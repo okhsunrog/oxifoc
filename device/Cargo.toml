@@ -1,0 +1,74 @@
+[package]
+name = "oxifoc"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "oxifoc"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+# Embassy dependencies (matching ergot requirements)
+embassy-executor = { version = "0.9.1", features = ["arch-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-futures = "0.1.2"
+embassy-stm32 = { version = "0.4.0", features = ["memory-x", "stm32g431cb", "time-driver-any", "exti", "unstable-pac"] }
+embassy-sync = "0.7.2"
+embassy-time = { version = "0.5.0", features = ["tick-hz-32_768"] }
+
+# Cortex-M dependencies
+cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+
+# Debugging dependencies
+defmt = { version = "1.0.1", optional = true }
+defmt-rtt = { version = "1.0.0", optional = true }
+panic-probe = { version = "1.0.0", features = ["print-defmt"], optional = true }
+
+# RTT for ergot transport
+rtt-target = "0.6"
+
+# Serialization
+serde = { version = "1.0.219", features = ["derive"], default-features = false }
+postcard-schema = "0.2.5"
+
+# Synchronization
+mutex = "1.0.2"
+
+# Logging
+log = "0.4"
+
+# Local dependencies
+oxifoc-protocol = { path = "../protocol" }
+ergot = { path = "../ergot/crates/ergot", features = ["embedded-io-async-v0_6"] }
+
+# Additional ergot deps
+bbq2 = { version = "0.4.2", default-features = false, features = ["critical-section", "maitake-sync-0_2"] }
+static_cell = "2.1"
+embedded-io-async = "0.6"
+
+[features]
+default = []
+debug = [
+    "defmt",
+    "panic-probe",
+    "embassy-executor/defmt",
+    "embassy-sync/defmt",
+    "embassy-futures/defmt",
+    "embassy-time/defmt",
+    "embassy-time/defmt-timestamp-uptime",
+    "embassy-stm32/defmt",
+]
+
+[profile.dev]
+debug = true
+lto = true
+opt-level = "z"
+incremental = true
+
+[profile.release]
+debug = false
+lto = true
+opt-level = "z"
+incremental = true

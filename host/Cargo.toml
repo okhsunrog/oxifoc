@@ -1,0 +1,29 @@
+[package]
+name = "oxifoc-host"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Protocol shared with device
+oxifoc-protocol = { path = "../protocol" }
+
+# Ergot for host side
+ergot = { path = "../ergot/crates/ergot", features = ["tokio-std"] }
+
+# probe-rs for RTT communication
+probe-rs = "0.30"
+
+# Async runtime
+tokio = { version = "1.45", features = ["full"] }
+
+# Logging
+env_logger = "0.11"
+log = "0.4"
+
+# Utilities
+anyhow = "1.0"
+mutex = "1.0.2"
+
+# Decoding ergot frames
+cobs = "0.3"
+postcard = "1.1"

@@ -1,0 +1,3 @@
+[submodule "ergot"]
+	path = ergot
+	url = git@github.com:okhsunrog/ergot.git
