@@ -1,7 +1,7 @@
 # This file was automatically generated.
 
 [package]
-edition = "2021"
+edition = "2024"
 name = "oxifoc"
 version = "0.1.0"
 
@@ -15,6 +15,7 @@ embassy-futures = "0.1.2"
 embassy-stm32 = { version = "0.4.0", features = ["memory-x", "stm32g431cb", "time-driver-any", "exti", "unstable-pac"] }
 embassy-sync = "0.7.2"
 embassy-time = { version = "0.5.0", features = ["tick-hz-32_768"] }
+ergot = { version = "0.11.0", features = ["defmt-v1"] }
 panic-halt = "1.0.0"
 panic-probe = { version = "1.0.0", features = ["print-defmt"], optional = true }
 

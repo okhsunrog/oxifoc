@@ -1,6 +1,6 @@
 # This file was automatically generated.
 
 [toolchain]
-channel = "1.84"
+channel = "1.89"
 components = ["rust-src", "rustfmt"]
-targets = ["thumbv7em-none-eabi"]
+targets = ["thumbv7em-none-eabihf"]
