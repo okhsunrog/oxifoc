@@ -33,7 +33,7 @@ This project does NOT use a Cargo workspace at the root level, as different targ
   - Network event handling (ergot server)
   - Periodic keepalive messages (every 3 seconds)
   - Device info request/response server
-- Dual logging: defmt + ergot (simultaneous)
+- Defmt logging for debugging
 - Custom RTT I/O implementation using `embedded-io-async` traits
 - Hard float support, optimized for size (`opt-level = "z"`)
 - Rust Edition 2024
@@ -43,8 +43,8 @@ This project does NOT use a Cargo workspace at the root level, as different targ
 - Ergot DirectEdge stack in controller mode
 - Tokio async runtime
 - Simultaneous streaming of:
-  - Defmt logs (decoded using device ELF)
-  - Ergot messages (COBS-framed)
+  - Defmt debug logs (decoded using device ELF)
+  - Ergot protocol messages (COBS-framed)
 - Button event and keepalive message handlers
 - Device info query at startup
 - Configuration via optional TOML file
@@ -137,11 +137,11 @@ Alternatively, set the `OXIFOC_HOST_CONFIG` environment variable to point to a c
 
 The device firmware configures RTT channels as follows:
 
-- **up0 "defmt"**: defmt logging output (always available via rtt-target)
-- **up1 "ergot"**: COBS-framed ergot messages (device→host)
-- **down0 "ergot-down"**: Reserved for host→device ergot messages
+- **up0 "defmt"**: Debug logging output (via defmt macros)
+- **up1 "ergot"**: COBS-framed protocol messages (device→host)
+- **down0 "ergot-down"**: Reserved for host→device protocol messages
 
-Both defmt and ergot channels operate simultaneously. The host application reads from both channels in parallel.
+Both channels operate simultaneously - defmt for debug logs, ergot for structured protocol communication. The host application reads from both channels in parallel.
 
 ## Network Topology
 
