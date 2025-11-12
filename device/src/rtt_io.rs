@@ -29,8 +29,15 @@ impl ErrorType for RttReader {
 impl Read for RttReader {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         // Non-blocking read from RTT down channel
-        let n = self.down.read(buf);
-        Ok(n)
+        // If no data available, yield to prevent busy-waiting
+        loop {
+            let n = self.down.read(buf);
+            if n > 0 {
+                return Ok(n);
+            }
+            // Yield to allow other tasks to run
+            embassy_futures::yield_now().await;
+        }
     }
 }
 

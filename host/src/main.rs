@@ -9,13 +9,12 @@ use defmt_decoder::{Table, DecodeError, StreamDecoder};
 use std::fs;
 use ergot::interface_manager::utils::std::new_std_queue;
 use cobs_acc::{CobsAccumulator, FeedResult};
-use ergot::interface_manager::profiles::direct_router::process_frame as ergot_router_process_frame;
-use ergot::interface_manager::profiles::direct_router::DirectRouter;
+use ergot::interface_manager::profiles::direct_edge::process_frame as ergot_edge_process_frame;
 use ergot::interface_manager::utils::cobs_stream::Sink as ErgotSink;
 use ergot::interface_manager::utils::std::StdQueue as ErgotStdQueue;
-use ergot::net_stack::{ArcNetStack, NetStackHandle};
+use ergot::net_stack::ArcNetStack;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use ergot::interface_manager::{InterfaceState, Profile, Interface};
+use ergot::interface_manager::{InterfaceState, Interface};
 use oxifoc_protocol::{ButtonEndpoint, ButtonEvent};
 use core::pin::pin;
 
@@ -119,29 +118,22 @@ async fn main() -> Result<()> {
     let defmt_up_idx = if cfg.stream_defmt() { find_by_name("defmt").or(Some(0)) } else { None };
     info!("Using channels: ergot={:?}, defmt={:?}", ergot_up_idx, defmt_up_idx);
 
-    // Build an ergot Router stack using a COBS sink over a StdQueue.
-    // Define a local RTT interface marker that uses the same COBS Sink type.
+    // Build an ergot DirectEdge stack in controller mode (not router - we're directly connected to one device)
+    use ergot::interface_manager::profiles::direct_edge::DirectEdge;
     struct RttInterface;
     impl Interface for RttInterface { type Sink = ErgotSink<ErgotStdQueue>; }
-    type RouterStack = ArcNetStack<CriticalSectionRawMutex, DirectRouter<RttInterface>>;
+    type EdgeProfile = DirectEdge<RttInterface>;
+    type EdgeStack = ArcNetStack<CriticalSectionRawMutex, EdgeProfile>;
     const ERGOT_MTU: u16 = 1024;
     let queue = new_std_queue(4096);
-    let stack: RouterStack = RouterStack::new();
-    // Register an interface with the router so responses can be sent back out over RTT
-    let (ident, ergot_net_id) = {
-        let qh = queue.clone();
-        let res = stack.stack().manage_profile(|im| {
-            let ident = im.register_interface(ErgotSink::new_from_handle(qh, ERGOT_MTU))?;
-            match im.interface_state(ident) {
-                Some(InterfaceState::Active { net_id, .. }) => Some((ident, net_id)),
-                _ => {
-                    _ = im.deregister_interface(ident);
-                    None
-                }
-            }
-        });
-        res.ok_or_else(|| anyhow::anyhow!("Out of net IDs for ergot interface"))?
-    };
+
+    // Create stack with DirectEdge in controller mode (network 1, node 1)
+    let stack: EdgeStack = ArcNetStack::new_with_profile(
+        DirectEdge::new_controller(
+            ErgotSink::new_from_handle(queue.clone(), ERGOT_MTU),
+            InterfaceState::Active { net_id: 1, node_id: 1 }
+        )
+    );
 
     // Spawn servers for device-originated events: button and keepalive.
     tokio::spawn({
@@ -182,15 +174,16 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Request device info once at startup
+    // Request device info once at startup - send to explicit address (1.2.0) to trigger device interface activation
     {
         use ergot::Address;
+        let device_addr = Address { network_id: 1, node_id: 2, port_id: 0 };
         let cli = stack.endpoints().request::<oxifoc_protocol::InfoEndpoint>(
-            Address { network_id: ergot_net_id, node_id: 2, port_id: 0 },
+            device_addr,
             &(),
-            None,
+            Some("device_info"),
         );
-        if let Ok(Ok(info)) = tokio::time::timeout(Duration::from_millis(500), cli).await {
+        if let Ok(Ok(info)) = tokio::time::timeout(Duration::from_millis(1000), cli).await {
             let hw = info.hw.as_str();
             let sw = info.sw.as_str();
             tracing::info!("DeviceInfo hw='{}' sw='{}'", hw, sw);
@@ -224,6 +217,8 @@ async fn main() -> Result<()> {
     let mut defbuf = vec![0u8; 2048];
     // Accumulator for COBS-framed ergot data across RTT reads
     let mut cobs_acc = CobsAccumulator::new_boxslice(1024 * 4);
+    // Controller always has net_id=1
+    let mut net_id = Some(1u16);
     // Downlink writer uses the queue's consumer to send frames to device via RTT down channel
     let down_idx = {
         let mut find_down = |name: &str| -> Option<usize> {
@@ -250,8 +245,8 @@ async fn main() -> Result<()> {
                             FeedResult::DecodeError(new_w) => new_w,
                             FeedResult::Success { data, remaining }
                             | FeedResult::SuccessInput { data, remaining } => {
-                                // Route decoded frame into the ergot router stack
-                                ergot_router_process_frame(ergot_net_id, data, &stack, ident);
+                                // Process frame using DirectEdge (controller mode)
+                                ergot_edge_process_frame(&mut net_id, data, &stack, ());
                                 remaining
                             }
                         };

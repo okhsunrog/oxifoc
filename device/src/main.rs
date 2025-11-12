@@ -78,7 +78,7 @@ async fn main(spawner: Spawner) {
 
     defmt::info!("Oxifoc starting - ergot over RTT");
 
-    // Create RX worker for incoming ergot messages
+    // Create RX worker for incoming ergot messages (it will set interface to Inactive, then Active after first frame)
     let rx_worker = RxWorker::new_target(&STACK, rtt_rx, ());
 
     // Button: PC10, external pull-up, active-low to GND
@@ -131,9 +131,15 @@ async fn button_handler(mut button: ExtiInput<'static>) {
 
     defmt::info!("Button handler started");
 
+    // Target host router at network 1, node 1 (like rp2040-serial-pair target.rs:89-95)
+    let host_addr = Address {
+        network_id: 1,
+        node_id: 1,
+        port_id: 0,
+    };
     let client = STACK
         .endpoints()
-        .client::<ButtonEndpoint>(Address::unknown(), Some("button"));
+        .client::<ButtonEndpoint>(host_addr, Some("button"));
 
     defmt::info!("Button ready (active-low)");
 
@@ -214,16 +220,31 @@ async fn status_reporter() {
 /// Periodic keepalive to host
 #[embassy_executor::task]
 async fn keepalive_task() {
+    // Wait for interface to become active (host sends first frame)
+    defmt::info!("keepalive task waiting for active interface");
+    Timer::after(Duration::from_secs(2)).await;
+
     let mut seq: u32 = 0;
+    // Target host router at network 1, node 1 (like rp2040-serial-pair target.rs:89-95)
+    let host_addr = Address {
+        network_id: 1,
+        node_id: 1,
+        port_id: 0,
+    };
     let client = STACK
         .endpoints()
-        .client::<KeepAliveEndpoint>(Address::unknown(), Some("keepalive"));
+        .client::<KeepAliveEndpoint>(host_addr, Some("keepalive"));
     defmt::info!("keepalive task started");
     loop {
-        defmt::info!("sending keepalive");
         Timer::after(Duration::from_secs(3)).await;
+        defmt::info!("sending keepalive seq={}", seq);
         let msg = KeepAlive { seq };
-        let _ = client.request(&msg).await;
+        // Add timeout to prevent blocking forever if no host is connected
+        match with_timeout(Duration::from_millis(500), client.request(&msg)).await {
+            Ok(Ok(_)) => defmt::debug!("keepalive {} sent", seq),
+            Ok(Err(_)) => defmt::warn!("keepalive {} failed", seq),
+            Err(_) => defmt::warn!("keepalive {} timeout", seq),
+        }
         seq = seq.wrapping_add(1);
     }
 }
