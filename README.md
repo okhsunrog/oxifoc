@@ -9,11 +9,11 @@ oxifoc/
 ├── device/          # STM32G431 firmware (B-G431B-ESC1 board)
 ├── host/            # PC-side application for RTT communication
 ├── protocol/        # Shared protocol definitions
-├── ergot/           # ergot submodule for messaging
 └── docs/            # Documentation
 ```
 
 This project does NOT use a Cargo workspace at the root level, as different targets (embedded MCU vs. host) require separate configurations.
+We depend on the `ergot` crate from crates.io (no submodule required).
 
 ## Hardware
 
@@ -37,6 +37,9 @@ This project does NOT use a Cargo workspace at the root level, as different targ
 ```bash
 cd device
 cargo build --release
+
+# Optional: build with defmt logging instead of Ergot fmt-topic
+cargo build --release --no-default-features --features logs_via_defmt
 ```
 
 ### Host Application
@@ -64,12 +67,37 @@ With the board connected via ST-Link:
 ```bash
 cd host
 cargo run
+
+# Optional: select explicit log source and/or chip
+cargo run -- --log-source ergot
+cargo run -- --log-source defmt
+cargo run -- --chip STM32G431CBTx
 ```
 
 The host application will:
 1. Connect to the STM32G431 via ST-Link
-2. Attach to RTT channels
-3. Display button events and other debug output
+2. Attach to RTT and select a log source
+3. Display logs and other debug output
+
+Log source selection (runtime):
+- `--log-source auto` (default): Prefer `ergot` channel, else `defmt` if present
+- `--log-source ergot`: Read Ergot fmt-topic logs from RTT up channel named `ergot`
+- `--log-source defmt`: Read the RTT up channel named `defmt` and print raw bytes
+
+Note: defmt decoding with an ELF file will be added later (TODO); for now, defmt output is streamed as-is.
+
+RTT channel map (device)
+- up0: `defmt` (defmt logs when enabled)
+- up1: `ergot` (COBS-framed Ergot frames, including fmt-topic logs)
+- down0: `ergot-down` (reserved for future host→device messages)
+
+Logging modes (device)
+- Default (transport-agnostic): logs go over Ergot fmt-topic, carried by the selected interface (RTT in this project). Build normally.
+- Defmt mode: logs go over defmt RTT (up0). Build with `--no-default-features --features logs_via_defmt`.
+
+Host chip selection
+- By default, the host auto-detects the target with `TargetSelector::Auto`.
+- Override with `--chip <name>` (e.g., `STM32G431CBTx`) if needed.
 
 ## Protocol
 

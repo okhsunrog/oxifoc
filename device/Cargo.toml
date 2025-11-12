@@ -21,13 +21,12 @@ embassy-time = { version = "0.5.0", features = ["tick-hz-32_768"] }
 cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "0.7.5"
 
-# Debugging dependencies
-defmt = { version = "1.0.1", optional = true }
-defmt-rtt = { version = "1.0.0", optional = true }
-panic-probe = { version = "1.0.0", features = ["print-defmt"], optional = true }
+# Debugging and logging
+defmt = "1.0.1"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 
 # RTT for ergot transport
-rtt-target = "0.6"
+rtt-target = { version = "0.6.2", features = ["defmt"] }
 
 # Serialization
 serde = { version = "1.0.219", features = ["derive"], default-features = false }
@@ -36,12 +35,9 @@ postcard-schema = "0.2.5"
 # Synchronization
 mutex = "1.0.2"
 
-# Logging
-log = "0.4"
-
 # Local dependencies
 oxifoc-protocol = { path = "../protocol" }
-ergot = { path = "../ergot/crates/ergot", features = ["embedded-io-async-v0_6"] }
+ergot = { version = "0.12.0", default-features = false, features = ["embedded-io-async-v0_6", "disable-cache-padding"] }
 
 # Additional ergot deps
 bbq2 = { version = "0.4.2", default-features = false, features = ["critical-section", "maitake-sync-0_2"] }
@@ -50,16 +46,6 @@ embedded-io-async = "0.6"
 
 [features]
 default = []
-debug = [
-    "defmt",
-    "panic-probe",
-    "embassy-executor/defmt",
-    "embassy-sync/defmt",
-    "embassy-futures/defmt",
-    "embassy-time/defmt",
-    "embassy-time/defmt-timestamp-uptime",
-    "embassy-stm32/defmt",
-]
 
 [profile.dev]
 debug = true
@@ -68,7 +54,7 @@ opt-level = "z"
 incremental = true
 
 [profile.release]
-debug = false
+debug = 2
 lto = true
 opt-level = "z"
 incremental = true

@@ -8,7 +8,7 @@ edition = "2024"
 oxifoc-protocol = { path = "../protocol" }
 
 # Ergot for host side
-ergot = { path = "../ergot/crates/ergot", features = ["tokio-std"] }
+ergot = { version = "0.12.0", features = ["tokio-std"] }
 
 # probe-rs for RTT communication
 probe-rs = "0.30"

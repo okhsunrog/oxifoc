@@ -5,13 +5,34 @@ use probe_rs::Permissions;
 use probe_rs::rtt::{Rtt, ScanRegion};
 use std::time::Duration;
 use oxifoc_protocol::{ButtonEvent, ButtonEndpoint};
-use ergot::well_known::ErgotFmtRxOwned;
+use ergot::logging::fmtlog::ErgotFmtRxOwned;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum LogSourceSel { Auto, Ergot, Defmt }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
 
-    info!("Oxifoc Host - Ergot over RTT");
+    // Parse CLI flags: --log-source {auto|ergot|defmt} and optional --chip <name>
+    let mut sel = LogSourceSel::Auto;
+    let mut chip: Option<String> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--log-source" {
+            if let Some(val) = args.next() {
+                sel = match val.as_str() {
+                    "ergot" => LogSourceSel::Ergot,
+                    "defmt" => LogSourceSel::Defmt,
+                    _ => LogSourceSel::Auto,
+                };
+            }
+        } else if arg == "--chip" {
+            chip = args.next();
+        }
+    }
+
+    info!("Oxifoc Host - Ergot over RTT (log-source={:?}, chip={:?})", sel, chip);
     info!("Connecting to STM32G431 via ST-Link...");
 
     // Get list of available probes
@@ -28,9 +49,13 @@ async fn main() -> Result<()> {
     // Open the first available probe
     let probe = probes[0].open().context("Failed to open probe")?;
 
-    // Attach to the target
+    // Attach to the target (auto-detect by default, or explicit --chip)
+    let ts = match chip {
+        Some(name) => probe_rs::config::TargetSelector::from(name),
+        None => probe_rs::config::TargetSelector::Auto,
+    };
     let mut session = probe
-        .attach("STM32G431CBUx", Permissions::default())
+        .attach(ts, Permissions::default())
         .context("Failed to attach to target")?;
 
     info!("Successfully attached to STM32G431");
@@ -43,37 +68,61 @@ async fn main() -> Result<()> {
         .context("Failed to attach RTT")?;
 
     info!("RTT attached successfully");
-    info!("Available RTT channels:");
+    info!("Available RTT up channels:");
     for (idx, channel) in rtt.up_channels().iter().enumerate() {
-        info!("  Channel {}: {}", idx, channel.name().unwrap_or("unnamed"));
+        info!("  up{}: {}", idx, channel.name().unwrap_or("unnamed"));
+    }
+    info!("Available RTT down channels:");
+    for (idx, channel) in rtt.down_channels().iter().enumerate() {
+        info!("  down{}: {}", idx, channel.name().unwrap_or("unnamed"));
     }
 
-    // Main loop - read from both channels
-    let mut defmt_buf = vec![0u8; 1024];
-    let mut ergot_buf = vec![0u8; 2048];
+    // Decide the log source channel index
+    let choose_log_source = |rtt: &mut Rtt, sel: LogSourceSel| -> (LogSourceSel, Option<usize>) {
+        // helper: find channel by name (exact)
+        let mut find_by_name = |name: &str| -> Option<usize> {
+            rtt.up_channels()
+                .iter()
+                .enumerate()
+                .find_map(|(i, ch)| {
+                    if ch.name().map(|n| n == name).unwrap_or(false) { Some(i) } else { None }
+                })
+        };
+        match sel {
+            LogSourceSel::Ergot => (LogSourceSel::Ergot, find_by_name("ergot").or(Some(1))),
+            LogSourceSel::Defmt => (LogSourceSel::Defmt, find_by_name("defmt").or(Some(0))),
+            LogSourceSel::Auto => {
+                if let Some(i) = find_by_name("ergot") { return (LogSourceSel::Ergot, Some(i)); }
+                if let Some(i) = find_by_name("defmt") { return (LogSourceSel::Defmt, Some(i)); }
+                // fallback to ergot on up1
+                (LogSourceSel::Ergot, Some(1))
+            }
+        }
+    };
 
+    let (sel, log_up_idx) = choose_log_source(&mut rtt, sel);
+    info!("Selected log source: {:?} on up{}", sel, log_up_idx.unwrap_or(usize::MAX));
+
+    // Main loop - read from the selected source
+    let mut buf = vec![0u8; 2048];
     loop {
-        // Read defmt channel (channel 0) for debugging
-        if let Some(channel) = rtt.up_channels().get_mut(0) {
-            let count = channel.read(&mut core, &mut defmt_buf)?;
-            if count > 0 {
-                let text = String::from_utf8_lossy(&defmt_buf[..count]);
-                if !text.is_empty() {
-                    print!("[DEFMT] {}", text);
+        if let Some(up_idx) = log_up_idx {
+            if let Some(channel) = rtt.up_channels().get_mut(up_idx) {
+                let count = channel.read(&mut core, &mut buf)?;
+                if count > 0 {
+                    match sel {
+                        LogSourceSel::Ergot => process_ergot_data(&buf[..count]),
+                        LogSourceSel::Defmt => {
+                            // TODO(defmt): integrate defmt-decoder with an --defmt-elf <path>.
+                            // For now, stream raw bytes for debugging convenience.
+                            let text = String::from_utf8_lossy(&buf[..count]);
+                            if !text.is_empty() { print!("[DEFMT] {}", text); }
+                        }
+                        LogSourceSel::Auto => {}
+                    }
                 }
             }
         }
-
-        // Read ergot channel (channel 1)
-        if let Some(channel) = rtt.up_channels().get_mut(1) {
-            let count = channel.read(&mut core, &mut ergot_buf)?;
-            if count > 0 {
-                // Process ergot frames
-                process_ergot_data(&ergot_buf[..count]);
-            }
-        }
-
-        // Small delay to avoid overwhelming the probe
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }

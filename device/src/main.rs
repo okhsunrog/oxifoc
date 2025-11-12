@@ -10,27 +10,19 @@ use embassy_time::{Duration, Timer, with_timeout};
 use ergot::{
     Address,
     exports::bbq2::traits::coordination::cas::AtomicCoord,
-    logging::log_v0_4::LogSink,
     toolkits::embedded_io_async_v0_6::{self as kit, tx_worker},
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_protocol::{ButtonEvent, ButtonEndpoint};
-use rtt_target::rtt_init;
+use rtt_target::{rtt_init, ChannelMode::*};
 use static_cell::StaticCell;
 
 mod rtt_io;
 use rtt_io::RttWriter;
 
-#[cfg(feature = "defmt")]
+// Use panic-probe for panics
 use panic_probe as _;
 
-// Simple panic handler for non-defmt builds
-#[cfg(not(feature = "defmt"))]
-#[inline(never)]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    cortex_m::asm::udf()
-}
 
 const OUT_QUEUE_SIZE: usize = 2048;
 const MAX_PACKET_SIZE: usize = 512;
@@ -46,9 +38,6 @@ static OUTQ: Queue = kit::Queue::new();
 /// Statically store our netstack
 static STACK: Stack = kit::new_target_stack(OUTQ.stream_producer(), MAX_PACKET_SIZE as u16);
 
-/// Statically store the LogSink
-static LOGSINK: LogSink<&'static Stack> = LogSink::new(&STACK);
-
 /// Buffers for RX worker
 static RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
 static SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
@@ -58,13 +47,20 @@ static RTT_UP_CHANNEL: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // Initialize RTT with two up channels
+    // Initialize RTT with defmt on channel 0 and ergot on channel 1
+    // rtt-target automatically provides defmt support when defmt feature is enabled
     let channels = rtt_init! {
         up: {
-            0: { size: 1024 }  // Defmt/debug channel
-            1: { size: 2048 }  // Ergot data channel
+            0: { size: 1024, mode: NoBlockSkip, name: "defmt" } // defmt logs
+            1: { size: 2048, mode: NoBlockSkip, name: "ergot" } // Ergot data channel
+        }
+        down: {
+            0: { size: 1024, name: "ergot-down" } // Reserved for future host->device
         }
     };
+
+    // Configure rtt-target as the defmt global logger on up channel 0
+    rtt_target::set_defmt_channel(channels.up.0);
 
     // Get RTT channel for ergot (channel 1)
     let rtt_up = channels.up.1;
@@ -74,20 +70,17 @@ async fn main(spawner: Spawner) {
     let rtt_io = rtt_io::RttIo::new(rtt_up_static);
     let (rtt_rx, rtt_tx) = rtt_io.split();
 
-    // Register ergot as the global logger
-    LOGSINK.register_static(log::LevelFilter::Info);
-
     // Initialize STM32
     let p = embassy_stm32::init(Default::default());
 
-    log::info!("Oxifoc starting - ergot over RTT");
+    defmt::info!("Oxifoc starting - ergot over RTT");
 
     // Create RX worker for incoming ergot messages
     let rx_worker = RxWorker::new_target(&STACK, rtt_rx, ());
 
     // Button configuration
     let button = ExtiInput::new(p.PC10, p.EXTI10, Pull::Down);
-    log::info!("Button configured on PC10");
+    defmt::info!("Button configured on PC10");
 
     // Spawn I/O workers
     spawner.spawn(run_rx(
@@ -101,12 +94,12 @@ async fn main(spawner: Spawner) {
     spawner.spawn(button_handler(button)).unwrap();
     spawner.spawn(status_reporter()).unwrap();
 
-    log::info!("All tasks spawned, entering main loop");
+    defmt::info!("All tasks spawned, entering main loop");
 
     // Main heartbeat loop
     loop {
         Timer::after(Duration::from_secs(10)).await;
-        log::info!("Heartbeat - button ready, ergot active");
+        defmt::info!("Heartbeat - button ready, ergot active");
     }
 }
 
@@ -131,7 +124,7 @@ async fn button_handler(mut button: ExtiInput<'static>) {
     const DOUBLE_CLICK_DELAY: u64 = 250;
     const HOLD_DELAY: u64 = 1000;
 
-    log::info!("Button handler started");
+    defmt::info!("Button handler started");
 
     let client = STACK
         .endpoints()
@@ -139,7 +132,7 @@ async fn button_handler(mut button: ExtiInput<'static>) {
 
     // Wait for first button press
     button.wait_for_rising_edge().await;
-    log::info!("Button ready");
+    defmt::info!("Button ready");
 
     loop {
         // Check for hold (button pressed for more than HOLD_DELAY)
@@ -150,7 +143,7 @@ async fn button_handler(mut button: ExtiInput<'static>) {
         .await
         .is_err()
         {
-            log::info!("Button: HOLD");
+            defmt::info!("Button: HOLD");
             let _ = client.request(&ButtonEvent::Hold).await;
             button.wait_for_falling_edge().await;
         }
@@ -162,10 +155,10 @@ async fn button_handler(mut button: ExtiInput<'static>) {
         .await
         .is_err()
         {
-            log::info!("Button: SINGLE CLICK");
+            defmt::info!("Button: SINGLE CLICK");
             let _ = client.request(&ButtonEvent::SingleClick).await;
         } else {
-            log::info!("Button: DOUBLE CLICK");
+            defmt::info!("Button: DOUBLE CLICK");
             let _ = client.request(&ButtonEvent::DoubleClick).await;
             button.wait_for_falling_edge().await;
         }
@@ -177,7 +170,7 @@ async fn button_handler(mut button: ExtiInput<'static>) {
 
 #[embassy_executor::task]
 async fn status_reporter() {
-    log::info!("Status reporter started");
+    defmt::info!("Status reporter started");
 
     // Create server to handle incoming button requests from the network
     let button_socket = STACK
@@ -186,27 +179,27 @@ async fn status_reporter() {
     let button_socket = pin!(button_socket);
     let mut button_hdl = button_socket.attach();
 
-    log::info!("Ergot button endpoint ready");
+    defmt::info!("Ergot button endpoint ready");
 
     loop {
         // Handle button events from network with timeout
         let result = with_timeout(Duration::from_secs(5), button_hdl.serve(async |event| {
             match event {
                 ButtonEvent::SingleClick => {
-                    log::info!("Network: SINGLE CLICK");
+                    defmt::info!("Network: SINGLE CLICK");
                 },
                 ButtonEvent::DoubleClick => {
-                    log::info!("Network: DOUBLE CLICK");
+                    defmt::info!("Network: DOUBLE CLICK");
                 },
                 ButtonEvent::Hold => {
-                    log::info!("Network: HOLD");
+                    defmt::info!("Network: HOLD");
                 },
             }
         })).await;
 
         // Periodic status when no network activity
         if result.is_err() {
-            log::debug!("Waiting for network events...");
+            defmt::debug!("Waiting for network events...");
         }
     }
 }
