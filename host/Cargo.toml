@@ -17,13 +17,23 @@ probe-rs = "0.30"
 tokio = { version = "1.45", features = ["full"] }
 
 # Logging
-env_logger = "0.11"
 log = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-log = "0.2"
 
 # Utilities
 anyhow = "1.0"
 mutex = "1.0.2"
 
 # Decoding ergot frames
-cobs = "0.3"
+cobs = "0.5"
 postcard = "1.1"
+cobs-acc = "0.1"
+
+# Decode defmt frames from RTT using device ELF
+defmt-decoder = "1.0"
+
+# Config loading (TOML)
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"

@@ -2,6 +2,7 @@
 
 use ergot::endpoint;
 use postcard_schema::Schema;
+use heapless::String;
 use serde::{Deserialize, Serialize};
 
 /// Button events from the B-G431B-ESC1 board
@@ -14,3 +15,22 @@ pub enum ButtonEvent {
 
 // Define endpoint for button communication
 endpoint!(ButtonEndpoint, ButtonEvent, (), "event/button");
+
+/// Periodic keepalive from the device
+#[derive(Clone, Schema, Serialize, Deserialize, Debug)]
+pub struct KeepAlive {
+    pub seq: u32,
+}
+
+// Device -> Host keepalive endpoint (no response expected)
+endpoint!(KeepAliveEndpoint, KeepAlive, (), "event/keepalive");
+
+/// Basic device info returned on request
+#[derive(Clone, Schema, Serialize, Deserialize, Debug)]
+pub struct DeviceInfo {
+    pub hw: String<32>,
+    pub sw: String<32>,
+}
+
+// Host -> Device info query endpoint (unit request, returns DeviceInfo)
+endpoint!(InfoEndpoint, (), DeviceInfo, "req/device_info");

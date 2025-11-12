@@ -1,7 +1,7 @@
 //! RTT channel wrapper implementing embedded-io-async traits for ergot
 
 use embedded_io_async::{ErrorType, Read, Write};
-use rtt_target::UpChannel;
+use rtt_target::{UpChannel, DownChannel};
 
 /// Error type for RTT I/O operations
 #[derive(Debug, Clone, Copy)]
@@ -15,17 +15,11 @@ impl embedded_io_async::Error for RttError {
 
 /// RTT channel wrapper for reading (UpChannel - device to host)
 pub struct RttReader {
-    // We don't actually use UpChannel for reading on device side
-    // This is here for type compatibility
-    _phantom: core::marker::PhantomData<()>,
+    down: &'static mut DownChannel,
 }
 
 impl RttReader {
-    pub const fn new() -> Self {
-        Self {
-            _phantom: core::marker::PhantomData,
-        }
-    }
+    pub fn new(down: &'static mut DownChannel) -> Self { Self { down } }
 }
 
 impl ErrorType for RttReader {
@@ -33,10 +27,10 @@ impl ErrorType for RttReader {
 }
 
 impl Read for RttReader {
-    async fn read(&mut self, _buf: &mut [u8]) -> Result<usize, Self::Error> {
-        // RTT UpChannels are for device->host, we don't read from them on device
-        // Return 0 to indicate no data (ergot will handle this gracefully)
-        Ok(0)
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        // Non-blocking read from RTT down channel
+        let n = self.down.read(buf);
+        Ok(n)
     }
 }
 
@@ -75,9 +69,9 @@ pub struct RttIo {
 }
 
 impl RttIo {
-    pub fn new(up_channel: &'static mut UpChannel) -> Self {
+    pub fn new(up_channel: &'static mut UpChannel, down_channel: &'static mut DownChannel) -> Self {
         Self {
-            reader: RttReader::new(),
+            reader: RttReader::new(down_channel),
             writer: RttWriter::new(up_channel),
         }
     }

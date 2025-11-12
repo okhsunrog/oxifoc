@@ -13,7 +13,7 @@ use ergot::{
     toolkits::embedded_io_async_v0_6::{self as kit, tx_worker},
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use oxifoc_protocol::{ButtonEvent, ButtonEndpoint};
+use oxifoc_protocol::{ButtonEvent, ButtonEndpoint, KeepAlive, KeepAliveEndpoint, InfoEndpoint, DeviceInfo};
 use rtt_target::{rtt_init, ChannelMode::*};
 use static_cell::StaticCell;
 
@@ -44,6 +44,7 @@ static SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 
 /// RTT channel storage
 static RTT_UP_CHANNEL: StaticCell<rtt_target::UpChannel> = StaticCell::new();
+static RTT_DOWN_CHANNEL: StaticCell<rtt_target::DownChannel> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -62,12 +63,14 @@ async fn main(spawner: Spawner) {
     // Configure rtt-target as the defmt global logger on up channel 0
     rtt_target::set_defmt_channel(channels.up.0);
 
-    // Get RTT channel for ergot (channel 1)
+    // Get RTT channels for ergot (up: device->host, down: host->device)
     let rtt_up = channels.up.1;
     let rtt_up_static = RTT_UP_CHANNEL.init_with(|| rtt_up);
+    let rtt_down = channels.down.0;
+    let rtt_down_static = RTT_DOWN_CHANNEL.init_with(|| rtt_down);
 
     // Create RTT I/O
-    let rtt_io = rtt_io::RttIo::new(rtt_up_static);
+    let rtt_io = rtt_io::RttIo::new(rtt_up_static, rtt_down_static);
     let (rtt_rx, rtt_tx) = rtt_io.split();
 
     // Initialize STM32
@@ -78,9 +81,9 @@ async fn main(spawner: Spawner) {
     // Create RX worker for incoming ergot messages
     let rx_worker = RxWorker::new_target(&STACK, rtt_rx, ());
 
-    // Button configuration
-    let button = ExtiInput::new(p.PC10, p.EXTI10, Pull::Down);
-    defmt::info!("Button configured on PC10");
+    // Button: PC10, external pull-up, active-low to GND
+    let button = ExtiInput::new(p.PC10, p.EXTI10, Pull::None);
+    defmt::info!("Button configured on PC10 (active-low)");
 
     // Spawn I/O workers
     spawner.spawn(run_rx(
@@ -90,16 +93,18 @@ async fn main(spawner: Spawner) {
     )).unwrap();
     spawner.spawn(run_tx(rtt_tx)).unwrap();
 
-    // Spawn application tasks
+    // Spawn application tasks (temporarily disable others to debug keepalive)
     spawner.spawn(button_handler(button)).unwrap();
     spawner.spawn(status_reporter()).unwrap();
+    spawner.spawn(keepalive_task()).unwrap();
+    spawner.spawn(info_server()).unwrap();
 
     defmt::info!("All tasks spawned, entering main loop");
 
     // Main heartbeat loop
     loop {
-        Timer::after(Duration::from_secs(10)).await;
-        defmt::info!("Heartbeat - button ready, ergot active");
+        Timer::after(Duration::from_secs(5)).await;
+        defmt::info!("Heartbeat 5s - button ready, ergot active");
     }
 }
 
@@ -130,41 +135,43 @@ async fn button_handler(mut button: ExtiInput<'static>) {
         .endpoints()
         .client::<ButtonEndpoint>(Address::unknown(), Some("button"));
 
-    // Wait for first button press
-    button.wait_for_rising_edge().await;
-    defmt::info!("Button ready");
+    defmt::info!("Button ready (active-low)");
 
     loop {
-        // Check for hold (button pressed for more than HOLD_DELAY)
+        // Wait for press (active-low => falling edge)
+        button.wait_for_falling_edge().await;
+
+        // If release does not happen within HOLD_DELAY, it's a hold
         if with_timeout(
             Duration::from_millis(HOLD_DELAY),
-            button.wait_for_falling_edge(),
+            button.wait_for_rising_edge(),
         )
         .await
         .is_err()
         {
             defmt::info!("Button: HOLD");
             let _ = client.request(&ButtonEvent::Hold).await;
-            button.wait_for_falling_edge().await;
-        }
-        // Check for double click
-        else if with_timeout(
-            Duration::from_millis(DOUBLE_CLICK_DELAY),
-            button.wait_for_rising_edge(),
-        )
-        .await
-        .is_err()
-        {
-            defmt::info!("Button: SINGLE CLICK");
-            let _ = client.request(&ButtonEvent::SingleClick).await;
-        } else {
-            defmt::info!("Button: DOUBLE CLICK");
-            let _ = client.request(&ButtonEvent::DoubleClick).await;
-            button.wait_for_falling_edge().await;
+            // Ensure we're released before next iteration
+            button.wait_for_rising_edge().await;
+            continue;
         }
 
-        // Wait for next button press
-        button.wait_for_rising_edge().await;
+        // Released within hold window: check for a second press within DOUBLE_CLICK_DELAY
+        if with_timeout(
+            Duration::from_millis(DOUBLE_CLICK_DELAY),
+            button.wait_for_falling_edge(),
+        )
+        .await
+        .is_ok()
+        {
+            defmt::info!("Button: DOUBLE CLICK");
+            let _ = client.request(&ButtonEvent::DoubleClick).await;
+            // Wait for final release
+            button.wait_for_rising_edge().await;
+        } else {
+            defmt::info!("Button: SINGLE CLICK");
+            let _ = client.request(&ButtonEvent::SingleClick).await;
+        }
     }
 }
 
@@ -201,5 +208,41 @@ async fn status_reporter() {
         if result.is_err() {
             defmt::debug!("Waiting for network events...");
         }
+    }
+}
+
+/// Periodic keepalive to host
+#[embassy_executor::task]
+async fn keepalive_task() {
+    let mut seq: u32 = 0;
+    let client = STACK
+        .endpoints()
+        .client::<KeepAliveEndpoint>(Address::unknown(), Some("keepalive"));
+    defmt::info!("keepalive task started");
+    loop {
+        defmt::info!("sending keepalive");
+        Timer::after(Duration::from_secs(3)).await;
+        let msg = KeepAlive { seq };
+        let _ = client.request(&msg).await;
+        seq = seq.wrapping_add(1);
+    }
+}
+
+/// Respond to info requests from host
+#[embassy_executor::task]
+async fn info_server() {
+    let server = STACK
+        .endpoints()
+        .bounded_server::<InfoEndpoint, 2>(Some("device_info"));
+    let server = pin!(server);
+    let mut h = server.attach();
+    loop {
+        let _ = h.serve(|_req: &()| async move {
+            let mut hw: heapless::String<32> = heapless::String::new();
+            let mut sw: heapless::String<32> = heapless::String::new();
+            let _ = hw.push_str("B-G431B-ESC1");
+            let _ = sw.push_str("oxifoc-0.1.0");
+            DeviceInfo { hw, sw }
+        }).await;
     }
 }

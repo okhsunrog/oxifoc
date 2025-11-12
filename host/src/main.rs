@@ -1,38 +1,51 @@
 use anyhow::{Context, Result};
-use log::{info, error};
+use tracing::{info, error};
 use probe_rs::probe::list::Lister;
 use probe_rs::Permissions;
 use probe_rs::rtt::{Rtt, ScanRegion};
 use std::time::Duration;
-use oxifoc_protocol::{ButtonEvent, ButtonEndpoint};
-use ergot::logging::fmtlog::ErgotFmtRxOwned;
+// ergot stack and helpers
+use defmt_decoder::{Table, DecodeError, StreamDecoder};
+use std::fs;
+use ergot::interface_manager::utils::std::new_std_queue;
+use cobs_acc::{CobsAccumulator, FeedResult};
+use ergot::interface_manager::profiles::direct_router::process_frame as ergot_router_process_frame;
+use ergot::interface_manager::profiles::direct_router::DirectRouter;
+use ergot::interface_manager::utils::cobs_stream::Sink as ErgotSink;
+use ergot::interface_manager::utils::std::StdQueue as ErgotStdQueue;
+use ergot::net_stack::{ArcNetStack, NetStackHandle};
+use mutex::raw_impls::cs::CriticalSectionRawMutex;
+use ergot::interface_manager::{InterfaceState, Profile, Interface};
+use oxifoc_protocol::{ButtonEndpoint, ButtonEvent};
+use core::pin::pin;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum LogSourceSel { Auto, Ergot, Defmt }
+mod config;
+use config::HostConfig;
+
+fn init_tracing() {
+    // Default INFO; allow override via RUST_LOG
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    // Do not install a log tracer here to avoid SetLoggerError; rely on tracing only.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_level(true)
+        .compact()
+        .try_init();
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
+    init_tracing();
 
-    // Parse CLI flags: --log-source {auto|ergot|defmt} and optional --chip <name>
-    let mut sel = LogSourceSel::Auto;
-    let mut chip: Option<String> = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        if arg == "--log-source" {
-            if let Some(val) = args.next() {
-                sel = match val.as_str() {
-                    "ergot" => LogSourceSel::Ergot,
-                    "defmt" => LogSourceSel::Defmt,
-                    _ => LogSourceSel::Auto,
-                };
-            }
-        } else if arg == "--chip" {
-            chip = args.next();
-        }
-    }
+    // Load config file
+    let cfg = HostConfig::load_default().unwrap_or_default();
+    let probe_sel = cfg.probe.clone();
+    let chip = cfg.chip.clone();
+    let elf_from_cfg = cfg.elf.clone();
 
-    info!("Oxifoc Host - Ergot over RTT (log-source={:?}, chip={:?})", sel, chip);
+    info!("Oxifoc Host - RTT (chip={:?}, probe={:?})", chip, probe_sel);
     info!("Connecting to STM32G431 via ST-Link...");
 
     // Get list of available probes
@@ -46,8 +59,24 @@ async fn main() -> Result<()> {
 
     info!("Found {} probe(s)", probes.len());
 
-    // Open the first available probe
-    let probe = probes[0].open().context("Failed to open probe")?;
+    // Open specific probe if configured, otherwise first
+    let probe = if let Some(sel) = probe_sel {
+        let mut parts = sel.split(':');
+        let vid = parts.next();
+        let pid = parts.next();
+        let serial = parts.next();
+        let chosen = probes.iter().find(|p| {
+            let ok_vid = vid.and_then(|v| u16::from_str_radix(v, 16).ok())
+                .map(|v| p.vendor_id == v).unwrap_or(true);
+            let ok_pid = pid.and_then(|v| u16::from_str_radix(v, 16).ok())
+                .map(|v| p.product_id == v).unwrap_or(true);
+            let ok_ser = serial.map(|s| p.serial_number.as_deref() == Some(s)).unwrap_or(true);
+            ok_vid && ok_pid && ok_ser
+        }).ok_or_else(|| anyhow::anyhow!("Configured probe not found: {}", sel))?;
+        chosen.open().context("Failed to open selected probe")?
+    } else {
+        probes[0].open().context("Failed to open probe")?
+    };
 
     // Attach to the target (auto-detect by default, or explicit --chip)
     let ts = match chip {
@@ -77,103 +106,191 @@ async fn main() -> Result<()> {
         info!("  down{}: {}", idx, channel.name().unwrap_or("unnamed"));
     }
 
-    // Decide the log source channel index
-    let choose_log_source = |rtt: &mut Rtt, sel: LogSourceSel| -> (LogSourceSel, Option<usize>) {
-        // helper: find channel by name (exact)
-        let mut find_by_name = |name: &str| -> Option<usize> {
-            rtt.up_channels()
-                .iter()
-                .enumerate()
-                .find_map(|(i, ch)| {
-                    if ch.name().map(|n| n == name).unwrap_or(false) { Some(i) } else { None }
-                })
-        };
-        match sel {
-            LogSourceSel::Ergot => (LogSourceSel::Ergot, find_by_name("ergot").or(Some(1))),
-            LogSourceSel::Defmt => (LogSourceSel::Defmt, find_by_name("defmt").or(Some(0))),
-            LogSourceSel::Auto => {
-                if let Some(i) = find_by_name("ergot") { return (LogSourceSel::Ergot, Some(i)); }
-                if let Some(i) = find_by_name("defmt") { return (LogSourceSel::Defmt, Some(i)); }
-                // fallback to ergot on up1
-                (LogSourceSel::Ergot, Some(1))
-            }
-        }
+    // Find well-known channels by name
+    let mut find_by_name = |name: &str| -> Option<usize> {
+        rtt.up_channels()
+            .iter()
+            .enumerate()
+            .find_map(|(i, ch)| {
+                if ch.name().map(|n| n == name).unwrap_or(false) { Some(i) } else { None }
+            })
     };
+    let ergot_up_idx = if cfg.stream_ergot() { find_by_name("ergot").or(Some(1)) } else { None };
+    let defmt_up_idx = if cfg.stream_defmt() { find_by_name("defmt").or(Some(0)) } else { None };
+    info!("Using channels: ergot={:?}, defmt={:?}", ergot_up_idx, defmt_up_idx);
 
-    let (sel, log_up_idx) = choose_log_source(&mut rtt, sel);
-    info!("Selected log source: {:?} on up{}", sel, log_up_idx.unwrap_or(usize::MAX));
-
-    // Main loop - read from the selected source
-    let mut buf = vec![0u8; 2048];
-    loop {
-        if let Some(up_idx) = log_up_idx {
-            if let Some(channel) = rtt.up_channels().get_mut(up_idx) {
-                let count = channel.read(&mut core, &mut buf)?;
-                if count > 0 {
-                    match sel {
-                        LogSourceSel::Ergot => process_ergot_data(&buf[..count]),
-                        LogSourceSel::Defmt => {
-                            // TODO(defmt): integrate defmt-decoder with an --defmt-elf <path>.
-                            // For now, stream raw bytes for debugging convenience.
-                            let text = String::from_utf8_lossy(&buf[..count]);
-                            if !text.is_empty() { print!("[DEFMT] {}", text); }
-                        }
-                        LogSourceSel::Auto => {}
-                    }
+    // Build an ergot Router stack using a COBS sink over a StdQueue.
+    // Define a local RTT interface marker that uses the same COBS Sink type.
+    struct RttInterface;
+    impl Interface for RttInterface { type Sink = ErgotSink<ErgotStdQueue>; }
+    type RouterStack = ArcNetStack<CriticalSectionRawMutex, DirectRouter<RttInterface>>;
+    const ERGOT_MTU: u16 = 1024;
+    let queue = new_std_queue(4096);
+    let stack: RouterStack = RouterStack::new();
+    // Register an interface with the router so responses can be sent back out over RTT
+    let (ident, ergot_net_id) = {
+        let qh = queue.clone();
+        let res = stack.stack().manage_profile(|im| {
+            let ident = im.register_interface(ErgotSink::new_from_handle(qh, ERGOT_MTU))?;
+            match im.interface_state(ident) {
+                Some(InterfaceState::Active { net_id, .. }) => Some((ident, net_id)),
+                _ => {
+                    _ = im.deregister_interface(ident);
+                    None
                 }
             }
+        });
+        res.ok_or_else(|| anyhow::anyhow!("Out of net IDs for ergot interface"))?
+    };
+
+    // Spawn servers for device-originated events: button and keepalive.
+    tokio::spawn({
+        let stack = stack.clone();
+        async move {
+            let server = stack.endpoints().bounded_server::<ButtonEndpoint, 8>(Some("button"));
+            let server = pin!(server);
+            let mut h = server.attach();
+            loop {
+                let _ = h.serve(|event: &ButtonEvent| {
+                    let ev = event.clone();
+                    async move {
+                    match ev {
+                        ButtonEvent::SingleClick => tracing::info!("Button: SINGLE"),
+                        ButtonEvent::DoubleClick => tracing::info!("Button: DOUBLE"),
+                        ButtonEvent::Hold => tracing::info!("Button: HOLD"),
+                    }
+                    }
+                }).await;
+            }
+        }
+    });
+
+    tokio::spawn({
+        let stack = stack.clone();
+        async move {
+            let server = stack.endpoints().bounded_server::<oxifoc_protocol::KeepAliveEndpoint, 8>(Some("keepalive"));
+            let server = pin!(server);
+            let mut h = server.attach();
+            loop {
+                let _ = h.serve(|ka: &oxifoc_protocol::KeepAlive| {
+                    let seq = ka.seq;
+                    async move {
+                        tracing::info!("KeepAlive seq={} ", seq);
+                    }
+                }).await;
+            }
+        }
+    });
+
+    // Request device info once at startup
+    {
+        use ergot::Address;
+        let cli = stack.endpoints().request::<oxifoc_protocol::InfoEndpoint>(
+            Address { network_id: ergot_net_id, node_id: 2, port_id: 0 },
+            &(),
+            None,
+        );
+        if let Ok(Ok(info)) = tokio::time::timeout(Duration::from_millis(500), cli).await {
+            let hw = info.hw.as_str();
+            let sw = info.sw.as_str();
+            tracing::info!("DeviceInfo hw='{}' sw='{}'", hw, sw);
+        } else {
+            tracing::warn!("DeviceInfo request timed out");
+        }
+    }
+
+    // Prepare defmt decoder (ELF path)
+    let default_elf = {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../device/target/thumbv7em-none-eabihf/release/oxifoc");
+        p.to_string_lossy().into_owned()
+    };
+    let defmt_table: Option<Table> = if defmt_up_idx.is_some() {
+        let elf_path = elf_from_cfg.unwrap_or(default_elf);
+        let elf_bytes = fs::read(&elf_path)
+            .with_context(|| format!("Failed to read ELF at {}", elf_path))?;
+        Some(
+            Table::parse(&elf_bytes)
+                .context("Parsing defmt table from ELF failed")?
+                .ok_or_else(|| anyhow::anyhow!("No .defmt section in ELF; build device with defmt"))?,
+        )
+    } else { None };
+    let mut defmt_stream: Option<Box<dyn StreamDecoder + '_>> = defmt_table
+        .as_ref()
+        .map(|t| t.new_stream_decoder());
+
+    // Main loop - read from channels
+    let mut buf = vec![0u8; 4096];
+    let mut defbuf = vec![0u8; 2048];
+    // Accumulator for COBS-framed ergot data across RTT reads
+    let mut cobs_acc = CobsAccumulator::new_boxslice(1024 * 4);
+    // Downlink writer uses the queue's consumer to send frames to device via RTT down channel
+    let down_idx = {
+        let mut find_down = |name: &str| -> Option<usize> {
+            rtt.down_channels()
+                .iter()
+                .enumerate()
+                .find_map(|(i, ch)| if ch.name().map(|n| n == name).unwrap_or(false) { Some(i) } else { None })
+        };
+        find_down("ergot-down").or(Some(0))
+    };
+    let tx_consumer = queue.stream_consumer();
+    loop {
+        // Read ERGOT channel (COBS-framed)
+        if let Some(up_idx) = ergot_up_idx
+            && let Some(channel) = rtt.up_channels().get_mut(up_idx)
+        {
+                let count = channel.read(&mut core, &mut buf)?;
+                if count > 0 {
+                    let mut window = &mut buf[..count];
+                    while !window.is_empty() {
+                        window = match cobs_acc.feed_raw(window) {
+                            FeedResult::Consumed => break,
+                            FeedResult::OverFull(new_w) => new_w,
+                            FeedResult::DecodeError(new_w) => new_w,
+                            FeedResult::Success { data, remaining }
+                            | FeedResult::SuccessInput { data, remaining } => {
+                                // Route decoded frame into the ergot router stack
+                                ergot_router_process_frame(ergot_net_id, data, &stack, ident);
+                                remaining
+                            }
+                        };
+                    }
+                }
+        }
+        // Read DEFMT channel and decode
+        if let (Some(up_idx), Some(stream)) = (defmt_up_idx, defmt_stream.as_mut())
+            && let Some(channel) = rtt.up_channels().get_mut(up_idx)
+        {
+                let count = channel.read(&mut core, &mut defbuf)?;
+                if count > 0 {
+                    stream.received(&defbuf[..count]);
+                    loop {
+                        match stream.decode() {
+                            Ok(frame) => {
+                                println!("{}", frame.display(true));
+                            }
+                            Err(DecodeError::UnexpectedEof) => break,
+                            Err(DecodeError::Malformed) => { error!("Malformed defmt frame"); break; }
+                        }
+                    }
+                }
+        }
+        // Flush any pending outbound ergot frames from queue to RTT down channel
+        if let Some(di) = down_idx
+            && let Some(channel) = rtt.down_channels().get_mut(di)
+            && let Ok(frame) = tokio::time::timeout(Duration::from_millis(1), tx_consumer.wait_read()).await
+        {
+                    let frame = frame;
+                    let len = frame.len();
+                    if len > 0 {
+                        let data = &frame[..len];
+                        let _ = channel.write(&mut core, data);
+                        frame.release(len);
+                    }
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
-fn process_ergot_data(data: &[u8]) {
-    // Try to decode as COBS-framed ergot packets
-    // For now, just show raw data for debugging
-    if !data.is_empty() {
-        info!("Received ergot data: {} bytes", data.len());
-
-        // Attempt to find COBS frames (frames end with 0x00)
-        let mut pos = 0;
-        while pos < data.len() {
-            if let Some(frame_end) = data[pos..].iter().position(|&b| b == 0x00) {
-                let frame = &data[pos..pos + frame_end];
-                if !frame.is_empty() {
-                    decode_ergot_frame(frame);
-                }
-                pos += frame_end + 1;
-            } else {
-                break;
-            }
-        }
-    }
-}
-
-fn decode_ergot_frame(frame: &[u8]) {
-    // Decode COBS
-    let mut decoded = vec![0u8; frame.len()];
-    match cobs::decode(frame, &mut decoded) {
-        Ok(len) => {
-            let decoded = &decoded[..len];
-
-            // Try to decode as ergot log message
-            if let Ok(log_msg) = postcard::from_bytes::<ErgotFmtRxOwned>(decoded) {
-                log::info!(
-                    target: "device_log",
-                    "[{:?}] {}",
-                    log_msg.level,
-                    log_msg.inner
-                );
-                return;
-            }
-
-            // Try to decode as button event
-            // Note: This would be in ergot endpoint format, more complex to decode
-            // For now, just show we got a frame
-            info!("Received ergot frame: {} bytes", decoded.len());
-        }
-        Err(e) => {
-            error!("COBS decode error: {:?}", e);
-        }
-    }
-}
+// (no manual COBS or ad-hoc frame decoding here; ergot handles it)

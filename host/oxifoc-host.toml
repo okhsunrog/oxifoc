@@ -1,0 +1,15 @@
+# oxifoc-host configuration (TOML)
+
+# Optional: select a specific probe (VID:PID[:SERIAL])
+# probe = "0483:374b:0668FF555567894967074721"
+
+# Optional: explicit chip name (otherwise auto-detect)
+chip = "STM32G431CBTx"
+
+# Optional: path to device ELF for defmt decoding
+elf = "../device/target/thumbv7em-none-eabihf/release/oxifoc"
+
+# Toggle streaming
+stream_defmt = true
+stream_ergot = true
+

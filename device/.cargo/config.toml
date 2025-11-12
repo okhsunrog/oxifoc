@@ -1,11 +1,11 @@
-# This file was automatically generated.
-
-[target.thumbv7em-none-eabihf]
-runner = 'probe-rs run --chip STM32G431CBTx'
+# Probe-rs runner configuration for device crate with custom defmt log formatting
 
 [build]
 target = "thumbv7em-none-eabihf"
 
-[unstable]
-build-std = ["core"]
-build-std-features = ["panic_immediate_abort"]
+[target.thumbv7em-none-eabihf]
+runner = ["bash", "scripts/probe_run.sh"]
+
+[env]
+# Show all defmt levels unless overridden
+DEFMT_LOG = "debug"
