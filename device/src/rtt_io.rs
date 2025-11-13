@@ -1,7 +1,7 @@
 //! RTT channel wrapper implementing embedded-io-async traits for ergot
 
 use embedded_io_async::{ErrorType, Read, Write};
-use rtt_target::{UpChannel, DownChannel};
+use rtt_target::{DownChannel, UpChannel};
 
 /// Error type for RTT I/O operations
 #[derive(Debug, Clone, Copy)]
@@ -19,7 +19,9 @@ pub struct RttReader {
 }
 
 impl RttReader {
-    pub fn new(down: &'static mut DownChannel) -> Self { Self { down } }
+    pub fn new(down: &'static mut DownChannel) -> Self {
+        Self { down }
+    }
 }
 
 impl ErrorType for RttReader {

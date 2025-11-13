@@ -1,8 +1,8 @@
 #![no_std]
 
 use ergot::endpoint;
-use postcard_schema::Schema;
 use heapless::String;
+use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 
 /// Button events from the B-G431B-ESC1 board
