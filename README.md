@@ -1,6 +1,6 @@
 # Oxifoc
 
-Open FOC (Field-Oriented Control) implementation using [ergot](https://github.com/jamesmunns/ergot) for communication between device and host.
+WIP/experimental motor control (FOC) firmware for STM32G431 (B‑G431B‑ESC1) with a lightweight host tool. Device↔host communication runs over RTT using [ergot](https://github.com/jamesmunns/ergot).
 
 ## Project Structure
 
@@ -13,7 +13,7 @@ oxifoc/
 └── scripts/         # Helper scripts
 ```
 
-This project does NOT use a Cargo workspace at the root level, as different targets (embedded MCU vs. host) require separate configurations.
+This repo intentionally does not use a workspace at the root level (device and host use different targets/toolchains).
 
 ## Hardware
 
@@ -22,39 +22,11 @@ This project does NOT use a Cargo workspace at the root level, as different targ
 - **Debug Interface**: ST-Link
 - **Communication**: RTT (Real-Time Transfer) via probe-rs
 
-## Features
+## Current Capabilities (short)
 
-### Device Firmware
-- Button input handling (single click, double click, hold detection)
-- Ergot DirectEdge protocol over RTT with COBS framing
-- Embassy async runtime (version 0.9+)
-- Multiple async tasks:
-  - Button event detection and transmission
-  - Network event handling (ergot server)
-  - Periodic keepalive messages (every 3 seconds)
-  - Device info request/response server
-- Defmt logging for debugging
-- Custom RTT I/O implementation using `embedded-io-async` traits
-- Hard float support, optimized for size (`opt-level = "z"`)
-- Rust Edition 2024
-
-### Host Application
-- Probe-rs based RTT communication
-- Ergot DirectEdge stack in controller mode
-- Tokio async runtime
-- Simultaneous streaming of:
-  - Defmt debug logs (decoded using device ELF)
-  - Ergot protocol messages (COBS-framed)
-- Button event and keepalive message handlers
-- Device info query at startup
-- Configuration via optional TOML file
-
-### Protocol
-The shared protocol (`protocol/`) defines three ergot endpoints:
-
-- **ButtonEndpoint**: Device→Host button events (SingleClick, DoubleClick, Hold)
-- **KeepAliveEndpoint**: Device→Host periodic keepalive with sequence number
-- **InfoEndpoint**: Host→Device info query, returns hardware/software version
+- Device: button input (single/double/hold), keepalive, and device info server over ergot/RTT; defmt logs; Embassy async runtime.
+- Host: attaches via ST‑Link + RTT, streams defmt and ergot, queries DeviceInfo on connect, prints keepalives and button events.
+- Handshake: host requests DeviceInfo on startup with retry/backoff; device delays keepalives until it sees an inbound request to avoid “NoRoute” noise.
 
 ## Building
 
@@ -64,11 +36,6 @@ The shared protocol (`protocol/`) defines three ergot endpoints:
 cd device
 cargo build --release
 ```
-
-The firmware uses:
-- Rust toolchain: 1.89
-- Target: `thumbv7em-none-eabihf` (Cortex-M4F with hard float)
-- Edition: 2024
 
 ### Host Application
 
@@ -103,17 +70,17 @@ cd host
 cargo run --release
 ```
 
+Note: ensure no other `probe-rs` session is running (e.g., a prior `cargo run` in `device/` or a separate `probe-rs` tool) before starting the host; the ST‑Link/RTT connection can only be owned by one process at a time.
+
 The host will:
-1. Connect to the STM32G431 via ST-Link
-2. Attach to RTT channels
-3. Start ergot DirectEdge stack in controller mode (network 1, node 1)
-4. Stream both defmt logs and ergot messages simultaneously
-5. Query device info at startup
-6. Display button events and keepalive messages
+1. Connect to the STM32G431 via ST‑Link and attach RTT.
+2. Stream defmt logs and ergot messages.
+3. Query DeviceInfo early (with retry/backoff) and then continue.
+4. Display button events and keepalive messages.
 
-#### Configuration
+#### Configuration (TOML)
 
-The host can be configured via an optional `oxifoc-host.toml` file in the working directory:
+The host reads an optional `oxifoc-host.toml` in the current working directory (or from `OXIFOC_HOST_CONFIG` env var):
 
 ```toml
 # Optional: specify probe by VID:PID or VID:PID:SERIAL
@@ -131,7 +98,11 @@ stream_defmt = true
 stream_ergot = true
 ```
 
-Alternatively, set the `OXIFOC_HOST_CONFIG` environment variable to point to a config file.
+Fields:
+- `probe`: optional ST‑Link selector like `VID:PID` or `VID:PID:SERIAL`.
+- `chip`: optional chip override (e.g. `STM32G431CBTx`).
+- `elf`: path to device ELF with `.defmt` section used for decoding logs. Defaults to `../device/target/thumbv7em-none-eabihf/release/oxifoc`.
+- `stream_defmt` / `stream_ergot`: booleans to enable/disable streams (default true).
 
 ### RTT Channel Map
 
@@ -145,61 +116,41 @@ Both channels operate simultaneously - defmt for debug logs, ergot for structure
 
 ## Network Topology
 
-The project uses ergot's DirectEdge profile for point-to-point communication:
+Ergot DirectEdge profile (point‑to‑point):
+- Host: controller at `1.1.0`
+- Device: target at `1.2.0`
 
-- **Host**: Controller mode, address (network_id: 1, node_id: 1)
-- **Device**: Target mode, address (network_id: 1, node_id: 2)
+## Development Notes (short)
 
-The device sends messages to the host's router address (1.1.0), and the host can send requests to the device address (1.2.0).
-
-## Development
-
-### Device Firmware
-
-The device firmware is structured with:
-- `main.rs`: Entry point, task spawning, RTT initialization
-- `rtt_io.rs`: RTT channel wrappers implementing `embedded-io-async` traits
-
-Key dependencies:
-- `embassy-stm32` 0.4.0 (STM32G431CB support)
-- `embassy-executor` 0.9.1 (async runtime)
-- `ergot` 0.12.0 (messaging protocol)
-- `defmt` 1.0.1 (logging)
-- `rtt-target` 0.6.2 (RTT communication)
-
-### Host Application
-
-The host is structured with:
-- `main.rs`: RTT connection, channel streaming, ergot stack setup
-- `config.rs`: Optional TOML configuration loading
-
-Key dependencies:
-- `probe-rs` 0.30 (debug probe and RTT)
-- `ergot` 0.12.0 (messaging protocol)
-- `tokio` 1.45 (async runtime)
-- `defmt-decoder` 1.0 (defmt log decoding)
-
-### Protocol
-
-The protocol is no_std compatible and uses:
-- `ergot` 0.12.0 (endpoint definitions)
-- `serde` 1.0 + `postcard-schema` 0.2.5 (serialization)
-- `heapless` 0.9.2 (no_std collections)
+- Device code: `device/src/main.rs`, `device/src/rtt_io.rs`.
+- Host code: `host/src/main.rs`, `host/src/config.rs`.
+- Protocol endpoints: `protocol/src/lib.rs` (Button, KeepAlive, Info).
 
 ## Debugging
 
-View logs with the host application running, or use probe-rs directly:
+You can view defmt logs either through the host application or directly via probe‑rs — use one at a time:
 
-```bash
-probe-rs attach STM32G431CBTx
-```
+- Via host: run `cd host && cargo run --release` to stream defmt and ergot together.
+- Via probe‑rs: attach with your preferred tool to view defmt output only.
 
-For device firmware development, you can use the helper script:
+For device-only debugging (flash + run):
 
 ```bash
 cd device
 ../scripts/probe_run.sh target/thumbv7em-none-eabihf/release/oxifoc
 ```
+
+If you switch to the host application afterwards, stop any running probe‑rs session first.
+
+## Roadmap (draft)
+
+- PWM generation/commutation setup for G4 TIMs with safe dead‑time.
+- Current sense path bring‑up (ADC + PGA/OPAMP) and offset calibration.
+- Rotor angle feedback: Hall and incremental encoder support; sensorless exploration.
+- Control loops: Iq/Id PI, velocity/position layers; runtime tuning via host.
+- Safety: over‑current/voltage/temperature limits; fault latching and reporting.
+- Telemetry: structured streaming over ergot; capture buffers for tuning.
+- Host tooling: simple UI/CLI for calibration, logging, and parameter edits.
 
 ## License
 
