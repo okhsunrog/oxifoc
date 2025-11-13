@@ -60,7 +60,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25d3e5fd78b60ce3a60e21e9a92b1d5e741328264de8e609193e2bf7616747bd"
 dependencies = [
  "const-init",
- "critical-section",
  "maitake-sync",
 ]
 
@@ -838,7 +837,6 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 name = "oxifoc"
 version = "0.1.0"
 dependencies = [
- "bbq2",
  "cortex-m",
  "cortex-m-rt",
  "defmt 1.0.1",

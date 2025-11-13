@@ -10,7 +10,7 @@ test = false
 bench = false
 
 [dependencies]
-# Embassy dependencies (matching ergot requirements)
+# Embassy dependencies
 embassy-executor = { version = "0.9.1", features = ["arch-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-futures = "0.1.2"
 embassy-stm32 = { version = "0.4.0", features = ["memory-x", "stm32g431cb", "time-driver-any", "exti", "unstable-pac"] }
@@ -39,14 +39,9 @@ mutex = "1.0.2"
 oxifoc-protocol = { path = "../protocol" }
 ergot = { version = "0.12.0", default-features = false, features = ["embedded-io-async-v0_6", "disable-cache-padding"] }
 
-# Additional ergot deps
-bbq2 = { version = "0.4.2", default-features = false, features = ["critical-section", "maitake-sync-0_2"] }
 static_cell = "2.1"
 embedded-io-async = "0.6"
 heapless = { version = "0.9.2", default-features = false }
-
-[features]
-default = []
 
 [profile.dev]
 debug = true
