@@ -14,8 +14,10 @@ use ergot::{
     toolkits::embedded_io_async_v0_6::{self as kit, tx_worker},
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use oxifoc_protocol::{ButtonEvent, ButtonEndpoint, KeepAlive, KeepAliveEndpoint, InfoEndpoint, DeviceInfo};
-use rtt_target::{rtt_init, ChannelMode::*};
+use oxifoc_protocol::{
+    ButtonEndpoint, ButtonEvent, DeviceInfo, InfoEndpoint, KeepAlive, KeepAliveEndpoint,
+};
+use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 mod rtt_io;
@@ -23,7 +25,6 @@ use rtt_io::RttWriter;
 
 // Use panic-probe for panics
 use panic_probe as _;
-
 
 const OUT_QUEUE_SIZE: usize = 2048;
 const MAX_PACKET_SIZE: usize = 512;
@@ -90,11 +91,13 @@ async fn main(spawner: Spawner) {
     defmt::info!("Button configured on PC10 (active-low)");
 
     // Spawn I/O workers
-    spawner.spawn(run_rx(
-        rx_worker,
-        RECV_BUF.init_with(|| [0u8; MAX_PACKET_SIZE]),
-        SCRATCH_BUF.init_with(|| [0u8; 64])
-    )).unwrap();
+    spawner
+        .spawn(run_rx(
+            rx_worker,
+            RECV_BUF.init_with(|| [0u8; MAX_PACKET_SIZE]),
+            SCRATCH_BUF.init_with(|| [0u8; 64]),
+        ))
+        .unwrap();
     spawner.spawn(run_tx(rtt_tx)).unwrap();
 
     // Spawn application tasks (temporarily disable others to debug keepalive)
@@ -200,19 +203,21 @@ async fn status_reporter() {
 
     loop {
         // Handle button events from network with timeout
-        let result = with_timeout(Duration::from_secs(5), button_hdl.serve(async |event| {
-            match event {
+        let result = with_timeout(
+            Duration::from_secs(5),
+            button_hdl.serve(async |event| match event {
                 ButtonEvent::SingleClick => {
                     defmt::info!("Network: SINGLE CLICK");
-                },
+                }
                 ButtonEvent::DoubleClick => {
                     defmt::info!("Network: DOUBLE CLICK");
-                },
+                }
                 ButtonEvent::Hold => {
                     defmt::info!("Network: HOLD");
-                },
-            }
-        })).await;
+                }
+            }),
+        )
+        .await;
 
         // Periodic status when no network activity
         if result.is_err() {
@@ -227,7 +232,9 @@ async fn keepalive_task() {
     // Wait for interface to become active (first inbound host request)
     defmt::info!("keepalive task waiting for active interface");
     loop {
-        if LINK_ACTIVE.load(Ordering::Relaxed) { break; }
+        if LINK_ACTIVE.load(Ordering::Relaxed) {
+            break;
+        }
         Timer::after(Duration::from_millis(100)).await;
     }
 
@@ -265,14 +272,16 @@ async fn info_server() {
     let server = pin!(server);
     let mut h = server.attach();
     loop {
-        let _ = h.serve(|_req: &()| async move {
-            // Mark link as active on first inbound request
-            LINK_ACTIVE.store(true, Ordering::Relaxed);
-            let mut hw: heapless::String<32> = heapless::String::new();
-            let mut sw: heapless::String<32> = heapless::String::new();
-            let _ = hw.push_str("B-G431B-ESC1");
-            let _ = sw.push_str("oxifoc-0.1.0");
-            DeviceInfo { hw, sw }
-        }).await;
+        let _ = h
+            .serve(|_req: &()| async move {
+                // Mark link as active on first inbound request
+                LINK_ACTIVE.store(true, Ordering::Relaxed);
+                let mut hw: heapless::String<32> = heapless::String::new();
+                let mut sw: heapless::String<32> = heapless::String::new();
+                let _ = hw.push_str("B-G431B-ESC1");
+                let _ = sw.push_str("oxifoc-0.1.0");
+                DeviceInfo { hw, sw }
+            })
+            .await;
     }
 }
