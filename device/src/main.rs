@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_executor::Spawner;
 use embassy_stm32::exti::ExtiInput;
-use embassy_stm32::gpio::Pull;
+use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_time::{Duration, Timer, with_timeout};
 use ergot::{
     Address,
@@ -47,6 +47,31 @@ static SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 /// Link status: set true after we observe an inbound host request
 static LINK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum DeviceState {
+    Boot = 0,
+    WaitingLink = 1,
+    Linked = 2,
+    Error = 3,
+}
+
+use core::sync::atomic::AtomicU8;
+static DEVICE_STATE: AtomicU8 = AtomicU8::new(DeviceState::Boot as u8);
+
+fn set_device_state(s: DeviceState) {
+    DEVICE_STATE.store(s as u8, Ordering::Relaxed);
+}
+
+fn get_device_state() -> DeviceState {
+    match DEVICE_STATE.load(Ordering::Relaxed) {
+        0 => DeviceState::Boot,
+        1 => DeviceState::WaitingLink,
+        2 => DeviceState::Linked,
+        _ => DeviceState::Error,
+    }
+}
+
 /// RTT channel storage
 static RTT_UP_CHANNEL: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 static RTT_DOWN_CHANNEL: StaticCell<rtt_target::DownChannel> = StaticCell::new();
@@ -78,8 +103,32 @@ async fn main(spawner: Spawner) {
     let rtt_io = rtt_io::RttIo::new(rtt_up_static, rtt_down_static);
     let (rtt_rx, rtt_tx) = rtt_io.split();
 
-    // Initialize STM32
-    let p = embassy_stm32::init(Default::default());
+    // Initialize STM32 with HSE=8MHz feeding PLL to 170MHz SYSCLK
+    let p = {
+        let mut config = embassy_stm32::Config::default();
+        {
+            use embassy_stm32::rcc::*;
+            use embassy_stm32::time::Hertz;
+            // Use external 8MHz HSE oscillator as PLL source
+            config.rcc.hse = Some(Hse {
+                freq: Hertz(8_000_000),
+                mode: HseMode::Oscillator,
+            });
+            // VCO in: 8MHz / 2 = 4MHz; VCO: 4MHz * 85 = 340MHz; SYSCLK: 340MHz / 2 = 170MHz
+            config.rcc.pll = Some(Pll {
+                source: PllSource::HSE,
+                prediv: PllPreDiv::DIV2,
+                mul: PllMul::MUL85,
+                divp: None,
+                divq: None,
+                divr: Some(PllRDiv::DIV2),
+            });
+            config.rcc.sys = Sysclk::PLL1_R;
+            // Above 150MHz, enable Range1 boost mode per RM0440 guidance
+            config.rcc.boost = true;
+        }
+        embassy_stm32::init(config)
+    };
 
     defmt::info!("Oxifoc starting - ergot over RTT");
 
@@ -89,6 +138,9 @@ async fn main(spawner: Spawner) {
     // Button: PC10, external pull-up, active-low to GND
     let button = ExtiInput::new(p.PC10, p.EXTI10, Pull::None);
     defmt::info!("Button configured on PC10 (active-low)");
+
+    // LED on PC6
+    let led = Output::new(p.PC6, Level::Low, Speed::Low);
 
     // Spawn I/O workers
     spawner
@@ -105,6 +157,10 @@ async fn main(spawner: Spawner) {
     spawner.spawn(status_reporter()).unwrap();
     spawner.spawn(keepalive_task()).unwrap();
     spawner.spawn(info_server()).unwrap();
+    spawner.spawn(led_blinker(led)).unwrap();
+
+    // Transition to "waiting for link" once tasks are up
+    set_device_state(DeviceState::WaitingLink);
 
     defmt::info!("All tasks spawned, entering main loop");
 
@@ -233,6 +289,7 @@ async fn keepalive_task() {
     defmt::info!("keepalive task waiting for active interface");
     loop {
         if LINK_ACTIVE.load(Ordering::Relaxed) {
+            set_device_state(DeviceState::Linked);
             break;
         }
         Timer::after(Duration::from_millis(100)).await;
@@ -276,6 +333,7 @@ async fn info_server() {
             .serve(|_req: &()| async move {
                 // Mark link as active on first inbound request
                 LINK_ACTIVE.store(true, Ordering::Relaxed);
+                set_device_state(DeviceState::Linked);
                 let mut hw: heapless::String<32> = heapless::String::new();
                 let mut sw: heapless::String<32> = heapless::String::new();
                 let _ = hw.push_str("B-G431B-ESC1");
@@ -283,5 +341,46 @@ async fn info_server() {
                 DeviceInfo { hw, sw }
             })
             .await;
+    }
+}
+
+/// LED blinker: shows device state via patterns on PC6
+#[embassy_executor::task]
+async fn led_blinker(mut led: Output<'static>) {
+    loop {
+        match get_device_state() {
+            DeviceState::Boot => {
+                // Quick double blink
+                for _ in 0..2 {
+                    led.set_high();
+                    Timer::after(Duration::from_millis(100)).await;
+                    led.set_low();
+                    Timer::after(Duration::from_millis(100)).await;
+                }
+                Timer::after(Duration::from_millis(600)).await;
+            }
+            DeviceState::WaitingLink => {
+                // Slow blink (1 Hz, 10% duty)
+                led.set_high();
+                Timer::after(Duration::from_millis(100)).await;
+                led.set_low();
+                Timer::after(Duration::from_millis(900)).await;
+            }
+            DeviceState::Linked => {
+                // Solid ON with periodic short delay to allow state changes
+                led.set_high();
+                Timer::after(Duration::from_millis(500)).await;
+            }
+            DeviceState::Error => {
+                // Triple blink pattern
+                for _ in 0..3 {
+                    led.set_high();
+                    Timer::after(Duration::from_millis(120)).await;
+                    led.set_low();
+                    Timer::after(Duration::from_millis(120)).await;
+                }
+                Timer::after(Duration::from_millis(800)).await;
+            }
+        }
     }
 }
