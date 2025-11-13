@@ -173,24 +173,37 @@ async fn main() -> Result<()> {
             }
         }
     });
-
-    // Request device info once at startup - send to explicit address (1.2.0) to trigger device interface activation
-    {
+    // Handshake task: retry querying device info until it succeeds (runs concurrently with I/O pump below)
+    tokio::spawn({
         use ergot::Address;
-        let device_addr = Address { network_id: 1, node_id: 2, port_id: 0 };
-        let cli = stack.endpoints().request::<oxifoc_protocol::InfoEndpoint>(
-            device_addr,
-            &(),
-            Some("device_info"),
-        );
-        if let Ok(Ok(info)) = tokio::time::timeout(Duration::from_millis(1000), cli).await {
-            let hw = info.hw.as_str();
-            let sw = info.sw.as_str();
-            tracing::info!("DeviceInfo hw='{}' sw='{}'", hw, sw);
-        } else {
-            tracing::warn!("DeviceInfo request timed out");
+        let stack = stack.clone();
+        async move {
+            let device_addr = Address { network_id: 1, node_id: 2, port_id: 0 };
+            let mut backoff = Duration::from_millis(100);
+            for attempt in 1..=10u32 {
+                let fut = stack
+                    .endpoints()
+                    .request::<oxifoc_protocol::InfoEndpoint>(device_addr, &(), Some("device_info"));
+                match tokio::time::timeout(Duration::from_millis(800), fut).await {
+                    Ok(Ok(info)) => {
+                        let hw = info.hw.as_str();
+                        let sw = info.sw.as_str();
+                        tracing::info!("Device connected: hw='{}' sw='{}'", hw, sw);
+                        return;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("DeviceInfo attempt {} failed: {:?}", attempt, e);
+                    }
+                    Err(_) => {
+                        tracing::warn!("DeviceInfo attempt {} timed out", attempt);
+                    }
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(2));
+            }
+            tracing::warn!("Device info not received after retries; continuing without it");
         }
-    }
+    });
 
     // Prepare defmt decoder (ELF path)
     let default_elf = {
@@ -212,7 +225,7 @@ async fn main() -> Result<()> {
         .as_ref()
         .map(|t| t.new_stream_decoder());
 
-    // Main loop - read from channels
+    // Main loop - read from channels (drives RTT <-> ergot)
     let mut buf = vec![0u8; 4096];
     let mut defbuf = vec![0u8; 2048];
     // Accumulator for COBS-framed ergot data across RTT reads
@@ -274,15 +287,20 @@ async fn main() -> Result<()> {
         // Flush any pending outbound ergot frames from queue to RTT down channel
         if let Some(di) = down_idx
             && let Some(channel) = rtt.down_channels().get_mut(di)
-            && let Ok(frame) = tokio::time::timeout(Duration::from_millis(1), tx_consumer.wait_read()).await
         {
-                    let frame = frame;
-                    let len = frame.len();
-                    if len > 0 {
+            // Drain as many frames as available without blocking too long
+            for _ in 0..8 {
+                match tokio::time::timeout(Duration::from_millis(1), tx_consumer.wait_read()).await {
+                    Ok(frame) => {
+                        let len = frame.len();
+                        if len == 0 { break; }
                         let data = &frame[..len];
                         let _ = channel.write(&mut core, data);
                         frame.release(len);
                     }
+                    Err(_) => break,
+                }
+            }
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

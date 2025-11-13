@@ -2,6 +2,7 @@
 #![no_main]
 
 use core::pin::pin;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_executor::Spawner;
 use embassy_stm32::exti::ExtiInput;
@@ -41,6 +42,9 @@ static STACK: Stack = kit::new_target_stack(OUTQ.stream_producer(), MAX_PACKET_S
 /// Buffers for RX worker
 static RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
 static SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+
+/// Link status: set true after we observe an inbound host request
+static LINK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// RTT channel storage
 static RTT_UP_CHANNEL: StaticCell<rtt_target::UpChannel> = StaticCell::new();
@@ -220,9 +224,12 @@ async fn status_reporter() {
 /// Periodic keepalive to host
 #[embassy_executor::task]
 async fn keepalive_task() {
-    // Wait for interface to become active (host sends first frame)
+    // Wait for interface to become active (first inbound host request)
     defmt::info!("keepalive task waiting for active interface");
-    Timer::after(Duration::from_secs(2)).await;
+    loop {
+        if LINK_ACTIVE.load(Ordering::Relaxed) { break; }
+        Timer::after(Duration::from_millis(100)).await;
+    }
 
     let mut seq: u32 = 0;
     // Target host router at network 1, node 1 (like rp2040-serial-pair target.rs:89-95)
@@ -259,6 +266,8 @@ async fn info_server() {
     let mut h = server.attach();
     loop {
         let _ = h.serve(|_req: &()| async move {
+            // Mark link as active on first inbound request
+            LINK_ACTIVE.store(true, Ordering::Relaxed);
             let mut hw: heapless::String<32> = heapless::String::new();
             let mut sw: heapless::String<32> = heapless::String::new();
             let _ = hw.push_str("B-G431B-ESC1");
