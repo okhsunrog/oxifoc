@@ -37,7 +37,7 @@ mutex = "1.0.2"
 
 # Local dependencies
 oxifoc-protocol = { path = "../protocol" }
-ergot = { version = "0.12.0", default-features = false, features = ["embedded-io-async-v0_6", "disable-cache-padding"] }
+ergot = { path = "../ergot/crates/ergot", default-features = false, features = ["embedded-io-async-v0_6", "disable-cache-padding"] }
 
 static_cell = "2.1"
 embedded-io-async = "0.6"
