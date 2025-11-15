@@ -16,15 +16,6 @@ pub enum ButtonEvent {
 // Define endpoint for button communication
 endpoint!(ButtonEndpoint, ButtonEvent, (), "event/button");
 
-/// Periodic keepalive from the device
-#[derive(Clone, Schema, Serialize, Deserialize, Debug)]
-pub struct KeepAlive {
-    pub seq: u32,
-}
-
-// Device -> Host keepalive endpoint (no response expected)
-endpoint!(KeepAliveEndpoint, KeepAlive, (), "event/keepalive");
-
 /// Basic device info returned on request
 #[derive(Clone, Schema, Serialize, Deserialize, Debug)]
 pub struct DeviceInfo {

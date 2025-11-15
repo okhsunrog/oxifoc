@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
         },
     ));
 
-    // Spawn servers for device-originated events: button and keepalive.
+    // Spawn server for device-originated button events
     tokio::spawn({
         let stack = stack.clone();
         async move {
@@ -178,27 +178,6 @@ async fn main() -> Result<()> {
                                 ButtonEvent::DoubleClick => tracing::info!("Button: DOUBLE"),
                                 ButtonEvent::Hold => tracing::info!("Button: HOLD"),
                             }
-                        }
-                    })
-                    .await;
-            }
-        }
-    });
-
-    tokio::spawn({
-        let stack = stack.clone();
-        async move {
-            let server = stack
-                .endpoints()
-                .bounded_server::<oxifoc_protocol::KeepAliveEndpoint, 8>(Some("keepalive"));
-            let server = pin!(server);
-            let mut h = server.attach();
-            loop {
-                let _ = h
-                    .serve(|ka: &oxifoc_protocol::KeepAlive| {
-                        let seq = ka.seq;
-                        async move {
-                            tracing::info!("KeepAlive seq={} ", seq);
                         }
                     })
                     .await;

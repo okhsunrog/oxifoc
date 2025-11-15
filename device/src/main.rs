@@ -15,7 +15,7 @@ use ergot::{
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_protocol::{
-    ButtonEndpoint, ButtonEvent, DeviceInfo, InfoEndpoint, KeepAlive, KeepAliveEndpoint,
+    ButtonEndpoint, ButtonEvent, DeviceInfo, InfoEndpoint,
 };
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
@@ -86,7 +86,7 @@ async fn main(spawner: Spawner) {
             1: { size: 2048, mode: NoBlockSkip, name: "ergot" } // Ergot data channel
         }
         down: {
-            0: { size: 1024, name: "ergot-down" } // Reserved for future host->device
+            0: { size: 1024, name: "ergot-down" } // host->device
         }
     };
 
@@ -140,7 +140,7 @@ async fn main(spawner: Spawner) {
     defmt::info!("Button configured on PC10 (active-low)");
 
     // LED on PC6
-    let led = Output::new(p.PC6, Level::Low, Speed::Low);
+    let mut led = Output::new(p.PC6, Level::Low, Speed::Low);
 
     // Spawn I/O workers
     spawner
@@ -152,22 +152,51 @@ async fn main(spawner: Spawner) {
         .unwrap();
     spawner.spawn(run_tx(rtt_tx)).unwrap();
 
-    // Spawn application tasks (temporarily disable others to debug keepalive)
     spawner.spawn(button_handler(button)).unwrap();
     spawner.spawn(status_reporter()).unwrap();
-    spawner.spawn(keepalive_task()).unwrap();
     spawner.spawn(info_server()).unwrap();
-    spawner.spawn(led_blinker(led)).unwrap();
 
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);
 
-    defmt::info!("All tasks spawned, entering main loop");
+    defmt::info!("All tasks spawned, entering LED status loop");
 
-    // Main heartbeat loop
+    // LED status loop - shows device state via blink patterns
     loop {
-        Timer::after(Duration::from_secs(5)).await;
-        defmt::info!("Heartbeat 5s - button ready, ergot active");
+        match get_device_state() {
+            DeviceState::Boot => {
+                // Quick double blink
+                for _ in 0..2 {
+                    led.set_high();
+                    Timer::after(Duration::from_millis(100)).await;
+                    led.set_low();
+                    Timer::after(Duration::from_millis(100)).await;
+                }
+                Timer::after(Duration::from_millis(600)).await;
+            }
+            DeviceState::WaitingLink => {
+                // Slow blink (1 Hz, 10% duty)
+                led.set_high();
+                Timer::after(Duration::from_millis(100)).await;
+                led.set_low();
+                Timer::after(Duration::from_millis(900)).await;
+            }
+            DeviceState::Linked => {
+                // Solid ON with periodic short delay to allow state changes
+                led.set_high();
+                Timer::after(Duration::from_millis(500)).await;
+            }
+            DeviceState::Error => {
+                // Triple blink pattern
+                for _ in 0..3 {
+                    led.set_high();
+                    Timer::after(Duration::from_millis(120)).await;
+                    led.set_low();
+                    Timer::after(Duration::from_millis(120)).await;
+                }
+                Timer::after(Duration::from_millis(800)).await;
+            }
+        }
     }
 }
 
@@ -282,44 +311,6 @@ async fn status_reporter() {
     }
 }
 
-/// Periodic keepalive to host
-#[embassy_executor::task]
-async fn keepalive_task() {
-    // Wait for interface to become active (first inbound host request)
-    defmt::info!("keepalive task waiting for active interface");
-    loop {
-        if LINK_ACTIVE.load(Ordering::Relaxed) {
-            set_device_state(DeviceState::Linked);
-            break;
-        }
-        Timer::after(Duration::from_millis(100)).await;
-    }
-
-    let mut seq: u32 = 0;
-    // Target host router at network 1, node 1 (like rp2040-serial-pair target.rs:89-95)
-    let host_addr = Address {
-        network_id: 1,
-        node_id: 1,
-        port_id: 0,
-    };
-    let client = STACK
-        .endpoints()
-        .client::<KeepAliveEndpoint>(host_addr, Some("keepalive"));
-    defmt::info!("keepalive task started");
-    loop {
-        Timer::after(Duration::from_secs(3)).await;
-        defmt::info!("sending keepalive seq={}", seq);
-        let msg = KeepAlive { seq };
-        // Add timeout to prevent blocking forever if no host is connected
-        match with_timeout(Duration::from_millis(500), client.request(&msg)).await {
-            Ok(Ok(_)) => defmt::debug!("keepalive {} sent", seq),
-            Ok(Err(_)) => defmt::warn!("keepalive {} failed", seq),
-            Err(_) => defmt::warn!("keepalive {} timeout", seq),
-        }
-        seq = seq.wrapping_add(1);
-    }
-}
-
 /// Respond to info requests from host
 #[embassy_executor::task]
 async fn info_server() {
@@ -344,43 +335,3 @@ async fn info_server() {
     }
 }
 
-/// LED blinker: shows device state via patterns on PC6
-#[embassy_executor::task]
-async fn led_blinker(mut led: Output<'static>) {
-    loop {
-        match get_device_state() {
-            DeviceState::Boot => {
-                // Quick double blink
-                for _ in 0..2 {
-                    led.set_high();
-                    Timer::after(Duration::from_millis(100)).await;
-                    led.set_low();
-                    Timer::after(Duration::from_millis(100)).await;
-                }
-                Timer::after(Duration::from_millis(600)).await;
-            }
-            DeviceState::WaitingLink => {
-                // Slow blink (1 Hz, 10% duty)
-                led.set_high();
-                Timer::after(Duration::from_millis(100)).await;
-                led.set_low();
-                Timer::after(Duration::from_millis(900)).await;
-            }
-            DeviceState::Linked => {
-                // Solid ON with periodic short delay to allow state changes
-                led.set_high();
-                Timer::after(Duration::from_millis(500)).await;
-            }
-            DeviceState::Error => {
-                // Triple blink pattern
-                for _ in 0..3 {
-                    led.set_high();
-                    Timer::after(Duration::from_millis(120)).await;
-                    led.set_low();
-                    Timer::after(Duration::from_millis(120)).await;
-                }
-                Timer::after(Duration::from_millis(800)).await;
-            }
-        }
-    }
-}
