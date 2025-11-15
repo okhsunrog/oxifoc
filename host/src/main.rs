@@ -15,7 +15,7 @@ use ergot::interface_manager::utils::std::new_std_queue;
 use ergot::interface_manager::{Interface, InterfaceState};
 use ergot::net_stack::ArcNetStack;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use oxifoc_protocol::{ButtonEndpoint, ButtonEvent};
+use oxifoc_protocol::{ButtonEndpoint, ButtonEvent, MotorCommand, MotorEndpoint, MotorStatus};
 use std::fs;
 
 mod config;
@@ -184,6 +184,50 @@ async fn main() -> Result<()> {
             }
         }
     });
+
+    // Example: Send motor commands (commented out by default)
+    // Uncomment to test motor control
+    /*
+    tokio::spawn({
+        use ergot::Address;
+        let stack = stack.clone();
+        async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            let device_addr = Address {
+                network_id: 1,
+                node_id: 2,
+                port_id: 0,
+            };
+
+            // Start motor at 10% duty (very conservative for first test)
+            tracing::info!("Sending motor START command (10% duty)...");
+            match stack.endpoints().request::<MotorEndpoint>(
+                device_addr,
+                &MotorCommand::Start { duty: 10 },
+                Some("motor"),
+            ).await {
+                Ok(status) => tracing::info!("Motor status: state={:?}, duty={}%, step={}",
+                    status.state, status.duty, status.step),
+                Err(e) => tracing::error!("Motor command failed: {:?}", e),
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+            // Stop motor
+            tracing::info!("Sending motor STOP command...");
+            match stack.endpoints().request::<MotorEndpoint>(
+                device_addr,
+                &MotorCommand::Stop,
+                Some("motor"),
+            ).await {
+                Ok(status) => tracing::info!("Motor status: state={:?}, duty={}%, step={}",
+                    status.state, status.duty, status.step),
+                Err(e) => tracing::error!("Motor command failed: {:?}", e),
+            }
+        }
+    });
+    */
     // Handshake task: retry querying device info until it succeeds (runs concurrently with I/O pump below)
     tokio::spawn({
         use ergot::Address;
