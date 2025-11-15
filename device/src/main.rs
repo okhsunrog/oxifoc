@@ -16,12 +16,16 @@ use ergot::{
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_protocol::{
     ButtonEndpoint, ButtonEvent, DeviceInfo, InfoEndpoint,
+    MotorCommand, MotorEndpoint,
 };
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 mod rtt_io;
 use rtt_io::RttWriter;
+
+mod motor;
+use motor::MotorController;
 
 // Use panic-probe for panics
 use panic_probe as _;
@@ -142,6 +146,17 @@ async fn main(spawner: Spawner) {
     // LED on PC6
     let mut led = Output::new(p.PC6, Level::Low, Speed::Low);
 
+    // Initialize motor controller with TIM1 and motor pins
+    let motor_ctrl = MotorController::init(
+        p.TIM1,
+        p.PA8,   // Phase A high
+        p.PC13,  // Phase A low
+        p.PA9,   // Phase B high
+        p.PA12,  // Phase B low
+        p.PA10,  // Phase C high
+        p.PB15,  // Phase C low
+    );
+
     // Spawn I/O workers
     spawner
         .spawn(run_rx(
@@ -152,9 +167,16 @@ async fn main(spawner: Spawner) {
         .unwrap();
     spawner.spawn(run_tx(rtt_tx)).unwrap();
 
+    // Initialize motor command channel
+    let motor_cmd_channel = MOTOR_CMD_CHANNEL.init(embassy_sync::channel::Channel::new());
+    let motor_cmd_receiver = motor_cmd_channel.receiver();
+    let motor_cmd_sender = motor_cmd_channel.sender();
+
     spawner.spawn(button_handler(button)).unwrap();
     spawner.spawn(status_reporter()).unwrap();
     spawner.spawn(info_server()).unwrap();
+    spawner.spawn(motor_control_task(motor_ctrl, motor_cmd_receiver)).unwrap();
+    spawner.spawn(motor_command_server(motor_cmd_sender)).unwrap();
 
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);
@@ -330,6 +352,73 @@ async fn info_server() {
                 let _ = hw.push_str("B-G431B-ESC1");
                 let _ = sw.push_str("oxifoc-0.1.0");
                 DeviceInfo { hw, sw }
+            })
+            .await;
+    }
+}
+
+/// Static channel for motor commands
+static MOTOR_CMD_CHANNEL: StaticCell<
+    embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, MotorCommand, 4>,
+> = StaticCell::new();
+
+/// Motor control task - performs 6-step commutation and handles commands
+#[embassy_executor::task]
+async fn motor_control_task(
+    mut motor: MotorController<'static>,
+    cmd_receiver: embassy_sync::channel::Receiver<
+        'static,
+        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+        MotorCommand,
+        4,
+    >,
+) {
+    defmt::info!("Motor control task started");
+
+    loop {
+        // Check for commands (non-blocking)
+        if let Ok(cmd) = cmd_receiver.try_receive() {
+            motor.handle_command(&cmd);
+        }
+
+        // Perform commutation step
+        motor.commutate();
+
+        // Wait for next commutation based on speed
+        let period = motor.get_commutation_period();
+        Timer::after(period).await;
+    }
+}
+
+/// Motor command server - handles motor control commands via ergot
+#[embassy_executor::task]
+async fn motor_command_server(
+    motor_cmd_sender: embassy_sync::channel::Sender<
+        'static,
+        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+        MotorCommand,
+        4,
+    >,
+) {
+    defmt::info!("Motor command server started");
+
+    let server = STACK
+        .endpoints()
+        .bounded_server::<MotorEndpoint, 2>(Some("motor"));
+    let server = pin!(server);
+    let mut h = server.attach();
+
+    loop {
+        let _ = h
+            .serve(|cmd: &MotorCommand| {
+                let cmd_clone = cmd.clone();
+                let sender_clone = motor_cmd_sender.clone();
+                async move {
+                    // Send command to motor task
+                    let _ = sender_clone.try_send(cmd_clone);
+                    // Return current motor status
+                    motor::get_motor_status()
+                }
             })
             .await;
     }
