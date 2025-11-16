@@ -13,7 +13,10 @@ use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
 use embassy_stm32::peripherals;
-use embassy_stm32::{interrupt, interrupt::typelevel::{ADC1_2, Interrupt}};
+use embassy_stm32::{
+    interrupt,
+    interrupt::typelevel::{ADC1_2, Interrupt},
+};
 use embassy_time::{Duration, Timer, with_timeout};
 use ergot::{
     Address,
@@ -22,13 +25,14 @@ use ergot::{
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_protocol::{
-    ButtonEndpoint, ButtonEvent, DeviceInfo, InfoEndpoint,
-    MotorCommand, MotorEndpoint,
+    ButtonEndpoint, ButtonEvent, DeviceInfo, InfoEndpoint, MotorCommand, MotorEndpoint,
 };
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as SyncRawMutex;
+use embassy_sync::channel;
 
 mod rtt_io;
 use rtt_io::RttWriter;
@@ -89,18 +93,31 @@ fn get_device_state() -> DeviceState {
 static RTT_UP_CHANNEL: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 static RTT_DOWN_CHANNEL: StaticCell<rtt_target::DownChannel> = StaticCell::new();
 /// Handle for ADC1 injected conversions (TIM1-triggered).
-static ADC1_INJECTED: CriticalSectionMutex<
-    RefCell<Option<InjectedAdc<peripherals::ADC1, 1>>>,
-> = CriticalSectionMutex::new(RefCell::new(None));
+static ADC1_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<peripherals::ADC1, 1>>>> =
+    CriticalSectionMutex::new(RefCell::new(None));
 /// Handle for ADC2 injected conversions (TIM1-triggered).
-static ADC2_INJECTED: CriticalSectionMutex<
-    RefCell<Option<InjectedAdc<peripherals::ADC2, 2>>>,
-> = CriticalSectionMutex::new(RefCell::new(None));
+static ADC2_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<peripherals::ADC2, 2>>>> =
+    CriticalSectionMutex::new(RefCell::new(None));
 
 /// Latest phase current samples (from ADC1/ADC2 injected sequences).
 static IA_SAMPLE: AtomicU16 = AtomicU16::new(0);
 static IB_SAMPLE: AtomicU16 = AtomicU16::new(0);
 static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
+
+/// Sequence counter for streamed ADC samples.
+static ADC_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Simple decimation counter to reduce streaming load.
+const ADC_STREAM_DECIM: u8 = 8;
+static ADC_DECIM_COUNTER: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Channel used to send decimated ADC samples from ISR to telemetry task.
+static ADC_SAMPLE_CH: StaticCell<channel::Channel<SyncRawMutex, oxifoc_protocol::AdcSample, 16>> =
+    StaticCell::new();
+
+/// Raw pointer to the ADC sample channel (set once in main, used in ISR).
+static mut ADC_SAMPLE_CH_REF: Option<
+    &'static channel::Channel<SyncRawMutex, oxifoc_protocol::AdcSample, 16>,
+> = None;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -168,21 +185,15 @@ async fn main(spawner: Spawner) {
     // directly on dedicated internal channels.
     let mut opamp1 = OpAmp::new(p.OPAMP1, OpAmpSpeed::HighSpeed);
     opamp1.calibrate();
-    let ia_chan = opamp1
-        .pga_int(p.PA1, OpAmpGain::Mul16)
-        .degrade_adc(); // -> AnyAdcChannel<ADC1>
+    let ia_chan = opamp1.pga_int(p.PA1, OpAmpGain::Mul16).degrade_adc(); // -> AnyAdcChannel<ADC1>
 
     let mut opamp2 = OpAmp::new(p.OPAMP2, OpAmpSpeed::HighSpeed);
     opamp2.calibrate();
-    let ib_chan = opamp2
-        .pga_int(p.PA7, OpAmpGain::Mul16)
-        .degrade_adc(); // -> AnyAdcChannel<ADC2>
+    let ib_chan = opamp2.pga_int(p.PA7, OpAmpGain::Mul16).degrade_adc(); // -> AnyAdcChannel<ADC2>
 
     let mut opamp3 = OpAmp::new(p.OPAMP3, OpAmpSpeed::HighSpeed);
     opamp3.calibrate();
-    let ic_chan = opamp3
-        .pga_int(p.PB0, OpAmpGain::Mul16)
-        .degrade_adc(); // -> AnyAdcChannel<ADC2>
+    let ic_chan = opamp3.pga_int(p.PB0, OpAmpGain::Mul16).degrade_adc(); // -> AnyAdcChannel<ADC2>
 
     // ADC1/ADC2: phase current feedback via injected conversions.
     //
@@ -233,6 +244,14 @@ async fn main(spawner: Spawner) {
     ADC2_INJECTED.lock(|cell| {
         cell.replace(Some(injected_adc2));
     });
+    // Initialize ADC streaming channel and spawn telemetry task.
+    let adc_sample_ch = ADC_SAMPLE_CH.init(channel::Channel::new());
+    let adc_sample_rx = adc_sample_ch.receiver();
+    unsafe {
+        ADC_SAMPLE_CH_REF = Some(adc_sample_ch);
+    }
+    spawner.spawn(adc_telemetry_task(adc_sample_rx).unwrap());
+
     unsafe {
         ADC1_2::unpend();
         ADC1_2::enable();
@@ -252,13 +271,12 @@ async fn main(spawner: Spawner) {
 
     // Initialize motor controller with TIM1 and motor pins
     let motor_ctrl = MotorController::init(
-        p.TIM1,
-        p.PA8,   // Phase A high
-        p.PC13,  // Phase A low
-        p.PA9,   // Phase B high
-        p.PA12,  // Phase B low
-        p.PA10,  // Phase C high
-        p.PB15,  // Phase C low
+        p.TIM1, p.PA8,  // Phase A high
+        p.PC13, // Phase A low
+        p.PA9,  // Phase B high
+        p.PA12, // Phase B low
+        p.PA10, // Phase C high
+        p.PB15, // Phase C low
     );
 
     // Spawn I/O workers
@@ -464,8 +482,35 @@ async fn info_server() {
 
 /// Static channel for motor commands
 static MOTOR_CMD_CHANNEL: StaticCell<
-    embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, MotorCommand, 4>,
+    embassy_sync::channel::Channel<
+        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+        MotorCommand,
+        4,
+    >,
 > = StaticCell::new();
+
+/// ADC telemetry task - sends decimated samples to host via ergot.
+#[embassy_executor::task]
+async fn adc_telemetry_task(
+    adc_rx: channel::Receiver<'static, SyncRawMutex, oxifoc_protocol::AdcSample, 16>,
+) {
+    use oxifoc_protocol::AdcSampleEndpoint;
+
+    // Host controller at network 1, node 1.
+    let host_addr = Address {
+        network_id: 1,
+        node_id: 1,
+        port_id: 0,
+    };
+    let client = STACK
+        .endpoints()
+        .client::<AdcSampleEndpoint>(host_addr, Some("adc"));
+
+    loop {
+        let sample = adc_rx.receive().await;
+        let _ = client.request(&sample).await;
+    }
+}
 
 /// Motor control task - performs 6-step commutation and handles commands
 #[embassy_executor::task]
@@ -523,7 +568,7 @@ async fn motor_command_server(
         let _ = h
             .serve(|cmd: &MotorCommand| {
                 let cmd_clone = cmd.clone();
-                let sender_clone = motor_cmd_sender.clone();
+                let sender_clone = motor_cmd_sender;
                 async move {
                     // Send command to motor task
                     let _ = sender_clone.try_send(cmd_clone);
@@ -554,4 +599,23 @@ unsafe fn ADC1_2() {
             IC_SAMPLE.store(samples[1], Ordering::Relaxed);
         }
     });
+
+    // Decimate and enqueue ADC samples for streaming to host.
+    let cnt = ADC_DECIM_COUNTER
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    if cnt % ADC_STREAM_DECIM == 0 {
+        let seq = ADC_SEQ.fetch_add(1, Ordering::Relaxed);
+        let sample = oxifoc_protocol::AdcSample {
+            ia: IA_SAMPLE.load(Ordering::Relaxed),
+            ib: IB_SAMPLE.load(Ordering::Relaxed),
+            ic: IC_SAMPLE.load(Ordering::Relaxed),
+            seq,
+        };
+        unsafe {
+            if let Some(ch) = ADC_SAMPLE_CH_REF {
+                let _ = ch.try_send(sample);
+            }
+        }
+    }
 }

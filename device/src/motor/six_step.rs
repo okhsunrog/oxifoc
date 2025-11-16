@@ -9,12 +9,12 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CommutationStep {
-    Step0 = 0,  // A+, B-, C floating
-    Step1 = 1,  // A+, C-, B floating
-    Step2 = 2,  // B+, C-, A floating
-    Step3 = 3,  // B+, A-, C floating
-    Step4 = 4,  // C+, A-, B floating
-    Step5 = 5,  // C+, B-, A floating
+    Step0 = 0, // A+, B-, C floating
+    Step1 = 1, // A+, C-, B floating
+    Step2 = 2, // B+, C-, A floating
+    Step3 = 3, // B+, A-, C floating
+    Step4 = 4, // C+, A-, B floating
+    Step5 = 5, // C+, B-, A floating
 }
 
 impl CommutationStep {
