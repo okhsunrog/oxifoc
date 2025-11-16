@@ -35,27 +35,37 @@ impl CommutationStep {
         self as u8
     }
 
-    /// Get phase enable/disable pattern for this step
+    /// Get phase drive pattern for this step.
     ///
-    /// Returns (ph_a_en, ph_b_en, ph_c_en, ph_a_high, ph_b_high, ph_c_high)
-    /// - enable flags: true = phase active, false = floating
-    /// - high flags: true = high-side on, false = low-side on
-    pub fn get_phase_states(self) -> (bool, bool, bool, bool, bool, bool) {
+    /// Returns the desired drive state for (phase A, phase B, phase C).
+    pub fn get_phase_states(self) -> (PhaseState, PhaseState, PhaseState) {
+        use PhaseState::*;
         match self {
             // A+, B-, C floating
-            Self::Step0 => (true, true, false, true, false, false),
+            Self::Step0 => (High, Low, Off),
             // A+, C-, B floating
-            Self::Step1 => (true, false, true, true, false, false),
+            Self::Step1 => (High, Off, Low),
             // B+, C-, A floating
-            Self::Step2 => (false, true, true, false, true, false),
+            Self::Step2 => (Off, High, Low),
             // B+, A-, C floating
-            Self::Step3 => (true, true, false, false, true, false),
+            Self::Step3 => (Low, High, Off),
             // C+, A-, B floating
-            Self::Step4 => (true, false, true, false, false, true),
+            Self::Step4 => (Low, Off, High),
             // C+, B-, A floating
-            Self::Step5 => (false, true, true, false, false, true),
+            Self::Step5 => (Off, Low, High),
         }
     }
+}
+
+/// Desired drive state for a single motor phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhaseState {
+    /// Both FETs off (phase floating).
+    Off,
+    /// High-side FET active, low-side off.
+    High,
+    /// Low-side FET active, high-side off.
+    Low,
 }
 
 #[cfg(test)]

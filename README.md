@@ -22,6 +22,59 @@ This repo intentionally does not use a workspace at the root level (device and h
 - **Debug Interface**: ST-Link
 - **Communication**: RTT (Real-Time Transfer) via probe-rs
 
+### B-G431B-ESC1 Pinout (Oxifoc)
+
+| Pin           | Signal               |
+|--------------:|----------------------|
+| VBAT          | 3V3                  |
+| PC13/TAMP/RTC | TIM1_CH1N            |
+| PC14          | CAN_TERM             |
+| PC15          | N.C.                 |
+| PF0/OSC-IN    | OSC 8MHz             |
+| PF1/OSC-OUT   | OSC 8MHz             |
+| PG10/NRST     | RESET                |
+| PA0           | VBUS                 |
+| PA1           | Curr_fdbk1_OPAmp+    |
+| PA2           | OP1_OUT              |
+| PA3           | Curr_fdbk1_OPAmp-    |
+| PA4           | BEMF1                |
+| PA5           | Curr_fdbk2_OPAmp-    |
+| PA6           | OP2_OUT              |
+| PA7           | Curr_fdbk2_OPAmp+    |
+| PC4           | BEMF2                |
+| PB0           | Curr_fdbk3_OPAmp+    |
+| PB1           | TP3                  |
+| PB2           | Curr_fdbk3_OPAmp-    |
+| VREF+         | 3V3                  |
+| VDDA          | 3V3                  |
+| PB10          | N.C.                 |
+| VDD4          | 3V3                  |
+| PB11          | BEMF3                |
+| PB12          | POTENTIOMETER        |
+| PB13          | N.C.                 |
+| PB14          | Temperature feedback |
+| PB15          | TIM1_CH3N            |
+| PC6           | STATUS               |
+| PA8           | TIM1_CH1             |
+| PA9           | TIM1_CH2             |
+| PA10          | TIM1_CH3             |
+| PA11          | CAN_RX               |
+| PA12          | TIM1_CH2N            |
+| VDD6          | 3V3                  |
+| PA13          | SWDIO                |
+| PA14          | SWCLK                |
+| PA15          | PWM                  |
+| PC10          | BUTTON               |
+| PC11          | CAN_SHDN, TP2        |
+| PB3           | USART2_TX            |
+| PB4           | USART2_RX            |
+| PB5           | GPIO_BEMF            |
+| PB6           | A+/H1                |
+| PB7           | B+/H2                |
+| PB8           | Z+/H3                |
+| PB9           | CAN_TX               |
+| VDD8          | 3V3                  |
+
 ## Current Capabilities (short)
 
 - Device: button input (single/double/hold), keepalive, and device info server over ergot/RTT; defmt logs; Embassy async runtime.
