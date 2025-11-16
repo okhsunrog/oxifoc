@@ -30,8 +30,8 @@ endpoint!(InfoEndpoint, (), DeviceInfo, "req/device_info");
 #[derive(Clone, Schema, Serialize, Deserialize, Debug)]
 pub enum MotorCommand {
     Stop,
-    Start { duty: u8 },      // duty: 0-100%
-    SetSpeed { duty: u8 },   // duty: 0-100% (adjust while running)
+    Start { duty: u8 },    // duty: 0-100%
+    SetSpeed { duty: u8 }, // duty: 0-100% (adjust while running)
 }
 
 /// Motor operational state
@@ -46,9 +46,21 @@ pub enum MotorState {
 #[derive(Clone, Schema, Serialize, Deserialize, Debug)]
 pub struct MotorStatus {
     pub state: MotorState,
-    pub duty: u8,           // Current duty cycle (0-100%)
-    pub step: u8,           // Current commutation step (0-5)
+    pub duty: u8, // Current duty cycle (0-100%)
+    pub step: u8, // Current commutation step (0-5)
 }
 
 // Host -> Device motor control endpoint (command in, status out)
 endpoint!(MotorEndpoint, MotorCommand, MotorStatus, "cmd/motor");
+
+/// Raw ADC sample triplet (phase currents)
+#[derive(Clone, Schema, Serialize, Deserialize, Debug)]
+pub struct AdcSample {
+    pub ia: u16,
+    pub ib: u16,
+    pub ic: u16,
+    /// Monotonic sequence number (wraps on overflow)
+    pub seq: u32,
+}
+
+endpoint!(AdcSampleEndpoint, AdcSample, (), "stream/adc");

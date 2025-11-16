@@ -37,3 +37,6 @@ defmt-decoder = "1.0"
 # Config loading (TOML)
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
+eframe = "0.33.2"
+egui_plot = "0.34.0"
+crossbeam-channel = "0.5.15"

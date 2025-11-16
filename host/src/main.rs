@@ -1,31 +1,40 @@
+mod config;
+
 use anyhow::{Context, Result};
-use probe_rs::Permissions;
-use probe_rs::probe::list::Lister;
-use probe_rs::rtt::{Rtt, ScanRegion};
-use std::time::Duration;
-use tracing::{error, info};
-// ergot stack and helpers
+use config::HostConfig;
 use cobs_acc::{CobsAccumulator, FeedResult};
 use core::pin::pin;
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use defmt_decoder::{DecodeError, StreamDecoder, Table};
+use eframe::{egui, App};
+use egui_plot::{Line, Plot, PlotPoints};
 use ergot::interface_manager::profiles::direct_edge::process_frame as ergot_edge_process_frame;
+use ergot::interface_manager::profiles::direct_edge::DirectEdge;
 use ergot::interface_manager::utils::cobs_stream::Sink as ErgotSink;
-use ergot::interface_manager::utils::std::StdQueue as ErgotStdQueue;
 use ergot::interface_manager::utils::std::new_std_queue;
+use ergot::interface_manager::utils::std::StdQueue as ErgotStdQueue;
 use ergot::interface_manager::{Interface, InterfaceState};
 use ergot::net_stack::ArcNetStack;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use oxifoc_protocol::{ButtonEndpoint, ButtonEvent, MotorCommand, MotorEndpoint, MotorStatus};
+use oxifoc_protocol::{
+    AdcSample, AdcSampleEndpoint, ButtonEndpoint, ButtonEvent, MotorCommand, MotorEndpoint,
+};
+use probe_rs::probe::list::Lister;
+use probe_rs::rtt::{Rtt, ScanRegion};
+use probe_rs::Permissions;
+use std::collections::VecDeque;
 use std::fs;
-
-mod config;
-use config::HostConfig;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
+use tokio::runtime::Runtime;
+use tracing::{error, info};
 
 fn init_tracing() {
-    // Default INFO; allow override via RUST_LOG
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    // Do not install a log tracer here to avoid SetLoggerError; rely on tracing only.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
@@ -34,32 +43,44 @@ fn init_tracing() {
         .try_init();
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    init_tracing();
+#[derive(Clone)]
+enum HostCommand {
+    Motor(MotorCommand),
+}
 
-    // Load config file
-    let cfg = HostConfig::load_default().unwrap_or_default();
-    let probe_sel = cfg.probe.clone();
-    let chip = cfg.chip.clone();
-    let elf_from_cfg = cfg.elf.clone();
+fn spawn_backend(
+    config: HostConfig,
+    adc_tx: Sender<AdcSample>,
+    cmd_rx: Receiver<HostCommand>,
+    connected_flag: Arc<AtomicBool>,
+) {
+    std::thread::spawn(move || {
+        let rt = Runtime::new().expect("Failed to create tokio runtime");
+        if let Err(e) = rt.block_on(backend_main(config, adc_tx, cmd_rx, connected_flag)) {
+            error!("backend_main error: {:?}", e);
+        }
+    });
+}
 
-    info!("Oxifoc Host - RTT (chip={:?}, probe={:?})", chip, probe_sel);
-    info!("Connecting to STM32G431 via ST-Link...");
+async fn backend_main(
+    cfg: HostConfig,
+    adc_tx: Sender<AdcSample>,
+    cmd_rx: Receiver<HostCommand>,
+    connected_flag: Arc<AtomicBool>,
+) -> Result<()> {
+    info!(
+        "Oxifoc Host backend - RTT (chip={:?}, probe={:?})",
+        cfg.chip, cfg.probe
+    );
 
-    // Get list of available probes
     let lister = Lister::new();
     let probes = lister.list_all();
-
     if probes.is_empty() {
         error!("No debug probes found! Make sure ST-Link is connected.");
-        return Err(anyhow::anyhow!("No probes found"));
+        return Ok(());
     }
 
-    info!("Found {} probe(s)", probes.len());
-
-    // Open specific probe if configured, otherwise first
-    let probe = if let Some(sel) = probe_sel {
+    let probe = if let Some(sel) = cfg.probe.clone() {
         let mut parts = sel.split(':');
         let vid = parts.next();
         let pid = parts.next();
@@ -86,8 +107,7 @@ async fn main() -> Result<()> {
         probes[0].open().context("Failed to open probe")?
     };
 
-    // Attach to the target (auto-detect by default, or explicit --chip)
-    let ts = match chip {
+    let ts = match cfg.chip.clone() {
         Some(name) => probe_rs::config::TargetSelector::from(name),
         None => probe_rs::config::TargetSelector::Auto,
     };
@@ -97,10 +117,7 @@ async fn main() -> Result<()> {
 
     info!("Successfully attached to STM32G431");
 
-    // Get the core
     let mut core = session.core(0)?;
-
-    // Set up RTT - scan entire RAM
     let mut rtt =
         Rtt::attach_region(&mut core, &ScanRegion::Ram).context("Failed to attach RTT")?;
 
@@ -114,7 +131,6 @@ async fn main() -> Result<()> {
         info!("  down{}: {}", idx, channel.name().unwrap_or("unnamed"));
     }
 
-    // Find well-known channels by name
     let mut find_by_name = |name: &str| -> Option<usize> {
         rtt.up_channels().iter().enumerate().find_map(|(i, ch)| {
             if ch.name().map(|n| n == name).unwrap_or(false) {
@@ -139,8 +155,6 @@ async fn main() -> Result<()> {
         ergot_up_idx, defmt_up_idx
     );
 
-    // Build an ergot DirectEdge stack in controller mode (not router - we're directly connected to one device)
-    use ergot::interface_manager::profiles::direct_edge::DirectEdge;
     struct RttInterface;
     impl Interface for RttInterface {
         type Sink = ErgotSink<ErgotStdQueue>;
@@ -150,7 +164,6 @@ async fn main() -> Result<()> {
     const ERGOT_MTU: u16 = 1024;
     let queue = new_std_queue(4096);
 
-    // Create stack with DirectEdge in controller mode (network 1, node 1)
     let stack: EdgeStack = ArcNetStack::new_with_profile(DirectEdge::new_controller(
         ErgotSink::new_from_handle(queue.clone(), ERGOT_MTU),
         InterfaceState::Active {
@@ -159,7 +172,7 @@ async fn main() -> Result<()> {
         },
     ));
 
-    // Spawn server for device-originated button events
+    // Button events
     tokio::spawn({
         let stack = stack.clone();
         async move {
@@ -185,50 +198,53 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Example: Send motor commands (commented out by default)
-    // Uncomment to test motor control
-    /*
+    // ADC samples from device
+    tokio::spawn({
+        let stack = stack.clone();
+        let adc_tx = adc_tx.clone();
+        async move {
+            let server = stack
+                .endpoints()
+                .bounded_server::<AdcSampleEndpoint, 64>(Some("adc"));
+            let server = pin!(server);
+            let mut h = server.attach();
+            loop {
+                let _ = h
+                    .serve(|sample: &AdcSample| {
+                        let s = sample.clone();
+                        let adc_tx = adc_tx.clone();
+                        async move {
+                            let _ = adc_tx.send(s);
+                        }
+                    })
+                    .await;
+            }
+        }
+    });
+
+    // Motor command handler
     tokio::spawn({
         use ergot::Address;
         let stack = stack.clone();
         async move {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-            let device_addr = Address {
-                network_id: 1,
-                node_id: 2,
-                port_id: 0,
-            };
-
-            // Start motor at 10% duty (very conservative for first test)
-            tracing::info!("Sending motor START command (10% duty)...");
-            match stack.endpoints().request::<MotorEndpoint>(
-                device_addr,
-                &MotorCommand::Start { duty: 10 },
-                Some("motor"),
-            ).await {
-                Ok(status) => tracing::info!("Motor status: state={:?}, duty={}%, step={}",
-                    status.state, status.duty, status.step),
-                Err(e) => tracing::error!("Motor command failed: {:?}", e),
-            }
-
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-
-            // Stop motor
-            tracing::info!("Sending motor STOP command...");
-            match stack.endpoints().request::<MotorEndpoint>(
-                device_addr,
-                &MotorCommand::Stop,
-                Some("motor"),
-            ).await {
-                Ok(status) => tracing::info!("Motor status: state={:?}, duty={}%, step={}",
-                    status.state, status.duty, status.step),
-                Err(e) => tracing::error!("Motor command failed: {:?}", e),
+            while let Ok(HostCommand::Motor(mc)) = cmd_rx.recv() {
+                let device_addr = Address {
+                    network_id: 1,
+                    node_id: 2,
+                    port_id: 0,
+                };
+                let res = stack
+                    .endpoints()
+                    .request::<MotorEndpoint>(device_addr, &mc, Some("motor"))
+                    .await;
+                if let Err(e) = res {
+                    tracing::warn!("Motor command failed: {:?}", e);
+                }
             }
         }
     });
-    */
-    // Handshake task: retry querying device info until it succeeds (runs concurrently with I/O pump below)
+
+    // Handshake: DeviceInfo
     tokio::spawn({
         use ergot::Address;
         let stack = stack.clone();
@@ -240,11 +256,9 @@ async fn main() -> Result<()> {
             };
             let mut backoff = Duration::from_millis(100);
             for attempt in 1..=10u32 {
-                let fut = stack.endpoints().request::<oxifoc_protocol::InfoEndpoint>(
-                    device_addr,
-                    &(),
-                    Some("device_info"),
-                );
+                let fut = stack
+                    .endpoints()
+                    .request::<oxifoc_protocol::InfoEndpoint>(device_addr, &(), Some("device_info"));
                 match tokio::time::timeout(Duration::from_millis(800), fut).await {
                     Ok(Ok(info)) => {
                         let hw = info.hw.as_str();
@@ -266,14 +280,14 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Prepare defmt decoder (ELF path)
+    // Prepare defmt decoder
     let default_elf = {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../device/target/thumbv7em-none-eabihf/release/oxifoc");
         p.to_string_lossy().into_owned()
     };
     let defmt_table: Option<Table> = if defmt_up_idx.is_some() {
-        let elf_path = elf_from_cfg.unwrap_or(default_elf);
+        let elf_path = cfg.elf.clone().unwrap_or(default_elf);
         let elf_bytes =
             fs::read(&elf_path).with_context(|| format!("Failed to read ELF at {}", elf_path))?;
         Some(
@@ -289,14 +303,10 @@ async fn main() -> Result<()> {
     let mut defmt_stream: Option<Box<dyn StreamDecoder + '_>> =
         defmt_table.as_ref().map(|t| t.new_stream_decoder());
 
-    // Main loop - read from channels (drives RTT <-> ergot)
     let mut buf = vec![0u8; 4096];
     let mut defbuf = vec![0u8; 2048];
-    // Accumulator for COBS-framed ergot data across RTT reads
     let mut cobs_acc = CobsAccumulator::new_boxslice(1024 * 4);
-    // Controller always has net_id=1
     let mut net_id = Some(1u16);
-    // Downlink writer uses the queue's consumer to send frames to device via RTT down channel
     let down_idx = {
         let mut find_down = |name: &str| -> Option<usize> {
             rtt.down_channels().iter().enumerate().find_map(|(i, ch)| {
@@ -310,8 +320,10 @@ async fn main() -> Result<()> {
         find_down("ergot-down").or(Some(0))
     };
     let tx_consumer = queue.stream_consumer();
+
+    connected_flag.store(true, Ordering::Relaxed);
+
     loop {
-        // Read ERGOT channel (COBS-framed)
         if let Some(up_idx) = ergot_up_idx
             && let Some(channel) = rtt.up_channels().get_mut(up_idx)
         {
@@ -325,7 +337,6 @@ async fn main() -> Result<()> {
                         FeedResult::DecodeError(new_w) => new_w,
                         FeedResult::Success { data, remaining }
                         | FeedResult::SuccessInput { data, remaining } => {
-                            // Process frame using DirectEdge (controller mode)
                             ergot_edge_process_frame(&mut net_id, data, &stack, ());
                             remaining
                         }
@@ -333,7 +344,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        // Read DEFMT channel and decode
+
         if let (Some(up_idx), Some(stream)) = (defmt_up_idx, defmt_stream.as_mut())
             && let Some(channel) = rtt.up_channels().get_mut(up_idx)
         {
@@ -354,11 +365,10 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        // Flush any pending outbound ergot frames from queue to RTT down channel
+
         if let Some(di) = down_idx
             && let Some(channel) = rtt.down_channels().get_mut(di)
         {
-            // Drain as many frames as available without blocking too long
             for _ in 0..8 {
                 match tokio::time::timeout(Duration::from_millis(1), tx_consumer.wait_read()).await
                 {
@@ -375,8 +385,113 @@ async fn main() -> Result<()> {
                 }
             }
         }
+
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
-// (no manual COBS or ad-hoc frame decoding here; ergot handles it)
+struct OxifocApp {
+    connected: Arc<AtomicBool>,
+    adc_rx: Receiver<AdcSample>,
+    cmd_tx: Sender<HostCommand>,
+    duty: f32,
+    samples: VecDeque<AdcSample>,
+    max_samples: usize,
+}
+
+impl OxifocApp {
+    fn new(adc_rx: Receiver<AdcSample>, cmd_tx: Sender<HostCommand>, connected: Arc<AtomicBool>) -> Self {
+        Self {
+            connected,
+            adc_rx,
+            cmd_tx,
+            duty: 10.0,
+            samples: VecDeque::with_capacity(1024),
+            max_samples: 1024,
+        }
+    }
+}
+
+impl App for OxifocApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        while let Ok(sample) = self.adc_rx.try_recv() {
+            if self.samples.len() >= self.max_samples {
+                self.samples.pop_front();
+            }
+            self.samples.push_back(sample);
+        }
+
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            let is_connected = self.connected.load(Ordering::Relaxed);
+            ui.label(if is_connected {
+                "Connected"
+            } else {
+                "Not connected"
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Duty (%)");
+                ui.add(
+                    egui::Slider::new(&mut self.duty, 0.0..=100.0)
+                        .clamping(egui::SliderClamping::Always),
+                );
+                if ui.button("Start").clicked() {
+                    let duty = self.duty as u8;
+                    let _ = self
+                        .cmd_tx
+                        .send(HostCommand::Motor(MotorCommand::Start { duty }));
+                }
+                if ui.button("Stop").clicked() {
+                    let _ = self.cmd_tx.send(HostCommand::Motor(MotorCommand::Stop));
+                }
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let points_ia: PlotPoints = self
+                .samples
+                .iter()
+                .map(|s| [s.seq as f64, s.ia as f64])
+                .collect();
+            let points_ib: PlotPoints = self
+                .samples
+                .iter()
+                .map(|s| [s.seq as f64, s.ib as f64])
+                .collect();
+            let points_ic: PlotPoints = self
+                .samples
+                .iter()
+                .map(|s| [s.seq as f64, s.ic as f64])
+                .collect();
+
+            Plot::new("adc_plot")
+                .legend(egui_plot::Legend::default())
+                .show(ui, |plot_ui| {
+                    plot_ui.line(Line::new("ia", points_ia));
+                    plot_ui.line(Line::new("ib", points_ib));
+                    plot_ui.line(Line::new("ic", points_ic));
+                });
+        });
+
+        ctx.request_repaint_after(Duration::from_millis(16));
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    init_tracing();
+
+    let (adc_tx, adc_rx) = unbounded::<AdcSample>();
+    let (cmd_tx, cmd_rx) = unbounded::<HostCommand>();
+    let connected = Arc::new(AtomicBool::new(false));
+
+    // Spawn backend immediately; UI will reflect connection state.
+    let cfg = HostConfig::load_default().unwrap_or_default();
+    spawn_backend(cfg, adc_tx, cmd_rx, connected.clone());
+
+    let native_options = eframe::NativeOptions::default();
+    eframe::run_native(
+        "Oxifoc Host",
+        native_options,
+        Box::new(|_cc| Ok(Box::new(OxifocApp::new(adc_rx, cmd_tx, connected)))),
+    )
+}

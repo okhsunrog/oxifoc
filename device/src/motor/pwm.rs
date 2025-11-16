@@ -4,8 +4,8 @@ use embassy_stm32::gpio::OutputType;
 use embassy_stm32::time::khz;
 use embassy_stm32::timer::Channel;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin, Mms2};
-use embassy_stm32::timer::simple_pwm::PwmPin;
 use embassy_stm32::timer::low_level::CountingMode;
+use embassy_stm32::timer::simple_pwm::PwmPin;
 
 use super::six_step::PhaseState;
 
@@ -22,9 +22,9 @@ pub struct MotorPwmConfig {
 impl Default for MotorPwmConfig {
     fn default() -> Self {
         Self {
-            pwm_freq: 20_000,      // 20 kHz
-            dead_time_ns: 2000,    // ~2 µs
-            max_duty_percent: 15,  // 15% for very safe initial testing
+            pwm_freq: 20_000,     // 20 kHz
+            dead_time_ns: 2000,   // ~2 µs
+            max_duty_percent: 15, // 15% for very safe initial testing
         }
     }
 }
@@ -62,14 +62,14 @@ impl<'d> MotorPwm<'d> {
         let pb15 = pb15.into();
 
         // High-side pins (TIM1 CH1/2/3)
-        let ch1 = PwmPin::new(pa8, OutputType::PushPull);   // Phase A high
-        let ch2 = PwmPin::new(pa9, OutputType::PushPull);   // Phase B high
-        let ch3 = PwmPin::new(pa10, OutputType::PushPull);  // Phase C high
+        let ch1 = PwmPin::new(pa8, OutputType::PushPull); // Phase A high
+        let ch2 = PwmPin::new(pa9, OutputType::PushPull); // Phase B high
+        let ch3 = PwmPin::new(pa10, OutputType::PushPull); // Phase C high
 
         // Low-side pins (TIM1 CH1N/2N/3N)
-        let ch1n = ComplementaryPwmPin::new(pc13, OutputType::PushPull);  // Phase A low
-        let ch2n = ComplementaryPwmPin::new(pa12, OutputType::PushPull);  // Phase B low
-        let ch3n = ComplementaryPwmPin::new(pb15, OutputType::PushPull);  // Phase C low
+        let ch1n = ComplementaryPwmPin::new(pc13, OutputType::PushPull); // Phase A low
+        let ch2n = ComplementaryPwmPin::new(pa12, OutputType::PushPull); // Phase B low
+        let ch3n = ComplementaryPwmPin::new(pb15, OutputType::PushPull); // Phase C low
 
         let pwm_freq = khz(config.pwm_freq / 1000);
 
@@ -157,16 +157,14 @@ impl<'d> MotorPwm<'d> {
         let duty = (self.max_duty as u32 * duty_percent as u32 / 100) as u16;
         let duty = duty.min(self.duty_limit);
 
-        let mut drive_phase = |channel: Channel, state: PhaseState| {
-            match state {
-                PhaseState::Off => {
-                    self.pwm.set_duty(channel, 0);
-                    self.pwm.disable(channel);
-                }
-                PhaseState::High | PhaseState::Low => {
-                    self.pwm.set_duty(channel, duty);
-                    self.pwm.enable(channel);
-                }
+        let mut drive_phase = |channel: Channel, state: PhaseState| match state {
+            PhaseState::Off => {
+                self.pwm.set_duty(channel, 0);
+                self.pwm.disable(channel);
+            }
+            PhaseState::High | PhaseState::Low => {
+                self.pwm.set_duty(channel, duty);
+                self.pwm.enable(channel);
             }
         };
 

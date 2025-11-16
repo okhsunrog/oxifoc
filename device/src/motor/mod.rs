@@ -27,8 +27,8 @@ pub struct MotorParams {
 impl Default for MotorParams {
     fn default() -> Self {
         Self {
-            pole_pairs: 7,      // ZD2808-V1.9: 14 poles = 7 pole pairs
-            kv_rating: 700,     // 700 KV
+            pole_pairs: 7,  // ZD2808-V1.9: 14 poles = 7 pole pairs
+            kv_rating: 700, // 700 KV
         }
     }
 }
@@ -100,7 +100,7 @@ impl<'d> MotorController<'d> {
             pwm,
             current_step: CommutationStep::Step0,
             target_duty: 0,
-            commutation_period_ms: 500,  // Very slow for initial testing (500ms per step = ~2.8 RPM)
+            commutation_period_ms: 500, // Very slow for initial testing (500ms per step = ~2.8 RPM)
         }
     }
 
