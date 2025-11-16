@@ -1,12 +1,19 @@
 #![no_std]
 #![no_main]
 
+use core::cell::RefCell;
 use core::pin::pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use embassy_executor::Spawner;
+use embassy_stm32::adc::{
+    Adc, AdcChannel, AdcConfig, ConversionTrigger, Exten, InjectedAdc, SampleTime,
+};
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
+use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
+use embassy_stm32::peripherals;
+use embassy_stm32::{interrupt, interrupt::typelevel::{ADC1_2, Interrupt}};
 use embassy_time::{Duration, Timer, with_timeout};
 use ergot::{
     Address,
@@ -20,6 +27,8 @@ use oxifoc_protocol::{
 };
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
+
+use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
 mod rtt_io;
 use rtt_io::RttWriter;
@@ -79,6 +88,19 @@ fn get_device_state() -> DeviceState {
 /// RTT channel storage
 static RTT_UP_CHANNEL: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 static RTT_DOWN_CHANNEL: StaticCell<rtt_target::DownChannel> = StaticCell::new();
+/// Handle for ADC1 injected conversions (TIM1-triggered).
+static ADC1_INJECTED: CriticalSectionMutex<
+    RefCell<Option<InjectedAdc<peripherals::ADC1, 1>>>,
+> = CriticalSectionMutex::new(RefCell::new(None));
+/// Handle for ADC2 injected conversions (TIM1-triggered).
+static ADC2_INJECTED: CriticalSectionMutex<
+    RefCell<Option<InjectedAdc<peripherals::ADC2, 2>>>,
+> = CriticalSectionMutex::new(RefCell::new(None));
+
+/// Latest phase current samples (from ADC1/ADC2 injected sequences).
+static IA_SAMPLE: AtomicU16 = AtomicU16::new(0);
+static IB_SAMPLE: AtomicU16 = AtomicU16::new(0);
+static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -136,6 +158,86 @@ async fn main(spawner: Spawner) {
 
     defmt::info!("Oxifoc starting - ergot over RTT");
 
+    // Configure OPAMPs as PGAs for phase current shunts.
+    //
+    // OPAMP1: phase A current (PA1/PA3).
+    // OPAMP2: phase B current (PA7/PA5).
+    // OPAMP3: phase C current (PB0/PB2).
+    //
+    // We use internal outputs so the ADC sees the amplified shunt voltages
+    // directly on dedicated internal channels.
+    let mut opamp1 = OpAmp::new(p.OPAMP1, OpAmpSpeed::HighSpeed);
+    opamp1.calibrate();
+    let ia_chan = opamp1
+        .pga_int(p.PA1, OpAmpGain::Mul16)
+        .degrade_adc(); // -> AnyAdcChannel<ADC1>
+
+    let mut opamp2 = OpAmp::new(p.OPAMP2, OpAmpSpeed::HighSpeed);
+    opamp2.calibrate();
+    let ib_chan = opamp2
+        .pga_int(p.PA7, OpAmpGain::Mul16)
+        .degrade_adc(); // -> AnyAdcChannel<ADC2>
+
+    let mut opamp3 = OpAmp::new(p.OPAMP3, OpAmpSpeed::HighSpeed);
+    opamp3.calibrate();
+    let ic_chan = opamp3
+        .pga_int(p.PB0, OpAmpGain::Mul16)
+        .degrade_adc(); // -> AnyAdcChannel<ADC2>
+
+    // ADC1/ADC2: phase current feedback via injected conversions.
+    //
+    // NOTE: BEMF pins (PA4/PC4/PB11) and GPIO_BEMF (PB5) are intentionally left
+    // unused for now; they'll be wired up later for sensorless BEMF detection.
+    let adc1 = Adc::new(p.ADC1, AdcConfig::default());
+    let adc2 = Adc::new(p.ADC2, AdcConfig::default());
+
+    let injected_trigger = ConversionTrigger {
+        // TIM1_TRGO2 (we route this from TIM1_CH4 compare in MotorPwm).
+        channel: 8,
+        edge: Exten::RISING_EDGE,
+    };
+
+    // Injected ADC1: phase A current (single rank).
+    //
+    // We deliberately *disable* the injected interrupt for ADC1 and only enable it
+    // on ADC2 (see below). ADC2 has the longer injected sequence (2 ranks vs 1),
+    // so when its JEOS interrupt fires we know:
+    //
+    //   - ADC2 has finished both ranks (ib, ic), and
+    //   - ADC1 (shorter sequence) has already finished as well.
+    //
+    // This matches the recommendation in embassy_stm32's G4 ADC driver comments:
+    // enable JEOS only on the ADC whose injected sequence takes the longest, and
+    // read both ADC1/ADC2 injected results in the shared ADC1_2 ISR to get a
+    // coherent (ia, ib, ic) sample triplet per PWM period.
+    let injected_adc1 = adc1.setup_injected_conversions(
+        [(ia_chan, SampleTime::CYCLES24_5)],
+        injected_trigger,
+        false,
+    );
+
+    // Injected ADC2: phase B and C currents (two ranks).
+    let injected_adc2 = adc2.setup_injected_conversions(
+        [
+            (ib_chan, SampleTime::CYCLES24_5),
+            (ic_chan, SampleTime::CYCLES24_5),
+        ],
+        injected_trigger,
+        true,
+    );
+
+    // Store injected ADC handles and enable ADC1/2 interrupt.
+    ADC1_INJECTED.lock(|cell| {
+        cell.replace(Some(injected_adc1));
+    });
+    ADC2_INJECTED.lock(|cell| {
+        cell.replace(Some(injected_adc2));
+    });
+    unsafe {
+        ADC1_2::unpend();
+        ADC1_2::enable();
+    }
+
     // Create RX worker for incoming ergot messages (it will set interface to Inactive, then Active after first frame)
     let rx_worker = RxWorker::new_target(&STACK, rtt_rx, ());
 
@@ -145,6 +247,8 @@ async fn main(spawner: Spawner) {
 
     // LED on PC6
     let mut led = Output::new(p.PC6, Level::Low, Speed::Low);
+    // Back-EMF enable (GPIO_BEMF on PB5) - keep defined but unused for now.
+    // let mut gpio_bemf = Output::new(p.PB5, Level::Low, Speed::Low);
 
     // Initialize motor controller with TIM1 and motor pins
     let motor_ctrl = MotorController::init(
@@ -158,25 +262,26 @@ async fn main(spawner: Spawner) {
     );
 
     // Spawn I/O workers
-    spawner
-        .spawn(run_rx(
+    spawner.spawn(
+        run_rx(
             rx_worker,
             RECV_BUF.init_with(|| [0u8; MAX_PACKET_SIZE]),
             SCRATCH_BUF.init_with(|| [0u8; 64]),
-        ))
-        .unwrap();
-    spawner.spawn(run_tx(rtt_tx)).unwrap();
+        )
+        .unwrap(),
+    );
+    spawner.spawn(run_tx(rtt_tx).unwrap());
 
     // Initialize motor command channel
     let motor_cmd_channel = MOTOR_CMD_CHANNEL.init(embassy_sync::channel::Channel::new());
     let motor_cmd_receiver = motor_cmd_channel.receiver();
     let motor_cmd_sender = motor_cmd_channel.sender();
 
-    spawner.spawn(button_handler(button)).unwrap();
-    spawner.spawn(status_reporter()).unwrap();
-    spawner.spawn(info_server()).unwrap();
-    spawner.spawn(motor_control_task(motor_ctrl, motor_cmd_receiver)).unwrap();
-    spawner.spawn(motor_command_server(motor_cmd_sender)).unwrap();
+    spawner.spawn(button_handler(button).unwrap());
+    spawner.spawn(status_reporter().unwrap());
+    spawner.spawn(info_server().unwrap());
+    spawner.spawn(motor_control_task(motor_ctrl, motor_cmd_receiver).unwrap());
+    spawner.spawn(motor_command_server(motor_cmd_sender).unwrap());
 
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);
@@ -376,6 +481,12 @@ async fn motor_control_task(
     defmt::info!("Motor control task started");
 
     loop {
+        // Latest injected current samples (TIM1-synchronized via ADC1/ADC2 injected conversions).
+        let ia_raw = IA_SAMPLE.load(Ordering::Relaxed);
+        let ib_raw = IB_SAMPLE.load(Ordering::Relaxed);
+        let ic_raw = IC_SAMPLE.load(Ordering::Relaxed);
+        let _ = (ia_raw, ib_raw, ic_raw); // placeholder for future current control logic
+
         // Check for commands (non-blocking)
         if let Ok(cmd) = cmd_receiver.try_receive() {
             motor.handle_command(&cmd);
@@ -424,3 +535,23 @@ async fn motor_command_server(
     }
 }
 
+/// ADC1/ADC2 shared interrupt: read injected ADC1 samples (phase current).
+#[interrupt]
+unsafe fn ADC1_2() {
+    // Read ADC1 injected (phase A).
+    ADC1_INJECTED.lock(|cell| {
+        if let Some(injected) = cell.borrow_mut().as_mut() {
+            let samples = injected.read_injected_samples();
+            IA_SAMPLE.store(samples[0], Ordering::Relaxed);
+        }
+    });
+
+    // Read ADC2 injected (phases B and C).
+    ADC2_INJECTED.lock(|cell| {
+        if let Some(injected) = cell.borrow_mut().as_mut() {
+            let samples = injected.read_injected_samples();
+            IB_SAMPLE.store(samples[0], Ordering::Relaxed);
+            IC_SAMPLE.store(samples[1], Ordering::Relaxed);
+        }
+    });
+}

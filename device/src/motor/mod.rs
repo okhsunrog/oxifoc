@@ -176,17 +176,12 @@ impl<'d> MotorController<'d> {
             return;
         }
 
-        // Get phase states for current step
-        let (ph_a_en, ph_b_en, ph_c_en, _ph_a_high, _ph_b_high, _ph_c_high) =
-            self.current_step.get_phase_states();
+        // Get phase drive states for current step
+        let (ph_a_state, ph_b_state, ph_c_state) = self.current_step.get_phase_states();
 
         // Apply commutation pattern with current duty cycle
-        self.pwm.apply_commutation(
-            self.target_duty,
-            ph_a_en,
-            ph_b_en,
-            ph_c_en,
-        );
+        self.pwm
+            .apply_commutation(self.target_duty, ph_a_state, ph_b_state, ph_c_state);
 
         // Update global state
         set_motor_step(self.current_step.as_u8());
