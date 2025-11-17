@@ -3,11 +3,13 @@
 
 use core::cell::RefCell;
 use core::pin::pin;
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_executor::Spawner;
+use embassy_stm32::adc::RingBufferedAdc;
 use embassy_stm32::adc::{
-    Adc, AdcChannel, AdcConfig, ConversionTrigger, Exten, InjectedAdc, SampleTime,
+    Adc, AdcChannel, AdcConfig, ConversionTrigger, Exten, InjectedAdc, RegularConversionMode,
+    SampleTime,
 };
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
@@ -73,7 +75,6 @@ enum DeviceState {
     Error = 3,
 }
 
-use core::sync::atomic::AtomicU8;
 static DEVICE_STATE: AtomicU8 = AtomicU8::new(DeviceState::Boot as u8);
 
 fn set_device_state(s: DeviceState) {
@@ -104,6 +105,11 @@ static IA_SAMPLE: AtomicU16 = AtomicU16::new(0);
 static IB_SAMPLE: AtomicU16 = AtomicU16::new(0);
 static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
 
+/// Latest measured DC bus voltage in millivolts.
+static VBUS_MV: AtomicU32 = AtomicU32::new(0);
+/// Latest measured FET temperature in 0.1°C units.
+static FET_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
+
 /// Sequence counter for streamed ADC samples.
 static ADC_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 /// Simple decimation counter to reduce streaming load.
@@ -118,6 +124,48 @@ static ADC_SAMPLE_CH: StaticCell<channel::Channel<SyncRawMutex, oxifoc_protocol:
 static mut ADC_SAMPLE_CH_REF: Option<
     &'static channel::Channel<SyncRawMutex, oxifoc_protocol::AdcSample, 16>,
 > = None;
+
+// DMA buffer used for ADC1 regular conversions (VBUS measurement).
+// Must be non-empty and <= 0xFFFF elements; half of this length is used as the
+// measurement buffer by the RingBufferedAdc::read() API.
+const VBUS_DMA_BUF_LEN: usize = 64;
+const VBUS_MEAS_BUF_LEN: usize = VBUS_DMA_BUF_LEN / 2;
+static VBUS_DMA_BUF: StaticCell<[u16; VBUS_DMA_BUF_LEN]> = StaticCell::new();
+
+// ADC conversion constants for VBUS measurement.
+const ADC_MAX_COUNTS: u32 = 4095;
+const ADC_VREF_MV: u32 = 3300;
+// B-G431B-ESC1 VBUS divider: 169k (top, R68) and 18k (bottom, R76).
+// Vsense = Vbus * 18 / 187  =>  Vbus = Vsense * 187 / 18.
+const VBUS_DIV_NUM: u32 = 187;
+const VBUS_DIV_DEN: u32 = 18;
+
+fn vbus_mv_from_adc(raw: u16) -> u32 {
+    let raw = raw as u32;
+    let vsense_mv = raw * ADC_VREF_MV / ADC_MAX_COUNTS;
+    vsense_mv * VBUS_DIV_NUM / VBUS_DIV_DEN
+}
+
+// Temperature sensing constants for PB14 NTC divider:
+//  - 10k NTC to 3.3V
+//  - 4.7k resistor to GND
+// Using a simple Beta model with Beta = 3455 and R0 = 10k at 25°C.
+const NTC_R_BOTTOM_OHM: f32 = 4700.0;
+const NTC_R0_OHM: f32 = 10_000.0;
+const NTC_BETA: f32 = 3455.0;
+const NTC_T0_K: f32 = 273.15 + 25.0;
+const NTC_KELVIN_OFFSET: f32 = 273.15;
+
+fn fet_temp_c_from_adc(raw: u16) -> f32 {
+    let adc = raw as f32;
+    // Avoid divide-by-zero when ADC reading is very small.
+    let eps = 0.1;
+    let r_ntc = NTC_R_BOTTOM_OHM * (4096.0 / (adc + eps) - 1.0);
+    // Beta-model temperature calculation.
+    let ln_term = libm::logf(NTC_R0_OHM / r_ntc);
+    let temp_k = NTC_BETA * NTC_T0_K / (NTC_BETA - NTC_T0_K * ln_term);
+    temp_k - NTC_KELVIN_OFFSET
+}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -199,6 +247,14 @@ async fn main(spawner: Spawner) {
     //
     // NOTE: BEMF pins (PA4/PC4/PB11) and GPIO_BEMF (PB5) are intentionally left
     // unused for now; they'll be wired up later for sensorless BEMF detection.
+    //
+    // For ADC1 we use both:
+    //   - Regular conversions (via DMA ring buffer) to sample:
+    //       * DC bus voltage on the VBUS_SENS divider (PA0 -> ADC1_IN1), and
+    //       * FET temperature via NTC on PB14 (ADC1_IN5).
+    //   - Injected conversions (TIM1-triggered) to sample phase A current.
+    //
+    // ADC2 is used only for injected conversions (phases B and C).
     let adc1 = Adc::new(p.ADC1, AdcConfig::default());
     let adc2 = Adc::new(p.ADC2, AdcConfig::default());
 
@@ -208,24 +264,31 @@ async fn main(spawner: Spawner) {
         edge: Exten::RISING_EDGE,
     };
 
-    // Injected ADC1: phase A current (single rank).
+    // ADC1 regular + injected:
     //
-    // We deliberately *disable* the injected interrupt for ADC1 and only enable it
-    // on ADC2 (see below). ADC2 has the longer injected sequence (2 ranks vs 1),
-    // so when its JEOS interrupt fires we know:
+    // Regular sequence: VBUS_SENS on PA0 and NTC temperature on PB14, sampled
+    // continuously via DMA into a ring buffer. A separate async task
+    // (vbus_task) reads this buffer and updates VBUS_MV (mV) and
+    // FET_TEMP_C_X10 (0.1°C units).
     //
-    //   - ADC2 has finished both ranks (ib, ic), and
-    //   - ADC1 (shorter sequence) has already finished as well.
-    //
-    // This matches the recommendation in embassy_stm32's G4 ADC driver comments:
-    // enable JEOS only on the ADC whose injected sequence takes the longest, and
-    // read both ADC1/ADC2 injected results in the shared ADC1_2 ISR to get a
-    // coherent (ia, ib, ic) sample triplet per PWM period.
-    let injected_adc1 = adc1.setup_injected_conversions(
-        [(ia_chan, SampleTime::CYCLES24_5)],
-        injected_trigger,
-        false,
-    );
+    // Injected sequence: phase A current (single rank), triggered by TIM1_TRGO2.
+    let vbus_dma_buf = VBUS_DMA_BUF.init([0u16; VBUS_DMA_BUF_LEN]);
+    let vbus_chan = p.PA0.degrade_adc();
+    let temp_chan = p.PB14.degrade_adc();
+    let (adc1_ring, injected_adc1): (RingBufferedAdc<'static, peripherals::ADC1>, _) = adc1
+        .into_ring_buffered_and_injected(
+            p.DMA1_CH1,
+            vbus_dma_buf,
+            [
+                (vbus_chan, SampleTime::CYCLES24_5),
+                (temp_chan, SampleTime::CYCLES24_5),
+            ]
+            .into_iter(),
+            RegularConversionMode::Continuous,
+            [(ia_chan, SampleTime::CYCLES24_5)],
+            injected_trigger,
+            false,
+        );
 
     // Injected ADC2: phase B and C currents (two ranks).
     let injected_adc2 = adc2.setup_injected_conversions(
@@ -244,6 +307,10 @@ async fn main(spawner: Spawner) {
     ADC2_INJECTED.lock(|cell| {
         cell.replace(Some(injected_adc2));
     });
+
+    // Spawn VBUS sampling task (reads ADC1 regular ring buffer and updates VBUS_MV).
+    spawner.spawn(vbus_task(adc1_ring).unwrap());
+
     // Initialize ADC streaming channel and spawn telemetry task.
     let adc_sample_ch = ADC_SAMPLE_CH.init(channel::Channel::new());
     let adc_sample_rx = adc_sample_ch.receiver();
@@ -489,6 +556,59 @@ static MOTOR_CMD_CHANNEL: StaticCell<
     >,
 > = StaticCell::new();
 
+/// Periodically read VBUS and FET temperature via ADC1 regular conversions and
+/// update VBUS_MV / FET_TEMP_C_X10.
+#[embassy_executor::task]
+async fn vbus_task(mut adc: RingBufferedAdc<'static, peripherals::ADC1>) {
+    defmt::info!("VBUS + temperature sampling task started");
+
+    let mut meas = [0u16; VBUS_MEAS_BUF_LEN];
+
+    loop {
+        match adc.read(&mut meas).await {
+            Ok(n) if n > 1 => {
+                let mut sum_vbus: u32 = 0;
+                let mut cnt_vbus: u32 = 0;
+                let mut sum_temp: u32 = 0;
+                let mut cnt_temp: u32 = 0;
+
+                for (idx, &raw) in meas[..n].iter().enumerate() {
+                    if idx % 2 == 0 {
+                        sum_vbus += raw as u32;
+                        cnt_vbus += 1;
+                    } else {
+                        sum_temp += raw as u32;
+                        cnt_temp += 1;
+                    }
+                }
+
+                if cnt_vbus > 0 {
+                    let avg_vbus_raw = (sum_vbus / cnt_vbus) as u16;
+                    let vbus_mv = vbus_mv_from_adc(avg_vbus_raw);
+                    VBUS_MV.store(vbus_mv, Ordering::Relaxed);
+                }
+
+                if cnt_temp > 0 {
+                    let avg_temp_raw = (sum_temp / cnt_temp) as u16;
+                    let temp_c = fet_temp_c_from_adc(avg_temp_raw);
+                    let temp_c_x10 = if temp_c.is_finite() {
+                        let clamped = if temp_c < 0.0 { 0.0 } else { temp_c };
+                        (clamped * 10.0) as u16
+                    } else {
+                        0
+                    };
+                    FET_TEMP_C_X10.store(temp_c_x10, Ordering::Relaxed);
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {
+                defmt::warn!("VBUS/temperature ADC overrun, clearing buffer");
+                adc.clear();
+            }
+        }
+    }
+}
+
 /// ADC telemetry task - sends decimated samples to host via ergot.
 #[embassy_executor::task]
 async fn adc_telemetry_task(
@@ -530,7 +650,8 @@ async fn motor_control_task(
         let ia_raw = IA_SAMPLE.load(Ordering::Relaxed);
         let ib_raw = IB_SAMPLE.load(Ordering::Relaxed);
         let ic_raw = IC_SAMPLE.load(Ordering::Relaxed);
-        let _ = (ia_raw, ib_raw, ic_raw); // placeholder for future current control logic
+        let vbus_mv = VBUS_MV.load(Ordering::Relaxed);
+        let _ = (ia_raw, ib_raw, ic_raw, vbus_mv); // placeholder for future control logic
 
         // Check for commands (non-blocking)
         if let Ok(cmd) = cmd_receiver.try_receive() {
@@ -610,6 +731,8 @@ unsafe fn ADC1_2() {
             ia: IA_SAMPLE.load(Ordering::Relaxed),
             ib: IB_SAMPLE.load(Ordering::Relaxed),
             ic: IC_SAMPLE.load(Ordering::Relaxed),
+            vbus_mv: VBUS_MV.load(Ordering::Relaxed),
+            fet_temp_c_x10: FET_TEMP_C_X10.load(Ordering::Relaxed),
             seq,
         };
         unsafe {
