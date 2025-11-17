@@ -1,32 +1,32 @@
 mod config;
 
 use anyhow::{Context, Result};
-use config::HostConfig;
 use cobs_acc::{CobsAccumulator, FeedResult};
+use config::HostConfig;
 use core::pin::pin;
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use defmt_decoder::{DecodeError, StreamDecoder, Table};
-use eframe::{egui, App};
+use eframe::{App, egui};
 use egui_plot::{Line, Plot, PlotPoints};
-use ergot::interface_manager::profiles::direct_edge::process_frame as ergot_edge_process_frame;
 use ergot::interface_manager::profiles::direct_edge::DirectEdge;
+use ergot::interface_manager::profiles::direct_edge::process_frame as ergot_edge_process_frame;
 use ergot::interface_manager::utils::cobs_stream::Sink as ErgotSink;
-use ergot::interface_manager::utils::std::new_std_queue;
 use ergot::interface_manager::utils::std::StdQueue as ErgotStdQueue;
+use ergot::interface_manager::utils::std::new_std_queue;
 use ergot::interface_manager::{Interface, InterfaceState};
 use ergot::net_stack::ArcNetStack;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_protocol::{
     AdcSample, AdcSampleEndpoint, ButtonEndpoint, ButtonEvent, MotorCommand, MotorEndpoint,
 };
+use probe_rs::Permissions;
 use probe_rs::probe::list::Lister;
 use probe_rs::rtt::{Rtt, ScanRegion};
-use probe_rs::Permissions;
 use std::collections::VecDeque;
 use std::fs;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -256,9 +256,11 @@ async fn backend_main(
             };
             let mut backoff = Duration::from_millis(100);
             for attempt in 1..=10u32 {
-                let fut = stack
-                    .endpoints()
-                    .request::<oxifoc_protocol::InfoEndpoint>(device_addr, &(), Some("device_info"));
+                let fut = stack.endpoints().request::<oxifoc_protocol::InfoEndpoint>(
+                    device_addr,
+                    &(),
+                    Some("device_info"),
+                );
                 match tokio::time::timeout(Duration::from_millis(800), fut).await {
                     Ok(Ok(info)) => {
                         let hw = info.hw.as_str();
@@ -400,7 +402,11 @@ struct OxifocApp {
 }
 
 impl OxifocApp {
-    fn new(adc_rx: Receiver<AdcSample>, cmd_tx: Sender<HostCommand>, connected: Arc<AtomicBool>) -> Self {
+    fn new(
+        adc_rx: Receiver<AdcSample>,
+        cmd_tx: Sender<HostCommand>,
+        connected: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             connected,
             adc_rx,
@@ -445,6 +451,14 @@ impl App for OxifocApp {
                     let _ = self.cmd_tx.send(HostCommand::Motor(MotorCommand::Stop));
                 }
             });
+
+            if let Some(last) = self.samples.back() {
+                ui.label(format!("Vbus: {:.2} V", last.vbus_mv as f32 / 1000.0));
+                ui.label(format!(
+                    "FET temp: {:.1} °C",
+                    last.fet_temp_c_x10 as f32 / 10.0
+                ));
+            }
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -463,6 +477,16 @@ impl App for OxifocApp {
                 .iter()
                 .map(|s| [s.seq as f64, s.ic as f64])
                 .collect();
+            let points_vbus: PlotPoints = self
+                .samples
+                .iter()
+                .map(|s| [s.seq as f64, s.vbus_mv as f64])
+                .collect();
+            let points_temp: PlotPoints = self
+                .samples
+                .iter()
+                .map(|s| [s.seq as f64, s.fet_temp_c_x10 as f64 / 10.0])
+                .collect();
 
             Plot::new("adc_plot")
                 .legend(egui_plot::Legend::default())
@@ -470,6 +494,8 @@ impl App for OxifocApp {
                     plot_ui.line(Line::new("ia", points_ia));
                     plot_ui.line(Line::new("ib", points_ib));
                     plot_ui.line(Line::new("ic", points_ic));
+                    plot_ui.line(Line::new("vbus_mv", points_vbus));
+                    plot_ui.line(Line::new("fet_temp_c", points_temp));
                 });
         });
 

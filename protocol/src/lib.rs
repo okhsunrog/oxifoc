@@ -59,6 +59,10 @@ pub struct AdcSample {
     pub ia: u16,
     pub ib: u16,
     pub ic: u16,
+    /// Measured DC bus voltage in millivolts.
+    pub vbus_mv: u32,
+    /// Estimated FET temperature in 0.1°C units.
+    pub fet_temp_c_x10: u16,
     /// Monotonic sequence number (wraps on overflow)
     pub seq: u32,
 }
