@@ -25,7 +25,7 @@ use embassy_time::{Duration, Timer, with_timeout};
 use ergot::{
     Address,
     exports::bbq2::traits::coordination::cas::AtomicCoord,
-    logging::{defmt_v1::DefmtSink, defmtlog::ErgotDefmtTx},
+    logging::{defmt_sink, defmtlog::ErgotDefmtTx},
     toolkits::embedded_io_async_v0_6::{self as kit, tx_worker},
     well_known::ErgotDefmtTxTopic,
 };
@@ -206,13 +206,8 @@ async fn main(spawner: Spawner) {
         embassy_stm32::init(config)
     };
 
-    // Initialize defmt sink before any logging
-    DefmtSink::init(|frame| {
-        let _ = STACK.topics().broadcast_borrowed::<ErgotDefmtTxTopic>(
-            &ErgotDefmtTx { frame },
-            None,
-        );
-    });
+    // Initialize defmt sink before any logging (network output)
+    let defmt_consumer = defmt_sink::init();
 
     defmt::info!("Oxifoc starting - ergot over USART2 VCP + defmt sink");
 
@@ -368,6 +363,8 @@ async fn main(spawner: Spawner) {
         .unwrap(),
     );
     spawner.spawn(run_tx(UartWriter::new(uart_tx)).unwrap());
+    spawner
+        .spawn(defmt_forwarder(defmt_consumer).unwrap());
 
     // Initialize motor command channel
     let motor_cmd_channel = MOTOR_CMD_CHANNEL.init(embassy_sync::channel::Channel::new());
@@ -437,6 +434,18 @@ async fn run_rx(mut rcvr: RxWorker, recv_buf: &'static mut [u8], scratch_buf: &'
 async fn run_tx(mut tx: UartWriter) {
     loop {
         let _ = tx_worker(&mut tx, OUTQ.stream_consumer()).await;
+    }
+}
+
+/// Forward defmt frames from the sink to ergot network
+#[embassy_executor::task]
+async fn defmt_forwarder(consumer: defmt_sink::DefmtConsumer) {
+    loop {
+        let frame = consumer.wait_read().await;
+        let _ = STACK
+            .topics()
+            .broadcast_borrowed::<ErgotDefmtTxTopic>(&ErgotDefmtTx { frame: &frame }, None);
+        frame.release();
     }
 }
 
