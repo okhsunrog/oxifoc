@@ -8,7 +8,7 @@ edition = "2024"
 oxifoc-protocol = { path = "../protocol" }
 
 # Ergot for host side
-ergot = { path = "../ergot/crates/ergot", features = ["tokio-std", "tokio-serial-v5", "defmt-network"] }
+ergot = { path = "../ergot/crates/ergot", features = ["tokio-std", "tokio-serial-v5", "defmtlog"] }
 
 # Async runtime
 tokio = { version = "1.45", features = ["full"] }
