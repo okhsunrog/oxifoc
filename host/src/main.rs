@@ -5,31 +5,32 @@ use cobs_acc::{CobsAccumulator, FeedResult};
 use config::HostConfig;
 use core::pin::pin;
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use defmt_decoder::{DecodeError, StreamDecoder, Table};
+use defmt_decoder::{DecodeError, Table};
 use eframe::{App, egui};
 use egui_plot::{Line, Plot, PlotPoints};
+use ergot::interface_manager::interface_impls::tokio_serial_cobs::TokioSerialInterface;
 use ergot::interface_manager::profiles::direct_edge::DirectEdge;
 use ergot::interface_manager::profiles::direct_edge::process_frame as ergot_edge_process_frame;
 use ergot::interface_manager::utils::cobs_stream::Sink as ErgotSink;
-use ergot::interface_manager::utils::std::StdQueue as ErgotStdQueue;
 use ergot::interface_manager::utils::std::new_std_queue;
-use ergot::interface_manager::{Interface, InterfaceState};
+use ergot::interface_manager::InterfaceState;
 use ergot::net_stack::ArcNetStack;
+use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_protocol::{
     AdcSample, AdcSampleEndpoint, ButtonEndpoint, ButtonEvent, MotorCommand, MotorEndpoint,
 };
-use probe_rs::Permissions;
-use probe_rs::probe::list::Lister;
-use probe_rs::rtt::{Rtt, ScanRegion};
 use std::collections::VecDeque;
 use std::fs;
+use std::path::Path;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
+use tokio_serial::SerialPortBuilderExt;
 use tracing::{error, info};
 
 fn init_tracing() {
@@ -68,100 +69,28 @@ async fn backend_main(
     cmd_rx: Receiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
 ) -> Result<()> {
+    const ERGOT_MTU: u16 = 512;
+
+    let serial_path = cfg.serial_path();
+    let baud = cfg.serial_baud();
+
     info!(
-        "Oxifoc Host backend - RTT (chip={:?}, probe={:?})",
-        cfg.chip, cfg.probe
+        "Oxifoc Host backend - USART2 over ST-Link VCP (serial={}, baud={})",
+        serial_path, baud
     );
 
-    let lister = Lister::new();
-    let probes = lister.list_all();
-    if probes.is_empty() {
-        error!("No debug probes found! Make sure ST-Link is connected.");
+    if !cfg.stream_ergot() {
+        info!("stream_ergot disabled in config; backend not starting transport");
         return Ok(());
     }
 
-    let probe = if let Some(sel) = cfg.probe.clone() {
-        let mut parts = sel.split(':');
-        let vid = parts.next();
-        let pid = parts.next();
-        let serial = parts.next();
-        let chosen = probes
-            .iter()
-            .find(|p| {
-                let ok_vid = vid
-                    .and_then(|v| u16::from_str_radix(v, 16).ok())
-                    .map(|v| p.vendor_id == v)
-                    .unwrap_or(true);
-                let ok_pid = pid
-                    .and_then(|v| u16::from_str_radix(v, 16).ok())
-                    .map(|v| p.product_id == v)
-                    .unwrap_or(true);
-                let ok_ser = serial
-                    .map(|s| p.serial_number.as_deref() == Some(s))
-                    .unwrap_or(true);
-                ok_vid && ok_pid && ok_ser
-            })
-            .ok_or_else(|| anyhow::anyhow!("Configured probe not found: {}", sel))?;
-        chosen.open().context("Failed to open selected probe")?
-    } else {
-        probes[0].open().context("Failed to open probe")?
-    };
+    let port = tokio_serial::new(serial_path.clone(), baud)
+        .open_native_async()
+        .with_context(|| format!("Failed to open serial port {}", serial_path))?;
+    let (mut serial_rx, mut serial_tx) = tokio::io::split(port);
 
-    let ts = match cfg.chip.clone() {
-        Some(name) => probe_rs::config::TargetSelector::from(name),
-        None => probe_rs::config::TargetSelector::Auto,
-    };
-    let mut session = probe
-        .attach(ts, Permissions::default())
-        .context("Failed to attach to target")?;
-
-    info!("Successfully attached to STM32G431");
-
-    let mut core = session.core(0)?;
-    let mut rtt =
-        Rtt::attach_region(&mut core, &ScanRegion::Ram).context("Failed to attach RTT")?;
-
-    info!("RTT attached successfully");
-    info!("Available RTT up channels:");
-    for (idx, channel) in rtt.up_channels().iter().enumerate() {
-        info!("  up{}: {}", idx, channel.name().unwrap_or("unnamed"));
-    }
-    info!("Available RTT down channels:");
-    for (idx, channel) in rtt.down_channels().iter().enumerate() {
-        info!("  down{}: {}", idx, channel.name().unwrap_or("unnamed"));
-    }
-
-    let mut find_by_name = |name: &str| -> Option<usize> {
-        rtt.up_channels().iter().enumerate().find_map(|(i, ch)| {
-            if ch.name().map(|n| n == name).unwrap_or(false) {
-                Some(i)
-            } else {
-                None
-            }
-        })
-    };
-    let ergot_up_idx = if cfg.stream_ergot() {
-        find_by_name("ergot").or(Some(1))
-    } else {
-        None
-    };
-    let defmt_up_idx = if cfg.stream_defmt() {
-        find_by_name("defmt").or(Some(0))
-    } else {
-        None
-    };
-    info!(
-        "Using channels: ergot={:?}, defmt={:?}",
-        ergot_up_idx, defmt_up_idx
-    );
-
-    struct RttInterface;
-    impl Interface for RttInterface {
-        type Sink = ErgotSink<ErgotStdQueue>;
-    }
-    type EdgeProfile = DirectEdge<RttInterface>;
+    type EdgeProfile = DirectEdge<TokioSerialInterface>;
     type EdgeStack = ArcNetStack<CriticalSectionRawMutex, EdgeProfile>;
-    const ERGOT_MTU: u16 = 1024;
     let queue = new_std_queue(4096);
 
     let stack: EdgeStack = ArcNetStack::new_with_profile(DirectEdge::new_controller(
@@ -171,6 +100,70 @@ async fn backend_main(
             node_id: 1,
         },
     ));
+
+    // Serial RX worker
+    tokio::spawn({
+        let stack = stack.clone();
+        let connected_flag = connected_flag.clone();
+        async move {
+            let mut buf = vec![0u8; 2048];
+            let mut cobs_acc = CobsAccumulator::new_boxslice((ERGOT_MTU as usize) + 64);
+            let mut net_id = Some(1u16);
+            loop {
+                match serial_rx.read(&mut buf).await {
+                    Ok(0) => {
+                        error!("Serial port closed");
+                        connected_flag.store(false, Ordering::Relaxed);
+                        break;
+                    }
+                    Ok(count) => {
+                        let mut window = &mut buf[..count];
+                        while !window.is_empty() {
+                            window = match cobs_acc.feed_raw(window) {
+                                FeedResult::Consumed => break,
+                                FeedResult::OverFull(rem) | FeedResult::DecodeError(rem) => rem,
+                                FeedResult::Success { data, remaining }
+                                | FeedResult::SuccessInput { data, remaining } => {
+                                    ergot_edge_process_frame(&mut net_id, data, &stack, ());
+                                    remaining
+                                }
+                            };
+                        }
+                    }
+                    Err(e) => {
+                        error!("Serial read error: {:?}", e);
+                        connected_flag.store(false, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Serial TX worker
+    let tx_queue: &'static _ = Box::leak(Box::new(queue.clone()));
+    tokio::spawn({
+        let tx_consumer = tx_queue.stream_consumer();
+        let connected_flag = connected_flag.clone();
+        async move {
+            loop {
+                let frame = tx_consumer.wait_read().await;
+                let len = frame.len();
+                if len == 0 {
+                    frame.release(len);
+                    continue;
+                }
+
+                if let Err(e) = serial_tx.write_all(&frame[..len]).await {
+                    error!("Serial write error: {:?}", e);
+                    connected_flag.store(false, Ordering::Relaxed);
+                    frame.release(len);
+                    break;
+                }
+                frame.release(len);
+            }
+        }
+    });
 
     // Button events
     tokio::spawn({
@@ -248,6 +241,7 @@ async fn backend_main(
     tokio::spawn({
         use ergot::Address;
         let stack = stack.clone();
+        let connected_flag = connected_flag.clone();
         async move {
             let device_addr = Address {
                 network_id: 1,
@@ -266,6 +260,7 @@ async fn backend_main(
                         let hw = info.hw.as_str();
                         let sw = info.sw.as_str();
                         tracing::info!("Device connected: hw='{}' sw='{}'", hw, sw);
+                        connected_flag.store(true, Ordering::Relaxed);
                         return;
                     }
                     Ok(Err(e)) => {
@@ -282,113 +277,50 @@ async fn backend_main(
         }
     });
 
-    // Prepare defmt decoder
-    let default_elf = {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../device/target/thumbv7em-none-eabihf/release/oxifoc");
-        p.to_string_lossy().into_owned()
-    };
-    let defmt_table: Option<Table> = if defmt_up_idx.is_some() {
+    // Prepare defmt decoder (frames arrive over ergot defmt sink)
+    if cfg.stream_defmt() {
+        let default_elf = {
+            let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../device/target/thumbv7em-none-eabihf/release/oxifoc");
+            p.to_string_lossy().into_owned()
+        };
         let elf_path = cfg.elf.clone().unwrap_or(default_elf);
         let elf_bytes =
             fs::read(&elf_path).with_context(|| format!("Failed to read ELF at {}", elf_path))?;
-        Some(
-            Table::parse(&elf_bytes)
-                .context("Parsing defmt table from ELF failed")?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("No .defmt section in ELF; build device with defmt")
-                })?,
-        )
-    } else {
-        None
-    };
-    let mut defmt_stream: Option<Box<dyn StreamDecoder + '_>> =
-        defmt_table.as_ref().map(|t| t.new_stream_decoder());
+        let table = Table::parse(&elf_bytes)
+            .context("Parsing defmt table from ELF failed")?
+            .ok_or_else(|| anyhow::anyhow!("No .defmt section in ELF; build device with defmt"))?;
 
-    let mut buf = vec![0u8; 4096];
-    let mut defbuf = vec![0u8; 2048];
-    let mut cobs_acc = CobsAccumulator::new_boxslice(1024 * 4);
-    let mut net_id = Some(1u16);
-    let down_idx = {
-        let mut find_down = |name: &str| -> Option<usize> {
-            rtt.down_channels().iter().enumerate().find_map(|(i, ch)| {
-                if ch.name().map(|n| n == name).unwrap_or(false) {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-        };
-        find_down("ergot-down").or(Some(0))
-    };
-    let tx_consumer = queue.stream_consumer();
+        tokio::spawn({
+            let stack = stack.clone();
+            async move {
+                let sub = stack
+                    .topics()
+                    .heap_bounded_receiver::<ErgotDefmtRxOwnedTopic>(32, Some("defmt"));
+                let sub = pin!(sub);
+                let mut hdl = sub.subscribe();
 
-    connected_flag.store(true, Ordering::Relaxed);
-
-    loop {
-        if let Some(up_idx) = ergot_up_idx
-            && let Some(channel) = rtt.up_channels().get_mut(up_idx)
-        {
-            let count = channel.read(&mut core, &mut buf)?;
-            if count > 0 {
-                let mut window = &mut buf[..count];
-                while !window.is_empty() {
-                    window = match cobs_acc.feed_raw(window) {
-                        FeedResult::Consumed => break,
-                        FeedResult::OverFull(new_w) => new_w,
-                        FeedResult::DecodeError(new_w) => new_w,
-                        FeedResult::Success { data, remaining }
-                        | FeedResult::SuccessInput { data, remaining } => {
-                            ergot_edge_process_frame(&mut net_id, data, &stack, ());
-                            remaining
-                        }
-                    };
-                }
-            }
-        }
-
-        if let (Some(up_idx), Some(stream)) = (defmt_up_idx, defmt_stream.as_mut())
-            && let Some(channel) = rtt.up_channels().get_mut(up_idx)
-        {
-            let count = channel.read(&mut core, &mut defbuf)?;
-            if count > 0 {
-                stream.received(&defbuf[..count]);
                 loop {
-                    match stream.decode() {
-                        Ok(frame) => {
+                    let msg = hdl.recv().await;
+                    match table.decode(&msg.t.frame) {
+                        Ok((frame, _consumed)) => {
                             println!("{}", frame.display(true));
                         }
-                        Err(DecodeError::UnexpectedEof) => break,
+                        Err(DecodeError::UnexpectedEof) => {
+                            error!("Unexpected EOF while decoding defmt frame");
+                        }
                         Err(DecodeError::Malformed) => {
                             error!("Malformed defmt frame");
-                            break;
                         }
                     }
                 }
             }
-        }
+        });
+    }
 
-        if let Some(di) = down_idx
-            && let Some(channel) = rtt.down_channels().get_mut(di)
-        {
-            for _ in 0..8 {
-                match tokio::time::timeout(Duration::from_millis(1), tx_consumer.wait_read()).await
-                {
-                    Ok(frame) => {
-                        let len = frame.len();
-                        if len == 0 {
-                            break;
-                        }
-                        let data = &frame[..len];
-                        let _ = channel.write(&mut core, data);
-                        frame.release(len);
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-
-        tokio::time::sleep(Duration::from_millis(10)).await;
+    // Keep backend alive
+    loop {
+        tokio::time::sleep(Duration::from_secs(60)).await;
     }
 }
 

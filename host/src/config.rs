@@ -8,6 +8,8 @@ pub struct HostConfig {
     pub elf: Option<String>,        // path to device ELF with .defmt
     pub stream_defmt: Option<bool>, // default: true
     pub stream_ergot: Option<bool>, // default: true
+    pub serial_path: Option<String>, // e.g. "/dev/ttyACM0"
+    pub serial_baud: Option<u32>,    // e.g. 921600
 }
 
 impl HostConfig {
@@ -45,5 +47,15 @@ impl HostConfig {
     }
     pub fn stream_ergot(&self) -> bool {
         self.stream_ergot.unwrap_or(true)
+    }
+
+    pub fn serial_path(&self) -> String {
+        self.serial_path
+            .clone()
+            .unwrap_or_else(|| "/dev/ttyACM0".to_string())
+    }
+
+    pub fn serial_baud(&self) -> u32 {
+        self.serial_baud.unwrap_or(921_600)
     }
 }

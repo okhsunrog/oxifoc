@@ -11,6 +11,7 @@ use embassy_stm32::adc::{
     Adc, AdcChannel, AdcConfig, ConversionTrigger, Exten, InjectedAdc, RegularConversionMode,
     SampleTime,
 };
+use embassy_stm32::bind_interrupts;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
@@ -19,25 +20,27 @@ use embassy_stm32::{
     interrupt,
     interrupt::typelevel::{ADC1_2, Interrupt},
 };
+use embassy_stm32::usart::{BufferedUart, Config as UartConfig, Parity as UartParity, StopBits as UartStopBits};
 use embassy_time::{Duration, Timer, with_timeout};
 use ergot::{
     Address,
     exports::bbq2::traits::coordination::cas::AtomicCoord,
+    logging::{defmt_v1::DefmtSink, defmtlog::ErgotDefmtTx},
     toolkits::embedded_io_async_v0_6::{self as kit, tx_worker},
+    well_known::ErgotDefmtTxTopic,
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_protocol::{
     ButtonEndpoint, ButtonEvent, DeviceInfo, InfoEndpoint, MotorCommand, MotorEndpoint,
 };
-use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as SyncRawMutex;
 use embassy_sync::channel;
 
-mod rtt_io;
-use rtt_io::RttWriter;
+mod usart_io;
+use usart_io::{UartReader, UartWriter};
 
 mod motor;
 use motor::MotorController;
@@ -47,11 +50,13 @@ use panic_probe as _;
 
 const OUT_QUEUE_SIZE: usize = 2048;
 const MAX_PACKET_SIZE: usize = 512;
+const UART_BAUD: u32 = 921_600;
+const UART_BUF_LEN: usize = 1024;
 
 // Type aliases for our application
 type Queue = kit::Queue<OUT_QUEUE_SIZE, AtomicCoord>;
 type Stack = kit::Stack<&'static Queue, CriticalSectionRawMutex>;
-type RxWorker = kit::RxWorker<&'static Queue, CriticalSectionRawMutex, rtt_io::RttReader>;
+type RxWorker = kit::RxWorker<&'static Queue, CriticalSectionRawMutex, UartReader>;
 
 /// Statically store our outgoing packet buffer
 static OUTQ: Queue = kit::Queue::new();
@@ -90,9 +95,6 @@ fn get_device_state() -> DeviceState {
     }
 }
 
-/// RTT channel storage
-static RTT_UP_CHANNEL: StaticCell<rtt_target::UpChannel> = StaticCell::new();
-static RTT_DOWN_CHANNEL: StaticCell<rtt_target::DownChannel> = StaticCell::new();
 /// Handle for ADC1 injected conversions (TIM1-triggered).
 static ADC1_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<peripherals::ADC1, 1>>>> =
     CriticalSectionMutex::new(RefCell::new(None));
@@ -132,6 +134,10 @@ const VBUS_DMA_BUF_LEN: usize = 64;
 const VBUS_MEAS_BUF_LEN: usize = VBUS_DMA_BUF_LEN / 2;
 static VBUS_DMA_BUF: StaticCell<[u16; VBUS_DMA_BUF_LEN]> = StaticCell::new();
 
+/// UART buffers
+static UART_TX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
+static UART_RX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
+
 // ADC conversion constants for VBUS measurement.
 const ADC_MAX_COUNTS: u32 = 4095;
 const ADC_VREF_MV: u32 = 3300;
@@ -167,33 +173,12 @@ fn fet_temp_c_from_adc(raw: u16) -> f32 {
     temp_k - NTC_KELVIN_OFFSET
 }
 
+bind_interrupts!(struct Irqs {
+    USART2 => embassy_stm32::usart::BufferedInterruptHandler<peripherals::USART2>;
+});
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // Initialize RTT with defmt on channel 0 and ergot on channel 1
-    // rtt-target automatically provides defmt support when defmt feature is enabled
-    let channels = rtt_init! {
-        up: {
-            0: { size: 1024, mode: NoBlockSkip, name: "defmt" } // defmt logs
-            1: { size: 2048, mode: NoBlockSkip, name: "ergot" } // Ergot data channel
-        }
-        down: {
-            0: { size: 1024, name: "ergot-down" } // host->device
-        }
-    };
-
-    // Configure rtt-target as the defmt global logger on up channel 0
-    rtt_target::set_defmt_channel(channels.up.0);
-
-    // Get RTT channels for ergot (up: device->host, down: host->device)
-    let rtt_up = channels.up.1;
-    let rtt_up_static = RTT_UP_CHANNEL.init_with(|| rtt_up);
-    let rtt_down = channels.down.0;
-    let rtt_down_static = RTT_DOWN_CHANNEL.init_with(|| rtt_down);
-
-    // Create RTT I/O
-    let rtt_io = rtt_io::RttIo::new(rtt_up_static, rtt_down_static);
-    let (rtt_rx, rtt_tx) = rtt_io.split();
-
     // Initialize STM32 with HSE=8MHz feeding PLL to 170MHz SYSCLK
     let p = {
         let mut config = embassy_stm32::Config::default();
@@ -221,7 +206,15 @@ async fn main(spawner: Spawner) {
         embassy_stm32::init(config)
     };
 
-    defmt::info!("Oxifoc starting - ergot over RTT");
+    // Initialize defmt sink before any logging
+    DefmtSink::init(|frame| {
+        let _ = STACK.topics().broadcast_borrowed::<ErgotDefmtTxTopic>(
+            &ErgotDefmtTx { frame },
+            None,
+        );
+    });
+
+    defmt::info!("Oxifoc starting - ergot over USART2 VCP + defmt sink");
 
     // Configure OPAMPs as PGAs for phase current shunts.
     //
@@ -324,8 +317,27 @@ async fn main(spawner: Spawner) {
         ADC1_2::enable();
     }
 
+    // Configure USART2 on ST-LINK VCP (PB3 TX, PB4 RX)
+    let mut uart_cfg = UartConfig::default();
+    uart_cfg.baudrate = UART_BAUD;
+    uart_cfg.parity = UartParity::ParityNone;
+    uart_cfg.stop_bits = UartStopBits::STOP1;
+    let tx_buf = UART_TX_BUF.init([0u8; UART_BUF_LEN]);
+    let rx_buf = UART_RX_BUF.init([0u8; UART_BUF_LEN]);
+    let uart = BufferedUart::new(
+        p.USART2,
+        p.PB4,
+        p.PB3,
+        tx_buf,
+        rx_buf,
+        Irqs,
+        uart_cfg,
+    )
+    .expect("USART2 init failed");
+    let (uart_tx, uart_rx) = uart.split();
+
     // Create RX worker for incoming ergot messages (it will set interface to Inactive, then Active after first frame)
-    let rx_worker = RxWorker::new_target(&STACK, rtt_rx, ());
+    let rx_worker = RxWorker::new_target(&STACK, UartReader::new(uart_rx), ());
 
     // Button: PC10, external pull-up, active-low to GND
     let button = ExtiInput::new(p.PC10, p.EXTI10, Pull::None);
@@ -355,7 +367,7 @@ async fn main(spawner: Spawner) {
         )
         .unwrap(),
     );
-    spawner.spawn(run_tx(rtt_tx).unwrap());
+    spawner.spawn(run_tx(UartWriter::new(uart_tx)).unwrap());
 
     // Initialize motor command channel
     let motor_cmd_channel = MOTOR_CMD_CHANNEL.init(embassy_sync::channel::Channel::new());
@@ -412,7 +424,7 @@ async fn main(spawner: Spawner) {
     }
 }
 
-/// Worker task for incoming ergot data via RTT
+/// Worker task for incoming ergot data via USART2
 #[embassy_executor::task]
 async fn run_rx(mut rcvr: RxWorker, recv_buf: &'static mut [u8], scratch_buf: &'static mut [u8]) {
     loop {
@@ -420,9 +432,9 @@ async fn run_rx(mut rcvr: RxWorker, recv_buf: &'static mut [u8], scratch_buf: &'
     }
 }
 
-/// Worker task for outgoing ergot data via RTT
+/// Worker task for outgoing ergot data via USART2
 #[embassy_executor::task]
-async fn run_tx(mut tx: RttWriter) {
+async fn run_tx(mut tx: UartWriter) {
     loop {
         let _ = tx_worker(&mut tx, OUTQ.stream_consumer()).await;
     }

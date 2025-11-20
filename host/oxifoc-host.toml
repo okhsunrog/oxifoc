@@ -9,7 +9,10 @@ chip = "STM32G431CBTx"
 # Optional: path to device ELF for defmt decoding
 elf = "../device/target/thumbv7em-none-eabihf/release/oxifoc"
 
+# Serial transport (ST-LINK VCP -> USART2)
+serial_path = "/dev/ttyACM0"
+serial_baud = 921600
+
 # Toggle streaming
 stream_defmt = true
 stream_ergot = true
-

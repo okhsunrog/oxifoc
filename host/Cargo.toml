@@ -8,13 +8,11 @@ edition = "2024"
 oxifoc-protocol = { path = "../protocol" }
 
 # Ergot for host side
-ergot = { path = "../ergot/crates/ergot", features = ["tokio-std"] }
-
-# probe-rs for RTT communication
-probe-rs = "0.30"
+ergot = { path = "../ergot/crates/ergot", features = ["tokio-std", "tokio-serial-v5", "defmt-network"] }
 
 # Async runtime
 tokio = { version = "1.45", features = ["full"] }
+tokio-serial = "5.4.4"
 
 # Logging
 log = "0.4"
@@ -26,9 +24,6 @@ tracing-log = "0.2"
 anyhow = "1.0"
 mutex = "1.0.2"
 
-# Decoding ergot frames
-cobs = "0.5"
-postcard = "1.1"
 cobs-acc = { path = "../ergot/crates/cobs-acc", features = ["std"] }
 
 # Decode defmt frames from RTT using device ELF
