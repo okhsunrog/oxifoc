@@ -25,9 +25,6 @@ cortex-m-rt = "0.7.5"
 defmt = "1.0.1"
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 
-# RTT for ergot transport
-rtt-target = { version = "0.6.2", features = ["defmt"] }
-
 # Serialization
 serde = { version = "1.0.219", features = ["derive"], default-features = false }
 postcard-schema = "0.2.5"
@@ -37,7 +34,7 @@ mutex = "1.0.2"
 
 # Local dependencies
 oxifoc-protocol = { path = "../protocol" }
-ergot = { path = "../ergot/crates/ergot", default-features = false, features = ["embedded-io-async-v0_6", "disable-cache-padding"] }
+ergot = { path = "../ergot/crates/ergot", default-features = false, features = ["embedded-io-async-v0_6", "disable-cache-padding", "defmt-sink"] }
 
 static_cell = "2.1"
 embedded-io-async = "0.6"
