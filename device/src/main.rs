@@ -23,6 +23,7 @@ use embassy_stm32::{
 use embassy_stm32::usart::{BufferedUart, Config as UartConfig, Parity as UartParity, StopBits as UartStopBits};
 use embassy_time::{Duration, Timer, with_timeout};
 use ergot::{
+    rtt_target::{ChannelMode::*, rtt_init},
     Address,
     exports::bbq2::traits::coordination::cas::AtomicCoord,
     logging::{defmt_sink, defmtlog::ErgotDefmtTx},
@@ -138,6 +139,9 @@ static VBUS_DMA_BUF: StaticCell<[u16; VBUS_DMA_BUF_LEN]> = StaticCell::new();
 static UART_TX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
 static UART_RX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
 
+/// RTT defmt channel storage to satisfy 'static requirement for defmt sink RTT.
+static RTT_DEFMT_UP: StaticCell<ergot::rtt_target::UpChannel> = StaticCell::new();
+
 // ADC conversion constants for VBUS measurement.
 const ADC_MAX_COUNTS: u32 = 4095;
 const ADC_VREF_MV: u32 = 3300;
@@ -206,8 +210,14 @@ async fn main(spawner: Spawner) {
         embassy_stm32::init(config)
     };
 
-    // Initialize defmt sink before any logging (network output)
-    let defmt_consumer = defmt_sink::init();
+    // Set up RTT for defmt output (RTT + network via defmt sink)
+    let channels = rtt_init! {
+        up: {
+            0: { size: 2048, mode: NoBlockSkip, name: "defmt" }
+        }
+    };
+    let defmt_up = RTT_DEFMT_UP.init(channels.up.0);
+    let defmt_consumer = defmt_sink::init_network_and_rtt(defmt_up);
 
     defmt::info!("Oxifoc starting - ergot over USART2 VCP + defmt sink");
 
