@@ -26,9 +26,8 @@ use ergot::{
     rtt_target::{ChannelMode::*, rtt_init},
     Address,
     exports::bbq2::traits::coordination::cas::AtomicCoord,
-    logging::{defmt_sink, defmtlog::ErgotDefmtTx},
+    logging::defmt_sink,
     toolkits::embedded_io_async_v0_6::{self as kit, tx_worker},
-    well_known::ErgotDefmtTxTopic,
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_protocol::{
@@ -450,13 +449,8 @@ async fn run_tx(mut tx: UartWriter) {
 /// Forward defmt frames from the sink to ergot network
 #[embassy_executor::task]
 async fn defmt_forwarder(consumer: defmt_sink::DefmtConsumer) {
-    loop {
-        let frame = consumer.wait_read().await;
-        let _ = STACK
-            .topics()
-            .broadcast_borrowed::<ErgotDefmtTxTopic>(&ErgotDefmtTx { frame: &frame }, None);
-        frame.release();
-    }
+    // Uses ergot helper; still required to move frames from sink queue to network.
+    defmt_sink::forward_to_ergot_topic(&consumer, &&STACK, None).await;
 }
 
 #[embassy_executor::task]
