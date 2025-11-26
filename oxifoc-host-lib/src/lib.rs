@@ -7,6 +7,7 @@ use cobs_acc::{CobsAccumulator, FeedResult};
 use core::pin::pin;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use defmt_decoder::{DecodeError, Table};
+use defmt_parser::Level as DefmtLevel;
 use ergot::interface_manager::InterfaceState;
 use ergot::interface_manager::interface_impls::tokio_serial_cobs::TokioSerialInterface;
 use ergot::interface_manager::profiles::direct_edge::DirectEdge;
@@ -334,7 +335,30 @@ async fn backend_main(
                     loop {
                         match stream.decode() {
                             Ok(frame) => {
-                                println!("{}", frame.display(true));
+                                // Route defmt frames through tracing with target "device"
+                                // so they appear in GUI, stdout, and logcat
+                                let msg = frame.display(false).to_string();
+                                match frame.level() {
+                                    Some(DefmtLevel::Trace) => {
+                                        tracing::trace!(target: "device", "{}", msg)
+                                    }
+                                    Some(DefmtLevel::Debug) => {
+                                        tracing::debug!(target: "device", "{}", msg)
+                                    }
+                                    Some(DefmtLevel::Info) => {
+                                        tracing::info!(target: "device", "{}", msg)
+                                    }
+                                    Some(DefmtLevel::Warn) => {
+                                        tracing::warn!(target: "device", "{}", msg)
+                                    }
+                                    Some(DefmtLevel::Error) => {
+                                        tracing::error!(target: "device", "{}", msg)
+                                    }
+                                    None => {
+                                        // No level specified, default to info
+                                        tracing::info!(target: "device", "{}", msg)
+                                    }
+                                }
                             }
                             Err(DecodeError::UnexpectedEof) => break,
                             Err(DecodeError::Malformed) => {
@@ -384,7 +408,28 @@ async fn backend_main(
                         let msg = hdl.recv().await;
                         match table.decode(&msg.t.frame) {
                             Ok((frame, _consumed)) => {
-                                println!("{}", frame.display(true));
+                                // Route defmt frames through tracing with target "device"
+                                let msg = frame.display(false).to_string();
+                                match frame.level() {
+                                    Some(DefmtLevel::Trace) => {
+                                        tracing::trace!(target: "device", "{}", msg)
+                                    }
+                                    Some(DefmtLevel::Debug) => {
+                                        tracing::debug!(target: "device", "{}", msg)
+                                    }
+                                    Some(DefmtLevel::Info) => {
+                                        tracing::info!(target: "device", "{}", msg)
+                                    }
+                                    Some(DefmtLevel::Warn) => {
+                                        tracing::warn!(target: "device", "{}", msg)
+                                    }
+                                    Some(DefmtLevel::Error) => {
+                                        tracing::error!(target: "device", "{}", msg)
+                                    }
+                                    None => {
+                                        tracing::info!(target: "device", "{}", msg)
+                                    }
+                                }
                             }
                             Err(DecodeError::UnexpectedEof) => {
                                 error!("Unexpected EOF while decoding defmt frame");

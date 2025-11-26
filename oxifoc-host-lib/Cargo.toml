@@ -23,5 +23,6 @@ mutex = "1.0.2"
 crossbeam-channel = { workspace = true }
 cobs-acc = { path = "../ergot/crates/cobs-acc", features = ["std"] }
 defmt-decoder = "1.0"
+defmt-parser = "1.0"
 serde = { workspace = true }
 toml = "0.9"
