@@ -199,7 +199,8 @@ const rebuildChart = () => {
  * Always use this function to access data arrays for push/shift operations.
  * Never use the original dataBuffers directly after chart initialization.
  */
-const getSeriesData = () => chart?.options.series.map((s) => s.data) ?? []
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const getSeriesData = () => chart?.options.series.map((s: any) => s.data) ?? []
 
 /**
  * Scheduled update handler - called via requestAnimationFrame for batching.
@@ -214,7 +215,8 @@ const scheduledUpdate = () => {
 
     // Trim old data using shift() on the DataPointsBuffer arrays
     const cutoffX = latestX - windowMsComputed.value * 2
-    seriesData.forEach((data) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    seriesData.forEach((data: any) => {
       while (data.length > 0 && data[0].x < cutoffX) {
         data.shift()
       }
@@ -262,7 +264,8 @@ const appendSample = (sample: AdcSample) => {
 
   // Push to the DataPointsBuffer arrays (mutation is tracked)
   const seriesData = getSeriesData()
-  seriesData.forEach((data, idx) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  seriesData.forEach((data: any, idx: number) => {
     data.push({ x: latestX, y: normalizedValues[idx] })
   })
 
