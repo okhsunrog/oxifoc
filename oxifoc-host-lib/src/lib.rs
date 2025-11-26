@@ -30,6 +30,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use transport::Transport;
 
@@ -57,6 +58,7 @@ pub struct HostRuntime {
     pub adc_rx: Receiver<AdcSample>,
     pub cmd_tx: Sender<HostCommand>,
     pub connected: Arc<AtomicBool>,
+    cancel_token: CancellationToken,
 }
 
 impl HostRuntime {
@@ -75,19 +77,27 @@ impl HostRuntime {
 
         self.connected.load(Ordering::Relaxed)
     }
+
+    /// Signals all backend tasks to shut down gracefully.
+    pub fn shutdown(&self) {
+        info!("Shutting down host backend...");
+        self.cancel_token.cancel();
+    }
 }
 
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (adc_tx, adc_rx) = unbounded::<AdcSample>();
     let (cmd_tx, cmd_rx) = unbounded::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
+    let cancel_token = CancellationToken::new();
 
-    spawn_backend(cfg, adc_tx, cmd_rx, connected.clone());
+    spawn_backend(cfg, adc_tx, cmd_rx, connected.clone(), cancel_token.clone());
 
     HostRuntime {
         adc_rx,
         cmd_tx,
         connected,
+        cancel_token,
     }
 }
 
@@ -96,10 +106,17 @@ fn spawn_backend(
     adc_tx: Sender<AdcSample>,
     cmd_rx: Receiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
+    cancel_token: CancellationToken,
 ) {
     thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create tokio runtime");
-        if let Err(e) = rt.block_on(backend_main(config, adc_tx, cmd_rx, connected_flag)) {
+        if let Err(e) = rt.block_on(backend_main(
+            config,
+            adc_tx,
+            cmd_rx,
+            connected_flag,
+            cancel_token,
+        )) {
             error!("backend_main error: {:?}", e);
         }
     });
@@ -110,6 +127,7 @@ async fn backend_main(
     adc_tx: Sender<AdcSample>,
     cmd_rx: Receiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
+    cancel_token: CancellationToken,
 ) -> Result<()> {
     const ERGOT_MTU: u16 = 512;
 
@@ -141,35 +159,44 @@ async fn backend_main(
     tokio::spawn({
         let stack = stack.clone();
         let connected_flag = connected_flag.clone();
+        let token = cancel_token.clone();
         async move {
             let mut buf = vec![0u8; 2048];
             let mut cobs_acc = CobsAccumulator::new_boxslice((ERGOT_MTU as usize) + 64);
             let mut net_id = Some(1u16);
             loop {
-                match transport_rx.read(&mut buf).await {
-                    Ok(0) => {
-                        error!("Transport closed");
-                        connected_flag.store(false, Ordering::Relaxed);
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        info!("Transport reader shutting down");
                         break;
                     }
-                    Ok(count) => {
-                        let mut window = &mut buf[..count];
-                        while !window.is_empty() {
-                            window = match cobs_acc.feed_raw(window) {
-                                FeedResult::Consumed => break,
-                                FeedResult::OverFull(rem) | FeedResult::DecodeError(rem) => rem,
-                                FeedResult::Success { data, remaining }
-                                | FeedResult::SuccessInput { data, remaining } => {
-                                    ergot_edge_process_frame(&mut net_id, data, &stack, ());
-                                    remaining
+                    result = transport_rx.read(&mut buf) => {
+                        match result {
+                            Ok(0) => {
+                                error!("Transport closed");
+                                connected_flag.store(false, Ordering::Relaxed);
+                                break;
+                            }
+                            Ok(count) => {
+                                let mut window = &mut buf[..count];
+                                while !window.is_empty() {
+                                    window = match cobs_acc.feed_raw(window) {
+                                        FeedResult::Consumed => break,
+                                        FeedResult::OverFull(rem) | FeedResult::DecodeError(rem) => rem,
+                                        FeedResult::Success { data, remaining }
+                                        | FeedResult::SuccessInput { data, remaining } => {
+                                            ergot_edge_process_frame(&mut net_id, data, &stack, ());
+                                            remaining
+                                        }
+                                    };
                                 }
-                            };
+                            }
+                            Err(e) => {
+                                error!("Transport read error: {:?}", e);
+                                connected_flag.store(false, Ordering::Relaxed);
+                                break;
+                            }
                         }
-                    }
-                    Err(e) => {
-                        error!("Transport read error: {:?}", e);
-                        connected_flag.store(false, Ordering::Relaxed);
-                        break;
                     }
                 }
             }
@@ -180,22 +207,30 @@ async fn backend_main(
     tokio::spawn({
         let tx_consumer = tx_queue.stream_consumer();
         let connected_flag = connected_flag.clone();
+        let token = cancel_token.clone();
         async move {
             loop {
-                let frame = tx_consumer.wait_read().await;
-                let len = frame.len();
-                if len == 0 {
-                    frame.release(len);
-                    continue;
-                }
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        info!("Transport writer shutting down");
+                        break;
+                    }
+                    frame = tx_consumer.wait_read() => {
+                        let len = frame.len();
+                        if len == 0 {
+                            frame.release(len);
+                            continue;
+                        }
 
-                if let Err(e) = transport_tx.write_all(&frame[..len]).await {
-                    error!("Transport write error: {:?}", e);
-                    connected_flag.store(false, Ordering::Relaxed);
-                    frame.release(len);
-                    break;
+                        if let Err(e) = transport_tx.write_all(&frame[..len]).await {
+                            error!("Transport write error: {:?}", e);
+                            connected_flag.store(false, Ordering::Relaxed);
+                            frame.release(len);
+                            break;
+                        }
+                        frame.release(len);
+                    }
                 }
-                frame.release(len);
             }
         }
     });
@@ -444,7 +479,8 @@ async fn backend_main(
         }
     }
 
-    loop {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-    }
+    // Wait for cancellation signal
+    cancel_token.cancelled().await;
+    info!("Host backend shutdown complete");
+    Ok(())
 }

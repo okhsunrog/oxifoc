@@ -8,6 +8,7 @@ oxifoc-protocol = { path = "../protocol" }
 ergot = { path = "../ergot/crates/ergot", features = ["tokio-std", "tokio-serial-v5", "defmtlog"] }
 
 tokio = { workspace = true }
+tokio-util = "0.7"
 tokio-serial = "5.4.4"
 serialport = "4.7"  # For port enumeration
 
