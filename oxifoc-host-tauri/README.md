@@ -1,7 +1,49 @@
-# Tauri + Vue + TypeScript
+# Oxifoc Host Tauri
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+Desktop GUI for controlling and monitoring the Oxifoc BLDC motor FOC system. Built with Tauri 2, Vue 3, TypeScript, Tailwind CSS v4, and DaisyUI v5.
 
-## Recommended IDE Setup
+## Quick Start
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+**Prerequisites**: Rust, Bun, platform-specific WebView libraries (see Tauri docs)
+
+```bash
+# From monorepo root (using justfile)
+just install && just dev
+
+# Or from this directory
+bun install && bun tauri dev
+```
+
+## Features
+
+- Multi-transport support (Serial UART / RTT debug probe)
+- Automatic device discovery with USB-Serial filtering
+- Real-time ADC visualization (phase currents, voltage, temperature)
+- Motor control interface (start/stop, duty cycle adjustment)
+
+## Configuration
+
+Create `oxifoc-host.toml` in monorepo root:
+
+```toml
+serial_path = "/dev/ttyACM0"
+serial_baud = 921600
+```
+
+Or set `OXIFOC_HOST_CONFIG=/path/to/config.toml`
+
+## Development
+
+```bash
+bun tauri dev          # Dev server with hot-reload
+bun tauri build        # Production build
+bun type-check         # TypeScript check
+bun lint:check         # ESLint
+bun format             # Format with Prettier
+```
+
+**Adding Tauri commands**: See `CLAUDE.md` for architecture and development guide.
+
+## Critical Notes
+
+- **Type bindings**: Auto-generated in `src/bindings.ts` via tauri-specta
