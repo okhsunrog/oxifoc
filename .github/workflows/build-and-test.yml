@@ -1,0 +1,76 @@
+name: 'build-and-test'
+
+on: [push, pull_request]
+
+jobs:
+  test-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest' # for Arm based macs (M1 and above).
+            args: '--target aarch64-apple-darwin'
+          - platform: 'macos-latest' # for Intel based macs.
+            args: '--target x86_64-apple-darwin'
+          - platform: 'ubuntu-22.04'
+            args: ''
+          - platform: 'windows-latest'
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: oxifoc-host-tauri
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          components: rustfmt, clippy
+
+      - name: install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: install frontend dependencies
+        run: bun install
+
+      - name: run workspace rust format check
+        working-directory: .
+        run: cargo fmt --check --all
+
+      - name: run workspace rust clippy
+        working-directory: .
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: run workspace rust tests
+        working-directory: .
+        run: cargo test --workspace
+
+      - name: run type check
+        run: bun run type-check
+
+      - name: run linter
+        run: bun run lint:check
+
+      - name: run format check
+        run: bun run format:check
+
+      # If tagName and releaseId are omitted tauri-action will only build the app and won't try to upload any assets.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: oxifoc-host-tauri
+          args: ${{ matrix.args }}

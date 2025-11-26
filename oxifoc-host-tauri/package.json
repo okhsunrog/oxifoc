@@ -1,0 +1,51 @@
+{
+  "name": "oxifoc-host-tauri",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "type-check": "vue-tsc --build --force",
+    "lint": "eslint . --fix",
+    "lint:check": "eslint .",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-log": "~2",
+    "@tauri-apps/plugin-opener": "^2.5.2",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "chart.js": "^4.5.1",
+    "pinia": "^3.0.4",
+    "pinia-plugin-persistedstate": "^4.7.1",
+    "timechart": "github:huww98/TimeChart",
+    "vue": "^3.5.24"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.17",
+    "@tauri-apps/cli": "^2.9.4",
+    "@tsconfig/node22": "^22.0.5",
+    "@types/node": "^24.10.1",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "@vue/eslint-config-prettier": "^10.2.0",
+    "@vue/eslint-config-typescript": "^14.6.0",
+    "@vue/tsconfig": "^0.8.1",
+    "daisyui": "^5.5.5",
+    "eslint": "^9.39.1",
+    "eslint-plugin-vue": "^10.6.0",
+    "jiti": "^2.6.1",
+    "npm-run-all2": "^8.0.4",
+    "prettier": "^3.6.2",
+    "tailwindcss": "^4.1.17",
+    "typescript": "~5.6.3",
+    "typescript-eslint": "^8.47.0",
+    "vite": "^6.4.1",
+    "vite-plugin-vue-devtools": "^8.0.5",
+    "vue-tsc": "^2.2.12"
+  }
+}

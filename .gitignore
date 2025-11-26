@@ -15,3 +15,8 @@ target/
 # OS
 .DS_Store
 Thumbs.db
+
+# Tauri frontend
+oxifoc-host-tauri/node_modules/
+oxifoc-host-tauri/dist/
+oxifoc-host-tauri/src-tauri/target/

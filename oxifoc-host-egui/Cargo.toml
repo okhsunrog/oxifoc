@@ -1,0 +1,11 @@
+[package]
+name = "oxifoc-host-egui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+oxifoc-host-lib = { path = "../oxifoc-host-lib" }
+oxifoc-protocol = { path = "../protocol" }
+eframe = "0.33.2"
+egui_plot = "0.34.0"
+crossbeam-channel = { workspace = true }

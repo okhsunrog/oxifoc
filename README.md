@@ -6,14 +6,21 @@ WIP/experimental motor control (FOC) firmware for STM32G431 (B‑G431B‑ESC1) w
 
 ```
 oxifoc/
-├── device/          # STM32G431 firmware (B-G431B-ESC1 board)
-├── host/            # PC-side application for RTT communication
-├── protocol/        # Shared protocol definitions
-├── docs/            # Documentation
-└── scripts/         # Helper scripts
+├── Cargo.toml          # Workspace root (host crates only)
+├── justfile            # Build automation
+├── oxifoc-device/      # STM32G431 firmware (excluded from workspace)
+├── oxifoc-host-lib/    # Shared host backend (transport + config)
+├── oxifoc-host-tauri/  # Tauri desktop/mobile GUI
+├── oxifoc-host-egui/   # egui desktop frontend
+├── oxifoc-host-cli/    # CLI frontend
+├── protocol/           # Shared protocol definitions
+├── ergot/              # Git submodule - networking stack
+├── docs/               # Documentation
+├── scripts/            # Helper scripts
+└── oxifoc-host.toml    # Optional host config
 ```
 
-This repo intentionally does not use a workspace at the root level (device and host use different targets/toolchains).
+This repo uses a Cargo workspace for host crates. Device firmware is excluded (different toolchain).
 
 ## Hardware
 
@@ -86,15 +93,22 @@ This repo intentionally does not use a workspace at the root level (device and h
 ### Device Firmware
 
 ```bash
-cd device
+cd oxifoc-device
 cargo build --release
 ```
 
-### Host Application
+### Host Applications
+
+Build the egui app:
 
 ```bash
-cd host
-cargo build --release
+cargo build --manifest-path oxifoc-host-egui/Cargo.toml --release
+```
+
+Build the CLI:
+
+```bash
+cargo build --manifest-path oxifoc-host-cli/Cargo.toml --release
 ```
 
 ## Running
@@ -104,7 +118,7 @@ cargo build --release
 Using probe-rs (recommended):
 
 ```bash
-cd device
+cd oxifoc-device
 cargo run --release
 ```
 
@@ -114,13 +128,12 @@ This will flash the firmware and start the device. The device will:
 3. Start ergot communication stack
 4. Begin periodic heartbeat and keepalive messages
 
-### Run Host Application
+### Run Host Application (egui)
 
-With the board connected via ST-Link:
+From the repo root with the board connected via ST-Link:
 
 ```bash
-cd host
-cargo run --release
+cargo run --manifest-path oxifoc-host-egui/Cargo.toml --release
 ```
 
 Note: ensure no other `probe-rs` session is running (e.g., a prior `cargo run` in `device/` or a separate `probe-rs` tool) before starting the host; the ST‑Link/RTT connection can only be owned by one process at a time.
@@ -143,7 +156,7 @@ probe = "0483:374b"
 chip = "STM32G431CBTx"
 
 # Optional: path to device ELF for defmt decoding
-# Defaults to ../device/target/thumbv7em-none-eabihf/release/oxifoc
+# Defaults to device/target/thumbv7em-none-eabihf/release/oxifoc-device
 elf = "/path/to/device.elf"
 
 # Optional: enable/disable channel streaming (both default to true)
@@ -154,7 +167,7 @@ stream_ergot = true
 Fields:
 - `probe`: optional ST‑Link selector like `VID:PID` or `VID:PID:SERIAL`.
 - `chip`: optional chip override (e.g. `STM32G431CBTx`).
-- `elf`: path to device ELF with `.defmt` section used for decoding logs. Defaults to `../device/target/thumbv7em-none-eabihf/release/oxifoc`.
+- `elf`: path to device ELF with `.defmt` section used for decoding logs. Defaults to `oxifoc-device/target/thumbv7em-none-eabihf/release/oxifoc-device`.
 - `stream_defmt` / `stream_ergot`: booleans to enable/disable streams (default true).
 
 ### RTT Channel Map
@@ -175,22 +188,36 @@ Ergot DirectEdge profile (point‑to‑point):
 
 ## Development Notes (short)
 
-- Device code: `device/src/main.rs`, `device/src/rtt_io.rs`.
-- Host code: `host/src/main.rs`, `host/src/config.rs`.
-- Protocol endpoints: `protocol/src/lib.rs` (Button, KeepAlive, Info).
+- Device code: `oxifoc-device/src/main.rs`, `oxifoc-device/src/usart_io.rs`.
+- Host backend: `oxifoc-host-lib/src/lib.rs` (+ `oxifoc-host-lib/src/config.rs`).
+- Host frontends: `oxifoc-host-tauri/` (Tauri GUI), `oxifoc-host-egui/src/main.rs`, `oxifoc-host-cli/src/main.rs` (CLI).
+- Protocol endpoints: `protocol/src/lib.rs` (Button, Motor, AdcSample, Info).
+
+### Quick Commands (justfile)
+
+```bash
+just install    # Install Tauri frontend dependencies
+just dev        # Run Tauri dev server
+just build      # Build Tauri release
+just egui       # Run egui app
+just cli        # Run CLI
+just flash      # Flash device firmware
+just lint       # Lint all code
+just format     # Format all code
+```
 
 ## Debugging
 
 You can view defmt logs either through the host application or directly via probe‑rs — use one at a time:
 
-- Via host: run `cd host && cargo run --release` to stream defmt and ergot together.
+- Via host: run `cargo run --manifest-path oxifoc-host-egui/Cargo.toml --release` to stream defmt and ergot together.
 - Via probe‑rs: attach with your preferred tool to view defmt output only.
 
 For device-only debugging (flash + run):
 
 ```bash
-cd device
-../scripts/probe_run.sh target/thumbv7em-none-eabihf/release/oxifoc
+cd oxifoc-device
+../scripts/probe_run.sh target/thumbv7em-none-eabihf/release/oxifoc-device
 ```
 
 If you switch to the host application afterwards, stop any running probe‑rs session first.
