@@ -13,7 +13,7 @@
         "chart.js": "^4.5.1",
         "pinia": "^3.0.4",
         "pinia-plugin-persistedstate": "^4.7.1",
-        "timechart": "github:huww98/TimeChart",
+        "timechart": "1.0.0-beta.10",
         "vue": "^3.5.24",
       },
       "devDependencies": {
@@ -753,7 +753,7 @@
 
     "tapable": ["tapable@2.3.0", "", {}, "sha512-g9ljZiwki/LfxmQADO3dEY1CbpmXT5Hm2fJ+QaGKwSXUylMybePR7/67YW7jOrrvjEgL1Fmz5kzyAjWVWLlucg=="],
 
-    "timechart": ["timechart@github:huww98/TimeChart#6d1d26c", { "dependencies": { "d3-axis": "^3.0.0", "d3-color": "^3.0.1", "d3-scale": "^4.0.2", "d3-selection": "^3.0.0", "gl-matrix": "^3.3.0", "tslib": "^2.4.0" } }, "huww98-TimeChart-6d1d26c"],
+    "timechart": ["timechart@1.0.0-beta.10", "", { "dependencies": { "d3-axis": "^3.0.0", "d3-color": "^3.0.1", "d3-scale": "^4.0.2", "d3-selection": "^3.0.0", "gl-matrix": "^3.3.0", "tslib": "^2.4.0" } }, "sha512-0ngdnKhWnspjZk7VMm4mWsr4aAnAvWj+7YeTzicdpIzjQBLeNkbO2X8sQ9dwdZmOeRmkW7FRAtg1YQcmUVk2PQ=="],
 
     "tinyglobby": ["tinyglobby@0.2.15", "", { "dependencies": { "fdir": "^6.5.0", "picomatch": "^4.0.3" } }, "sha512-j2Zq4NyQYG5XMST4cbs02Ak8iJUdxRM0XI5QyxXuZOzKOINmWurp3smXu3y5wDcJrptwpSjgXHzIQxR0omXljQ=="],
 

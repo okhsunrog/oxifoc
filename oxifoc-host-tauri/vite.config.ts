@@ -58,8 +58,6 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
-      // TimeChart GitHub version needs to be resolved from source since dist isn't pre-built
-      'timechart': fileURLToPath(new URL('./node_modules/timechart/src/index.ts', import.meta.url)),
     },
   },
 
