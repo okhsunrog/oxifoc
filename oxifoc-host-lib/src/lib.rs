@@ -120,7 +120,8 @@ async fn backend_main(
 
     let transport_config = cfg.transport_config()?;
     let transport = Transport::new(transport_config).await?;
-    let (mut transport_rx, mut transport_tx) = (transport.reader, transport.writer);
+    let (mut transport_rx, mut transport_tx, defmt_reader) =
+        (transport.reader, transport.writer, transport.defmt_reader);
 
     type EdgeProfile = DirectEdge<TokioSerialInterface>;
     type EdgeStack = ArcNetStack<CriticalSectionRawMutex, EdgeProfile>;
@@ -317,31 +318,83 @@ async fn backend_main(
             .context("Parsing defmt table from ELF failed")?
             .ok_or_else(|| anyhow::anyhow!("No .defmt section in ELF; build device with defmt"))?;
 
-        tokio::spawn({
-            let stack = stack.clone();
-            async move {
-                let sub = stack
-                    .topics()
-                    .heap_bounded_receiver::<ErgotDefmtRxOwnedTopic>(32, Some("defmt"));
-                let sub = pin!(sub);
-                let mut hdl = sub.subscribe();
+        if let Some(mut defmt_rx) = defmt_reader {
+            // RTT mode: read defmt frames directly from RTT channel 0
+            // Use a channel to send data to a blocking decoder thread (StreamDecoder is !Send)
+            info!("Starting defmt decoder (RTT mode - channel 0)");
+            let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(64);
 
-                loop {
-                    let msg = hdl.recv().await;
-                    match table.decode(&msg.t.frame) {
-                        Ok((frame, _consumed)) => {
-                            println!("{}", frame.display(true));
-                        }
-                        Err(DecodeError::UnexpectedEof) => {
-                            error!("Unexpected EOF while decoding defmt frame");
-                        }
-                        Err(DecodeError::Malformed) => {
-                            error!("Malformed defmt frame");
+            // Decoder thread (blocking, since StreamDecoder is !Send)
+            std::thread::spawn(move || {
+                let mut stream = table.new_stream_decoder();
+                while let Ok(data) = rx.recv() {
+                    stream.received(&data);
+                    loop {
+                        match stream.decode() {
+                            Ok(frame) => {
+                                println!("{}", frame.display(true));
+                            }
+                            Err(DecodeError::UnexpectedEof) => break,
+                            Err(DecodeError::Malformed) => {
+                                tracing::error!("Malformed defmt frame");
+                                break;
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
+
+            // Async reader task
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 1024];
+                loop {
+                    match defmt_rx.read(&mut buf).await {
+                        Ok(0) => {
+                            error!("Defmt RTT channel closed");
+                            break;
+                        }
+                        Ok(count) => {
+                            if tx.send(buf[..count].to_vec()).is_err() {
+                                error!("Defmt decoder thread terminated");
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Defmt RTT read error: {:?}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+        } else {
+            // Serial mode: defmt frames forwarded over ergot network
+            info!("Starting defmt decoder (serial mode - ergot network)");
+            tokio::spawn({
+                let stack = stack.clone();
+                async move {
+                    let sub = stack
+                        .topics()
+                        .heap_bounded_receiver::<ErgotDefmtRxOwnedTopic>(32, Some("defmt"));
+                    let sub = pin!(sub);
+                    let mut hdl = sub.subscribe();
+
+                    loop {
+                        let msg = hdl.recv().await;
+                        match table.decode(&msg.t.frame) {
+                            Ok((frame, _consumed)) => {
+                                println!("{}", frame.display(true));
+                            }
+                            Err(DecodeError::UnexpectedEof) => {
+                                error!("Unexpected EOF while decoding defmt frame");
+                            }
+                            Err(DecodeError::Malformed) => {
+                                error!("Malformed defmt frame");
+                            }
+                        }
+                    }
+                }
+            });
+        }
     }
 
     loop {
