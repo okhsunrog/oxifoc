@@ -2,7 +2,7 @@ import { defineStore, acceptHMRUpdate } from 'pinia'
 import { Channel } from '@tauri-apps/api/core'
 import { computed, ref, shallowRef } from 'vue'
 import { commands, type AdcSample } from '../bindings'
-import { error as logError, info as logInfo } from '@tauri-apps/plugin-log'
+import { error as logError } from '@tauri-apps/plugin-log'
 
 const RETENTION_SAMPLES = 1500 // Keep ~25 seconds at 60Hz
 const RATE_SAMPLE_WINDOW = 120
@@ -10,11 +10,8 @@ const RATE_SAMPLE_WINDOW = 120
 export const useStreamStore = defineStore('stream', () => {
   const samples = ref<AdcSample[]>([])
   const isStreaming = ref(false)
-  const isConnected = ref(false)
-  const isInitialized = ref(false)
   const activeChannel = shallowRef<Channel<AdcSample> | null>(null)
   let startPromise: Promise<void> | null = null
-  let initPromise: Promise<void> | null = null
 
   /**
    * Counter that increments with each incoming sample.
@@ -53,60 +50,20 @@ export const useStreamStore = defineStore('stream', () => {
   }
 
   /**
-   * Initialize the device connection.
-   * This starts the host backend which connects to the serial port.
-   */
-  const initConnection = async () => {
-    if (isInitialized.value) return
-
-    if (!initPromise) {
-      initPromise = (async () => {
-        logInfo('Initializing device connection...')
-        const result = await commands.initDeviceConnection()
-        if (result.status === 'error') {
-          throw new Error(String(result.error))
-        }
-        isInitialized.value = true
-        logInfo('Device connection initialized')
-      })()
-        .catch((err) => {
-          logError(`Failed to initialize connection: ${err}`)
-          throw err
-        })
-        .finally(() => {
-          initPromise = null
-        })
-    }
-    return initPromise
-  }
-
-  /**
    * Check and update the device connection status.
    */
   const checkConnection = async () => {
-    const result = await commands.isDeviceConnected()
-    if (result.status === 'ok') {
-      isConnected.value = result.data
-    }
-    return isConnected.value
+    return await commands.isDeviceConnected()
   }
 
   /**
    * Wait for device connection with timeout.
    */
   const waitForDevice = async (timeoutSecs: number = 5) => {
-    const result = await commands.waitForDevice(timeoutSecs)
-    if (result.status === 'ok') {
-      isConnected.value = result.data
-      return result.data
-    }
-    return false
+    return await commands.waitForDevice(timeoutSecs)
   }
 
   const startStream = async () => {
-    // Ensure connection is initialized first
-    await initConnection()
-
     const channel = new Channel<AdcSample>()
     channel.onmessage = (sample) => handleSample(sample)
 
@@ -162,11 +119,8 @@ export const useStreamStore = defineStore('stream', () => {
     samples,
     latestSample,
     isStreaming,
-    isConnected,
-    isInitialized,
     approxUpdateHz,
     sampleCount,
-    initConnection,
     checkConnection,
     waitForDevice,
     ensureStream,

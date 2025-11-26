@@ -4,11 +4,11 @@
 //! device through a debug probe (ST-Link, J-Link, etc.) using probe-rs.
 
 use super::Transport;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use probe_rs::{
+    Permissions,
     probe::list::Lister,
     rtt::{Rtt, ScanRegion},
-    Permissions,
 };
 use std::io;
 use std::pin::Pin;
@@ -184,7 +184,7 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<Transpo
             _ => {
                 return Err(anyhow!(
                     "Invalid probe selector format. Use 'VID:PID' or 'VID:PID:SERIAL'"
-                ))
+                ));
             }
         };
 
@@ -218,8 +218,8 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<Transpo
     // Get the core and scan for RTT to verify channels exist
     {
         let mut core = session.core(0).context("Failed to get core 0")?;
-        let mut rtt = Rtt::attach_region(&mut core, &ScanRegion::Ram)
-            .context("Failed to attach to RTT")?;
+        let mut rtt =
+            Rtt::attach_region(&mut core, &ScanRegion::Ram).context("Failed to attach to RTT")?;
 
         info!("RTT attached successfully");
 

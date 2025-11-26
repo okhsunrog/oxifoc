@@ -1,4 +1,5 @@
 pub mod config;
+pub mod discovery;
 pub mod transport;
 
 use anyhow::{Context, Result};
@@ -32,6 +33,7 @@ use tracing::{error, info};
 use transport::Transport;
 
 pub use config::HostConfig;
+pub use discovery::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
 pub use transport::{TransportConfig, TransportType};
 
 pub fn init_tracing() {

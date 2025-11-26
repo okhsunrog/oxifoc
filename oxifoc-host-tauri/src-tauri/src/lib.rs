@@ -2,9 +2,11 @@ pub mod logging;
 
 use crossbeam_channel::TryRecvError;
 use logging::LogEvent;
-use oxifoc_host_lib::{start_host, HostCommand, HostConfig, HostRuntime};
+use oxifoc_host_lib::{
+    list_probes, list_serial_ports, start_host, HostCommand, HostConfig, HostRuntime, TransportType,
+};
 use oxifoc_protocol::MotorCommand;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::ipc::Channel;
@@ -49,25 +51,169 @@ pub enum MotorState {
     Error,
 }
 
-/// Initialize connection to the Oxifoc device.
-/// This starts the host backend which connects to the serial port.
+// ============================================================================
+// Device Discovery Types
+// ============================================================================
+
+/// Serial port information for TypeScript
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialPort {
+    pub path: String,
+    pub vid: Option<u16>,
+    pub pid: Option<u16>,
+    pub serial_number: Option<String>,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
+    pub display_name: String,
+}
+
+impl From<oxifoc_host_lib::SerialPortInfo> for SerialPort {
+    fn from(p: oxifoc_host_lib::SerialPortInfo) -> Self {
+        let display_name = if let Some(ref product) = p.product {
+            format!("{} ({})", p.path, product)
+        } else if let (Some(vid), Some(pid)) = (p.vid, p.pid) {
+            format!("{} [{:04x}:{:04x}]", p.path, vid, pid)
+        } else {
+            p.path.clone()
+        };
+        Self {
+            path: p.path,
+            vid: p.vid,
+            pid: p.pid,
+            serial_number: p.serial_number,
+            manufacturer: p.manufacturer,
+            product: p.product,
+            display_name,
+        }
+    }
+}
+
+/// Debug probe information for TypeScript (RTT transport)
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugProbe {
+    pub identifier: String,
+    pub vid: u16,
+    pub pid: u16,
+    pub serial_number: Option<String>,
+    pub probe_type: String,
+    pub display_name: String,
+}
+
+impl From<oxifoc_host_lib::ProbeInfo> for DebugProbe {
+    fn from(p: oxifoc_host_lib::ProbeInfo) -> Self {
+        let display_name = if let Some(ref serial) = p.serial_number {
+            format!("{} [{:04x}:{:04x}:{}]", p.probe_type, p.vid, p.pid, serial)
+        } else {
+            format!("{} [{:04x}:{:04x}]", p.probe_type, p.vid, p.pid)
+        };
+        Self {
+            identifier: p.identifier,
+            vid: p.vid,
+            pid: p.pid,
+            serial_number: p.serial_number,
+            probe_type: p.probe_type,
+            display_name,
+        }
+    }
+}
+
+/// Connection configuration from frontend
+#[derive(Debug, Clone, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionConfig {
+    /// Transport type: "serial" or "rtt"
+    pub transport: String,
+    /// Serial port path (for serial transport)
+    pub serial_path: Option<String>,
+    /// Baud rate (for serial transport)
+    pub baud_rate: Option<u32>,
+    /// Probe identifier (for RTT transport)
+    pub probe: Option<String>,
+    /// Chip name (for RTT transport)
+    pub chip: Option<String>,
+}
+
+// ============================================================================
+// Discovery Commands
+// ============================================================================
+
+/// List all available serial ports.
 #[tauri::command]
 #[specta::specta]
-fn init_device_connection(state: State<OxifocState>) -> Result<(), String> {
+fn list_serial_ports_cmd() -> Vec<SerialPort> {
+    info!("Listing serial ports...");
+    let ports: Vec<SerialPort> = list_serial_ports().into_iter().map(Into::into).collect();
+    info!("Found {} serial ports", ports.len());
+    ports
+}
+
+/// List all available debug probes (for RTT transport).
+#[tauri::command]
+#[specta::specta]
+fn list_probes_cmd() -> Vec<DebugProbe> {
+    info!("Listing debug probes...");
+    let probes: Vec<DebugProbe> = list_probes().into_iter().map(Into::into).collect();
+    info!("Found {} debug probes", probes.len());
+    probes
+}
+
+/// Connect to a device with the specified configuration.
+#[tauri::command]
+#[specta::specta]
+fn connect_device(config: ConnectionConfig, state: State<OxifocState>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
 
+    // Disconnect existing connection if any
     if guard.is_some() {
-        info!("Device connection already initialized");
+        info!("Disconnecting existing connection...");
+        *guard = None;
+    }
+
+    info!("Connecting with config: {:?}", config);
+
+    // Build HostConfig from ConnectionConfig
+    let host_config = HostConfig {
+        transport: Some(match config.transport.as_str() {
+            "rtt" => TransportType::Rtt,
+            _ => TransportType::Serial,
+        }),
+        serial_path: config.serial_path,
+        serial_baud: config.baud_rate,
+        probe: config.probe,
+        chip: config.chip,
+        elf: None,
+        stream_defmt: Some(true),
+        stream_ergot: Some(true),
+    };
+
+    let runtime = start_host(host_config);
+    *guard = Some(runtime);
+    info!("Device connection started");
+    Ok(())
+}
+
+/// Disconnect from the current device.
+#[tauri::command]
+#[specta::specta]
+fn disconnect_device(state: State<OxifocState>) -> Result<(), String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+
+    if guard.is_none() {
+        info!("No device connected");
         return Ok(());
     }
 
-    info!("Initializing device connection...");
-    let cfg = HostConfig::load_default().unwrap_or_default();
-    let runtime = start_host(cfg);
-    *guard = Some(runtime);
-    info!("Host backend started");
+    info!("Disconnecting device...");
+    *guard = None;
+    info!("Device disconnected");
     Ok(())
 }
+
+// ============================================================================
+// Connection State Commands
+// ============================================================================
 
 /// Check if the device is connected.
 #[tauri::command]
@@ -207,12 +353,19 @@ pub fn run() {
     // Initialize Specta builder
     let specta_builder = tauri_specta::Builder::<tauri::Wry>::new()
         .commands(tauri_specta::collect_commands![
-            init_device_connection,
+            // Discovery
+            list_serial_ports_cmd,
+            list_probes_cmd,
+            // Connection
+            connect_device,
+            disconnect_device,
             is_device_connected,
             wait_for_device,
+            // Motor control
             motor_start,
             motor_stop,
             motor_set_speed,
+            // ADC streaming
             start_adc_stream,
             get_adc_sample,
         ])

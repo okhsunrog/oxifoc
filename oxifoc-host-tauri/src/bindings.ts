@@ -6,12 +6,34 @@
 
 export const commands = {
   /**
-   * Initialize connection to the Oxifoc device.
-   * This starts the host backend which connects to the serial port.
+   * List all available serial ports.
    */
-  async initDeviceConnection(): Promise<Result<null, string>> {
+  async listSerialPortsCmd(): Promise<SerialPort[]> {
+    return await TAURI_INVOKE('list_serial_ports_cmd')
+  },
+  /**
+   * List all available debug probes (for RTT transport).
+   */
+  async listProbesCmd(): Promise<DebugProbe[]> {
+    return await TAURI_INVOKE('list_probes_cmd')
+  },
+  /**
+   * Connect to a device with the specified configuration.
+   */
+  async connectDevice(config: ConnectionConfig): Promise<Result<null, string>> {
     try {
-      return { status: 'ok', data: await TAURI_INVOKE('init_device_connection') }
+      return { status: 'ok', data: await TAURI_INVOKE('connect_device', { config }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Disconnect from the current device.
+   */
+  async disconnectDevice(): Promise<Result<null, string>> {
+    try {
+      return { status: 'ok', data: await TAURI_INVOKE('disconnect_device') }
     } catch (e) {
       if (e instanceof Error) throw e
       else return { status: 'error', error: e as any }
@@ -112,7 +134,55 @@ export type AdcSample = {
   fetTempCX10: number
   seq: number
 }
+/**
+ * Connection configuration from frontend
+ */
+export type ConnectionConfig = {
+  /**
+   * Transport type: "serial" or "rtt"
+   */
+  transport: string
+  /**
+   * Serial port path (for serial transport)
+   */
+  serialPath: string | null
+  /**
+   * Baud rate (for serial transport)
+   */
+  baudRate: number | null
+  /**
+   * Probe identifier (for RTT transport)
+   */
+  probe: string | null
+  /**
+   * Chip name (for RTT transport)
+   */
+  chip: string | null
+}
+/**
+ * Debug probe information for TypeScript (RTT transport)
+ */
+export type DebugProbe = {
+  identifier: string
+  vid: number
+  pid: number
+  serialNumber: string | null
+  probeType: string
+  displayName: string
+}
 export type LogEvent = { message: string }
+/**
+ * Serial port information for TypeScript
+ */
+export type SerialPort = {
+  path: string
+  vid: number | null
+  pid: number | null
+  serialNumber: string | null
+  manufacturer: string | null
+  product: string | null
+  displayName: string
+}
 
 /** tauri-specta globals **/
 

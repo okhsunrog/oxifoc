@@ -9,6 +9,7 @@ ergot = { path = "../ergot/crates/ergot", features = ["tokio-std", "tokio-serial
 
 tokio = { workspace = true }
 tokio-serial = "5.4.4"
+serialport = "4.7"  # For port enumeration
 
 # RTT transport via probe-rs
 probe-rs = "0.28"
