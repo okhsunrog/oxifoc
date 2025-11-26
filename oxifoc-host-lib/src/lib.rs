@@ -203,12 +203,12 @@ async fn backend_main(
         }
     });
 
-    let tx_queue: &'static _ = Box::leak(Box::new(queue.clone()));
     tokio::spawn({
-        let tx_consumer = tx_queue.stream_consumer();
+        let tx_queue = queue.clone();
         let connected_flag = connected_flag.clone();
         let token = cancel_token.clone();
         async move {
+            let tx_consumer = tx_queue.stream_consumer();
             loop {
                 tokio::select! {
                     _ = token.cancelled() => {
