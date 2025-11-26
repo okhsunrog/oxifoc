@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "protocol",
+    "oxifoc-host-lib",
+    "oxifoc-host-cli",
+    "oxifoc-host-egui",
+    "oxifoc-host-tauri/src-tauri",
+]
+exclude = [
+    "oxifoc-device",  # Different toolchain (thumbv7em-none-eabihf)
+    "ergot",          # Git submodule with own workspace
+]
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
+
+[workspace.dependencies]
+tokio = { version = "1.45", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+anyhow = "1.0"
+crossbeam-channel = "0.5.15"

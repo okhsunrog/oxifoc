@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en" data-theme="nord">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Oxifoc Tauri GUI</title>
+    <script>
+      // Set theme before page loads to prevent flash
+      const theme = localStorage.getItem('theme') || 'nord';
+      document.documentElement.setAttribute('data-theme', theme);
+    </script>
+  </head>
+
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

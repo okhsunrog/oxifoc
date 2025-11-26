@@ -14,7 +14,7 @@ The device firmware uses:
 
 ### Current RTT Configuration
 
-In `device/Cargo.toml`:
+In `oxifoc-device/Cargo.toml`:
 ```toml
 defmt = { version = "1.0.1", optional = true }
 defmt-rtt = { version = "1.0.0", optional = true }

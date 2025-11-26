@@ -1,0 +1,11 @@
+[package]
+name = "oxifoc-host-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+oxifoc-host-lib = { path = "../oxifoc-host-lib" }
+oxifoc-protocol = { path = "../protocol" }
+anyhow = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+crossbeam-channel = { workspace = true }
