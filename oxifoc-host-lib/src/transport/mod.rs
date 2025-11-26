@@ -44,8 +44,13 @@ pub enum TransportConfig {
 
 /// A boxed transport that can be used for async I/O.
 pub struct Transport {
+    /// Reader for ergot data (device -> host)
     pub reader: Box<dyn AsyncRead + Send + Unpin>,
+    /// Writer for ergot data (host -> device)
     pub writer: Box<dyn AsyncWrite + Send + Unpin>,
+    /// Optional reader for defmt data (RTT mode only, channel 0)
+    /// In serial mode, defmt is forwarded over ergot network instead.
+    pub defmt_reader: Option<Box<dyn AsyncRead + Send + Unpin>>,
 }
 
 impl Transport {

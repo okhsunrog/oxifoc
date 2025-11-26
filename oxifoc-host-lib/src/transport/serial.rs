@@ -1,4 +1,7 @@
 //! Serial (UART) transport implementation.
+//!
+//! In serial mode, defmt frames are forwarded over the ergot network,
+//! so there's no separate defmt reader.
 
 use super::Transport;
 use anyhow::{Context, Result};
@@ -18,5 +21,6 @@ pub async fn connect(path: &str, baud: u32) -> Result<Transport> {
     Ok(Transport {
         reader: Box::new(reader),
         writer: Box::new(writer),
+        defmt_reader: None, // defmt forwarded over ergot network in serial mode
     })
 }

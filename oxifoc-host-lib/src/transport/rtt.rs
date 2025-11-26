@@ -19,6 +19,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tracing::{debug, info};
 
 /// RTT channel indices (must match device firmware)
+const RTT_UP_CHANNEL_DEFMT: usize = 0; // Device -> Host (defmt logs)
 const RTT_UP_CHANNEL_ERGOT: usize = 1; // Device -> Host (ergot data)
 const RTT_DOWN_CHANNEL_ERGOT: usize = 0; // Host -> Device (ergot data)
 
@@ -241,6 +242,12 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<Transpo
         }
 
         // Verify required channels exist
+        if rtt.up_channel(RTT_UP_CHANNEL_DEFMT).is_none() {
+            return Err(anyhow!(
+                "RTT up channel {} (defmt) not found. Device may not be running or RTT not initialized.",
+                RTT_UP_CHANNEL_DEFMT
+            ));
+        }
         if rtt.up_channel(RTT_UP_CHANNEL_ERGOT).is_none() {
             return Err(anyhow!(
                 "RTT up channel {} (ergot) not found. Device may not be running or RTT not initialized.",
@@ -257,18 +264,27 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<Transpo
 
     let state = Arc::new(Mutex::new(RttState { session }));
 
+    // Ergot data reader (channel 1)
     let reader = RttReader {
         state: state.clone(),
         channel_idx: RTT_UP_CHANNEL_ERGOT,
     };
 
+    // Ergot data writer (down channel 0)
     let writer = RttWriter {
-        state,
+        state: state.clone(),
         channel_idx: RTT_DOWN_CHANNEL_ERGOT,
+    };
+
+    // Defmt reader (channel 0)
+    let defmt_reader = RttReader {
+        state,
+        channel_idx: RTT_UP_CHANNEL_DEFMT,
     };
 
     Ok(Transport {
         reader: Box::new(reader),
         writer: Box::new(writer),
+        defmt_reader: Some(Box::new(defmt_reader)),
     })
 }
