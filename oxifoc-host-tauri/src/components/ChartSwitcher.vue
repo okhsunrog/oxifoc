@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import TimeChartStream from './TimeChartStream.vue'
+import EChartsPlot from './charts/EChartsPlot.vue'
 import { useStreamStore } from '../stores/streamStore'
 
-const windowMs = ref(20000)
+const windowMs = ref(2000)
 const windowSeconds = computed(() => windowMs.value / 1000)
 
 const streamStore = useStreamStore()
@@ -32,6 +32,6 @@ const { approxUpdateHz } = storeToRefs(streamStore)
       <span class="w-14 text-right font-mono text-sm">{{ windowSeconds.toFixed(1) }}s</span>
     </div>
 
-    <TimeChartStream :windowMs="windowMs" />
+    <EChartsPlot :windowMs="windowMs" />
   </div>
 </template>

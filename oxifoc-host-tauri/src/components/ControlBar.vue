@@ -15,13 +15,13 @@ const isLoading = ref(false)
 // Format VBUS voltage (millivolts to volts)
 const vbusVolts = computed(() => {
   if (!latestSample.value) return '—'
-  return (latestSample.value.vbusMv / 1000).toFixed(2)
+  return (latestSample.value.raw.vbusMv / 1000).toFixed(2)
 })
 
 // Format FET temperature (0.1°C units to °C)
 const fetTempC = computed(() => {
   if (!latestSample.value) return '—'
-  return (latestSample.value.fetTempCX10 / 10).toFixed(1)
+  return (latestSample.value.raw.fetTempCX10 / 10).toFixed(1)
 })
 
 const startMotor = async () => {
