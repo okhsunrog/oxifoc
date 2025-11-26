@@ -98,12 +98,7 @@ Uses **tauri-specta** for automatic bindings:
 
 ### TimeChart Requirements
 
-**CRITICAL**: This project requires the GitHub version of TimeChart:
-```json
-"timechart": "github:huww98/TimeChart"
-```
-
-DO NOT use npm `timechart@0.5.2` - it lacks DataPointsBuffer mutation tracking and breaks after ~40 seconds.
+Use the npm beta series (`timechart@1.0.0-beta.10` or later). Older npm `0.5.x` lacks DataPointsBuffer mutation tracking and will break under sustained streaming.
 
 ## Configuration
 

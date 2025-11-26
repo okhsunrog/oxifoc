@@ -4,14 +4,8 @@
  *
  * CRITICAL REQUIREMENTS:
  * =======================
- * This component REQUIRES the GitHub version of TimeChart (1.0.0-beta or later),
- * NOT the npm package (0.5.2). The npm version lacks DataPointsBuffer mutation tracking.
- *
- * In package.json, use:
- *   "timechart": "github:huww98/TimeChart"
- *
- * DO NOT use:
- *   "timechart": "^0.5.2"  // This version breaks after ~40 seconds!
+ * This component REQUIRES TimeChart 1.0.0-beta or later (npm package).
+ * Older npm 0.5.x versions lack DataPointsBuffer mutation tracking and break after sustained streaming.
  *
  * DATA FORMAT:
  * ------------
