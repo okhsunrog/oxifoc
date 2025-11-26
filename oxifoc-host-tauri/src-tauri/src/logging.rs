@@ -1,11 +1,43 @@
-use serde::Serialize;
-use tauri::{AppHandle, Emitter}; // Added Manager for potential future use
-use tracing_subscriber::{prelude::*, EnvFilter};
+use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+use tauri::{AppHandle, Emitter};
+use tracing_subscriber::{
+    filter::LevelFilter,
+    layer::SubscriberExt,
+    reload::{self, Handle},
+    util::SubscriberInitExt,
+    EnvFilter, Registry,
+};
 
 // Define the event structure for sending logs to the frontend
 #[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
 pub struct LogEvent {
     pub message: String,
+}
+
+/// Log level enum for frontend/backend communication
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Off,
+}
+
+impl LogLevel {
+    fn to_level_filter(self) -> LevelFilter {
+        match self {
+            LogLevel::Trace => LevelFilter::TRACE,
+            LogLevel::Debug => LevelFilter::DEBUG,
+            LogLevel::Info => LevelFilter::INFO,
+            LogLevel::Warn => LevelFilter::WARN,
+            LogLevel::Error => LevelFilter::ERROR,
+            LogLevel::Off => LevelFilter::OFF,
+        }
+    }
 }
 
 // Custom writer that forwards logs to the Tauri frontend via events
@@ -38,30 +70,141 @@ impl std::io::Write for TauriWriter {
     }
 }
 
+// Global state for filter reload handles
+struct FilterHandles {
+    host_level: LogLevel,
+    device_level: LogLevel,
+    reload_handle: Handle<EnvFilter, Registry>,
+}
+
+static FILTER_HANDLES: OnceLock<std::sync::Mutex<FilterHandles>> = OnceLock::new();
+
+/// Build an EnvFilter based on current log levels
+fn build_filter(host_level: LogLevel, device_level: LogLevel) -> EnvFilter {
+    let host_filter = host_level.to_level_filter();
+    let device_filter = device_level.to_level_filter();
+
+    // Start with environment variable overrides
+    let mut filter = EnvFilter::from_default_env();
+
+    // Add host-related directives
+    if host_filter != LevelFilter::OFF {
+        filter = filter
+            .add_directive(
+                format!("oxifoc_host_tauri_lib={}", host_filter)
+                    .parse()
+                    .unwrap(),
+            )
+            .add_directive(format!("oxifoc_host_lib={}", host_filter).parse().unwrap());
+    }
+
+    // Add device directive
+    if device_filter != LevelFilter::OFF {
+        filter = filter.add_directive(format!("device={}", device_filter).parse().unwrap());
+    }
+
+    // Limit noisy USB enumeration crates to info level max
+    filter = filter
+        .add_directive("nusb=info".parse().unwrap())
+        .add_directive("probe_rs=info".parse().unwrap());
+
+    // Suppress some framework noise
+    filter = filter
+        .add_directive("webview=warn".parse().unwrap())
+        .add_directive("tauri=info".parse().unwrap())
+        .add_directive("tao=warn".parse().unwrap())
+        .add_directive("wry=warn".parse().unwrap());
+
+    // Catch-all based on the more verbose of the two levels
+    let catch_all = std::cmp::max(host_filter, device_filter);
+    if catch_all != LevelFilter::OFF {
+        filter = filter.add_directive(catch_all.into());
+    }
+
+    filter
+}
+
+/// Set the host log level at runtime
+pub fn set_host_log_level(level: LogLevel) -> Result<(), String> {
+    let handles = FILTER_HANDLES
+        .get()
+        .ok_or("Logging not initialized")?
+        .lock()
+        .map_err(|e| e.to_string())?;
+
+    let mut handles = handles;
+    handles.host_level = level;
+
+    let new_filter = build_filter(handles.host_level, handles.device_level);
+    handles
+        .reload_handle
+        .reload(new_filter)
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!("Host log level changed to {:?}", level);
+    Ok(())
+}
+
+/// Set the device log level at runtime
+pub fn set_device_log_level(level: LogLevel) -> Result<(), String> {
+    let handles = FILTER_HANDLES
+        .get()
+        .ok_or("Logging not initialized")?
+        .lock()
+        .map_err(|e| e.to_string())?;
+
+    let mut handles = handles;
+    handles.device_level = level;
+
+    let new_filter = build_filter(handles.host_level, handles.device_level);
+    handles
+        .reload_handle
+        .reload(new_filter)
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!("Device log level changed to {:?}", level);
+    Ok(())
+}
+
+/// Get current log levels
+pub fn get_log_levels() -> (LogLevel, LogLevel) {
+    FILTER_HANDLES
+        .get()
+        .and_then(|h| h.lock().ok())
+        .map(|h| (h.host_level, h.device_level))
+        .unwrap_or((LogLevel::Info, LogLevel::Info))
+}
+
 /// Initializes the tracing subscriber based on build configuration and platform.
 ///
-/// Sets up filtering and multiple writers:
+/// Sets up filtering with reload capability and multiple writers:
 /// - TauriWriter: Sends logs to the frontend via events.
 /// - Stdout (non-Android): Writes logs to the console.
 /// - Logcat (Android): Writes logs to Android's logcat.
 pub fn init_tracing(app_handle: AppHandle) {
-    // Configure the filter with different log levels based on build type
-    // Start with default environment variable settings (RUST_LOG)
-    let filter = EnvFilter::from_default_env();
-
-    // Debug build configuration (more verbose)
+    // Default log levels
     #[cfg(debug_assertions)]
-    let filter = filter
-        .add_directive("oxifoc_host_tauri_lib=trace".parse().unwrap())
-        .add_directive("webview=debug".parse().unwrap()) // Less verbose webview usually
-        .add_directive("tauri=info".parse().unwrap()) // Less verbose tauri usually
-        .add_directive("debug".parse().unwrap()); // Catch-all for other debug logs
-
-    // Release build configuration (less verbose)
+    let (host_level, device_level) = (LogLevel::Debug, LogLevel::Trace);
     #[cfg(not(debug_assertions))]
-    let filter = filter
-        .add_directive("oxifoc_host_tauri_lib=info".parse().unwrap())
-        .add_directive("warn".parse().unwrap()); // Catch-all for warn and error
+    let (host_level, device_level) = (LogLevel::Info, LogLevel::Info);
+
+    // Build initial filter
+    let initial_filter = build_filter(host_level, device_level);
+
+    // Create reloadable filter layer
+    let (filter_layer, reload_handle) = reload::Layer::new(initial_filter);
+
+    // Store the reload handle globally
+    if FILTER_HANDLES
+        .set(std::sync::Mutex::new(FilterHandles {
+            host_level,
+            device_level,
+            reload_handle,
+        }))
+        .is_err()
+    {
+        panic!("Filter handles already initialized");
+    }
 
     // Create a writer factory for Tauri with ANSI colors enabled
     // Cloning app_handle is cheap (it's Arc-based)
@@ -71,24 +214,23 @@ pub fn init_tracing(app_handle: AppHandle) {
 
     #[cfg(target_os = "android")]
     {
-        // Temporarily disable logcat integration until tracing_logcat is added.
-        // Uncomment the block below once the dependency is available.
-        /*
         use tracing_logcat::{LogcatMakeWriter, LogcatTag};
-        let tag = LogcatTag::Fixed("FwupdGui".to_owned());
+
+        // Logcat layer for Android logging (viewable via `adb logcat`)
+        let tag = LogcatTag::Fixed("Oxifoc".to_owned());
         let logcat_writer = LogcatMakeWriter::new(tag).expect("Failed to initialize logcat writer");
         let logcat_layer = tracing_subscriber::fmt::layer()
-            .with_ansi(false)
+            .with_ansi(false) // Logcat doesn't support ANSI
             .with_writer(logcat_writer);
-        */
 
+        // Tauri layer for frontend terminal (with ANSI colors)
         let tauri_layer = tracing_subscriber::fmt::layer()
             .with_ansi(true)
             .with_writer(tauri_writer_factory);
 
         tracing_subscriber::registry()
-            .with(filter)
-            // .with(logcat_layer) // Re-enable when tracing_logcat is added
+            .with(filter_layer)
+            .with(logcat_layer)
             .with(tauri_layer)
             .init();
     }
@@ -107,7 +249,7 @@ pub fn init_tracing(app_handle: AppHandle) {
 
         // Combine layers and initialize the subscriber
         tracing_subscriber::registry()
-            .with(filter)
+            .with(filter_layer)
             .with(stdout_layer)
             .with(tauri_layer)
             .init();

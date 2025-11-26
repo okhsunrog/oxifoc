@@ -4,6 +4,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { useTerminalStore } from '../../stores/terminalStore'
 import { THEMES } from '../../constants/themes'
+import { commands, type LogLevel } from '../../bindings'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
 
@@ -15,6 +16,43 @@ const terminalStore = useTerminalStore()
 
 // Track component mount state to prevent duplicate initialization
 const isMounted = ref(false)
+
+// --- Log Level Controls ---
+const LOG_LEVELS: LogLevel[] = ['trace', 'debug', 'info', 'warn', 'error', 'off']
+const hostLevel = ref<LogLevel>('info')
+const deviceLevel = ref<LogLevel>('info')
+
+// Load initial log levels from backend
+const loadLogLevels = async () => {
+  try {
+    const [host, device] = await commands.getLogLevels()
+    hostLevel.value = host
+    deviceLevel.value = device
+  } catch (e) {
+    console.error('Failed to load log levels:', e)
+  }
+}
+
+// Handle log level changes
+const onHostLevelChange = async (event: Event) => {
+  const level = (event.target as HTMLSelectElement).value as LogLevel
+  try {
+    await commands.setHostLogLevel(level)
+    hostLevel.value = level
+  } catch (e) {
+    console.error('Failed to set host log level:', e)
+  }
+}
+
+const onDeviceLevelChange = async (event: Event) => {
+  const level = (event.target as HTMLSelectElement).value as LogLevel
+  try {
+    await commands.setDeviceLogLevel(level)
+    deviceLevel.value = level
+  } catch (e) {
+    console.error('Failed to set device log level:', e)
+  }
+}
 
 // --- Theme Logic ---
 const isLightTheme = ref(false)
@@ -191,12 +229,12 @@ const initializeTerminal = async () => {
     terminal.value.open(terminalElement.value)
 
     // Process existing messages
-    const messages = terminalStore.messages
-    if (messages.length > 0) {
-      lastProcessedId = Math.max(...messages.map((msg) => msg.id))
+    const msgs = terminalStore.messages
+    if (msgs.length > 0) {
+      lastProcessedId = Math.max(...msgs.map((msg) => msg.id))
 
       const currentIsLight = isLightTheme.value
-      for (const msg of messages) {
+      for (const msg of msgs) {
         let content = msg.content
         if (currentIsLight) {
           content = content.replace(dimCodeRegex, '')
@@ -338,6 +376,8 @@ onMounted(async () => {
     await nextTick()
     // Log listener is already initialized in main.ts
     await initializeTerminal()
+    // Load current log levels from backend
+    await loadLogLevels()
   } catch (error) {
     console.error('Failed to initialize terminal:', error)
   }
@@ -406,7 +446,33 @@ if (import.meta.hot) {
 <template>
   <div class="card bg-base-100 shadow-xl">
     <div class="card-body p-3 md:p-4">
-      <h2 class="card-title text-sm md:text-base mb-2">Terminal</h2>
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <h2 class="card-title text-sm md:text-base">Terminal</h2>
+        <div class="flex items-center gap-3 text-xs">
+          <label class="flex items-center gap-1">
+            <span class="opacity-70">Host:</span>
+            <select
+              class="select select-xs select-bordered"
+              :value="hostLevel"
+              @change="onHostLevelChange">
+              <option v-for="level in LOG_LEVELS" :key="level" :value="level">
+                {{ level }}
+              </option>
+            </select>
+          </label>
+          <label class="flex items-center gap-1">
+            <span class="opacity-70">Device:</span>
+            <select
+              class="select select-xs select-bordered"
+              :value="deviceLevel"
+              @change="onDeviceLevelChange">
+              <option v-for="level in LOG_LEVELS" :key="level" :value="level">
+                {{ level }}
+              </option>
+            </select>
+          </label>
+        </div>
+      </div>
       <div class="h-80 w-full overflow-hidden rounded-md border border-base-300">
         <div ref="terminalElement" class="terminal-container h-full w-full"></div>
       </div>

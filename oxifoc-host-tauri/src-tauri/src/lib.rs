@@ -1,7 +1,7 @@
 pub mod logging;
 
 use crossbeam_channel::TryRecvError;
-use logging::LogEvent;
+use logging::{LogEvent, LogLevel};
 use oxifoc_host_lib::{
     list_probes, list_serial_ports, start_host, HostCommand, HostConfig, HostRuntime, TransportType,
 };
@@ -348,6 +348,31 @@ fn get_adc_sample(state: State<OxifocState>) -> Result<Option<AdcSample>, String
     }
 }
 
+// ============================================================================
+// Logging Commands
+// ============================================================================
+
+/// Set the host log level at runtime
+#[tauri::command]
+#[specta::specta]
+fn set_host_log_level(level: LogLevel) -> Result<(), String> {
+    logging::set_host_log_level(level)
+}
+
+/// Set the device log level at runtime
+#[tauri::command]
+#[specta::specta]
+fn set_device_log_level(level: LogLevel) -> Result<(), String> {
+    logging::set_device_log_level(level)
+}
+
+/// Get current log levels (host, device)
+#[tauri::command]
+#[specta::specta]
+fn get_log_levels() -> (LogLevel, LogLevel) {
+    logging::get_log_levels()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize Specta builder
@@ -368,6 +393,10 @@ pub fn run() {
             // ADC streaming
             start_adc_stream,
             get_adc_sample,
+            // Logging
+            set_host_log_level,
+            set_device_log_level,
+            get_log_levels,
         ])
         .events(tauri_specta::collect_events![LogEvent]);
 

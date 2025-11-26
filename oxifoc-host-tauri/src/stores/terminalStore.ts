@@ -92,11 +92,10 @@ export const useTerminalStore = defineStore(
       }
     }
 
-    // Add message without deduplication
+    // Add message
     function addMessage(content: string) {
       if (!content.trim()) return
 
-      // Add the message
       messages.value.push({
         id: nextId.value++,
         content,

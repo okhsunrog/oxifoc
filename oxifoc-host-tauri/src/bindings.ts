@@ -108,6 +108,34 @@ export const commands = {
       else return { status: 'error', error: e as any }
     }
   },
+  /**
+   * Set the host log level at runtime
+   */
+  async setHostLogLevel(level: LogLevel): Promise<Result<null, string>> {
+    try {
+      return { status: 'ok', data: await TAURI_INVOKE('set_host_log_level', { level }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Set the device log level at runtime
+   */
+  async setDeviceLogLevel(level: LogLevel): Promise<Result<null, string>> {
+    try {
+      return { status: 'ok', data: await TAURI_INVOKE('set_device_log_level', { level }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Get current log levels (host, device)
+   */
+  async getLogLevels(): Promise<[LogLevel, LogLevel]> {
+    return await TAURI_INVOKE('get_log_levels')
+  },
 }
 
 /** user-defined events **/
@@ -171,6 +199,10 @@ export type DebugProbe = {
   displayName: string
 }
 export type LogEvent = { message: string }
+/**
+ * Log level enum for frontend/backend communication
+ */
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'off'
 /**
  * Serial port information for TypeScript
  */

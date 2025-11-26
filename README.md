@@ -1,6 +1,6 @@
 # Oxifoc
 
-WIP/experimental motor control (FOC) firmware for STM32G431 (B‑G431B‑ESC1) with a lightweight host tool. Device↔host communication runs over RTT using [ergot](https://github.com/jamesmunns/ergot).
+WIP/experimental motor control (FOC) firmware for STM32G431 (B‑G431B‑ESC1) with a lightweight host tool. Device↔host communication uses [ergot](https://github.com/jamesmunns/ergot) over either **Serial (UART)** or **RTT**.
 
 ## Project Structure
 
@@ -26,67 +26,16 @@ This repo uses a Cargo workspace for host crates. Device firmware is excluded (d
 
 - **Board**: B-G431B-ESC1
 - **MCU**: STM32G431CB (Cortex-M4F with hardware FPU)
-- **Debug Interface**: ST-Link
-- **Communication**: RTT (Real-Time Transfer) via probe-rs
+- **Debug Interface**: ST-Link V2 (built-in)
+- **Communication**: Serial (via ST-Link VCP) or RTT (via probe-rs)
 
-### B-G431B-ESC1 Pinout (Oxifoc)
-
-| Pin           | Signal               |
-|--------------:|----------------------|
-| VBAT          | 3V3                  |
-| PC13/TAMP/RTC | TIM1_CH1N            |
-| PC14          | CAN_TERM             |
-| PC15          | N.C.                 |
-| PF0/OSC-IN    | OSC 8MHz             |
-| PF1/OSC-OUT   | OSC 8MHz             |
-| PG10/NRST     | RESET                |
-| PA0           | VBUS                 |
-| PA1           | Curr_fdbk1_OPAmp+    |
-| PA2           | OP1_OUT              |
-| PA3           | Curr_fdbk1_OPAmp-    |
-| PA4           | BEMF1                |
-| PA5           | Curr_fdbk2_OPAmp-    |
-| PA6           | OP2_OUT              |
-| PA7           | Curr_fdbk2_OPAmp+    |
-| PC4           | BEMF2                |
-| PB0           | Curr_fdbk3_OPAmp+    |
-| PB1           | TP3                  |
-| PB2           | Curr_fdbk3_OPAmp-    |
-| VREF+         | 3V3                  |
-| VDDA          | 3V3                  |
-| PB10          | N.C.                 |
-| VDD4          | 3V3                  |
-| PB11          | BEMF3                |
-| PB12          | POTENTIOMETER        |
-| PB13          | N.C.                 |
-| PB14          | Temperature feedback |
-| PB15          | TIM1_CH3N            |
-| PC6           | STATUS               |
-| PA8           | TIM1_CH1             |
-| PA9           | TIM1_CH2             |
-| PA10          | TIM1_CH3             |
-| PA11          | CAN_RX               |
-| PA12          | TIM1_CH2N            |
-| VDD6          | 3V3                  |
-| PA13          | SWDIO                |
-| PA14          | SWCLK                |
-| PA15          | PWM                  |
-| PC10          | BUTTON               |
-| PC11          | CAN_SHDN, TP2        |
-| PB3           | USART2_TX            |
-| PB4           | USART2_RX            |
-| PB5           | GPIO_BEMF            |
-| PB6           | A+/H1                |
-| PB7           | B+/H2                |
-| PB8           | Z+/H3                |
-| PB9           | CAN_TX               |
-| VDD8          | 3V3                  |
+See [docs/hardware.md](docs/hardware.md) for detailed pinout and functional groups.
 
 ## Current Capabilities (short)
 
-- Device: button input (single/double/hold), keepalive, and device info server over ergot/RTT; defmt logs; Embassy async runtime.
-- Host: attaches via ST‑Link + RTT, streams defmt and ergot, queries DeviceInfo on connect, prints keepalives and button events.
-- Handshake: host requests DeviceInfo on startup with retry/backoff; device delays keepalives until it sees an inbound request to avoid “NoRoute” noise.
+- Device: button input (single/double/hold), keepalive, and device info server over ergot; defmt logs; Embassy async runtime. Supports Serial (UART) or RTT transport (compile-time feature).
+- Host: connects via Serial (ST-Link VCP) or RTT (probe-rs), streams defmt and ergot, queries DeviceInfo on connect.
+- Tauri GUI: desktop/mobile app with transport selection, real-time ADC charts, and log level controls.
 
 ## Building
 
@@ -94,8 +43,15 @@ This repo uses a Cargo workspace for host crates. Device firmware is excluded (d
 
 ```bash
 cd oxifoc-device
-cargo build --release
+
+# Serial transport (default, uses ST-Link VCP at 921600 baud)
+cargo build --release --features transport-uart
+
+# RTT transport (uses probe-rs RTT channels)
+cargo build --release --features transport-rtt
 ```
+
+Note: Only one transport feature can be enabled at a time.
 
 ### Host Applications
 
@@ -115,70 +71,77 @@ cargo build --manifest-path oxifoc-host-cli/Cargo.toml --release
 
 ### Flash and Run Device
 
-Using probe-rs (recommended):
+Using probe-rs:
 
 ```bash
 cd oxifoc-device
-cargo run --release
+
+# Flash with Serial transport
+cargo run --release --features transport-uart
+
+# Flash with RTT transport
+cargo run --release --features transport-rtt
 ```
 
-This will flash the firmware and start the device. The device will:
-1. Initialize RTT channels (defmt on up0, ergot on up1, ergot-down on down0)
-2. Configure button input on PC10 (active-low)
-3. Start ergot communication stack
-4. Begin periodic heartbeat and keepalive messages
+The device will initialize the selected transport and start the ergot communication stack.
+
+### Run Host Application (Tauri GUI)
+
+```bash
+cd oxifoc-host-tauri
+bun install
+bun tauri dev
+```
+
+The Tauri GUI allows selecting transport (Serial or RTT) and provides real-time ADC charts and log controls.
 
 ### Run Host Application (egui)
-
-From the repo root with the board connected via ST-Link:
 
 ```bash
 cargo run --manifest-path oxifoc-host-egui/Cargo.toml --release
 ```
 
-Note: ensure no other `probe-rs` session is running (e.g., a prior `cargo run` in `device/` or a separate `probe-rs` tool) before starting the host; the ST‑Link/RTT connection can only be owned by one process at a time.
-
-The host will:
-1. Connect to the STM32G431 via ST‑Link and attach RTT.
-2. Stream defmt logs and ergot messages.
-3. Query DeviceInfo early (with retry/backoff) and then continue.
-4. Display button events and keepalive messages.
+Note: For RTT transport, ensure no other `probe-rs` session is running (the ST‑Link/RTT connection can only be owned by one process at a time).
 
 #### Configuration (TOML)
 
 The host reads an optional `oxifoc-host.toml` in the current working directory (or from `OXIFOC_HOST_CONFIG` env var):
 
 ```toml
-# Optional: specify probe by VID:PID or VID:PID:SERIAL
-probe = "0483:374b"
+# Transport: "serial" or "rtt" (default: serial)
+transport = "serial"
 
-# Optional: override chip auto-detection
-chip = "STM32G431CBTx"
+# Serial transport options
+serial_path = "/dev/ttyACM0"  # Auto-detected if not set
+serial_baud = 921600          # Default: 921600
 
-# Optional: path to device ELF for defmt decoding
-# Defaults to device/target/thumbv7em-none-eabihf/release/oxifoc-device
+# RTT transport options
+probe = "0483:374b"           # VID:PID or VID:PID:SERIAL
+chip = "STM32G431CBUx"
+
+# Path to device ELF for defmt decoding
 elf = "/path/to/device.elf"
 
-# Optional: enable/disable channel streaming (both default to true)
+# Enable/disable channel streaming (both default to true)
 stream_defmt = true
 stream_ergot = true
 ```
 
-Fields:
-- `probe`: optional ST‑Link selector like `VID:PID` or `VID:PID:SERIAL`.
-- `chip`: optional chip override (e.g. `STM32G431CBTx`).
-- `elf`: path to device ELF with `.defmt` section used for decoding logs. Defaults to `oxifoc-device/target/thumbv7em-none-eabihf/release/oxifoc-device`.
-- `stream_defmt` / `stream_ergot`: booleans to enable/disable streams (default true).
+### Transport Details
 
-### RTT Channel Map
+**Serial (UART) transport** (`transport-uart` feature):
+- Uses ST-Link V2's built-in VCP (Virtual COM Port)
+- UART pins: PB3 (TX), PB4 (RX)
+- Default baud rate: 921600, 8N1
+- Both defmt and ergot are multiplexed over a single UART (defmt forwarded via ergot network)
 
-The device firmware configures RTT channels as follows:
-
-- **up0 "defmt"**: Debug logging output (via defmt macros)
-- **up1 "ergot"**: COBS-framed protocol messages (device→host)
-- **down0 "ergot-down"**: Reserved for host→device protocol messages
-
-Both channels operate simultaneously - defmt for debug logs, ergot for structured protocol communication. The host application reads from both channels in parallel.
+**RTT transport** (`transport-rtt` feature):
+- Uses probe-rs RTT channels via ST-Link
+- Channel map:
+  - **up0 "defmt"**: Debug logging output (via defmt macros)
+  - **up1 "ergot"**: COBS-framed protocol messages (device→host)
+  - **down0 "ergot-down"**: Host→device protocol messages
+- Separate channels for defmt and ergot (parallel streaming)
 
 ## Network Topology
 
@@ -208,19 +171,14 @@ just format     # Format all code
 
 ## Debugging
 
-You can view defmt logs either through the host application or directly via probe‑rs — use one at a time:
+View defmt logs via the host application (Tauri GUI, egui, or CLI). For RTT transport, only one process can hold the ST-Link/RTT connection at a time.
 
-- Via host: run `cargo run --manifest-path oxifoc-host-egui/Cargo.toml --release` to stream defmt and ergot together.
-- Via probe‑rs: attach with your preferred tool to view defmt output only.
-
-For device-only debugging (flash + run):
+For device-only debugging with RTT:
 
 ```bash
 cd oxifoc-device
-../scripts/probe_run.sh target/thumbv7em-none-eabihf/release/oxifoc-device
+cargo run --release --features transport-rtt
 ```
-
-If you switch to the host application afterwards, stop any running probe‑rs session first.
 
 ## Roadmap (draft)
 
