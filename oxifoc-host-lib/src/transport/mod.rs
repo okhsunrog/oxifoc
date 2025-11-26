@@ -32,14 +32,8 @@ pub enum TransportType {
 /// Configuration for transport selection.
 #[derive(Debug, Clone)]
 pub enum TransportConfig {
-    Serial {
-        path: String,
-        baud: u32,
-    },
-    Rtt {
-        probe: Option<String>,
-        chip: String,
-    },
+    Serial { path: String, baud: u32 },
+    Rtt { probe: Option<String>, chip: String },
 }
 
 /// A boxed transport that can be used for async I/O.

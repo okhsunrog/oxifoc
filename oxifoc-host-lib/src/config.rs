@@ -8,17 +8,17 @@ pub struct HostConfig {
     pub transport: Option<TransportType>,
 
     // RTT transport options
-    pub probe: Option<String>,       // e.g. "0483:374b:<serial>" or "0483:374b"
-    pub chip: Option<String>,        // e.g. "STM32G431CBTx"
+    pub probe: Option<String>, // e.g. "0483:374b:<serial>" or "0483:374b"
+    pub chip: Option<String>,  // e.g. "STM32G431CBTx"
 
     // Serial transport options
     pub serial_path: Option<String>, // e.g. "/dev/ttyACM0"
     pub serial_baud: Option<u32>,    // e.g. 921600
 
     // Common options
-    pub elf: Option<String>,         // path to device ELF with .defmt
-    pub stream_defmt: Option<bool>,  // default: true
-    pub stream_ergot: Option<bool>,  // default: true
+    pub elf: Option<String>,        // path to device ELF with .defmt
+    pub stream_defmt: Option<bool>, // default: true
+    pub stream_ergot: Option<bool>, // default: true
 }
 
 impl HostConfig {
