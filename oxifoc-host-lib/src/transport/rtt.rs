@@ -36,14 +36,14 @@ impl RttState {
     where
         F: FnOnce(&mut probe_rs::rtt::UpChannel, &mut probe_rs::Core) -> io::Result<T>,
     {
-        let mut core = self.session.core(0).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("Failed to get core: {}", e))
-        })?;
+        let mut core = self
+            .session
+            .core(0)
+            .map_err(|e| io::Error::other(format!("Failed to get core: {}", e)))?;
 
         // Re-attach to RTT each time (this is inefficient but avoids borrow issues)
-        let mut rtt = Rtt::attach_region(&mut core, &ScanRegion::Ram).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("Failed to attach RTT: {}", e))
-        })?;
+        let mut rtt = Rtt::attach_region(&mut core, &ScanRegion::Ram)
+            .map_err(|e| io::Error::other(format!("Failed to attach RTT: {}", e)))?;
 
         let channel = rtt.up_channel(channel_up).ok_or_else(|| {
             io::Error::new(
@@ -59,13 +59,13 @@ impl RttState {
     where
         F: FnOnce(&mut probe_rs::rtt::DownChannel, &mut probe_rs::Core) -> io::Result<T>,
     {
-        let mut core = self.session.core(0).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("Failed to get core: {}", e))
-        })?;
+        let mut core = self
+            .session
+            .core(0)
+            .map_err(|e| io::Error::other(format!("Failed to get core: {}", e)))?;
 
-        let mut rtt = Rtt::attach_region(&mut core, &ScanRegion::Ram).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("Failed to attach RTT: {}", e))
-        })?;
+        let mut rtt = Rtt::attach_region(&mut core, &ScanRegion::Ram)
+            .map_err(|e| io::Error::other(format!("Failed to attach RTT: {}", e)))?;
 
         let channel = rtt.down_channel(channel_down).ok_or_else(|| {
             io::Error::new(
@@ -97,7 +97,7 @@ impl AsyncRead for RttReader {
             let unfilled = buf.initialize_unfilled();
             channel
                 .read(core, unfilled)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                .map_err(|e| io::Error::other(e.to_string()))
         });
 
         match result {
@@ -137,7 +137,7 @@ impl AsyncWrite for RttWriter {
         let result = state.with_rtt_down(channel_idx, |channel, core| {
             channel
                 .write(core, buf)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                .map_err(|e| io::Error::other(e.to_string()))
         });
 
         Poll::Ready(result)
