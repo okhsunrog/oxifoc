@@ -1,4 +1,5 @@
 pub mod config;
+pub mod transport;
 
 use anyhow::{Context, Result};
 use cobs_acc::{CobsAccumulator, FeedResult};
@@ -27,10 +28,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
-use tokio_serial::SerialPortBuilderExt;
 use tracing::{error, info};
+use transport::Transport;
 
 pub use config::HostConfig;
+pub use transport::{TransportConfig, TransportType};
 
 pub fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -108,23 +110,17 @@ async fn backend_main(
 ) -> Result<()> {
     const ERGOT_MTU: u16 = 512;
 
-    let serial_path = cfg.serial_path();
-    let baud = cfg.serial_baud();
-
-    info!(
-        "Oxifoc Host backend - USART2 over ST-Link VCP (serial={}, baud={})",
-        serial_path, baud
-    );
+    let transport_type = cfg.transport_type();
+    info!("Oxifoc Host backend - transport: {:?}", transport_type);
 
     if !cfg.stream_ergot() {
         info!("stream_ergot disabled in config; backend not starting transport");
         return Ok(());
     }
 
-    let port = tokio_serial::new(serial_path.clone(), baud)
-        .open_native_async()
-        .with_context(|| format!("Failed to open serial port {}", serial_path))?;
-    let (mut serial_rx, mut serial_tx) = tokio::io::split(port);
+    let transport_config = cfg.transport_config()?;
+    let transport = Transport::new(transport_config).await?;
+    let (mut transport_rx, mut transport_tx) = (transport.reader, transport.writer);
 
     type EdgeProfile = DirectEdge<TokioSerialInterface>;
     type EdgeStack = ArcNetStack<CriticalSectionRawMutex, EdgeProfile>;
@@ -146,9 +142,9 @@ async fn backend_main(
             let mut cobs_acc = CobsAccumulator::new_boxslice((ERGOT_MTU as usize) + 64);
             let mut net_id = Some(1u16);
             loop {
-                match serial_rx.read(&mut buf).await {
+                match transport_rx.read(&mut buf).await {
                     Ok(0) => {
-                        error!("Serial port closed");
+                        error!("Transport closed");
                         connected_flag.store(false, Ordering::Relaxed);
                         break;
                     }
@@ -167,7 +163,7 @@ async fn backend_main(
                         }
                     }
                     Err(e) => {
-                        error!("Serial read error: {:?}", e);
+                        error!("Transport read error: {:?}", e);
                         connected_flag.store(false, Ordering::Relaxed);
                         break;
                     }
@@ -189,8 +185,8 @@ async fn backend_main(
                     continue;
                 }
 
-                if let Err(e) = serial_tx.write_all(&frame[..len]).await {
-                    error!("Serial write error: {:?}", e);
+                if let Err(e) = transport_tx.write_all(&frame[..len]).await {
+                    error!("Transport write error: {:?}", e);
                     connected_flag.store(false, Ordering::Relaxed);
                     frame.release(len);
                     break;

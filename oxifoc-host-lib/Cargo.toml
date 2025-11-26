@@ -10,6 +10,9 @@ ergot = { path = "../ergot/crates/ergot", features = ["tokio-std", "tokio-serial
 tokio = { workspace = true }
 tokio-serial = "5.4.4"
 
+# RTT transport via probe-rs
+probe-rs = "0.28"
+
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-log = "0.2"
