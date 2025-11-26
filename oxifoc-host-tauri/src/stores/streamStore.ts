@@ -4,18 +4,40 @@ import { computed, ref, shallowRef } from 'vue'
 import { commands, type AdcSample } from '../bindings'
 import { error as logError } from '@tauri-apps/plugin-log'
 
-const RETENTION_SAMPLES = 1500 // Keep ~25 seconds at 60Hz
+const RETENTION_MS = 25_000 // Must be >= max window size (20s) + buffer
 const RATE_SAMPLE_WINDOW = 120
 
+// ADC configuration for normalization
+const ADC_MIDPOINT = 2048 // 12-bit ADC center
+const ADC_SCALE = 2048 // Scale factor for normalization
+
+/**
+ * Extended sample with client-side timestamp and normalized values.
+ * timestampMs is added when samples arrive for time-based windowing.
+ */
+export interface StreamSample {
+  timestampMs: number
+  values: [number, number, number] // Normalized phase currents (ia, ib, ic)
+  raw: AdcSample // Original sample for telemetry access
+}
+
+/**
+ * Normalize raw ADC value to -1.0 to 1.0 range.
+ * ADC values are 12-bit (0-4095), centered around 2048.
+ */
+const normalizeAdcValue = (raw: number): number => {
+  return (raw - ADC_MIDPOINT) / ADC_SCALE
+}
+
 export const useStreamStore = defineStore('stream', () => {
-  const samples = ref<AdcSample[]>([])
+  const samples = ref<StreamSample[]>([])
   const isStreaming = ref(false)
   const activeChannel = shallowRef<Channel<AdcSample> | null>(null)
   let startPromise: Promise<void> | null = null
 
   /**
    * Counter that increments with each incoming sample.
-   * Used by TimeChartStream.vue as a reliable watch target.
+   * Used as a reliable watch target for chart components.
    */
   const sampleCount = ref(0)
 
@@ -27,19 +49,29 @@ export const useStreamStore = defineStore('stream', () => {
     if (window.length < 2) return null
     const first = window[0]
     const last = window[window.length - 1]
-    // Use seq difference to calculate rate (seq increments per sample)
-    const seqDelta = last.seq - first.seq
-    if (seqDelta <= 0) return null
-    // Assuming roughly constant sample rate, estimate Hz
-    // This is an approximation since we don't have timestamps
-    return (seqDelta / (window.length - 1)) * 60 // Assuming ~60Hz base rate
+    const deltaMs = last.timestampMs - first.timestampMs
+    if (deltaMs <= 0) return null
+    return ((window.length - 1) * 1000) / deltaMs
   })
 
   const handleSample = (sample: AdcSample) => {
-    samples.value.push(sample)
+    const timestampMs = performance.now()
+    const streamSample: StreamSample = {
+      timestampMs,
+      values: [
+        normalizeAdcValue(sample.ia),
+        normalizeAdcValue(sample.ib),
+        normalizeAdcValue(sample.ic),
+      ],
+      raw: sample,
+    }
+
+    samples.value.push(streamSample)
     sampleCount.value++
-    // Trim old samples based on count (not timestamp, since AdcSample has no timestamp)
-    while (samples.value.length > RETENTION_SAMPLES) {
+
+    // Trim old samples based on timestamp
+    const cutoff = timestampMs - RETENTION_MS
+    while (samples.value.length && samples.value[0].timestampMs < cutoff) {
       samples.value.shift()
     }
   }
@@ -102,10 +134,13 @@ export const useStreamStore = defineStore('stream', () => {
   }
 
   /**
-   * Get the most recent N samples.
+   * Get samples within a time window from the latest sample.
    */
-  const recentSamples = (count: number) => {
-    return samples.value.slice(-count)
+  const windowedSamples = (windowMs: number) => {
+    const latestTs = latestSample.value?.timestampMs
+    if (!latestTs) return [] as StreamSample[]
+    const cutoff = latestTs - windowMs
+    return samples.value.filter((sample) => sample.timestampMs >= cutoff)
   }
 
   const reset = () => {
@@ -124,7 +159,7 @@ export const useStreamStore = defineStore('stream', () => {
     checkConnection,
     waitForDevice,
     ensureStream,
-    recentSamples,
+    windowedSamples,
     reset,
   }
 })
