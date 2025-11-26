@@ -1,6 +1,13 @@
 #![no_std]
 #![no_main]
 
+// Compile-time check: only one transport can be enabled
+#[cfg(all(feature = "transport-uart", feature = "transport-rtt"))]
+compile_error!("Cannot enable both transport-uart and transport-rtt features simultaneously. Choose one transport.");
+
+#[cfg(not(any(feature = "transport-uart", feature = "transport-rtt")))]
+compile_error!("Must enable either transport-uart or transport-rtt feature.");
+
 use core::cell::RefCell;
 use core::pin::pin;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
@@ -11,14 +18,10 @@ use embassy_stm32::adc::{
     Adc, AdcChannel, AdcConfig, ConversionTrigger, Exten, InjectedAdc, RegularConversionMode,
     SampleTime,
 };
-use embassy_stm32::bind_interrupts;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
 use embassy_stm32::peripherals;
-use embassy_stm32::usart::{
-    BufferedUart, Config as UartConfig, Parity as UartParity, StopBits as UartStopBits,
-};
 use embassy_stm32::{
     interrupt,
     interrupt::typelevel::{ADC1_2, Interrupt},
@@ -27,7 +30,6 @@ use embassy_time::{Duration, Timer, with_timeout};
 use ergot::{
     Address,
     exports::bbq2::traits::coordination::cas::AtomicCoord,
-    logging::defmt_sink,
     rtt_target::{ChannelMode::*, rtt_init},
     toolkits::embedded_io_async_v0_6::{self as kit, tx_worker},
 };
@@ -41,8 +43,22 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as SyncRawMutex;
 use embassy_sync::channel;
 
+// Transport-specific imports
+#[cfg(feature = "transport-uart")]
+use embassy_stm32::bind_interrupts;
+#[cfg(feature = "transport-uart")]
+use embassy_stm32::usart::{
+    BufferedUart, Config as UartConfig, Parity as UartParity, StopBits as UartStopBits,
+};
+#[cfg(feature = "transport-uart")]
 mod usart_io;
+#[cfg(feature = "transport-uart")]
 use usart_io::{UartReader, UartWriter};
+#[cfg(feature = "transport-uart")]
+use ergot::logging::defmt_sink;
+
+#[cfg(feature = "transport-rtt")]
+use ergot::transport::rtt::{RttReader, RttWriter};
 
 mod motor;
 use motor::MotorController;
@@ -52,13 +68,21 @@ use panic_probe as _;
 
 const OUT_QUEUE_SIZE: usize = 2048;
 const MAX_PACKET_SIZE: usize = 512;
+
+// UART transport constants
+#[cfg(feature = "transport-uart")]
 const UART_BAUD: u32 = 921_600;
+#[cfg(feature = "transport-uart")]
 const UART_BUF_LEN: usize = 1024;
 
 // Type aliases for our application
 type Queue = kit::Queue<OUT_QUEUE_SIZE, AtomicCoord>;
 type Stack = kit::Stack<&'static Queue, CriticalSectionRawMutex>;
+
+#[cfg(feature = "transport-uart")]
 type RxWorker = kit::RxWorker<&'static Queue, CriticalSectionRawMutex, UartReader>;
+#[cfg(feature = "transport-rtt")]
+type RxWorker = kit::RxWorker<&'static Queue, CriticalSectionRawMutex, RttReader>;
 
 /// Statically store our outgoing packet buffer
 static OUTQ: Queue = kit::Queue::new();
@@ -69,6 +93,24 @@ static STACK: Stack = kit::new_target_stack(OUTQ.stream_producer(), MAX_PACKET_S
 /// Buffers for RX worker
 static RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
 static SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+
+/// UART buffers (only for UART transport)
+#[cfg(feature = "transport-uart")]
+static UART_TX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
+#[cfg(feature = "transport-uart")]
+static UART_RX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
+
+/// RTT defmt channel storage (for UART mode - hybrid defmt sink)
+#[cfg(feature = "transport-uart")]
+static RTT_DEFMT_UP: StaticCell<ergot::rtt_target::UpChannel> = StaticCell::new();
+
+/// RTT channel storage (for RTT transport mode)
+#[cfg(feature = "transport-rtt")]
+static RTT_DEFMT_CHANNEL: StaticCell<ergot::rtt_target::UpChannel> = StaticCell::new();
+#[cfg(feature = "transport-rtt")]
+static RTT_ERGOT_UP: StaticCell<ergot::rtt_target::UpChannel> = StaticCell::new();
+#[cfg(feature = "transport-rtt")]
+static RTT_ERGOT_DOWN: StaticCell<ergot::rtt_target::DownChannel> = StaticCell::new();
 
 /// Link status: set true after we observe an inbound host request
 static LINK_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -136,13 +178,6 @@ const VBUS_DMA_BUF_LEN: usize = 64;
 const VBUS_MEAS_BUF_LEN: usize = VBUS_DMA_BUF_LEN / 2;
 static VBUS_DMA_BUF: StaticCell<[u16; VBUS_DMA_BUF_LEN]> = StaticCell::new();
 
-/// UART buffers
-static UART_TX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
-static UART_RX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
-
-/// RTT defmt channel storage to satisfy 'static requirement for defmt sink RTT.
-static RTT_DEFMT_UP: StaticCell<ergot::rtt_target::UpChannel> = StaticCell::new();
-
 // ADC conversion constants for VBUS measurement.
 const ADC_MAX_COUNTS: u32 = 4095;
 const ADC_VREF_MV: u32 = 3300;
@@ -178,6 +213,7 @@ fn fet_temp_c_from_adc(raw: u16) -> f32 {
     temp_k - NTC_KELVIN_OFFSET
 }
 
+#[cfg(feature = "transport-uart")]
 bind_interrupts!(struct Irqs {
     USART2 => embassy_stm32::usart::BufferedInterruptHandler<peripherals::USART2>;
 });
@@ -211,16 +247,46 @@ async fn main(spawner: Spawner) {
         embassy_stm32::init(config)
     };
 
-    // Set up RTT for defmt output (RTT + network via defmt sink)
-    let channels = rtt_init! {
-        up: {
-            0: { size: 2048, mode: NoBlockSkip, name: "defmt" }
-        }
-    };
-    let defmt_up = RTT_DEFMT_UP.init(channels.up.0);
-    let defmt_consumer = defmt_sink::init_network_and_rtt(defmt_up);
+    // ========== TRANSPORT-SPECIFIC RTT INITIALIZATION ==========
 
+    // UART mode: Single RTT channel for defmt (hybrid: RTT + network forwarding)
+    #[cfg(feature = "transport-uart")]
+    let defmt_consumer = {
+        let channels = rtt_init! {
+            up: {
+                0: { size: 2048, mode: NoBlockSkip, name: "defmt" }
+            }
+        };
+        let defmt_up = RTT_DEFMT_UP.init(channels.up.0);
+        defmt_sink::init_network_and_rtt(defmt_up)
+    };
+
+    // RTT mode: Separate RTT channels for defmt and ergot transport
+    #[cfg(feature = "transport-rtt")]
+    let (rtt_rx, rtt_tx) = {
+        use ergot::logging::defmt_sink;
+        let channels = rtt_init! {
+            up: {
+                0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
+                1: { size: 2048, mode: NoBlockSkip, name: "ergot" }
+            }
+            down: {
+                0: { size: 1024, name: "ergot-down" }
+            }
+        };
+        // Initialize defmt sink (RTT only, no network forwarding)
+        let defmt_up = RTT_DEFMT_CHANNEL.init(channels.up.0);
+        defmt_sink::init_rtt(defmt_up);
+        // Store ergot RTT channels
+        let ergot_up = RTT_ERGOT_UP.init(channels.up.1);
+        let ergot_down = RTT_ERGOT_DOWN.init(channels.down.0);
+        (RttReader::new(ergot_down), RttWriter::new(ergot_up))
+    };
+
+    #[cfg(feature = "transport-uart")]
     defmt::info!("Oxifoc starting - ergot over USART2 VCP + defmt sink");
+    #[cfg(feature = "transport-rtt")]
+    defmt::info!("Oxifoc starting - ergot over RTT");
 
     // Configure OPAMPs as PGAs for phase current shunts.
     //
@@ -323,19 +389,27 @@ async fn main(spawner: Spawner) {
         ADC1_2::enable();
     }
 
-    // Configure USART2 on ST-LINK VCP (PB3 TX, PB4 RX)
-    let mut uart_cfg = UartConfig::default();
-    uart_cfg.baudrate = UART_BAUD;
-    uart_cfg.parity = UartParity::ParityNone;
-    uart_cfg.stop_bits = UartStopBits::STOP1;
-    let tx_buf = UART_TX_BUF.init([0u8; UART_BUF_LEN]);
-    let rx_buf = UART_RX_BUF.init([0u8; UART_BUF_LEN]);
-    let uart = BufferedUart::new(p.USART2, p.PB4, p.PB3, tx_buf, rx_buf, Irqs, uart_cfg)
-        .expect("USART2 init failed");
-    let (uart_tx, uart_rx) = uart.split();
+    // ========== TRANSPORT-SPECIFIC SETUP ==========
 
-    // Create RX worker for incoming ergot messages (it will set interface to Inactive, then Active after first frame)
-    let rx_worker = RxWorker::new_target(&STACK, UartReader::new(uart_rx), ());
+    // UART mode: Configure USART2 on ST-LINK VCP (PB3 TX, PB4 RX)
+    #[cfg(feature = "transport-uart")]
+    let (uart_tx, rx_worker) = {
+        let mut uart_cfg = UartConfig::default();
+        uart_cfg.baudrate = UART_BAUD;
+        uart_cfg.parity = UartParity::ParityNone;
+        uart_cfg.stop_bits = UartStopBits::STOP1;
+        let tx_buf = UART_TX_BUF.init([0u8; UART_BUF_LEN]);
+        let rx_buf = UART_RX_BUF.init([0u8; UART_BUF_LEN]);
+        let uart = BufferedUart::new(p.USART2, p.PB4, p.PB3, tx_buf, rx_buf, Irqs, uart_cfg)
+            .expect("USART2 init failed");
+        let (uart_tx, uart_rx) = uart.split();
+        let rx_worker = RxWorker::new_target(&STACK, UartReader::new(uart_rx), ());
+        (uart_tx, rx_worker)
+    };
+
+    // RTT mode: Create RX worker using RTT channels
+    #[cfg(feature = "transport-rtt")]
+    let rx_worker = RxWorker::new_target(&STACK, rtt_rx, ());
 
     // Button: PC10, external pull-up, active-low to GND
     let button = ExtiInput::new(p.PC10, p.EXTI10, Pull::None);
@@ -356,7 +430,7 @@ async fn main(spawner: Spawner) {
         p.PB15, // Phase C low
     );
 
-    // Spawn I/O workers
+    // Spawn I/O workers (transport-specific)
     spawner.spawn(
         run_rx(
             rx_worker,
@@ -365,8 +439,15 @@ async fn main(spawner: Spawner) {
         )
         .unwrap(),
     );
-    spawner.spawn(run_tx(UartWriter::new(uart_tx)).unwrap());
-    spawner.spawn(defmt_forwarder(defmt_consumer).unwrap());
+
+    #[cfg(feature = "transport-uart")]
+    {
+        spawner.spawn(run_tx_uart(UartWriter::new(uart_tx)).unwrap());
+        spawner.spawn(defmt_forwarder(defmt_consumer).unwrap());
+    }
+
+    #[cfg(feature = "transport-rtt")]
+    spawner.spawn(run_tx_rtt(rtt_tx).unwrap());
 
     // Initialize motor command channel
     let motor_cmd_channel = MOTOR_CMD_CHANNEL.init(embassy_sync::channel::Channel::new());
@@ -423,7 +504,7 @@ async fn main(spawner: Spawner) {
     }
 }
 
-/// Worker task for incoming ergot data via USART2
+/// Worker task for incoming ergot data (transport-agnostic)
 #[embassy_executor::task]
 async fn run_rx(mut rcvr: RxWorker, recv_buf: &'static mut [u8], scratch_buf: &'static mut [u8]) {
     loop {
@@ -431,15 +512,26 @@ async fn run_rx(mut rcvr: RxWorker, recv_buf: &'static mut [u8], scratch_buf: &'
     }
 }
 
-/// Worker task for outgoing ergot data via USART2
+/// Worker task for outgoing ergot data via UART (transport-uart only)
+#[cfg(feature = "transport-uart")]
 #[embassy_executor::task]
-async fn run_tx(mut tx: UartWriter) {
+async fn run_tx_uart(mut tx: UartWriter) {
     loop {
         let _ = tx_worker(&mut tx, OUTQ.stream_consumer()).await;
     }
 }
 
-/// Forward defmt frames from the sink to ergot network
+/// Worker task for outgoing ergot data via RTT (transport-rtt only)
+#[cfg(feature = "transport-rtt")]
+#[embassy_executor::task]
+async fn run_tx_rtt(mut tx: RttWriter) {
+    loop {
+        let _ = tx_worker(&mut tx, OUTQ.stream_consumer()).await;
+    }
+}
+
+/// Forward defmt frames from the sink to ergot network (transport-uart only)
+#[cfg(feature = "transport-uart")]
 #[embassy_executor::task]
 async fn defmt_forwarder(consumer: defmt_sink::DefmtConsumer) {
     // Uses ergot helper; still required to move frames from sink queue to network.

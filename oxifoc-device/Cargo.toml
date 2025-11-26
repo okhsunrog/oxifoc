@@ -9,6 +9,13 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[features]
+default = ["transport-uart"]
+# UART over ST-Link VCP: ergot over serial, defmt over RTT + network forwarding
+transport-uart = ["ergot/defmt-sink-network"]
+# RTT via debug probe: ergot over RTT channels, defmt over separate RTT channel
+transport-rtt = ["ergot/rtt"]
+
 [dependencies]
 # Embassy dependencies
 embassy-executor = { version = "0.9.1", features = ["arch-cortex-m", "executor-thread", "executor-interrupt"] }
@@ -34,7 +41,14 @@ mutex = "1.0.2"
 
 # Local dependencies
 oxifoc-protocol = { path = "../protocol" }
-ergot = { path = "../ergot/crates/ergot", default-features = false, features = ["embedded-io-async-v0_6", "disable-cache-padding", "defmt-sink-network", "defmt-sink-rtt"] }
+# Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
+# transport-uart adds: defmt-sink-network (for network forwarding)
+# transport-rtt adds: rtt (for RTT transport wrappers)
+ergot = { path = "../ergot/crates/ergot", default-features = false, features = [
+    "embedded-io-async-v0_6",
+    "disable-cache-padding",
+    "defmt-sink-rtt",
+] }
 
 static_cell = "2.1"
 embedded-io-async = "0.6"
