@@ -11,7 +11,7 @@ elf = "oxifoc-device/target/thumbv7em-none-eabihf/release/oxifoc-device"
 
 # Serial transport (ST-LINK VCP -> USART2)
 serial_path = "/dev/ttyACM0"
-serial_baud = 921600
+serial_baud = 115200
 
 # Toggle streaming
 stream_defmt = true

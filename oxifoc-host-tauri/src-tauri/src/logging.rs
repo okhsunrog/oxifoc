@@ -115,6 +115,9 @@ fn build_filter(host_level: LogLevel, device_level: LogLevel) -> EnvFilter {
         .add_directive("tao=warn".parse().unwrap())
         .add_directive("wry=warn".parse().unwrap());
 
+    // Suppress noisy ergot protocol debug logs
+    filter = filter.add_directive("ergot=warn".parse().unwrap());
+
     // Catch-all based on the more verbose of the two levels
     let catch_all = std::cmp::max(host_filter, device_filter);
     if catch_all != LevelFilter::OFF {
