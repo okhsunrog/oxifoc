@@ -19,7 +19,6 @@ use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_protocol::{
     AdcSample, AdcSampleEndpoint, ButtonEndpoint, ButtonEvent, MotorCommand, MotorEndpoint,
-    TelemetryConfig, TelemetryConfigEndpoint,
 };
 use std::fs;
 use std::path::Path;
@@ -50,10 +49,14 @@ pub fn init_tracing() {
         .try_init();
 }
 
+/// Default ADC polling rate in Hz
+pub const DEFAULT_ADC_POLL_RATE_HZ: u32 = 60;
+
 #[derive(Clone)]
 pub enum HostCommand {
     Motor(MotorCommand),
-    SetTelemetryRate(u8),
+    /// Set ADC polling rate (0 = disabled, 1-255 = rate in Hz)
+    SetAdcPollRate(u8),
 }
 
 pub struct HostRuntime {
@@ -262,25 +265,74 @@ async fn backend_main(
         }
     });
 
+    // ADC polling task - polls device at configurable rate
+    let adc_poll_rate = Arc::new(std::sync::atomic::AtomicU8::new(
+        DEFAULT_ADC_POLL_RATE_HZ as u8,
+    ));
     tokio::spawn({
+        use ergot::Address;
         let stack = stack.clone();
         let adc_tx = adc_tx.clone();
+        let connected_flag = connected_flag.clone();
+        let poll_rate = adc_poll_rate.clone();
+        let token = cancel_token.clone();
         async move {
-            let server = stack
-                .endpoints()
-                .bounded_server::<AdcSampleEndpoint, 64>(Some("adc"));
-            let server = pin!(server);
-            let mut h = server.attach();
+            let device_addr = Address {
+                network_id: 1,
+                node_id: 2,
+                port_id: 0,
+            };
+
+            // Wait for device connection before starting to poll
+            while !connected_flag.load(Ordering::Relaxed) {
+                tokio::select! {
+                    _ = token.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+
+            tracing::info!(
+                "ADC polling started at {}Hz",
+                poll_rate.load(Ordering::Relaxed)
+            );
+
             loop {
-                let _ = h
-                    .serve(|sample: &AdcSample| {
-                        let s = sample.clone();
-                        let adc_tx = adc_tx.clone();
-                        async move {
-                            let _ = adc_tx.send(s);
+                let rate_hz = poll_rate.load(Ordering::Relaxed);
+                if rate_hz == 0 {
+                    // Polling disabled - check again after a delay
+                    tokio::select! {
+                        _ = token.cancelled() => break,
+                        _ = tokio::time::sleep(Duration::from_millis(100)) => continue,
+                    }
+                }
+
+                let interval = Duration::from_micros(1_000_000 / rate_hz as u64);
+                let mut ticker = tokio::time::interval(interval);
+
+                // Poll at current rate until rate changes or cancelled
+                let current_rate = rate_hz;
+                while poll_rate.load(Ordering::Relaxed) == current_rate {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            tracing::info!("ADC polling shutting down");
+                            return;
                         }
-                    })
-                    .await;
+                        _ = ticker.tick() => {
+                            // Request ADC sample from device
+                            let fut = stack
+                                .endpoints()
+                                .request::<AdcSampleEndpoint>(device_addr, &(), Some("adc"));
+                            match tokio::time::timeout(Duration::from_millis(100), fut).await {
+                                Ok(Ok(sample)) => {
+                                    let _ = adc_tx.send(sample);
+                                }
+                                Ok(Err(_)) | Err(_) => {
+                                    // Request failed or timed out - continue polling
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     });
@@ -288,6 +340,7 @@ async fn backend_main(
     tokio::spawn({
         use ergot::Address;
         let stack = stack.clone();
+        let poll_rate = adc_poll_rate.clone();
         async move {
             let device_addr = Address {
                 network_id: 1,
@@ -305,24 +358,10 @@ async fn backend_main(
                             tracing::warn!("Motor command failed: {:?}", e);
                         }
                     }
-                    HostCommand::SetTelemetryRate(rate_hz) => {
-                        let cfg = TelemetryConfig { rate_hz };
-                        let res = stack
-                            .endpoints()
-                            .request::<TelemetryConfigEndpoint>(
-                                device_addr,
-                                &cfg,
-                                Some("telemetry_config"),
-                            )
-                            .await;
-                        match res {
-                            Ok(response) => {
-                                tracing::info!("Telemetry rate set to {}Hz", response.rate_hz);
-                            }
-                            Err(e) => {
-                                tracing::warn!("Set telemetry rate failed: {:?}", e);
-                            }
-                        }
+                    HostCommand::SetAdcPollRate(rate_hz) => {
+                        let old_rate = poll_rate.load(Ordering::Relaxed);
+                        poll_rate.store(rate_hz, Ordering::Relaxed);
+                        tracing::info!("ADC poll rate changed: {}Hz -> {}Hz", old_rate, rate_hz);
                     }
                 }
             }
@@ -371,9 +410,12 @@ async fn backend_main(
     if cfg.stream_defmt() {
         let default_elf = {
             // Check CARGO_TARGET_DIR first (for custom target directories)
-            let target_dir = std::env::var("CARGO_TARGET_DIR").ok().map(std::path::PathBuf::from).unwrap_or_else(|| {
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxifoc-device/target")
-            });
+            let target_dir = std::env::var("CARGO_TARGET_DIR")
+                .ok()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxifoc-device/target")
+                });
             let p = target_dir.join("thumbv7em-none-eabihf/release/oxifoc-device");
             p.to_string_lossy().into_owned()
         };

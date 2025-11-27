@@ -53,7 +53,7 @@ pub struct MotorStatus {
 // Host -> Device motor control endpoint (command in, status out)
 endpoint!(MotorEndpoint, MotorCommand, MotorStatus, "cmd/motor");
 
-/// Raw ADC sample triplet (phase currents)
+/// Raw ADC sample (phase currents, voltage, temperature)
 #[derive(Clone, Schema, Serialize, Deserialize, Debug)]
 pub struct AdcSample {
     pub ia: u16,
@@ -67,19 +67,5 @@ pub struct AdcSample {
     pub seq: u32,
 }
 
-endpoint!(AdcSampleEndpoint, AdcSample, (), "stream/adc");
-
-/// Telemetry configuration
-#[derive(Clone, Schema, Serialize, Deserialize, Debug)]
-pub struct TelemetryConfig {
-    /// Telemetry rate in Hz (0 = disabled, 1-255 = rate)
-    pub rate_hz: u8,
-}
-
-// Telemetry config endpoint (echoes current config)
-endpoint!(
-    TelemetryConfigEndpoint,
-    TelemetryConfig,
-    TelemetryConfig,
-    "cfg/telemetry"
-);
+// Host polls device for current ADC sample (request-response)
+endpoint!(AdcSampleEndpoint, (), AdcSample, "req/adc");
