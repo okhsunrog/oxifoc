@@ -73,6 +73,11 @@ assign_resources! {
         pa10: PA10, // Phase C high
         pb15: PB15, // Phase C low
     }
+    hall: HallResources {
+        pb6: PB6,   // H1 / Encoder A+
+        pb7: PB7,   // H2 / Encoder B+
+        pb8: PB8,   // H3 / Encoder Z+
+    }
 }
 
 // Use panic-probe for panics
@@ -403,6 +408,13 @@ async fn main(spawner: Spawner) {
 
     // Initialize motor controller with TIM1 and motor pins
     let r = split_resources!(p);
+
+    // Initialize Hall sensor inputs with pull-ups
+    let hall_h1 = Input::new(r.hall.pb6, Pull::Up);
+    let hall_h2 = Input::new(r.hall.pb7, Pull::Up);
+    let hall_h3 = Input::new(r.hall.pb8, Pull::Up);
+    defmt::info!("Hall sensors configured: H1=PB6, H2=PB7, H3=PB8");
+
     let motor_ctrl = MotorController::init(r.motor);
 
     // Spawn I/O workers (transport-specific)
