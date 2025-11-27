@@ -6,7 +6,6 @@ target/
 *.pdb
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo
