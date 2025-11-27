@@ -49,6 +49,8 @@ struct ConnectedState {
     duty: f32,
     samples: VecDeque<AdcSample>,
     max_samples: usize,
+    window_samples: usize,
+    show_numeric: bool,
 }
 
 /// Application state machine
@@ -243,8 +245,10 @@ impl OxifocApp {
             self.state = AppState::Connected(ConnectedState {
                 runtime,
                 duty: 10.0,
-                samples: VecDeque::with_capacity(1024),
-                max_samples: 1024,
+                samples: VecDeque::with_capacity(2000),
+                max_samples: 2000,
+                window_samples: 120, // ~2 seconds at 60Hz
+                show_numeric: true,
             });
         }
     }
@@ -309,51 +313,129 @@ impl OxifocApp {
                 }
             });
 
-            if let Some(last) = connected.samples.back() {
-                ui.label(format!("Vbus: {:.2} V", last.vbus_mv as f32 / 1000.0));
-                ui.label(format!(
-                    "FET temp: {:.1} °C",
-                    last.fet_temp_c_x10 as f32 / 10.0
-                ));
-            }
+            ui.horizontal(|ui| {
+                ui.label(format!("Samples: {}", connected.samples.len()));
+                ui.separator();
+                ui.label("View:");
+                ui.checkbox(&mut connected.show_numeric, "Numeric");
+                ui.separator();
+                ui.label("Window:");
+                ui.add(
+                    egui::Slider::new(&mut connected.window_samples, 30..=1000).suffix(" samples"),
+                );
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let points_ia: PlotPoints = connected
-                .samples
-                .iter()
-                .map(|s| [s.seq as f64, s.ia as f64])
-                .collect();
-            let points_ib: PlotPoints = connected
-                .samples
-                .iter()
-                .map(|s| [s.seq as f64, s.ib as f64])
-                .collect();
-            let points_ic: PlotPoints = connected
-                .samples
-                .iter()
-                .map(|s| [s.seq as f64, s.ic as f64])
-                .collect();
-            let points_vbus: PlotPoints = connected
-                .samples
-                .iter()
-                .map(|s| [s.seq as f64, s.vbus_mv as f64])
-                .collect();
-            let points_temp: PlotPoints = connected
-                .samples
-                .iter()
-                .map(|s| [s.seq as f64, s.fet_temp_c_x10 as f64 / 10.0])
-                .collect();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // Numeric display
+                if connected.show_numeric
+                    && let Some(last) = connected.samples.back()
+                {
+                    ui.group(|ui| {
+                        ui.heading("Real-Time Telemetry");
+                        ui.add_space(10.0);
 
-            Plot::new("adc_plot")
-                .legend(egui_plot::Legend::default())
-                .show(ui, |plot_ui| {
-                    plot_ui.line(Line::new("ia", points_ia));
-                    plot_ui.line(Line::new("ib", points_ib));
-                    plot_ui.line(Line::new("ic", points_ic));
-                    plot_ui.line(Line::new("vbus_mv", points_vbus));
-                    plot_ui.line(Line::new("fet_temp_c", points_temp));
+                        // Phase Currents (raw ADC)
+                        ui.label(egui::RichText::new("Phase Currents (Raw ADC)").strong());
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Phase A: {}", last.ia));
+                            ui.separator();
+                            ui.label(format!("Phase B: {}", last.ib));
+                            ui.separator();
+                            ui.label(format!("Phase C: {}", last.ic));
+                        });
+                        ui.add_space(10.0);
+
+                        // Voltage & Temperature
+                        ui.label(egui::RichText::new("Voltage & Temperature").strong());
+                        ui.horizontal(|ui| {
+                            ui.label(format!("DC Bus: {:.2} V", last.vbus_mv as f32 / 1000.0));
+                            ui.separator();
+                            ui.label(format!(
+                                "FET Temp: {:.1} °C",
+                                last.fet_temp_c_x10 as f32 / 10.0
+                            ));
+                        });
+                        ui.add_space(10.0);
+
+                        // Sequence
+                        ui.label(format!("Sequence: {}", last.seq));
+                    });
+                    ui.add_space(10.0);
+                }
+
+                // Get windowed samples
+                let window_start = connected
+                    .samples
+                    .len()
+                    .saturating_sub(connected.window_samples);
+                let windowed: Vec<&AdcSample> =
+                    connected.samples.iter().skip(window_start).collect();
+
+                // Phase Currents Plot
+                ui.group(|ui| {
+                    ui.heading("Phase Currents");
+                    let points_ia: PlotPoints = windowed
+                        .iter()
+                        .map(|s| [s.seq as f64, s.ia as f64])
+                        .collect();
+                    let points_ib: PlotPoints = windowed
+                        .iter()
+                        .map(|s| [s.seq as f64, s.ib as f64])
+                        .collect();
+                    let points_ic: PlotPoints = windowed
+                        .iter()
+                        .map(|s| [s.seq as f64, s.ic as f64])
+                        .collect();
+
+                    Plot::new("phase_currents_plot")
+                        .height(200.0)
+                        .legend(egui_plot::Legend::default())
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(
+                                Line::new("Phase A", points_ia)
+                                    .color(egui::Color32::from_rgb(34, 211, 238)),
+                            );
+                            plot_ui.line(
+                                Line::new("Phase B", points_ib)
+                                    .color(egui::Color32::from_rgb(139, 92, 246)),
+                            );
+                            plot_ui.line(
+                                Line::new("Phase C", points_ic)
+                                    .color(egui::Color32::from_rgb(249, 115, 22)),
+                            );
+                        });
                 });
+                ui.add_space(10.0);
+
+                // Voltage & Temperature Plot
+                ui.group(|ui| {
+                    ui.heading("Voltage & Temperature");
+                    let points_vbus: PlotPoints = windowed
+                        .iter()
+                        .map(|s| [s.seq as f64, s.vbus_mv as f64 / 1000.0])
+                        .collect();
+                    let points_temp: PlotPoints = windowed
+                        .iter()
+                        .map(|s| [s.seq as f64, s.fet_temp_c_x10 as f64 / 10.0])
+                        .collect();
+
+                    Plot::new("voltage_temp_plot")
+                        .height(200.0)
+                        .legend(egui_plot::Legend::default())
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(
+                                Line::new("Voltage (V)", points_vbus)
+                                    .color(egui::Color32::from_rgb(234, 179, 8)),
+                            );
+                            plot_ui.line(
+                                Line::new("Temperature (°C)", points_temp)
+                                    .color(egui::Color32::from_rgb(239, 68, 68)),
+                            );
+                        });
+                });
+            });
         });
 
         ctx.request_repaint_after(Duration::from_millis(16));
