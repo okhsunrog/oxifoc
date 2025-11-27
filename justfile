@@ -24,20 +24,16 @@ egui:
 cli *ARGS:
     cargo run -p oxifoc-host-cli -- {{ARGS}}
 
-# Format all Rust code
+# Format all code (Rust + TypeScript, excludes ergot)
 fmt:
     cargo fmt --all
-
-# Format frontend code
-fmt-ts:
+    cd oxifoc-device && cargo fmt
     cd oxifoc-host-tauri && bun format
-
-# Format all code (Rust + TypeScript)
-format: fmt fmt-ts
 
 # Lint Rust code (clippy)
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
+    cd oxifoc-device && cargo clippy --all-targets -- -D warnings
 
 # Lint frontend code (eslint)
 lint-ts:
@@ -68,11 +64,11 @@ test:
 
 # Flash device firmware (release build)
 flash:
-    cd oxifoc-device && cargo flash --release --chip STM32G431CBTx
+    cd oxifoc-device && cargo run --release
 
 # Flash device firmware (debug build)
 flash-debug:
-    cd oxifoc-device && cargo flash --chip STM32G431CBTx
+    cd oxifoc-device && cargo run
 
 # Build device firmware (release)
 device:
@@ -84,8 +80,35 @@ device-debug:
 
 # Clean all build artifacts
 clean:
-    cargo clean
-    cd oxifoc-host-tauri && rm -rf dist node_modules
+    git clean -dfx
+
+# Check all Rust code (format, clippy, build, test)
+check-rust:
+    @echo "Checking Rust formatting..."
+    cargo fmt --all -- --check
+    cd oxifoc-device && cargo fmt -- --check
+    @echo "Running clippy..."
+    just clippy
+    @echo "Checking builds..."
+    cargo check --workspace
+    cd oxifoc-device && cargo check
+    @echo "Running tests..."
+    cargo test --workspace
+    @echo "✓ Rust checks passed!"
+
+# Check all TypeScript code (format, type-check, lint)
+check-ts:
+    @echo "Checking TypeScript formatting..."
+    cd oxifoc-host-tauri && bun format --check
+    @echo "Type checking TypeScript..."
+    cd oxifoc-host-tauri && bun type-check
+    @echo "Linting TypeScript..."
+    cd oxifoc-host-tauri && bun lint:check
+    @echo "✓ TypeScript checks passed!"
+
+# Run all checks (Rust + TypeScript)
+check-all: check-rust check-ts
+    @echo "✓ All checks passed!"
 
 # Full rebuild from scratch
 rebuild: clean install build-all
