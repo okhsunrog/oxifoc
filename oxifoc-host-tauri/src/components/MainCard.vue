@@ -16,7 +16,7 @@ const connectionStore = useConnectionStore()
             Connected
           </div>
         </div>
-        <button class="btn btn-sm btn-ghost" @click="connectionStore.disconnect()">
+        <button class="btn btn-sm btn-error" @click="connectionStore.disconnect()">
           Disconnect
         </button>
       </div>

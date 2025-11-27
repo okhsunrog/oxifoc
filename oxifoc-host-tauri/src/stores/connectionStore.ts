@@ -17,7 +17,7 @@ export const useConnectionStore = defineStore('connection', () => {
   // Serial configuration
   const serialPorts = ref<SerialPort[]>([])
   const selectedSerialPath = ref<string | null>(null)
-  const serialBaudRate = ref(921600)
+  const serialBaudRate = ref(115200)
 
   // RTT configuration
   const debugProbes = ref<DebugProbe[]>([])

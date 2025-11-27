@@ -370,8 +370,11 @@ async fn backend_main(
 
     if cfg.stream_defmt() {
         let default_elf = {
-            let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../oxifoc-device/target/thumbv7em-none-eabihf/release/oxifoc-device");
+            // Check CARGO_TARGET_DIR first (for custom target directories)
+            let target_dir = std::env::var("CARGO_TARGET_DIR").ok().map(std::path::PathBuf::from).unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxifoc-device/target")
+            });
+            let p = target_dir.join("thumbv7em-none-eabihf/release/oxifoc-device");
             p.to_string_lossy().into_owned()
         };
         let elf_path = cfg.elf.clone().unwrap_or(default_elf);

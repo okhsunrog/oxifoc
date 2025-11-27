@@ -109,6 +109,17 @@ export const commands = {
     }
   },
   /**
+   * Set ADC telemetry rate in Hz (0 = disabled, 1-255 = rate).
+   */
+  async setTelemetryRate(rateHz: number): Promise<Result<null, string>> {
+    try {
+      return { status: 'ok', data: await TAURI_INVOKE('set_telemetry_rate', { rateHz }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
    * Set the host log level at runtime
    */
   async setHostLogLevel(level: LogLevel): Promise<Result<null, string>> {

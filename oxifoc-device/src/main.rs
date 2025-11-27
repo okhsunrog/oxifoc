@@ -32,6 +32,7 @@ use embassy_time::{Duration, Timer, with_timeout};
 use ergot::{
     Address,
     exports::bbq2::traits::coordination::cas::AtomicCoord,
+    interface_manager::InterfaceState,
     rtt_target::{ChannelMode::*, rtt_init},
     toolkits::embedded_io_async_v0_6::{self as kit, tx_worker},
 };
@@ -85,7 +86,7 @@ const MAX_PACKET_SIZE: usize = 512;
 
 // UART transport constants
 #[cfg(feature = "transport-uart")]
-const UART_BAUD: u32 = 921_600;
+const UART_BAUD: u32 = 115_200;
 #[cfg(feature = "transport-uart")]
 const UART_BUF_LEN: usize = 1024;
 
@@ -245,6 +246,8 @@ async fn main(spawner: Spawner) {
             config.rcc.sys = Sysclk::PLL1_R;
             // Above 150MHz, enable Range1 boost mode per RM0440 guidance
             config.rcc.boost = true;
+            // ADC clock source: use SYSCLK (170MHz)
+            config.rcc.mux.adc12sel = mux::Adcsel::SYS;
         }
         embassy_stm32::init(config)
     };
@@ -434,7 +437,9 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "transport-uart")]
     {
         spawner.spawn(run_tx_uart(UartWriter::new(uart_tx)).unwrap());
-        spawner.spawn(defmt_forwarder(defmt_consumer).unwrap());
+        // NOTE: defmt_forwarder disabled - causes feedback loop with ergot logs
+        // Device logs are already visible via RTT in probe-rs terminal
+        let _ = defmt_consumer; // suppress unused warning
     }
 
     #[cfg(feature = "transport-rtt")]
@@ -522,12 +527,24 @@ async fn run_tx_rtt(mut tx: RttWriter) {
     }
 }
 
-/// Forward defmt frames from the sink to ergot network (transport-uart only)
+/// Forward defmt frames from the sink to ergot network (transport-uart only).
+/// Only forwards when interface is active to avoid NoRoute errors.
 #[cfg(feature = "transport-uart")]
 #[embassy_executor::task]
 async fn defmt_forwarder(consumer: defmt_sink::DefmtConsumer) {
-    // Uses ergot helper; still required to move frames from sink queue to network.
-    defmt_sink::forward_to_ergot_topic(&consumer, &&STACK, None).await;
+    use ergot::logging::defmtlog::ErgotDefmtTx;
+    use ergot::well_known::ErgotDefmtTxTopic;
+
+    loop {
+        let frame = consumer.wait_read().await;
+        // Only broadcast if interface is active (host connected)
+        if is_interface_active() {
+            let _ = STACK
+                .topics()
+                .broadcast_borrowed::<ErgotDefmtTxTopic>(&ErgotDefmtTx { frame: &frame }, None);
+        }
+        frame.release();
+    }
 }
 
 #[embassy_executor::task]
@@ -669,6 +686,8 @@ async fn vbus_task(mut adc: RingBufferedAdc<'static, peripherals::ADC1>) {
     loop {
         match adc.read(&mut meas).await {
             Ok(n) if n > 1 => {
+                // Clamp n to buffer size (shouldn't exceed, but be safe)
+                let n = n.min(meas.len());
                 let mut sum_vbus: u32 = 0;
                 let mut cnt_vbus: u32 = 0;
                 let mut sum_temp: u32 = 0;
@@ -711,8 +730,20 @@ async fn vbus_task(mut adc: RingBufferedAdc<'static, peripherals::ADC1>) {
     }
 }
 
+/// Check if the ergot interface is active (host connected).
+fn is_interface_active() -> bool {
+    use ergot::interface_manager::Profile;
+    STACK.manage_profile(|profile| {
+        matches!(
+            profile.interface_state(()),
+            Some(InterfaceState::Active { .. })
+        )
+    })
+}
+
 /// ADC telemetry task - pushes samples to host at configurable rate.
 /// Rate controlled by TELEMETRY_RATE_HZ (0 = disabled).
+/// Only sends when interface is active (host connected).
 #[embassy_executor::task]
 async fn adc_telemetry_task() {
     use embassy_time::Ticker;
@@ -735,8 +766,8 @@ async fn adc_telemetry_task() {
     loop {
         let rate_hz = TELEMETRY_RATE_HZ.load(Ordering::Relaxed);
 
-        if rate_hz == 0 {
-            // Telemetry disabled - sleep and check again
+        if rate_hz == 0 || !is_interface_active() {
+            // Telemetry disabled or no host connected - sleep and check again
             Timer::after(Duration::from_millis(100)).await;
             continue;
         }
@@ -744,9 +775,9 @@ async fn adc_telemetry_task() {
         // Create ticker for current rate
         let mut ticker = Ticker::every(Duration::from_hz(rate_hz as u64));
 
-        // Stream at configured rate until rate changes
+        // Stream at configured rate until rate changes or interface goes down
         let current_rate = rate_hz;
-        while TELEMETRY_RATE_HZ.load(Ordering::Relaxed) == current_rate {
+        while TELEMETRY_RATE_HZ.load(Ordering::Relaxed) == current_rate && is_interface_active() {
             ticker.next().await;
 
             let sample = oxifoc_protocol::AdcSample {
