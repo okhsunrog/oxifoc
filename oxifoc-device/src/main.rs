@@ -182,10 +182,10 @@ static ADC_DECIM_COUNTER: core::sync::atomic::AtomicU8 = core::sync::atomic::Ato
 static ADC_SAMPLE_CH: StaticCell<channel::Channel<SyncRawMutex, oxifoc_protocol::AdcSample, 16>> =
     StaticCell::new();
 
-/// Raw pointer to the ADC sample channel (set once in main, used in ISR).
-static mut ADC_SAMPLE_CH_REF: Option<
-    &'static channel::Channel<SyncRawMutex, oxifoc_protocol::AdcSample, 16>,
-> = None;
+/// Reference to the ADC sample channel (set once in main, used in ISR).
+static ADC_SAMPLE_CH_REF: CriticalSectionMutex<
+    RefCell<Option<&'static channel::Channel<SyncRawMutex, oxifoc_protocol::AdcSample, 16>>>,
+> = CriticalSectionMutex::new(RefCell::new(None));
 
 // DMA buffer used for ADC1 regular conversions (VBUS measurement).
 // Must be non-empty and <= 0xFFFF elements; half of this length is used as the
@@ -395,9 +395,9 @@ async fn main(spawner: Spawner) {
     // Initialize ADC streaming channel and spawn telemetry task.
     let adc_sample_ch = ADC_SAMPLE_CH.init(channel::Channel::new());
     let adc_sample_rx = adc_sample_ch.receiver();
-    unsafe {
-        ADC_SAMPLE_CH_REF = Some(adc_sample_ch);
-    }
+    ADC_SAMPLE_CH_REF.lock(|cell| {
+        cell.replace(Some(adc_sample_ch));
+    });
     spawner.spawn(adc_telemetry_task(adc_sample_rx).unwrap());
 
     unsafe {
@@ -855,10 +855,10 @@ unsafe fn ADC1_2() {
             fet_temp_c_x10: FET_TEMP_C_X10.load(Ordering::Relaxed),
             seq,
         };
-        unsafe {
-            if let Some(ch) = ADC_SAMPLE_CH_REF {
+        ADC_SAMPLE_CH_REF.lock(|cell| {
+            if let Some(ch) = cell.borrow().as_ref() {
                 let _ = ch.try_send(sample);
             }
-        }
+        });
     }
 }
