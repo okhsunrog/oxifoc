@@ -1,7 +1,7 @@
 {
   "rust-analyzer.linkedProjects": [
     "Cargo.toml",
-    "oxifoc-device/Cargo.toml",
+    "oxifoc-g431/Cargo.toml",
     "ergot/crates/ergot/Cargo.toml"
   ]
 }

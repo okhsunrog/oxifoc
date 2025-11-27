@@ -4720,6 +4720,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxifoc-core"
+version = "0.1.0"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "oxifoc-host-cli"
 version = "0.1.0"
 dependencies = [

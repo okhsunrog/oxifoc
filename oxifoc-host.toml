@@ -7,7 +7,7 @@
 chip = "STM32G431CBTx"
 
 # Optional: path to device ELF for defmt decoding
-elf = "oxifoc-device/target/thumbv7em-none-eabihf/release/oxifoc-device"
+elf = "oxifoc-g431/target/thumbv7em-none-eabihf/release/oxifoc-g431"
 
 # Serial transport (ST-LINK VCP -> USART2)
 serial_path = "/dev/ttyACM0"

@@ -27,13 +27,13 @@ cli *ARGS:
 # Format all code (Rust + TypeScript, excludes ergot)
 fmt:
     cargo fmt --all
-    cd oxifoc-device && cargo fmt
+    cd oxifoc-g431 && cargo fmt
     cd oxifoc-host-tauri && bun format
 
 # Lint Rust code (clippy)
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
-    cd oxifoc-device && cargo clippy --all-targets -- -D warnings
+    cd oxifoc-g431 && cargo clippy --all-targets -- -D warnings
 
 # Lint frontend code (eslint)
 lint-ts:
@@ -64,19 +64,19 @@ test:
 
 # Flash device firmware (release build)
 flash:
-    cd oxifoc-device && cargo run --release
+    cd oxifoc-g431 && cargo run --release
 
 # Flash device firmware (debug build)
 flash-debug:
-    cd oxifoc-device && cargo run
+    cd oxifoc-g431 && cargo run
 
 # Build device firmware (release)
 device:
-    cd oxifoc-device && cargo build --release
+    cd oxifoc-g431 && cargo build --release
 
 # Build device firmware (debug)
 device-debug:
-    cd oxifoc-device && cargo build
+    cd oxifoc-g431 && cargo build
 
 # Clean all build artifacts
 clean:
@@ -86,12 +86,12 @@ clean:
 check-rust:
     @echo "Checking Rust formatting..."
     cargo fmt --all -- --check
-    cd oxifoc-device && cargo fmt -- --check
+    cd oxifoc-g431 && cargo fmt -- --check
     @echo "Running clippy..."
     just clippy
     @echo "Checking builds..."
     cargo check --workspace
-    cd oxifoc-device && cargo check
+    cd oxifoc-g431 && cargo check
     @echo "Running tests..."
     cargo test --workspace
     @echo "✓ Rust checks passed!"

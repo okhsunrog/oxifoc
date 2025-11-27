@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: oxifoc-device
+        working-directory: oxifoc-g431
 
     steps:
       - uses: actions/checkout@v4

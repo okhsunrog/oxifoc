@@ -6,9 +6,10 @@ WIP/experimental motor control (FOC) firmware for STM32G431 (B‑G431B‑ESC1) w
 
 ```
 oxifoc/
-├── Cargo.toml          # Workspace root (host crates only)
+├── Cargo.toml          # Workspace root (host + core)
 ├── justfile            # Build automation
-├── oxifoc-device/      # STM32G431 firmware (excluded from workspace)
+├── oxifoc-core/        # Platform-agnostic FOC algorithms (testable)
+├── oxifoc-g431/        # STM32G431 firmware (excluded from workspace)
 ├── oxifoc-host-lib/    # Shared host backend (transport + config)
 ├── oxifoc-host-tauri/  # Tauri desktop/mobile GUI
 ├── oxifoc-host-egui/   # egui desktop frontend
@@ -42,7 +43,7 @@ See [docs/hardware.md](docs/hardware.md) for detailed pinout and functional grou
 ### Device Firmware
 
 ```bash
-cd oxifoc-device
+cd oxifoc-g431
 
 # Serial transport (default, uses ST-Link VCP at 921600 baud)
 cargo build --release --features transport-uart
@@ -74,7 +75,7 @@ cargo build --manifest-path oxifoc-host-cli/Cargo.toml --release
 Using probe-rs:
 
 ```bash
-cd oxifoc-device
+cd oxifoc-g431
 
 # Flash with Serial transport
 cargo run --release --features transport-uart
@@ -151,7 +152,7 @@ Ergot DirectEdge profile (point‑to‑point):
 
 ## Development Notes (short)
 
-- Device code: `oxifoc-device/src/main.rs`, `oxifoc-device/src/usart_io.rs`.
+- Device code: `oxifoc-g431/src/main.rs`.
 - Host backend: `oxifoc-host-lib/src/lib.rs` (+ `oxifoc-host-lib/src/config.rs`).
 - Host frontends: `oxifoc-host-tauri/` (Tauri GUI), `oxifoc-host-egui/src/main.rs`, `oxifoc-host-cli/src/main.rs` (CLI).
 - Protocol endpoints: `protocol/src/lib.rs` (Button, Motor, AdcSample, Info).
@@ -176,7 +177,7 @@ View defmt logs via the host application (Tauri GUI, egui, or CLI). For RTT tran
 For device-only debugging with RTT:
 
 ```bash
-cd oxifoc-device
+cd oxifoc-g431
 cargo run --release --features transport-rtt
 ```
 
