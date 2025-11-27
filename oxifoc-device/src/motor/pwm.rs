@@ -3,11 +3,11 @@
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::time::khz;
 use embassy_stm32::timer::Channel;
-use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin, Mms2};
+use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin, Mms2, Ossr};
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
 
-use super::six_step::PhaseState;
+use super::six_step::{CommutationStep, PhaseState};
 
 /// PWM configuration for the motor.
 pub struct MotorPwmConfig {
@@ -91,9 +91,16 @@ impl<'d> MotorPwm<'d> {
 
         let max_duty = pwm.get_max_duty();
 
-        // Conservative dead-time configuration as a fraction of max_duty.
-        let dead_time_ticks = max_duty / 512;
+        // Calculate dead-time based on timer clock frequency.
+        // STM32G4 runs at 170MHz.
+        const TIMER_CLOCK_HZ: u32 = 170_000_000;
+        let dead_time_ticks =
+            ((config.dead_time_ns as u64 * TIMER_CLOCK_HZ as u64) / 1_000_000_000) as u16;
         pwm.set_dead_time(dead_time_ticks);
+
+        // Enable OSSR for safer off-state behavior when channels are disabled.
+        // IDLE_LEVEL means outputs go to their idle state when disabled.
+        pwm.set_off_state_selection_run(Ossr::IDLE_LEVEL);
 
         // Channel 4: internal "sampling" channel to generate TIM1_TRGO2 for ADC.
         //
@@ -146,9 +153,10 @@ impl<'d> MotorPwm<'d> {
 
     /// Apply 6-step commutation pattern.
     ///
-    /// PhaseState encodes which phases should be active; currently both High/Low
-    /// are treated as "active" on that phase, with direction captured by the
-    /// commutation sequence rather than per-phase polarity tweaks.
+    /// Traditional 6-step behavior:
+    /// - `PhaseState::High`: High-side FET PWMs at duty, low-side follows complementary with dead-time
+    /// - `PhaseState::Low`: High-side OFF, low-side ON continuously (0% duty = low-side always on)
+    /// - `PhaseState::Off`: Both FETs off (floating phase)
     pub fn apply_commutation(
         &mut self,
         duty_percent: u8,
@@ -160,20 +168,38 @@ impl<'d> MotorPwm<'d> {
         let duty = (self.max_duty as u32 * duty_percent as u32 / 100) as u16;
         let duty = duty.min(self.duty_limit);
 
-        let mut drive_phase = |channel: Channel, state: PhaseState| match state {
+        self.apply_phase_state(Channel::Ch1, ph_a_state, duty);
+        self.apply_phase_state(Channel::Ch2, ph_b_state, duty);
+        self.apply_phase_state(Channel::Ch3, ph_c_state, duty);
+    }
+
+    /// Apply a commutation step directly.
+    #[allow(dead_code)]
+    pub fn apply_step(&mut self, step: CommutationStep, duty_percent: u8) {
+        let (a, b, c) = step.get_phase_states();
+        self.apply_commutation(duty_percent, a, b, c);
+    }
+
+    /// Apply the drive state for a single phase.
+    fn apply_phase_state(&mut self, channel: Channel, state: PhaseState, duty: u16) {
+        match state {
             PhaseState::Off => {
+                // Floating: both FETs off
                 self.pwm.set_duty(channel, 0);
                 self.pwm.disable(channel);
             }
-            PhaseState::High | PhaseState::Low => {
+            PhaseState::High => {
+                // High-side PWMs at duty, low-side complementary
                 self.pwm.set_duty(channel, duty);
                 self.pwm.enable(channel);
             }
-        };
-
-        drive_phase(Channel::Ch1, ph_a_state);
-        drive_phase(Channel::Ch2, ph_b_state);
-        drive_phase(Channel::Ch3, ph_c_state);
+            PhaseState::Low => {
+                // High-side OFF, low-side ON (sink current)
+                // With complementary PWM: 0% duty = high-side off, low-side on
+                self.pwm.set_duty(channel, 0);
+                self.pwm.enable(channel);
+            }
+        }
     }
 
     /// Emergency stop - disable all phases immediately.
