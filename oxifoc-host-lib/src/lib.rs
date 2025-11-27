@@ -19,6 +19,7 @@ use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_protocol::{
     AdcSample, AdcSampleEndpoint, ButtonEndpoint, ButtonEvent, MotorCommand, MotorEndpoint,
+    TelemetryConfig, TelemetryConfigEndpoint,
 };
 use std::fs;
 use std::path::Path;
@@ -52,6 +53,7 @@ pub fn init_tracing() {
 #[derive(Clone)]
 pub enum HostCommand {
     Motor(MotorCommand),
+    SetTelemetryRate(u8),
 }
 
 pub struct HostRuntime {
@@ -287,18 +289,41 @@ async fn backend_main(
         use ergot::Address;
         let stack = stack.clone();
         async move {
-            while let Ok(HostCommand::Motor(mc)) = cmd_rx.recv() {
-                let device_addr = Address {
-                    network_id: 1,
-                    node_id: 2,
-                    port_id: 0,
-                };
-                let res = stack
-                    .endpoints()
-                    .request::<MotorEndpoint>(device_addr, &mc, Some("motor"))
-                    .await;
-                if let Err(e) = res {
-                    tracing::warn!("Motor command failed: {:?}", e);
+            let device_addr = Address {
+                network_id: 1,
+                node_id: 2,
+                port_id: 0,
+            };
+            while let Ok(cmd) = cmd_rx.recv() {
+                match cmd {
+                    HostCommand::Motor(mc) => {
+                        let res = stack
+                            .endpoints()
+                            .request::<MotorEndpoint>(device_addr, &mc, Some("motor"))
+                            .await;
+                        if let Err(e) = res {
+                            tracing::warn!("Motor command failed: {:?}", e);
+                        }
+                    }
+                    HostCommand::SetTelemetryRate(rate_hz) => {
+                        let cfg = TelemetryConfig { rate_hz };
+                        let res = stack
+                            .endpoints()
+                            .request::<TelemetryConfigEndpoint>(
+                                device_addr,
+                                &cfg,
+                                Some("telemetry_config"),
+                            )
+                            .await;
+                        match res {
+                            Ok(response) => {
+                                tracing::info!("Telemetry rate set to {}Hz", response.rate_hz);
+                            }
+                            Err(e) => {
+                                tracing::warn!("Set telemetry rate failed: {:?}", e);
+                            }
+                        }
+                    }
                 }
             }
         }

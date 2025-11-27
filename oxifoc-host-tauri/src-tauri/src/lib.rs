@@ -296,6 +296,21 @@ fn motor_set_speed(state: State<OxifocState>, duty: u8) -> Result<(), String> {
         .map_err(|e| format!("Failed to send command: {}", e))
 }
 
+/// Set ADC telemetry rate in Hz (0 = disabled, 1-255 = rate).
+#[tauri::command]
+#[specta::specta]
+fn set_telemetry_rate(state: State<OxifocState>, rate_hz: u8) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    let runtime = guard.as_ref().ok_or("Host not initialized")?;
+
+    info!("Setting telemetry rate to {}Hz", rate_hz);
+
+    runtime
+        .cmd_tx
+        .send(HostCommand::SetTelemetryRate(rate_hz))
+        .map_err(|e| format!("Failed to send command: {}", e))
+}
+
 /// Start streaming ADC samples to the frontend via the provided channel.
 /// Spawns a background thread that forwards samples from the host runtime.
 #[tauri::command]
@@ -393,6 +408,7 @@ pub fn run() {
             // ADC streaming
             start_adc_stream,
             get_adc_sample,
+            set_telemetry_rate,
             // Logging
             set_host_log_level,
             set_device_log_level,
