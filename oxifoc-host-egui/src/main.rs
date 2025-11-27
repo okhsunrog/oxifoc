@@ -26,6 +26,7 @@ struct ConnectionState {
     baud_rate: u32,
     chip: String,
     error: Option<String>,
+    show_usb_only: bool,
 }
 
 impl Default for ConnectionState {
@@ -39,7 +40,26 @@ impl Default for ConnectionState {
             baud_rate: 921600,
             chip: "STM32G431CBUx".to_string(),
             error: None,
+            show_usb_only: true,
         }
+    }
+}
+
+impl ConnectionState {
+    /// Filter serial ports to show only USB-Serial devices (ttyACM*, ttyUSB*, ttyAMA*)
+    fn filtered_serial_ports(&self) -> Vec<(usize, SerialPortInfo)> {
+        self.serial_ports
+            .iter()
+            .enumerate()
+            .filter(|(_, port)| {
+                if !self.show_usb_only {
+                    return true;
+                }
+                let path = port.path.to_lowercase();
+                path.contains("ttyacm") || path.contains("ttyusb") || path.contains("ttyama")
+            })
+            .map(|(idx, port)| (idx, port.clone()))
+            .collect()
     }
 }
 
@@ -116,6 +136,7 @@ impl OxifocApp {
                 SelectedTransport::Serial => {
                     ui.horizontal(|ui| {
                         ui.heading("Serial Ports");
+                        ui.checkbox(&mut conn.show_usb_only, "USB-Serial only");
                         if ui.button("↻ Refresh").clicked() {
                             conn.serial_ports = list_serial_ports();
                         }
@@ -123,18 +144,22 @@ impl OxifocApp {
 
                     ui.add_space(5.0);
 
+                    let filtered = conn.filtered_serial_ports();
+
                     if conn.serial_ports.is_empty() {
                         ui.label("No serial ports found");
+                    } else if filtered.is_empty() {
+                        ui.label("No USB-Serial devices found");
                     } else {
                         egui::ScrollArea::vertical()
                             .max_height(200.0)
                             .show(ui, |ui| {
-                                for (idx, port) in conn.serial_ports.iter().enumerate() {
-                                    let is_selected = conn.selected_serial == Some(idx);
+                                for (idx, port) in &filtered {
+                                    let is_selected = conn.selected_serial == Some(*idx);
                                     let response =
                                         ui.selectable_label(is_selected, port.to_string());
                                     if response.clicked() {
-                                        conn.selected_serial = Some(idx);
+                                        conn.selected_serial = Some(*idx);
                                     }
                                 }
                             });
