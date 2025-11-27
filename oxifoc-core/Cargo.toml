@@ -1,0 +1,13 @@
+[package]
+name = "oxifoc-core"
+version = "0.1.0"
+edition = "2024"
+description = "Platform-agnostic FOC (Field-Oriented Control) algorithms and motor control logic"
+
+[dependencies]
+# Math library for no_std (sin, cos, sqrt, etc)
+libm = { version = "0.2.15", default-features = false }
+
+[lib]
+name = "oxifoc_core"
+path = "src/lib.rs"

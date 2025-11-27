@@ -414,9 +414,9 @@ async fn backend_main(
                 .ok()
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| {
-                    Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxifoc-device/target")
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxifoc-g431/target")
                 });
-            let p = target_dir.join("thumbv7em-none-eabihf/release/oxifoc-device");
+            let p = target_dir.join("thumbv7em-none-eabihf/release/oxifoc-g431");
             p.to_string_lossy().into_owned()
         };
         let elf_path = cfg.elf.clone().unwrap_or(default_elf);

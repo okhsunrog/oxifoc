@@ -1,10 +1,11 @@
 [package]
-name = "oxifoc-device"
+name = "oxifoc-g431"
 version = "0.1.0"
 edition = "2024"
+description = "STM32G431-based motor controller (B-G431B-ESC1 board)"
 
 [[bin]]
-name = "oxifoc-device"
+name = "oxifoc-g431"
 path = "src/main.rs"
 test = false
 bench = false
@@ -40,6 +41,7 @@ postcard-schema = "0.2.5"
 mutex = "1.0.2"
 
 # Local dependencies
+oxifoc-core = { path = "../oxifoc-core" }
 oxifoc-protocol = { path = "../protocol" }
 # Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
 # transport-uart adds: defmt-sink-network (for network forwarding)

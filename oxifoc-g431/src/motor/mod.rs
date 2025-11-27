@@ -9,6 +9,9 @@
 pub mod pwm;
 pub mod six_step;
 
+// Re-export FOC modules from oxifoc-core for convenience
+pub use oxifoc_core::foc::{pi_controller, svpwm, transforms};
+
 use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_time::Duration;
 use oxifoc_protocol::{MotorCommand, MotorState, MotorStatus};

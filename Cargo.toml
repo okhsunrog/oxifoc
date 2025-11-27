@@ -5,10 +5,10 @@ members = [
     "oxifoc-host-lib",
     "oxifoc-host-cli",
     "oxifoc-host-egui",
-    "oxifoc-host-tauri/src-tauri",
+    "oxifoc-host-tauri/src-tauri", "oxifoc-core",
 ]
 exclude = [
-    "oxifoc-device",  # Different toolchain (thumbv7em-none-eabihf)
+    "oxifoc-g431",    # Different toolchain (thumbv7em-none-eabihf)
     "ergot",          # Git submodule with own workspace
 ]
 
