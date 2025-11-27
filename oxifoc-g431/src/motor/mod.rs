@@ -6,12 +6,9 @@
 //! - Voltage: 3S-4S LiPo (11.1-14.8V)
 //! - Type: Outrunner disc motor
 
+pub mod hall_sensor;
 pub mod pwm;
 pub mod six_step;
-pub mod hall_sensor;
-
-// Re-export FOC modules from oxifoc-core for convenience
-pub use oxifoc_core::foc::{pi_controller, svpwm, transforms};
 
 use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_time::Duration;

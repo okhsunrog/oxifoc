@@ -8,6 +8,13 @@ description = "Platform-agnostic FOC (Field-Oriented Control) algorithms and mot
 # Math library for no_std (sin, cos, sqrt, etc)
 libm = { version = "0.2.15", default-features = false }
 
+[dev-dependencies]
+# std is available during tests
+
 [lib]
 name = "oxifoc_core"
 path = "src/lib.rs"
+
+[features]
+default = []
+std = []

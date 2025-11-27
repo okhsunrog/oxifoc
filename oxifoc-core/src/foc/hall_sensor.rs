@@ -87,13 +87,13 @@ impl HallSensor {
     /// * `raw_state` - 3-bit Hall sensor value (H3<<2 | H2<<1 | H1)
     ///
     /// # Returns
-    /// * `Ok(angle)` - Electrical angle in radians (0 to 2π)
-    /// * `Err(())` - Invalid Hall state (0 or 7)
-    pub fn update(&mut self, raw_state: u8) -> Result<f32, ()> {
+    /// * `Some(angle)` - Electrical angle in radians (0 to 2π)
+    /// * `None` - Invalid Hall state (0 or 7)
+    pub fn update(&mut self, raw_state: u8) -> Option<f32> {
         // Check for invalid states (all low or all high)
         if raw_state == 0 || raw_state > 6 {
             self.error_count += 1;
-            return Err(());
+            return None;
         }
 
         let prev_state = self.state_prev;
@@ -149,7 +149,7 @@ impl HallSensor {
         let hall_state_idx = self.hall_idx_base + current_state as usize;
         self.angle = self.angle_per_state * hall_state_idx as f32;
 
-        Ok(self.angle)
+        Some(self.angle)
     }
 
     /// Get current electrical angle in radians (0 to 2π)
@@ -213,11 +213,11 @@ mod tests {
         let mut hall = HallSensor::new(7);
 
         // All low (0b000)
-        assert!(hall.update(0).is_err());
+        assert!(hall.update(0).is_none());
         assert_eq!(hall.error_count(), 1);
 
         // All high (0b111)
-        assert!(hall.update(7).is_err());
+        assert!(hall.update(7).is_none());
         assert_eq!(hall.error_count(), 2);
     }
 
@@ -303,7 +303,7 @@ mod tests {
     fn test_reset_errors() {
         let mut hall = HallSensor::new(1);
 
-        hall.update(0).unwrap_or_default(); // Generate error
+        hall.update(0).unwrap_or(0.0); // Generate error
         assert!(hall.error_count() > 0);
 
         hall.reset_errors();

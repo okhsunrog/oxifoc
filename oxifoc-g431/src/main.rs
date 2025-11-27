@@ -60,8 +60,8 @@ use usart_io::{UartReader, UartWriter};
 use ergot::transport::rtt::{RttReader, RttWriter};
 
 mod motor;
-use motor::hall_sensor::HallSensorDriver;
 use motor::MotorController;
+use motor::hall_sensor::HallSensorDriver;
 
 // Resource assignments for hardware peripherals
 assign_resources! {

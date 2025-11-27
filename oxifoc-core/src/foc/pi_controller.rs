@@ -16,7 +16,9 @@
 /// - Anti-windup: Back-calculation method to prevent integral buildup
 ///
 /// # Example
-/// ```
+/// ```rust
+/// use oxifoc_core::foc::pi_controller::PIController;
+///
 /// let mut controller = PIController::new(0.5, 10.0)
 ///     .with_limits(-24.0, 24.0); // Voltage limits
 ///
@@ -25,6 +27,7 @@
 /// let measurement = 4.8; // Measured current
 ///
 /// let output = controller.update(setpoint, measurement, dt);
+/// assert!(output > 0.0 && output <= 24.0);
 /// ```
 pub struct PIController {
     /// Proportional gain
@@ -47,12 +50,17 @@ impl PIController {
     /// * `ki` - Integral gain
     ///
     /// # Example
-    /// ```
+    /// ```rust
+    /// use oxifoc_core::foc::pi_controller::PIController;
+    ///
     /// // Current controller gains (typical values)
     /// let current_pi = PIController::new(0.5, 10.0);
     ///
     /// // Velocity controller gains (typical values)
     /// let velocity_pi = PIController::new(0.01, 0.1);
+    ///
+    /// assert_eq!(current_pi.get_integral(), 0.0);
+    /// assert_eq!(velocity_pi.get_integral(), 0.0);
     /// ```
     pub fn new(kp: f32, ki: f32) -> Self {
         Self {
@@ -74,9 +82,14 @@ impl PIController {
     /// * `max` - Maximum output value
     ///
     /// # Example
-    /// ```
+    /// ```rust
+    /// use oxifoc_core::foc::pi_controller::PIController;
+    ///
     /// let mut controller = PIController::new(0.5, 10.0)
     ///     .with_limits(-24.0, 24.0); // ±24V for a 24V bus
+    ///
+    /// let limited_output = controller.update(0.0, -100.0, 0.001);
+    /// assert!(limited_output >= -24.0 && limited_output <= 24.0);
     /// ```
     pub fn with_limits(mut self, min: f32, max: f32) -> Self {
         self.min_limit = Some(min);
@@ -95,9 +108,13 @@ impl PIController {
     /// Controller output (clamped to limits if set)
     ///
     /// # Example
-    /// ```
+    /// ```rust
+    /// use oxifoc_core::foc::pi_controller::PIController;
+    ///
+    /// let mut controller = PIController::new(0.5, 10.0);
     /// let dt = 0.0001; // 10kHz loop
     /// let output = controller.update(5.0, 4.8, dt);
+    /// assert!(output > 0.0);
     /// ```
     pub fn update(&mut self, setpoint: f32, measurement: f32, dt: f32) -> f32 {
         // Calculate error
@@ -113,7 +130,7 @@ impl PIController {
         let output_raw = p_term + self.integral;
 
         // Apply limits and anti-windup
-        let output = match (self.min_limit, self.max_limit) {
+        match (self.min_limit, self.max_limit) {
             (Some(min), Some(max)) => {
                 let output_clamped = output_raw.clamp(min, max);
 
@@ -127,9 +144,7 @@ impl PIController {
                 output_clamped
             }
             _ => output_raw,
-        };
-
-        output
+        }
     }
 
     /// Reset the integral term to zero
@@ -230,14 +245,13 @@ mod tests {
 
     #[test]
     fn test_pi_output_limits() {
-        let mut controller = PIController::new(1.0, 100.0)
-            .with_limits(-5.0, 5.0);
+        let mut controller = PIController::new(1.0, 100.0).with_limits(-5.0, 5.0);
 
         // Large error should saturate output
         let output = controller.update(100.0, 0.0, DT);
 
         assert!(
-            output >= -5.0 && output <= 5.0,
+            (-5.0..=5.0).contains(&output),
             "Output should be clamped, got {}",
             output
         );
@@ -245,8 +259,7 @@ mod tests {
 
     #[test]
     fn test_pi_anti_windup() {
-        let mut controller = PIController::new(0.5, 100.0)
-            .with_limits(-10.0, 10.0);
+        let mut controller = PIController::new(0.5, 100.0).with_limits(-10.0, 10.0);
 
         // Apply large error for many steps (would cause windup without anti-windup)
         for _ in 0..100 {
@@ -323,15 +336,15 @@ mod tests {
         assert!(
             (output2 - expected).abs() < 0.01,
             "Expected ~{}, got {}",
-            expected, output2
+            expected,
+            output2
         );
     }
 
     #[test]
     fn test_pi_realistic_current_control() {
         // Simulate realistic current control scenario with well-tuned gains
-        let mut controller = PIController::new(2.0, 100.0)
-            .with_limits(-24.0, 24.0); // 24V bus
+        let mut controller = PIController::new(2.0, 100.0).with_limits(-24.0, 24.0); // 24V bus
 
         let target_current = 5.0; // Amps
         let mut actual_current = 0.0;

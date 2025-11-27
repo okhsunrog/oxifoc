@@ -53,6 +53,7 @@ impl HallSensorDriver {
     }
 
     /// Reset error counter
+    #[allow(dead_code)]
     pub fn reset_errors(&mut self) {
         self.sensor.reset_errors();
     }
@@ -75,12 +76,12 @@ impl HallSensorDriver {
 
         // Update angle estimate
         match self.sensor.update(raw_state) {
-            Ok(angle) => {
+            Some(angle) => {
                 // Publish angle and direction to signals
                 HALL_ANGLE.signal(angle);
                 HALL_DIRECTION.signal(self.sensor.direction());
             }
-            Err(_) => {
+            None => {
                 // Invalid state - error already incremented in sensor.update()
                 defmt::warn!(
                     "Invalid Hall state: {:03b} (errors: {})",
@@ -123,4 +124,3 @@ impl HallSensorDriver {
         self.sensor.state()
     }
 }
-

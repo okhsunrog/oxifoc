@@ -11,11 +11,7 @@
 //!
 //! Based on VESC firmware implementation.
 
-/// 1/√3 constant for sector boundary calculations
-const ONE_BY_SQRT3: f32 = 0.57735026919;
-
-/// 2/√3 constant for switching time calculations
-const TWO_BY_SQRT3: f32 = 2.0 * 0.57735026919;
+use super::constants::{FRAC_1_SQRT_3 as ONE_BY_SQRT3, FRAC_2_SQRT_3 as TWO_BY_SQRT3};
 
 /// Space Vector PWM modulation
 ///
@@ -30,16 +26,19 @@ const TWO_BY_SQRT3: f32 = 2.0 * 0.57735026919;
 /// Array of [duty_a, duty_b, duty_c] where each value is 0 to max_duty
 ///
 /// # Example
-/// ```
+/// ```rust
+/// use oxifoc_core::foc::svpwm::space_vector_pwm;
+///
 /// let vbus = 24.0; // volts
-/// let vd = 2.0;    // desired d-axis voltage
-/// let vq = 3.0;    // desired q-axis voltage
+/// let v_alpha = 2.0; // desired α-axis voltage
+/// let v_beta = 3.0;  // desired β-axis voltage
 ///
 /// // Normalize to -1..1 range
 /// let alpha_norm = v_alpha / vbus;
 /// let beta_norm = v_beta / vbus;
 ///
 /// let duties = space_vector_pwm(alpha_norm, beta_norm, 1000);
+/// assert!(duties.iter().all(|&duty| duty <= 1000));
 /// ```
 pub fn space_vector_pwm(alpha: f32, beta: f32, max_duty: u16) -> [u16; 3] {
     // Determine sector using geometric method (VESC algorithm)
@@ -47,35 +46,17 @@ pub fn space_vector_pwm(alpha: f32, beta: f32, max_duty: u16) -> [u16; 3] {
     let sector = if beta >= 0.0 {
         if alpha >= 0.0 {
             // Quadrant I
-            if ONE_BY_SQRT3 * beta > alpha {
-                2
-            } else {
-                1
-            }
+            if ONE_BY_SQRT3 * beta > alpha { 2 } else { 1 }
         } else {
             // Quadrant II
-            if -ONE_BY_SQRT3 * beta > alpha {
-                3
-            } else {
-                2
-            }
+            if -ONE_BY_SQRT3 * beta > alpha { 3 } else { 2 }
         }
+    } else if alpha >= 0.0 {
+        // Quadrant IV
+        if -ONE_BY_SQRT3 * beta > alpha { 5 } else { 6 }
     } else {
-        if alpha >= 0.0 {
-            // Quadrant IV
-            if -ONE_BY_SQRT3 * beta > alpha {
-                5
-            } else {
-                6
-            }
-        } else {
-            // Quadrant III
-            if ONE_BY_SQRT3 * beta > alpha {
-                4
-            } else {
-                5
-            }
-        }
+        // Quadrant III
+        if ONE_BY_SQRT3 * beta > alpha { 4 } else { 5 }
     };
 
     // Calculate PWM timings per sector
@@ -150,35 +131,17 @@ pub fn get_sector(alpha: f32, beta: f32) -> u8 {
     if beta >= 0.0 {
         if alpha >= 0.0 {
             // Quadrant I
-            if ONE_BY_SQRT3 * beta > alpha {
-                2
-            } else {
-                1
-            }
+            if ONE_BY_SQRT3 * beta > alpha { 2 } else { 1 }
         } else {
             // Quadrant II
-            if -ONE_BY_SQRT3 * beta > alpha {
-                3
-            } else {
-                2
-            }
+            if -ONE_BY_SQRT3 * beta > alpha { 3 } else { 2 }
         }
+    } else if alpha >= 0.0 {
+        // Quadrant IV
+        if -ONE_BY_SQRT3 * beta > alpha { 5 } else { 6 }
     } else {
-        if alpha >= 0.0 {
-            // Quadrant IV
-            if -ONE_BY_SQRT3 * beta > alpha {
-                5
-            } else {
-                6
-            }
-        } else {
-            // Quadrant III
-            if ONE_BY_SQRT3 * beta > alpha {
-                4
-            } else {
-                5
-            }
-        }
+        // Quadrant III
+        if ONE_BY_SQRT3 * beta > alpha { 4 } else { 5 }
     }
 }
 
@@ -237,12 +200,12 @@ mod tests {
         // Test that all 6 sectors are covered
         // Using VESC geometric sector detection (robust at boundaries)
         let test_vectors = [
-            (0.5, 0.1, 1),       // ~11° - sector 1
-            (0.1, 0.5, 2),       // ~79° - sector 2
-            (-0.4, 0.4, 3),      // ~135° - sector 3
-            (-0.5, -0.1, 4),     // ~191° - sector 4
-            (-0.1, -0.5, 5),     // ~259° - sector 5
-            (0.4, -0.4, 6),      // ~315° - sector 6
+            (0.5, 0.1, 1),   // ~11° - sector 1
+            (0.1, 0.5, 2),   // ~79° - sector 2
+            (-0.4, 0.4, 3),  // ~135° - sector 3
+            (-0.5, -0.1, 4), // ~191° - sector 4
+            (-0.1, -0.5, 5), // ~259° - sector 5
+            (0.4, -0.4, 6),  // ~315° - sector 6
         ];
 
         for (alpha, beta, expected_sector) in test_vectors {
