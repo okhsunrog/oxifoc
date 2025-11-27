@@ -1,7 +1,8 @@
 # FOC Implementation Plan
 
 **Branch:** `feature/foc-implementation`
-**Target Hardware:** B-G431B-ESC1 (STM32G431CB)
+**Target Hardware:** B-G431B-ESC1 (STM32G431CB)  
+**Additional Target:** Simple FOCer 2 / VESC hardware (STM32F405RG, USB transport)
 **Test Motor:** Flipsky 5065 270KV with Hall sensors
 **Created:** 2025-01-27
 
@@ -29,11 +30,23 @@ Implement Field-Oriented Control (FOC) for BLDC motors with:
 - ✅ ergot communication (Serial/RTT)
 - ✅ Real-time ADC sample streaming to host
 - ✅ Basic 6-step commutation (proof of concept)
+- ✅ Shared FOC math (Clarke/Park, SVPWM, PI, Hall estimator) lives in `oxifoc-core` with unit tests
 
 ### Hardware Verification Needed
 - ⚠️ Current sensor shunt resistance (assumed 0.5mΩ - VERIFY!)
 - ⚠️ OPAMP offset calibration (not yet implemented)
 - ⚠️ Hall sensor pull-up configuration (assumed internal pull-ups OK)
+
+### Cross-Target Plan (G431 + F405)
+- Centralize control logic in `oxifoc-core` using traits (`CurrentSensor`, `AngleSensor`, `PhasePwm`) to avoid duplication.
+- Keep device crates thin: `oxifoc-g431` (UART/RTT) and new `oxifoc-f405` (USB) wire the same core FOC loop to board-specific peripherals.
+- Reuse the existing protocol endpoints for host tooling across both targets.
+- USB is the preferred transport on STM32F405 (Simple FOCer 2 / VESC layout).
+
+### F405 (Simple FOCer 2) Bring-up TODOs
+- [ ] Scaffold `oxifoc-f405` crate with Embassy clock setup and ergot-over-USB.
+- [ ] Map VESC/Simple FOCer 2 pinout (PWM, current sense, Hall) to `oxifoc-core` traits.
+- [ ] Align calibration/telemetry flows with G431 so host/GUI can swap targets seamlessly.
 
 ---
 

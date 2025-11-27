@@ -56,15 +56,27 @@ pub mod foc {
     /// Mathematical constants (√3, 1/√3, etc.)
     pub mod constants;
 
-    /// Coordinate transformations (Clarke, Park, and their inverses)
-    pub mod transforms;
+    /// High-level FOC control loop
+    pub mod controller;
 
-    /// Space Vector PWM modulation
-    pub mod svpwm;
+    /// Shunt resistor current sensing
+    pub mod current_sense;
+
+    /// Hall sensor angle estimation
+    pub mod hall_sensor;
 
     /// PI controller with anti-windup
     pub mod pi_controller;
 
-    /// Hall sensor angle estimation
-    pub mod hall_sensor;
+    /// Phase PWM trait for platform drivers
+    pub mod pwm;
+
+    /// Sensor trait definitions (CurrentSensor, AngleSensor)
+    pub mod sensors;
+
+    /// Space Vector PWM modulation
+    pub mod svpwm;
+
+    /// Coordinate transformations (Clarke, Park, and their inverses)
+    pub mod transforms;
 }
