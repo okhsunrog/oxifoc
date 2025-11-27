@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useConnectionStore } from '../stores/connectionStore'
-import ChartSwitcher from './ChartSwitcher.vue'
+import TelemetryCharts from './TelemetryCharts.vue'
 
 const connectionStore = useConnectionStore()
 </script>
@@ -21,7 +21,7 @@ const connectionStore = useConnectionStore()
         </button>
       </div>
 
-      <ChartSwitcher />
+      <TelemetryCharts />
     </div>
   </div>
 </template>
