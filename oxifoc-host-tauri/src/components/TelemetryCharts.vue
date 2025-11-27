@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import EChartsPlot from './charts/EChartsPlot.vue'
+import VbusTempPlot from './charts/VbusTempPlot.vue'
 import { useStreamStore } from '../stores/streamStore'
 
 const windowMs = ref(2000)
@@ -14,7 +15,7 @@ const { approxUpdateHz } = storeToRefs(streamStore)
 <template>
   <div class="w-full space-y-3">
     <div class="flex items-center justify-between">
-      <h2 class="text-xl font-bold">Real-Time Plot</h2>
+      <h2 class="text-xl font-bold">Real-Time Plots</h2>
       <span class="badge badge-outline font-mono">
         {{ approxUpdateHz ? `${approxUpdateHz.toFixed(1)} Hz` : '— Hz' }}
       </span>
@@ -33,5 +34,6 @@ const { approxUpdateHz } = storeToRefs(streamStore)
     </div>
 
     <EChartsPlot :windowMs="windowMs" />
+    <VbusTempPlot :windowMs="windowMs" />
   </div>
 </template>
