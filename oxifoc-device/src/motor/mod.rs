@@ -15,6 +15,7 @@ use oxifoc_protocol::{MotorCommand, MotorState, MotorStatus};
 
 use self::pwm::{MotorPwm, MotorPwmConfig};
 use self::six_step::CommutationStep;
+use crate::MotorResources;
 
 /// Motor physical parameters
 #[allow(dead_code)]
@@ -106,17 +107,9 @@ impl<'d> MotorController<'d> {
     }
 
     /// Initialize motor PWM hardware
-    pub fn init(
-        tim1: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::TIM1>>,
-        pa8: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PA8>>,
-        pc13: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PC13>>,
-        pa9: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PA9>>,
-        pa12: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PA12>>,
-        pa10: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PA10>>,
-        pb15: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PB15>>,
-    ) -> Self {
+    pub fn init(resources: MotorResources) -> Self {
         let config = MotorPwmConfig::default();
-        let pwm = MotorPwm::new(tim1, pa8, pc13, pa9, pa12, pa10, pb15, config);
+        let pwm = MotorPwm::new(resources, config);
         Self::new(pwm)
     }
 

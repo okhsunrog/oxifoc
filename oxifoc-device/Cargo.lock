@@ -42,6 +42,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "assign-resources"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "840ad5d907de7448d88a3f22b4a7b5d326c6eb3deeb9f94cfaaec7354a80b305"
+
+[[package]]
 name = "atomic-polyfill"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -981,6 +987,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 name = "oxifoc-device"
 version = "0.1.0"
 dependencies = [
+ "assign-resources",
  "cortex-m",
  "cortex-m-rt",
  "defmt 1.0.1",
