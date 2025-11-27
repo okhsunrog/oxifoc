@@ -1,6 +1,6 @@
 import { defineStore, acceptHMRUpdate } from 'pinia'
 import { Channel } from '@tauri-apps/api/core'
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef, triggerRef } from 'vue'
 import { commands, type AdcSample } from '../bindings'
 import { error as logError } from '@tauri-apps/plugin-log'
 
@@ -30,7 +30,9 @@ const normalizeAdcValue = (raw: number): number => {
 }
 
 export const useStreamStore = defineStore('stream', () => {
-  const samples = ref<StreamSample[]>([])
+  // Use shallowRef for samples array to avoid Vue deeply tracking every mutation
+  // This prevents massive performance degradation at high sample rates (60Hz)
+  const samples = shallowRef<StreamSample[]>([])
   const isStreaming = ref(false)
   const activeChannel = shallowRef<Channel<AdcSample> | null>(null)
   let startPromise: Promise<void> | null = null
@@ -74,6 +76,10 @@ export const useStreamStore = defineStore('stream', () => {
     while (samples.value.length && samples.value[0].timestampMs < cutoff) {
       samples.value.shift()
     }
+
+    // Trigger reactivity manually since we're using shallowRef
+    // triggerRef is the proper way to notify Vue of shallow ref changes
+    triggerRef(samples)
   }
 
   const clearSamples = () => {

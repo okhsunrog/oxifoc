@@ -17,7 +17,6 @@ import { GridComponent, LegendComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
 import type { EChartsOption } from 'echarts'
 import { useStreamStore } from '../../stores/streamStore'
-import { useFrameTiming } from '../../composables/useFrameTiming'
 
 // Register required ECharts components
 use([CanvasRenderer, LineChart, GridComponent, LegendComponent])
@@ -30,12 +29,11 @@ type SeriesConfig = {
 
 const props = defineProps<{ windowMs?: number }>()
 const streamStore = useStreamStore()
-const { latestSample, approxUpdateHz } = storeToRefs(streamStore)
+const { latestSample } = storeToRefs(streamStore)
 
 const chartRef = ref<InstanceType<typeof VChart> | null>(null)
 let rafId: number | null = null
 let updatePending = false
-const { measureFrame, avgFrameTimeMs, maxFps } = useFrameTiming()
 
 /**
  * Pre-allocated tuple pools to eliminate GC pressure.
@@ -65,19 +63,26 @@ const seriesDefs: SeriesConfig[] = [
 /**
  * Convert any CSS color (including OKLCH) to RGB hex format
  * Uses canvas to leverage browser's color parsing
+ * Canvas is cached to avoid DOM thrashing
  */
+let colorConversionCanvas: HTMLCanvasElement | null = null
+let colorConversionCtx: CanvasRenderingContext2D | null = null
+
 const colorToRgb = (cssColor: string): string => {
   if (typeof window === 'undefined') return cssColor
 
-  const canvas = document.createElement('canvas')
-  canvas.width = 1
-  canvas.height = 1
-  const ctx = canvas.getContext('2d')
+  // Create canvas once and reuse it
+  if (!colorConversionCanvas) {
+    colorConversionCanvas = document.createElement('canvas')
+    colorConversionCanvas.width = 1
+    colorConversionCanvas.height = 1
+    colorConversionCtx = colorConversionCanvas.getContext('2d')
+  }
 
-  if (!ctx) return cssColor
+  if (!colorConversionCtx) return cssColor
 
-  ctx.fillStyle = cssColor
-  return ctx.fillStyle // Returns in rgb() or #hex format
+  colorConversionCtx.fillStyle = cssColor
+  return colorConversionCtx.fillStyle // Returns in rgb() or #hex format
 }
 
 const getCssVar = (name: string, fallback: string): string => {
@@ -217,18 +222,16 @@ const doChartUpdate = () => {
 
   // Use manual setOption to avoid disrupting legend state
   const chart = chartRef.value
-  measureFrame(() => {
-    chart.setOption({
-      xAxis: {
-        min: -windowSec.value,
-        max: 0,
-      },
-      series: [
-        { name: seriesDefs[0].name, data: phaseASlice },
-        { name: seriesDefs[1].name, data: phaseBSlice },
-        { name: seriesDefs[2].name, data: phaseCSlice },
-      ],
-    })
+  chart.setOption({
+    xAxis: {
+      min: -windowSec.value,
+      max: 0,
+    },
+    series: [
+      { name: seriesDefs[0].name, data: phaseASlice },
+      { name: seriesDefs[1].name, data: phaseBSlice },
+      { name: seriesDefs[2].name, data: phaseCSlice },
+    ],
   })
 }
 
@@ -268,20 +271,7 @@ streamStore.ensureStream()
 <template>
   <div class="card bg-base-100 shadow-xl">
     <div class="card-body">
-      <div class="flex flex-col items-start gap-2">
-        <h2 class="card-title">Phase Currents</h2>
-        <div class="flex items-center gap-2 flex-wrap">
-          <div class="badge badge-outline">
-            {{ approxUpdateHz ? `${approxUpdateHz.toFixed(1)} Hz` : '— Hz' }} incoming
-          </div>
-          <div class="badge badge-success badge-outline">
-            {{ avgFrameTimeMs ? `${avgFrameTimeMs.toFixed(1)}ms` : '—' }} / frame
-          </div>
-          <div class="badge badge-info badge-outline">
-            {{ maxFps ? `${maxFps.toFixed(0)} fps` : '—' }} capable
-          </div>
-        </div>
-      </div>
+      <h2 class="card-title">Phase Currents</h2>
       <div class="mt-4 h-72 w-full">
         <VChart
           ref="chartRef"

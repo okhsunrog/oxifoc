@@ -110,10 +110,12 @@ fn build_filter(host_level: LogLevel, device_level: LogLevel) -> EnvFilter {
 
     // Suppress some framework noise
     filter = filter
-        .add_directive("webview=warn".parse().unwrap())
         .add_directive("tauri=info".parse().unwrap())
         .add_directive("tao=warn".parse().unwrap())
         .add_directive("wry=warn".parse().unwrap());
+
+    // Enable frontend webview logs (from @tauri-apps/plugin-log)
+    filter = filter.add_directive("webview=info".parse().unwrap());
 
     // Suppress noisy ergot protocol debug logs
     filter = filter.add_directive("ergot=warn".parse().unwrap());
