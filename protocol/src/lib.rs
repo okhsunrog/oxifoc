@@ -68,3 +68,18 @@ pub struct AdcSample {
 }
 
 endpoint!(AdcSampleEndpoint, AdcSample, (), "stream/adc");
+
+/// Telemetry configuration
+#[derive(Clone, Schema, Serialize, Deserialize, Debug)]
+pub struct TelemetryConfig {
+    /// Telemetry rate in Hz (0 = disabled, 1-255 = rate)
+    pub rate_hz: u8,
+}
+
+// Telemetry config endpoint (echoes current config)
+endpoint!(
+    TelemetryConfigEndpoint,
+    TelemetryConfig,
+    TelemetryConfig,
+    "cfg/telemetry"
+);

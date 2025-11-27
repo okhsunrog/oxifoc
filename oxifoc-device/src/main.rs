@@ -43,8 +43,6 @@ use static_cell::StaticCell;
 
 use assign_resources::assign_resources;
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as SyncRawMutex;
-use embassy_sync::channel;
 
 // Transport-specific imports
 #[cfg(feature = "transport-uart")]
@@ -172,20 +170,8 @@ static VBUS_MV: AtomicU32 = AtomicU32::new(0);
 /// Latest measured FET temperature in 0.1°C units.
 static FET_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
 
-/// Sequence counter for streamed ADC samples.
-static ADC_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-/// Simple decimation counter to reduce streaming load.
-const ADC_STREAM_DECIM: u8 = 8;
-static ADC_DECIM_COUNTER: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
-
-/// Channel used to send decimated ADC samples from ISR to telemetry task.
-static ADC_SAMPLE_CH: StaticCell<channel::Channel<SyncRawMutex, oxifoc_protocol::AdcSample, 16>> =
-    StaticCell::new();
-
-/// Reference to the ADC sample channel (set once in main, used in ISR).
-static ADC_SAMPLE_CH_REF: CriticalSectionMutex<
-    RefCell<Option<&'static channel::Channel<SyncRawMutex, oxifoc_protocol::AdcSample, 16>>>,
-> = CriticalSectionMutex::new(RefCell::new(None));
+/// Telemetry rate in Hz (0 = disabled, 1-255 = rate). Default 60Hz for GUI plotting.
+static TELEMETRY_RATE_HZ: AtomicU8 = AtomicU8::new(60);
 
 // DMA buffer used for ADC1 regular conversions (VBUS measurement).
 // Must be non-empty and <= 0xFFFF elements; half of this length is used as the
@@ -392,13 +378,8 @@ async fn main(spawner: Spawner) {
     // Spawn VBUS sampling task (reads ADC1 regular ring buffer and updates VBUS_MV).
     spawner.spawn(vbus_task(adc1_ring).unwrap());
 
-    // Initialize ADC streaming channel and spawn telemetry task.
-    let adc_sample_ch = ADC_SAMPLE_CH.init(channel::Channel::new());
-    let adc_sample_rx = adc_sample_ch.receiver();
-    ADC_SAMPLE_CH_REF.lock(|cell| {
-        cell.replace(Some(adc_sample_ch));
-    });
-    spawner.spawn(adc_telemetry_task(adc_sample_rx).unwrap());
+    // Spawn ADC telemetry task (push-based, rate controlled by TELEMETRY_RATE_HZ).
+    spawner.spawn(adc_telemetry_task().unwrap());
 
     unsafe {
         ADC1_2::unpend();
@@ -467,6 +448,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(button_handler(button).unwrap());
     spawner.spawn(status_reporter().unwrap());
     spawner.spawn(info_server().unwrap());
+    spawner.spawn(telemetry_config_server().unwrap());
     spawner.spawn(motor_control_task(motor_ctrl, motor_cmd_receiver).unwrap());
     spawner.spawn(motor_command_server(motor_cmd_sender).unwrap());
 
@@ -729,12 +711,14 @@ async fn vbus_task(mut adc: RingBufferedAdc<'static, peripherals::ADC1>) {
     }
 }
 
-/// ADC telemetry task - sends decimated samples to host via ergot.
+/// ADC telemetry task - pushes samples to host at configurable rate.
+/// Rate controlled by TELEMETRY_RATE_HZ (0 = disabled).
 #[embassy_executor::task]
-async fn adc_telemetry_task(
-    adc_rx: channel::Receiver<'static, SyncRawMutex, oxifoc_protocol::AdcSample, 16>,
-) {
+async fn adc_telemetry_task() {
+    use embassy_time::Ticker;
     use oxifoc_protocol::AdcSampleEndpoint;
+
+    defmt::info!("ADC telemetry task started");
 
     // Host controller at network 1, node 1.
     let host_addr = Address {
@@ -746,9 +730,65 @@ async fn adc_telemetry_task(
         .endpoints()
         .client::<AdcSampleEndpoint>(host_addr, Some("adc"));
 
+    let mut seq: u32 = 0;
+
     loop {
-        let sample = adc_rx.receive().await;
-        let _ = client.request(&sample).await;
+        let rate_hz = TELEMETRY_RATE_HZ.load(Ordering::Relaxed);
+
+        if rate_hz == 0 {
+            // Telemetry disabled - sleep and check again
+            Timer::after(Duration::from_millis(100)).await;
+            continue;
+        }
+
+        // Create ticker for current rate
+        let mut ticker = Ticker::every(Duration::from_hz(rate_hz as u64));
+
+        // Stream at configured rate until rate changes
+        let current_rate = rate_hz;
+        while TELEMETRY_RATE_HZ.load(Ordering::Relaxed) == current_rate {
+            ticker.next().await;
+
+            let sample = oxifoc_protocol::AdcSample {
+                ia: IA_SAMPLE.load(Ordering::Relaxed),
+                ib: IB_SAMPLE.load(Ordering::Relaxed),
+                ic: IC_SAMPLE.load(Ordering::Relaxed),
+                vbus_mv: VBUS_MV.load(Ordering::Relaxed),
+                fet_temp_c_x10: FET_TEMP_C_X10.load(Ordering::Relaxed),
+                seq,
+            };
+            seq = seq.wrapping_add(1);
+
+            let _ = client.request(&sample).await;
+        }
+    }
+}
+
+/// Telemetry configuration server - allows host to change telemetry rate.
+#[embassy_executor::task]
+async fn telemetry_config_server() {
+    use oxifoc_protocol::{TelemetryConfig, TelemetryConfigEndpoint};
+
+    defmt::info!("Telemetry config server started");
+
+    let server = STACK
+        .endpoints()
+        .bounded_server::<TelemetryConfigEndpoint, 2>(Some("telemetry_config"));
+    let server = pin!(server);
+    let mut h = server.attach();
+
+    loop {
+        let _ = h
+            .serve(|cfg: &TelemetryConfig| {
+                let rate_hz = cfg.rate_hz; // Copy value before async block
+                async move {
+                    let old_rate = TELEMETRY_RATE_HZ.load(Ordering::Relaxed);
+                    TELEMETRY_RATE_HZ.store(rate_hz, Ordering::Relaxed);
+                    defmt::info!("Telemetry rate changed: {}Hz -> {}Hz", old_rate, rate_hz);
+                    TelemetryConfig { rate_hz }
+                }
+            })
+            .await;
     }
 }
 
@@ -821,7 +861,8 @@ async fn motor_command_server(
     }
 }
 
-/// ADC1/ADC2 shared interrupt: read injected ADC1 samples (phase current).
+/// ADC1/ADC2 shared interrupt: read injected ADC samples (phase currents).
+/// Just stores raw values to atomics - telemetry task handles sending.
 #[interrupt]
 unsafe fn ADC1_2() {
     // Read ADC1 injected (phase A).
@@ -840,25 +881,4 @@ unsafe fn ADC1_2() {
             IC_SAMPLE.store(samples[1], Ordering::Relaxed);
         }
     });
-
-    // Decimate and enqueue ADC samples for streaming to host.
-    let cnt = ADC_DECIM_COUNTER
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
-    if cnt % ADC_STREAM_DECIM == 0 {
-        let seq = ADC_SEQ.fetch_add(1, Ordering::Relaxed);
-        let sample = oxifoc_protocol::AdcSample {
-            ia: IA_SAMPLE.load(Ordering::Relaxed),
-            ib: IB_SAMPLE.load(Ordering::Relaxed),
-            ic: IC_SAMPLE.load(Ordering::Relaxed),
-            vbus_mv: VBUS_MV.load(Ordering::Relaxed),
-            fet_temp_c_x10: FET_TEMP_C_X10.load(Ordering::Relaxed),
-            seq,
-        };
-        ADC_SAMPLE_CH_REF.lock(|cell| {
-            if let Some(ch) = cell.borrow().as_ref() {
-                let _ = ch.try_send(sample);
-            }
-        });
-    }
 }
