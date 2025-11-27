@@ -32,11 +32,28 @@ This repo uses a Cargo workspace for host crates. Device firmware is excluded (d
 
 See [docs/hardware.md](docs/hardware.md) for detailed pinout and functional groups.
 
-## Current Capabilities (short)
+## Current Capabilities
 
-- Device: button input (single/double/hold), keepalive, and device info server over ergot; defmt logs; Embassy async runtime. Supports Serial (UART) or RTT transport (compile-time feature).
-- Host: connects via Serial (ST-Link VCP) or RTT (probe-rs), streams defmt and ergot, queries DeviceInfo on connect.
-- Tauri GUI: desktop/mobile app with transport selection, real-time ADC charts, and log level controls.
+- **Device firmware:**
+  - Button input (single/double/hold), keepalive, device info server over ergot
+  - Hall sensor angle estimation (6-state, async edge detection)
+  - ADC sampling (phase currents, Vbus, FET temperature)
+  - Embassy async runtime with defmt logging
+  - Supports Serial (UART) or RTT transport (compile-time feature)
+  - Protocol endpoints: button events, device info, motor control, ADC samples, Hall sensor data
+
+- **FOC Core Library** (`oxifoc-core`):
+  - Clarke/Park transforms (ABC → αβ → dq and inverse)
+  - Space Vector PWM (VESC geometric sector method)
+  - PI controller with anti-windup
+  - Hall sensor logic (platform-agnostic)
+  - Fully tested on x86_64 (33 unit tests)
+
+- **Host applications:**
+  - Connects via Serial (ST-Link VCP) or RTT (probe-rs)
+  - Streams defmt logs and ergot protocol messages
+  - Tauri GUI: transport selection, real-time ADC charts, log level controls
+  - CLI and egui frontends available
 
 ## Building
 
@@ -150,12 +167,17 @@ Ergot DirectEdge profile (point‑to‑point):
 - Host: controller at `1.1.0`
 - Device: target at `1.2.0`
 
-## Development Notes (short)
+## Development Notes
 
-- Device code: `oxifoc-g431/src/main.rs`.
-- Host backend: `oxifoc-host-lib/src/lib.rs` (+ `oxifoc-host-lib/src/config.rs`).
-- Host frontends: `oxifoc-host-tauri/` (Tauri GUI), `oxifoc-host-egui/src/main.rs`, `oxifoc-host-cli/src/main.rs` (CLI).
-- Protocol endpoints: `protocol/src/lib.rs` (Button, Motor, AdcSample, Info).
+- **FOC algorithms**: `oxifoc-core/src/foc/` (transforms, SVPWM, PI controller, Hall sensor)
+- **Device firmware**: `oxifoc-g431/src/main.rs` (main task orchestration)
+  - Motor control: `oxifoc-g431/src/motor/` (PWM, six-step, Hall sensor driver)
+- **Protocol**: `protocol/src/lib.rs` (Button, Motor, AdcSample, HallSensor, Info endpoints)
+- **Host backend**: `oxifoc-host-lib/src/lib.rs` (+ `config.rs` for TOML parsing)
+- **Host frontends**:
+  - Tauri GUI: `oxifoc-host-tauri/` (desktop/mobile)
+  - egui: `oxifoc-host-egui/src/main.rs`
+  - CLI: `oxifoc-host-cli/src/main.rs`
 
 ### Quick Commands (justfile)
 
@@ -181,15 +203,106 @@ cd oxifoc-g431
 cargo run --release --features transport-rtt
 ```
 
-## Roadmap (draft)
+## Roadmap
 
-- PWM generation/commutation setup for G4 TIMs with safe dead‑time.
-- Current sense path bring‑up (ADC + PGA/OPAMP) and offset calibration.
-- Rotor angle feedback: Hall and incremental encoder support; sensorless exploration.
-- Control loops: Iq/Id PI, velocity/position layers; runtime tuning via host.
-- Safety: over‑current/voltage/temperature limits; fault latching and reporting.
-- Telemetry: structured streaming over ergot; capture buffers for tuning.
-- Host tooling: simple UI/CLI for calibration, logging, and parameter edits.
+### Completed
+- ✅ Platform-agnostic FOC algorithm library (`oxifoc-core`)
+  - Clarke/Park transforms and inverses
+  - Space Vector PWM (VESC geometric method)
+  - PI controller with anti-windup
+- ✅ Basic Hall sensor support
+  - Platform-agnostic Hall sensor logic (6-state, fixed 60° spacing)
+  - STM32G431 async driver using ExtiInput
+  - Hall sensor telemetry endpoint (`req/hall`)
+  - Direction detection and error tracking
+
+### In Progress / Next Steps
+
+#### Phase 2: Current Sensing (FOC Foundation)
+- ADC path for phase current sampling (synchronized with PWM)
+  - Use existing injected ADC channels (ia, ib, ic)
+  - Offset calibration routine (measure with motor stopped)
+  - Current measurement telemetry
+- Test current readings with known load
+
+#### Phase 3: PWM Generation for FOC
+- TIM1 3-phase complementary PWM configuration
+  - Safe dead-time insertion (prevent shoot-through)
+  - Center-aligned PWM for ADC synchronization
+- Integrate SVPWM algorithm with TIM1
+- Emergency shutdown on fault conditions
+- Safe startup sequence
+
+#### Phase 4: FOC Current Control Loop
+- Implement Id/Iq current control (dq frame)
+  - Use PI controllers from `oxifoc-core`
+  - Runtime gain tuning via host
+- Velocity control layer (outer loop)
+- Torque/current limit enforcement
+- Field weakening (optional, for high-speed operation)
+
+### Advanced Hall Sensor Features (VESC-inspired)
+**Priority: Medium** (enhance after basic FOC works)
+
+- **Hall sensor calibration** (`mcpwm_foc_hall_detect` equivalent)
+  - Automatic calibration routine: rotate motor via forced commutation
+  - Learn actual electrical angle for each Hall state (store in calibration table)
+  - Account for Hall sensor mounting misalignment
+  - Store calibration in non-volatile memory
+
+- **Hall angle interpolation** (`foc_correct_hall` equivalent)
+  - Linear interpolation between Hall transitions using estimated speed
+  - Speed calculation from Hall transition timing (`hall_dt_diff`)
+  - Speed-dependent interpolation threshold (`foc_hall_interp_erpm`)
+  - Midpoint angle on Hall state transitions
+
+- **Hall angle rate limiting**
+  - Limit maximum angle change per update (prevent current spikes)
+  - Smooth angle transitions during acceleration/deceleration
+
+- **Hall error detection and recovery**
+  - Invalid state detection (all high/low, illegal transitions)
+  - Glitch filtering (debounce, majority voting)
+  - Fallback to sensorless observer on Hall failure
+  - Error rate monitoring and reporting
+
+- **Hall-sensorless hybrid mode** (VESC `FOC_SENSOR_MODE_HALL`)
+  - Use Hall at low speed (< `foc_sl_erpm` threshold)
+  - Transition to sensorless observer at higher speeds
+  - Smooth blending between Hall and observer angles
+
+### Future Enhancements
+
+#### Encoder Support
+- Incremental encoder (ABI) support
+  - High-resolution angle feedback (> 6 states)
+  - Index pulse for absolute positioning
+- Absolute encoder support (SPI-based: AS5047, MT6816, etc.)
+
+#### Sensorless Control
+- Sensorless FOC (observer-based, VESC `m_observer`)
+  - Back-EMF observer for angle estimation
+  - High-frequency injection (HFI) for zero/low speed
+  - Automatic transition from sensored to sensorless
+
+#### Safety & Protection
+- Over-current protection (hardware + software limits)
+- Over-voltage / under-voltage detection
+- Over-temperature monitoring (FET, motor)
+- Fault latching and safe shutdown
+- Watchdog integration
+
+#### Telemetry & Diagnostics
+- High-speed telemetry streaming (not just poll-based)
+- Capture buffers for scope-like tuning (ia, ib, angle, duty)
+- Motor parameter identification (resistance, inductance, flux linkage)
+- Performance metrics (efficiency, power, RPM)
+
+#### Host Tooling
+- Calibration wizards (Hall, current offset, motor params)
+- Real-time plotting and tuning UI
+- Configuration save/load (non-volatile storage)
+- Firmware update via bootloader
 
 ## License
 
