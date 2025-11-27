@@ -8,11 +8,7 @@
 //!
 //! Based on Microsemi implementation guide and foc-calebfletcher reference.
 
-/// √3 constant for inverse Clarke transform
-const SQRT_3: f32 = 1.73205081;
-
-/// 1 / √3 constant for Clarke transform
-const FRAC_1_SQRT_3: f32 = 0.57735027;
+use super::constants::{FRAC_1_SQRT_3, SQRT_3};
 
 /// Clarke transform: Convert 3-phase currents (ABC) to 2-phase stationary frame (αβ)
 ///
@@ -20,8 +16,11 @@ const FRAC_1_SQRT_3: f32 = 0.57735027;
 /// Output: (alpha, beta) in stationary reference frame
 ///
 /// # Example
-/// ```
+/// ```rust
+/// use oxifoc_core::foc::transforms::clarke;
+///
 /// let (alpha, beta) = clarke(1.0, 0.5);
+/// assert!(alpha > 0.0 && beta > 0.0);
 /// ```
 #[inline]
 pub fn clarke(ia: f32, ib: f32) -> (f32, f32) {
@@ -41,8 +40,11 @@ pub fn clarke(ia: f32, ib: f32) -> (f32, f32) {
 /// Output: (a, b, c) three-phase values
 ///
 /// # Example
-/// ```
-/// let (va, vb, vc) = inverse_clarke(alpha, beta);
+/// ```rust
+/// use oxifoc_core::foc::transforms::inverse_clarke;
+///
+/// let (va, vb, vc) = inverse_clarke(0.8, 0.2);
+/// assert!((va + vb + vc).abs() < 1e-6);
 /// ```
 #[inline]
 pub fn inverse_clarke(alpha: f32, beta: f32) -> (f32, f32, f32) {
@@ -74,10 +76,17 @@ pub fn inverse_clarke(alpha: f32, beta: f32) -> (f32, f32, f32) {
 /// * `cos_theta` - cos(electrical angle)
 ///
 /// # Example
-/// ```
-/// let theta = 0.5; // radians
-/// let (sin_theta, cos_theta) = (theta.sin(), theta.cos());
+/// ```rust
+/// use oxifoc_core::foc::transforms::park;
+///
+/// let i_alpha = 1.0;
+/// let i_beta = 0.0;
+/// let sin_theta = 0.0;
+/// let cos_theta = 1.0;
+///
 /// let (id, iq) = park(i_alpha, i_beta, sin_theta, cos_theta);
+/// assert_eq!(id, i_alpha);
+/// assert_eq!(iq, i_beta);
 /// ```
 #[inline]
 pub fn park(alpha: f32, beta: f32, sin_theta: f32, cos_theta: f32) -> (f32, f32) {
@@ -104,10 +113,17 @@ pub fn park(alpha: f32, beta: f32, sin_theta: f32, cos_theta: f32) -> (f32, f32)
 /// * `cos_theta` - cos(electrical angle)
 ///
 /// # Example
-/// ```
-/// let theta = 0.5; // radians
-/// let (sin_theta, cos_theta) = (theta.sin(), theta.cos());
+/// ```rust
+/// use oxifoc_core::foc::transforms::inverse_park;
+///
+/// let vd = 1.2;
+/// let vq = -0.3;
+/// let sin_theta = 0.0;
+/// let cos_theta = 1.0;
+///
 /// let (v_alpha, v_beta) = inverse_park(vd, vq, sin_theta, cos_theta);
+/// assert_eq!(v_alpha, vd);
+/// assert_eq!(v_beta, vq);
 /// ```
 #[inline]
 pub fn inverse_park(d: f32, q: f32, sin_theta: f32, cos_theta: f32) -> (f32, f32) {
@@ -149,11 +165,15 @@ mod tests {
 
             assert!(
                 (a - ia).abs() < EPSILON,
-                "Clarke roundtrip failed for ia={}: got a={}", ia, a
+                "Clarke roundtrip failed for ia={}: got a={}",
+                ia,
+                a
             );
             assert!(
                 (b - ib).abs() < EPSILON,
-                "Clarke roundtrip failed for ib={}: got b={}", ib, b
+                "Clarke roundtrip failed for ib={}: got b={}",
+                ib,
+                b
             );
         }
     }
@@ -167,7 +187,8 @@ mod tests {
 
         assert!(
             sum.abs() < EPSILON,
-            "3-phase sum should be zero, got {}", sum
+            "3-phase sum should be zero, got {}",
+            sum
         );
     }
 
@@ -184,7 +205,13 @@ mod tests {
 
     #[test]
     fn test_park_roundtrip() {
-        let test_angles = [0.0, 0.5, 1.0, core::f32::consts::PI / 4.0, core::f32::consts::PI];
+        let test_angles = [
+            0.0,
+            0.5,
+            1.0,
+            core::f32::consts::PI / 4.0,
+            core::f32::consts::PI,
+        ];
         let test_values = [(1.0, 0.0), (0.0, 1.0), (1.5, -0.8), (2.3, 1.7)];
 
         for theta in test_angles {
@@ -198,12 +225,16 @@ mod tests {
                 assert!(
                     (alpha_result - alpha).abs() < EPSILON,
                     "Park roundtrip failed for alpha={} at θ={}: got {}",
-                    alpha, theta, alpha_result
+                    alpha,
+                    theta,
+                    alpha_result
                 );
                 assert!(
                     (beta_result - beta).abs() < EPSILON,
                     "Park roundtrip failed for beta={} at θ={}: got {}",
-                    beta, theta, beta_result
+                    beta,
+                    theta,
+                    beta_result
                 );
             }
         }
