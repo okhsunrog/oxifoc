@@ -19,7 +19,7 @@ use embassy_stm32::adc::{
     Adc, AdcChannel, AdcConfig, ConversionTrigger, Exten, InjectedAdc, SampleTime,
 };
 use embassy_stm32::exti::ExtiInput;
-use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
+use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
 use embassy_stm32::{Peri, peripherals};
 use embassy_stm32::{
@@ -60,6 +60,7 @@ use usart_io::{UartReader, UartWriter};
 use ergot::transport::rtt::{RttReader, RttWriter};
 
 mod motor;
+use motor::hall_sensor::HallSensorDriver;
 use motor::MotorController;
 
 // Resource assignments for hardware peripherals
@@ -174,6 +175,18 @@ static VBUS_MV: AtomicU32 = AtomicU32::new(0);
 static FET_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
 /// Sequence counter for ADC samples (incremented each poll).
 static ADC_SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// Hall sensor data (updated by hall_sensor_task).
+/// Angle stored as f32 bit-pattern in AtomicU32.
+static HALL_ANGLE_BITS: AtomicU32 = AtomicU32::new(0);
+/// Hall direction: 0=Stopped, 1=Clockwise, 2=CounterClockwise
+static HALL_DIRECTION: AtomicU8 = AtomicU8::new(0);
+/// Hall state (0-5)
+static HALL_STATE: AtomicU8 = AtomicU8::new(0);
+/// Hall error count
+static HALL_ERROR_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Sequence counter for Hall sensor samples
+static HALL_SEQ: AtomicU32 = AtomicU32::new(0);
 
 // ADC conversion constants for VBUS measurement.
 const ADC_MAX_COUNTS: u32 = 4095;
@@ -409,11 +422,15 @@ async fn main(spawner: Spawner) {
     // Initialize motor controller with TIM1 and motor pins
     let r = split_resources!(p);
 
-    // Initialize Hall sensor inputs with pull-ups
-    let hall_h1 = Input::new(r.hall.pb6, Pull::Up);
-    let hall_h2 = Input::new(r.hall.pb7, Pull::Up);
-    let hall_h3 = Input::new(r.hall.pb8, Pull::Up);
+    // Initialize Hall sensor inputs with pull-ups and EXTI (for async edge detection)
+    let hall_h1 = ExtiInput::new(r.hall.pb6, p.EXTI6, Pull::Up);
+    let hall_h2 = ExtiInput::new(r.hall.pb7, p.EXTI7, Pull::Up);
+    let hall_h3 = ExtiInput::new(r.hall.pb8, p.EXTI8, Pull::Up);
     defmt::info!("Hall sensors configured: H1=PB6, H2=PB7, H3=PB8");
+
+    // Create Hall sensor driver (7 pole pairs for ZD2808-V1.9)
+    let hall_sensor = HallSensorDriver::new(hall_h1, hall_h2, hall_h3, 7);
+    defmt::info!("Hall sensor driver initialized for 7 pole pairs");
 
     let motor_ctrl = MotorController::init(r.motor);
 
@@ -447,6 +464,8 @@ async fn main(spawner: Spawner) {
     spawner.spawn(status_reporter().unwrap());
     spawner.spawn(info_server().unwrap());
     spawner.spawn(adc_sample_server().unwrap());
+    spawner.spawn(hall_sensor_task(hall_sensor).unwrap());
+    spawner.spawn(hall_sensor_server().unwrap());
     spawner.spawn(motor_control_task(motor_ctrl, motor_cmd_receiver).unwrap());
     spawner.spawn(motor_command_server(motor_cmd_sender).unwrap());
 
@@ -671,6 +690,88 @@ async fn adc_sample_server() {
                     ic: IC_SAMPLE.load(Ordering::Relaxed),
                     vbus_mv: VBUS_MV.load(Ordering::Relaxed),
                     fet_temp_c_x10: FET_TEMP_C_X10.load(Ordering::Relaxed),
+                    seq,
+                }
+            })
+            .await;
+    }
+}
+
+/// Hall sensor task - continuously updates Hall angle on sensor edges
+#[embassy_executor::task]
+async fn hall_sensor_task(mut hall: HallSensorDriver) {
+    use oxifoc_core::foc::hall_sensor::Direction;
+    defmt::info!("Hall sensor task started");
+
+    loop {
+        // Wait for Hall sensor edge and update angle
+        hall.wait_and_update().await;
+
+        // Store Hall sensor data in atomics
+        let angle = hall.angle();
+        let direction = hall.direction();
+        let state = hall.state();
+        let error_count = hall.error_count();
+
+        // Convert angle f32 to bit pattern for atomic storage
+        HALL_ANGLE_BITS.store(angle.to_bits(), Ordering::Relaxed);
+
+        // Convert direction enum to u8
+        let dir_u8 = match direction {
+            Direction::Stopped => 0,
+            Direction::Clockwise => 1,
+            Direction::CounterClockwise => 2,
+        };
+        HALL_DIRECTION.store(dir_u8, Ordering::Relaxed);
+        HALL_STATE.store(state, Ordering::Relaxed);
+        HALL_ERROR_COUNT.store(error_count, Ordering::Relaxed);
+
+        // Log Hall sensor updates at debug level
+        defmt::debug!(
+            "Hall update: angle={} rad, dir={}, state={}, errors={}",
+            angle,
+            dir_u8,
+            state,
+            error_count
+        );
+    }
+}
+
+/// Hall sensor server - responds to host poll requests with current Hall sensor data
+#[embassy_executor::task]
+async fn hall_sensor_server() {
+    use oxifoc_protocol::{HallDirection, HallSensorData, HallSensorEndpoint};
+
+    defmt::info!("Hall sensor server started (poll-based)");
+
+    let server = STACK
+        .endpoints()
+        .bounded_server::<HallSensorEndpoint, 2>(Some("hall"));
+    let server = pin!(server);
+    let mut h = server.attach();
+
+    loop {
+        let _ = h
+            .serve(|_: &()| async {
+                let seq = HALL_SEQ.fetch_add(1, Ordering::Relaxed);
+
+                // Load angle from bit pattern
+                let angle_bits = HALL_ANGLE_BITS.load(Ordering::Relaxed);
+                let angle_rad = f32::from_bits(angle_bits);
+
+                // Convert direction u8 back to enum
+                let dir_u8 = HALL_DIRECTION.load(Ordering::Relaxed);
+                let direction = match dir_u8 {
+                    1 => HallDirection::Clockwise,
+                    2 => HallDirection::CounterClockwise,
+                    _ => HallDirection::Stopped,
+                };
+
+                HallSensorData {
+                    angle_rad,
+                    direction,
+                    state: HALL_STATE.load(Ordering::Relaxed),
+                    error_count: HALL_ERROR_COUNT.load(Ordering::Relaxed),
                     seq,
                 }
             })

@@ -50,4 +50,7 @@ pub mod foc {
 
     /// PI controller with anti-windup
     pub mod pi_controller;
+
+    /// Hall sensor angle estimation
+    pub mod hall_sensor;
 }

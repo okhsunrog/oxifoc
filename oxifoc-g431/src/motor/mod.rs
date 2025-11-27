@@ -8,6 +8,7 @@
 
 pub mod pwm;
 pub mod six_step;
+pub mod hall_sensor;
 
 // Re-export FOC modules from oxifoc-core for convenience
 pub use oxifoc_core::foc::{pi_controller, svpwm, transforms};
