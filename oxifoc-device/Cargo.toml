@@ -51,6 +51,7 @@ ergot = { path = "../ergot/crates/ergot", default-features = false, features = [
 ] }
 
 static_cell = "2.1"
+assign-resources = "0.5.0"
 embedded-io-async = "0.6"
 heapless = { version = "0.9.2", default-features = false }
 libm = { version = "0.2.15", default-features = false }

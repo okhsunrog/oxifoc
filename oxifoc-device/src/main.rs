@@ -3,7 +3,9 @@
 
 // Compile-time check: only one transport can be enabled
 #[cfg(all(feature = "transport-uart", feature = "transport-rtt"))]
-compile_error!("Cannot enable both transport-uart and transport-rtt features simultaneously. Choose one transport.");
+compile_error!(
+    "Cannot enable both transport-uart and transport-rtt features simultaneously. Choose one transport."
+);
 
 #[cfg(not(any(feature = "transport-uart", feature = "transport-rtt")))]
 compile_error!("Must enable either transport-uart or transport-rtt feature.");
@@ -21,7 +23,7 @@ use embassy_stm32::adc::{
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
-use embassy_stm32::peripherals;
+use embassy_stm32::{Peri, peripherals};
 use embassy_stm32::{
     interrupt,
     interrupt::typelevel::{ADC1_2, Interrupt},
@@ -39,6 +41,7 @@ use oxifoc_protocol::{
 };
 use static_cell::StaticCell;
 
+use assign_resources::assign_resources;
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as SyncRawMutex;
 use embassy_sync::channel;
@@ -53,15 +56,28 @@ use embassy_stm32::usart::{
 #[cfg(feature = "transport-uart")]
 mod usart_io;
 #[cfg(feature = "transport-uart")]
-use usart_io::{UartReader, UartWriter};
-#[cfg(feature = "transport-uart")]
 use ergot::logging::defmt_sink;
+#[cfg(feature = "transport-uart")]
+use usart_io::{UartReader, UartWriter};
 
 #[cfg(feature = "transport-rtt")]
 use ergot::transport::rtt::{RttReader, RttWriter};
 
 mod motor;
 use motor::MotorController;
+
+// Resource assignments for hardware peripherals
+assign_resources! {
+    motor: MotorResources {
+        tim1: TIM1,
+        pa8: PA8,   // Phase A high
+        pc13: PC13, // Phase A low
+        pa9: PA9,   // Phase B high
+        pa12: PA12, // Phase B low
+        pa10: PA10, // Phase C high
+        pb15: PB15, // Phase C low
+    }
+}
 
 // Use panic-probe for panics
 use panic_probe as _;
@@ -421,14 +437,8 @@ async fn main(spawner: Spawner) {
     // let mut gpio_bemf = Output::new(p.PB5, Level::Low, Speed::Low);
 
     // Initialize motor controller with TIM1 and motor pins
-    let motor_ctrl = MotorController::init(
-        p.TIM1, p.PA8,  // Phase A high
-        p.PC13, // Phase A low
-        p.PA9,  // Phase B high
-        p.PA12, // Phase B low
-        p.PA10, // Phase C high
-        p.PB15, // Phase C low
-    );
+    let r = split_resources!(p);
+    let motor_ctrl = MotorController::init(r.motor);
 
     // Spawn I/O workers (transport-specific)
     spawner.spawn(

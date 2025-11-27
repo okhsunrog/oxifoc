@@ -8,6 +8,7 @@ use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
 
 use super::six_step::{CommutationStep, PhaseState};
+use crate::MotorResources;
 
 /// PWM configuration for the motor.
 pub struct MotorPwmConfig {
@@ -44,23 +45,14 @@ impl<'d> MotorPwm<'d> {
     /// - Phase A: TIM1_CH1 (PA8) / TIM1_CH1N (PC13)
     /// - Phase B: TIM1_CH2 (PA9) / TIM1_CH2N (PA12)
     /// - Phase C: TIM1_CH3 (PA10) / TIM1_CH3N (PB15)
-    pub fn new(
-        tim1: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::TIM1>>,
-        pa8: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PA8>>,
-        pc13: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PC13>>,
-        pa9: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PA9>>,
-        pa12: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PA12>>,
-        pa10: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PA10>>,
-        pb15: impl Into<embassy_stm32::Peri<'d, embassy_stm32::peripherals::PB15>>,
-        config: MotorPwmConfig,
-    ) -> Self {
-        let tim1 = tim1.into();
-        let pa8 = pa8.into();
-        let pc13 = pc13.into();
-        let pa9 = pa9.into();
-        let pa12 = pa12.into();
-        let pa10 = pa10.into();
-        let pb15 = pb15.into();
+    pub fn new(resources: MotorResources, config: MotorPwmConfig) -> Self {
+        let tim1 = resources.tim1;
+        let pa8 = resources.pa8;
+        let pc13 = resources.pc13;
+        let pa9 = resources.pa9;
+        let pa12 = resources.pa12;
+        let pa10 = resources.pa10;
+        let pb15 = resources.pb15;
 
         // High-side pins (TIM1 CH1/2/3)
         let ch1 = PwmPin::new(pa8, OutputType::PushPull); // Phase A high
