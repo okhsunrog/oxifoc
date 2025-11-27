@@ -168,7 +168,7 @@ mod tests {
 
         // Duties should be near mid-scale for zero voltage command
         for duty in telem.duties {
-            assert!(duty >= 490 && duty <= 510);
+            assert!((490..=510).contains(&duty));
         }
         assert!((telem.id).abs() < 1e-6);
         assert!((telem.iq).abs() < 1e-6);

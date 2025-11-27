@@ -1,0 +1,68 @@
+[package]
+name = "oxifoc-f405"
+version = "0.1.0"
+edition = "2024"
+description = "STM32F405-based motor controller (Simple FOCer 2 / VESC hardware)"
+
+[[bin]]
+name = "oxifoc-f405"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+default = ["transport-usb"]
+# USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
+transport-usb = ["ergot/embassy-usb-v0_5", "ergot/defmt-sink-rtt"]
+
+[dependencies]
+# Embassy + Cortex-M
+embassy-executor = { version = "0.9.1", features = ["arch-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-futures = "0.1.2"
+embassy-stm32 = { version = "0.4.0", features = ["memory-x", "stm32f405rg", "time-driver-any", "exti", "unstable-pac"] }
+embassy-sync = "0.7.2"
+embassy-time = { version = "0.5.0", features = ["tick-hz-32_768"] }
+embassy-usb = { version = "0.5.0", package = "embassy-usb" }
+
+cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+
+# Debugging and logging
+defmt = "1.0.1"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+
+# Utilities
+heapless = { version = "0.9.2", default-features = false }
+mutex = "1.0.2"
+static_cell = "2.1"
+
+# Local crates
+oxifoc-core = { path = "../oxifoc-core" }
+oxifoc-protocol = { path = "../protocol" }
+ergot = { path = "../ergot/crates/ergot", default-features = false, features = [
+    "embassy-usb-v0_5",
+    "disable-cache-padding",
+    "defmt-sink-rtt",
+] }
+
+[profile.dev]
+debug = true
+lto = true
+opt-level = "z"
+incremental = true
+
+[profile.release]
+debug = 2
+lto = true
+opt-level = "z"
+incremental = true
+
+[patch.crates-io]
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5b03773" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5b03773" }
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "5b03773" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5b03773" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5b03773" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "5b03773", package = "embassy-usb" }
+embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", rev = "5b03773" }
+embassy-usb-synopsys-otg = { git = "https://github.com/embassy-rs/embassy", rev = "5b03773" }
