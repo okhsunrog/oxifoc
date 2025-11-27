@@ -1,0 +1,9 @@
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+runner = ["bash", "../scripts/probe_run_f405.sh"]
+
+[env]
+# Default to chatty defmt logs while bringup
+DEFMT_LOG = "debug"

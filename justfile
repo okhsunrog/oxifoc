@@ -28,12 +28,14 @@ cli *ARGS:
 fmt:
     cargo fmt --all
     cd oxifoc-g431 && cargo fmt
+    cd oxifoc-f405 && cargo fmt
     cd oxifoc-host-tauri && bun format
 
 # Lint Rust code (clippy)
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
     cd oxifoc-g431 && cargo clippy --all-targets -- -D warnings
+    cd oxifoc-f405 && cargo clippy --all-targets -- -D warnings
 
 # Lint frontend code (eslint)
 lint-ts:
@@ -87,11 +89,13 @@ check-rust:
     @echo "Checking Rust formatting..."
     cargo fmt --all -- --check
     cd oxifoc-g431 && cargo fmt -- --check
+    cd oxifoc-f405 && cargo fmt -- --check
     @echo "Running clippy..."
     just clippy
     @echo "Checking builds..."
     cargo check --workspace
     cd oxifoc-g431 && cargo check
+    cd oxifoc-f405 && cargo check
     @echo "Running tests..."
     cargo test --workspace
     @echo "✓ Rust checks passed!"
