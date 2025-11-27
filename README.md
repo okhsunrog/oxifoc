@@ -48,6 +48,7 @@ See [docs/hardware.md](docs/hardware.md) for detailed pinout and functional grou
   - PI controller with anti-windup
   - Hall sensor logic (platform-agnostic)
   - Fully tested on x86_64 (33 unit tests)
+  - Hall support: expect per-motor calibration (offset/sequence), apply offset before Park, and optionally blend an estimated angle from velocity for smoother operation at low speeds (similar to VESC). Calibration and interpolation are TODO in device firmware.
 
 - **Host applications:**
   - Connects via Serial (ST-Link VCP) or RTT (probe-rs)

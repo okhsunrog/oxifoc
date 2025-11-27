@@ -5,7 +5,11 @@
 //! shared traits. The controller is intentionally minimal: it runs one
 //! current loop step and returns the computed PWM duties plus telemetry.
 
-use super::{pi_controller::PIController, svpwm, transforms};
+use super::{
+    pi_controller::PIController,
+    pwm::{Modulator, SvpwmModulator},
+    transforms,
+};
 
 /// Result of a single FOC update
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,7 +41,7 @@ pub struct FocTelemetry {
 /// The controller is hardware-agnostic: it consumes measured currents and
 /// electrical angle, then returns duty cycles that can be written through a
 /// platform `PhasePwm` implementation.
-pub struct FocController {
+pub struct FocController<M: Modulator = SvpwmModulator> {
     /// d-axis PI controller (flux)
     pub id_pi: PIController,
     /// q-axis PI controller (torque)
@@ -46,9 +50,11 @@ pub struct FocController {
     vbus: f32,
     /// Modulation limit as a fraction of `vbus` (0.0–1.0)
     modulation_limit: f32,
+    /// Modulator type
+    _mod: core::marker::PhantomData<M>,
 }
 
-impl FocController {
+impl<M: Modulator> FocController<M> {
     /// Conservative default modulation limit (keeps us inside linear SVPWM)
     pub const DEFAULT_MODULATION_LIMIT: f32 = 0.577; // ≈ 1/√3
 
@@ -59,6 +65,7 @@ impl FocController {
             iq_pi: PIController::new(0.4, 40.0).with_limits(-12.0, 12.0),
             vbus: vbus.max(1.0),
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
+            _mod: core::marker::PhantomData,
         }
     }
 
@@ -135,7 +142,7 @@ impl FocController {
         // dq -> stationary frame
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
         let inv_vbus = 1.0 / self.vbus;
-        let duties = svpwm::space_vector_pwm(v_alpha * inv_vbus, v_beta * inv_vbus, max_duty);
+        let duties = M::to_duties(v_alpha * inv_vbus, v_beta * inv_vbus, max_duty);
 
         FocTelemetry {
             ia,
@@ -163,7 +170,7 @@ mod tests {
 
     #[test]
     fn zero_currents_zero_setpoint_centered_pwm() {
-        let mut foc = FocController::new(24.0);
+        let mut foc = FocController::<SvpwmModulator>::new(24.0);
         let telem = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 0.0, 1000, DT);
 
         // Duties should be near mid-scale for zero voltage command
@@ -176,7 +183,7 @@ mod tests {
 
     #[test]
     fn positive_q_axis_command_generates_voltage() {
-        let mut foc = FocController::new(48.0);
+        let mut foc = FocController::<SvpwmModulator>::new(48.0);
         let telem = foc.step((0.0, 0.0, 0.0), 1.0, 0.0, 5.0, 1200, DT);
 
         assert!(telem.vq > 0.0);
@@ -185,7 +192,7 @@ mod tests {
 
     #[test]
     fn modulation_limit_is_respected() {
-        let mut foc = FocController::new(30.0).with_modulation_limit(0.25);
+        let mut foc = FocController::<SvpwmModulator>::new(30.0).with_modulation_limit(0.25);
         let telem = foc.step((2.0, -1.0, -1.0), 0.7, 0.0, 20.0, 800, DT);
 
         let v_limit = foc.vbus() * foc.modulation_limit() + 1e-6;

@@ -59,6 +59,9 @@ pub mod foc {
     /// High-level FOC control loop
     pub mod controller;
 
+    /// Fault registry shared across targets
+    pub mod fault;
+
     /// Shunt resistor current sensing
     pub mod current_sense;
 
