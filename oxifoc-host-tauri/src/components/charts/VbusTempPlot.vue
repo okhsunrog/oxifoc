@@ -13,7 +13,6 @@ import { GridComponent, LegendComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
 import type { EChartsOption } from 'echarts'
 import { useStreamStore } from '../../stores/streamStore'
-import { useFrameTiming } from '../../composables/useFrameTiming'
 
 use([CanvasRenderer, LineChart, GridComponent, LegendComponent])
 
@@ -22,7 +21,6 @@ const streamStore = useStreamStore()
 
 const chartRef = ref<InstanceType<typeof VChart> | null>(null)
 let updateInterval: ReturnType<typeof setInterval> | null = null
-const { measureFrame, avgFrameTimeMs, maxFps } = useFrameTiming()
 
 // Update at 10Hz - voltage/temp change slowly, no need for 60Hz
 const UPDATE_INTERVAL_MS = 100
@@ -38,15 +36,23 @@ let updatesPaused = false
 const windowMs = computed(() => props.windowMs ?? 2000)
 const windowSec = computed(() => windowMs.value / 1000)
 
+let colorConversionCanvas: HTMLCanvasElement | null = null
+let colorConversionCtx: CanvasRenderingContext2D | null = null
+
 const colorToRgb = (cssColor: string): string => {
   if (typeof window === 'undefined') return cssColor
-  const canvas = document.createElement('canvas')
-  canvas.width = 1
-  canvas.height = 1
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return cssColor
-  ctx.fillStyle = cssColor
-  return ctx.fillStyle
+
+  // Create canvas once and reuse it
+  if (!colorConversionCanvas) {
+    colorConversionCanvas = document.createElement('canvas')
+    colorConversionCanvas.width = 1
+    colorConversionCanvas.height = 1
+    colorConversionCtx = colorConversionCanvas.getContext('2d')
+  }
+
+  if (!colorConversionCtx) return cssColor
+  colorConversionCtx.fillStyle = cssColor
+  return colorConversionCtx.fillStyle
 }
 
 const getCssVar = (name: string, fallback: string): string => {
@@ -185,17 +191,15 @@ const doChartUpdate = () => {
   const tempSlice = tempPool.slice(0, activePointCount)
 
   const chart = chartRef.value
-  measureFrame(() => {
-    chart.setOption({
-      xAxis: {
-        min: -windowSec.value,
-        max: 0,
-      },
-      series: [
-        { name: 'Voltage', data: voltageSlice },
-        { name: 'Temperature', data: tempSlice },
-      ],
-    })
+  chart.setOption({
+    xAxis: {
+      min: -windowSec.value,
+      max: 0,
+    },
+    series: [
+      { name: 'Voltage', data: voltageSlice },
+      { name: 'Temperature', data: tempSlice },
+    ],
   })
 }
 
@@ -235,17 +239,7 @@ streamStore.ensureStream()
 <template>
   <div class="card bg-base-100 shadow-xl">
     <div class="card-body">
-      <div class="flex flex-col items-start gap-2">
-        <h2 class="card-title">Voltage & Temperature</h2>
-        <div class="flex items-center gap-2 flex-wrap">
-          <div class="badge badge-success badge-outline">
-            {{ avgFrameTimeMs ? `${avgFrameTimeMs.toFixed(1)}ms` : '—' }} / frame
-          </div>
-          <div class="badge badge-info badge-outline">
-            {{ maxFps ? `${maxFps.toFixed(0)} fps` : '—' }} capable
-          </div>
-        </div>
-      </div>
+      <h2 class="card-title">Voltage & Temperature</h2>
       <div class="mt-4 h-72 w-full">
         <VChart
           ref="chartRef"

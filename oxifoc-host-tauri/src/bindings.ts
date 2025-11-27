@@ -4,165 +4,161 @@
 
 /** user-defined commands **/
 
-
 export const commands = {
-/**
- * List all available serial ports.
- */
-async listSerialPortsCmd() : Promise<SerialPort[]> {
-    return await TAURI_INVOKE("list_serial_ports_cmd");
-},
-/**
- * List all available debug probes (for RTT transport).
- */
-async listProbesCmd() : Promise<DebugProbe[]> {
-    return await TAURI_INVOKE("list_probes_cmd");
-},
-/**
- * Connect to a device with the specified configuration.
- */
-async connectDevice(config: ConnectionConfig) : Promise<Result<null, string>> {
+  /**
+   * List all available serial ports.
+   */
+  async listSerialPortsCmd(): Promise<SerialPort[]> {
+    return await TAURI_INVOKE('list_serial_ports_cmd')
+  },
+  /**
+   * List all available debug probes (for RTT transport).
+   */
+  async listProbesCmd(): Promise<DebugProbe[]> {
+    return await TAURI_INVOKE('list_probes_cmd')
+  },
+  /**
+   * Connect to a device with the specified configuration.
+   */
+  async connectDevice(config: ConnectionConfig): Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("connect_device", { config }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Disconnect from the current device.
- */
-async disconnectDevice() : Promise<Result<null, string>> {
+      return { status: 'ok', data: await TAURI_INVOKE('connect_device', { config }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Disconnect from the current device.
+   */
+  async disconnectDevice(): Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("disconnect_device") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Check if the device is connected.
- */
-async isDeviceConnected() : Promise<boolean> {
-    return await TAURI_INVOKE("is_device_connected");
-},
-/**
- * Wait for device connection with timeout (in seconds).
- */
-async waitForDevice(timeoutSecs: number) : Promise<boolean> {
-    return await TAURI_INVOKE("wait_for_device", { timeoutSecs });
-},
-/**
- * Start the motor at the specified duty cycle (0-100%).
- */
-async motorStart(duty: number) : Promise<Result<null, string>> {
+      return { status: 'ok', data: await TAURI_INVOKE('disconnect_device') }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Check if the device is connected.
+   */
+  async isDeviceConnected(): Promise<boolean> {
+    return await TAURI_INVOKE('is_device_connected')
+  },
+  /**
+   * Wait for device connection with timeout (in seconds).
+   */
+  async waitForDevice(timeoutSecs: number): Promise<boolean> {
+    return await TAURI_INVOKE('wait_for_device', { timeoutSecs })
+  },
+  /**
+   * Start the motor at the specified duty cycle (0-100%).
+   */
+  async motorStart(duty: number): Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("motor_start", { duty }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Stop the motor.
- */
-async motorStop() : Promise<Result<null, string>> {
+      return { status: 'ok', data: await TAURI_INVOKE('motor_start', { duty }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Stop the motor.
+   */
+  async motorStop(): Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("motor_stop") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Set motor speed (duty cycle 0-100%) while running.
- */
-async motorSetSpeed(duty: number) : Promise<Result<null, string>> {
+      return { status: 'ok', data: await TAURI_INVOKE('motor_stop') }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Set motor speed (duty cycle 0-100%) while running.
+   */
+  async motorSetSpeed(duty: number): Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("motor_set_speed", { duty }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Start streaming ADC samples to the frontend via the provided channel.
- * Spawns a background thread that forwards samples from the host runtime.
- */
-async startAdcStream(channel: TAURI_CHANNEL<AdcSample>) : Promise<Result<null, string>> {
+      return { status: 'ok', data: await TAURI_INVOKE('motor_set_speed', { duty }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Start streaming ADC samples to the frontend via the provided channel.
+   * Spawns a background thread that forwards samples from the host runtime.
+   */
+  async startAdcStream(channel: TAURI_CHANNEL<AdcSample>): Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_adc_stream", { channel }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Get a single ADC sample (non-blocking).
- * Returns None if no sample is available.
- */
-async getAdcSample() : Promise<Result<AdcSample | null, string>> {
+      return { status: 'ok', data: await TAURI_INVOKE('start_adc_stream', { channel }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Get a single ADC sample (non-blocking).
+   * Returns None if no sample is available.
+   */
+  async getAdcSample(): Promise<Result<AdcSample | null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_adc_sample") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Set ADC poll rate in Hz (0 = disabled, 1-255 = rate).
- * Controls how often the host polls the device for ADC samples.
- */
-async setAdcPollRate(rateHz: number) : Promise<Result<null, string>> {
+      return { status: 'ok', data: await TAURI_INVOKE('get_adc_sample') }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Set ADC poll rate in Hz (0 = disabled, 1-255 = rate).
+   * Controls how often the host polls the device for ADC samples.
+   */
+  async setAdcPollRate(rateHz: number): Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_adc_poll_rate", { rateHz }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Set the host log level at runtime
- */
-async setHostLogLevel(level: LogLevel) : Promise<Result<null, string>> {
+      return { status: 'ok', data: await TAURI_INVOKE('set_adc_poll_rate', { rateHz }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Set the host log level at runtime
+   */
+  async setHostLogLevel(level: LogLevel): Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_host_log_level", { level }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Set the device log level at runtime
- */
-async setDeviceLogLevel(level: LogLevel) : Promise<Result<null, string>> {
+      return { status: 'ok', data: await TAURI_INVOKE('set_host_log_level', { level }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Set the device log level at runtime
+   */
+  async setDeviceLogLevel(level: LogLevel): Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_device_log_level", { level }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Get current log levels (host, device)
- */
-async getLogLevels() : Promise<[LogLevel, LogLevel]> {
-    return await TAURI_INVOKE("get_log_levels");
-}
+      return { status: 'ok', data: await TAURI_INVOKE('set_device_log_level', { level }) }
+    } catch (e) {
+      if (e instanceof Error) throw e
+      else return { status: 'error', error: e as any }
+    }
+  },
+  /**
+   * Get current log levels (host, device)
+   */
+  async getLogLevels(): Promise<[LogLevel, LogLevel]> {
+    return await TAURI_INVOKE('get_log_levels')
+  },
 }
 
 /** user-defined events **/
 
-
 export const events = __makeEvents__<{
-logEvent: LogEvent
+  logEvent: LogEvent
 }>({
-logEvent: "log-event"
+  logEvent: 'log-event',
 })
 
 /** user-defined constants **/
-
-
 
 /** user-defined types **/
 
@@ -170,101 +166,113 @@ logEvent: "log-event"
  * ADC sample with specta derives for TypeScript bindings.
  * Mirrors oxifoc_protocol::AdcSample but with specta support.
  */
-export type AdcSample = { ia: number; ib: number; ic: number; vbusMv: number; fetTempCX10: number; seq: number }
+export type AdcSample = {
+  ia: number
+  ib: number
+  ic: number
+  vbusMv: number
+  fetTempCX10: number
+  seq: number
+}
 /**
  * Connection configuration from frontend
  */
-export type ConnectionConfig = { 
-/**
- * Transport type: "serial" or "rtt"
- */
-transport: string; 
-/**
- * Serial port path (for serial transport)
- */
-serialPath: string | null; 
-/**
- * Baud rate (for serial transport)
- */
-baudRate: number | null; 
-/**
- * Probe identifier (for RTT transport)
- */
-probe: string | null; 
-/**
- * Chip name (for RTT transport)
- */
-chip: string | null }
+export type ConnectionConfig = {
+  /**
+   * Transport type: "serial" or "rtt"
+   */
+  transport: string
+  /**
+   * Serial port path (for serial transport)
+   */
+  serialPath: string | null
+  /**
+   * Baud rate (for serial transport)
+   */
+  baudRate: number | null
+  /**
+   * Probe identifier (for RTT transport)
+   */
+  probe: string | null
+  /**
+   * Chip name (for RTT transport)
+   */
+  chip: string | null
+}
 /**
  * Debug probe information for TypeScript (RTT transport)
  */
-export type DebugProbe = { identifier: string; vid: number; pid: number; serialNumber: string | null; probeType: string; displayName: string }
+export type DebugProbe = {
+  identifier: string
+  vid: number
+  pid: number
+  serialNumber: string | null
+  probeType: string
+  displayName: string
+}
 export type LogEvent = { message: string }
 /**
  * Log level enum for frontend/backend communication
  */
-export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "off"
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'off'
 /**
  * Serial port information for TypeScript
  */
-export type SerialPort = { path: string; vid: number | null; pid: number | null; serialNumber: string | null; manufacturer: string | null; product: string | null; displayName: string }
+export type SerialPort = {
+  path: string
+  vid: number | null
+  pid: number | null
+  serialNumber: string | null
+  manufacturer: string | null
+  product: string | null
+  displayName: string
+}
 
 /** tauri-specta globals **/
 
-import {
-	invoke as TAURI_INVOKE,
-	Channel as TAURI_CHANNEL,
-} from "@tauri-apps/api/core";
-import * as TAURI_API_EVENT from "@tauri-apps/api/event";
-import { type WebviewWindow as __WebviewWindow__ } from "@tauri-apps/api/webviewWindow";
+import { invoke as TAURI_INVOKE, Channel as TAURI_CHANNEL } from '@tauri-apps/api/core'
+import * as TAURI_API_EVENT from '@tauri-apps/api/event'
+import { type WebviewWindow as __WebviewWindow__ } from '@tauri-apps/api/webviewWindow'
 
 type __EventObj__<T> = {
-	listen: (
-		cb: TAURI_API_EVENT.EventCallback<T>,
-	) => ReturnType<typeof TAURI_API_EVENT.listen<T>>;
-	once: (
-		cb: TAURI_API_EVENT.EventCallback<T>,
-	) => ReturnType<typeof TAURI_API_EVENT.once<T>>;
-	emit: null extends T
-		? (payload?: T) => ReturnType<typeof TAURI_API_EVENT.emit>
-		: (payload: T) => ReturnType<typeof TAURI_API_EVENT.emit>;
-};
+  listen: (cb: TAURI_API_EVENT.EventCallback<T>) => ReturnType<typeof TAURI_API_EVENT.listen<T>>
+  once: (cb: TAURI_API_EVENT.EventCallback<T>) => ReturnType<typeof TAURI_API_EVENT.once<T>>
+  emit: null extends T
+    ? (payload?: T) => ReturnType<typeof TAURI_API_EVENT.emit>
+    : (payload: T) => ReturnType<typeof TAURI_API_EVENT.emit>
+}
 
-export type Result<T, E> =
-	| { status: "ok"; data: T }
-	| { status: "error"; error: E };
+export type Result<T, E> = { status: 'ok'; data: T } | { status: 'error'; error: E }
 
-function __makeEvents__<T extends Record<string, any>>(
-	mappings: Record<keyof T, string>,
-) {
-	return new Proxy(
-		{} as unknown as {
-			[K in keyof T]: __EventObj__<T[K]> & {
-				(handle: __WebviewWindow__): __EventObj__<T[K]>;
-			};
-		},
-		{
-			get: (_, event) => {
-				const name = mappings[event as keyof T];
+function __makeEvents__<T extends Record<string, any>>(mappings: Record<keyof T, string>) {
+  return new Proxy(
+    {} as unknown as {
+      [K in keyof T]: __EventObj__<T[K]> & {
+        (handle: __WebviewWindow__): __EventObj__<T[K]>
+      }
+    },
+    {
+      get: (_, event) => {
+        const name = mappings[event as keyof T]
 
-				return new Proxy((() => {}) as any, {
-					apply: (_, __, [window]: [__WebviewWindow__]) => ({
-						listen: (arg: any) => window.listen(name, arg),
-						once: (arg: any) => window.once(name, arg),
-						emit: (arg: any) => window.emit(name, arg),
-					}),
-					get: (_, command: keyof __EventObj__<any>) => {
-						switch (command) {
-							case "listen":
-								return (arg: any) => TAURI_API_EVENT.listen(name, arg);
-							case "once":
-								return (arg: any) => TAURI_API_EVENT.once(name, arg);
-							case "emit":
-								return (arg: any) => TAURI_API_EVENT.emit(name, arg);
-						}
-					},
-				});
-			},
-		},
-	);
+        return new Proxy((() => {}) as any, {
+          apply: (_, __, [window]: [__WebviewWindow__]) => ({
+            listen: (arg: any) => window.listen(name, arg),
+            once: (arg: any) => window.once(name, arg),
+            emit: (arg: any) => window.emit(name, arg),
+          }),
+          get: (_, command: keyof __EventObj__<any>) => {
+            switch (command) {
+              case 'listen':
+                return (arg: any) => TAURI_API_EVENT.listen(name, arg)
+              case 'once':
+                return (arg: any) => TAURI_API_EVENT.once(name, arg)
+              case 'emit':
+                return (arg: any) => TAURI_API_EVENT.emit(name, arg)
+            }
+          },
+        })
+      },
+    },
+  )
 }
