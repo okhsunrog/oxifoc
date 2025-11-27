@@ -32,18 +32,12 @@ impl HallSensorDriver {
     ///
     /// # Arguments
     /// * `h1`, `h2`, `h3` - ExtiInput pins for the three Hall sensors
-    /// * `pole_pairs` - Number of motor pole pairs
-    pub fn new(
-        h1: ExtiInput<'static>,
-        h2: ExtiInput<'static>,
-        h3: ExtiInput<'static>,
-        pole_pairs: u8,
-    ) -> Self {
+    pub fn new(h1: ExtiInput<'static>, h2: ExtiInput<'static>, h3: ExtiInput<'static>) -> Self {
         Self {
             h1,
             h2,
             h3,
-            sensor: HallSensor::new(pole_pairs),
+            sensor: HallSensor::new(),
         }
     }
 
@@ -122,5 +116,17 @@ impl HallSensorDriver {
     /// Get current Hall state (0-5)
     pub fn state(&self) -> u8 {
         self.sensor.state()
+    }
+
+    /// Get mechanical angle from electrical angle
+    ///
+    /// # Arguments
+    /// * `pole_pairs` - Number of motor pole pairs
+    ///
+    /// # Returns
+    /// Mechanical angle in radians (0 to 2π per physical shaft rotation)
+    #[allow(dead_code)]
+    pub fn mechanical_angle(&self, pole_pairs: u8) -> f32 {
+        self.sensor.angle() / pole_pairs as f32
     }
 }

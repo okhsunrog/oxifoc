@@ -428,9 +428,9 @@ async fn main(spawner: Spawner) {
     let hall_h3 = ExtiInput::new(r.hall.pb8, p.EXTI8, Pull::Up);
     defmt::info!("Hall sensors configured: H1=PB6, H2=PB7, H3=PB8");
 
-    // Create Hall sensor driver (7 pole pairs for ZD2808-V1.9)
-    let hall_sensor = HallSensorDriver::new(hall_h1, hall_h2, hall_h3, 7);
-    defmt::info!("Hall sensor driver initialized for 7 pole pairs");
+    // Create Hall sensor driver
+    let hall_sensor = HallSensorDriver::new(hall_h1, hall_h2, hall_h3);
+    defmt::info!("Hall sensor driver initialized");
 
     let motor_ctrl = MotorController::init(r.motor);
 

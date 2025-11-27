@@ -25,13 +25,14 @@ const HALL_STATE_TABLE: [u8; 8] = [
 ];
 
 /// Direction of rotation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Direction {
     /// Clockwise rotation
     Clockwise,
     /// Counter-clockwise rotation
     CounterClockwise,
     /// Motor stopped or direction unknown
+    #[default]
     Stopped,
 }
 
@@ -39,10 +40,11 @@ pub enum Direction {
 ///
 /// Tracks Hall sensor state transitions to estimate electrical angle
 /// and direction of rotation.
+///
+/// Returns electrical angle (0 to 2π per electrical revolution),
+/// which completes every 6 Hall states regardless of motor pole count.
 pub struct HallSensor {
-    /// Number of motor pole pairs
-    pole_pairs: u8,
-    /// Electrical angle increment per Hall state change
+    /// Electrical angle increment per Hall state change (TAU / 6)
     angle_per_state: f32,
     /// Current electrical angle (radians, 0 to 2π)
     angle: f32,
@@ -52,32 +54,32 @@ pub struct HallSensor {
     direction: Direction,
     /// Error counter for invalid states or transitions
     error_count: u32,
-    /// Maximum Hall index (pole_pairs * 6)
-    hall_idx_max: usize,
-    /// Base Hall index (increments by 6 each electrical revolution)
-    hall_idx_base: usize,
+}
+
+impl Default for HallSensor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HallSensor {
     /// Create a new Hall sensor estimator
     ///
-    /// # Arguments
-    /// * `pole_pairs` - Number of motor pole pairs (poles / 2)
+    /// Returns **electrical angle** (0 to 2π per electrical revolution),
+    /// which completes every 6 Hall states.
     ///
-    /// For a 14-pole motor: pole_pairs = 7
-    pub fn new(pole_pairs: u8) -> Self {
-        let hall_idx_max = pole_pairs as usize * 6;
-        let angle_per_state = TAU / (hall_idx_max as f32);
+    /// To convert to mechanical angle, divide by pole pairs:
+    /// `mechanical_angle = electrical_angle / pole_pairs`
+    pub fn new() -> Self {
+        // Electrical angle completes 2π every 6 Hall states (one electrical revolution)
+        let angle_per_state = TAU / 6.0;
 
         HallSensor {
-            pole_pairs,
             angle_per_state,
             angle: 0.0,
             state_prev: 0,
             direction: Direction::Stopped,
             error_count: 0,
-            hall_idx_max,
-            hall_idx_base: 0,
         }
     }
 
@@ -100,17 +102,11 @@ impl HallSensor {
         let current_state = HALL_STATE_TABLE[raw_state as usize];
         self.state_prev = current_state;
 
-        // Detect direction and update Hall index base
-        // State 0 → 5: CW wraps to next electrical cycle
-        // State 5 → 0: CCW wraps to previous electrical cycle
+        // Detect direction based on state transitions
         match current_state {
             0 => {
                 if prev_state == 5 {
-                    // Forward wrap (CW)
-                    self.hall_idx_base += 6;
-                    if self.hall_idx_base >= self.hall_idx_max {
-                        self.hall_idx_base = 0;
-                    }
+                    // Forward wrap (CW): 5 → 0
                     self.direction = Direction::Clockwise;
                 } else if prev_state != 1 && prev_state != 0 {
                     // Invalid transition
@@ -119,12 +115,7 @@ impl HallSensor {
             }
             5 => {
                 if prev_state == 0 {
-                    // Backward wrap (CCW)
-                    if self.hall_idx_base < 6 {
-                        self.hall_idx_base = self.hall_idx_max - 6;
-                    } else {
-                        self.hall_idx_base -= 6;
-                    }
+                    // Backward wrap (CCW): 0 → 5
                     self.direction = Direction::CounterClockwise;
                 } else if prev_state != 4 && prev_state != 5 {
                     // Invalid transition
@@ -145,9 +136,8 @@ impl HallSensor {
             }
         }
 
-        // Calculate electrical angle
-        let hall_state_idx = self.hall_idx_base + current_state as usize;
-        self.angle = self.angle_per_state * hall_state_idx as f32;
+        // Calculate electrical angle (0 to 2π, wraps every 6 states)
+        self.angle = self.angle_per_state * current_state as f32;
 
         Some(self.angle)
     }
@@ -176,11 +166,6 @@ impl HallSensor {
     pub fn state(&self) -> u8 {
         self.state_prev
     }
-
-    /// Get number of pole pairs
-    pub fn pole_pairs(&self) -> u8 {
-        self.pole_pairs
-    }
 }
 
 #[cfg(test)]
@@ -201,8 +186,7 @@ mod tests {
 
     #[test]
     fn test_hall_sensor_creation() {
-        let hall = HallSensor::new(7); // 14-pole motor
-        assert_eq!(hall.pole_pairs(), 7);
+        let hall = HallSensor::new();
         assert_eq!(hall.angle(), 0.0);
         assert_eq!(hall.direction(), Direction::Stopped);
         assert_eq!(hall.error_count(), 0);
@@ -210,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_invalid_states() {
-        let mut hall = HallSensor::new(7);
+        let mut hall = HallSensor::new();
 
         // All low (0b000)
         assert!(hall.update(0).is_none());
@@ -223,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_forward_sequence() {
-        let mut hall = HallSensor::new(1); // 2-pole motor for simplicity
+        let mut hall = HallSensor::new();
 
         // Valid CW sequence: 1 → 3 → 2 → 6 → 4 → 5 → (wrap to 1)
         let sequence = [1, 3, 2, 6, 4, 5, 1];
@@ -255,7 +239,7 @@ mod tests {
 
     #[test]
     fn test_reverse_sequence() {
-        let mut hall = HallSensor::new(1); // 2-pole motor
+        let mut hall = HallSensor::new();
 
         // Start from state 5
         hall.update(5).unwrap();
@@ -273,11 +257,11 @@ mod tests {
     }
 
     #[test]
-    fn test_multi_pole_motor() {
-        let mut hall = HallSensor::new(7); // 14-pole motor
+    fn test_electrical_angle_increment() {
+        let mut hall = HallSensor::new();
 
-        // Angle increment should be TAU / 42 (7 pole pairs * 6 states)
-        let expected_increment = TAU / 42.0;
+        // Electrical angle increment is TAU / 6 (completes 2π every 6 Hall states)
+        let expected_increment = TAU / 6.0;
 
         let angle1 = hall.update(1).unwrap();
         assert!((angle1 - 0.0).abs() < 1e-5);
@@ -288,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_error_detection() {
-        let mut hall = HallSensor::new(1);
+        let mut hall = HallSensor::new();
 
         // Valid state
         hall.update(1).unwrap();
@@ -301,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_reset_errors() {
-        let mut hall = HallSensor::new(1);
+        let mut hall = HallSensor::new();
 
         hall.update(0).unwrap_or(0.0); // Generate error
         assert!(hall.error_count() > 0);
