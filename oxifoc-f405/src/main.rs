@@ -17,7 +17,7 @@ mod sensors;
 mod transport;
 
 use config::BoardScaling;
-use hardware::{AssignedResources, HallResources, MotorResources};
+use hardware::{AssignedResources, DrvResources, HallResources, MotorResources};
 use protocol::{OUTQ, RECV_BUF, STACK};
 
 // Re-export FOC types for stub implementation
@@ -57,16 +57,30 @@ async fn main(spawner: Spawner) {
     let r = split_resources!(p);
     let _motor_resources = r.motor;
 
-    // ========== STEP 6: Initialize Hall Sensor ==========
+    // ========== STEP 6: Initialize DRV8301 Gate Driver ==========
+    let mut drv_config = hardware::drv8301::init_spi(
+        r.drv.spi3, r.drv.pc10, r.drv.pc11, r.drv.pc12, r.drv.pc9, r.drv.pb5, r.drv.pb7,
+    );
+
+    // Configure DRV8301 per VESC settings
+    match hardware::drv8301::configure_drv8301(&mut drv_config) {
+        Ok(()) => defmt::info!("DRV8301 ready"),
+        Err(_e) => defmt::error!("DRV8301 configuration failed"),
+    }
+
+    // Enable gate driver
+    hardware::drv8301::enable_gate_driver(&mut drv_config);
+
+    // ========== STEP 7: Initialize Hall Sensor ==========
     sensors::init_hall(
         r.hall.pc6, r.hall.pc7, r.hall.pc8, p.EXTI6, p.EXTI7, p.EXTI8,
     );
 
-    // ========== STEP 7: Start FOC Stub ==========
+    // ========== STEP 8: Start FOC Stub ==========
     spawner.spawn(foc_stub().unwrap());
 
     defmt::info!(
-        "F405 pin map (planned): PWM PA8/PA9/PA10 + PB13/14/15, EN_GATE=PB5, nFAULT=PB7, \
+        "F405 pin map: PWM PA8/PA9/PA10 + PB13/14/15, DRV8301 EN_GATE=PB5, nFAULT=PB7, \
          SPI3 CS/SCK/MISO/MOSI=PC9/PC10/PC11/PC12, halls=PC6/7/8, ADC currents PC0-2, VBUS PC3"
     );
     defmt::info!(

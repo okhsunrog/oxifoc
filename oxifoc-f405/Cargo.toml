@@ -37,6 +37,10 @@ mutex = "1.0.2"
 static_cell = "2.1"
 assign-resources = "0.5.0"
 
+# Gate driver
+drv8301-dd = { git = "https://github.com/okhsunrog/drv8301-dd", features = ["defmt"] }
+embedded-hal-bus = "0.3"
+
 # Local crates
 oxifoc-core = { path = "../oxifoc-core", features = ["defmt"] }
 oxifoc-protocol = { path = "../protocol" }
