@@ -41,7 +41,7 @@ postcard-schema = "0.2.5"
 mutex = "1.0.2"
 
 # Local dependencies
-oxifoc-core = { path = "../oxifoc-core" }
+oxifoc-core = { path = "../oxifoc-core", features = ["defmt"] }
 oxifoc-protocol = { path = "../protocol" }
 # Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
 # transport-uart adds: defmt-sink-network (for network forwarding)

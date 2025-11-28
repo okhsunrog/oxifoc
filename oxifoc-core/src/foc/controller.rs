@@ -12,7 +12,7 @@ use super::{
 };
 
 /// Result of a single FOC update
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct FocTelemetry {
     /// Raw phase currents (A)
     pub ia: f32,

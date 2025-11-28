@@ -8,6 +8,7 @@
 /// - One phase floating (high-Z)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum CommutationStep {
     Step0 = 0, // A+, B-, C floating
     Step1 = 1, // A+, C-, B floating
@@ -17,6 +18,7 @@ pub enum CommutationStep {
     Step5 = 5, // C+, B-, A floating
 }
 
+#[allow(dead_code)]
 impl CommutationStep {
     /// Advance to the next commutation step
     pub fn next(self) -> Self {
