@@ -1,5 +1,4 @@
-//! Motor helpers for oxifoc-g431
-pub mod current;
+//! Motor control helpers for oxifoc-g431
 pub mod fault_handler;
 pub mod hall_sensor;
 pub mod pwm;
