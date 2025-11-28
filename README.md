@@ -46,7 +46,12 @@ See [docs/hardware.md](docs/hardware.md) for detailed pinout and functional grou
   - Clarke/Park transforms (ABC → αβ → dq and inverse)
   - Space Vector PWM (VESC geometric sector method)
   - PI controller with anti-windup
-  - Hall sensor logic (platform-agnostic)
+  - Hall handling (software expectations inspired by VESC `mcpwm_foc`):
+    - Calibrate per-motor Hall advance/offset and state sequence.
+    - Reject invalid transitions; count errors and set a fault on repeated bad states.
+    - Interpolate electrical angle between Hall edges using measured speed for smoother low-speed FOC.
+    - Apply calibrated offset before Park transforms.
+  - See `docs/cheap-focer2-notes.md` for the F405 pin/filter specifics (hardware).
   - Fully tested on x86_64 (33 unit tests)
   - Hall support: expect per-motor calibration (offset/sequence), apply offset before Park, and optionally blend an estimated angle from velocity for smoother operation at low speeds (similar to VESC). Calibration and interpolation are TODO in device firmware.
 

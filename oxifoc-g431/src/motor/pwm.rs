@@ -205,3 +205,29 @@ impl<'d> MotorPwm<'d> {
         self.max_duty
     }
 }
+
+// ========== Implement PhasePwm trait for FOC integration ==========
+
+use oxifoc_core::foc::pwm::PhasePwm;
+
+impl<'d> PhasePwm for MotorPwm<'d> {
+    fn max_duty(&self) -> u16 {
+        self.max_duty
+    }
+
+    fn set_duties(&mut self, duties: [u16; 3]) {
+        // Set duty cycles for all three phases
+        // Clamp to duty_limit for safety
+        let duty_a = duties[0].min(self.duty_limit);
+        let duty_b = duties[1].min(self.duty_limit);
+        let duty_c = duties[2].min(self.duty_limit);
+
+        self.pwm.set_duty(Channel::Ch1, duty_a);
+        self.pwm.set_duty(Channel::Ch2, duty_b);
+        self.pwm.set_duty(Channel::Ch3, duty_c);
+    }
+
+    fn disable(&mut self) {
+        self.emergency_stop();
+    }
+}

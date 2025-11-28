@@ -1,14 +1,19 @@
 #![no_std]
 #![no_main]
 
+use core::cell::RefCell;
 use core::pin::pin;
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
+use assign_resources::assign_resources;
 use defmt::{info, warn};
 use embassy_executor::{Spawner, task};
+use embassy_stm32::interrupt::typelevel::Interrupt;
 use embassy_stm32::{
-    Config as StmConfig, bind_interrupts,
-    gpio::{Level, Output, Speed},
-    peripherals,
+    Config as StmConfig, Peri, bind_interrupts,
+    exti::ExtiInput,
+    gpio::{Level, Output, Pull, Speed},
+    interrupt, peripherals,
     time::Hertz,
     usb,
 };
@@ -18,16 +23,46 @@ use ergot::{
     exports::bbq2::traits::coordination::cas::AtomicCoord, toolkits::embassy_usb_v0_5 as kit,
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use oxifoc_core::foc::{controller::FocController, pwm::PhasePwm};
+use oxifoc_core::foc::{
+    controller::FocController,
+    fault::FaultRegistry,
+    hall_sensor::{Direction, HallSensor},
+    pwm::PhasePwm,
+};
 use oxifoc_protocol::{DeviceInfo, InfoEndpoint};
 use static_cell::StaticCell;
 
 // Enable defmt global logger + panic probe
 use panic_probe as _;
 
+mod motor;
+
 bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
 });
+
+assign_resources! {
+    motor: MotorResources {
+        tim1: TIM1,
+        pa8: PA8,
+        pa9: PA9,
+        pa10: PA10,
+        pb13: PB13,
+        pb14: PB14,
+        pb15: PB15,
+        pb5: PB5,   // EN_GATE
+        pb7: PB7,   // nFAULT
+        pc0: PC0,
+        pc1: PC1,
+        pc2: PC2,
+        pc3: PC3,   // VBUS sense
+    }
+    hall: HallResources {
+        pc6: PC6,
+        pc7: PC7,
+        pc8: PC8,
+    }
+}
 
 type AppDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 type Queue = kit::Queue<OUT_QUEUE_SIZE, AtomicCoord>;
@@ -37,15 +72,53 @@ type RxWorker = kit::RxWorker<&'static Queue, CriticalSectionRawMutex, AppDriver
 const OUT_QUEUE_SIZE: usize = 4096;
 const MAX_PACKET_SIZE: usize = 512;
 
+/// Fixed hardware scaling for Cheap FOCer 2 (STM32F405).
+#[derive(Clone, Copy)]
+struct BoardScaling {
+    shunt_ohms: f32,
+    current_amp_gain: f32,
+    vbus_divider_ratio: f32,
+}
+
+impl BoardScaling {
+    const fn new() -> Self {
+        // Two 1 mΩ shunts in parallel => 0.5 mΩ effective.
+        // DRV8301 amp gain set to 20 V/V to match external stage.
+        // VBUS divider: 39k / 2.2k => ~18.7273:1 (ADC volts * ratio = bus volts).
+        Self {
+            shunt_ohms: 0.0005,
+            current_amp_gain: 20.0,
+            vbus_divider_ratio: (39.0 + 2.2) / 2.2,
+        }
+    }
+}
+
 static OUTQ: Queue = kit::Queue::new();
 static STACK: Stack = kit::new_target_stack(OUTQ.framed_producer(), MAX_PACKET_SIZE as u16);
 static USB_STORAGE: kit::WireStorage<256, 256, 64, 256> = kit::WireStorage::new();
 static RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
 static EP_OUT_BUF: StaticCell<[u8; kit::USB_FS_MAX_PACKET_SIZE]> = StaticCell::new();
+#[allow(dead_code)]
+static FAULTS: FaultRegistry = FaultRegistry::new();
+static HALL_ANGLE_BITS: AtomicU32 = AtomicU32::new(0);
+static HALL_DIRECTION: AtomicU8 = AtomicU8::new(0);
+static HALL_STATE: AtomicU8 = AtomicU8::new(0);
+static HALL_ESTIMATOR: embassy_sync::blocking_mutex::CriticalSectionMutex<
+    RefCell<Option<HallSensor>>,
+> = embassy_sync::blocking_mutex::CriticalSectionMutex::new(RefCell::new(None));
+static HALL_INPUTS: StaticCell<(ExtiInput<'static>, ExtiInput<'static>, ExtiInput<'static>)> =
+    StaticCell::new();
+static mut HALL_INPUTS_PTR: Option<&'static (
+    ExtiInput<'static>,
+    ExtiInput<'static>,
+    ExtiInput<'static>,
+)> = None;
+const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     info!("oxifoc-f405 boot");
+    let scaling = BoardScaling::new();
 
     // Clock setup for STM32F405 with 8MHz HSE (Simple FOCer 2 / VESC layouts)
     let mut config = StmConfig::default();
@@ -95,7 +168,41 @@ async fn main(spawner: Spawner) {
     spawner.spawn(run_rx(rx_worker, RECV_BUF.init([0u8; MAX_PACKET_SIZE])).unwrap());
     spawner.spawn(run_tx(ep_in, OUTQ.framed_consumer()).unwrap());
     spawner.spawn(info_server().unwrap());
+
+    // Split peripherals for motor/hall resources.
+    let resources = split_resources!(p);
+    let hall_resources = resources.hall;
+    let _motor_resources = resources.motor;
+
+    let hall1 = ExtiInput::new(hall_resources.pc6, p.EXTI6, Pull::Up);
+    let hall2 = ExtiInput::new(hall_resources.pc7, p.EXTI7, Pull::Up);
+    let hall3 = ExtiInput::new(hall_resources.pc8, p.EXTI8, Pull::Up);
+    let inputs = HALL_INPUTS.init((hall1, hall2, hall3));
+    unsafe {
+        HALL_INPUTS_PTR = Some(inputs);
+    }
+    HALL_ESTIMATOR.lock(|est| {
+        est.replace(Some(oxifoc_core::foc::hall_sensor::HallSensor::new(
+            TIMEBASE_TICKS_PER_SEC,
+        )));
+    });
+    // Enable EXTI9_5 for PC6/7/8
+    unsafe {
+        embassy_stm32::interrupt::typelevel::EXTI9_5::unpend();
+        embassy_stm32::interrupt::typelevel::EXTI9_5::enable();
+    }
     spawner.spawn(foc_stub().unwrap());
+
+    info!(
+        "F405 pin map (planned): PWM PA8/PA9/PA10 + PB13/14/15, EN_GATE=PB5, nFAULT=PB7, SPI3 CS/SCK/MISO/MOSI=PC9/PC10/PC11/PC12, halls=PC6/7/8, ADC currents PC0-2, VBUS PC3"
+    );
+    info!(
+        "Scaling: shunt={=f32}Ω, amp_gain={=f32} V/V, vbus_ratio={=f32}:1, faults=0x{=u32:08x}",
+        scaling.shunt_ohms,
+        scaling.current_amp_gain,
+        scaling.vbus_divider_ratio,
+        FAULTS.bits()
+    );
 }
 
 #[task]
@@ -162,7 +269,7 @@ async fn heartbeat(mut led: Output<'static>) {
 #[task]
 async fn foc_stub() {
     let mut pwm = DummyPwm::new(1200);
-    let mut foc = FocController::new(24.0);
+    let mut foc: FocController = FocController::new(24.0);
     let mut angle = 0.0_f32;
     let mut loop_counter: u32 = 0;
 
@@ -209,4 +316,44 @@ impl PhasePwm for DummyPwm {
     fn set_duties(&mut self, duties: [u16; 3]) {
         self.duties = duties;
     }
+}
+
+#[inline]
+fn read_hall_state_fast() -> u8 {
+    if let Some((h1, h2, h3)) = unsafe { HALL_INPUTS_PTR } {
+        let mut state = 0u8;
+        if h1.is_high() {
+            state |= 0b001;
+        }
+        if h2.is_high() {
+            state |= 0b010;
+        }
+        if h3.is_high() {
+            state |= 0b100;
+        }
+        state
+    } else {
+        0
+    }
+}
+
+#[interrupt]
+fn EXTI9_5() {
+    let state = read_hall_state_fast();
+    let ticks = embassy_time::Instant::now().as_ticks() as u32;
+    HALL_ESTIMATOR.lock(|est| {
+        if let Some(h) = est.borrow_mut().as_mut()
+            && let Ok(reading) = h.update_sample(state, ticks as u64)
+        {
+            HALL_ANGLE_BITS.store(reading.angle_rad.to_bits(), Ordering::Relaxed);
+            let dir_u8 = match reading.direction {
+                Direction::Stopped => 0,
+                Direction::Clockwise => 1,
+                Direction::CounterClockwise => 2,
+            };
+            HALL_DIRECTION.store(dir_u8, Ordering::Relaxed);
+            HALL_STATE.store(reading.state, Ordering::Relaxed);
+        }
+    });
+    interrupt::typelevel::EXTI9_5::unpend();
 }

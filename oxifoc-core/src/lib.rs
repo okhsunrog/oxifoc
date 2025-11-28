@@ -51,6 +51,9 @@
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
+/// High-level motor driver combining FOC with sensors and PWM
+pub mod motor;
+
 /// Field-Oriented Control algorithms
 pub mod foc {
     /// Mathematical constants (√3, 1/√3, etc.)

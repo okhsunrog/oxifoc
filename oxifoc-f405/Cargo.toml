@@ -35,9 +35,10 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 heapless = { version = "0.9.2", default-features = false }
 mutex = "1.0.2"
 static_cell = "2.1"
+assign-resources = "0.5.0"
 
 # Local crates
-oxifoc-core = { path = "../oxifoc-core" }
+oxifoc-core = { path = "../oxifoc-core", features = ["defmt"] }
 oxifoc-protocol = { path = "../protocol" }
 ergot = { path = "../ergot/crates/ergot", default-features = false, features = [
     "embassy-usb-v0_5",

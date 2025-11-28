@@ -26,21 +26,20 @@ use embassy_stm32::{
     interrupt,
     interrupt::typelevel::{ADC1_2, Interrupt},
 };
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_time::{Duration, Timer};
 use ergot::{
-    Address,
     exports::bbq2::traits::coordination::cas::AtomicCoord,
     rtt_target::{ChannelMode::*, rtt_init},
     toolkits::embedded_io_async_v0_6::{self as kit, tx_worker},
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use oxifoc_protocol::{
-    ButtonEndpoint, ButtonEvent, DeviceInfo, InfoEndpoint, MotorCommand, MotorEndpoint,
-};
+use oxifoc_protocol::{DeviceInfo, InfoEndpoint, MotorCommand, MotorEndpoint};
 use static_cell::StaticCell;
 
 use assign_resources::assign_resources;
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
+use embassy_sync::channel::Channel;
+use embassy_sync::watch::Watch;
 
 // Transport-specific imports
 #[cfg(feature = "transport-uart")]
@@ -60,8 +59,15 @@ use usart_io::{UartReader, UartWriter};
 use ergot::transport::rtt::{RttReader, RttWriter};
 
 mod motor;
-use motor::MotorController;
-use motor::hall_sensor::HallSensorDriver;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as EmbassyCS;
+use motor::current::G431CurrentSensor;
+use motor::pwm::{MotorPwm, MotorPwmConfig};
+use oxifoc_core::foc::controller::{FocController, FocTelemetry};
+use oxifoc_core::foc::fault::FaultRegistry;
+use oxifoc_core::foc::hall_sensor::{Direction, HallSensor};
+use oxifoc_core::foc::sensors::{AngleSample, AngleSensor, CurrentSensor};
+use oxifoc_core::motor::{ControlMode, FocDriver};
+use oxifoc_protocol::MotorState;
 
 // Resource assignments for hardware peripherals
 assign_resources! {
@@ -86,6 +92,12 @@ use panic_probe as _;
 
 const OUT_QUEUE_SIZE: usize = 2048;
 const MAX_PACKET_SIZE: usize = 512;
+/// Conservative default bus voltage used until ADC updates arrive.
+const INITIAL_VBUS_VOLTS: f32 = 12.0;
+/// Maps motor duty percent (0-100) to a target q-axis current in Amps.
+const MAX_IQ_TARGET_A: f32 = 10.0;
+/// Timebase for Hall interpolation (match embassy_time ticks).
+const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 
 // UART transport constants
 #[cfg(feature = "transport-uart")]
@@ -188,6 +200,105 @@ static HALL_ERROR_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Sequence counter for Hall sensor samples
 static HALL_SEQ: AtomicU32 = AtomicU32::new(0);
 
+/// Keep Hall ExtiInput instances alive for EXTI interrupt handling.
+static HALL_INPUTS: StaticCell<(ExtiInput<'static>, ExtiInput<'static>, ExtiInput<'static>)> =
+    StaticCell::new();
+static mut HALL_INPUTS_PTR: Option<&'static (
+    ExtiInput<'static>,
+    ExtiInput<'static>,
+    ExtiInput<'static>,
+)> = None;
+
+struct HallEdgeMailbox {
+    seq: AtomicU32,
+    state: AtomicU8,
+    ticks: AtomicU32,
+}
+
+impl HallEdgeMailbox {
+    const fn new() -> Self {
+        Self {
+            seq: AtomicU32::new(0),
+            state: AtomicU8::new(0),
+            ticks: AtomicU32::new(0),
+        }
+    }
+
+    fn write(&self, state: u8, ticks: u32) {
+        self.state.store(state, Ordering::Relaxed);
+        self.ticks.store(ticks, Ordering::Relaxed);
+        self.seq.fetch_add(1, Ordering::Release);
+    }
+
+    fn load(&self) -> (u32, u8, u32) {
+        let seq = self.seq.load(Ordering::Acquire);
+        let state = self.state.load(Ordering::Relaxed);
+        let ticks = self.ticks.load(Ordering::Relaxed);
+        (seq, state, ticks)
+    }
+}
+
+/// Mailbox for Hall edge updates from EXTI to ADC ISR.
+static HALL_EDGE_MAILBOX: HallEdgeMailbox = HallEdgeMailbox::new();
+
+/// Hall estimator shared between EXTI/Hall task and ADC ISR.
+static HALL_ESTIMATOR: CriticalSectionMutex<RefCell<Option<HallSensor>>> =
+    CriticalSectionMutex::new(RefCell::new(None));
+
+/// Angle sensor proxy for the FOC driver; pulls snapshots from `HALL_ESTIMATOR`.
+struct HallAngleProxy;
+
+impl HallAngleProxy {
+    const fn new() -> Self {
+        Self
+    }
+}
+
+impl AngleSensor for HallAngleProxy {
+    fn sample(&self, now_ticks: u64) -> Option<AngleSample> {
+        HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(|h| h.sample_at(now_ticks)))
+    }
+
+    fn read_angle(&self) -> f32 {
+        let now = embassy_time::Instant::now().as_ticks();
+        self.sample(now).map(|s| s.angle).unwrap_or(0.0)
+    }
+
+    fn read_direction(&self) -> Direction {
+        let now = embassy_time::Instant::now().as_ticks();
+        self.sample(now)
+            .map(|s| s.direction)
+            .unwrap_or(Direction::Stopped)
+    }
+
+    fn error_count(&self) -> u32 {
+        HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().map(|h| h.error_count()).unwrap_or(0))
+    }
+
+    fn reset_errors(&mut self) {
+        HALL_ESTIMATOR.lock(|est| {
+            if let Some(h) = est.borrow_mut().as_mut() {
+                h.reset_errors();
+            }
+        });
+    }
+}
+
+/// FOC telemetry data (updated by ADC ISR)
+static FOC_TELEMETRY: Watch<EmbassyCS, FocTelemetry, 1> = Watch::new();
+
+/// FOC command channel (tasks → ISR)
+static FOC_CMD: Channel<EmbassyCS, ControlMode, 4> = Channel::new();
+
+/// FOC driver storage (mutated only inside the ADC ISR)
+type FocDriverType = FocDriver<MotorPwm<'static>, G431CurrentSensor, HallAngleProxy>;
+static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
+    CriticalSectionMutex::new(RefCell::new(None));
+
+/// Shared fault registry
+#[allow(dead_code)]
+static FAULT_REGISTRY: FaultRegistry = FaultRegistry::new();
+
 // ADC conversion constants for VBUS measurement.
 const ADC_MAX_COUNTS: u32 = 4095;
 const ADC_VREF_MV: u32 = 3300;
@@ -221,6 +332,25 @@ fn fet_temp_c_from_adc(raw: u16) -> f32 {
     let ln_term = libm::logf(NTC_R0_OHM / r_ntc);
     let temp_k = NTC_BETA * NTC_T0_K / (NTC_BETA - NTC_T0_K * ln_term);
     temp_k - NTC_KELVIN_OFFSET
+}
+
+#[inline]
+fn read_hall_state_fast() -> u8 {
+    if let Some((h1, h2, h3)) = unsafe { HALL_INPUTS_PTR } {
+        let mut state = 0u8;
+        if h1.is_high() {
+            state |= 0b001;
+        }
+        if h2.is_high() {
+            state |= 0b010;
+        }
+        if h3.is_high() {
+            state |= 0b100;
+        }
+        state
+    } else {
+        0
+    }
 }
 
 #[cfg(feature = "transport-uart")]
@@ -410,10 +540,6 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "transport-rtt")]
     let rx_worker = RxWorker::new_target(&STACK, rtt_rx, ());
 
-    // Button: PC10, external pull-up, active-low to GND
-    let button = ExtiInput::new(p.PC10, p.EXTI10, Pull::None);
-    defmt::info!("Button configured on PC10 (active-low)");
-
     // LED on PC6
     let mut led = Output::new(p.PC6, Level::Low, Speed::Low);
     // Back-EMF enable (GPIO_BEMF on PB5) - keep defined but unused for now.
@@ -428,11 +554,45 @@ async fn main(spawner: Spawner) {
     let hall_h3 = ExtiInput::new(r.hall.pb8, p.EXTI8, Pull::Up);
     defmt::info!("Hall sensors configured: H1=PB6, H2=PB7, H3=PB8");
 
-    // Create Hall sensor driver
-    let hall_sensor = HallSensorDriver::new(hall_h1, hall_h2, hall_h3);
-    defmt::info!("Hall sensor driver initialized");
+    // Keep Hall EXTI inputs alive to maintain configuration
+    let inputs = HALL_INPUTS.init((hall_h1, hall_h2, hall_h3));
+    unsafe {
+        HALL_INPUTS_PTR = Some(inputs);
+    }
 
-    let motor_ctrl = MotorController::init(r.motor);
+    // Initialize Hall estimator
+    HALL_ESTIMATOR.lock(|est| {
+        est.replace(Some(HallSensor::new(TIMEBASE_TICKS_PER_SEC)));
+    });
+
+    // Enable EXTI9_5 interrupt for Hall lines 6/7/8
+    unsafe {
+        interrupt::typelevel::EXTI9_5::unpend();
+        interrupt::typelevel::EXTI9_5::enable();
+    }
+
+    // Build FOC driver (owns TIM1 PWM + current/hall sensors). Keep outputs off until commanded.
+    let mut motor_pwm = MotorPwm::new(r.motor, MotorPwmConfig::default());
+    motor_pwm.emergency_stop();
+
+    let current_sensor = G431CurrentSensor::new();
+    let angle_sensor = HallAngleProxy::new();
+    let initial_vbus_v = (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(INITIAL_VBUS_VOLTS);
+    let mut foc_driver = FocDriver::new(
+        FocController::new(initial_vbus_v),
+        motor_pwm,
+        current_sensor,
+        angle_sensor,
+    );
+
+    // Allow ADC injected conversions to start firing before zero-current calibration.
+    Timer::after(Duration::from_millis(10)).await;
+    foc_driver.current_sensor_mut().calibrate(300);
+
+    // Install FOC driver for ISR-only access.
+    FOC_DRIVER.lock(|cell| {
+        cell.replace(Some(foc_driver));
+    });
 
     // Spawn I/O workers (transport-specific)
     spawner.spawn(
@@ -455,19 +615,10 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "transport-rtt")]
     spawner.spawn(run_tx_rtt(rtt_tx).unwrap());
 
-    // Initialize motor command channel
-    let motor_cmd_channel = MOTOR_CMD_CHANNEL.init(embassy_sync::channel::Channel::new());
-    let motor_cmd_receiver = motor_cmd_channel.receiver();
-    let motor_cmd_sender = motor_cmd_channel.sender();
-
-    spawner.spawn(button_handler(button).unwrap());
-    spawner.spawn(status_reporter().unwrap());
     spawner.spawn(info_server().unwrap());
     spawner.spawn(adc_sample_server().unwrap());
-    spawner.spawn(hall_sensor_task(hall_sensor).unwrap());
     spawner.spawn(hall_sensor_server().unwrap());
-    spawner.spawn(motor_control_task(motor_ctrl, motor_cmd_receiver).unwrap());
-    spawner.spawn(motor_command_server(motor_cmd_sender).unwrap());
+    spawner.spawn(motor_command_server().unwrap());
 
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);
@@ -539,101 +690,6 @@ async fn run_tx_rtt(mut tx: RttWriter) {
     }
 }
 
-#[embassy_executor::task]
-async fn button_handler(mut button: ExtiInput<'static>) {
-    const DOUBLE_CLICK_DELAY: u64 = 250;
-    const HOLD_DELAY: u64 = 1000;
-
-    defmt::info!("Button handler started");
-
-    // Target host router at network 1, node 1 (like rp2040-serial-pair target.rs:89-95)
-    let host_addr = Address {
-        network_id: 1,
-        node_id: 1,
-        port_id: 0,
-    };
-    let client = STACK
-        .endpoints()
-        .client::<ButtonEndpoint>(host_addr, Some("button"));
-
-    defmt::info!("Button ready (active-low)");
-
-    loop {
-        // Wait for press (active-low => falling edge)
-        button.wait_for_falling_edge().await;
-
-        // If release does not happen within HOLD_DELAY, it's a hold
-        if with_timeout(
-            Duration::from_millis(HOLD_DELAY),
-            button.wait_for_rising_edge(),
-        )
-        .await
-        .is_err()
-        {
-            defmt::info!("Button: HOLD");
-            let _ = client.request(&ButtonEvent::Hold).await;
-            // Ensure we're released before next iteration
-            button.wait_for_rising_edge().await;
-            continue;
-        }
-
-        // Released within hold window: check for a second press within DOUBLE_CLICK_DELAY
-        if with_timeout(
-            Duration::from_millis(DOUBLE_CLICK_DELAY),
-            button.wait_for_falling_edge(),
-        )
-        .await
-        .is_ok()
-        {
-            defmt::info!("Button: DOUBLE CLICK");
-            let _ = client.request(&ButtonEvent::DoubleClick).await;
-            // Wait for final release
-            button.wait_for_rising_edge().await;
-        } else {
-            defmt::info!("Button: SINGLE CLICK");
-            let _ = client.request(&ButtonEvent::SingleClick).await;
-        }
-    }
-}
-
-#[embassy_executor::task]
-async fn status_reporter() {
-    defmt::info!("Status reporter started");
-
-    // Create server to handle incoming button requests from the network
-    let button_socket = STACK
-        .endpoints()
-        .bounded_server::<ButtonEndpoint, 4>(Some("button"));
-    let button_socket = pin!(button_socket);
-    let mut button_hdl = button_socket.attach();
-
-    defmt::info!("Ergot button endpoint ready");
-
-    loop {
-        // Handle button events from network with timeout
-        let result = with_timeout(
-            Duration::from_secs(5),
-            button_hdl.serve(async |event| match event {
-                ButtonEvent::SingleClick => {
-                    defmt::info!("Network: SINGLE CLICK");
-                }
-                ButtonEvent::DoubleClick => {
-                    defmt::info!("Network: DOUBLE CLICK");
-                }
-                ButtonEvent::Hold => {
-                    defmt::info!("Network: HOLD");
-                }
-            }),
-        )
-        .await;
-
-        // Periodic status when no network activity
-        if result.is_err() {
-            defmt::debug!("Waiting for network events...");
-        }
-    }
-}
-
 /// Respond to info requests from host
 #[embassy_executor::task]
 async fn info_server() {
@@ -658,14 +714,6 @@ async fn info_server() {
     }
 }
 
-/// Static channel for motor commands
-static MOTOR_CMD_CHANNEL: StaticCell<
-    embassy_sync::channel::Channel<
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        MotorCommand,
-        4,
-    >,
-> = StaticCell::new();
 /// ADC sample server - responds to host poll requests with current ADC values.
 /// Host controls polling rate; device just returns latest values from atomics.
 #[embassy_executor::task]
@@ -694,46 +742,6 @@ async fn adc_sample_server() {
                 }
             })
             .await;
-    }
-}
-
-/// Hall sensor task - continuously updates Hall angle on sensor edges
-#[embassy_executor::task]
-async fn hall_sensor_task(mut hall: HallSensorDriver) {
-    use oxifoc_core::foc::hall_sensor::Direction;
-    defmt::info!("Hall sensor task started");
-
-    loop {
-        // Wait for Hall sensor edge and update angle
-        hall.wait_and_update().await;
-
-        // Store Hall sensor data in atomics
-        let angle = hall.angle();
-        let direction = hall.direction();
-        let state = hall.state();
-        let error_count = hall.error_count();
-
-        // Convert angle f32 to bit pattern for atomic storage
-        HALL_ANGLE_BITS.store(angle.to_bits(), Ordering::Relaxed);
-
-        // Convert direction enum to u8
-        let dir_u8 = match direction {
-            Direction::Stopped => 0,
-            Direction::Clockwise => 1,
-            Direction::CounterClockwise => 2,
-        };
-        HALL_DIRECTION.store(dir_u8, Ordering::Relaxed);
-        HALL_STATE.store(state, Ordering::Relaxed);
-        HALL_ERROR_COUNT.store(error_count, Ordering::Relaxed);
-
-        // Log Hall sensor updates at debug level
-        defmt::debug!(
-            "Hall update: angle={} rad, dir={}, state={}, errors={}",
-            angle,
-            dir_u8,
-            state,
-            error_count
-        );
     }
 }
 
@@ -779,51 +787,9 @@ async fn hall_sensor_server() {
     }
 }
 
-/// Motor control task - performs 6-step commutation and handles commands
-#[embassy_executor::task]
-async fn motor_control_task(
-    mut motor: MotorController<'static>,
-    cmd_receiver: embassy_sync::channel::Receiver<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        MotorCommand,
-        4,
-    >,
-) {
-    defmt::info!("Motor control task started");
-
-    loop {
-        // Latest injected current samples (TIM1-synchronized via ADC1/ADC2 injected conversions).
-        let ia_raw = IA_SAMPLE.load(Ordering::Relaxed);
-        let ib_raw = IB_SAMPLE.load(Ordering::Relaxed);
-        let ic_raw = IC_SAMPLE.load(Ordering::Relaxed);
-        let vbus_mv = VBUS_MV.load(Ordering::Relaxed);
-        let _ = (ia_raw, ib_raw, ic_raw, vbus_mv); // placeholder for future control logic
-
-        // Check for commands (non-blocking)
-        if let Ok(cmd) = cmd_receiver.try_receive() {
-            motor.handle_command(&cmd);
-        }
-
-        // Perform commutation step
-        motor.commutate();
-
-        // Wait for next commutation based on speed
-        let period = motor.get_commutation_period();
-        Timer::after(period).await;
-    }
-}
-
 /// Motor command server - handles motor control commands via ergot
 #[embassy_executor::task]
-async fn motor_command_server(
-    motor_cmd_sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        MotorCommand,
-        4,
-    >,
-) {
+async fn motor_command_server() {
     defmt::info!("Motor command server started");
 
     let server = STACK
@@ -835,12 +801,29 @@ async fn motor_command_server(
     loop {
         let _ = h
             .serve(|cmd: &MotorCommand| {
-                let cmd_clone = cmd.clone();
-                let sender_clone = motor_cmd_sender;
+                let cmd = cmd.clone();
                 async move {
-                    // Send command to motor task
-                    let _ = sender_clone.try_send(cmd_clone);
-                    // Return current motor status
+                    match cmd {
+                        MotorCommand::Stop => {
+                            motor::set_motor_state(MotorState::Stopped);
+                            motor::set_motor_duty(0);
+                            motor::set_motor_step(0);
+                            let _ = FOC_CMD.try_send(ControlMode::Stopped);
+                        }
+                        MotorCommand::Start { duty } | MotorCommand::SetSpeed { duty } => {
+                            let duty = duty.min(100);
+                            motor::set_motor_state(MotorState::Running);
+                            motor::set_motor_duty(duty);
+                            motor::set_motor_step(0);
+
+                            let iq_target = duty as f32 / 100.0 * MAX_IQ_TARGET_A;
+                            let _ = FOC_CMD.try_send(ControlMode::CurrentControl {
+                                iq_target,
+                                id_target: 0.0,
+                            });
+                        }
+                    }
+
                     motor::get_motor_status()
                 }
             })
@@ -848,15 +831,20 @@ async fn motor_command_server(
     }
 }
 
-/// ADC1/ADC2 shared interrupt: read all injected ADC samples.
+/// ADC1/ADC2 shared interrupt: read all injected ADC samples and run FOC control.
 ///
 /// ADC1: ia (phase A), vbus, temp
 /// ADC2: ib (phase B), ic (phase C)
 ///
 /// Triggered by ADC1 end-of-sequence (ADC1 finishes last).
 /// Stores raw phase currents; converts vbus/temp to engineering units.
+/// Runs FOC control loop synchronized with PWM.
 #[interrupt]
 unsafe fn ADC1_2() {
+    // Static state (ISR has exclusive access)
+    static mut CONTROL_MODE: ControlMode = ControlMode::Stopped;
+    static mut LAST_HALL_SEQ: u32 = 0;
+
     // Read ADC1 injected: phase A current, VBUS voltage, FET temperature
     ADC1_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
@@ -886,4 +874,74 @@ unsafe fn ADC1_2() {
             IC_SAMPLE.store(samples[1], Ordering::Relaxed);
         }
     });
+
+    // Process FOC commands (non-blocking, ~20ns overhead)
+    while let Ok(cmd) = FOC_CMD.try_receive() {
+        *CONTROL_MODE = cmd;
+    }
+
+    // Incorporate latest Hall edge (from EXTI)
+    let (edge_seq, edge_state, edge_ticks) = HALL_EDGE_MAILBOX.load();
+    if edge_seq != *LAST_HALL_SEQ {
+        HALL_ESTIMATOR.lock(|est| {
+            if let Some(h) = est.borrow_mut().as_mut() {
+                let _ = h.update_sample(edge_state, edge_ticks as u64);
+            }
+        });
+        HALL_STATE.store(edge_state, Ordering::Relaxed);
+        let err =
+            HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().map(|h| h.error_count()).unwrap_or(0));
+        HALL_ERROR_COUNT.store(err, Ordering::Relaxed);
+        *LAST_HALL_SEQ = edge_seq;
+    }
+
+    // Snapshot current Hall data for telemetry/consumers
+    let now_ticks = embassy_time::Instant::now().as_ticks();
+    if let Some(sample) =
+        HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(|h| h.sample_at(now_ticks)))
+    {
+        HALL_ANGLE_BITS.store(sample.angle.to_bits(), Ordering::Relaxed);
+        let dir_u8 = match sample.direction {
+            Direction::Stopped => 0,
+            Direction::Clockwise => 1,
+            Direction::CounterClockwise => 2,
+        };
+        HALL_DIRECTION.store(dir_u8, Ordering::Relaxed);
+    }
+
+    // Run FOC control loop
+    FOC_DRIVER.lock(|cell| {
+        if let Some(driver) = cell.borrow_mut().as_mut() {
+            // Update bus voltage
+            let vbus_mv = VBUS_MV.load(Ordering::Relaxed);
+            driver.set_vbus(vbus_mv as f32 / 1000.0);
+
+            // Update control mode
+            driver.set_mode(*CONTROL_MODE);
+
+            // Run FOC step (dt = 1/20kHz = 50µs)
+            const DT: f32 = 1.0 / 20_000.0;
+            match driver.step(DT, now_ticks) {
+                Ok(telem) => {
+                    // Broadcast telemetry to all listeners
+                    FOC_TELEMETRY.sender().send(telem);
+                }
+                Err(_) => {
+                    // Sensor not ready or other error - disable outputs
+                    driver.set_mode(ControlMode::Stopped);
+                }
+            }
+        }
+    });
+}
+
+/// Handle Hall sensor edges (PB6/PB7/PB8) and timestamp them.
+#[interrupt]
+unsafe fn EXTI9_5() {
+    let state = read_hall_state_fast();
+    let ticks = embassy_time::Instant::now().as_ticks() as u32;
+    HALL_EDGE_MAILBOX.write(state, ticks);
+
+    // Clear EXTI pending bits for lines 6/7/8
+    interrupt::typelevel::EXTI9_5::unpend();
 }
