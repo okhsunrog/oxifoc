@@ -12,12 +12,19 @@ assign_resources! {
         pb13: PB13, // Phase A low
         pb14: PB14, // Phase B low
         pb15: PB15, // Phase C low
-        pb5: PB5,   // EN_GATE
-        pb7: PB7,   // nFAULT
         pc0: PC0,   // Current sense A
         pc1: PC1,   // Current sense B
         pc2: PC2,   // Current sense C
         pc3: PC3,   // VBUS sense
+    }
+    drv: DrvResources {
+        spi3: SPI3,
+        pc9: PC9,   // SPI3_CS
+        pc10: PC10, // SPI3_SCK
+        pc11: PC11, // SPI3_MISO
+        pc12: PC12, // SPI3_MOSI
+        pb5: PB5,   // EN_GATE
+        pb7: PB7,   // nFAULT
     }
     hall: HallResources {
         pc6: PC6,   // Hall sensor 1
