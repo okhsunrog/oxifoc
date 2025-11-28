@@ -8,7 +8,7 @@ use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
 
 use super::six_step::{CommutationStep, PhaseState};
-use crate::MotorResources;
+use crate::hardware::resources::MotorResources;
 
 /// PWM configuration for the motor.
 pub struct MotorPwmConfig {
