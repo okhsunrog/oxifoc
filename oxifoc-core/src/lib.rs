@@ -56,6 +56,9 @@ pub mod motor;
 
 /// Field-Oriented Control algorithms
 pub mod foc {
+    /// Board configuration and ADC utilities
+    pub mod config;
+
     /// Mathematical constants (√3, 1/√3, etc.)
     pub mod constants;
 

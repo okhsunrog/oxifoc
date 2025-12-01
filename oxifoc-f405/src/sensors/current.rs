@@ -1,23 +1,24 @@
-//! STM32G431 current sensing implementation
+//! STM32F405 current sensing implementation
 //!
-//! Wraps the platform-agnostic `ShuntCurrentSense` with G431-specific
+//! Wraps the platform-agnostic `ShuntCurrentSense` with F405-specific
 //! ADC reading from injected channels.
 //!
-//! # Hardware Setup (B-G431B-ESC1)
+//! # Hardware Setup (Simple FOCer 2 / Cheap FOCer 2)
 //!
-//! - **Shunt resistors**: 3mΩ (0.003Ω) on phases A, B, C
-//! - **OPAMP gain**: 16x (configured in main.rs)
-//! - **ADC**: 12-bit injected channels, synchronized by TIM1_TRGO2
-//! - **Sampling**: Phase A (ADC1), Phase B+C (ADC2)
+//! - **Shunt resistors**: 2x 1mΩ in parallel = 0.5mΩ effective
+//! - **DRV8301 gain**: 10 V/V
+//! - **ADC**: 12-bit injected channels, synchronized by TIM1_CC4
+//! - **Sampling**: Phase A (ADC1 PC0), Phase B (ADC2 PC1), Phase C (ADC3 PC2)
 //!
 //! # Calibration
 //!
-//! Before using current readings, call `calibrate_offsets()` with motor disabled
+//! Before using current readings, call `calibrate()` with motor disabled
 //! (PWM off, no current flow). This measures the zero-current ADC offsets.
 //!
 //! Uses `ShuntCurrentSense` from oxifoc-core for ADC-to-current conversion,
 //! and implements the `CurrentSensor` trait for a unified interface.
-#![allow(dead_code)]
+
+#![allow(dead_code)] // Public API not yet wired to protocol handlers
 
 use core::sync::atomic::Ordering;
 
@@ -32,20 +33,20 @@ use oxifoc_core::foc::sensors::CurrentSensor;
 use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
 
 // ============================================================================
-// G431 Current Sensor (implements CurrentSensor trait)
+// F405 Current Sensor (implements CurrentSensor trait)
 // ============================================================================
 
-/// G431 current sensor implementation
+/// F405 current sensor implementation
 ///
 /// Reads phase currents from ADC via static atomics and converts to Amperes
 /// using `ShuntCurrentSense` from oxifoc-core.
-pub struct G431CurrentSensor {
+pub struct F405CurrentSensor {
     /// Core conversion logic
     converter: ShuntCurrentSense,
 }
 
-impl G431CurrentSensor {
-    /// Create a new G431 current sensor
+impl F405CurrentSensor {
+    /// Create a new F405 current sensor
     ///
     /// Uses board configuration for hardware parameters.
     pub fn new(config: &BoardConfig) -> Self {
@@ -124,7 +125,7 @@ impl G431CurrentSensor {
     }
 }
 
-impl CurrentSensor for G431CurrentSensor {
+impl CurrentSensor for F405CurrentSensor {
     fn read_currents(&self) -> (f32, f32, f32) {
         let (adc_a, adc_b, adc_c) = self.read_raw();
         self.converter.convert_raw(adc_a, adc_b, adc_c)

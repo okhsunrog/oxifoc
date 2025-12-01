@@ -7,29 +7,11 @@ use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwm
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
 
-use super::six_step::{CommutationStep, PhaseState};
 use crate::hardware::resources::MotorResources;
+use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm};
 
-/// PWM configuration for the motor.
-pub struct MotorPwmConfig {
-    /// PWM switching frequency in Hz.
-    pub pwm_freq: u32,
-    /// Requested dead time in nanoseconds (used as a hint).
-    #[allow(dead_code)]
-    pub dead_time_ns: u32,
-    /// Maximum allowed duty cycle in percent (0-100).
-    pub max_duty_percent: u8,
-}
-
-impl Default for MotorPwmConfig {
-    fn default() -> Self {
-        Self {
-            pwm_freq: 20_000,     // 20 kHz
-            dead_time_ns: 2000,   // ~2 µs
-            max_duty_percent: 15, // 15% for very safe initial testing
-        }
-    }
-}
+/// STM32G431 timer clock frequency (170 MHz)
+const TIMER_CLOCK_HZ: u32 = 170_000_000;
 
 /// Motor PWM controller using TIM1 with complementary outputs.
 pub struct MotorPwm<'d> {
@@ -64,7 +46,7 @@ impl<'d> MotorPwm<'d> {
         let ch2n = ComplementaryPwmPin::new(pa12, OutputType::PushPull); // Phase B low
         let ch3n = ComplementaryPwmPin::new(pb15, OutputType::PushPull); // Phase C low
 
-        let pwm_freq = khz(config.pwm_freq / 1000);
+        let pwm_freq = khz(config.pwm_freq_hz / 1000);
 
         // Center-aligned complementary PWM on all three phases.
         let mut pwm = ComplementaryPwm::new(
@@ -83,12 +65,9 @@ impl<'d> MotorPwm<'d> {
 
         let max_duty = pwm.get_max_duty();
 
-        // Calculate dead-time based on timer clock frequency.
-        // STM32G4 runs at 170MHz.
-        const TIMER_CLOCK_HZ: u32 = 170_000_000;
-        let dead_time_ticks =
-            ((config.dead_time_ns as u64 * TIMER_CLOCK_HZ as u64) / 1_000_000_000) as u16;
-        pwm.set_dead_time(dead_time_ticks);
+        // Calculate dead time using shared helper
+        let dead_time = pwm::dead_time_ticks(config.dead_time_ns, TIMER_CLOCK_HZ);
+        pwm.set_dead_time(dead_time);
 
         // Enable OSSR for safer off-state behavior when channels are disabled.
         // IDLE_LEVEL means outputs go to their idle state when disabled.
@@ -103,12 +82,12 @@ impl<'d> MotorPwm<'d> {
         pwm.enable(Channel::Ch4);
         pwm.set_mms2(Mms2::COMPARE_OC4);
 
-        // Calculate duty cycle limit based on max_duty_percent.
-        let duty_limit = (max_duty as u32 * config.max_duty_percent as u32 / 100) as u16;
+        // Calculate duty limit using shared helper
+        let duty_limit = pwm::duty_limit(max_duty, config.max_duty_percent);
 
         defmt::info!(
-            "Motor PWM init: freq={}Hz, max_duty={}, limit={}%",
-            config.pwm_freq,
+            "G431 Motor PWM init: freq={}Hz, max_duty={}, limit={}%",
+            config.pwm_freq_hz,
             max_duty,
             config.max_duty_percent
         );
@@ -125,90 +104,16 @@ impl<'d> MotorPwm<'d> {
         }
     }
 
-    /// Set duty cycle for a specific phase (0-100%).
-    ///
-    /// Duty is clamped to the configured max_duty_percent.
-    #[allow(dead_code)]
-    pub fn set_phase_duty(&mut self, channel: Channel, duty_percent: u8) {
-        let duty_percent = duty_percent.min(100);
-        let duty = (self.max_duty as u32 * duty_percent as u32 / 100) as u16;
-        let duty = duty.min(self.duty_limit);
-        self.pwm.set_duty(channel, duty);
-    }
-
-    /// Disable a specific phase (all FETs off for that phase).
-    #[allow(dead_code)]
-    pub fn disable_phase(&mut self, channel: Channel) {
-        self.pwm.set_duty(channel, 0);
-        self.pwm.disable(channel);
-    }
-
-    /// Apply 6-step commutation pattern.
-    ///
-    /// Traditional 6-step behavior:
-    /// - `PhaseState::High`: High-side FET PWMs at duty, low-side follows complementary with dead-time
-    /// - `PhaseState::Low`: High-side OFF, low-side ON continuously (0% duty = low-side always on)
-    /// - `PhaseState::Off`: Both FETs off (floating phase)
-    pub fn apply_commutation(
-        &mut self,
-        duty_percent: u8,
-        ph_a_state: PhaseState,
-        ph_b_state: PhaseState,
-        ph_c_state: PhaseState,
-    ) {
-        let duty_percent = duty_percent.min(100);
-        let duty = (self.max_duty as u32 * duty_percent as u32 / 100) as u16;
-        let duty = duty.min(self.duty_limit);
-
-        self.apply_phase_state(Channel::Ch1, ph_a_state, duty);
-        self.apply_phase_state(Channel::Ch2, ph_b_state, duty);
-        self.apply_phase_state(Channel::Ch3, ph_c_state, duty);
-    }
-
-    /// Apply a commutation step directly.
-    #[allow(dead_code)]
-    pub fn apply_step(&mut self, step: CommutationStep, duty_percent: u8) {
-        let (a, b, c) = step.get_phase_states();
-        self.apply_commutation(duty_percent, a, b, c);
-    }
-
-    /// Apply the drive state for a single phase.
-    fn apply_phase_state(&mut self, channel: Channel, state: PhaseState, duty: u16) {
-        match state {
-            PhaseState::Off => {
-                // Floating: both FETs off
-                self.pwm.set_duty(channel, 0);
-                self.pwm.disable(channel);
-            }
-            PhaseState::High => {
-                // High-side PWMs at duty, low-side complementary
-                self.pwm.set_duty(channel, duty);
-                self.pwm.enable(channel);
-            }
-            PhaseState::Low => {
-                // High-side OFF, low-side ON (sink current)
-                // With complementary PWM: 0% duty = high-side off, low-side on
-                self.pwm.set_duty(channel, 0);
-                self.pwm.enable(channel);
-            }
-        }
-    }
-
     /// Emergency stop - disable all phases immediately.
     pub fn emergency_stop(&mut self) {
-        self.apply_commutation(0, PhaseState::Off, PhaseState::Off, PhaseState::Off);
-    }
-
-    /// Get maximum duty cycle value.
-    #[allow(dead_code)]
-    pub fn get_max_duty(&self) -> u16 {
-        self.max_duty
+        self.pwm.set_duty(Channel::Ch1, 0);
+        self.pwm.set_duty(Channel::Ch2, 0);
+        self.pwm.set_duty(Channel::Ch3, 0);
+        self.pwm.disable(Channel::Ch1);
+        self.pwm.disable(Channel::Ch2);
+        self.pwm.disable(Channel::Ch3);
     }
 }
-
-// ========== Implement PhasePwm trait for FOC integration ==========
-
-use oxifoc_core::foc::pwm::PhasePwm;
 
 impl<'d> PhasePwm for MotorPwm<'d> {
     fn max_duty(&self) -> u16 {
