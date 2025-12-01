@@ -1,8 +1,6 @@
 //! Motor control helpers for oxifoc-g431
 pub mod fault_handler;
-pub mod hall_sensor;
 pub mod pwm;
-pub mod six_step;
 
 use core::sync::atomic::{AtomicU8, Ordering};
 use oxifoc_protocol::{MotorState, MotorStatus};

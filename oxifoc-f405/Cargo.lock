@@ -450,8 +450,9 @@ dependencies = [
 
 [[package]]
 name = "drv8301-dd"
-version = "0.1.0"
-source = "git+https://github.com/okhsunrog/drv8301-dd#aec4d7b2904236ff9969f78ae2554d74336cf153"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90b42c67a02d2da7ad660e6fb412974b9f5d30c7bf56aca889e777f165fdb3af"
 dependencies = [
  "bisync",
  "defmt 1.0.1",

@@ -12,10 +12,6 @@ assign_resources! {
         pb13: PB13, // Phase A low
         pb14: PB14, // Phase B low
         pb15: PB15, // Phase C low
-        pc0: PC0,   // Current sense A
-        pc1: PC1,   // Current sense B
-        pc2: PC2,   // Current sense C
-        pc3: PC3,   // VBUS sense
     }
     drv: DrvResources {
         spi3: SPI3,

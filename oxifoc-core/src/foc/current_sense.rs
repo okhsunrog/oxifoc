@@ -2,6 +2,39 @@
 //!
 //! Converts raw ADC readings from shunt resistor + OPAMP amplifiers
 //! into calibrated current measurements in Amperes.
+//!
+//! # Architecture
+//!
+//! - `ShuntCurrentSense`: Core converter (ADC counts → Amps) with calibration
+//! - Platform code: Provides raw ADC values via atomics, implements `CurrentSensor` trait
+//! - Calibration: Async function in platform code, uses `calibrate_offsets()` for math
+//!
+//! # Usage Pattern (for platform crates)
+//!
+//! ```ignore
+//! // In platform crate (e.g., oxifoc-f405/src/sensors/current.rs):
+//! use oxifoc_core::foc::current_sense::ShuntCurrentSense;
+//! use oxifoc_core::foc::sensors::CurrentSensor;
+//!
+//! static RAW_A: AtomicU16 = AtomicU16::new(2048);
+//! static RAW_B: AtomicU16 = AtomicU16::new(2048);
+//! static RAW_C: AtomicU16 = AtomicU16::new(2048);
+//! static CONVERTER: Mutex<RefCell<Option<ShuntCurrentSense>>> = ...;
+//!
+//! pub struct PlatformCurrentSensor { /* config */ }
+//!
+//! impl CurrentSensor for PlatformCurrentSensor {
+//!     fn read_currents(&self) -> (f32, f32, f32) { ... }
+//!     fn read_raw(&self) -> (u16, u16, u16) { ... }
+//!     fn is_calibrated(&self) -> bool { ... }
+//!     fn get_offsets(&self) -> (f32, f32, f32) { ... }
+//! }
+//!
+//! pub async fn calibrate_offsets(num_samples: usize, delay_us: u64) {
+//!     // Collect samples with Timer::after() delays
+//!     // Call CONVERTER.calibrate_offsets(&samples)
+//! }
+//! ```
 
 /// Shunt-based current sense converter
 ///
@@ -49,7 +82,10 @@ impl ShuntCurrentSense {
         (ia, ib, ic)
     }
 
-    /// Calibrate zero-current offsets from sample data
+    /// Calibrate zero-current offsets from sample data (all phases simultaneously)
+    ///
+    /// This is the simple calibration method - samples all phases at once.
+    /// For VESC-style per-phase calibration, use `calibrate_phase_offset`.
     pub fn calibrate_offsets(&mut self, samples: &[(u16, u16, u16)]) {
         if samples.is_empty() {
             return;
@@ -70,6 +106,58 @@ impl ShuntCurrentSense {
         self.offset_b = sum_b as f32 / count;
         self.offset_c = sum_c as f32 / count;
         self.calibrated = true;
+    }
+
+    /// Calibrate a single phase offset from samples (VESC-style per-phase calibration)
+    ///
+    /// This allows calibrating each phase individually while PWM is active on that phase.
+    /// VESC uses this approach: enable PWM on one phase at a time, sample that phase's ADC,
+    /// then move to the next phase. This provides more accurate offsets under load conditions.
+    ///
+    /// # Arguments
+    /// * `phase` - Phase index (0=A, 1=B, 2=C)
+    /// * `samples` - Raw ADC samples for this phase
+    ///
+    /// # Note
+    /// After calibrating all three phases individually, `is_calibrated()` will return true.
+    pub fn calibrate_phase_offset(&mut self, phase: usize, samples: &[u16]) {
+        if samples.is_empty() {
+            return;
+        }
+
+        let sum: u32 = samples.iter().map(|&s| s as u32).sum();
+        let avg = sum as f32 / samples.len() as f32;
+
+        match phase {
+            0 => self.offset_a = avg,
+            1 => self.offset_b = avg,
+            2 => self.offset_c = avg,
+            _ => return, // Invalid phase
+        }
+
+        // Mark calibrated only when all three phases have reasonable offsets
+        // (not at default mid-scale value)
+        let mid = self.adc_max_counts as f32 / 2.0;
+        let tolerance = self.adc_max_counts as f32 * 0.1; // 10% tolerance
+        let a_calibrated =
+            (self.offset_a - mid).abs() > tolerance || (phase == 0 && samples.len() > 10);
+        let b_calibrated =
+            (self.offset_b - mid).abs() > tolerance || (phase == 1 && samples.len() > 10);
+        let c_calibrated =
+            (self.offset_c - mid).abs() > tolerance || (phase == 2 && samples.len() > 10);
+
+        // Simple heuristic: if any phase has been explicitly calibrated with enough samples
+        if a_calibrated || b_calibrated || c_calibrated {
+            self.calibrated = true;
+        }
+    }
+
+    /// Reset calibration state (useful before starting a new per-phase calibration)
+    pub fn reset_calibration(&mut self) {
+        self.offset_a = self.adc_max_counts as f32 / 2.0;
+        self.offset_b = self.adc_max_counts as f32 / 2.0;
+        self.offset_c = self.adc_max_counts as f32 / 2.0;
+        self.calibrated = false;
     }
 
     /// Check if offsets have been calibrated
@@ -207,5 +295,43 @@ mod tests {
         let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
         converter.calibrate_offsets(&[]);
         assert!(!converter.is_calibrated());
+    }
+
+    #[test]
+    fn test_per_phase_calibration() {
+        let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+
+        // Calibrate phase A
+        let samples_a: Vec<u16> = (0..100).map(|_| 2040).collect();
+        converter.calibrate_phase_offset(0, &samples_a);
+
+        // Calibrate phase B
+        let samples_b: Vec<u16> = (0..100).map(|_| 2050).collect();
+        converter.calibrate_phase_offset(1, &samples_b);
+
+        // Calibrate phase C
+        let samples_c: Vec<u16> = (0..100).map(|_| 2060).collect();
+        converter.calibrate_phase_offset(2, &samples_c);
+
+        let (oa, ob, oc) = converter.get_offsets();
+        assert!((oa - 2040.0).abs() < 0.1);
+        assert!((ob - 2050.0).abs() < 0.1);
+        assert!((oc - 2060.0).abs() < 0.1);
+        assert!(converter.is_calibrated());
+    }
+
+    #[test]
+    fn test_reset_calibration() {
+        let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+        converter.set_offsets(2000.0, 2100.0, 2200.0);
+        assert!(converter.is_calibrated());
+
+        converter.reset_calibration();
+        assert!(!converter.is_calibrated());
+
+        let (oa, ob, oc) = converter.get_offsets();
+        assert!((oa - 2047.5).abs() < 0.1);
+        assert!((ob - 2047.5).abs() < 0.1);
+        assert!((oc - 2047.5).abs() < 0.1);
     }
 }

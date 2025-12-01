@@ -12,10 +12,9 @@ use embassy_sync::watch::Watch;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::{FocController, FocTelemetry};
-use oxifoc_core::foc::sensors::CurrentSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
 
-use crate::config::{INITIAL_VBUS_VOLTS, MAX_IQ_TARGET_A, fet_temp_c_from_adc, vbus_mv_from_adc};
+use crate::config::{BOARD, NTC};
 use crate::motor::pwm::MotorPwm;
 use crate::sensors::{G431CurrentSensor, HallAngleProxy};
 
@@ -67,9 +66,10 @@ pub async fn init(
     motor_pwm.emergency_stop();
 
     // Build current sensor and angle sensor
-    let current_sensor = G431CurrentSensor::new();
+    let current_sensor = G431CurrentSensor::new(&BOARD);
     let angle_sensor = HallAngleProxy::new();
-    let initial_vbus_v = (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(INITIAL_VBUS_VOLTS);
+    let initial_vbus_v =
+        (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
 
     // Build FOC driver
     let mut foc_driver = FocDriver::new(
@@ -85,7 +85,7 @@ pub async fn init(
 
     // Allow ADC injected conversions to start firing before zero-current calibration.
     Timer::after(Duration::from_millis(10)).await;
-    foc_driver.current_sensor_mut().calibrate(300);
+    foc_driver.current_sensor_mut().calibrate().await;
 
     // Install FOC driver for ISR-only access.
     FOC_DRIVER.lock(|cell| {
@@ -102,8 +102,7 @@ pub fn send_command(mode: ControlMode) {
 
 /// Map duty percent to target q-axis current
 pub fn duty_to_iq(duty: u8) -> f32 {
-    let duty = duty.min(100);
-    duty as f32 / 100.0 * MAX_IQ_TARGET_A
+    BOARD.duty_to_iq(duty)
 }
 
 // ========== ADC Interrupt Handler ==========
@@ -129,11 +128,11 @@ unsafe fn ADC1_2() {
             IA_SAMPLE.store(samples[0], Ordering::Relaxed);
 
             // Convert VBUS raw ADC to millivolts
-            let vbus_mv = vbus_mv_from_adc(samples[1]);
+            let vbus_mv = BOARD.vbus_mv_from_adc(samples[1]);
             VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
             // Convert temperature raw ADC to 0.1°C units
-            let temp_c = fet_temp_c_from_adc(samples[2]);
+            let temp_c = NTC.temp_c_from_adc(samples[2], BOARD.adc_max_counts);
             let temp_c_x10 = if temp_c.is_finite() && temp_c >= 0.0 {
                 (temp_c * 10.0) as u16
             } else {

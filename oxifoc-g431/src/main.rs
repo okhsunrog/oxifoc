@@ -26,7 +26,8 @@ mod sensors;
 mod transport;
 
 use hardware::{AssignedResources, HallResources, MotorResources};
-use motor::pwm::{MotorPwm, MotorPwmConfig};
+use motor::pwm::MotorPwm;
+use oxifoc_core::foc::pwm::MotorPwmConfig;
 use protocol::{DeviceState, RECV_BUF, SCRATCH_BUF, STACK, get_device_state, set_device_state};
 
 #[embassy_executor::main]

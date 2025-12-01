@@ -18,18 +18,26 @@ pub struct AngleSample {
 ///
 /// Implementers provide 3-phase current measurements in Amperes.
 /// Supports both 3-phase and 2-phase sensing (set unused phase to 0.0).
+///
+/// Note: Calibration is handled separately via async functions in platform code,
+/// using `ShuntCurrentSense::calibrate_offsets()` for the algorithm.
 pub trait CurrentSensor {
     /// Read 3-phase currents in Amperes
     ///
     /// Returns (i_a, i_b, i_c) in Amps.
     /// For 2-phase sampling, set the third phase to 0.0.
-    fn read_currents(&mut self) -> (f32, f32, f32);
+    fn read_currents(&self) -> (f32, f32, f32);
 
-    /// Calibrate zero-current offsets (with motor disabled)
-    fn calibrate(&mut self, samples: usize);
+    /// Read raw ADC values (for calibration and debugging)
+    ///
+    /// Returns (adc_a, adc_b, adc_c) raw counts.
+    fn read_raw(&self) -> (u16, u16, u16);
 
     /// True if calibration has been performed
     fn is_calibrated(&self) -> bool;
+
+    /// Get current calibration offsets (in ADC counts)
+    fn get_offsets(&self) -> (f32, f32, f32);
 }
 
 /// Platform-agnostic angle sensor trait

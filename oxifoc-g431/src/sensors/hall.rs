@@ -1,15 +1,14 @@
 //! Hall sensor management for B-G431B-ESC1
 //!
-//! Provides Hall sensor edge detection via EXTI interrupts, angle estimation,
-//! and integration with the FOC control loop.
+//! Uses raw PAC access for EXTI configuration to avoid conflicts with Embassy's
+//! EXTI feature while maintaining low-latency interrupt-driven hall sensing.
 
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
-use embassy_stm32::exti::ExtiInput;
-use embassy_stm32::gpio::Pull;
+use embassy_stm32::gpio::{Input, Pull};
 use embassy_stm32::interrupt::typelevel::Interrupt;
-use embassy_stm32::{Peri, interrupt, peripherals};
+use embassy_stm32::{Peri, interrupt, pac, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use static_cell::StaticCell;
 
@@ -73,35 +72,37 @@ static HALL_EDGE_MAILBOX: HallEdgeMailbox = HallEdgeMailbox::new();
 static HALL_ESTIMATOR: CriticalSectionMutex<RefCell<Option<HallSensor>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
-// ========== Hall EXTI Inputs ==========
+// ========== Hall GPIO Inputs ==========
 
-/// Keep Hall ExtiInput instances alive for EXTI interrupt handling.
-static HALL_INPUTS: StaticCell<(ExtiInput<'static>, ExtiInput<'static>, ExtiInput<'static>)> =
+/// Static storage for GPIO inputs
+static HALL_INPUTS: StaticCell<(Input<'static>, Input<'static>, Input<'static>)> =
     StaticCell::new();
-static mut HALL_INPUTS_PTR: Option<&'static (
-    ExtiInput<'static>,
-    ExtiInput<'static>,
-    ExtiInput<'static>,
-)> = None;
+
+/// Unsafe pointer to hall inputs for fast ISR access
+static mut HALL_INPUTS_PTR: Option<&'static (Input<'static>, Input<'static>, Input<'static>)> =
+    None;
 
 // ========== Hall Sensor Initialization ==========
 
-/// Initialize Hall sensor inputs and estimator
+/// Initialize Hall sensor inputs and enable EXTI interrupts
+///
+/// Note: We configure EXTI via PAC directly to avoid symbol conflicts with LTO.
+/// The EXTI6/7/8 parameters are kept for API compatibility but unused.
 pub fn init(
     pb6: Peri<'static, peripherals::PB6>,
     pb7: Peri<'static, peripherals::PB7>,
     pb8: Peri<'static, peripherals::PB8>,
-    exti6: Peri<'static, peripherals::EXTI6>,
-    exti7: Peri<'static, peripherals::EXTI7>,
-    exti8: Peri<'static, peripherals::EXTI8>,
+    _exti6: Peri<'static, peripherals::EXTI6>,
+    _exti7: Peri<'static, peripherals::EXTI7>,
+    _exti8: Peri<'static, peripherals::EXTI8>,
 ) {
-    // Initialize Hall sensor inputs with pull-ups and EXTI (for async edge detection)
-    let hall_h1 = ExtiInput::new(pb6, exti6, Pull::Up);
-    let hall_h2 = ExtiInput::new(pb7, exti7, Pull::Up);
-    let hall_h3 = ExtiInput::new(pb8, exti8, Pull::Up);
+    // Create GPIO inputs with pull-up
+    let hall_h1 = Input::new(pb6, Pull::Up);
+    let hall_h2 = Input::new(pb7, Pull::Up);
+    let hall_h3 = Input::new(pb8, Pull::Up);
     defmt::info!("Hall sensors configured: H1=PB6, H2=PB7, H3=PB8");
 
-    // Keep Hall EXTI inputs alive to maintain configuration
+    // Keep Hall inputs alive for ISR access
     let inputs = HALL_INPUTS.init((hall_h1, hall_h2, hall_h3));
     unsafe {
         HALL_INPUTS_PTR = Some(inputs);
@@ -112,13 +113,51 @@ pub fn init(
         est.replace(Some(HallSensor::new(TIMEBASE_TICKS_PER_SEC)));
     });
 
-    // Enable EXTI9_5 interrupt for Hall lines 6/7/8
+    // Configure EXTI for PB6, PB7, PB8 via PAC
+    // SYSCFG_EXTICR2 controls EXTI6 and EXTI7 (pins 4-7)
+    // SYSCFG_EXTICR3 controls EXTI8 (pins 8-11)
+    // Port B = 0b0001
+    pac::SYSCFG.exticr(1).modify(|w| {
+        w.set_exti(2, 0b0001); // EXTI6 -> PB6
+        w.set_exti(3, 0b0001); // EXTI7 -> PB7
+    });
+    pac::SYSCFG.exticr(2).modify(|w| {
+        w.set_exti(0, 0b0001); // EXTI8 -> PB8
+    });
+
+    // Enable rising and falling edge triggers for lines 6, 7, 8
+    pac::EXTI.rtsr(0).modify(|w| {
+        w.set_line(6, true);
+        w.set_line(7, true);
+        w.set_line(8, true);
+    });
+    pac::EXTI.ftsr(0).modify(|w| {
+        w.set_line(6, true);
+        w.set_line(7, true);
+        w.set_line(8, true);
+    });
+
+    // Clear any pending interrupts
+    pac::EXTI.pr(0).write(|w| {
+        w.set_line(6, true);
+        w.set_line(7, true);
+        w.set_line(8, true);
+    });
+
+    // Enable interrupt mask for lines 6, 7, 8
+    pac::EXTI.imr(0).modify(|w| {
+        w.set_line(6, true);
+        w.set_line(7, true);
+        w.set_line(8, true);
+    });
+
+    // Enable EXTI9_5 interrupt in NVIC
     unsafe {
         interrupt::typelevel::EXTI9_5::unpend();
         interrupt::typelevel::EXTI9_5::enable();
     }
 
-    defmt::info!("Hall sensor initialized with EXTI edge detection");
+    defmt::info!("Hall sensor initialized with EXTI edge detection (raw PAC)");
 }
 
 // ========== Fast Hall State Reading ==========
@@ -147,13 +186,17 @@ fn read_hall_state_fast() -> u8 {
 
 /// Handle Hall sensor edges (PB6/PB7/PB8) and timestamp them.
 #[interrupt]
-unsafe fn EXTI9_5() {
+fn EXTI9_5() {
     let state = read_hall_state_fast();
     let ticks = embassy_time::Instant::now().as_ticks() as u32;
     HALL_EDGE_MAILBOX.write(state, ticks);
 
-    // Clear EXTI pending bits for lines 6/7/8
-    interrupt::typelevel::EXTI9_5::unpend();
+    // Clear pending bits for lines 6, 7, 8
+    pac::EXTI.pr(0).write(|w| {
+        w.set_line(6, true);
+        w.set_line(7, true);
+        w.set_line(8, true);
+    });
 }
 
 // ========== Public API for Control Loop ==========

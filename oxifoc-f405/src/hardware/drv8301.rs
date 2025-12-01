@@ -1,6 +1,9 @@
 //! DRV8301 gate driver configuration for Simple FOCer 2
 
-use drv8301_dd::{Drv8301, DrvError, OcAdjSet, OcpMode, ShuntAmplifierGain};
+use drv8301_dd::{Drv8301, DrvError, GateCurrent, OcpMode, ShuntAmplifierGain};
+
+// Re-export FaultStatus for use by other modules
+pub use drv8301_dd::FaultStatus;
 use embassy_stm32::{
     Peri,
     gpio::{Level, Output, Speed},
@@ -69,16 +72,15 @@ pub fn init_spi(
     }
 }
 
-/// Configure DRV8301 according to VESC settings
-pub fn configure_drv8301(
-    drv_config: &mut Drv8301Config<'_>,
-) -> Result<
-    (),
-    DrvError<
-        embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, core::convert::Infallible>,
-    >,
-> {
-    // Create SPI device from bus and CS pin
+/// DRV8301 SPI error type alias for convenience
+pub type Drv8301Error = DrvError<
+    embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, core::convert::Infallible>,
+>;
+
+/// Configure DRV8301 according to VESC Cheap FOCer 2 v1.0 settings
+///
+/// Matches VESC firmware: drv8301_write_reg(2, 0x0430) + drv8301_set_current_amp_gain(10)
+pub fn configure_drv8301(drv_config: &mut Drv8301Config<'_>) -> Result<(), Drv8301Error> {
     let spi_device =
         ExclusiveDevice::new_no_delay(&mut drv_config.spi, &mut drv_config.cs).unwrap();
 
@@ -95,31 +97,65 @@ pub fn configure_drv8301(
         }
     }
 
-    // Check for existing faults
-    let has_fault = drv.has_fault()?;
-    if has_fault {
+    // Check for existing faults and log details
+    let fault_status = drv.get_fault_status()?;
+    if !fault_status.is_ok() {
+        log_fault_status(&fault_status);
         defmt::warn!("DRV8301 has faults, resetting...");
         drv.reset_gate_faults()?;
     }
 
-    // VESC configuration sequence:
-    // 1. Disable overcurrent protection initially (VESC writes 0x0430 to reg 2)
-    //    This sets OC_MODE to latched shutdown but with a permissive threshold
-    drv.set_ocp_mode(OcpMode::OcLatchShutdown)?;
-    drv.set_oc_threshold(OcAdjSet::Vds250mV)?; // Conservative threshold
-
-    // 2. Set current amplifier gain to 20 V/V (matching BoardScaling)
-    drv.set_shunt_amplifier_gain(ShuntAmplifierGain::Gain20)?;
-
-    // 3. Set 6-PWM mode (false = 6-PWM, true = 3-PWM)
+    // VESC configuration (0x0430): OC disabled, 6-PWM, low gate current
+    drv.set_ocp_mode(OcpMode::OcDisabled)?;
     drv.set_pwm_mode(false)?;
+    drv.set_gate_current(GateCurrent::Low)?;
 
-    // 4. Reset any latched faults
+    // Cheap FOCer 2 v1.0: CURRENT_AMP_GAIN = 10
+    drv.set_shunt_amplifier_gain(ShuntAmplifierGain::Gain10)?;
+
+    // Reset any latched faults
     drv.reset_gate_faults()?;
 
-    defmt::info!("DRV8301 configured successfully");
+    defmt::info!("DRV8301 configured (Cheap FOCer 2 v1.0)");
 
     Ok(())
+}
+
+/// Log detailed fault status information
+fn log_fault_status(status: &FaultStatus) {
+    defmt::warn!("DRV8301 Fault Status:");
+    if status.has_voltage_fault() {
+        defmt::warn!(
+            "  Voltage faults - GVDD_UV: {}, GVDD_OV: {}, PVDD_UV: {}",
+            status.gvdd_uv,
+            status.gvdd_ov,
+            status.pvdd_uv
+        );
+    }
+    if status.has_thermal() {
+        defmt::warn!(
+            "  Thermal - Shutdown: {}, Warning: {}",
+            status.otsd,
+            status.otw
+        );
+    }
+    if status.has_overcurrent() {
+        defmt::warn!(
+            "  Phase A OC - High: {}, Low: {}",
+            status.fetha_oc,
+            status.fetla_oc
+        );
+        defmt::warn!(
+            "  Phase B OC - High: {}, Low: {}",
+            status.fethb_oc,
+            status.fetlb_oc
+        );
+        defmt::warn!(
+            "  Phase C OC - High: {}, Low: {}",
+            status.fethc_oc,
+            status.fetlc_oc
+        );
+    }
 }
 
 /// Enable the DRV8301 gate driver
@@ -135,8 +171,40 @@ pub fn disable_gate_driver(drv_config: &mut Drv8301Config<'_>) {
     defmt::info!("DRV8301 gate driver disabled");
 }
 
-/// Check if DRV8301 is reporting a fault
+/// Check if DRV8301 is reporting a fault via hardware pin (fast check)
 #[allow(dead_code)]
 pub fn is_fault_active(drv_config: &Drv8301Config<'_>) -> bool {
     drv_config.fault.is_low()
+}
+
+/// Get detailed fault status from DRV8301 via SPI
+///
+/// This reads both status registers to provide a complete fault picture.
+/// Use `is_fault_active()` for a fast hardware-level check, or this function
+/// when you need to know specifically what fault occurred.
+#[allow(dead_code)]
+pub fn get_fault_status(drv_config: &mut Drv8301Config<'_>) -> Result<FaultStatus, Drv8301Error> {
+    let spi_device =
+        ExclusiveDevice::new_no_delay(&mut drv_config.spi, &mut drv_config.cs).unwrap();
+    let mut drv = Drv8301::new(spi_device);
+    drv.get_fault_status()
+}
+
+/// Check and log any active faults, returning true if faults are present
+#[allow(dead_code)]
+pub fn check_and_log_faults(drv_config: &mut Drv8301Config<'_>) -> Result<bool, Drv8301Error> {
+    let fault_status = get_fault_status(drv_config)?;
+    if !fault_status.is_ok() {
+        log_fault_status(&fault_status);
+    }
+    Ok(!fault_status.is_ok())
+}
+
+/// Reset gate driver faults
+#[allow(dead_code)]
+pub fn reset_faults(drv_config: &mut Drv8301Config<'_>) -> Result<(), Drv8301Error> {
+    let spi_device =
+        ExclusiveDevice::new_no_delay(&mut drv_config.spi, &mut drv_config.cs).unwrap();
+    let mut drv = Drv8301::new(spi_device);
+    drv.reset_gate_faults()
 }
