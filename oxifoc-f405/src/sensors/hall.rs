@@ -184,6 +184,13 @@ fn read_hall_state_fast() -> u8 {
     }
 }
 
+/// Read raw Hall sensor state (public API for calibration)
+///
+/// Returns 3-bit Hall state (0-7): H3<<2 | H2<<1 | H1
+pub fn read_hall_state_raw() -> u8 {
+    read_hall_state_fast()
+}
+
 // ========== EXTI Interrupt Handler ==========
 
 /// Handle Hall sensor edges (PC6/PC7/PC8) and timestamp them.

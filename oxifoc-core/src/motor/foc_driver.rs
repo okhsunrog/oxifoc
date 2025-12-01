@@ -36,6 +36,18 @@ pub enum ControlMode {
         /// Target position in radians
         target_pos: f32,
     },
+    /// Open-loop mode for calibration - locks rotor to specified electrical angle
+    ///
+    /// In this mode, the FOC controller uses a commanded angle instead of the
+    /// angle sensor. Current control still runs to regulate the applied current.
+    /// This is used for Hall sensor calibration where we need to sweep the rotor
+    /// through known electrical angles.
+    OpenLoop {
+        /// Target electrical angle (radians, 0 to 2π)
+        angle_rad: f32,
+        /// Current magnitude (Amps) - applied as q-current to lock rotor
+        current: f32,
+    },
 }
 
 /// Motor command (for channel-based API)
@@ -61,6 +73,13 @@ pub enum MotorCommand {
         /// Target position in radians
         pos: f32,
     },
+    /// Set open-loop mode (for calibration)
+    SetOpenLoop {
+        /// Target electrical angle (radians)
+        angle: f32,
+        /// Current magnitude (Amps)
+        current: f32,
+    },
 }
 
 impl MotorCommand {
@@ -74,6 +93,10 @@ impl MotorCommand {
             },
             MotorCommand::SetVelocity { vel } => ControlMode::VelocityControl { target_vel: vel },
             MotorCommand::SetPosition { pos } => ControlMode::PositionControl { target_pos: pos },
+            MotorCommand::SetOpenLoop { angle, current } => ControlMode::OpenLoop {
+                angle_rad: angle,
+                current,
+            },
         }
     }
 }
@@ -205,6 +228,9 @@ where
                 // TODO: Implement position PI controller
                 Err("Position control not implemented")
             }
+            ControlMode::OpenLoop { angle_rad, current } => {
+                self.step_open_loop(angle_rad, current, dt)
+            }
         }
     }
 
@@ -234,6 +260,38 @@ where
         let telem = self
             .controller
             .step(currents, angle_rad, id_target, iq_target, max_duty, dt);
+
+        // Set PWM duties
+        self.pwm.set_duties(telem.duties);
+
+        Ok(telem)
+    }
+
+    /// Execute open-loop control step (for calibration)
+    ///
+    /// Uses commanded angle instead of sensor feedback to lock rotor position.
+    /// Current feedback is still used to regulate the applied current.
+    fn step_open_loop(
+        &mut self,
+        angle_rad: f32,
+        current: f32,
+        dt: f32,
+    ) -> Result<FocTelemetry, &'static str> {
+        // Check sensor calibration
+        if !self.current_sensor.is_calibrated() {
+            return Err("Current sensor not calibrated");
+        }
+
+        // Read currents for feedback
+        let currents = self.current_sensor.read_currents();
+
+        // Use commanded angle instead of sensor
+        // Apply current as q-axis (torque) to lock rotor at the commanded angle
+        // id_target = 0 (no field weakening in open-loop)
+        let max_duty = self.pwm.max_duty();
+        let telem = self
+            .controller
+            .step(currents, angle_rad, 0.0, current, max_duty, dt);
 
         // Set PWM duties
         self.pwm.set_duties(telem.duties);
