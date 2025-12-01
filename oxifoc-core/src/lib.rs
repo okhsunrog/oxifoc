@@ -71,6 +71,9 @@ pub mod foc {
     /// Shunt resistor current sensing
     pub mod current_sense;
 
+    /// Hall sensor calibration algorithm
+    pub mod hall_calibration;
+
     /// Hall sensor angle estimation
     pub mod hall_sensor;
 

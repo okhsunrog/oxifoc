@@ -17,7 +17,7 @@ use super::sensors::{AngleSample, AngleSensor};
 /// The table maps raw 3-bit Hall reading to normalized state:
 /// - Invalid states (0, 7) map to 0 with error flag
 /// - Valid states (1,2,3,4,5,6) map to their position in the sequence
-const HALL_STATE_TABLE: [u8; 8] = [
+pub const HALL_STATE_TABLE: [u8; 8] = [
     0, // 000 (invalid - all sensors low)
     0, // 001 (H1 only)
     2, // 010 (H2 only)
@@ -212,6 +212,22 @@ impl HallSensor {
     /// clockwise sequence 0→1→2→3→4→5.
     pub fn set_calibration(&mut self, table_rad: [f32; 6]) {
         self.calib = HallCalibration::new(table_rad, self.calib.advance_rad);
+    }
+
+    /// Apply calibration result from `HallCalibrator`
+    ///
+    /// Converts the raw-state calibration result to logical-state table and applies it.
+    /// Returns `true` if calibration was valid and applied, `false` otherwise.
+    pub fn apply_calibration(
+        &mut self,
+        result: &super::hall_calibration::HallCalibrationResult,
+    ) -> bool {
+        if result.is_valid() {
+            self.set_calibration(result.to_logical_table());
+            true
+        } else {
+            false
+        }
     }
 
     /// Set additional electrical advance (radians) applied to calibrated angles.
