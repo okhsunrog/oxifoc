@@ -121,26 +121,52 @@ pub async fn hall_sensor_server() {
     let server = pin!(server);
     let mut h = server.attach();
 
+    // Sequence counter for protocol (since we removed it from HallSnapshot)
+    let mut seq: u32 = 0;
+
     loop {
         let _ = h
-            .serve(|_: &()| async {
-                let snapshot = get_hall_snapshot();
+            .serve(|_: &()| {
+                seq = seq.wrapping_add(1);
+                let current_seq = seq;
+                async move {
+                    let now_ticks = embassy_time::Instant::now().as_ticks();
+                    let snapshot = get_hall_snapshot(now_ticks);
 
-                // Convert core Direction to protocol HallDirection
-                let direction = match snapshot.direction {
-                    oxifoc_core::foc::hall_sensor::Direction::Clockwise => HallDirection::Clockwise,
-                    oxifoc_core::foc::hall_sensor::Direction::CounterClockwise => {
-                        HallDirection::CounterClockwise
+                    match snapshot {
+                        Some(s) => {
+                            // Convert core Direction to protocol HallDirection
+                            let direction = match s.direction {
+                                oxifoc_core::foc::hall_sensor::Direction::Clockwise => {
+                                    HallDirection::Clockwise
+                                }
+                                oxifoc_core::foc::hall_sensor::Direction::CounterClockwise => {
+                                    HallDirection::CounterClockwise
+                                }
+                                oxifoc_core::foc::hall_sensor::Direction::Stopped => {
+                                    HallDirection::Stopped
+                                }
+                            };
+
+                            HallSensorData {
+                                angle_rad: s.angle_rad,
+                                direction,
+                                state: s.state,
+                                error_count: s.error_count,
+                                seq: current_seq,
+                            }
+                        }
+                        None => {
+                            // Hall sensor not initialized yet
+                            HallSensorData {
+                                angle_rad: 0.0,
+                                direction: HallDirection::Stopped,
+                                state: 0,
+                                error_count: 0,
+                                seq: current_seq,
+                            }
+                        }
                     }
-                    oxifoc_core::foc::hall_sensor::Direction::Stopped => HallDirection::Stopped,
-                };
-
-                HallSensorData {
-                    angle_rad: snapshot.angle_rad,
-                    direction,
-                    state: snapshot.state,
-                    error_count: snapshot.error_count,
-                    seq: snapshot.seq,
                 }
             })
             .await;
