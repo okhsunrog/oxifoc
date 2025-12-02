@@ -163,9 +163,8 @@ unsafe fn ADC1_2() {
     // Incorporate latest Hall edge (from EXTI)
     crate::sensors::hall::process_edge(LAST_HALL_SEQ);
 
-    // Snapshot current Hall data for telemetry/consumers
+    // Get current timestamp for FOC and phase manager
     let now_ticks = embassy_time::Instant::now().as_ticks();
-    crate::sensors::hall::update_snapshot(now_ticks);
 
     // Run FOC control loop
     FOC_DRIVER.lock(|cell| {

@@ -6,7 +6,6 @@
 #![allow(dead_code)] // Public API not yet wired to protocol handlers
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use embassy_stm32::gpio::{Input, Pull};
 use embassy_stm32::interrupt::typelevel::Interrupt;
@@ -15,25 +14,11 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use static_cell::StaticCell;
 
 use oxifoc_core::foc::hall_sensor::{Direction, HallSensor};
-use oxifoc_core::foc::sensors::{AngleSample, AngleSensor};
+use oxifoc_core::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait};
 
 use crate::config::TIMEBASE_TICKS_PER_SEC;
 
-// ========== Hall Sensor State (Global Atomics) ==========
-
-/// Hall sensor data (updated by EXTI ISR and consumed by ADC ISR + servers).
-/// Angle stored as f32 bit-pattern in AtomicU32.
-static HALL_ANGLE_BITS: AtomicU32 = AtomicU32::new(0);
-/// Hall direction: 0=Stopped, 1=Clockwise, 2=CounterClockwise
-static HALL_DIRECTION: AtomicU8 = AtomicU8::new(0);
-/// Hall state (0-5)
-static HALL_STATE: AtomicU8 = AtomicU8::new(0);
-/// Hall error count
-static HALL_ERROR_COUNT: AtomicU32 = AtomicU32::new(0);
-/// Sequence counter for Hall sensor samples
-static HALL_SEQ: AtomicU32 = AtomicU32::new(0);
-
-// ========== Hall Edge Mailbox ==========
+// ========== Hall Edge Mailbox (EXTI → ADC ISR) ==========
 
 /// Hall edge data communicated from EXTI ISR to ADC ISR
 #[derive(Clone, Copy)]
@@ -58,9 +43,10 @@ impl HallEdge {
 static HALL_EDGE_MAILBOX: CriticalSectionMutex<RefCell<HallEdge>> =
     CriticalSectionMutex::new(RefCell::new(HallEdge::new()));
 
-// ========== Hall Estimator ==========
+// ========== Hall Estimator (shared state) ==========
 
-/// Hall estimator shared between EXTI/Hall task and ADC ISR.
+/// Hall estimator - the single source of truth for Hall sensor state.
+/// Accessed by ADC ISR (write) and telemetry tasks (read).
 static HALL_ESTIMATOR: CriticalSectionMutex<RefCell<Option<HallSensor>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
@@ -218,10 +204,6 @@ pub fn process_edge(last_seq: &mut u32) -> bool {
                 let _ = h.update_sample(edge.state, edge.ticks as u64);
             }
         });
-        HALL_STATE.store(edge.state, Ordering::Relaxed);
-        let err =
-            HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().map(|h| h.error_count()).unwrap_or(0));
-        HALL_ERROR_COUNT.store(err, Ordering::Relaxed);
         *last_seq = edge.seq;
         true
     } else {
@@ -229,49 +211,31 @@ pub fn process_edge(last_seq: &mut u32) -> bool {
     }
 }
 
-/// Update global Hall state snapshot (called from ADC ISR)
-pub fn update_snapshot(now_ticks: u64) {
-    if let Some(sample) =
-        HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(|h| h.sample_at(now_ticks)))
-    {
-        HALL_ANGLE_BITS.store(sample.angle.to_bits(), Ordering::Relaxed);
-        let dir_u8 = match sample.direction {
-            Direction::Stopped => 0,
-            Direction::Clockwise => 1,
-            Direction::CounterClockwise => 2,
-        };
-        HALL_DIRECTION.store(dir_u8, Ordering::Relaxed);
-    }
-}
-
-/// Get current Hall sensor snapshot for protocol servers
-pub fn get_snapshot() -> HallSnapshot {
-    let seq = HALL_SEQ.fetch_add(1, Ordering::Relaxed);
-    let angle_bits = HALL_ANGLE_BITS.load(Ordering::Relaxed);
-    let angle_rad = f32::from_bits(angle_bits);
-    let dir_u8 = HALL_DIRECTION.load(Ordering::Relaxed);
-    let direction = match dir_u8 {
-        1 => Direction::Clockwise,
-        2 => Direction::CounterClockwise,
-        _ => Direction::Stopped,
-    };
-
-    HallSnapshot {
-        angle_rad,
-        direction,
-        state: HALL_STATE.load(Ordering::Relaxed),
-        error_count: HALL_ERROR_COUNT.load(Ordering::Relaxed),
-        seq,
-    }
-}
+// ========== Public API for Telemetry ==========
 
 /// Snapshot of Hall sensor data for protocol use
+#[derive(Clone, Copy, Debug)]
 pub struct HallSnapshot {
     pub angle_rad: f32,
+    pub velocity_rad_s: f32,
     pub direction: Direction,
     pub state: u8,
     pub error_count: u32,
-    pub seq: u32,
+}
+
+/// Get current Hall sensor snapshot (for telemetry, polled at low rate)
+pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
+    HALL_ESTIMATOR.lock(|est| {
+        est.borrow().as_ref().and_then(|h| {
+            h.sample_at(now_ticks).map(|sample| HallSnapshot {
+                angle_rad: sample.angle,
+                velocity_rad_s: sample.omega,
+                direction: sample.direction,
+                state: h.logical_state(),
+                error_count: h.error_count(),
+            })
+        })
+    })
 }
 
 // ========== Hall Angle Proxy for FOC ==========
