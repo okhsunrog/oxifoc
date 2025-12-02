@@ -160,6 +160,80 @@ impl<M: Modulator> FocController<M> {
             duties,
         }
     }
+
+    /// Run one FOC current loop step with voltage injection.
+    ///
+    /// Used for HFI-based inductance measurement. The injection voltages
+    /// are added to the PI controller outputs before inverse Park transform.
+    ///
+    /// # Arguments
+    /// * `currents`   - (ia, ib, ic) phase currents in Amps
+    /// * `angle_rad`  - electrical angle in radians
+    /// * `id_target`  - d-axis current target (flux)
+    /// * `iq_target`  - q-axis current target (torque)
+    /// * `vd_inject`  - d-axis voltage to inject (V)
+    /// * `vq_inject`  - q-axis voltage to inject (V)
+    /// * `max_duty`   - timer ARR value used for PWM normalization
+    /// * `dt`         - loop period in seconds
+    ///
+    /// # Returns
+    /// Telemetry containing intermediate values and final duty cycles.
+    /// The `vd` and `vq` fields include the injected voltages.
+    #[allow(clippy::too_many_arguments)]
+    pub fn step_with_injection(
+        &mut self,
+        currents: (f32, f32, f32),
+        angle_rad: f32,
+        id_target: f32,
+        iq_target: f32,
+        vd_inject: f32,
+        vq_inject: f32,
+        max_duty: u16,
+        dt: f32,
+    ) -> FocTelemetry {
+        let (ia, ib, ic) = currents;
+        let sin_theta = libm::sinf(angle_rad);
+        let cos_theta = libm::cosf(angle_rad);
+
+        // Phase currents -> stationary frame
+        let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+        // Stationary -> rotating frame
+        let (id, iq) = transforms::park(i_alpha, i_beta, sin_theta, cos_theta);
+
+        // Current controllers (dq frame)
+        let mut vd = self.id_pi.update(id_target, id, dt);
+        let mut vq = self.iq_pi.update(iq_target, iq, dt);
+
+        // Add HFI injection voltage
+        vd += vd_inject;
+        vq += vq_inject;
+
+        // Clamp to allowed modulation to avoid distorting SVPWM
+        let v_limit = self.vbus * self.modulation_limit;
+        vd = vd.clamp(-v_limit, v_limit);
+        vq = vq.clamp(-v_limit, v_limit);
+
+        // dq -> stationary frame
+        let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
+        let inv_vbus = 1.0 / self.vbus;
+        let duties = M::to_duties(v_alpha * inv_vbus, v_beta * inv_vbus, max_duty);
+
+        FocTelemetry {
+            ia,
+            ib,
+            ic,
+            angle_rad,
+            i_alpha,
+            i_beta,
+            id,
+            iq,
+            vd,
+            vq,
+            v_alpha,
+            v_beta,
+            duties,
+        }
+    }
 }
 
 #[cfg(test)]

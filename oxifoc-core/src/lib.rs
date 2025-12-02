@@ -6,8 +6,8 @@
 //! - Coordinate transformations (Clarke, Park)
 //! - Space Vector PWM (SVPWM) modulation
 //! - PI controllers with anti-windup
-//! - FOC control loops (planned)
-//! - Motor parameter detection (planned)
+//! - FOC control loops
+//! - Motor parameter detection (R, L, λ)
 //!
 //! ## Design Philosophy
 //!
@@ -91,4 +91,10 @@ pub mod foc {
 
     /// Coordinate transformations (Clarke, Park, and their inverses)
     pub mod transforms;
+
+    /// Motor parameter detection (R, L, λ)
+    pub mod detection;
+
+    /// Phase management (PhaseProvider, PhaseManager, Observer)
+    pub mod phase;
 }

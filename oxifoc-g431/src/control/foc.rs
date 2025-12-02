@@ -12,6 +12,8 @@ use embassy_sync::watch::Watch;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::{FocController, FocTelemetry};
+use oxifoc_core::foc::phase::PhaseManager;
+use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
 
 use crate::config::{BOARD, NTC};
@@ -50,7 +52,8 @@ pub static FOC_TELEMETRY: Watch<CriticalSectionRawMutex, FocTelemetry, 1> = Watc
 pub static FOC_CMD: Channel<CriticalSectionRawMutex, ControlMode, 4> = Channel::new();
 
 /// FOC driver storage (mutated only inside the ADC ISR)
-type FocDriverType = FocDriver<MotorPwm<'static>, G431CurrentSensor, HallAngleProxy>;
+type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor>;
+type FocDriverType = FocDriver<MotorPwm<'static>, G431CurrentSensor, PhaseManagerType>;
 static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
@@ -65,9 +68,10 @@ pub async fn init(
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
 
-    // Build current sensor and angle sensor
+    // Build current sensor and phase manager
     let current_sensor = G431CurrentSensor::new(&BOARD);
-    let angle_sensor = HallAngleProxy::new();
+    let hall_proxy = HallAngleProxy::new();
+    let phase_manager = PhaseManager::with_hall(hall_proxy);
     let initial_vbus_v =
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
 
@@ -76,7 +80,7 @@ pub async fn init(
         FocController::new(initial_vbus_v),
         motor_pwm,
         current_sensor,
-        angle_sensor,
+        phase_manager,
     );
 
     // Store ADC handles for ISR access
