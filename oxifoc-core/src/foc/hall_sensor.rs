@@ -7,7 +7,7 @@
 
 use core::f32::consts::TAU;
 
-use super::sensors::{AngleSample, AngleSensor};
+use super::sensors::{AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait};
 
 /// Hall state lookup table: maps raw sensor reading (0-7) to logical state (0-5)
 ///
@@ -54,8 +54,10 @@ pub struct HallSensor {
     calib: HallCalibration,
     /// Current electrical angle at last Hall edge (radians, 0 to 2π)
     angle: f32,
-    /// Previous Hall state (0-5)
-    state_prev: u8,
+    /// Raw 3-bit Hall state (0-7)
+    raw_state: u8,
+    /// Logical Hall state (0-5)
+    logical_state: u8,
     /// Current direction of rotation
     direction: Direction,
     /// Last edge timestamp (ticks of a caller-provided clock)
@@ -106,7 +108,8 @@ impl HallSensor {
             angle_per_state,
             calib: HallCalibration::default(),
             angle: 0.0,
-            state_prev: 0,
+            raw_state: 0,
+            logical_state: 0,
             direction: Direction::Stopped,
             last_edge_ticks: None,
             elec_velocity: 0.0,
@@ -125,13 +128,16 @@ impl HallSensor {
     /// * `Some(angle)` - Electrical angle at the edge in radians (0 to 2π)
     /// * `None` - Invalid Hall state (0 or 7)
     pub fn update(&mut self, raw_state: u8, t_ticks: u64) -> Option<f32> {
+        // Store raw state
+        self.raw_state = raw_state;
+
         // Check for invalid states (all low or all high)
         if raw_state == 0 || raw_state > 6 {
             self.error_count += 1;
             return None;
         }
 
-        let prev_state = self.state_prev;
+        let prev_state = self.logical_state;
         let current_state = HALL_STATE_TABLE[raw_state as usize];
         // Detect direction based on state transitions
         let is_wrap_cw = prev_state == 5 && current_state == 0;
@@ -149,7 +155,7 @@ impl HallSensor {
         } else if current_state < prev_state {
             self.direction = Direction::CounterClockwise;
         }
-        self.state_prev = current_state;
+        self.logical_state = current_state;
 
         // Base angle from calibration table (includes user-set advance)
         let angle_raw = self.calib.angle_for_state(current_state);
@@ -173,7 +179,7 @@ impl HallSensor {
             Some(angle) => Ok(HallReading {
                 angle_rad: angle,
                 direction: self.direction,
-                state: self.state_prev,
+                state: self.logical_state,
                 elec_velocity: self.elec_velocity,
                 t_ticks,
             }),
@@ -201,9 +207,24 @@ impl HallSensor {
         self.error_count = 0;
     }
 
-    /// Get the raw Hall state index (0-5)
+    /// Get the logical Hall state (0-5)
     pub fn state(&self) -> u8 {
-        self.state_prev
+        self.logical_state
+    }
+
+    /// Get the raw Hall state (0-7)
+    pub fn raw_state(&self) -> u8 {
+        self.raw_state
+    }
+
+    /// Get current timing advance (radians)
+    pub fn advance(&self) -> f32 {
+        self.calib.advance_rad
+    }
+
+    /// Get ticks per second
+    pub fn ticks_per_sec(&self) -> u64 {
+        self.ticks_per_sec
     }
 
     /// Calibrate Hall table (electrical angles in radians for logical states 0-5).
@@ -320,11 +341,68 @@ impl AngleSensor for HallSensor {
     }
 
     fn error_count(&self) -> u32 {
-        self.error_count()
+        self.error_count
     }
 
     fn reset_errors(&mut self) {
-        HallSensor::reset_errors(self)
+        self.error_count = 0;
+    }
+}
+
+impl HallSensorTrait for HallSensor {
+    fn raw_state(&self) -> u8 {
+        self.raw_state
+    }
+
+    fn logical_state(&self) -> u8 {
+        self.logical_state
+    }
+
+    fn last_edge_ticks(&self) -> Option<u64> {
+        self.last_edge_ticks
+    }
+
+    fn electrical_velocity(&self) -> f32 {
+        self.elec_velocity
+    }
+
+    fn set_calibration(&mut self, table: [f32; 6]) {
+        HallSensor::set_calibration(self, table)
+    }
+
+    fn apply_calibration(
+        &mut self,
+        result: &super::hall_calibration::HallCalibrationResult,
+    ) -> bool {
+        HallSensor::apply_calibration(self, result)
+    }
+
+    fn set_advance(&mut self, advance_rad: f32) {
+        HallSensor::set_advance(self, advance_rad)
+    }
+
+    fn advance(&self) -> f32 {
+        self.calib.advance_rad
+    }
+
+    fn interpolation_info(&self, now_ticks: u64) -> HallInterpolationInfo {
+        let base_angle = self.calib.angle_for_state(self.logical_state);
+        let (interpolation_offset, time_since_edge_us) = if let Some(t0) = self.last_edge_ticks {
+            let dt_ticks = now_ticks.wrapping_sub(t0);
+            let dt_sec = dt_ticks as f32 / self.ticks_per_sec as f32;
+            let offset = self.elec_velocity * dt_sec;
+            let time_us = (dt_sec * 1_000_000.0) as u32;
+            (offset, time_us)
+        } else {
+            (0.0, 0)
+        };
+
+        HallInterpolationInfo {
+            base_angle,
+            interpolation_offset,
+            estimated_velocity: self.elec_velocity,
+            time_since_edge_us,
+        }
     }
 }
 

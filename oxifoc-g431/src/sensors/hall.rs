@@ -33,38 +33,28 @@ static HALL_SEQ: AtomicU32 = AtomicU32::new(0);
 
 // ========== Hall Edge Mailbox ==========
 
-/// Mailbox for communicating Hall edges from EXTI ISR to ADC ISR
-struct HallEdgeMailbox {
-    seq: AtomicU32,
-    state: AtomicU8,
-    ticks: AtomicU32,
+/// Hall edge data communicated from EXTI ISR to ADC ISR
+#[derive(Clone, Copy)]
+struct HallEdge {
+    seq: u32,
+    state: u8,
+    ticks: u32,
 }
 
-impl HallEdgeMailbox {
+impl HallEdge {
     const fn new() -> Self {
         Self {
-            seq: AtomicU32::new(0),
-            state: AtomicU8::new(0),
-            ticks: AtomicU32::new(0),
+            seq: 0,
+            state: 0,
+            ticks: 0,
         }
-    }
-
-    fn write(&self, state: u8, ticks: u32) {
-        self.state.store(state, Ordering::Relaxed);
-        self.ticks.store(ticks, Ordering::Relaxed);
-        self.seq.fetch_add(1, Ordering::Release);
-    }
-
-    pub fn load(&self) -> (u32, u8, u32) {
-        let seq = self.seq.load(Ordering::Acquire);
-        let state = self.state.load(Ordering::Relaxed);
-        let ticks = self.ticks.load(Ordering::Relaxed);
-        (seq, state, ticks)
     }
 }
 
 /// Mailbox for Hall edge updates from EXTI to ADC ISR.
-static HALL_EDGE_MAILBOX: HallEdgeMailbox = HallEdgeMailbox::new();
+/// Uses CriticalSectionMutex to ensure atomic read/write of the entire struct.
+static HALL_EDGE_MAILBOX: CriticalSectionMutex<RefCell<HallEdge>> =
+    CriticalSectionMutex::new(RefCell::new(HallEdge::new()));
 
 // ========== Hall Estimator ==========
 
@@ -189,7 +179,13 @@ fn read_hall_state_fast() -> u8 {
 fn EXTI9_5() {
     let state = read_hall_state_fast();
     let ticks = embassy_time::Instant::now().as_ticks() as u32;
-    HALL_EDGE_MAILBOX.write(state, ticks);
+
+    HALL_EDGE_MAILBOX.lock(|cell| {
+        let mut edge = cell.borrow_mut();
+        edge.state = state;
+        edge.ticks = ticks;
+        edge.seq = edge.seq.wrapping_add(1);
+    });
 
     // Clear pending bits for lines 6, 7, 8
     pac::EXTI.pr(0).write(|w| {
@@ -205,18 +201,19 @@ fn EXTI9_5() {
 ///
 /// Returns true if a new edge was processed
 pub fn process_edge(last_seq: &mut u32) -> bool {
-    let (edge_seq, edge_state, edge_ticks) = HALL_EDGE_MAILBOX.load();
-    if edge_seq != *last_seq {
+    let edge = HALL_EDGE_MAILBOX.lock(|cell| *cell.borrow());
+
+    if edge.seq != *last_seq {
         HALL_ESTIMATOR.lock(|est| {
             if let Some(h) = est.borrow_mut().as_mut() {
-                let _ = h.update_sample(edge_state, edge_ticks as u64);
+                let _ = h.update_sample(edge.state, edge.ticks as u64);
             }
         });
-        HALL_STATE.store(edge_state, Ordering::Relaxed);
+        HALL_STATE.store(edge.state, Ordering::Relaxed);
         let err =
             HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().map(|h| h.error_count()).unwrap_or(0));
         HALL_ERROR_COUNT.store(err, Ordering::Relaxed);
-        *last_seq = edge_seq;
+        *last_seq = edge.seq;
         true
     } else {
         false

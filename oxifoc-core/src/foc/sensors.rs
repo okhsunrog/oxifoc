@@ -3,7 +3,21 @@
 //! Provides platform-agnostic traits for angle and current sensing.
 //! Hardware implementations can be found in platform-specific crates
 //! (e.g., oxifoc-g431, oxifoc-f405).
+//!
+//! ## Trait Hierarchy
+//!
+//! ```text
+//!                  AngleSensor
+//!                  (base trait)
+//!                       │
+//!           ┌──────────┴──────────┐
+//!           │                     │
+//!           ▼                     ▼
+//!    HallSensorTrait       EncoderSensorTrait
+//!    (Hall-specific)       (Encoder-specific)
+//! ```
 
+use super::hall_calibration::HallCalibrationResult;
 use super::hall_sensor::Direction;
 
 /// Snapshot from an angle sensor.
@@ -73,4 +87,138 @@ pub trait AngleSensor {
 pub trait VelocitySensor {
     /// Electrical angular velocity in rad/s
     fn read_velocity(&self) -> f32;
+}
+
+// ============================================================================
+// Extended sensor traits
+// ============================================================================
+
+/// Hall sensor interpolation diagnostics
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HallInterpolationInfo {
+    /// Angle from Hall state calibration table
+    pub base_angle: f32,
+    /// Offset added by velocity extrapolation
+    pub interpolation_offset: f32,
+    /// Velocity used for interpolation (rad/s)
+    pub estimated_velocity: f32,
+    /// Time since last Hall edge (microseconds)
+    pub time_since_edge_us: u32,
+}
+
+/// Hall-sensor-specific operations
+///
+/// Extends `AngleSensor` with Hall-specific functionality:
+/// - Raw/logical state access
+/// - Edge timing for velocity estimation
+/// - Calibration table management
+/// - Timing advance configuration
+pub trait HallSensorTrait: AngleSensor {
+    /// Raw 3-bit Hall state (0-7, where 0 and 7 are invalid)
+    fn raw_state(&self) -> u8;
+
+    /// Logical Hall state (0-5, normalized sequence position)
+    fn logical_state(&self) -> u8;
+
+    /// Timestamp of last Hall edge (in sensor's tick timebase)
+    fn last_edge_ticks(&self) -> Option<u64>;
+
+    /// Electrical velocity from edge timing (rad/s)
+    fn electrical_velocity(&self) -> f32;
+
+    /// Set calibration table (angles for logical states 0-5)
+    fn set_calibration(&mut self, table: [f32; 6]);
+
+    /// Apply calibration result from HallCalibrator
+    fn apply_calibration(&mut self, result: &HallCalibrationResult) -> bool;
+
+    /// Set timing advance (radians)
+    fn set_advance(&mut self, advance_rad: f32);
+
+    /// Get current timing advance (radians)
+    fn advance(&self) -> f32;
+
+    /// Get interpolation diagnostics
+    fn interpolation_info(&self, now_ticks: u64) -> HallInterpolationInfo;
+}
+
+/// Encoder type classification
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EncoderType {
+    /// Standard quadrature encoder
+    #[default]
+    Incremental,
+    /// Quadrature with index pulse
+    IncrementalWithIndex,
+    /// Absolute position encoder (SPI, I2C, etc.)
+    Absolute,
+}
+
+/// Encoder-specific operations
+///
+/// Extends `AngleSensor` with encoder-specific functionality:
+/// - Raw count access
+/// - Zero/offset management
+/// - Index pulse handling
+pub trait EncoderSensorTrait: AngleSensor {
+    /// Raw encoder count
+    fn counts(&self) -> i32;
+
+    /// Set current position as electrical zero
+    fn set_zero(&mut self);
+
+    /// Set electrical angle offset (radians)
+    fn set_offset(&mut self, offset_rad: f32);
+
+    /// Get electrical angle offset (radians)
+    fn offset(&self) -> f32;
+
+    /// Counts per electrical revolution
+    fn counts_per_electrical_rev(&self) -> u32;
+
+    /// Set counts per electrical revolution
+    fn set_counts_per_electrical_rev(&mut self, cpr: u32);
+
+    /// Check if index pulse has been seen
+    fn index_seen(&self) -> bool {
+        false
+    }
+
+    /// Reset index flag
+    fn reset_index(&mut self) {}
+
+    /// Get encoder type
+    fn encoder_type(&self) -> EncoderType {
+        EncoderType::Incremental
+    }
+}
+
+// ============================================================================
+// Null sensor for unused slots
+// ============================================================================
+
+/// Null sensor placeholder for unused sensor slots
+///
+/// Used as a type parameter when a sensor is not present.
+/// Always returns `None` for samples and `false` for availability.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoSensor;
+
+impl AngleSensor for NoSensor {
+    fn sample(&self, _now_ticks: u64) -> Option<AngleSample> {
+        None
+    }
+
+    fn error_count(&self) -> u32 {
+        0
+    }
+
+    fn reset_errors(&mut self) {}
+}
+
+impl NoSensor {
+    /// Check if this is a null sensor (always true for NoSensor)
+    pub fn is_null(&self) -> bool {
+        true
+    }
 }

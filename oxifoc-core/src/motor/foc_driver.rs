@@ -3,15 +3,17 @@
 //! This module provides a high-level FOC driver that integrates:
 //! - FOC controller (Clarke/Park transforms, PI control, SVPWM)
 //! - Current sensing
-//! - Angle sensing
+//! - Phase provider (angle sensing/estimation)
 //! - PWM output
 //! - Control mode management
 //!
 //! Platform code just needs to provide trait implementations and call `step()`.
 
 use crate::foc::controller::{FocController, FocTelemetry};
+use crate::foc::phase::{PhaseInput, PhaseProvider};
 use crate::foc::pwm::PhasePwm;
-use crate::foc::sensors::{AngleSensor, CurrentSensor};
+use crate::foc::sensors::CurrentSensor;
+use crate::foc::transforms;
 
 /// Control mode for the motor
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,6 +50,18 @@ pub enum ControlMode {
         /// Current magnitude (Amps) - applied as q-current to lock rotor
         current: f32,
     },
+    /// HFI injection mode for inductance measurement
+    ///
+    /// Locks rotor at angle 0 with a holding current while injecting
+    /// high-frequency voltage for inductance measurement.
+    HfiInjection {
+        /// DC current to hold rotor in place (Amps)
+        hold_current: f32,
+        /// d-axis voltage to inject (V)
+        vd_inject: f32,
+        /// q-axis voltage to inject (V)
+        vq_inject: f32,
+    },
 }
 
 /// Motor command (for channel-based API)
@@ -80,6 +94,15 @@ pub enum MotorCommand {
         /// Current magnitude (Amps)
         current: f32,
     },
+    /// Set HFI injection mode (for inductance measurement)
+    SetHfiInjection {
+        /// DC current to hold rotor (Amps)
+        hold_current: f32,
+        /// d-axis injection voltage (V)
+        vd_inject: f32,
+        /// q-axis injection voltage (V)
+        vq_inject: f32,
+    },
 }
 
 impl MotorCommand {
@@ -97,6 +120,15 @@ impl MotorCommand {
                 angle_rad: angle,
                 current,
             },
+            MotorCommand::SetHfiInjection {
+                hold_current,
+                vd_inject,
+                vq_inject,
+            } => ControlMode::HfiInjection {
+                hold_current,
+                vd_inject,
+                vq_inject,
+            },
         }
     }
 }
@@ -106,11 +138,13 @@ impl MotorCommand {
 /// # Type Parameters
 /// * `P` - PWM output implementing `PhasePwm`
 /// * `C` - Current sensor implementing `CurrentSensor`
-/// * `A` - Angle sensor implementing `AngleSensor`
+/// * `Phase` - Phase provider implementing `PhaseProvider`
 ///
 /// # Example (platform code)
 /// ```rust,ignore
-/// static FOC_DRIVER: Mutex<NoopRawMutex, RefCell<Option<FocDriver<MotorPwm, CurrentSense, HallSensor>>>> =
+/// use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
+///
+/// static FOC_DRIVER: Mutex<NoopRawMutex, RefCell<Option<FocDriver<MotorPwm, CurrentSense, PhaseManager<HallSensor>>>>> =
 ///     Mutex::new(RefCell::new(None));
 ///
 /// #[interrupt]
@@ -126,18 +160,18 @@ impl MotorCommand {
 ///     FOC_DRIVER.lock(|cell| {
 ///         if let Some(driver) = cell.borrow_mut().as_mut() {
 ///             driver.set_mode(*STATE);
-///             if let Ok(telem) = driver.step(DT) {
+///             if let Ok(telem) = driver.step(DT, now_ticks) {
 ///                 MOTOR_TELEM.set(telem);
 ///             }
 ///         }
 ///     });
 /// }
 /// ```
-pub struct FocDriver<P, C, A>
+pub struct FocDriver<P, C, Phase>
 where
     P: PhasePwm,
     C: CurrentSensor,
-    A: AngleSensor,
+    Phase: PhaseProvider,
 {
     /// FOC controller
     controller: FocController,
@@ -145,19 +179,19 @@ where
     pwm: P,
     /// Current sensor
     current_sensor: C,
-    /// Angle sensor
-    angle_sensor: A,
+    /// Phase provider (manages angle sources)
+    phase: Phase,
     /// Current control mode
     mode: ControlMode,
     /// Bus voltage (V)
     vbus: f32,
 }
 
-impl<P, C, A> FocDriver<P, C, A>
+impl<P, C, Phase> FocDriver<P, C, Phase>
 where
     P: PhasePwm,
     C: CurrentSensor,
-    A: AngleSensor,
+    Phase: PhaseProvider,
 {
     /// Create a new FOC driver
     ///
@@ -165,13 +199,13 @@ where
     /// * `controller` - FOC controller instance
     /// * `pwm` - PWM output
     /// * `current_sensor` - Current sensor (should be calibrated)
-    /// * `angle_sensor` - Angle sensor
-    pub fn new(controller: FocController, pwm: P, current_sensor: C, angle_sensor: A) -> Self {
+    /// * `phase` - Phase provider (manages angle sources)
+    pub fn new(controller: FocController, pwm: P, current_sensor: C, phase: Phase) -> Self {
         Self {
             controller,
             pwm,
             current_sensor,
-            angle_sensor,
+            phase,
             mode: ControlMode::Stopped,
             vbus: 12.0, // Default, should be updated
         }
@@ -204,7 +238,7 @@ where
     ///
     /// # Arguments
     /// * `dt` - Time step in seconds (e.g., 1.0/20000.0 for 20kHz)
-    /// * `now_ticks` - Monotonic ticks for angle sampling (sensor-defined timebase)
+    /// * `now_ticks` - Monotonic ticks for phase sampling (sensor-defined timebase)
     ///
     /// # Returns
     /// * `Ok(FocTelemetry)` - Control telemetry on success
@@ -214,6 +248,14 @@ where
             ControlMode::Stopped => {
                 // Disable PWM outputs
                 self.pwm.disable();
+                // Still update phase provider for sensor tracking
+                self.phase.update(
+                    &PhaseInput {
+                        dt,
+                        ..Default::default()
+                    },
+                    now_ticks,
+                );
                 Ok(FocTelemetry::default())
             }
             ControlMode::CurrentControl {
@@ -229,8 +271,13 @@ where
                 Err("Position control not implemented")
             }
             ControlMode::OpenLoop { angle_rad, current } => {
-                self.step_open_loop(angle_rad, current, dt)
+                self.step_open_loop(angle_rad, current, dt, now_ticks)
             }
+            ControlMode::HfiInjection {
+                hold_current,
+                vd_inject,
+                vq_inject,
+            } => self.step_hfi_injection(hold_current, vd_inject, vq_inject, dt, now_ticks),
         }
     }
 
@@ -247,13 +294,13 @@ where
             return Err("Current sensor not calibrated");
         }
 
-        // Read sensors
+        // Get phase from provider (uses previous update's estimate)
+        let phase_out = self.phase.get();
+        let angle_rad = phase_out.angle;
+
+        // Read currents
         let currents = self.current_sensor.read_currents();
-        let angle_rad = self
-            .angle_sensor
-            .sample(now_ticks)
-            .map(|s| s.angle)
-            .unwrap_or_else(|| self.angle_sensor.read_angle());
+        let (i_alpha, i_beta) = transforms::clarke(currents.0, currents.1);
 
         // Run FOC controller
         let max_duty = self.pwm.max_duty();
@@ -263,6 +310,18 @@ where
 
         // Set PWM duties
         self.pwm.set_duties(telem.duties);
+
+        // Update phase provider for next step (feeds observer if present)
+        self.phase.update(
+            &PhaseInput {
+                v_alpha: telem.v_alpha,
+                v_beta: telem.v_beta,
+                i_alpha,
+                i_beta,
+                dt,
+            },
+            now_ticks,
+        );
 
         Ok(telem)
     }
@@ -276,6 +335,7 @@ where
         angle_rad: f32,
         current: f32,
         dt: f32,
+        now_ticks: u64,
     ) -> Result<FocTelemetry, &'static str> {
         // Check sensor calibration
         if !self.current_sensor.is_calibrated() {
@@ -284,6 +344,7 @@ where
 
         // Read currents for feedback
         let currents = self.current_sensor.read_currents();
+        let (i_alpha, i_beta) = transforms::clarke(currents.0, currents.1);
 
         // Use commanded angle instead of sensor
         // Apply current as q-axis (torque) to lock rotor at the commanded angle
@@ -296,6 +357,71 @@ where
         // Set PWM duties
         self.pwm.set_duties(telem.duties);
 
+        // Update phase provider (for sensor tracking, even in open-loop)
+        self.phase.update(
+            &PhaseInput {
+                v_alpha: telem.v_alpha,
+                v_beta: telem.v_beta,
+                i_alpha,
+                i_beta,
+                dt,
+            },
+            now_ticks,
+        );
+
+        Ok(telem)
+    }
+
+    /// Execute HFI injection step (for inductance measurement)
+    ///
+    /// Locks rotor at angle 0 with d-axis current while injecting
+    /// high-frequency voltage for inductance measurement.
+    fn step_hfi_injection(
+        &mut self,
+        hold_current: f32,
+        vd_inject: f32,
+        vq_inject: f32,
+        dt: f32,
+        now_ticks: u64,
+    ) -> Result<FocTelemetry, &'static str> {
+        // Check sensor calibration
+        if !self.current_sensor.is_calibrated() {
+            return Err("Current sensor not calibrated");
+        }
+
+        // Read currents for feedback
+        let currents = self.current_sensor.read_currents();
+        let (i_alpha, i_beta) = transforms::clarke(currents.0, currents.1);
+
+        // Lock rotor at angle 0, apply d-axis holding current
+        // The HFI injection voltages are added on top
+        let max_duty = self.pwm.max_duty();
+        let telem = self.controller.step_with_injection(
+            currents,
+            0.0,          // Lock at angle 0
+            hold_current, // d-axis current to hold rotor
+            0.0,          // No q-axis current (we're holding position)
+            vd_inject,
+            vq_inject,
+            max_duty,
+            dt,
+        );
+
+        // Set PWM duties
+        self.pwm.set_duties(telem.duties);
+
+        // Update phase provider
+        self.phase.update(
+            &PhaseInput {
+                v_alpha: telem.v_alpha,
+                v_beta: telem.v_beta,
+                i_alpha,
+                i_beta,
+                dt,
+            },
+            now_ticks,
+        );
+
         Ok(telem)
     }
 
@@ -304,13 +430,28 @@ where
         &mut self.current_sensor
     }
 
-    /// Get mutable reference to angle sensor
-    pub fn angle_sensor_mut(&mut self) -> &mut A {
-        &mut self.angle_sensor
+    /// Get reference to current sensor
+    pub fn current_sensor(&self) -> &C {
+        &self.current_sensor
+    }
+
+    /// Get mutable reference to phase provider
+    pub fn phase_mut(&mut self) -> &mut Phase {
+        &mut self.phase
+    }
+
+    /// Get reference to phase provider
+    pub fn phase(&self) -> &Phase {
+        &self.phase
     }
 
     /// Get mutable reference to FOC controller (for tuning)
     pub fn controller_mut(&mut self) -> &mut FocController {
         &mut self.controller
+    }
+
+    /// Get reference to FOC controller
+    pub fn controller(&self) -> &FocController {
+        &self.controller
     }
 }

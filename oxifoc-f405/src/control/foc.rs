@@ -26,6 +26,8 @@ use embassy_sync::watch::Watch;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::{FocController, FocTelemetry};
+use oxifoc_core::foc::phase::PhaseManager;
+use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
 
 use crate::config::{BOARD, NTC_BOARD, NTC_MOTOR};
@@ -57,7 +59,8 @@ pub static FOC_TELEMETRY: Watch<CriticalSectionRawMutex, FocTelemetry, 1> = Watc
 pub static FOC_CMD: Channel<CriticalSectionRawMutex, ControlMode, 4> = Channel::new();
 
 /// FOC driver storage (mutated only inside the ADC ISR)
-type FocDriverType = FocDriver<MotorPwm<'static>, F405CurrentSensor, HallAngleProxy>;
+type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor>;
+type FocDriverType = FocDriver<MotorPwm<'static>, F405CurrentSensor, PhaseManagerType>;
 static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
@@ -229,9 +232,10 @@ pub async fn init(mut motor_pwm: MotorPwm<'static>) {
     // Configure TIM1 CH4 for ADC triggering
     configure_tim1_adc_trigger();
 
-    // Build current sensor and angle sensor
+    // Build current sensor and phase manager
     let current_sensor = F405CurrentSensor::new(&BOARD);
-    let angle_sensor = HallAngleProxy::new();
+    let hall_proxy = HallAngleProxy::new();
+    let phase_manager = PhaseManager::with_hall(hall_proxy);
     let initial_vbus_v =
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
 
@@ -240,7 +244,7 @@ pub async fn init(mut motor_pwm: MotorPwm<'static>) {
         FocController::new(initial_vbus_v),
         motor_pwm,
         current_sensor,
-        angle_sensor,
+        phase_manager,
     );
 
     // Allow ADC injected conversions to start firing before zero-current calibration.
