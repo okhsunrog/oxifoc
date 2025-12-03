@@ -189,19 +189,24 @@ pub fn init_adc_injected() {
     defmt::info!("F405 ADC injected channels initialized (TIM1_CC4 trigger)");
 }
 
-/// Configure TIM1 CH4 to trigger ADC at PWM center
+/// Configure TIM1 CH4 to trigger ADC at peak of center-aligned PWM
 ///
-/// Sets TIM1_CH4 compare value to half of ARR (center of PWM period).
-/// This triggers the injected ADC conversions at the optimal sampling point.
+/// Sets TIM1_CH4 compare value near ARR (peak of triangle wave).
+/// In center-aligned mode, CNT=ARR is the V0 point where all low-side
+/// FETs are ON for any duty < 100%, making it optimal for low-side shunt sampling.
 pub fn configure_tim1_adc_trigger() {
     let tim1 = pac::TIM1;
 
     // Read current ARR value
     let arr = tim1.arr().read().arr();
-    let mid = arr / 2;
 
-    // Set CH4 compare value to center
-    tim1.ccr(3).write(|w| w.set_ccr(mid));
+    // Sample at peak of triangle wave (V0 - all low-side ON)
+    // Small offset ensures ADC completes before any switching edges
+    let peak_offset = arr / 50; // ~2% margin
+    let trigger_point = arr.saturating_sub(peak_offset);
+
+    // Set CH4 compare value to peak
+    tim1.ccr(3).write(|w| w.set_ccr(trigger_point));
 
     // Enable CH4 output compare (not for pin output, just for internal trigger)
     // We need to enable the CC4 event generation
@@ -218,7 +223,7 @@ pub fn configure_tim1_adc_trigger() {
     // Note: We don't enable CH4 output on a pin, just the compare event
     // The compare event will trigger ADC via the internal connection
 
-    defmt::info!("TIM1 CH4 configured for ADC trigger at ARR/2={}", mid);
+    defmt::info!("TIM1 CH4 configured for ADC trigger at ARR-offset={}", trigger_point);
 }
 
 /// Initialize FOC driver with motor PWM and sensors

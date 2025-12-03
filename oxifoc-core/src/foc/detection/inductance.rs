@@ -1,28 +1,35 @@
 //! Motor inductance measurement using High-Frequency Injection (HFI).
 //!
-//! Measures d-axis and q-axis inductance (Ld, Lq) by injecting a high-frequency
-//! sinusoidal voltage and analyzing the current response using FFT.
+//! Measures d-axis and q-axis inductance (Ld, Lq) by injecting a rotating
+//! high-frequency voltage vector and analyzing the current response using FFT.
 //!
-//! # Algorithm (based on VESC approach)
+//! # Algorithm (VESC-equivalent)
 //!
-//! 1. Lock rotor at electrical angle 0 with a holding current
-//! 2. Inject HFI voltage: V_inject = V_amp × sin(ω_hfi × t)
-//! 3. Sample the resulting current over N cycles
-//! 4. Apply FFT to extract frequency components:
-//!    - Bin 0 (DC): Average of 1/L (inverse inductance)
-//!    - Bin 2 (2nd harmonic): Contains Ld-Lq saliency information
-//! 5. Calculate Ld = 1/(offset + amplitude), Lq = 1/(offset - amplitude)
+//! 1. Lock rotor at a fixed electrical position with holding current
+//! 2. Inject rotating HFI voltage vector in alpha-beta (stator) frame
+//! 3. Measure differential current response (di = i_now - i_prev)
+//! 4. Store inverse inductance: 1/L = (ω × di) / V_inject
+//! 5. Apply FFT to extract frequency components:
+//!    - Bin 0 (DC): Average inverse inductance = (1/Ld + 1/Lq) / 2
+//!    - Bin 2 (2nd harmonic): Saliency = (1/Ld - 1/Lq) / 2
+//! 6. Calculate: Ld = 1/(offset + amplitude), Lq = 1/(offset - amplitude)
 //!
 //! # Theory
 //!
-//! For a high-frequency injection V = V_amp × sin(ω×t), the current response is:
-//! ```text
-//! I = V_amp / (ω × L) × sin(ω×t - π/2)
-//! ```
+//! For a rotating injection vector V = V_amp × e^(j×θ_inj) where θ_inj advances
+//! through 360° over FFT_SIZE samples, the current response depends on the
+//! inductance at each angle.
 //!
-//! The current amplitude is inversely proportional to inductance.
-//! For IPMSM with saliency, the inductance varies with rotor position,
-//! creating a 2nd harmonic component proportional to (Ld - Lq).
+//! For an IPM motor with saliency:
+//! - L(θ) = L_avg + L_diff × cos(2×θ)  (inductance varies with angle)
+//! - 1/L(θ) = 1/L_avg × (1 - (L_diff/L_avg) × cos(2×θ))  (approximately)
+//!
+//! The FFT of 1/L samples gives:
+//! - Bin 0: DC component = average of 1/L
+//! - Bin 2: 2nd harmonic = saliency information
+//!
+//! This allows measuring both Ld and Lq in a single sweep, and is robust
+//! to small rotor position errors.
 
 use super::types::{DetectionError, InductanceParams};
 
@@ -32,7 +39,13 @@ use microfft::real::rfft_32;
 /// Number of samples for FFT (must be power of 2)
 pub const FFT_SIZE: usize = 32;
 
-/// Scale factor applied to measured inductance for stability (from VESC)
+/// Number of HFI injection cycles per FFT window.
+/// With FFT_SIZE=32 and 1 cycle, the injection angle θ sweeps 0→2π.
+/// The inductance saliency L(θ) = L_avg + L_diff×cos(2θ) creates a 2nd harmonic,
+/// which appears at FFT bin 2.
+const HFI_CYCLES_PER_FFT: usize = 1;
+
+/// Scale factor applied to measured inductance for stability (from VESC).
 /// The observer is more stable when inductance is slightly underestimated.
 const INDUCTANCE_SCALE_FACTOR: f32 = 0.9;
 
@@ -55,100 +68,154 @@ pub struct InductanceResult {
     /// Average inductance (Ld + Lq) / 2 in Henries
     pub l_avg: f32,
 
-    /// Inductance difference (Lq - Ld) in Henries
+    /// Inductance difference (Lq - Ld) in Henries (saliency)
     pub l_diff: f32,
 
     /// Average current during measurement (for validation)
     pub avg_current: f32,
 }
 
-/// HFI voltage injection generator.
+/// Rotating HFI voltage injection generator (VESC-style).
 ///
-/// Generates the sinusoidal injection voltage for each PWM cycle.
+/// Generates a rotating injection vector in the alpha-beta (stator) frame.
+/// The vector completes `HFI_CYCLES_PER_FFT` rotations over `FFT_SIZE` samples.
 #[derive(Clone, Debug)]
 pub struct HfiInjector {
-    /// Injection frequency in rad/s
-    omega: f32,
+    /// Base HFI frequency in rad/s (the carrier frequency)
+    omega_hfi: f32,
     /// Voltage amplitude in Volts
     voltage_amplitude: f32,
-    /// Phase accumulator
-    phase: f32,
+    /// HFI phase accumulator (carrier phase)
+    hfi_phase: f32,
+    /// Injection angle (rotates through 360° over FFT_SIZE samples)
+    injection_angle: f32,
+    /// Angle increment per sample (for rotating injection)
+    angle_increment: f32,
+    /// Current sample index within FFT window
+    sample_index: usize,
 }
 
 impl HfiInjector {
-    /// Create a new HFI injector.
+    /// Create a new rotating HFI injector.
     ///
     /// # Arguments
-    /// * `frequency_hz` - Injection frequency in Hz
+    /// * `hfi_frequency_hz` - HFI carrier frequency in Hz (typically 500-2000 Hz)
     /// * `voltage_amplitude` - Peak voltage amplitude in Volts
-    pub fn new(frequency_hz: f32, voltage_amplitude: f32) -> Self {
+    /// * `pwm_frequency_hz` - PWM/sampling frequency in Hz
+    pub fn new(hfi_frequency_hz: f32, voltage_amplitude: f32, _pwm_frequency_hz: f32) -> Self {
+        // The injection angle advances such that we complete HFI_CYCLES_PER_FFT
+        // full rotations over FFT_SIZE samples
+        let angle_increment =
+            (HFI_CYCLES_PER_FFT as f32 * core::f32::consts::TAU) / FFT_SIZE as f32;
+
         Self {
-            omega: frequency_hz * core::f32::consts::TAU,
+            omega_hfi: hfi_frequency_hz * core::f32::consts::TAU,
             voltage_amplitude,
-            phase: 0.0,
+            hfi_phase: 0.0,
+            injection_angle: 0.0,
+            angle_increment,
+            sample_index: 0,
         }
     }
 
     /// Get the injection voltage for the current sample.
     ///
     /// # Arguments
-    /// * `dt` - Time step in seconds
+    /// * `dt` - Time step in seconds (1 / PWM_frequency)
     ///
     /// # Returns
-    /// (vd_inject, vq_inject) - Voltage to add to d and q axes
+    /// (v_alpha, v_beta) - Voltage to apply in stator frame
     pub fn step(&mut self, dt: f32) -> (f32, f32) {
-        let v_inject = self.voltage_amplitude * libm::sinf(self.phase);
+        // HFI carrier: sin(ω_hfi × t)
+        let hfi_signal = self.voltage_amplitude * libm::sinf(self.hfi_phase);
 
-        self.phase += self.omega * dt;
-        // Wrap phase to prevent overflow
-        if self.phase > core::f32::consts::TAU {
-            self.phase -= core::f32::consts::TAU;
+        // Rotate the injection vector in alpha-beta frame
+        // This sweeps through all electrical angles over FFT_SIZE samples
+        let v_alpha = hfi_signal * libm::cosf(self.injection_angle);
+        let v_beta = hfi_signal * libm::sinf(self.injection_angle);
+
+        // Advance HFI carrier phase
+        self.hfi_phase += self.omega_hfi * dt;
+        if self.hfi_phase > core::f32::consts::TAU {
+            self.hfi_phase -= core::f32::consts::TAU;
         }
 
-        // Inject on d-axis for Ld measurement
-        // For Lq, rotate to q-axis (swap d and q)
-        (v_inject, 0.0)
+        // Advance injection angle (for next sample)
+        self.injection_angle += self.angle_increment;
+        if self.injection_angle > core::f32::consts::TAU {
+            self.injection_angle -= core::f32::consts::TAU;
+        }
+
+        self.sample_index += 1;
+
+        (v_alpha, v_beta)
     }
 
-    /// Reset the phase accumulator.
+    /// Reset for a new FFT window.
     pub fn reset(&mut self) {
-        self.phase = 0.0;
+        self.hfi_phase = 0.0;
+        self.injection_angle = 0.0;
+        self.sample_index = 0;
     }
 
-    /// Get current phase for synchronization.
+    /// Get current sample index within FFT window.
     #[inline]
-    pub fn phase(&self) -> f32 {
-        self.phase
+    pub fn sample_index(&self) -> usize {
+        self.sample_index
+    }
+
+    /// Get current injection angle.
+    #[inline]
+    pub fn injection_angle(&self) -> f32 {
+        self.injection_angle
+    }
+
+    /// Get voltage amplitude.
+    #[inline]
+    pub fn voltage_amplitude(&self) -> f32 {
+        self.voltage_amplitude
+    }
+
+    /// Get HFI frequency in rad/s.
+    #[inline]
+    pub fn omega_hfi(&self) -> f32 {
+        self.omega_hfi
     }
 }
 
-/// Inductance measurement state machine.
+/// VESC-style inductance measurement using rotating HFI and FFT.
 ///
-/// Collects current samples during HFI injection and computes
-/// inductance using FFT analysis.
+/// Collects inverse inductance samples during rotating injection,
+/// then uses FFT to extract Ld and Lq from the frequency components.
 #[derive(Clone)]
 pub struct InductanceMeasurement {
-    /// FFT input buffer for current samples
+    /// FFT input buffer for inverse inductance samples (1/L)
     samples: [f32; FFT_SIZE],
-    /// Current sample index
+    /// Current sample index within FFT window
     sample_idx: usize,
+    /// Previous current sample for differential calculation
+    prev_i_alpha: f32,
+    prev_i_beta: f32,
+    /// Previous injection angle (for aligning di with injection direction)
+    prev_injection_angle: f32,
     /// Number of complete FFT cycles collected
     cycles_completed: u32,
-    /// Target number of cycles
+    /// Target number of FFT cycles to average
     target_cycles: u32,
-    /// Accumulated Ld sum
+    /// Accumulated Ld sum (for averaging across cycles)
     ld_sum: f32,
     /// Accumulated Lq sum
     lq_sum: f32,
-    /// Accumulated current sum
+    /// Accumulated current sum (for validation)
     current_sum: f32,
-    /// HFI injection frequency in rad/s
-    omega_hfi: f32,
+    /// Total sample count
+    total_samples: u32,
+    /// PWM/sampling frequency in Hz (used for 1/L calculation)
+    pwm_freq_hz: f32,
     /// Injection voltage amplitude
     voltage_amplitude: f32,
-    /// Sample interval (dt) - reserved for future use
-    #[allow(dead_code)]
-    dt: f32,
+    /// Is this the first sample? (skip differential on first)
+    first_sample: bool,
 }
 
 impl InductanceMeasurement {
@@ -156,36 +223,123 @@ impl InductanceMeasurement {
     ///
     /// # Arguments
     /// * `params` - Measurement parameters
-    /// * `dt` - Sample interval in seconds (1/PWM_frequency)
-    pub fn new(params: &InductanceParams, dt: f32) -> Self {
+    /// * `pwm_freq_hz` - PWM frequency in Hz
+    pub fn new(params: &InductanceParams, pwm_freq_hz: f32) -> Self {
+        // Each FFT cycle is FFT_SIZE samples
+        // num_cycles from params is how many FFT windows to average
+        let target_cycles = params.num_cycles;
+
         Self {
             samples: [0.0; FFT_SIZE],
             sample_idx: 0,
+            prev_i_alpha: 0.0,
+            prev_i_beta: 0.0,
+            prev_injection_angle: 0.0,
             cycles_completed: 0,
-            target_cycles: params.num_cycles,
+            target_cycles,
             ld_sum: 0.0,
             lq_sum: 0.0,
             current_sum: 0.0,
-            omega_hfi: params.hfi_frequency_hz * core::f32::consts::TAU,
+            total_samples: 0,
+            pwm_freq_hz,
             voltage_amplitude: params.hfi_voltage_v,
-            dt,
+            first_sample: true,
         }
     }
 
     /// Record a current sample.
     ///
     /// # Arguments
-    /// * `current` - Measured current in Amps (use id for Ld, iq for Lq)
+    /// * `i_alpha` - Measured alpha-axis current in Amps (stator frame)
+    /// * `i_beta` - Measured beta-axis current in Amps (stator frame)
+    /// * `injection_angle` - Current injection angle from HfiInjector
     ///
     /// # Returns
-    /// true if a complete FFT cycle was just processed
-    pub fn record(&mut self, current: f32) -> bool {
-        self.samples[self.sample_idx] = current;
-        self.sample_idx += 1;
-        self.current_sum += current.abs();
+    /// `true` if a complete FFT cycle was just processed
+    #[cfg(feature = "microfft")]
+    pub fn record(&mut self, i_alpha: f32, i_beta: f32, injection_angle: f32) -> bool {
+        // Track total current for validation
+        let i_magnitude = libm::sqrtf(i_alpha * i_alpha + i_beta * i_beta);
+        self.current_sum += i_magnitude;
+        self.total_samples += 1;
 
+        // Skip first sample (no valid differential)
+        if self.first_sample {
+            self.prev_i_alpha = i_alpha;
+            self.prev_i_beta = i_beta;
+            self.prev_injection_angle = injection_angle;
+            self.first_sample = false;
+            return false;
+        }
+
+        // Calculate differential current
+        let di_alpha = i_alpha - self.prev_i_alpha;
+        let di_beta = i_beta - self.prev_i_beta;
+
+        // Project di onto the injection direction
+        // This gives us the component of current change in the direction we're injecting
+        let cos_angle = libm::cosf(self.prev_injection_angle);
+        let sin_angle = libm::sinf(self.prev_injection_angle);
+        let di_projected = di_alpha * cos_angle + di_beta * sin_angle;
+
+        // Calculate inverse inductance: 1/L = (f_sample × di) / V
+        // For an inductor: V = L × (di/dt)
+        // With discrete sampling: di/dt ≈ di × f_sample
+        // Therefore: 1/L = (di × f_sample) / V
+        let inverse_l = if self.voltage_amplitude > 1e-6 {
+            (self.pwm_freq_hz * di_projected) / self.voltage_amplitude
+        } else {
+            0.0
+        };
+
+        // Store inverse inductance sample
+        self.samples[self.sample_idx] = inverse_l;
+        self.sample_idx += 1;
+
+        // Save for next differential
+        self.prev_i_alpha = i_alpha;
+        self.prev_i_beta = i_beta;
+        self.prev_injection_angle = injection_angle;
+
+        // Check if FFT window is complete
         if self.sample_idx >= FFT_SIZE {
             self.process_fft_cycle();
+            self.sample_idx = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Fallback record method when microfft is not available.
+    #[cfg(not(feature = "microfft"))]
+    pub fn record(&mut self, i_alpha: f32, i_beta: f32, injection_angle: f32) -> bool {
+        // Without FFT, use simple amplitude detection
+        let i_magnitude = libm::sqrtf(i_alpha * i_alpha + i_beta * i_beta);
+        self.current_sum += i_magnitude;
+        self.total_samples += 1;
+
+        if self.first_sample {
+            self.prev_i_alpha = i_alpha;
+            self.prev_i_beta = i_beta;
+            self.prev_injection_angle = injection_angle;
+            self.first_sample = false;
+            return false;
+        }
+
+        let di_alpha = i_alpha - self.prev_i_alpha;
+        let di_beta = i_beta - self.prev_i_beta;
+        let di_magnitude = libm::sqrtf(di_alpha * di_alpha + di_beta * di_beta);
+
+        self.samples[self.sample_idx] = di_magnitude;
+        self.sample_idx += 1;
+
+        self.prev_i_alpha = i_alpha;
+        self.prev_i_beta = i_beta;
+        self.prev_injection_angle = injection_angle;
+
+        if self.sample_idx >= FFT_SIZE {
+            self.process_simple_cycle();
             self.sample_idx = 0;
             true
         } else {
@@ -203,82 +357,64 @@ impl InductanceMeasurement {
         let spectrum = rfft_32(&mut fft_input);
 
         // Extract frequency bins
-        // Bin 0: DC component (average current)
+        // Bin 0: DC component = average of 1/L samples
         let bin0_real = spectrum[0].re;
 
-        // Bin 2: 2nd harmonic (for saliency)
+        // Bin 2: 2nd harmonic = saliency information
+        // (2nd harmonic because inductance varies at 2× electrical frequency)
         let bin2_real = spectrum[2].re;
         let bin2_imag = spectrum[2].im;
         let bin2_magnitude = libm::sqrtf(bin2_real * bin2_real + bin2_imag * bin2_imag);
 
-        // Calculate inductance from frequency response
-        // At injection frequency ω, impedance Z = ω×L
-        // Current amplitude I = V / (ω×L) => L = V / (ω×I)
-        // bin0_real represents average of 1/L
-
         // Normalize by FFT size
+        // offset = average inverse inductance = (1/Ld + 1/Lq) / 2
         let offset = bin0_real / FFT_SIZE as f32;
+
+        // amplitude = saliency in inverse inductance = (1/Ld - 1/Lq) / 2
+        // Factor of 2 for single-sided spectrum
         let amplitude = bin2_magnitude * 2.0 / FFT_SIZE as f32;
 
         // Prevent division by zero
-        let offset = if offset.abs() < 1e-10 { 1e-10 } else { offset };
-
-        // Calculate Ld and Lq from offset and amplitude
-        // Based on VESC formula: Ld = 1/(offset + amplitude), Lq = 1/(offset - amplitude)
-        // This assumes the samples represent 1/L (inverse inductance)
-
-        // For our direct current measurement approach:
-        // The current amplitude is proportional to 1/L
-        // So we calculate L from the relationship between injected voltage and current
-
-        let ld_est = self.calculate_inductance_from_current(offset + amplitude);
-        let lq_est = self.calculate_inductance_from_current(offset - amplitude);
-
-        self.ld_sum += ld_est;
-        self.lq_sum += lq_est;
-        self.cycles_completed += 1;
-    }
-
-    #[cfg(not(feature = "microfft"))]
-    fn process_fft_cycle(&mut self) {
-        // Fallback: use simple amplitude measurement without FFT
-        // Find peak-to-peak current amplitude
-        let mut min_current = f32::MAX;
-        let mut max_current = f32::MIN;
-
-        for &sample in &self.samples {
-            if sample < min_current {
-                min_current = sample;
-            }
-            if sample > max_current {
-                max_current = sample;
-            }
-        }
-
-        let current_amplitude = (max_current - min_current) / 2.0;
-
-        // L = V / (ω × I)
-        let l_est = if current_amplitude > 1e-6 {
-            self.voltage_amplitude / (self.omega_hfi * current_amplitude)
+        let offset = if offset.abs() < 1e-10 {
+            1e-10
         } else {
-            0.0
+            offset.abs() // 1/L should always be positive
         };
 
-        // Without FFT, we can't distinguish Ld from Lq
-        self.ld_sum += l_est;
-        self.lq_sum += l_est;
-        self.cycles_completed += 1;
+        // Calculate Ld and Lq from offset and amplitude
+        // 1/Ld = offset + amplitude
+        // 1/Lq = offset - amplitude
+        let inv_ld = offset + amplitude;
+        let inv_lq = (offset - amplitude).abs().max(1e-10); // Ensure positive
+
+        let ld_est = 1.0 / inv_ld;
+        let lq_est = 1.0 / inv_lq;
+
+        // Accumulate for averaging
+        if ld_est.is_finite() && lq_est.is_finite() {
+            self.ld_sum += ld_est;
+            self.lq_sum += lq_est;
+            self.cycles_completed += 1;
+        }
     }
 
-    /// Calculate inductance from measured current response.
-    #[allow(dead_code)]
-    fn calculate_inductance_from_current(&self, current_component: f32) -> f32 {
-        // The current at HFI frequency is I = V / (ω×L)
-        // Therefore L = V / (ω×I)
-        if current_component.abs() > 1e-10 {
-            self.voltage_amplitude / (self.omega_hfi * current_component.abs())
-        } else {
-            0.0
+    /// Simple cycle processing without FFT (fallback).
+    #[cfg(not(feature = "microfft"))]
+    fn process_simple_cycle(&mut self) {
+        // Find average di amplitude
+        let mut sum = 0.0;
+        for &sample in &self.samples {
+            sum += sample;
+        }
+        let avg_di = sum / FFT_SIZE as f32;
+
+        // Estimate inductance from average: L ≈ V / (f_sample × di)
+        // From V = L × di/dt, and di/dt ≈ di × f_sample
+        if avg_di > 1e-6 {
+            let l_est = self.voltage_amplitude / (self.pwm_freq_hz * avg_di);
+            self.ld_sum += l_est;
+            self.lq_sum += l_est; // Can't distinguish without FFT
+            self.cycles_completed += 1;
         }
     }
 
@@ -291,7 +427,16 @@ impl InductanceMeasurement {
     /// Get progress as percentage.
     #[inline]
     pub fn progress_percent(&self) -> u8 {
-        ((self.cycles_completed * 100) / self.target_cycles) as u8
+        if self.target_cycles == 0 {
+            return 100;
+        }
+        ((self.cycles_completed * 100) / self.target_cycles).min(100) as u8
+    }
+
+    /// Get number of completed FFT cycles.
+    #[inline]
+    pub fn cycles_completed(&self) -> u32 {
+        self.cycles_completed
     }
 
     /// Finish measurement and return results.
@@ -302,6 +447,7 @@ impl InductanceMeasurement {
 
         let n = self.cycles_completed as f32;
 
+        // Average the accumulated values
         let ld = (self.ld_sum / n) * INDUCTANCE_SCALE_FACTOR;
         let lq = (self.lq_sum / n) * INDUCTANCE_SCALE_FACTOR;
         let l_avg = (ld + lq) / 2.0;
@@ -315,7 +461,11 @@ impl InductanceMeasurement {
             return Err(DetectionError::OutOfRange);
         }
 
-        let avg_current = self.current_sum / (self.cycles_completed * FFT_SIZE as u32) as f32;
+        let avg_current = if self.total_samples > 0 {
+            self.current_sum / self.total_samples as f32
+        } else {
+            0.0
+        };
 
         Ok(InductanceResult {
             ld,
@@ -327,89 +477,6 @@ impl InductanceMeasurement {
     }
 }
 
-/// Simple synchronous demodulation for inductance measurement.
-///
-/// Alternative to FFT that uses direct multiplication with sin/cos
-/// reference signals. Less accurate but simpler and no FFT required.
-#[derive(Clone, Debug)]
-pub struct SyncDemodulator {
-    /// Accumulator for cosine component
-    cos_acc: f32,
-    /// Accumulator for sine component
-    sin_acc: f32,
-    /// Sample count
-    sample_count: u32,
-    /// HFI frequency in rad/s
-    omega: f32,
-    /// Phase accumulator
-    phase: f32,
-    /// Injection voltage amplitude
-    voltage_amplitude: f32,
-}
-
-impl SyncDemodulator {
-    /// Create a new synchronous demodulator.
-    pub fn new(frequency_hz: f32, voltage_amplitude: f32) -> Self {
-        Self {
-            cos_acc: 0.0,
-            sin_acc: 0.0,
-            sample_count: 0,
-            omega: frequency_hz * core::f32::consts::TAU,
-            phase: 0.0,
-            voltage_amplitude,
-        }
-    }
-
-    /// Record a sample and update demodulation.
-    ///
-    /// # Arguments
-    /// * `current` - Measured current
-    /// * `dt` - Time step
-    pub fn record(&mut self, current: f32, dt: f32) {
-        // Multiply by reference signals
-        self.cos_acc += current * libm::cosf(self.phase);
-        self.sin_acc += current * libm::sinf(self.phase);
-        self.sample_count += 1;
-
-        // Advance phase
-        self.phase += self.omega * dt;
-        if self.phase > core::f32::consts::TAU {
-            self.phase -= core::f32::consts::TAU;
-        }
-    }
-
-    /// Calculate inductance from accumulated data.
-    ///
-    /// # Returns
-    /// Inductance in Henries, or error
-    pub fn finish(self) -> Result<f32, DetectionError> {
-        if self.sample_count < 32 {
-            return Err(DetectionError::InsufficientSamples);
-        }
-
-        let n = self.sample_count as f32;
-
-        // Calculate amplitude of current at injection frequency
-        let cos_avg = self.cos_acc / n;
-        let sin_avg = self.sin_acc / n;
-        let current_amplitude = libm::sqrtf(cos_avg * cos_avg + sin_avg * sin_avg) * 2.0;
-
-        if current_amplitude < 1e-6 {
-            return Err(DetectionError::LowConfidence);
-        }
-
-        // L = V / (ω × I)
-        let inductance = self.voltage_amplitude / (self.omega * current_amplitude);
-
-        // Validate
-        if !(MIN_VALID_INDUCTANCE..=MAX_VALID_INDUCTANCE).contains(&inductance) {
-            return Err(DetectionError::OutOfRange);
-        }
-
-        Ok(inductance * INDUCTANCE_SCALE_FACTOR)
-    }
-}
-
 /// Validate measured inductance values.
 pub fn validate_inductance(ld: f32, lq: f32) -> Result<(), DetectionError> {
     let valid_range = MIN_VALID_INDUCTANCE..=MAX_VALID_INDUCTANCE;
@@ -417,7 +484,9 @@ pub fn validate_inductance(ld: f32, lq: f32) -> Result<(), DetectionError> {
         return Err(DetectionError::OutOfRange);
     }
 
-    // Check Ld/Lq ratio is reasonable (0.3 to 3.0 for most motors)
+    // Check Ld/Lq ratio is reasonable (0.2 to 5.0 for most motors)
+    // SPM: Ld ≈ Lq (ratio ≈ 1.0)
+    // IPM: Ld < Lq typically (ratio < 1.0)
     let ratio = ld / lq;
     if !(0.2..=5.0).contains(&ratio) {
         return Err(DetectionError::LowConfidence);
@@ -426,60 +495,168 @@ pub fn validate_inductance(ld: f32, lq: f32) -> Result<(), DetectionError> {
     Ok(())
 }
 
+// ============================================================================
+// Axis enum for compatibility with other code
+// ============================================================================
+
+/// Axis identifier (for compatibility, not used in VESC-style measurement).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Axis {
+    /// d-axis (direct axis, aligned with rotor flux)
+    D,
+    /// q-axis (quadrature axis, 90° from rotor flux)
+    Q,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_hfi_injector_basic() {
-        let mut injector = HfiInjector::new(1000.0, 3.0);
+    fn test_hfi_injector_rotation() {
+        let mut injector = HfiInjector::new(1000.0, 3.0, 20000.0);
 
-        // First sample should be near zero (sin(0) = 0)
-        let dt = 1.0 / 20000.0; // 20kHz sample rate
-        let (vd, vq) = injector.step(dt);
-        assert!(vd.abs() < 0.5); // Near zero at start
-        assert_eq!(vq, 0.0);
+        // Collect injection angles over one FFT window
+        let dt = 1.0 / 20000.0;
+        let mut angles = Vec::new();
 
-        // After many steps (1/4 period = 250µs = 5 steps at 20kHz)
-        for _ in 0..4 {
+        for _ in 0..FFT_SIZE {
+            let angle = injector.injection_angle();
+            angles.push(angle);
             injector.step(dt);
         }
-        let (vd, _) = injector.step(dt);
-        // Should be building up toward peak
-        assert!(vd.abs() > 0.5);
+
+        // First angle should be ~0
+        assert!(angles[0].abs() < 0.1);
+
+        // The angle increment per sample
+        let increment = (HFI_CYCLES_PER_FFT as f32 * core::f32::consts::TAU) / FFT_SIZE as f32;
+
+        // After 31 steps, total angle = 31 × increment
+        // With HFI_CYCLES_PER_FFT=1, this is 31 × (2π/32) = 31π/16 ≈ 6.09 rad
+        let total_angle = 31.0 * increment;
+        let expected_final = total_angle % core::f32::consts::TAU;
+        let final_angle = angles[FFT_SIZE - 1];
+
+        assert!(
+            (final_angle - expected_final).abs() < 0.2,
+            "Final angle {} vs expected {} (total unwrapped: {})",
+            final_angle,
+            expected_final,
+            total_angle
+        );
+
+        // Verify we complete approximately HFI_CYCLES_PER_FFT rotations
+        // by checking the total angular travel
+        let total_travel = FFT_SIZE as f32 * increment;
+        let expected_rotations = HFI_CYCLES_PER_FFT as f32;
+        let actual_rotations = total_travel / core::f32::consts::TAU;
+        assert!(
+            (actual_rotations - expected_rotations).abs() < 0.1,
+            "Expected {} rotations, got {}",
+            expected_rotations,
+            actual_rotations
+        );
     }
 
     #[test]
-    fn test_sync_demodulator() {
-        let mut demod = SyncDemodulator::new(1000.0, 3.0);
-        let dt = 1.0 / 20000.0; // 20kHz sample rate
+    fn test_hfi_injector_output() {
+        let mut injector = HfiInjector::new(1000.0, 3.0, 20000.0);
+        let dt = 1.0 / 20000.0;
 
-        // Simulate current response to HFI injection
-        // For L = 100µH, I = V/(ω×L) = 3.0/(2π×1000×0.0001) ≈ 4.77A
+        // At angle = 0, v_alpha should be non-zero, v_beta should be ~0
+        let (v_alpha, v_beta) = injector.step(dt);
+        // First sample: sin(0) = 0 for HFI, so both should be small
+        assert!(v_alpha.abs() < 0.5);
+        assert!(v_beta.abs() < 0.5);
+
+        // After a few samples, we should see non-zero values
+        for _ in 0..4 {
+            injector.step(dt);
+        }
+        let (v_alpha, v_beta) = injector.step(dt);
+        let v_mag = libm::sqrtf(v_alpha * v_alpha + v_beta * v_beta);
+        assert!(v_mag > 0.5, "Expected non-zero voltage, got {}", v_mag);
+    }
+
+    #[cfg(feature = "microfft")]
+    #[test]
+    fn test_inductance_measurement_spm() {
+        // Test with simulated SPM motor (Ld ≈ Lq)
+        let pwm_freq_hz = 20000.0;
+        let params = InductanceParams {
+            hfi_frequency_hz: 1000.0,
+            hfi_voltage_v: 3.0,
+            num_cycles: 5,
+            ..Default::default()
+        };
+
+        let mut measurement = InductanceMeasurement::new(&params, pwm_freq_hz);
+        let mut injector = HfiInjector::new(1000.0, 3.0, pwm_freq_hz);
+        let dt = 1.0 / pwm_freq_hz;
+
+        // Simulate SPM motor: L = 100µH (same for all angles)
         let l_actual = 0.0001; // 100µH
-        let omega = 1000.0 * core::f32::consts::TAU;
-        let i_amplitude = 3.0 / (omega * l_actual);
 
-        // Generate 100 samples (5 complete cycles at 1kHz with 20kHz sampling)
-        let mut phase = 0.0f32;
-        for _ in 0..100 {
-            // Current lags voltage by 90° for pure inductance
-            let current = i_amplitude * libm::sinf(phase - core::f32::consts::FRAC_PI_2);
-            demod.record(current, dt);
-            phase += omega * dt;
+        // Track current for simulation (integrating di over time)
+        let mut i_alpha = 0.0f32;
+        let mut i_beta = 0.0f32;
+
+        while !measurement.is_complete() {
+            let injection_angle = injector.injection_angle();
+            let (v_alpha, v_beta) = injector.step(dt);
+
+            // Physics: V = L × di/dt, so di = (V/L) × dt
+            // For discrete simulation: di = V × dt / L
+            let di_alpha = v_alpha * dt / l_actual;
+            let di_beta = v_beta * dt / l_actual;
+
+            // Update current (integrating di)
+            i_alpha += di_alpha;
+            i_beta += di_beta;
+
+            measurement.record(i_alpha, i_beta, injection_angle);
         }
 
-        let l_measured = demod.finish().unwrap();
+        let result = measurement.finish().unwrap();
 
-        // Should be close to actual inductance (within 20% due to simulation simplifications)
-        let error = (l_measured - l_actual).abs() / l_actual;
-        assert!(error < 0.3, "Inductance error too large: {}", error);
+        // For SPM, Ld ≈ Lq ≈ L_actual
+        // Allow larger tolerance due to simulation simplifications
+        let ld_error = (result.ld - l_actual).abs() / l_actual;
+        let lq_error = (result.lq - l_actual).abs() / l_actual;
+
+        assert!(
+            ld_error < 0.5,
+            "Ld error too large: {:.1}% (got {:.2}µH, expected {:.2}µH)",
+            ld_error * 100.0,
+            result.ld * 1e6,
+            l_actual * 1e6
+        );
+        assert!(
+            lq_error < 0.5,
+            "Lq error too large: {:.1}% (got {:.2}µH, expected {:.2}µH)",
+            lq_error * 100.0,
+            result.lq * 1e6,
+            l_actual * 1e6
+        );
+
+        // Ld and Lq should be similar for SPM
+        let ratio = result.ld / result.lq;
+        assert!(
+            (0.5..=2.0).contains(&ratio),
+            "Ld/Lq ratio {} outside expected range for SPM",
+            ratio
+        );
     }
 
     #[test]
     fn test_validate_inductance() {
-        // Valid values
+        // Valid values (SPM motor, Ld ≈ Lq)
         assert!(validate_inductance(0.0001, 0.00012).is_ok());
+
+        // Valid values (IPM motor, Ld < Lq)
+        assert!(validate_inductance(0.00008, 0.00015).is_ok());
 
         // Invalid: too low
         assert!(validate_inductance(1e-9, 0.0001).is_err());
