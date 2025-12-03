@@ -11,6 +11,9 @@ libm = { version = "0.2.15", default-features = false }
 # Optional defmt support for embedded logging
 defmt = { version = "1.0", optional = true }
 
+# Optional log support for std logging
+log = { version = "0.4", optional = true }
+
 # Optional FFT for inductance measurement via HFI
 microfft = { version = "0.6", optional = true }
 
@@ -25,4 +28,5 @@ path = "src/lib.rs"
 default = []
 std = []
 defmt = ["dep:defmt"]
+log = ["dep:log"]
 microfft = ["dep:microfft"]

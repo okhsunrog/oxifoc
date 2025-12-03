@@ -81,6 +81,9 @@ pub mod pi_tuning;
 /// Phase resistance measurement
 pub mod resistance;
 
+/// Async detection sweeps (requires platform implementation)
+pub mod sweep;
+
 // Re-export commonly used types for convenience
 pub use types::{
     DcOffsetParams, DcOffsets, DetectionError, FluxLinkageParams, InductanceParams, MotorParams,

@@ -223,7 +223,10 @@ pub fn configure_tim1_adc_trigger() {
     // Note: We don't enable CH4 output on a pin, just the compare event
     // The compare event will trigger ADC via the internal connection
 
-    defmt::info!("TIM1 CH4 configured for ADC trigger at ARR-offset={}", trigger_point);
+    defmt::info!(
+        "TIM1 CH4 configured for ADC trigger at ARR-offset={}",
+        trigger_point
+    );
 }
 
 /// Initialize FOC driver with motor PWM and sensors
