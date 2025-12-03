@@ -51,6 +51,13 @@
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
+/// Logging macros abstraction (defmt/log/none)
+#[macro_use]
+mod fmt;
+
+/// Timer abstraction for async delays
+pub mod timer;
+
 /// High-level motor driver combining FOC with sensors and PWM
 pub mod motor;
 
