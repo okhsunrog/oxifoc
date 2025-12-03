@@ -17,6 +17,7 @@ use embassy_time::{Duration, Timer};
 use panic_probe as _;
 
 // Module declarations
+mod calibration;
 mod config;
 mod control;
 mod hardware;

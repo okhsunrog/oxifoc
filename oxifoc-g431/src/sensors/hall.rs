@@ -138,6 +138,12 @@ pub fn init(
 
 // ========== Fast Hall State Reading ==========
 
+/// Read raw Hall sensor state from GPIO (public for calibration)
+#[inline]
+pub fn read_hall_state_raw() -> u8 {
+    read_hall_state_fast()
+}
+
 /// Read Hall sensor state quickly from GPIO (for ISR use)
 #[inline]
 fn read_hall_state_fast() -> u8 {

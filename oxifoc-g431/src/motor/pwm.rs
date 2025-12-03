@@ -75,10 +75,12 @@ impl<'d> MotorPwm<'d> {
 
         // Channel 4: internal "sampling" channel to generate TIM1_TRGO2 for ADC.
         //
-        // In center-aligned mode, setting duty to max_duty / 2 places the compare
-        // event near the middle of the PWM period.
-        let mid = max_duty / 2;
-        pwm.set_duty(Channel::Ch4, mid);
+        // Sample at peak of triangle wave (V0 - all low-side ON).
+        // In center-aligned mode, CNT=ARR is the V0 point where all low-side
+        // FETs are ON for any duty < 100%.
+        // Small offset ensures ADC completes before any switching edges.
+        let peak_offset = max_duty / 50; // ~2% margin
+        pwm.set_duty(Channel::Ch4, max_duty.saturating_sub(peak_offset));
         pwm.enable(Channel::Ch4);
         pwm.set_mms2(Mms2::COMPARE_OC4);
 

@@ -1,4 +1,4 @@
-//! Calibration and motor parameter detection for F405 platform
+//! Calibration and motor parameter detection for G431 platform
 //!
 //! This module implements async sweeps for motor parameter detection:
 //! - DC offset calibration (current sensor zeros)
@@ -23,7 +23,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use oxifoc_f405::calibration::{run_full_detection, DetectionResult};
+//! use oxifoc_g431::calibration::{run_full_detection, DetectionResult};
 //!
 //! // Run full detection sequence
 //! let result = run_full_detection(params).await?;
@@ -33,13 +33,12 @@
 //! let inductance = measure_inductance(params).await?;
 //! ```
 
-pub mod hall;
-
 pub mod detection;
+pub mod hall;
 
 // Re-exports
 #[allow(unused_imports)]
-pub use hall::{calibrate_hall, F405HallReader};
+pub use hall::{calibrate_hall, G431HallReader};
 
 pub use detection::{
     run_full_detection, DetectionParams, DetectionResult,
