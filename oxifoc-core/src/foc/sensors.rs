@@ -127,7 +127,12 @@ pub trait HallSensorTrait: AngleSensor {
     fn electrical_velocity(&self) -> f32;
 
     /// Set calibration table (angles for logical states 0-5)
+    /// For backwards compatibility - prefer `set_calibration_raw`
     fn set_calibration(&mut self, table: [f32; 6]);
+
+    /// Set calibration table using raw Hall states (8-entry table)
+    /// This is the preferred method as it works with any Hall sensor wiring
+    fn set_calibration_raw(&mut self, raw_table: [f32; 8]);
 
     /// Apply calibration result from HallCalibrator
     fn apply_calibration(&mut self, result: &HallCalibrationResult) -> bool;

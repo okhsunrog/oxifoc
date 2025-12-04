@@ -8,6 +8,9 @@ description = "Platform-agnostic FOC (Field-Oriented Control) algorithms and mot
 # Math library for no_std (sin, cos, sqrt, etc)
 libm = { version = "0.2.15", default-features = false }
 
+# no_std data structures
+heapless = { version = "0.8", default-features = false }
+
 # Optional defmt support for embedded logging
 defmt = { version = "1.0", optional = true }
 

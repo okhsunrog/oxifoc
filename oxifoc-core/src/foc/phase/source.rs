@@ -48,6 +48,22 @@ pub enum PhaseSource {
         blend_high: f32,
     },
 
+    /// Hall sensor with automatic observer fallback (VESC-style)
+    ///
+    /// Full-featured Hall mode with:
+    /// - Hall at low speed
+    /// - Blends to observer at high speed
+    /// - Automatic fallback to observer if Hall fails
+    /// - Open-loop override if observer not ready (TODO)
+    HallWithFallback {
+        /// Start blending Hall→Observer (electrical rad/s)
+        blend_low: f32,
+        /// Full observer (electrical rad/s)
+        blend_high: f32,
+        /// Hall timeout before fallback (microseconds)
+        timeout_us: u32,
+    },
+
     /// HFI at startup, transition to back-EMF observer
     HfiToObserver {
         /// Minimum velocity for observer (rad/s)
@@ -109,7 +125,10 @@ impl PhaseSource {
     pub fn requires_hall(&self) -> bool {
         matches!(
             self,
-            PhaseSource::Hall | PhaseSource::HallToObserver { .. } | PhaseSource::HfiToHall { .. }
+            PhaseSource::Hall
+                | PhaseSource::HallToObserver { .. }
+                | PhaseSource::HallWithFallback { .. }
+                | PhaseSource::HfiToHall { .. }
         )
     }
 
@@ -129,6 +148,7 @@ impl PhaseSource {
             self,
             PhaseSource::Observer
                 | PhaseSource::HallToObserver { .. }
+                | PhaseSource::HallWithFallback { .. }
                 | PhaseSource::EncoderToObserver { .. }
                 | PhaseSource::HfiToObserver { .. }
         )

@@ -50,7 +50,7 @@ mod observer;
 mod provider;
 mod source;
 
-pub use manager::PhaseManager;
+pub use manager::{HallHealth, OpenLoopOverride, PhaseFault, PhaseManager};
 pub use observer::{BackEmfObserver, HfiObserver, Observer, ObserverInput};
 pub use provider::{PhaseInput, PhaseOutput, PhaseProvider};
 pub use source::{PhaseSource, PhaseSourceError};

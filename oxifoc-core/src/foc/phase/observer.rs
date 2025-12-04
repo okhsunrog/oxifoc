@@ -234,6 +234,19 @@ impl BackEmfObserver {
         self.pll_kp = kp;
         self.pll_ki = ki;
     }
+
+    /// Force phase to specific value (for testing or handoff from other source)
+    pub fn force_phase(&mut self, phase: f32) {
+        self.phase_pll = wrap_angle(phase);
+        // Also set flux state to match
+        self.x1 = self.lambda * libm::cosf(phase);
+        self.x2 = self.lambda * libm::sinf(phase);
+    }
+
+    /// Set velocity estimate (for testing or handoff from other source)
+    pub fn set_velocity(&mut self, velocity: f32) {
+        self.velocity_pll = velocity;
+    }
 }
 
 // ============================================================================

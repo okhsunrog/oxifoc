@@ -1,7 +1,8 @@
 //! Hall sensor management for Simple FOCer 2 (STM32F405)
 //!
-//! Uses raw PAC access for EXTI configuration to avoid conflicts with Embassy's
-//! EXTI feature while maintaining low-latency interrupt-driven hall sensing.
+//! Uses TIM6-based polling at 5µs intervals with 7-read majority voting
+//! for noise immunity. This approach filters sub-µs glitches while maintaining
+//! good timing resolution.
 
 #![allow(dead_code)] // Public API not yet wired to protocol handlers
 
@@ -18,35 +19,21 @@ use oxifoc_core::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait};
 
 use crate::config::TIMEBASE_TICKS_PER_SEC;
 
-// ========== Hall Edge Mailbox (EXTI → ADC ISR) ==========
+// ========== Configuration ==========
 
-/// Hall edge data communicated from EXTI ISR to ADC ISR
-#[derive(Clone, Copy)]
-struct HallEdge {
-    seq: u32,
-    state: u8,
-    ticks: u32,
-}
+/// Polling interval in microseconds
+const POLL_INTERVAL_US: u32 = 5;
 
-impl HallEdge {
-    const fn new() -> Self {
-        Self {
-            seq: 0,
-            state: 0,
-            ticks: 0,
-        }
-    }
-}
+/// Number of GPIO reads per poll for majority voting
+const READS_PER_POLL: u8 = 7;
 
-/// Mailbox for Hall edge updates from EXTI to ADC ISR.
-/// Uses CriticalSectionMutex to ensure atomic read/write of the entire struct.
-static HALL_EDGE_MAILBOX: CriticalSectionMutex<RefCell<HallEdge>> =
-    CriticalSectionMutex::new(RefCell::new(HallEdge::new()));
+/// Majority threshold (need more than half)
+const MAJORITY_THRESHOLD: u8 = READS_PER_POLL / 2 + 1; // 4 of 7
 
 // ========== Hall Estimator (shared state) ==========
 
 /// Hall estimator - the single source of truth for Hall sensor state.
-/// Accessed by ADC ISR (write) and telemetry tasks (read).
+/// Accessed by TIM6 ISR (write) and telemetry tasks (read).
 static HALL_ESTIMATOR: CriticalSectionMutex<RefCell<Option<HallSensor>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
@@ -62,10 +49,10 @@ static mut HALL_INPUTS_PTR: Option<&'static (Input<'static>, Input<'static>, Inp
 
 // ========== Hall Sensor Initialization ==========
 
-/// Initialize Hall sensor inputs and enable EXTI interrupts
+/// Initialize Hall sensor inputs and TIM6 for polling
 ///
-/// Note: We configure EXTI via PAC directly to avoid symbol conflicts with LTO.
-/// The EXTI6/7/8 parameters are kept for API compatibility but unused.
+/// Configures TIM6 to fire every 5µs. Each ISR performs 7 rapid GPIO reads
+/// with majority voting to filter noise.
 pub fn init_hall(
     pc6: Peri<'static, peripherals::PC6>,
     pc7: Peri<'static, peripherals::PC7>,
@@ -91,56 +78,53 @@ pub fn init_hall(
         est.replace(Some(HallSensor::new(TIMEBASE_TICKS_PER_SEC)));
     });
 
-    // Configure EXTI for PC6, PC7, PC8 via PAC
-    // SYSCFG_EXTICR2 controls EXTI6 and EXTI7 (pins 4-7)
-    // SYSCFG_EXTICR3 controls EXTI8 (pins 8-11)
-    // Port C = 0b0010
-    pac::SYSCFG.exticr(1).modify(|w| {
-        w.set_exti(2, 0b0010); // EXTI6 -> PC6
-        w.set_exti(3, 0b0010); // EXTI7 -> PC7
-    });
-    pac::SYSCFG.exticr(2).modify(|w| {
-        w.set_exti(0, 0b0010); // EXTI8 -> PC8
+    // Configure TIM6 for 5µs polling
+    // STM32F405 runs at 168MHz, TIM6 is on APB1 (84MHz with APB1 prescaler = 2, but timer x2 = 168MHz)
+    // Actually on F4, APB1 timers run at 2x APB1 clock when prescaler > 1
+    // With default embassy config: APB1 = 42MHz, timer clock = 84MHz
+    // For 5µs period: 84MHz * 5µs = 420 ticks
+    // Use prescaler = 0, ARR = 419
+
+    // Enable TIM6 clock
+    pac::RCC.apb1enr().modify(|w| w.set_tim6en(true));
+
+    // Reset TIM6
+    pac::RCC.apb1rstr().modify(|w| w.set_tim6rst(true));
+    pac::RCC.apb1rstr().modify(|w| w.set_tim6rst(false));
+
+    let tim6 = pac::TIM6;
+
+    // Configure timer
+    // Note: F405 timer clock depends on APB1 prescaler configuration
+    // Embassy default: SYSCLK=168MHz, APB1=42MHz, timer clock=84MHz
+    tim6.psc().write_value(0); // No prescaler
+    tim6.arr().write(|w| w.set_arr(419)); // 420 ticks = 5µs at 84MHz
+    tim6.dier().write(|w| w.set_uie(true)); // Enable update interrupt
+    tim6.cr1().write(|w| {
+        w.set_cen(true); // Enable counter
+        w.set_arpe(true); // Auto-reload preload enable
     });
 
-    // Enable rising and falling edge triggers for lines 6, 7, 8
-    pac::EXTI.rtsr(0).modify(|w| {
-        w.set_line(6, true);
-        w.set_line(7, true);
-        w.set_line(8, true);
-    });
-    pac::EXTI.ftsr(0).modify(|w| {
-        w.set_line(6, true);
-        w.set_line(7, true);
-        w.set_line(8, true);
-    });
-
-    // Clear any pending interrupts
-    pac::EXTI.pr(0).write(|w| {
-        w.set_line(6, true);
-        w.set_line(7, true);
-        w.set_line(8, true);
-    });
-
-    // Enable interrupt mask for lines 6, 7, 8
-    pac::EXTI.imr(0).modify(|w| {
-        w.set_line(6, true);
-        w.set_line(7, true);
-        w.set_line(8, true);
-    });
-
-    // Enable EXTI9_5 interrupt in NVIC
+    // Enable TIM6 interrupt in NVIC with high priority
     unsafe {
-        interrupt::typelevel::EXTI9_5::unpend();
-        interrupt::typelevel::EXTI9_5::enable();
+        interrupt::typelevel::TIM6_DAC::unpend();
+        cortex_m::peripheral::NVIC::unmask(interrupt::TIM6_DAC);
+        // Set high priority (lower number = higher priority)
+        // Priority 1 to ensure Hall sampling is responsive
+        let mut nvic = cortex_m::peripheral::Peripherals::steal().NVIC;
+        nvic.set_priority(interrupt::TIM6_DAC, 1);
     }
 
-    defmt::info!("Hall sensor initialized with EXTI edge detection (raw PAC)");
+    defmt::info!(
+        "Hall sensor initialized with TIM6 polling ({}µs interval, {} reads/poll)",
+        POLL_INTERVAL_US,
+        READS_PER_POLL
+    );
 }
 
 // ========== Fast Hall State Reading ==========
 
-/// Read Hall sensor state quickly from GPIO (for ISR use)
+/// Read Hall sensor state quickly from GPIO (single read)
 #[inline]
 fn read_hall_state_fast() -> u8 {
     if let Some((h1, h2, h3)) = unsafe { HALL_INPUTS_PTR } {
@@ -167,48 +151,91 @@ pub fn read_hall_state_raw() -> u8 {
     read_hall_state_fast()
 }
 
-// ========== EXTI Interrupt Handler ==========
+/// Read Hall sensor state with 7-read majority voting (VESC-style)
+///
+/// Performs 7 rapid GPIO reads and returns the state that appears most often.
+/// This filters sub-microsecond noise glitches.
+#[inline]
+fn read_hall_state_voted() -> u8 {
+    if let Some((h1, h2, h3)) = unsafe { HALL_INPUTS_PTR } {
+        let mut h1_count = 0u8;
+        let mut h2_count = 0u8;
+        let mut h3_count = 0u8;
 
-/// Handle Hall sensor edges (PC6/PC7/PC8) and timestamp them.
+        // 7 rapid reads (takes ~200-300ns total)
+        for _ in 0..READS_PER_POLL {
+            if h1.is_high() {
+                h1_count += 1;
+            }
+            if h2.is_high() {
+                h2_count += 1;
+            }
+            if h3.is_high() {
+                h3_count += 1;
+            }
+        }
+
+        // Majority vote for each channel
+        let mut state = 0u8;
+        if h1_count >= MAJORITY_THRESHOLD {
+            state |= 0b001;
+        }
+        if h2_count >= MAJORITY_THRESHOLD {
+            state |= 0b010;
+        }
+        if h3_count >= MAJORITY_THRESHOLD {
+            state |= 0b100;
+        }
+        state
+    } else {
+        0
+    }
+}
+
+// ========== TIM6 Interrupt Handler ==========
+
+/// TIM6 update interrupt: poll Hall sensors with majority voting
 #[interrupt]
-fn EXTI9_5() {
-    let state = read_hall_state_fast();
-    let ticks = embassy_time::Instant::now().as_ticks() as u32;
+fn TIM6_DAC() {
+    // Clear update interrupt flag
+    pac::TIM6.sr().write(|w| w.set_uif(false));
 
-    HALL_EDGE_MAILBOX.lock(|cell| {
-        let mut edge = cell.borrow_mut();
-        edge.state = state;
-        edge.ticks = ticks;
-        edge.seq = edge.seq.wrapping_add(1);
-    });
+    // Read Hall state with majority voting
+    let state = read_hall_state_voted();
 
-    // Clear pending bits for lines 6, 7, 8
-    pac::EXTI.pr(0).write(|w| {
-        w.set_line(6, true);
-        w.set_line(7, true);
-        w.set_line(8, true);
-    });
+    // Static state for edge detection (ISR has exclusive access)
+    static mut LAST_STATE: u8 = 0;
+
+    // Check for state change
+    let last = unsafe { LAST_STATE };
+    if state != last && state != 0 && state != 7 {
+        // Valid state change detected
+        let ticks = embassy_time::Instant::now().as_ticks();
+
+        // Update Hall estimator
+        HALL_ESTIMATOR.lock(|est| {
+            if let Some(h) = est.borrow_mut().as_mut() {
+                let _ = h.update_sample(state, ticks);
+            }
+        });
+
+        unsafe {
+            LAST_STATE = state;
+        }
+    }
 }
 
 // ========== Public API for Control Loop ==========
 
-/// Process Hall edge from mailbox (called from ADC ISR)
+/// Process Hall state (called from ADC ISR for compatibility)
 ///
-/// Returns true if a new edge was processed
-pub fn process_edge(last_seq: &mut u32) -> bool {
-    let edge = HALL_EDGE_MAILBOX.lock(|cell| *cell.borrow());
-
-    if edge.seq != *last_seq {
-        HALL_ESTIMATOR.lock(|est| {
-            if let Some(h) = est.borrow_mut().as_mut() {
-                let _ = h.update_sample(edge.state, edge.ticks as u64);
-            }
-        });
-        *last_seq = edge.seq;
-        true
-    } else {
-        false
-    }
+/// With timer-based polling, this is now a no-op since Hall updates
+/// happen directly in the TIM6 ISR. Kept for API compatibility.
+#[inline]
+pub fn process_edge(_last_seq: &mut u32) -> bool {
+    // No longer needed - Hall updates happen in TIM6 ISR
+    // Return false to indicate no new edge was processed here
+    false
 }
 
 // ========== Public API for Telemetry ==========
