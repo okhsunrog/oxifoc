@@ -126,7 +126,7 @@ pub trait PhaseProvider {
 
 ### 3. PhaseManager
 
-Concrete implementation of `PhaseProvider` that manages multiple angle sources.
+Concrete implementation of `PhaseProvider` that manages multiple angle sources with automatic fallback.
 
 ```rust
 pub struct PhaseManager<H = NoSensor, E = NoSensor>
@@ -152,6 +152,29 @@ where
 
     // Timebase
     ticks_per_sec: u64,
+
+    // Hall health tracking (VESC-style)
+    hall_health: HallHealth,      // Ok, Stale, Invalid, NotPresent
+    hall_failure_ticks: Option<u64>,
+
+    // Open-loop override for Hall failure recovery
+    open_loop_override: OpenLoopOverride,
+
+    // Fault tracking
+    faults: HeaplessVec<PhaseFault, 4>,
+}
+
+pub enum HallHealth {
+    Ok,         // Hall working normally
+    Stale,      // No edges for timeout period
+    Invalid,    // Returning invalid states (0 or 7)
+    NotPresent, // Hall not configured
+}
+
+pub enum PhaseFault {
+    HallTimeout,
+    HallInvalidState,
+    ObserverNotReady,
 }
 ```
 
@@ -159,7 +182,14 @@ where
 - Sample hardware sensors (Hall, Encoder)
 - Update software observer
 - Select/blend angle sources based on `PhaseSource`
+- Track Hall sensor health and trigger fallback
 - Provide unified phase output to FocDriver
+
+**Fallback Chain:**
+When Hall fails, PhaseManager automatically falls back:
+1. **Hall** → try Observer
+2. **Observer not ready** → use OpenLoop override
+3. **OpenLoop** → maintain minimum velocity until observer syncs
 
 ---
 
@@ -183,6 +213,11 @@ pub enum PhaseSource {
     HallToObserver {         // Hall at low speed, observer at high speed
         blend_low: f32,      // Start blending (electrical rad/s)
         blend_high: f32,     // Full observer (electrical rad/s)
+    },
+    HallWithFallback {       // Hall with automatic observer fallback
+        blend_low: f32,      // Start blending (electrical rad/s)
+        blend_high: f32,     // Full observer (electrical rad/s)
+        timeout_us: u32,     // Hall timeout before fallback
     },
     EncoderToObserver {      // Encoder at low speed, observer at high speed
         blend_low: f32,
@@ -282,7 +317,12 @@ pub trait HallSensorTrait: AngleSensor {
     fn electrical_velocity(&self) -> f32;
 
     /// Set calibration table (angles for logical states 0-5)
+    /// For backwards compatibility - prefer `set_calibration_raw`
     fn set_calibration(&mut self, table: [f32; 6]);
+
+    /// Set calibration table using raw Hall states (8-entry table)
+    /// This is the preferred method as it works with any Hall sensor wiring
+    fn set_calibration_raw(&mut self, raw_table: [f32; 8]);
 
     /// Apply calibration result
     fn apply_calibration(&mut self, result: &HallCalibrationResult) -> bool;
@@ -302,6 +342,38 @@ pub struct HallInterpolationInfo {
     pub interpolation_offset: f32, // Added by velocity extrapolation
     pub estimated_velocity: f32,   // Velocity used for interpolation
     pub time_since_edge_us: u32,   // Time since last Hall edge
+}
+```
+
+### HallSensor Implementation (VESC-compatible)
+
+The `HallSensor` struct provides VESC-style features:
+
+```rust
+pub struct HallSensor {
+    // Calibration: 8-entry raw-state table (direct lookup, no logical conversion)
+    calib: HallCalibration,  // raw_table: [f32; 8], valid: [bool; 8]
+
+    // VESC-compatible interpolation parameters
+    interp_min_erpm: f32,         // Threshold below which interpolation is disabled (default: 500)
+    max_drift_rad: f32,           // Max drift before soft correction (default: π/6 = 30°)
+    drift_correction_gain: f32,   // Pull-back rate (default: 0.01 = 1% per sample)
+    rate_limit_factor: f32,       // Max angle step multiplier (default: 1.5)
+
+    // State tracking
+    direction_reversed: bool,     // True on direction change (for velocity handling)
+    timeout_ticks: u64,           // Timeout for stale detection
+}
+
+impl HallSensor {
+    /// Check if Hall sensor data is stale (no edges for timeout period)
+    pub fn is_stale(&self, now_ticks: u64) -> bool;
+
+    /// Set minimum eRPM for interpolation (VESC-style)
+    pub fn set_interp_min_erpm(&mut self, erpm: f32);
+
+    /// Interpolated sample with soft drift correction and rate limiting
+    pub fn sample_at_mut(&mut self, now_ticks: u64) -> Option<AngleSample>;
 }
 ```
 
@@ -861,19 +933,25 @@ oxifoc-g431/src/             # STM32G431 platform
 
 | Feature | Status |
 |---------|--------|
-| Current control (FOC) | Implemented |
-| Open-loop control | Implemented |
-| HFI injection mode | Implemented |
-| Hall sensor support | Implemented |
-| Hall calibration | Implemented |
-| Resistance detection | Implemented |
-| Inductance detection (HFI) | Implemented |
-| Flux linkage detection | Implemented |
-| Back-EMF observer | Implemented (untested) |
-| Velocity control | Planned |
-| Position control | Planned |
-| Outer loop controllers | Planned |
-| Encoder support | Trait defined, hardware impl planned |
-| HFI angle tracking | Planned |
-| Field weakening | Planned |
-| MTPA (Max Torque Per Amp) | Planned |
+| Current control (FOC) | ✅ Implemented |
+| Open-loop control | ✅ Implemented |
+| HFI injection mode | ✅ Implemented |
+| Hall sensor support | ✅ Implemented (VESC-compatible) |
+| Hall 8-entry raw calibration | ✅ Implemented |
+| Hall soft drift correction | ✅ Implemented |
+| Hall rate limiting | ✅ Implemented |
+| Hall eRPM threshold | ✅ Implemented |
+| Hall health tracking | ✅ Implemented |
+| Hall → Observer fallback | ✅ Implemented |
+| Hall calibration | ✅ Implemented |
+| Resistance detection | ✅ Implemented |
+| Inductance detection (HFI) | ✅ Implemented |
+| Flux linkage detection | ✅ Implemented |
+| Back-EMF observer | 🔄 Implemented (untested) |
+| Velocity control | 📋 Planned |
+| Position control | 📋 Planned |
+| Outer loop controllers | 📋 Planned |
+| Encoder support | 📋 Trait defined, hardware impl planned |
+| HFI angle tracking | 📋 Planned |
+| Field weakening | 📋 Planned |
+| MTPA (Max Torque Per Amp) | 📋 Planned |
