@@ -35,7 +35,18 @@ pub const HALL_STATE_TABLE: [u8; 8] = [
 ];
 
 /// Direction of rotation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    postcard_schema::Schema,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Direction {
     /// Clockwise rotation
     Clockwise,

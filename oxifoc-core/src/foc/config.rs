@@ -75,28 +75,6 @@ pub const DEFAULT_CALIBRATION_SAMPLES: usize = 256;
 pub const DEFAULT_CALIBRATION_DELAY_US: u64 = 100;
 
 // ============================================================================
-// ADC Snapshot
-// ============================================================================
-
-/// Snapshot of ADC measurements for telemetry
-///
-/// Platform code populates this from ISR-updated atomics.
-#[derive(Clone, Copy, Debug, Default)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct AdcSnapshot {
-    /// Phase A current (raw ADC counts)
-    pub ia: u16,
-    /// Phase B current (raw ADC counts)
-    pub ib: u16,
-    /// Phase C current (raw ADC counts)
-    pub ic: u16,
-    /// Bus voltage in millivolts
-    pub vbus_mv: u32,
-    /// Sequence counter (incremented each read)
-    pub seq: u32,
-}
-
-// ============================================================================
 // NTC Temperature Sensing
 // ============================================================================
 

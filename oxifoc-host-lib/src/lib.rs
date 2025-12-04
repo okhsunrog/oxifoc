@@ -17,9 +17,8 @@ use ergot::interface_manager::utils::std::new_std_queue;
 use ergot::net_stack::ArcNetStack;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use oxifoc_protocol::{
-    AdcSample, AdcSampleEndpoint, ButtonEndpoint, ButtonEvent, MotorCommand, MotorEndpoint,
-};
+use oxifoc_core::icd::{AdcSampleEndpoint, ButtonEndpoint, MotorEndpoint};
+use oxifoc_core::types::{AdcSample, ButtonEvent, ControlMode};
 use std::fs;
 use std::path::Path;
 use std::sync::{
@@ -54,7 +53,7 @@ pub const DEFAULT_ADC_POLL_RATE_HZ: u32 = 60;
 
 #[derive(Clone)]
 pub enum HostCommand {
-    Motor(MotorCommand),
+    Motor(ControlMode),
     /// Set ADC polling rate (0 = disabled, 1-255 = rate in Hz)
     SetAdcPollRate(u8),
 }
@@ -251,7 +250,7 @@ async fn backend_main(
             loop {
                 let _ = h
                     .serve(|event: &ButtonEvent| {
-                        let ev = event.clone();
+                        let ev = *event;
                         async move {
                             match ev {
                                 ButtonEvent::SingleClick => tracing::info!("Button: SINGLE"),
@@ -380,7 +379,7 @@ async fn backend_main(
             };
             let mut backoff = Duration::from_millis(100);
             for attempt in 1..=10u32 {
-                let fut = stack.endpoints().request::<oxifoc_protocol::InfoEndpoint>(
+                let fut = stack.endpoints().request::<oxifoc_core::icd::InfoEndpoint>(
                     device_addr,
                     &(),
                     Some("device_info"),

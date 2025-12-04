@@ -15,7 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # Path dependencies to sibling crates
 oxifoc-host-lib = { path = "../../oxifoc-host-lib" }
-oxifoc-protocol = { path = "../../protocol" }
+oxifoc-core = { path = "../../oxifoc-core", features = ["icd"] }
 
 # Workspace dependencies
 serde = { workspace = true }

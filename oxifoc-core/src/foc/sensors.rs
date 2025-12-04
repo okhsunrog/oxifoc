@@ -498,6 +498,19 @@ impl Default for AdcSnapshot {
 }
 
 impl AdcSnapshot {
+    /// Create an empty ADC snapshot (const for static initialization)
+    pub const fn empty() -> Self {
+        Self {
+            ia: 0,
+            ib: 0,
+            ic: 0,
+            vbus_mv: 0,
+            temps: [(TempSensorId::Fet, 0); 4],
+            temp_count: 0,
+            seq: 0,
+        }
+    }
+
     /// Create a new ADC snapshot with currents and voltage only
     pub fn new(ia: u16, ib: u16, ic: u16, vbus_mv: u32, seq: u32) -> Self {
         Self {

@@ -9,7 +9,7 @@ description = "Platform-agnostic FOC (Field-Oriented Control) algorithms and mot
 libm = { version = "0.2.15", default-features = false }
 
 # no_std data structures
-heapless = { version = "0.8", default-features = false }
+heapless = { version = "0.9", default-features = false, features = ["serde"] }
 
 # Optional defmt support for embedded logging
 defmt = { version = "1.0", optional = true }
@@ -20,6 +20,19 @@ log = { version = "0.4", optional = true }
 # Optional FFT for inductance measurement via HFI
 microfft = { version = "0.6", optional = true }
 
+# Serialization (always required for shared types)
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+postcard-schema = { version = "0.2.5", features = ["derive", "heapless-v0_9"] }
+
+# Ergot protocol framework (for icd feature)
+ergot = { path = "../ergot/crates/ergot", optional = true }
+
+# Async runtime support (for runtime feature)
+embassy-time = { version = "0.5.0", optional = true }
+embassy-sync = { version = "0.7", optional = true }
+embassy-futures = { version = "0.1", optional = true }
+critical-section = { version = "1.2", optional = true }
+
 [dev-dependencies]
 # std is available during tests
 
@@ -28,8 +41,31 @@ name = "oxifoc_core"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["algorithms"]
+
+# Interface Control Document - ergot endpoints and wire types
+icd = ["dep:ergot"]
+
+# FOC algorithms (transforms, SVPWM, PI controllers, etc.)
+# This is the core motor control math, no extra dependencies
+algorithms = []
+
+# Async runtime with state management and protocol servers
+# Requires icd for endpoints and algorithms for control logic
+runtime = ["icd", "algorithms", "dep:embassy-time", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section"]
+
+# Virtual motor simulation for testing without hardware
+# Useful for host-side integration tests
+virtual-motor = ["runtime"]
+
+# std support (enables std-dependent features)
 std = []
-defmt = ["dep:defmt"]
+
+# defmt support for embedded logging
+defmt = ["dep:defmt", "heapless/defmt"]
+
+# log crate support for std logging
 log = ["dep:log"]
+
+# FFT for inductance measurement via HFI
 microfft = ["dep:microfft"]

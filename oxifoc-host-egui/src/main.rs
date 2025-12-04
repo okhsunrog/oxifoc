@@ -1,10 +1,10 @@
 use eframe::{App, egui};
 use egui_plot::{Line, Plot, PlotPoints};
+use oxifoc_core::types::{AdcSample, ControlMode};
 use oxifoc_host_lib::{
     HostCommand, HostConfig, HostRuntime, ProbeInfo, SerialPortInfo, TransportType, init_tracing,
     list_probes, list_serial_ports, start_host,
 };
-use oxifoc_protocol::{AdcSample, MotorCommand};
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -324,17 +324,20 @@ impl OxifocApp {
                         .clamping(egui::SliderClamping::Always),
                 );
                 if ui.button("Start").clicked() {
-                    let duty = connected.duty as u8;
-                    let _ = connected
-                        .runtime
-                        .cmd_tx
-                        .send(HostCommand::Motor(MotorCommand::Start { duty }));
+                    // Convert duty percentage to iq_target (0-100% → 0-10A)
+                    let iq_target = connected.duty * 0.1;
+                    let _ = connected.runtime.cmd_tx.send(HostCommand::Motor(
+                        ControlMode::CurrentControl {
+                            iq_target,
+                            id_target: 0.0,
+                        },
+                    ));
                 }
                 if ui.button("Stop").clicked() {
                     let _ = connected
                         .runtime
                         .cmd_tx
-                        .send(HostCommand::Motor(MotorCommand::Stop));
+                        .send(HostCommand::Motor(ControlMode::Stopped));
                 }
             });
 

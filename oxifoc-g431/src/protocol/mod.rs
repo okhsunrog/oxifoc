@@ -2,7 +2,7 @@
 
 pub mod servers;
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 use static_cell::StaticCell;
 
 use crate::config::MAX_PACKET_SIZE;
@@ -36,9 +36,6 @@ pub enum DeviceState {
 }
 
 static DEVICE_STATE: AtomicU8 = AtomicU8::new(DeviceState::Boot as u8);
-
-/// Link status: set true after we observe an inbound host request
-pub static LINK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub fn set_device_state(s: DeviceState) {
     DEVICE_STATE.store(s as u8, Ordering::Relaxed);

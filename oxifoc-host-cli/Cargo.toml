@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 oxifoc-host-lib = { path = "../oxifoc-host-lib" }
-oxifoc-protocol = { path = "../protocol" }
+oxifoc-core = { path = "../oxifoc-core", features = ["icd"] }
 anyhow = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 crossbeam-channel = { workspace = true }

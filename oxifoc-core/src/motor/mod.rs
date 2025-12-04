@@ -2,4 +2,4 @@
 
 pub mod foc_driver;
 
-pub use foc_driver::{ControlMode, FocDriver, MotorCommand};
+pub use foc_driver::{ControlMode, FocDriver};

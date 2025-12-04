@@ -3,9 +3,6 @@
 //! TIM1 complementary PWM configuration for 3-phase BLDC/PMSM control
 //! with dead-time insertion for shoot-through protection and
 //! center-aligned PWM for optimal ADC sampling.
-//! Plus motor state management for protocol telemetry.
-
-use core::sync::atomic::{AtomicU8, Ordering};
 
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::peripherals;
@@ -17,62 +14,6 @@ use embassy_stm32::timer::simple_pwm::PwmPin;
 
 use crate::hardware::resources::MotorResources;
 use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm};
-use oxifoc_protocol::{MotorState, MotorStatus};
-
-// ============================================================================
-// Motor State Management (for protocol telemetry)
-// ============================================================================
-
-// Public API not yet wired to protocol handlers
-#[allow(dead_code)]
-static MOTOR_STATE: AtomicU8 = AtomicU8::new(MotorState::Stopped as u8);
-#[allow(dead_code)]
-static MOTOR_DUTY: AtomicU8 = AtomicU8::new(0);
-#[allow(dead_code)]
-static MOTOR_STEP: AtomicU8 = AtomicU8::new(0);
-
-#[allow(dead_code)]
-pub fn set_motor_state(state: MotorState) {
-    MOTOR_STATE.store(state as u8, Ordering::Relaxed);
-}
-
-#[allow(dead_code)]
-pub fn get_motor_state() -> MotorState {
-    match MOTOR_STATE.load(Ordering::Relaxed) {
-        0 => MotorState::Stopped,
-        1 => MotorState::Running,
-        _ => MotorState::Error,
-    }
-}
-
-#[allow(dead_code)]
-pub fn set_motor_duty(duty: u8) {
-    MOTOR_DUTY.store(duty, Ordering::Relaxed);
-}
-
-#[allow(dead_code)]
-pub fn get_motor_duty() -> u8 {
-    MOTOR_DUTY.load(Ordering::Relaxed)
-}
-
-#[allow(dead_code)]
-pub fn set_motor_step(step: u8) {
-    MOTOR_STEP.store(step, Ordering::Relaxed);
-}
-
-#[allow(dead_code)]
-pub fn get_motor_step() -> u8 {
-    MOTOR_STEP.load(Ordering::Relaxed)
-}
-
-#[allow(dead_code)]
-pub fn get_motor_status() -> MotorStatus {
-    MotorStatus {
-        state: get_motor_state(),
-        duty: get_motor_duty(),
-        step: get_motor_step(),
-    }
-}
 
 // ============================================================================
 // Motor PWM

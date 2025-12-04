@@ -3,9 +3,10 @@
 //! Implements platform-specific responses to motor faults.
 
 use oxifoc_core::foc::fault::{FaultAction, FaultHandler, FaultKind};
-use oxifoc_protocol::MotorState;
+use oxifoc_core::motor::ControlMode;
+use oxifoc_core::state;
 
-use crate::motor::{MotorPwm, set_motor_state};
+use crate::motor::MotorPwm;
 
 /// G431-specific fault handler
 ///
@@ -31,7 +32,8 @@ impl<'a, 'd> G431FaultHandler<'a, 'd> {
     fn emergency_stop(&mut self) {
         defmt::error!("EMERGENCY STOP triggered");
         self.pwm.emergency_stop();
-        set_motor_state(MotorState::Error);
+        // Send stop command via state channel
+        let _ = state::CMD_CHANNEL.try_send(ControlMode::Stopped);
         // TODO: Enable brake resistor if available
     }
 
@@ -39,7 +41,8 @@ impl<'a, 'd> G431FaultHandler<'a, 'd> {
     fn disable_output(&mut self) {
         defmt::warn!("Disabling motor outputs");
         self.pwm.emergency_stop();
-        set_motor_state(MotorState::Stopped);
+        // Send stop command via state channel
+        let _ = state::CMD_CHANNEL.try_send(ControlMode::Stopped);
     }
 }
 

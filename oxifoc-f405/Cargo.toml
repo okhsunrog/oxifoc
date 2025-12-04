@@ -42,8 +42,7 @@ drv8301-dd = { version = "0.2.0", features = ["defmt"] }
 embedded-hal-bus = "0.3"
 
 # Local crates
-oxifoc-core = { path = "../oxifoc-core", features = ["defmt"] }
-oxifoc-protocol = { path = "../protocol" }
+oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime"] }
 ergot = { path = "../ergot/crates/ergot", default-features = false, features = [
     "embassy-usb-v0_5",
     "disable-cache-padding",

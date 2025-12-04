@@ -36,6 +36,27 @@ pub struct FocTelemetry {
     pub duties: [u16; 3],
 }
 
+impl FocTelemetry {
+    /// Create an empty telemetry struct (const for static initialization)
+    pub const fn empty() -> Self {
+        Self {
+            ia: 0.0,
+            ib: 0.0,
+            ic: 0.0,
+            angle_rad: 0.0,
+            i_alpha: 0.0,
+            i_beta: 0.0,
+            id: 0.0,
+            iq: 0.0,
+            vd: 0.0,
+            vq: 0.0,
+            v_alpha: 0.0,
+            v_beta: 0.0,
+            duties: [0; 3],
+        }
+    }
+}
+
 /// Field-Oriented Controller (current loop)
 ///
 /// The controller is hardware-agnostic: it consumes measured currents and

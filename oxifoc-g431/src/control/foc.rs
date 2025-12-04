@@ -6,15 +6,13 @@ use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::{interrupt, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
-use embassy_sync::watch::Watch;
 use embassy_time::{Duration, Timer};
 
-use oxifoc_core::foc::controller::{FocController, FocTelemetry};
+use oxifoc_core::foc::controller::FocController;
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
+use oxifoc_core::state;
 
 use crate::config::{BOARD, NTC};
 use crate::motor::MotorPwm;
@@ -31,8 +29,6 @@ pub static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
 pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
 /// Latest measured FET temperature in 0.1°C units (updated in ADC interrupt).
 pub static FET_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
-/// Sequence counter for ADC samples (incremented each poll).
-pub static ADC_SEQ: AtomicU32 = AtomicU32::new(0);
 
 // ========== ADC Handles ==========
 
@@ -44,12 +40,6 @@ pub static ADC2_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<periph
     CriticalSectionMutex::new(RefCell::new(None));
 
 // ========== FOC Control ==========
-
-/// FOC telemetry data (updated by ADC ISR)
-pub static FOC_TELEMETRY: Watch<CriticalSectionRawMutex, FocTelemetry, 1> = Watch::new();
-
-/// FOC command channel (tasks → ISR)
-pub static FOC_CMD: Channel<CriticalSectionRawMutex, ControlMode, 4> = Channel::new();
 
 /// FOC driver storage (mutated only inside the ADC ISR)
 type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor>;
@@ -99,16 +89,6 @@ pub async fn init(
     defmt::info!("FOC driver initialized and calibrated");
 }
 
-/// Send a control mode command to the FOC driver
-pub fn send_command(mode: ControlMode) {
-    let _ = FOC_CMD.try_send(mode);
-}
-
-/// Map duty percent to target q-axis current
-pub fn duty_to_iq(duty: u8) -> f32 {
-    BOARD.duty_to_iq(duty)
-}
-
 // ========== ADC Interrupt Handler ==========
 
 /// ADC1/ADC2 shared interrupt: read all injected ADC samples and run FOC control.
@@ -121,23 +101,34 @@ pub fn duty_to_iq(duty: u8) -> f32 {
 /// Runs FOC control loop synchronized with PWM.
 #[interrupt]
 unsafe fn ADC1_2() {
+    use core::ptr::addr_of_mut;
+    use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
+
     // Static state (ISR has exclusive access)
-    static mut CONTROL_MODE: ControlMode = ControlMode::Stopped;
     static mut LAST_HALL_SEQ: u32 = 0;
+    static mut SEQ: u32 = 0;
+
+    // Local storage for ADC readings
+    let mut ia_raw: u16 = 0;
+    let mut ib_raw: u16 = 0;
+    let mut ic_raw: u16 = 0;
+    let mut vbus_mv: u32 = 0;
+    let mut temp_c_x10: u16 = 0;
 
     // Read ADC1 injected: phase A current, VBUS voltage, FET temperature
     ADC1_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
             let samples = injected.read_injected_samples();
-            IA_SAMPLE.store(samples[0], Ordering::Relaxed);
+            ia_raw = samples[0];
+            IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
             // Convert VBUS raw ADC to millivolts
-            let vbus_mv = BOARD.vbus_mv_from_adc(samples[1]);
+            vbus_mv = BOARD.vbus_mv_from_adc(samples[1]);
             VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
             // Convert temperature raw ADC to 0.1°C units
             let temp_c = NTC.temp_c_from_adc(samples[2], BOARD.adc_max_counts);
-            let temp_c_x10 = if temp_c.is_finite() && temp_c >= 0.0 {
+            temp_c_x10 = if temp_c.is_finite() && temp_c >= 0.0 {
                 (temp_c * 10.0) as u16
             } else {
                 0
@@ -150,60 +141,61 @@ unsafe fn ADC1_2() {
     ADC2_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
             let samples = injected.read_injected_samples();
-            IB_SAMPLE.store(samples[0], Ordering::Relaxed);
-            IC_SAMPLE.store(samples[1], Ordering::Relaxed);
+            ib_raw = samples[0];
+            ic_raw = samples[1];
+            IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
+            IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
         }
     });
 
-    // Process FOC commands (non-blocking, ~20ns overhead)
-    while let Ok(cmd) = FOC_CMD.try_receive() {
-        *CONTROL_MODE = cmd;
-    }
-
     // Incorporate latest Hall edge (from EXTI)
-    crate::sensors::hall::process_edge(LAST_HALL_SEQ);
+    // SAFETY: ISR has exclusive access to this static
+    unsafe { crate::sensors::hall::process_edge(&mut *addr_of_mut!(LAST_HALL_SEQ)) };
 
     // Get current timestamp for FOC and phase manager
     let now_ticks = embassy_time::Instant::now().as_ticks();
 
+    // Build ADC snapshot
+    // SAFETY: ISR has exclusive access to this static
+    let seq_val = unsafe {
+        let seq = addr_of_mut!(SEQ);
+        *seq = (*seq).wrapping_add(1);
+        *seq
+    };
+    let adc_snapshot = AdcSnapshot::new(ia_raw, ib_raw, ic_raw, vbus_mv, seq_val)
+        .with_temp(TempSensorId::Fet, temp_c_x10);
+
+    // Get Hall snapshot
+    let hall_snapshot = crate::sensors::hall::get_snapshot(now_ticks);
+
     // Run FOC control loop
-    FOC_DRIVER.lock(|cell| {
+    let foc_telem = FOC_DRIVER.lock(|cell| {
         if let Some(driver) = cell.borrow_mut().as_mut() {
             // Update bus voltage
-            let vbus_mv = VBUS_MV.load(Ordering::Relaxed);
             driver.set_vbus(vbus_mv as f32 / 1000.0);
 
-            // Update control mode
-            driver.set_mode(*CONTROL_MODE);
+            // Process commands from core state channel
+            let mode = state::process_commands(driver);
 
             // Run FOC step (dt = 1/20kHz = 50µs)
             const DT: f32 = 1.0 / 20_000.0;
             match driver.step(DT, now_ticks) {
-                Ok(telem) => {
-                    // Broadcast telemetry to all listeners
-                    FOC_TELEMETRY.sender().send(telem);
-                }
+                Ok(telem) => Some(telem),
                 Err(_) => {
                     // Sensor not ready or other error - disable outputs
-                    driver.set_mode(ControlMode::Stopped);
+                    if mode != ControlMode::Stopped {
+                        driver.set_mode(ControlMode::Stopped);
+                    }
+                    None
                 }
             }
+        } else {
+            None
         }
     });
-}
 
-// ========== Public API for Protocol Servers ==========
-
-use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
-
-pub fn get_adc_snapshot() -> AdcSnapshot {
-    let seq = ADC_SEQ.fetch_add(1, Ordering::Relaxed);
-    AdcSnapshot::new(
-        IA_SAMPLE.load(Ordering::Relaxed),
-        IB_SAMPLE.load(Ordering::Relaxed),
-        IC_SAMPLE.load(Ordering::Relaxed),
-        VBUS_MV.load(Ordering::Relaxed),
-        seq,
-    )
-    .with_temp(TempSensorId::Fet, FET_TEMP_C_X10.load(Ordering::Relaxed))
+    // Update global state with telemetry
+    if let Some(foc) = foc_telem {
+        state::update_telemetry(adc_snapshot, hall_snapshot, foc);
+    }
 }

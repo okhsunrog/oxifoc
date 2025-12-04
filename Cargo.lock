@@ -1938,6 +1938,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc2d050bdc5c21e0862a89256ed8029ae6c290a93aecefc73084b3002cdebb01"
 
 [[package]]
+name = "embassy-sync"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73974a3edbd0bd286759b3d483540f0ebef705919a5f56f4fc7709066f71689b"
+dependencies = [
+ "cfg-if",
+ "critical-section",
+ "embedded-io-async",
+ "futures-core",
+ "futures-sink",
+ "heapless 0.8.0",
+]
+
+[[package]]
 name = "embassy-time"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2029,6 +2043,15 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "embedded-io-async"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ff09972d4073aa8c299395be75161d582e7629cd663171d62af73c8d50dba3f"
+dependencies = [
+ "embedded-io 0.6.1",
+]
 
 [[package]]
 name = "encoding_rs"
@@ -3030,6 +3053,7 @@ version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af2455f757db2b292a9b1768c4b70186d443bcb3b316252d6b540aec1cd89ed"
 dependencies = [
+ "defmt",
  "hash32 0.3.1",
  "serde_core",
  "stable_deref_trait",
@@ -4766,11 +4790,18 @@ dependencies = [
 name = "oxifoc-core"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
  "defmt",
- "heapless 0.8.0",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "ergot",
+ "heapless 0.9.2",
  "libm",
  "log",
  "microfft",
+ "postcard-schema",
+ "serde",
 ]
 
 [[package]]
@@ -4780,8 +4811,8 @@ dependencies = [
  "anyhow",
  "clap",
  "crossbeam-channel",
+ "oxifoc-core",
  "oxifoc-host-lib",
- "oxifoc-protocol",
 ]
 
 [[package]]
@@ -4791,8 +4822,8 @@ dependencies = [
  "crossbeam-channel",
  "eframe",
  "egui_plot",
+ "oxifoc-core",
  "oxifoc-host-lib",
- "oxifoc-protocol",
 ]
 
 [[package]]
@@ -4806,7 +4837,7 @@ dependencies = [
  "defmt-parser",
  "ergot",
  "mutex",
- "oxifoc-protocol",
+ "oxifoc-core",
  "probe-rs",
  "serde",
  "serialport",
@@ -4824,8 +4855,8 @@ name = "oxifoc-host-tauri"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "oxifoc-core",
  "oxifoc-host-lib",
- "oxifoc-protocol",
  "serde",
  "serde_json",
  "specta",
@@ -4838,16 +4869,6 @@ dependencies = [
  "tracing",
  "tracing-logcat",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "oxifoc-protocol"
-version = "0.1.0"
-dependencies = [
- "ergot",
- "heapless 0.9.2",
- "postcard-schema",
- "serde",
 ]
 
 [[package]]

@@ -3,11 +3,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use oxifoc_core::types::ControlMode;
 use oxifoc_host_lib::{
     HostCommand, HostConfig, TransportType, init_tracing, list_probes, list_serial_ports,
     start_host,
 };
-use oxifoc_protocol::MotorCommand;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Transport {
@@ -108,16 +108,24 @@ fn main() -> Result<()> {
     match cli.command {
         Command::List => unreachable!(), // Handled above
         Command::Start { duty } => {
+            // Convert duty percentage to iq_target (0-100% → 0-10A)
+            let iq_target = duty as f32 * 0.1;
             runtime
                 .cmd_tx
-                .send(HostCommand::Motor(MotorCommand::Start { duty }))
+                .send(HostCommand::Motor(ControlMode::CurrentControl {
+                    iq_target,
+                    id_target: 0.0,
+                }))
                 .context("send start command")?;
-            println!("Start command sent with duty {}%", duty);
+            println!(
+                "Start command sent with duty {}% (iq={:.1}A)",
+                duty, iq_target
+            );
         }
         Command::Stop => {
             runtime
                 .cmd_tx
-                .send(HostCommand::Motor(MotorCommand::Stop))
+                .send(HostCommand::Motor(ControlMode::Stopped))
                 .context("send stop command")?;
             println!("Stop command sent");
         }

@@ -3,4 +3,4 @@
 pub mod fault_handler;
 pub mod foc;
 
-pub use foc::{duty_to_iq, get_adc_snapshot, init as init_foc, send_command};
+pub use foc::init as init_foc;

@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "protocol",
+    "oxifoc-core",
     "oxifoc-host-lib",
     "oxifoc-host-cli",
     "oxifoc-host-egui",
-    "oxifoc-host-tauri/src-tauri", "oxifoc-core",
+    "oxifoc-host-tauri/src-tauri",
 ]
 exclude = [
     "oxifoc-g431",    # Different toolchain (thumbv7em-none-eabihf)

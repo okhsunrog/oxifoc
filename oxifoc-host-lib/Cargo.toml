@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-oxifoc-protocol = { path = "../protocol" }
+oxifoc-core = { path = "../oxifoc-core", features = ["icd"] }
 ergot = { path = "../ergot/crates/ergot", features = ["tokio-std", "tokio-serial-v5", "defmtlog"] }
 
 tokio = { workspace = true }

@@ -9,14 +9,34 @@
 //! - FOC control loops
 //! - Motor parameter detection (R, L, λ)
 //!
-//! ## Design Philosophy
+//! ## Feature Flags
 //!
-//! - **No hardware dependencies**: Pure algorithms, works on any platform
-//! - **no_std compatible**: Can run on embedded systems
-//! - **Testable**: All logic has comprehensive unit tests that run on host
-//! - **Float-based**: Uses f32 for simplicity and FPU efficiency
+//! - **`algorithms`** (default): FOC math algorithms
+//! - **`icd`**: Interface Control Document with ergot endpoints
+//! - **`runtime`**: Async runtime with servers
+//! - **`virtual-motor`**: Motor simulation for testing
+//! - **`defmt`**: defmt logging support for embedded
+//! - **`log`**: log crate support for std
+//! - **`std`**: Standard library support
 //!
-//! ## Usage
+//! ## Usage Examples
+//!
+//! ### Host application with ICD
+//! ```toml
+//! oxifoc-core = { version = "0.1", default-features = false, features = ["icd"] }
+//! ```
+//!
+//! ### Embedded firmware
+//! ```toml
+//! oxifoc-core = { version = "0.1", features = ["runtime", "defmt"] }
+//! ```
+//!
+//! ### Testing with virtual motor
+//! ```toml
+//! oxifoc-core = { version = "0.1", features = ["virtual-motor"] }
+//! ```
+//!
+//! ## FOC Algorithm Example
 //!
 //! ```rust
 //! use oxifoc_core::foc::{transforms, svpwm, pi_controller::PIController};
@@ -60,6 +80,40 @@ pub mod timer;
 
 /// High-level motor driver combining FOC with sensors and PWM
 pub mod motor;
+
+/// Shared types for protocol communication
+///
+/// Contains serializable types shared between firmware and host applications:
+/// - Motor state and control types (MotorState, ControlMode)
+/// - Telemetry types (HallSensorData, AdcSample, MotorStatus)
+/// - Device info and events
+pub mod types;
+
+/// Interface Control Document with ergot endpoints (requires `icd` feature)
+///
+/// Defines the communication protocol between host and device:
+/// - Endpoint definitions for ergot framework
+/// - Re-exports all types from the `types` module
+#[cfg(feature = "icd")]
+pub mod icd;
+
+/// Motor state management (requires `runtime` feature)
+///
+/// Centralized state management for motor control:
+/// - Global STATE with motor state, telemetry
+/// - CMD_CHANNEL for protocol commands
+/// - TELEMETRY watch for streaming
+/// - Helper functions for ISR use
+#[cfg(feature = "runtime")]
+pub mod state;
+
+/// Async runtime with servers (requires `runtime` feature)
+///
+/// Provides async protocol servers that access state directly:
+/// - Servers for Hall, ADC, motor commands, device info
+/// - No MotorRuntime trait needed - servers use state module
+#[cfg(feature = "runtime")]
+pub mod runtime;
 
 /// Field-Oriented Control algorithms
 pub mod foc {

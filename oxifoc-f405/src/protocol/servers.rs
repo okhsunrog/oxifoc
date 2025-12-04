@@ -1,13 +1,12 @@
 //! Ergot protocol servers and USB I/O worker tasks
 
-use core::pin::pin;
-
 use embassy_executor::Spawner;
 use ergot::{exports::bbq2::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_5 as kit};
-use oxifoc_protocol::{DeviceInfo, InfoEndpoint};
+use heapless::String;
 
 use crate::protocol::STACK;
 use crate::transport::{AppDriver, RxWorker};
+use oxifoc_core::types::DeviceInfo;
 
 // ========== Worker Tasks ==========
 
@@ -40,31 +39,27 @@ pub async fn run_tx(
 
 // ========== Protocol Servers ==========
 
-/// Respond to info requests from host
+/// All protocol servers running concurrently in a single task
+///
+/// Uses join to run info, hall, adc, and motor servers together.
+/// This is more RAM-efficient than separate tasks.
 #[embassy_executor::task]
-pub async fn info_server() {
-    let server = STACK
-        .endpoints()
-        .bounded_server::<InfoEndpoint, 2>(Some("device_info"));
-    let server = pin!(server);
-    let mut h = server.attach();
+pub async fn protocol_servers() {
+    defmt::info!("Starting protocol servers");
 
-    loop {
-        let _ = h
-            .serve(|_req: &()| async move {
-                let mut hw: heapless::String<32> = heapless::String::new();
-                let mut sw: heapless::String<32> = heapless::String::new();
-                let _ = hw.push_str("Simple FOCer 2 (F405)");
-                let _ = sw.push_str("oxifoc-f405@WIP");
-                DeviceInfo { hw, sw }
-            })
-            .await;
-    }
+    // Build device info
+    let mut hw: String<32> = String::new();
+    let mut sw: String<32> = String::new();
+    let _ = hw.push_str("Simple FOCer 2 (F405)");
+    let _ = sw.push_str("oxifoc-0.1.0");
+    let device_info = DeviceInfo { hw, sw };
+
+    oxifoc_core::runtime::run_all_servers(STACK.endpoints(), device_info).await
 }
 
 // ========== Task Spawning ==========
 
 /// Spawn all protocol server tasks
 pub fn spawn_servers(spawner: &Spawner) {
-    spawner.spawn(info_server().unwrap());
+    spawner.spawn(protocol_servers().unwrap());
 }

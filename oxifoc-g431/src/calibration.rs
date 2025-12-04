@@ -13,9 +13,10 @@ use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::detection::sweep::{self, DetectionHardware, HallReader};
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::motor::ControlMode;
+use oxifoc_core::state;
 
 use crate::config::BOARD;
-use crate::control::foc::{FOC_TELEMETRY, IA_SAMPLE, IB_SAMPLE, IC_SAMPLE, send_command};
+use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
 use crate::sensors::hall::read_hall_state_raw;
 
 // Re-export types from core for convenience
@@ -49,7 +50,7 @@ pub struct G431DetectionHardware {
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
         FocTelemetry,
-        1,
+        2,
     >,
 }
 
@@ -57,7 +58,7 @@ impl G431DetectionHardware {
     /// Create a new G431 detection hardware instance.
     pub fn new() -> Self {
         Self {
-            telem_rx: FOC_TELEMETRY.receiver().unwrap(),
+            telem_rx: state::TELEMETRY.receiver().unwrap(),
         }
     }
 }
@@ -70,7 +71,8 @@ impl Default for G431DetectionHardware {
 
 impl DetectionHardware for G431DetectionHardware {
     fn send_command(&self, mode: ControlMode) {
-        send_command(mode);
+        // Send ControlMode directly to the state channel
+        let _ = state::CMD_CHANNEL.try_send(mode);
     }
 
     async fn wait_telemetry(&mut self) -> FocTelemetry {

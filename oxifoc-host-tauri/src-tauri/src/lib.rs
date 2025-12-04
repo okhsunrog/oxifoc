@@ -2,10 +2,10 @@ pub mod logging;
 
 use crossbeam_channel::TryRecvError;
 use logging::{LogEvent, LogLevel};
+use oxifoc_core::types::ControlMode;
 use oxifoc_host_lib::{
     list_probes, list_serial_ports, start_host, HostCommand, HostConfig, HostRuntime, TransportType,
 };
-use oxifoc_protocol::MotorCommand;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 struct OxifocState(Mutex<Option<HostRuntime>>);
 
 /// ADC sample with specta derives for TypeScript bindings.
-/// Mirrors oxifoc_protocol::AdcSample but with specta support.
+/// Mirrors oxifoc_core::types::AdcSample but with specta support.
 #[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AdcSample {
@@ -29,8 +29,8 @@ pub struct AdcSample {
     pub seq: u32,
 }
 
-impl From<oxifoc_protocol::AdcSample> for AdcSample {
-    fn from(s: oxifoc_protocol::AdcSample) -> Self {
+impl From<oxifoc_core::types::AdcSample> for AdcSample {
+    fn from(s: oxifoc_core::types::AdcSample) -> Self {
         Self {
             ia: s.ia,
             ib: s.ib,
@@ -257,11 +257,16 @@ fn motor_start(state: State<OxifocState>, duty: u8) -> Result<(), String> {
     let runtime = guard.as_ref().ok_or("Host not initialized")?;
 
     let duty = duty.min(100);
-    info!("Starting motor at {}% duty", duty);
+    // Convert duty percentage to iq_target (0-100% → 0-10A)
+    let iq_target = duty as f32 * 0.1;
+    info!("Starting motor at {}% duty (iq={:.1}A)", duty, iq_target);
 
     runtime
         .cmd_tx
-        .send(HostCommand::Motor(MotorCommand::Start { duty }))
+        .send(HostCommand::Motor(ControlMode::CurrentControl {
+            iq_target,
+            id_target: 0.0,
+        }))
         .map_err(|e| format!("Failed to send command: {}", e))
 }
 
@@ -276,7 +281,7 @@ fn motor_stop(state: State<OxifocState>) -> Result<(), String> {
 
     runtime
         .cmd_tx
-        .send(HostCommand::Motor(MotorCommand::Stop))
+        .send(HostCommand::Motor(ControlMode::Stopped))
         .map_err(|e| format!("Failed to send command: {}", e))
 }
 
@@ -288,11 +293,16 @@ fn motor_set_speed(state: State<OxifocState>, duty: u8) -> Result<(), String> {
     let runtime = guard.as_ref().ok_or("Host not initialized")?;
 
     let duty = duty.min(100);
-    debug!("Setting motor speed to {}%", duty);
+    // Convert duty percentage to iq_target (0-100% → 0-10A)
+    let iq_target = duty as f32 * 0.1;
+    debug!("Setting motor speed to {}% (iq={:.1}A)", duty, iq_target);
 
     runtime
         .cmd_tx
-        .send(HostCommand::Motor(MotorCommand::SetSpeed { duty }))
+        .send(HostCommand::Motor(ControlMode::CurrentControl {
+            iq_target,
+            id_target: 0.0,
+        }))
         .map_err(|e| format!("Failed to send command: {}", e))
 }
 
