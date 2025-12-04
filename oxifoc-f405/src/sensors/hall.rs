@@ -15,20 +15,12 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use static_cell::StaticCell;
 
 use oxifoc_core::foc::hall_sensor::{Direction, HallSensor};
-use oxifoc_core::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait, HallSnapshot};
+use oxifoc_core::foc::sensors::{
+    AngleSample, AngleSensor, HallSensorTrait, HallSnapshot,
+    hall_polling::{MAJORITY_THRESHOLD, POLL_INTERVAL_US, READS_PER_POLL, majority_vote},
+};
 
 use crate::config::TIMEBASE_TICKS_PER_SEC;
-
-// ========== Configuration ==========
-
-/// Polling interval in microseconds
-const POLL_INTERVAL_US: u32 = 5;
-
-/// Number of GPIO reads per poll for majority voting
-const READS_PER_POLL: u8 = 7;
-
-/// Majority threshold (need more than half)
-const MAJORITY_THRESHOLD: u8 = READS_PER_POLL / 2 + 1; // 4 of 7
 
 // ========== Hall Estimator (shared state) ==========
 
@@ -175,18 +167,8 @@ fn read_hall_state_voted() -> u8 {
             }
         }
 
-        // Majority vote for each channel
-        let mut state = 0u8;
-        if h1_count >= MAJORITY_THRESHOLD {
-            state |= 0b001;
-        }
-        if h2_count >= MAJORITY_THRESHOLD {
-            state |= 0b010;
-        }
-        if h3_count >= MAJORITY_THRESHOLD {
-            state |= 0b100;
-        }
-        state
+        // Use shared majority voting helper from core
+        majority_vote(h1_count, h2_count, h3_count, MAJORITY_THRESHOLD)
     } else {
         0
     }

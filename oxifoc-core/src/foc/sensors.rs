@@ -370,6 +370,83 @@ impl<R: RawCurrentReader> CurrentSensor for GenericCurrentSensor<R> {
 // ADC snapshot for telemetry
 // ============================================================================
 
+// ============================================================================
+// Hall sensor polling configuration
+// ============================================================================
+
+/// Configuration for Hall sensor timer-based polling
+///
+/// These constants are shared across all platforms that use TIM6-based
+/// polling with majority voting for Hall sensor noise immunity.
+pub mod hall_polling {
+    /// Polling interval in microseconds
+    ///
+    /// Each TIM6 interrupt reads Hall sensors with majority voting.
+    /// 5µs provides good balance between noise filtering and responsiveness.
+    pub const POLL_INTERVAL_US: u32 = 5;
+
+    /// Number of GPIO reads per poll for majority voting
+    ///
+    /// VESC uses 7 reads for robust noise filtering.
+    /// Takes ~200-300ns total on Cortex-M4F.
+    pub const READS_PER_POLL: u8 = 7;
+
+    /// Majority threshold (need more than half)
+    ///
+    /// With 7 reads, need 4 or more to count as HIGH.
+    pub const MAJORITY_THRESHOLD: u8 = READS_PER_POLL / 2 + 1; // 4 of 7
+
+    /// Perform majority voting on individual bit counts
+    ///
+    /// Given the counts of HIGH readings for each Hall channel (h1, h2, h3)
+    /// out of `reads_per_poll` total reads, returns the voted 3-bit Hall state.
+    ///
+    /// # Arguments
+    /// * `h1_count` - Number of HIGH readings for Hall 1
+    /// * `h2_count` - Number of HIGH readings for Hall 2
+    /// * `h3_count` - Number of HIGH readings for Hall 3
+    /// * `threshold` - Minimum count to be considered HIGH (typically 4 of 7)
+    ///
+    /// # Returns
+    /// 3-bit Hall state: H3<<2 | H2<<1 | H1
+    ///
+    /// # Example
+    /// ```
+    /// use oxifoc_core::foc::sensors::hall_polling;
+    ///
+    /// // 7 reads: H1=6 high, H2=2 high, H3=5 high
+    /// let state = hall_polling::majority_vote(6, 2, 5, hall_polling::MAJORITY_THRESHOLD);
+    /// assert_eq!(state, 0b101); // H1 and H3 are HIGH
+    /// ```
+    #[inline]
+    pub const fn majority_vote(h1_count: u8, h2_count: u8, h3_count: u8, threshold: u8) -> u8 {
+        let mut state = 0u8;
+        if h1_count >= threshold {
+            state |= 0b001;
+        }
+        if h2_count >= threshold {
+            state |= 0b010;
+        }
+        if h3_count >= threshold {
+            state |= 0b100;
+        }
+        state
+    }
+
+    /// Check if a Hall state is valid (not all low or all high)
+    ///
+    /// Valid states are 1-6 (binary: 001, 010, 011, 100, 101, 110).
+    /// Invalid states are 0 (all low) and 7 (all high).
+    #[inline]
+    pub const fn is_valid_hall_state(state: u8) -> bool {
+        state != 0 && state != 7
+    }
+}
+
+// ============================================================================
+// Temperature sensors
+// ============================================================================
+
 /// Temperature sensor identification
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TempSensorId {
