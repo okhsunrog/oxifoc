@@ -1,6 +1,6 @@
 # Oxifoc
 
-Field-Oriented Control (FOC) firmware for STM32 motor controllers, written in Rust. Supports STM32G431 (B-G431B-ESC1) and STM32F405 (Cheap FOCer 2). Device↔host communication uses [ergot](https://github.com/jamesmunns/ergot) over either **Serial (UART)** or **RTT**.
+Field-Oriented Control (FOC) firmware for STM32 motor controllers, written in Rust. Supports STM32G431 (B-G431B-ESC1) and STM32F405 (Cheap FOCer 2). Device↔host communication uses [ergot](https://github.com/jamesmunns/ergot).
 
 ## Project Structure
 
@@ -15,7 +15,6 @@ oxifoc/
 ├── oxifoc-host-tauri/  # Tauri desktop/mobile GUI
 ├── oxifoc-host-egui/   # egui desktop frontend
 ├── oxifoc-host-cli/    # CLI frontend
-├── protocol/           # Shared protocol definitions
 ├── ergot/              # Git submodule - networking stack
 ├── docs/               # Documentation
 ├── scripts/            # Helper scripts
@@ -196,7 +195,7 @@ Ergot DirectEdge profile (point‑to‑point):
 - **FOC algorithms**: `oxifoc-core/src/foc/` (transforms, SVPWM, PI controller, Hall sensor)
 - **Device firmware**: `oxifoc-g431/src/main.rs` (main task orchestration)
   - Motor control: `oxifoc-g431/src/motor/` (PWM, six-step, Hall sensor driver)
-- **Protocol**: `protocol/src/lib.rs` (Button, Motor, AdcSample, HallSensor, Info endpoints)
+- **Protocol**: `oxifoc-core/src/protocol.rs` (Button, Motor, AdcSample, HallSensor, Info endpoints)
 - **Host backend**: `oxifoc-host-lib/src/lib.rs` (+ `config.rs` for TOML parsing)
 - **Host frontends**:
   - Tauri GUI: `oxifoc-host-tauri/` (desktop/mobile)
