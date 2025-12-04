@@ -49,9 +49,6 @@ pub fn init_hall(
     pc6: Peri<'static, peripherals::PC6>,
     pc7: Peri<'static, peripherals::PC7>,
     pc8: Peri<'static, peripherals::PC8>,
-    _exti6: Peri<'static, peripherals::EXTI6>,
-    _exti7: Peri<'static, peripherals::EXTI7>,
-    _exti8: Peri<'static, peripherals::EXTI8>,
 ) {
     // Create GPIO inputs with pull-up
     let hall_h1 = Input::new(pc6, Pull::Up);
@@ -61,6 +58,8 @@ pub fn init_hall(
 
     // Keep Hall inputs alive for ISR access
     let inputs = HALL_INPUTS.init((hall_h1, hall_h2, hall_h3));
+    // SAFETY: Single-threaded initialization before interrupts are enabled.
+    // HALL_INPUTS_PTR is only written here once and read by TIM6 ISR afterward.
     unsafe {
         HALL_INPUTS_PTR = Some(inputs);
     }
@@ -70,12 +69,8 @@ pub fn init_hall(
         est.replace(Some(HallSensor::new(TIMEBASE_TICKS_PER_SEC)));
     });
 
-    // Configure TIM6 for 5µs polling
-    // STM32F405 runs at 168MHz, TIM6 is on APB1 (84MHz with APB1 prescaler = 2, but timer x2 = 168MHz)
-    // Actually on F4, APB1 timers run at 2x APB1 clock when prescaler > 1
-    // With default embassy config: APB1 = 42MHz, timer clock = 84MHz
-    // For 5µs period: 84MHz * 5µs = 420 ticks
-    // Use prescaler = 0, ARR = 419
+    // Configure TIM6 for Hall sensor polling at POLL_INTERVAL_US
+    // See config.rs for TIM6_CLOCK_HZ and TIM6_ARR calculation
 
     // Enable TIM6 clock
     pac::RCC.apb1enr().modify(|w| w.set_tim6en(true));
@@ -86,18 +81,18 @@ pub fn init_hall(
 
     let tim6 = pac::TIM6;
 
-    // Configure timer
-    // Note: F405 timer clock depends on APB1 prescaler configuration
-    // Embassy default: SYSCLK=168MHz, APB1=42MHz, timer clock=84MHz
+    // Configure timer with computed ARR from config
     tim6.psc().write_value(0); // No prescaler
-    tim6.arr().write(|w| w.set_arr(419)); // 420 ticks = 5µs at 84MHz
+    tim6.arr().write(|w| w.set_arr(crate::config::TIM6_ARR));
     tim6.dier().write(|w| w.set_uie(true)); // Enable update interrupt
     tim6.cr1().write(|w| {
         w.set_cen(true); // Enable counter
         w.set_arpe(true); // Auto-reload preload enable
     });
 
-    // Enable TIM6 interrupt in NVIC with high priority
+    // SAFETY: All static data (HALL_INPUTS_PTR, HALL_ESTIMATOR) is initialized above.
+    // Enabling the interrupt is safe because the ISR can now access valid data.
+    // Peripherals::steal() is safe in single-core context during init.
     unsafe {
         interrupt::typelevel::TIM6_DAC::unpend();
         cortex_m::peripheral::NVIC::unmask(interrupt::TIM6_DAC);
@@ -119,6 +114,8 @@ pub fn init_hall(
 /// Read Hall sensor state quickly from GPIO (single read)
 #[inline]
 fn read_hall_state_fast() -> u8 {
+    // SAFETY: HALL_INPUTS_PTR is initialized once in init_hall() before interrupts
+    // are enabled, and never modified afterward. Reading a static pointer is safe.
     if let Some((h1, h2, h3)) = unsafe { HALL_INPUTS_PTR } {
         let mut state = 0u8;
         if h1.is_high() {
@@ -149,6 +146,8 @@ pub fn read_hall_state_raw() -> u8 {
 /// This filters sub-microsecond noise glitches.
 #[inline]
 fn read_hall_state_voted() -> u8 {
+    // SAFETY: HALL_INPUTS_PTR is initialized once in init_hall() before interrupts
+    // are enabled, and never modified afterward. Reading a static pointer is safe.
     if let Some((h1, h2, h3)) = unsafe { HALL_INPUTS_PTR } {
         let mut h1_count = 0u8;
         let mut h2_count = 0u8;
@@ -185,11 +184,13 @@ fn TIM6_DAC() {
     // Read Hall state with majority voting
     let state = read_hall_state_voted();
 
-    // Static state for edge detection (ISR has exclusive access)
+    // Static state for edge detection
+    // SAFETY: ISR has exclusive access - this handler runs atomically on single-core MCU
+    // and cannot be preempted by itself. No other code accesses this static.
     static mut LAST_STATE: u8 = 0;
+    let last = unsafe { LAST_STATE };
 
     // Check for state change
-    let last = unsafe { LAST_STATE };
     if state != last && state != 0 && state != 7 {
         // Valid state change detected
         let ticks = embassy_time::Instant::now().as_ticks();
@@ -201,23 +202,9 @@ fn TIM6_DAC() {
             }
         });
 
-        unsafe {
-            LAST_STATE = state;
-        }
+        // SAFETY: Same as above - exclusive ISR access
+        unsafe { LAST_STATE = state };
     }
-}
-
-// ========== Public API for Control Loop ==========
-
-/// Process Hall state (called from ADC ISR for compatibility)
-///
-/// With timer-based polling, this is now a no-op since Hall updates
-/// happen directly in the TIM6 ISR. Kept for API compatibility.
-#[inline]
-pub fn process_edge(_last_seq: &mut u32) -> bool {
-    // No longer needed - Hall updates happen in TIM6 ISR
-    // Return false to indicate no new edge was processed here
-    false
 }
 
 // ========== Public API for Telemetry ==========

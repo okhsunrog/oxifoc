@@ -180,7 +180,9 @@ pub fn init_adc_injected() {
     // Enable JEOC interrupt on ADC3 (it finishes last with 2 channels)
     adc3.cr1().modify(|w| w.set_jeocie(true));
 
-    // Enable ADC interrupt in NVIC
+    // SAFETY: All ADCs are configured above and FOC_DRIVER will be initialized
+    // before motor control starts. The ISR only accesses ADC registers and
+    // atomics/mutexes that are safely initialized.
     unsafe {
         interrupt::typelevel::ADC::unpend();
         interrupt::typelevel::ADC::enable();
@@ -285,10 +287,9 @@ pub fn duty_to_iq(duty: u8) -> f32 {
 /// ADC1, ADC2, ADC3 all start conversion simultaneously on TIM1_CC4.
 /// ADC3 finishes last (2 channels) and generates the interrupt.
 #[interrupt]
-unsafe fn ADC() {
+fn ADC() {
     // Static state (ISR has exclusive access)
     static mut CONTROL_MODE: ControlMode = ControlMode::Stopped;
-    static mut LAST_HALL_SEQ: u32 = 0;
 
     let adc1 = pac::ADC1;
     let adc2 = pac::ADC2;
@@ -348,9 +349,6 @@ unsafe fn ADC() {
     while let Ok(cmd) = FOC_CMD.try_receive() {
         *CONTROL_MODE = cmd;
     }
-
-    // Incorporate latest Hall edge (from EXTI)
-    crate::sensors::hall::process_edge(LAST_HALL_SEQ);
 
     // Get current timestamp for FOC and phase manager
     let now_ticks = embassy_time::Instant::now().as_ticks();

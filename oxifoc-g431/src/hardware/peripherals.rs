@@ -150,6 +150,10 @@ pub fn init_adc(
     );
 
     // Enable shared ADC1/ADC2 interrupt
+    // SAFETY: Called during single-threaded initialization after ADC1/ADC2 are configured.
+    // The ADC1_2 ISR (in control/foc.rs) will have valid ADC handles stored in the global
+    // statics before this interrupt fires. Enabling and unpending is safe here because
+    // the ISR is designed to handle being called immediately after enable.
     unsafe {
         ADC1_2::unpend();
         ADC1_2::enable();

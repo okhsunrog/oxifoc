@@ -40,6 +40,17 @@ pub const NTC: NtcConfig = NtcConfig {
 /// Timebase for Hall interpolation (match embassy_time ticks)
 pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 
+/// TIM6 clock frequency in Hz (APB1 timers on G4 run at SYSCLK)
+/// Embassy default: SYSCLK=170MHz
+pub const TIM6_CLOCK_HZ: u32 = 170_000_000;
+
+/// TIM6 auto-reload value for Hall sensor polling
+/// Computed from: (TIM6_CLOCK_HZ / 1_000_000 * POLL_INTERVAL_US) - 1
+/// At 170MHz with 5µs interval: 170 * 5 - 1 = 849
+pub const TIM6_ARR: u16 = (TIM6_CLOCK_HZ / 1_000_000
+    * oxifoc_core::foc::sensors::hall_polling::POLL_INTERVAL_US) as u16
+    - 1;
+
 // ============================================================================
 // Protocol Configuration
 // ============================================================================

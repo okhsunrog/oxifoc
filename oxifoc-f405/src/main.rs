@@ -73,9 +73,7 @@ async fn main(spawner: Spawner) {
     hardware::drv8301::enable_gate_driver(&mut drv_config);
 
     // ========== STEP 7: Initialize Hall Sensor ==========
-    sensors::init_hall(
-        r.hall.pc6, r.hall.pc7, r.hall.pc8, p.EXTI6, p.EXTI7, p.EXTI8,
-    );
+    sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8);
 
     // ========== STEP 8: Initialize Motor PWM ==========
     let motor_pwm = MotorPwm::new(r.motor, MotorPwmConfig::default());

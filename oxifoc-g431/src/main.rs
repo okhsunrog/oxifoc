@@ -61,9 +61,7 @@ async fn main(spawner: Spawner) {
     let motor_pwm = MotorPwm::new(r.motor, MotorPwmConfig::default());
 
     // ========== STEP 5: Initialize Hall Sensor ==========
-    sensors::init_hall(
-        r.hall.pb6, r.hall.pb7, r.hall.pb8, p.EXTI6, p.EXTI7, p.EXTI8,
-    );
+    sensors::init_hall(r.hall.pb6, r.hall.pb7, r.hall.pb8);
 
     // ========== STEP 6: Initialize FOC Controller ==========
     control::init_foc(motor_pwm, adc_handles.adc1, adc_handles.adc2).await;

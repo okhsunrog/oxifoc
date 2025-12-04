@@ -100,12 +100,11 @@ pub async fn init(
 /// Stores raw phase currents; converts vbus/temp to engineering units.
 /// Runs FOC control loop synchronized with PWM.
 #[interrupt]
-unsafe fn ADC1_2() {
+fn ADC1_2() {
     use core::ptr::addr_of_mut;
     use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
 
     // Static state (ISR has exclusive access)
-    static mut LAST_HALL_SEQ: u32 = 0;
     static mut SEQ: u32 = 0;
 
     // Local storage for ADC readings
@@ -147,10 +146,6 @@ unsafe fn ADC1_2() {
             IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
         }
     });
-
-    // Incorporate latest Hall edge (from EXTI)
-    // SAFETY: ISR has exclusive access to this static
-    unsafe { crate::sensors::hall::process_edge(&mut *addr_of_mut!(LAST_HALL_SEQ)) };
 
     // Get current timestamp for FOC and phase manager
     let now_ticks = embassy_time::Instant::now().as_ticks();
