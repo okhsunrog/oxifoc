@@ -21,7 +21,6 @@ mod transport;
 #[allow(unused_imports)]
 use hardware::{AssignedResources, DrvResources, HallResources, MotorResources};
 use motor::MotorPwm;
-use oxifoc_core::foc::pwm::MotorPwmConfig;
 use protocol::{OUTQ, RECV_BUF, STACK};
 
 // FOC types from core
@@ -76,7 +75,7 @@ async fn main(spawner: Spawner) {
     sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8);
 
     // ========== STEP 8: Initialize Motor PWM ==========
-    let motor_pwm = MotorPwm::new(r.motor, MotorPwmConfig::default());
+    let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
 
     // ========== STEP 9: Initialize FOC Controller ==========
     // This sets up injected ADC, TIM1 trigger, and FOC driver

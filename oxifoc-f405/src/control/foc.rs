@@ -30,7 +30,7 @@ use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
 
-use crate::config::{BOARD, NTC_BOARD, NTC_MOTOR};
+use crate::config::{BOARD, NTC_BOARD, NTC_MOTOR, PWM_CONFIG};
 use crate::motor::MotorPwm;
 use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
 
@@ -249,12 +249,13 @@ pub async fn init(mut motor_pwm: MotorPwm<'static>) {
     let initial_vbus_v =
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
 
-    // Build FOC driver
+    // Build FOC driver with dt from PWM config
     let mut foc_driver = FocDriver::new(
         FocController::new(initial_vbus_v),
         motor_pwm,
         current_sensor,
         phase_manager,
+        PWM_CONFIG.dt_s(),
     );
 
     // Allow ADC injected conversions to start firing before zero-current calibration.
@@ -363,9 +364,8 @@ fn ADC() {
             // Update control mode
             driver.set_mode(*CONTROL_MODE);
 
-            // Run FOC step (dt = 1/20kHz = 50µs)
-            const DT: f32 = 1.0 / 20_000.0;
-            match driver.step(DT, now_ticks) {
+            // Run FOC step (dt is stored in driver from PWM_CONFIG)
+            match driver.step(now_ticks) {
                 Ok(telem) => {
                     // Broadcast telemetry to all listeners
                     FOC_TELEMETRY.sender().send(telem);

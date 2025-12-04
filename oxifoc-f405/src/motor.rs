@@ -6,21 +6,15 @@
 
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::peripherals;
-use embassy_stm32::time::khz;
+use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::Channel;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin};
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
 
+use crate::config::TIM1_CLOCK_HZ;
 use crate::hardware::resources::MotorResources;
 use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm};
-
-// ============================================================================
-// Motor PWM
-// ============================================================================
-
-/// STM32F405 timer clock frequency (168 MHz)
-const TIMER_CLOCK_HZ: u32 = 168_000_000;
 
 /// Motor PWM controller using TIM1
 ///
@@ -52,7 +46,7 @@ impl<'d> MotorPwm<'d> {
         let ch2n = ComplementaryPwmPin::new(resources.pb14, OutputType::PushPull);
         let ch3n = ComplementaryPwmPin::new(resources.pb15, OutputType::PushPull);
 
-        let pwm_freq = khz(config.pwm_freq_hz / 1000);
+        let pwm_freq = Hertz(config.pwm_freq_hz);
 
         let mut pwm = ComplementaryPwm::new(
             resources.tim1,
@@ -71,7 +65,7 @@ impl<'d> MotorPwm<'d> {
         let max_duty = pwm.get_max_duty();
 
         // Calculate dead time using shared helper
-        let dead_time = pwm::dead_time_ticks(config.dead_time_ns, TIMER_CLOCK_HZ);
+        let dead_time = pwm::dead_time_ticks(config.dead_time_ns, TIM1_CLOCK_HZ);
         pwm.set_dead_time(dead_time);
 
         // Calculate duty limit using shared helper

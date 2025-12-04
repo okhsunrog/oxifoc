@@ -28,24 +28,27 @@ pub use crate::types::ControlMode;
 /// # Example (platform code)
 /// ```rust,ignore
 /// use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
+/// use oxifoc_core::foc::pwm::MotorPwmConfig;
 ///
 /// static FOC_DRIVER: Mutex<NoopRawMutex, RefCell<Option<FocDriver<MotorPwm, CurrentSense, PhaseManager<HallSensor>>>>> =
 ///     Mutex::new(RefCell::new(None));
 ///
+/// // During init - dt comes from PWM config:
+/// let motor_pwm = MotorPwm::new(resources, config::PWM_CONFIG);
+/// let driver = FocDriver::new(
+///     controller,
+///     motor_pwm,
+///     current_sensor,
+///     phase,
+///     config::PWM_CONFIG.dt_s(),
+/// );
+///
 /// #[interrupt]
 /// fn ADC1_2() {
-///     static mut STATE: ControlMode = ControlMode::Stopped;
-///
-///     // Process commands
-///     while let Ok(cmd) = MOTOR_CMD.try_receive() {
-///         *STATE = cmd.to_mode();
-///     }
-///
-///     // Run FOC
+///     // Run FOC - dt is stored in driver
 ///     FOC_DRIVER.lock(|cell| {
 ///         if let Some(driver) = cell.borrow_mut().as_mut() {
-///             driver.set_mode(*STATE);
-///             if let Ok(telem) = driver.step(DT, now_ticks) {
+///             if let Ok(telem) = driver.step(now_ticks) {
 ///                 MOTOR_TELEM.set(telem);
 ///             }
 ///         }
@@ -70,6 +73,8 @@ where
     mode: ControlMode,
     /// Bus voltage (V)
     vbus: f32,
+    /// Control loop period in seconds (1/pwm_freq)
+    dt: f32,
 }
 
 impl<P, C, Phase> FocDriver<P, C, Phase>
@@ -85,7 +90,14 @@ where
     /// * `pwm` - PWM output
     /// * `current_sensor` - Current sensor (should be calibrated)
     /// * `phase` - Phase provider (manages angle sources)
-    pub fn new(controller: FocController, pwm: P, current_sensor: C, phase: Phase) -> Self {
+    /// * `dt` - Control loop period in seconds (from `MotorPwmConfig::dt_s()`)
+    pub fn new(
+        controller: FocController,
+        pwm: P,
+        current_sensor: C,
+        phase: Phase,
+        dt: f32,
+    ) -> Self {
         Self {
             controller,
             pwm,
@@ -93,7 +105,13 @@ where
             phase,
             mode: ControlMode::Stopped,
             vbus: 12.0, // Default, should be updated
+            dt,
         }
+    }
+
+    /// Get the control loop period (dt) in seconds
+    pub fn dt(&self) -> f32 {
+        self.dt
     }
 
     /// Set control mode
@@ -120,15 +138,16 @@ where
     /// Execute one FOC control step
     ///
     /// Call this from your ADC ISR synchronized with PWM.
+    /// Uses the stored dt (set via `with_dt()` or defaulting to 20kHz).
     ///
     /// # Arguments
-    /// * `dt` - Time step in seconds (e.g., 1.0/20000.0 for 20kHz)
     /// * `now_ticks` - Monotonic ticks for phase sampling (sensor-defined timebase)
     ///
     /// # Returns
     /// * `Ok(FocTelemetry)` - Control telemetry on success
     /// * `Err(&str)` - Error message if sensors not ready
-    pub fn step(&mut self, dt: f32, now_ticks: u64) -> Result<FocTelemetry, &'static str> {
+    pub fn step(&mut self, now_ticks: u64) -> Result<FocTelemetry, &'static str> {
+        let dt = self.dt;
         match self.mode {
             ControlMode::Stopped => {
                 // Disable PWM outputs

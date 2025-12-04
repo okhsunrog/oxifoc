@@ -1,6 +1,7 @@
 //! Configuration constants for oxifoc-f405 (Simple FOCer 2 / Cheap FOCer 2)
 
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology};
+use oxifoc_core::foc::pwm::MotorPwmConfig;
 
 // ============================================================================
 // Board Hardware Configuration
@@ -46,11 +47,26 @@ pub const NTC_MOTOR: NtcConfig = NtcConfig {
 };
 
 // ============================================================================
+// PWM Configuration
+// ============================================================================
+
+/// Motor PWM configuration
+///
+/// Central source of truth for PWM frequency and timing.
+/// Used by motor.rs for timer setup and control/foc.rs for dt calculation.
+pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
+// To change frequency: MotorPwmConfig::new().with_pwm_freq(25_000)
+
+// ============================================================================
 // Timing Configuration
 // ============================================================================
 
 /// Embassy timebase ticks per second
 pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
+
+/// TIM1 clock frequency in Hz (APB2 timers run at SYSCLK on F405)
+/// Used for motor PWM and dead time calculation.
+pub const TIM1_CLOCK_HZ: u32 = 168_000_000;
 
 /// TIM6 clock frequency in Hz (APB1 timers run at 2x APB1 when prescaler > 1)
 /// Embassy default: SYSCLK=168MHz, APB1=42MHz, timer clock=84MHz

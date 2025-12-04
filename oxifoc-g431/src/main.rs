@@ -28,7 +28,6 @@ mod transport;
 
 use hardware::{AssignedResources, HallResources, MotorResources};
 use motor::MotorPwm;
-use oxifoc_core::foc::pwm::MotorPwmConfig;
 use protocol::{DeviceState, RECV_BUF, SCRATCH_BUF, STACK, get_device_state, set_device_state};
 
 #[embassy_executor::main]
@@ -58,7 +57,7 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 4: Initialize Motor PWM ==========
     let r = split_resources!(p);
-    let motor_pwm = MotorPwm::new(r.motor, MotorPwmConfig::default());
+    let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
 
     // ========== STEP 5: Initialize Hall Sensor ==========
     sensors::init_hall(r.hall.pb6, r.hall.pb7, r.hall.pb8);

@@ -1,6 +1,7 @@
 //! Configuration constants and structures for oxifoc-g431 (B-G431B-ESC1)
 
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology};
+use oxifoc_core::foc::pwm::MotorPwmConfig;
 
 // ============================================================================
 // Board Hardware Configuration
@@ -34,11 +35,26 @@ pub const NTC: NtcConfig = NtcConfig {
 };
 
 // ============================================================================
+// PWM Configuration
+// ============================================================================
+
+/// Motor PWM configuration
+///
+/// Central source of truth for PWM frequency and timing.
+/// Used by motor.rs for timer setup and control/foc.rs for dt calculation.
+pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
+// To change frequency: MotorPwmConfig::new().with_pwm_freq(25_000)
+
+// ============================================================================
 // Timing Configuration
 // ============================================================================
 
 /// Timebase for Hall interpolation (match embassy_time ticks)
 pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
+
+/// TIM1 clock frequency in Hz (runs at SYSCLK on G4)
+/// Used for motor PWM and dead time calculation.
+pub const TIM1_CLOCK_HZ: u32 = 170_000_000;
 
 /// TIM6 clock frequency in Hz (APB1 timers on G4 run at SYSCLK)
 /// Embassy default: SYSCLK=170MHz

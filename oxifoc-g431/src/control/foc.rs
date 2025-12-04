@@ -14,7 +14,7 @@ use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
 use oxifoc_core::state;
 
-use crate::config::{BOARD, NTC};
+use crate::config::{BOARD, NTC, PWM_CONFIG};
 use crate::motor::MotorPwm;
 use crate::sensors::{G431CurrentSensor, G431CurrentSensorExt, HallAngleProxy};
 
@@ -65,12 +65,13 @@ pub async fn init(
     let initial_vbus_v =
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
 
-    // Build FOC driver
+    // Build FOC driver with dt from PWM config
     let mut foc_driver = FocDriver::new(
         FocController::new(initial_vbus_v),
         motor_pwm,
         current_sensor,
         phase_manager,
+        PWM_CONFIG.dt_s(),
     );
 
     // Store ADC handles for ISR access
@@ -101,11 +102,9 @@ pub async fn init(
 /// Runs FOC control loop synchronized with PWM.
 #[interrupt]
 fn ADC1_2() {
-    use core::ptr::addr_of_mut;
-    use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
-
-    // Static state (ISR has exclusive access)
     static mut SEQ: u32 = 0;
+
+    use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
 
     // Local storage for ADC readings
     let mut ia_raw: u16 = 0;
@@ -151,13 +150,8 @@ fn ADC1_2() {
     let now_ticks = embassy_time::Instant::now().as_ticks();
 
     // Build ADC snapshot
-    // SAFETY: ISR has exclusive access to this static
-    let seq_val = unsafe {
-        let seq = addr_of_mut!(SEQ);
-        *seq = (*seq).wrapping_add(1);
-        *seq
-    };
-    let adc_snapshot = AdcSnapshot::new(ia_raw, ib_raw, ic_raw, vbus_mv, seq_val)
+    *SEQ = SEQ.wrapping_add(1);
+    let adc_snapshot = AdcSnapshot::new(ia_raw, ib_raw, ic_raw, vbus_mv, *SEQ)
         .with_temp(TempSensorId::Fet, temp_c_x10);
 
     // Get Hall snapshot
@@ -172,9 +166,8 @@ fn ADC1_2() {
             // Process commands from core state channel
             let mode = state::process_commands(driver);
 
-            // Run FOC step (dt = 1/20kHz = 50µs)
-            const DT: f32 = 1.0 / 20_000.0;
-            match driver.step(DT, now_ticks) {
+            // Run FOC step (dt is stored in driver from PWM_CONFIG)
+            match driver.step(now_ticks) {
                 Ok(telem) => Some(telem),
                 Err(_) => {
                     // Sensor not ready or other error - disable outputs

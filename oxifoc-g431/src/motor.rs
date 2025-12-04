@@ -3,21 +3,15 @@
 //! TIM1 complementary PWM configuration for 3-phase BLDC motor control.
 
 use embassy_stm32::gpio::OutputType;
-use embassy_stm32::time::khz;
+use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::Channel;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin, Mms2, Ossr};
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
 
+use crate::config::TIM1_CLOCK_HZ;
 use crate::hardware::resources::MotorResources;
 use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm};
-
-// ============================================================================
-// Motor PWM
-// ============================================================================
-
-/// STM32G431 timer clock frequency (170 MHz)
-const TIMER_CLOCK_HZ: u32 = 170_000_000;
 
 /// Motor PWM controller using TIM1 with complementary outputs.
 pub struct MotorPwm<'d> {
@@ -52,7 +46,7 @@ impl<'d> MotorPwm<'d> {
         let ch2n = ComplementaryPwmPin::new(pa12, OutputType::PushPull); // Phase B low
         let ch3n = ComplementaryPwmPin::new(pb15, OutputType::PushPull); // Phase C low
 
-        let pwm_freq = khz(config.pwm_freq_hz / 1000);
+        let pwm_freq = Hertz(config.pwm_freq_hz);
 
         // Center-aligned complementary PWM on all three phases.
         let mut pwm = ComplementaryPwm::new(
@@ -72,7 +66,7 @@ impl<'d> MotorPwm<'d> {
         let max_duty = pwm.get_max_duty();
 
         // Calculate dead time using shared helper
-        let dead_time = pwm::dead_time_ticks(config.dead_time_ns, TIMER_CLOCK_HZ);
+        let dead_time = pwm::dead_time_ticks(config.dead_time_ns, TIM1_CLOCK_HZ);
         pwm.set_dead_time(dead_time);
 
         // Enable OSSR for safer off-state behavior when channels are disabled.

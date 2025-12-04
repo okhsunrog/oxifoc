@@ -46,6 +46,14 @@ impl MotorPwmConfig {
         }
     }
 
+    /// Get the control loop period (dt) in seconds
+    ///
+    /// This is the inverse of the PWM frequency, used for PI controller updates.
+    #[inline]
+    pub const fn dt_s(&self) -> f32 {
+        1.0 / self.pwm_freq_hz as f32
+    }
+
     /// Set PWM switching frequency in Hz
     pub const fn with_pwm_freq(mut self, freq_hz: u32) -> Self {
         self.pwm_freq_hz = freq_hz;
