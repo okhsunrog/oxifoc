@@ -20,7 +20,7 @@ mod transport;
 
 #[allow(unused_imports)]
 use hardware::{AssignedResources, DrvResources, HallResources, MotorResources};
-use motor::pwm::MotorPwm;
+use motor::MotorPwm;
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 use protocol::{OUTQ, RECV_BUF, STACK};
 

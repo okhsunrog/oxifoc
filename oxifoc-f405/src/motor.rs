@@ -1,9 +1,8 @@
-//! TIM1 complementary PWM configuration for Simple FOCer 2 (STM32F405)
+//! Motor control for Simple FOCer 2 (STM32F405)
 //!
-//! Hardware: Simple FOCer 2 / Cheap FOCer 2 / VESC-compatible designs
-//! - TIM1 complementary outputs for 3-phase BLDC/PMSM control
-//! - Dead-time insertion for shoot-through protection
-//! - Center-aligned PWM for optimal ADC sampling
+//! TIM1 complementary PWM configuration for 3-phase BLDC/PMSM control
+//! with dead-time insertion for shoot-through protection and
+//! center-aligned PWM for optimal ADC sampling.
 
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::peripherals;

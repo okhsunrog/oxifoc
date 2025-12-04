@@ -1,7 +1,7 @@
 //! STM32G431 current sensing implementation
 //!
-//! Wraps the platform-agnostic `ShuntCurrentSense` with G431-specific
-//! ADC reading from injected channels.
+//! Uses the generic `GenericCurrentSensor` from oxifoc-core with a
+//! G431-specific raw ADC reader.
 //!
 //! # Hardware Setup (B-G431B-ESC1)
 //!
@@ -9,14 +9,7 @@
 //! - **OPAMP gain**: 16x (configured in main.rs)
 //! - **ADC**: 12-bit injected channels, synchronized by TIM1_TRGO2
 //! - **Sampling**: Phase A (ADC1), Phase B+C (ADC2)
-//!
-//! # Calibration
-//!
-//! Before using current readings, call `calibrate_offsets()` with motor disabled
-//! (PWM off, no current flow). This measures the zero-current ADC offsets.
-//!
-//! Uses `ShuntCurrentSense` from oxifoc-core for ADC-to-current conversion,
-//! and implements the `CurrentSensor` trait for a unified interface.
+
 #![allow(dead_code)]
 
 use core::sync::atomic::Ordering;
@@ -26,64 +19,59 @@ use embassy_time::{Duration, Timer};
 use oxifoc_core::foc::config::{
     BoardConfig, DEFAULT_CALIBRATION_DELAY_US, DEFAULT_CALIBRATION_SAMPLES,
 };
-use oxifoc_core::foc::current_sense::ShuntCurrentSense;
-use oxifoc_core::foc::sensors::CurrentSensor;
+use oxifoc_core::foc::sensors::{GenericCurrentSensor, RawCurrentReader};
 
 use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
 
 // ============================================================================
-// G431 Current Sensor (implements CurrentSensor trait)
+// G431 Raw ADC Reader
 // ============================================================================
 
-/// G431 current sensor implementation
+/// G431-specific raw ADC reader
 ///
-/// Reads phase currents from ADC via static atomics and converts to Amperes
-/// using `ShuntCurrentSense` from oxifoc-core.
-pub struct G431CurrentSensor {
-    /// Core conversion logic
-    converter: ShuntCurrentSense,
+/// Reads phase currents from static atomics populated by ADC ISR.
+#[derive(Clone, Copy)]
+pub struct G431AdcReader;
+
+impl RawCurrentReader for G431AdcReader {
+    fn read_raw(&self) -> (u16, u16, u16) {
+        let ia_raw = IA_SAMPLE.load(Ordering::Relaxed);
+        let ib_raw = IB_SAMPLE.load(Ordering::Relaxed);
+        let ic_raw = IC_SAMPLE.load(Ordering::Relaxed);
+        (ia_raw, ib_raw, ic_raw)
+    }
 }
 
-impl G431CurrentSensor {
-    /// Create a new G431 current sensor
-    ///
-    /// Uses board configuration for hardware parameters.
-    pub fn new(config: &BoardConfig) -> Self {
-        Self {
-            converter: ShuntCurrentSense::new(
-                config.shunt_ohms,
-                config.amp_gain,
-                config.adc_vref_mv,
-                config.adc_max_counts,
-            ),
-        }
-    }
+// ============================================================================
+// G431 Current Sensor (type alias)
+// ============================================================================
 
-    /// Manually set calibration offsets
-    ///
-    /// Useful for loading saved calibration values.
-    pub fn set_offsets(&mut self, offset_a: f32, offset_b: f32, offset_c: f32) {
-        self.converter.set_offsets(offset_a, offset_b, offset_c);
-    }
+/// G431 current sensor - generic sensor with G431-specific ADC reader
+pub type G431CurrentSensor = GenericCurrentSensor<G431AdcReader>;
+
+/// Extension trait for G431-specific calibration
+pub trait G431CurrentSensorExt {
+    /// Create a new G431 current sensor from board config
+    fn from_board(config: &BoardConfig) -> Self;
 
     /// Calibrate current sense offsets (async)
-    ///
-    /// Samples ADC values over time and computes zero-current offsets.
-    /// Call this with motor disabled (no current flowing).
-    ///
-    /// Uses `ShuntCurrentSense::calibrate_offsets()` from oxifoc-core for the
-    /// offset calculation algorithm.
-    pub async fn calibrate(&mut self) {
+    async fn calibrate(&mut self);
+
+    /// Calibrate current sense offsets with custom parameters (async)
+    async fn calibrate_with_params(&mut self, num_samples: usize, delay_us: u64);
+}
+
+impl G431CurrentSensorExt for G431CurrentSensor {
+    fn from_board(config: &BoardConfig) -> Self {
+        GenericCurrentSensor::from_config(config, G431AdcReader)
+    }
+
+    async fn calibrate(&mut self) {
         self.calibrate_with_params(DEFAULT_CALIBRATION_SAMPLES, DEFAULT_CALIBRATION_DELAY_US)
             .await;
     }
 
-    /// Calibrate current sense offsets with custom parameters (async)
-    ///
-    /// # Arguments
-    /// * `num_samples` - Number of samples to collect (more = more accurate, slower)
-    /// * `delay_us` - Delay between samples in microseconds
-    pub async fn calibrate_with_params(&mut self, num_samples: usize, delay_us: u64) {
+    async fn calibrate_with_params(&mut self, num_samples: usize, delay_us: u64) {
         defmt::info!(
             "Calibrating current sense: {} samples, {}us delay",
             num_samples,
@@ -94,17 +82,17 @@ impl G431CurrentSensor {
         let mut samples = heapless::Vec::<(u16, u16, u16), 1024>::new();
 
         for i in 0..num_samples.min(1024) {
-            let (raw_a, raw_b, raw_c) = self.read_raw();
+            let raw = G431AdcReader.read_raw();
 
-            let _ = samples.push((raw_a, raw_b, raw_c));
+            let _ = samples.push(raw);
 
             if i % 64 == 0 {
                 defmt::debug!(
                     "Calibration sample {}: A={} B={} C={}",
                     i,
-                    raw_a,
-                    raw_b,
-                    raw_c
+                    raw.0,
+                    raw.1,
+                    raw.2
                 );
             }
 
@@ -112,36 +100,14 @@ impl G431CurrentSensor {
         }
 
         // Use shared calibration algorithm from oxifoc-core
-        self.converter.calibrate_offsets(&samples);
+        self.calibrate_offsets(&samples);
 
-        let (oa, ob, oc) = self.converter.get_offsets();
+        let (oa, ob, oc) = self.converter().get_offsets();
         defmt::info!(
             "Current sense calibrated: A={} B={} C={}",
             oa as u16,
             ob as u16,
             oc as u16
         );
-    }
-}
-
-impl CurrentSensor for G431CurrentSensor {
-    fn read_currents(&self) -> (f32, f32, f32) {
-        let (adc_a, adc_b, adc_c) = self.read_raw();
-        self.converter.convert_raw(adc_a, adc_b, adc_c)
-    }
-
-    fn read_raw(&self) -> (u16, u16, u16) {
-        let ia_raw = IA_SAMPLE.load(Ordering::Relaxed);
-        let ib_raw = IB_SAMPLE.load(Ordering::Relaxed);
-        let ic_raw = IC_SAMPLE.load(Ordering::Relaxed);
-        (ia_raw, ib_raw, ic_raw)
-    }
-
-    fn is_calibrated(&self) -> bool {
-        self.converter.is_calibrated()
-    }
-
-    fn get_offsets(&self) -> (f32, f32, f32) {
-        self.converter.get_offsets()
     }
 }

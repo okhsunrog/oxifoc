@@ -31,8 +31,8 @@ use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
 
 use crate::config::{BOARD, NTC_BOARD, NTC_MOTOR};
-use crate::motor::pwm::MotorPwm;
-use crate::sensors::{F405CurrentSensor, hall::HallAngleProxy};
+use crate::motor::MotorPwm;
+use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
 
 // ========== ADC Sample Storage (Global Atomics) ==========
 
@@ -241,7 +241,7 @@ pub async fn init(mut motor_pwm: MotorPwm<'static>) {
     configure_tim1_adc_trigger();
 
     // Build current sensor and phase manager
-    let current_sensor = F405CurrentSensor::new(&BOARD);
+    let current_sensor = F405CurrentSensor::from_board(&BOARD);
     let hall_proxy = HallAngleProxy::new();
     let phase_manager = PhaseManager::with_hall(hall_proxy);
     let initial_vbus_v =
@@ -383,26 +383,23 @@ unsafe fn ADC() {
 
 // ========== Public API for Protocol Servers ==========
 
-/// Get ADC sample snapshot
-pub struct AdcSnapshot {
-    pub ia: u16,
-    pub ib: u16,
-    pub ic: u16,
-    pub vbus_mv: u32,
-    pub board_temp_c_x10: u16,
-    pub motor_temp_c_x10: u16,
-    pub seq: u32,
-}
+use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
 
 pub fn get_adc_snapshot() -> AdcSnapshot {
     let seq = ADC_SEQ.fetch_add(1, Ordering::Relaxed);
-    AdcSnapshot {
-        ia: IA_SAMPLE.load(Ordering::Relaxed),
-        ib: IB_SAMPLE.load(Ordering::Relaxed),
-        ic: IC_SAMPLE.load(Ordering::Relaxed),
-        vbus_mv: VBUS_MV.load(Ordering::Relaxed),
-        board_temp_c_x10: BOARD_TEMP_C_X10.load(Ordering::Relaxed),
-        motor_temp_c_x10: MOTOR_TEMP_C_X10.load(Ordering::Relaxed),
+    AdcSnapshot::new(
+        IA_SAMPLE.load(Ordering::Relaxed),
+        IB_SAMPLE.load(Ordering::Relaxed),
+        IC_SAMPLE.load(Ordering::Relaxed),
+        VBUS_MV.load(Ordering::Relaxed),
         seq,
-    }
+    )
+    .with_temp(
+        TempSensorId::Board,
+        BOARD_TEMP_C_X10.load(Ordering::Relaxed),
+    )
+    .with_temp(
+        TempSensorId::Motor,
+        MOTOR_TEMP_C_X10.load(Ordering::Relaxed),
+    )
 }

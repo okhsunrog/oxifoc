@@ -100,7 +100,7 @@ pub async fn adc_sample_server() {
                     ib: snapshot.ib,
                     ic: snapshot.ic,
                     vbus_mv: snapshot.vbus_mv,
-                    fet_temp_c_x10: snapshot.fet_temp_c_x10,
+                    fet_temp_c_x10: snapshot.fet_temp_c_x10().unwrap_or(0),
                     seq: snapshot.seq,
                 }
             })

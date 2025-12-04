@@ -17,6 +17,7 @@
 //!    (Hall-specific)       (Encoder-specific)
 //! ```
 
+use super::current_sense::ShuntCurrentSense;
 use super::hall_calibration::HallCalibrationResult;
 use super::hall_sensor::Direction;
 
@@ -225,5 +226,243 @@ impl NoSensor {
     /// Check if this is a null sensor (always true for NoSensor)
     pub fn is_null(&self) -> bool {
         true
+    }
+}
+
+// ============================================================================
+// Hall sensor snapshot for telemetry
+// ============================================================================
+
+/// Snapshot of Hall sensor data for protocol/telemetry use
+///
+/// This is a platform-agnostic struct that can be used by any firmware
+/// to report Hall sensor state to the host.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HallSnapshot {
+    /// Electrical angle in radians (0..2π)
+    pub angle_rad: f32,
+    /// Electrical angular velocity in rad/s
+    pub velocity_rad_s: f32,
+    /// Current rotation direction
+    pub direction: Direction,
+    /// Raw 3-bit Hall state (0-7)
+    pub state: u8,
+    /// Cumulative error count
+    pub error_count: u32,
+}
+
+// ============================================================================
+// Generic current sensor with raw ADC reader
+// ============================================================================
+
+/// Trait for reading raw ADC values from platform-specific sources
+///
+/// Implement this trait in platform code to provide raw ADC readings
+/// to the generic `GenericCurrentSensor`.
+pub trait RawCurrentReader {
+    /// Read raw ADC values for all three phases
+    ///
+    /// Returns (adc_a, adc_b, adc_c) in raw ADC counts.
+    fn read_raw(&self) -> (u16, u16, u16);
+}
+
+/// Generic current sensor implementation
+///
+/// Combines a platform-specific raw ADC reader with the shared
+/// `ShuntCurrentSense` converter. This eliminates code duplication
+/// between platform crates.
+///
+/// # Usage
+///
+/// ```ignore
+/// // In platform crate:
+/// struct MyAdcReader;
+///
+/// impl RawCurrentReader for MyAdcReader {
+///     fn read_raw(&self) -> (u16, u16, u16) {
+///         (IA_SAMPLE.load(Relaxed), IB_SAMPLE.load(Relaxed), IC_SAMPLE.load(Relaxed))
+///     }
+/// }
+///
+/// type MyCurrentSensor = GenericCurrentSensor<MyAdcReader>;
+/// ```
+pub struct GenericCurrentSensor<R: RawCurrentReader> {
+    /// Core conversion logic
+    converter: ShuntCurrentSense,
+    /// Platform-specific raw ADC reader
+    reader: R,
+}
+
+impl<R: RawCurrentReader> GenericCurrentSensor<R> {
+    /// Create a new generic current sensor
+    ///
+    /// # Arguments
+    /// * `shunt_ohms` - Shunt resistance in Ohms
+    /// * `amp_gain` - OPAMP/amplifier gain
+    /// * `adc_vref_mv` - ADC reference voltage in millivolts
+    /// * `adc_max_counts` - Maximum ADC count value
+    /// * `reader` - Platform-specific raw ADC reader
+    pub fn new(
+        shunt_ohms: f32,
+        amp_gain: f32,
+        adc_vref_mv: u32,
+        adc_max_counts: u16,
+        reader: R,
+    ) -> Self {
+        Self {
+            converter: ShuntCurrentSense::new(shunt_ohms, amp_gain, adc_vref_mv, adc_max_counts),
+            reader,
+        }
+    }
+
+    /// Create from board config
+    pub fn from_config(config: &super::config::BoardConfig, reader: R) -> Self {
+        Self::new(
+            config.shunt_ohms,
+            config.amp_gain,
+            config.adc_vref_mv,
+            config.adc_max_counts,
+            reader,
+        )
+    }
+
+    /// Access the underlying converter for calibration
+    pub fn converter(&self) -> &ShuntCurrentSense {
+        &self.converter
+    }
+
+    /// Access the underlying converter mutably for calibration
+    pub fn converter_mut(&mut self) -> &mut ShuntCurrentSense {
+        &mut self.converter
+    }
+
+    /// Manually set calibration offsets
+    pub fn set_offsets(&mut self, offset_a: f32, offset_b: f32, offset_c: f32) {
+        self.converter.set_offsets(offset_a, offset_b, offset_c);
+    }
+
+    /// Calibrate offsets from collected samples
+    pub fn calibrate_offsets(&mut self, samples: &[(u16, u16, u16)]) {
+        self.converter.calibrate_offsets(samples);
+    }
+}
+
+impl<R: RawCurrentReader> CurrentSensor for GenericCurrentSensor<R> {
+    fn read_currents(&self) -> (f32, f32, f32) {
+        let (adc_a, adc_b, adc_c) = self.reader.read_raw();
+        self.converter.convert_raw(adc_a, adc_b, adc_c)
+    }
+
+    fn read_raw(&self) -> (u16, u16, u16) {
+        self.reader.read_raw()
+    }
+
+    fn is_calibrated(&self) -> bool {
+        self.converter.is_calibrated()
+    }
+
+    fn get_offsets(&self) -> (f32, f32, f32) {
+        self.converter.get_offsets()
+    }
+}
+
+// ============================================================================
+// ADC snapshot for telemetry
+// ============================================================================
+
+/// Temperature sensor identification
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TempSensorId {
+    /// FET/MOSFET temperature
+    Fet,
+    /// PCB/board temperature
+    Board,
+    /// Motor winding temperature
+    Motor,
+    /// Other/custom temperature sensor
+    Other(u8),
+}
+
+/// ADC sample snapshot for protocol/telemetry use
+///
+/// Platform-agnostic struct that can report ADC data to the host.
+/// Supports variable number of temperature sensors.
+#[derive(Clone, Debug)]
+pub struct AdcSnapshot {
+    /// Phase A current (raw ADC counts)
+    pub ia: u16,
+    /// Phase B current (raw ADC counts)
+    pub ib: u16,
+    /// Phase C current (raw ADC counts)
+    pub ic: u16,
+    /// DC bus voltage in millivolts
+    pub vbus_mv: u32,
+    /// Temperature readings: (sensor_id, value in 0.1°C)
+    /// Using a fixed array to avoid heap allocation
+    pub temps: [(TempSensorId, u16); 4],
+    /// Number of valid temperature entries
+    pub temp_count: u8,
+    /// Sequence counter
+    pub seq: u32,
+}
+
+impl Default for AdcSnapshot {
+    fn default() -> Self {
+        Self {
+            ia: 0,
+            ib: 0,
+            ic: 0,
+            vbus_mv: 0,
+            temps: [(TempSensorId::Fet, 0); 4],
+            temp_count: 0,
+            seq: 0,
+        }
+    }
+}
+
+impl AdcSnapshot {
+    /// Create a new ADC snapshot with currents and voltage only
+    pub fn new(ia: u16, ib: u16, ic: u16, vbus_mv: u32, seq: u32) -> Self {
+        Self {
+            ia,
+            ib,
+            ic,
+            vbus_mv,
+            temps: [(TempSensorId::Fet, 0); 4],
+            temp_count: 0,
+            seq,
+        }
+    }
+
+    /// Add a temperature reading
+    pub fn with_temp(mut self, sensor: TempSensorId, temp_c_x10: u16) -> Self {
+        if (self.temp_count as usize) < self.temps.len() {
+            self.temps[self.temp_count as usize] = (sensor, temp_c_x10);
+            self.temp_count += 1;
+        }
+        self
+    }
+
+    /// Get temperature for a specific sensor
+    pub fn get_temp(&self, sensor: TempSensorId) -> Option<u16> {
+        self.temps[..self.temp_count as usize]
+            .iter()
+            .find(|(id, _)| *id == sensor)
+            .map(|(_, temp)| *temp)
+    }
+
+    /// Get FET temperature (convenience method)
+    pub fn fet_temp_c_x10(&self) -> Option<u16> {
+        self.get_temp(TempSensorId::Fet)
+    }
+
+    /// Get board temperature (convenience method)
+    pub fn board_temp_c_x10(&self) -> Option<u16> {
+        self.get_temp(TempSensorId::Board)
+    }
+
+    /// Get motor temperature (convenience method)
+    pub fn motor_temp_c_x10(&self) -> Option<u16> {
+        self.get_temp(TempSensorId::Motor)
     }
 }

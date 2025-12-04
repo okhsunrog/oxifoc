@@ -15,7 +15,7 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use static_cell::StaticCell;
 
 use oxifoc_core::foc::hall_sensor::{Direction, HallSensor};
-use oxifoc_core::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait};
+use oxifoc_core::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait, HallSnapshot};
 
 use crate::config::TIMEBASE_TICKS_PER_SEC;
 
@@ -240,17 +240,9 @@ pub fn process_edge(_last_seq: &mut u32) -> bool {
 
 // ========== Public API for Telemetry ==========
 
-/// Snapshot of Hall sensor data for protocol use
-#[derive(Clone, Copy, Debug)]
-pub struct HallSnapshot {
-    pub angle_rad: f32,
-    pub velocity_rad_s: f32,
-    pub direction: Direction,
-    pub state: u8,
-    pub error_count: u32,
-}
-
 /// Get current Hall sensor snapshot (for telemetry, polled at low rate)
+///
+/// Uses `HallSnapshot` from oxifoc-core.
 pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
     HALL_ESTIMATOR.lock(|est| {
         est.borrow().as_ref().and_then(|h| {

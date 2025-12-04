@@ -17,8 +17,8 @@ use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
 
 use crate::config::{BOARD, NTC};
-use crate::motor::pwm::MotorPwm;
-use crate::sensors::{G431CurrentSensor, HallAngleProxy};
+use crate::motor::MotorPwm;
+use crate::sensors::{G431CurrentSensor, G431CurrentSensorExt, HallAngleProxy};
 
 // ========== ADC Sample Storage (Global Atomics) ==========
 
@@ -69,7 +69,7 @@ pub async fn init(
     motor_pwm.emergency_stop();
 
     // Build current sensor and phase manager
-    let current_sensor = G431CurrentSensor::new(&BOARD);
+    let current_sensor = G431CurrentSensor::from_board(&BOARD);
     let hall_proxy = HallAngleProxy::new();
     let phase_manager = PhaseManager::with_hall(hall_proxy);
     let initial_vbus_v =
@@ -194,24 +194,16 @@ unsafe fn ADC1_2() {
 
 // ========== Public API for Protocol Servers ==========
 
-/// Get ADC sample snapshot
-pub struct AdcSnapshot {
-    pub ia: u16,
-    pub ib: u16,
-    pub ic: u16,
-    pub vbus_mv: u32,
-    pub fet_temp_c_x10: u16,
-    pub seq: u32,
-}
+use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
 
 pub fn get_adc_snapshot() -> AdcSnapshot {
     let seq = ADC_SEQ.fetch_add(1, Ordering::Relaxed);
-    AdcSnapshot {
-        ia: IA_SAMPLE.load(Ordering::Relaxed),
-        ib: IB_SAMPLE.load(Ordering::Relaxed),
-        ic: IC_SAMPLE.load(Ordering::Relaxed),
-        vbus_mv: VBUS_MV.load(Ordering::Relaxed),
-        fet_temp_c_x10: FET_TEMP_C_X10.load(Ordering::Relaxed),
+    AdcSnapshot::new(
+        IA_SAMPLE.load(Ordering::Relaxed),
+        IB_SAMPLE.load(Ordering::Relaxed),
+        IC_SAMPLE.load(Ordering::Relaxed),
+        VBUS_MV.load(Ordering::Relaxed),
         seq,
-    }
+    )
+    .with_temp(TempSensorId::Fet, FET_TEMP_C_X10.load(Ordering::Relaxed))
 }

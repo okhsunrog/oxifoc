@@ -3,10 +3,9 @@
 //! Implements platform-specific responses to motor faults.
 
 use oxifoc_core::foc::fault::{FaultAction, FaultHandler, FaultKind};
-
-use super::pwm::MotorPwm;
-use super::set_motor_state;
 use oxifoc_protocol::MotorState;
+
+use crate::motor::{MotorPwm, set_motor_state};
 
 /// G431-specific fault handler
 ///
