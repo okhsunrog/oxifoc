@@ -282,9 +282,8 @@ impl HallSensor {
     ///
     /// Returns `None` if no edge has been received yet.
     pub fn time_since_edge_us(&self, now_ticks: u64) -> Option<u32> {
-        self.time_since_edge(now_ticks).map(|ticks| {
-            ((ticks * 1_000_000) / self.ticks_per_sec) as u32
-        })
+        self.time_since_edge(now_ticks)
+            .map(|ticks| ((ticks * 1_000_000) / self.ticks_per_sec) as u32)
     }
 
     /// Check if direction reversal was detected on last update
@@ -348,11 +347,11 @@ impl HallSensor {
         };
 
         // Explicit direction reversal detection (VESC-style)
-        self.direction_reversed = match (self.prev_direction, new_direction) {
-            (Direction::Clockwise, Direction::CounterClockwise) => true,
-            (Direction::CounterClockwise, Direction::Clockwise) => true,
-            _ => false,
-        };
+        self.direction_reversed = matches!(
+            (self.prev_direction, new_direction),
+            (Direction::Clockwise, Direction::CounterClockwise)
+                | (Direction::CounterClockwise, Direction::Clockwise)
+        );
 
         self.direction = new_direction;
         self.logical_state = current_state;
@@ -693,8 +692,7 @@ impl HallCalibration {
     /// Get angle for a raw Hall state, panicking on invalid (for internal use)
     #[inline]
     pub fn angle_for_state(&self, raw_state: u8) -> f32 {
-        self.angle_for_raw_state(raw_state)
-            .unwrap_or(0.0) // Fallback for invalid states
+        self.angle_for_raw_state(raw_state).unwrap_or(0.0) // Fallback for invalid states
     }
 
     /// Check if a raw state is valid
@@ -1151,6 +1149,6 @@ mod tests {
         // At 1MHz, 50ms = 50_000 ticks
         hall.update(1, 0).unwrap();
         assert!(!hall.is_stale(49_999)); // Just before 50ms
-        assert!(hall.is_stale(50_001));  // Just after 50ms
+        assert!(hall.is_stale(50_001)); // Just after 50ms
     }
 }

@@ -1000,7 +1000,13 @@ mod tests {
         let _initial_output = phase.get();
 
         // Continue with Hall failed
-        phase.update(&PhaseInput { dt: 0.001, ..Default::default() }, 1000);
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            1000,
+        );
 
         // Open-loop override should be active
         assert!(phase.is_open_loop_override_active());
@@ -1011,7 +1017,13 @@ mod tests {
         assert!(output.velocity > 0.0); // Should have minimum velocity
 
         // After more updates, angle should advance
-        phase.update(&PhaseInput { dt: 0.001, ..Default::default() }, 2000);
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            2000,
+        );
         let output2 = phase.get();
         // Angle should have advanced
         assert!(output2.angle != output.angle || output.velocity > 0.0);
@@ -1026,7 +1038,13 @@ mod tests {
 
         // Make Hall fail first (will activate open-loop override)
         phase.hall_mut().set_valid(false);
-        phase.update(&PhaseInput { dt: 0.001, ..Default::default() }, 0);
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            0,
+        );
 
         assert!(phase.is_open_loop_override_active());
 
@@ -1037,7 +1055,13 @@ mod tests {
         phase.set_observer(Observer::BackEmf(observer));
 
         // Update - observer should take over and deactivate open-loop override
-        phase.update(&PhaseInput { dt: 0.001, ..Default::default() }, 1000);
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            1000,
+        );
 
         // Open-loop override should be deactivated
         assert!(!phase.is_open_loop_override_active());
