@@ -28,13 +28,13 @@ This repo uses a Cargo workspace for host crates. Device firmware crates are exc
 
 ### Supported Boards
 
-| Board | MCU | Features |
-|-------|-----|----------|
-| B-G431B-ESC1 | STM32G431CB | CORDIC accelerator, compact form factor |
-| Cheap FOCer 2 | STM32F405RG | Higher current capacity, more GPIO |
+| Board | MCU | Communication | Features |
+|-------|-----|---------------|----------|
+| B-G431B-ESC1 | STM32G431CB | Serial (ST-Link VCP) or RTT | Built-in opamps, compact |
+| Cheap FOCer 2 | STM32F405RG | USB (bulk endpoints) | Higher current, native USB |
 
 - **Debug Interface**: ST-Link V2 (built-in or external)
-- **Communication**: Serial (via ST-Link VCP) or RTT (via probe-rs)
+- **Protocol**: [ergot](https://github.com/jamesmunns/ergot) over transport layer
 
 See [docs/hardware.md](docs/hardware.md) for detailed pinout and functional groups.
 
