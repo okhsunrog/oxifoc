@@ -3,6 +3,8 @@
 //! Uses TIM6-based polling at 5µs intervals with 7-read majority voting
 //! for noise immunity. This approach filters sub-µs glitches while maintaining
 //! good timing resolution.
+//!
+//! Hall sensors are on PB6, PB7, PB8 - all on GPIOB, allowing single-register reads.
 
 use core::cell::RefCell;
 
@@ -10,7 +12,6 @@ use embassy_stm32::gpio::{Input, Pull};
 use embassy_stm32::interrupt::typelevel::Interrupt;
 use embassy_stm32::{Peri, interrupt, pac, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
-use static_cell::StaticCell;
 
 use oxifoc_core::foc::hall_sensor::{Direction, HallSensor};
 use oxifoc_core::foc::sensors::{
@@ -27,40 +28,28 @@ use crate::config::TIMEBASE_TICKS_PER_SEC;
 static HALL_ESTIMATOR: CriticalSectionMutex<RefCell<Option<HallSensor>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
-// ========== Hall GPIO Inputs ==========
-
-/// Static storage for GPIO inputs
-static HALL_INPUTS: StaticCell<(Input<'static>, Input<'static>, Input<'static>)> =
-    StaticCell::new();
-
-/// Unsafe pointer to hall inputs for fast ISR access
-static mut HALL_INPUTS_PTR: Option<&'static (Input<'static>, Input<'static>, Input<'static>)> =
-    None;
-
 // ========== Hall Sensor Initialization ==========
 
 /// Initialize Hall sensor inputs and TIM6 for polling
 ///
 /// Configures TIM6 to fire every 5µs. Each ISR performs 7 rapid GPIO reads
 /// with majority voting to filter noise.
+///
+/// GPIO pins are configured as inputs with pull-up, then read directly via
+/// GPIOB IDR register for maximum speed (single read for all 3 sensors).
 pub fn init_hall(
     pb6: Peri<'static, peripherals::PB6>,
     pb7: Peri<'static, peripherals::PB7>,
     pb8: Peri<'static, peripherals::PB8>,
 ) {
-    // Create GPIO inputs with pull-up
+    // Configure GPIO inputs with pull-up.
+    // We keep them alive with forget() - the configuration persists in hardware.
+    // Reading is done directly via GPIOB IDR register for speed.
     let hall_h1 = Input::new(pb6, Pull::Up);
     let hall_h2 = Input::new(pb7, Pull::Up);
     let hall_h3 = Input::new(pb8, Pull::Up);
+    core::mem::forget((hall_h1, hall_h2, hall_h3));
     defmt::info!("Hall sensors configured: H1=PB6, H2=PB7, H3=PB8");
-
-    // Keep Hall inputs alive for ISR access
-    let inputs = HALL_INPUTS.init((hall_h1, hall_h2, hall_h3));
-    // SAFETY: Single-threaded initialization before interrupts are enabled.
-    // HALL_INPUTS_PTR is only written here once and read by TIM6 ISR afterward.
-    unsafe {
-        HALL_INPUTS_PTR = Some(inputs);
-    }
 
     // Initialize Hall estimator
     HALL_ESTIMATOR.lock(|est| {
@@ -88,8 +77,7 @@ pub fn init_hall(
         w.set_arpe(true); // Auto-reload preload enable
     });
 
-    // SAFETY: All static data (HALL_INPUTS_PTR, HALL_ESTIMATOR) is initialized above.
-    // Enabling the interrupt is safe because the ISR can now access valid data.
+    // SAFETY: HALL_ESTIMATOR is initialized above.
     // Peripherals::steal() is safe in single-core context during init.
     unsafe {
         interrupt::typelevel::TIM6_DAC::unpend();
@@ -109,65 +97,49 @@ pub fn init_hall(
 
 // ========== Fast Hall State Reading ==========
 
-/// Read raw Hall sensor state from GPIO (public for calibration)
-#[inline]
-pub fn read_hall_state_raw() -> u8 {
-    read_hall_state_fast()
+/// Read Hall state from GPIOB IDR in a single register access.
+/// PB6=H1 (bit 0), PB7=H2 (bit 1), PB8=H3 (bit 2)
+#[inline(always)]
+fn read_hall_idr() -> u8 {
+    // Single 32-bit read, extract bits 6-8, shift to bits 0-2
+    ((pac::GPIOB.idr().read().0 >> 6) & 0b111) as u8
 }
 
-/// Read Hall sensor state quickly from GPIO (single read)
+/// Read raw Hall sensor state from GPIO (public for calibration).
+///
+/// INIT ORDER: init_hall() must be called before any use of this function.
+/// GPIO is configured there; TIM6 ISR starts after.
 #[inline]
-fn read_hall_state_fast() -> u8 {
-    // SAFETY: HALL_INPUTS_PTR is initialized once in init_hall() before interrupts
-    // are enabled, and never modified afterward. Reading a static pointer is safe.
-    if let Some((h1, h2, h3)) = unsafe { HALL_INPUTS_PTR } {
-        let mut state = 0u8;
-        if h1.is_high() {
-            state |= 0b001;
-        }
-        if h2.is_high() {
-            state |= 0b010;
-        }
-        if h3.is_high() {
-            state |= 0b100;
-        }
-        state
-    } else {
-        0
-    }
+pub fn read_hall_state_raw() -> u8 {
+    read_hall_idr()
 }
 
 /// Read Hall sensor state with 7-read majority voting (VESC-style)
 ///
-/// Performs 7 rapid GPIO reads and returns the state that appears most often.
+/// Performs 7 rapid single-register reads and returns the state that appears most often.
 /// This filters sub-microsecond noise glitches.
 #[inline]
 fn read_hall_state_voted() -> u8 {
-    // SAFETY: HALL_INPUTS_PTR is initialized once in init_hall() before interrupts
-    // are enabled, and never modified afterward. Reading a static pointer is safe.
-    if let Some((h1, h2, h3)) = unsafe { HALL_INPUTS_PTR } {
-        let mut h1_count = 0u8;
-        let mut h2_count = 0u8;
-        let mut h3_count = 0u8;
+    let mut h1_count = 0u8;
+    let mut h2_count = 0u8;
+    let mut h3_count = 0u8;
 
-        // 7 rapid reads (takes ~200-300ns total)
-        for _ in 0..READS_PER_POLL {
-            if h1.is_high() {
-                h1_count += 1;
-            }
-            if h2.is_high() {
-                h2_count += 1;
-            }
-            if h3.is_high() {
-                h3_count += 1;
-            }
+    // 7 rapid reads - each is a single GPIOB IDR access
+    for _ in 0..READS_PER_POLL {
+        let state = read_hall_idr();
+        if state & 0b001 != 0 {
+            h1_count += 1;
         }
-
-        // Use shared majority voting helper from core
-        majority_vote(h1_count, h2_count, h3_count, MAJORITY_THRESHOLD)
-    } else {
-        0
+        if state & 0b010 != 0 {
+            h2_count += 1;
+        }
+        if state & 0b100 != 0 {
+            h3_count += 1;
+        }
     }
+
+    // Use shared majority voting helper from core
+    majority_vote(h1_count, h2_count, h3_count, MAJORITY_THRESHOLD)
 }
 
 // ========== TIM6 Interrupt Handler ==========
@@ -175,21 +147,17 @@ fn read_hall_state_voted() -> u8 {
 /// TIM6 update interrupt: poll Hall sensors with majority voting
 #[interrupt]
 fn TIM6_DAC() {
+    // Static state for edge detection (transformed to &mut by #[interrupt] macro)
+    static mut LAST_STATE: u8 = 0;
+
     // Clear update interrupt flag
     pac::TIM6.sr().write(|w| w.set_uif(false));
 
     // Read Hall state with majority voting
     let state = read_hall_state_voted();
 
-    // Static state for edge detection
-    // SAFETY: ISR has exclusive access - this handler runs atomically on single-core MCU
-    // and cannot be preempted by itself. No other code accesses this static.
-    static mut LAST_STATE: u8 = 0;
-    let last = unsafe { LAST_STATE };
-
-    // Check for state change
-    if state != last && state != 0 && state != 7 {
-        // Valid state change detected
+    // Check for state change (0 and 7 are invalid Hall states)
+    if state != *LAST_STATE && state != 0 && state != 7 {
         let ticks = embassy_time::Instant::now().as_ticks();
 
         // Update Hall estimator
@@ -199,8 +167,7 @@ fn TIM6_DAC() {
             }
         });
 
-        // SAFETY: Same as above - exclusive ISR access
-        unsafe { LAST_STATE = state };
+        *LAST_STATE = state;
     }
 }
 
