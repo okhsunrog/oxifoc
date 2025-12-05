@@ -23,6 +23,11 @@
 ///     adc_max_counts: 4095,        // 12-bit ADC
 ///     initial_vbus_volts: 12.0,    // Default VBUS assumption
 ///     max_iq_target_a: 10.0,       // Max torque current
+///     // Fault thresholds
+///     max_phase_current_a: 40.0,   // Peak phase current limit
+///     max_vbus_mv: 60_000,         // Overvoltage at 60V
+///     min_vbus_mv: 8_000,          // Undervoltage at 8V
+///     max_fet_temp_c: 100.0,       // FET overtemp at 100°C
 /// };
 /// ```
 #[derive(Clone, Copy, Debug)]
@@ -41,6 +46,16 @@ pub struct BoardConfig {
     pub initial_vbus_volts: f32,
     /// Maximum q-axis current target in Amperes
     pub max_iq_target_a: f32,
+
+    // Fault thresholds
+    /// Maximum peak phase current in Amperes (instantaneous trip)
+    pub max_phase_current_a: f32,
+    /// Maximum DC bus voltage in millivolts (overvoltage threshold)
+    pub max_vbus_mv: u32,
+    /// Minimum DC bus voltage in millivolts (undervoltage threshold)
+    pub min_vbus_mv: u32,
+    /// Maximum FET temperature in Celsius (overtemperature threshold)
+    pub max_fet_temp_c: f32,
 }
 
 impl BoardConfig {
@@ -155,6 +170,11 @@ mod tests {
         adc_max_counts: 4095,
         initial_vbus_volts: 12.0,
         max_iq_target_a: 10.0,
+        // Fault thresholds
+        max_phase_current_a: 40.0,
+        max_vbus_mv: 60_000,
+        min_vbus_mv: 8_000,
+        max_fet_temp_c: 100.0,
     };
 
     #[test]

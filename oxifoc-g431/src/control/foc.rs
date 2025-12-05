@@ -9,10 +9,11 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::FocController;
+use oxifoc_core::foc::fault::{FaultKind, VOLTAGE_HYSTERESIS_MV};
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
-use oxifoc_core::state;
+use oxifoc_core::state::{self, FAULT_REGISTRY};
 
 use crate::config::{BOARD, NTC, PWM_CONFIG};
 use crate::motor::MotorPwm;
@@ -90,6 +91,51 @@ pub async fn init(
     defmt::info!("FOC driver initialized and calibrated");
 }
 
+// ========== Fault Detection ==========
+
+/// Check voltage faults (overvoltage / undervoltage)
+///
+/// Sets fault if out of range. Clears undervoltage (recoverable) if back in range with hysteresis.
+#[inline]
+fn check_voltage_faults(vbus_mv: u32) {
+    // Overvoltage check
+    if vbus_mv > BOARD.max_vbus_mv && !FAULT_REGISTRY.is_set(FaultKind::OverVoltage) {
+        state::set_fault(FaultKind::OverVoltage);
+    }
+
+    // Undervoltage check (recoverable with hysteresis)
+    if vbus_mv < BOARD.min_vbus_mv && !FAULT_REGISTRY.is_set(FaultKind::UnderVoltage) {
+        state::set_fault(FaultKind::UnderVoltage);
+    } else if vbus_mv > BOARD.min_vbus_mv + VOLTAGE_HYSTERESIS_MV
+        && FAULT_REGISTRY.is_set(FaultKind::UnderVoltage)
+    {
+        // Auto-recover undervoltage (it's recoverable)
+        state::clear_fault(FaultKind::UnderVoltage);
+    }
+}
+
+/// Check temperature fault (FET overtemperature)
+#[inline]
+fn check_temperature_fault(temp_c_x10: u16) {
+    let temp_c = temp_c_x10 as f32 / 10.0;
+    if temp_c > BOARD.max_fet_temp_c && !FAULT_REGISTRY.is_set(FaultKind::OverTemp) {
+        state::set_fault(FaultKind::OverTemp);
+    }
+}
+
+/// Check phase current faults (overcurrent)
+///
+/// Instantaneous trip if any phase exceeds limit.
+#[inline]
+fn check_current_faults(ia: f32, ib: f32, ic: f32) {
+    let limit = BOARD.max_phase_current_a;
+    if (ia.abs() > limit || ib.abs() > limit || ic.abs() > limit)
+        && !FAULT_REGISTRY.is_set(FaultKind::OverCurrent)
+    {
+        state::set_fault(FaultKind::OverCurrent);
+    }
+}
+
 // ========== ADC Interrupt Handler ==========
 
 /// ADC1/ADC2 shared interrupt: read all injected ADC samples and run FOC control.
@@ -146,6 +192,10 @@ fn ADC1_2() {
         }
     });
 
+    // === Fault detection (voltage and temperature) ===
+    check_voltage_faults(vbus_mv);
+    check_temperature_fault(temp_c_x10);
+
     // Get current timestamp for FOC and phase manager
     let now_ticks = embassy_time::Instant::now().as_ticks();
 
@@ -157,7 +207,7 @@ fn ADC1_2() {
     // Get Hall snapshot
     let hall_snapshot = crate::sensors::hall::get_snapshot(now_ticks);
 
-    // Run FOC control loop
+    // Run FOC control loop (skip if faulted with non-recoverable fault)
     let foc_telem = FOC_DRIVER.lock(|cell| {
         if let Some(driver) = cell.borrow_mut().as_mut() {
             // Update bus voltage
@@ -166,9 +216,21 @@ fn ADC1_2() {
             // Process commands from core state channel
             let mode = state::process_commands(driver);
 
+            // If faulted, disable outputs and skip FOC step
+            if FAULT_REGISTRY.any() {
+                if mode != ControlMode::Stopped {
+                    driver.set_mode(ControlMode::Stopped);
+                }
+                return None;
+            }
+
             // Run FOC step (dt is stored in driver from PWM_CONFIG)
             match driver.step(now_ticks) {
-                Ok(telem) => Some(telem),
+                Ok(telem) => {
+                    // Check phase currents for overcurrent (instantaneous)
+                    check_current_faults(telem.ia, telem.ib, telem.ic);
+                    Some(telem)
+                }
                 Err(_) => {
                     // Sensor not ready or other error - disable outputs
                     if mode != ControlMode::Stopped {

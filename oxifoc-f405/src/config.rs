@@ -14,6 +14,8 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 /// - DRV8301 amp gain: 10 V/V (for Cheap FOCer 2 v1.0, 20 V/V for v0.9)
 /// - ADC: 12-bit with 3.3V reference
 /// - VBUS divider: 39k / 2.2k = (39 + 2.2) / 2.2 ratio
+/// - Max continuous current: ~60A (FET rating, IRFS7530)
+/// - Max VBUS: 60V (FET Vds rating with margin)
 pub const BOARD: BoardConfig = BoardConfig {
     shunt_ohms: 0.0005,                     // 0.5mΩ (two 1mΩ in parallel)
     amp_gain: 10.0,                         // DRV8301 10 V/V gain
@@ -22,6 +24,11 @@ pub const BOARD: BoardConfig = BoardConfig {
     adc_max_counts: 4095,                   // 12-bit
     initial_vbus_volts: 12.0,               // Conservative default
     max_iq_target_a: 10.0,                  // Max torque current
+    // Fault thresholds
+    max_phase_current_a: 60.0, // Peak phase current limit (FET rating)
+    max_vbus_mv: 60_000,       // Overvoltage at 60V (12S LiPo max)
+    min_vbus_mv: 8_000,        // Undervoltage at 8V
+    max_fet_temp_c: 100.0,     // FET overtemp at 100°C
 };
 
 /// On-board PCB/FET NTC thermistor configuration (PA3, ADC123_IN3)

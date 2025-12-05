@@ -19,13 +19,13 @@
 
 use core::pin::pin;
 
-use embassy_futures::join::join4;
+use embassy_futures::join::join5;
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
 use crate::foc::hall_sensor::Direction;
 use crate::icd::{
-    AdcSample, AdcSampleEndpoint, ControlMode, DeviceInfo, HallSensorData, HallSensorEndpoint,
-    InfoEndpoint, MotorEndpoint,
+    AdcSample, AdcSampleEndpoint, ControlMode, DeviceInfo, FaultEndpoint, FaultRequest,
+    FaultResponse, HallSensorData, HallSensorEndpoint, InfoEndpoint, MotorEndpoint,
 };
 use crate::state;
 
@@ -145,6 +145,45 @@ where
     }
 }
 
+/// Fault management server - handles fault queries and clear requests
+///
+/// Allows host to read current fault state and clear faults.
+pub async fn fault_server<NS, const N: usize>(endpoints: Endpoints<NS>)
+where
+    NS: NetStackHandle,
+{
+    let server = endpoints.bounded_server::<FaultEndpoint, N>(Some("fault"));
+    let server = pin!(server);
+    let mut h = server.attach();
+
+    loop {
+        let _ = h
+            .serve(|req: &FaultRequest| {
+                // Handle clear requests
+                if req.clear_all {
+                    state::clear_all_faults();
+                } else if let Some(mask) = req.clear_mask {
+                    state::FAULT_REGISTRY.clear_mask(mask);
+                }
+
+                // Build response
+                let active = state::fault_bits();
+                let primary = state::FAULT_REGISTRY
+                    .active_faults()
+                    .next()
+                    .map(crate::types::FaultCode::from);
+
+                async move {
+                    FaultResponse {
+                        active_faults: active,
+                        primary_fault: primary,
+                    }
+                }
+            })
+            .await;
+    }
+}
+
 /// Run all protocol servers concurrently in a single task
 ///
 /// This is the recommended way to run servers - it uses `join` to run
@@ -177,11 +216,12 @@ pub async fn run_all_servers<NS>(endpoints: Endpoints<NS>, device_info: DeviceIn
 where
     NS: NetStackHandle + Clone,
 {
-    join4(
+    join5(
         info_server::<NS, 2>(endpoints.clone(), device_info),
         hall_sensor_server::<NS, 2>(endpoints.clone()),
         adc_sample_server::<NS, 2>(endpoints.clone()),
-        motor_command_server::<NS, 2>(endpoints),
+        motor_command_server::<NS, 2>(endpoints.clone()),
+        fault_server::<NS, 2>(endpoints),
     )
     .await;
 }

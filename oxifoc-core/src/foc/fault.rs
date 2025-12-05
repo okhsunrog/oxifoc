@@ -21,7 +21,9 @@ pub enum FaultKind {
     DriverFault = 4,
     CalibrationFailed = 5,
     CommsTimeout = 6,
-    Unknown = 7,
+    HallSensorError = 7,
+    Stall = 8,
+    Unknown = 15,
 }
 
 /// Action to take when a fault occurs
@@ -41,7 +43,7 @@ impl FaultKind {
     ///
     /// Returns the recommended safety action. Platforms can override
     /// specific fault actions via `FaultHandler`.
-    pub fn default_action(self) -> FaultAction {
+    pub const fn default_action(self) -> FaultAction {
         match self {
             FaultKind::OverCurrent => FaultAction::EmergencyStop,
             FaultKind::OverVoltage => FaultAction::DisableOutput,
@@ -50,10 +52,30 @@ impl FaultKind {
             FaultKind::DriverFault => FaultAction::EmergencyStop,
             FaultKind::CalibrationFailed => FaultAction::Log,
             FaultKind::CommsTimeout => FaultAction::Log,
+            FaultKind::HallSensorError => FaultAction::DisableOutput,
+            FaultKind::Stall => FaultAction::DisableOutput,
             FaultKind::Unknown => FaultAction::DisableOutput,
         }
     }
+
+    /// Returns true if this fault can auto-clear when condition resolves.
+    ///
+    /// Recoverable faults (undervoltage, comms timeout) will automatically
+    /// clear when the fault condition is no longer present.
+    /// Non-recoverable faults (overcurrent, overtemp, driver fault) require
+    /// explicit host command to clear.
+    pub const fn is_recoverable(self) -> bool {
+        matches!(self, FaultKind::UnderVoltage | FaultKind::CommsTimeout)
+    }
 }
+
+// ============================================================================
+// Hysteresis constants for auto-recovery
+// ============================================================================
+
+/// Voltage hysteresis in millivolts.
+/// Undervoltage clears when Vbus > min_vbus_mv + VOLTAGE_HYSTERESIS_MV
+pub const VOLTAGE_HYSTERESIS_MV: u32 = 500;
 
 /// Bitmask helper for a fault flag.
 const fn bit(kind: FaultKind) -> u32 {
@@ -144,16 +166,7 @@ impl FaultRegistry {
         }
 
         // Check each fault and handle active ones
-        for fault in [
-            FaultKind::OverCurrent,
-            FaultKind::OverVoltage,
-            FaultKind::UnderVoltage,
-            FaultKind::OverTemp,
-            FaultKind::DriverFault,
-            FaultKind::CalibrationFailed,
-            FaultKind::CommsTimeout,
-            FaultKind::Unknown,
-        ] {
+        for fault in Self::ALL_FAULTS {
             if self.is_set(fault) {
                 let action = handler.get_action(fault);
                 handler.handle_fault(fault, action);
@@ -163,6 +176,25 @@ impl FaultRegistry {
         true
     }
 
+    /// Clear faults by bitmask
+    pub fn clear_mask(&self, mask: u32) {
+        self.flags.fetch_and(!mask, Ordering::Relaxed);
+    }
+
+    /// All fault kinds for iteration
+    const ALL_FAULTS: [FaultKind; 10] = [
+        FaultKind::OverCurrent,
+        FaultKind::OverVoltage,
+        FaultKind::UnderVoltage,
+        FaultKind::OverTemp,
+        FaultKind::DriverFault,
+        FaultKind::CalibrationFailed,
+        FaultKind::CommsTimeout,
+        FaultKind::HallSensorError,
+        FaultKind::Stall,
+        FaultKind::Unknown,
+    ];
+
     /// Raw fault bitfield (useful for telemetry).
     pub fn bits(&self) -> u32 {
         self.flags.load(Ordering::Relaxed)
@@ -171,18 +203,7 @@ impl FaultRegistry {
     /// Get iterator over active faults
     pub fn active_faults(&self) -> impl Iterator<Item = FaultKind> {
         let bits = self.bits();
-        [
-            FaultKind::OverCurrent,
-            FaultKind::OverVoltage,
-            FaultKind::UnderVoltage,
-            FaultKind::OverTemp,
-            FaultKind::DriverFault,
-            FaultKind::CalibrationFailed,
-            FaultKind::CommsTimeout,
-            FaultKind::Unknown,
-        ]
-        .into_iter()
-        .filter(move |&fault| {
+        Self::ALL_FAULTS.into_iter().filter(move |&fault| {
             let mask = bit(fault);
             bits & mask != 0
         })

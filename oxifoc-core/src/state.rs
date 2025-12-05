@@ -48,6 +48,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::watch::Watch;
 
 use crate::foc::controller::FocTelemetry;
+use crate::foc::fault::{FaultKind, FaultRegistry};
 use crate::foc::phase::PhaseProvider;
 use crate::foc::pwm::PhasePwm;
 use crate::foc::sensors::CurrentSensor;
@@ -68,6 +69,9 @@ pub static TELEMETRY: Watch<CriticalSectionRawMutex, FocTelemetry, 2> = Watch::n
 /// Global motor state - owned by core, updated by platform ISR
 pub static STATE: CriticalSectionMutex<RefCell<MotorControlState>> =
     CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+
+/// Global fault registry - atomic, ISR-safe
+pub static FAULT_REGISTRY: FaultRegistry = FaultRegistry::new();
 
 // ============================================================================
 // State Structure
@@ -111,10 +115,18 @@ impl MotorControlState {
 
     /// Get current motor status for protocol response
     pub fn status(&self) -> MotorStatus {
+        let fault_bits = FAULT_REGISTRY.bits();
+        // Get primary fault from registry if any
+        let fault = FAULT_REGISTRY
+            .active_faults()
+            .next()
+            .map(FaultCode::from)
+            .or(self.fault);
         MotorStatus {
             state: self.motor_state,
             mode: self.control_mode,
-            fault: self.fault,
+            fault,
+            fault_bits,
         }
     }
 
@@ -263,5 +275,48 @@ pub fn is_link_active() -> bool {
 pub fn set_link_active() {
     critical_section::with(|cs| {
         STATE.borrow(cs).borrow_mut().set_link_active();
+    });
+}
+
+// ============================================================================
+// Fault Management
+// ============================================================================
+
+/// Check if any fault is active
+pub fn any_fault() -> bool {
+    FAULT_REGISTRY.any()
+}
+
+/// Get current fault bits
+pub fn fault_bits() -> u32 {
+    FAULT_REGISTRY.bits()
+}
+
+/// Clear all faults and return motor to stopped state
+pub fn clear_all_faults() {
+    FAULT_REGISTRY.clear_all();
+    critical_section::with(|cs| {
+        STATE.borrow(cs).borrow_mut().clear_fault();
+    });
+}
+
+/// Clear specific fault
+pub fn clear_fault(kind: FaultKind) {
+    FAULT_REGISTRY.clear(kind);
+    // If no more faults, clear error state
+    if !FAULT_REGISTRY.any() {
+        critical_section::with(|cs| {
+            STATE.borrow(cs).borrow_mut().clear_fault();
+        });
+    }
+}
+
+/// Set a fault (for use from ISR or fault detection)
+pub fn set_fault(kind: FaultKind) {
+    FAULT_REGISTRY.set(kind);
+    critical_section::with(|cs| {
+        let mut state = STATE.borrow(cs).borrow_mut();
+        state.motor_state = MotorState::Error;
+        state.fault = Some(FaultCode::from(kind));
     });
 }

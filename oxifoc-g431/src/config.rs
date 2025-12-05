@@ -14,6 +14,8 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 /// - OPAMP gain: 16x (configured in hardware/peripherals.rs)
 /// - ADC: 12-bit with 3.3V reference
 /// - VBUS divider: 169k (top, R68) / 18k (bottom, R76) = 187/18 ratio
+/// - Max continuous current: ~40A (FET rating)
+/// - Max VBUS: 45V (FET Vds rating with margin)
 pub const BOARD: BoardConfig = BoardConfig {
     shunt_ohms: 0.003,                // 3mΩ
     amp_gain: 16.0,                   // 16x OPAMP gain
@@ -22,6 +24,11 @@ pub const BOARD: BoardConfig = BoardConfig {
     adc_max_counts: 4095,             // 12-bit
     initial_vbus_volts: 12.0,         // Conservative default
     max_iq_target_a: 10.0,            // Max torque current
+    // Fault thresholds
+    max_phase_current_a: 40.0, // Peak phase current limit (FET rating)
+    max_vbus_mv: 45_000,       // Overvoltage at 45V (FET Vds margin)
+    min_vbus_mv: 8_000,        // Undervoltage at 8V
+    max_fet_temp_c: 100.0,     // FET overtemp at 100°C
 };
 
 /// NTC configuration for FET temperature sensing on PB14

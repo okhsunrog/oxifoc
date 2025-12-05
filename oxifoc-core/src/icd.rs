@@ -14,9 +14,10 @@
 //! |----------|---------|----------|-------|-------------|
 //! | `ButtonEndpoint` | `ButtonEvent` | `()` | `event/button` | Button events from device |
 //! | `InfoEndpoint` | `()` | `DeviceInfo` | `req/device_info` | Device information query |
-//! | `MotorEndpoint` | `MotorCommand` | `MotorStatus` | `cmd/motor` | Motor control commands |
+//! | `MotorEndpoint` | `ControlMode` | `MotorStatus` | `cmd/motor` | Motor control commands |
 //! | `AdcSampleEndpoint` | `()` | `AdcSample` | `req/adc` | ADC sample poll |
 //! | `HallSensorEndpoint` | `()` | `HallSensorData` | `req/hall` | Hall sensor data poll |
+//! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | `cmd/fault` | Fault query/clear |
 
 use ergot::endpoint;
 
@@ -46,6 +47,10 @@ endpoint!(AdcSampleEndpoint, (), AdcSample, "req/adc");
 // Hall sensor endpoint (host → device)
 // Host polls device for Hall sensor data (angle, direction, state).
 endpoint!(HallSensorEndpoint, (), HallSensorData, "req/hall");
+
+// Fault management endpoint (host → device)
+// Host queries/clears faults. Responds with current fault state.
+endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
 
 // ============================================================================
 // Future endpoints (placeholders)

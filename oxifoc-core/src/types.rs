@@ -126,8 +126,10 @@ pub struct MotorStatus {
     pub state: MotorState,
     /// Current control mode
     pub mode: ControlMode,
-    /// Active fault code (if any)
+    /// Primary/first active fault code (if any)
     pub fault: Option<FaultCode>,
+    /// Full fault bitmask (all active faults)
+    pub fault_bits: u32,
 }
 
 /// Hall sensor telemetry data
@@ -195,8 +197,70 @@ pub enum ButtonEvent {
 }
 
 // ============================================================================
+// Fault Management Types
+// ============================================================================
+
+/// Fault management request
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct FaultRequest {
+    /// If true, clear all clearable faults
+    pub clear_all: bool,
+    /// Optional: clear only faults matching this bitmask
+    pub clear_mask: Option<u32>,
+}
+
+/// Fault management response
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct FaultResponse {
+    /// Currently active faults (bitmask)
+    pub active_faults: u32,
+    /// Primary fault code (first active fault)
+    pub primary_fault: Option<FaultCode>,
+}
+
+// ============================================================================
 // Conversion helpers
 // ============================================================================
+
+// FaultKind <-> FaultCode conversions
+use crate::foc::fault::FaultKind;
+
+impl From<FaultKind> for FaultCode {
+    fn from(kind: FaultKind) -> Self {
+        match kind {
+            FaultKind::OverCurrent => FaultCode::OverCurrent,
+            FaultKind::OverVoltage => FaultCode::OverVoltage,
+            FaultKind::UnderVoltage => FaultCode::UnderVoltage,
+            FaultKind::OverTemp => FaultCode::OverTemperature,
+            FaultKind::DriverFault => FaultCode::HardwareFault,
+            FaultKind::CalibrationFailed => FaultCode::CalibrationRequired,
+            FaultKind::CommsTimeout => FaultCode::CommTimeout,
+            FaultKind::HallSensorError => FaultCode::HallSensorError,
+            FaultKind::Stall => FaultCode::Stall,
+            FaultKind::Unknown => FaultCode::HardwareFault,
+        }
+    }
+}
+
+impl From<FaultCode> for Option<FaultKind> {
+    fn from(code: FaultCode) -> Self {
+        match code {
+            FaultCode::None => None,
+            FaultCode::OverCurrent => Some(FaultKind::OverCurrent),
+            FaultCode::OverVoltage => Some(FaultKind::OverVoltage),
+            FaultCode::UnderVoltage => Some(FaultKind::UnderVoltage),
+            FaultCode::OverTemperature => Some(FaultKind::OverTemp),
+            FaultCode::HallSensorError => Some(FaultKind::HallSensorError),
+            FaultCode::EncoderError => Some(FaultKind::Unknown), // No encoder fault in FaultKind
+            FaultCode::CommTimeout => Some(FaultKind::CommsTimeout),
+            FaultCode::Stall => Some(FaultKind::Stall),
+            FaultCode::CalibrationRequired => Some(FaultKind::CalibrationFailed),
+            FaultCode::HardwareFault => Some(FaultKind::DriverFault),
+        }
+    }
+}
 
 impl MotorState {
     /// Convert from u8 (for atomic storage)
