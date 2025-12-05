@@ -1,71 +1,349 @@
 //! Fault handling for motor control systems
 //!
-//! Provides a shared fault registry and action policies for handling
-//! hardware faults consistently across platforms.
+//! Provides a flexible fault registry that platforms can extend with their own fault types.
+//! Platform crates define their own fault enums (with associated data if needed) and
+//! the registry stores them for ISR-safe access.
 //!
-//! Platform crates map hardware-specific conditions (overcurrent, driver fault,
-//! undervoltage, overtemperature, calibration failure, etc.) into this
-//! registry so the control loop and host telemetry can react consistently.
+//! # Example Platform Fault Type
+//!
+//! ```ignore
+//! use drv8301_dd::FaultStatus;
+//!
+//! #[derive(Clone, Copy, PartialEq)]
+//! pub enum MyPlatformFault {
+//!     OverCurrent,
+//!     OverVoltage,
+//!     UnderVoltage,
+//!     OverTemp,
+//!     HallSensorError,
+//!     DrvFault(FaultStatus),  // Contains full driver fault details!
+//! }
+//! ```
 
-use core::sync::atomic::{AtomicU32, Ordering};
+#[cfg(feature = "runtime")]
+use core::cell::RefCell;
+#[cfg(feature = "runtime")]
+use embassy_sync::blocking_mutex::CriticalSectionMutex;
+#[cfg(feature = "runtime")]
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+#[cfg(feature = "runtime")]
+use embassy_sync::signal::Signal;
+#[cfg(feature = "runtime")]
+use heapless::Vec;
 
-/// Fault categories understood by the control stack.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use heapless::String;
+use postcard_schema::Schema;
+use serde::{Deserialize, Serialize};
+
+// ============================================================================
+// Protocol Fault Type (fixed, for wire protocol)
+// ============================================================================
+
+/// Protocol-level fault categories
+///
+/// This is the fixed set of fault categories used in the wire protocol.
+/// Platforms map their rich fault types to these categories.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum FaultKind {
-    OverCurrent = 0,
-    OverVoltage = 1,
-    UnderVoltage = 2,
-    OverTemp = 3,
-    DriverFault = 4,
-    CalibrationFailed = 5,
-    CommsTimeout = 6,
-    HallSensorError = 7,
-    Stall = 8,
-    Unknown = 15,
+pub enum FaultCategory {
+    /// No fault
+    #[default]
+    None,
+    /// Over-current detected
+    OverCurrent,
+    /// Over-voltage on DC bus
+    OverVoltage,
+    /// Under-voltage on DC bus
+    UnderVoltage,
+    /// Over-temperature (FET or motor)
+    OverTemp,
+    /// Gate driver fault (DRV8301, etc.)
+    DriverFault,
+    /// Hall sensor error
+    HallError,
+    /// Motor stalled
+    Stall,
+    /// Calibration required or failed
+    CalibrationFault,
+    /// Communication timeout
+    CommTimeout,
 }
 
-/// Action to take when a fault occurs
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Fault information for protocol transmission
+///
+/// Contains a category (fixed enum) plus a human-readable detail string
+/// that platforms can populate with specific information.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum FaultAction {
-    /// Log the fault but continue operation
-    Log,
-    /// Disable PWM outputs but keep control loop running
-    DisableOutput,
-    /// Emergency stop - halt all operations
-    EmergencyStop,
+pub struct FaultInfo {
+    /// Fault category
+    pub category: FaultCategory,
+    /// Human-readable details (platform-specific)
+    pub details: String<128>,
 }
 
-impl FaultKind {
-    /// Get the default action for this fault type
-    ///
-    /// Returns the recommended safety action. Platforms can override
-    /// specific fault actions via `FaultHandler`.
-    pub const fn default_action(self) -> FaultAction {
-        match self {
-            FaultKind::OverCurrent => FaultAction::EmergencyStop,
-            FaultKind::OverVoltage => FaultAction::DisableOutput,
-            FaultKind::UnderVoltage => FaultAction::DisableOutput,
-            FaultKind::OverTemp => FaultAction::DisableOutput,
-            FaultKind::DriverFault => FaultAction::EmergencyStop,
-            FaultKind::CalibrationFailed => FaultAction::Log,
-            FaultKind::CommsTimeout => FaultAction::Log,
-            FaultKind::HallSensorError => FaultAction::DisableOutput,
-            FaultKind::Stall => FaultAction::DisableOutput,
-            FaultKind::Unknown => FaultAction::DisableOutput,
+impl FaultInfo {
+    /// Create a new fault info with category and details
+    pub fn new(category: FaultCategory, details: &str) -> Self {
+        let mut s = String::new();
+        let _ = s.push_str(details);
+        Self {
+            category,
+            details: s,
         }
     }
 
-    /// Returns true if this fault can auto-clear when condition resolves.
+    /// Create a fault info with just a category (no details)
+    pub fn from_category(category: FaultCategory) -> Self {
+        Self {
+            category,
+            details: String::new(),
+        }
+    }
+}
+
+// ============================================================================
+// Platform Fault Trait
+// ============================================================================
+
+/// Platform-specific fault type
+///
+/// Platforms implement this trait for their fault enum, which can contain
+/// associated data (e.g., `DrvFault(FaultStatus)`).
+///
+/// # Example
+///
+/// ```ignore
+/// impl PlatformFault for MyPlatformFault {
+///     fn category(&self) -> FaultCategory {
+///         match self {
+///             MyPlatformFault::OverCurrent => FaultCategory::OverCurrent,
+///             MyPlatformFault::DrvFault(_) => FaultCategory::DriverFault,
+///             // ...
+///         }
+///     }
+///
+///     fn details(&self) -> String<128> {
+///         match self {
+///             MyPlatformFault::DrvFault(status) => {
+///                 let mut s = String::new();
+///                 if status.fetha_oc { s.push_str("PhA_OC "); }
+///                 if status.otsd { s.push_str("ThermalShutdown "); }
+///                 // ...
+///                 s
+///             }
+///             _ => String::new(),
+///         }
+///     }
+///
+///     fn is_recoverable(&self) -> bool {
+///         matches!(self, MyPlatformFault::UnderVoltage)
+///     }
+///
+///     fn is_critical(&self) -> bool {
+///         matches!(self, MyPlatformFault::OverCurrent | MyPlatformFault::DrvFault(_))
+///     }
+/// }
+/// ```
+pub trait PlatformFault: Copy + Clone + PartialEq {
+    /// Get the protocol-level fault category
+    fn category(&self) -> FaultCategory;
+
+    /// Get human-readable details about this fault
     ///
-    /// Recoverable faults (undervoltage, comms timeout) will automatically
-    /// clear when the fault condition is no longer present.
-    /// Non-recoverable faults (overcurrent, overtemp, driver fault) require
-    /// explicit host command to clear.
-    pub const fn is_recoverable(self) -> bool {
-        matches!(self, FaultKind::UnderVoltage | FaultKind::CommsTimeout)
+    /// For driver faults, this might include specific flags like
+    /// "PhaseA_OC ThermalWarning GVDD_UV"
+    fn details(&self) -> String<128>;
+
+    /// Convert to protocol fault info
+    fn to_fault_info(&self) -> FaultInfo {
+        FaultInfo {
+            category: self.category(),
+            details: self.details(),
+        }
+    }
+
+    /// Returns true if this fault can auto-clear when condition resolves
+    fn is_recoverable(&self) -> bool;
+
+    /// Returns true if this fault requires immediate motor shutdown
+    fn is_critical(&self) -> bool;
+}
+
+// ============================================================================
+// Fault Registry (requires runtime feature)
+// ============================================================================
+
+/// Maximum number of simultaneous faults
+#[cfg(feature = "runtime")]
+pub const MAX_FAULTS: usize = 16;
+
+/// Fault registry that stores platform-specific faults with their data
+///
+/// This is ISR-safe and can be used from both interrupts and tasks.
+/// Faults are stored in a heapless Vec with their associated data.
+#[cfg(feature = "runtime")]
+pub struct FaultRegistry<F: PlatformFault> {
+    /// Active faults (protected by critical section)
+    faults: CriticalSectionMutex<RefCell<Vec<F, MAX_FAULTS>>>,
+    /// Signal to wake tasks when faults change
+    changed: Signal<CriticalSectionRawMutex, ()>,
+}
+
+#[cfg(feature = "runtime")]
+impl<F: PlatformFault> FaultRegistry<F> {
+    /// Create a new fault registry
+    pub const fn new() -> Self {
+        Self {
+            faults: CriticalSectionMutex::new(RefCell::new(Vec::new())),
+            changed: Signal::new(),
+        }
+    }
+
+    /// Set a fault (adds if not already present, or updates if category matches)
+    ///
+    /// Returns true if the fault was newly added (not already present).
+    pub fn set(&self, fault: F) -> bool {
+        let newly_added = self.faults.lock(|cell| {
+            let mut faults = cell.borrow_mut();
+            let cat = fault.category();
+
+            // Check if this fault category is already present
+            if let Some(pos) = faults.iter().position(|f| f.category() == cat) {
+                // Update existing fault with new data
+                faults[pos] = fault;
+                false
+            } else {
+                // Add new fault
+                faults.push(fault).is_ok()
+            }
+        });
+
+        if newly_added {
+            self.changed.signal(());
+        }
+
+        newly_added
+    }
+
+    /// Clear a specific fault by category
+    pub fn clear(&self, category: FaultCategory) {
+        let removed = self.faults.lock(|cell| {
+            let mut faults = cell.borrow_mut();
+            if let Some(pos) = faults.iter().position(|f| f.category() == category) {
+                faults.swap_remove(pos);
+                true
+            } else {
+                false
+            }
+        });
+
+        if removed {
+            self.changed.signal(());
+        }
+    }
+
+    /// Clear a specific fault by value
+    pub fn clear_fault(&self, fault: &F) {
+        self.clear(fault.category());
+    }
+
+    /// Clear all faults
+    pub fn clear_all(&self) {
+        let had_faults = self.faults.lock(|cell| {
+            let mut faults = cell.borrow_mut();
+            let had = !faults.is_empty();
+            faults.clear();
+            had
+        });
+
+        if had_faults {
+            self.changed.signal(());
+        }
+    }
+
+    /// Returns true if any fault is active
+    pub fn any(&self) -> bool {
+        self.faults.lock(|cell| !cell.borrow().is_empty())
+    }
+
+    /// Returns true if any critical fault is active
+    pub fn any_critical(&self) -> bool {
+        self.faults
+            .lock(|cell| cell.borrow().iter().any(|f| f.is_critical()))
+    }
+
+    /// Check if a specific fault category is active
+    pub fn has_category(&self, category: FaultCategory) -> bool {
+        self.faults
+            .lock(|cell| cell.borrow().iter().any(|f| f.category() == category))
+    }
+
+    /// Get a fault by category
+    pub fn get_by_category(&self, category: FaultCategory) -> Option<F> {
+        self.faults.lock(|cell| {
+            cell.borrow()
+                .iter()
+                .find(|f| f.category() == category)
+                .copied()
+        })
+    }
+
+    /// Get all faults as FaultInfo for protocol transmission
+    pub fn to_fault_info_vec(&self) -> Vec<FaultInfo, MAX_FAULTS> {
+        self.faults
+            .lock(|cell| cell.borrow().iter().map(|f| f.to_fault_info()).collect())
+    }
+
+    /// Get count of active faults
+    pub fn count(&self) -> usize {
+        self.faults.lock(|cell| cell.borrow().len())
+    }
+
+    /// Get a snapshot of all active faults
+    pub fn snapshot(&self) -> Vec<F, MAX_FAULTS> {
+        self.faults.lock(|cell| cell.borrow().clone())
+    }
+
+    /// Get the first fault (if any)
+    pub fn first(&self) -> Option<F> {
+        self.faults.lock(|cell| cell.borrow().first().copied())
+    }
+
+    /// Wait for fault state to change
+    pub async fn wait_for_change(&self) {
+        self.changed.wait().await;
+    }
+
+    /// Auto-clear all recoverable faults
+    ///
+    /// Call this when the fault condition is no longer present
+    /// (e.g., voltage back in range).
+    pub fn auto_clear_recoverable(&self) {
+        let changed = self.faults.lock(|cell| {
+            let mut faults = cell.borrow_mut();
+            let before = faults.len();
+            faults.retain(|f| !f.is_recoverable());
+            faults.len() != before
+        });
+
+        if changed {
+            self.changed.signal(());
+        }
+    }
+
+    /// Execute a closure with access to the fault list
+    ///
+    /// Useful for complex operations that need to inspect multiple faults.
+    pub fn with_faults<R>(&self, f: impl FnOnce(&Vec<F, MAX_FAULTS>) -> R) -> R {
+        self.faults.lock(|cell| f(&cell.borrow()))
+    }
+}
+
+#[cfg(feature = "runtime")]
+impl<F: PlatformFault> Default for FaultRegistry<F> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -76,142 +354,3 @@ impl FaultKind {
 /// Voltage hysteresis in millivolts.
 /// Undervoltage clears when Vbus > min_vbus_mv + VOLTAGE_HYSTERESIS_MV
 pub const VOLTAGE_HYSTERESIS_MV: u32 = 500;
-
-/// Bitmask helper for a fault flag.
-const fn bit(kind: FaultKind) -> u32 {
-    1u32 << kind as u8
-}
-
-/// Platform-specific fault handler trait
-///
-/// Implement this trait to define how your platform responds to faults.
-/// For example, disabling PWM, enabling brake resistor, triggering watchdog, etc.
-pub trait FaultHandler {
-    /// Handle a fault with the given action
-    ///
-    /// # Arguments
-    /// * `fault` - The fault that occurred
-    /// * `action` - The action to take (may be overridden by platform policy)
-    fn handle_fault(&mut self, fault: FaultKind, action: FaultAction);
-
-    /// Optional: Get platform-specific action for a fault
-    ///
-    /// Override this to customize fault actions. Default uses `FaultKind::default_action()`.
-    fn get_action(&self, fault: FaultKind) -> FaultAction {
-        fault.default_action()
-    }
-}
-
-/// Atomic fault registry (no_std friendly).
-///
-/// This can be placed in a `static` and shared across ISRs and tasks.
-/// Use with a `FaultHandler` implementation for active fault management.
-#[derive(Debug)]
-pub struct FaultRegistry {
-    flags: AtomicU32,
-}
-
-impl FaultRegistry {
-    /// Create a new registry with all faults cleared.
-    pub const fn new() -> Self {
-        Self {
-            flags: AtomicU32::new(0),
-        }
-    }
-
-    /// Set a fault bit.
-    pub fn set(&self, kind: FaultKind) {
-        let mask = bit(kind);
-        self.flags.fetch_or(mask, Ordering::Relaxed);
-    }
-
-    /// Set a fault and invoke handler
-    ///
-    /// This is the preferred method when a handler is available.
-    pub fn set_with_handler(&self, kind: FaultKind, handler: &mut impl FaultHandler) {
-        self.set(kind);
-        let action = handler.get_action(kind);
-        handler.handle_fault(kind, action);
-    }
-
-    /// Clear a fault bit.
-    pub fn clear(&self, kind: FaultKind) {
-        let mask = bit(kind);
-        self.flags.fetch_and(!mask, Ordering::Relaxed);
-    }
-
-    /// Clear all faults.
-    pub fn clear_all(&self) {
-        self.flags.store(0, Ordering::Relaxed);
-    }
-
-    /// Returns `true` if any fault is active.
-    pub fn any(&self) -> bool {
-        self.flags.load(Ordering::Relaxed) != 0
-    }
-
-    /// Returns `true` if the specific fault is set.
-    pub fn is_set(&self, kind: FaultKind) -> bool {
-        let mask = bit(kind);
-        self.flags.load(Ordering::Relaxed) & mask != 0
-    }
-
-    /// Check for any faults and invoke handler if needed
-    ///
-    /// Returns `true` if any fault is active.
-    pub fn check_and_handle(&self, handler: &mut impl FaultHandler) -> bool {
-        let bits = self.bits();
-        if bits == 0 {
-            return false;
-        }
-
-        // Check each fault and handle active ones
-        for fault in Self::ALL_FAULTS {
-            if self.is_set(fault) {
-                let action = handler.get_action(fault);
-                handler.handle_fault(fault, action);
-            }
-        }
-
-        true
-    }
-
-    /// Clear faults by bitmask
-    pub fn clear_mask(&self, mask: u32) {
-        self.flags.fetch_and(!mask, Ordering::Relaxed);
-    }
-
-    /// All fault kinds for iteration
-    const ALL_FAULTS: [FaultKind; 10] = [
-        FaultKind::OverCurrent,
-        FaultKind::OverVoltage,
-        FaultKind::UnderVoltage,
-        FaultKind::OverTemp,
-        FaultKind::DriverFault,
-        FaultKind::CalibrationFailed,
-        FaultKind::CommsTimeout,
-        FaultKind::HallSensorError,
-        FaultKind::Stall,
-        FaultKind::Unknown,
-    ];
-
-    /// Raw fault bitfield (useful for telemetry).
-    pub fn bits(&self) -> u32 {
-        self.flags.load(Ordering::Relaxed)
-    }
-
-    /// Get iterator over active faults
-    pub fn active_faults(&self) -> impl Iterator<Item = FaultKind> {
-        let bits = self.bits();
-        Self::ALL_FAULTS.into_iter().filter(move |&fault| {
-            let mask = bit(fault);
-            bits & mask != 0
-        })
-    }
-}
-
-impl Default for FaultRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}

@@ -9,15 +9,16 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::FocController;
-use oxifoc_core::foc::fault::{FaultKind, VOLTAGE_HYSTERESIS_MV};
+use oxifoc_core::foc::fault::{FaultCategory, VOLTAGE_HYSTERESIS_MV};
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
-use oxifoc_core::state::{self, FAULT_REGISTRY};
 
 use crate::config::{BOARD, NTC, PWM_CONFIG};
+use crate::fault::G431Fault;
 use crate::motor::MotorPwm;
 use crate::sensors::{G431CurrentSensor, G431CurrentSensorExt, HallAngleProxy};
+use crate::{FAULT_REGISTRY, STATE};
 
 // ========== ADC Sample Storage (Global Atomics) ==========
 
@@ -99,18 +100,18 @@ pub async fn init(
 #[inline]
 fn check_voltage_faults(vbus_mv: u32) {
     // Overvoltage check
-    if vbus_mv > BOARD.max_vbus_mv && !FAULT_REGISTRY.is_set(FaultKind::OverVoltage) {
-        state::set_fault(FaultKind::OverVoltage);
+    if vbus_mv > BOARD.max_vbus_mv && !FAULT_REGISTRY.has_category(FaultCategory::OverVoltage) {
+        FAULT_REGISTRY.set(G431Fault::OverVoltage);
     }
 
     // Undervoltage check (recoverable with hysteresis)
-    if vbus_mv < BOARD.min_vbus_mv && !FAULT_REGISTRY.is_set(FaultKind::UnderVoltage) {
-        state::set_fault(FaultKind::UnderVoltage);
+    if vbus_mv < BOARD.min_vbus_mv && !FAULT_REGISTRY.has_category(FaultCategory::UnderVoltage) {
+        FAULT_REGISTRY.set(G431Fault::UnderVoltage);
     } else if vbus_mv > BOARD.min_vbus_mv + VOLTAGE_HYSTERESIS_MV
-        && FAULT_REGISTRY.is_set(FaultKind::UnderVoltage)
+        && FAULT_REGISTRY.has_category(FaultCategory::UnderVoltage)
     {
         // Auto-recover undervoltage (it's recoverable)
-        state::clear_fault(FaultKind::UnderVoltage);
+        FAULT_REGISTRY.clear(FaultCategory::UnderVoltage);
     }
 }
 
@@ -118,8 +119,8 @@ fn check_voltage_faults(vbus_mv: u32) {
 #[inline]
 fn check_temperature_fault(temp_c_x10: u16) {
     let temp_c = temp_c_x10 as f32 / 10.0;
-    if temp_c > BOARD.max_fet_temp_c && !FAULT_REGISTRY.is_set(FaultKind::OverTemp) {
-        state::set_fault(FaultKind::OverTemp);
+    if temp_c > BOARD.max_fet_temp_c && !FAULT_REGISTRY.has_category(FaultCategory::OverTemp) {
+        FAULT_REGISTRY.set(G431Fault::OverTemp);
     }
 }
 
@@ -130,9 +131,9 @@ fn check_temperature_fault(temp_c_x10: u16) {
 fn check_current_faults(ia: f32, ib: f32, ic: f32) {
     let limit = BOARD.max_phase_current_a;
     if (ia.abs() > limit || ib.abs() > limit || ic.abs() > limit)
-        && !FAULT_REGISTRY.is_set(FaultKind::OverCurrent)
+        && !FAULT_REGISTRY.has_category(FaultCategory::OverCurrent)
     {
-        state::set_fault(FaultKind::OverCurrent);
+        FAULT_REGISTRY.set(G431Fault::OverCurrent);
     }
 }
 
@@ -214,7 +215,7 @@ fn ADC1_2() {
             driver.set_vbus(vbus_mv as f32 / 1000.0);
 
             // Process commands from core state channel
-            let mode = state::process_commands(driver);
+            let mode = oxifoc_core::state::process_commands(&STATE, driver);
 
             // If faulted, disable outputs and skip FOC step
             if FAULT_REGISTRY.any() {
@@ -246,6 +247,6 @@ fn ADC1_2() {
 
     // Update global state with telemetry
     if let Some(foc) = foc_telem {
-        state::update_telemetry(adc_snapshot, hall_snapshot, foc);
+        oxifoc_core::state::update_telemetry(&STATE, adc_snapshot, hall_snapshot, foc);
     }
 }

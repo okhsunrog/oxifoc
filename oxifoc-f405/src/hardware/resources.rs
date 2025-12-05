@@ -20,7 +20,8 @@ assign_resources! {
         pc11: PC11, // SPI3_MISO
         pc12: PC12, // SPI3_MOSI
         pb5: PB5,   // EN_GATE
-        pb7: PB7,   // nFAULT
+        pb7: PB7,   // nFAULT pin
+        exti7: EXTI7, // EXTI for nFAULT interrupt
     }
     hall: HallResources {
         pc6: PC6,   // Hall sensor 1

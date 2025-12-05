@@ -1298,6 +1298,7 @@ dependencies = [
  "assign-resources",
  "cortex-m",
  "cortex-m-rt",
+ "critical-section",
  "defmt 1.0.1",
  "drv8301-dd",
  "embassy-executor",

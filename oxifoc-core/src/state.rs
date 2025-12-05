@@ -1,44 +1,7 @@
 //! Motor state management
 //!
 //! This module provides centralized state management for motor control.
-//! Core owns the state, platforms update it via the provided methods.
-//!
-//! # Architecture
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────────────┐
-//! │                         oxifoc-core                             │
-//! │  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
-//! │  │  STATE (global) │  │  CMD_CHANNEL    │  │  TELEMETRY     │  │
-//! │  │  - motor_state  │  │  - ControlMode  │  │  - FocTelemetry│  │
-//! │  │  - fault        │  │                 │  │                │  │
-//! │  │  - hall/adc     │  │                 │  │                │  │
-//! │  └────────┬────────┘  └────────┬────────┘  └────────┬───────┘  │
-//! │           │                    │                    │          │
-//! │           ▼                    ▼                    ▼          │
-//! │  ┌─────────────────────────────────────────────────────────┐   │
-//! │  │                      Servers                             │   │
-//! │  │   (access STATE directly, send to CMD_CHANNEL)          │   │
-//! │  └─────────────────────────────────────────────────────────┘   │
-//! └─────────────────────────────────────────────────────────────────┘
-//!                              │
-//!                    platform calls
-//!                              ▼
-//! ┌─────────────────────────────────────────────────────────────────┐
-//! │                         Platform                                │
-//! │  ┌──────────────────────────────────────────────────────────┐  │
-//! │  │                        ADC ISR                            │  │
-//! │  │   1. Read ADC → AdcSample                                 │  │
-//! │  │   2. core::process_commands(&mut foc_driver)              │  │
-//! │  │   3. foc_driver.step() if running                         │  │
-//! │  │   4. core::update_telemetry(...)                          │  │
-//! │  └──────────────────────────────────────────────────────────┘  │
-//! │  ┌──────────────────────────────────────────────────────────┐  │
-//! │  │                     FocDriver<P,C,Ph>                     │  │
-//! │  │   (platform-specific, owns hardware)                      │  │
-//! │  └──────────────────────────────────────────────────────────┘  │
-//! └─────────────────────────────────────────────────────────────────┘
-//! ```
+//! Platforms instantiate the state with their own fault types.
 
 use core::cell::RefCell;
 
@@ -48,16 +11,15 @@ use embassy_sync::channel::Channel;
 use embassy_sync::watch::Watch;
 
 use crate::foc::controller::FocTelemetry;
-use crate::foc::fault::{FaultKind, FaultRegistry};
 use crate::foc::phase::PhaseProvider;
 use crate::foc::pwm::PhasePwm;
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
 use crate::motor::{ControlMode, FocDriver};
-use crate::types::{FaultCode, MotorState, MotorStatus};
+use crate::types::MotorState;
 
 // ============================================================================
-// Global State
+// Global Communication Channels
 // ============================================================================
 
 /// Command channel - servers send ControlMode here, ISR receives them
@@ -65,13 +27,6 @@ pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, ControlMode, 4> = Chann
 
 /// Telemetry watch - ISR broadcasts, streaming tasks can subscribe
 pub static TELEMETRY: Watch<CriticalSectionRawMutex, FocTelemetry, 2> = Watch::new();
-
-/// Global motor state - owned by core, updated by platform ISR
-pub static STATE: CriticalSectionMutex<RefCell<MotorControlState>> =
-    CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
-
-/// Global fault registry - atomic, ISR-safe
-pub static FAULT_REGISTRY: FaultRegistry = FaultRegistry::new();
 
 // ============================================================================
 // State Structure
@@ -87,8 +42,6 @@ pub struct MotorControlState {
     pub motor_state: MotorState,
     /// Current control mode
     pub control_mode: ControlMode,
-    /// Active fault (if any)
-    pub fault: Option<FaultCode>,
     /// Last Hall sensor snapshot
     pub last_hall: Option<HallSnapshot>,
     /// Last ADC snapshot
@@ -105,28 +58,10 @@ impl MotorControlState {
         Self {
             motor_state: MotorState::Stopped,
             control_mode: ControlMode::Stopped,
-            fault: None,
             last_hall: None,
             last_adc: AdcSnapshot::empty(),
             last_foc: FocTelemetry::empty(),
             link_active: false,
-        }
-    }
-
-    /// Get current motor status for protocol response
-    pub fn status(&self) -> MotorStatus {
-        let fault_bits = FAULT_REGISTRY.bits();
-        // Get primary fault from registry if any
-        let fault = FAULT_REGISTRY
-            .active_faults()
-            .next()
-            .map(FaultCode::from)
-            .or(self.fault);
-        MotorStatus {
-            state: self.motor_state,
-            mode: self.control_mode,
-            fault,
-            fault_bits,
         }
     }
 
@@ -143,14 +78,12 @@ impl MotorControlState {
     }
 
     /// Set motor to error state
-    pub fn set_error(&mut self, fault: FaultCode) {
+    pub fn set_error(&mut self) {
         self.motor_state = MotorState::Error;
-        self.fault = Some(fault);
     }
 
-    /// Clear fault and return to stopped state
-    pub fn clear_fault(&mut self) {
-        self.fault = None;
+    /// Clear error and return to stopped state
+    pub fn clear_error(&mut self) {
         self.motor_state = MotorState::Stopped;
         self.control_mode = ControlMode::Stopped;
     }
@@ -183,6 +116,33 @@ impl Default for MotorControlState {
 }
 
 // ============================================================================
+// Platform State - Platforms define this
+// ============================================================================
+
+/// Platform must define this macro to provide state globals
+///
+/// Example usage in platform crate:
+/// ```
+/// use oxifoc_core::define_platform_state;
+/// define_platform_state!(MyFault);
+/// ```
+#[macro_export]
+macro_rules! define_platform_state {
+    ($fault_type:ty) => {
+        /// Global motor state
+        pub static STATE: ::critical_section::Mutex<
+            ::core::cell::RefCell<$crate::state::MotorControlState>,
+        > = ::critical_section::Mutex::new(::core::cell::RefCell::new(
+            $crate::state::MotorControlState::new(),
+        ));
+
+        /// Global fault registry
+        pub static FAULT_REGISTRY: $crate::foc::fault::FaultRegistry<$fault_type> =
+            $crate::foc::fault::FaultRegistry::new();
+    };
+}
+
+// ============================================================================
 // Command Processing
 // ============================================================================
 
@@ -192,11 +152,15 @@ impl Default for MotorControlState {
 /// ControlMode commands and applies them to the driver.
 ///
 /// # Arguments
+/// * `state_mutex` - Reference to the platform STATE global
 /// * `foc` - Mutable reference to the FocDriver
 ///
 /// # Returns
 /// The current ControlMode after processing commands
-pub fn process_commands<P, C, Ph>(foc: &mut FocDriver<P, C, Ph>) -> ControlMode
+pub fn process_commands<P, C, Ph>(
+    state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
+    foc: &mut FocDriver<P, C, Ph>,
+) -> ControlMode
 where
     P: PhasePwm,
     C: CurrentSensor,
@@ -205,9 +169,9 @@ where
     // Process all pending commands
     while let Ok(mode) = CMD_CHANNEL.try_receive() {
         critical_section::with(|cs| {
-            let mut state = STATE.borrow(cs).borrow_mut();
+            let mut state = state_mutex.borrow(cs).borrow_mut();
 
-            // Can't change mode if in error state (must clear fault first via separate mechanism)
+            // Can't change mode if in error state (must clear fault first)
             if state.motor_state == MotorState::Error && mode != ControlMode::Stopped {
                 return;
             }
@@ -232,10 +196,15 @@ where
 ///
 /// Call this after running FOC step to update the global state
 /// with fresh telemetry data.
-pub fn update_telemetry(adc: AdcSnapshot, hall: Option<HallSnapshot>, foc: FocTelemetry) {
+pub fn update_telemetry(
+    state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
+    adc: AdcSnapshot,
+    hall: Option<HallSnapshot>,
+    foc: FocTelemetry,
+) {
     // Update state
     critical_section::with(|cs| {
-        let mut state = STATE.borrow(cs).borrow_mut();
+        let mut state = state_mutex.borrow(cs).borrow_mut();
         state.update_adc(adc);
         if let Some(h) = hall {
             state.update_hall(h);
@@ -245,78 +214,4 @@ pub fn update_telemetry(adc: AdcSnapshot, hall: Option<HallSnapshot>, foc: FocTe
 
     // Broadcast to any subscribers
     TELEMETRY.sender().send(foc);
-}
-
-// ============================================================================
-// State Access Helpers
-// ============================================================================
-
-/// Get current motor status (for server responses)
-pub fn motor_status() -> MotorStatus {
-    critical_section::with(|cs| STATE.borrow(cs).borrow().status())
-}
-
-/// Get last ADC snapshot
-pub fn adc_snapshot() -> AdcSnapshot {
-    critical_section::with(|cs| STATE.borrow(cs).borrow().last_adc.clone())
-}
-
-/// Get last Hall snapshot
-pub fn hall_snapshot() -> Option<HallSnapshot> {
-    critical_section::with(|cs| STATE.borrow(cs).borrow().last_hall)
-}
-
-/// Check if link is active
-pub fn is_link_active() -> bool {
-    critical_section::with(|cs| STATE.borrow(cs).borrow().link_active)
-}
-
-/// Mark link as active
-pub fn set_link_active() {
-    critical_section::with(|cs| {
-        STATE.borrow(cs).borrow_mut().set_link_active();
-    });
-}
-
-// ============================================================================
-// Fault Management
-// ============================================================================
-
-/// Check if any fault is active
-pub fn any_fault() -> bool {
-    FAULT_REGISTRY.any()
-}
-
-/// Get current fault bits
-pub fn fault_bits() -> u32 {
-    FAULT_REGISTRY.bits()
-}
-
-/// Clear all faults and return motor to stopped state
-pub fn clear_all_faults() {
-    FAULT_REGISTRY.clear_all();
-    critical_section::with(|cs| {
-        STATE.borrow(cs).borrow_mut().clear_fault();
-    });
-}
-
-/// Clear specific fault
-pub fn clear_fault(kind: FaultKind) {
-    FAULT_REGISTRY.clear(kind);
-    // If no more faults, clear error state
-    if !FAULT_REGISTRY.any() {
-        critical_section::with(|cs| {
-            STATE.borrow(cs).borrow_mut().clear_fault();
-        });
-    }
-}
-
-/// Set a fault (for use from ISR or fault detection)
-pub fn set_fault(kind: FaultKind) {
-    FAULT_REGISTRY.set(kind);
-    critical_section::with(|cs| {
-        let mut state = STATE.borrow(cs).borrow_mut();
-        state.motor_state = MotorState::Error;
-        state.fault = Some(FaultCode::from(kind));
-    });
 }

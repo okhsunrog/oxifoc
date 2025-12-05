@@ -26,11 +26,14 @@ use embassy_sync::watch::Watch;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::{FocController, FocTelemetry};
+use oxifoc_core::foc::fault::{FaultCategory, VOLTAGE_HYSTERESIS_MV};
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
 
+use crate::FAULT_REGISTRY;
 use crate::config::{BOARD, NTC_BOARD, NTC_MOTOR, PWM_CONFIG};
+use crate::fault::F405Fault;
 use crate::motor::MotorPwm;
 use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
 
@@ -280,6 +283,51 @@ pub fn duty_to_iq(duty: u8) -> f32 {
     BOARD.duty_to_iq(duty)
 }
 
+// ========== Fault Detection ==========
+
+/// Check voltage faults (overvoltage / undervoltage)
+///
+/// Sets fault if out of range. Clears undervoltage (recoverable) if back in range with hysteresis.
+#[inline]
+fn check_voltage_faults(vbus_mv: u32) {
+    // Overvoltage check
+    if vbus_mv > BOARD.max_vbus_mv && !FAULT_REGISTRY.has_category(FaultCategory::OverVoltage) {
+        FAULT_REGISTRY.set(F405Fault::OverVoltage);
+    }
+
+    // Undervoltage check (recoverable with hysteresis)
+    if vbus_mv < BOARD.min_vbus_mv && !FAULT_REGISTRY.has_category(FaultCategory::UnderVoltage) {
+        FAULT_REGISTRY.set(F405Fault::UnderVoltage);
+    } else if vbus_mv > BOARD.min_vbus_mv + VOLTAGE_HYSTERESIS_MV
+        && FAULT_REGISTRY.has_category(FaultCategory::UnderVoltage)
+    {
+        // Auto-recover undervoltage (it's recoverable)
+        FAULT_REGISTRY.clear(FaultCategory::UnderVoltage);
+    }
+}
+
+/// Check temperature fault (board/FET overtemperature)
+#[inline]
+fn check_temperature_fault(temp_c_x10: u16) {
+    let temp_c = temp_c_x10 as f32 / 10.0;
+    if temp_c > BOARD.max_fet_temp_c && !FAULT_REGISTRY.has_category(FaultCategory::OverTemp) {
+        FAULT_REGISTRY.set(F405Fault::OverTemp);
+    }
+}
+
+/// Check phase current faults (overcurrent)
+///
+/// Instantaneous trip if any phase exceeds limit.
+#[inline]
+fn check_current_faults(ia: f32, ib: f32, ic: f32) {
+    let limit = BOARD.max_phase_current_a;
+    if (ia.abs() > limit || ib.abs() > limit || ic.abs() > limit)
+        && !FAULT_REGISTRY.has_category(FaultCategory::OverCurrent)
+    {
+        FAULT_REGISTRY.set(F405Fault::OverCurrent);
+    }
+}
+
 // ========== ADC Interrupt Handler ==========
 
 /// ADC interrupt: read all injected ADC samples and run FOC control.
@@ -346,6 +394,10 @@ fn ADC() {
     adc2.sr().modify(|w| w.set_jeoc(false));
     adc3.sr().modify(|w| w.set_jeoc(false));
 
+    // === Fault detection (voltage and temperature) ===
+    check_voltage_faults(vbus_mv);
+    check_temperature_fault(board_temp_c_x10);
+
     // Process FOC commands (non-blocking, ~20ns overhead)
     while let Ok(cmd) = FOC_CMD.try_receive() {
         *CONTROL_MODE = cmd;
@@ -354,12 +406,20 @@ fn ADC() {
     // Get current timestamp for FOC and phase manager
     let now_ticks = embassy_time::Instant::now().as_ticks();
 
-    // Run FOC control loop
+    // Run FOC control loop (skip if faulted)
     FOC_DRIVER.lock(|cell| {
         if let Some(driver) = cell.borrow_mut().as_mut() {
             // Update bus voltage
             let vbus_mv = VBUS_MV.load(Ordering::Relaxed);
             driver.set_vbus(vbus_mv as f32 / 1000.0);
+
+            // If faulted, disable outputs and skip FOC step
+            if FAULT_REGISTRY.any() {
+                if *CONTROL_MODE != ControlMode::Stopped {
+                    driver.set_mode(ControlMode::Stopped);
+                }
+                return;
+            }
 
             // Update control mode
             driver.set_mode(*CONTROL_MODE);
@@ -367,6 +427,8 @@ fn ADC() {
             // Run FOC step (dt is stored in driver from PWM_CONFIG)
             match driver.step(now_ticks) {
                 Ok(telem) => {
+                    // Check phase currents for overcurrent (instantaneous)
+                    check_current_faults(telem.ia, telem.ib, telem.ic);
                     // Broadcast telemetry to all listeners
                     FOC_TELEMETRY.sender().send(telem);
                 }

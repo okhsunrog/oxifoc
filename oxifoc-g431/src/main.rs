@@ -20,6 +20,7 @@ use panic_probe as _;
 mod calibration;
 mod config;
 mod control;
+pub mod fault;
 mod hardware;
 mod motor;
 mod protocol;
@@ -27,6 +28,9 @@ mod sensors;
 mod transport;
 
 use hardware::{AssignedResources, HallResources, MotorResources};
+
+// Define platform state with our fault type
+oxifoc_core::define_platform_state!(fault::G431Fault);
 use motor::MotorPwm;
 use protocol::{DeviceState, RECV_BUF, SCRATCH_BUF, STACK, get_device_state, set_device_state};
 

@@ -28,6 +28,7 @@ embassy-time = { version = "0.5.0", features = ["tick-hz-32_768"] }
 # Cortex-M dependencies
 cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "0.7.5"
+critical-section = "1.2"
 
 # Debugging and logging
 defmt = "1.0.1"

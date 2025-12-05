@@ -1,11 +1,15 @@
 //! Protocol servers that access state directly
 //!
 //! These servers handle ergot protocol requests by accessing the global
-//! state module. No MotorRuntime trait needed.
+//! state module. Platforms define their own state globals using
+//! `define_platform_state!` macro.
 //!
 //! # Usage
 //!
 //! ```ignore
+//! // In platform - define state globals
+//! oxifoc_core::define_platform_state!(MyFault);
+//!
 //! // In platform - single task wrapper
 //! #[embassy_executor::task]
 //! pub async fn protocol_servers() {
@@ -13,28 +17,36 @@
 //!     oxifoc_core::runtime::run_all_servers(
 //!         STACK.endpoints(),
 //!         device_info,
+//!         &STATE,
+//!         &FAULT_REGISTRY,
 //!     ).await
 //! }
 //! ```
 
+use core::cell::RefCell;
 use core::pin::pin;
 
+use critical_section::Mutex as CriticalSectionMutex;
 use embassy_futures::join::join5;
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
+use crate::foc::fault::{FaultRegistry, PlatformFault};
 use crate::foc::hall_sensor::Direction;
 use crate::icd::{
     AdcSample, AdcSampleEndpoint, ControlMode, DeviceInfo, FaultEndpoint, FaultRequest,
-    FaultResponse, HallSensorData, HallSensorEndpoint, InfoEndpoint, MotorEndpoint,
+    FaultResponse, HallSensorData, HallSensorEndpoint, InfoEndpoint, MotorEndpoint, MotorStatus,
 };
-use crate::state;
+use crate::state::{CMD_CHANNEL, MotorControlState};
 
 /// Device info server - responds to info requests from host
 ///
 /// Returns hardware and software version information.
 /// Also marks the communication link as active on first request.
-pub async fn info_server<NS, const N: usize>(endpoints: Endpoints<NS>, device_info: DeviceInfo)
-where
+pub async fn info_server<NS, const N: usize>(
+    endpoints: Endpoints<NS>,
+    device_info: DeviceInfo,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+) where
     NS: NetStackHandle,
 {
     let server = endpoints.bounded_server::<InfoEndpoint, N>(Some("device_info"));
@@ -46,7 +58,9 @@ where
         let _ = h
             .serve(|_req: &()| {
                 // Mark link as active on first request
-                state::set_link_active();
+                critical_section::with(|cs| {
+                    state_mutex.borrow(cs).borrow_mut().set_link_active();
+                });
                 async move { info }
             })
             .await;
@@ -57,8 +71,10 @@ where
 ///
 /// Returns current Hall sensor state including angle, direction,
 /// raw state, and error count.
-pub async fn hall_sensor_server<NS, const N: usize>(endpoints: Endpoints<NS>)
-where
+pub async fn hall_sensor_server<NS, const N: usize>(
+    endpoints: Endpoints<NS>,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+) where
     NS: NetStackHandle,
 {
     let server = endpoints.bounded_server::<HallSensorEndpoint, N>(Some("hall"));
@@ -73,7 +89,8 @@ where
 
         let _ = h
             .serve(|_: &()| {
-                let snapshot = state::hall_snapshot();
+                let snapshot =
+                    critical_section::with(|cs| state_mutex.borrow(cs).borrow().last_hall.clone());
 
                 async move {
                     match snapshot {
@@ -101,8 +118,10 @@ where
 /// ADC sample server - responds to ADC data requests
 ///
 /// Returns current phase currents, bus voltage, and temperature.
-pub async fn adc_sample_server<NS, const N: usize>(endpoints: Endpoints<NS>)
-where
+pub async fn adc_sample_server<NS, const N: usize>(
+    endpoints: Endpoints<NS>,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+) where
     NS: NetStackHandle,
 {
     let server = endpoints.bounded_server::<AdcSampleEndpoint, N>(Some("adc"));
@@ -112,7 +131,8 @@ where
     loop {
         let _ = h
             .serve(|_: &()| {
-                let snapshot = state::adc_snapshot();
+                let snapshot =
+                    critical_section::with(|cs| state_mutex.borrow(cs).borrow().last_adc.clone());
                 async move { AdcSample::from_snapshot(&snapshot) }
             })
             .await;
@@ -123,9 +143,13 @@ where
 ///
 /// Sends ControlMode to CMD_CHANNEL for ISR processing.
 /// Returns the current motor status.
-pub async fn motor_command_server<NS, const N: usize>(endpoints: Endpoints<NS>)
-where
+pub async fn motor_command_server<NS, F, const N: usize>(
+    endpoints: Endpoints<NS>,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    fault_registry: &'static FaultRegistry<F>,
+) where
     NS: NetStackHandle,
+    F: PlatformFault,
 {
     let server = endpoints.bounded_server::<MotorEndpoint, N>(Some("motor"));
     let server = pin!(server);
@@ -135,10 +159,17 @@ where
         let _ = h
             .serve(|mode: &ControlMode| {
                 // Send control mode to the ISR via channel
-                let _ = state::CMD_CHANNEL.try_send(*mode);
+                let _ = CMD_CHANNEL.try_send(*mode);
 
                 // Return current status
-                let status = state::motor_status();
+                let status = critical_section::with(|cs| {
+                    let state = state_mutex.borrow(cs).borrow();
+                    MotorStatus {
+                        state: state.motor_state,
+                        mode: state.control_mode,
+                        fault_count: fault_registry.count() as u8,
+                    }
+                });
                 async move { status }
             })
             .await;
@@ -148,9 +179,12 @@ where
 /// Fault management server - handles fault queries and clear requests
 ///
 /// Allows host to read current fault state and clear faults.
-pub async fn fault_server<NS, const N: usize>(endpoints: Endpoints<NS>)
-where
+pub async fn fault_server<NS, F, const N: usize>(
+    endpoints: Endpoints<NS>,
+    fault_registry: &'static FaultRegistry<F>,
+) where
     NS: NetStackHandle,
+    F: PlatformFault,
 {
     let server = endpoints.bounded_server::<FaultEndpoint, N>(Some("fault"));
     let server = pin!(server);
@@ -159,24 +193,29 @@ where
     loop {
         let _ = h
             .serve(|req: &FaultRequest| {
-                // Handle clear requests
-                if req.clear_all {
-                    state::clear_all_faults();
-                } else if let Some(mask) = req.clear_mask {
-                    state::FAULT_REGISTRY.clear_mask(mask);
+                // Handle requests
+                match req {
+                    FaultRequest::Query => {
+                        // Just query, no action needed
+                    }
+                    FaultRequest::Clear(category) => {
+                        fault_registry.clear(*category);
+                    }
+                    FaultRequest::ClearAll => {
+                        fault_registry.clear_all();
+                    }
                 }
 
-                // Build response
-                let active = state::fault_bits();
-                let primary = state::FAULT_REGISTRY
-                    .active_faults()
-                    .next()
-                    .map(crate::types::FaultCode::from);
+                // Build response with all faults converted to FaultInfo
+                let fault_infos = fault_registry.to_fault_info_vec();
+                let mut response_faults = heapless::Vec::new();
+                for info in fault_infos.iter().take(crate::types::MAX_FAULT_RESPONSE) {
+                    let _ = response_faults.push(info.clone());
+                }
 
                 async move {
                     FaultResponse {
-                        active_faults: active,
-                        primary_fault: primary,
+                        faults: response_faults,
                     }
                 }
             })
@@ -195,10 +234,15 @@ where
 /// # Arguments
 /// * `endpoints` - Ergot endpoints from the net stack
 /// * `device_info` - Device information (hardware/software version)
+/// * `state_mutex` - Reference to platform's STATE global
+/// * `fault_registry` - Reference to platform's FAULT_REGISTRY global
 ///
 /// # Usage
 ///
 /// ```ignore
+/// // Platform code:
+/// oxifoc_core::define_platform_state!(MyFault);
+///
 /// #[embassy_executor::task]
 /// pub async fn protocol_servers() {
 ///     let mut hw: String<32> = String::new();
@@ -209,19 +253,26 @@ where
 ///     oxifoc_core::runtime::run_all_servers(
 ///         STACK.endpoints(),
 ///         DeviceInfo { hw, sw },
+///         &STATE,
+///         &FAULT_REGISTRY,
 ///     ).await
 /// }
 /// ```
-pub async fn run_all_servers<NS>(endpoints: Endpoints<NS>, device_info: DeviceInfo)
-where
+pub async fn run_all_servers<NS, F>(
+    endpoints: Endpoints<NS>,
+    device_info: DeviceInfo,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    fault_registry: &'static FaultRegistry<F>,
+) where
     NS: NetStackHandle + Clone,
+    F: PlatformFault,
 {
     join5(
-        info_server::<NS, 2>(endpoints.clone(), device_info),
-        hall_sensor_server::<NS, 2>(endpoints.clone()),
-        adc_sample_server::<NS, 2>(endpoints.clone()),
-        motor_command_server::<NS, 2>(endpoints.clone()),
-        fault_server::<NS, 2>(endpoints),
+        info_server::<NS, 2>(endpoints.clone(), device_info, state_mutex),
+        hall_sensor_server::<NS, 2>(endpoints.clone(), state_mutex),
+        adc_sample_server::<NS, 2>(endpoints.clone(), state_mutex),
+        motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
+        fault_server::<NS, F, 2>(endpoints, fault_registry),
     )
     .await;
 }

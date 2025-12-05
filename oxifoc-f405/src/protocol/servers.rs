@@ -6,6 +6,7 @@ use heapless::String;
 
 use crate::protocol::STACK;
 use crate::transport::{AppDriver, RxWorker};
+use crate::{FAULT_REGISTRY, STATE};
 use oxifoc_core::types::DeviceInfo;
 
 // ========== Worker Tasks ==========
@@ -54,7 +55,8 @@ pub async fn protocol_servers() {
     let _ = sw.push_str("oxifoc-0.1.0");
     let device_info = DeviceInfo { hw, sw };
 
-    oxifoc_core::runtime::run_all_servers(STACK.endpoints(), device_info).await
+    oxifoc_core::runtime::run_all_servers(STACK.endpoints(), device_info, &STATE, &FAULT_REGISTRY)
+        .await
 }
 
 // ========== Task Spawning ==========

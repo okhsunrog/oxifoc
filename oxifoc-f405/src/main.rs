@@ -12,6 +12,7 @@ use panic_probe as _;
 mod calibration;
 mod config;
 mod control;
+pub mod fault;
 mod hardware;
 mod motor;
 mod protocol;
@@ -23,12 +24,8 @@ use hardware::{AssignedResources, DrvResources, HallResources, MotorResources};
 use motor::MotorPwm;
 use protocol::{OUTQ, RECV_BUF, STACK};
 
-// FOC types from core
-use oxifoc_core::foc::fault::FaultRegistry;
-
-// Static fault registry (will be used when real FOC is implemented)
-#[allow(dead_code)]
-static FAULTS: FaultRegistry = FaultRegistry::new();
+// Define platform state with our fault type
+oxifoc_core::define_platform_state!(fault::F405Fault);
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -58,18 +55,28 @@ async fn main(spawner: Spawner) {
     let r = split_resources!(p);
 
     // ========== STEP 6: Initialize DRV8301 Gate Driver ==========
-    let mut drv_config = hardware::drv8301::init_spi(
-        r.drv.spi3, r.drv.pc10, r.drv.pc11, r.drv.pc12, r.drv.pc9, r.drv.pb5, r.drv.pb7,
+    let (drv_config, nfault) = hardware::drv8301::init_spi(
+        r.drv.spi3,
+        r.drv.pc10,
+        r.drv.pc11,
+        r.drv.pc12,
+        r.drv.pc9,
+        r.drv.pb5,
+        r.drv.pb7,
+        r.drv.exti7,
     );
 
-    // Configure DRV8301 per VESC settings
-    match hardware::drv8301::configure_drv8301(&mut drv_config) {
+    // Configure DRV8301 per VESC settings (stores config globally)
+    match hardware::drv8301::configure_and_store_drv8301(drv_config) {
         Ok(()) => defmt::info!("DRV8301 ready"),
         Err(_e) => defmt::error!("DRV8301 configuration failed"),
     }
 
     // Enable gate driver
-    hardware::drv8301::enable_gate_driver(&mut drv_config);
+    hardware::drv8301::enable_gate_driver();
+
+    // Spawn nFAULT monitor task (EXTI-based fault detection with SPI readout)
+    spawner.spawn(hardware::drv8301::nfault_monitor_task(nfault).unwrap());
 
     // ========== STEP 7: Initialize Hall Sensor ==========
     sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8);
@@ -86,11 +93,11 @@ async fn main(spawner: Spawner) {
          SPI3 CS/SCK/MISO/MOSI=PC9/PC10/PC11/PC12, halls=PC6/7/8, ADC currents PC0-2, VBUS PC3"
     );
     defmt::info!(
-        "Board config: shunt={=f32}Ω, amp_gain={=f32} V/V, vbus_ratio={=f32}:1, faults=0x{=u32:08x}",
+        "Board config: shunt={=f32}Ω, amp_gain={=f32} V/V, vbus_ratio={=f32}:1, faults={}",
         config::BOARD.shunt_ohms,
         config::BOARD.amp_gain,
         config::BOARD.vbus_divider_ratio,
-        FAULTS.bits()
+        FAULT_REGISTRY.count()
     );
 
     // Main task completes, other tasks continue running

@@ -1,26 +1,38 @@
 //! DRV8301 gate driver configuration for Simple FOCer 2
 
+use core::cell::RefCell;
+
 use drv8301_dd::{Drv8301, DrvError, GateCurrent, OcpMode, ShuntAmplifierGain};
 
 // Re-export FaultStatus for use by other modules
 pub use drv8301_dd::FaultStatus;
 use embassy_stm32::{
     Peri,
-    gpio::{Level, Output, Speed},
+    exti::ExtiInput,
+    gpio::{Level, Output, Pull, Speed},
     peripherals,
     spi::{self, Spi},
     time::Hertz,
 };
+use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embedded_hal_bus::spi::ExclusiveDevice;
+
+use crate::FAULT_REGISTRY;
+use crate::fault::F405Fault;
 
 /// DRV8301 configuration matching VESC Simple FOCer 2 settings
 pub struct Drv8301Config<'d> {
     pub spi: Spi<'d, embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>,
     pub cs: Output<'static>,
     pub en_gate: Output<'static>,
-    #[allow(dead_code)]
-    pub fault: embassy_stm32::gpio::Input<'static>,
 }
+
+/// nFAULT EXTI input for interrupt-driven fault detection
+pub type NfaultInput = ExtiInput<'static>;
+
+/// Global DRV8301 config for fault status reading from ISR/tasks
+static DRV_CONFIG: CriticalSectionMutex<RefCell<Option<Drv8301Config<'static>>>> =
+    CriticalSectionMutex::new(RefCell::new(None));
 
 /// Initialize SPI3 for DRV8301 communication
 ///
@@ -29,6 +41,10 @@ pub struct Drv8301Config<'d> {
 /// - SPI3_MISO: PC11
 /// - SPI3_MOSI: PC12
 /// - SPI3_CS:   PC9
+///
+/// Returns (Drv8301Config, NfaultInput) - the nFAULT input should be passed
+/// to `nfault_monitor_task` for interrupt-driven fault detection.
+#[allow(clippy::too_many_arguments)]
 pub fn init_spi(
     spi3: Peri<'static, peripherals::SPI3>,
     pc10: Peri<'static, peripherals::PC10>,
@@ -37,7 +53,8 @@ pub fn init_spi(
     pc9: Peri<'static, peripherals::PC9>,
     pb5: Peri<'static, peripherals::PB5>,
     pb7: Peri<'static, peripherals::PB7>,
-) -> Drv8301Config<'static> {
+    exti7: Peri<'static, peripherals::EXTI7>,
+) -> (Drv8301Config<'static>, NfaultInput) {
     // Configure SPI3 - DRV8301: CPOL=0, CPHA=1 (Mode 1), max 10MHz
     let mut spi_config = spi::Config::default();
     spi_config.mode = spi::Mode {
@@ -59,17 +76,12 @@ pub fn init_spi(
     // EN_GATE pin (enable gate driver, active high)
     let en_gate = Output::new(pb5, Level::Low, Speed::Low);
 
-    // nFAULT pin (fault indicator, active low)
-    let fault = embassy_stm32::gpio::Input::new(pb7, embassy_stm32::gpio::Pull::Up);
+    // nFAULT pin with EXTI for interrupt-driven fault detection (active low, pull-up)
+    let nfault = ExtiInput::new(pb7, exti7, Pull::Up);
 
     defmt::info!("DRV8301 SPI3 initialized");
 
-    Drv8301Config {
-        spi,
-        cs,
-        en_gate,
-        fault,
-    }
+    (Drv8301Config { spi, cs, en_gate }, nfault)
 }
 
 /// DRV8301 SPI error type alias for convenience
@@ -80,7 +92,10 @@ pub type Drv8301Error = DrvError<
 /// Configure DRV8301 according to VESC Cheap FOCer 2 v1.0 settings
 ///
 /// Matches VESC firmware: drv8301_write_reg(2, 0x0430) + drv8301_set_current_amp_gain(10)
-pub fn configure_drv8301(drv_config: &mut Drv8301Config<'_>) -> Result<(), Drv8301Error> {
+/// After successful configuration, stores the config globally for fault reading.
+pub fn configure_and_store_drv8301(
+    mut drv_config: Drv8301Config<'static>,
+) -> Result<(), Drv8301Error> {
     let spi_device =
         ExclusiveDevice::new_no_delay(&mut drv_config.spi, &mut drv_config.cs).unwrap();
 
@@ -117,6 +132,11 @@ pub fn configure_drv8301(drv_config: &mut Drv8301Config<'_>) -> Result<(), Drv83
     drv.reset_gate_faults()?;
 
     defmt::info!("DRV8301 configured (Cheap FOCer 2 v1.0)");
+
+    // Store config globally for fault status reading from tasks
+    DRV_CONFIG.lock(|cell| {
+        cell.replace(Some(drv_config));
+    });
 
     Ok(())
 }
@@ -159,22 +179,83 @@ fn log_fault_status(status: &FaultStatus) {
 }
 
 /// Enable the DRV8301 gate driver
-pub fn enable_gate_driver(drv_config: &mut Drv8301Config<'_>) {
-    drv_config.en_gate.set_high();
-    defmt::info!("DRV8301 gate driver enabled");
+pub fn enable_gate_driver() {
+    DRV_CONFIG.lock(|cell| {
+        if let Some(config) = cell.borrow_mut().as_mut() {
+            config.en_gate.set_high();
+            defmt::info!("DRV8301 gate driver enabled");
+        }
+    });
 }
 
 /// Disable the DRV8301 gate driver
 #[allow(dead_code)]
-pub fn disable_gate_driver(drv_config: &mut Drv8301Config<'_>) {
-    drv_config.en_gate.set_low();
-    defmt::info!("DRV8301 gate driver disabled");
+pub fn disable_gate_driver() {
+    DRV_CONFIG.lock(|cell| {
+        if let Some(config) = cell.borrow_mut().as_mut() {
+            config.en_gate.set_low();
+            defmt::info!("DRV8301 gate driver disabled");
+        }
+    });
 }
 
-/// Check if DRV8301 is reporting a fault via hardware pin (fast check)
+/// Check if DRV8301 nFAULT is asserted (active low)
 #[allow(dead_code)]
-pub fn is_fault_active(drv_config: &Drv8301Config<'_>) -> bool {
-    drv_config.fault.is_low()
+pub fn is_fault_active(nfault: &NfaultInput) -> bool {
+    nfault.is_low()
+}
+
+/// nFAULT monitor task - reads DRV8301 fault details and sets DriverFault
+///
+/// This task monitors the DRV8301 nFAULT pin using EXTI interrupts.
+/// When nFAULT goes low (fault condition), it:
+/// 1. Reads detailed fault status from DRV8301 via SPI
+/// 2. Logs the specific fault details (OC, thermal, voltage, etc.)
+/// 3. Sets the DriverFault flag in the global fault registry
+///
+/// The task then waits for the rising edge (fault cleared) before
+/// monitoring for the next fault.
+///
+/// # Note
+/// This does NOT auto-clear the fault - the host must clear it via
+/// the fault management protocol after investigating the cause.
+#[embassy_executor::task]
+pub async fn nfault_monitor_task(mut nfault: NfaultInput) {
+    defmt::info!("DRV8301 nFAULT monitor started");
+
+    loop {
+        // Wait for falling edge (nFAULT asserted - fault condition)
+        nfault.wait_for_falling_edge().await;
+
+        // Read detailed fault status from DRV8301 via SPI
+        let fault_status = DRV_CONFIG.lock(|cell| {
+            if let Some(config) = cell.borrow_mut().as_mut() {
+                let spi_device =
+                    ExclusiveDevice::new_no_delay(&mut config.spi, &mut config.cs).unwrap();
+                let mut drv = Drv8301::new(spi_device);
+                drv.get_fault_status().ok()
+            } else {
+                None
+            }
+        });
+
+        // Log detailed fault information and set fault with DRV status
+        if let Some(status) = fault_status {
+            defmt::error!("DRV8301 FAULT detected!");
+            log_fault_status(&status);
+            // Set the driver fault with full status details
+            FAULT_REGISTRY.set(F405Fault::DrvFault(status));
+        } else {
+            defmt::error!("DRV8301 FAULT detected (failed to read details)!");
+            // Set a default DRV fault (couldn't read details)
+            FAULT_REGISTRY.set(F405Fault::DrvFault(FaultStatus::default()));
+        }
+
+        // Wait for rising edge (fault condition cleared in hardware)
+        // Note: Software fault flag remains set until host clears it
+        nfault.wait_for_rising_edge().await;
+        defmt::info!("DRV8301 nFAULT deasserted (hardware clear)");
+    }
 }
 
 /// Get detailed fault status from DRV8301 via SPI
@@ -183,28 +264,42 @@ pub fn is_fault_active(drv_config: &Drv8301Config<'_>) -> bool {
 /// Use `is_fault_active()` for a fast hardware-level check, or this function
 /// when you need to know specifically what fault occurred.
 #[allow(dead_code)]
-pub fn get_fault_status(drv_config: &mut Drv8301Config<'_>) -> Result<FaultStatus, Drv8301Error> {
-    let spi_device =
-        ExclusiveDevice::new_no_delay(&mut drv_config.spi, &mut drv_config.cs).unwrap();
-    let mut drv = Drv8301::new(spi_device);
-    drv.get_fault_status()
+pub fn get_fault_status() -> Option<FaultStatus> {
+    DRV_CONFIG.lock(|cell| {
+        if let Some(config) = cell.borrow_mut().as_mut() {
+            let spi_device =
+                ExclusiveDevice::new_no_delay(&mut config.spi, &mut config.cs).unwrap();
+            let mut drv = Drv8301::new(spi_device);
+            drv.get_fault_status().ok()
+        } else {
+            None
+        }
+    })
 }
 
 /// Check and log any active faults, returning true if faults are present
 #[allow(dead_code)]
-pub fn check_and_log_faults(drv_config: &mut Drv8301Config<'_>) -> Result<bool, Drv8301Error> {
-    let fault_status = get_fault_status(drv_config)?;
-    if !fault_status.is_ok() {
+pub fn check_and_log_faults() -> bool {
+    if let Some(fault_status) = get_fault_status()
+        && !fault_status.is_ok()
+    {
         log_fault_status(&fault_status);
+        return true;
     }
-    Ok(!fault_status.is_ok())
+    false
 }
 
 /// Reset gate driver faults
 #[allow(dead_code)]
-pub fn reset_faults(drv_config: &mut Drv8301Config<'_>) -> Result<(), Drv8301Error> {
-    let spi_device =
-        ExclusiveDevice::new_no_delay(&mut drv_config.spi, &mut drv_config.cs).unwrap();
-    let mut drv = Drv8301::new(spi_device);
-    drv.reset_gate_faults()
+pub fn reset_faults() -> Result<(), ()> {
+    DRV_CONFIG.lock(|cell| {
+        if let Some(config) = cell.borrow_mut().as_mut() {
+            let spi_device =
+                ExclusiveDevice::new_no_delay(&mut config.spi, &mut config.cs).unwrap();
+            let mut drv = Drv8301::new(spi_device);
+            drv.reset_gate_faults().map_err(|_| ())
+        } else {
+            Err(())
+        }
+    })
 }

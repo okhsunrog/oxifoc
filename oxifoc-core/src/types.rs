@@ -12,11 +12,15 @@
 //! ```
 
 use heapless::String;
+use heapless::Vec;
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 
 // Re-export Direction from hall_sensor (it has conditional serde derives)
 pub use crate::foc::hall_sensor::Direction;
+
+// Re-export fault types for protocol use
+pub use crate::foc::fault::{FaultCategory, FaultInfo};
 
 // ============================================================================
 // Motor State Types
@@ -86,39 +90,14 @@ pub enum ControlMode {
     },
 }
 
-/// Motor fault codes
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum FaultCode {
-    /// No fault
-    None,
-    /// Over-current detected
-    OverCurrent,
-    /// Over-voltage on DC bus
-    OverVoltage,
-    /// Under-voltage on DC bus
-    UnderVoltage,
-    /// Over-temperature (FET or motor)
-    OverTemperature,
-    /// Hall sensor error (invalid state or sequence)
-    HallSensorError,
-    /// Encoder error
-    EncoderError,
-    /// Communication timeout
-    CommTimeout,
-    /// Motor stalled
-    Stall,
-    /// Calibration required
-    CalibrationRequired,
-    /// Generic hardware fault
-    HardwareFault,
-}
-
 // ============================================================================
 // Status/Telemetry Types
 // ============================================================================
 
 /// Motor status response
+///
+/// Note: Fault information is now platform-specific. Use the platform's
+/// fault endpoint to get detailed fault information.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MotorStatus {
@@ -126,10 +105,8 @@ pub struct MotorStatus {
     pub state: MotorState,
     /// Current control mode
     pub mode: ControlMode,
-    /// Primary/first active fault code (if any)
-    pub fault: Option<FaultCode>,
-    /// Full fault bitmask (all active faults)
-    pub fault_bits: u32,
+    /// Number of active faults
+    pub fault_count: u8,
 }
 
 /// Hall sensor telemetry data
@@ -197,70 +174,36 @@ pub enum ButtonEvent {
 }
 
 // ============================================================================
-// Fault Management Types
+// Fault Protocol Types
 // ============================================================================
+
+/// Maximum number of faults that can be returned in a response
+pub const MAX_FAULT_RESPONSE: usize = 8;
 
 /// Fault management request
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct FaultRequest {
-    /// If true, clear all clearable faults
-    pub clear_all: bool,
-    /// Optional: clear only faults matching this bitmask
-    pub clear_mask: Option<u32>,
+pub enum FaultRequest {
+    /// Query all active faults
+    #[default]
+    Query,
+    /// Clear a specific fault by category
+    Clear(FaultCategory),
+    /// Clear all faults
+    ClearAll,
 }
 
 /// Fault management response
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct FaultResponse {
-    /// Currently active faults (bitmask)
-    pub active_faults: u32,
-    /// Primary fault code (first active fault)
-    pub primary_fault: Option<FaultCode>,
+    /// List of active faults with details
+    pub faults: Vec<FaultInfo, MAX_FAULT_RESPONSE>,
 }
 
 // ============================================================================
 // Conversion helpers
 // ============================================================================
-
-// FaultKind <-> FaultCode conversions
-use crate::foc::fault::FaultKind;
-
-impl From<FaultKind> for FaultCode {
-    fn from(kind: FaultKind) -> Self {
-        match kind {
-            FaultKind::OverCurrent => FaultCode::OverCurrent,
-            FaultKind::OverVoltage => FaultCode::OverVoltage,
-            FaultKind::UnderVoltage => FaultCode::UnderVoltage,
-            FaultKind::OverTemp => FaultCode::OverTemperature,
-            FaultKind::DriverFault => FaultCode::HardwareFault,
-            FaultKind::CalibrationFailed => FaultCode::CalibrationRequired,
-            FaultKind::CommsTimeout => FaultCode::CommTimeout,
-            FaultKind::HallSensorError => FaultCode::HallSensorError,
-            FaultKind::Stall => FaultCode::Stall,
-            FaultKind::Unknown => FaultCode::HardwareFault,
-        }
-    }
-}
-
-impl From<FaultCode> for Option<FaultKind> {
-    fn from(code: FaultCode) -> Self {
-        match code {
-            FaultCode::None => None,
-            FaultCode::OverCurrent => Some(FaultKind::OverCurrent),
-            FaultCode::OverVoltage => Some(FaultKind::OverVoltage),
-            FaultCode::UnderVoltage => Some(FaultKind::UnderVoltage),
-            FaultCode::OverTemperature => Some(FaultKind::OverTemp),
-            FaultCode::HallSensorError => Some(FaultKind::HallSensorError),
-            FaultCode::EncoderError => Some(FaultKind::Unknown), // No encoder fault in FaultKind
-            FaultCode::CommTimeout => Some(FaultKind::CommsTimeout),
-            FaultCode::Stall => Some(FaultKind::Stall),
-            FaultCode::CalibrationRequired => Some(FaultKind::CalibrationFailed),
-            FaultCode::HardwareFault => Some(FaultKind::DriverFault),
-        }
-    }
-}
 
 impl MotorState {
     /// Convert from u8 (for atomic storage)
