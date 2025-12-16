@@ -19,4 +19,7 @@ assign_resources! {
         pb7: PB7,   // H2 / Encoder B+
         pb8: PB8,   // H3 / Encoder Z+
     }
+    storage: StorageResources {
+        flash: FLASH,
+    }
 }

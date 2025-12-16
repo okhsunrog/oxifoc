@@ -25,9 +25,10 @@ mod hardware;
 mod motor;
 mod protocol;
 mod sensors;
+mod storage;
 mod transport;
 
-use hardware::{AssignedResources, HallResources, MotorResources};
+use hardware::{AssignedResources, HallResources, MotorResources, StorageResources};
 
 // Define platform state with our fault type
 oxifoc_core::define_platform_state!(fault::G431Fault);
@@ -59,17 +60,25 @@ async fn main(spawner: Spawner) {
     // Initialize LED
     let mut led = hardware::peripherals::init_led(p.PC6);
 
-    // ========== STEP 4: Initialize Motor PWM ==========
+    // ========== STEP 4: Split Resources ==========
     let r = split_resources!(p);
+
+    // ========== STEP 5: Initialize Persistent Storage ==========
+    let flash = embassy_stm32::flash::Flash::new_blocking(r.storage.flash);
+    let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
+    spawner.spawn(storage::storage_worker(flash).unwrap());
+    defmt::info!("Storage worker spawned");
+
+    // ========== STEP 6: Initialize Motor PWM ==========
     let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
 
-    // ========== STEP 5: Initialize Hall Sensor ==========
+    // ========== STEP 7: Initialize Hall Sensor ==========
     sensors::init_hall(r.hall.pb6, r.hall.pb7, r.hall.pb8);
 
-    // ========== STEP 6: Initialize FOC Controller ==========
+    // ========== STEP 8: Initialize FOC Controller ==========
     control::init_foc(motor_pwm, adc_handles.adc1, adc_handles.adc2).await;
 
-    // ========== STEP 7: Spawn I/O and Protocol Tasks ==========
+    // ========== STEP 9: Spawn I/O and Protocol Tasks ==========
 
     // Spawn RX worker
     spawner.spawn(
@@ -96,7 +105,7 @@ async fn main(spawner: Spawner) {
 
     defmt::info!("All tasks spawned, entering LED status loop");
 
-    // ========== STEP 8: LED Status Loop ==========
+    // ========== STEP 10: LED Status Loop ==========
     // Shows device state via blink patterns
     loop {
         match get_device_state() {
