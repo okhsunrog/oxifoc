@@ -1,0 +1,90 @@
+[package]
+name = "oxifoc-g474"
+version = "0.1.0"
+edition = "2024"
+description = "STM32G474-based motor controller (NUCLEO-G474RE board)"
+
+[[bin]]
+name = "oxifoc-g474"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+default = ["transport-uart"]
+# UART over ST-Link VCP: ergot over serial, defmt over RTT + network forwarding
+transport-uart = ["ergot/defmt-sink-network"]
+# RTT via debug probe: ergot over RTT channels, defmt over separate RTT channel
+transport-rtt = ["ergot/rtt"]
+
+[dependencies]
+# Embassy dependencies - use fork with async flash support for G4
+embassy-executor = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4", features = ["arch-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-futures = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+embassy-stm32 = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4", features = ["stm32g474re", "time-driver-tim2", "unstable-pac", "dual-bank"] }
+embassy-sync = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+embassy-time = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4", features = ["tick-hz-32_768"] }
+
+# Cortex-M dependencies
+cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+critical-section = "1.2"
+
+# Debugging and logging
+defmt = "1.0.1"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+
+# Serialization
+serde = { version = "1.0.219", features = ["derive"], default-features = false }
+postcard-schema = "0.2.5"
+
+# Synchronization
+mutex = "1.0.2"
+
+# Local dependencies
+# runtime feature includes icd (endpoints) and types (shared structs)
+oxifoc-core = { path = "../oxifoc-core", features = ["runtime", "defmt"] }
+# Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
+# transport-uart adds: defmt-sink-network (for network forwarding)
+# transport-rtt adds: rtt (for RTT transport wrappers)
+ergot = { path = "../ergot/crates/ergot", default-features = false, features = [
+    "embedded-io-async-v0_7",
+    "disable-cache-padding",
+    "defmt-sink-rtt",
+] }
+
+static_cell = "2.1"
+assign-resources = "0.5.0"
+embedded-io-async = "0.7"
+heapless = { version = "0.9.2", default-features = false }
+libm = { version = "0.2.15", default-features = false }
+
+# Persistent configuration storage
+sequential-storage = "7.0"
+embedded-storage-async = "0.4"
+embassy-embedded-hal = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+postcard = "1.1"
+
+[profile.dev]
+debug = true
+lto = true
+opt-level = "z"
+incremental = true
+
+[profile.release]
+debug = 2
+lto = true
+opt-level = "z"
+incremental = true
+
+# Patch crates.io embassy deps for transitive dependencies (e.g., ergot)
+[patch.crates-io]
+embassy-executor = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+embassy-futures = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+embassy-stm32 = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+embassy-sync = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+embassy-time = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+embassy-time-driver = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+embassy-time-queue-utils = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+embassy-embedded-hal = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
+embassy-hal-internal = { git = "https://github.com/okhsunrog/embassy", branch = "flash-async-g4" }
