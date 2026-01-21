@@ -3,10 +3,16 @@
 
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::Output;
+use embassy_stm32::{bind_interrupts, exti, interrupt};
 use embassy_time::{Duration, Timer};
 
 // Use panic-probe for panics
 use panic_probe as _;
+
+// Bind EXTI9_5 interrupt for nFAULT monitoring (PB7/EXTI7)
+bind_interrupts!(struct ExtiIrqs {
+    EXTI9_5 => exti::InterruptHandler<interrupt::typelevel::EXTI9_5>;
+});
 
 // Module declarations
 mod calibration;
@@ -64,6 +70,7 @@ async fn main(spawner: Spawner) {
         r.drv.pb5,
         r.drv.pb7,
         r.drv.exti7,
+        ExtiIrqs,
     );
 
     // Configure DRV8301 per VESC settings (stores config globally)

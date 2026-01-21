@@ -4,10 +4,10 @@
 
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::time::Hertz;
-use embassy_stm32::timer::Channel;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin, Mms2, Ossr};
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
+use embassy_stm32::timer::Channel;
 
 use crate::config::TIM1_CLOCK_HZ;
 use crate::hardware::resources::MotorResources;
@@ -16,8 +16,8 @@ use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm};
 /// Motor PWM controller using TIM1 with complementary outputs.
 pub struct MotorPwm<'d> {
     pwm: ComplementaryPwm<'d, embassy_stm32::peripherals::TIM1>,
-    max_duty: u16,
-    duty_limit: u16,
+    max_duty: u32,
+    duty_limit: u32,
 }
 
 impl<'d> MotorPwm<'d> {
@@ -84,8 +84,8 @@ impl<'d> MotorPwm<'d> {
         pwm.enable(Channel::Ch4);
         pwm.set_mms2(Mms2::COMPARE_OC4);
 
-        // Calculate duty limit using shared helper
-        let duty_limit = pwm::duty_limit(max_duty, config.max_duty_percent);
+        // Calculate duty limit using shared helper (convert to u16 for helper, then back to u32)
+        let duty_limit = pwm::duty_limit(max_duty as u16, config.max_duty_percent) as u32;
 
         defmt::info!(
             "G431 Motor PWM init: freq={}Hz, max_duty={}, limit={}%",
@@ -119,15 +119,15 @@ impl<'d> MotorPwm<'d> {
 
 impl<'d> PhasePwm for MotorPwm<'d> {
     fn max_duty(&self) -> u16 {
-        self.max_duty
+        self.max_duty as u16
     }
 
     fn set_duties(&mut self, duties: [u16; 3]) {
         // Set duty cycles for all three phases
         // Clamp to duty_limit for safety
-        let duty_a = duties[0].min(self.duty_limit);
-        let duty_b = duties[1].min(self.duty_limit);
-        let duty_c = duties[2].min(self.duty_limit);
+        let duty_a = (duties[0] as u32).min(self.duty_limit);
+        let duty_b = (duties[1] as u32).min(self.duty_limit);
+        let duty_c = (duties[2] as u32).min(self.duty_limit);
 
         self.pwm.set_duty(Channel::Ch1, duty_a);
         self.pwm.set_duty(Channel::Ch2, duty_b);

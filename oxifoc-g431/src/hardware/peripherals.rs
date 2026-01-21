@@ -4,9 +4,10 @@ use embassy_stm32::adc::{
     Adc, AdcChannel, AdcConfig, ConversionTrigger, Exten, InjectedAdc, SampleTime,
 };
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::interrupt::typelevel::{ADC1_2, Interrupt};
+use embassy_stm32::interrupt::typelevel::{Interrupt, ADC1_2};
 use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
-use embassy_stm32::{Peri, Peripherals, peripherals};
+use embassy_stm32::{peripherals, Peri, Peripherals};
+use static_cell::StaticCell;
 
 /// Initialize STM32G431 clocks and return peripherals
 ///
@@ -40,11 +41,16 @@ pub fn init_clock() -> Peripherals {
 }
 
 /// OPAMP channels returned from initialization
-pub struct OpAmpChannels {
-    pub ia_chan: embassy_stm32::adc::AnyAdcChannel<peripherals::ADC1>,
-    pub ib_chan: embassy_stm32::adc::AnyAdcChannel<peripherals::ADC2>,
-    pub ic_chan: embassy_stm32::adc::AnyAdcChannel<peripherals::ADC2>,
+pub struct OpAmpChannels<'a> {
+    pub ia_chan: embassy_stm32::adc::AnyAdcChannel<'a, peripherals::ADC1>,
+    pub ib_chan: embassy_stm32::adc::AnyAdcChannel<'a, peripherals::ADC2>,
+    pub ic_chan: embassy_stm32::adc::AnyAdcChannel<'a, peripherals::ADC2>,
 }
+
+// Static storage for OpAmps (they must outlive the ADC channels)
+static OPAMP1_CELL: StaticCell<OpAmp<'static, peripherals::OPAMP1>> = StaticCell::new();
+static OPAMP2_CELL: StaticCell<OpAmp<'static, peripherals::OPAMP2>> = StaticCell::new();
+static OPAMP3_CELL: StaticCell<OpAmp<'static, peripherals::OPAMP3>> = StaticCell::new();
 
 /// Initialize OPAMPs as PGAs for phase current shunts
 ///
@@ -60,18 +66,21 @@ pub fn init_opamps(
     pa1: Peri<'static, peripherals::PA1>,
     pa7: Peri<'static, peripherals::PA7>,
     pb0: Peri<'static, peripherals::PB0>,
-) -> OpAmpChannels {
-    let mut opamp1 = OpAmp::new(opamp1, OpAmpSpeed::HighSpeed);
-    opamp1.calibrate();
-    let ia_chan = opamp1.pga_int(pa1, OpAmpGain::Mul16).degrade_adc();
+) -> OpAmpChannels<'static> {
+    let mut opamp1_inst = OpAmp::new(opamp1, OpAmpSpeed::HighSpeed);
+    opamp1_inst.calibrate();
+    let opamp1_ref = OPAMP1_CELL.init(opamp1_inst);
+    let ia_chan = opamp1_ref.pga_int(pa1, OpAmpGain::Mul16).degrade_adc();
 
-    let mut opamp2 = OpAmp::new(opamp2, OpAmpSpeed::HighSpeed);
-    opamp2.calibrate();
-    let ib_chan = opamp2.pga_int(pa7, OpAmpGain::Mul16).degrade_adc();
+    let mut opamp2_inst = OpAmp::new(opamp2, OpAmpSpeed::HighSpeed);
+    opamp2_inst.calibrate();
+    let opamp2_ref = OPAMP2_CELL.init(opamp2_inst);
+    let ib_chan = opamp2_ref.pga_int(pa7, OpAmpGain::Mul16).degrade_adc();
 
-    let mut opamp3 = OpAmp::new(opamp3, OpAmpSpeed::HighSpeed);
-    opamp3.calibrate();
-    let ic_chan = opamp3.pga_int(pb0, OpAmpGain::Mul16).degrade_adc();
+    let mut opamp3_inst = OpAmp::new(opamp3, OpAmpSpeed::HighSpeed);
+    opamp3_inst.calibrate();
+    let opamp3_ref = OPAMP3_CELL.init(opamp3_inst);
+    let ic_chan = opamp3_ref.pga_int(pb0, OpAmpGain::Mul16).degrade_adc();
 
     OpAmpChannels {
         ia_chan,
@@ -81,9 +90,9 @@ pub fn init_opamps(
 }
 
 /// ADC handles for injected conversions
-pub struct AdcHandles {
-    pub adc1: InjectedAdc<peripherals::ADC1, 3>,
-    pub adc2: InjectedAdc<peripherals::ADC2, 2>,
+pub struct AdcHandles<'a> {
+    pub adc1: InjectedAdc<'a, peripherals::ADC1, 3>,
+    pub adc2: InjectedAdc<'a, peripherals::ADC2, 2>,
 }
 
 /// Initialize ADC1 and ADC2 with injected conversions triggered by TIM1
@@ -113,10 +122,10 @@ pub struct AdcHandles {
 pub fn init_adc(
     adc1_periph: Peri<'static, peripherals::ADC1>,
     adc2_periph: Peri<'static, peripherals::ADC2>,
-    opamp_channels: OpAmpChannels,
+    opamp_channels: OpAmpChannels<'static>,
     vbus_pin: Peri<'static, peripherals::PA0>,
     temp_pin: Peri<'static, peripherals::PB14>,
-) -> AdcHandles {
+) -> AdcHandles<'static> {
     let adc1 = Adc::new(adc1_periph, AdcConfig::default());
     let adc2 = Adc::new(adc2_periph, AdcConfig::default());
 

@@ -316,7 +316,7 @@ dependencies = [
 [[package]]
 name = "embassy-embedded-hal"
 version = "0.5.0"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "embassy-futures",
  "embassy-hal-internal",
@@ -333,7 +333,7 @@ dependencies = [
 [[package]]
 name = "embassy-executor"
 version = "0.9.1"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "cordyceps",
  "cortex-m",
@@ -346,7 +346,7 @@ dependencies = [
 [[package]]
 name = "embassy-executor-macros"
 version = "0.7.0"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -357,17 +357,17 @@ dependencies = [
 [[package]]
 name = "embassy-executor-timer-queue"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 
 [[package]]
 name = "embassy-futures"
 version = "0.1.2"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 
 [[package]]
 name = "embassy-hal-internal"
 version = "0.4.0"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "cortex-m",
  "critical-section",
@@ -404,7 +404,7 @@ dependencies = [
 [[package]]
 name = "embassy-net-driver"
 version = "0.2.0"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 
 [[package]]
 name = "embassy-net-driver-channel"
@@ -420,7 +420,7 @@ dependencies = [
 [[package]]
 name = "embassy-stm32"
 version = "0.5.0"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "aligned",
  "bit_field",
@@ -434,12 +434,12 @@ dependencies = [
  "embassy-embedded-hal",
  "embassy-futures",
  "embassy-hal-internal",
- "embassy-net-driver 0.2.0 (git+https://github.com/okhsunrog/embassy?branch=flash-async-g4)",
+ "embassy-net-driver 0.2.0 (git+https://github.com/embassy-rs/embassy?rev=d08bd25)",
  "embassy-sync",
  "embassy-time",
  "embassy-time-driver",
  "embassy-time-queue-utils",
- "embassy-usb-driver 0.2.0 (git+https://github.com/okhsunrog/embassy?branch=flash-async-g4)",
+ "embassy-usb-driver 0.2.0 (git+https://github.com/embassy-rs/embassy?rev=d08bd25)",
  "embassy-usb-synopsys-otg",
  "embedded-can",
  "embedded-hal 0.2.7",
@@ -469,7 +469,7 @@ dependencies = [
 [[package]]
 name = "embassy-sync"
 version = "0.7.2"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -482,7 +482,7 @@ dependencies = [
 [[package]]
 name = "embassy-time"
 version = "0.5.0"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -498,7 +498,7 @@ dependencies = [
 [[package]]
 name = "embassy-time-driver"
 version = "0.2.1"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "document-features",
 ]
@@ -506,7 +506,7 @@ dependencies = [
 [[package]]
 name = "embassy-time-queue-utils"
 version = "0.3.0"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "embassy-executor-timer-queue",
  "heapless 0.8.0",
@@ -542,7 +542,7 @@ dependencies = [
 [[package]]
 name = "embassy-usb-driver"
 version = "0.2.0"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "embedded-io-async 0.7.0",
 ]
@@ -550,11 +550,11 @@ dependencies = [
 [[package]]
 name = "embassy-usb-synopsys-otg"
 version = "0.3.1"
-source = "git+https://github.com/okhsunrog/embassy?branch=flash-async-g4#e732c5083fc95acd30fdba91e0f18d1ad526ed46"
+source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
 dependencies = [
  "critical-section",
  "embassy-sync",
- "embassy-usb-driver 0.2.0 (git+https://github.com/okhsunrog/embassy?branch=flash-async-g4)",
+ "embassy-usb-driver 0.2.0 (git+https://github.com/embassy-rs/embassy?rev=d08bd25)",
 ]
 
 [[package]]

@@ -7,10 +7,10 @@
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::peripherals;
 use embassy_stm32::time::Hertz;
-use embassy_stm32::timer::Channel;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin};
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
+use embassy_stm32::timer::Channel;
 
 use crate::config::TIM1_CLOCK_HZ;
 use crate::hardware::resources::MotorResources;
@@ -24,8 +24,8 @@ use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm};
 /// - Phase C: TIM1_CH3 (PA10) / TIM1_CH3N (PB15)
 pub struct MotorPwm<'d> {
     pwm: ComplementaryPwm<'d, peripherals::TIM1>,
-    max_duty: u16,
-    duty_limit: u16,
+    max_duty: u32,
+    duty_limit: u32,
 }
 
 impl<'d> MotorPwm<'d> {
@@ -69,7 +69,7 @@ impl<'d> MotorPwm<'d> {
         pwm.set_dead_time(dead_time);
 
         // Calculate duty limit using shared helper
-        let duty_limit = pwm::duty_limit(max_duty, config.max_duty_percent);
+        let duty_limit = pwm::duty_limit(max_duty as u16, config.max_duty_percent) as u32;
 
         defmt::info!(
             "F405 Motor PWM init: freq={}Hz, max_duty={}, limit={}%",
@@ -103,14 +103,14 @@ impl<'d> MotorPwm<'d> {
 
 impl<'d> PhasePwm for MotorPwm<'d> {
     fn max_duty(&self) -> u16 {
-        self.max_duty
+        self.max_duty as u16
     }
 
     fn set_duties(&mut self, duties: [u16; 3]) {
         // Clamp to duty limit for safety
-        let duty_a = duties[0].min(self.duty_limit);
-        let duty_b = duties[1].min(self.duty_limit);
-        let duty_c = duties[2].min(self.duty_limit);
+        let duty_a = (duties[0] as u32).min(self.duty_limit);
+        let duty_b = (duties[1] as u32).min(self.duty_limit);
+        let duty_c = (duties[2] as u32).min(self.duty_limit);
 
         self.pwm.set_duty(Channel::Ch1, duty_a);
         self.pwm.set_duty(Channel::Ch2, duty_b);

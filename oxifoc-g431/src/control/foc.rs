@@ -35,10 +35,10 @@ pub static FET_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
 // ========== ADC Handles ==========
 
 /// Handle for ADC1 injected conversions (TIM1-triggered): ia, vbus, temp.
-pub static ADC1_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<peripherals::ADC1, 3>>>> =
+pub static ADC1_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<'static, peripherals::ADC1, 3>>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 /// Handle for ADC2 injected conversions (TIM1-triggered).
-pub static ADC2_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<peripherals::ADC2, 2>>>> =
+pub static ADC2_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<'static, peripherals::ADC2, 2>>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
 // ========== FOC Control ==========
@@ -54,8 +54,8 @@ static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
 /// Initialize FOC driver with motor PWM and sensors
 pub async fn init(
     mut motor_pwm: MotorPwm<'static>,
-    adc1: InjectedAdc<peripherals::ADC1, 3>,
-    adc2: InjectedAdc<peripherals::ADC2, 2>,
+    adc1: InjectedAdc<'static, peripherals::ADC1, 3>,
+    adc2: InjectedAdc<'static, peripherals::ADC2, 2>,
 ) {
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();

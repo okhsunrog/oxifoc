@@ -8,8 +8,9 @@ use drv8301_dd::{Drv8301, DrvError, GateCurrent, OcpMode, ShuntAmplifierGain};
 pub use drv8301_dd::FaultStatus;
 use embassy_stm32::{
     Peri,
-    exti::ExtiInput,
+    exti::{self, ExtiInput},
     gpio::{Level, Output, Pull, Speed},
+    interrupt::{self, typelevel::Binding},
     peripherals,
     spi::{self, Spi},
     time::Hertz,
@@ -54,6 +55,7 @@ pub fn init_spi(
     pb5: Peri<'static, peripherals::PB5>,
     pb7: Peri<'static, peripherals::PB7>,
     exti7: Peri<'static, peripherals::EXTI7>,
+    exti_irq: impl Binding<interrupt::typelevel::EXTI9_5, exti::InterruptHandler<interrupt::typelevel::EXTI9_5>>,
 ) -> (Drv8301Config<'static>, NfaultInput) {
     // Configure SPI3 - DRV8301: CPOL=0, CPHA=1 (Mode 1), max 10MHz
     let mut spi_config = spi::Config::default();
@@ -77,7 +79,7 @@ pub fn init_spi(
     let en_gate = Output::new(pb5, Level::Low, Speed::Low);
 
     // nFAULT pin with EXTI for interrupt-driven fault detection (active low, pull-up)
-    let nfault = ExtiInput::new(pb7, exti7, Pull::Up);
+    let nfault = ExtiInput::new(pb7, exti7, Pull::Up, exti_irq);
 
     defmt::info!("DRV8301 SPI3 initialized");
 
