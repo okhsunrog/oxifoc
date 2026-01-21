@@ -14,7 +14,7 @@ use crate::transport::{Queue, Stack};
 pub static OUTQ: Queue = Queue::new();
 
 /// Statically store our netstack
-pub static STACK: Stack = ergot::toolkits::embedded_io_async_v0_6::new_target_stack(
+pub static STACK: Stack = ergot::toolkits::embedded_io_async::new_target_stack(
     OUTQ.stream_producer(),
     MAX_PACKET_SIZE as u16,
 );
