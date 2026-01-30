@@ -109,3 +109,9 @@ impl From<oxifoc_core::types::AdcSample> for AdcSample {
         }
     }
 }
+
+/// Log output for terminal display
+#[derive(Serialize, RustSignal)]
+pub struct LogOutput {
+    pub text: String,
+}

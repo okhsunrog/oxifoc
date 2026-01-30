@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:rinf/rinf.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:xterm/xterm.dart';
 import 'src/bindings/bindings.dart';
 
 Future<void> main() async {
@@ -70,7 +72,7 @@ class _HomePageState extends State<HomePage> {
             ),
         ],
       ),
-      body: _isConnected ? const TelemetryView() : const ConnectionView(),
+      body: _isConnected ? const MainView() : const ConnectionView(),
       bottomNavigationBar: _statusMessage != null
           ? Container(
               color: _isConnected
@@ -298,20 +300,386 @@ class _ConnectionViewState extends State<ConnectionView> {
 }
 
 // ============================================================================
-// Telemetry View
+// Main View (Chart + Terminal + Controls)
 // ============================================================================
 
-class TelemetryView extends StatefulWidget {
-  const TelemetryView({super.key});
+class MainView extends StatelessWidget {
+  const MainView({super.key});
 
   @override
-  State<TelemetryView> createState() => _TelemetryViewState();
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Use column layout on narrow screens, row on wide
+        if (constraints.maxWidth < 800) {
+          return const SingleChildScrollView(
+            child: Column(
+              children: [
+                Padding(padding: EdgeInsets.all(8), child: MotorControlCard()),
+                Padding(
+                  padding: EdgeInsets.all(8),
+                  child: SizedBox(height: 300, child: PhaseCurrentChart()),
+                ),
+                Padding(padding: EdgeInsets.all(8), child: TelemetryCard()),
+                Padding(
+                  padding: EdgeInsets.all(8),
+                  child: SizedBox(height: 250, child: TerminalCard()),
+                ),
+              ],
+            ),
+          );
+        } else {
+          return const Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: Column(
+                  children: [
+                    Expanded(flex: 2, child: PhaseCurrentChart()),
+                    Expanded(child: TerminalCard()),
+                  ],
+                ),
+              ),
+              SizedBox(
+                width: 320,
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: EdgeInsets.all(8),
+                        child: MotorControlCard(),
+                      ),
+                      Padding(
+                        padding: EdgeInsets.all(8),
+                        child: TelemetryCard(),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+      },
+    );
+  }
 }
 
-class _TelemetryViewState extends State<TelemetryView> {
-  AdcSample? _latestSample;
+// ============================================================================
+// Phase Current Chart
+// ============================================================================
+
+class PhaseCurrentChart extends StatefulWidget {
+  const PhaseCurrentChart({super.key});
+
+  @override
+  State<PhaseCurrentChart> createState() => _PhaseCurrentChartState();
+}
+
+class _PhaseCurrentChartState extends State<PhaseCurrentChart> {
+  final List<_ChartSample> _samples = [];
+  StreamSubscription? _adcSub;
+  static const int _maxSamples = 1200; // 20 seconds at 60Hz
+  static const double _windowSeconds = 5.0;
+
+  // ADC normalization
+  static const int _adcMidpoint = 2048;
+  static const double _adcScale = 2048.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _adcSub = AdcSample.rustSignalStream.listen((signalPack) {
+      final sample = signalPack.message;
+      final now = DateTime.now().millisecondsSinceEpoch.toDouble();
+
+      setState(() {
+        _samples.add(
+          _ChartSample(
+            timestamp: now,
+            ia: (sample.ia - _adcMidpoint) / _adcScale,
+            ib: (sample.ib - _adcMidpoint) / _adcScale,
+            ic: (sample.ic - _adcMidpoint) / _adcScale,
+          ),
+        );
+
+        // Trim old samples
+        while (_samples.length > _maxSamples) {
+          _samples.removeAt(0);
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _adcSub?.cancel();
+    super.dispose();
+  }
+
+  List<FlSpot> _buildSpots(double Function(_ChartSample) getValue) {
+    if (_samples.isEmpty) return [];
+
+    final now = _samples.last.timestamp;
+    final cutoff = now - (_windowSeconds * 1000);
+
+    return _samples
+        .where((s) => s.timestamp >= cutoff)
+        .map((s) => FlSpot((s.timestamp - now) / 1000, getValue(s)))
+        .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Card(
+      margin: const EdgeInsets.all(8),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Phase Currents',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: LineChart(
+                LineChartData(
+                  minY: -1.6,
+                  maxY: 1.6,
+                  minX: -_windowSeconds,
+                  maxX: 0,
+                  clipData: const FlClipData.all(),
+                  gridData: FlGridData(
+                    show: true,
+                    horizontalInterval: 0.4,
+                    verticalInterval: 1,
+                    getDrawingHorizontalLine: (value) => FlLine(
+                      color: colorScheme.outline.withValues(alpha: 0.3),
+                      strokeWidth: 1,
+                    ),
+                    getDrawingVerticalLine: (value) => FlLine(
+                      color: colorScheme.outline.withValues(alpha: 0.3),
+                      strokeWidth: 1,
+                    ),
+                  ),
+                  titlesData: FlTitlesData(
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 40,
+                        getTitlesWidget: (value, meta) => Text(
+                          value.toStringAsFixed(1),
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                    ),
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 22,
+                        getTitlesWidget: (value, meta) => Text(
+                          '${value.toInt()}s',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                    ),
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                  ),
+                  borderData: FlBorderData(
+                    show: true,
+                    border: Border.all(
+                      color: colorScheme.outline.withValues(alpha: 0.5),
+                    ),
+                  ),
+                  lineTouchData: const LineTouchData(enabled: false),
+                  lineBarsData: [
+                    _buildLineData(
+                      _buildSpots((s) => s.ia),
+                      Colors.cyan,
+                      'Phase A',
+                    ),
+                    _buildLineData(
+                      _buildSpots((s) => s.ib),
+                      Colors.purple,
+                      'Phase B',
+                    ),
+                    _buildLineData(
+                      _buildSpots((s) => s.ic),
+                      Colors.orange,
+                      'Phase C',
+                    ),
+                  ],
+                ),
+                duration: Duration.zero, // Disable animation for streaming
+              ),
+            ),
+            const SizedBox(height: 8),
+            // Legend
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _legendItem('Phase A', Colors.cyan),
+                const SizedBox(width: 16),
+                _legendItem('Phase B', Colors.purple),
+                const SizedBox(width: 16),
+                _legendItem('Phase C', Colors.orange),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  LineChartBarData _buildLineData(List<FlSpot> spots, Color color, String id) {
+    return LineChartBarData(
+      spots: spots,
+      isCurved: false,
+      color: color,
+      barWidth: 2,
+      isStrokeCapRound: true,
+      dotData: const FlDotData(show: false),
+      belowBarData: BarAreaData(show: false),
+    );
+  }
+
+  Widget _legendItem(String label, Color color) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 12)),
+      ],
+    );
+  }
+}
+
+class _ChartSample {
+  final double timestamp;
+  final double ia, ib, ic;
+
+  _ChartSample({
+    required this.timestamp,
+    required this.ia,
+    required this.ib,
+    required this.ic,
+  });
+}
+
+// ============================================================================
+// Motor Control Card
+// ============================================================================
+
+class MotorControlCard extends StatefulWidget {
+  const MotorControlCard({super.key});
+
+  @override
+  State<MotorControlCard> createState() => _MotorControlCardState();
+}
+
+class _MotorControlCardState extends State<MotorControlCard> {
   double _iqTarget = 1.0;
   bool _motorRunning = false;
+
+  void _startMotor() {
+    MotorCommand(
+      command: MotorCommandTypeStart(iqTarget: _iqTarget),
+    ).sendSignalToRust();
+    setState(() => _motorRunning = true);
+  }
+
+  void _stopMotor() {
+    MotorCommand(command: const MotorCommandTypeStop()).sendSignalToRust();
+    setState(() => _motorRunning = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Motor Control',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: Slider(
+                    value: _iqTarget,
+                    min: 0,
+                    max: 10,
+                    divisions: 100,
+                    label: '${_iqTarget.toStringAsFixed(1)} A',
+                    onChanged: (value) => setState(() => _iqTarget = value),
+                  ),
+                ),
+                SizedBox(
+                  width: 60,
+                  child: Text('${_iqTarget.toStringAsFixed(1)} A'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                FilledButton.icon(
+                  onPressed: _motorRunning ? null : _startMotor,
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('Start'),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: _motorRunning ? _stopMotor : null,
+                  icon: const Icon(Icons.stop),
+                  label: const Text('Stop'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// Telemetry Card
+// ============================================================================
+
+class TelemetryCard extends StatefulWidget {
+  const TelemetryCard({super.key});
+
+  @override
+  State<TelemetryCard> createState() => _TelemetryCardState();
+}
+
+class _TelemetryCardState extends State<TelemetryCard> {
+  AdcSample? _latestSample;
   StreamSubscription? _adcSub;
 
   @override
@@ -330,113 +698,36 @@ class _TelemetryViewState extends State<TelemetryView> {
     super.dispose();
   }
 
-  void _startMotor() {
-    MotorCommand(
-      command: MotorCommandTypeStart(iqTarget: _iqTarget),
-    ).sendSignalToRust();
-    setState(() => _motorRunning = true);
-  }
-
-  void _stopMotor() {
-    MotorCommand(command: const MotorCommandTypeStop()).sendSignalToRust();
-    setState(() => _motorRunning = false);
-  }
-
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Motor control card
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Motor Control',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Slider(
-                          value: _iqTarget,
-                          min: 0,
-                          max: 10,
-                          divisions: 100,
-                          label: '${_iqTarget.toStringAsFixed(1)} A',
-                          onChanged: (value) =>
-                              setState(() => _iqTarget = value),
-                        ),
-                      ),
-                      SizedBox(
-                        width: 60,
-                        child: Text('${_iqTarget.toStringAsFixed(1)} A'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      FilledButton.icon(
-                        onPressed: _motorRunning ? null : _startMotor,
-                        icon: const Icon(Icons.play_arrow),
-                        label: const Text('Start'),
-                      ),
-                      FilledButton.tonalIcon(
-                        onPressed: _motorRunning ? _stopMotor : null,
-                        icon: const Icon(Icons.stop),
-                        label: const Text('Stop'),
-                      ),
-                    ],
-                  ),
-                ],
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Telemetry', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 16),
+            if (_latestSample == null)
+              const Text('Waiting for data...')
+            else ...[
+              _buildTelemetryRow('Phase A', '${_latestSample!.ia}'),
+              _buildTelemetryRow('Phase B', '${_latestSample!.ib}'),
+              _buildTelemetryRow('Phase C', '${_latestSample!.ic}'),
+              const Divider(),
+              _buildTelemetryRow(
+                'Bus Voltage',
+                '${(_latestSample!.vbusMv / 1000).toStringAsFixed(2)} V',
               ),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Telemetry card
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Telemetry',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const SizedBox(height: 16),
-                  if (_latestSample == null)
-                    const Text('Waiting for data...')
-                  else ...[
-                    _buildTelemetryRow('Phase A', '${_latestSample!.ia}'),
-                    _buildTelemetryRow('Phase B', '${_latestSample!.ib}'),
-                    _buildTelemetryRow('Phase C', '${_latestSample!.ic}'),
-                    const Divider(),
-                    _buildTelemetryRow(
-                      'Bus Voltage',
-                      '${(_latestSample!.vbusMv / 1000).toStringAsFixed(2)} V',
-                    ),
-                    _buildTelemetryRow(
-                      'FET Temp',
-                      '${(_latestSample!.fetTempCX10 / 10).toStringAsFixed(1)} °C',
-                    ),
-                    const Divider(),
-                    _buildTelemetryRow('Sequence', '${_latestSample!.seq}'),
-                  ],
-                ],
+              _buildTelemetryRow(
+                'FET Temp',
+                '${(_latestSample!.fetTempCX10 / 10).toStringAsFixed(1)} °C',
               ),
-            ),
-          ),
-        ],
+              const Divider(),
+              _buildTelemetryRow('Sequence', '${_latestSample!.seq}'),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -449,6 +740,93 @@ class _TelemetryViewState extends State<TelemetryView> {
         children: [
           Text(label),
           Text(value, style: const TextStyle(fontFamily: 'monospace')),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// Terminal Card
+// ============================================================================
+
+class TerminalCard extends StatefulWidget {
+  const TerminalCard({super.key});
+
+  @override
+  State<TerminalCard> createState() => _TerminalCardState();
+}
+
+class _TerminalCardState extends State<TerminalCard> {
+  late final Terminal _terminal;
+  StreamSubscription? _logSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _terminal = Terminal(maxLines: 1000);
+
+    // Write welcome message
+    _terminal.write('Oxifoc Terminal\r\n');
+    _terminal.write('---------------\r\n');
+
+    // Listen for log output from Rust
+    _logSub = LogOutput.rustSignalStream.listen((signalPack) {
+      _terminal.write('${signalPack.message.text}\r\n');
+    });
+  }
+
+  @override
+  void dispose() {
+    _logSub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.all(8),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text(
+              'Console',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          Expanded(
+            child: TerminalView(
+              _terminal,
+              theme: TerminalTheme(
+                cursor: Colors.white,
+                selection: Colors.white24,
+                foreground: Colors.white,
+                background: Colors.black,
+                black: Colors.black,
+                white: Colors.white,
+                red: Colors.red,
+                green: Colors.green,
+                yellow: Colors.yellow,
+                blue: Colors.blue,
+                magenta: Colors.purple,
+                cyan: Colors.cyan,
+                brightBlack: Colors.grey,
+                brightWhite: Colors.white,
+                brightRed: Colors.redAccent,
+                brightGreen: Colors.greenAccent,
+                brightYellow: Colors.yellowAccent,
+                brightBlue: Colors.blueAccent,
+                brightMagenta: Colors.purpleAccent,
+                brightCyan: Colors.cyanAccent,
+                searchHitBackground: Colors.yellow,
+                searchHitBackgroundCurrent: Colors.orange,
+                searchHitForeground: Colors.black,
+              ),
+            ),
+          ),
         ],
       ),
     );
