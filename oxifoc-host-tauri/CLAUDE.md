@@ -12,23 +12,14 @@ This is part of the oxifoc monorepo:
 ```
 oxifoc/
 ├── oxifoc-host-tauri/     # This directory - Tauri GUI
+├── oxifoc-host-flutter/   # Flutter GUI (cross-platform)
 ├── oxifoc-host-lib/       # Core backend library
 ├── oxifoc-host-cli/       # CLI tool
 ├── oxifoc-host-egui/      # egui GUI
-├── protocol/              # Shared protocol types
-└── oxifoc-device/         # Device firmware (excluded from workspace)
+└── oxifoc-core/           # Shared protocol types
 ```
 
 ## Commands
-
-**From monorepo root (using justfile):**
-```bash
-just install      # Install frontend dependencies
-just dev          # Run Tauri dev server
-just build        # Build Tauri release
-just format       # Format all code
-just lint         # Lint all code
-```
 
 **From this directory:**
 ```bash
@@ -40,6 +31,19 @@ bun run lint           # ESLint with auto-fix
 bun run format         # Prettier format
 ```
 
+## Tech Stack
+
+**Frontend:**
+- Vue 3 + TypeScript
+- TailwindCSS v4 + DaisyUI for styling
+- ECharts (vue-echarts) for real-time plotting
+- xterm.js for terminal/log display
+- Pinia for state management
+
+**Backend:**
+- Tauri 2.x with tauri-specta for type-safe bindings
+- oxifoc-host-lib for device communication
+
 ## Architecture
 
 ### Rust Backend (`src-tauri/`)
@@ -48,19 +52,15 @@ The Tauri backend integrates with `oxifoc-host-lib` for device communication:
 
 **Key dependencies:**
 - `oxifoc-host-lib`: Core backend (starts serial connection, manages channels)
-- `oxifoc-protocol`: Shared types (AdcSample, MotorCommand, etc.)
+- `oxifoc-core`: Shared types (AdcSample, ControlMode, etc.)
 
 **Commands:**
 - `init_device_connection()`: Starts the host backend
 - `is_device_connected()`: Checks connection status
 - `wait_for_device(timeout_secs)`: Waits for device handshake
-- `motor_start(duty)`: Start motor at duty cycle (0-100%)
-- `motor_stop()`: Stop motor
-- `motor_set_speed(duty)`: Adjust duty while running
 - `start_adc_stream(channel)`: Stream ADC samples to frontend
-- `get_adc_sample()`: Get single sample (non-blocking)
 
-**Data types (from protocol):**
+**Data types (from oxifoc-core):**
 ```rust
 struct AdcSample {
     ia: u16,           // Phase A current (raw ADC, 0-4095)
@@ -70,22 +70,30 @@ struct AdcSample {
     fet_temp_c_x10: u16, // Temperature in 0.1°C units
     seq: u32,          // Sequence number
 }
-
-enum MotorCommand {
-    Stop,
-    Start { duty: u8 },
-    SetSpeed { duty: u8 },
-}
 ```
 
 ### Frontend (`src/`)
 
-**Key stores:**
-- `streamStore.ts`: Manages device connection and ADC data streaming
+**Stores:**
+- `streamStore.ts`: Manages ADC data streaming with client-side timestamping and normalization
+- `connectionStore.ts`: Device connection state
+- `terminalStore.ts`: Terminal/log output
 
 **Key components:**
-- `TimeChartStream.vue`: WebGL-accelerated real-time chart for phase currents
-- `ChartSwitcher.vue`: Chart container with window size controls
+- `charts/EChartsPlot.vue`: High-performance real-time chart with pre-allocated tuple pools, binary search windowing, LTTB sampling
+- `charts/VbusTempPlot.vue`: Voltage and temperature chart
+- `terminal/TerminalDisplay.vue`: xterm-based log viewer
+- `ConnectionCard.vue`: Device connection UI
+- `ControlBar.vue`: Motor control interface
+
+### ECharts Performance Optimizations
+
+The plotting implementation uses several techniques to minimize GC pressure at 60Hz update rates:
+- Pre-allocated tuple pools (`[number, number][]`) created at startup
+- In-place tuple mutation instead of creating new arrays
+- Binary search for time-based windowing
+- LTTB (Largest Triangle Three Buckets) sampling for large datasets
+- `shallowRef` for samples array to avoid deep Vue reactivity
 
 ### Type-Safe Rust ↔ TypeScript Bridge
 
@@ -95,10 +103,6 @@ Uses **tauri-specta** for automatic bindings:
 3. Import via `import { commands, type AdcSample } from './bindings'`
 
 **IMPORTANT**: The Rust crate name is `oxifoc_host_tauri_lib` (underscore, not hyphen).
-
-### TimeChart Requirements
-
-Use the npm beta series (`timechart@1.0.0-beta.10` or later). Older npm `0.5.x` lacks DataPointsBuffer mutation tracking and will break under sustained streaming.
 
 ## Configuration
 
