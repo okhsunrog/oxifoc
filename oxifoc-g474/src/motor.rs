@@ -1,13 +1,13 @@
-//! Motor control for B-G431B-ESC1
+//! Motor control for NUCLEO-G474RE + X-NUCLEO-IHM08M1
 //!
 //! TIM1 complementary PWM configuration for 3-phase BLDC motor control.
 
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::time::Hertz;
-use embassy_stm32::timer::Channel;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin, Mms2, Ossr};
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
+use embassy_stm32::timer::Channel;
 
 use crate::config::TIM1_CLOCK_HZ;
 use crate::hardware::resources::MotorResources;
@@ -21,30 +21,30 @@ pub struct MotorPwm<'d> {
 }
 
 impl<'d> MotorPwm<'d> {
-    /// Initialize TIM1 complementary PWM for the B-G431B-ESC1 board.
+    /// Initialize TIM1 complementary PWM for X-NUCLEO-IHM08M1.
     ///
-    /// Phase mapping (B‑G431B‑ESC1):
-    /// - Phase A: TIM1_CH1 (PA8) / TIM1_CH1N (PC13)
-    /// - Phase B: TIM1_CH2 (PA9) / TIM1_CH2N (PA12)
-    /// - Phase C: TIM1_CH3 (PA10) / TIM1_CH3N (PB15)
+    /// Phase mapping (IHM08M1 via Morpho):
+    /// - Phase U: TIM1_CH1 (PA8) / TIM1_CH1N (PA7)
+    /// - Phase V: TIM1_CH2 (PA9) / TIM1_CH2N (PB0)
+    /// - Phase W: TIM1_CH3 (PA10) / TIM1_CH3N (PB1)
     pub fn new(resources: MotorResources, config: MotorPwmConfig) -> Self {
         let tim1 = resources.tim1;
         let pa8 = resources.pa8;
-        let pc13 = resources.pc13;
+        let pa7 = resources.pa7;
         let pa9 = resources.pa9;
-        let pa12 = resources.pa12;
+        let pb0 = resources.pb0;
         let pa10 = resources.pa10;
-        let pb15 = resources.pb15;
+        let pb1 = resources.pb1;
 
         // High-side pins (TIM1 CH1/2/3)
-        let ch1 = PwmPin::new(pa8, OutputType::PushPull); // Phase A high
-        let ch2 = PwmPin::new(pa9, OutputType::PushPull); // Phase B high
-        let ch3 = PwmPin::new(pa10, OutputType::PushPull); // Phase C high
+        let ch1 = PwmPin::new(pa8, OutputType::PushPull); // Phase U high
+        let ch2 = PwmPin::new(pa9, OutputType::PushPull); // Phase V high
+        let ch3 = PwmPin::new(pa10, OutputType::PushPull); // Phase W high
 
         // Low-side pins (TIM1 CH1N/2N/3N)
-        let ch1n = ComplementaryPwmPin::new(pc13, OutputType::PushPull); // Phase A low
-        let ch2n = ComplementaryPwmPin::new(pa12, OutputType::PushPull); // Phase B low
-        let ch3n = ComplementaryPwmPin::new(pb15, OutputType::PushPull); // Phase C low
+        let ch1n = ComplementaryPwmPin::new(pa7, OutputType::PushPull); // Phase U low
+        let ch2n = ComplementaryPwmPin::new(pb0, OutputType::PushPull); // Phase V low
+        let ch3n = ComplementaryPwmPin::new(pb1, OutputType::PushPull); // Phase W low
 
         let pwm_freq = Hertz(config.pwm_freq_hz);
 
@@ -88,7 +88,7 @@ impl<'d> MotorPwm<'d> {
         let duty_limit = pwm::duty_limit(max_duty, config.max_duty_percent);
 
         defmt::info!(
-            "G431 Motor PWM init: freq={}Hz, max_duty={}, limit={}%",
+            "G474 Motor PWM init: freq={}Hz, max_duty={}, limit={}%",
             config.pwm_freq_hz,
             max_duty,
             config.max_duty_percent

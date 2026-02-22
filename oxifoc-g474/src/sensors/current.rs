@@ -1,14 +1,14 @@
-//! STM32G431 current sensing implementation
+//! STM32G474 current sensing implementation for X-NUCLEO-IHM08M1
 //!
 //! Uses the generic `GenericCurrentSensor` from oxifoc-core with a
-//! G431-specific raw ADC reader.
+//! G474-specific raw ADC reader.
 //!
-//! # Hardware Setup (B-G431B-ESC1)
+//! # Hardware Setup (X-NUCLEO-IHM08M1)
 //!
-//! - **Shunt resistors**: 3mΩ (0.003Ω) on phases A, B, C
-//! - **OPAMP gain**: 16x (configured in main.rs)
+//! - **Shunt resistors**: 0.33Ω on phases U, V, W
+//! - **OPAMP gain**: 16x (using internal OPAMPs in PGA mode)
 //! - **ADC**: 12-bit injected channels, synchronized by TIM1_TRGO2
-//! - **Sampling**: Phase A (ADC1), Phase B+C (ADC2)
+//! - **Sampling**: Phase U (ADC1), Phase V+W (ADC2)
 
 #![allow(dead_code)]
 
@@ -24,16 +24,16 @@ use oxifoc_core::foc::sensors::{GenericCurrentSensor, RawCurrentReader};
 use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
 
 // ============================================================================
-// G431 Raw ADC Reader
+// G474 Raw ADC Reader
 // ============================================================================
 
-/// G431-specific raw ADC reader
+/// G474-specific raw ADC reader for X-NUCLEO-IHM08M1
 ///
 /// Reads phase currents from static atomics populated by ADC ISR.
 #[derive(Clone, Copy)]
-pub struct G431AdcReader;
+pub struct G474AdcReader;
 
-impl RawCurrentReader for G431AdcReader {
+impl RawCurrentReader for G474AdcReader {
     fn read_raw(&self) -> (u16, u16, u16) {
         let ia_raw = IA_SAMPLE.load(Ordering::Relaxed);
         let ib_raw = IB_SAMPLE.load(Ordering::Relaxed);
@@ -43,15 +43,15 @@ impl RawCurrentReader for G431AdcReader {
 }
 
 // ============================================================================
-// G431 Current Sensor (type alias)
+// G474 Current Sensor (type alias)
 // ============================================================================
 
-/// G431 current sensor - generic sensor with G431-specific ADC reader
-pub type G431CurrentSensor = GenericCurrentSensor<G431AdcReader>;
+/// G474 current sensor - generic sensor with G474-specific ADC reader
+pub type G474CurrentSensor = GenericCurrentSensor<G474AdcReader>;
 
-/// Extension trait for G431-specific calibration
-pub trait G431CurrentSensorExt {
-    /// Create a new G431 current sensor from board config
+/// Extension trait for G474-specific calibration
+pub trait G474CurrentSensorExt {
+    /// Create a new G474 current sensor from board config
     fn from_board(config: &BoardConfig) -> Self;
 
     /// Calibrate current sense offsets (async)
@@ -61,9 +61,9 @@ pub trait G431CurrentSensorExt {
     async fn calibrate_with_params(&mut self, num_samples: usize, delay_us: u64);
 }
 
-impl G431CurrentSensorExt for G431CurrentSensor {
+impl G474CurrentSensorExt for G474CurrentSensor {
     fn from_board(config: &BoardConfig) -> Self {
-        GenericCurrentSensor::from_config(config, G431AdcReader)
+        GenericCurrentSensor::from_config(config, G474AdcReader)
     }
 
     async fn calibrate(&mut self) {
@@ -82,7 +82,7 @@ impl G431CurrentSensorExt for G431CurrentSensor {
         let mut samples = heapless::Vec::<(u16, u16, u16), 1024>::new();
 
         for i in 0..num_samples.min(1024) {
-            let raw = G431AdcReader.read_raw();
+            let raw = G474AdcReader.read_raw();
 
             let _ = samples.push(raw);
 

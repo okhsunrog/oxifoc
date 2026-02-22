@@ -37,10 +37,9 @@ mod transport;
 // mod motor;
 // mod sensors;
 
-use hardware::{AssignedResources, StorageResources};
+use hardware::{AssignedResources, HallResources, MotorResources, StorageResources};
 
-// Motor-related imports (commented out until IHM08M1 shield is connected)
-// use hardware::{HallResources, MotorResources};
+// Motor PWM (uncomment when ready to enable motor control)
 // use motor::MotorPwm;
 
 // Define platform state with our fault type

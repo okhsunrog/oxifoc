@@ -1,22 +1,23 @@
-//! Hall sensor management for B-G431B-ESC1
+//! Hall sensor management for NUCLEO-G474RE + X-NUCLEO-IHM08M1
 //!
 //! Uses TIM6-based polling at 5µs intervals with 7-read majority voting
 //! for noise immunity. This approach filters sub-µs glitches while maintaining
 //! good timing resolution.
 //!
-//! Hall sensors are on PB6, PB7, PB8 - all on GPIOB, allowing single-register reads.
+//! Hall sensors on IHM08M1 directly connected to PB6, PB7, PB8 via Morpho.
+//! Active-low logic, directly from motor Hall sensors.
 
 use core::cell::RefCell;
 
 use embassy_stm32::gpio::{Input, Pull};
 use embassy_stm32::interrupt::typelevel::Interrupt;
-use embassy_stm32::{Peri, interrupt, pac, peripherals};
+use embassy_stm32::{interrupt, pac, peripherals, Peri};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
 use oxifoc_core::foc::hall_sensor::{Direction, HallSensor};
 use oxifoc_core::foc::sensors::{
+    hall_polling::{majority_vote, MAJORITY_THRESHOLD, POLL_INTERVAL_US, READS_PER_POLL},
     AngleSample, AngleSensor, HallSensorTrait, HallSnapshot,
-    hall_polling::{MAJORITY_THRESHOLD, POLL_INTERVAL_US, READS_PER_POLL, majority_vote},
 };
 
 use crate::config::TIMEBASE_TICKS_PER_SEC;

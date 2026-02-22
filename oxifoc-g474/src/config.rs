@@ -1,51 +1,48 @@
-//! Configuration constants and structures for oxifoc-g474 (NUCLEO-G474RE)
+//! Configuration constants and structures for oxifoc-g474 (NUCLEO-G474RE + X-NUCLEO-IHM08M1)
 //!
-//! Motor control configuration is placeholder until IHM08M1 shield is connected.
-//! The board configuration will need to be updated based on the shield's
-//! shunt resistors, voltage divider, and other hardware specifics.
+//! X-NUCLEO-IHM08M1 hardware configuration.
 
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 
 // ============================================================================
-// Board Hardware Configuration (Placeholder for IHM08M1)
+// Board Hardware Configuration (X-NUCLEO-IHM08M1)
 // ============================================================================
 
-/// NUCLEO-G474RE + IHM08M1 board configuration (PLACEHOLDER)
+/// NUCLEO-G474RE + X-NUCLEO-IHM08M1 board configuration
 ///
-/// TODO: Update these values when IHM08M1 shield is connected!
-/// Hardware specs will depend on the IHM08M1 shield configuration.
-///
-/// IHM08M1 typical specs (verify with your specific board):
-/// - Shunt resistors: needs verification
-/// - OPAMP gain: needs verification
-/// - ADC: 12-bit with 3.3V reference
-/// - VBUS divider: needs verification
+/// X-NUCLEO-IHM08M1 hardware specs:
+/// - Driver: L6398 gate driver + STL220N6F7 MOSFETs
+/// - Shunt resistors: 0.33Ω (R7, R8, R12 on schematic)
+/// - Current sense: direct ADC (no external op-amp, uses MCU internal OPAMPs)
+/// - VBUS divider: 1:19.18 (R5=560k, R6=30.9k) -> ratio ~19.12
+/// - Max voltage: 45V (limited by STL220N6F7)
+/// - Max current: ~15A peak (limited by shunt power dissipation)
 #[allow(dead_code)]
 pub const BOARD: BoardConfig = BoardConfig {
-    shunt_ohms: 0.010,        // Placeholder - verify for IHM08M1
-    amp_gain: 10.0,           // Placeholder - verify for IHM08M1
-    vbus_divider_ratio: 10.0, // Placeholder - verify for IHM08M1
-    adc_vref_mv: 3300,        // 3.3V
-    adc_max_counts: 4095,     // 12-bit
-    initial_vbus_volts: 12.0, // Conservative default
-    max_iq_target_a: 5.0,     // Placeholder - conservative default
-    // Fault thresholds (conservative placeholders)
-    max_phase_current_a: 10.0, // Placeholder - verify for your motor
-    max_vbus_mv: 30_000,       // Placeholder - verify for your setup
+    shunt_ohms: 0.33,          // 0.33Ω shunt resistors
+    amp_gain: 16.0,            // Using internal OPAMP with 16x gain (PGA mode)
+    vbus_divider_ratio: 19.12, // (560k + 30.9k) / 30.9k = 19.12
+    adc_vref_mv: 3300,         // 3.3V
+    adc_max_counts: 4095,      // 12-bit ADC
+    initial_vbus_volts: 12.0,  // Conservative default
+    max_iq_target_a: 5.0,      // Conservative default for testing
+    // Fault thresholds
+    max_phase_current_a: 10.0, // Conservative limit
+    max_vbus_mv: 45_000,       // Max 45V for STL220N6F7
     min_vbus_mv: 8_000,        // Undervoltage at 8V
     max_fet_temp_c: 85.0,      // Conservative overtemp threshold
 };
 
-/// NTC configuration (PLACEHOLDER)
-/// TODO: Verify NTC configuration for IHM08M1 shield
+/// NTC configuration for X-NUCLEO-IHM08M1
+/// NTC1 on board: 10kΩ @ 25°C, Beta ~3435K (typical NTC)
 #[allow(dead_code)]
 pub const NTC: NtcConfig = NtcConfig {
-    r_fixed_ohm: 10_000.0,
-    r0_ohm: 10_000.0,
-    beta: 3435.0,
-    t0_k: 273.15 + 25.0,
-    topology: NtcTopology::LowSide,
+    r_fixed_ohm: 10_000.0,          // R13 = 10kΩ pull-up
+    r0_ohm: 10_000.0,               // NTC = 10kΩ @ 25°C
+    beta: 3435.0,                   // Typical NTC beta
+    t0_k: 273.15 + 25.0,            // Reference temp 25°C
+    topology: NtcTopology::LowSide, // NTC to GND, pull-up to VCC
 };
 
 // ============================================================================
