@@ -6,6 +6,7 @@ members = [
     "oxifoc-host-cli",
     "oxifoc-host-egui",
     "oxifoc-host-tauri/src-tauri",
+    "oxifoc-host-slint",
 ]
 exclude = [
     "oxifoc-g431",    # Different toolchain (thumbv7em-none-eabihf)

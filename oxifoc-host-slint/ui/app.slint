@@ -1,0 +1,405 @@
+import { VerticalBox, HorizontalBox, Button, ComboBox, Slider, CheckBox,
+         StandardListView, LineEdit, GroupBox, ScrollView, GridBox } from "std-widgets.slint";
+
+// Simple line chart using Path with viewbox coordinates (0-1000)
+component LineChart inherits Rectangle {
+    in property <string> title: "";
+    in property <string> line1-commands: "";
+    in property <string> line2-commands: "";
+    in property <string> line3-commands: "";
+    in property <color> line1-color: #22d3ee;
+    in property <color> line2-color: #8b5cf6;
+    in property <color> line3-color: #f97316;
+    in property <string> line1-label: "";
+    in property <string> line2-label: "";
+    in property <string> line3-label: "";
+    in property <bool> show-line3: false;
+
+    border-radius: 4px;
+    background: #2a2a3a;
+    clip: true;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            spacing: 16px;
+            alignment: start;
+
+            Text {
+                text: root.title;
+                font-weight: 700;
+                font-size: 13px;
+                color: #e0e0e0;
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+
+                Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 2px;
+                    background: root.line1-color;
+                }
+                Text { text: root.line1-label; color: #b0b0b0; font-size: 11px; }
+
+                Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 2px;
+                    background: root.line2-color;
+                }
+                Text { text: root.line2-label; color: #b0b0b0; font-size: 11px; }
+
+                if root.show-line3 : Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 2px;
+                    background: root.line3-color;
+                }
+                if root.show-line3 : Text { text: root.line3-label; color: #b0b0b0; font-size: 11px; }
+            }
+        }
+
+        Rectangle {
+            background: #1e1e2e;
+            border-radius: 2px;
+            vertical-stretch: 1;
+
+            Path {
+                width: 100%;
+                height: 100%;
+                viewbox-width: 1000;
+                viewbox-height: 1000;
+                commands: root.line1-commands;
+                stroke: root.line1-color;
+                stroke-width: 2px;
+                fill: transparent;
+            }
+            Path {
+                width: 100%;
+                height: 100%;
+                viewbox-width: 1000;
+                viewbox-height: 1000;
+                commands: root.line2-commands;
+                stroke: root.line2-color;
+                stroke-width: 2px;
+                fill: transparent;
+            }
+            if root.show-line3 : Path {
+                width: 100%;
+                height: 100%;
+                viewbox-width: 1000;
+                viewbox-height: 1000;
+                commands: root.line3-commands;
+                stroke: root.line3-color;
+                stroke-width: 2px;
+                fill: transparent;
+            }
+        }
+    }
+}
+
+export component App inherits Window {
+    title: "Oxifoc Host";
+    preferred-width: 850px;
+    preferred-height: 650px;
+
+    // ── Page state ──
+    in-out property <string> page: "connect";
+
+    // ── Connection properties ──
+    in-out property <bool> use-serial: true;
+    in property <[StandardListViewItem]> serial-ports;
+    in property <[StandardListViewItem]> probes;
+    in-out property <int> selected-serial: -1;
+    in-out property <int> selected-probe: -1;
+    in-out property <int> baud-index: 3;
+    in-out property <string> chip-name: "STM32G474RETx";
+    in-out property <bool> usb-only: true;
+    in property <string> error-text: "";
+
+    // ── Main page state ──
+    in property <bool> is-connected: false;
+
+    // ── Motor control ──
+    in-out property <float> duty: 10;
+
+    // ── Telemetry (formatted strings from Rust) ──
+    in property <string> ia-text: "0";
+    in property <string> ib-text: "0";
+    in property <string> ic-text: "0";
+    in property <string> vbus-text: "0.00 V";
+    in property <string> temp-text: "0.0 °C";
+    in property <string> seq-text: "0";
+    in property <int> sample-count: 0;
+
+    // ── Chart SVG path commands ──
+    in property <string> chart-ia-cmd: "";
+    in property <string> chart-ib-cmd: "";
+    in property <string> chart-ic-cmd: "";
+    in property <string> chart-vbus-cmd: "";
+    in property <string> chart-temp-cmd: "";
+
+    // ── Callbacks ──
+    callback refresh-serial-ports();
+    callback refresh-probes();
+    callback connect-device();
+    callback disconnect-device();
+    callback motor-start();
+    callback motor-stop();
+
+    // ═══════════════════════════════════════════
+    //  Connection Page
+    // ═══════════════════════════════════════════
+    if root.page == "connect" : VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        alignment: start;
+
+        Text {
+            text: "Connect to Device";
+            font-size: 22px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+
+        // Transport selector
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: center;
+
+            Button {
+                text: root.use-serial ? "● Serial (UART)" : "○ Serial (UART)";
+                clicked => { root.use-serial = true; }
+            }
+            Button {
+                text: !root.use-serial ? "● RTT (Debug Probe)" : "○ RTT (Debug Probe)";
+                clicked => { root.use-serial = false; }
+            }
+        }
+
+        // Error message
+        if root.error-text != "" : Text {
+            text: root.error-text;
+            color: #ef4444;
+            horizontal-alignment: center;
+        }
+
+        // ── Serial transport ──
+        if root.use-serial : VerticalLayout {
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Text {
+                    text: "Serial Ports";
+                    font-size: 16px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                CheckBox {
+                    text: "USB-Serial only";
+                    checked <=> root.usb-only;
+                    toggled => { root.refresh-serial-ports(); }
+                }
+                Button {
+                    text: "Refresh";
+                    clicked => { root.refresh-serial-ports(); }
+                }
+            }
+
+            StandardListView {
+                model: root.serial-ports;
+                current-item <=> root.selected-serial;
+                min-height: 160px;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Text { text: "Baud Rate:"; vertical-alignment: center; }
+                ComboBox {
+                    model: ["115200", "230400", "460800", "921600", "1000000", "2000000"];
+                    current-index <=> root.baud-index;
+                    width: 150px;
+                }
+            }
+        }
+
+        // ── RTT transport ──
+        if !root.use-serial : VerticalLayout {
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Text {
+                    text: "Debug Probes";
+                    font-size: 16px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Button {
+                    text: "Refresh";
+                    clicked => { root.refresh-probes(); }
+                }
+            }
+
+            StandardListView {
+                model: root.probes;
+                current-item <=> root.selected-probe;
+                min-height: 160px;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Text { text: "Target Chip:"; vertical-alignment: center; }
+                LineEdit {
+                    text <=> root.chip-name;
+                    width: 220px;
+                }
+            }
+        }
+
+        // Connect button
+        HorizontalLayout {
+            alignment: center;
+
+            Button {
+                text: "Connect";
+                primary: true;
+                enabled: root.use-serial
+                    ? root.selected-serial >= 0
+                    : (root.selected-probe >= 0 && root.chip-name != "");
+                clicked => { root.connect-device(); }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    //  Main Page
+    // ═══════════════════════════════════════════
+    if root.page == "main" : VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+
+        // ── Status bar ──
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+
+            Rectangle {
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                background: root.is-connected ? #22c55e : #eab308;
+            }
+            Text {
+                text: root.is-connected ? "Connected" : "Connecting...";
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: "Disconnect";
+                clicked => { root.disconnect-device(); }
+            }
+        }
+
+        // ── Motor control ──
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+
+            Text { text: "Duty (%)"; vertical-alignment: center; }
+            Slider {
+                minimum: 0;
+                maximum: 100;
+                value <=> root.duty;
+                min-width: 200px;
+            }
+            Text {
+                text: "\{round(root.duty)}%";
+                vertical-alignment: center;
+                min-width: 45px;
+            }
+            Button {
+                text: "Start";
+                primary: true;
+                clicked => { root.motor-start(); }
+            }
+            Button {
+                text: "Stop";
+                clicked => { root.motor-stop(); }
+            }
+        }
+
+        // ── Telemetry ──
+        Rectangle {
+            background: #f0f0f5;
+            border-radius: 4px;
+            min-height: 70px;
+
+            GridLayout {
+                padding: 10px;
+                spacing: 6px;
+
+                Row {
+                    Text { text: "Phase A:"; }
+                    Text { text: root.ia-text; font-weight: 600; }
+                    Text { text: "Phase B:"; }
+                    Text { text: root.ib-text; font-weight: 600; }
+                    Text { text: "Phase C:"; }
+                    Text { text: root.ic-text; font-weight: 600; }
+                }
+                Row {
+                    Text { text: "VBUS:"; }
+                    Text { text: root.vbus-text; font-weight: 600; }
+                    Text { text: "Temp:"; }
+                    Text { text: root.temp-text; font-weight: 600; }
+                    Text { text: "Seq:"; }
+                    Text { text: root.seq-text; font-weight: 600; }
+                }
+                Row {
+                    Text { text: "Samples:"; }
+                    Text { text: "\{root.sample-count}"; font-weight: 600; }
+                }
+            }
+        }
+
+        // ── Charts ──
+        LineChart {
+            vertical-stretch: 1;
+            title: "Phase Currents";
+            line1-commands: root.chart-ia-cmd;
+            line2-commands: root.chart-ib-cmd;
+            line3-commands: root.chart-ic-cmd;
+            line1-label: "Phase A";
+            line2-label: "Phase B";
+            line3-label: "Phase C";
+            show-line3: true;
+            line1-color: #22d3ee;
+            line2-color: #8b5cf6;
+            line3-color: #f97316;
+        }
+
+        LineChart {
+            vertical-stretch: 1;
+            title: "Voltage & Temperature";
+            line1-commands: root.chart-vbus-cmd;
+            line2-commands: root.chart-temp-cmd;
+            line1-label: "Voltage (V)";
+            line2-label: "Temperature (°C)";
+            line1-color: #eab308;
+            line2-color: #ef4444;
+        }
+    }
+}

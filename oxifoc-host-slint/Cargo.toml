@@ -1,0 +1,13 @@
+[package]
+name = "oxifoc-host-slint"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+oxifoc-host-lib = { path = "../oxifoc-host-lib" }
+oxifoc-core = { path = "../oxifoc-core", features = ["icd"] }
+slint = "1.15.1"
+crossbeam-channel = { workspace = true }
+
+[build-dependencies]
+slint-build = "1.15.1"
