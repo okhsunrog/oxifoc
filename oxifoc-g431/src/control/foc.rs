@@ -11,10 +11,12 @@ use embassy_time::{Duration, Timer};
 use oxifoc_core::foc::controller::FocController;
 use oxifoc_core::foc::fault::{FaultCategory, VOLTAGE_HYSTERESIS_MV};
 use oxifoc_core::foc::phase::PhaseManager;
+use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
 
 use crate::config::{BOARD, NTC, PWM_CONFIG};
+use crate::cordic::CordicSinCos;
 use crate::fault::G431Fault;
 use crate::motor::MotorPwm;
 use crate::sensors::{G431CurrentSensor, G431CurrentSensorExt, HallAngleProxy};
@@ -35,17 +37,20 @@ pub static FET_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
 // ========== ADC Handles ==========
 
 /// Handle for ADC1 injected conversions (TIM1-triggered): ia, vbus, temp.
-pub static ADC1_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<'static, peripherals::ADC1, 3>>>> =
-    CriticalSectionMutex::new(RefCell::new(None));
+pub static ADC1_INJECTED: CriticalSectionMutex<
+    RefCell<Option<InjectedAdc<'static, peripherals::ADC1, 3>>>,
+> = CriticalSectionMutex::new(RefCell::new(None));
 /// Handle for ADC2 injected conversions (TIM1-triggered).
-pub static ADC2_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<'static, peripherals::ADC2, 2>>>> =
-    CriticalSectionMutex::new(RefCell::new(None));
+pub static ADC2_INJECTED: CriticalSectionMutex<
+    RefCell<Option<InjectedAdc<'static, peripherals::ADC2, 2>>>,
+> = CriticalSectionMutex::new(RefCell::new(None));
 
 // ========== FOC Control ==========
 
 /// FOC driver storage (mutated only inside the ADC ISR)
 type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor>;
-type FocDriverType = FocDriver<MotorPwm<'static>, G431CurrentSensor, PhaseManagerType>;
+type FocDriverType =
+    FocDriver<MotorPwm<'static>, G431CurrentSensor, PhaseManagerType, CordicSinCos>;
 static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
@@ -67,9 +72,12 @@ pub async fn init(
     let initial_vbus_v =
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
 
+    // Initialize CORDIC hardware for fast sin/cos in FOC loop
+    CordicSinCos::init();
+
     // Build FOC driver with dt from PWM config
     let mut foc_driver = FocDriver::new(
-        FocController::new(initial_vbus_v),
+        FocController::<SvpwmModulator, CordicSinCos>::new(initial_vbus_v),
         motor_pwm,
         current_sensor,
         phase_manager,

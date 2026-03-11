@@ -1,7 +1,7 @@
 //! Hardware peripheral initialization for NUCLEO-G474RE
 
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::{peripherals, Peri, Peripherals};
+use embassy_stm32::{Peri, Peripherals, peripherals};
 
 // Motor-related imports (commented out until IHM08M1 shield is connected)
 // use embassy_stm32::adc::{

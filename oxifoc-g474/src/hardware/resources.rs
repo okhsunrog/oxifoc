@@ -4,7 +4,7 @@
 //! PWM signals directly connected to TIM1 channels.
 
 use assign_resources::assign_resources;
-use embassy_stm32::{peripherals, Peri};
+use embassy_stm32::{Peri, peripherals};
 
 // Resource assignments for hardware peripherals
 assign_resources! {

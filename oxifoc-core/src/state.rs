@@ -15,6 +15,7 @@ use crate::foc::phase::PhaseProvider;
 use crate::foc::pwm::PhasePwm;
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
+use crate::foc::trig::SinCos;
 use crate::motor::{ControlMode, FocDriver};
 use crate::types::MotorState;
 
@@ -157,14 +158,15 @@ macro_rules! define_platform_state {
 ///
 /// # Returns
 /// The current ControlMode after processing commands
-pub fn process_commands<P, C, Ph>(
+pub fn process_commands<P, C, Ph, S>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
-    foc: &mut FocDriver<P, C, Ph>,
+    foc: &mut FocDriver<P, C, Ph, S>,
 ) -> ControlMode
 where
     P: PhasePwm,
     C: CurrentSensor,
     Ph: PhaseProvider,
+    S: SinCos,
 {
     // Process all pending commands
     while let Ok(mode) = CMD_CHANNEL.try_receive() {

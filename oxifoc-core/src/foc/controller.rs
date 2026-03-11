@@ -9,6 +9,7 @@ use super::{
     pi_controller::PIController,
     pwm::{Modulator, SvpwmModulator},
     transforms,
+    trig::{LibmSinCos, SinCos},
 };
 
 /// Result of a single FOC update
@@ -62,7 +63,7 @@ impl FocTelemetry {
 /// The controller is hardware-agnostic: it consumes measured currents and
 /// electrical angle, then returns duty cycles that can be written through a
 /// platform `PhasePwm` implementation.
-pub struct FocController<M: Modulator = SvpwmModulator> {
+pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> {
     /// d-axis PI controller (flux)
     pub id_pi: PIController,
     /// q-axis PI controller (torque)
@@ -71,11 +72,11 @@ pub struct FocController<M: Modulator = SvpwmModulator> {
     vbus: f32,
     /// Modulation limit as a fraction of `vbus` (0.0–1.0)
     modulation_limit: f32,
-    /// Modulator type
-    _mod: core::marker::PhantomData<M>,
+    /// Modulator + SinCos phantom (both are ZSTs)
+    _phantom: core::marker::PhantomData<(M, S)>,
 }
 
-impl<M: Modulator> FocController<M> {
+impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Conservative default modulation limit (keeps us inside linear SVPWM)
     pub const DEFAULT_MODULATION_LIMIT: f32 = 0.577; // ≈ 1/√3
 
@@ -86,7 +87,7 @@ impl<M: Modulator> FocController<M> {
             iq_pi: PIController::new(0.4, 40.0).with_limits(-12.0, 12.0),
             vbus: vbus.max(1.0),
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
-            _mod: core::marker::PhantomData,
+            _phantom: core::marker::PhantomData,
         }
     }
 
@@ -143,8 +144,7 @@ impl<M: Modulator> FocController<M> {
         dt: f32,
     ) -> FocTelemetry {
         let (ia, ib, ic) = currents;
-        let sin_theta = libm::sinf(angle_rad);
-        let cos_theta = libm::cosf(angle_rad);
+        let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
 
         // Phase currents -> stationary frame
         let (i_alpha, i_beta) = transforms::clarke(ia, ib);
@@ -213,8 +213,7 @@ impl<M: Modulator> FocController<M> {
         dt: f32,
     ) -> FocTelemetry {
         let (ia, ib, ic) = currents;
-        let sin_theta = libm::sinf(angle_rad);
-        let cos_theta = libm::cosf(angle_rad);
+        let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
 
         // Phase currents -> stationary frame
         let (i_alpha, i_beta) = transforms::clarke(ia, ib);

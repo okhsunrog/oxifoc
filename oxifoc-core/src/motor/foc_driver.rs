@@ -11,9 +11,10 @@
 
 use crate::foc::controller::{FocController, FocTelemetry};
 use crate::foc::phase::{PhaseInput, PhaseProvider};
-use crate::foc::pwm::{PhasePwm, PhaseState};
+use crate::foc::pwm::{PhasePwm, PhaseState, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::transforms;
+use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::motor::six_step;
 
 // Re-export ControlMode from types (single source of truth)
@@ -56,14 +57,14 @@ pub use crate::types::ControlMode;
 ///     });
 /// }
 /// ```
-pub struct FocDriver<P, C, Phase>
+pub struct FocDriver<P, C, Phase, S: SinCos = LibmSinCos>
 where
     P: PhasePwm,
     C: CurrentSensor,
     Phase: PhaseProvider,
 {
     /// FOC controller
-    controller: FocController,
+    controller: FocController<SvpwmModulator, S>,
     /// PWM output
     pwm: P,
     /// Current sensor
@@ -78,11 +79,12 @@ where
     dt: f32,
 }
 
-impl<P, C, Phase> FocDriver<P, C, Phase>
+impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
     P: PhasePwm,
     C: CurrentSensor,
     Phase: PhaseProvider,
+    S: SinCos,
 {
     /// Create a new FOC driver
     ///
@@ -93,7 +95,7 @@ where
     /// * `phase` - Phase provider (manages angle sources)
     /// * `dt` - Control loop period in seconds (from `MotorPwmConfig::dt_s()`)
     pub fn new(
-        controller: FocController,
+        controller: FocController<SvpwmModulator, S>,
         pwm: P,
         current_sensor: C,
         phase: Phase,
@@ -421,12 +423,12 @@ where
     }
 
     /// Get mutable reference to FOC controller (for tuning)
-    pub fn controller_mut(&mut self) -> &mut FocController {
+    pub fn controller_mut(&mut self) -> &mut FocController<SvpwmModulator, S> {
         &mut self.controller
     }
 
     /// Get reference to FOC controller
-    pub fn controller(&self) -> &FocController {
+    pub fn controller(&self) -> &FocController<SvpwmModulator, S> {
         &self.controller
     }
 }

@@ -4,10 +4,10 @@
 
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::time::Hertz;
+use embassy_stm32::timer::Channel;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin, Mms2, Ossr};
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
-use embassy_stm32::timer::Channel;
 
 use crate::config::TIM1_CLOCK_HZ;
 use crate::hardware::resources::MotorResources;

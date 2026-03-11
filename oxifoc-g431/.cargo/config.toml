@@ -3,6 +3,7 @@ target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
 runner = ["bash", "../scripts/probe_run.sh"]
+rustflags = ["-C", "target-feature=+vfp2"]
 
 [env]
 # Show all defmt levels unless overridden

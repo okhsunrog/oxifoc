@@ -20,6 +20,7 @@ use panic_probe as _;
 mod calibration;
 mod config;
 mod control;
+mod cordic;
 pub mod fault;
 mod hardware;
 mod motor;

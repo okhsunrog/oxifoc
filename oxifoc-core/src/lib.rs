@@ -153,6 +153,9 @@ pub mod foc {
     /// Coordinate transformations (Clarke, Park, and their inverses)
     pub mod transforms;
 
+    /// Trigonometric abstractions (SinCos trait, q1.31 helpers for CORDIC)
+    pub mod trig;
+
     /// Motor parameter detection (R, L, λ)
     pub mod detection;
 
