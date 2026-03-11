@@ -153,10 +153,12 @@ fn main() {
             let duty = app.get_duty();
             let iq_target = duty * 0.1;
             if let Some(ref runtime) = *rt.lock().unwrap() {
-                let _ = runtime.cmd_tx.send(HostCommand::Motor(ControlMode::CurrentControl {
-                    iq_target,
-                    id_target: 0.0,
-                }));
+                let _ = runtime
+                    .cmd_tx
+                    .send(HostCommand::Motor(ControlMode::CurrentControl {
+                        iq_target,
+                        id_target: 0.0,
+                    }));
             }
         });
     }
@@ -166,7 +168,9 @@ fn main() {
         let rt = runtime.clone();
         app.on_motor_stop(move || {
             if let Some(ref runtime) = *rt.lock().unwrap() {
-                let _ = runtime.cmd_tx.send(HostCommand::Motor(ControlMode::Stopped));
+                let _ = runtime
+                    .cmd_tx
+                    .send(HostCommand::Motor(ControlMode::Stopped));
             }
         });
     }
@@ -259,9 +263,7 @@ fn adc_poll_loop(
                             app.set_ia_text(format!("{}", s.ia).into());
                             app.set_ib_text(format!("{}", s.ib).into());
                             app.set_ic_text(format!("{}", s.ic).into());
-                            app.set_vbus_text(
-                                format!("{:.2} V", s.vbus_mv as f32 / 1000.0).into(),
-                            );
+                            app.set_vbus_text(format!("{:.2} V", s.vbus_mv as f32 / 1000.0).into());
                             app.set_temp_text(
                                 format!("{:.1} °C", s.fet_temp_c_x10 as f32 / 10.0).into(),
                             );

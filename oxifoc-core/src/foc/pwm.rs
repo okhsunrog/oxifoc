@@ -12,6 +12,20 @@
 
 use super::svpwm;
 
+/// Phase output state for six-step commutation
+///
+/// Each phase can be PWM-modulated, forced low, or floating (high-impedance).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PhaseState {
+    /// PWM modulated output at given duty cycle count.
+    /// Both high-side and low-side are active (with dead time).
+    Pwm(u16),
+    /// Forced low: low-side ON, high-side OFF (current sink path).
+    Low,
+    /// Floating / high-impedance: both high-side and low-side OFF.
+    Float,
+}
+
 /// PWM configuration for motor control
 ///
 /// Provides common configuration parameters for 3-phase complementary PWM.
@@ -114,6 +128,22 @@ pub trait PhasePwm {
     /// Implementers can override to turn off outputs or enter a safe state.
     fn disable(&mut self) {
         // Default: no-op for platforms that handle safety elsewhere.
+    }
+
+    /// Set individual phase states for six-step commutation.
+    ///
+    /// Each element controls one phase: \[A, B, C\].
+    /// Platform crates should override this for proper floating (hi-Z)
+    /// support using `enable(Channel)` / `disable(Channel)`.
+    ///
+    /// The default implementation falls back to `set_duties()` which
+    /// cannot produce true high-impedance.
+    fn set_phase_states(&mut self, states: [PhaseState; 3]) {
+        let duties = states.map(|s| match s {
+            PhaseState::Pwm(duty) => duty,
+            PhaseState::Low | PhaseState::Float => 0,
+        });
+        self.set_duties(duties);
     }
 }
 

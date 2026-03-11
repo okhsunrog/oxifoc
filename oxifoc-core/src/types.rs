@@ -88,6 +88,16 @@ pub enum ControlMode {
         /// q-axis voltage to inject (V)
         vq_inject: f32,
     },
+    /// Six-step (trapezoidal) commutation mode
+    ///
+    /// Simple voltage-mode drive for board bringup and testing.
+    /// Does not require current sensor calibration.
+    /// Sign of duty determines direction: positive = forward,
+    /// negative = reverse.
+    SixStep {
+        /// Duty cycle (-1.0 to 1.0)
+        duty: f32,
+    },
 }
 
 // ============================================================================

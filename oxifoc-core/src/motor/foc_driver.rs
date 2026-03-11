@@ -11,9 +11,10 @@
 
 use crate::foc::controller::{FocController, FocTelemetry};
 use crate::foc::phase::{PhaseInput, PhaseProvider};
-use crate::foc::pwm::PhasePwm;
+use crate::foc::pwm::{PhasePwm, PhaseState};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::transforms;
+use crate::motor::six_step;
 
 // Re-export ControlMode from types (single source of truth)
 pub use crate::types::ControlMode;
@@ -115,7 +116,17 @@ where
     }
 
     /// Set control mode
+    ///
+    /// When leaving SixStep mode, re-enables all PWM channels that may
+    /// have been disabled (floated) during six-step commutation.
     pub fn set_mode(&mut self, mode: ControlMode) {
+        if matches!(self.mode, ControlMode::SixStep { .. })
+            && !matches!(mode, ControlMode::SixStep { .. })
+        {
+            // Re-enable all phases so set_duties() in FOC modes works
+            self.pwm
+                .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
+        }
         self.mode = mode;
     }
 
@@ -182,6 +193,7 @@ where
                 vd_inject,
                 vq_inject,
             } => self.step_hfi_injection(hold_current, vd_inject, vq_inject, dt, now_ticks),
+            ControlMode::SixStep { duty } => self.step_six_step(duty, dt, now_ticks),
         }
     }
 
@@ -327,6 +339,65 @@ where
         );
 
         Ok(telem)
+    }
+
+    /// Execute six-step (trapezoidal) commutation step
+    ///
+    /// Pure voltage-mode drive: no current loop, no Clarke/Park transforms.
+    /// Derives commutation sector from the PhaseProvider angle and applies
+    /// the appropriate phase states via `set_phase_states()`.
+    ///
+    /// Does NOT require current sensor calibration, making it suitable
+    /// for initial board bringup.
+    fn step_six_step(
+        &mut self,
+        duty: f32,
+        dt: f32,
+        now_ticks: u64,
+    ) -> Result<FocTelemetry, &'static str> {
+        // Get current electrical angle from phase provider
+        let phase_out = self.phase.get();
+        let sector = six_step::angle_to_sector(phase_out.angle);
+
+        // Duty sign determines direction
+        let forward = duty >= 0.0;
+        let duty_abs = duty.abs().clamp(0.0, 1.0);
+        let raw_duty = (duty_abs * self.pwm.max_duty() as f32) as u16;
+
+        // Generate and apply phase states
+        let states = six_step::commutate(sector, raw_duty, forward);
+        self.pwm.set_phase_states(states);
+
+        // Update phase provider (keep sensor tracking active)
+        self.phase.update(
+            &PhaseInput {
+                dt,
+                ..Default::default()
+            },
+            now_ticks,
+        );
+
+        // Read currents opportunistically (if sensor is calibrated)
+        let (ia, ib, ic) = if self.current_sensor.is_calibrated() {
+            self.current_sensor.read_currents()
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+
+        // Duty values for telemetry (Float phases report 0)
+        let duties = states.map(|s| match s {
+            PhaseState::Pwm(d) => d,
+            PhaseState::Low | PhaseState::Float => 0,
+        });
+
+        Ok(FocTelemetry {
+            ia,
+            ib,
+            ic,
+            angle_rad: phase_out.angle,
+            duties,
+            ..Default::default()
+        })
     }
 
     /// Get mutable reference to current sensor (for calibration)

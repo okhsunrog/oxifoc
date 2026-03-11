@@ -11,7 +11,7 @@ use embassy_stm32::timer::Channel;
 
 use crate::config::TIM1_CLOCK_HZ;
 use crate::hardware::resources::MotorResources;
-use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm};
+use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm, PhaseState};
 
 /// Motor PWM controller using TIM1 with complementary outputs.
 pub struct MotorPwm<'d> {
@@ -136,5 +136,25 @@ impl<'d> PhasePwm for MotorPwm<'d> {
 
     fn disable(&mut self) {
         self.emergency_stop();
+    }
+
+    fn set_phase_states(&mut self, states: [PhaseState; 3]) {
+        const CHANNELS: [Channel; 3] = [Channel::Ch1, Channel::Ch2, Channel::Ch3];
+        for (state, &ch) in states.iter().zip(CHANNELS.iter()) {
+            match state {
+                PhaseState::Pwm(duty) => {
+                    self.pwm.enable(ch);
+                    self.pwm.set_duty(ch, (*duty).min(self.duty_limit));
+                }
+                PhaseState::Low => {
+                    self.pwm.enable(ch);
+                    self.pwm.set_duty(ch, 0);
+                }
+                PhaseState::Float => {
+                    self.pwm.set_duty(ch, 0);
+                    self.pwm.disable(ch);
+                }
+            }
+        }
     }
 }
