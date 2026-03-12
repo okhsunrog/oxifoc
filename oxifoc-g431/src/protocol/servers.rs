@@ -1,7 +1,7 @@
 //! Ergot protocol servers and I/O worker tasks
 
 use embassy_executor::Spawner;
-use ergot::toolkits::embedded_io_async::tx_worker;
+use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
 use heapless::String;
 use oxifoc_core::types::DeviceInfo;
 

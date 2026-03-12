@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 oxifoc-core = { path = "../oxifoc-core", features = ["icd"] }
-ergot = { path = "../ergot/crates/ergot", features = ["tokio-std", "tokio-serial-v5", "defmtlog"] }
+ergot = { git = "https://github.com/okhsunrog/ergot", branch = "defmt_sink_plus_rtt", features = ["tokio-std", "tokio-serial-v5", "defmtlog"] }
 
 tokio = { workspace = true }
 tokio-util = "0.7"
@@ -22,7 +22,7 @@ tracing-log = "0.2"
 anyhow = { workspace = true }
 mutex = "1.0.2"
 crossbeam-channel = { workspace = true }
-cobs-acc = { path = "../ergot/crates/cobs-acc", features = ["std"] }
+cobs-acc = { git = "https://github.com/okhsunrog/ergot", branch = "defmt_sink_plus_rtt", features = ["std"] }
 defmt-decoder = "1.0"
 defmt-parser = "1.0"
 serde = { workspace = true }

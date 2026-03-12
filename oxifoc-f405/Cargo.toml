@@ -44,7 +44,7 @@ embedded-hal-bus = "0.3"
 
 # Local crates
 oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime"] }
-ergot = { path = "../ergot/crates/ergot", default-features = false, features = [
+ergot = { git = "https://github.com/okhsunrog/ergot", branch = "defmt_sink_plus_rtt", default-features = false, features = [
     "embassy-usb-v0_5",
     "disable-cache-padding",
     "defmt-sink-rtt",
