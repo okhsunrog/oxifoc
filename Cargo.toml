@@ -12,7 +12,6 @@ exclude = [
     "oxifoc-g431",    # Different toolchain (thumbv7em-none-eabihf)
     "oxifoc-g474",    # Different toolchain (thumbv7em-none-eabihf)
     "oxifoc-f405",    # Different toolchain (thumbv7em-none-eabihf)
-    "ergot",          # Git submodule with own workspace
 ]
 
 [profile.dev]
