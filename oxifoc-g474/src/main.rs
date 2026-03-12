@@ -25,6 +25,7 @@ bind_interrupts!(struct FlashIrqs {
 
 // Module declarations
 mod config;
+#[allow(dead_code)]
 mod cordic;
 pub mod fault;
 mod hardware;

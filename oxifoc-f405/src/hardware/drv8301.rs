@@ -55,7 +55,10 @@ pub fn init_spi(
     pb5: Peri<'static, peripherals::PB5>,
     pb7: Peri<'static, peripherals::PB7>,
     exti7: Peri<'static, peripherals::EXTI7>,
-    exti_irq: impl Binding<interrupt::typelevel::EXTI9_5, exti::InterruptHandler<interrupt::typelevel::EXTI9_5>>,
+    exti_irq: impl Binding<
+        interrupt::typelevel::EXTI9_5,
+        exti::InterruptHandler<interrupt::typelevel::EXTI9_5>,
+    >,
 ) -> (Drv8301Config<'static>, NfaultInput) {
     // Configure SPI3 - DRV8301: CPOL=0, CPHA=1 (Mode 1), max 10MHz
     let mut spi_config = spi::Config::default();
