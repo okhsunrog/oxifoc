@@ -4,15 +4,17 @@ on: [push, pull_request]
 
 jobs:
   build-device:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [oxifoc-g431, oxifoc-g474, oxifoc-f405]
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: oxifoc-g431
+        working-directory: ${{ matrix.target }}
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: install Rust toolchain
         uses: dtolnay/rust-toolchain@master
