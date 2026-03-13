@@ -1,0 +1,8 @@
+[package]
+name = "slint-wgpu-plot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+slint = { workspace = true }
+bytemuck = { workspace = true }

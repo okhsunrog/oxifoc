@@ -4,6 +4,7 @@ members = [
     "oxifoc-core",
     "oxifoc-host-lib",
     "oxifoc-host-cli",
+    "slint-wgpu-plot",
     "oxifoc-host-slint",
 ]
 exclude = [
@@ -29,3 +30,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 anyhow = "1.0"
 crossbeam-channel = "0.5.15"
+slint = { git = "https://github.com/slint-ui/slint.git", default-features = false, features = ["std", "unstable-wgpu-28", "compat-1-2"] }
+slint-build = { git = "https://github.com/slint-ui/slint.git" }
+bytemuck = { version = "1", features = ["derive"] }

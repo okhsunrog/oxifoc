@@ -1,9 +1,7 @@
 slint::include_modules!();
 
-use std::collections::VecDeque;
-use std::fmt::Write;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,65 +11,186 @@ use oxifoc_host_lib::{
     HostCommand, HostConfig, HostRuntime, ProbeInfo, SerialPortInfo, TransportType, init_tracing,
     list_probes, list_serial_ports, start_host,
 };
-use slint::{ModelRc, SharedString, StandardListViewItem, VecModel};
+use slint::wgpu_28::WGPUConfiguration;
+use slint::{GraphicsAPI, Image, ModelRc, RenderingState, SharedString, StandardListViewItem,
+            VecModel};
+use slint_wgpu_plot::{PlotBuffer, PlotConfig, PlotRenderer, required_wgpu_settings};
 
-const MAX_SAMPLES: usize = 500;
+const CAPACITY: usize = 32768;
 const UI_UPDATE_HZ: u64 = 30;
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];
 
 fn main() {
     init_tracing();
 
+    // Configure the WGPU backend (required for GPU chart rendering).
+    // The largest chart has 3 channels (phase currents).
+    let wgpu_settings = required_wgpu_settings(CAPACITY, 3);
+    slint::BackendSelector::new()
+        .require_wgpu_28(WGPUConfiguration::Automatic(wgpu_settings))
+        .select()
+        .expect("Failed to initialise WGPU backend");
+
     let app = App::new().unwrap();
 
-    // Shared state
-    let ports_list: Arc<Mutex<Vec<SerialPortInfo>>> = Arc::new(Mutex::new(Vec::new()));
-    let probes_list: Arc<Mutex<Vec<ProbeInfo>>> = Arc::new(Mutex::new(Vec::new()));
-    let runtime: Arc<Mutex<Option<HostRuntime>>> = Arc::new(Mutex::new(None));
+    // ── Shared state ──────────────────────────────────────────────────────────
+    let ports_list: Arc<std::sync::Mutex<Vec<SerialPortInfo>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let probes_list: Arc<std::sync::Mutex<Vec<ProbeInfo>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let runtime: Arc<std::sync::Mutex<Option<HostRuntime>>> =
+        Arc::new(std::sync::Mutex::new(None));
     let stop_adc = Arc::new(AtomicBool::new(false));
 
-    // Populate initial lists
+    // ── Ring buffers shared between data thread and render notifier ───────────
+    let currents_buf = Arc::new(PlotBuffer::new(3, CAPACITY)); // ia, ib, ic
+    let vbus_buf = Arc::new(PlotBuffer::new(1, CAPACITY));     // V
+    let temp_buf = Arc::new(PlotBuffer::new(1, CAPACITY));     // °C
+
     refresh_serial_ports(&app, &ports_list);
     refresh_probes(&app, &probes_list);
 
-    // ── Refresh serial ports ──
+    // ── Rendering notifier: creates PlotRenderers on setup, renders on every frame ──
+    {
+        let app_weak = app.as_weak();
+        let cb = currents_buf.clone();
+        let vb = vbus_buf.clone();
+        let tb = temp_buf.clone();
+
+        let mut cr: Option<PlotRenderer> = None;
+        let mut vr: Option<PlotRenderer> = None;
+        let mut tr: Option<PlotRenderer> = None;
+
+        app.window()
+            .set_rendering_notifier(move |state, graphics_api| match state {
+                RenderingState::RenderingSetup => {
+                    if let GraphicsAPI::WGPU28 { device, queue, .. } = graphics_api {
+                        cr = Some(PlotRenderer::new(
+                            device,
+                            queue,
+                            PlotConfig {
+                                num_channels: 3,
+                                capacity: CAPACITY,
+                                y_min: 0.0,
+                                y_max: 4095.0,
+                                channel_colors: vec![
+                                    [0.133, 0.827, 0.933, 1.0], // cyan  – Phase A
+                                    [0.545, 0.361, 0.965, 1.0], // violet – Phase B
+                                    [0.976, 0.451, 0.086, 1.0], // orange – Phase C
+                                ],
+                            },
+                        ));
+                        vr = Some(PlotRenderer::new(
+                            device,
+                            queue,
+                            PlotConfig {
+                                num_channels: 1,
+                                capacity: CAPACITY,
+                                y_min: 0.0,
+                                y_max: 60.0,
+                                channel_colors: vec![[0.918, 0.702, 0.031, 1.0]], // yellow
+                            },
+                        ));
+                        tr = Some(PlotRenderer::new(
+                            device,
+                            queue,
+                            PlotConfig {
+                                num_channels: 1,
+                                capacity: CAPACITY,
+                                y_min: 0.0,
+                                y_max: 150.0,
+                                channel_colors: vec![[0.937, 0.267, 0.267, 1.0]], // red
+                            },
+                        ));
+                    }
+                }
+                RenderingState::BeforeRendering => {
+                    if let (Some(app), Some(cr), Some(vr), Some(tr)) = (
+                        app_weak.upgrade(),
+                        cr.as_mut(),
+                        vr.as_mut(),
+                        tr.as_mut(),
+                    ) {
+                        let vis = CAPACITY as u32;
+
+                        let tex = cr.render(
+                            &cb,
+                            app.get_currents_w() as u32,
+                            app.get_currents_h() as u32,
+                            vis,
+                        );
+                        app.set_currents_texture(Image::try_from(tex).unwrap());
+
+                        let tex = vr.render(
+                            &vb,
+                            app.get_vbus_w() as u32,
+                            app.get_vbus_h() as u32,
+                            vis,
+                        );
+                        app.set_vbus_texture(Image::try_from(tex).unwrap());
+
+                        let tex = tr.render(
+                            &tb,
+                            app.get_temp_w() as u32,
+                            app.get_temp_h() as u32,
+                            vis,
+                        );
+                        app.set_temp_texture(Image::try_from(tex).unwrap());
+
+                        // Keep rendering continuously so charts update with data.
+                        app.window().request_redraw();
+                    }
+                }
+                RenderingState::RenderingTeardown => {
+                    drop(cr.take());
+                    drop(vr.take());
+                    drop(tr.take());
+                }
+                _ => {}
+            })
+            .expect("Unable to set rendering notifier");
+    }
+
+    // ── Refresh serial ports ──────────────────────────────────────────────────
     {
         let weak = app.as_weak();
         let ports = ports_list.clone();
         app.on_refresh_serial_ports(move || {
-            let app = weak.unwrap();
-            refresh_serial_ports(&app, &ports);
+            refresh_serial_ports(&weak.unwrap(), &ports);
         });
     }
 
-    // ── Refresh probes ──
+    // ── Refresh probes ────────────────────────────────────────────────────────
     {
         let weak = app.as_weak();
         let probes = probes_list.clone();
         app.on_refresh_probes(move || {
-            let app = weak.unwrap();
-            refresh_probes(&app, &probes);
+            refresh_probes(&weak.unwrap(), &probes);
         });
     }
 
-    // ── Connect device ──
+    // ── Connect device ────────────────────────────────────────────────────────
     {
         let weak = app.as_weak();
         let ports = ports_list.clone();
         let probes = probes_list.clone();
         let rt = runtime.clone();
         let stop = stop_adc.clone();
+        let cb = currents_buf.clone();
+        let vb = vbus_buf.clone();
+        let tb = temp_buf.clone();
+
         app.on_connect_device(move || {
             let app = weak.unwrap();
 
             let config = if app.get_use_serial() {
                 let idx = app.get_selected_serial();
-                let ports_guard = ports.lock().unwrap();
-                if idx < 0 || idx as usize >= ports_guard.len() {
+                let guard = ports.lock().unwrap();
+                if idx < 0 || idx as usize >= guard.len() {
                     app.set_error_text("No serial port selected".into());
                     return;
                 }
-                let port = &ports_guard[idx as usize];
+                let port = &guard[idx as usize];
                 let baud = BAUD_RATES[app.get_baud_index().clamp(0, 5) as usize];
                 HostConfig {
                     transport: Some(TransportType::Serial),
@@ -85,12 +204,12 @@ fn main() {
                 }
             } else {
                 let idx = app.get_selected_probe();
-                let probes_guard = probes.lock().unwrap();
-                if idx < 0 || idx as usize >= probes_guard.len() {
+                let guard = probes.lock().unwrap();
+                if idx < 0 || idx as usize >= guard.len() {
                     app.set_error_text("No probe selected".into());
                     return;
                 }
-                let probe = &probes_guard[idx as usize];
+                let probe = &guard[idx as usize];
                 let chip = app.get_chip_name().to_string();
                 if chip.is_empty() {
                     app.set_error_text("Chip name required".into());
@@ -113,22 +232,23 @@ fn main() {
             let host_runtime = start_host(config);
             let adc_rx = host_runtime.adc_rx.clone();
             let connected = host_runtime.connected.clone();
-
             *rt.lock().unwrap() = Some(host_runtime);
             stop.store(false, Ordering::Relaxed);
 
-            // Start ADC polling thread
             let weak2 = weak.clone();
             let stop2 = stop.clone();
+            let cb2 = cb.clone();
+            let vb2 = vb.clone();
+            let tb2 = tb.clone();
             thread::spawn(move || {
-                adc_poll_loop(weak2, adc_rx, connected, stop2);
+                adc_poll_loop(weak2, adc_rx, connected, stop2, cb2, vb2, tb2);
             });
 
             app.set_page("main".into());
         });
     }
 
-    // ── Disconnect device ──
+    // ── Disconnect device ─────────────────────────────────────────────────────
     {
         let weak = app.as_weak();
         let rt = runtime.clone();
@@ -144,7 +264,7 @@ fn main() {
         });
     }
 
-    // ── Motor start ──
+    // ── Motor start ───────────────────────────────────────────────────────────
     {
         let rt = runtime.clone();
         let weak = app.as_weak();
@@ -153,41 +273,37 @@ fn main() {
             let duty = app.get_duty();
             let iq_target = duty * 0.1;
             if let Some(ref runtime) = *rt.lock().unwrap() {
-                let _ = runtime
-                    .cmd_tx
-                    .send(HostCommand::Motor(ControlMode::CurrentControl {
-                        iq_target,
-                        id_target: 0.0,
-                    }));
+                let _ = runtime.cmd_tx.send(HostCommand::Motor(
+                    ControlMode::CurrentControl { iq_target, id_target: 0.0 },
+                ));
             }
         });
     }
 
-    // ── Motor stop ──
+    // ── Motor stop ────────────────────────────────────────────────────────────
     {
         let rt = runtime.clone();
         app.on_motor_stop(move || {
             if let Some(ref runtime) = *rt.lock().unwrap() {
-                let _ = runtime
-                    .cmd_tx
-                    .send(HostCommand::Motor(ControlMode::Stopped));
+                let _ = runtime.cmd_tx.send(HostCommand::Motor(ControlMode::Stopped));
             }
         });
     }
 
     app.run().unwrap();
 
-    // Cleanup on exit
     stop_adc.store(true, Ordering::Relaxed);
     if let Some(rt) = runtime.lock().unwrap().take() {
         rt.shutdown();
     }
 }
 
-fn refresh_serial_ports(app: &App, ports: &Arc<Mutex<Vec<SerialPortInfo>>>) {
+fn refresh_serial_ports(
+    app: &App,
+    ports: &Arc<std::sync::Mutex<Vec<SerialPortInfo>>>,
+) {
     let usb_only = app.get_usb_only();
     let all_ports = list_serial_ports();
-
     let filtered: Vec<SerialPortInfo> = if usb_only {
         all_ports
             .into_iter()
@@ -199,25 +315,17 @@ fn refresh_serial_ports(app: &App, ports: &Arc<Mutex<Vec<SerialPortInfo>>>) {
     } else {
         all_ports
     };
-
-    let items: Vec<StandardListViewItem> = filtered
-        .iter()
-        .map(|p| SharedString::from(p.to_string()).into())
-        .collect();
-
+    let items: Vec<StandardListViewItem> =
+        filtered.iter().map(|p| SharedString::from(p.to_string()).into()).collect();
     *ports.lock().unwrap() = filtered;
     app.set_serial_ports(ModelRc::new(VecModel::from(items)));
     app.set_selected_serial(-1);
 }
 
-fn refresh_probes(app: &App, probes: &Arc<Mutex<Vec<ProbeInfo>>>) {
+fn refresh_probes(app: &App, probes: &Arc<std::sync::Mutex<Vec<ProbeInfo>>>) {
     let all_probes = list_probes();
-
-    let items: Vec<StandardListViewItem> = all_probes
-        .iter()
-        .map(|p| SharedString::from(p.to_string()).into())
-        .collect();
-
+    let items: Vec<StandardListViewItem> =
+        all_probes.iter().map(|p| SharedString::from(p.to_string()).into()).collect();
     *probes.lock().unwrap() = all_probes;
     app.set_probes(ModelRc::new(VecModel::from(items)));
     app.set_selected_probe(-1);
@@ -228,53 +336,42 @@ fn adc_poll_loop(
     adc_rx: crossbeam_channel::Receiver<AdcSample>,
     connected: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    currents_buf: Arc<PlotBuffer>,
+    vbus_buf: Arc<PlotBuffer>,
+    temp_buf: Arc<PlotBuffer>,
 ) {
-    let mut samples: VecDeque<AdcSample> = VecDeque::with_capacity(MAX_SAMPLES);
-    let mut last_update = Instant::now();
-    let update_interval = Duration::from_millis(1000 / UI_UPDATE_HZ);
+    let mut last_ui_update = Instant::now();
+    let ui_interval = Duration::from_millis(1000 / UI_UPDATE_HZ);
 
     while !stop.load(Ordering::Relaxed) {
         match adc_rx.recv_timeout(Duration::from_millis(50)) {
             Ok(sample) => {
-                if samples.len() >= MAX_SAMPLES {
-                    samples.pop_front();
-                }
-                samples.push_back(sample);
+                // Push to ring buffers on every sample — no rate limiting.
+                currents_buf.push_frame(&[
+                    sample.ia as f32,
+                    sample.ib as f32,
+                    sample.ic as f32,
+                ]);
+                vbus_buf.push_frame(&[sample.vbus_mv as f32 / 1000.0]);
+                temp_buf.push_frame(&[sample.fet_temp_c_x10 as f32 / 10.0]);
 
-                if last_update.elapsed() >= update_interval {
-                    last_update = Instant::now();
-
+                // Throttle the text telemetry updates to UI_UPDATE_HZ.
+                if last_ui_update.elapsed() >= ui_interval {
+                    last_ui_update = Instant::now();
                     let is_conn = connected.load(Ordering::Relaxed);
-                    let latest = samples.back().cloned();
-                    let count = samples.len() as i32;
-
-                    // Generate chart path commands
-                    let ia_cmd = chart_commands(&samples, |s| s.ia as f64);
-                    let ib_cmd = chart_commands(&samples, |s| s.ib as f64);
-                    let ic_cmd = chart_commands(&samples, |s| s.ic as f64);
-                    let vbus_cmd = chart_commands(&samples, |s| s.vbus_mv as f64 / 1000.0);
-                    let temp_cmd = chart_commands(&samples, |s| s.fet_temp_c_x10 as f64 / 10.0);
-
+                    let s = sample;
                     let _ = weak.upgrade_in_event_loop(move |app| {
                         app.set_is_connected(is_conn);
-                        app.set_sample_count(count);
-
-                        if let Some(s) = latest {
-                            app.set_ia_text(format!("{}", s.ia).into());
-                            app.set_ib_text(format!("{}", s.ib).into());
-                            app.set_ic_text(format!("{}", s.ic).into());
-                            app.set_vbus_text(format!("{:.2} V", s.vbus_mv as f32 / 1000.0).into());
-                            app.set_temp_text(
-                                format!("{:.1} °C", s.fet_temp_c_x10 as f32 / 10.0).into(),
-                            );
-                            app.set_seq_text(format!("{}", s.seq).into());
-                        }
-
-                        app.set_chart_ia_cmd(SharedString::from(ia_cmd));
-                        app.set_chart_ib_cmd(SharedString::from(ib_cmd));
-                        app.set_chart_ic_cmd(SharedString::from(ic_cmd));
-                        app.set_chart_vbus_cmd(SharedString::from(vbus_cmd));
-                        app.set_chart_temp_cmd(SharedString::from(temp_cmd));
+                        app.set_ia_text(format!("{}", s.ia).into());
+                        app.set_ib_text(format!("{}", s.ib).into());
+                        app.set_ic_text(format!("{}", s.ic).into());
+                        app.set_vbus_text(
+                            format!("{:.2} V", s.vbus_mv as f32 / 1000.0).into(),
+                        );
+                        app.set_temp_text(
+                            format!("{:.1} °C", s.fet_temp_c_x10 as f32 / 10.0).into(),
+                        );
+                        app.set_seq_text(format!("{}", s.seq).into());
                     });
                 }
             }
@@ -287,40 +384,4 @@ fn adc_poll_loop(
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
-}
-
-/// Generate SVG path commands for a line chart.
-/// Maps data to a 1000x1000 viewbox with 50px margin top/bottom.
-fn chart_commands<F>(samples: &VecDeque<AdcSample>, f: F) -> String
-where
-    F: Fn(&AdcSample) -> f64,
-{
-    if samples.len() < 2 {
-        return String::new();
-    }
-
-    let values: Vec<f64> = samples.iter().map(&f).collect();
-    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let range = max - min;
-
-    let n = values.len();
-    let mut cmd = String::with_capacity(n * 16);
-
-    for (i, &v) in values.iter().enumerate() {
-        let x = (i as f64 / (n - 1) as f64) * 1000.0;
-        let y = if range < 0.001 {
-            500.0 // flat line centered
-        } else {
-            950.0 - ((v - min) / range) * 900.0 // maps to 50..950
-        };
-
-        if i == 0 {
-            let _ = write!(cmd, "M {} {}", x as i32, y as i32);
-        } else {
-            let _ = write!(cmd, " L {} {}", x as i32, y as i32);
-        }
-    }
-
-    cmd
 }

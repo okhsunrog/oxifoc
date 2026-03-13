@@ -1,111 +1,11 @@
 import { VerticalBox, HorizontalBox, Button, ComboBox, Slider, CheckBox,
          StandardListView, LineEdit, GroupBox, ScrollView, GridBox } from "std-widgets.slint";
-
-// Simple line chart using Path with viewbox coordinates (0-1000)
-component LineChart inherits Rectangle {
-    in property <string> title: "";
-    in property <string> line1-commands: "";
-    in property <string> line2-commands: "";
-    in property <string> line3-commands: "";
-    in property <color> line1-color: #22d3ee;
-    in property <color> line2-color: #8b5cf6;
-    in property <color> line3-color: #f97316;
-    in property <string> line1-label: "";
-    in property <string> line2-label: "";
-    in property <string> line3-label: "";
-    in property <bool> show-line3: false;
-
-    border-radius: 4px;
-    background: #2a2a3a;
-    clip: true;
-
-    VerticalLayout {
-        padding: 8px;
-        spacing: 4px;
-
-        HorizontalLayout {
-            spacing: 16px;
-            alignment: start;
-
-            Text {
-                text: root.title;
-                font-weight: 700;
-                font-size: 13px;
-                color: #e0e0e0;
-            }
-
-            HorizontalLayout {
-                spacing: 12px;
-
-                Rectangle {
-                    width: 10px;
-                    height: 10px;
-                    border-radius: 2px;
-                    background: root.line1-color;
-                }
-                Text { text: root.line1-label; color: #b0b0b0; font-size: 11px; }
-
-                Rectangle {
-                    width: 10px;
-                    height: 10px;
-                    border-radius: 2px;
-                    background: root.line2-color;
-                }
-                Text { text: root.line2-label; color: #b0b0b0; font-size: 11px; }
-
-                if root.show-line3 : Rectangle {
-                    width: 10px;
-                    height: 10px;
-                    border-radius: 2px;
-                    background: root.line3-color;
-                }
-                if root.show-line3 : Text { text: root.line3-label; color: #b0b0b0; font-size: 11px; }
-            }
-        }
-
-        Rectangle {
-            background: #1e1e2e;
-            border-radius: 2px;
-            vertical-stretch: 1;
-
-            Path {
-                width: 100%;
-                height: 100%;
-                viewbox-width: 1000;
-                viewbox-height: 1000;
-                commands: root.line1-commands;
-                stroke: root.line1-color;
-                stroke-width: 2px;
-                fill: transparent;
-            }
-            Path {
-                width: 100%;
-                height: 100%;
-                viewbox-width: 1000;
-                viewbox-height: 1000;
-                commands: root.line2-commands;
-                stroke: root.line2-color;
-                stroke-width: 2px;
-                fill: transparent;
-            }
-            if root.show-line3 : Path {
-                width: 100%;
-                height: 100%;
-                viewbox-width: 1000;
-                viewbox-height: 1000;
-                commands: root.line3-commands;
-                stroke: root.line3-color;
-                stroke-width: 2px;
-                fill: transparent;
-            }
-        }
-    }
-}
+import { PlotWidget } from "@slint-wgpu-plot/plot.slint";
 
 export component App inherits Window {
     title: "Oxifoc Host";
-    preferred-width: 850px;
-    preferred-height: 650px;
+    preferred-width: 900px;
+    preferred-height: 750px;
 
     // ── Page state ──
     in-out property <string> page: "connect";
@@ -128,20 +28,27 @@ export component App inherits Window {
     in-out property <float> duty: 10;
 
     // ── Telemetry (formatted strings from Rust) ──
-    in property <string> ia-text: "0";
-    in property <string> ib-text: "0";
-    in property <string> ic-text: "0";
+    in property <string> ia-text:   "0";
+    in property <string> ib-text:   "0";
+    in property <string> ic-text:   "0";
     in property <string> vbus-text: "0.00 V";
     in property <string> temp-text: "0.0 °C";
-    in property <string> seq-text: "0";
-    in property <int> sample-count: 0;
+    in property <string> seq-text:  "0";
 
-    // ── Chart SVG path commands ──
-    in property <string> chart-ia-cmd: "";
-    in property <string> chart-ib-cmd: "";
-    in property <string> chart-ic-cmd: "";
-    in property <string> chart-vbus-cmd: "";
-    in property <string> chart-temp-cmd: "";
+    // ── Chart textures (set by Rust after each render) ──
+    in property <image> currents-texture;
+    in property <image> vbus-texture;
+    in property <image> temp-texture;
+
+    // ── Chart size feedback (read by Rust in BeforeRendering).
+    //    Elements live in main-page which is always in the tree (just hidden);
+    //    this lets us bind to their properties unconditionally. ──
+    out property <length> currents-w: currents-plot.requested-texture-width;
+    out property <length> currents-h: currents-plot.requested-texture-height;
+    out property <length> vbus-w:     vbus-plot.requested-texture-width;
+    out property <length> vbus-h:     vbus-plot.requested-texture-height;
+    out property <length> temp-w:     temp-plot.requested-texture-width;
+    out property <length> temp-h:     temp-plot.requested-texture-height;
 
     // ── Callbacks ──
     callback refresh-serial-ports();
@@ -152,9 +59,10 @@ export component App inherits Window {
     callback motor-stop();
 
     // ═══════════════════════════════════════════
-    //  Connection Page
+    //  Connection Page  (hidden, not destroyed, when on main page)
     // ═══════════════════════════════════════════
-    if root.page == "connect" : VerticalLayout {
+    connect-page := VerticalLayout {
+        visible: root.page == "connect";
         padding: 24px;
         spacing: 12px;
         alignment: start;
@@ -166,7 +74,6 @@ export component App inherits Window {
             horizontal-alignment: center;
         }
 
-        // Transport selector
         HorizontalLayout {
             spacing: 8px;
             alignment: center;
@@ -181,14 +88,12 @@ export component App inherits Window {
             }
         }
 
-        // Error message
         if root.error-text != "" : Text {
             text: root.error-text;
             color: #ef4444;
             horizontal-alignment: center;
         }
 
-        // ── Serial transport ──
         if root.use-serial : VerticalLayout {
             spacing: 8px;
 
@@ -232,7 +137,6 @@ export component App inherits Window {
             }
         }
 
-        // ── RTT transport ──
         if !root.use-serial : VerticalLayout {
             spacing: 8px;
 
@@ -270,7 +174,6 @@ export component App inherits Window {
             }
         }
 
-        // Connect button
         HorizontalLayout {
             alignment: center;
 
@@ -286,11 +189,12 @@ export component App inherits Window {
     }
 
     // ═══════════════════════════════════════════
-    //  Main Page
+    //  Main Page  (hidden, not destroyed, when on connect page)
     // ═══════════════════════════════════════════
-    if root.page == "main" : VerticalLayout {
+    main-page := VerticalLayout {
+        visible: root.page == "main";
         padding: 12px;
-        spacing: 10px;
+        spacing: 8px;
 
         // ── Status bar ──
         HorizontalLayout {
@@ -346,7 +250,7 @@ export component App inherits Window {
         Rectangle {
             background: #f0f0f5;
             border-radius: 4px;
-            min-height: 70px;
+            min-height: 60px;
 
             GridLayout {
                 padding: 10px;
@@ -354,11 +258,11 @@ export component App inherits Window {
 
                 Row {
                     Text { text: "Phase A:"; }
-                    Text { text: root.ia-text; font-weight: 600; }
+                    Text { text: root.ia-text;   font-weight: 600; }
                     Text { text: "Phase B:"; }
-                    Text { text: root.ib-text; font-weight: 600; }
+                    Text { text: root.ib-text;   font-weight: 600; }
                     Text { text: "Phase C:"; }
-                    Text { text: root.ic-text; font-weight: 600; }
+                    Text { text: root.ic-text;   font-weight: 600; }
                 }
                 Row {
                     Text { text: "VBUS:"; }
@@ -366,40 +270,28 @@ export component App inherits Window {
                     Text { text: "Temp:"; }
                     Text { text: root.temp-text; font-weight: 600; }
                     Text { text: "Seq:"; }
-                    Text { text: root.seq-text; font-weight: 600; }
-                }
-                Row {
-                    Text { text: "Samples:"; }
-                    Text { text: "\{root.sample-count}"; font-weight: 600; }
+                    Text { text: root.seq-text;  font-weight: 600; }
                 }
             }
         }
 
         // ── Charts ──
-        LineChart {
-            vertical-stretch: 1;
-            title: "Phase Currents";
-            line1-commands: root.chart-ia-cmd;
-            line2-commands: root.chart-ib-cmd;
-            line3-commands: root.chart-ic-cmd;
-            line1-label: "Phase A";
-            line2-label: "Phase B";
-            line3-label: "Phase C";
-            show-line3: true;
-            line1-color: #22d3ee;
-            line2-color: #8b5cf6;
-            line3-color: #f97316;
+        currents-plot := PlotWidget {
+            vertical-stretch: 2;
+            title: "Phase Currents (ADC counts)";
+            texture: root.currents-texture;
         }
 
-        LineChart {
+        vbus-plot := PlotWidget {
             vertical-stretch: 1;
-            title: "Voltage & Temperature";
-            line1-commands: root.chart-vbus-cmd;
-            line2-commands: root.chart-temp-cmd;
-            line1-label: "Voltage (V)";
-            line2-label: "Temperature (°C)";
-            line1-color: #eab308;
-            line2-color: #ef4444;
+            title: "Bus Voltage (V)";
+            texture: root.vbus-texture;
+        }
+
+        temp-plot := PlotWidget {
+            vertical-stretch: 1;
+            title: "FET Temperature (°C)";
+            texture: root.temp-texture;
         }
     }
 }

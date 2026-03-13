@@ -1,0 +1,42 @@
+// PlotWidget — a GPU-accelerated real-time line chart for Slint.
+//
+// The Rust side renders into `texture` via `PlotRenderer::render()`.
+// The widget feeds back the pixel dimensions the renderer should target
+// through `requested-texture-width` / `requested-texture-height`.
+
+export component PlotWidget inherits Rectangle {
+    // Set by Rust after each `PlotRenderer::render()` call.
+    in property <image> texture;
+
+    // Read by Rust in `BeforeRendering` to know what size texture to produce.
+    out property <length> requested-texture-width:  plot-img.width;
+    out property <length> requested-texture-height: plot-img.height;
+
+    // Optional chart title shown above the plot area.
+    in property <string> title: "";
+
+    background:    #1e1e2e;
+    border-radius: 4px;
+    clip:          true;
+
+    VerticalLayout {
+        padding: 4px;
+        spacing: 2px;
+
+        if root.title != "" : Text {
+            text:                root.title;
+            font-size:           11px;
+            font-weight:         700;
+            color:               #e0e0e0;
+            horizontal-alignment: left;
+            height:              18px;
+        }
+
+        plot-img := Image {
+            vertical-stretch: 1;
+            source:           root.texture;
+            width:            100%;
+            image-fit:        fill;
+        }
+    }
+}
