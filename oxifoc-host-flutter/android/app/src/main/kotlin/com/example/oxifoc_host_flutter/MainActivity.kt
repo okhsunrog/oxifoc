@@ -1,5 +1,0 @@
-package com.example.oxifoc_host_flutter
-
-import io.flutter.embedding.android.FlutterActivity
-
-class MainActivity : FlutterActivity()

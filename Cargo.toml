@@ -4,8 +4,6 @@ members = [
     "oxifoc-core",
     "oxifoc-host-lib",
     "oxifoc-host-cli",
-    "oxifoc-host-egui",
-    "oxifoc-host-tauri/src-tauri",
     "oxifoc-host-slint",
 ]
 exclude = [
