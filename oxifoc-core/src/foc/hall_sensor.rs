@@ -746,7 +746,6 @@ impl Default for HallCalibration {
     }
 }
 
-
 impl AngleSensor for HallSensor {
     fn sample(&self, now_ticks: u64) -> Option<AngleSample> {
         self.sample_at(now_ticks)

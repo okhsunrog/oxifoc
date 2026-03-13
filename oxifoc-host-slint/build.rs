@@ -3,7 +3,11 @@ use std::path::PathBuf;
 
 fn main() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let plot_ui = manifest.parent().unwrap().join("slint-wgpu-plot").join("ui");
+    let plot_ui = manifest
+        .parent()
+        .unwrap()
+        .join("slint-wgpu-plot")
+        .join("ui");
 
     let mut library_paths = HashMap::new();
     library_paths.insert("slint-wgpu-plot".to_string(), plot_ui);

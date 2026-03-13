@@ -69,6 +69,25 @@ impl BoardConfig {
         (vsense_mv as f32 * self.vbus_divider_ratio) as u32
     }
 
+    /// Convert 3 raw ADC readings to phase currents in Amps
+    ///
+    /// Assumes mid-scale (adc_max_counts/2) is zero current.
+    /// Scale = Vref / (adc_max * R_shunt * gain)
+    #[inline]
+    pub fn convert_raw_currents(&self, raw_a: u16, raw_b: u16, raw_c: u16) -> (f32, f32, f32) {
+        let offset = self.adc_max_counts as f32 / 2.0;
+        let scale = self.adc_vref_mv as f32
+            / 1000.0
+            / self.adc_max_counts as f32
+            / self.shunt_ohms
+            / self.amp_gain;
+        (
+            (raw_a as f32 - offset) * scale,
+            (raw_b as f32 - offset) * scale,
+            (raw_c as f32 - offset) * scale,
+        )
+    }
+
     /// Convert duty percent (0-100) to target q-axis current
     ///
     /// Linear mapping from duty percentage to current target.

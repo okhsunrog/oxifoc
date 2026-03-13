@@ -112,8 +112,8 @@ pub struct VirtualMotor {
     id: f32,
     id_int: f32, // integral state: id_int = id + lambda/ld
     iq: f32,
-    omega_e: f32,  // electrical angular velocity (rad/s)
-    phi: f32,      // electrical rotor angle (rad)
+    omega_e: f32, // electrical angular velocity (rad/s)
+    phi: f32,     // electrical rotor angle (rad)
     sin_phi: f32,
     cos_phi: f32,
 }
@@ -168,17 +168,12 @@ impl VirtualMotor {
 
         // ── D-axis current (flux model with PM offset) ────────────────────────
         // Ld·did/dt = Vd − R·id + ωe·Lq·iq
-        self.id_int +=
-            (vd + self.omega_e * p.lq * self.iq - p.r * self.id) * dt / p.ld;
+        self.id_int += (vd + self.omega_e * p.lq * self.iq - p.r * self.id) * dt / p.ld;
         self.id = self.id_int - p.lambda / p.ld;
 
         // ── Q-axis current ────────────────────────────────────────────────────
         // Lq·diq/dt = Vq − R·iq − ωe·(Ld·id + λPM)
-        self.iq += (vq
-            - self.omega_e * (p.ld * self.id + p.lambda)
-            - p.r * self.iq)
-            * dt
-            / p.lq;
+        self.iq += (vq - self.omega_e * (p.ld * self.id + p.lambda) - p.r * self.iq) * dt / p.lq;
 
         // ── Electromagnetic torque (with reluctance term) ─────────────────────
         // Te = (3/2)·p·[λPM + (Ld − Lq)·id]·iq
@@ -261,24 +256,28 @@ mod tests {
         // Run 500 steps = 25 ms.  Back-EMF is still small, so the FOC can
         // inject close to the target 2 A and the motor accelerates.
         for _ in 0..500 {
-            let telem = foc.step(
-                (out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT,
-            );
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT);
             out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
         }
 
         // Motor should be spinning and producing torque.
-        assert!(out.omega_e > 10.0, "motor should spin up: ωe={}", out.omega_e);
+        assert!(
+            out.omega_e > 10.0,
+            "motor should spin up: ωe={}",
+            out.omega_e
+        );
         assert!(out.torque > 0.0, "torque should be positive");
         let i_mag = libm::sqrtf(out.ia * out.ia + out.ib * out.ib + out.ic * out.ic);
-        assert!(i_mag > 0.3, "motor should carry current at low speed: |i|={}", i_mag);
+        assert!(
+            i_mag > 0.3,
+            "motor should carry current at low speed: |i|={}",
+            i_mag
+        );
 
         // Continue for a full second.  Viscous friction limits the terminal
         // speed, but ωe should still be well above zero.
         for _ in 0..20_000 {
-            let telem = foc.step(
-                (out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT,
-            );
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT);
             out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
         }
         assert!(
@@ -333,7 +332,10 @@ mod tests {
         }
 
         let cal_result = calibrator.finish().expect("calibration must succeed");
-        assert!(cal_result.is_valid(), "calibration result must cover all 6 states");
+        assert!(
+            cal_result.is_valid(),
+            "calibration result must cover all 6 states"
+        );
 
         // Sanity-check: with offset=π/6 the centre of sector 0 is at π/3.
         // The calibrated angle for raw state 1 (sector 0) should be close to π/3.
@@ -372,8 +374,7 @@ mod tests {
                 hall_angle = sample.angle;
             }
 
-            let telem =
-                foc.step((out.ia, out.ib, out.ic), hall_angle, 0.0, 2.0, 1000, DT);
+            let telem = foc.step((out.ia, out.ib, out.ic), hall_angle, 0.0, 2.0, 1000, DT);
             out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
         }
 
@@ -382,7 +383,11 @@ mod tests {
             "motor should reach speed with calibrated Hall sensor (offset=π/6): ωe={}",
             out.omega_e
         );
-        assert!(out.torque > 0.0, "torque should be positive: T={}", out.torque);
+        assert!(
+            out.torque > 0.0,
+            "torque should be positive: T={}",
+            out.torque
+        );
     }
 
     /// Check that the Hall state cycles through the correct CW Gray-code
@@ -414,14 +419,21 @@ mod tests {
         }
 
         // Exactly 6 distinct transitions per electrical revolution.
-        assert_eq!(states.len(), 6, "expected 6 Hall transitions, got {:?}", states);
+        assert_eq!(
+            states.len(),
+            6,
+            "expected 6 Hall transitions, got {:?}",
+            states
+        );
 
         // The sequence is the CW Gray-code [1,3,2,6,4,5] (or any cyclic
         // rotation, depending on where in the revolution the sweep starts).
         const CW: [u8; 6] = [1, 3, 2, 6, 4, 5];
-        let is_rotation = (0..6).any(|offset| {
-            (0..6).all(|i| states[i] == CW[(i + offset) % 6])
-        });
-        assert!(is_rotation, "sequence {:?} is not a CW rotation of {:?}", states, CW);
+        let is_rotation = (0..6).any(|offset| (0..6).all(|i| states[i] == CW[(i + offset) % 6]));
+        assert!(
+            is_rotation,
+            "sequence {:?} is not a CW rotation of {:?}",
+            states, CW
+        );
     }
 }

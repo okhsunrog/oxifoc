@@ -9,7 +9,7 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::FocController;
-use oxifoc_core::foc::fault::{FaultCategory, VOLTAGE_HYSTERESIS_MV};
+use oxifoc_core::foc::fault;
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::NoSensor;
@@ -66,7 +66,7 @@ pub async fn init(
     motor_pwm.emergency_stop();
 
     // Build current sensor and phase manager
-    let current_sensor = G431CurrentSensor::from_board(&BOARD);
+    let current_sensor = G431CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
     let hall_proxy = HallAngleProxy::new();
     let phase_manager = PhaseManager::with_hall(hall_proxy);
     let initial_vbus_v =
@@ -98,51 +98,6 @@ pub async fn init(
     });
 
     defmt::info!("FOC driver initialized and calibrated");
-}
-
-// ========== Fault Detection ==========
-
-/// Check voltage faults (overvoltage / undervoltage)
-///
-/// Sets fault if out of range. Clears undervoltage (recoverable) if back in range with hysteresis.
-#[inline]
-fn check_voltage_faults(vbus_mv: u32) {
-    // Overvoltage check
-    if vbus_mv > BOARD.max_vbus_mv && !FAULT_REGISTRY.has_category(FaultCategory::OverVoltage) {
-        FAULT_REGISTRY.set(G431Fault::OverVoltage);
-    }
-
-    // Undervoltage check (recoverable with hysteresis)
-    if vbus_mv < BOARD.min_vbus_mv && !FAULT_REGISTRY.has_category(FaultCategory::UnderVoltage) {
-        FAULT_REGISTRY.set(G431Fault::UnderVoltage);
-    } else if vbus_mv > BOARD.min_vbus_mv + VOLTAGE_HYSTERESIS_MV
-        && FAULT_REGISTRY.has_category(FaultCategory::UnderVoltage)
-    {
-        // Auto-recover undervoltage (it's recoverable)
-        FAULT_REGISTRY.clear(FaultCategory::UnderVoltage);
-    }
-}
-
-/// Check temperature fault (FET overtemperature)
-#[inline]
-fn check_temperature_fault(temp_c_x10: u16) {
-    let temp_c = temp_c_x10 as f32 / 10.0;
-    if temp_c > BOARD.max_fet_temp_c && !FAULT_REGISTRY.has_category(FaultCategory::OverTemp) {
-        FAULT_REGISTRY.set(G431Fault::OverTemp);
-    }
-}
-
-/// Check phase current faults (overcurrent)
-///
-/// Instantaneous trip if any phase exceeds limit.
-#[inline]
-fn check_current_faults(ia: f32, ib: f32, ic: f32) {
-    let limit = BOARD.max_phase_current_a;
-    if (ia.abs() > limit || ib.abs() > limit || ic.abs() > limit)
-        && !FAULT_REGISTRY.has_category(FaultCategory::OverCurrent)
-    {
-        FAULT_REGISTRY.set(G431Fault::OverCurrent);
-    }
 }
 
 // ========== ADC Interrupt Handler ==========
@@ -202,8 +157,14 @@ fn ADC1_2() {
     });
 
     // === Fault detection (voltage and temperature) ===
-    check_voltage_faults(vbus_mv);
-    check_temperature_fault(temp_c_x10);
+    fault::check_voltage_faults(
+        vbus_mv,
+        &BOARD,
+        &FAULT_REGISTRY,
+        G431Fault::OverVoltage,
+        G431Fault::UnderVoltage,
+    );
+    fault::check_temperature_fault(temp_c_x10, &BOARD, &FAULT_REGISTRY, G431Fault::OverTemp);
 
     // Get current timestamp for FOC and phase manager
     let now_ticks = embassy_time::Instant::now().as_ticks();
@@ -237,7 +198,14 @@ fn ADC1_2() {
             match driver.step(now_ticks) {
                 Ok(telem) => {
                     // Check phase currents for overcurrent (instantaneous)
-                    check_current_faults(telem.ia, telem.ib, telem.ic);
+                    fault::check_current_faults(
+                        telem.ia,
+                        telem.ib,
+                        telem.ic,
+                        &BOARD,
+                        &FAULT_REGISTRY,
+                        G431Fault::OverCurrent,
+                    );
                     Some(telem)
                 }
                 Err(_) => {

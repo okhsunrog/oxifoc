@@ -197,7 +197,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         max_duty: u16,
         dt: f32,
     ) -> FocTelemetry {
-        self.step_with_injection(currents, angle_rad, id_target, iq_target, 0.0, 0.0, max_duty, dt)
+        self.step_with_injection(
+            currents, angle_rad, id_target, iq_target, 0.0, 0.0, max_duty, dt,
+        )
     }
 
     /// Run one FOC current loop step with voltage injection.
@@ -320,7 +322,11 @@ mod tests {
         let mut foc = foc;
         let telem = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, 0.001);
         // vq should be positive and around 1.0 (kp*error + ki*error*dt)
-        assert!(telem.vq > 0.4, "vq should reflect computed gains, got {}", telem.vq);
+        assert!(
+            telem.vq > 0.4,
+            "vq should reflect computed gains, got {}",
+            telem.vq
+        );
         assert!(telem.vq < 1.5, "vq should be reasonable, got {}", telem.vq);
 
         // PI limits should be ±vbus*modulation_limit = ±24*0.577 ≈ ±13.85
@@ -338,7 +344,8 @@ mod tests {
     fn from_motor_params_with_custom_bandwidth() {
         // Higher bandwidth should give proportionally higher gains
         let foc_default = FocController::<SvpwmModulator>::from_motor_params(0.5, 5e-4, 24.0);
-        let foc_fast = FocController::<SvpwmModulator>::from_motor_params_with_bw(0.5, 5e-4, 24.0, 2000.0);
+        let foc_fast =
+            FocController::<SvpwmModulator>::from_motor_params_with_bw(0.5, 5e-4, 24.0, 2000.0);
 
         let mut foc_d = foc_default;
         let mut foc_f = foc_fast;

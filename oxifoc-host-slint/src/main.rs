@@ -16,8 +16,9 @@ use oxifoc_host_lib::{
     list_probes, list_serial_ports, start_host,
 };
 use slint::wgpu_28::WGPUConfiguration;
-use slint::{GraphicsAPI, Image, ModelRc, RenderingState, SharedString, StandardListViewItem,
-            VecModel};
+use slint::{
+    GraphicsAPI, Image, ModelRc, RenderingState, SharedString, StandardListViewItem, VecModel,
+};
 use slint_wgpu_plot::{PlotBuffer, PlotConfig, PlotRenderer, required_wgpu_settings};
 
 const CAPACITY: usize = 32768;
@@ -54,8 +55,7 @@ fn main() {
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let probes_list: Arc<std::sync::Mutex<Vec<ProbeInfo>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
-    let runtime: Arc<std::sync::Mutex<Option<HostRuntime>>> =
-        Arc::new(std::sync::Mutex::new(None));
+    let runtime: Arc<std::sync::Mutex<Option<HostRuntime>>> = Arc::new(std::sync::Mutex::new(None));
     let stop_adc = Arc::new(AtomicBool::new(false));
 
     // Simulation-specific state
@@ -65,8 +65,8 @@ fn main() {
 
     // ── Ring buffers shared between data thread and render notifier ───────────
     let currents_buf = Arc::new(PlotBuffer::new(3, CAPACITY)); // ia, ib, ic
-    let vbus_buf = Arc::new(PlotBuffer::new(1, CAPACITY));     // V
-    let temp_buf = Arc::new(PlotBuffer::new(1, CAPACITY));     // °C
+    let vbus_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // V
+    let temp_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // °C
 
     refresh_serial_ports(&app, &ports_list);
     refresh_probes(&app, &probes_list);
@@ -127,12 +127,9 @@ fn main() {
                     }
                 }
                 RenderingState::BeforeRendering => {
-                    if let (Some(app), Some(cr), Some(vr), Some(tr)) = (
-                        app_weak.upgrade(),
-                        cr.as_mut(),
-                        vr.as_mut(),
-                        tr.as_mut(),
-                    ) {
+                    if let (Some(app), Some(cr), Some(vr), Some(tr)) =
+                        (app_weak.upgrade(), cr.as_mut(), vr.as_mut(), tr.as_mut())
+                    {
                         let vis = CAPACITY as u32;
 
                         // Adjust currents chart y-range based on mode
@@ -150,20 +147,12 @@ fn main() {
                         );
                         app.set_currents_texture(Image::try_from(tex).unwrap());
 
-                        let tex = vr.render(
-                            &vb,
-                            app.get_vbus_w() as u32,
-                            app.get_vbus_h() as u32,
-                            vis,
-                        );
+                        let tex =
+                            vr.render(&vb, app.get_vbus_w() as u32, app.get_vbus_h() as u32, vis);
                         app.set_vbus_texture(Image::try_from(tex).unwrap());
 
-                        let tex = tr.render(
-                            &tb,
-                            app.get_temp_w() as u32,
-                            app.get_temp_h() as u32,
-                            vis,
-                        );
+                        let tex =
+                            tr.render(&tb, app.get_temp_w() as u32, app.get_temp_h() as u32, vis);
                         app.set_temp_texture(Image::try_from(tex).unwrap());
 
                         // Keep rendering continuously so charts update with data.
@@ -331,12 +320,17 @@ fn main() {
             let duty = app.get_duty();
             let iq_target = duty * 0.1;
             if sim.load(Ordering::Relaxed) {
-                *sim_ctl.lock().unwrap() =
-                    ControlMode::CurrentControl { iq_target, id_target: 0.0 };
+                *sim_ctl.lock().unwrap() = ControlMode::CurrentControl {
+                    iq_target,
+                    id_target: 0.0,
+                };
             } else if let Some(ref runtime) = *rt.lock().unwrap() {
-                let _ = runtime.cmd_tx.send(HostCommand::Motor(
-                    ControlMode::CurrentControl { iq_target, id_target: 0.0 },
-                ));
+                let _ = runtime
+                    .cmd_tx
+                    .send(HostCommand::Motor(ControlMode::CurrentControl {
+                        iq_target,
+                        id_target: 0.0,
+                    }));
             }
         });
     }
@@ -350,7 +344,9 @@ fn main() {
             if sim.load(Ordering::Relaxed) {
                 *sim_ctl.lock().unwrap() = ControlMode::Stopped;
             } else if let Some(ref runtime) = *rt.lock().unwrap() {
-                let _ = runtime.cmd_tx.send(HostCommand::Motor(ControlMode::Stopped));
+                let _ = runtime
+                    .cmd_tx
+                    .send(HostCommand::Motor(ControlMode::Stopped));
             }
         });
     }
@@ -364,10 +360,7 @@ fn main() {
     }
 }
 
-fn refresh_serial_ports(
-    app: &App,
-    ports: &Arc<std::sync::Mutex<Vec<SerialPortInfo>>>,
-) {
+fn refresh_serial_ports(app: &App, ports: &Arc<std::sync::Mutex<Vec<SerialPortInfo>>>) {
     let usb_only = app.get_usb_only();
     let all_ports = list_serial_ports();
     let filtered: Vec<SerialPortInfo> = if usb_only {
@@ -381,8 +374,10 @@ fn refresh_serial_ports(
     } else {
         all_ports
     };
-    let items: Vec<StandardListViewItem> =
-        filtered.iter().map(|p| SharedString::from(p.to_string()).into()).collect();
+    let items: Vec<StandardListViewItem> = filtered
+        .iter()
+        .map(|p| SharedString::from(p.to_string()).into())
+        .collect();
     *ports.lock().unwrap() = filtered;
     app.set_serial_ports(ModelRc::new(VecModel::from(items)));
     app.set_selected_serial(-1);
@@ -390,8 +385,10 @@ fn refresh_serial_ports(
 
 fn refresh_probes(app: &App, probes: &Arc<std::sync::Mutex<Vec<ProbeInfo>>>) {
     let all_probes = list_probes();
-    let items: Vec<StandardListViewItem> =
-        all_probes.iter().map(|p| SharedString::from(p.to_string()).into()).collect();
+    let items: Vec<StandardListViewItem> = all_probes
+        .iter()
+        .map(|p| SharedString::from(p.to_string()).into())
+        .collect();
     *probes.lock().unwrap() = all_probes;
     app.set_probes(ModelRc::new(VecModel::from(items)));
     app.set_selected_probe(-1);
@@ -413,11 +410,7 @@ fn adc_poll_loop(
         match adc_rx.recv_timeout(Duration::from_millis(50)) {
             Ok(sample) => {
                 // Push to ring buffers on every sample — no rate limiting.
-                currents_buf.push_frame(&[
-                    sample.ia as f32,
-                    sample.ib as f32,
-                    sample.ic as f32,
-                ]);
+                currents_buf.push_frame(&[sample.ia as f32, sample.ib as f32, sample.ic as f32]);
                 vbus_buf.push_frame(&[sample.vbus_mv as f32 / 1000.0]);
                 temp_buf.push_frame(&[sample.fet_temp_c_x10 as f32 / 10.0]);
 
@@ -431,9 +424,7 @@ fn adc_poll_loop(
                         app.set_ia_text(format!("{}", s.ia).into());
                         app.set_ib_text(format!("{}", s.ib).into());
                         app.set_ic_text(format!("{}", s.ic).into());
-                        app.set_vbus_text(
-                            format!("{:.2} V", s.vbus_mv as f32 / 1000.0).into(),
-                        );
+                        app.set_vbus_text(format!("{:.2} V", s.vbus_mv as f32 / 1000.0).into());
                         app.set_temp_text(
                             format!("{:.1} °C", s.fet_temp_c_x10 as f32 / 10.0).into(),
                         );
@@ -492,7 +483,10 @@ fn sim_loop(
                 foc.reset();
                 (0.0, 0.0)
             }
-            ControlMode::CurrentControl { iq_target, id_target } => (id_target, iq_target),
+            ControlMode::CurrentControl {
+                iq_target,
+                id_target,
+            } => (id_target, iq_target),
             _ => (0.0, 0.0),
         };
 

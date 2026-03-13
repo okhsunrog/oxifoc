@@ -100,7 +100,7 @@ async fn main(spawner: Spawner) {
     // let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
     //
     // // Initialize Hall Sensor
-    // sensors::init_hall(r.hall.pb6, r.hall.pb7, r.hall.pb8);
+    // sensors::init_hall(r.hall.pb6, r.hall.pb7, r.hall.pb8, config::TIMEBASE_TICKS_PER_SEC, config::TIM6_ARR);
     //
     // // Initialize FOC Controller
     // control::init_foc(motor_pwm, adc_handles.adc1, adc_handles.adc2).await;

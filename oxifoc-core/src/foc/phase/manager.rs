@@ -8,11 +8,11 @@ use core::f32::consts::TAU;
 use heapless::Vec as HeaplessVec;
 
 use super::observer::{Observer, ObserverInput};
-use crate::foc::wrap_angle;
 use super::provider::{PhaseInput, PhaseOutput, PhaseProvider};
 use super::source::{PhaseSource, PhaseSourceError};
 use crate::foc::hall_calibration::HallCalibrationResult;
 use crate::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait, NoSensor};
+use crate::foc::wrap_angle;
 
 // ============================================================================
 // Hall Health Tracking (VESC-style)
@@ -769,7 +769,6 @@ fn blend_angles(a: f32, b: f32, blend: f32) -> f32 {
 
     wrap_angle(a + diff_signed * blend)
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -72,7 +72,9 @@ impl PlotRenderer {
             mapped_at_creation: false,
         });
 
-        let mut colors_data = ColorsUniform { data: [[0.0; 4]; MAX_CHANNELS] };
+        let mut colors_data = ColorsUniform {
+            data: [[0.0; 4]; MAX_CHANNELS],
+        };
         for (i, c) in config.channel_colors.iter().enumerate() {
             colors_data.data[i] = *c;
         }
@@ -171,7 +173,11 @@ impl PlotRenderer {
     fn make_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
         device.create_texture(&wgpu::TextureDescriptor {
             label: Some("plot_texture"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -200,11 +206,8 @@ impl PlotRenderer {
         }
 
         buffer.copy_to(&mut self.scratch);
-        self.queue.write_buffer(
-            &self.samples_buffer,
-            0,
-            bytemuck::cast_slice(&self.scratch),
-        );
+        self.queue
+            .write_buffer(&self.samples_buffer, 0, bytemuck::cast_slice(&self.scratch));
 
         let params = PlotParams {
             write_pos: buffer.write_pos(),
@@ -217,9 +220,12 @@ impl PlotRenderer {
             texture_height: height,
         };
 
-        let view = self.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder =
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        let view = self
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("plot_encoder"),
             });
         {

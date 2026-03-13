@@ -20,22 +20,19 @@ use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use embassy_stm32::interrupt::typelevel::Interrupt;
 use embassy_stm32::{interrupt, pac};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
-use embassy_sync::watch::Watch;
 use embassy_time::{Duration, Timer};
 
-use oxifoc_core::foc::controller::{FocController, FocTelemetry};
-use oxifoc_core::foc::fault::{FaultCategory, VOLTAGE_HYSTERESIS_MV};
+use oxifoc_core::foc::controller::FocController;
+use oxifoc_core::foc::fault;
 use oxifoc_core::foc::phase::PhaseManager;
-use oxifoc_core::foc::sensors::NoSensor;
+use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, TempSensorId};
 use oxifoc_core::motor::{ControlMode, FocDriver};
 
-use crate::FAULT_REGISTRY;
 use crate::config::{BOARD, NTC_BOARD, NTC_MOTOR, PWM_CONFIG};
 use crate::fault::F405Fault;
 use crate::motor::MotorPwm;
 use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
+use crate::{FAULT_REGISTRY, STATE};
 
 // ========== ADC Sample Storage (Global Atomics) ==========
 
@@ -50,16 +47,8 @@ pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
 pub static BOARD_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
 /// Latest motor temperature in 0.1°C units (updated in ADC interrupt).
 pub static MOTOR_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
-/// Sequence counter for ADC samples (incremented each poll).
-pub static ADC_SEQ: AtomicU32 = AtomicU32::new(0);
 
 // ========== FOC Control ==========
-
-/// FOC telemetry data (updated by ADC ISR)
-pub static FOC_TELEMETRY: Watch<CriticalSectionRawMutex, FocTelemetry, 1> = Watch::new();
-
-/// FOC command channel (tasks → ISR)
-pub static FOC_CMD: Channel<CriticalSectionRawMutex, ControlMode, 4> = Channel::new();
 
 /// FOC driver storage (mutated only inside the ADC ISR)
 type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor>;
@@ -273,59 +262,9 @@ pub async fn init(mut motor_pwm: MotorPwm<'static>) {
     defmt::info!("F405 FOC driver initialized and calibrated");
 }
 
-/// Send a control mode command to the FOC driver
-pub fn send_command(mode: ControlMode) {
-    let _ = FOC_CMD.try_send(mode);
-}
-
 /// Map duty percent to target q-axis current
 pub fn duty_to_iq(duty: u8) -> f32 {
     BOARD.duty_to_iq(duty)
-}
-
-// ========== Fault Detection ==========
-
-/// Check voltage faults (overvoltage / undervoltage)
-///
-/// Sets fault if out of range. Clears undervoltage (recoverable) if back in range with hysteresis.
-#[inline]
-fn check_voltage_faults(vbus_mv: u32) {
-    // Overvoltage check
-    if vbus_mv > BOARD.max_vbus_mv && !FAULT_REGISTRY.has_category(FaultCategory::OverVoltage) {
-        FAULT_REGISTRY.set(F405Fault::OverVoltage);
-    }
-
-    // Undervoltage check (recoverable with hysteresis)
-    if vbus_mv < BOARD.min_vbus_mv && !FAULT_REGISTRY.has_category(FaultCategory::UnderVoltage) {
-        FAULT_REGISTRY.set(F405Fault::UnderVoltage);
-    } else if vbus_mv > BOARD.min_vbus_mv + VOLTAGE_HYSTERESIS_MV
-        && FAULT_REGISTRY.has_category(FaultCategory::UnderVoltage)
-    {
-        // Auto-recover undervoltage (it's recoverable)
-        FAULT_REGISTRY.clear(FaultCategory::UnderVoltage);
-    }
-}
-
-/// Check temperature fault (board/FET overtemperature)
-#[inline]
-fn check_temperature_fault(temp_c_x10: u16) {
-    let temp_c = temp_c_x10 as f32 / 10.0;
-    if temp_c > BOARD.max_fet_temp_c && !FAULT_REGISTRY.has_category(FaultCategory::OverTemp) {
-        FAULT_REGISTRY.set(F405Fault::OverTemp);
-    }
-}
-
-/// Check phase current faults (overcurrent)
-///
-/// Instantaneous trip if any phase exceeds limit.
-#[inline]
-fn check_current_faults(ia: f32, ib: f32, ic: f32) {
-    let limit = BOARD.max_phase_current_a;
-    if (ia.abs() > limit || ib.abs() > limit || ic.abs() > limit)
-        && !FAULT_REGISTRY.has_category(FaultCategory::OverCurrent)
-    {
-        FAULT_REGISTRY.set(F405Fault::OverCurrent);
-    }
 }
 
 // ========== ADC Interrupt Handler ==========
@@ -337,8 +276,7 @@ fn check_current_faults(ia: f32, ib: f32, ic: f32) {
 /// ADC3 finishes last (2 channels) and generates the interrupt.
 #[interrupt]
 fn ADC() {
-    // Static state (ISR has exclusive access)
-    static mut CONTROL_MODE: ControlMode = ControlMode::Stopped;
+    static mut SEQ: u32 = 0;
 
     let adc1 = pac::ADC1;
     let adc2 = pac::ADC2;
@@ -351,9 +289,9 @@ fn ADC() {
 
     // Read ADC1 injected data (phase A current + board temp)
     // For JL=1: JDR1 = first conversion (ch10), JDR2 = second conversion (ch3)
-    let ia = adc1.jdr(0).read().jdata();
+    let ia_raw = adc1.jdr(0).read().jdata();
     let board_temp_raw = adc1.jdr(1).read().jdata();
-    IA_SAMPLE.store(ia, Ordering::Relaxed);
+    IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
     // Convert board temperature raw ADC to 0.1°C units
     let board_temp_c = NTC_BOARD.temp_c_from_adc(board_temp_raw, BOARD.adc_max_counts);
@@ -366,9 +304,9 @@ fn ADC() {
 
     // Read ADC2 injected data (phase B current + motor temp)
     // For JL=1: JDR1 = first conversion (ch11), JDR2 = second conversion (ch14)
-    let ib = adc2.jdr(0).read().jdata();
+    let ib_raw = adc2.jdr(0).read().jdata();
     let motor_temp_raw = adc2.jdr(1).read().jdata();
-    IB_SAMPLE.store(ib, Ordering::Relaxed);
+    IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
 
     // Convert motor temperature raw ADC to 0.1°C units
     let motor_temp_c = NTC_MOTOR.temp_c_from_adc(motor_temp_raw, BOARD.adc_max_counts);
@@ -381,9 +319,9 @@ fn ADC() {
 
     // Read ADC3 injected data (phase C current + VBUS)
     // For JL=1: JDR1 = first conversion (ch12), JDR2 = second conversion (ch13)
-    let ic = adc3.jdr(0).read().jdata();
+    let ic_raw = adc3.jdr(0).read().jdata();
     let vbus_raw = adc3.jdr(1).read().jdata();
-    IC_SAMPLE.store(ic, Ordering::Relaxed);
+    IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
 
     // Convert VBUS raw ADC to millivolts
     let vbus_mv = BOARD.vbus_mv_from_adc(vbus_raw);
@@ -395,71 +333,78 @@ fn ADC() {
     adc3.sr().modify(|w| w.set_jeoc(false));
 
     // === Fault detection (voltage and temperature) ===
-    check_voltage_faults(vbus_mv);
-    check_temperature_fault(board_temp_c_x10);
-
-    // Process FOC commands (non-blocking, ~20ns overhead)
-    while let Ok(cmd) = FOC_CMD.try_receive() {
-        *CONTROL_MODE = cmd;
-    }
+    fault::check_voltage_faults(
+        vbus_mv,
+        &BOARD,
+        &FAULT_REGISTRY,
+        F405Fault::OverVoltage,
+        F405Fault::UnderVoltage,
+    );
+    fault::check_temperature_fault(
+        board_temp_c_x10,
+        &BOARD,
+        &FAULT_REGISTRY,
+        F405Fault::OverTemp,
+    );
 
     // Get current timestamp for FOC and phase manager
     let now_ticks = embassy_time::Instant::now().as_ticks();
 
+    // Build ADC snapshot
+    *SEQ = SEQ.wrapping_add(1);
+    let adc_snapshot = AdcSnapshot::new(ia_raw, ib_raw, ic_raw, vbus_mv, *SEQ)
+        .with_temp(TempSensorId::Board, board_temp_c_x10)
+        .with_temp(TempSensorId::Motor, motor_temp_c_x10);
+
+    // Get Hall snapshot
+    let hall_snapshot = crate::sensors::hall::get_snapshot(now_ticks);
+
     // Run FOC control loop (skip if faulted)
-    FOC_DRIVER.lock(|cell| {
+    let foc_telem = FOC_DRIVER.lock(|cell| {
         if let Some(driver) = cell.borrow_mut().as_mut() {
             // Update bus voltage
-            let vbus_mv = VBUS_MV.load(Ordering::Relaxed);
             driver.set_vbus(vbus_mv as f32 / 1000.0);
+
+            // Process commands from core state channel
+            let mode = oxifoc_core::state::process_commands(&STATE, driver);
 
             // If faulted, disable outputs and skip FOC step
             if FAULT_REGISTRY.any() {
-                if *CONTROL_MODE != ControlMode::Stopped {
+                if mode != ControlMode::Stopped {
                     driver.set_mode(ControlMode::Stopped);
                 }
-                return;
+                return None;
             }
-
-            // Update control mode
-            driver.set_mode(*CONTROL_MODE);
 
             // Run FOC step (dt is stored in driver from PWM_CONFIG)
             match driver.step(now_ticks) {
                 Ok(telem) => {
                     // Check phase currents for overcurrent (instantaneous)
-                    check_current_faults(telem.ia, telem.ib, telem.ic);
-                    // Broadcast telemetry to all listeners
-                    FOC_TELEMETRY.sender().send(telem);
+                    fault::check_current_faults(
+                        telem.ia,
+                        telem.ib,
+                        telem.ic,
+                        &BOARD,
+                        &FAULT_REGISTRY,
+                        F405Fault::OverCurrent,
+                    );
+                    Some(telem)
                 }
                 Err(_) => {
                     // Sensor not ready or other error - disable outputs
-                    driver.set_mode(ControlMode::Stopped);
+                    if mode != ControlMode::Stopped {
+                        driver.set_mode(ControlMode::Stopped);
+                    }
+                    None
                 }
             }
+        } else {
+            None
         }
     });
-}
 
-// ========== Public API for Protocol Servers ==========
-
-use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
-
-pub fn get_adc_snapshot() -> AdcSnapshot {
-    let seq = ADC_SEQ.fetch_add(1, Ordering::Relaxed);
-    AdcSnapshot::new(
-        IA_SAMPLE.load(Ordering::Relaxed),
-        IB_SAMPLE.load(Ordering::Relaxed),
-        IC_SAMPLE.load(Ordering::Relaxed),
-        VBUS_MV.load(Ordering::Relaxed),
-        seq,
-    )
-    .with_temp(
-        TempSensorId::Board,
-        BOARD_TEMP_C_X10.load(Ordering::Relaxed),
-    )
-    .with_temp(
-        TempSensorId::Motor,
-        MOTOR_TEMP_C_X10.load(Ordering::Relaxed),
-    )
+    // Update global state with telemetry
+    if let Some(foc) = foc_telem {
+        oxifoc_core::state::update_telemetry(&STATE, adc_snapshot, hall_snapshot, foc);
+    }
 }

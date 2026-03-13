@@ -395,7 +395,6 @@ impl HfiObserver {
 // Utility functions
 // ============================================================================
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

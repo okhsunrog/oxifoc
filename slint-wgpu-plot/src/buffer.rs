@@ -36,7 +36,12 @@ impl PlotBuffer {
             .map(|_| AtomicU32::new(0))
             .collect();
 
-        Self { data, write_pos: AtomicU32::new(0), num_channels, capacity }
+        Self {
+            data,
+            write_pos: AtomicU32::new(0),
+            num_channels,
+            capacity,
+        }
     }
 
     /// Push one frame (one `f32` value per channel).

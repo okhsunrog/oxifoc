@@ -1,23 +1,20 @@
-//! Calibration and motor parameter detection for F405 platform
+//! Calibration and motor parameter detection for STM32G4 platforms
 //!
 //! Implements DetectionHardware trait and provides access to core detection functions.
 
-#![allow(dead_code)] // Public API not yet wired to protocol handlers
+#![allow(dead_code)]
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use embassy_time::{Duration, Timer};
 
+use oxifoc_core::foc::config::BoardConfig;
 use oxifoc_core::foc::controller::FocTelemetry;
 use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::detection::sweep::{self, DetectionHardware, HallReader};
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::motor::ControlMode;
 use oxifoc_core::state;
-
-use crate::config::BOARD;
-use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
-use crate::sensors::read_hall_state_raw;
 
 // Re-export types from core for convenience
 pub use oxifoc_core::foc::detection::sweep::{DetectionParams, DetectionResult};
@@ -44,33 +41,41 @@ impl oxifoc_core::timer::Timer for EmbassyTimer {
 // Hardware Implementation
 // ============================================================================
 
-/// F405 hardware abstraction for motor detection.
-pub struct F405DetectionHardware {
+/// G4-family hardware abstraction for motor detection.
+pub struct G4DetectionHardware {
     telem_rx: embassy_sync::watch::Receiver<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
         FocTelemetry,
         2,
     >,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
 }
 
-impl F405DetectionHardware {
-    /// Create a new F405 detection hardware instance.
-    pub fn new() -> Self {
+impl G4DetectionHardware {
+    /// Create a new G4 detection hardware instance.
+    pub fn new(
+        ia: &'static AtomicU16,
+        ib: &'static AtomicU16,
+        ic: &'static AtomicU16,
+        board: &'static BoardConfig,
+    ) -> Self {
         Self {
             telem_rx: state::TELEMETRY.receiver().unwrap(),
+            ia,
+            ib,
+            ic,
+            board,
         }
     }
 }
 
-impl Default for F405DetectionHardware {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DetectionHardware for F405DetectionHardware {
+impl DetectionHardware for G4DetectionHardware {
     fn send_command(&self, mode: ControlMode) {
+        // Send ControlMode directly to the state channel
         let _ = state::CMD_CHANNEL.try_send(mode);
     }
 
@@ -79,10 +84,10 @@ impl DetectionHardware for F405DetectionHardware {
     }
 
     fn read_phase_currents(&self) -> (f32, f32, f32) {
-        let ia_raw = IA_SAMPLE.load(Ordering::Relaxed);
-        let ib_raw = IB_SAMPLE.load(Ordering::Relaxed);
-        let ic_raw = IC_SAMPLE.load(Ordering::Relaxed);
-        BOARD.convert_raw_currents(ia_raw, ib_raw, ic_raw)
+        let ia_raw = self.ia.load(Ordering::Relaxed);
+        let ib_raw = self.ib.load(Ordering::Relaxed);
+        let ic_raw = self.ic.load(Ordering::Relaxed);
+        self.board.convert_raw_currents(ia_raw, ib_raw, ic_raw)
     }
 }
 
@@ -90,12 +95,13 @@ impl DetectionHardware for F405DetectionHardware {
 // Hall Sensor Reader
 // ============================================================================
 
-/// Hall sensor reader implementation for F405.
-pub struct F405HallReader;
+/// Hall sensor reader for G4 platforms.
+/// Delegates to the shared hall module.
+pub struct G4HallReader;
 
-impl HallReader for F405HallReader {
+impl HallReader for G4HallReader {
     fn read_hall_state(&self) -> u8 {
-        read_hall_state_raw()
+        crate::hall::read_hall_state_raw()
     }
 }
 
@@ -104,8 +110,14 @@ impl HallReader for F405HallReader {
 // ============================================================================
 
 /// Measure motor phase resistance.
-pub async fn measure_resistance(params: &ResistanceParams) -> Result<f32, DetectionError> {
-    let mut hw = F405DetectionHardware::new();
+pub async fn measure_resistance(
+    params: &ResistanceParams,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
+) -> Result<f32, DetectionError> {
+    let mut hw = G4DetectionHardware::new(ia, ib, ic, board);
     sweep::measure_resistance::<_, EmbassyTimer>(&mut hw, params).await
 }
 
@@ -113,35 +125,58 @@ pub async fn measure_resistance(params: &ResistanceParams) -> Result<f32, Detect
 pub async fn measure_inductance(
     params: &InductanceParams,
     pwm_freq_hz: f32,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
 ) -> Result<(f32, f32), DetectionError> {
-    let mut hw = F405DetectionHardware::new();
+    let mut hw = G4DetectionHardware::new(ia, ib, ic, board);
     sweep::measure_inductance::<_, EmbassyTimer>(&mut hw, params, pwm_freq_hz).await
 }
 
 /// Measure motor flux linkage via open-loop spinning.
-pub async fn measure_flux_linkage(params: &FluxLinkageParams) -> Result<f32, DetectionError> {
-    let mut hw = F405DetectionHardware::new();
+pub async fn measure_flux_linkage(
+    params: &FluxLinkageParams,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
+) -> Result<f32, DetectionError> {
+    let mut hw = G4DetectionHardware::new(ia, ib, ic, board);
     sweep::measure_flux_linkage::<_, EmbassyTimer>(&mut hw, params).await
 }
 
 /// Run full motor parameter detection sequence.
 pub async fn run_full_detection(
     params: DetectionParams,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
 ) -> Result<DetectionResult, DetectionError> {
-    let mut hw = F405DetectionHardware::new();
+    let mut hw = G4DetectionHardware::new(ia, ib, ic, board);
     sweep::run_full_detection::<_, EmbassyTimer>(&mut hw, params).await
 }
 
 /// Run Hall sensor calibration.
 pub async fn calibrate_hall(
     params: HallCalibrationParams,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
 ) -> Result<HallCalibrationResult, DetectionError> {
-    let mut hw = F405DetectionHardware::new();
-    let reader = F405HallReader;
+    let mut hw = G4DetectionHardware::new(ia, ib, ic, board);
+    let reader = G4HallReader;
     sweep::calibrate_hall::<_, EmbassyTimer, _>(&mut hw, &reader, params).await
 }
 
 /// Calibrate Hall sensors with default parameters.
-pub async fn calibrate_hall_default() -> Result<HallCalibrationResult, DetectionError> {
-    calibrate_hall(HallCalibrationParams::default()).await
+pub async fn calibrate_hall_default(
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
+) -> Result<HallCalibrationResult, DetectionError> {
+    calibrate_hall(HallCalibrationParams::default(), ia, ib, ic, board).await
 }

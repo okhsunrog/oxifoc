@@ -354,3 +354,77 @@ impl<F: PlatformFault> Default for FaultRegistry<F> {
 /// Voltage hysteresis in millivolts.
 /// Undervoltage clears when Vbus > min_vbus_mv + VOLTAGE_HYSTERESIS_MV
 pub const VOLTAGE_HYSTERESIS_MV: u32 = 500;
+
+// ============================================================================
+// Generic fault check functions (for ISR use across platforms)
+// ============================================================================
+
+#[cfg(feature = "runtime")]
+use crate::foc::config::BoardConfig;
+
+/// Check voltage faults against board thresholds.
+///
+/// Sets overvoltage/undervoltage faults. Auto-clears undervoltage
+/// when voltage returns above threshold + hysteresis.
+/// Call from ADC ISR with current vbus_mv reading.
+#[cfg(feature = "runtime")]
+#[inline]
+pub fn check_voltage_faults<F: PlatformFault>(
+    vbus_mv: u32,
+    board: &BoardConfig,
+    registry: &FaultRegistry<F>,
+    ov_fault: F,
+    uv_fault: F,
+) {
+    if vbus_mv > board.max_vbus_mv && !registry.has_category(FaultCategory::OverVoltage) {
+        registry.set(ov_fault);
+    }
+
+    if vbus_mv < board.min_vbus_mv && !registry.has_category(FaultCategory::UnderVoltage) {
+        registry.set(uv_fault);
+    } else if vbus_mv > board.min_vbus_mv + VOLTAGE_HYSTERESIS_MV
+        && registry.has_category(FaultCategory::UnderVoltage)
+    {
+        registry.clear(FaultCategory::UnderVoltage);
+    }
+}
+
+/// Check temperature fault against board threshold.
+///
+/// Sets overtemperature fault when temp exceeds `max_fet_temp_c`.
+/// Call from ADC ISR with current temperature in 0.1°C units.
+#[cfg(feature = "runtime")]
+#[inline]
+pub fn check_temperature_fault<F: PlatformFault>(
+    temp_c_x10: u16,
+    board: &BoardConfig,
+    registry: &FaultRegistry<F>,
+    ot_fault: F,
+) {
+    let temp_c = temp_c_x10 as f32 / 10.0;
+    if temp_c > board.max_fet_temp_c && !registry.has_category(FaultCategory::OverTemp) {
+        registry.set(ot_fault);
+    }
+}
+
+/// Check phase current faults (overcurrent).
+///
+/// Instantaneous trip if any phase current exceeds `max_phase_current_a`.
+/// Call from ADC ISR after FOC step with measured currents.
+#[cfg(feature = "runtime")]
+#[inline]
+pub fn check_current_faults<F: PlatformFault>(
+    ia: f32,
+    ib: f32,
+    ic: f32,
+    board: &BoardConfig,
+    registry: &FaultRegistry<F>,
+    oc_fault: F,
+) {
+    let limit = board.max_phase_current_a;
+    if (ia.abs() > limit || ib.abs() > limit || ic.abs() > limit)
+        && !registry.has_category(FaultCategory::OverCurrent)
+    {
+        registry.set(oc_fault);
+    }
+}

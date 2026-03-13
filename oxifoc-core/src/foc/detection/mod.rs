@@ -122,16 +122,14 @@ mod integration_tests {
 
         // Settle for 2 000 steps (0.1 s ≈ 100 × Ld/R time constants).
         for _ in 0..2_000 {
-            let telem =
-                foc.step((out.ia, out.ib, out.ic), out.angle_rad, 1.0, 0.0, 1000, DT);
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 1.0, 0.0, 1000, DT);
             out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
         }
 
         // Collect 500 steady-state (Vd, Id) samples.
         let mut meas = ResistanceMeasurement::new(500);
         for _ in 0..500 {
-            let telem =
-                foc.step((out.ia, out.ib, out.ic), out.angle_rad, 1.0, 0.0, 1000, DT);
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 1.0, 0.0, 1000, DT);
             out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
             meas.record(telem.vd, telem.id);
         }
@@ -171,8 +169,7 @@ mod integration_tests {
 
         // Spin with iq_target = 0.5 A for 0.5 s (10 000 steps ≈ 5 time constants).
         for _ in 0..10_000 {
-            let telem =
-                foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 0.5, 1000, DT);
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 0.5, 1000, DT);
             out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
         }
 
@@ -185,8 +182,7 @@ mod integration_tests {
         // Collect 500 steady-state (Vq, Iq, ωe) samples.
         let mut meas = FluxLinkageMeasurement::new(params.r, 500);
         for _ in 0..500 {
-            let telem =
-                foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 0.5, 1000, DT);
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 0.5, 1000, DT);
             out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
             meas.record(telem.vq, telem.iq, out.omega_e);
         }

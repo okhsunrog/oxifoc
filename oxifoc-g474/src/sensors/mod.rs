@@ -3,7 +3,7 @@
 pub mod current;
 pub mod hall;
 
-pub use current::{G431CurrentSensor, G431CurrentSensorExt};
+pub use current::{G474CurrentSensor, G474CurrentSensorExt};
 pub use hall::{HallAngleProxy, init_hall};
 
 // Re-export HallSnapshot from core (used by hall module but also exposed for external use)
