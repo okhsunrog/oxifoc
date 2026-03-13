@@ -12,6 +12,7 @@ export component App inherits Window {
 
     // ── Connection properties ──
     in-out property <bool> use-serial: true;
+    in-out property <bool> use-simulate: false;
     in property <[StandardListViewItem]> serial-ports;
     in property <[StandardListViewItem]> probes;
     in-out property <int> selected-serial: -1;
@@ -79,12 +80,16 @@ export component App inherits Window {
             alignment: center;
 
             Button {
-                text: root.use-serial ? "● Serial (UART)" : "○ Serial (UART)";
-                clicked => { root.use-serial = true; }
+                text: (!root.use-simulate && root.use-serial) ? "● Serial (UART)" : "○ Serial (UART)";
+                clicked => { root.use-serial = true; root.use-simulate = false; }
             }
             Button {
-                text: !root.use-serial ? "● RTT (Debug Probe)" : "○ RTT (Debug Probe)";
-                clicked => { root.use-serial = false; }
+                text: (!root.use-simulate && !root.use-serial) ? "● RTT (Debug Probe)" : "○ RTT (Debug Probe)";
+                clicked => { root.use-serial = false; root.use-simulate = false; }
+            }
+            Button {
+                text: root.use-simulate ? "● Simulate" : "○ Simulate";
+                clicked => { root.use-simulate = true; }
             }
         }
 
@@ -94,7 +99,40 @@ export component App inherits Window {
             horizontal-alignment: center;
         }
 
-        if root.use-serial : VerticalLayout {
+        if root.use-simulate : VerticalLayout {
+            spacing: 8px;
+
+            Rectangle {
+                background: #f0f0f5;
+                border-radius: 4px;
+                min-height: 80px;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 4px;
+                    alignment: center;
+
+                    Text {
+                        text: "Built-in PMSM model";
+                        font-size: 15px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "R = 0.5 Ω  ·  L = 0.5 mH  ·  λ = 10 mWb  ·  7 pole pairs  ·  J = 0.1 g·m²";
+                        horizontal-alignment: center;
+                        color: #555;
+                    }
+                    Text {
+                        text: "Vbus = 24 V  ·  FOC at 20 kHz  ·  No load torque";
+                        horizontal-alignment: center;
+                        color: #555;
+                    }
+                }
+            }
+        }
+
+        if !root.use-simulate && root.use-serial : VerticalLayout {
             spacing: 8px;
 
             HorizontalLayout {
@@ -137,7 +175,7 @@ export component App inherits Window {
             }
         }
 
-        if !root.use-serial : VerticalLayout {
+        if !root.use-simulate && !root.use-serial : VerticalLayout {
             spacing: 8px;
 
             HorizontalLayout {
@@ -180,9 +218,11 @@ export component App inherits Window {
             Button {
                 text: "Connect";
                 primary: true;
-                enabled: root.use-serial
-                    ? root.selected-serial >= 0
-                    : (root.selected-probe >= 0 && root.chip-name != "");
+                enabled: root.use-simulate
+                    ? true
+                    : (root.use-serial
+                        ? root.selected-serial >= 0
+                        : (root.selected-probe >= 0 && root.chip-name != ""));
                 clicked => { root.connect-device(); }
             }
         }

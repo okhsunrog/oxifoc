@@ -107,6 +107,10 @@ pub mod icd;
 #[cfg(feature = "runtime")]
 pub mod state;
 
+/// Dynamic PMSM motor simulation (requires `virtual-motor` feature)
+#[cfg(feature = "virtual-motor")]
+pub mod virtual_motor;
+
 /// Async runtime with servers (requires `runtime` feature)
 ///
 /// Provides async protocol servers that access state directly:

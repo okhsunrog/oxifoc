@@ -55,8 +55,8 @@ algorithms = []
 runtime = ["icd", "algorithms", "dep:embassy-time", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section"]
 
 # Virtual motor simulation for testing without hardware
-# Useful for host-side integration tests
-virtual-motor = ["runtime"]
+# Useful for host-side integration tests and GUI simulation mode
+virtual-motor = []
 
 # std support (enables std-dependent features)
 std = []
