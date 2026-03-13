@@ -167,6 +167,16 @@ impl PIController {
         self.integral
     }
 
+    /// Apply external anti-windup correction to the integral term.
+    ///
+    /// Used when voltage limiting is applied externally (e.g., circular
+    /// voltage clamping in FOC). The saturation signal is the difference
+    /// between the clamped and unclamped output: `v_clamped - v_raw`.
+    #[inline]
+    pub fn apply_anti_windup(&mut self, saturation: f32) {
+        self.integral += saturation;
+    }
+
     /// Update controller gains at runtime
     ///
     /// Useful for:

@@ -84,15 +84,19 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Minimum bus voltage to avoid divide-by-zero (used in both `new` and `set_vbus`).
     const MIN_VBUS: f32 = 0.5;
 
-    /// Create a new controller with reasonable default gains and limits.
+    /// Create a new controller with reasonable default gains.
     ///
     /// The default gains (kp=0.4, ki=40) are a conservative starting point
     /// but won't be optimal for most motors. Prefer [`from_motor_params`](Self::from_motor_params)
     /// when resistance and inductance are known.
+    ///
+    /// PI controllers have no individual output limits — voltage is constrained
+    /// by circular clamping in [`step_with_injection`](Self::step_with_injection)
+    /// which tracks `vbus × modulation_limit` every cycle.
     pub fn new(vbus: f32) -> Self {
         Self {
-            id_pi: PIController::new(0.4, 40.0).with_limits(-12.0, 12.0),
-            iq_pi: PIController::new(0.4, 40.0).with_limits(-12.0, 12.0),
+            id_pi: PIController::new(0.4, 40.0),
+            iq_pi: PIController::new(0.4, 40.0),
             vbus: vbus.max(Self::MIN_VBUS),
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
             _phantom: core::marker::PhantomData,
@@ -105,8 +109,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// - `Kp = L × ω_bw`
     /// - `Ki = R × ω_bw`
     ///
-    /// PI output limits are set to `±vbus × modulation_limit` so the controller
-    /// cannot request more voltage than the bus can deliver.
+    /// Voltage is constrained by circular clamping in
+    /// [`step_with_injection`](Self::step_with_injection) using
+    /// `vbus × modulation_limit`, recomputed every cycle.
     ///
     /// # Arguments
     /// * `resistance` - Phase resistance in Ohms
@@ -134,11 +139,10 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     ) -> Self {
         let (kp, ki) = pi_tuning::calculate_current_gains(resistance, inductance, bandwidth_rad_s);
         let vbus = vbus.max(Self::MIN_VBUS);
-        let v_limit = vbus * Self::DEFAULT_MODULATION_LIMIT;
 
         Self {
-            id_pi: PIController::new(kp, ki).with_limits(-v_limit, v_limit),
-            iq_pi: PIController::new(kp, ki).with_limits(-v_limit, v_limit),
+            id_pi: PIController::new(kp, ki),
+            iq_pi: PIController::new(kp, ki),
             vbus,
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
             _phantom: core::marker::PhantomData,
@@ -241,13 +245,26 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let (id, iq) = transforms::park(i_alpha, i_beta, sin_theta, cos_theta);
 
         // Current controllers (dq frame) + optional HFI injection
-        let mut vd = self.id_pi.update(id_target, id, dt) + vd_inject;
-        let mut vq = self.iq_pi.update(iq_target, iq, dt) + vq_inject;
+        let vd_raw = self.id_pi.update(id_target, id, dt) + vd_inject;
+        let vq_raw = self.iq_pi.update(iq_target, iq, dt) + vq_inject;
 
-        // Clamp to allowed modulation to avoid distorting SVPWM
+        // Circular voltage limiting: constrain |V| ≤ vbus × modulation_limit
+        // Preserves voltage vector direction (unlike independent axis clamping)
         let v_limit = self.vbus * self.modulation_limit;
-        vd = vd.clamp(-v_limit, v_limit);
-        vq = vq.clamp(-v_limit, v_limit);
+        let v_mag_sq = vd_raw * vd_raw + vq_raw * vq_raw;
+        let v_limit_sq = v_limit * v_limit;
+
+        let (vd, vq) = if v_mag_sq > v_limit_sq {
+            let scale = v_limit / libm::sqrtf(v_mag_sq);
+            let vd = vd_raw * scale;
+            let vq = vq_raw * scale;
+            // Coordinated anti-windup: feed saturation back to both PI integrators
+            self.id_pi.apply_anti_windup(vd - vd_raw);
+            self.iq_pi.apply_anti_windup(vq - vq_raw);
+            (vd, vq)
+        } else {
+            (vd_raw, vq_raw)
+        };
 
         // dq -> stationary frame
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
@@ -305,9 +322,15 @@ mod tests {
         let mut foc = FocController::<SvpwmModulator>::new(30.0).with_modulation_limit(0.25);
         let telem = foc.step((2.0, -1.0, -1.0), 0.7, 0.0, 20.0, 800, DT);
 
-        let v_limit = foc.vbus() * foc.modulation_limit() + 1e-6;
-        assert!(telem.vd.abs() <= v_limit);
-        assert!(telem.vq.abs() <= v_limit);
+        // Circular constraint: sqrt(vd² + vq²) ≤ v_limit
+        let v_limit = foc.vbus() * foc.modulation_limit();
+        let v_mag = libm::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+        assert!(
+            v_mag <= v_limit + 1e-6,
+            "voltage magnitude {} exceeds limit {}",
+            v_mag,
+            v_limit
+        );
     }
 
     #[test]
@@ -329,14 +352,17 @@ mod tests {
         );
         assert!(telem.vq < 1.5, "vq should be reasonable, got {}", telem.vq);
 
-        // PI limits should be ±vbus*modulation_limit = ±24*0.577 ≈ ±13.85
+        // Circular limit: sqrt(vd² + vq²) ≤ vbus*modulation_limit = 24*0.577 ≈ 13.85
         let v_limit = 24.0 * FocController::<SvpwmModulator>::DEFAULT_MODULATION_LIMIT;
         let telem_saturated = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 100.0, 1000, 0.001);
+        let v_mag = libm::sqrtf(
+            telem_saturated.vd * telem_saturated.vd + telem_saturated.vq * telem_saturated.vq,
+        );
         assert!(
-            telem_saturated.vq <= v_limit + 1e-3,
-            "PI output should be limited to {}, got {}",
+            v_mag <= v_limit + 1e-3,
+            "voltage magnitude should be limited to {}, got {}",
             v_limit,
-            telem_saturated.vq
+            v_mag
         );
     }
 

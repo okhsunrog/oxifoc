@@ -55,8 +55,8 @@ pub struct ShuntCurrentSense {
     offset_b: f32,
     /// Zero-current ADC offset for phase C (in ADC counts)
     offset_c: f32,
-    /// Calibration status
-    calibrated: bool,
+    /// Per-phase calibration bitmask (bit 0=A, 1=B, 2=C)
+    calibrated_phases: u8,
 }
 
 impl ShuntCurrentSense {
@@ -70,7 +70,7 @@ impl ShuntCurrentSense {
             offset_a: adc_max_counts as f32 / 2.0, // Default to mid-scale
             offset_b: adc_max_counts as f32 / 2.0,
             offset_c: adc_max_counts as f32 / 2.0,
-            calibrated: false,
+            calibrated_phases: 0,
         }
     }
 
@@ -105,7 +105,7 @@ impl ShuntCurrentSense {
         self.offset_a = sum_a as f32 / count;
         self.offset_b = sum_b as f32 / count;
         self.offset_c = sum_c as f32 / count;
-        self.calibrated = true;
+        self.calibrated_phases = 0b111; // All three phases calibrated
     }
 
     /// Calibrate a single phase offset from samples (VESC-style per-phase calibration)
@@ -119,7 +119,7 @@ impl ShuntCurrentSense {
     /// * `samples` - Raw ADC samples for this phase
     ///
     /// # Note
-    /// After calibrating all three phases individually, `is_calibrated()` will return true.
+    /// `is_calibrated()` returns true only after all three phases have been calibrated.
     pub fn calibrate_phase_offset(&mut self, phase: usize, samples: &[u16]) {
         if samples.is_empty() {
             return;
@@ -135,21 +135,8 @@ impl ShuntCurrentSense {
             _ => return, // Invalid phase
         }
 
-        // Mark calibrated only when all three phases have reasonable offsets
-        // (not at default mid-scale value)
-        let mid = self.adc_max_counts as f32 / 2.0;
-        let tolerance = self.adc_max_counts as f32 * 0.1; // 10% tolerance
-        let a_calibrated =
-            (self.offset_a - mid).abs() > tolerance || (phase == 0 && samples.len() > 10);
-        let b_calibrated =
-            (self.offset_b - mid).abs() > tolerance || (phase == 1 && samples.len() > 10);
-        let c_calibrated =
-            (self.offset_c - mid).abs() > tolerance || (phase == 2 && samples.len() > 10);
-
-        // Simple heuristic: if any phase has been explicitly calibrated with enough samples
-        if a_calibrated || b_calibrated || c_calibrated {
-            self.calibrated = true;
-        }
+        // Mark this phase as calibrated; is_calibrated() requires all three
+        self.calibrated_phases |= 1 << phase;
     }
 
     /// Reset calibration state (useful before starting a new per-phase calibration)
@@ -157,12 +144,12 @@ impl ShuntCurrentSense {
         self.offset_a = self.adc_max_counts as f32 / 2.0;
         self.offset_b = self.adc_max_counts as f32 / 2.0;
         self.offset_c = self.adc_max_counts as f32 / 2.0;
-        self.calibrated = false;
+        self.calibrated_phases = 0;
     }
 
-    /// Check if offsets have been calibrated
+    /// Check if all three phase offsets have been calibrated
     pub fn is_calibrated(&self) -> bool {
-        self.calibrated
+        self.calibrated_phases == 0b111
     }
 
     /// Get current calibration offsets (in ADC counts)
@@ -175,7 +162,7 @@ impl ShuntCurrentSense {
         self.offset_a = offset_a;
         self.offset_b = offset_b;
         self.offset_c = offset_c;
-        self.calibrated = true;
+        self.calibrated_phases = 0b111;
     }
 
     /// Internal helper: convert a single ADC reading to current (A)
