@@ -29,7 +29,7 @@ pub struct Drv8301Config<'d> {
 }
 
 /// nFAULT EXTI input for interrupt-driven fault detection
-pub type NfaultInput = ExtiInput<'static>;
+pub type NfaultInput = ExtiInput<'static, embassy_stm32::mode::Async>;
 
 /// Global DRV8301 config for fault status reading from ISR/tasks
 static DRV_CONFIG: CriticalSectionMutex<RefCell<Option<Drv8301Config<'static>>>> =

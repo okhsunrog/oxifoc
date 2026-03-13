@@ -72,10 +72,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "bbq2"
-version = "0.4.3"
+name = "bbqueue"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a71c275de2904ad7132c0b6ccfd5d6276c9c1b6618b049b90cbffee98a1796d"
+checksum = "4b4607b1781ac66093cab552f203fe44dd45dc30838e0abd11e3b34bec473d59"
 dependencies = [
  "const-init",
  "maitake-sync",
@@ -163,7 +163,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=defmt_sink_plus_rtt#3553672097374cb8af52801ccbb42c5aac224ab5"
+source = "git+https://github.com/okhsunrog/ergot?branch=defmt_sink_plus_rtt#746dc1e1589877ff99de4f2ea5c3617965554ac6"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -316,12 +316,12 @@ dependencies = [
 
 [[package]]
 name = "embassy-embedded-hal"
-version = "0.5.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+version = "0.6.0"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 dependencies = [
  "embassy-futures",
  "embassy-hal-internal",
- "embassy-sync",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
@@ -333,8 +333,8 @@ dependencies = [
 
 [[package]]
 name = "embassy-executor"
-version = "0.9.1"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+version = "0.10.0"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 dependencies = [
  "cordyceps",
  "cortex-m",
@@ -346,8 +346,8 @@ dependencies = [
 
 [[package]]
 name = "embassy-executor-macros"
-version = "0.7.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+version = "0.8.0"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -358,17 +358,17 @@ dependencies = [
 [[package]]
 name = "embassy-executor-timer-queue"
 version = "0.1.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 
 [[package]]
 name = "embassy-futures"
 version = "0.1.2"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 
 [[package]]
 name = "embassy-hal-internal"
 version = "0.4.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 dependencies = [
  "cortex-m",
  "critical-section",
@@ -384,7 +384,7 @@ dependencies = [
  "defmt 1.0.1",
  "document-features",
  "embassy-net-driver 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "embassy-sync",
+ "embassy-sync 0.7.2",
  "embassy-time",
  "embedded-io-async 0.6.1",
  "embedded-nal-async",
@@ -405,7 +405,7 @@ dependencies = [
 [[package]]
 name = "embassy-net-driver"
 version = "0.2.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 
 [[package]]
 name = "embassy-net-driver-channel"
@@ -415,13 +415,23 @@ checksum = "b7b2739fbcf6cd206ae08779c7d709087b16577d255f2ea4a45bc4bbbf305b3f"
 dependencies = [
  "embassy-futures",
  "embassy-net-driver 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "embassy-sync",
+ "embassy-sync 0.7.2",
+]
+
+[[package]]
+name = "embassy-net-driver-channel"
+version = "0.4.0"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+dependencies = [
+ "embassy-futures",
+ "embassy-net-driver 0.2.0 (git+https://github.com/okhsunrog/embassy?rev=a1da90c)",
+ "embassy-sync 0.8.0",
 ]
 
 [[package]]
 name = "embassy-stm32"
-version = "0.5.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+version = "0.6.0"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 dependencies = [
  "aligned",
  "bit_field",
@@ -435,12 +445,12 @@ dependencies = [
  "embassy-embedded-hal",
  "embassy-futures",
  "embassy-hal-internal",
- "embassy-net-driver 0.2.0 (git+https://github.com/embassy-rs/embassy?rev=d08bd25)",
- "embassy-sync",
+ "embassy-net-driver 0.2.0 (git+https://github.com/okhsunrog/embassy?rev=a1da90c)",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "embassy-time-driver",
  "embassy-time-queue-utils",
- "embassy-usb-driver 0.2.0 (git+https://github.com/embassy-rs/embassy?rev=d08bd25)",
+ "embassy-usb-driver",
  "embassy-usb-synopsys-otg",
  "embedded-can",
  "embedded-hal 0.2.7",
@@ -458,9 +468,11 @@ dependencies = [
  "quote",
  "rand_core 0.6.4",
  "rand_core 0.9.5",
+ "regex",
  "sdio-host",
  "static_assertions",
  "stm32-fmc",
+ "stm32-hrtim",
  "stm32-metapac",
  "trait-set",
  "vcell",
@@ -470,20 +482,34 @@ dependencies = [
 [[package]]
 name = "embassy-sync"
 version = "0.7.2"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73974a3edbd0bd286759b3d483540f0ebef705919a5f56f4fc7709066f71689b"
 dependencies = [
  "cfg-if",
  "critical-section",
- "embedded-io-async 0.7.0",
+ "embedded-io-async 0.6.1",
  "futures-core",
  "futures-sink",
  "heapless 0.8.0",
 ]
 
 [[package]]
+name = "embassy-sync"
+version = "0.8.0"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+dependencies = [
+ "cfg-if",
+ "critical-section",
+ "embedded-io-async 0.7.0",
+ "futures-core",
+ "futures-sink",
+ "heapless 0.9.2",
+]
+
+[[package]]
 name = "embassy-time"
-version = "0.5.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+version = "0.5.1"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -499,7 +525,7 @@ dependencies = [
 [[package]]
 name = "embassy-time-driver"
 version = "0.2.1"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 dependencies = [
  "document-features",
 ]
@@ -507,10 +533,10 @@ dependencies = [
 [[package]]
 name = "embassy-time-queue-utils"
 version = "0.3.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 dependencies = [
  "embassy-executor-timer-queue",
- "heapless 0.8.0",
+ "heapless 0.9.2",
 ]
 
 [[package]]
@@ -521,41 +547,50 @@ checksum = "dc4462e48b19a4f401a11901bdd981aab80c6a826608016a0bdc73cbbab31954"
 dependencies = [
  "defmt 1.0.1",
  "embassy-futures",
- "embassy-net-driver-channel",
- "embassy-sync",
- "embassy-usb-driver 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "embassy-net-driver-channel 0.3.2",
+ "embassy-sync 0.7.2",
+ "embassy-usb-driver",
  "embedded-io-async 0.6.1",
  "heapless 0.8.0",
  "ssmarshal",
- "usbd-hid",
+ "usbd-hid 0.8.2",
+]
+
+[[package]]
+name = "embassy-usb"
+version = "0.6.0"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+dependencies = [
+ "bitflags 2.10.0",
+ "defmt 1.0.1",
+ "embassy-futures",
+ "embassy-net-driver-channel 0.4.0",
+ "embassy-sync 0.8.0",
+ "embassy-time",
+ "embassy-usb-driver",
+ "embedded-io-async 0.7.0",
+ "heapless 0.9.2",
+ "ssmarshal",
+ "usbd-hid 0.9.0",
 ]
 
 [[package]]
 name = "embassy-usb-driver"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17119855ccc2d1f7470a39756b12068454ae27a3eabb037d940b5c03d9c77b7a"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 dependencies = [
  "defmt 1.0.1",
- "embedded-io-async 0.6.1",
-]
-
-[[package]]
-name = "embassy-usb-driver"
-version = "0.2.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
-dependencies = [
  "embedded-io-async 0.7.0",
 ]
 
 [[package]]
 name = "embassy-usb-synopsys-otg"
-version = "0.3.1"
-source = "git+https://github.com/embassy-rs/embassy?rev=d08bd25#d08bd25d0bc06d1ac832ed50c5726c033444d14a"
+version = "0.3.2"
+source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
 dependencies = [
  "critical-section",
- "embassy-sync",
- "embassy-usb-driver 0.2.0 (git+https://github.com/embassy-rs/embassy?rev=d08bd25)",
+ "embassy-sync 0.8.0",
+ "embassy-usb-driver",
 ]
 
 [[package]]
@@ -683,9 +718,9 @@ checksum = "a357d28ed41a50f9c765dbfe56cbc04a64e53e5fc58ba79fbc34c10ef3df831f"
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=defmt_sink_plus_rtt#3553672097374cb8af52801ccbb42c5aac224ab5"
+source = "git+https://github.com/okhsunrog/ergot?branch=defmt_sink_plus_rtt#746dc1e1589877ff99de4f2ea5c3617965554ac6"
 dependencies = [
- "bbq2",
+ "bbqueue",
  "cobs 0.3.0",
  "cobs-acc",
  "const-fnv1a-hash",
@@ -695,7 +730,8 @@ dependencies = [
  "embassy-futures",
  "embassy-net",
  "embassy-time",
- "embassy-usb",
+ "embassy-usb 0.5.1",
+ "embassy-usb 0.6.0",
  "embedded-io-async 0.6.1",
  "embedded-io-async 0.7.0",
  "heapless 0.9.2",
@@ -721,6 +757,15 @@ name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+
+[[package]]
+name = "fugit"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e639847d312d9a82d2e75b0edcc1e934efcc64e6cb7aa94f0b1fbec0bc231d6"
+dependencies = [
+ "gcd",
+]
 
 [[package]]
 name = "futures-core"
@@ -751,6 +796,12 @@ dependencies = [
  "pin-project-lite",
  "pin-utils",
 ]
+
+[[package]]
+name = "gcd"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d758ba1b47b00caf47f24925c0074ecb20d6dfcffe7f6d53395c0465674841a"
 
 [[package]]
 name = "generator"
@@ -993,7 +1044,7 @@ dependencies = [
  "critical-section",
  "defmt 1.0.1",
  "embassy-futures",
- "embassy-sync",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "ergot",
  "heapless 0.9.2",
@@ -1010,7 +1061,7 @@ dependencies = [
  "critical-section",
  "defmt 1.0.1",
  "embassy-stm32",
- "embassy-sync",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "embedded-io-async 0.7.0",
  "heapless 0.9.2",
@@ -1030,7 +1081,7 @@ dependencies = [
  "embassy-executor",
  "embassy-futures",
  "embassy-stm32",
- "embassy-sync",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "embedded-io-async 0.7.0",
  "embedded-storage-async",
@@ -1180,6 +1231,18 @@ name = "rand_core"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
+
+[[package]]
+name = "regex"
+version = "1.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
 
 [[package]]
 name = "regex-automata"
@@ -1395,12 +1458,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "stm32-hrtim"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee749ac0511b9977bcd5d508641bae0045964e861a4dc3fb40131f2e8aeb0360"
+dependencies = [
+ "fugit",
+ "stm32g4",
+]
+
+[[package]]
 name = "stm32-metapac"
-version = "19.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-b77e90cbd1c55b5ebb87c3bd46e6681915862812#562ffb5746da468e22df8e320639fb7f0bce3786"
+version = "20.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0f828e67a906a03b84bfe8819b20da8133d2c691ae1c440f72c0b251b0824fd"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
+]
+
+[[package]]
+name = "stm32g4"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97bc6434066d2459f0e0834ade8b03e5c5e8d4aad84dc2ff50e56464e6104f4d"
+dependencies = [
+ "cortex-m",
+ "vcell",
 ]
 
 [[package]]
@@ -1563,7 +1647,19 @@ dependencies = [
  "serde",
  "ssmarshal",
  "usb-device",
- "usbd-hid-macros",
+ "usbd-hid-macros 0.8.2",
+]
+
+[[package]]
+name = "usbd-hid"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a7cd3bfb2bb57779f2aeab3f679e5ec6c80265adfe77894539792be7c22aaf0"
+dependencies = [
+ "serde",
+ "ssmarshal",
+ "usb-device",
+ "usbd-hid-macros 0.9.0",
 ]
 
 [[package]]
@@ -1571,6 +1667,15 @@ name = "usbd-hid-descriptors"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0eee54712c5d778d2fb2da43b1ce5a7b5060886ef7b09891baeb4bf36910a3ed"
+dependencies = [
+ "bitfield 0.14.0",
+]
+
+[[package]]
+name = "usbd-hid-descriptors"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac781e4d4c61a4d3bea4cda03fb4ed4d13578c55386b29c5cdc70b3bd89c47df"
 dependencies = [
  "bitfield 0.14.0",
 ]
@@ -1588,7 +1693,23 @@ dependencies = [
  "quote",
  "serde",
  "syn 1.0.109",
- "usbd-hid-descriptors",
+ "usbd-hid-descriptors 0.8.2",
+]
+
+[[package]]
+name = "usbd-hid-macros"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab457064302de0aca303a13cd520dcf035fdfd2aff713fa69d713d0a8e4291d8"
+dependencies = [
+ "byteorder",
+ "hashbrown",
+ "log",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 1.0.109",
+ "usbd-hid-descriptors 0.9.0",
 ]
 
 [[package]]

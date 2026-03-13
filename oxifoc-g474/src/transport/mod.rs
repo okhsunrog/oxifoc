@@ -29,7 +29,7 @@ use ergot::transport::rtt::{RttReader, RttWriter};
 use crate::config::OUT_QUEUE_SIZE;
 #[cfg(feature = "transport-uart")]
 use crate::config::{UART_BAUD, UART_BUF_LEN};
-use ergot::exports::bbq2::traits::coordination::cas::AtomicCoord;
+use ergot::exports::bbqueue::traits::coordination::cas::AtomicCoord;
 use ergot::toolkits::embedded_io_async_v0_7 as kit;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 

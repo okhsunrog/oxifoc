@@ -2,7 +2,7 @@
 
 use embassy_stm32::{Peri, bind_interrupts, peripherals, usb};
 use ergot::{
-    exports::bbq2::traits::coordination::cas::AtomicCoord, toolkits::embassy_usb_v0_5 as kit,
+    exports::bbqueue::traits::coordination::cas::AtomicCoord, toolkits::embassy_usb_v0_6 as kit,
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use static_cell::StaticCell;

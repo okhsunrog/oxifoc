@@ -1,7 +1,7 @@
 //! Hardware peripheral initialization for B-G431B-ESC1
 
 use embassy_stm32::adc::{
-    Adc, AdcChannel, AdcConfig, ConversionTrigger, Exten, InjectedAdc, SampleTime,
+    Adc, AdcChannel, AdcConfig, Exten, InjectedAdc, SampleTime,
 };
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::interrupt::typelevel::{ADC1_2, Interrupt};
@@ -129,12 +129,6 @@ pub fn init_adc(
     let adc1 = Adc::new(adc1_periph, AdcConfig::default());
     let adc2 = Adc::new(adc2_periph, AdcConfig::default());
 
-    let injected_trigger = ConversionTrigger {
-        // TIM1_TRGO2 (routed from TIM1_CH4 compare in MotorPwm).
-        channel: 8,
-        edge: Exten::RISING_EDGE,
-    };
-
     // ADC1 injected: phase A current + VBUS + temperature (finishes last → interrupt)
     let vbus_chan = vbus_pin.degrade_adc();
     let temp_chan = temp_pin.degrade_adc();
@@ -144,7 +138,8 @@ pub fn init_adc(
             (vbus_chan, SampleTime::CYCLES47_5),              // VBUS: 16kΩ divider impedance
             (temp_chan, SampleTime::CYCLES24_5),              // Temp: 3kΩ NTC divider
         ],
-        injected_trigger,
+        embassy_stm32::triggers::TIM1_TRGO2,
+        Exten::RISING_EDGE,
         true, // Interrupt on ADC1 (finishes last, guarantees ADC2 is also done)
     );
 
@@ -154,7 +149,8 @@ pub fn init_adc(
             (opamp_channels.ib_chan, SampleTime::CYCLES24_5), // Phase B: low-Z opamp output
             (opamp_channels.ic_chan, SampleTime::CYCLES24_5), // Phase C: low-Z opamp output
         ],
-        injected_trigger,
+        embassy_stm32::triggers::TIM1_TRGO2,
+        Exten::RISING_EDGE,
         false, // No interrupt - ADC1 interrupt handles both
     );
 
