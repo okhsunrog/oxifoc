@@ -6,6 +6,7 @@
 //! current loop step and returns the computed PWM duties plus telemetry.
 
 use super::{
+    detection::pi_tuning::{self, DEFAULT_BANDWIDTH_RAD_S},
     pi_controller::PIController,
     pwm::{Modulator, SvpwmModulator},
     transforms,
@@ -84,11 +85,61 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     const MIN_VBUS: f32 = 0.5;
 
     /// Create a new controller with reasonable default gains and limits.
+    ///
+    /// The default gains (kp=0.4, ki=40) are a conservative starting point
+    /// but won't be optimal for most motors. Prefer [`from_motor_params`](Self::from_motor_params)
+    /// when resistance and inductance are known.
     pub fn new(vbus: f32) -> Self {
         Self {
             id_pi: PIController::new(0.4, 40.0).with_limits(-12.0, 12.0),
             iq_pi: PIController::new(0.4, 40.0).with_limits(-12.0, 12.0),
             vbus: vbus.max(Self::MIN_VBUS),
+            modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+
+    /// Create a controller with PI gains computed from motor parameters.
+    ///
+    /// Uses the standard pole-placement formula:
+    /// - `Kp = L × ω_bw`
+    /// - `Ki = R × ω_bw`
+    ///
+    /// PI output limits are set to `±vbus × modulation_limit` so the controller
+    /// cannot request more voltage than the bus can deliver.
+    ///
+    /// # Arguments
+    /// * `resistance` - Phase resistance in Ohms
+    /// * `inductance` - Phase inductance in Henries (use Ld≈Lq for SPMSM)
+    /// * `vbus` - DC bus voltage in Volts
+    ///
+    /// Uses the default bandwidth of 1000 rad/s (~160 Hz). For custom
+    /// bandwidth, use [`from_motor_params_with_bw`](Self::from_motor_params_with_bw).
+    pub fn from_motor_params(resistance: f32, inductance: f32, vbus: f32) -> Self {
+        Self::from_motor_params_with_bw(resistance, inductance, vbus, DEFAULT_BANDWIDTH_RAD_S)
+    }
+
+    /// Create a controller with PI gains computed from motor parameters and custom bandwidth.
+    ///
+    /// # Arguments
+    /// * `resistance` - Phase resistance in Ohms
+    /// * `inductance` - Phase inductance in Henries
+    /// * `vbus` - DC bus voltage in Volts
+    /// * `bandwidth_rad_s` - Desired current loop bandwidth in rad/s
+    pub fn from_motor_params_with_bw(
+        resistance: f32,
+        inductance: f32,
+        vbus: f32,
+        bandwidth_rad_s: f32,
+    ) -> Self {
+        let (kp, ki) = pi_tuning::calculate_current_gains(resistance, inductance, bandwidth_rad_s);
+        let vbus = vbus.max(Self::MIN_VBUS);
+        let v_limit = vbus * Self::DEFAULT_MODULATION_LIMIT;
+
+        Self {
+            id_pi: PIController::new(kp, ki).with_limits(-v_limit, v_limit),
+            iq_pi: PIController::new(kp, ki).with_limits(-v_limit, v_limit),
+            vbus,
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
             _phantom: core::marker::PhantomData,
         }
@@ -255,5 +306,52 @@ mod tests {
         let v_limit = foc.vbus() * foc.modulation_limit() + 1e-6;
         assert!(telem.vd.abs() <= v_limit);
         assert!(telem.vq.abs() <= v_limit);
+    }
+
+    #[test]
+    fn from_motor_params_computes_correct_gains() {
+        // R = 0.5 Ω, L = 0.5 mH, vbus = 24 V, default bandwidth = 1000 rad/s
+        let foc = FocController::<SvpwmModulator>::from_motor_params(0.5, 5e-4, 24.0);
+
+        // Kp = L × ω = 5e-4 × 1000 = 0.5
+        // Ki = R × ω = 0.5 × 1000 = 500
+        // We can't read gains directly, but we can verify behavior:
+        // A 1A error at dt=0.001 should produce output ≈ kp*1 + ki*1*0.001 = 0.5 + 0.5 = 1.0
+        let mut foc = foc;
+        let telem = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, 0.001);
+        // vq should be positive and around 1.0 (kp*error + ki*error*dt)
+        assert!(telem.vq > 0.4, "vq should reflect computed gains, got {}", telem.vq);
+        assert!(telem.vq < 1.5, "vq should be reasonable, got {}", telem.vq);
+
+        // PI limits should be ±vbus*modulation_limit = ±24*0.577 ≈ ±13.85
+        let v_limit = 24.0 * FocController::<SvpwmModulator>::DEFAULT_MODULATION_LIMIT;
+        let telem_saturated = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 100.0, 1000, 0.001);
+        assert!(
+            telem_saturated.vq <= v_limit + 1e-3,
+            "PI output should be limited to {}, got {}",
+            v_limit,
+            telem_saturated.vq
+        );
+    }
+
+    #[test]
+    fn from_motor_params_with_custom_bandwidth() {
+        // Higher bandwidth should give proportionally higher gains
+        let foc_default = FocController::<SvpwmModulator>::from_motor_params(0.5, 5e-4, 24.0);
+        let foc_fast = FocController::<SvpwmModulator>::from_motor_params_with_bw(0.5, 5e-4, 24.0, 2000.0);
+
+        let mut foc_d = foc_default;
+        let mut foc_f = foc_fast;
+
+        let telem_d = foc_d.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, DT);
+        let telem_f = foc_f.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, DT);
+
+        // 2× bandwidth → 2× Kp → ~2× initial voltage response
+        assert!(
+            telem_f.vq > telem_d.vq * 1.5,
+            "Higher bandwidth should give stronger response: {} vs {}",
+            telem_f.vq,
+            telem_d.vq
+        );
     }
 }
