@@ -14,6 +14,7 @@
 use core::f32::consts::TAU;
 
 use super::sensors::{AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait};
+use super::{angle_difference, wrap_angle};
 
 /// Hall state lookup table: maps raw sensor reading (0-7) to logical state (0-5)
 ///
@@ -745,28 +746,6 @@ impl Default for HallCalibration {
     }
 }
 
-#[inline]
-fn wrap_angle(angle: f32) -> f32 {
-    let mut a = angle % TAU;
-    if a < 0.0 {
-        a += TAU;
-    }
-    a
-}
-
-/// Compute signed angle difference (a - b), handling wraparound.
-/// Result is in range (-π, π].
-#[inline]
-fn angle_difference(a: f32, b: f32) -> f32 {
-    let mut diff = a - b;
-    while diff > core::f32::consts::PI {
-        diff -= TAU;
-    }
-    while diff <= -core::f32::consts::PI {
-        diff += TAU;
-    }
-    diff
-}
 
 impl AngleSensor for HallSensor {
     fn sample(&self, now_ticks: u64) -> Option<AngleSample> {

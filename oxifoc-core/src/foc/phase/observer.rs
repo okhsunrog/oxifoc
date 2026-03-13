@@ -5,6 +5,8 @@
 
 use core::f32::consts::TAU;
 
+use crate::foc::wrap_angle;
+
 /// Input for observer update
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ObserverInput {
@@ -393,15 +395,6 @@ impl HfiObserver {
 // Utility functions
 // ============================================================================
 
-/// Wrap angle to [0, 2π)
-#[inline]
-fn wrap_angle(angle: f32) -> f32 {
-    let mut a = angle % TAU;
-    if a < 0.0 {
-        a += TAU;
-    }
-    a
-}
 
 #[cfg(test)]
 mod tests {

@@ -41,23 +41,7 @@ use super::constants::{FRAC_1_SQRT_3 as ONE_BY_SQRT3, FRAC_2_SQRT_3 as TWO_BY_SQ
 /// assert!(duties.iter().all(|&duty| duty <= 1000));
 /// ```
 pub fn space_vector_pwm(alpha: f32, beta: f32, max_duty: u16) -> [u16; 3] {
-    // Determine sector using geometric method (VESC algorithm)
-    // Uses >= for robust boundary handling
-    let sector = if beta >= 0.0 {
-        if alpha >= 0.0 {
-            // Quadrant I
-            if ONE_BY_SQRT3 * beta > alpha { 2 } else { 1 }
-        } else {
-            // Quadrant II
-            if -ONE_BY_SQRT3 * beta > alpha { 3 } else { 2 }
-        }
-    } else if alpha >= 0.0 {
-        // Quadrant IV
-        if -ONE_BY_SQRT3 * beta > alpha { 5 } else { 6 }
-    } else {
-        // Quadrant III
-        if ONE_BY_SQRT3 * beta > alpha { 4 } else { 5 }
-    };
+    let sector = get_sector(alpha, beta);
 
     // Calculate PWM timings per sector
     let pwm_full = max_duty as i32;

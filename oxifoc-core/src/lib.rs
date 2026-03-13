@@ -121,6 +121,29 @@ pub mod runtime;
 
 /// Field-Oriented Control algorithms
 pub mod foc {
+    use core::f32::consts::TAU;
+
+    /// Wrap angle to [0, 2π)
+    #[inline]
+    pub fn wrap_angle(angle: f32) -> f32 {
+        let mut a = angle % TAU;
+        if a < 0.0 {
+            a += TAU;
+        }
+        a
+    }
+
+    /// Compute signed angle difference (a - b), handling wraparound.
+    /// Result is in range (-π, π].
+    #[inline]
+    pub fn angle_difference(a: f32, b: f32) -> f32 {
+        let mut diff = libm::remainderf(a - b, TAU);
+        if diff <= -core::f32::consts::PI {
+            diff += TAU;
+        }
+        diff
+    }
+
     /// Board configuration and ADC utilities
     pub mod config;
 

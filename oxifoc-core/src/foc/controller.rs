@@ -80,12 +80,15 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Conservative default modulation limit (keeps us inside linear SVPWM)
     pub const DEFAULT_MODULATION_LIMIT: f32 = 0.577; // ≈ 1/√3
 
+    /// Minimum bus voltage to avoid divide-by-zero (used in both `new` and `set_vbus`).
+    const MIN_VBUS: f32 = 0.5;
+
     /// Create a new controller with reasonable default gains and limits.
     pub fn new(vbus: f32) -> Self {
         Self {
             id_pi: PIController::new(0.4, 40.0).with_limits(-12.0, 12.0),
             iq_pi: PIController::new(0.4, 40.0).with_limits(-12.0, 12.0),
-            vbus: vbus.max(1.0),
+            vbus: vbus.max(Self::MIN_VBUS),
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
             _phantom: core::marker::PhantomData,
         }
@@ -103,7 +106,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Update the cached DC bus voltage.
     pub fn set_vbus(&mut self, vbus: f32) {
         // Avoid divide-by-zero while tolerating brief brownouts.
-        self.vbus = vbus.max(0.5);
+        self.vbus = vbus.max(Self::MIN_VBUS);
     }
 
     /// Current DC bus voltage cached in the controller.
@@ -143,43 +146,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         max_duty: u16,
         dt: f32,
     ) -> FocTelemetry {
-        let (ia, ib, ic) = currents;
-        let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
-
-        // Phase currents -> stationary frame
-        let (i_alpha, i_beta) = transforms::clarke(ia, ib);
-        // Stationary -> rotating frame
-        let (id, iq) = transforms::park(i_alpha, i_beta, sin_theta, cos_theta);
-
-        // Current controllers (dq frame)
-        let mut vd = self.id_pi.update(id_target, id, dt);
-        let mut vq = self.iq_pi.update(iq_target, iq, dt);
-
-        // Clamp to allowed modulation to avoid distorting SVPWM
-        let v_limit = self.vbus * self.modulation_limit;
-        vd = vd.clamp(-v_limit, v_limit);
-        vq = vq.clamp(-v_limit, v_limit);
-
-        // dq -> stationary frame
-        let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
-        let inv_vbus = 1.0 / self.vbus;
-        let duties = M::to_duties(v_alpha * inv_vbus, v_beta * inv_vbus, max_duty);
-
-        FocTelemetry {
-            ia,
-            ib,
-            ic,
-            angle_rad,
-            i_alpha,
-            i_beta,
-            id,
-            iq,
-            vd,
-            vq,
-            v_alpha,
-            v_beta,
-            duties,
-        }
+        self.step_with_injection(currents, angle_rad, id_target, iq_target, 0.0, 0.0, max_duty, dt)
     }
 
     /// Run one FOC current loop step with voltage injection.
@@ -220,13 +187,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // Stationary -> rotating frame
         let (id, iq) = transforms::park(i_alpha, i_beta, sin_theta, cos_theta);
 
-        // Current controllers (dq frame)
-        let mut vd = self.id_pi.update(id_target, id, dt);
-        let mut vq = self.iq_pi.update(iq_target, iq, dt);
-
-        // Add HFI injection voltage
-        vd += vd_inject;
-        vq += vq_inject;
+        // Current controllers (dq frame) + optional HFI injection
+        let mut vd = self.id_pi.update(id_target, id, dt) + vd_inject;
+        let mut vq = self.iq_pi.update(iq_target, iq, dt) + vq_inject;
 
         // Clamp to allowed modulation to avoid distorting SVPWM
         let v_limit = self.vbus * self.modulation_limit;

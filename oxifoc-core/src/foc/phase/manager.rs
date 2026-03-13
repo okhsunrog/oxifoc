@@ -8,6 +8,7 @@ use core::f32::consts::TAU;
 use heapless::Vec as HeaplessVec;
 
 use super::observer::{Observer, ObserverInput};
+use crate::foc::wrap_angle;
 use super::provider::{PhaseInput, PhaseOutput, PhaseProvider};
 use super::source::{PhaseSource, PhaseSourceError};
 use crate::foc::hall_calibration::HallCalibrationResult;
@@ -769,15 +770,6 @@ fn blend_angles(a: f32, b: f32, blend: f32) -> f32 {
     wrap_angle(a + diff_signed * blend)
 }
 
-/// Wrap angle to [0, 2π)
-#[inline]
-fn wrap_angle(angle: f32) -> f32 {
-    let mut a = angle % TAU;
-    if a < 0.0 {
-        a += TAU;
-    }
-    a
-}
 
 #[cfg(test)]
 mod tests {
