@@ -2,7 +2,7 @@
 
 use core::cell::RefCell;
 
-use drv8301_dd::{Drv8301, DrvError, GateCurrent, OcpMode, ShuntAmplifierGain};
+use drv8301_dd::{Drv8301, DrvError, GateCurrent, OcAdjSet, OcpMode, ShuntAmplifierGain};
 
 // Re-export FaultStatus for use by other modules
 pub use drv8301_dd::FaultStatus;
@@ -125,8 +125,12 @@ pub fn configure_and_store_drv8301(
         drv.reset_gate_faults()?;
     }
 
-    // VESC configuration (0x0430): OC disabled, 6-PWM, low gate current
-    drv.set_ocp_mode(OcpMode::OcDisabled)?;
+    // Hardware overcurrent protection: VDS sensing with latched shutdown.
+    // IRFS7530 Rds_on ≈ 1.5mΩ (25°C), ~3mΩ (150°C).
+    // At 60A nominal: VDS ≈ 90–180mV. Threshold 511mV gives margin for
+    // transients while catching dead shorts (~340A cold) before FET failure.
+    drv.set_oc_threshold(OcAdjSet::Vds511mV)?;
+    drv.set_ocp_mode(OcpMode::OcLatchShutdown)?;
     drv.set_pwm_mode(false)?;
     drv.set_gate_current(GateCurrent::Low)?;
 
@@ -136,7 +140,7 @@ pub fn configure_and_store_drv8301(
     // Reset any latched faults
     drv.reset_gate_faults()?;
 
-    defmt::info!("DRV8301 configured (Cheap FOCer 2 v1.0)");
+    defmt::info!("DRV8301 configured (OCP: latch shutdown, VDS threshold: 511mV)");
 
     // Store config globally for fault status reading from tasks
     DRV_CONFIG.lock(|cell| {
