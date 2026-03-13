@@ -36,6 +36,8 @@ pub struct PIController {
     ki: f32,
     /// Accumulated integral
     integral: f32,
+    /// Previous error for trapezoidal integration
+    prev_error: f32,
     /// Minimum output limit (None = no limit)
     min_limit: Option<f32>,
     /// Maximum output limit (None = no limit)
@@ -67,6 +69,7 @@ impl PIController {
             kp,
             ki,
             integral: 0.0,
+            prev_error: 0.0,
             min_limit: None,
             max_limit: None,
         }
@@ -123,8 +126,9 @@ impl PIController {
         // Proportional term
         let p_term = self.kp * error;
 
-        // Integral term (trapezoidal integration)
-        self.integral += self.ki * error * dt;
+        // Integral term (trapezoidal / Tustin integration)
+        self.integral += self.ki * (error + self.prev_error) * 0.5 * dt;
+        self.prev_error = error;
 
         // Calculate raw output (before limiting)
         let output_raw = p_term + self.integral;
@@ -155,6 +159,7 @@ impl PIController {
     /// - Switching control modes
     pub fn reset(&mut self) {
         self.integral = 0.0;
+        self.prev_error = 0.0;
     }
 
     /// Get current integral value (for debugging/telemetry)
@@ -212,8 +217,11 @@ mod tests {
             controller.update(6.0, 5.0, DT);
         }
 
-        // Integral should accumulate: ki * error * dt * steps
-        let expected = 10.0 * error * DT * steps as f32;
+        // Trapezoidal integration with constant error:
+        // First step: ki * (error + 0) / 2 * dt = half contribution
+        // Steps 2..N: ki * (error + error) / 2 * dt = full contribution
+        // Total = ki * error * dt * (steps - 0.5)
+        let expected = 10.0 * error * DT * (steps as f32 - 0.5);
         assert!((controller.get_integral() - expected).abs() < EPSILON);
     }
 
@@ -330,9 +338,9 @@ mod tests {
             "Gain change should affect output"
         );
 
-        // With reset integral, output = kp*error + ki*error*dt
-        // = 1.0*2.0 + 20.0*2.0*0.0001 = 2.0 + 0.004 = 2.004
-        let expected = 1.0 * 2.0 + 20.0 * 2.0 * DT;
+        // With reset integral (prev_error=0), output = kp*error + ki*(error+0)/2*dt
+        // = 1.0*2.0 + 20.0*2.0/2*0.0001 = 2.0 + 0.002 = 2.002
+        let expected = 1.0 * 2.0 + 20.0 * 2.0 * 0.5 * DT;
         assert!(
             (output2 - expected).abs() < 0.01,
             "Expected ~{}, got {}",
