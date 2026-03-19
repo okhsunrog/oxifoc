@@ -223,12 +223,15 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer>(
         T::after_millis(10).await;
     }
 
-    // Wait for rotor to settle
+    // Wait for rotor to settle, then capture steady-state holding voltage
     T::after_millis(params.settle_time_ms as u64).await;
+    let telem = hw.wait_telemetry().await;
+    let vd_hold = telem.vd;
 
-    info!("Starting HFI injection...");
+    info!("Starting HFI injection (vd_hold={}V)...", vd_hold);
 
-    // Run HFI measurement, synchronized to PWM cycles via telemetry
+    // Switch to DirectVoltage mode — no PI interference during measurement.
+    // The captured vd_hold maintains the holding force, HFI injection is added on top.
     let mut first_iteration = true;
     let mut prev_injection_angle = 0.0f32;
 
@@ -236,7 +239,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer>(
         // Wait for current PWM cycle to complete (synced to ADC ISR)
         let _telem = hw.wait_telemetry().await;
 
-        // Read currents from THIS cycle (response to previous injection)
+        // Read currents from THIS cycle (response to previous voltage)
         let (ia, ib, _ic) = hw.read_phase_currents();
         let (i_alpha, i_beta) = transforms::clarke(ia, ib);
 
@@ -249,25 +252,26 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer>(
         let injection_angle = injector.injection_angle();
         let (v_alpha_inj, v_beta_inj) = injector.step(dt);
 
-        // Since we're locked at angle 0, α-β = d-q
-        hw.send_command(ControlMode::HfiInjection {
-            hold_current: params.hold_current_a,
-            vd_inject: v_alpha_inj,
-            vq_inject: v_beta_inj,
+        // At angle 0, α-β = d-q: vd_hold holds rotor, injection rides on top
+        hw.send_command(ControlMode::DirectVoltage {
+            vd: vd_hold + v_alpha_inj,
+            vq: v_beta_inj,
+            angle_rad: 0.0,
         });
 
         prev_injection_angle = injection_angle;
         first_iteration = false;
     }
 
-    // Stop HFI injection, ramp down holding current
+    // Ramp down holding voltage
     info!("HFI measurement complete, ramping down...");
 
     for i in (0..ramp_steps).rev() {
-        let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
-        hw.send_command(ControlMode::OpenLoop {
+        let vd = vd_hold * (i as f32 / ramp_steps as f32);
+        hw.send_command(ControlMode::DirectVoltage {
+            vd,
+            vq: 0.0,
             angle_rad: 0.0,
-            current,
         });
         T::after_millis(10).await;
     }

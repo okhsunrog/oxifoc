@@ -190,11 +190,9 @@ where
             ControlMode::OpenLoop { angle_rad, current } => {
                 self.step_open_loop(angle_rad, current, dt, now_ticks)
             }
-            ControlMode::HfiInjection {
-                hold_current,
-                vd_inject,
-                vq_inject,
-            } => self.step_hfi_injection(hold_current, vd_inject, vq_inject, dt, now_ticks),
+            ControlMode::DirectVoltage { vd, vq, angle_rad } => {
+                self.step_direct_voltage(vd, vq, angle_rad, dt, now_ticks)
+            }
             ControlMode::SixStep { duty } => self.step_six_step(duty, dt, now_ticks),
         }
     }
@@ -283,41 +281,35 @@ where
         Ok(out)
     }
 
-    /// Execute HFI injection step (for inductance measurement)
+    /// Execute direct voltage step — no PI control.
     ///
-    /// Locks rotor at angle 0 with d-axis current while injecting
-    /// high-frequency voltage for inductance measurement.
-    fn step_hfi_injection(
+    /// Applies the given dq voltages via `FocController::apply_dq`, reads
+    /// currents for telemetry, and feeds the phase observer. Used for
+    /// measurement modes (HFI inductance) and direct voltage control.
+    fn step_direct_voltage(
         &mut self,
-        hold_current: f32,
-        vd_inject: f32,
-        vq_inject: f32,
+        vd: f32,
+        vq: f32,
+        angle_rad: f32,
         dt: f32,
         now_ticks: u64,
     ) -> Result<FocOutput, &'static str> {
-        // Check sensor calibration
-        if !self.current_sensor.is_calibrated() {
-            return Err("Current sensor not calibrated");
-        }
-
-        // Read currents and run FOC controller with HFI injection
-        let currents = self.current_sensor.read_currents();
         let max_duty = self.pwm.max_duty();
-        let out = self.controller.step_with_injection(
-            currents,
-            0.0,          // Lock at angle 0
-            hold_current, // d-axis current to hold rotor
-            0.0,          // No q-axis current (we're holding position)
-            vd_inject,
-            vq_inject,
-            max_duty,
-            dt,
-        );
+        let mut out = self.controller.apply_dq(vd, vq, angle_rad, max_duty);
 
-        // Set PWM duties
         self.pwm.set_duties(out.duties);
 
-        // Update phase provider
+        // Read currents for telemetry and phase observer
+        if self.current_sensor.is_calibrated() {
+            let currents = self.current_sensor.read_currents();
+            out.ia = currents.0;
+            out.ib = currents.1;
+            out.ic = currents.2;
+            let (i_alpha, i_beta) = crate::foc::transforms::clarke(currents.0, currents.1);
+            out.i_alpha = i_alpha;
+            out.i_beta = i_beta;
+        }
+
         self.phase.update(
             &PhaseInput {
                 v_alpha: out.v_alpha,

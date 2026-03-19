@@ -76,17 +76,18 @@ pub enum ControlMode {
         /// Current magnitude (Amps) - applied as q-current to lock rotor
         current: f32,
     },
-    /// HFI injection mode for inductance measurement
+    /// Direct voltage mode — apply dq voltages without PI control.
     ///
-    /// Locks rotor at angle 0 with a holding current while injecting
-    /// high-frequency voltage for inductance measurement.
-    HfiInjection {
-        /// DC current to hold rotor in place (Amps)
-        hold_current: f32,
-        /// d-axis voltage to inject (V)
-        vd_inject: f32,
-        /// q-axis voltage to inject (V)
-        vq_inject: f32,
+    /// Bypasses current regulation entirely. Used for measurement modes
+    /// (HFI inductance detection), calibration, and board bringup where
+    /// PI interference is undesirable.
+    DirectVoltage {
+        /// d-axis voltage (V)
+        vd: f32,
+        /// q-axis voltage (V)
+        vq: f32,
+        /// Electrical angle (radians)
+        angle_rad: f32,
     },
     /// Six-step (trapezoidal) commutation mode
     ///

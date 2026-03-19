@@ -180,6 +180,43 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         self.iq_pi.reset();
     }
 
+    /// Convert dq-frame voltages to PWM duties without PI control.
+    ///
+    /// Applies circular voltage clamping, inverse Park transform, and SVPWM.
+    /// No current measurement, no PI feedback — pure voltage-to-duty conversion.
+    ///
+    /// Use this for measurement modes (HFI inductance detection) and direct
+    /// voltage control where PI interference is undesirable.
+    pub fn apply_dq(&self, vd: f32, vq: f32, angle_rad: f32, max_duty: u16) -> FocOutput {
+        let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
+
+        // Circular voltage limiting
+        let v_limit = self.vbus * self.modulation_limit;
+        let v_mag_sq = vd * vd + vq * vq;
+        let v_limit_sq = v_limit * v_limit;
+
+        let (vd, vq) = if v_mag_sq > v_limit_sq {
+            let scale = v_limit / libm::sqrtf(v_mag_sq);
+            (vd * scale, vq * scale)
+        } else {
+            (vd, vq)
+        };
+
+        let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
+        let inv_vbus = 1.0 / self.vbus;
+        let duties = M::to_duties(v_alpha * inv_vbus, v_beta * inv_vbus, max_duty);
+
+        FocOutput {
+            angle_rad,
+            vd,
+            vq,
+            v_alpha,
+            v_beta,
+            duties,
+            ..Default::default()
+        }
+    }
+
     /// Run one FOC current loop step.
     ///
     /// # Arguments
@@ -208,8 +245,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
     /// Run one FOC current loop step with voltage injection.
     ///
-    /// Used for HFI-based inductance measurement. The injection voltages
-    /// are added to the PI controller outputs before inverse Park transform.
+    /// Used for sensorless HFI angle tracking where PI must remain active.
+    /// The injection voltages are added to the PI controller outputs before
+    /// inverse Park transform.
     ///
     /// # Arguments
     /// * `currents`   - (ia, ib, ic) phase currents in Amps
