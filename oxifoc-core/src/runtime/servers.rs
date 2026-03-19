@@ -93,7 +93,7 @@ pub async fn hall_sensor_server<NS, const N: usize>(
         let _ = h
             .serve(|_: &()| {
                 let snapshot =
-                    critical_section::with(|cs| state_mutex.borrow(cs).borrow().last_hall.clone());
+                    critical_section::with(|cs| state_mutex.borrow(cs).borrow().last_hall);
 
                 async move {
                     match snapshot {

@@ -123,7 +123,7 @@ impl Default for MotorControlState {
 /// Platform must define this macro to provide state globals
 ///
 /// Example usage in platform crate:
-/// ```
+/// ```ignore
 /// use oxifoc_core::define_platform_state;
 /// define_platform_state!(MyFault);
 /// ```
