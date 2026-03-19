@@ -26,7 +26,7 @@ pub struct PlotBuffer {
 impl PlotBuffer {
     pub fn new(num_channels: usize, capacity: usize) -> Self {
         assert!(
-            num_channels >= 1 && num_channels <= crate::MAX_CHANNELS,
+            (1..=crate::MAX_CHANNELS).contains(&num_channels),
             "num_channels must be 1..={}",
             crate::MAX_CHANNELS
         );

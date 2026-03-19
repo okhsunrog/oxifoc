@@ -68,7 +68,7 @@ pub fn init_hall(
 
     // Configure TIM6 for Hall sensor polling using embassy low-level Timer
     let timer = Timer::new(tim6);
-    timer.set_period_us(POLL_INTERVAL_US as u32, RoundTo::Faster);
+    timer.set_period_us(POLL_INTERVAL_US, RoundTo::Faster);
     timer.enable_update_interrupt(true);
     timer.set_autoreload_preload(true);
     timer.start();

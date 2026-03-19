@@ -62,6 +62,7 @@ pub struct AdcHandles {
 ///
 /// All triggered simultaneously by TIM1_CC4 rising edge.
 /// ADC3 generates JEOC interrupt (signals all ADCs done).
+#[allow(clippy::too_many_arguments)]
 pub fn init_adc(
     adc1_peri: Peri<'static, peripherals::ADC1>,
     adc2_peri: Peri<'static, peripherals::ADC2>,

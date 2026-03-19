@@ -135,7 +135,7 @@ fn ADC() {
             let samples = injected.read_injected_samples();
             (samples[0], samples[1])
         } else {
-            return (0, 0);
+            (0, 0)
         }
     });
     IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
@@ -155,7 +155,7 @@ fn ADC() {
             let samples = injected.read_injected_samples();
             (samples[0], samples[1])
         } else {
-            return (0, 0);
+            (0, 0)
         }
     });
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
@@ -175,7 +175,7 @@ fn ADC() {
             let samples = injected.read_injected_samples();
             (samples[0], samples[1])
         } else {
-            return (0, 0);
+            (0, 0)
         }
     });
     IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
