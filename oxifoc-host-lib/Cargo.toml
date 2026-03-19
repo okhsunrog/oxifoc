@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-oxifoc-core = { path = "../oxifoc-core", features = ["icd"] }
+oxifoc-core = { workspace = true, features = ["icd"] }
 ergot = { git = "https://github.com/jamesmunns/ergot", features = ["tokio-std", "tokio-serial-v5", "defmtlog"] }
 
 tokio = { workspace = true }
@@ -26,4 +26,4 @@ cobs-acc = { git = "https://github.com/jamesmunns/ergot", features = ["std"] }
 defmt-decoder = "1.0"
 defmt-parser = "1.0"
 serde = { workspace = true }
-toml = "0.9"
+toml = { workspace = true }

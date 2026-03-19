@@ -1,118 +1,67 @@
-# Oxifoc Monorepo Build Automation
+# oxifoc — FOC motor controller monorepo
 
-# Default recipe shows available commands
-default:
-    @just --list
+# Device firmware crates (excluded from workspace, different toolchain)
+device_crates := "oxifoc-g431 oxifoc-g474 oxifoc-f405"
 
-# Install frontend dependencies
-install:
-    cd oxifoc-host-tauri && bun install
-
-# Run Tauri development server
-dev:
-    cd oxifoc-host-tauri && bun tauri dev
-
-# Build Tauri application (release)
-build:
-    cd oxifoc-host-tauri && bun tauri build
-
-# Run egui application
-egui:
-    cargo run -p oxifoc-host-egui
-
-# Run CLI tool with arguments
-cli *ARGS:
-    cargo run -p oxifoc-host-cli -- {{ARGS}}
-
-# Format all code (Rust + TypeScript, excludes ergot)
-fmt:
-    cargo fmt --all
-    cd oxifoc-g431 && cargo fmt
-    cd oxifoc-f405 && cargo fmt
-    cd oxifoc-host-tauri && bun format
-
-# Lint Rust code (clippy)
-clippy:
-    cargo clippy --workspace --all-targets -- -D warnings
-    cd oxifoc-g431 && cargo clippy --all-targets -- -D warnings
-    cd oxifoc-f405 && cargo clippy --all-targets -- -D warnings
-
-# Lint frontend code (eslint)
-lint-ts:
-    cd oxifoc-host-tauri && bun lint:check
-
-# Lint all code
-lint: clippy lint-ts
-
-# Type check frontend
-type-check:
-    cd oxifoc-host-tauri && bun type-check
-
-# Check all workspace crates compile
+# Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
-    cargo check --workspace
+    @just check-host
+    @just check-device
 
-# Build all workspace crates (debug)
-build-all:
-    cargo build --workspace
+# Host workspace: fmt + clippy + tests
+check-host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "rustfmt (workspace)..."
+    cargo fmt --check --all
+    echo "clippy (workspace)..."
+    cargo clippy --workspace --quiet -- -D warnings
+    echo "tests (workspace)..."
+    output=$(cargo test --workspace --quiet 2>&1) || { echo "$output"; exit 1; }
 
-# Build all workspace crates (release)
-build-release:
-    cargo build --workspace --release
+# Device firmware: fmt + clippy + build (all targets)
+check-device:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    filter() { grep -v 'unstable feature.*vfp2\|not stably supported\|^  |\|^$' || true; }
+    for crate in {{ device_crates }}; do
+        echo "$crate: fmt + clippy + build..."
+        (cd "$crate" && cargo fmt --check) || exit 1
+        (cd "$crate" && cargo clippy --quiet -- -D warnings 2>&1 | filter) || exit 1
+        (cd "$crate" && cargo build --release --quiet 2>&1 | filter) || exit 1
+    done
 
-# Run tests for all workspace crates
+# Format all code (workspace + device crates)
+fmt:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "rustfmt..."
+    cargo fmt --all
+    for crate in {{ device_crates }}; do
+        (cd "$crate" && cargo fmt)
+    done
+
+# Run workspace tests
 test:
     cargo test --workspace
 
-# Flash device firmware (release build)
-flash:
-    cd oxifoc-g431 && cargo run --release
-
-# Flash device firmware (debug build)
-flash-debug:
-    cd oxifoc-g431 && cargo run
-
 # Build device firmware (release)
-device:
-    cd oxifoc-g431 && cargo build --release
+build target="oxifoc-g431":
+    cd {{ target }} && cargo build --release
 
-# Build device firmware (debug)
-device-debug:
-    cd oxifoc-g431 && cargo build
+# Flash device firmware (release)
+flash target="oxifoc-g431":
+    cd {{ target }} && cargo run --release
+
+# Run host CLI with arguments
+cli *ARGS:
+    cargo run -p oxifoc-host-cli -- {{ ARGS }}
+
+# Run host GUI
+gui:
+    cargo run -p oxifoc-host-slint
 
 # Clean all build artifacts
 clean:
-    git clean -dfx
-
-# Check all Rust code (format, clippy, build, test)
-check-rust:
-    @echo "Checking Rust formatting..."
-    cargo fmt --all -- --check
-    cd oxifoc-g431 && cargo fmt -- --check
-    cd oxifoc-f405 && cargo fmt -- --check
-    @echo "Running clippy..."
-    just clippy
-    @echo "Checking builds..."
-    cargo check --workspace
-    cd oxifoc-g431 && cargo check
-    cd oxifoc-f405 && cargo check
-    @echo "Running tests..."
-    cargo test --workspace
-    @echo "✓ Rust checks passed!"
-
-# Check all TypeScript code (format, type-check, lint)
-check-ts:
-    @echo "Checking TypeScript formatting..."
-    cd oxifoc-host-tauri && bun format --check
-    @echo "Type checking TypeScript..."
-    cd oxifoc-host-tauri && bun type-check
-    @echo "Linting TypeScript..."
-    cd oxifoc-host-tauri && bun lint:check
-    @echo "✓ TypeScript checks passed!"
-
-# Run all checks (Rust + TypeScript)
-check-all: check-rust check-ts
-    @echo "✓ All checks passed!"
-
-# Full rebuild from scratch
-rebuild: clean install build-all
+    cargo clean
+    for crate in {{ device_crates }}; do (cd "$crate" && cargo clean); done

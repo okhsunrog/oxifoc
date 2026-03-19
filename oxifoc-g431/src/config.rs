@@ -59,7 +59,6 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
 /// Timebase for Hall interpolation (match embassy_time ticks)
 pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 
-
 // ============================================================================
 // Protocol Configuration
 // ============================================================================

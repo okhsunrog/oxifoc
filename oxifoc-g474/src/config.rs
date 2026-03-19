@@ -65,7 +65,6 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
 #[allow(dead_code)]
 pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 
-
 // ============================================================================
 // Protocol Configuration
 // ============================================================================

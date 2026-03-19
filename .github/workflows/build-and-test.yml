@@ -1,9 +1,39 @@
-name: 'build-and-test'
+name: CI
 
 on: [push, pull_request]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  host:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: install Rust nightly (device toolchain)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.89'
+          targets: thumbv7em-none-eabihf
+          components: rustfmt
+
+      - name: format check (workspace)
+        run: cargo fmt --check --all
+
+      - name: format check (device crates)
+        run: |
+          for crate in oxifoc-g431 oxifoc-g474 oxifoc-f405; do
+            (cd "$crate" && cargo +1.89 fmt --check)
+          done
+
+  clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,13 +46,27 @@ jobs:
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
-      - name: format check
-        run: cargo fmt --check --all
+      - uses: Swatinem/rust-cache@v2
 
-      - name: clippy
-        run: cargo clippy --workspace -- -D warnings
+      - name: clippy (workspace)
+        run: cargo clippy --workspace --quiet -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libudev-dev libfontconfig-dev
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: tests
         run: cargo test --workspace
@@ -44,13 +88,14 @@ jobs:
         with:
           toolchain: '1.89'
           targets: thumbv7em-none-eabihf
-          components: rustfmt, clippy
+          components: clippy
 
-      - name: format check
-        run: cargo fmt --check
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.target }}
 
       - name: clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --quiet -- -D warnings
 
       - name: build release
         run: cargo build --release

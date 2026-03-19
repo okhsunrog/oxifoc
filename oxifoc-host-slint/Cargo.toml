@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 oxifoc-host-lib = { path = "../oxifoc-host-lib" }
-oxifoc-core = { path = "../oxifoc-core", features = ["icd", "virtual-motor"] }
+oxifoc-core = { workspace = true, features = ["icd", "virtual-motor"] }
 slint-wgpu-plot = { path = "../slint-wgpu-plot" }
 slint = { workspace = true, features = ["backend-winit", "renderer-femtovg-wgpu", "accessibility"] }
 crossbeam-channel = { workspace = true }
