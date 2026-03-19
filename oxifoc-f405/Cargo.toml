@@ -19,7 +19,7 @@ transport-usb = ["ergot/embassy-usb-v0_6", "ergot/defmt-sink-rtt"]
 # Embassy + Cortex-M
 embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["stm32f405rg", "time-driver-tim2", "unstable-pac", "exti"] }
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["stm32f405rg", "time-driver-tim2", "unstable-pac", "exti", "defmt"] }
 embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
 embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["tick-hz-32_768"] }
 embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", package = "embassy-usb" }

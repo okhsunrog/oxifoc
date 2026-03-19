@@ -474,6 +474,7 @@ name = "embassy-embedded-hal"
 version = "0.6.0"
 source = "git+https://github.com/embassy-rs/embassy?rev=5bc8260#5bc8260aad50c08a2f7d37e3374193d4f961b581"
 dependencies = [
+ "defmt 1.0.1",
  "embassy-futures",
  "embassy-hal-internal",
  "embassy-sync 0.8.0",
@@ -527,6 +528,7 @@ source = "git+https://github.com/embassy-rs/embassy?rev=5bc8260#5bc8260aad50c08a
 dependencies = [
  "cortex-m",
  "critical-section",
+ "defmt 1.0.1",
  "num-traits",
 ]
 
@@ -561,6 +563,9 @@ dependencies = [
 name = "embassy-net-driver"
 version = "0.2.0"
 source = "git+https://github.com/embassy-rs/embassy?rev=5bc8260#5bc8260aad50c08a2f7d37e3374193d4f961b581"
+dependencies = [
+ "defmt 1.0.1",
+]
 
 [[package]]
 name = "embassy-net-driver-channel"
@@ -596,6 +601,7 @@ dependencies = [
  "cortex-m",
  "cortex-m-rt",
  "critical-section",
+ "defmt 1.0.1",
  "document-features",
  "embassy-embedded-hal",
  "embassy-futures",
@@ -654,6 +660,7 @@ source = "git+https://github.com/embassy-rs/embassy?rev=5bc8260#5bc8260aad50c08a
 dependencies = [
  "cfg-if",
  "critical-section",
+ "defmt 1.0.1",
  "embedded-io-async 0.7.0",
  "futures-core",
  "futures-sink",
@@ -743,6 +750,7 @@ version = "0.3.2"
 source = "git+https://github.com/embassy-rs/embassy?rev=5bc8260#5bc8260aad50c08a2f7d37e3374193d4f961b581"
 dependencies = [
  "critical-section",
+ "defmt 1.0.1",
  "embassy-sync 0.8.0",
  "embassy-usb-driver",
 ]
@@ -1753,6 +1761,7 @@ source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
+ "defmt 0.3.100",
 ]
 
 [[package]]

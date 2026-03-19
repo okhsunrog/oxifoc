@@ -21,7 +21,7 @@ transport-rtt = ["ergot/rtt"]
 # Embassy dependencies (main branch with async flash support for G4)
 embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["stm32g474re", "time-driver-tim2", "unstable-pac", "dual-bank"] }
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["stm32g474re", "time-driver-tim2", "unstable-pac", "dual-bank", "defmt"] }
 embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
 embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["tick-hz-32_768"] }
 
@@ -43,7 +43,7 @@ mutex = "1.0.2"
 
 # Local dependencies
 # runtime feature includes icd (endpoints) and types (shared structs)
-oxifoc-core = { path = "../oxifoc-core", features = ["runtime", "defmt"] }
+oxifoc-core = { path = "../oxifoc-core", features = ["runtime", "defmt", "storage"] }
 oxifoc-g4 = { path = "../oxifoc-g4" }
 # Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
 # transport-uart adds: defmt-sink-network (for network forwarding)
@@ -61,7 +61,7 @@ heapless = { version = "0.9.2", default-features = false }
 libm = { version = "0.2.15", default-features = false }
 
 # Persistent configuration storage
-sequential-storage = "7.0"
+sequential-storage = { version = "7.1", features = ["postcard", "defmt"] }
 embedded-storage-async = "0.4"
 embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
 postcard = "1.1"
