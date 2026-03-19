@@ -59,9 +59,6 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
 /// Timebase for Hall interpolation (match embassy_time ticks)
 pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 
-/// TIM1 clock frequency in Hz (runs at SYSCLK on G4)
-/// Used for motor PWM and dead time calculation.
-pub const TIM1_CLOCK_HZ: u32 = 170_000_000;
 
 // ============================================================================
 // Protocol Configuration

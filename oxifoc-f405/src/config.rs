@@ -71,10 +71,6 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
 /// Embassy timebase ticks per second
 pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 
-/// TIM1 clock frequency in Hz (APB2 timers run at SYSCLK on F405)
-/// Used for motor PWM and dead time calculation.
-pub const TIM1_CLOCK_HZ: u32 = 168_000_000;
-
 // ============================================================================
 // Protocol Configuration
 // ============================================================================

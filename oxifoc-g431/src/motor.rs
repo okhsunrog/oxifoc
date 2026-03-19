@@ -9,7 +9,6 @@ use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwm
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
 
-use crate::config::TIM1_CLOCK_HZ;
 use crate::hardware::resources::MotorResources;
 use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm, PhaseState};
 
@@ -65,8 +64,9 @@ impl<'d> MotorPwm<'d> {
 
         let max_duty = pwm.get_max_duty();
 
-        // Calculate dead time using shared helper
-        let dead_time = pwm::dead_time_ticks(config.dead_time_ns, TIM1_CLOCK_HZ);
+        // Calculate dead time from actual timer clock frequency
+        let tim1_clock_hz = embassy_stm32::rcc::frequency::<embassy_stm32::peripherals::TIM1>().0;
+        let dead_time = pwm::dead_time_ticks(config.dead_time_ns, tim1_clock_hz);
         pwm.set_dead_time(dead_time);
 
         // Enable OSSR for safer off-state behavior when channels are disabled.
