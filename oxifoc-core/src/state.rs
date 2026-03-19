@@ -211,7 +211,7 @@ pub fn update_telemetry(
         if let Some(h) = hall {
             state.update_hall(h);
         }
-        state.update_foc(foc.clone());
+        state.update_foc(foc);
     });
 
     // Broadcast to any subscribers

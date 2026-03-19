@@ -187,13 +187,9 @@ impl VirtualMotor {
 
         // ── Electrical angle integration ──────────────────────────────────────
         self.phi += self.omega_e * dt;
-        // Wrap to (−π, π]
+        // Wrap to (−π, π] — use remainder for robustness at high speeds
         use core::f32::consts::PI;
-        if self.phi > PI {
-            self.phi -= 2.0 * PI;
-        } else if self.phi < -PI {
-            self.phi += 2.0 * PI;
-        }
+        self.phi = libm::remainderf(self.phi, 2.0 * PI);
 
         // Update cached sin/cos
         self.sin_phi = libm::sinf(self.phi);
