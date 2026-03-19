@@ -28,6 +28,24 @@ const STORAGE_START: u32 = 0x7F000; // 508KB offset
 const STORAGE_SIZE: u32 = 4 * 1024;
 const BUFFER_SIZE: usize = 128;
 
+// Compile-time check: storage must not overlap firmware.
+// FIRMWARE_END_OFFSET is parsed from memory.x by build.rs (ORIGIN - 0x08000000 + LENGTH).
+const _: () = assert!(
+    STORAGE_START >= const_parse_u32(env!("FIRMWARE_END_OFFSET")),
+    "STORAGE_START overlaps firmware FLASH region - update memory.x or STORAGE_START"
+);
+
+const fn const_parse_u32(s: &str) -> u32 {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut result: u32 = 0;
+    while i < bytes.len() {
+        result = result * 10 + (bytes[i] - b'0') as u32;
+        i += 1;
+    }
+    result
+}
+
 // ============================================================================
 // Flash Operation Messages
 // ============================================================================
