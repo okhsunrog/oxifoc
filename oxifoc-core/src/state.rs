@@ -10,7 +10,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::watch::Watch;
 
-use crate::foc::controller::FocTelemetry;
+use crate::foc::controller::FocOutput;
 use crate::foc::phase::PhaseProvider;
 use crate::foc::pwm::PhasePwm;
 use crate::foc::sensors::CurrentSensor;
@@ -27,7 +27,7 @@ use crate::types::MotorState;
 pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, ControlMode, 4> = Channel::new();
 
 /// Telemetry watch - ISR broadcasts, streaming tasks can subscribe
-pub static TELEMETRY: Watch<CriticalSectionRawMutex, FocTelemetry, 2> = Watch::new();
+pub static TELEMETRY: Watch<CriticalSectionRawMutex, FocOutput, 2> = Watch::new();
 
 // ============================================================================
 // State Structure
@@ -48,7 +48,7 @@ pub struct MotorControlState {
     /// Last ADC snapshot
     pub last_adc: AdcSnapshot,
     /// Last FOC telemetry
-    pub last_foc: FocTelemetry,
+    pub last_foc: FocOutput,
     /// Link active flag (host has connected)
     pub link_active: bool,
 }
@@ -61,7 +61,7 @@ impl MotorControlState {
             control_mode: ControlMode::Stopped,
             last_hall: None,
             last_adc: AdcSnapshot::empty(),
-            last_foc: FocTelemetry::empty(),
+            last_foc: FocOutput::empty(),
             link_active: false,
         }
     }
@@ -100,7 +100,7 @@ impl MotorControlState {
     }
 
     /// Update FOC telemetry
-    pub fn update_foc(&mut self, foc: FocTelemetry) {
+    pub fn update_foc(&mut self, foc: FocOutput) {
         self.last_foc = foc;
     }
 
@@ -202,7 +202,7 @@ pub fn update_telemetry(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     adc: AdcSnapshot,
     hall: Option<HallSnapshot>,
-    foc: FocTelemetry,
+    foc: FocOutput,
 ) {
     // Update state
     critical_section::with(|cs| {

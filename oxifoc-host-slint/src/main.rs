@@ -464,11 +464,9 @@ fn sim_loop(
     // Current-loop bandwidth ≈ 1000 rad/s → Kp = L·ω, Ki = R·ω
     let kp = SIM_PARAMS.ld * 1000.0;
     let ki = SIM_PARAMS.r * 1000.0;
-    let v_lim = SIM_VBUS;
-
     let mut foc = FocController::<SvpwmModulator>::new(SIM_VBUS);
-    foc.id_pi = PIController::new(kp, ki).with_limits(-v_lim, v_lim);
-    foc.iq_pi = PIController::new(kp, ki).with_limits(-v_lim, v_lim);
+    foc.id_pi = PIController::new(kp, ki);
+    foc.iq_pi = PIController::new(kp, ki);
 
     let mut motor = VirtualMotor::new(SIM_PARAMS);
     let mut out = VirtualMotorOutput::default();

@@ -9,11 +9,10 @@
 //!
 //! Platform code just needs to provide trait implementations and call `step()`.
 
-use crate::foc::controller::{FocController, FocTelemetry};
+use crate::foc::controller::{FocController, FocOutput};
 use crate::foc::phase::{PhaseInput, PhaseProvider};
 use crate::foc::pwm::{PhasePwm, PhaseState, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
-use crate::foc::transforms;
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::motor::six_step;
 
@@ -101,13 +100,14 @@ where
         phase: Phase,
         dt: f32,
     ) -> Self {
+        let vbus = controller.vbus();
         Self {
             controller,
             pwm,
             current_sensor,
             phase,
             mode: ControlMode::Stopped,
-            vbus: 12.0, // Default, should be updated
+            vbus,
             dt,
         }
     }
@@ -157,9 +157,9 @@ where
     /// * `now_ticks` - Monotonic ticks for phase sampling (sensor-defined timebase)
     ///
     /// # Returns
-    /// * `Ok(FocTelemetry)` - Control telemetry on success
+    /// * `Ok(FocOutput)` - Control telemetry on success
     /// * `Err(&str)` - Error message if sensors not ready
-    pub fn step(&mut self, now_ticks: u64) -> Result<FocTelemetry, &'static str> {
+    pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, &'static str> {
         let dt = self.dt;
         match self.mode {
             ControlMode::Stopped => {
@@ -173,7 +173,7 @@ where
                     },
                     now_ticks,
                 );
-                Ok(FocTelemetry::default())
+                Ok(FocOutput::default())
             }
             ControlMode::CurrentControl {
                 iq_target,
@@ -206,7 +206,7 @@ where
         id_target: f32,
         dt: f32,
         now_ticks: u64,
-    ) -> Result<FocTelemetry, &'static str> {
+    ) -> Result<FocOutput, &'static str> {
         // Check sensor calibration
         if !self.current_sensor.is_calibrated() {
             return Err("Current sensor not calibrated");
@@ -216,32 +216,29 @@ where
         let phase_out = self.phase.get();
         let angle_rad = phase_out.angle;
 
-        // Read currents
+        // Read currents and run FOC controller
         let currents = self.current_sensor.read_currents();
-        let (i_alpha, i_beta) = transforms::clarke(currents.0, currents.1);
-
-        // Run FOC controller
         let max_duty = self.pwm.max_duty();
-        let telem = self
+        let out = self
             .controller
             .step(currents, angle_rad, id_target, iq_target, max_duty, dt);
 
         // Set PWM duties
-        self.pwm.set_duties(telem.duties);
+        self.pwm.set_duties(out.duties);
 
         // Update phase provider for next step (feeds observer if present)
         self.phase.update(
             &PhaseInput {
-                v_alpha: telem.v_alpha,
-                v_beta: telem.v_beta,
-                i_alpha,
-                i_beta,
+                v_alpha: out.v_alpha,
+                v_beta: out.v_beta,
+                i_alpha: out.i_alpha,
+                i_beta: out.i_beta,
                 dt,
             },
             now_ticks,
         );
 
-        Ok(telem)
+        Ok(out)
     }
 
     /// Execute open-loop control step (for calibration)
@@ -254,40 +251,36 @@ where
         current: f32,
         dt: f32,
         now_ticks: u64,
-    ) -> Result<FocTelemetry, &'static str> {
+    ) -> Result<FocOutput, &'static str> {
         // Check sensor calibration
         if !self.current_sensor.is_calibrated() {
             return Err("Current sensor not calibrated");
         }
 
-        // Read currents for feedback
-        let currents = self.current_sensor.read_currents();
-        let (i_alpha, i_beta) = transforms::clarke(currents.0, currents.1);
-
-        // Use commanded angle instead of sensor
-        // Apply current as q-axis (torque) to lock rotor at the commanded angle
+        // Read currents and run FOC controller with commanded angle
         // id_target = 0 (no field weakening in open-loop)
+        let currents = self.current_sensor.read_currents();
         let max_duty = self.pwm.max_duty();
-        let telem = self
+        let out = self
             .controller
             .step(currents, angle_rad, 0.0, current, max_duty, dt);
 
         // Set PWM duties
-        self.pwm.set_duties(telem.duties);
+        self.pwm.set_duties(out.duties);
 
         // Update phase provider (for sensor tracking, even in open-loop)
         self.phase.update(
             &PhaseInput {
-                v_alpha: telem.v_alpha,
-                v_beta: telem.v_beta,
-                i_alpha,
-                i_beta,
+                v_alpha: out.v_alpha,
+                v_beta: out.v_beta,
+                i_alpha: out.i_alpha,
+                i_beta: out.i_beta,
                 dt,
             },
             now_ticks,
         );
 
-        Ok(telem)
+        Ok(out)
     }
 
     /// Execute HFI injection step (for inductance measurement)
@@ -301,20 +294,16 @@ where
         vq_inject: f32,
         dt: f32,
         now_ticks: u64,
-    ) -> Result<FocTelemetry, &'static str> {
+    ) -> Result<FocOutput, &'static str> {
         // Check sensor calibration
         if !self.current_sensor.is_calibrated() {
             return Err("Current sensor not calibrated");
         }
 
-        // Read currents for feedback
+        // Read currents and run FOC controller with HFI injection
         let currents = self.current_sensor.read_currents();
-        let (i_alpha, i_beta) = transforms::clarke(currents.0, currents.1);
-
-        // Lock rotor at angle 0, apply d-axis holding current
-        // The HFI injection voltages are added on top
         let max_duty = self.pwm.max_duty();
-        let telem = self.controller.step_with_injection(
+        let out = self.controller.step_with_injection(
             currents,
             0.0,          // Lock at angle 0
             hold_current, // d-axis current to hold rotor
@@ -326,21 +315,21 @@ where
         );
 
         // Set PWM duties
-        self.pwm.set_duties(telem.duties);
+        self.pwm.set_duties(out.duties);
 
         // Update phase provider
         self.phase.update(
             &PhaseInput {
-                v_alpha: telem.v_alpha,
-                v_beta: telem.v_beta,
-                i_alpha,
-                i_beta,
+                v_alpha: out.v_alpha,
+                v_beta: out.v_beta,
+                i_alpha: out.i_alpha,
+                i_beta: out.i_beta,
                 dt,
             },
             now_ticks,
         );
 
-        Ok(telem)
+        Ok(out)
     }
 
     /// Execute six-step (trapezoidal) commutation step
@@ -356,7 +345,7 @@ where
         duty: f32,
         dt: f32,
         now_ticks: u64,
-    ) -> Result<FocTelemetry, &'static str> {
+    ) -> Result<FocOutput, &'static str> {
         // Get current electrical angle from phase provider
         let phase_out = self.phase.get();
         let sector = six_step::angle_to_sector(phase_out.angle);
@@ -392,7 +381,7 @@ where
             PhaseState::Low | PhaseState::Float => 0,
         });
 
-        Ok(FocTelemetry {
+        Ok(FocOutput {
             ia,
             ib,
             ic,

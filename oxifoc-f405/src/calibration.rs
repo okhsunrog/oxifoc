@@ -8,7 +8,7 @@ use core::sync::atomic::Ordering;
 
 use embassy_time::{Duration, Timer};
 
-use oxifoc_core::foc::controller::FocTelemetry;
+use oxifoc_core::foc::controller::FocOutput;
 use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::detection::sweep::{self, DetectionHardware, HallReader};
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
@@ -49,7 +49,7 @@ pub struct F405DetectionHardware {
     telem_rx: embassy_sync::watch::Receiver<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        FocTelemetry,
+        FocOutput,
         2,
     >,
 }
@@ -74,7 +74,7 @@ impl DetectionHardware for F405DetectionHardware {
         let _ = state::CMD_CHANNEL.try_send(mode);
     }
 
-    async fn wait_telemetry(&mut self) -> FocTelemetry {
+    async fn wait_telemetry(&mut self) -> FocOutput {
         self.telem_rx.changed().await
     }
 

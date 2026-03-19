@@ -248,8 +248,8 @@ mod tests {
         let ki = params.r * 1000.0;
 
         let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        foc.id_pi = PIController::new(kp, ki).with_limits(-24.0, 24.0);
-        foc.iq_pi = PIController::new(kp, ki).with_limits(-24.0, 24.0);
+        foc.id_pi = PIController::new(kp, ki);
+        foc.iq_pi = PIController::new(kp, ki);
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
@@ -350,8 +350,8 @@ mod tests {
         let ki = params.r * 1_000.0;
 
         let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        foc.id_pi = PIController::new(kp, ki).with_limits(-24.0, 24.0);
-        foc.iq_pi = PIController::new(kp, ki).with_limits(-24.0, 24.0);
+        foc.id_pi = PIController::new(kp, ki);
+        foc.iq_pi = PIController::new(kp, ki);
 
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();

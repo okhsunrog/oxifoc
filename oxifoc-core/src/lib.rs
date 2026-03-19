@@ -42,8 +42,8 @@
 //! use oxifoc_core::foc::{transforms, svpwm, pi_controller::PIController};
 //!
 //! // Example: Current control loop
-//! let mut id_controller = PIController::new(0.5, 10.0).with_limits(-24.0, 24.0);
-//! let mut iq_controller = PIController::new(0.5, 10.0).with_limits(-24.0, 24.0);
+//! let mut id_controller = PIController::new(0.5, 10.0);
+//! let mut iq_controller = PIController::new(0.5, 10.0);
 //!
 //! // Sample feedback and setpoints
 //! let ia = 1.2;

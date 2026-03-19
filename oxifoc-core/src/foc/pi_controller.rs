@@ -1,33 +1,38 @@
 //! PI Controller for Field-Oriented Control
 //!
-//! Implements a Proportional-Integral controller with anti-windup protection.
-//! Used for both current control (d-axis, q-axis) and velocity control.
+//! Two controller types for different anti-windup strategies:
 //!
-//! Anti-windup is critical for motor control to prevent integral buildup
-//! during saturation (e.g., when voltage limits are reached).
+//! - [`PIController`] — raw P+I output with external anti-windup via
+//!   [`apply_anti_windup()`](PIController::apply_anti_windup). Used inside
+//!   [`FocController`](super::controller::FocController) where circular
+//!   voltage clamping handles saturation.
+//!
+//! - [`ClampedPI`] — self-contained PI with rectangular output limits and
+//!   internal back-calculation anti-windup. For standalone use (velocity
+//!   loops, thermal controllers, etc.).
+//!
+//! The two types exist to prevent dual anti-windup: if a PI controller
+//! had both internal limits *and* external circular clamping, the integral
+//! would be double-corrected, causing sluggish or oscillatory behavior.
 //!
 //! Based on foc-calebfletcher reference implementation, adapted to f32.
 
-/// PI Controller with anti-windup
+/// PI Controller with external anti-windup
 ///
-/// The controller implements:
-/// - Proportional term: kp * error
-/// - Integral term: ki * ∫error dt
-/// - Anti-windup: Back-calculation method to prevent integral buildup
+/// Returns raw (unclamped) output. Anti-windup is applied externally
+/// via [`apply_anti_windup()`](Self::apply_anti_windup) after the caller's
+/// own saturation logic (e.g., circular voltage clamping in FOC).
 ///
 /// # Example
 /// ```rust
 /// use oxifoc_core::foc::pi_controller::PIController;
 ///
-/// let mut controller = PIController::new(0.5, 10.0)
-///     .with_limits(-24.0, 24.0); // Voltage limits
+/// let mut pi = PIController::new(0.5, 10.0);
+/// let raw = pi.update(5.0, 4.8, 0.0001);
 ///
-/// let dt = 0.0001; // 10kHz control loop
-/// let setpoint = 5.0; // Target current
-/// let measurement = 4.8; // Measured current
-///
-/// let output = controller.update(setpoint, measurement, dt);
-/// assert!(output > 0.0 && output <= 24.0);
+/// // Caller applies its own clamping, then feeds back saturation:
+/// let clamped = raw.clamp(-24.0, 24.0);
+/// pi.apply_anti_windup(clamped - raw);
 /// ```
 pub struct PIController {
     /// Proportional gain
@@ -38,10 +43,6 @@ pub struct PIController {
     integral: f32,
     /// Previous error for trapezoidal integration
     prev_error: f32,
-    /// Minimum output limit (None = no limit)
-    min_limit: Option<f32>,
-    /// Maximum output limit (None = no limit)
-    max_limit: Option<f32>,
 }
 
 impl PIController {
@@ -50,77 +51,24 @@ impl PIController {
     /// # Arguments
     /// * `kp` - Proportional gain
     /// * `ki` - Integral gain
-    ///
-    /// # Example
-    /// ```rust
-    /// use oxifoc_core::foc::pi_controller::PIController;
-    ///
-    /// // Current controller gains (typical values)
-    /// let current_pi = PIController::new(0.5, 10.0);
-    ///
-    /// // Velocity controller gains (typical values)
-    /// let velocity_pi = PIController::new(0.01, 0.1);
-    ///
-    /// assert_eq!(current_pi.get_integral(), 0.0);
-    /// assert_eq!(velocity_pi.get_integral(), 0.0);
-    /// ```
     pub fn new(kp: f32, ki: f32) -> Self {
         Self {
             kp,
             ki,
             integral: 0.0,
             prev_error: 0.0,
-            min_limit: None,
-            max_limit: None,
         }
     }
 
-    /// Set output limits for anti-windup protection
+    /// Compute one PI step, returning the raw (unclamped) output.
     ///
-    /// When output saturates, the integral term will be adjusted to prevent
-    /// windup using the back-calculation method.
-    ///
-    /// # Arguments
-    /// * `min` - Minimum output value
-    /// * `max` - Maximum output value
-    ///
-    /// # Example
-    /// ```rust
-    /// use oxifoc_core::foc::pi_controller::PIController;
-    ///
-    /// let mut controller = PIController::new(0.5, 10.0)
-    ///     .with_limits(-24.0, 24.0); // ±24V for a 24V bus
-    ///
-    /// let limited_output = controller.update(0.0, -100.0, 0.001);
-    /// assert!(limited_output >= -24.0 && limited_output <= 24.0);
-    /// ```
-    pub fn with_limits(mut self, min: f32, max: f32) -> Self {
-        self.min_limit = Some(min);
-        self.max_limit = Some(max);
-        self
-    }
-
-    /// Update the PI controller with a new measurement
+    /// Uses trapezoidal (Tustin) integration for the integral term.
     ///
     /// # Arguments
     /// * `setpoint` - Desired value
     /// * `measurement` - Current measured value
     /// * `dt` - Time step (seconds) since last update
-    ///
-    /// # Returns
-    /// Controller output (clamped to limits if set)
-    ///
-    /// # Example
-    /// ```rust
-    /// use oxifoc_core::foc::pi_controller::PIController;
-    ///
-    /// let mut controller = PIController::new(0.5, 10.0);
-    /// let dt = 0.0001; // 10kHz loop
-    /// let output = controller.update(5.0, 4.8, dt);
-    /// assert!(output > 0.0);
-    /// ```
     pub fn update(&mut self, setpoint: f32, measurement: f32, dt: f32) -> f32 {
-        // Calculate error
         let error = setpoint - measurement;
 
         // Proportional term
@@ -130,25 +78,18 @@ impl PIController {
         self.integral += self.ki * (error + self.prev_error) * 0.5 * dt;
         self.prev_error = error;
 
-        // Calculate raw output (before limiting)
-        let output_raw = p_term + self.integral;
+        p_term + self.integral
+    }
 
-        // Apply limits and anti-windup
-        match (self.min_limit, self.max_limit) {
-            (Some(min), Some(max)) => {
-                let output_clamped = output_raw.clamp(min, max);
-
-                // Anti-windup: back-calculation method
-                // If output saturated, reduce integral by the saturation amount
-                if output_raw != output_clamped {
-                    let saturation = output_clamped - output_raw;
-                    self.integral += saturation;
-                }
-
-                output_clamped
-            }
-            _ => output_raw,
-        }
+    /// Apply external anti-windup correction to the integral term.
+    ///
+    /// Call this after your saturation logic with the difference between
+    /// the clamped and unclamped output: `v_clamped - v_raw`.
+    ///
+    /// Used by FOC circular voltage clamping.
+    #[inline]
+    pub fn apply_anti_windup(&mut self, saturation: f32) {
+        self.integral += saturation;
     }
 
     /// Reset the integral term to zero
@@ -167,25 +108,89 @@ impl PIController {
         self.integral
     }
 
-    /// Apply external anti-windup correction to the integral term.
-    ///
-    /// Used when voltage limiting is applied externally (e.g., circular
-    /// voltage clamping in FOC). The saturation signal is the difference
-    /// between the clamped and unclamped output: `v_clamped - v_raw`.
-    #[inline]
-    pub fn apply_anti_windup(&mut self, saturation: f32) {
-        self.integral += saturation;
-    }
-
     /// Update controller gains at runtime
-    ///
-    /// Useful for:
-    /// - Adaptive control
-    /// - Gain scheduling based on operating point
-    /// - Manual tuning via telemetry
     pub fn set_gains(&mut self, kp: f32, ki: f32) {
         self.kp = kp;
         self.ki = ki;
+    }
+}
+
+/// PI Controller with internal rectangular clamping and anti-windup
+///
+/// Wraps [`PIController`] and adds output limits with back-calculation
+/// anti-windup. Use this for standalone control loops (velocity, thermal, etc.)
+/// where there is no external saturation logic.
+///
+/// # Example
+/// ```rust
+/// use oxifoc_core::foc::pi_controller::ClampedPI;
+///
+/// let mut pi = ClampedPI::new(0.5, 10.0, -24.0, 24.0);
+/// let output = pi.update(5.0, 4.8, 0.0001);
+/// assert!(output >= -24.0 && output <= 24.0);
+/// ```
+pub struct ClampedPI {
+    pi: PIController,
+    min: f32,
+    max: f32,
+}
+
+impl ClampedPI {
+    /// Create a new clamped PI controller
+    ///
+    /// # Arguments
+    /// * `kp` - Proportional gain
+    /// * `ki` - Integral gain
+    /// * `min` - Minimum output value
+    /// * `max` - Maximum output value
+    pub fn new(kp: f32, ki: f32, min: f32, max: f32) -> Self {
+        Self {
+            pi: PIController::new(kp, ki),
+            min,
+            max,
+        }
+    }
+
+    /// Compute one PI step with clamping and internal anti-windup.
+    ///
+    /// # Arguments
+    /// * `setpoint` - Desired value
+    /// * `measurement` - Current measured value
+    /// * `dt` - Time step (seconds) since last update
+    ///
+    /// # Returns
+    /// Controller output clamped to `[min, max]`
+    pub fn update(&mut self, setpoint: f32, measurement: f32, dt: f32) -> f32 {
+        let raw = self.pi.update(setpoint, measurement, dt);
+        let clamped = raw.clamp(self.min, self.max);
+
+        // Back-calculation anti-windup
+        if raw != clamped {
+            self.pi.apply_anti_windup(clamped - raw);
+        }
+
+        clamped
+    }
+
+    /// Update output limits
+    pub fn set_limits(&mut self, min: f32, max: f32) {
+        self.min = min;
+        self.max = max;
+    }
+
+    /// Reset the integral term to zero
+    pub fn reset(&mut self) {
+        self.pi.reset();
+    }
+
+    /// Get current integral value (for debugging/telemetry)
+    pub fn get_integral(&self) -> f32 {
+        self.pi.get_integral()
+    }
+
+    /// Update controller gains at runtime
+    pub fn set_gains(&mut self, kp: f32, ki: f32) {
+        self.pi.set_gains(kp, ki);
     }
 }
 
@@ -262,8 +267,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pi_output_limits() {
-        let mut controller = PIController::new(1.0, 100.0).with_limits(-5.0, 5.0);
+    fn test_clamped_pi_output_limits() {
+        let mut controller = ClampedPI::new(1.0, 100.0, -5.0, 5.0);
 
         // Large error should saturate output
         let output = controller.update(100.0, 0.0, DT);
@@ -276,8 +281,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pi_anti_windup() {
-        let mut controller = PIController::new(0.5, 100.0).with_limits(-10.0, 10.0);
+    fn test_clamped_pi_anti_windup() {
+        let mut controller = ClampedPI::new(0.5, 100.0, -10.0, 10.0);
 
         // Apply large error for many steps (would cause windup without anti-windup)
         for _ in 0..100 {
@@ -360,9 +365,9 @@ mod tests {
     }
 
     #[test]
-    fn test_pi_realistic_current_control() {
+    fn test_clamped_pi_realistic_current_control() {
         // Simulate realistic current control scenario with well-tuned gains
-        let mut controller = PIController::new(2.0, 100.0).with_limits(-24.0, 24.0); // 24V bus
+        let mut controller = ClampedPI::new(2.0, 100.0, -24.0, 24.0); // 24V bus
 
         let target_current = 5.0; // Amps
         let mut actual_current = 0.0;

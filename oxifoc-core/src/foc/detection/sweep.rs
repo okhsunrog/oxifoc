@@ -37,7 +37,7 @@ use super::resistance::ResistanceMeasurement;
 use super::types::{
     DetectionError, FluxLinkageParams, InductanceParams, MotorParams, MotorSize, ResistanceParams,
 };
-use crate::foc::controller::FocTelemetry;
+use crate::foc::controller::FocOutput;
 use crate::foc::transforms;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
@@ -59,7 +59,7 @@ pub trait DetectionHardware {
     /// Wait for the next telemetry update and return it.
     ///
     /// This should block until new telemetry is available from the FOC ISR.
-    fn wait_telemetry(&mut self) -> impl Future<Output = FocTelemetry>;
+    fn wait_telemetry(&mut self) -> impl Future<Output = FocOutput>;
 
     /// Read raw phase currents in Amps (ia, ib, ic).
     ///

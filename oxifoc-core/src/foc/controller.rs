@@ -13,9 +13,9 @@ use super::{
     trig::{LibmSinCos, SinCos},
 };
 
-/// Result of a single FOC update
+/// Output of a single FOC current-loop step
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub struct FocTelemetry {
+pub struct FocOutput {
     /// Raw phase currents (A)
     pub ia: f32,
     pub ib: f32,
@@ -38,7 +38,7 @@ pub struct FocTelemetry {
     pub duties: [u16; 3],
 }
 
-impl FocTelemetry {
+impl FocOutput {
     /// Create an empty telemetry struct (const for static initialization)
     pub const fn empty() -> Self {
         Self {
@@ -200,7 +200,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         iq_target: f32,
         max_duty: u16,
         dt: f32,
-    ) -> FocTelemetry {
+    ) -> FocOutput {
         self.step_with_injection(
             currents, angle_rad, id_target, iq_target, 0.0, 0.0, max_duty, dt,
         )
@@ -235,7 +235,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         vq_inject: f32,
         max_duty: u16,
         dt: f32,
-    ) -> FocTelemetry {
+    ) -> FocOutput {
         let (ia, ib, ic) = currents;
         let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
 
@@ -271,7 +271,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let inv_vbus = 1.0 / self.vbus;
         let duties = M::to_duties(v_alpha * inv_vbus, v_beta * inv_vbus, max_duty);
 
-        FocTelemetry {
+        FocOutput {
             ia,
             ib,
             ic,
