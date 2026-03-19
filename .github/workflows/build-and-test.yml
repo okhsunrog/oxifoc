@@ -56,7 +56,9 @@ jobs:
 
       - name: run workspace rust tests
         working-directory: .
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace
+          cargo test -p oxifoc-core --features virtual-motor
 
       - name: run type check
         run: bun run type-check
