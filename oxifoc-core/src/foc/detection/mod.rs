@@ -100,7 +100,11 @@ mod integration_tests {
     use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
     use super::flux_linkage::FluxLinkageMeasurement;
+    #[cfg(feature = "microfft")]
+    use super::inductance::{HfiInjector, InductanceMeasurement};
     use super::resistance::ResistanceMeasurement;
+    #[cfg(feature = "microfft")]
+    use super::types::InductanceParams;
 
     /// Verify resistance detection against the virtual motor's known R.
     ///
@@ -195,6 +199,94 @@ mod integration_tests {
              expected = {:.5} Wb, error = {:.1}%",
             params.lambda,
             error * 100.0
+        );
+    }
+
+    /// End-to-end HFI inductance measurement using VirtualMotor.
+    ///
+    /// Unlike the unit test in inductance.rs which uses a pure-inductor model
+    /// (di = V·dt/L), this drives VirtualMotor with full PMSM dynamics:
+    /// resistance, inductance, back-EMF, and mechanical model. The rotor is
+    /// locked at angle 0 with a DC holding voltage, then HFI injection is
+    /// applied on top and the current response is fed to InductanceMeasurement.
+    #[cfg(feature = "microfft")]
+    #[test]
+    fn detect_inductance_matches_virtual_motor() {
+        use crate::foc::transforms;
+
+        const DT: f32 = 1.0 / 20_000.0;
+        const PWM_FREQ: f32 = 20_000.0;
+        let params = MotorParams::default(); // Ld = Lq = 0.5 mH (SPM)
+
+        let mut motor = VirtualMotor::new(params);
+        let mut out = VirtualMotorOutput::default();
+
+        // Phase 1: lock rotor at angle 0 with DC holding voltage
+        // At steady state: V = R × I, so V_hold = R × I_hold
+        let hold_current = 2.0;
+        let hold_v = hold_current * params.r; // 1.0V for 2A × 0.5Ω
+        for _ in 0..4_000 {
+            // 200ms settle — alpha axis only (angle 0)
+            out = motor.step(hold_v, 0.0, 0.0, DT);
+        }
+
+        // Phase 2: inject HFI and collect inductance samples
+        let ind_params = InductanceParams {
+            hfi_frequency_hz: 1000.0,
+            hfi_voltage_v: 3.0,
+            num_cycles: 10,
+            hold_current_a: hold_current,
+            ..Default::default()
+        };
+
+        let mut injector = HfiInjector::new(
+            ind_params.hfi_frequency_hz,
+            ind_params.hfi_voltage_v,
+            PWM_FREQ,
+        );
+        let mut measurement = InductanceMeasurement::new(&ind_params, PWM_FREQ);
+
+        while !measurement.is_complete() {
+            let injection_angle = injector.injection_angle();
+            let (v_inj_a, v_inj_b) = injector.step(DT);
+
+            // Apply holding voltage + HFI injection
+            out = motor.step(hold_v + v_inj_a, v_inj_b, 0.0, DT);
+
+            let (i_alpha, i_beta) = transforms::clarke(out.ia, out.ib);
+            measurement.record(i_alpha, i_beta, injection_angle);
+        }
+
+        let result = measurement.finish().unwrap();
+
+        // Expected: Ld = Lq = 0.5 mH (SPM motor, default params)
+        // InductanceMeasurement applies 0.9x scale factor internally.
+        // With full PMSM model (R causes overestimation), allow 50% tolerance.
+        let expected_l = params.ld;
+        let ld_error = (result.ld - expected_l).abs() / expected_l;
+        let lq_error = (result.lq - expected_l).abs() / expected_l;
+
+        assert!(
+            ld_error < 0.50,
+            "Ld error too large: {:.1}% (measured {:.2} µH, expected {:.2} µH)",
+            ld_error * 100.0,
+            result.ld * 1e6,
+            expected_l * 1e6
+        );
+        assert!(
+            lq_error < 0.50,
+            "Lq error too large: {:.1}% (measured {:.2} µH, expected {:.2} µH)",
+            lq_error * 100.0,
+            result.lq * 1e6,
+            expected_l * 1e6
+        );
+
+        // SPM motor: Ld ≈ Lq, ratio should be close to 1.0
+        let ratio = result.ld / result.lq;
+        assert!(
+            (0.5..=2.0).contains(&ratio),
+            "Ld/Lq ratio {:.2} too far from 1.0 for SPM motor",
+            ratio
         );
     }
 }
