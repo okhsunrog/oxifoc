@@ -20,6 +20,9 @@ log = { version = "0.4", optional = true }
 # Optional FFT for inductance measurement via HFI
 microfft = { version = "0.6", optional = true }
 
+# Optional persistent storage
+sequential-storage = { version = "7.1", default-features = false, features = ["postcard"], optional = true }
+
 # Serialization (always required for shared types)
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 postcard-schema = { version = "0.2.5", features = ["derive", "heapless-v0_9"] }
@@ -69,3 +72,6 @@ log = ["dep:log"]
 
 # FFT for inductance measurement via HFI
 microfft = ["dep:microfft"]
+
+# Persistent configuration storage
+storage = ["dep:sequential-storage"]

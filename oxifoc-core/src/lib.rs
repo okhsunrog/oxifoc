@@ -111,6 +111,10 @@ pub mod state;
 #[cfg(feature = "virtual-motor")]
 pub mod virtual_motor;
 
+/// Persistent configuration storage types (requires `storage` feature)
+#[cfg(feature = "storage")]
+pub mod storage;
+
 /// Async runtime with servers (requires `runtime` feature)
 ///
 /// Provides async protocol servers that access state directly:
