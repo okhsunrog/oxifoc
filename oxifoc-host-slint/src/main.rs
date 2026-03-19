@@ -34,6 +34,7 @@ const SIM_PARAMS: MotorParams = MotorParams {
     pole_pairs: 7,
     j: 1e-4,
     friction_b: 1e-4,
+    hall_offset: 0.0,
 };
 const SIM_VBUS: f32 = 24.0;
 
