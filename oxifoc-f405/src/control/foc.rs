@@ -1,8 +1,5 @@
 //! FOC (Field-Oriented Control) management and ADC interrupt handling for F405
 //!
-//! Uses raw PAC access for injected ADC since embassy-stm32 doesn't support
-//! injected channels on STM32F4.
-//!
 //! # ADC Configuration
 //!
 //! All ADC sampling via TIM1-triggered injected conversions (no DMA for currents).
@@ -17,8 +14,8 @@
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
-use embassy_stm32::interrupt::typelevel::Interrupt;
-use embassy_stm32::{interrupt, pac};
+use embassy_stm32::adc::InjectedAdc;
+use embassy_stm32::{interrupt, pac, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
@@ -48,6 +45,21 @@ pub static BOARD_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
 /// Latest motor temperature in 0.1°C units (updated in ADC interrupt).
 pub static MOTOR_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
 
+// ========== ADC Handles ==========
+
+/// ADC1 injected handle: phase A current + board temperature
+pub static ADC1_INJECTED: CriticalSectionMutex<
+    RefCell<Option<InjectedAdc<'static, peripherals::ADC1, 2>>>,
+> = CriticalSectionMutex::new(RefCell::new(None));
+/// ADC2 injected handle: phase B current + motor temperature
+pub static ADC2_INJECTED: CriticalSectionMutex<
+    RefCell<Option<InjectedAdc<'static, peripherals::ADC2, 2>>>,
+> = CriticalSectionMutex::new(RefCell::new(None));
+/// ADC3 injected handle: phase C current + VBUS
+pub static ADC3_INJECTED: CriticalSectionMutex<
+    RefCell<Option<InjectedAdc<'static, peripherals::ADC3, 2>>>,
+> = CriticalSectionMutex::new(RefCell::new(None));
+
 // ========== FOC Control ==========
 
 /// FOC driver storage (mutated only inside the ADC ISR)
@@ -56,132 +68,7 @@ type FocDriverType = FocDriver<MotorPwm<'static>, F405CurrentSensor, PhaseManage
 static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
-// ========== Injected ADC External Trigger Selection ==========
-
-// Use PAC types for ADC configuration
-use pac::adc::vals::{Exten, SampleTime};
-use pac::timer::vals::Ocm;
-
 // ========== Initialization ==========
-
-/// Initialize ADCs for injected conversions triggered by TIM1_CH4
-///
-/// This configures:
-/// - ADC1: Phase A current (PC0, ch10) + Board temp (PA3, ch3) - 2 injected channels
-/// - ADC2: Phase B current (PC1, ch11) + Motor temp (PC4, ch14) - 2 injected channels
-/// - ADC3: Phase C current (PC2, ch12) + VBUS (PC3, ch13) - 2 injected channels
-///
-/// All triggered by TIM1_CC4 rising edge.
-/// ADC3 generates interrupt on JEOC (all ADCs now have 2 channels each).
-pub fn init_adc_injected() {
-    // Enable ADC clocks (APB2)
-    pac::RCC.apb2enr().modify(|w| {
-        w.set_adc1en(true);
-        w.set_adc2en(true);
-        w.set_adc3en(true);
-    });
-
-    // Configure ADC common settings
-    // Prescaler: PCLK2/4 = 84MHz/4 = 21MHz (max 36MHz per datasheet)
-    pac::ADC123_COMMON.ccr().modify(|w| {
-        w.set_adcpre(pac::adccommon::vals::Adcpre::DIV4);
-    });
-
-    // ========== ADC1: Phase A current (PC0, ch10) + Board temp (PA3, ch3) ==========
-    let adc1 = pac::ADC1;
-
-    // Power on ADC1
-    adc1.cr2().modify(|w| w.set_adon(true));
-
-    // Configure sample time for channels
-    // ch3 (PA3) is in SMPR2[3], ch10 (PC0) is in SMPR1[0]
-    adc1.smpr2().modify(|w| w.set_smp(3, SampleTime::CYCLES15)); // ch3 board temp
-    adc1.smpr1().modify(|w| w.set_smp(0, SampleTime::CYCLES15)); // ch10 phase A
-
-    // Configure injected sequence: 2 channels
-    // JL = 1 means 2 conversions
-    // When JL=1, JSQ3 and JSQ4 are used (JSQ3 first, then JSQ4)
-    adc1.jsqr().write(|w| {
-        w.set_jl(1); // 2 conversions
-        w.set_jsq(2, 10); // JSQ3 = channel 10 (phase A current)
-        w.set_jsq(3, 3); // JSQ4 = channel 3 (board temp)
-    });
-
-    // Configure external trigger for injected: TIM1_CC4, rising edge
-    // TIM1_CC4 = 0b0000 for injected trigger selection
-    adc1.cr2().modify(|w| {
-        w.set_jextsel(0b0000); // TIM1_CC4
-        w.set_jexten(Exten::RISING_EDGE);
-    });
-
-    // ========== ADC2: Phase B current (PC1, ch11) + Motor temp (PC4, ch14) ==========
-    let adc2 = pac::ADC2;
-
-    // Power on ADC2
-    adc2.cr2().modify(|w| w.set_adon(true));
-
-    // Configure sample time for channels
-    // ch11 (PC1) is in SMPR1[1], ch14 (PC4) is in SMPR1[4]
-    adc2.smpr1().modify(|w| {
-        w.set_smp(1, SampleTime::CYCLES15); // ch11 phase B
-        w.set_smp(4, SampleTime::CYCLES15); // ch14 motor temp
-    });
-
-    // Configure injected sequence: 2 channels
-    // JL = 1 means 2 conversions
-    // When JL=1, JSQ3 and JSQ4 are used (JSQ3 first, then JSQ4)
-    adc2.jsqr().write(|w| {
-        w.set_jl(1); // 2 conversions
-        w.set_jsq(2, 11); // JSQ3 = channel 11 (phase B current)
-        w.set_jsq(3, 14); // JSQ4 = channel 14 (motor temp)
-    });
-
-    // Configure external trigger for injected: TIM1_CC4, rising edge
-    adc2.cr2().modify(|w| {
-        w.set_jextsel(0b0000); // TIM1_CC4
-        w.set_jexten(Exten::RISING_EDGE);
-    });
-
-    // ========== ADC3: Phase C current (PC2, ch12) + VBUS (PC3, ch13) ==========
-    let adc3 = pac::ADC3;
-
-    // Power on ADC3
-    adc3.cr2().modify(|w| w.set_adon(true));
-
-    // Configure sample time for channels 12 and 13 - 15 cycles
-    adc3.smpr1().modify(|w| {
-        w.set_smp(2, SampleTime::CYCLES15); // ch12 is in SMPR1[2]
-        w.set_smp(3, SampleTime::CYCLES15); // ch13 is in SMPR1[3]
-    });
-
-    // Configure injected sequence: 2 channels
-    // JL = 1 means 2 conversions
-    // When JL=1, JSQ3 and JSQ4 are used (JSQ3 first, then JSQ4)
-    adc3.jsqr().write(|w| {
-        w.set_jl(1); // 2 conversions
-        w.set_jsq(2, 12); // JSQ3 = channel 12 (phase C)
-        w.set_jsq(3, 13); // JSQ4 = channel 13 (VBUS)
-    });
-
-    // Configure external trigger for injected: TIM1_CC4, rising edge
-    adc3.cr2().modify(|w| {
-        w.set_jextsel(0b0000); // TIM1_CC4
-        w.set_jexten(Exten::RISING_EDGE);
-    });
-
-    // Enable JEOC interrupt on ADC3 (it finishes last with 2 channels)
-    adc3.cr1().modify(|w| w.set_jeocie(true));
-
-    // SAFETY: All ADCs are configured above and FOC_DRIVER will be initialized
-    // before motor control starts. The ISR only accesses ADC registers and
-    // atomics/mutexes that are safely initialized.
-    unsafe {
-        interrupt::typelevel::ADC::unpend();
-        interrupt::typelevel::ADC::enable();
-    }
-
-    defmt::info!("F405 ADC injected channels initialized (TIM1_CC4 trigger)");
-}
 
 /// Configure TIM1 CH4 to trigger ADC at peak of center-aligned PWM
 ///
@@ -189,6 +76,8 @@ pub fn init_adc_injected() {
 /// In center-aligned mode, CNT=ARR is the V0 point where all low-side
 /// FETs are ON for any duty < 100%, making it optimal for low-side shunt sampling.
 pub fn configure_tim1_adc_trigger() {
+    use pac::timer::vals::Ocm;
+
     let tim1 = pac::TIM1;
 
     // Read current ARR value
@@ -203,19 +92,12 @@ pub fn configure_tim1_adc_trigger() {
     tim1.ccr(3).write(|w| w.set_ccr(trigger_point));
 
     // Enable CH4 output compare (not for pin output, just for internal trigger)
-    // We need to enable the CC4 event generation
     tim1.ccmr_output(1).modify(|w| {
         // CH4 in PWM mode 1 (active when CNT < CCR4)
         w.set_ocm(1, Ocm::PWM_MODE1);
-    });
-
-    // Enable CC4 preload
-    tim1.ccmr_output(1).modify(|w| {
+        // Enable CC4 preload
         w.set_ocpe(1, true);
     });
-
-    // Note: We don't enable CH4 output on a pin, just the compare event
-    // The compare event will trigger ADC via the internal connection
 
     defmt::info!(
         "TIM1 CH4 configured for ADC trigger at ARR-offset={}",
@@ -224,15 +106,20 @@ pub fn configure_tim1_adc_trigger() {
 }
 
 /// Initialize FOC driver with motor PWM and sensors
-pub async fn init(mut motor_pwm: MotorPwm<'static>) {
+pub async fn init(
+    mut motor_pwm: MotorPwm<'static>,
+    adc_handles: crate::hardware::peripherals::AdcHandles,
+) {
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
 
-    // Initialize ADC for injected conversions
-    init_adc_injected();
-
     // Configure TIM1 CH4 for ADC triggering
     configure_tim1_adc_trigger();
+
+    // Store ADC handles for ISR access
+    ADC1_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc1)));
+    ADC2_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc2)));
+    ADC3_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc3)));
 
     // Build current sensor and phase manager
     let current_sensor = F405CurrentSensor::from_board(&BOARD);
@@ -273,24 +160,19 @@ pub fn duty_to_iq(duty: u8) -> f32 {
 ///
 /// Triggered by ADC3 JEOC (end of injected conversion sequence).
 /// ADC1, ADC2, ADC3 all start conversion simultaneously on TIM1_CC4.
-/// ADC3 finishes last (2 channels) and generates the interrupt.
 #[interrupt]
 fn ADC() {
     static mut SEQ: u32 = 0;
 
-    let adc1 = pac::ADC1;
-    let adc2 = pac::ADC2;
-    let adc3 = pac::ADC3;
-
-    // Check if ADC3 JEOC flag is set
-    if !adc3.sr().read().jeoc() {
-        return;
-    }
-
     // Read ADC1 injected data (phase A current + board temp)
-    // For JL=1: JDR1 = first conversion (ch10), JDR2 = second conversion (ch3)
-    let ia_raw = adc1.jdr(0).read().jdata();
-    let board_temp_raw = adc1.jdr(1).read().jdata();
+    let (ia_raw, board_temp_raw) = ADC1_INJECTED.lock(|cell| {
+        if let Some(injected) = cell.borrow_mut().as_mut() {
+            let samples = injected.read_injected_samples();
+            (samples[0], samples[1])
+        } else {
+            return (0, 0);
+        }
+    });
     IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
     // Convert board temperature raw ADC to 0.1°C units
@@ -303,9 +185,14 @@ fn ADC() {
     BOARD_TEMP_C_X10.store(board_temp_c_x10, Ordering::Relaxed);
 
     // Read ADC2 injected data (phase B current + motor temp)
-    // For JL=1: JDR1 = first conversion (ch11), JDR2 = second conversion (ch14)
-    let ib_raw = adc2.jdr(0).read().jdata();
-    let motor_temp_raw = adc2.jdr(1).read().jdata();
+    let (ib_raw, motor_temp_raw) = ADC2_INJECTED.lock(|cell| {
+        if let Some(injected) = cell.borrow_mut().as_mut() {
+            let samples = injected.read_injected_samples();
+            (samples[0], samples[1])
+        } else {
+            return (0, 0);
+        }
+    });
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
 
     // Convert motor temperature raw ADC to 0.1°C units
@@ -318,19 +205,19 @@ fn ADC() {
     MOTOR_TEMP_C_X10.store(motor_temp_c_x10, Ordering::Relaxed);
 
     // Read ADC3 injected data (phase C current + VBUS)
-    // For JL=1: JDR1 = first conversion (ch12), JDR2 = second conversion (ch13)
-    let ic_raw = adc3.jdr(0).read().jdata();
-    let vbus_raw = adc3.jdr(1).read().jdata();
+    let (ic_raw, vbus_raw) = ADC3_INJECTED.lock(|cell| {
+        if let Some(injected) = cell.borrow_mut().as_mut() {
+            let samples = injected.read_injected_samples();
+            (samples[0], samples[1])
+        } else {
+            return (0, 0);
+        }
+    });
     IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
 
     // Convert VBUS raw ADC to millivolts
     let vbus_mv = BOARD.vbus_mv_from_adc(vbus_raw);
     VBUS_MV.store(vbus_mv, Ordering::Relaxed);
-
-    // Clear JEOC flags on all ADCs
-    adc1.sr().modify(|w| w.set_jeoc(false));
-    adc2.sr().modify(|w| w.set_jeoc(false));
-    adc3.sr().modify(|w| w.set_jeoc(false));
 
     // === Fault detection (voltage and temperature) ===
     fault::check_voltage_faults(

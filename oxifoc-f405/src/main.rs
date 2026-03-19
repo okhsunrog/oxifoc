@@ -88,12 +88,20 @@ async fn main(spawner: Spawner) {
     // ========== STEP 7: Initialize Hall Sensor ==========
     sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8, p.TIM6);
 
-    // ========== STEP 8: Initialize Motor PWM ==========
+    // ========== STEP 8: Initialize ADCs ==========
+    let adc_handles = hardware::peripherals::init_adc(
+        p.ADC1, p.ADC2, p.ADC3,
+        p.PC0, p.PA3,  // ADC1: phase A current + board temp
+        p.PC1, p.PC4,  // ADC2: phase B current + motor temp
+        p.PC2, p.PC3,  // ADC3: phase C current + VBUS
+    );
+
+    // ========== STEP 9: Initialize Motor PWM ==========
     let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
 
-    // ========== STEP 9: Initialize FOC Controller ==========
-    // This sets up injected ADC, TIM1 trigger, and FOC driver
-    control::foc::init(motor_pwm).await;
+    // ========== STEP 10: Initialize FOC Controller ==========
+    // This sets up TIM1 trigger and FOC driver
+    control::foc::init(motor_pwm, adc_handles).await;
 
     defmt::info!(
         "F405 pin map: PWM PA8/PA9/PA10 + PB13/14/15, DRV8301 EN_GATE=PB5, nFAULT=PB7, \
