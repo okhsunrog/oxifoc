@@ -1,0 +1,9 @@
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+runner = "probe-rs run --chip STM32G431CBTx"
+rustflags = ["-C", "target-feature=+vfp2"]
+
+[env]
+DEFMT_LOG = "debug"
