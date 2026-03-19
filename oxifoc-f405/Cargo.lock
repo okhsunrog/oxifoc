@@ -1345,6 +1345,7 @@ dependencies = [
  "heapless 0.9.2",
  "libm",
  "postcard-schema",
+ "sequential-storage",
  "serde",
 ]
 
@@ -1358,6 +1359,7 @@ dependencies = [
  "critical-section",
  "defmt 1.0.1",
  "drv8301-dd",
+ "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures",
  "embassy-stm32",
@@ -1365,11 +1367,14 @@ dependencies = [
  "embassy-time",
  "embassy-usb 0.6.0",
  "embedded-hal-bus",
+ "embedded-storage-async",
  "ergot",
  "heapless 0.9.2",
  "mutex",
  "oxifoc-core",
  "panic-probe",
+ "postcard",
+ "sequential-storage",
  "static_cell",
 ]
 
@@ -1626,6 +1631,18 @@ name = "semver-parser"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
+
+[[package]]
+name = "sequential-storage"
+version = "7.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4580ee0fa08cd41bee9f5b50ed309877e18735370fd4eef5766cc82863ef772"
+dependencies = [
+ "defmt 1.0.1",
+ "embedded-storage-async",
+ "postcard",
+ "serde",
+]
 
 [[package]]
 name = "serde"

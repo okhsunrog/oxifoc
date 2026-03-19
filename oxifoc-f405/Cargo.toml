@@ -42,8 +42,14 @@ assign-resources = "0.5.0"
 drv8301-dd = { version = "0.2.0", features = ["defmt"] }
 embedded-hal-bus = "0.3"
 
+# Persistent configuration storage
+sequential-storage = { version = "7.1", features = ["postcard", "defmt"] }
+embedded-storage-async = "0.4"
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+postcard = "1.1"
+
 # Local crates
-oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime"] }
+oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage"] }
 ergot = { git = "https://github.com/okhsunrog/ergot", branch = "embassy-usb-v0_6", default-features = false, features = [
     "embassy-usb-v0_6",
     "disable-cache-padding",

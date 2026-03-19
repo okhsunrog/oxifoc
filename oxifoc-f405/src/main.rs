@@ -23,6 +23,7 @@ mod hardware;
 mod motor;
 mod protocol;
 mod sensors;
+mod storage;
 mod transport;
 
 #[allow(unused_imports)]
