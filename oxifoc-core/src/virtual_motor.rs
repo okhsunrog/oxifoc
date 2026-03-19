@@ -332,6 +332,71 @@ mod tests {
         );
     }
 
+    /// Apply a load torque step mid-run and verify the controller doesn't
+    /// diverge. Speed should drop under load but remain positive, and iq
+    /// should increase to compensate.
+    #[test]
+    fn load_torque_step_rejection() {
+        const DT: f32 = 1.0 / 20_000.0;
+        let params = MotorParams::default();
+        let kp = params.ld * 1000.0;
+        let ki = params.r * 1000.0;
+
+        let mut foc = FocController::<SvpwmModulator>::new(24.0);
+        foc.id_pi = PIController::new(kp, ki);
+        foc.iq_pi = PIController::new(kp, ki);
+        let mut motor = VirtualMotor::new(params);
+        let mut out = VirtualMotorOutput::default();
+
+        // Phase 1: spin up to steady state with no load (1 second)
+        for _ in 0..20_000 {
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        }
+        let speed_no_load = out.omega_e;
+        assert!(
+            speed_no_load > 100.0,
+            "should reach steady state before load: ωe={}",
+            speed_no_load
+        );
+
+        // Phase 2: apply load torque step, settle for 1 second
+        let load = 0.005; // N·m — significant but within controller capability
+        for _ in 0..20_000 {
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, load, DT);
+        }
+        let speed_loaded = out.omega_e;
+
+        // Speed should drop but motor must keep spinning forward
+        assert!(
+            speed_loaded > 0.0,
+            "motor should not stall under load: ωe={}",
+            speed_loaded
+        );
+        assert!(
+            speed_loaded < speed_no_load,
+            "speed should decrease under load: {} vs {}",
+            speed_loaded,
+            speed_no_load
+        );
+
+        // Phase 3: remove load, verify recovery (1 second)
+        for _ in 0..20_000 {
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        }
+        let speed_recovered = out.omega_e;
+
+        // Should recover close to original no-load speed
+        assert!(
+            (speed_recovered - speed_no_load).abs() / speed_no_load < 0.05,
+            "speed should recover after load removal: {} vs {}",
+            speed_recovered,
+            speed_no_load
+        );
+    }
+
     /// Realistic Hall sensor closed-loop test: calibrate first, then drive.
     ///
     /// Uses a 30° electrical mounting offset (`hall_offset = π/6`) to mimic
