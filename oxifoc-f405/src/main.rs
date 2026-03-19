@@ -61,6 +61,13 @@ async fn main(spawner: Spawner) {
     // ========== STEP 5: Initialize Hardware Peripherals ==========
     let r = split_resources!(p);
 
+    // ========== STEP 5b: Initialize Persistent Storage ==========
+    let flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH);
+    let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
+    spawner.spawn(storage::storage_worker(flash).unwrap());
+    let runtime_config = storage::CONFIG_LOADED.wait().await;
+    defmt::info!("Config loaded from flash");
+
     // ========== STEP 6: Initialize DRV8301 Gate Driver ==========
     let (drv_config, nfault) = hardware::drv8301::init_spi(
         r.drv.spi3,
@@ -100,8 +107,7 @@ async fn main(spawner: Spawner) {
     let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
 
     // ========== STEP 10: Initialize FOC Controller ==========
-    // This sets up TIM1 trigger and FOC driver
-    control::foc::init(motor_pwm, adc_handles).await;
+    control::foc::init(motor_pwm, adc_handles, &runtime_config).await;
 
     defmt::info!(
         "F405 pin map: PWM PA8/PA9/PA10 + PB13/14/15, DRV8301 EN_GATE=PB5, nFAULT=PB7, \

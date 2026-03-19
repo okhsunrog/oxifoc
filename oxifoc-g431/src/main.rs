@@ -68,7 +68,8 @@ async fn main(spawner: Spawner) {
     let flash = embassy_stm32::flash::Flash::new_blocking(r.storage.flash);
     let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
     spawner.spawn(storage::storage_worker(flash).unwrap());
-    defmt::info!("Storage worker spawned");
+    let runtime_config = storage::CONFIG_LOADED.wait().await;
+    defmt::info!("Config loaded from flash");
 
     // ========== STEP 6: Initialize Motor PWM ==========
     let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
@@ -83,7 +84,14 @@ async fn main(spawner: Spawner) {
     );
 
     // ========== STEP 8: Initialize FOC Controller ==========
-    control::init_foc(motor_pwm, adc_handles.adc1, adc_handles.adc2, p.CORDIC).await;
+    control::init_foc(
+        motor_pwm,
+        adc_handles.adc1,
+        adc_handles.adc2,
+        p.CORDIC,
+        &runtime_config,
+    )
+    .await;
 
     // ========== STEP 9: Spawn I/O and Protocol Tasks ==========
 

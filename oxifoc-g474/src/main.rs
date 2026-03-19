@@ -83,7 +83,8 @@ async fn main(spawner: Spawner) {
     // Code runs from bank 1, storage is in bank 2 - no CPU stalls during flash ops
     let flash = embassy_stm32::flash::Flash::new(r.storage.flash, FlashIrqs);
     spawner.spawn(storage::storage_worker(flash).unwrap());
-    defmt::info!("Storage worker spawned (async flash on bank 2)");
+    let _runtime_config = storage::CONFIG_LOADED.wait().await;
+    defmt::info!("Config loaded from flash");
 
     // ========== Motor Control Initialization (commented out) ==========
     // When IHM08M1 shield is connected, uncomment:

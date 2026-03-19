@@ -24,6 +24,7 @@ use oxifoc_core::foc::fault;
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, TempSensorId};
 use oxifoc_core::motor::{ControlMode, FocDriver};
+use oxifoc_core::storage::RuntimeConfig;
 
 use crate::config::{BOARD, NTC_BOARD, NTC_MOTOR, PWM_CONFIG};
 use crate::fault::F405Fault;
@@ -70,10 +71,11 @@ static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
 
 // ========== Initialization ==========
 
-/// Initialize FOC driver with motor PWM and sensors
+/// Initialize FOC driver with motor PWM, sensors, and stored config.
 pub async fn init(
     mut motor_pwm: MotorPwm<'static>,
     adc_handles: crate::hardware::peripherals::AdcHandles,
+    config: &RuntimeConfig,
 ) {
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
@@ -93,9 +95,34 @@ pub async fn init(
     let initial_vbus_v =
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
 
+    // Build FOC controller — use stored motor params for PI tuning if available
+    let foc_controller = if let Some(ref mp) = config.motor_params {
+        if mp.is_valid() {
+            let l_avg = (mp.inductance_d_h + mp.inductance_q_h) / 2.0;
+            defmt::info!(
+                "Using stored motor params: R={=f32}, L={=f32}, λ={=f32}, pp={}",
+                mp.resistance_ohm,
+                l_avg,
+                mp.flux_linkage_wb,
+                mp.pole_pairs
+            );
+            FocController::from_motor_params(mp.resistance_ohm, l_avg, initial_vbus_v)
+        } else {
+            FocController::new(initial_vbus_v)
+        }
+    } else if let Some(ref pg) = config.pi_gains {
+        let mut foc = FocController::new(initial_vbus_v);
+        foc.id_pi.set_gains(pg.kp, pg.ki);
+        foc.iq_pi.set_gains(pg.kp, pg.ki);
+        defmt::info!("Using stored PI gains: kp={=f32}, ki={=f32}", pg.kp, pg.ki);
+        foc
+    } else {
+        FocController::new(initial_vbus_v)
+    };
+
     // Build FOC driver with dt from PWM config
     let mut foc_driver = FocDriver::new(
-        FocController::new(initial_vbus_v),
+        foc_controller,
         motor_pwm,
         current_sensor,
         phase_manager,
