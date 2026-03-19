@@ -19,11 +19,11 @@ transport-rtt = ["ergot/rtt"]
 
 [dependencies]
 # Embassy dependencies (main branch with async flash support for G4)
-embassy-executor = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
-embassy-futures = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-stm32 = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758", features = ["stm32g474re", "time-driver-tim2", "unstable-pac", "dual-bank"] }
-embassy-sync = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-time = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758", features = ["tick-hz-32_768"] }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["stm32g474re", "time-driver-tim2", "unstable-pac", "dual-bank"] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["tick-hz-32_768"] }
 
 # Cortex-M dependencies
 cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
@@ -63,7 +63,7 @@ libm = { version = "0.2.15", default-features = false }
 # Persistent configuration storage
 sequential-storage = "7.0"
 embedded-storage-async = "0.4"
-embassy-embedded-hal = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
 postcard = "1.1"
 
 [profile.dev]
@@ -80,14 +80,14 @@ incremental = true
 
 # Patch crates.io embassy deps for transitive dependencies (e.g., ergot)
 [patch.crates-io]
-embassy-executor = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-futures = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-stm32 = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-sync = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-time = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-time-driver = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-time-queue-utils = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-embedded-hal = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-hal-internal = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-usb = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
-embassy-usb-driver = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-hal-internal = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }

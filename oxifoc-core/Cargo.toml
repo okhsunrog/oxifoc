@@ -28,9 +28,9 @@ postcard-schema = { version = "0.2.5", features = ["derive", "heapless-v0_9"] }
 ergot = { git = "https://github.com/okhsunrog/ergot", branch = "defmt_sink_plus_rtt", optional = true }
 
 # Async runtime support (for runtime feature)
-embassy-time = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758", optional = true }
-embassy-sync = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758", optional = true }
-embassy-futures = { git = "https://github.com/okhsunrog/embassy", rev = "3bc1758", optional = true }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", optional = true }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", optional = true }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", optional = true }
 critical-section = { version = "1.2", optional = true }
 
 [dev-dependencies]
