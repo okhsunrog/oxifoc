@@ -27,16 +27,19 @@ use core::cell::RefCell;
 use core::pin::pin;
 
 use critical_section::Mutex as CriticalSectionMutex;
-use embassy_futures::join::join5;
+use embassy_futures::join::{join, join5};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
 use crate::foc::fault::{FaultRegistry, PlatformFault};
 use crate::foc::hall_sensor::Direction;
 use crate::icd::{
-    AdcSample, AdcSampleEndpoint, ControlMode, DeviceInfo, FaultEndpoint, FaultRequest,
-    FaultResponse, HallSensorData, HallSensorEndpoint, InfoEndpoint, MotorEndpoint, MotorStatus,
+    AdcSample, AdcSampleEndpoint, ConfigEndpoint, ConfigRequest, ConfigResponse, ControlMode,
+    DeviceInfo, FaultEndpoint, FaultRequest, FaultResponse, HallSensorData, HallSensorEndpoint,
+    InfoEndpoint, MotorEndpoint, MotorStatus,
 };
 use crate::state::{CMD_CHANNEL, MotorControlState};
+#[cfg(feature = "storage")]
+use crate::storage::{ConfigKey, ConfigPayload, FLASH_CHANNEL, FlashOperation, RuntimeConfig};
 
 /// Device info server - responds to info requests from host
 ///
@@ -223,6 +226,120 @@ pub async fn fault_server<NS, F, const N: usize>(
     }
 }
 
+/// Configuration server - handles config read/write/reset requests
+///
+/// Reads from the shared RuntimeConfig, writes go through FLASH_CHANNEL
+/// to the platform's storage worker task.
+#[cfg(feature = "storage")]
+pub async fn config_server<NS, const N: usize>(
+    endpoints: Endpoints<NS>,
+    runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
+) where
+    NS: NetStackHandle,
+{
+    use crate::icd::ConfigGroupId;
+    use crate::types::ConfigWrite;
+
+    let server = endpoints.bounded_server::<ConfigEndpoint, N>(Some("config"));
+    let server = pin!(server);
+    let mut h = server.attach();
+
+    loop {
+        let _ = h
+            .serve(|req: &ConfigRequest| {
+                let response = match req {
+                    ConfigRequest::Read(group) => {
+                        let cfg =
+                            critical_section::with(|cs| runtime_config.borrow(cs).borrow().clone());
+                        match group {
+                            ConfigGroupId::MotorParams => match cfg.motor_params {
+                                Some(v) => ConfigResponse::MotorParams(v),
+                                None => ConfigResponse::NotFound,
+                            },
+                            ConfigGroupId::HallCalibration => match cfg.hall_calibration {
+                                Some(v) => ConfigResponse::HallCalibration(v),
+                                None => ConfigResponse::NotFound,
+                            },
+                            ConfigGroupId::DcOffsets => match cfg.dc_offsets {
+                                Some(v) => ConfigResponse::DcOffsets(v),
+                                None => ConfigResponse::NotFound,
+                            },
+                            ConfigGroupId::CurrentLimits => match cfg.current_limits {
+                                Some(v) => ConfigResponse::CurrentLimits(v),
+                                None => ConfigResponse::NotFound,
+                            },
+                            ConfigGroupId::VoltageLimits => match cfg.voltage_limits {
+                                Some(v) => ConfigResponse::VoltageLimits(v),
+                                None => ConfigResponse::NotFound,
+                            },
+                            ConfigGroupId::PwmConfig => match cfg.pwm_config {
+                                Some(v) => ConfigResponse::PwmConfig(v),
+                                None => ConfigResponse::NotFound,
+                            },
+                            ConfigGroupId::PiGains => match cfg.pi_gains {
+                                Some(v) => ConfigResponse::PiGains(v),
+                                None => ConfigResponse::NotFound,
+                            },
+                            ConfigGroupId::HallTuning => match cfg.hall_tuning {
+                                Some(v) => ConfigResponse::HallTuning(v),
+                                None => ConfigResponse::NotFound,
+                            },
+                        }
+                    }
+                    ConfigRequest::Write(write) => {
+                        let (key, payload) = match write.clone() {
+                            ConfigWrite::MotorParams(v) => {
+                                (ConfigKey::MotorParams, ConfigPayload::MotorParams(v))
+                            }
+                            ConfigWrite::CurrentLimits(v) => {
+                                (ConfigKey::CurrentLimits, ConfigPayload::CurrentLimits(v))
+                            }
+                            ConfigWrite::VoltageLimits(v) => {
+                                (ConfigKey::VoltageLimits, ConfigPayload::VoltageLimits(v))
+                            }
+                            ConfigWrite::PwmConfig(v) => {
+                                (ConfigKey::PwmConfig, ConfigPayload::PwmConfig(v))
+                            }
+                            ConfigWrite::PiGains(v) => {
+                                (ConfigKey::PiGains, ConfigPayload::PiGains(v))
+                            }
+                            ConfigWrite::HallTuning(v) => {
+                                (ConfigKey::HallTuning, ConfigPayload::HallTuning(v))
+                            }
+                        };
+                        let _ = FLASH_CHANNEL.try_send(FlashOperation::Save(key, payload));
+                        // Update in-memory config
+                        critical_section::with(|cs| {
+                            let mut cfg = runtime_config.borrow(cs).borrow_mut();
+                            match write {
+                                ConfigWrite::MotorParams(v) => cfg.motor_params = Some(v.clone()),
+                                ConfigWrite::CurrentLimits(v) => {
+                                    cfg.current_limits = Some(v.clone())
+                                }
+                                ConfigWrite::VoltageLimits(v) => {
+                                    cfg.voltage_limits = Some(v.clone())
+                                }
+                                ConfigWrite::PwmConfig(v) => cfg.pwm_config = Some(v.clone()),
+                                ConfigWrite::PiGains(v) => cfg.pi_gains = Some(v.clone()),
+                                ConfigWrite::HallTuning(v) => cfg.hall_tuning = Some(v.clone()),
+                            }
+                        });
+                        ConfigResponse::Ok
+                    }
+                    ConfigRequest::ResetAll => {
+                        let _ = FLASH_CHANNEL.try_send(FlashOperation::EraseAll);
+                        critical_section::with(|cs| {
+                            *runtime_config.borrow(cs).borrow_mut() = RuntimeConfig::default();
+                        });
+                        ConfigResponse::Ok
+                    }
+                };
+                async move { response }
+            })
+            .await;
+    }
+}
+
 /// Run all protocol servers concurrently in a single task
 ///
 /// This is the recommended way to run servers - it uses `join` to run
@@ -258,6 +375,10 @@ pub async fn fault_server<NS, F, const N: usize>(
 ///     ).await
 /// }
 /// ```
+/// Run all protocol servers concurrently (without config server).
+///
+/// Use [`run_all_servers_with_config`] when the `storage` feature is enabled
+/// to include the configuration endpoint.
 pub async fn run_all_servers<NS, F>(
     endpoints: Endpoints<NS>,
     device_info: DeviceInfo,
@@ -273,6 +394,31 @@ pub async fn run_all_servers<NS, F>(
         adc_sample_server::<NS, 2>(endpoints.clone(), state_mutex),
         motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
         fault_server::<NS, F, 2>(endpoints, fault_registry),
+    )
+    .await;
+}
+
+/// Run all protocol servers including config endpoint.
+#[cfg(feature = "storage")]
+pub async fn run_all_servers_with_config<NS, F>(
+    endpoints: Endpoints<NS>,
+    device_info: DeviceInfo,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    fault_registry: &'static FaultRegistry<F>,
+    runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
+) where
+    NS: NetStackHandle + Clone,
+    F: PlatformFault,
+{
+    join(
+        join5(
+            info_server::<NS, 2>(endpoints.clone(), device_info, state_mutex),
+            hall_sensor_server::<NS, 2>(endpoints.clone(), state_mutex),
+            adc_sample_server::<NS, 2>(endpoints.clone(), state_mutex),
+            motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
+            fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
+        ),
+        config_server::<NS, 2>(endpoints, runtime_config),
     )
     .await;
 }

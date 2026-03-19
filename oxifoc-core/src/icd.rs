@@ -52,12 +52,7 @@ endpoint!(HallSensorEndpoint, (), HallSensorData, "req/hall");
 // Host queries/clears faults. Responds with current fault state.
 endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
 
-// ============================================================================
-// Future endpoints (placeholders)
-// ============================================================================
-
-// TODO: Add these as needed:
-// - CalibrationEndpoint for Hall calibration commands/results
-// - DetectionEndpoint for motor parameter detection
-// - ConfigEndpoint for runtime configuration
-// - TelemetryStreamEndpoint for high-rate streaming data
+// Configuration endpoint (host → device)
+// Host reads/writes persistent configuration stored in flash.
+#[cfg(feature = "storage")]
+endpoint!(ConfigEndpoint, ConfigRequest, ConfigResponse, "cmd/config");

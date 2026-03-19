@@ -213,6 +213,84 @@ pub struct FaultResponse {
 }
 
 // ============================================================================
+// Configuration Protocol Types (require storage feature)
+// ============================================================================
+
+#[cfg(feature = "storage")]
+pub use config_types::*;
+
+#[cfg(feature = "storage")]
+mod config_types {
+    use super::*;
+
+    /// Configuration request from host
+    #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub enum ConfigRequest {
+        /// Read a config group (returns current value or defaults)
+        Read(ConfigGroupId),
+        /// Write a config group to flash
+        Write(ConfigWrite),
+        /// Reset all config to defaults (erase flash)
+        ResetAll,
+    }
+
+    /// Config group identifier for read requests
+    #[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub enum ConfigGroupId {
+        MotorParams,
+        HallCalibration,
+        DcOffsets,
+        CurrentLimits,
+        VoltageLimits,
+        PwmConfig,
+        PiGains,
+        HallTuning,
+    }
+
+    /// Config write payload — one variant per group
+    #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub enum ConfigWrite {
+        MotorParams(crate::storage::MotorParamsConfig),
+        CurrentLimits(crate::storage::CurrentLimitsConfig),
+        VoltageLimits(crate::storage::VoltageLimitsConfig),
+        PwmConfig(crate::storage::PwmConfigStored),
+        PiGains(crate::storage::PiGainsConfig),
+        HallTuning(crate::storage::HallTuningConfig),
+    }
+
+    /// Configuration response
+    #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub enum ConfigResponse {
+        /// Operation succeeded
+        Ok,
+        /// Motor parameters
+        MotorParams(crate::storage::MotorParamsConfig),
+        /// Current limits
+        CurrentLimits(crate::storage::CurrentLimitsConfig),
+        /// Voltage limits
+        VoltageLimits(crate::storage::VoltageLimitsConfig),
+        /// PWM configuration
+        PwmConfig(crate::storage::PwmConfigStored),
+        /// PI gains
+        PiGains(crate::storage::PiGainsConfig),
+        /// Hall tuning
+        HallTuning(crate::storage::HallTuningConfig),
+        /// Hall calibration data
+        HallCalibration(crate::storage::HallCalibrationConfig),
+        /// DC offsets
+        DcOffsets(crate::storage::DcOffsetsConfig),
+        /// Requested group has no stored value
+        NotFound,
+        /// Flash operation failed
+        Error,
+    }
+}
+
+// ============================================================================
 // Conversion helpers
 // ============================================================================
 

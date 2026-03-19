@@ -11,14 +11,11 @@ use defmt::{debug, error, info};
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::task;
 use embassy_stm32::flash::{Blocking, Flash as StmFlash, WRITE_SIZE};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
-use embassy_sync::signal::Signal;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map::{MapConfig, MapStorage};
 use static_cell::ConstStaticCell;
 
-// Re-export config types from core
+// Re-export config types, channels, and signals from core
 pub use oxifoc_core::storage::*;
 
 // ============================================================================
@@ -47,39 +44,6 @@ const fn const_parse_u32(s: &str) -> u32 {
     }
     result
 }
-
-// ============================================================================
-// Flash Operation Messages
-// ============================================================================
-
-/// Messages for flash write operations
-#[derive(Clone, Debug)]
-pub enum FlashOperation {
-    Save(ConfigKey, ConfigPayload),
-    EraseAll,
-}
-
-/// Payload variants for each config group
-#[derive(Clone, Debug)]
-pub enum ConfigPayload {
-    MotorParams(MotorParamsConfig),
-    HallCalibration(HallCalibrationConfig),
-    DcOffsets(DcOffsetsConfig),
-    CurrentLimits(CurrentLimitsConfig),
-    VoltageLimits(VoltageLimitsConfig),
-    PwmConfig(PwmConfigStored),
-    PiGains(PiGainsConfig),
-    HallTuning(HallTuningConfig),
-}
-
-/// Channel for sending flash operations to the storage task
-pub static FLASH_CHANNEL: Channel<CriticalSectionRawMutex, FlashOperation, 4> = Channel::new();
-
-/// Signal indicating flash operation completion (true = success)
-pub static FLASH_DONE: Signal<CriticalSectionRawMutex, bool> = Signal::new();
-
-/// Signal carrying loaded config from worker to main task at boot
-pub static CONFIG_LOADED: Signal<CriticalSectionRawMutex, RuntimeConfig> = Signal::new();
 
 // ============================================================================
 // Storage Types

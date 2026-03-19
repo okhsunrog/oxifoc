@@ -75,7 +75,7 @@ impl Key for ConfigKey {
 // ============================================================================
 
 /// Motor electrical parameters.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MotorParamsConfig {
     /// Phase-to-neutral resistance (Ω)
@@ -100,7 +100,7 @@ impl MotorParamsConfig {
 }
 
 /// Hall sensor calibration data.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct HallCalibrationConfig {
     /// Electrical angle (radians) for each raw Hall state (0-7)
@@ -138,7 +138,7 @@ impl HallCalibrationConfig {
 }
 
 /// Current sensor DC offset calibration data.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DcOffsetsConfig {
     /// Phase A offset (ADC counts)
@@ -152,7 +152,7 @@ pub struct DcOffsetsConfig {
 impl PostcardValue<'_> for DcOffsetsConfig {}
 
 /// Current limits.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CurrentLimitsConfig {
     /// Maximum q-axis (torque) current target (A)
@@ -173,7 +173,7 @@ impl Default for CurrentLimitsConfig {
 }
 
 /// Voltage limits.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct VoltageLimitsConfig {
     /// Minimum bus voltage before undervoltage fault (mV)
@@ -194,7 +194,7 @@ impl Default for VoltageLimitsConfig {
 }
 
 /// PWM configuration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PwmConfigStored {
     /// PWM switching frequency (Hz)
@@ -215,7 +215,7 @@ impl Default for PwmConfigStored {
 }
 
 /// PI controller gains.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PiGainsConfig {
     /// Proportional gain
@@ -239,7 +239,7 @@ impl Default for PiGainsConfig {
 }
 
 /// Hall sensor interpolation tuning.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct HallTuningConfig {
     /// Minimum eRPM for angle interpolation
@@ -283,3 +283,56 @@ pub struct RuntimeConfig {
     pub pi_gains: Option<PiGainsConfig>,
     pub hall_tuning: Option<HallTuningConfig>,
 }
+
+// ============================================================================
+// Flash Operation Messages (shared across platforms)
+// ============================================================================
+
+/// Messages for flash write operations.
+///
+/// Sent from protocol servers to the platform storage worker task.
+#[derive(Clone, Debug)]
+pub enum FlashOperation {
+    /// Save a config group to flash
+    Save(ConfigKey, ConfigPayload),
+    /// Erase all stored configuration
+    EraseAll,
+}
+
+/// Payload variants for each config group.
+#[derive(Clone, Debug)]
+pub enum ConfigPayload {
+    MotorParams(MotorParamsConfig),
+    HallCalibration(HallCalibrationConfig),
+    DcOffsets(DcOffsetsConfig),
+    CurrentLimits(CurrentLimitsConfig),
+    VoltageLimits(VoltageLimitsConfig),
+    PwmConfig(PwmConfigStored),
+    PiGains(PiGainsConfig),
+    HallTuning(HallTuningConfig),
+}
+
+// ============================================================================
+// Shared Channels (require runtime feature for embassy_sync)
+// ============================================================================
+
+#[cfg(feature = "runtime")]
+mod channels {
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use embassy_sync::channel::Channel;
+    use embassy_sync::signal::Signal;
+
+    use super::{FlashOperation, RuntimeConfig};
+
+    /// Channel for sending flash operations to the storage worker task.
+    pub static FLASH_CHANNEL: Channel<CriticalSectionRawMutex, FlashOperation, 4> = Channel::new();
+
+    /// Signal indicating flash operation completion (true = success).
+    pub static FLASH_DONE: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+
+    /// Signal carrying loaded config from storage worker to main task at boot.
+    pub static CONFIG_LOADED: Signal<CriticalSectionRawMutex, RuntimeConfig> = Signal::new();
+}
+
+#[cfg(feature = "runtime")]
+pub use channels::*;

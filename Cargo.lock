@@ -1059,7 +1059,7 @@ checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -1702,23 +1702,6 @@ dependencies = [
 
 [[package]]
 name = "embassy-time"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4fa65b9284d974dad7a23bb72835c4ec85c0b540d86af7fc4098c88cff51d65"
-dependencies = [
- "cfg-if",
- "critical-section",
- "document-features",
- "embassy-time-driver",
- "embassy-time-queue-utils",
- "embedded-hal 0.2.7",
- "embedded-hal 1.0.0",
- "embedded-hal-async",
- "futures-core",
-]
-
-[[package]]
-name = "embassy-time"
 version = "0.5.1"
 source = "git+https://github.com/embassy-rs/embassy?rev=5bc8260#5bc8260aad50c08a2f7d37e3374193d4f961b581"
 dependencies = [
@@ -1726,6 +1709,7 @@ dependencies = [
  "critical-section",
  "document-features",
  "embassy-time-driver",
+ "embassy-time-queue-utils",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -1802,6 +1786,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-storage"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a21dea9854beb860f3062d10228ce9b976da520a73474aed3171ec276bc0c032"
+
+[[package]]
+name = "embedded-storage-async"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1763775e2323b7d5f0aa6090657f5e21cfa02ede71f5dc40eead06d64dcd15cc"
+dependencies = [
+ "embedded-storage",
+]
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1875,7 +1874,7 @@ dependencies = [
  "cordyceps",
  "critical-section",
  "embassy-futures",
- "embassy-time 0.5.0",
+ "embassy-time",
  "heapless 0.9.2",
  "log",
  "maitake-sync",
@@ -2483,7 +2482,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.17",
- "windows 0.58.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -4495,13 +4494,14 @@ dependencies = [
  "defmt",
  "embassy-futures",
  "embassy-sync",
- "embassy-time 0.5.1",
+ "embassy-time",
  "ergot",
  "heapless 0.9.2",
  "libm",
  "log",
  "microfft",
  "postcard-schema",
+ "sequential-storage",
  "serde",
 ]
 
@@ -5441,6 +5441,17 @@ name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+
+[[package]]
+name = "sequential-storage"
+version = "7.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4580ee0fa08cd41bee9f5b50ed309877e18735370fd4eef5766cc82863ef772"
+dependencies = [
+ "embedded-storage-async",
+ "postcard",
+ "serde",
+]
 
 [[package]]
 name = "serde"
