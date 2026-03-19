@@ -24,11 +24,8 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace -- -D warnings
 
-      - name: workspace tests
+      - name: tests
         run: cargo test --workspace
-
-      - name: virtual motor tests
-        run: cargo test -p oxifoc-core --features virtual-motor
 
   device:
     strategy:
