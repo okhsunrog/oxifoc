@@ -90,6 +90,17 @@ impl<'d> MotorPwm<'d> {
         }
     }
 
+    /// Configure TIM1 CH4 to trigger ADC at peak of center-aligned PWM.
+    ///
+    /// Sets CH4 compare near ARR (triangle wave peak) where all low-side
+    /// FETs are ON, optimal for low-side shunt current sampling.
+    /// CH4 is already in PWM mode 1 with preload from ComplementaryPwm::new().
+    pub fn configure_adc_trigger(&mut self) {
+        let trigger_point = self.max_duty - self.max_duty / 50; // ~2% margin from peak
+        self.pwm.set_duty(Channel::Ch4, trigger_point);
+        defmt::info!("TIM1 CH4 ADC trigger at {}", trigger_point);
+    }
+
     /// Emergency stop - disable all outputs
     pub fn emergency_stop(&mut self) {
         self.pwm.set_duty(Channel::Ch1, 0);

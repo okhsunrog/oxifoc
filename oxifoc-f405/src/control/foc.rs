@@ -15,7 +15,7 @@ use core::cell::RefCell;
 use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
-use embassy_stm32::{interrupt, pac, peripherals};
+use embassy_stm32::{interrupt, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
@@ -70,41 +70,6 @@ static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
 
 // ========== Initialization ==========
 
-/// Configure TIM1 CH4 to trigger ADC at peak of center-aligned PWM
-///
-/// Sets TIM1_CH4 compare value near ARR (peak of triangle wave).
-/// In center-aligned mode, CNT=ARR is the V0 point where all low-side
-/// FETs are ON for any duty < 100%, making it optimal for low-side shunt sampling.
-pub fn configure_tim1_adc_trigger() {
-    use pac::timer::vals::Ocm;
-
-    let tim1 = pac::TIM1;
-
-    // Read current ARR value
-    let arr = tim1.arr().read().arr();
-
-    // Sample at peak of triangle wave (V0 - all low-side ON)
-    // Small offset ensures ADC completes before any switching edges
-    let peak_offset = arr / 50; // ~2% margin
-    let trigger_point = arr.saturating_sub(peak_offset);
-
-    // Set CH4 compare value to peak
-    tim1.ccr(3).write(|w| w.set_ccr(trigger_point));
-
-    // Enable CH4 output compare (not for pin output, just for internal trigger)
-    tim1.ccmr_output(1).modify(|w| {
-        // CH4 in PWM mode 1 (active when CNT < CCR4)
-        w.set_ocm(1, Ocm::PWM_MODE1);
-        // Enable CC4 preload
-        w.set_ocpe(1, true);
-    });
-
-    defmt::info!(
-        "TIM1 CH4 configured for ADC trigger at ARR-offset={}",
-        trigger_point
-    );
-}
-
 /// Initialize FOC driver with motor PWM and sensors
 pub async fn init(
     mut motor_pwm: MotorPwm<'static>,
@@ -113,8 +78,8 @@ pub async fn init(
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
 
-    // Configure TIM1 CH4 for ADC triggering
-    configure_tim1_adc_trigger();
+    // Configure TIM1 CH4 for ADC triggering at PWM peak
+    motor_pwm.configure_adc_trigger();
 
     // Store ADC handles for ISR access
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc1)));
