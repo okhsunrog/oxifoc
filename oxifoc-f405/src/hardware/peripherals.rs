@@ -3,8 +3,9 @@
 use embassy_stm32::adc::{Adc, AdcChannel, Exten, InjectedAdc, SampleTime};
 use embassy_stm32::interrupt::typelevel::Interrupt;
 use embassy_stm32::{
-    Config as StmConfig, Peri, Peripherals, interrupt, peripherals,
+    Config as StmConfig, Peri, Peripherals,
     gpio::{Level, Output, Speed},
+    interrupt, peripherals,
     time::Hertz,
 };
 
@@ -39,9 +40,7 @@ pub fn init_clock() -> Peripherals {
 }
 
 /// Initialize heartbeat LED on PC13
-pub fn init_led(
-    pc13: Peri<'static, peripherals::PC13>,
-) -> Output<'static> {
+pub fn init_led(pc13: Peri<'static, peripherals::PC13>) -> Output<'static> {
     Output::new(pc13, Level::High, Speed::Low)
 }
 
@@ -81,7 +80,7 @@ pub fn init_adc(
     // ADC1 injected: phase A current + board temperature
     let injected_adc1 = adc1.setup_injected_conversions(
         [
-            (ia_pin.degrade_adc(), SampleTime::CYCLES15),         // Phase A current (PC0, ch10)
+            (ia_pin.degrade_adc(), SampleTime::CYCLES15), // Phase A current (PC0, ch10)
             (board_temp_pin.degrade_adc(), SampleTime::CYCLES15), // Board temp (PA3, ch3)
         ],
         embassy_stm32::triggers::TIM1_CH4,
@@ -92,8 +91,8 @@ pub fn init_adc(
     // ADC2 injected: phase B current + motor temperature
     let injected_adc2 = adc2.setup_injected_conversions(
         [
-            (ib_pin.degrade_adc(), SampleTime::CYCLES15),          // Phase B current (PC1, ch11)
-            (motor_temp_pin.degrade_adc(), SampleTime::CYCLES15),  // Motor temp (PC4, ch14)
+            (ib_pin.degrade_adc(), SampleTime::CYCLES15), // Phase B current (PC1, ch11)
+            (motor_temp_pin.degrade_adc(), SampleTime::CYCLES15), // Motor temp (PC4, ch14)
         ],
         embassy_stm32::triggers::TIM1_CH4,
         Exten::RISING_EDGE,
@@ -103,7 +102,7 @@ pub fn init_adc(
     // ADC3 injected: phase C current + VBUS (interrupt on ADC3 — signals all done)
     let injected_adc3 = adc3.setup_injected_conversions(
         [
-            (ic_pin.degrade_adc(), SampleTime::CYCLES15),   // Phase C current (PC2, ch12)
+            (ic_pin.degrade_adc(), SampleTime::CYCLES15), // Phase C current (PC2, ch12)
             (vbus_pin.degrade_adc(), SampleTime::CYCLES15), // VBUS (PC3, ch13)
         ],
         embassy_stm32::triggers::TIM1_CH4,

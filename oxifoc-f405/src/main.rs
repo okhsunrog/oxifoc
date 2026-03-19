@@ -90,10 +90,9 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 8: Initialize ADCs ==========
     let adc_handles = hardware::peripherals::init_adc(
-        p.ADC1, p.ADC2, p.ADC3,
-        p.PC0, p.PA3,  // ADC1: phase A current + board temp
-        p.PC1, p.PC4,  // ADC2: phase B current + motor temp
-        p.PC2, p.PC3,  // ADC3: phase C current + VBUS
+        p.ADC1, p.ADC2, p.ADC3, p.PC0, p.PA3, // ADC1: phase A current + board temp
+        p.PC1, p.PC4, // ADC2: phase B current + motor temp
+        p.PC2, p.PC3, // ADC3: phase C current + VBUS
     );
 
     // ========== STEP 9: Initialize Motor PWM ==========

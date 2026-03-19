@@ -1,7 +1,9 @@
 //! Ergot protocol servers and USB I/O worker tasks
 
 use embassy_executor::Spawner;
-use ergot::{exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as kit};
+use ergot::{
+    exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as kit,
+};
 use heapless::String;
 
 use crate::protocol::STACK;

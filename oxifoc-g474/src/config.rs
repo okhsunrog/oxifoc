@@ -70,7 +70,6 @@ pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 #[allow(dead_code)]
 pub const TIM1_CLOCK_HZ: u32 = 170_000_000;
 
-
 // ============================================================================
 // Protocol Configuration
 // ============================================================================

@@ -75,7 +75,6 @@ pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 /// Used for motor PWM and dead time calculation.
 pub const TIM1_CLOCK_HZ: u32 = 168_000_000;
 
-
 // ============================================================================
 // Protocol Configuration
 // ============================================================================
