@@ -287,6 +287,51 @@ mod tests {
         );
     }
 
+    /// Negative iq_target must produce reverse rotation.
+    ///
+    /// Verifies sign conventions are consistent through the entire chain:
+    /// FOC controller → inverse Park/Clarke → virtual motor → negative ωe.
+    /// Direction bugs are notoriously subtle in FOC code.
+    #[test]
+    fn closed_loop_reverse_direction() {
+        const DT: f32 = 1.0 / 20_000.0;
+        let params = MotorParams::default();
+        let kp = params.ld * 1000.0;
+        let ki = params.r * 1000.0;
+
+        let mut foc = FocController::<SvpwmModulator>::new(24.0);
+        foc.id_pi = PIController::new(kp, ki);
+        foc.iq_pi = PIController::new(kp, ki);
+        let mut motor = VirtualMotor::new(params);
+        let mut out = VirtualMotorOutput::default();
+
+        // Run 500 steps with negative iq_target
+        for _ in 0..500 {
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, -2.0, 1000, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        }
+
+        // Motor should spin in reverse
+        assert!(
+            out.omega_e < -10.0,
+            "motor should spin in reverse: ωe={}",
+            out.omega_e
+        );
+        assert!(out.torque < 0.0, "torque should be negative");
+
+        // Continue for a full second to reach steady state
+        for _ in 0..20_000 {
+            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, -2.0, 1000, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        }
+
+        assert!(
+            out.omega_e < -100.0,
+            "motor should reach steady-state reverse speed: ωe={}",
+            out.omega_e
+        );
+    }
+
     /// Realistic Hall sensor closed-loop test: calibrate first, then drive.
     ///
     /// Uses a 30° electrical mounting offset (`hall_offset = π/6`) to mimic
