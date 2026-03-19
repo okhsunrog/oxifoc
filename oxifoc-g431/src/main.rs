@@ -78,12 +78,12 @@ async fn main(spawner: Spawner) {
         r.hall.pb6,
         r.hall.pb7,
         r.hall.pb8,
+        p.TIM6,
         config::TIMEBASE_TICKS_PER_SEC,
-        config::TIM6_ARR,
     );
 
     // ========== STEP 8: Initialize FOC Controller ==========
-    control::init_foc(motor_pwm, adc_handles.adc1, adc_handles.adc2).await;
+    control::init_foc(motor_pwm, adc_handles.adc1, adc_handles.adc2, p.CORDIC).await;
 
     // ========== STEP 9: Spawn I/O and Protocol Tasks ==========
 

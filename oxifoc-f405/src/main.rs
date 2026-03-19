@@ -86,7 +86,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(hardware::drv8301::nfault_monitor_task(nfault).unwrap());
 
     // ========== STEP 7: Initialize Hall Sensor ==========
-    sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8);
+    sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8, p.TIM6);
 
     // ========== STEP 8: Initialize Motor PWM ==========
     let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);

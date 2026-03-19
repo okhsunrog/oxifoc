@@ -4,7 +4,7 @@ use core::cell::RefCell;
 use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
-use embassy_stm32::{interrupt, peripherals};
+use embassy_stm32::{Peri, interrupt, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
@@ -61,6 +61,7 @@ pub async fn init(
     mut motor_pwm: MotorPwm<'static>,
     adc1: InjectedAdc<'static, peripherals::ADC1, 3>,
     adc2: InjectedAdc<'static, peripherals::ADC2, 2>,
+    cordic_peri: Peri<'static, peripherals::CORDIC>,
 ) {
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
@@ -73,7 +74,7 @@ pub async fn init(
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
 
     // Initialize CORDIC hardware for fast sin/cos in FOC loop
-    CordicSinCos::init();
+    CordicSinCos::init(cordic_peri);
 
     // Build FOC driver with dt from PWM config
     let mut foc_driver = FocDriver::new(

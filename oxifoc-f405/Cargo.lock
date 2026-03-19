@@ -472,7 +472,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 [[package]]
 name = "embassy-embedded-hal"
 version = "0.6.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "embassy-futures",
  "embassy-hal-internal",
@@ -489,7 +489,7 @@ dependencies = [
 [[package]]
 name = "embassy-executor"
 version = "0.10.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "cordyceps",
  "cortex-m",
@@ -502,7 +502,7 @@ dependencies = [
 [[package]]
 name = "embassy-executor-macros"
 version = "0.8.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -513,17 +513,17 @@ dependencies = [
 [[package]]
 name = "embassy-executor-timer-queue"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 
 [[package]]
 name = "embassy-futures"
 version = "0.1.2"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 
 [[package]]
 name = "embassy-hal-internal"
 version = "0.4.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "cortex-m",
  "critical-section",
@@ -560,7 +560,7 @@ dependencies = [
 [[package]]
 name = "embassy-net-driver"
 version = "0.2.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 
 [[package]]
 name = "embassy-net-driver-channel"
@@ -576,17 +576,17 @@ dependencies = [
 [[package]]
 name = "embassy-net-driver-channel"
 version = "0.4.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "embassy-futures",
- "embassy-net-driver 0.2.0 (git+https://github.com/okhsunrog/embassy?rev=a1da90c)",
+ "embassy-net-driver 0.2.0 (git+https://github.com/okhsunrog/embassy?rev=3bc1758)",
  "embassy-sync 0.8.0",
 ]
 
 [[package]]
 name = "embassy-stm32"
 version = "0.6.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "aligned",
  "bit_field",
@@ -600,7 +600,7 @@ dependencies = [
  "embassy-embedded-hal",
  "embassy-futures",
  "embassy-hal-internal",
- "embassy-net-driver 0.2.0 (git+https://github.com/okhsunrog/embassy?rev=a1da90c)",
+ "embassy-net-driver 0.2.0 (git+https://github.com/okhsunrog/embassy?rev=3bc1758)",
  "embassy-sync 0.8.0",
  "embassy-time",
  "embassy-time-driver",
@@ -650,7 +650,7 @@ dependencies = [
 [[package]]
 name = "embassy-sync"
 version = "0.8.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -663,7 +663,7 @@ dependencies = [
 [[package]]
 name = "embassy-time"
 version = "0.5.1"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -679,7 +679,7 @@ dependencies = [
 [[package]]
 name = "embassy-time-driver"
 version = "0.2.1"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "document-features",
 ]
@@ -687,7 +687,7 @@ dependencies = [
 [[package]]
 name = "embassy-time-queue-utils"
 version = "0.3.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "embassy-executor-timer-queue",
  "heapless 0.9.2",
@@ -713,7 +713,7 @@ dependencies = [
 [[package]]
 name = "embassy-usb"
 version = "0.6.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "bitflags 2.10.0",
  "defmt 1.0.1",
@@ -725,13 +725,13 @@ dependencies = [
  "embedded-io-async 0.7.0",
  "heapless 0.9.2",
  "ssmarshal",
- "usbd-hid 0.9.0",
+ "usbd-hid 0.10.0",
 ]
 
 [[package]]
 name = "embassy-usb-driver"
 version = "0.2.0"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "defmt 1.0.1",
  "embedded-io-async 0.7.0",
@@ -740,7 +740,7 @@ dependencies = [
 [[package]]
 name = "embassy-usb-synopsys-otg"
 version = "0.3.2"
-source = "git+https://github.com/okhsunrog/embassy?rev=a1da90c#a1da90c48ef7b8479b46f70519b93c169838450b"
+source = "git+https://github.com/okhsunrog/embassy?rev=3bc1758#3bc17589168b23f333721b7f34930453fb7d1c06"
 dependencies = [
  "critical-section",
  "embassy-sync 0.8.0",
@@ -1748,8 +1748,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "20.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0f828e67a906a03b84bfe8819b20da8133d2c691ae1c440f72c0b251b0824fd"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-21b543f6cab91a2966c0a4247e418d73a87a4ae7#497b4312537a7f4dd1473eba33a261703cd5da07"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
@@ -1938,14 +1937,12 @@ dependencies = [
 
 [[package]]
 name = "usbd-hid"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a7cd3bfb2bb57779f2aeab3f679e5ec6c80265adfe77894539792be7c22aaf0"
+checksum = "68beab087e4971a2fe76f631478b0e91d39593f58efd2775026ce6dc07a7bac6"
 dependencies = [
- "serde",
- "ssmarshal",
  "usb-device",
- "usbd-hid-macros 0.9.0",
+ "usbd-hid-macros 0.10.0",
 ]
 
 [[package]]
@@ -1959,9 +1956,9 @@ dependencies = [
 
 [[package]]
 name = "usbd-hid-descriptors"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac781e4d4c61a4d3bea4cda03fb4ed4d13578c55386b29c5cdc70b3bd89c47df"
+checksum = "b297f021719c4308d5d0c61b6c1e7c6b3ba383deba774b49aa5484f996bdb8f1"
 dependencies = [
  "bitfield 0.14.0",
 ]
@@ -1984,9 +1981,9 @@ dependencies = [
 
 [[package]]
 name = "usbd-hid-macros"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab457064302de0aca303a13cd520dcf035fdfd2aff713fa69d713d0a8e4291d8"
+checksum = "011a3219e0933f5b3ad7dc90d9a66541a967d084c98c067deed1cd608e557ed7"
 dependencies = [
  "byteorder",
  "hashbrown 0.13.2",
@@ -1994,8 +1991,8 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn 1.0.109",
- "usbd-hid-descriptors 0.9.0",
+ "syn 2.0.114",
+ "usbd-hid-descriptors 0.10.0",
 ]
 
 [[package]]

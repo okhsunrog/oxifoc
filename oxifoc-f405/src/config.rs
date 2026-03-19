@@ -75,16 +75,6 @@ pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 /// Used for motor PWM and dead time calculation.
 pub const TIM1_CLOCK_HZ: u32 = 168_000_000;
 
-/// TIM6 clock frequency in Hz (APB1 timers run at 2x APB1 when prescaler > 1)
-/// Embassy default: SYSCLK=168MHz, APB1=42MHz, timer clock=84MHz
-pub const TIM6_CLOCK_HZ: u32 = 84_000_000;
-
-/// TIM6 auto-reload value for Hall sensor polling
-/// Computed from: (TIM6_CLOCK_HZ / 1_000_000 * POLL_INTERVAL_US) - 1
-/// At 84MHz with 5µs interval: 84 * 5 - 1 = 419
-pub const TIM6_ARR: u16 = (TIM6_CLOCK_HZ / 1_000_000
-    * oxifoc_core::foc::sensors::hall_polling::POLL_INTERVAL_US) as u16
-    - 1;
 
 // ============================================================================
 // Protocol Configuration

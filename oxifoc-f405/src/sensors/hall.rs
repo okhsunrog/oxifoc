@@ -12,6 +12,7 @@ use core::cell::RefCell;
 
 use embassy_stm32::gpio::{Input, Pull};
 use embassy_stm32::interrupt::typelevel::Interrupt;
+use embassy_stm32::timer::low_level::{RoundTo, Timer};
 use embassy_stm32::{Peri, interrupt, pac, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
@@ -30,6 +31,10 @@ use crate::config::TIMEBASE_TICKS_PER_SEC;
 static HALL_ESTIMATOR: CriticalSectionMutex<RefCell<Option<HallSensor>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
+/// TIM6 driver instance for ISR flag clearing.
+static TIM6_DRIVER: CriticalSectionMutex<RefCell<Option<Timer<'static, peripherals::TIM6>>>> =
+    CriticalSectionMutex::new(RefCell::new(None));
+
 // ========== Hall Sensor Initialization ==========
 
 /// Initialize Hall sensor inputs and TIM6 for polling
@@ -43,6 +48,7 @@ pub fn init_hall(
     pc6: Peri<'static, peripherals::PC6>,
     pc7: Peri<'static, peripherals::PC7>,
     pc8: Peri<'static, peripherals::PC8>,
+    tim6: Peri<'static, peripherals::TIM6>,
 ) {
     // Configure GPIO inputs with pull-up.
     // We keep them alive with forget() - the configuration persists in hardware.
@@ -58,29 +64,17 @@ pub fn init_hall(
         est.replace(Some(HallSensor::new(TIMEBASE_TICKS_PER_SEC)));
     });
 
-    // Configure TIM6 for Hall sensor polling at POLL_INTERVAL_US
-    // See config.rs for TIM6_CLOCK_HZ and TIM6_ARR calculation
+    // Configure TIM6 for Hall sensor polling using embassy low-level Timer
+    let timer = Timer::new(tim6);
+    timer.set_period_us(POLL_INTERVAL_US as u32, RoundTo::Faster);
+    timer.enable_update_interrupt(true);
+    timer.set_autoreload_preload(true);
+    timer.start();
 
-    // Enable TIM6 clock
-    pac::RCC.apb1enr().modify(|w| w.set_tim6en(true));
-
-    // Reset TIM6
-    pac::RCC.apb1rstr().modify(|w| w.set_tim6rst(true));
-    pac::RCC.apb1rstr().modify(|w| w.set_tim6rst(false));
-
-    let tim6 = pac::TIM6;
-
-    // Configure timer with computed ARR from config
-    tim6.psc().write_value(0); // No prescaler
-    tim6.arr().write(|w| w.set_arr(crate::config::TIM6_ARR));
-    tim6.dier().write(|w| w.set_uie(true)); // Enable update interrupt
-    tim6.cr1().write(|w| {
-        w.set_cen(true); // Enable counter
-        w.set_arpe(true); // Auto-reload preload enable
-    });
+    // Store timer for ISR access
+    TIM6_DRIVER.lock(|cell| cell.replace(Some(timer)));
 
     // SAFETY: HALL_ESTIMATOR is initialized above.
-    // Peripherals::steal() is safe in single-core context during init.
     unsafe {
         interrupt::typelevel::TIM6_DAC::unpend();
         cortex_m::peripheral::NVIC::unmask(interrupt::TIM6_DAC);
@@ -155,7 +149,11 @@ fn TIM6_DAC() {
     static mut LAST_STATE: u8 = 0;
 
     // Clear update interrupt flag
-    pac::TIM6.sr().write(|w| w.set_uif(false));
+    TIM6_DRIVER.lock(|cell| {
+        if let Some(timer) = cell.borrow().as_ref() {
+            timer.clear_update_interrupt();
+        }
+    });
 
     // Read Hall state with majority voting
     let state = read_hall_state_voted();
