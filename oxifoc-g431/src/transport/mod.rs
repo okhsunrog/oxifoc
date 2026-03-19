@@ -6,7 +6,7 @@
 
 pub mod io;
 
-use ergot::rtt_target::{ChannelMode::*, rtt_init};
+use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 #[cfg(feature = "transport-uart")]
@@ -48,15 +48,15 @@ static UART_RX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
 
 /// RTT defmt channel storage (for UART mode - hybrid defmt sink)
 #[cfg(feature = "transport-uart")]
-static RTT_DEFMT_UP: StaticCell<ergot::rtt_target::UpChannel> = StaticCell::new();
+static RTT_DEFMT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 
 /// RTT channel storage (for RTT transport mode)
 #[cfg(feature = "transport-rtt")]
-static RTT_DEFMT_CHANNEL: StaticCell<ergot::rtt_target::UpChannel> = StaticCell::new();
+static RTT_DEFMT_CHANNEL: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 #[cfg(feature = "transport-rtt")]
-static RTT_ERGOT_UP: StaticCell<ergot::rtt_target::UpChannel> = StaticCell::new();
+static RTT_ERGOT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 #[cfg(feature = "transport-rtt")]
-static RTT_ERGOT_DOWN: StaticCell<ergot::rtt_target::DownChannel> = StaticCell::new();
+static RTT_ERGOT_DOWN: StaticCell<rtt_target::DownChannel> = StaticCell::new();
 
 // ========== UART Transport (feature = "transport-uart") ==========
 

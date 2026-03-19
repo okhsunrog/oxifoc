@@ -122,9 +122,9 @@ dependencies = [
 
 [[package]]
 name = "bbqueue"
-version = "0.6.2"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b4607b1781ac66093cab552f203fe44dd45dc30838e0abd11e3b34bec473d59"
+checksum = "68917624e17aad88607cb5a5936f6da9b607c48c711e4e9ed101e7189aed28c2"
 dependencies = [
  "const-init",
  "maitake-sync",
@@ -239,7 +239,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=defmt_sink_plus_rtt#746dc1e1589877ff99de4f2ea5c3617965554ac6"
+source = "git+https://github.com/okhsunrog/ergot?branch=embassy-usb-v0_6#13040cef5207e2e7165d266c235836ccbfc23b72"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -895,7 +895,7 @@ dependencies = [
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=defmt_sink_plus_rtt#746dc1e1589877ff99de4f2ea5c3617965554ac6"
+source = "git+https://github.com/okhsunrog/ergot?branch=embassy-usb-v0_6#13040cef5207e2e7165d266c235836ccbfc23b72"
 dependencies = [
  "bbqueue",
  "cobs 0.3.0",
@@ -1155,9 +1155,9 @@ dependencies = [
 
 [[package]]
 name = "maitake-sync"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "748f86d9befd480b602c3bebc9ef30dbf2f3dfc8acc4a73d07b90f0117e6de3f"
+checksum = "3d77c365d697828821727b9bc09e6bc3c518b8c63804e79e1be5a5ae091a7c5f"
 dependencies = [
  "cordyceps",
  "loom",
@@ -1541,11 +1541,12 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "rtt-target"
-version = "0.5.0"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10b34c9e6832388e45f3c01f1bb60a016384a0a4ad80cdd7d34913bed25037f0"
+checksum = "e7afed1f4302eeba88c601636cf2c554c45e1cbb464bab44c6012bab0e71473c"
 dependencies = [
  "critical-section",
+ "portable-atomic",
  "ufmt-write",
 ]
 
