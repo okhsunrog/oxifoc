@@ -84,10 +84,13 @@ pub mod resistance;
 /// Async detection sweeps (requires platform implementation)
 pub mod sweep;
 
+/// Inductance measurement via voltage pulse (fallback for HFI)
+pub mod voltage_pulse;
+
 // Re-export commonly used types for convenience
 pub use types::{
     DcOffsetParams, DcOffsets, DetectionError, FluxLinkageParams, InductanceParams, MotorParams,
-    MotorSize, ResistanceParams,
+    MotorSize, ResistanceParams, VoltagePulseParams,
 };
 
 /// Integration tests: feed VirtualMotor output into detection accumulators
@@ -548,6 +551,7 @@ mod integration_tests {
             pole_pairs: motor_params.pole_pairs,
             current_max: 10.0,
             pwm_freq_hz: 20_000.0,
+            vbus: 24.0,
         };
 
         let mut hw = VirtualHardware;

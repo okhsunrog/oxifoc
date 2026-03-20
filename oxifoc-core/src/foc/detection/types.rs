@@ -317,6 +317,33 @@ impl Default for FluxLinkageParams {
     }
 }
 
+/// Parameters for voltage-pulse inductance measurement (fallback for HFI).
+#[derive(Clone, Copy, Debug)]
+pub struct VoltagePulseParams {
+    /// DC holding current to lock rotor (Amps)
+    pub hold_current_a: f32,
+    /// Previously measured phase resistance (Ohms)
+    pub resistance_ohm: f32,
+    /// Voltage step amplitude (Volts).  Typically 20-30% of Vbus.
+    pub pulse_voltage_v: f32,
+    /// Number of pulses to average per axis (default: 20)
+    pub num_pulses: u32,
+    /// Settling time after locking rotor (milliseconds)
+    pub settle_time_ms: u32,
+}
+
+impl Default for VoltagePulseParams {
+    fn default() -> Self {
+        Self {
+            hold_current_a: 2.0,
+            resistance_ohm: 0.0,
+            pulse_voltage_v: 5.0,
+            num_pulses: 20,
+            settle_time_ms: 200,
+        }
+    }
+}
+
 /// Parameters for DC offset calibration.
 #[derive(Clone, Copy, Debug)]
 pub struct DcOffsetParams {

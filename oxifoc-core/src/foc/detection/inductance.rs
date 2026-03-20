@@ -548,11 +548,12 @@ pub fn validate_inductance(ld: f32, lq: f32) -> Result<(), DetectionError> {
         return Err(DetectionError::OutOfRange);
     }
 
-    // Check Ld/Lq ratio is reasonable (0.2 to 5.0 for most motors)
+    // Check Ld/Lq ratio is reasonable (0.3 to 3.5).
     // SPM: Ld ≈ Lq (ratio ≈ 1.0)
-    // IPM: Ld < Lq typically (ratio < 1.0)
+    // IPM: Ld < Lq (ratio 0.3–0.8 typical)
+    // Anything outside this range likely indicates measurement error.
     let ratio = ld / lq;
-    if !(0.2..=5.0).contains(&ratio) {
+    if !(0.3..=3.5).contains(&ratio) {
         return Err(DetectionError::LowConfidence);
     }
 

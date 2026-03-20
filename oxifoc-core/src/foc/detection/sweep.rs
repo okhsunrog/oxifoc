@@ -31,12 +31,14 @@
 use core::future::Future;
 
 use super::flux_linkage::{FluxLinkageMeasurement, SpinDownFluxMeasurement};
-use super::inductance::{HfiInjector, InductanceMeasurement};
+use super::inductance::{HfiInjector, InductanceMeasurement, validate_inductance};
 use super::pi_tuning::{calculate_foc_gains, estimate_bandwidth};
 use super::resistance::ResistanceMeasurement;
 use super::types::{
     DetectionError, FluxLinkageParams, InductanceParams, MotorParams, MotorSize, ResistanceParams,
+    VoltagePulseParams,
 };
+use super::voltage_pulse::VoltagePulseMeasurement;
 use crate::foc::controller::FocOutput;
 use crate::foc::transforms;
 use crate::motor::ControlMode;
@@ -98,6 +100,8 @@ pub struct DetectionParams {
     pub current_max: f32,
     /// PWM frequency in Hz
     pub pwm_freq_hz: f32,
+    /// DC bus voltage (Volts) — used for voltage pulse fallback
+    pub vbus: f32,
 }
 
 impl Default for DetectionParams {
@@ -107,6 +111,7 @@ impl Default for DetectionParams {
             pole_pairs: 7,
             current_max: 10.0,
             pwm_freq_hz: 20000.0,
+            vbus: 24.0,
         }
     }
 }
@@ -307,6 +312,102 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer>(
     let result = measurement.finish()?;
 
     Ok((result.ld, result.lq))
+}
+
+/// Measure inductance via voltage pulse (di/dt).
+///
+/// Locks the rotor at angle 0 (d-axis), applies a voltage step, measures
+/// the current change over one PWM period, then repeats at angle π/2
+/// (q-axis).  Works reliably on high-resistance motors where HFI fails.
+///
+/// Requires previously measured resistance for compensation.
+pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    params: &VoltagePulseParams,
+    pwm_freq_hz: f32,
+) -> Result<(f32, f32), DetectionError> {
+    info!("Starting voltage-pulse inductance measurement...");
+
+    let ramp_steps = 50u32;
+    let mut results = [(0.0f32, 0.0f32); 2]; // (angle, measured_L)
+    let angles = [0.0f32, core::f32::consts::FRAC_PI_2];
+
+    for (axis, &angle) in angles.iter().enumerate() {
+        // Lock rotor at this angle
+        for i in 1..=ramp_steps {
+            let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
+            hw.send_command(ControlMode::OpenLoop {
+                angle_rad: angle,
+                current,
+            });
+            T::after_millis(10).await;
+        }
+        T::after_millis(params.settle_time_ms as u64).await;
+
+        // Capture steady-state holding voltage
+        let telem = hw.wait_telemetry().await;
+        let vd_hold = telem.vd;
+
+        // Pulse measurement
+        let mut meas = VoltagePulseMeasurement::new(params, pwm_freq_hz);
+
+        for _ in 0..params.num_pulses * 2 {
+            // guard against skipped pulses
+            if meas.is_complete() {
+                break;
+            }
+
+            // Read current before pulse
+            let (ia, ib, _) = hw.read_phase_currents();
+            let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+            let cos_a = libm::cosf(angle);
+            let sin_a = libm::sinf(angle);
+            let id_before = i_alpha * cos_a + i_beta * sin_a;
+
+            // Apply voltage step
+            hw.send_command(ControlMode::DirectVoltage {
+                vd: vd_hold + params.pulse_voltage_v,
+                vq: 0.0,
+                angle_rad: angle,
+            });
+            hw.wait_telemetry().await; // one PWM period
+
+            // Read current after pulse
+            let (ia, ib, _) = hw.read_phase_currents();
+            let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+            let id_after = i_alpha * cos_a + i_beta * sin_a;
+
+            meas.record_pulse(id_before, id_after);
+
+            // Restore holding voltage and wait one cycle
+            hw.send_command(ControlMode::DirectVoltage {
+                vd: vd_hold,
+                vq: 0.0,
+                angle_rad: angle,
+            });
+            hw.wait_telemetry().await;
+        }
+
+        results[axis] = (angle, meas.finish()?);
+
+        // Ramp down
+        for i in (0..ramp_steps).rev() {
+            let vd = vd_hold * (i as f32 / ramp_steps as f32);
+            hw.send_command(ControlMode::DirectVoltage {
+                vd,
+                vq: 0.0,
+                angle_rad: angle,
+            });
+            T::after_millis(10).await;
+        }
+        hw.send_command(ControlMode::Stopped);
+        T::after_millis(200).await;
+    }
+
+    let ld = results[0].1; // angle 0 = d-axis
+    let lq = results[1].1; // angle π/2 = q-axis
+    info!("Voltage-pulse inductance measurement complete");
+    Ok((ld, lq))
 }
 
 /// Measure motor flux linkage via open-loop spinning.
@@ -536,12 +637,38 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
 
     // Step 2: Measure inductance (using measured R for compensation)
     info!("Step 2/4: Inductance measurement");
+
+    // Limit holding current to what the bus can deliver, leaving at
+    // least 40 % headroom for HFI injection or pulse voltage.
+    let r = result.params.resistance_ohm;
+    let max_hold_current = (params.vbus * 0.577 * 0.6) / r.max(0.001);
+    let hold_current = 2.0f32.min(max_hold_current).max(0.1);
+
     let inductance_params = InductanceParams {
         motor_size: params.motor_size,
-        resistance_ohm: result.params.resistance_ohm,
+        resistance_ohm: r,
+        hold_current_a: hold_current,
         ..Default::default()
     };
-    let (ld, lq) = measure_inductance::<H, T>(hw, &inductance_params, params.pwm_freq_hz).await?;
+    let (mut ld, mut lq) =
+        measure_inductance::<H, T>(hw, &inductance_params, params.pwm_freq_hz).await?;
+
+    // If HFI result looks suspicious, fall back to voltage pulse method
+    if validate_inductance(ld, lq).is_err() {
+        info!("HFI inductance suspicious, falling back to voltage pulse");
+        T::after_millis(500).await;
+        let v_hold = r * hold_current;
+        let v_headroom = params.vbus * 0.577 - v_hold;
+        let pulse_params = VoltagePulseParams {
+            hold_current_a: hold_current,
+            resistance_ohm: r,
+            pulse_voltage_v: v_headroom.max(0.5),
+            num_pulses: 20,
+            settle_time_ms: 200,
+        };
+        (ld, lq) = measure_inductance_pulse::<H, T>(hw, &pulse_params, params.pwm_freq_hz).await?;
+    }
+
     result.params.inductance_d_h = ld;
     result.params.inductance_q_h = lq;
     result.params.inductance_avg_h = (ld + lq) / 2.0;

@@ -369,6 +369,7 @@ fn run_detection(def: &MotorDef) -> DetResult {
         pole_pairs: p.pole_pairs,
         current_max: 10.0,
         pwm_freq_hz: 20_000.0,
+        vbus: def.vbus,
     };
 
     // Full detection sequence
