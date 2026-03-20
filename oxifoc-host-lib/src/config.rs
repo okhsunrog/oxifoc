@@ -4,7 +4,7 @@ use std::{env, fs, path::PathBuf};
 
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct HostConfig {
-    /// Transport type: "serial" (default), "rtt", or "tcp"
+    /// Transport type: "serial" (default), "rtt", "tcp", "udp", or "usb"
     pub transport: Option<TransportType>,
 
     // RTT transport options
@@ -19,6 +19,10 @@ pub struct HostConfig {
     pub tcp_host: Option<String>, // e.g. "127.0.0.1"
     pub tcp_port: Option<u16>,    // e.g. 2025
 
+    // UDP transport options
+    pub udp_host: Option<String>, // e.g. "127.0.0.1"
+    pub udp_port: Option<u16>,    // e.g. 2025
+
     // Common options
     pub elf: Option<String>,        // path to device ELF with .defmt
     pub stream_defmt: Option<bool>, // default: true
@@ -27,7 +31,6 @@ pub struct HostConfig {
 
 impl HostConfig {
     pub fn load_default() -> Option<Self> {
-        // Priority: OXIFOC_HOST_CONFIG env var, then ./oxifoc-host.toml if exists
         if let Ok(p) = env::var("OXIFOC_HOST_CONFIG") {
             return Self::from_path(PathBuf::from(p));
         }
@@ -72,12 +75,10 @@ impl HostConfig {
         self.serial_baud.unwrap_or(921_600)
     }
 
-    /// Get the transport type (defaults to Serial).
     pub fn transport_type(&self) -> TransportType {
         self.transport.clone().unwrap_or_default()
     }
 
-    /// Get the transport configuration based on settings.
     pub fn transport_config(&self) -> anyhow::Result<TransportConfig> {
         match self.transport_type() {
             TransportType::Serial => Ok(TransportConfig::Serial {
@@ -100,6 +101,14 @@ impl HostConfig {
                     .unwrap_or_else(|| "127.0.0.1".to_string()),
                 port: self.tcp_port.unwrap_or(2025),
             }),
+            TransportType::Udp => Ok(TransportConfig::Udp {
+                host: self
+                    .udp_host
+                    .clone()
+                    .unwrap_or_else(|| "127.0.0.1".to_string()),
+                port: self.udp_port.unwrap_or(2025),
+            }),
+            TransportType::Usb => Ok(TransportConfig::Usb),
         }
     }
 }

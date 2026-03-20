@@ -6,19 +6,11 @@
 use core::cell::RefCell;
 
 use anyhow::Result;
-use cobs_acc::{CobsAccumulator, FeedResult};
 use critical_section::Mutex as CriticalSectionMutex;
-use ergot::interface_manager::interface_impls::tokio_serial_cobs::TokioSerialInterface;
-use ergot::interface_manager::profiles::direct_edge::DirectEdge;
-use ergot::interface_manager::profiles::direct_edge::process_frame as ergot_edge_process_frame;
-use ergot::interface_manager::utils::cobs_stream::Sink as ErgotSink;
-use ergot::interface_manager::utils::std::new_std_queue;
-use ergot::net_stack::ArcNetStack;
+use ergot::toolkits::tokio_stream::{self as stream_kit, EdgeStack, register_target_stream};
 use heapless::String;
-use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::info;
 
 use oxifoc_core::foc::fault::FaultRegistry;
 use oxifoc_core::icd::DeviceInfo;
@@ -45,74 +37,13 @@ pub async fn run(
 
         // Create a fresh ergot edge stack for this connection.
         // We are the target (node 2), host is controller (node 1).
-        let queue = new_std_queue(4096);
+        let queue = stream_kit::new_std_queue(4096);
+        let stack: EdgeStack = stream_kit::new_target_stack(&queue, ERGOT_MTU);
 
-        type EdgeProfile = DirectEdge<TokioSerialInterface>;
-        type EdgeStack = ArcNetStack<CriticalSectionRawMutex, EdgeProfile>;
-
-        let stack: EdgeStack = ArcNetStack::new_with_profile(DirectEdge::new_target(
-            ErgotSink::new_from_handle(queue.clone(), ERGOT_MTU),
-        ));
-
-        let (mut rx, mut tx) = socket.into_split();
-
-        // RX worker: TCP → COBS decode → ergot stack
-        tokio::spawn({
-            let stack = stack.clone();
-            async move {
-                let mut buf = vec![0u8; 2048];
-                let mut cobs_acc = CobsAccumulator::new_boxslice((ERGOT_MTU as usize) + 64);
-                let mut net_id = None;
-                loop {
-                    match rx.read(&mut buf).await {
-                        Ok(0) => {
-                            info!("Client disconnected: {addr}");
-                            break;
-                        }
-                        Ok(count) => {
-                            let mut window = &mut buf[..count];
-                            while !window.is_empty() {
-                                window = match cobs_acc.feed_raw(window) {
-                                    FeedResult::Consumed => break,
-                                    FeedResult::OverFull(rem) | FeedResult::DecodeError(rem) => rem,
-                                    FeedResult::Success { data, remaining }
-                                    | FeedResult::SuccessInput { data, remaining } => {
-                                        ergot_edge_process_frame(&mut net_id, data, &stack, ());
-                                        remaining
-                                    }
-                                };
-                            }
-                        }
-                        Err(e) => {
-                            error!("TCP read error from {addr}: {e:?}");
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-
-        // TX worker: ergot stack → COBS → TCP
-        tokio::spawn({
-            let tx_queue = queue.clone();
-            async move {
-                let tx_consumer = tx_queue.stream_consumer();
-                loop {
-                    let frame = tx_consumer.wait_read().await;
-                    let len = frame.len();
-                    if len == 0 {
-                        frame.release(len);
-                        continue;
-                    }
-                    if let Err(e) = tx.write_all(&frame[..len]).await {
-                        error!("TCP write error: {e:?}");
-                        frame.release(len);
-                        break;
-                    }
-                    frame.release(len);
-                }
-            }
-        });
+        let (rx, tx) = socket.into_split();
+        register_target_stream(stack.clone(), rx, tx, queue)
+            .await
+            .map_err(|_| anyhow::anyhow!("Interface already active"))?;
 
         // Protocol servers for this connection
         tokio::spawn({

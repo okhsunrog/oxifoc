@@ -3,13 +3,13 @@
 //! In serial mode, defmt frames are forwarded over the ergot network,
 //! so there's no separate defmt reader.
 
-use super::Transport;
+use super::CobsStreamTransport;
 use anyhow::{Context, Result};
 use tokio_serial::SerialPortBuilderExt;
 use tracing::info;
 
 /// Connect to a serial port.
-pub async fn connect(path: &str, baud: u32) -> Result<Transport> {
+pub async fn connect(path: &str, baud: u32) -> Result<CobsStreamTransport> {
     info!("Opening serial port {} at {} baud", path, baud);
 
     let port = tokio_serial::new(path, baud)
@@ -18,9 +18,9 @@ pub async fn connect(path: &str, baud: u32) -> Result<Transport> {
 
     let (reader, writer) = tokio::io::split(port);
 
-    Ok(Transport {
+    Ok(CobsStreamTransport {
         reader: Box::new(reader),
         writer: Box::new(writer),
-        defmt_reader: None, // defmt forwarded over ergot network in serial mode
+        defmt_reader: None,
     })
 }

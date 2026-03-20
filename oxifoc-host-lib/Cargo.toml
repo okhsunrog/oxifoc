@@ -5,10 +5,10 @@ edition = "2024"
 
 [dependencies]
 oxifoc-core = { workspace = true, features = ["icd"] }
-ergot = { git = "https://github.com/jamesmunns/ergot", features = ["tokio-std", "tokio-serial-v5", "defmtlog"] }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "beebb2a", features = ["tokio-std", "tokio-serial-v5", "nusb-v0_1", "defmtlog"] }
 
 tokio = { workspace = true }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["io"] }
 tokio-serial = "5.4.4"
 serialport = "4.7"  # For port enumeration
 
@@ -20,10 +20,11 @@ tracing-subscriber = { workspace = true }
 tracing-log = "0.2"
 
 anyhow = { workspace = true }
-mutex = "1.0.2"
 crossbeam-channel = { workspace = true }
-cobs-acc = { git = "https://github.com/jamesmunns/ergot", features = ["std"] }
 defmt-decoder = "1.0"
 defmt-parser = "1.0"
 serde = { workspace = true }
 toml = { workspace = true }
+tokio-stream = "0.1.18"
+bytes = "1.11.1"
+futures = "0.3.32"

@@ -1,15 +1,18 @@
 //! Transport abstraction for oxifoc host communication.
 //!
-//! Provides a unified interface for different transport backends:
-//! - Serial (UART over USB VCP)
-//! - RTT (via debug probe using probe-rs)
-//! - TCP (for oxifoc-virtual or remote devices)
+//! Provides different transport backends:
+//! - Serial (UART over USB VCP) — COBS stream
+//! - RTT (via debug probe using probe-rs) — COBS stream
+//! - TCP (for oxifoc-virtual or remote devices) — COBS stream
+//! - UDP — framed (no COBS)
+//! - USB (via nusb bulk endpoints) — framed (no COBS)
 
 pub mod rtt;
 pub mod serial;
 pub mod tcp;
+pub mod udp;
+pub mod usb;
 
-use anyhow::Result;
 use serde::Deserialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -24,6 +27,10 @@ pub enum TransportType {
     Rtt,
     /// TCP connection (for oxifoc-virtual or remote devices)
     Tcp,
+    /// UDP connection
+    Udp,
+    /// USB bulk (via nusb, ergot device class)
+    Usb,
 }
 
 /// Configuration for transport selection.
@@ -32,26 +39,20 @@ pub enum TransportConfig {
     Serial { path: String, baud: u32 },
     Rtt { probe: Option<String>, chip: String },
     Tcp { host: String, port: u16 },
+    Udp { host: String, port: u16 },
+    Usb,
 }
 
-/// A boxed transport that can be used for async I/O.
-pub struct Transport {
+/// A COBS-stream transport (TCP, serial, RTT).
+///
+/// Returns AsyncRead/AsyncWrite pairs for use with ergot's `tokio_stream` toolkit.
+/// UDP and USB use different ergot toolkits and don't go through this struct.
+pub struct CobsStreamTransport {
     /// Reader for ergot data (device -> host)
     pub reader: Box<dyn AsyncRead + Send + Unpin>,
     /// Writer for ergot data (host -> device)
     pub writer: Box<dyn AsyncWrite + Send + Unpin>,
-    /// Optional reader for defmt data (RTT mode only, channel 0)
-    /// In serial mode, defmt is forwarded over ergot network instead.
+    /// Optional reader for defmt data (RTT mode only, channel 0).
+    /// In serial/TCP mode, defmt is forwarded over ergot network instead.
     pub defmt_reader: Option<Box<dyn AsyncRead + Send + Unpin>>,
-}
-
-impl Transport {
-    /// Create a new transport from the given configuration.
-    pub async fn new(config: TransportConfig) -> Result<Self> {
-        match config {
-            TransportConfig::Serial { path, baud } => serial::connect(&path, baud).await,
-            TransportConfig::Rtt { probe, chip } => rtt::connect(probe.as_deref(), &chip).await,
-            TransportConfig::Tcp { host, port } => tcp::connect(&host, port).await,
-        }
-    }
 }

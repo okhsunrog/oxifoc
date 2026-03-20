@@ -13,9 +13,7 @@ oxifoc-core = { workspace = true, features = [
     "log",
 ] }
 
-ergot = { git = "https://github.com/jamesmunns/ergot", features = ["tokio-std"] }
-cobs-acc = { git = "https://github.com/jamesmunns/ergot", features = ["std"] }
-mutex = "1.0.2"
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "beebb2a", features = ["tokio-std"] }
 tokio = { workspace = true }
 critical-section = { version = "1.2", features = ["std"] }
 sequential-storage = { version = "7.1", features = ["postcard", "_test"] }

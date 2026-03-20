@@ -14,6 +14,8 @@ enum Transport {
     Serial,
     Rtt,
     Tcp,
+    Udp,
+    Usb,
 }
 
 #[derive(Parser)]
@@ -58,6 +60,14 @@ struct Cli {
     /// TCP port (for TCP transport, default: 2025)
     #[arg(long)]
     tcp_port: Option<u16>,
+
+    /// UDP host (for UDP transport, default: 127.0.0.1)
+    #[arg(long)]
+    udp_host: Option<String>,
+
+    /// UDP port (for UDP transport, default: 2025)
+    #[arg(long)]
+    udp_port: Option<u16>,
 
     #[command(subcommand)]
     command: Command,
@@ -154,6 +164,8 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
             Transport::Serial => TransportType::Serial,
             Transport::Rtt => TransportType::Rtt,
             Transport::Tcp => TransportType::Tcp,
+            Transport::Udp => TransportType::Udp,
+            Transport::Usb => TransportType::Usb,
         });
     }
 
@@ -177,6 +189,14 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
 
     if let Some(port) = cli.tcp_port {
         cfg.tcp_port = Some(port);
+    }
+
+    if let Some(ref host) = cli.udp_host {
+        cfg.udp_host = Some(host.clone());
+    }
+
+    if let Some(port) = cli.udp_port {
+        cfg.udp_port = Some(port);
     }
 
     Ok(cfg)
