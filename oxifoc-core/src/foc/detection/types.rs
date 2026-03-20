@@ -273,7 +273,8 @@ pub struct FluxLinkageParams {
     /// Motor size for determining test current
     pub motor_size: MotorSize,
 
-    /// Previously measured resistance (Ohms) - required
+    /// Previously measured resistance (Ohms) — required for driven method,
+    /// ignored by spin-down method.
     pub resistance_ohm: f32,
 
     /// Target mechanical RPM for measurement
@@ -293,6 +294,11 @@ pub struct FluxLinkageParams {
 
     /// Number of pole pairs (for eRPM calculation)
     pub pole_pairs: u8,
+
+    /// Minimum electrical angular velocity (rad/s) to accept a sample
+    /// during spin-down measurement.  Below this, back-EMF is too small
+    /// for accurate ADC readings.  Default: 50 rad/s (~475 eRPM at 7pp).
+    pub min_coast_omega_e: f32,
 }
 
 impl Default for FluxLinkageParams {
@@ -306,6 +312,7 @@ impl Default for FluxLinkageParams {
             settle_time_ms: 1000,
             num_samples: 200,
             pole_pairs: 7,
+            min_coast_omega_e: 50.0,
         }
     }
 }

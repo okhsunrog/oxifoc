@@ -466,8 +466,8 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
     T::after_millis(20).await;
 
     // ── Sample back-EMF during coast-down ──────────────────────────────
-    let min_omega = 50.0f32; // ~475 eRPM for 7pp — below this ADC noise dominates
-    let mut measurement = SpinDownFluxMeasurement::new(params.num_samples, min_omega);
+    let mut measurement =
+        SpinDownFluxMeasurement::new(params.num_samples, params.min_coast_omega_e);
 
     let max_coast_samples = 10_000u32; // safety limit
     for _ in 0..max_coast_samples {
