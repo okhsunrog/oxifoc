@@ -18,13 +18,53 @@ mod tests {
 
     const MAX_TRIG_ERR: f32 = 1e-4; // ~20-bit CORDIC precision
     const MAX_Q31_ERR: f32 = 1e-6; // q31 round-trip precision
+    const SYSCLK_HZ: u32 = 170_000_000;
 
     struct TestState;
 
+    /// Enable DWT cycle counter for benchmarking
+    fn enable_dwt() {
+        unsafe {
+            // DCB DEMCR: set TRCENA bit to enable DWT
+            let demcr = 0xE000_EDFC as *mut u32;
+            core::ptr::write_volatile(demcr, core::ptr::read_volatile(demcr) | (1 << 24));
+            // DWT CYCCNT: reset counter
+            core::ptr::write_volatile(0xE000_1004 as *mut u32, 0);
+            // DWT CTRL: set CYCCNTENA bit
+            let ctrl = 0xE000_1000 as *mut u32;
+            core::ptr::write_volatile(ctrl, core::ptr::read_volatile(ctrl) | 1);
+        }
+    }
+
+    fn dwt_cycles() -> u32 {
+        unsafe { core::ptr::read_volatile(0xE000_1004 as *const u32) }
+    }
+
     #[init]
     fn init() -> TestState {
-        let dp = embassy_stm32::init(embassy_stm32::Config::default());
+        use embassy_stm32::rcc::*;
+        use embassy_stm32::time::Hertz;
+
+        let mut config = embassy_stm32::Config::default();
+        // 24MHz HSE → PLL → 170MHz SYSCLK
+        config.rcc.hse = Some(Hse {
+            freq: Hertz(24_000_000),
+            mode: HseMode::Oscillator,
+        });
+        config.rcc.pll = Some(Pll {
+            source: PllSource::HSE,
+            prediv: PllPreDiv::DIV6,
+            mul: PllMul::MUL85,
+            divp: None,
+            divq: None,
+            divr: Some(PllRDiv::DIV2),
+        });
+        config.rcc.sys = Sysclk::PLL1_R;
+        config.rcc.boost = true;
+
+        let dp = embassy_stm32::init(config);
         CordicSinCos::init(dp.CORDIC);
+        enable_dwt();
         TestState
     }
 
@@ -249,5 +289,64 @@ mod tests {
             defmt::assert!(any_nonzero, "sector {}: all duties zero", i + 1);
         }
         defmt::info!("SVPWM all sectors: PASS");
+    }
+
+    // ========== Benchmark: full FOC step at 170MHz ==========
+
+    #[test]
+    fn bench_foc_step(_state: TestState) {
+        let vbus = 24.0_f32;
+        let max_duty: u16 = 2000;
+        let dt = 50e-6_f32; // 20kHz
+
+        let mut foc = FocController::<SvpwmModulator, CordicSinCos>::new(vbus);
+
+        // Warm up: let PI settle
+        for i in 0..50u32 {
+            let angle = (i as f32) * 0.1;
+            foc.step((1.0, -0.5, -0.5), angle, 0.5, 2.0, max_duty, dt);
+        }
+
+        // Benchmark N iterations of the full FOC step
+        // (Clarke + CORDIC sin/cos + Park + 2×PI + inverse Park + SVPWM)
+        const N: u32 = 1000;
+        let mut min_cycles = u32::MAX;
+        let mut max_cycles = 0u32;
+        let mut total_cycles = 0u64;
+
+        for i in 0..N {
+            // Vary angle to sweep all SVPWM sectors; vary currents slightly
+            let angle = (i as f32) * 0.00628; // full rotation over 1000 steps
+            let ia = 1.5 + (i as f32) * 0.001;
+            let ib = -0.75 - (i as f32) * 0.0005;
+            let ic = -ia - ib;
+
+            let start = dwt_cycles();
+            let result = foc.step((ia, ib, ic), angle, 0.5, 2.0, max_duty, dt);
+            let end = dwt_cycles();
+            core::hint::black_box(&result);
+
+            let elapsed = end.wrapping_sub(start);
+            total_cycles += elapsed as u64;
+            if elapsed < min_cycles {
+                min_cycles = elapsed;
+            }
+            if elapsed > max_cycles {
+                max_cycles = elapsed;
+            }
+        }
+
+        let avg_cycles = (total_cycles / N as u64) as u32;
+        let avg_ns = (avg_cycles as u64 * 1_000_000_000) / SYSCLK_HZ as u64;
+        let min_ns = (min_cycles as u64 * 1_000_000_000) / SYSCLK_HZ as u64;
+        let max_ns = (max_cycles as u64 * 1_000_000_000) / SYSCLK_HZ as u64;
+        let budget_cycles = SYSCLK_HZ / 20_000; // 50µs at 170MHz = 8500 cycles
+        let utilization = (avg_cycles as u64 * 100) / budget_cycles as u64;
+
+        defmt::info!("=== FOC step benchmark ({} iterations @ {}MHz) ===", N, SYSCLK_HZ / 1_000_000);
+        defmt::info!("  avg: {} cycles ({} ns)", avg_cycles, avg_ns);
+        defmt::info!("  min: {} cycles ({} ns)", min_cycles, min_ns);
+        defmt::info!("  max: {} cycles ({} ns)", max_cycles, max_ns);
+        defmt::info!("  50us budget: {} cycles, utilization: {}%", budget_cycles, utilization);
     }
 }
