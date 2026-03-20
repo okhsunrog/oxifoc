@@ -192,6 +192,31 @@ pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
     })
 }
 
+// ========== Apply Stored Config at Boot ==========
+
+/// Apply stored Hall calibration and tuning parameters to the estimator.
+///
+/// Must be called after `init_hall()`. Skips silently if no config is stored.
+pub fn apply_stored_config(config: &oxifoc_core::storage::RuntimeConfig) {
+    HALL_ESTIMATOR.lock(|est| {
+        if let Some(h) = est.borrow_mut().as_mut() {
+            if let Some(ref cal) = config.hall_calibration
+                && cal.is_calibrated()
+            {
+                h.set_calibration_raw(cal.angles);
+                defmt::info!("Applied stored Hall calibration");
+            }
+            if let Some(ref tuning) = config.hall_tuning {
+                h.set_interp_min_erpm(tuning.interp_min_erpm);
+                h.set_drift_correction_gain(tuning.drift_correction_gain);
+                h.set_rate_limit_factor(tuning.rate_limit_factor);
+                h.set_timeout_us(tuning.timeout_us);
+                defmt::info!("Applied stored Hall tuning params");
+            }
+        }
+    });
+}
+
 // ========== Hall Angle Proxy for FOC ==========
 
 /// Angle sensor proxy for the FOC driver; pulls snapshots from `HALL_ESTIMATOR`.

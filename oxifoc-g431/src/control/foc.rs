@@ -70,6 +70,7 @@ pub async fn init(
 
     // Build current sensor and phase manager
     let current_sensor = G431CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
+    crate::sensors::hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
     let phase_manager = PhaseManager::with_hall(hall_proxy);
     let initial_vbus_v =

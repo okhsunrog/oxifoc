@@ -91,6 +91,7 @@ pub async fn init(
 
     // Build current sensor and phase manager
     let current_sensor = F405CurrentSensor::from_board(&BOARD);
+    crate::sensors::hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
     let phase_manager = PhaseManager::with_hall(hall_proxy);
     let initial_vbus_v =
