@@ -196,7 +196,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let v_limit_sq = v_limit * v_limit;
 
         let (vd, vq) = if v_mag_sq > v_limit_sq {
-            let scale = v_limit / libm::sqrtf(v_mag_sq);
+            let scale = v_limit / ::libm::sqrtf(v_mag_sq);
             (vd * scale, vq * scale)
         } else {
             (vd, vq)
@@ -293,7 +293,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let v_limit_sq = v_limit * v_limit;
 
         let (vd, vq) = if v_mag_sq > v_limit_sq {
-            let scale = v_limit / libm::sqrtf(v_mag_sq);
+            let scale = v_limit / ::libm::sqrtf(v_mag_sq);
             let vd = vd_raw * scale;
             let vq = vq_raw * scale;
             // Coordinated anti-windup: feed saturation back to both PI integrators
@@ -330,99 +330,110 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foc::trig::FastSinCos;
 
     const DT: f32 = 0.0001;
 
-    #[test]
-    fn zero_currents_zero_setpoint_centered_pwm() {
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        let telem = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 0.0, 1000, DT);
+    /// Generate FOC controller tests for a given SinCos implementation.
+    macro_rules! foc_controller_tests {
+        ($mod_name:ident, $sincos:ty) => {
+            mod $mod_name {
+                use super::*;
 
-        // Duties should be near mid-scale for zero voltage command
-        for duty in telem.duties {
-            assert!((490..=510).contains(&duty));
-        }
-        assert!((telem.id).abs() < 1e-6);
-        assert!((telem.iq).abs() < 1e-6);
+                #[test]
+                fn zero_currents_zero_setpoint_centered_pwm() {
+                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(24.0);
+                    let telem = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 0.0, 1000, DT);
+
+                    for duty in telem.duties {
+                        assert!((490..=510).contains(&duty));
+                    }
+                    assert!((telem.id).abs() < 1e-6);
+                    assert!((telem.iq).abs() < 1e-6);
+                }
+
+                #[test]
+                fn positive_q_axis_command_generates_voltage() {
+                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(48.0);
+                    let telem = foc.step((0.0, 0.0, 0.0), 1.0, 0.0, 5.0, 1200, DT);
+
+                    assert!(telem.vq > 0.0);
+                    assert!(telem.duties.iter().all(|d| *d <= 1200));
+                }
+
+                #[test]
+                fn modulation_limit_is_respected() {
+                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(30.0)
+                        .with_modulation_limit(0.25);
+                    let telem = foc.step((2.0, -1.0, -1.0), 0.7, 0.0, 20.0, 800, DT);
+
+                    let v_limit = foc.vbus() * foc.modulation_limit();
+                    let v_mag = ::libm::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+                    assert!(
+                        v_mag <= v_limit + 1e-6,
+                        "voltage magnitude {} exceeds limit {}",
+                        v_mag,
+                        v_limit
+                    );
+                }
+
+                #[test]
+                fn from_motor_params_computes_correct_gains() {
+                    let foc = FocController::<SvpwmModulator, $sincos>::from_motor_params(
+                        0.5, 5e-4, 24.0,
+                    );
+
+                    let mut foc = foc;
+                    let telem = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, 0.001);
+                    assert!(
+                        telem.vq > 0.4,
+                        "vq should reflect computed gains, got {}",
+                        telem.vq
+                    );
+                    assert!(telem.vq < 1.5, "vq should be reasonable, got {}", telem.vq);
+
+                    let v_limit =
+                        24.0 * FocController::<SvpwmModulator, $sincos>::DEFAULT_MODULATION_LIMIT;
+                    let telem_saturated = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 100.0, 1000, 0.001);
+                    let v_mag = ::libm::sqrtf(
+                        telem_saturated.vd * telem_saturated.vd
+                            + telem_saturated.vq * telem_saturated.vq,
+                    );
+                    assert!(
+                        v_mag <= v_limit + 1e-3,
+                        "voltage magnitude should be limited to {}, got {}",
+                        v_limit,
+                        v_mag
+                    );
+                }
+
+                #[test]
+                fn from_motor_params_with_custom_bandwidth() {
+                    let foc_default = FocController::<SvpwmModulator, $sincos>::from_motor_params(
+                        0.5, 5e-4, 24.0,
+                    );
+                    let foc_fast =
+                        FocController::<SvpwmModulator, $sincos>::from_motor_params_with_bw(
+                            0.5, 5e-4, 24.0, 2000.0,
+                        );
+
+                    let mut foc_d = foc_default;
+                    let mut foc_f = foc_fast;
+
+                    let telem_d = foc_d.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, DT);
+                    let telem_f = foc_f.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, DT);
+
+                    assert!(
+                        telem_f.vq > telem_d.vq * 1.5,
+                        "Higher bandwidth should give stronger response: {} vs {}",
+                        telem_f.vq,
+                        telem_d.vq
+                    );
+                }
+            }
+        };
     }
 
-    #[test]
-    fn positive_q_axis_command_generates_voltage() {
-        let mut foc = FocController::<SvpwmModulator>::new(48.0);
-        let telem = foc.step((0.0, 0.0, 0.0), 1.0, 0.0, 5.0, 1200, DT);
-
-        assert!(telem.vq > 0.0);
-        assert!(telem.duties.iter().all(|d| *d <= 1200));
-    }
-
-    #[test]
-    fn modulation_limit_is_respected() {
-        let mut foc = FocController::<SvpwmModulator>::new(30.0).with_modulation_limit(0.25);
-        let telem = foc.step((2.0, -1.0, -1.0), 0.7, 0.0, 20.0, 800, DT);
-
-        // Circular constraint: sqrt(vd² + vq²) ≤ v_limit
-        let v_limit = foc.vbus() * foc.modulation_limit();
-        let v_mag = libm::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
-        assert!(
-            v_mag <= v_limit + 1e-6,
-            "voltage magnitude {} exceeds limit {}",
-            v_mag,
-            v_limit
-        );
-    }
-
-    #[test]
-    fn from_motor_params_computes_correct_gains() {
-        // R = 0.5 Ω, L = 0.5 mH, vbus = 24 V, default bandwidth = 1000 rad/s
-        let foc = FocController::<SvpwmModulator>::from_motor_params(0.5, 5e-4, 24.0);
-
-        // Kp = L × ω = 5e-4 × 1000 = 0.5
-        // Ki = R × ω = 0.5 × 1000 = 500
-        // We can't read gains directly, but we can verify behavior:
-        // A 1A error at dt=0.001 should produce output ≈ kp*1 + ki*1*0.001 = 0.5 + 0.5 = 1.0
-        let mut foc = foc;
-        let telem = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, 0.001);
-        // vq should be positive and around 1.0 (kp*error + ki*error*dt)
-        assert!(
-            telem.vq > 0.4,
-            "vq should reflect computed gains, got {}",
-            telem.vq
-        );
-        assert!(telem.vq < 1.5, "vq should be reasonable, got {}", telem.vq);
-
-        // Circular limit: sqrt(vd² + vq²) ≤ vbus*modulation_limit = 24*0.577 ≈ 13.85
-        let v_limit = 24.0 * FocController::<SvpwmModulator>::DEFAULT_MODULATION_LIMIT;
-        let telem_saturated = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 100.0, 1000, 0.001);
-        let v_mag = libm::sqrtf(
-            telem_saturated.vd * telem_saturated.vd + telem_saturated.vq * telem_saturated.vq,
-        );
-        assert!(
-            v_mag <= v_limit + 1e-3,
-            "voltage magnitude should be limited to {}, got {}",
-            v_limit,
-            v_mag
-        );
-    }
-
-    #[test]
-    fn from_motor_params_with_custom_bandwidth() {
-        // Higher bandwidth should give proportionally higher gains
-        let foc_default = FocController::<SvpwmModulator>::from_motor_params(0.5, 5e-4, 24.0);
-        let foc_fast =
-            FocController::<SvpwmModulator>::from_motor_params_with_bw(0.5, 5e-4, 24.0, 2000.0);
-
-        let mut foc_d = foc_default;
-        let mut foc_f = foc_fast;
-
-        let telem_d = foc_d.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, DT);
-        let telem_f = foc_f.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, DT);
-
-        // 2× bandwidth → 2× Kp → ~2× initial voltage response
-        assert!(
-            telem_f.vq > telem_d.vq * 1.5,
-            "Higher bandwidth should give stronger response: {} vs {}",
-            telem_f.vq,
-            telem_d.vq
-        );
-    }
+    foc_controller_tests!(libm, LibmSinCos);
+    foc_controller_tests!(fast, FastSinCos);
 }
