@@ -3,7 +3,7 @@ target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
 runner = ["bash", "../scripts/probe_run_f405.sh"]
-rustflags = ["-C", "target-feature=+vfp2"]
+rustflags = ["-C", "target-feature=+vfp2,-fp64"]
 
 [env]
 # Default to chatty defmt logs while bringup

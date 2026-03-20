@@ -18,6 +18,7 @@ cortex-m-rt = "0.7.5"
 
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 
 embedded-test = { version = "0.7", features = ["defmt", "external-executor", "embassy", "panic-handler"] }
 libm = { version = "0.2", default-features = false }

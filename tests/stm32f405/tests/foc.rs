@@ -16,8 +16,23 @@ mod tests {
     };
 
     const MAX_TRIG_ERR: f32 = 1e-5;
+    const SYSCLK_HZ: u32 = 168_000_000;
 
     struct TestState;
+
+    fn enable_dwt() {
+        unsafe {
+            let demcr = 0xE000_EDFC as *mut u32;
+            core::ptr::write_volatile(demcr, core::ptr::read_volatile(demcr) | (1 << 24));
+            core::ptr::write_volatile(0xE000_1004 as *mut u32, 0);
+            let ctrl = 0xE000_1000 as *mut u32;
+            core::ptr::write_volatile(ctrl, core::ptr::read_volatile(ctrl) | 1);
+        }
+    }
+
+    fn dwt_cycles() -> u32 {
+        unsafe { core::ptr::read_volatile(0xE000_1004 as *const u32) }
+    }
 
     #[init]
     fn init() -> TestState {
@@ -44,6 +59,7 @@ mod tests {
         config.rcc.sys = Sysclk::PLL1_P;
 
         let _dp = embassy_stm32::init(config);
+        enable_dwt();
         TestState
     }
 
@@ -91,6 +107,45 @@ mod tests {
         defmt::info!("Transform round-trip: PASS");
     }
 
+    // ========== FOC zero currents ==========
+
+    #[test]
+    fn foc_zero_currents(_state: TestState) {
+        let mut foc = FocController::<SvpwmModulator>::new(12.0);
+        let max_duty: u16 = 1000;
+        let dt = 50e-6_f32;
+
+        for &angle in &[0.0_f32, FRAC_PI_4, PI, 5.0] {
+            let telem = foc.step((0.0, 0.0, 0.0), angle, 0.0, 0.0, max_duty, dt);
+            let center = max_duty / 2;
+            let tolerance = max_duty / 10;
+            for (i, &duty) in telem.duties.iter().enumerate() {
+                let diff = if duty > center { duty - center } else { center - duty };
+                defmt::assert!(diff <= tolerance, "angle {}: duty[{}] = {}", angle, i, duty);
+            }
+        }
+        defmt::info!("FOC zero currents: PASS");
+    }
+
+    // ========== FOC synthetic current ==========
+
+    #[test]
+    fn foc_synthetic_current(_state: TestState) {
+        let mut foc = FocController::<SvpwmModulator>::new(24.0);
+        let max_duty: u16 = 2000;
+        let dt = 50e-6_f32;
+
+        let mut last = foc.step((1.0, -0.5, -0.5), 0.0, 0.0, 0.0, max_duty, dt);
+        for _ in 0..10 {
+            last = foc.step((1.0, -0.5, -0.5), 0.0, 0.0, 0.0, max_duty, dt);
+        }
+
+        defmt::assert!(last.vd < 0.0, "Expected negative vd, got {}", last.vd);
+        let all_same = last.duties[0] == last.duties[1] && last.duties[1] == last.duties[2];
+        defmt::assert!(!all_same, "Duties should differ: {:?}", last.duties);
+        defmt::info!("FOC synthetic current: PASS (vd={}, duties={:?})", last.vd, last.duties);
+    }
+
     // ========== SVPWM sector coverage ==========
 
     #[test]
@@ -114,29 +169,52 @@ mod tests {
         defmt::info!("SVPWM all sectors: PASS");
     }
 
-    // ========== FOC pipeline (manual decomposition) ==========
-    // NOTE: FocController::step() causes a HardFault on F405 via DAPLink probe.
-    // Individual operations (Clarke, Park, PI, SVPWM) all work — the issue is
-    // specific to the composed step() call. Needs debugger investigation.
-    // The manual decomposition below verifies the full pipeline works.
+    // ========== Benchmark: full FOC step at 168MHz (libm sin/cos) ==========
 
     #[test]
-    fn foc_pipeline_manual(_state: TestState) {
+    fn z_bench_foc_step(_state: TestState) {
         let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        let max_duty: u16 = 1000;
+        let max_duty: u16 = 2000;
         let dt = 50e-6_f32;
 
-        let (alpha, beta) = transforms::clarke(1.0, -0.5);
-        let (sin, cos) = LibmSinCos::sin_cos(0.5);
-        let (id, iq) = transforms::park(alpha, beta, sin, cos);
-        let vd = foc.id_pi.update(0.0, id, dt);
-        let vq = foc.iq_pi.update(2.0, iq, dt);
-        let (va, vb) = transforms::inverse_park(vd, vq, sin, cos);
-        let duties = oxifoc_core::foc::svpwm::space_vector_pwm(va / 24.0, vb / 24.0, max_duty);
-
-        for &d in &duties {
-            defmt::assert!(d <= max_duty, "duty {} > max {}", d, max_duty);
+        // Warm up
+        for i in 0..20u32 {
+            foc.step((1.0, -0.5, -0.5), (i as f32) * 0.1, 0.5, 2.0, max_duty, dt);
         }
-        defmt::info!("FOC pipeline manual: PASS (duties={:?})", duties);
+
+        const N: u32 = 1000;
+        let mut min_cycles = u32::MAX;
+        let mut max_cycles = 0u32;
+        let mut total_cycles = 0u64;
+
+        for i in 0..N {
+            let angle = (i as f32) * 0.00628;
+            let ia = 1.5 + (i as f32) * 0.001;
+            let ib = -0.75 - (i as f32) * 0.0005;
+            let ic = -ia - ib;
+
+            let start = dwt_cycles();
+            let result = foc.step((ia, ib, ic), angle, 0.5, 2.0, max_duty, dt);
+            let end = dwt_cycles();
+            core::hint::black_box(&result);
+
+            let elapsed = end.wrapping_sub(start);
+            total_cycles += elapsed as u64;
+            if elapsed < min_cycles { min_cycles = elapsed; }
+            if elapsed > max_cycles { max_cycles = elapsed; }
+        }
+
+        let avg_cycles = (total_cycles / N as u64) as u32;
+        let avg_ns = (avg_cycles as u64 * 1_000_000_000) / SYSCLK_HZ as u64;
+        let min_ns = (min_cycles as u64 * 1_000_000_000) / SYSCLK_HZ as u64;
+        let max_ns = (max_cycles as u64 * 1_000_000_000) / SYSCLK_HZ as u64;
+        let budget_cycles = SYSCLK_HZ / 20_000;
+        let utilization = (avg_cycles as u64 * 100) / budget_cycles as u64;
+
+        defmt::info!("=== FOC step benchmark ({} iterations @ {}MHz, libm sin/cos) ===", N, SYSCLK_HZ / 1_000_000);
+        defmt::info!("  avg: {} cycles ({} ns)", avg_cycles, avg_ns);
+        defmt::info!("  min: {} cycles ({} ns)", min_cycles, min_ns);
+        defmt::info!("  max: {} cycles ({} ns)", max_cycles, max_ns);
+        defmt::info!("  50us budget: {} cycles, utilization: {}%", budget_cycles, utilization);
     }
 }

@@ -6,5 +6,6 @@ fn main() {
     println!("cargo:rustc-link-arg=--nmagic");
     println!("cargo:rustc-link-arg=-Tlink.x");
     println!("cargo:rustc-link-arg=-Tdefmt.x");
-    println!("cargo:rustc-link-arg=-Tembedded-test.x");
+    // embedded-test.x only for test harness, not for the standalone binary
+    println!("cargo:rustc-link-arg-tests=-Tembedded-test.x");
 }
