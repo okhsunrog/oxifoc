@@ -108,6 +108,37 @@ fn motor_catalog() -> Vec<MotorDef> {
             vbus: 72.0,
             motor_size: MotorSize::Large,
         },
+        // IPM motors (Ld ≠ Lq) — saliency test
+        MotorDef {
+            name: "IPM servo (mild)",
+            params: MotorParams {
+                r: 0.3,
+                ld: 3e-4, // Ld < Lq typical for IPM
+                lq: 5e-4,
+                lambda: 0.012,
+                pole_pairs: 4,
+                j: 5e-4,
+                friction_b: 1e-4,
+                hall_offset: 0.0,
+            },
+            vbus: 48.0,
+            motor_size: MotorSize::Medium,
+        },
+        MotorDef {
+            name: "IPM traction (strong)",
+            params: MotorParams {
+                r: 0.02,
+                ld: 1e-4, // strong saliency: Lq/Ld = 3
+                lq: 3e-4,
+                lambda: 0.02,
+                pole_pairs: 4,
+                j: 2e-3,
+                friction_b: 1e-3,
+                hall_offset: 0.0,
+            },
+            vbus: 96.0,
+            motor_size: MotorSize::Large,
+        },
         MotorDef {
             name: "NEMA23 stepper-servo",
             params: MotorParams {
