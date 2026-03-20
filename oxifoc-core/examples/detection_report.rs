@@ -622,10 +622,16 @@ fn main() {
     }
     println!();
 
-    // Benchmark 3: Driven flux — q-axis vs magnitude (VESC-style)
-    println!("3) Driven flux: q-axis (ours) vs magnitude (VESC-style):");
-    println!("  {:<22} {:>14} {:>14}", "Motor", "q-axis", "magnitude");
-    println!("  {:-<22} {:->14} {:->14}", "", "", "");
+    // Benchmark 3: Driven flux — q-axis vs magnitude vs auto-pick
+    println!("3) Driven flux fallback: q-axis vs magnitude vs auto-pick (I*L/lm threshold):");
+    println!(
+        "  {:<22} {:>10} {:>10} {:>14} {:>7}",
+        "Motor", "q-axis", "magnit.", "picked", "I*L/lm"
+    );
+    println!(
+        "  {:-<22} {:->10} {:->10} {:->14} {:->7}",
+        "", "", "", "", ""
+    );
     for def in &catalog {
         let p = def.params;
         let flux_params = FluxLinkageParams {
@@ -659,7 +665,26 @@ fn main() {
             Err(_) => "FAIL".to_string(),
         };
 
-        println!("  {:<22} {:>14} {:>14}", def.name, q_s, m_s);
+        // Auto-pick: I·L/λ < 0.05 → magnitude, else → q-axis
+        let i_l_ratio = flux_params.current_a * l_avg / p.lambda;
+        let pick_s = match (qaxis, mag) {
+            (Ok(q), Ok(m)) => {
+                let (val, tag) = if i_l_ratio < 0.05 {
+                    (m, "mag")
+                } else {
+                    (q, "q")
+                };
+                format!("{:+.1}%({})", err_pct(val, p.lambda), tag)
+            }
+            (Ok(q), Err(_)) => format!("{:+.1}%(q)", err_pct(q, p.lambda)),
+            (Err(_), Ok(m)) => format!("{:+.1}%(mag)", err_pct(m, p.lambda)),
+            (Err(_), Err(_)) => "FAIL".to_string(),
+        };
+
+        println!(
+            "  {:<22} {:>10} {:>10} {:>14} {:>7.3}",
+            def.name, q_s, m_s, pick_s, i_l_ratio
+        );
     }
 
     println!();

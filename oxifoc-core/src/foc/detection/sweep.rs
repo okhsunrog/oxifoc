@@ -778,9 +778,34 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
     match measure_flux_linkage_spindown::<H, T>(hw, &flux_params).await {
         Ok(flux) => result.params.flux_linkage_wb = flux,
         Err(DetectionError::InsufficientSamples) => {
-            info!("Spin-down failed (motor stopped too fast), falling back to driven method");
+            // Motor can't coast — fall back to driven measurement.
+            // Try both q-axis and magnitude methods, pick the better one.
+            info!("Spin-down failed (motor stopped too fast), falling back to driven methods");
             T::after_millis(500).await;
-            result.params.flux_linkage_wb = measure_flux_linkage::<H, T>(hw, &flux_params).await?;
+
+            let lam_q = measure_flux_linkage::<H, T>(hw, &flux_params).await;
+            T::after_millis(500).await;
+            let l_avg = result.params.inductance_avg_h;
+            let lam_m = measure_flux_linkage_magnitude::<H, T>(hw, &flux_params, l_avg).await;
+
+            result.params.flux_linkage_wb = match (lam_q, lam_m) {
+                (Ok(q), Ok(m)) => {
+                    // Pick based on I·L/λ ratio: when the correction term
+                    // is small relative to the signal, the magnitude
+                    // (angle-invariant) method is more accurate.
+                    let i_l_ratio = flux_params.current_a * l_avg / q.abs().max(1e-6);
+                    if i_l_ratio < 0.05 {
+                        info!("Using magnitude flux (low I*L/lm ratio)");
+                        m
+                    } else {
+                        info!("Using q-axis flux (high I*L/lm ratio)");
+                        q
+                    }
+                }
+                (Ok(q), Err(_)) => q,
+                (Err(_), Ok(m)) => m,
+                (Err(_), Err(e)) => return Err(e),
+            };
         }
         Err(e) => return Err(e),
     }
