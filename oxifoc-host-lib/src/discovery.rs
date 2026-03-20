@@ -1,7 +1,7 @@
 //! Device discovery for oxifoc transports.
 //!
 //! Provides enumeration of available devices for each transport type:
-//! - Serial ports (via serialport crate)
+//! - Serial ports (via tokio_serial, which re-exports mio_serial/serialport)
 //! - Debug probes for RTT (via probe-rs)
 
 use probe_rs::probe::list::Lister;
@@ -71,12 +71,12 @@ impl fmt::Display for ProbeInfo {
 /// Returns information about each discovered port including USB metadata
 /// when available (VID, PID, serial number, manufacturer, product name).
 pub fn list_serial_ports() -> Vec<SerialPortInfo> {
-    match serialport::available_ports() {
+    match tokio_serial::available_ports() {
         Ok(ports) => ports
             .into_iter()
             .map(|port| {
                 let (vid, pid, serial_number, manufacturer, product) = match port.port_type {
-                    serialport::SerialPortType::UsbPort(usb_info) => (
+                    tokio_serial::SerialPortType::UsbPort(usb_info) => (
                         Some(usb_info.vid),
                         Some(usb_info.pid),
                         usb_info.serial_number,

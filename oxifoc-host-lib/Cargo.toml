@@ -10,7 +10,6 @@ ergot = { git = "https://github.com/okhsunrog/ergot", rev = "beebb2a", features 
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }
 tokio-serial = "5.4.4"
-serialport = "4.7"  # For port enumeration
 
 # RTT transport via probe-rs
 probe-rs = "0.28"
