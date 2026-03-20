@@ -1,12 +1,13 @@
 //! Transport abstraction for oxifoc host communication.
 //!
-//! This module provides a unified interface for different transport backends:
+//! Provides a unified interface for different transport backends:
 //! - Serial (UART over USB VCP)
 //! - RTT (via debug probe using probe-rs)
-//! - Future: USB (via nusb), BLE, TCP/UDP, CAN bus
+//! - TCP (for oxifoc-virtual or remote devices)
 
 pub mod rtt;
 pub mod serial;
+pub mod tcp;
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -21,12 +22,8 @@ pub enum TransportType {
     Serial,
     /// RTT via debug probe (probe-rs)
     Rtt,
-    // Future transports:
-    // Usb,
-    // Ble,
-    // Tcp,
-    // Udp,
-    // Can,
+    /// TCP connection (for oxifoc-virtual or remote devices)
+    Tcp,
 }
 
 /// Configuration for transport selection.
@@ -34,6 +31,7 @@ pub enum TransportType {
 pub enum TransportConfig {
     Serial { path: String, baud: u32 },
     Rtt { probe: Option<String>, chip: String },
+    Tcp { host: String, port: u16 },
 }
 
 /// A boxed transport that can be used for async I/O.
@@ -53,6 +51,7 @@ impl Transport {
         match config {
             TransportConfig::Serial { path, baud } => serial::connect(&path, baud).await,
             TransportConfig::Rtt { probe, chip } => rtt::connect(probe.as_deref(), &chip).await,
+            TransportConfig::Tcp { host, port } => tcp::connect(&host, port).await,
         }
     }
 }

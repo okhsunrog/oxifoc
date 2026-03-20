@@ -4,7 +4,7 @@ use std::{env, fs, path::PathBuf};
 
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct HostConfig {
-    /// Transport type: "serial" (default) or "rtt"
+    /// Transport type: "serial" (default), "rtt", or "tcp"
     pub transport: Option<TransportType>,
 
     // RTT transport options
@@ -14,6 +14,10 @@ pub struct HostConfig {
     // Serial transport options
     pub serial_path: Option<String>, // e.g. "/dev/ttyACM0"
     pub serial_baud: Option<u32>,    // e.g. 921600
+
+    // TCP transport options
+    pub tcp_host: Option<String>, // e.g. "127.0.0.1"
+    pub tcp_port: Option<u16>,    // e.g. 2025
 
     // Common options
     pub elf: Option<String>,        // path to device ELF with .defmt
@@ -89,6 +93,13 @@ impl HostConfig {
                     chip,
                 })
             }
+            TransportType::Tcp => Ok(TransportConfig::Tcp {
+                host: self
+                    .tcp_host
+                    .clone()
+                    .unwrap_or_else(|| "127.0.0.1".to_string()),
+                port: self.tcp_port.unwrap_or(2025),
+            }),
         }
     }
 }

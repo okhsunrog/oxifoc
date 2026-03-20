@@ -186,11 +186,9 @@ fn main() {
                     transport: Some(TransportType::Serial),
                     serial_path: Some(port.path.clone()),
                     serial_baud: Some(baud),
-                    probe: None,
-                    chip: None,
-                    elf: None,
                     stream_defmt: Some(true),
                     stream_ergot: Some(true),
+                    ..Default::default()
                 }
             } else {
                 let idx = app.get_selected_probe();
@@ -207,13 +205,11 @@ fn main() {
                 }
                 HostConfig {
                     transport: Some(TransportType::Rtt),
-                    serial_path: None,
-                    serial_baud: None,
                     probe: Some(probe.identifier.clone()),
                     chip: Some(chip),
-                    elf: None,
                     stream_defmt: Some(true),
                     stream_ergot: Some(true),
+                    ..Default::default()
                 }
             };
 

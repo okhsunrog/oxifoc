@@ -13,6 +13,7 @@ use oxifoc_host_lib::{
 enum Transport {
     Serial,
     Rtt,
+    Tcp,
 }
 
 #[derive(Parser)]
@@ -49,6 +50,14 @@ struct Cli {
     /// Target chip name (e.g., STM32G431CBUx). Required for RTT transport.
     #[arg(long)]
     chip: Option<String>,
+
+    /// TCP host (for TCP transport, default: 127.0.0.1)
+    #[arg(long)]
+    tcp_host: Option<String>,
+
+    /// TCP port (for TCP transport, default: 2025)
+    #[arg(long)]
+    tcp_port: Option<u16>,
 
     #[command(subcommand)]
     command: Command,
@@ -144,6 +153,7 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
         cfg.transport = Some(match transport {
             Transport::Serial => TransportType::Serial,
             Transport::Rtt => TransportType::Rtt,
+            Transport::Tcp => TransportType::Tcp,
         });
     }
 
@@ -159,6 +169,14 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
 
     if let Some(ref chip) = cli.chip {
         cfg.chip = Some(chip.clone());
+    }
+
+    if let Some(ref host) = cli.tcp_host {
+        cfg.tcp_host = Some(host.clone());
+    }
+
+    if let Some(port) = cli.tcp_port {
+        cfg.tcp_port = Some(port);
     }
 
     Ok(cfg)
