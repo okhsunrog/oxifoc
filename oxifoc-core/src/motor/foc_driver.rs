@@ -163,9 +163,9 @@ where
         let dt = self.dt;
         match self.mode {
             ControlMode::Stopped => {
-                // Disable PWM outputs
+                // Safe-off: all low-side ON (brake) or all OFF depending on
+                // platform.  `disable()` is the platform's emergency-stop.
                 self.pwm.disable();
-                // Still update phase provider for sensor tracking
                 self.phase.update(
                     &PhaseInput {
                         dt,
@@ -192,6 +192,24 @@ where
             }
             ControlMode::DirectVoltage { vd, vq, angle_rad } => {
                 self.step_direct_voltage(vd, vq, angle_rad, dt, now_ticks)
+            }
+            ControlMode::Coast => {
+                // High-Z: all FETs off, motor spins freely.
+                use super::super::foc::pwm::PhaseState;
+                self.pwm.set_phase_states([
+                    PhaseState::Float,
+                    PhaseState::Float,
+                    PhaseState::Float,
+                ]);
+                self.controller.reset();
+                self.phase.update(
+                    &PhaseInput {
+                        dt,
+                        ..Default::default()
+                    },
+                    now_ticks,
+                );
+                Ok(FocOutput::default())
             }
             ControlMode::SixStep { duty } => self.step_six_step(duty, dt, now_ticks),
         }

@@ -89,6 +89,11 @@ pub enum ControlMode {
         /// Electrical angle (radians)
         angle_rad: f32,
     },
+    /// Coast mode — all FETs off (high-impedance), motor spins freely.
+    ///
+    /// Used during spin-down flux linkage measurement.  Phase voltages
+    /// float so back-EMF can be read directly by ADC.
+    Coast,
     /// Six-step (trapezoidal) commutation mode
     ///
     /// Simple voltage-mode drive for board bringup and testing.

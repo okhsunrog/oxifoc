@@ -99,6 +99,12 @@ pub struct VirtualMotorOutput {
     /// [`crate::foc::hall_sensor::HallSensor`].  The state advances through
     /// the CW sequence 1 → 3 → 2 → 6 → 4 → 5 as the rotor spins forward.
     pub hall_state: u8,
+    /// Open-circuit back-EMF in α-β stator frame (V).
+    ///
+    /// `e_α = −ωe × λ × sin(φ)`, `e_β = ωe × λ × cos(φ)`.
+    /// Only physically meaningful when no current flows (coast mode).
+    pub bemf_alpha: f32,
+    pub bemf_beta: f32,
 }
 
 /// Dynamic PMSM model using forward-Euler integration in the dq frame.
@@ -145,7 +151,67 @@ impl VirtualMotor {
         self.cos_phi = libm::cosf(phi_rad);
     }
 
-    /// Run one simulation step.
+    /// Compute the Hall sensor raw state from the current rotor angle.
+    fn hall_state(&self) -> u8 {
+        use core::f32::consts::TAU;
+        let phi_pos = if self.phi < 0.0 {
+            self.phi + TAU
+        } else {
+            self.phi
+        };
+        let phi_hall = libm::fmodf(phi_pos - self.params.hall_offset + TAU, TAU);
+        let sector = ((phi_hall * 6.0 / TAU) as usize).min(5);
+        HALL_CW_RAW[sector]
+    }
+
+    /// Run one simulation step with all FETs off (high-impedance).
+    ///
+    /// No current flows.  The only torque is the external load plus
+    /// viscous friction.  The motor decelerates purely mechanically.
+    pub fn step_coast(&mut self, load_torque: f32, dt: f32) -> VirtualMotorOutput {
+        let p = &self.params;
+        let pp = p.pole_pairs as f32;
+
+        // Zero current — no electromagnetic torque
+        self.id = 0.0;
+        self.id_int = p.lambda / p.ld; // reset so id = id_int - λ/Ld = 0
+        self.iq = 0.0;
+
+        // Mechanical dynamics: only friction + external load
+        let friction_torque = (p.friction_b / pp) * self.omega_e;
+        self.omega_e -= dt * pp / p.j * (load_torque + friction_torque);
+
+        // Angle integration
+        self.phi += self.omega_e * dt;
+        self.phi = libm::remainderf(self.phi, 2.0 * core::f32::consts::PI);
+        self.sin_phi = libm::sinf(self.phi);
+        self.cos_phi = libm::cosf(self.phi);
+
+        let bemf_alpha = -self.omega_e * p.lambda * self.sin_phi;
+        let bemf_beta = self.omega_e * p.lambda * self.cos_phi;
+
+        VirtualMotorOutput {
+            ia: 0.0,
+            ib: 0.0,
+            ic: 0.0,
+            angle_rad: self.phi,
+            omega_e: self.omega_e,
+            torque: 0.0,
+            hall_state: self.hall_state(),
+            bemf_alpha,
+            bemf_beta,
+        }
+    }
+
+    /// Run one simulation step with shorted terminals (V = 0).
+    ///
+    /// All low-side FETs on: the motor windings are short-circuited.
+    /// Currents circulate creating strong braking torque.
+    pub fn step_shorted(&mut self, load_torque: f32, dt: f32) -> VirtualMotorOutput {
+        self.step(0.0, 0.0, load_torque, dt)
+    }
+
+    /// Run one simulation step with a voltage source connected.
     ///
     /// # Arguments
     /// * `v_alpha`      – α-axis voltage applied to the motor (V)
@@ -200,20 +266,11 @@ impl VirtualMotor {
         let i_beta = self.cos_phi * self.iq + self.sin_phi * self.id;
         let (ia, ib, ic) = inverse_clarke(i_alpha, i_beta);
 
-        // ── Hall sensor simulation ────────────────────────────────────────────
-        // phi is in (−π, π].  Convert to [0, 2π) then apply the mounting
-        // offset, and map the resulting electrical angle to one of the 6 CW
-        // sectors.  Each sector spans TAU/6 electrical radians.
-        use core::f32::consts::TAU;
-        let phi_pos = if self.phi < 0.0 {
-            self.phi + TAU
-        } else {
-            self.phi
-        };
-        // fmodf keeps the result in [0, TAU) even when hall_offset > phi_pos
-        let phi_hall = libm::fmodf(phi_pos - p.hall_offset + TAU, TAU);
-        let sector = ((phi_hall * 6.0 / TAU) as usize).min(5);
-        let hall_state = HALL_CW_RAW[sector];
+        let hall_state = self.hall_state();
+
+        // Open-circuit back-EMF: e = ωe × λ × [−sin(φ), cos(φ)]
+        let bemf_alpha = -self.omega_e * p.lambda * self.sin_phi;
+        let bemf_beta = self.omega_e * p.lambda * self.cos_phi;
 
         VirtualMotorOutput {
             ia,
@@ -223,6 +280,8 @@ impl VirtualMotor {
             omega_e: self.omega_e,
             torque,
             hall_state,
+            bemf_alpha,
+            bemf_beta,
         }
     }
 }

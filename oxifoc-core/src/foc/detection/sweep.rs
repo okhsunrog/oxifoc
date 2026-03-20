@@ -30,7 +30,7 @@
 
 use core::future::Future;
 
-use super::flux_linkage::FluxLinkageMeasurement;
+use super::flux_linkage::{FluxLinkageMeasurement, SpinDownFluxMeasurement};
 use super::inductance::{HfiInjector, InductanceMeasurement};
 use super::pi_tuning::{calculate_foc_gains, estimate_bandwidth};
 use super::resistance::ResistanceMeasurement;
@@ -66,6 +66,20 @@ pub trait DetectionHardware {
     /// Used for HFI inductance measurement where we need α-β currents
     /// without going through the full FOC telemetry path.
     fn read_phase_currents(&self) -> (f32, f32, f32);
+
+    /// Read coast-down telemetry: back-EMF voltages and angular velocity.
+    ///
+    /// Returns `(v_alpha, v_beta, omega_e)` where:
+    /// - `v_alpha`, `v_beta` are open-circuit back-EMF in the αβ frame (V)
+    /// - `omega_e` is electrical angular velocity (rad/s)
+    ///
+    /// Called during spin-down flux linkage measurement when all FETs are
+    /// off.  On real hardware: ADC reads phase voltage dividers, Hall or
+    /// observer provides ωe.  Default returns zeros (triggers fallback to
+    /// driven measurement).
+    fn read_coast_telemetry(&self) -> (f32, f32, f32) {
+        (0.0, 0.0, 0.0)
+    }
 }
 
 // ============================================================================
@@ -234,6 +248,8 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer>(
     // The captured vd_hold maintains the holding force, HFI injection is added on top.
     let mut first_iteration = true;
     let mut prev_injection_angle = 0.0f32;
+    let mut prev_v_alpha_inj = 0.0f32;
+    let mut prev_v_beta_inj = 0.0f32;
 
     while !measurement.is_complete() {
         // Wait for current PWM cycle to complete (synced to ADC ISR)
@@ -243,9 +259,15 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer>(
         let (ia, ib, _ic) = hw.read_phase_currents();
         let (i_alpha, i_beta) = transforms::clarke(ia, ib);
 
-        // Record sample (skip first iteration - no previous injection yet)
+        // Record sample with the injection voltage that caused this current
         if !first_iteration {
-            measurement.record(i_alpha, i_beta, prev_injection_angle);
+            measurement.record(
+                i_alpha,
+                i_beta,
+                prev_injection_angle,
+                prev_v_alpha_inj,
+                prev_v_beta_inj,
+            );
         }
 
         // Calculate and send NEXT injection command
@@ -260,6 +282,8 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer>(
         });
 
         prev_injection_angle = injection_angle;
+        prev_v_alpha_inj = v_alpha_inj;
+        prev_v_beta_inj = v_beta_inj;
         first_iteration = false;
     }
 
@@ -393,6 +417,84 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
     Ok(flux_linkage)
 }
 
+/// Measure flux linkage using spin-down (undriven) back-EMF.
+///
+/// Spins the motor to target speed, releases all FETs (coast), and
+/// measures the open-circuit back-EMF during deceleration.
+///
+///   `λ = |V_bemf| / |ωe|`
+///
+/// This method does **not** depend on resistance or inductance.
+///
+/// Returns `Err(InsufficientSamples)` if the motor decelerates too
+/// quickly for enough valid samples — the caller should fall back to
+/// the driven [`measure_flux_linkage`] in that case.
+pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    params: &FluxLinkageParams,
+) -> Result<f32, DetectionError> {
+    info!("Starting spin-down flux linkage measurement...");
+
+    let target_omega_e = params.spin_rpm * core::f32::consts::TAU * params.pole_pairs as f32 / 60.0;
+
+    // ── Spin-up (open-loop ramp, same as driven method) ────────────────
+    let ramp_steps = 100u32;
+    let ramp_delay_ms = params.ramp_time_ms / ramp_steps;
+    let mut current_angle = 0.0f32;
+
+    for i in 1..=ramp_steps {
+        let progress = i as f32 / ramp_steps as f32;
+        let omega = target_omega_e * progress;
+        let dt = params.ramp_time_ms as f32 / 1000.0 / ramp_steps as f32;
+        current_angle += omega * dt;
+        current_angle %= core::f32::consts::TAU;
+
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: current_angle,
+            current: params.current_a,
+        });
+        T::after_millis(ramp_delay_ms as u64).await;
+    }
+
+    // Hold at speed briefly to ensure steady state
+    T::after_millis(params.settle_time_ms as u64).await;
+
+    // ── Release: coast with all FETs off ───────────────────────────────
+    hw.send_command(ControlMode::Coast);
+
+    // Wait for currents to decay (a few L/R time constants)
+    T::after_millis(20).await;
+
+    // ── Sample back-EMF during coast-down ──────────────────────────────
+    let min_omega = 50.0f32; // ~475 eRPM for 7pp — below this ADC noise dominates
+    let mut measurement = SpinDownFluxMeasurement::new(params.num_samples, min_omega);
+
+    let max_coast_samples = 10_000u32; // safety limit
+    for _ in 0..max_coast_samples {
+        hw.wait_telemetry().await; // advance one FOC cycle
+        T::after_micros(500).await; // ~2 kHz effective sample rate
+
+        let (v_alpha, v_beta, omega_e) = hw.read_coast_telemetry();
+        let v_bemf = libm::sqrtf(v_alpha * v_alpha + v_beta * v_beta);
+
+        if !measurement.record(v_bemf, omega_e) {
+            // omega below threshold — motor has slowed too much
+            break;
+        }
+        if measurement.has_enough_samples() {
+            break;
+        }
+    }
+
+    // ── Stop ───────────────────────────────────────────────────────────
+    hw.send_command(ControlMode::Stopped);
+    T::after_millis(100).await;
+
+    let flux = measurement.finish()?;
+    info!("Spin-down flux linkage measurement complete");
+    Ok(flux)
+}
+
 // ============================================================================
 // Full Detection Sequence
 // ============================================================================
@@ -432,10 +534,11 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
 
     T::after_millis(500).await;
 
-    // Step 2: Measure inductance
+    // Step 2: Measure inductance (using measured R for compensation)
     info!("Step 2/4: Inductance measurement");
     let inductance_params = InductanceParams {
         motor_size: params.motor_size,
+        resistance_ohm: result.params.resistance_ohm,
         ..Default::default()
     };
     let (ld, lq) = measure_inductance::<H, T>(hw, &inductance_params, params.pwm_freq_hz).await?;
@@ -446,15 +549,24 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
 
     T::after_millis(500).await;
 
-    // Step 3: Measure flux linkage
-    info!("Step 3/4: Flux linkage measurement");
+    // Step 3: Measure flux linkage — try spin-down (R-independent) first,
+    // fall back to driven method if the motor decelerates too quickly.
     let flux_params = FluxLinkageParams {
         motor_size: params.motor_size,
         resistance_ohm: result.params.resistance_ohm,
         pole_pairs: params.pole_pairs,
         ..Default::default()
     };
-    result.params.flux_linkage_wb = measure_flux_linkage::<H, T>(hw, &flux_params).await?;
+    info!("Step 3/4: Flux linkage measurement (spin-down)");
+    match measure_flux_linkage_spindown::<H, T>(hw, &flux_params).await {
+        Ok(flux) => result.params.flux_linkage_wb = flux,
+        Err(DetectionError::InsufficientSamples) => {
+            info!("Spin-down failed (motor stopped too fast), falling back to driven method");
+            T::after_millis(500).await;
+            result.params.flux_linkage_wb = measure_flux_linkage::<H, T>(hw, &flux_params).await?;
+        }
+        Err(e) => return Err(e),
+    }
     result.params.calculate_kv();
 
     // Step 4: Calculate PI gains

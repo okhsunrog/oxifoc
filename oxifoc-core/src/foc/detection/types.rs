@@ -246,6 +246,11 @@ pub struct InductanceParams {
 
     /// Time to wait for settling (milliseconds)
     pub settle_time_ms: u32,
+
+    /// Previously measured phase resistance (Ohms).
+    /// Used to compensate for the resistive voltage drop in the 1/L
+    /// calculation.  Set to 0.0 when unknown.
+    pub resistance_ohm: f32,
 }
 
 impl Default for InductanceParams {
@@ -257,6 +262,7 @@ impl Default for InductanceParams {
             hold_current_a: 2.0,
             num_cycles: 100,
             settle_time_ms: 200,
+            resistance_ohm: 0.0,
         }
     }
 }

@@ -45,9 +45,14 @@ pub const FFT_SIZE: usize = 32;
 /// which appears at FFT bin 2.
 const HFI_CYCLES_PER_FFT: usize = 1;
 
-/// Scale factor applied to measured inductance for stability (from VESC).
-/// The observer is more stable when inductance is slightly underestimated.
-const INDUCTANCE_SCALE_FACTOR: f32 = 0.9;
+/// Scale factor applied to measured inductance.
+///
+/// Set to 1.0 (no scaling) — the measurement should report the true value.
+/// Downstream code (e.g. the flux observer) can apply its own stability
+/// margin if needed.  A previous value of 0.9 (from VESC) was compensating
+/// for systematic overestimation that has since been fixed by proper HFI
+/// carrier demodulation and resistance compensation.
+const INDUCTANCE_SCALE_FACTOR: f32 = 1.0;
 
 /// Minimum valid inductance in Henries
 const MIN_VALID_INDUCTANCE: f32 = 1e-7; // 0.1 µH
@@ -187,6 +192,14 @@ impl HfiInjector {
 ///
 /// Collects inverse inductance samples during rotating injection,
 /// then uses FFT to extract Ld and Lq from the frequency components.
+///
+/// The `record()` method accepts the injection voltage that caused the
+/// measured current change.  Dividing `di` by the actual instantaneous
+/// voltage (instead of the peak amplitude) cancels the HFI carrier
+/// modulation, producing clean `1/L(θ)` samples for the FFT.  When
+/// the phase resistance is known, it is subtracted from the voltage
+/// to remove the resistive contamination that would otherwise create
+/// false saliency in SPM motors.
 #[derive(Clone)]
 pub struct InductanceMeasurement {
     /// FFT input buffer for inverse inductance samples (1/L)
@@ -212,8 +225,13 @@ pub struct InductanceMeasurement {
     total_samples: u32,
     /// PWM/sampling frequency in Hz (used for 1/L calculation)
     pwm_freq_hz: f32,
-    /// Injection voltage amplitude
+    /// Injection voltage amplitude (used only as fallback/threshold)
     voltage_amplitude: f32,
+    /// Previously measured phase resistance (Ω) for compensation.
+    /// Set to 0 when unknown.
+    resistance_ohm: f32,
+    /// DC holding current (A) for separating AC from DC in R compensation.
+    hold_current: f32,
     /// Is this the first sample? (skip differential on first)
     first_sample: bool,
 }
@@ -243,27 +261,41 @@ impl InductanceMeasurement {
             total_samples: 0,
             pwm_freq_hz,
             voltage_amplitude: params.hfi_voltage_v,
+            resistance_ohm: params.resistance_ohm,
+            hold_current: params.hold_current_a,
             first_sample: true,
         }
     }
 
-    /// Record a current sample.
+    /// Record a current sample together with the injection voltage that
+    /// caused it.
+    ///
+    /// The injection voltage is used to cancel the HFI carrier modulation
+    /// from the `1/L` samples, and — when phase resistance is known — to
+    /// subtract the resistive voltage drop.
     ///
     /// # Arguments
-    /// * `i_alpha` - Measured alpha-axis current in Amps (stator frame)
-    /// * `i_beta` - Measured beta-axis current in Amps (stator frame)
-    /// * `injection_angle` - Current injection angle from HfiInjector
+    /// * `i_alpha`, `i_beta` - Measured α/β current (A)
+    /// * `injection_angle` - Injection direction angle from [`HfiInjector`]
+    /// * `v_inj_alpha`, `v_inj_beta` - Injection voltage (V) applied at the
+    ///   **previous** time-step (the one that produced the current being
+    ///   measured now).
     ///
     /// # Returns
-    /// `true` if a complete FFT cycle was just processed
+    /// `true` when a complete FFT window has been processed.
     #[cfg(feature = "microfft")]
-    pub fn record(&mut self, i_alpha: f32, i_beta: f32, injection_angle: f32) -> bool {
-        // Track total current for validation
+    pub fn record(
+        &mut self,
+        i_alpha: f32,
+        i_beta: f32,
+        injection_angle: f32,
+        v_inj_alpha: f32,
+        v_inj_beta: f32,
+    ) -> bool {
         let i_magnitude = libm::sqrtf(i_alpha * i_alpha + i_beta * i_beta);
         self.current_sum += i_magnitude;
         self.total_samples += 1;
 
-        // Skip first sample (no valid differential)
         if self.first_sample {
             self.prev_i_alpha = i_alpha;
             self.prev_i_beta = i_beta;
@@ -272,36 +304,45 @@ impl InductanceMeasurement {
             return false;
         }
 
-        // Calculate differential current
+        // Differential current
         let di_alpha = i_alpha - self.prev_i_alpha;
         let di_beta = i_beta - self.prev_i_beta;
 
-        // Project di onto the injection direction
-        // This gives us the component of current change in the direction we're injecting
+        // Project di and the previous voltage onto the injection direction
         let cos_angle = libm::cosf(self.prev_injection_angle);
         let sin_angle = libm::sinf(self.prev_injection_angle);
         let di_projected = di_alpha * cos_angle + di_beta * sin_angle;
+        let v_projected = v_inj_alpha * cos_angle + v_inj_beta * sin_angle;
 
-        // Calculate inverse inductance: 1/L = (f_sample × di) / V
-        // For an inductor: V = L × (di/dt)
-        // With discrete sampling: di/dt ≈ di × f_sample
-        // Therefore: 1/L = (di × f_sample) / V
-        let inverse_l = if self.voltage_amplitude > 1e-6 {
-            (self.pwm_freq_hz * di_projected) / self.voltage_amplitude
+        // Resistance compensation: subtract R × i_AC from the voltage.
+        // The DC holding current does NOT contribute to di so it must be
+        // excluded.  At injection angle θ the DC hold projects as
+        // i_hold·cos(θ); the remainder is the AC ripple caused by HFI.
+        let i_projected = self.prev_i_alpha * cos_angle + self.prev_i_beta * sin_angle;
+        let i_hold_proj = self.hold_current * libm::cosf(self.prev_injection_angle);
+        let i_ac_proj = i_projected - i_hold_proj;
+        let v_inductive = v_projected - self.resistance_ohm * i_ac_proj;
+
+        // Clamp to avoid division by near-zero at carrier zero-crossings.
+        let min_v = self.voltage_amplitude * 0.1;
+        let inverse_l = if v_inductive.abs() > min_v {
+            (self.pwm_freq_hz * di_projected) / v_inductive
         } else {
-            0.0
+            // Carrier near zero crossing — carry forward the last valid sample
+            if self.sample_idx > 0 {
+                self.samples[self.sample_idx - 1]
+            } else {
+                0.0
+            }
         };
 
-        // Store inverse inductance sample
         self.samples[self.sample_idx] = inverse_l;
         self.sample_idx += 1;
 
-        // Save for next differential
         self.prev_i_alpha = i_alpha;
         self.prev_i_beta = i_beta;
         self.prev_injection_angle = injection_angle;
 
-        // Check if FFT window is complete
         if self.sample_idx >= FFT_SIZE {
             self.process_fft_cycle();
             self.sample_idx = 0;
@@ -313,8 +354,14 @@ impl InductanceMeasurement {
 
     /// Fallback record method when microfft is not available.
     #[cfg(not(feature = "microfft"))]
-    pub fn record(&mut self, i_alpha: f32, i_beta: f32, injection_angle: f32) -> bool {
-        // Without FFT, use simple amplitude detection
+    pub fn record(
+        &mut self,
+        i_alpha: f32,
+        i_beta: f32,
+        injection_angle: f32,
+        v_inj_alpha: f32,
+        v_inj_beta: f32,
+    ) -> bool {
         let i_magnitude = libm::sqrtf(i_alpha * i_alpha + i_beta * i_beta);
         self.current_sum += i_magnitude;
         self.total_samples += 1;
@@ -329,9 +376,26 @@ impl InductanceMeasurement {
 
         let di_alpha = i_alpha - self.prev_i_alpha;
         let di_beta = i_beta - self.prev_i_beta;
-        let di_magnitude = libm::sqrtf(di_alpha * di_alpha + di_beta * di_beta);
 
-        self.samples[self.sample_idx] = di_magnitude;
+        let cos_angle = libm::cosf(self.prev_injection_angle);
+        let sin_angle = libm::sinf(self.prev_injection_angle);
+        let v_projected = v_inj_alpha * cos_angle + v_inj_beta * sin_angle;
+        let i_projected = self.prev_i_alpha * cos_angle + self.prev_i_beta * sin_angle;
+        let i_hold_proj = self.hold_current * libm::cosf(self.prev_injection_angle);
+        let i_ac_proj = i_projected - i_hold_proj;
+        let v_inductive = v_projected - self.resistance_ohm * i_ac_proj;
+
+        let di_magnitude = libm::sqrtf(di_alpha * di_alpha + di_beta * di_beta);
+        let min_v = self.voltage_amplitude * 0.1;
+        let sample = if v_inductive.abs() > min_v {
+            di_magnitude * v_inductive.signum() // preserve sign
+        } else if self.sample_idx > 0 {
+            self.samples[self.sample_idx - 1]
+        } else {
+            0.0
+        };
+
+        self.samples[self.sample_idx] = sample;
         self.sample_idx += 1;
 
         self.prev_i_alpha = i_alpha;
@@ -602,21 +666,23 @@ mod tests {
         // Track current for simulation (integrating di over time)
         let mut i_alpha = 0.0f32;
         let mut i_beta = 0.0f32;
+        let mut prev_v_alpha = 0.0f32;
+        let mut prev_v_beta = 0.0f32;
 
         while !measurement.is_complete() {
             let injection_angle = injector.injection_angle();
             let (v_alpha, v_beta) = injector.step(dt);
 
             // Physics: V = L × di/dt, so di = (V/L) × dt
-            // For discrete simulation: di = V × dt / L
             let di_alpha = v_alpha * dt / l_actual;
             let di_beta = v_beta * dt / l_actual;
 
-            // Update current (integrating di)
             i_alpha += di_alpha;
             i_beta += di_beta;
 
-            measurement.record(i_alpha, i_beta, injection_angle);
+            measurement.record(i_alpha, i_beta, injection_angle, prev_v_alpha, prev_v_beta);
+            prev_v_alpha = v_alpha;
+            prev_v_beta = v_beta;
         }
 
         let result = measurement.finish().unwrap();

@@ -200,6 +200,107 @@ impl FluxLinkageMeasurement {
     }
 }
 
+// ============================================================================
+// Spin-down (undriven) flux linkage measurement
+// ============================================================================
+
+/// Accumulator for spin-down (undriven) flux linkage measurement.
+///
+/// Collects back-EMF voltage magnitude and angular velocity samples
+/// during motor coast-down (all FETs off), then computes:
+///
+///   `λ = avg(|V_bemf|) / avg(|ωe|)`
+///
+/// This method does **not** depend on resistance or inductance — only
+/// on voltage and speed measurement.
+#[derive(Clone, Debug)]
+pub struct SpinDownFluxMeasurement {
+    v_bemf_sum: f32,
+    omega_sum: f32,
+    sample_count: u32,
+    min_samples: u32,
+    min_omega: f32,
+}
+
+impl SpinDownFluxMeasurement {
+    /// Create a new spin-down flux measurement.
+    ///
+    /// # Arguments
+    /// * `min_samples` - Minimum samples required for a valid result
+    /// * `min_omega` - Minimum |ωe| (rad/s) to accept a sample
+    pub fn new(min_samples: u32, min_omega: f32) -> Self {
+        Self {
+            v_bemf_sum: 0.0,
+            omega_sum: 0.0,
+            sample_count: 0,
+            min_samples,
+            min_omega,
+        }
+    }
+
+    /// Record a coast-down sample.
+    ///
+    /// Samples with |ωe| below `min_omega` are rejected (back-EMF
+    /// too small for accurate measurement).
+    ///
+    /// # Arguments
+    /// * `v_bemf` - Back-EMF voltage magnitude `√(vα² + vβ²)` in Volts
+    /// * `omega_e` - Electrical angular velocity in rad/s
+    ///
+    /// # Returns
+    /// `true` if the sample was accepted, `false` if rejected.
+    pub fn record(&mut self, v_bemf: f32, omega_e: f32) -> bool {
+        if omega_e.abs() < self.min_omega {
+            return false;
+        }
+        self.v_bemf_sum += v_bemf.abs();
+        self.omega_sum += omega_e.abs();
+        self.sample_count += 1;
+        true
+    }
+
+    /// Check whether enough samples have been collected.
+    pub fn has_enough_samples(&self) -> bool {
+        self.sample_count >= self.min_samples
+    }
+
+    /// Compute the flux linkage from accumulated samples.
+    pub fn finish(self) -> Result<f32, DetectionError> {
+        if self.sample_count < self.min_samples {
+            return Err(DetectionError::InsufficientSamples);
+        }
+
+        let n = self.sample_count as f32;
+        let avg_v = self.v_bemf_sum / n;
+        let avg_omega = self.omega_sum / n;
+
+        if avg_omega < self.min_omega {
+            return Err(DetectionError::LowConfidence);
+        }
+
+        let flux = avg_v / avg_omega;
+
+        if !(MIN_VALID_FLUX..=MAX_VALID_FLUX).contains(&flux) {
+            return Err(DetectionError::OutOfRange);
+        }
+
+        Ok(flux)
+    }
+
+    /// Get an intermediate estimate without consuming the accumulator.
+    pub fn current_estimate(&self) -> Option<f32> {
+        if self.sample_count < 5 {
+            return None;
+        }
+        let n = self.sample_count as f32;
+        let avg_omega = self.omega_sum / n;
+        if avg_omega < self.min_omega {
+            return None;
+        }
+        Some(self.v_bemf_sum / n / avg_omega)
+    }
+}
+
 /// Convert mechanical RPM to electrical angular velocity.
 ///
 /// # Arguments
