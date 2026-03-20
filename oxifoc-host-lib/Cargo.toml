@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 oxifoc-core = { workspace = true, features = ["icd"] }
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "5b92d96", features = ["tokio-std", "tokio-serial-v5", "nusb-v0_1", "defmtlog"] }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "9a145ac", features = ["tokio-std", "tokio-serial-v5", "nusb-v0_1", "defmtlog"] }
 
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }

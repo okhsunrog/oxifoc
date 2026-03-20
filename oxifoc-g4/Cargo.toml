@@ -10,9 +10,9 @@ bench = false
 
 [dependencies]
 # Embassy dependencies - NO chip feature; consuming crate provides it via feature unification
-embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["unstable-pac"] }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["tick-hz-32_768"] }
+embassy-stm32 = { version = "0.6.0", features = ["unstable-pac"] }
+embassy-sync = { version = "0.8.0" }
+embassy-time = { version = "0.5.1", features = ["tick-hz-32_768"] }
 
 # Cortex-M dependencies
 cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }

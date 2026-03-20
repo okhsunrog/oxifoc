@@ -19,11 +19,11 @@ transport-rtt = ["ergot/rtt"]
 
 [dependencies]
 # Embassy dependencies (main branch with async flash support for G4)
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["stm32g474re", "time-driver-tim2", "unstable-pac", "dual-bank", "defmt"] }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["tick-hz-32_768"] }
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-futures = { version = "0.1.2" }
+embassy-stm32 = { version = "0.6.0", features = ["stm32g474re", "time-driver-tim2", "unstable-pac", "dual-bank", "defmt"] }
+embassy-sync = { version = "0.8.0" }
+embassy-time = { version = "0.5.1", features = ["tick-hz-32_768"] }
 
 # Cortex-M dependencies
 cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
@@ -48,7 +48,7 @@ oxifoc-g4 = { path = "../oxifoc-g4" }
 # Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
 # transport-uart adds: defmt-sink-network (for network forwarding)
 # transport-rtt adds: rtt (for RTT transport wrappers)
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "5b92d96", default-features = false, features = [
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "9a145ac", default-features = false, features = [
     "embedded-io-async-v0_7",
     "disable-cache-padding",
     "defmt-sink-rtt",
@@ -63,7 +63,7 @@ libm = { version = "0.2.15", default-features = false }
 # Persistent configuration storage
 sequential-storage = { version = "7.1", features = ["postcard", "defmt"] }
 embedded-storage-async = "0.4"
-embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-embedded-hal = { version = "0.6.0" }
 postcard = "1.1"
 rtt-target = "0.6"
 
@@ -78,17 +78,3 @@ debug = 2
 lto = "fat"
 opt-level = 3
 incremental = true
-
-# Patch crates.io embassy deps for transitive dependencies (e.g., ergot)
-[patch.crates-io]
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-hal-internal = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
-embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
