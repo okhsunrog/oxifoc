@@ -23,6 +23,7 @@ use oxifoc_core::foc::controller::FocController;
 use oxifoc_core::foc::fault;
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, TempSensorId};
+use oxifoc_core::foc::trig::FastSinCos;
 use oxifoc_core::motor::{ControlMode, FocDriver};
 use oxifoc_core::storage::RuntimeConfig;
 
@@ -65,7 +66,7 @@ pub static ADC3_INJECTED: CriticalSectionMutex<
 
 /// FOC driver storage (mutated only inside the ADC ISR)
 type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor>;
-type FocDriverType = FocDriver<MotorPwm<'static>, F405CurrentSensor, PhaseManagerType>;
+type FocDriverType = FocDriver<MotorPwm<'static>, F405CurrentSensor, PhaseManagerType, FastSinCos>;
 static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
@@ -106,18 +107,22 @@ pub async fn init(
                 mp.flux_linkage_wb,
                 mp.pole_pairs
             );
-            FocController::from_motor_params(mp.resistance_ohm, l_avg, initial_vbus_v)
+            FocController::<_, FastSinCos>::from_motor_params(
+                mp.resistance_ohm,
+                l_avg,
+                initial_vbus_v,
+            )
         } else {
-            FocController::new(initial_vbus_v)
+            FocController::<_, FastSinCos>::new(initial_vbus_v)
         }
     } else if let Some(ref pg) = config.pi_gains {
-        let mut foc = FocController::new(initial_vbus_v);
+        let mut foc = FocController::<_, FastSinCos>::new(initial_vbus_v);
         foc.id_pi.set_gains(pg.kp, pg.ki);
         foc.iq_pi.set_gains(pg.kp, pg.ki);
         defmt::info!("Using stored PI gains: kp={=f32}, ki={=f32}", pg.kp, pg.ki);
         foc
     } else {
-        FocController::new(initial_vbus_v)
+        FocController::<_, FastSinCos>::new(initial_vbus_v)
     };
 
     // Build FOC driver with dt from PWM config
