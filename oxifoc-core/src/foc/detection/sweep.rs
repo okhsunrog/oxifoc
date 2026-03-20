@@ -30,7 +30,9 @@
 
 use core::future::Future;
 
-use super::flux_linkage::{FluxLinkageMeasurement, SpinDownFluxMeasurement};
+use super::flux_linkage::{
+    FluxLinkageMeasurement, MagnitudeFluxMeasurement, SpinDownFluxMeasurement,
+};
 use super::inductance::{HfiInjector, InductanceMeasurement, validate_inductance};
 use super::pi_tuning::{calculate_foc_gains, estimate_bandwidth};
 use super::resistance::ResistanceMeasurement;
@@ -516,6 +518,94 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
     info!("Flux linkage measurement complete");
 
     Ok(flux_linkage)
+}
+
+/// Measure flux linkage using magnitude-based VESC formula.
+///
+/// Same open-loop spin procedure as [`measure_flux_linkage`] but uses
+/// voltage and current **magnitudes** instead of q-axis components:
+///
+///   `λ = (|V| − R·|I|) / ωe − |I|·L`
+///
+/// This is rotation-invariant — angle tracking lag does not affect the
+/// result.  Requires both R and L from earlier detection steps.
+pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    params: &FluxLinkageParams,
+    inductance_h: f32,
+) -> Result<f32, DetectionError> {
+    info!("Starting magnitude-based flux linkage measurement...");
+
+    if params.resistance_ohm <= 0.0 {
+        return Err(DetectionError::MissingPrerequisite);
+    }
+
+    let mut measurement =
+        MagnitudeFluxMeasurement::new(params.resistance_ohm, inductance_h, params.num_samples);
+
+    let target_omega_e = params.spin_rpm * core::f32::consts::TAU * params.pole_pairs as f32 / 60.0;
+
+    // Ramp up (identical to driven method)
+    let ramp_steps = 100u32;
+    let ramp_delay_ms = params.ramp_time_ms / ramp_steps;
+    let mut current_angle = 0.0f32;
+
+    for i in 1..=ramp_steps {
+        let progress = i as f32 / ramp_steps as f32;
+        let omega = target_omega_e * progress;
+        let dt = params.ramp_time_ms as f32 / 1000.0 / ramp_steps as f32;
+        current_angle += omega * dt;
+        current_angle %= core::f32::consts::TAU;
+
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: current_angle,
+            current: params.current_a,
+        });
+        T::after_millis(ramp_delay_ms as u64).await;
+    }
+
+    T::after_millis(params.settle_time_ms as u64).await;
+
+    // Collect samples — record all 4 dq components
+    let sample_delay_us = 500u32;
+    let dt = 1.0 / 2000.0;
+
+    for _ in 0..params.num_samples {
+        current_angle += target_omega_e * dt;
+        current_angle %= core::f32::consts::TAU;
+
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: current_angle,
+            current: params.current_a,
+        });
+        T::after_micros(sample_delay_us as u64).await;
+
+        let telem = hw.wait_telemetry().await;
+        measurement.record(telem.vd, telem.vq, telem.id, telem.iq, target_omega_e);
+    }
+
+    // Ramp down
+    for i in (0..ramp_steps).rev() {
+        let progress = i as f32 / ramp_steps as f32;
+        let omega = target_omega_e * progress;
+        let dt = params.ramp_time_ms as f32 / 1000.0 / ramp_steps as f32;
+        current_angle += omega * dt;
+        current_angle %= core::f32::consts::TAU;
+
+        let current = params.current_a * progress;
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: current_angle,
+            current,
+        });
+        T::after_millis(ramp_delay_ms as u64).await;
+    }
+
+    hw.send_command(ControlMode::Stopped);
+    T::after_millis(100).await;
+
+    let flux = measurement.finish()?;
+    info!("Magnitude-based flux linkage measurement complete");
+    Ok(flux)
 }
 
 /// Measure flux linkage using spin-down (undriven) back-EMF.

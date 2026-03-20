@@ -257,7 +257,7 @@ impl Default for InductanceParams {
     fn default() -> Self {
         Self {
             motor_size: MotorSize::Medium,
-            hfi_frequency_hz: 1000.0,
+            hfi_frequency_hz: 5000.0,
             hfi_voltage_v: 3.0,
             hold_current_a: 2.0,
             num_cycles: 100,

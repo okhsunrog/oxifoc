@@ -14,8 +14,9 @@ use std::cell::RefCell;
 
 use oxifoc_core::foc::controller::{FocController, FocOutput};
 use oxifoc_core::foc::detection::sweep::{
-    DetectionHardware, DetectionParams, measure_flux_linkage, measure_flux_linkage_spindown,
-    measure_inductance, measure_inductance_pulse, run_full_detection,
+    DetectionHardware, DetectionParams, measure_flux_linkage, measure_flux_linkage_magnitude,
+    measure_flux_linkage_spindown, measure_inductance, measure_inductance_pulse,
+    run_full_detection,
 };
 use oxifoc_core::foc::detection::types::{
     FluxLinkageParams, InductanceParams, MotorSize, VoltagePulseParams,
@@ -621,9 +622,9 @@ fn main() {
     }
     println!();
 
-    // Benchmark 3: I·L correction on driven flux
-    println!("3) Driven flux: standard vs VESC I*L correction:");
-    println!("  {:<22} {:>14} {:>14}", "Motor", "standard", "with I*L");
+    // Benchmark 3: Driven flux — q-axis vs magnitude (VESC-style)
+    println!("3) Driven flux: q-axis (ours) vs magnitude (VESC-style):");
+    println!("  {:<22} {:>14} {:>14}", "Motor", "q-axis", "magnitude");
     println!("  {:-<22} {:->14} {:->14}", "", "", "");
     for def in &catalog {
         let p = def.params;
@@ -633,41 +634,32 @@ fn main() {
             pole_pairs: p.pole_pairs,
             ..Default::default()
         };
+        let l_avg = (p.ld + p.lq) / 2.0;
 
-        // Standard driven
+        // Q-axis driven
         reset_sim(p, def.vbus);
         let mut hw = VirtualHardware;
-        let std_lam = block_on(measure_flux_linkage::<VirtualHardware, VirtualTimer>(
+        let qaxis = block_on(measure_flux_linkage::<VirtualHardware, VirtualTimer>(
             &mut hw,
             &flux_params,
         ));
-        let std_s = match std_lam {
+        let q_s = match qaxis {
             Ok(v) => format!("{:+.1}%", err_pct(v, p.lambda)),
             Err(_) => "FAIL".to_string(),
         };
 
-        // With I·L correction: λ_corrected = λ_measured - I_avg * L_avg
-        // We use known L for the correction (in practice, L is measured in step 2)
-        let l_avg = (p.ld + p.lq) / 2.0;
-        let corr_s = match std_lam {
-            Ok(lam) => {
-                // Estimate I from the driven measurement: I ≈ lam*omega/R (rough)
-                // Actually we need the actual I during measurement. For the
-                // benchmark, apply the I·L correction using the known parameters.
-                // The driven measurement uses current_a = 2.0 (default)
-                let i_mag = flux_params.current_a;
-                let corrected = lam - i_mag * l_avg;
-                // If correction overshoots, it's not helpful
-                if corrected > 0.0 {
-                    format!("{:+.1}%", err_pct(corrected, p.lambda))
-                } else {
-                    "overcorr".to_string()
-                }
-            }
+        // Magnitude driven (VESC-style)
+        reset_sim(p, def.vbus);
+        let mag = block_on(measure_flux_linkage_magnitude::<
+            VirtualHardware,
+            VirtualTimer,
+        >(&mut hw, &flux_params, l_avg));
+        let m_s = match mag {
+            Ok(v) => format!("{:+.1}%", err_pct(v, p.lambda)),
             Err(_) => "FAIL".to_string(),
         };
 
-        println!("  {:<22} {:>14} {:>14}", def.name, std_s, corr_s);
+        println!("  {:<22} {:>14} {:>14}", def.name, q_s, m_s);
     }
 
     println!();

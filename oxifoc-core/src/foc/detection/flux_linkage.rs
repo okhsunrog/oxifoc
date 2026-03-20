@@ -201,6 +201,86 @@ impl FluxLinkageMeasurement {
 }
 
 // ============================================================================
+// Magnitude-based driven flux linkage measurement (VESC-style)
+// ============================================================================
+
+/// Accumulator for magnitude-based driven flux linkage measurement.
+///
+/// Uses the VESC approach: voltage and current magnitudes instead of
+/// q-axis components.  This is **rotation-invariant** — angle tracking
+/// errors do not affect the result.
+///
+///   `λ = (|V| − R·|I|) / ωe − |I|·L`
+///
+/// Requires both R and L from previous detection steps.
+#[derive(Clone, Debug)]
+pub struct MagnitudeFluxMeasurement {
+    resistance_ohm: f32,
+    inductance_h: f32,
+    v_mag_sum: f32,
+    i_mag_sum: f32,
+    omega_sum: f32,
+    sample_count: u32,
+    min_samples: u32,
+}
+
+impl MagnitudeFluxMeasurement {
+    /// Create a new magnitude-based flux measurement.
+    ///
+    /// # Arguments
+    /// * `resistance_ohm` — previously measured R
+    /// * `inductance_h` — previously measured L_avg (Henries)
+    /// * `min_samples` — minimum samples for valid result
+    pub fn new(resistance_ohm: f32, inductance_h: f32, min_samples: u32) -> Self {
+        Self {
+            resistance_ohm,
+            inductance_h,
+            v_mag_sum: 0.0,
+            i_mag_sum: 0.0,
+            omega_sum: 0.0,
+            sample_count: 0,
+            min_samples,
+        }
+    }
+
+    /// Record a sample using all four dq components.
+    ///
+    /// Computes magnitudes internally: `|V| = √(vd²+vq²)`, `|I| = √(id²+iq²)`.
+    #[inline]
+    pub fn record(&mut self, vd: f32, vq: f32, id: f32, iq: f32, omega_e: f32) {
+        self.v_mag_sum += libm::sqrtf(vd * vd + vq * vq);
+        self.i_mag_sum += libm::sqrtf(id * id + iq * iq);
+        self.omega_sum += omega_e;
+        self.sample_count += 1;
+    }
+
+    /// Compute the flux linkage.
+    pub fn finish(self) -> Result<f32, DetectionError> {
+        if self.sample_count < self.min_samples {
+            return Err(DetectionError::InsufficientSamples);
+        }
+
+        let n = self.sample_count as f32;
+        let avg_v = self.v_mag_sum / n;
+        let avg_i = self.i_mag_sum / n;
+        let avg_omega = self.omega_sum / n;
+
+        if avg_omega.abs() < MIN_VALID_OMEGA {
+            return Err(DetectionError::LowConfidence);
+        }
+
+        // VESC formula: λ = (|V| - R·|I|) / ω - |I|·L
+        let flux = (avg_v - self.resistance_ohm * avg_i) / avg_omega - avg_i * self.inductance_h;
+
+        if !(MIN_VALID_FLUX..=MAX_VALID_FLUX).contains(&flux) {
+            return Err(DetectionError::OutOfRange);
+        }
+
+        Ok(flux)
+    }
+}
+
+// ============================================================================
 // Spin-down (undriven) flux linkage measurement
 // ============================================================================
 
