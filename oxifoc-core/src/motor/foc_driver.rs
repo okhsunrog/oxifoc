@@ -6,6 +6,7 @@
 //! - Phase provider (angle sensing/estimation)
 //! - PWM output
 //! - Control mode management
+//! - Current limiting (target clamping + measured overcurrent protection)
 //!
 //! Platform code just needs to provide trait implementations and call `step()`.
 
@@ -18,6 +19,89 @@ use crate::motor::six_step;
 
 // Re-export ControlMode from types (single source of truth)
 pub use crate::types::ControlMode;
+
+/// Current limiting configuration for the FOC driver.
+///
+/// Two layers of protection:
+/// 1. **Target clamp**: limits what the PI controller is asked to do (prevents
+///    absurd commands). Uses circular clamp with d-axis priority.
+/// 2. **Measured overcurrent**: checks actual dq current magnitude after the
+///    FOC step. If it exceeds `overcurrent_threshold`, PWM is disabled and
+///    an error is returned. This is the software equivalent of hardware
+///    overcurrent protection for boards that lack it.
+#[derive(Clone, Copy, Debug)]
+pub struct CurrentLimits {
+    /// Maximum current target magnitude (A). The PI controller will never
+    /// be asked to produce more than this. Set from BoardConfig or
+    /// CurrentLimitsConfig. 0 = no limit.
+    pub max_current_a: f32,
+    /// Hard overcurrent threshold on measured current (A). If actual
+    /// sqrt(id² + iq²) exceeds this, PWM is immediately disabled.
+    /// Typically set to 1.2-1.5× max_current_a. 0 = no limit.
+    pub overcurrent_threshold_a: f32,
+}
+
+impl Default for CurrentLimits {
+    fn default() -> Self {
+        Self {
+            max_current_a: 0.0,
+            overcurrent_threshold_a: 0.0,
+        }
+    }
+}
+
+impl CurrentLimits {
+    /// Create current limits from a maximum current value.
+    /// Sets overcurrent threshold to 1.3× the max current.
+    pub fn from_max_current(max_a: f32) -> Self {
+        Self {
+            max_current_a: max_a,
+            overcurrent_threshold_a: max_a * 1.3,
+        }
+    }
+
+    /// Check if current limiting is enabled
+    #[inline]
+    pub fn is_enabled(&self) -> bool {
+        self.max_current_a > 0.0
+    }
+
+    /// Clamp id/iq targets to the current limit circle.
+    ///
+    /// Uses d-axis priority: id is clamped first to the full budget,
+    /// then iq gets the remaining circular margin. This is correct for
+    /// IPM motors where id is used for field weakening.
+    #[inline]
+    pub fn clamp_targets(&self, id_target: f32, iq_target: f32) -> (f32, f32) {
+        if self.max_current_a <= 0.0 {
+            return (id_target, iq_target);
+        }
+        let limit = self.max_current_a;
+        // D-axis priority: clamp id first
+        let id = id_target.clamp(-limit, limit);
+        // Q-axis gets the remaining circular budget
+        let iq_budget_sq = limit * limit - id * id;
+        let iq_budget = if iq_budget_sq > 0.0 {
+            libm::sqrtf(iq_budget_sq)
+        } else {
+            0.0
+        };
+        let iq = iq_target.clamp(-iq_budget, iq_budget);
+        (id, iq)
+    }
+
+    /// Check if measured current exceeds the overcurrent threshold.
+    /// Returns true if overcurrent is detected.
+    #[inline]
+    pub fn is_overcurrent(&self, id: f32, iq: f32) -> bool {
+        if self.overcurrent_threshold_a <= 0.0 {
+            return false;
+        }
+        let mag_sq = id * id + iq * iq;
+        let threshold_sq = self.overcurrent_threshold_a * self.overcurrent_threshold_a;
+        mag_sq > threshold_sq
+    }
+}
 
 /// Reusable FOC driver
 ///
@@ -76,6 +160,8 @@ where
     vbus: f32,
     /// Control loop period in seconds (1/pwm_freq)
     dt: f32,
+    /// Current limiting configuration
+    current_limits: CurrentLimits,
 }
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
@@ -109,12 +195,23 @@ where
             mode: ControlMode::Stopped,
             vbus,
             dt,
+            current_limits: CurrentLimits::default(),
         }
     }
 
     /// Get the control loop period (dt) in seconds
     pub fn dt(&self) -> f32 {
         self.dt
+    }
+
+    /// Set current limits.
+    pub fn set_current_limits(&mut self, limits: CurrentLimits) {
+        self.current_limits = limits;
+    }
+
+    /// Get current limits.
+    pub fn current_limits(&self) -> &CurrentLimits {
+        &self.current_limits
     }
 
     /// Set control mode
@@ -158,7 +255,7 @@ where
     ///
     /// # Returns
     /// * `Ok(FocOutput)` - Control telemetry on success
-    /// * `Err(&str)` - Error message if sensors not ready
+    /// * `Err(&str)` - Error message if sensors not ready or overcurrent detected
     pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, &'static str> {
         let dt = self.dt;
         match self.mode {
@@ -228,6 +325,9 @@ where
             return Err("Current sensor not calibrated");
         }
 
+        // Layer 1: Clamp current targets (prevents absurd commands)
+        let (id_target, iq_target) = self.current_limits.clamp_targets(id_target, iq_target);
+
         // Get phase from provider (uses previous update's estimate)
         let phase_out = self.phase.get();
         let angle_rad = phase_out.angle;
@@ -238,6 +338,14 @@ where
         let out = self
             .controller
             .step(currents, angle_rad, id_target, iq_target, max_duty, dt);
+
+        // Layer 2: Check measured current against hard overcurrent limit
+        if self.current_limits.is_overcurrent(out.id, out.iq) {
+            self.pwm.disable();
+            self.controller.reset();
+            self.mode = ControlMode::Stopped;
+            return Err("Overcurrent: measured current exceeds limit");
+        }
 
         // Set PWM duties
         self.pwm.set_duties(out.duties);
@@ -273,6 +381,16 @@ where
             return Err("Current sensor not calibrated");
         }
 
+        // Clamp open-loop current to the target limit
+        let current = if self.current_limits.max_current_a > 0.0 {
+            current.clamp(
+                -self.current_limits.max_current_a,
+                self.current_limits.max_current_a,
+            )
+        } else {
+            current
+        };
+
         // Read currents and run FOC controller with commanded angle
         // id_target = 0 (no field weakening in open-loop)
         let currents = self.current_sensor.read_currents();
@@ -280,6 +398,14 @@ where
         let out = self
             .controller
             .step(currents, angle_rad, 0.0, current, max_duty, dt);
+
+        // Check measured overcurrent
+        if self.current_limits.is_overcurrent(out.id, out.iq) {
+            self.pwm.disable();
+            self.controller.reset();
+            self.mode = ControlMode::Stopped;
+            return Err("Overcurrent: measured current exceeds limit");
+        }
 
         // Set PWM duties
         self.pwm.set_duties(out.duties);

@@ -134,6 +134,11 @@ pub async fn init(
         PWM_CONFIG.dt_s(),
     );
 
+    // Set current limits from board config
+    foc_driver.set_current_limits(
+        oxifoc_core::motor::foc_driver::CurrentLimits::from_max_current(BOARD.max_phase_current_a),
+    );
+
     // Allow ADC injected conversions to start firing before zero-current calibration.
     Timer::after(Duration::from_millis(10)).await;
     foc_driver.current_sensor_mut().calibrate().await;

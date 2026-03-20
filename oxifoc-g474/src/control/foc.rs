@@ -83,6 +83,11 @@ pub async fn init(
         PWM_CONFIG.dt_s(),
     );
 
+    // Set current limits from board config
+    foc_driver.set_current_limits(oxifoc_core::motor::foc_driver::CurrentLimits::from_max_current(
+        BOARD.max_phase_current_a,
+    ));
+
     // Store ADC handles for ISR access
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc1)));
     ADC2_INJECTED.lock(|cell| cell.replace(Some(adc2)));
