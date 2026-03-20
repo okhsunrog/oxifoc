@@ -19,7 +19,7 @@ pub fn init_clock() -> Peripherals {
         use embassy_stm32::rcc::*;
         config.rcc.hse = Some(Hse {
             freq: Hertz(8_000_000),
-            mode: HseMode::Bypass,
+            mode: HseMode::Oscillator,
         });
         config.rcc.pll_src = PllSource::HSE;
         config.rcc.pll = Some(Pll {

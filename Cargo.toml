@@ -14,6 +14,7 @@ exclude = [
     "oxifoc-f405",    # Different toolchain (thumbv7em-none-eabihf)
     "tests/stm32g431", # On-target integration tests
     "tests/stm32g474", # On-target integration tests
+    "tests/stm32f405", # On-target integration tests
 ]
 
 [profile.dev]

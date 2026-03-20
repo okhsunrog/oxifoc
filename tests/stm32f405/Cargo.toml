@@ -1,0 +1,37 @@
+[package]
+name = "oxifoc-tests-f405"
+version = "0.1.0"
+edition = "2024"
+
+[[test]]
+name = "foc"
+harness = false
+
+[dependencies]
+embassy-stm32 = { version = "0.6.0", features = ["stm32f405rg", "time-driver-any", "unstable-pac"] }
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread"] }
+embassy-time = { version = "0.5.1" }
+embassy-sync = { version = "0.8.0" }
+
+cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+
+embedded-test = { version = "0.7", features = ["defmt", "external-executor", "embassy", "panic-handler"] }
+libm = { version = "0.2", default-features = false }
+
+oxifoc-core = { path = "../../oxifoc-core", features = ["defmt", "algorithms"] }
+
+[profile.dev]
+debug = true
+lto = "fat"
+opt-level = 3
+incremental = true
+
+[profile.release]
+debug = 2
+lto = "fat"
+opt-level = 3
+incremental = true
