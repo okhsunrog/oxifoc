@@ -173,44 +173,100 @@ fn main() {
             let app = weak.unwrap();
             stop.store(false, Ordering::Relaxed);
 
-            let config = if app.get_use_serial() {
-                let idx = app.get_selected_serial();
-                let guard = ports.lock().unwrap();
-                if idx < 0 || idx as usize >= guard.len() {
-                    app.set_error_text("No serial port selected".into());
-                    return;
+            let mode = app.get_transport_mode();
+            let config = match mode {
+                0 => {
+                    // Serial
+                    let idx = app.get_selected_serial();
+                    let guard = ports.lock().unwrap();
+                    if idx < 0 || idx as usize >= guard.len() {
+                        app.set_error_text("No serial port selected".into());
+                        return;
+                    }
+                    let port = &guard[idx as usize];
+                    let baud = BAUD_RATES[app.get_baud_index().clamp(0, 5) as usize];
+                    HostConfig {
+                        transport: Some(TransportType::Serial),
+                        serial_path: Some(port.path.clone()),
+                        serial_baud: Some(baud),
+                        stream_defmt: Some(true),
+                        stream_ergot: Some(true),
+                        ..Default::default()
+                    }
                 }
-                let port = &guard[idx as usize];
-                let baud = BAUD_RATES[app.get_baud_index().clamp(0, 5) as usize];
-                HostConfig {
-                    transport: Some(TransportType::Serial),
-                    serial_path: Some(port.path.clone()),
-                    serial_baud: Some(baud),
-                    stream_defmt: Some(true),
-                    stream_ergot: Some(true),
-                    ..Default::default()
+                1 => {
+                    // RTT
+                    let idx = app.get_selected_probe();
+                    let guard = probes.lock().unwrap();
+                    if idx < 0 || idx as usize >= guard.len() {
+                        app.set_error_text("No probe selected".into());
+                        return;
+                    }
+                    let probe = &guard[idx as usize];
+                    let chip = app.get_chip_name().to_string();
+                    if chip.is_empty() {
+                        app.set_error_text("Chip name required".into());
+                        return;
+                    }
+                    HostConfig {
+                        transport: Some(TransportType::Rtt),
+                        probe: Some(probe.identifier.clone()),
+                        chip: Some(chip),
+                        stream_defmt: Some(true),
+                        stream_ergot: Some(true),
+                        ..Default::default()
+                    }
                 }
-            } else {
-                let idx = app.get_selected_probe();
-                let guard = probes.lock().unwrap();
-                if idx < 0 || idx as usize >= guard.len() {
-                    app.set_error_text("No probe selected".into());
-                    return;
+                2 => {
+                    // TCP
+                    let host = app.get_tcp_host().to_string();
+                    let port_str = app.get_tcp_port().to_string();
+                    let port: u16 = match port_str.parse() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            app.set_error_text("Invalid TCP port".into());
+                            return;
+                        }
+                    };
+                    HostConfig {
+                        transport: Some(TransportType::Tcp),
+                        tcp_host: Some(host),
+                        tcp_port: Some(port),
+                        stream_defmt: Some(true),
+                        stream_ergot: Some(true),
+                        ..Default::default()
+                    }
                 }
-                let probe = &guard[idx as usize];
-                let chip = app.get_chip_name().to_string();
-                if chip.is_empty() {
-                    app.set_error_text("Chip name required".into());
-                    return;
+                3 => {
+                    // UDP
+                    let host = app.get_udp_host().to_string();
+                    let port_str = app.get_udp_port().to_string();
+                    let port: u16 = match port_str.parse() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            app.set_error_text("Invalid UDP port".into());
+                            return;
+                        }
+                    };
+                    HostConfig {
+                        transport: Some(TransportType::Udp),
+                        udp_host: Some(host),
+                        udp_port: Some(port),
+                        stream_defmt: Some(true),
+                        stream_ergot: Some(true),
+                        ..Default::default()
+                    }
                 }
-                HostConfig {
-                    transport: Some(TransportType::Rtt),
-                    probe: Some(probe.identifier.clone()),
-                    chip: Some(chip),
-                    stream_defmt: Some(true),
-                    stream_ergot: Some(true),
-                    ..Default::default()
+                4 => {
+                    // USB
+                    HostConfig {
+                        transport: Some(TransportType::Usb),
+                        stream_defmt: Some(true),
+                        stream_ergot: Some(true),
+                        ..Default::default()
+                    }
                 }
+                _ => return,
             };
 
             app.set_error_text("".into());

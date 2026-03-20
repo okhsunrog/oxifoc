@@ -11,8 +11,8 @@ export component App inherits Window {
     in-out property <string> page: "connect";
 
     // ── Connection properties ──
-    in-out property <bool> use-serial: true;
-    in-out property <bool> use-simulate: false;
+    // transport-mode: 0=Serial, 1=RTT, 2=TCP, 3=UDP, 4=USB
+    in-out property <int> transport-mode: 0;
     in property <[StandardListViewItem]> serial-ports;
     in property <[StandardListViewItem]> probes;
     in-out property <int> selected-serial: -1;
@@ -20,6 +20,10 @@ export component App inherits Window {
     in-out property <int> baud-index: 3;
     in-out property <string> chip-name: "STM32G474RETx";
     in-out property <bool> usb-only: true;
+    in-out property <string> tcp-host: "127.0.0.1";
+    in-out property <string> tcp-port: "2025";
+    in-out property <string> udp-host: "127.0.0.1";
+    in-out property <string> udp-port: "2025";
     in property <string> error-text: "";
 
     // ── Main page state ──
@@ -41,9 +45,7 @@ export component App inherits Window {
     in property <image> vbus-texture;
     in property <image> temp-texture;
 
-    // ── Chart size feedback (read by Rust in BeforeRendering).
-    //    Elements live in main-page which is always in the tree (just hidden);
-    //    this lets us bind to their properties unconditionally. ──
+    // ── Chart size feedback ──
     out property <length> currents-w: currents-plot.requested-texture-width;
     out property <length> currents-h: currents-plot.requested-texture-height;
     out property <length> vbus-w:     vbus-plot.requested-texture-width;
@@ -60,7 +62,7 @@ export component App inherits Window {
     callback motor-stop();
 
     // ═══════════════════════════════════════════
-    //  Connection Page  (hidden, not destroyed, when on main page)
+    //  Connection Page
     // ═══════════════════════════════════════════
     connect-page := VerticalLayout {
         visible: root.page == "connect";
@@ -75,21 +77,30 @@ export component App inherits Window {
             horizontal-alignment: center;
         }
 
+        // ── Transport selector ──
         HorizontalLayout {
             spacing: 8px;
             alignment: center;
 
             Button {
-                text: (!root.use-simulate && root.use-serial) ? "● Serial (UART)" : "○ Serial (UART)";
-                clicked => { root.use-serial = true; root.use-simulate = false; }
+                text: root.transport-mode == 0 ? "● Serial" : "○ Serial";
+                clicked => { root.transport-mode = 0; }
             }
             Button {
-                text: (!root.use-simulate && !root.use-serial) ? "● RTT (Debug Probe)" : "○ RTT (Debug Probe)";
-                clicked => { root.use-serial = false; root.use-simulate = false; }
+                text: root.transport-mode == 1 ? "● RTT" : "○ RTT";
+                clicked => { root.transport-mode = 1; }
             }
             Button {
-                text: root.use-simulate ? "● Simulate" : "○ Simulate";
-                clicked => { root.use-simulate = true; }
+                text: root.transport-mode == 2 ? "● TCP" : "○ TCP";
+                clicked => { root.transport-mode = 2; }
+            }
+            Button {
+                text: root.transport-mode == 3 ? "● UDP" : "○ UDP";
+                clicked => { root.transport-mode = 3; }
+            }
+            Button {
+                text: root.transport-mode == 4 ? "● USB" : "○ USB";
+                clicked => { root.transport-mode = 4; }
             }
         }
 
@@ -99,40 +110,8 @@ export component App inherits Window {
             horizontal-alignment: center;
         }
 
-        if root.use-simulate : VerticalLayout {
-            spacing: 8px;
-
-            Rectangle {
-                background: #f0f0f5;
-                border-radius: 4px;
-                min-height: 80px;
-
-                VerticalLayout {
-                    padding: 12px;
-                    spacing: 4px;
-                    alignment: center;
-
-                    Text {
-                        text: "Built-in PMSM model";
-                        font-size: 15px;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                    }
-                    Text {
-                        text: "R = 0.5 Ω  ·  L = 0.5 mH  ·  λ = 10 mWb  ·  7 pole pairs  ·  J = 0.1 g·m²";
-                        horizontal-alignment: center;
-                        color: #555;
-                    }
-                    Text {
-                        text: "Vbus = 24 V  ·  FOC at 20 kHz  ·  No load torque";
-                        horizontal-alignment: center;
-                        color: #555;
-                    }
-                }
-            }
-        }
-
-        if !root.use-simulate && root.use-serial : VerticalLayout {
+        // ── Serial config ──
+        if root.transport-mode == 0 : VerticalLayout {
             spacing: 8px;
 
             HorizontalLayout {
@@ -175,7 +154,8 @@ export component App inherits Window {
             }
         }
 
-        if !root.use-simulate && !root.use-serial : VerticalLayout {
+        // ── RTT config ──
+        if root.transport-mode == 1 : VerticalLayout {
             spacing: 8px;
 
             HorizontalLayout {
@@ -212,24 +192,108 @@ export component App inherits Window {
             }
         }
 
+        // ── TCP config ──
+        if root.transport-mode == 2 : VerticalLayout {
+            spacing: 8px;
+
+            Text {
+                text: "TCP Connection";
+                font-size: 16px;
+                font-weight: 600;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Text { text: "Host:"; vertical-alignment: center; }
+                LineEdit {
+                    text <=> root.tcp-host;
+                    width: 200px;
+                }
+                Text { text: "Port:"; vertical-alignment: center; }
+                LineEdit {
+                    text <=> root.tcp-port;
+                    width: 80px;
+                }
+            }
+        }
+
+        // ── UDP config ──
+        if root.transport-mode == 3 : VerticalLayout {
+            spacing: 8px;
+
+            Text {
+                text: "UDP Connection";
+                font-size: 16px;
+                font-weight: 600;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Text { text: "Host:"; vertical-alignment: center; }
+                LineEdit {
+                    text <=> root.udp-host;
+                    width: 200px;
+                }
+                Text { text: "Port:"; vertical-alignment: center; }
+                LineEdit {
+                    text <=> root.udp-port;
+                    width: 80px;
+                }
+            }
+        }
+
+        // ── USB config ──
+        if root.transport-mode == 4 : VerticalLayout {
+            spacing: 8px;
+
+            Rectangle {
+                background: #f0f0f5;
+                border-radius: 4px;
+                min-height: 60px;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 4px;
+                    alignment: center;
+
+                    Text {
+                        text: "USB (Auto-detect)";
+                        font-size: 15px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "Connects to the first ergot USB device found";
+                        horizontal-alignment: center;
+                        color: #555;
+                    }
+                }
+            }
+        }
+
+        // ── Connect button ──
         HorizontalLayout {
             alignment: center;
 
             Button {
                 text: "Connect";
                 primary: true;
-                enabled: root.use-simulate
-                    ? true
-                    : (root.use-serial
-                        ? root.selected-serial >= 0
-                        : (root.selected-probe >= 0 && root.chip-name != ""));
+                enabled: root.transport-mode == 0 ? root.selected-serial >= 0
+                       : root.transport-mode == 1 ? (root.selected-probe >= 0 && root.chip-name != "")
+                       : root.transport-mode == 2 ? (root.tcp-host != "" && root.tcp-port != "")
+                       : root.transport-mode == 3 ? (root.udp-host != "" && root.udp-port != "")
+                       : true; // USB always enabled
                 clicked => { root.connect-device(); }
             }
         }
     }
 
     // ═══════════════════════════════════════════
-    //  Main Page  (hidden, not destroyed, when on connect page)
+    //  Main Page
     // ═══════════════════════════════════════════
     main-page := VerticalLayout {
         visible: root.page == "main";
