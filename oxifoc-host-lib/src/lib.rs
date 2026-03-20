@@ -11,14 +11,16 @@ use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::icd::{AdcSampleEndpoint, ButtonEndpoint, MotorEndpoint};
 use oxifoc_core::types::{AdcSample, ButtonEvent, ControlMode};
-use std::fs;
-use std::path::Path;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+use std::{
+    fs,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
 };
-use std::thread;
-use std::time::{Duration, Instant};
 use tokio::io::AsyncRead;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
