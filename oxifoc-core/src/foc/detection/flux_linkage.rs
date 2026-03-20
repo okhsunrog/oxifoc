@@ -212,10 +212,18 @@ impl FluxLinkageMeasurement {
 ///
 ///   `λ = (|V| − R·|I|) / ωe − |I|·L`
 ///
+/// The `|I|·L` term compensates for the cross-coupling reactance
+/// `ωe·Ld·id` that appears in the q-axis voltage equation of the dq
+/// model.  When using vector magnitudes instead of axis-decomposed
+/// values, this term would otherwise inflate the apparent back-EMF.
+/// It is **not** a transient di/dt term — it arises from the steady-
+/// state rotating-frame voltage equations.
+///
 /// Requires both R and L from previous detection steps.
 #[derive(Clone, Debug)]
 pub struct MagnitudeFluxMeasurement {
     resistance_ohm: f32,
+    /// Average inductance (Henries) for cross-coupling compensation.
     inductance_h: f32,
     v_mag_sum: f32,
     i_mag_sum: f32,
@@ -303,7 +311,17 @@ pub struct SpinDownFluxMeasurement {
 }
 
 impl SpinDownFluxMeasurement {
+    /// Create from flux linkage parameters.
+    ///
+    /// Uses `params.num_samples` and `params.min_coast_omega_e`.
+    pub fn from_params(params: &super::types::FluxLinkageParams) -> Self {
+        Self::new(params.num_samples, params.min_coast_omega_e)
+    }
+
     /// Create a new spin-down flux measurement.
+    ///
+    /// Prefer [`from_params`](Self::from_params) to avoid divergence
+    /// between the threshold here and `FluxLinkageParams::min_coast_omega_e`.
     ///
     /// # Arguments
     /// * `min_samples` - Minimum samples required for a valid result
