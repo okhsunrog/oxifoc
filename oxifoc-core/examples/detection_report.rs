@@ -142,6 +142,42 @@ fn motor_catalog() -> Vec<MotorDef> {
             vbus: 96.0,
             motor_size: MotorSize::Large,
         },
+        // High-friction: spin-down fails, forces driven fallback.
+        // friction_b = 0.01 is a small motor with a loaded gearbox —
+        // high enough to stop coast-down quickly but low enough that
+        // the motor can still reach the open-loop target speed.
+        MotorDef {
+            name: "Robot joint (geared)",
+            params: MotorParams {
+                r: 0.1,
+                ld: 1e-4,
+                lq: 1e-4,
+                lambda: 0.015,
+                pole_pairs: 7,
+                j: 5e-5,           // tiny rotor
+                friction_b: 0.004, // gearbox: can spin but stops fast
+                hall_offset: 0.0,
+            },
+            vbus: 24.0,
+            motor_size: MotorSize::Small,
+        },
+        // Very low inertia + moderate friction: motor stops almost
+        // instantly when released, but can track open-loop angle.
+        MotorDef {
+            name: "Direct-drive gripper",
+            params: MotorParams {
+                r: 0.5,
+                ld: 4e-4,
+                lq: 4e-4,
+                lambda: 0.015,
+                pole_pairs: 7,
+                j: 2e-5,
+                friction_b: 0.005,
+                hall_offset: 0.0,
+            },
+            vbus: 24.0,
+            motor_size: MotorSize::Small,
+        },
         MotorDef {
             name: "NEMA23 stepper-servo",
             params: MotorParams {
@@ -622,16 +658,14 @@ fn main() {
     }
     println!();
 
-    // Benchmark 3: Driven flux — q-axis vs magnitude vs auto-pick
-    println!("3) Driven flux fallback: q-axis vs magnitude vs auto-pick (I*L/lm threshold):");
+    // Benchmark 3: Driven flux — q-axis vs magnitude
+    // Production: magnitude first, q-axis fallback
+    println!("3) Driven flux fallback: q-axis vs magnitude (prod: magnitude-first):");
     println!(
-        "  {:<22} {:>10} {:>10} {:>14} {:>7}",
-        "Motor", "q-axis", "magnit.", "picked", "I*L/lm"
+        "  {:<22} {:>10} {:>10} {:>10}",
+        "Motor", "q-axis", "magnit.", "produced"
     );
-    println!(
-        "  {:-<22} {:->10} {:->10} {:->14} {:->7}",
-        "", "", "", "", ""
-    );
+    println!("  {:-<22} {:->10} {:->10} {:->10}", "", "", "", "");
     for def in &catalog {
         let p = def.params;
         let flux_params = FluxLinkageParams {
@@ -642,7 +676,6 @@ fn main() {
         };
         let l_avg = (p.ld + p.lq) / 2.0;
 
-        // Q-axis driven
         reset_sim(p, def.vbus);
         let mut hw = VirtualHardware;
         let qaxis = block_on(measure_flux_linkage::<VirtualHardware, VirtualTimer>(
@@ -654,7 +687,6 @@ fn main() {
             Err(_) => "FAIL".to_string(),
         };
 
-        // Magnitude driven (VESC-style)
         reset_sim(p, def.vbus);
         let mag = block_on(measure_flux_linkage_magnitude::<
             VirtualHardware,
@@ -665,26 +697,14 @@ fn main() {
             Err(_) => "FAIL".to_string(),
         };
 
-        // Auto-pick: I·L/λ < 0.05 → magnitude, else → q-axis
-        let i_l_ratio = flux_params.current_a * l_avg / p.lambda;
-        let pick_s = match (qaxis, mag) {
-            (Ok(q), Ok(m)) => {
-                let (val, tag) = if i_l_ratio < 0.05 {
-                    (m, "mag")
-                } else {
-                    (q, "q")
-                };
-                format!("{:+.1}%({})", err_pct(val, p.lambda), tag)
-            }
-            (Ok(q), Err(_)) => format!("{:+.1}%(q)", err_pct(q, p.lambda)),
-            (Err(_), Ok(m)) => format!("{:+.1}%(mag)", err_pct(m, p.lambda)),
-            (Err(_), Err(_)) => "FAIL".to_string(),
+        // Production: magnitude first, q-axis fallback
+        let prod_s = match (mag, qaxis) {
+            (Ok(m), _) => format!("{:+.1}%", err_pct(m, p.lambda)),
+            (Err(_), Ok(q)) => format!("{:+.1}%", err_pct(q, p.lambda)),
+            _ => "FAIL".to_string(),
         };
 
-        println!(
-            "  {:<22} {:>10} {:>10} {:>14} {:>7.3}",
-            def.name, q_s, m_s, pick_s, i_l_ratio
-        );
+        println!("  {:<22} {:>10} {:>10} {:>10}", def.name, q_s, m_s, prod_s);
     }
 
     println!();
