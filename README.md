@@ -1,300 +1,230 @@
 # Oxifoc
 
-Field-Oriented Control (FOC) firmware for STM32 motor controllers, written in Rust. Supports STM32G431 (B-G431B-ESC1) and STM32F405 (Cheap FOCer 2). Device↔host communication uses [ergot](https://github.com/jamesmunns/ergot).
+Field-Oriented Control (FOC) firmware for STM32 motor controllers, written in Rust with [Embassy](https://embassy.dev/). Device-host communication uses [ergot](https://github.com/jamesmunns/ergot).
 
 ## Project Structure
 
 ```
 oxifoc/
-├── Cargo.toml          # Workspace root (host + core)
-├── justfile            # Build automation
-├── oxifoc-core/        # Platform-agnostic FOC algorithms (testable)
-├── oxifoc-g431/        # STM32G431 firmware (B-G431B-ESC1)
-├── oxifoc-f405/        # STM32F405 firmware (Cheap FOCer 2)
-├── oxifoc-host-lib/    # Shared host backend (transport + config)
-├── oxifoc-host-tauri/  # Tauri desktop/mobile GUI
-├── oxifoc-host-egui/   # egui desktop frontend
-├── oxifoc-host-cli/    # CLI frontend
-├── ergot/              # Git submodule - networking stack
-├── docs/               # Documentation
-├── scripts/            # Helper scripts
-└── oxifoc-host.toml    # Optional host config
+├── Cargo.toml             # Workspace root
+├── justfile               # Build automation (just check, just fmt, etc.)
+├── TODO.md                # Implementation backlog
+│
+├── oxifoc-core/           # Platform-agnostic FOC algorithms and protocol types
+├── oxifoc-g4/             # Shared code for STM32G4 platforms (Hall, CORDIC)
+├── oxifoc-g431/           # STM32G431 firmware (B-G431B-ESC1)
+├── oxifoc-g474/           # STM32G474 firmware (NUCLEO-G474RE + IHM08M1)
+├── oxifoc-f405/           # STM32F405 firmware (Simple FOCer 2)
+│
+├── oxifoc-host-lib/       # Shared host backend (transport, protocol, config)
+├── oxifoc-host-cli/       # CLI host tool
+├── oxifoc-host-slint/     # Slint GUI with real-time WGPU charts
+├── slint-wgpu-plot/       # GPU-accelerated plot renderer
+│
+├── oxifoc-virtual/        # Virtual device (FocController + VirtualMotor over TCP)
+│
+├── tests/stm32g431/       # On-target integration tests (G431)
+├── tests/stm32g474/       # On-target integration tests (G474)
+│
+└── .github/workflows/     # CI: fmt, clippy, tests, device builds
 ```
 
-This repo uses a Cargo workspace for host crates. Device firmware crates are excluded (different toolchain).
+Workspace members: `oxifoc-core`, `oxifoc-host-lib`, `oxifoc-host-cli`, `oxifoc-host-slint`, `slint-wgpu-plot`, `oxifoc-virtual`.
+
+Device firmware crates are excluded from the workspace (different Rust toolchain, `thumbv7em-none-eabihf`).
 
 ## Hardware
 
-### Supported Boards
+| Board | MCU | Flash/RAM | Communication | Notes |
+|-------|-----|-----------|---------------|-------|
+| B-G431B-ESC1 | STM32G431CB | 128K/32K | UART or RTT | Built-in opamps, CORDIC |
+| NUCLEO-G474RE | STM32G474RE | 512K/128K | UART or RTT | Dual-bank flash, CORDIC |
+| Simple FOCer 2 | STM32F405RG | 1M/128K | USB | DRV8301, high current |
 
-| Board | MCU | Communication | Features |
-|-------|-----|---------------|----------|
-| B-G431B-ESC1 | STM32G431CB | Serial (ST-Link VCP) or RTT | Built-in opamps, compact |
-| Cheap FOCer 2 | STM32F405RG | USB (bulk endpoints) | Higher current, native USB |
+## Core Library (`oxifoc-core`)
 
-- **Debug Interface**: ST-Link V2 (built-in or external)
-- **Protocol**: [ergot](https://github.com/jamesmunns/ergot) over transport layer
+Platform-agnostic FOC algorithms, fully tested on host (140+ unit tests):
 
-See [docs/hardware.md](docs/hardware.md) for detailed pinout and functional groups.
+- **Transforms**: Clarke/Park and inverses
+- **SVPWM**: Space Vector PWM (VESC geometric sector method)
+- **PI Controller**: Split into `PIController` (raw output, external anti-windup for FOC circular clamping) and `ClampedPI` (self-contained with rectangular limits)
+- **FocController**: Full current loop with circular voltage limiting, `apply_dq()` for direct voltage mode
+- **FocDriver**: Integrates controller + PWM + current sensor + phase manager
+- **Hall Sensor**: 8-entry calibration table, soft drift correction, rate limiting, direction detection, majority voting, timeout detection
+- **PhaseManager**: Hall → Observer → OpenLoop fallback chain with health tracking
+- **Motor Detection**: Resistance, inductance (rotating HFI), flux linkage, Hall calibration
+- **Virtual Motor**: PMSM simulation with closed-loop tests (forward, reverse, load rejection)
+- **Config Storage**: 8 config groups with `sequential-storage` + `PostcardValue` for flash persistence
+- **Protocol**: Ergot endpoints for motor control, ADC, Hall, faults, config read/write
 
-## Current Capabilities
+## Device Firmware
 
-- **FOC Core Library** (`oxifoc-core`):
-  - Clarke/Park transforms (ABC → αβ → dq and inverse)
-  - Space Vector PWM (VESC geometric sector method)
-  - PI controller with anti-windup
-  - **Hall sensor with VESC-compatible features:**
-    - 8-entry raw-state calibration table (works with any Hall wiring)
-    - Soft drift correction (1% pull-back toward sector angle)
-    - Rate limiting to prevent current spikes on transitions
-    - Low-speed interpolation threshold (configurable in eRPM)
-    - Direction reversal detection with clean velocity handling
-    - Invalid state detection with recovery reset
-    - Timeout detection for failure monitoring
-  - **PhaseManager with automatic fallback:**
-    - Hall → Observer → OpenLoop fallback chain
-    - Hall health tracking (Ok, Stale, Invalid, NotPresent)
-    - Velocity-based Hall-to-Observer blending
-    - Fault system for error reporting
-  - **Motor parameter detection:**
-    - Resistance measurement
-    - Inductance measurement (rotating HFI)
-    - Flux linkage measurement
-    - Hall sensor calibration
-  - Back-EMF observer (sensorless, untested)
-  - Fully tested on x86_64 (100+ unit tests)
+- 20kHz center-aligned PWM with dead-time insertion
+- TIM1-triggered injected ADC sampling (phase currents, Vbus, temperature)
+- Hall sensor polling via TIM6 at 5us with 7-read majority voting
+- CORDIC hardware sin/cos on G4 platforms
+- Embassy async runtime with defmt logging
+- Persistent configuration in internal flash (sequential-storage)
+- Boot flow: load stored config → apply PI gains/motor params → calibrate current sensor → run FOC
+- Fault detection: overcurrent, overvoltage, undervoltage, overtemperature
+- Protocol endpoints: device info, motor control, ADC samples, Hall data, faults, config
 
-- **Device firmware:**
-  - FOC current control loop (20kHz PWM)
-  - Hall sensor polling with 7-read majority voting (noise immunity)
-  - ADC sampling (phase currents, Vbus, temperature)
-  - Embassy async runtime with defmt logging
-  - Supports Serial (UART) or RTT transport
-  - Protocol endpoints: button events, device info, motor control, ADC samples, Hall sensor data
+## Host Tools
 
-- **Host applications:**
-  - Connects via Serial (ST-Link VCP) or RTT (probe-rs)
-  - Streams defmt logs and ergot protocol messages
-  - Tauri GUI: transport selection, real-time ADC charts, log level controls
-  - CLI and egui frontends available
+### Transport Options
+
+| Transport | Use Case | Config |
+|-----------|----------|--------|
+| Serial | UART over ST-Link VCP | `--transport serial --serial-path /dev/ttyACM0 --baud 921600` |
+| RTT | Debug probe (probe-rs) | `--transport rtt --chip STM32G431CBUx` |
+| TCP | Virtual device | `--transport tcp --tcp-host 127.0.0.1 --tcp-port 2025` |
+
+### CLI (`oxifoc-host-cli`)
+
+```bash
+# List available devices
+just cli list
+
+# Monitor ADC telemetry for 10 seconds
+just cli -- --transport serial monitor --seconds 10
+
+# Start motor at 10% duty
+just cli -- --transport tcp start --duty 10
+
+# Stop motor
+just cli -- --transport tcp stop
+```
+
+### GUI (`oxifoc-host-slint`)
+
+Slint-based desktop GUI with GPU-accelerated real-time charts (WGPU) for phase currents, bus voltage, and temperature.
+
+```bash
+just gui
+```
+
+### Virtual Device (`oxifoc-virtual`)
+
+Runs a simulated motor controller with the full ergot protocol over TCP. Host tools connect to it exactly as they would to real hardware.
+
+```bash
+# Start virtual device (default: port 2025, 20kHz FOC, 24V bus)
+cargo run -p oxifoc-virtual
+
+# Connect with CLI
+just cli -- --transport tcp monitor --seconds 5
+```
+
+CLI options: `--port`, `--foc-freq`, `--batch`, `--vbus`.
 
 ## Building
 
+### Quick Commands
+
+```bash
+just check         # Full check: fmt + clippy + tests (workspace + all device firmware)
+just fmt           # Format all code
+just test          # Run workspace tests
+just build g431    # Build device firmware (release)
+just flash g431    # Flash device firmware
+just gui           # Run Slint GUI
+just cli -- list   # Run CLI
+```
+
 ### Device Firmware
+
+Requires Rust nightly with `thumbv7em-none-eabihf` target:
 
 ```bash
 cd oxifoc-g431
-
-# Serial transport (default, uses ST-Link VCP at 921600 baud)
-cargo build --release --features transport-uart
-
-# RTT transport (uses probe-rs RTT channels)
-cargo build --release --features transport-rtt
+cargo build --release
+cargo run --release  # flash via probe-rs
 ```
 
-Note: Only one transport feature can be enabled at a time.
+Transport selection via features: `--features transport-uart` (default) or `--features transport-rtt`.
 
 ### Host Applications
 
-Build the egui app:
-
 ```bash
-cargo build --manifest-path oxifoc-host-egui/Cargo.toml --release
+cargo build --workspace  # all host crates
 ```
 
-Build the CLI:
+System dependencies (for Slint GUI): `libwayland-dev libxkbcommon-dev libudev-dev libfontconfig-dev`
 
-```bash
-cargo build --manifest-path oxifoc-host-cli/Cargo.toml --release
-```
+## Configuration
 
-## Running
+### Host Config (`oxifoc-host.toml`)
 
-### Flash and Run Device
-
-Using probe-rs:
-
-```bash
-cd oxifoc-g431
-
-# Flash with Serial transport
-cargo run --release --features transport-uart
-
-# Flash with RTT transport
-cargo run --release --features transport-rtt
-```
-
-The device will initialize the selected transport and start the ergot communication stack.
-
-### Run Host Application (Tauri GUI)
-
-```bash
-cd oxifoc-host-tauri
-bun install
-bun tauri dev
-```
-
-The Tauri GUI allows selecting transport (Serial or RTT) and provides real-time ADC charts and log controls.
-
-### Run Host Application (egui)
-
-```bash
-cargo run --manifest-path oxifoc-host-egui/Cargo.toml --release
-```
-
-Note: For RTT transport, ensure no other `probe-rs` session is running (the ST‑Link/RTT connection can only be owned by one process at a time).
-
-#### Configuration (TOML)
-
-The host reads an optional `oxifoc-host.toml` in the current working directory (or from `OXIFOC_HOST_CONFIG` env var):
+Optional TOML config, loaded from `./oxifoc-host.toml` or `OXIFOC_HOST_CONFIG` env var:
 
 ```toml
-# Transport: "serial" or "rtt" (default: serial)
-transport = "serial"
-
-# Serial transport options
-serial_path = "/dev/ttyACM0"  # Auto-detected if not set
-serial_baud = 921600          # Default: 921600
-
-# RTT transport options
-probe = "0483:374b"           # VID:PID or VID:PID:SERIAL
-chip = "STM32G431CBUx"
-
-# Path to device ELF for defmt decoding
-elf = "/path/to/device.elf"
-
-# Enable/disable channel streaming (both default to true)
+transport = "serial"       # "serial", "rtt", or "tcp"
+serial_path = "/dev/ttyACM0"
+serial_baud = 921600
+probe = "0483:374b"        # VID:PID for RTT
+chip = "STM32G431CBUx"     # required for RTT
+tcp_host = "127.0.0.1"     # for TCP transport
+tcp_port = 2025
+elf = "path/to/device.elf" # for defmt decoding
 stream_defmt = true
 stream_ergot = true
 ```
 
-### Transport Details
+### Device Config (Flash Storage)
 
-**Serial (UART) transport** (`transport-uart` feature):
-- Uses ST-Link V2's built-in VCP (Virtual COM Port)
-- UART pins: PB3 (TX), PB4 (RX)
-- Default baud rate: 921600, 8N1
-- Both defmt and ergot are multiplexed over a single UART (defmt forwarded via ergot network)
+Persistent configuration stored in internal flash using `sequential-storage`:
 
-**RTT transport** (`transport-rtt` feature):
-- Uses probe-rs RTT channels via ST-Link
-- Channel map:
-  - **up0 "defmt"**: Debug logging output (via defmt macros)
-  - **up1 "ergot"**: COBS-framed protocol messages (device→host)
-  - **down0 "ergot-down"**: Host→device protocol messages
-- Separate channels for defmt and ergot (parallel streaming)
+| Config Group | Contents |
+|-------------|----------|
+| MotorParams | R, Ld, Lq, flux linkage, pole pairs |
+| HallCalibration | Sector angles, validity flags |
+| DcOffsets | Current sensor zero-offset per phase |
+| CurrentLimits | Max Iq, max phase current |
+| VoltageLimits | Min/max bus voltage thresholds |
+| PwmConfig | Frequency, max duty percent |
+| PiGains | Kp, Ki, bandwidth |
+| HallTuning | Interpolation, drift correction, timeout |
+
+Configs are loaded at boot and applied to the FOC controller. Read/write via the `ConfigEndpoint` protocol command.
+
+## Testing
+
+### Unit Tests
+
+```bash
+cargo test --workspace                              # all workspace tests (140+)
+cargo test -p oxifoc-core --features virtual-motor  # include virtual motor tests
+cargo test -p oxifoc-core --features virtual-motor,microfft  # include HFI tests
+```
+
+### On-Target Integration Tests
+
+Run on real hardware via `embedded-test`:
+
+```bash
+cd tests/stm32g431 && cargo test  # requires G431 board connected
+cd tests/stm32g474 && cargo test  # requires G474 board connected
+```
+
+Tests: CORDIC accuracy, transform round-trips, FOC with synthetic currents, SVPWM all sectors.
+
+## CI
+
+GitHub Actions runs on every push/PR:
+- **fmt**: rustfmt check (workspace + all device crates)
+- **clippy**: `-D warnings` on workspace
+- **test**: `cargo test --workspace`
+- **device**: matrix build for G431/G474/F405 (fmt + clippy + release build) with `Swatinem/rust-cache`
+
+Concurrency groups cancel stale runs.
 
 ## Network Topology
 
-Ergot DirectEdge profile (point‑to‑point):
-- Host: controller at `1.1.0`
-- Device: target at `1.2.0`
+Ergot DirectEdge profile (point-to-point):
+- Host: controller at `1.1:0` (node 1)
+- Device: target at `1.2:0` (node 2)
 
-## Development Notes
-
-- **FOC algorithms**: `oxifoc-core/src/foc/` (transforms, SVPWM, PI controller, Hall sensor)
-- **Device firmware**: `oxifoc-g431/src/main.rs` (main task orchestration)
-  - Motor control: `oxifoc-g431/src/motor/` (PWM, six-step, Hall sensor driver)
-- **Protocol**: `oxifoc-core/src/protocol.rs` (Button, Motor, AdcSample, HallSensor, Info endpoints)
-- **Host backend**: `oxifoc-host-lib/src/lib.rs` (+ `config.rs` for TOML parsing)
-- **Host frontends**:
-  - Tauri GUI: `oxifoc-host-tauri/` (desktop/mobile)
-  - egui: `oxifoc-host-egui/src/main.rs`
-  - CLI: `oxifoc-host-cli/src/main.rs`
-
-### Quick Commands (justfile)
-
-```bash
-just install    # Install Tauri frontend dependencies
-just dev        # Run Tauri dev server
-just build      # Build Tauri release
-just egui       # Run egui app
-just cli        # Run CLI
-just flash      # Flash device firmware
-just lint       # Lint all code
-just format     # Format all code
-```
-
-## Debugging
-
-View defmt logs via the host application (Tauri GUI, egui, or CLI). For RTT transport, only one process can hold the ST-Link/RTT connection at a time.
-
-For device-only debugging with RTT:
-
-```bash
-cd oxifoc-g431
-cargo run --release --features transport-rtt
-```
-
-## Roadmap
-
-### Completed
-
-- ✅ **FOC Core Library** (`oxifoc-core`)
-  - Clarke/Park transforms and inverses
-  - Space Vector PWM (VESC geometric method)
-  - PI controller with anti-windup
-
-- ✅ **Hall Sensor (VESC-compatible)**
-  - 8-entry raw-state calibration table
-  - Soft drift correction and rate limiting
-  - Low-speed interpolation threshold (eRPM-based)
-  - Direction reversal detection
-  - Invalid state detection with recovery reset
-  - Timeout detection for failure monitoring
-  - 7-read majority voting for noise immunity
-
-- ✅ **PhaseManager with Fallback**
-  - Hall → Observer → OpenLoop fallback chain
-  - Hall health tracking (Ok, Stale, Invalid)
-  - Velocity-based Hall-to-Observer blending
-  - Fault system for error reporting
-
-- ✅ **Motor Parameter Detection**
-  - Resistance measurement
-  - Inductance measurement (rotating HFI)
-  - Flux linkage measurement
-  - Hall sensor calibration
-
-- ✅ **FOC Current Control Loop**
-  - Id/Iq current control (dq frame)
-  - Center-aligned PWM with dead-time
-  - ADC synchronized to PWM
-
-### In Progress
-
-- 🔄 **Back-EMF Observer** - Implemented but needs testing
-- 🔄 **Non-volatile storage** - Save calibration/config to flash
-
-### Planned
-
-#### Velocity & Position Control
-- Velocity control outer loop
-- Position control outer loop
-- Torque/current limit enforcement
-- Field weakening for high-speed operation
-
-#### Encoder Support
-- Incremental encoder (ABI) support
-- Index pulse for absolute positioning
-- Absolute encoder support (SPI-based: AS5047, MT6816)
-
-#### Sensorless Control
-- HFI angle tracking for zero/low speed
-- Automatic sensored→sensorless transition
-
-#### Safety & Protection
-- Over-current protection (hardware + software)
-- Over-voltage / under-voltage detection
-- Over-temperature monitoring
-- Fault latching and safe shutdown
-- Watchdog integration
-
-#### Host Tooling
-- Calibration wizards (Hall, current offset, motor params)
-- Real-time plotting and tuning UI
-- Configuration save/load
-- Firmware update via bootloader
+Same topology for serial, RTT, and TCP transports.
 
 ## License
 
