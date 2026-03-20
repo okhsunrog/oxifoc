@@ -758,11 +758,11 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
     // Step 2: Measure inductance (using measured R for compensation)
     info!("Step 2/4: Inductance measurement");
 
-    // Limit holding current to what the bus can deliver, leaving at
-    // least 40 % headroom for HFI injection or pulse voltage.
+    // Limit holding current to both the power-safe limit and what the
+    // bus can deliver (with 40% headroom for HFI/pulse voltage).
     let r = result.params.resistance_ohm;
-    let max_hold_current = (params.vbus * 0.577 * 0.6) / r.max(0.001);
-    let hold_current = 2.0f32.min(max_hold_current).max(0.1);
+    let max_bus_current = (params.vbus * 0.577 * 0.6) / r.max(0.001);
+    let hold_current = safe_current.min(max_bus_current).max(0.1);
 
     let inductance_params = InductanceParams {
         motor_size: params.motor_size,
@@ -809,6 +809,7 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
         resistance_ohm: result.params.resistance_ohm,
         pole_pairs: params.pole_pairs,
         spin_rpm,
+        current_a: safe_current.min(2.0), // cap to safe level
         ..Default::default()
     };
     info!("Step 3/4: Flux linkage measurement (spin-down)");
