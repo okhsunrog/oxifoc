@@ -3,7 +3,7 @@ target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
 runner = "probe-rs run --chip STM32G474RETx"
-rustflags = ["-C", "target-feature=+vfp2"]
+rustflags = ["-C", "target-feature=+vfp2,-fp64"]
 
 [env]
 DEFMT_LOG = "debug"

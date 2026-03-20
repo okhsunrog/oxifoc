@@ -23,7 +23,7 @@ check-host:
 check-device:
     #!/usr/bin/env bash
     set -euo pipefail
-    filter() { grep -v 'unstable feature.*vfp2\|not stably supported\|^  |\|^$' || true; }
+    filter() { grep -v 'unstable feature.*vfp2\|not stably supported\|unknown and unstable feature.*fp64\|still passed through to the codegen\|consider filing a feature request\|^  |\|^$' || true; }
     for crate in {{ device_crates }}; do
         echo "$crate: fmt + clippy + build..."
         (cd "$crate" && cargo fmt --check) || exit 1
