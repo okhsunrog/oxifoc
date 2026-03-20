@@ -550,8 +550,10 @@ mod integration_tests {
             motor_size: MotorSize::Small,
             pole_pairs: motor_params.pole_pairs,
             current_max: 10.0,
+            max_power_loss_w: 50.0, // Small motor preset
             pwm_freq_hz: 20_000.0,
             vbus: 24.0,
+            openloop_erpm: 1400.0, // Small outrunner preset
         };
 
         let mut hw = VirtualHardware;

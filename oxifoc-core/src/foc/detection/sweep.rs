@@ -94,16 +94,25 @@ pub trait DetectionHardware {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DetectionParams {
-    /// Motor size classification
+    /// Motor size classification (used for validation ranges).
+    /// Set to `MotorSize::Custom(max_power_loss_w)` when the power
+    /// limit comes from a host command instead of a hardcoded preset.
     pub motor_size: MotorSize,
     /// Number of pole pairs (required for flux linkage)
     pub pole_pairs: u8,
     /// Maximum hardware current limit (Amps)
     pub current_max: f32,
+    /// Maximum acceptable power dissipation in the motor during
+    /// detection (Watts).  Controls the safe test current.
+    pub max_power_loss_w: f32,
     /// PWM frequency in Hz
     pub pwm_freq_hz: f32,
     /// DC bus voltage (Volts) — used for voltage pulse fallback
     pub vbus: f32,
+    /// Open-loop ERPM for flux linkage spin-up.
+    /// Converted to mechanical RPM: `spin_rpm = openloop_erpm / pole_pairs`.
+    /// When 0, uses the motor_size default.
+    pub openloop_erpm: f32,
 }
 
 impl Default for DetectionParams {
@@ -112,8 +121,10 @@ impl Default for DetectionParams {
             motor_size: MotorSize::Medium,
             pole_pairs: 7,
             current_max: 10.0,
+            max_power_loss_w: 120.0,
             pwm_freq_hz: 20000.0,
             vbus: 24.0,
+            openloop_erpm: 0.0,
         }
     }
 }
@@ -714,11 +725,31 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
     let mut result = DetectionResult::default();
     result.params.pole_pairs = params.pole_pairs;
 
-    // Step 1: Measure resistance
+    // Step 1: Measure resistance with safe current finding.
+    // First pass at low current to estimate R, then compute the safe
+    // test current from the power limit, then full measurement.
     info!("Step 1/4: Resistance measurement");
+    let probe_current = (params.current_max / 50.0).max(0.5);
+    let probe_params = ResistanceParams {
+        motor_size: params.motor_size,
+        current_max: probe_current,
+        num_samples: 20,
+        ramp_time_ms: 200,
+        settle_time_ms: 100,
+        ..Default::default()
+    };
+    let r_probe = measure_resistance::<H, T>(hw, &probe_params).await?;
+    T::after_millis(200).await;
+
+    // Safe current: I = sqrt(max_power_loss / R / 1.5), capped to hardware limit
+    let safe_current = libm::sqrtf(params.max_power_loss_w / r_probe / 1.5)
+        .min(params.current_max)
+        .max(probe_current);
+    info!("Safe test current found");
+
     let resistance_params = ResistanceParams {
         motor_size: params.motor_size,
-        current_max: params.current_max,
+        current_max: safe_current,
         ..Default::default()
     };
     result.params.resistance_ohm = measure_resistance::<H, T>(hw, &resistance_params).await?;
@@ -768,10 +799,17 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
 
     // Step 3: Measure flux linkage — try spin-down (R-independent) first,
     // fall back to driven method if the motor decelerates too quickly.
+    // Use openloop_erpm to set spin RPM, fall back to motor_size default
+    let spin_rpm = if params.openloop_erpm > 0.0 {
+        params.openloop_erpm / params.pole_pairs as f32
+    } else {
+        params.motor_size.suggested_open_loop_erpm() / params.pole_pairs as f32
+    };
     let flux_params = FluxLinkageParams {
         motor_size: params.motor_size,
         resistance_ohm: result.params.resistance_ohm,
         pole_pairs: params.pole_pairs,
+        spin_rpm,
         ..Default::default()
     };
     info!("Step 3/4: Flux linkage measurement (spin-down)");

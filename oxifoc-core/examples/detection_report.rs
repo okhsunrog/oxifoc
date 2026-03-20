@@ -38,6 +38,7 @@ struct MotorDef {
     params: MotorParams,
     vbus: f32,
     motor_size: MotorSize,
+    openloop_erpm: f32,
 }
 
 fn motor_catalog() -> Vec<MotorDef> {
@@ -50,6 +51,7 @@ fn motor_catalog() -> Vec<MotorDef> {
             },
             vbus: 24.0,
             motor_size: MotorSize::Small,
+            openloop_erpm: 1400.0,
         },
         MotorDef {
             name: "Micro gimbal",
@@ -65,6 +67,7 @@ fn motor_catalog() -> Vec<MotorDef> {
             },
             vbus: 12.0,
             motor_size: MotorSize::Mini,
+            openloop_erpm: 1400.0,
         },
         MotorDef {
             name: "5010 drone motor",
@@ -80,6 +83,7 @@ fn motor_catalog() -> Vec<MotorDef> {
             },
             vbus: 24.0,
             motor_size: MotorSize::Small,
+            openloop_erpm: 1400.0,
         },
         MotorDef {
             name: "6354 eskate",
@@ -95,6 +99,7 @@ fn motor_catalog() -> Vec<MotorDef> {
             },
             vbus: 48.0,
             motor_size: MotorSize::Medium,
+            openloop_erpm: 700.0,
         },
         MotorDef {
             name: "8308 ebike hub",
@@ -110,6 +115,7 @@ fn motor_catalog() -> Vec<MotorDef> {
             },
             vbus: 72.0,
             motor_size: MotorSize::Large,
+            openloop_erpm: 700.0, // above min_coast_omega_e for 20pp
         },
         // IPM motors (Ld ≠ Lq) — saliency test
         MotorDef {
@@ -126,6 +132,7 @@ fn motor_catalog() -> Vec<MotorDef> {
             },
             vbus: 48.0,
             motor_size: MotorSize::Medium,
+            openloop_erpm: 700.0,
         },
         MotorDef {
             name: "IPM traction (strong)",
@@ -141,6 +148,7 @@ fn motor_catalog() -> Vec<MotorDef> {
             },
             vbus: 96.0,
             motor_size: MotorSize::Large,
+            openloop_erpm: 700.0,
         },
         // High-friction: spin-down fails, forces driven fallback.
         // friction_b = 0.01 is a small motor with a loaded gearbox —
@@ -160,6 +168,7 @@ fn motor_catalog() -> Vec<MotorDef> {
             },
             vbus: 24.0,
             motor_size: MotorSize::Small,
+            openloop_erpm: 1400.0,
         },
         // Very low inertia + moderate friction: motor stops almost
         // instantly when released, but can track open-loop angle.
@@ -177,6 +186,7 @@ fn motor_catalog() -> Vec<MotorDef> {
             },
             vbus: 24.0,
             motor_size: MotorSize::Small,
+            openloop_erpm: 1400.0,
         },
         MotorDef {
             name: "NEMA23 stepper-servo",
@@ -192,6 +202,8 @@ fn motor_catalog() -> Vec<MotorDef> {
             },
             vbus: 48.0,
             motor_size: MotorSize::Medium,
+            // 50pp needs higher eRPM for reasonable mechanical speed
+            openloop_erpm: 5000.0,
         },
     ]
 }
@@ -407,8 +419,10 @@ fn run_detection(def: &MotorDef) -> DetResult {
         motor_size: def.motor_size,
         pole_pairs: p.pole_pairs,
         current_max: 10.0,
+        max_power_loss_w: def.motor_size.max_power_loss_w(),
         pwm_freq_hz: 20_000.0,
         vbus: def.vbus,
+        openloop_erpm: def.openloop_erpm,
     };
 
     // Full detection sequence

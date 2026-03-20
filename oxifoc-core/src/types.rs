@@ -218,6 +218,80 @@ pub struct FaultResponse {
 }
 
 // ============================================================================
+// Motor Detection Protocol Types
+// ============================================================================
+
+/// Motor detection request from host.
+///
+/// Sent via the `DetectEndpoint` to start the full detection sequence.
+/// Parameters come from a motor preset selected by the user (similar
+/// to VESC Tool's motor size selection).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct DetectRequest {
+    /// Number of pole pairs (must be set manually)
+    pub pole_pairs: u8,
+    /// Maximum acceptable power dissipation in the motor during
+    /// detection (Watts).  Controls the safe test current via
+    /// `I_max = sqrt(max_power_loss / R / 1.5)`.
+    pub max_power_loss_w: f32,
+    /// Open-loop ERPM for the flux linkage spin-up.
+    /// Converted to mechanical RPM internally.
+    /// Typical: 300 (hub motor) to 1400 (small outrunner).
+    pub openloop_erpm: f32,
+    /// Sensorless transition ERPM — stored in config after detection.
+    /// Not used during measurement, passed through to results.
+    pub sensorless_erpm: f32,
+}
+
+/// Motor detection response.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum DetectResponse {
+    /// Detection succeeded with measured parameters.
+    Ok {
+        /// Phase resistance (Ohms)
+        resistance_ohm: f32,
+        /// d-axis inductance (Henries)
+        inductance_d_h: f32,
+        /// q-axis inductance (Henries)
+        inductance_q_h: f32,
+        /// Flux linkage (Weber)
+        flux_linkage_wb: f32,
+        /// Motor Kv (RPM/V)
+        kv_rpm_per_v: f32,
+        /// Maximum safe continuous current (Amps)
+        max_current_a: f32,
+        /// Current loop proportional gain
+        kp_current: f32,
+        /// Current loop integral gain
+        ki_current: f32,
+    },
+    /// Detection failed.
+    Error(DetectError),
+}
+
+/// Wire-friendly detection error.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum DetectError {
+    /// Motor not responding (open circuit, disconnected)
+    MotorNotResponding,
+    /// Measured value outside physical range
+    OutOfRange,
+    /// Detection timed out
+    Timeout,
+    /// Hardware fault during measurement
+    HardwareFault,
+    /// Not enough valid samples collected
+    InsufficientSamples,
+    /// Measurement too noisy
+    LowConfidence,
+    /// Prerequisite measurement not done
+    MissingPrerequisite,
+}
+
+// ============================================================================
 // Configuration Protocol Types (require storage feature)
 // ============================================================================
 

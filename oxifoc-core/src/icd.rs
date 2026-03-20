@@ -52,6 +52,11 @@ endpoint!(HallSensorEndpoint, (), HallSensorData, "req/hall");
 // Host queries/clears faults. Responds with current fault state.
 endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
 
+// Motor detection endpoint (host → device)
+// Host sends detection parameters, device runs the full detection sequence
+// (R, L, flux linkage, PI tuning) and returns the results.
+endpoint!(DetectEndpoint, DetectRequest, DetectResponse, "cmd/detect");
+
 // Configuration endpoint (host → device)
 // Host reads/writes persistent configuration stored in flash.
 #[cfg(feature = "storage")]
