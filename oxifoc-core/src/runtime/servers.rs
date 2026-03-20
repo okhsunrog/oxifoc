@@ -33,10 +33,11 @@ use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 use crate::foc::fault::{FaultRegistry, PlatformFault};
 use crate::foc::hall_sensor::Direction;
 use crate::icd::{
-    AdcSample, AdcSampleEndpoint, ConfigEndpoint, ConfigRequest, ConfigResponse, ControlMode,
-    DeviceInfo, FaultEndpoint, FaultRequest, FaultResponse, HallSensorData, HallSensorEndpoint,
-    InfoEndpoint, MotorEndpoint, MotorStatus,
+    AdcSample, AdcSampleEndpoint, ControlMode, DeviceInfo, FaultEndpoint, FaultRequest,
+    FaultResponse, HallSensorData, HallSensorEndpoint, InfoEndpoint, MotorEndpoint, MotorStatus,
 };
+#[cfg(feature = "storage")]
+use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
 use crate::state::{CMD_CHANNEL, MotorControlState};
 #[cfg(feature = "storage")]
 use crate::storage::{ConfigKey, ConfigPayload, FLASH_CHANNEL, FlashOperation, RuntimeConfig};
