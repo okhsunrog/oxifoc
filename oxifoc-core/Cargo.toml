@@ -75,3 +75,7 @@ microfft = ["dep:microfft"]
 
 # Persistent configuration storage
 storage = ["dep:sequential-storage"]
+
+[[example]]
+name = "detection_report"
+required-features = ["virtual-motor", "microfft", "std"]

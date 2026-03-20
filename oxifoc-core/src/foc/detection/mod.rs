@@ -87,6 +87,10 @@ pub mod sweep;
 /// Inductance measurement via voltage pulse (fallback for HFI)
 pub mod voltage_pulse;
 
+/// Virtual motor harness for detection testing and benchmarking
+#[cfg(all(feature = "virtual-motor", any(test, feature = "std")))]
+pub mod virtual_harness;
+
 // Re-export commonly used types for convenience
 pub use types::{
     DcOffsetParams, DcOffsets, DetectionError, FluxLinkageParams, InductanceParams, MotorParams,
@@ -310,317 +314,48 @@ mod integration_tests {
 
     /// End-to-end test of the full async detection orchestrator.
     ///
-    /// Runs [`run_full_detection()`] from `sweep.rs` against a `VirtualMotor`
-    /// parameterised as a 6354-class electric skateboard outrunner.  The
-    /// higher rotor inertia (~0.001 kg·m²) is representative of a real
-    /// motor+wheel load and ensures the motor coasts through the
-    /// flux-linkage settle phase — just as it does on real hardware.
-    ///
-    /// Every simulation step is one 50 µs FOC cycle at 20 kHz, faithfully
-    /// reproducing the control loop timing of real firmware.  Between
-    /// `send_command` calls the estimated open-loop angular velocity is
-    /// used to continuously advance the commutation angle so the motor
-    /// sees smooth rotation rather than discrete step-and-hold.
+    /// Uses the shared [`virtual_harness`] to run `run_full_detection()`
+    /// against a VirtualMotor and verify all parameters match ground truth.
     #[cfg(feature = "microfft")]
     #[test]
     fn run_full_detection_e2e() {
-        use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        use std::cell::RefCell;
-
-        use super::sweep::{DetectionHardware, DetectionParams, run_full_detection};
+        use super::sweep::DetectionParams;
         use super::types::MotorSize;
-        use crate::foc::controller::{FocController, FocOutput};
-        use core::f32::consts::TAU;
+        use super::virtual_harness::run_detection;
 
-        use crate::foc::{angle_difference, wrap_angle};
-        use crate::motor::ControlMode;
-        use crate::timer::Timer;
-
-        const DT: f32 = 1.0 / 20_000.0;
-        const MAX_DUTY: u16 = 1000;
-
-        // ── Shared simulation state ────────────────────────────────────────
-        struct SimState {
-            foc: FocController<SvpwmModulator>,
-            motor: VirtualMotor,
-            out: VirtualMotorOutput,
-            mode: ControlMode,
-            /// Smoothly-advancing angle for OpenLoop mode.  Between
-            /// `send_command` calls the Timer advances this at `ol_omega`
-            /// so the motor sees continuous rotation.
-            sim_angle: f32,
-            /// Estimated open-loop angular velocity (rad/s).
-            ol_omega: f32,
-            /// Commanded angle from the last `send_command` (for ω estimation).
-            prev_cmd_angle: f32,
-            /// Steps elapsed since the last `send_command`.
-            steps_since_send: u64,
-        }
-
-        impl SimState {
-            /// One FOC cycle (50 µs).
-            fn step_one(&mut self) -> FocOutput {
-                // Advance the simulation angle for OpenLoop mode so the
-                // motor sees continuous rotation between send_command calls.
-                if matches!(self.mode, ControlMode::OpenLoop { .. }) && self.ol_omega.abs() > 0.1 {
-                    self.sim_angle = wrap_angle(self.sim_angle + self.ol_omega * DT);
-                }
-                self.steps_since_send += 1;
-
-                let telem = match self.mode {
-                    ControlMode::OpenLoop { current, .. } => self.foc.step(
-                        (self.out.ia, self.out.ib, self.out.ic),
-                        self.sim_angle,
-                        current,
-                        0.0,
-                        MAX_DUTY,
-                        DT,
-                    ),
-                    ControlMode::DirectVoltage { vd, vq, angle_rad } => {
-                        self.foc.apply_dq(vd, vq, angle_rad, MAX_DUTY)
-                    }
-                    ControlMode::Coast => FocOutput::empty(),
-                    ControlMode::Stopped => FocOutput::empty(),
-                    _ => FocOutput::empty(),
-                };
-
-                // Advance the motor with the appropriate terminal model.
-                self.out = match self.mode {
-                    ControlMode::Coast => self.motor.step_coast(0.0, DT),
-                    ControlMode::Stopped => self.motor.step_shorted(0.0, DT),
-                    _ => self.motor.step(telem.v_alpha, telem.v_beta, 0.0, DT),
-                };
-                telem
-            }
-
-            fn step_n(&mut self, n: usize) {
-                for _ in 0..n {
-                    self.step_one();
-                }
-            }
-        }
-
-        thread_local! {
-            static SIM: RefCell<Option<SimState>> = RefCell::new(None);
-        }
-
-        // ── DetectionHardware backed by VirtualMotor ───────────────────────
-        struct VirtualHardware;
-
-        impl DetectionHardware for VirtualHardware {
-            fn send_command(&self, mode: ControlMode) {
-                SIM.with(|s| {
-                    let mut borrow = s.borrow_mut();
-                    let sim = borrow.as_mut().unwrap();
-
-                    match mode {
-                        ControlMode::OpenLoop { angle_rad, .. } => {
-                            // On entry from a non-OpenLoop mode, snap the
-                            // simulation angle to the first commanded angle.
-                            if !matches!(sim.mode, ControlMode::OpenLoop { .. }) {
-                                sim.sim_angle = angle_rad;
-                                sim.ol_omega = 0.0;
-                            }
-                            // Update ω estimate from consecutive commanded
-                            // angles, but only for short gaps (< 100 ms).
-                            // Long gaps are settle/pause periods where the
-                            // previous ω should be kept.
-                            if sim.steps_since_send > 0 && sim.steps_since_send < 2000 {
-                                let elapsed = sim.steps_since_send as f32 * DT;
-                                let wrapped = angle_difference(angle_rad, sim.prev_cmd_angle);
-                                // Unwrap: the open-loop ramp can advance by
-                                // more than π per step at high speeds, so
-                                // angle_difference may alias.  Use the previous
-                                // ω estimate to resolve the ambiguity.
-                                let expected = sim.ol_omega * elapsed;
-                                let n = ((expected - wrapped) / TAU).round();
-                                let delta = wrapped + n * TAU;
-                                sim.ol_omega = delta / elapsed;
-                            }
-                            sim.prev_cmd_angle = angle_rad;
-                            sim.steps_since_send = 0;
-                        }
-                        ControlMode::Coast => {
-                            // Motor coasts freely — keep ol_omega for
-                            // Timer stepping but reset FOC integrators.
-                            sim.foc.reset();
-                        }
-                        ControlMode::Stopped => {
-                            sim.foc.reset();
-                            sim.ol_omega = 0.0;
-                        }
-                        ControlMode::DirectVoltage { .. } => {
-                            sim.ol_omega = 0.0;
-                        }
-                        _ => {}
-                    }
-                    sim.mode = mode;
-                });
-            }
-
-            fn wait_telemetry(&mut self) -> impl core::future::Future<Output = FocOutput> {
-                core::future::ready(SIM.with(|s| s.borrow_mut().as_mut().unwrap().step_one()))
-            }
-
-            fn read_phase_currents(&self) -> (f32, f32, f32) {
-                SIM.with(|s| {
-                    let s = s.borrow();
-                    let s = s.as_ref().unwrap();
-                    (s.out.ia, s.out.ib, s.out.ic)
-                })
-            }
-
-            fn read_coast_telemetry(&self) -> (f32, f32, f32) {
-                SIM.with(|s| {
-                    let s = s.borrow();
-                    let s = s.as_ref().unwrap();
-                    (s.out.bemf_alpha, s.out.bemf_beta, s.out.omega_e)
-                })
-            }
-        }
-
-        // ── Timer: each ms/µs → exact number of 50 µs FOC steps ───────────
-        struct VirtualTimer;
-
-        impl Timer for VirtualTimer {
-            fn after_millis(ms: u64) -> impl core::future::Future<Output = ()> {
-                let steps = ((ms as f64 / 1000.0) * 20_000.0) as usize;
-                if steps > 0 {
-                    SIM.with(|s| s.borrow_mut().as_mut().unwrap().step_n(steps));
-                }
-                core::future::ready(())
-            }
-
-            fn after_micros(us: u64) -> impl core::future::Future<Output = ()> {
-                let steps = ((us as f64 / 1_000_000.0) * 20_000.0) as usize;
-                if steps > 0 {
-                    SIM.with(|s| s.borrow_mut().as_mut().unwrap().step_n(steps));
-                }
-                core::future::ready(())
-            }
-        }
-
-        // ── Minimal single-poll executor ───────────────────────────────────
-        fn block_on<F: core::future::Future>(f: F) -> F::Output {
-            fn noop(_: *const ()) {}
-            fn clone(p: *const ()) -> RawWaker {
-                RawWaker::new(p, &VTABLE)
-            }
-            static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
-            let waker = unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) };
-            let mut cx = Context::from_waker(&waker);
-            let mut f = core::pin::pin!(f);
-            match f.as_mut().poll(&mut cx) {
-                Poll::Ready(v) => v,
-                Poll::Pending => panic!("unexpected Pending in virtual motor sweep test"),
-            }
-        }
-
-        // ── Motor parameters ────────────────────────────────────────────────
-        // Default electrical params (R=0.5 Ω, Ld=Lq=0.5 mH, λ=0.01 Wb, 7pp)
-        // with higher inertia so the 2 A open-loop current can track the ramp
-        // (max accel = 0.21/5e-4 = 420 rad/s² > ramp's 183 rad/s²) and the
-        // motor coasts through the 1 s settle with minimal speed loss.
         let motor_params = MotorParams {
             j: 5e-4,
             ..MotorParams::default()
         };
-        let kp = motor_params.ld * 1_000.0;
-        let ki = motor_params.r * 1_000.0;
 
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        foc.id_pi = PIController::new(kp, ki);
-        foc.iq_pi = PIController::new(kp, ki);
-
-        SIM.with(|s| {
-            *s.borrow_mut() = Some(SimState {
-                foc,
-                motor: VirtualMotor::new(motor_params),
-                out: VirtualMotorOutput::default(),
-                mode: ControlMode::Stopped,
-                sim_angle: 0.0,
-                ol_omega: 0.0,
-                prev_cmd_angle: 0.0,
-                steps_since_send: 0,
-            });
-        });
-
-        // ── Run the full detection sequence ────────────────────────────────
         let det_params = DetectionParams {
             motor_size: MotorSize::Small,
             pole_pairs: motor_params.pole_pairs,
             current_max: 10.0,
-            max_power_loss_w: 50.0, // Small motor preset
+            max_power_loss_w: 50.0,
             pwm_freq_hz: 20_000.0,
             vbus: 24.0,
-            openloop_erpm: 1400.0, // Small outrunner preset
+            openloop_erpm: 1400.0,
         };
 
-        let mut hw = VirtualHardware;
-        let result = block_on(run_full_detection::<VirtualHardware, VirtualTimer>(
-            &mut hw, det_params,
-        ));
-        let result = result.expect("full detection sequence should succeed");
+        let result = run_detection(motor_params, 24.0, det_params)
+            .expect("full detection sequence should succeed");
 
-        // ── Verify detected parameters against ground truth ────────────────
-        assert!(
-            result.params.is_complete(),
-            "all motor parameters should be detected"
-        );
+        assert!(result.params.is_complete());
 
-        // Resistance (R = 0.5 Ω)
         let r_err = (result.params.resistance_ohm - motor_params.r).abs() / motor_params.r;
-        assert!(
-            r_err < 0.20,
-            "R error {:.1}%: measured {:.4} Ω, expected {:.4} Ω",
-            r_err * 100.0,
-            result.params.resistance_ohm,
-            motor_params.r,
-        );
+        assert!(r_err < 0.20, "R error {:.1}%", r_err * 100.0);
 
-        // Inductance (Ld = Lq = 0.5 mH)
         let l_err = (result.params.inductance_avg_h - motor_params.ld).abs() / motor_params.ld;
-        assert!(
-            l_err < 0.15,
-            "L error {:.1}%: measured {:.2} µH, expected {:.2} µH",
-            l_err * 100.0,
-            result.params.inductance_avg_h * 1e6,
-            motor_params.ld * 1e6,
-        );
+        assert!(l_err < 0.15, "L error {:.1}%", l_err * 100.0);
 
-        // Flux linkage (λ = 10 mWb)
         let lam_err =
             (result.params.flux_linkage_wb - motor_params.lambda).abs() / motor_params.lambda;
-        assert!(
-            lam_err < 0.05,
-            "λ error {:.1}%: measured {:.5} Wb, expected {:.5} Wb",
-            lam_err * 100.0,
-            result.params.flux_linkage_wb,
-            motor_params.lambda,
-        );
+        assert!(lam_err < 0.05, "λ error {:.1}%", lam_err * 100.0);
 
-        // PI gains should be positive and finite
-        assert!(
-            result.kp_current > 0.0 && result.kp_current.is_finite(),
-            "kp should be positive: {}",
-            result.kp_current,
-        );
-        assert!(
-            result.ki_current > 0.0 && result.ki_current.is_finite(),
-            "ki should be positive: {}",
-            result.ki_current,
-        );
-
-        // Derived values
-        assert!(
-            result.params.kv_rpm_per_v > 50.0,
-            "Kv should be reasonable: {}",
-            result.params.kv_rpm_per_v,
-        );
-        assert!(
-            result.params.max_current_a > 0.0,
-            "max current should be calculated: {}",
-            result.params.max_current_a,
-        );
+        assert!(result.kp_current > 0.0 && result.kp_current.is_finite());
+        assert!(result.ki_current > 0.0 && result.ki_current.is_finite());
+        assert!(result.params.kv_rpm_per_v > 50.0);
+        assert!(result.params.max_current_a > 0.0);
     }
 }
