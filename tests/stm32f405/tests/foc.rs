@@ -12,7 +12,7 @@ mod tests {
         controller::FocController,
         pwm::SvpwmModulator,
         transforms,
-        trig::{LibmSinCos, SinCos},
+        trig::{FastSinCos, LibmSinCos, SinCos},
     };
 
     const MAX_TRIG_ERR: f32 = 1e-5;
@@ -70,16 +70,32 @@ mod tests {
         let cases: [(f32, f32, f32); 6] = [
             (0.0, 0.0, 1.0),
             (FRAC_PI_6, 0.5, 0.866_025_4),
-            (FRAC_PI_4, core::f32::consts::FRAC_1_SQRT_2, core::f32::consts::FRAC_1_SQRT_2),
+            (
+                FRAC_PI_4,
+                core::f32::consts::FRAC_1_SQRT_2,
+                core::f32::consts::FRAC_1_SQRT_2,
+            ),
             (FRAC_PI_2, 1.0, 0.0),
             (PI, 0.0, -1.0),
-            (-FRAC_PI_4, -core::f32::consts::FRAC_1_SQRT_2, core::f32::consts::FRAC_1_SQRT_2),
+            (
+                -FRAC_PI_4,
+                -core::f32::consts::FRAC_1_SQRT_2,
+                core::f32::consts::FRAC_1_SQRT_2,
+            ),
         ];
 
         for (angle, exp_sin, exp_cos) in cases {
             let (sin, cos) = LibmSinCos::sin_cos(angle);
-            defmt::assert!(libm::fabsf(sin - exp_sin) < MAX_TRIG_ERR, "sin({}) err", angle);
-            defmt::assert!(libm::fabsf(cos - exp_cos) < MAX_TRIG_ERR, "cos({}) err", angle);
+            defmt::assert!(
+                libm::fabsf(sin - exp_sin) < MAX_TRIG_ERR,
+                "sin({}) err",
+                angle
+            );
+            defmt::assert!(
+                libm::fabsf(cos - exp_cos) < MAX_TRIG_ERR,
+                "cos({}) err",
+                angle
+            );
         }
         defmt::info!("libm sin/cos accuracy: PASS");
     }
@@ -111,7 +127,7 @@ mod tests {
 
     #[test]
     fn foc_zero_currents(_state: TestState) {
-        let mut foc = FocController::<SvpwmModulator>::new(12.0);
+        let mut foc = FocController::<SvpwmModulator, FastSinCos>::new(12.0);
         let max_duty: u16 = 1000;
         let dt = 50e-6_f32;
 
@@ -120,7 +136,11 @@ mod tests {
             let center = max_duty / 2;
             let tolerance = max_duty / 10;
             for (i, &duty) in telem.duties.iter().enumerate() {
-                let diff = if duty > center { duty - center } else { center - duty };
+                let diff = if duty > center {
+                    duty - center
+                } else {
+                    center - duty
+                };
                 defmt::assert!(diff <= tolerance, "angle {}: duty[{}] = {}", angle, i, duty);
             }
         }
@@ -131,7 +151,7 @@ mod tests {
 
     #[test]
     fn foc_synthetic_current(_state: TestState) {
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
+        let mut foc = FocController::<SvpwmModulator, FastSinCos>::new(24.0);
         let max_duty: u16 = 2000;
         let dt = 50e-6_f32;
 
@@ -143,7 +163,11 @@ mod tests {
         defmt::assert!(last.vd < 0.0, "Expected negative vd, got {}", last.vd);
         let all_same = last.duties[0] == last.duties[1] && last.duties[1] == last.duties[2];
         defmt::assert!(!all_same, "Duties should differ: {:?}", last.duties);
-        defmt::info!("FOC synthetic current: PASS (vd={}, duties={:?})", last.vd, last.duties);
+        defmt::info!(
+            "FOC synthetic current: PASS (vd={}, duties={:?})",
+            last.vd,
+            last.duties
+        );
     }
 
     // ========== SVPWM sector coverage ==========
@@ -169,15 +193,13 @@ mod tests {
         defmt::info!("SVPWM all sectors: PASS");
     }
 
-    // ========== Benchmark: full FOC step at 168MHz (libm sin/cos) ==========
+    // ========== Benchmark: full FOC step at 168MHz ==========
 
-    #[test]
-    fn z_bench_foc_step(_state: TestState) {
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
+    fn bench_foc<S: SinCos>(label: &str) {
+        let mut foc = FocController::<SvpwmModulator, S>::new(24.0);
         let max_duty: u16 = 2000;
         let dt = 50e-6_f32;
 
-        // Warm up
         for i in 0..20u32 {
             foc.step((1.0, -0.5, -0.5), (i as f32) * 0.1, 0.5, 2.0, max_duty, dt);
         }
@@ -200,8 +222,12 @@ mod tests {
 
             let elapsed = end.wrapping_sub(start);
             total_cycles += elapsed as u64;
-            if elapsed < min_cycles { min_cycles = elapsed; }
-            if elapsed > max_cycles { max_cycles = elapsed; }
+            if elapsed < min_cycles {
+                min_cycles = elapsed;
+            }
+            if elapsed > max_cycles {
+                max_cycles = elapsed;
+            }
         }
 
         let avg_cycles = (total_cycles / N as u64) as u32;
@@ -211,10 +237,29 @@ mod tests {
         let budget_cycles = SYSCLK_HZ / 20_000;
         let utilization = (avg_cycles as u64 * 100) / budget_cycles as u64;
 
-        defmt::info!("=== FOC step benchmark ({} iterations @ {}MHz, libm sin/cos) ===", N, SYSCLK_HZ / 1_000_000);
+        defmt::info!(
+            "=== FOC {} ({} iters @ {}MHz) ===",
+            label,
+            N,
+            SYSCLK_HZ / 1_000_000
+        );
         defmt::info!("  avg: {} cycles ({} ns)", avg_cycles, avg_ns);
         defmt::info!("  min: {} cycles ({} ns)", min_cycles, min_ns);
         defmt::info!("  max: {} cycles ({} ns)", max_cycles, max_ns);
-        defmt::info!("  50us budget: {} cycles, utilization: {}%", budget_cycles, utilization);
+        defmt::info!(
+            "  50us budget: {} cycles, utilization: {}%",
+            budget_cycles,
+            utilization
+        );
+    }
+
+    #[test]
+    fn z_bench_fast_sincos(_state: TestState) {
+        bench_foc::<FastSinCos>("FastSinCos");
+    }
+
+    #[test]
+    fn z_bench_libm_sincos(_state: TestState) {
+        bench_foc::<LibmSinCos>("LibmSinCos");
     }
 }
