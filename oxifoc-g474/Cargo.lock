@@ -163,7 +163,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/jamesmunns/ergot#fcc9e52780d82a8d866ada5f5898c168d599a9b4"
+source = "git+https://github.com/okhsunrog/ergot?rev=beebb2a#beebb2a3f88e825625f7e8e9b4fb158eb389fdf5"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -424,6 +424,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "embassy-net-driver-channel"
+version = "0.4.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=5bc8260#5bc8260aad50c08a2f7d37e3374193d4f961b581"
+dependencies = [
+ "embassy-futures",
+ "embassy-net-driver 0.2.0 (git+https://github.com/embassy-rs/embassy?rev=5bc8260)",
+ "embassy-sync 0.8.0",
+]
+
+[[package]]
 name = "embassy-stm32"
 version = "0.6.0"
 source = "git+https://github.com/embassy-rs/embassy?rev=5bc8260#5bc8260aad50c08a2f7d37e3374193d4f961b581"
@@ -544,13 +554,31 @@ checksum = "dc4462e48b19a4f401a11901bdd981aab80c6a826608016a0bdc73cbbab31954"
 dependencies = [
  "defmt 1.0.1",
  "embassy-futures",
- "embassy-net-driver-channel",
+ "embassy-net-driver-channel 0.3.2",
  "embassy-sync 0.7.2",
  "embassy-usb-driver",
  "embedded-io-async 0.6.1",
  "heapless 0.8.0",
  "ssmarshal",
- "usbd-hid",
+ "usbd-hid 0.8.2",
+]
+
+[[package]]
+name = "embassy-usb"
+version = "0.6.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=5bc8260#5bc8260aad50c08a2f7d37e3374193d4f961b581"
+dependencies = [
+ "bitflags 2.10.0",
+ "defmt 1.0.1",
+ "embassy-futures",
+ "embassy-net-driver-channel 0.4.0",
+ "embassy-sync 0.8.0",
+ "embassy-time",
+ "embassy-usb-driver",
+ "embedded-io-async 0.7.0",
+ "heapless 0.9.2",
+ "ssmarshal",
+ "usbd-hid 0.10.0",
 ]
 
 [[package]]
@@ -698,7 +726,7 @@ checksum = "a357d28ed41a50f9c765dbfe56cbc04a64e53e5fc58ba79fbc34c10ef3df831f"
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/jamesmunns/ergot#fcc9e52780d82a8d866ada5f5898c168d599a9b4"
+source = "git+https://github.com/okhsunrog/ergot?rev=beebb2a#beebb2a3f88e825625f7e8e9b4fb158eb389fdf5"
 dependencies = [
  "bbqueue",
  "cobs 0.3.0",
@@ -710,7 +738,8 @@ dependencies = [
  "embassy-futures",
  "embassy-net",
  "embassy-time",
- "embassy-usb",
+ "embassy-usb 0.5.1",
+ "embassy-usb 0.6.0",
  "embedded-io-async 0.6.1",
  "embedded-io-async 0.7.0",
  "heapless 0.9.2",
@@ -1632,7 +1661,17 @@ dependencies = [
  "serde",
  "ssmarshal",
  "usb-device",
- "usbd-hid-macros",
+ "usbd-hid-macros 0.8.2",
+]
+
+[[package]]
+name = "usbd-hid"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68beab087e4971a2fe76f631478b0e91d39593f58efd2775026ce6dc07a7bac6"
+dependencies = [
+ "usb-device",
+ "usbd-hid-macros 0.10.0",
 ]
 
 [[package]]
@@ -1640,6 +1679,15 @@ name = "usbd-hid-descriptors"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0eee54712c5d778d2fb2da43b1ce5a7b5060886ef7b09891baeb4bf36910a3ed"
+dependencies = [
+ "bitfield 0.14.0",
+]
+
+[[package]]
+name = "usbd-hid-descriptors"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b297f021719c4308d5d0c61b6c1e7c6b3ba383deba774b49aa5484f996bdb8f1"
 dependencies = [
  "bitfield 0.14.0",
 ]
@@ -1657,7 +1705,23 @@ dependencies = [
  "quote",
  "serde",
  "syn 1.0.109",
- "usbd-hid-descriptors",
+ "usbd-hid-descriptors 0.8.2",
+]
+
+[[package]]
+name = "usbd-hid-macros"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "011a3219e0933f5b3ad7dc90d9a66541a967d084c98c067deed1cd608e557ed7"
+dependencies = [
+ "byteorder",
+ "hashbrown",
+ "log",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 2.0.114",
+ "usbd-hid-descriptors 0.10.0",
 ]
 
 [[package]]
@@ -1736,8 +1800,3 @@ dependencies = [
  "quote",
  "syn 2.0.114",
 ]
-
-[[patch.unused]]
-name = "embassy-usb"
-version = "0.6.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=5bc8260#5bc8260aad50c08a2f7d37e3374193d4f961b581"

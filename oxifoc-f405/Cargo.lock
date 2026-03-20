@@ -239,7 +239,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=embassy-usb-v0_6#13040cef5207e2e7165d266c235836ccbfc23b72"
+source = "git+https://github.com/okhsunrog/ergot?rev=beebb2a#beebb2a3f88e825625f7e8e9b4fb158eb389fdf5"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -903,7 +903,7 @@ dependencies = [
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=embassy-usb-v0_6#13040cef5207e2e7165d266c235836ccbfc23b72"
+source = "git+https://github.com/okhsunrog/ergot?rev=beebb2a#beebb2a3f88e825625f7e8e9b4fb158eb389fdf5"
 dependencies = [
  "bbqueue",
  "cobs 0.3.0",
