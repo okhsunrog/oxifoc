@@ -182,8 +182,9 @@ fn main() {
                             PlotConfig {
                                 num_channels: 3,
                                 capacity: CAPACITY,
-                                y_min: -2.0,
-                                y_max: 2.0,
+                                y_min: -1.0,
+                                y_max: 1.0,
+                                auto_range: true,
                                 channel_colors: vec![
                                     [0.133, 0.827, 0.933, 1.0], // cyan  – Phase A
                                     [0.545, 0.361, 0.965, 1.0], // violet – Phase B
@@ -199,6 +200,7 @@ fn main() {
                                 capacity: CAPACITY,
                                 y_min: 0.0,
                                 y_max: 60.0,
+                                auto_range: true,
                                 channel_colors: vec![[0.918, 0.702, 0.031, 1.0]], // yellow
                             },
                         ));
@@ -210,6 +212,7 @@ fn main() {
                                 capacity: CAPACITY,
                                 y_min: 0.0,
                                 y_max: 150.0,
+                                auto_range: true,
                                 channel_colors: vec![[0.937, 0.267, 0.267, 1.0]], // red
                             },
                         ));
@@ -219,23 +222,30 @@ fn main() {
                     if let (Some(app), Some(cr), Some(vr), Some(tr)) =
                         (app_weak.upgrade(), cr.as_mut(), vr.as_mut(), tr.as_mut())
                     {
-                        let vis = VISIBLE_SAMPLES;
+                        let time_window = app.get_time_window();
+                        let vis = (time_window * 1000.0) as u32; // ~1kHz fast telemetry rate
 
-                        let tex = cr.render(
+                        let (tex, y_lo, y_hi) = cr.render(
                             &cb,
                             app.get_currents_w() as u32,
                             app.get_currents_h() as u32,
                             vis,
                         );
                         app.set_currents_texture(Image::try_from(tex).unwrap());
+                        app.set_currents_y_min(y_lo);
+                        app.set_currents_y_max(y_hi);
 
-                        let tex =
+                        let (tex, y_lo, y_hi) =
                             vr.render(&vb, app.get_vbus_w() as u32, app.get_vbus_h() as u32, vis);
                         app.set_vbus_texture(Image::try_from(tex).unwrap());
+                        app.set_vbus_y_min(y_lo);
+                        app.set_vbus_y_max(y_hi);
 
-                        let tex =
+                        let (tex, y_lo, y_hi) =
                             tr.render(&tb, app.get_temp_w() as u32, app.get_temp_h() as u32, vis);
                         app.set_temp_texture(Image::try_from(tex).unwrap());
+                        app.set_temp_y_min(y_lo);
+                        app.set_temp_y_max(y_hi);
 
                         // Keep rendering continuously so charts update with data.
                         app.window().request_redraw();

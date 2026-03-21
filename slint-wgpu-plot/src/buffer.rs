@@ -32,8 +32,9 @@ impl PlotBuffer {
         );
         assert!(capacity >= 2, "capacity must be at least 2");
 
+        let nan_bits = f32::NAN.to_bits();
         let data = (0..capacity * num_channels)
-            .map(|_| AtomicU32::new(0))
+            .map(|_| AtomicU32::new(nan_bits))
             .collect();
 
         Self {
@@ -78,6 +79,18 @@ impl PlotBuffer {
         }
         // Single Release fence after all frames are written.
         fence(Ordering::Release);
+    }
+
+    /// Reset the buffer: fill with NaN and reset write position.
+    ///
+    /// NaN values are rendered as transparent by the shader, avoiding
+    /// visible steps when the buffer is partially filled.
+    pub fn clear(&self) {
+        let nan_bits = f32::NAN.to_bits();
+        for atom in self.data.iter() {
+            atom.store(nan_bits, Ordering::Relaxed);
+        }
+        self.write_pos.store(0, Ordering::Release);
     }
 
     /// Current write position for use in the GPU shader.

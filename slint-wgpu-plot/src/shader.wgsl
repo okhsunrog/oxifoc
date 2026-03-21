@@ -83,14 +83,22 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let iter_count = min(s_end - s_start + 1u, 256u);
 
     for (var ch = 0u; ch < params.num_channels; ch++) {
-        var val_min = get_sample(ch, s_start);
-        var val_max = val_min;
+        // Find min/max skipping NaN values (unfilled buffer slots)
+        var val_min = 1e30f;
+        var val_max = -1e30f;
+        var valid = false;
 
-        for (var i = 1u; i < iter_count; i++) {
-            let v   = get_sample(ch, s_start + i);
-            val_min = min(val_min, v);
-            val_max = max(val_max, v);
+        for (var i = 0u; i < iter_count; i++) {
+            let v = get_sample(ch, s_start + i);
+            // NaN check: NaN != NaN
+            if v == v {
+                val_min = min(val_min, v);
+                val_max = max(val_max, v);
+                valid = true;
+            }
         }
+
+        if !valid { continue; }
 
         // Screen-space Y (0 = top, 1 = bottom).
         let y_top = 1.0 - value_to_y(val_max);

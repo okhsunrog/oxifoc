@@ -36,6 +36,7 @@ export component App inherits Window {
 
     // ── Motor control ──
     in-out property <float> duty: 10;
+    in-out property <float> time-window: 2.0;
 
     // ── Telemetry (formatted strings from Rust) ──
     in property <string> ia-text:   "0";
@@ -45,10 +46,16 @@ export component App inherits Window {
     in property <string> temp-text: "0.0 °C";
     in property <string> seq-text:  "0";
 
-    // ── Chart textures (set by Rust after each render) ──
+    // ── Chart textures and auto-range (set by Rust after each render) ──
     in property <image> currents-texture;
     in property <image> vbus-texture;
     in property <image> temp-texture;
+    in property <float> currents-y-min: -1.0;
+    in property <float> currents-y-max: 1.0;
+    in property <float> vbus-y-min: 0.0;
+    in property <float> vbus-y-max: 60.0;
+    in property <float> temp-y-min: 0.0;
+    in property <float> temp-y-max: 150.0;
 
     // ── Chart size feedback ──
     out property <length> currents-w: currents-plot.requested-texture-width;
@@ -336,7 +343,7 @@ export component App inherits Window {
             }
         }
 
-        // ── Motor control ──
+        // ── Motor control + Time window ──
         HorizontalLayout {
             spacing: 8px;
             alignment: start;
@@ -346,12 +353,12 @@ export component App inherits Window {
                 minimum: 0;
                 maximum: 100;
                 value <=> root.duty;
-                min-width: 200px;
+                min-width: 120px;
             }
             Text {
                 text: "\{round(root.duty)}%";
                 vertical-alignment: center;
-                min-width: 45px;
+                min-width: 35px;
             }
             Button {
                 text: "Start";
@@ -361,6 +368,21 @@ export component App inherits Window {
             Button {
                 text: "Stop";
                 clicked => { root.motor-stop(); }
+            }
+
+            Rectangle { width: 16px; }
+
+            Text { text: "Window:"; vertical-alignment: center; }
+            Slider {
+                minimum: 0.5;
+                maximum: 10.0;
+                value <=> root.time-window;
+                min-width: 120px;
+            }
+            Text {
+                text: "\{round(root.time-window * 10) / 10}s";
+                vertical-alignment: center;
+                min-width: 35px;
             }
         }
 
@@ -398,18 +420,39 @@ export component App inherits Window {
             vertical-stretch: 2;
             title: "Phase Currents (A)";
             texture: root.currents-texture;
+            y-min: root.currents-y-min;
+            y-max: root.currents-y-max;
+            y-divisions: 4;
+            time-window: root.time-window;
+            x-divisions: 5;
+            legend-labels: ["Phase A", "Phase B", "Phase C"];
+            legend-colors: [#22d3ee, #8b5cf6, #f97316];
         }
 
         vbus-plot := PlotWidget {
             vertical-stretch: 1;
             title: "Bus Voltage (V)";
             texture: root.vbus-texture;
+            y-min: root.vbus-y-min;
+            y-max: root.vbus-y-max;
+            y-divisions: 3;
+            time-window: root.time-window;
+            x-divisions: 5;
+            legend-labels: ["VBUS"];
+            legend-colors: [#eab308];
         }
 
         temp-plot := PlotWidget {
             vertical-stretch: 1;
             title: "FET Temperature (°C)";
             texture: root.temp-texture;
+            y-min: root.temp-y-min;
+            y-max: root.temp-y-max;
+            y-divisions: 3;
+            time-window: root.time-window;
+            x-divisions: 5;
+            legend-labels: ["FET"];
+            legend-colors: [#ef4444];
         }
 
         // ── Log panel ──

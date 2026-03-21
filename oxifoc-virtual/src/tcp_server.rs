@@ -10,6 +10,7 @@ use critical_section::Mutex as CriticalSectionMutex;
 use ergot::toolkits::tokio_stream::{self as stream_kit, EdgeStack, register_target_stream};
 use heapless::String;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use oxifoc_core::foc::fault::FaultRegistry;
@@ -47,9 +48,13 @@ pub async fn run(
             .await
             .map_err(|_| anyhow::anyhow!("Interface already active"))?;
 
+        // Cancel token for this connection — cancelled when servers exit
+        let conn_token = CancellationToken::new();
+
         // Protocol servers for this connection
         tokio::spawn({
             let endpoints = stack.endpoints();
+            let token = conn_token.clone();
             async move {
                 let mut hw: String<32> = String::new();
                 let mut sw: String<32> = String::new();
@@ -66,20 +71,31 @@ pub async fn run(
                     foc_freq_hz,
                 )
                 .await;
+
+                // Servers exited = connection dropped, cancel streaming tasks
+                token.cancel();
             }
         });
 
         // Telemetry streaming tasks for this connection
         tokio::spawn({
             let stack = stack.clone();
+            let token = conn_token.clone();
             async move {
-                fast_telemetry_stream(stack, &TELEMETRY, state_mutex).await;
+                tokio::select! {
+                    _ = token.cancelled() => {}
+                    _ = fast_telemetry_stream(stack, &TELEMETRY, state_mutex) => {}
+                }
             }
         });
         tokio::spawn({
             let stack = stack.clone();
+            let token = conn_token.clone();
             async move {
-                slow_telemetry_stream(stack, state_mutex, fault_registry).await;
+                tokio::select! {
+                    _ = token.cancelled() => {}
+                    _ = slow_telemetry_stream(stack, state_mutex, fault_registry) => {}
+                }
             }
         });
     }

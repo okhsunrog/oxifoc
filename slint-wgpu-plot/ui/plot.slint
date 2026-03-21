@@ -4,39 +4,197 @@
 // The widget feeds back the pixel dimensions the renderer should target
 // through `requested-texture-width` / `requested-texture-height`.
 
+import { Palette } from "std-widgets.slint";
+
 export component PlotWidget inherits Rectangle {
     // Set by Rust after each `PlotRenderer::render()` call.
     in property <image> texture;
 
     // Read by Rust in `BeforeRendering` to know what size texture to produce.
-    out property <length> requested-texture-width:  plot-img.width;
-    out property <length> requested-texture-height: plot-img.height;
+    out property <length> requested-texture-width:  plot-area.width;
+    out property <length> requested-texture-height: plot-area.height;
 
-    // Optional chart title shown above the plot area.
+    // Chart title shown above the plot area.
     in property <string> title: "";
 
-    background:    #1e1e2e;
-    border-radius: 4px;
-    clip:          true;
+    // Y-axis range (must match PlotConfig y_min/y_max)
+    in property <float> y-min: -1.0;
+    in property <float> y-max: 1.0;
+
+    // Time window in seconds (for X-axis labels)
+    in property <float> time-window: 2.0;
+
+    // Number of Y divisions (creates N+1 labels, N-1 interior grid lines)
+    in property <int> y-divisions: 4;
+
+    // Number of X divisions
+    in property <int> x-divisions: 5;
+
+    // Legend entries: ["Phase A", "Phase B", "Phase C"]
+    in property <[string]> legend-labels: [];
+
+    // Legend colors (ARGB hex): must match channel_colors order
+    in property <[color]> legend-colors: [];
+
+    // Theme-aware colors
+    property <bool> is-dark: Palette.color-scheme == ColorScheme.dark;
+    property <color> plot-bg: is-dark ? #0f0f1e : #fafafa;
+    property <color> grid-color: is-dark ? #1a1a30 : #e0e0e0;
+    property <color> axis-color: is-dark ? #5555aa : #909090;
+    property <color> label-color: is-dark ? #8888bb : #606060;
+    property <color> title-color: is-dark ? #ccccdd : #333333;
+    property <color> plot-border-color: is-dark ? #333366 : #cccccc;
+
+    // Layout dimensions
+    property <length> y-label-width: 50px;
+    property <length> x-label-height: 18px;
+    property <length> title-height: title != "" ? 20px : 0px;
+    property <length> legend-height: legend-labels.length > 0 ? 18px : 0px;
+
+    background: transparent;
+    min-height: 80px;
 
     VerticalLayout {
         padding: 4px;
-        spacing: 2px;
+        spacing: 0px;
 
+        // Title
         if root.title != "" : Text {
-            text:                root.title;
-            font-size:           11px;
-            font-weight:         700;
-            color:               #e0e0e0;
+            text: root.title;
+            font-size: 12px;
+            font-weight: 700;
+            color: root.title-color;
             horizontal-alignment: left;
-            height:              18px;
+            height: root.title-height;
         }
 
-        plot-img := Image {
+        // Main plot area with Y-axis labels
+        HorizontalLayout {
+            spacing: 0px;
             vertical-stretch: 1;
-            source:           root.texture;
-            width:            100%;
-            image-fit:        fill;
+
+            // Y-axis labels column
+            Rectangle {
+                width: root.y-label-width;
+                clip: true;
+
+                for i in (root.y-divisions + 1): Text {
+                    property <float> y-val: root.y-max - i * (root.y-max - root.y-min) / root.y-divisions;
+                    property <float> y-frac: i / root.y-divisions;
+                    x: 0;
+                    // Clamp top/bottom labels to stay inside the column
+                    y: y-frac <= 0.0 ? 0px
+                     : y-frac >= 1.0 ? parent.height - self.height
+                     : y-frac * parent.height - self.height / 2;
+                    width: root.y-label-width - 4px;
+                    horizontal-alignment: right;
+                    text: abs(self.y-val) >= 10.0 ? "\{Math.round(self.y-val)}"
+                        : abs(self.y-val) < 0.01 ? "0"
+                        : "\{Math.round(self.y-val * 100) / 100}";
+                    font-size: 10px;
+                    color: root.label-color;
+                }
+            }
+
+            // Plot area (grid + texture)
+            VerticalLayout {
+                spacing: 0px;
+                horizontal-stretch: 1;
+
+                plot-area := Rectangle {
+                    vertical-stretch: 1;
+                    background: root.plot-bg;
+                    border-width: 1px;
+                    border-color: root.plot-border-color;
+                    clip: true;
+
+                    // Vertical grid lines
+                    for i in (root.x-divisions - 1): Rectangle {
+                        x: (i + 1) * (parent.width / root.x-divisions);
+                        y: 0;
+                        width: 1px;
+                        height: parent.height;
+                        background: root.grid-color;
+                    }
+
+                    // Horizontal grid lines
+                    for i in (root.y-divisions - 1): Rectangle {
+                        x: 0;
+                        y: (i + 1) * (parent.height / root.y-divisions);
+                        width: parent.width;
+                        height: 1px;
+                        background: root.grid-color;
+                    }
+
+                    // Zero line (if within range)
+                    if root.y-min < 0.0 && root.y-max > 0.0 : Rectangle {
+                        property <float> zero-frac: root.y-max / (root.y-max - root.y-min);
+                        x: 0;
+                        y: self.zero-frac * parent.height - 0.5px;
+                        width: parent.width;
+                        height: 1px;
+                        background: root.axis-color;
+                    }
+
+                    // Waveform texture (transparent background from shader)
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.texture;
+                        image-fit: fill;
+                    }
+
+                    // Legend overlay (bottom-right)
+                    if root.legend-labels.length > 0 : Rectangle {
+                        x: parent.width - self.width - 8px;
+                        y: parent.height - self.height - 8px;
+                        width: legend-layout.preferred-width + 16px;
+                        height: legend-layout.preferred-height + 8px;
+                        background: root.is-dark ? #0f0f1ecc : #fafafacc;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: root.grid-color;
+
+                        legend-layout := VerticalLayout {
+                            padding: 4px;
+                            spacing: 2px;
+
+                            for label[i] in root.legend-labels: HorizontalLayout {
+                                spacing: 6px;
+                                height: 14px;
+
+                                Rectangle {
+                                    width: 12px;
+                                    height: 3px;
+                                    y: (parent.height - self.height) / 2;
+                                    background: i < root.legend-colors.length ? root.legend-colors[i] : #ffffff;
+                                    border-radius: 1px;
+                                }
+                                Text {
+                                    text: label;
+                                    font-size: 10px;
+                                    color: root.label-color;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // X-axis labels
+                Rectangle {
+                    height: root.x-label-height;
+
+                    for i in (root.x-divisions + 1): Text {
+                        property <float> abs-time: Math.round(root.time-window * (root.x-divisions - i) / root.x-divisions * 10) / 10;
+                        x: i * (parent.width / root.x-divisions) - self.width / 2;
+                        y: 2px;
+                        text: i == root.x-divisions ? "0s" : "-\{self.abs-time}s";
+                        font-size: 10px;
+                        color: root.label-color;
+                    }
+                }
+            }
         }
     }
 }

@@ -26,8 +26,12 @@ struct ColorsUniform {
 pub struct PlotConfig {
     pub num_channels: usize,
     pub capacity: usize,
+    /// Fallback Y-axis minimum (used when auto_range has no valid data)
     pub y_min: f32,
+    /// Fallback Y-axis maximum (used when auto_range has no valid data)
     pub y_max: f32,
+    /// Automatically compute Y range from visible data each frame
+    pub auto_range: bool,
     /// RGBA colour per channel; length must equal `num_channels`.
     pub channel_colors: Vec<[f32; 4]>,
 }
@@ -191,13 +195,16 @@ impl PlotRenderer {
     ///
     /// `visible_samples` is clamped to `[2, buffer.capacity]`.
     /// Call this from Slint's `RenderingState::BeforeRendering` on the main thread.
+    ///
+    /// Returns `(texture, actual_y_min, actual_y_max)`. When `auto_range` is true,
+    /// y_min/y_max are computed from the visible data with 10% margin.
     pub fn render(
         &mut self,
         buffer: &PlotBuffer,
         width: u32,
         height: u32,
         visible_samples: u32,
-    ) -> wgpu::Texture {
+    ) -> (wgpu::Texture, f32, f32) {
         let width = width.max(1);
         let height = height.max(1);
 
@@ -209,13 +216,41 @@ impl PlotRenderer {
         self.queue
             .write_buffer(&self.samples_buffer, 0, bytemuck::cast_slice(&self.scratch));
 
+        let vis = visible_samples.clamp(2, buffer.capacity as u32);
+
+        // Compute Y range from all valid data in buffer (auto-range)
+        let (y_min, y_max) = if self.config.auto_range {
+            let nch = buffer.num_channels;
+            let mut lo = f32::INFINITY;
+            let mut hi = f32::NEG_INFINITY;
+
+            for v in self.scratch.iter() {
+                if v.is_finite() {
+                    lo = lo.min(*v);
+                    hi = hi.max(*v);
+                }
+            }
+            let _ = nch; // used implicitly via scratch layout
+
+            if !lo.is_finite() || !hi.is_finite() || (hi - lo).abs() < 1e-6 {
+                // Fallback if no valid data
+                (self.config.y_min, self.config.y_max)
+            } else {
+                let margin = (hi - lo) * 0.1;
+                let margin = margin.max(0.01); // minimum margin
+                (lo - margin, hi + margin)
+            }
+        } else {
+            (self.config.y_min, self.config.y_max)
+        };
+
         let params = PlotParams {
             write_pos: buffer.write_pos(),
             num_samples: buffer.capacity as u32,
-            y_min: self.config.y_min,
-            y_max: self.config.y_max,
+            y_min,
+            y_max,
             num_channels: buffer.num_channels as u32,
-            visible_samples: visible_samples.clamp(2, buffer.capacity as u32),
+            visible_samples: vis,
             texture_width: width,
             texture_height: height,
         };
@@ -256,7 +291,7 @@ impl PlotRenderer {
             rpass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
-        self.texture.clone()
+        (self.texture.clone(), y_min, y_max)
     }
 
     /// Update the Y-axis range at runtime (e.g. for auto-scaling).
