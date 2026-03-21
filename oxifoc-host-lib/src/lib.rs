@@ -399,7 +399,7 @@ where
                     if !was_active && is_active {
                         info!("Interface active — device connected");
                     } else if was_active && !is_active {
-                        tracing::warn!("Interface went down, waiting for recovery...");
+                        tracing::warn!("Interface inactive, waiting for recovery...");
 
                         // Wait for recovery (frames resume) with a deadline.
                         // If the link was just temporarily idle, it will recover.
