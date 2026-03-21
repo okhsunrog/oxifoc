@@ -15,7 +15,8 @@ use ergot::toolkits::tokio_stream::WaitQueue;
 use ergot::toolkits::tokio_udp::{self as udp_kit, EdgeStack};
 use heapless::String;
 use tokio::net::UdpSocket;
-use tracing::info;
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 
 use oxifoc_core::foc::fault::FaultRegistry;
 use oxifoc_core::icd::DeviceInfo;
@@ -38,7 +39,6 @@ pub async fn run(
 ) -> Result<()> {
     let bind_addr = format!("0.0.0.0:{port}");
     let socket = UdpSocket::bind(&bind_addr).await?;
-    // No connect() — target waits for first packet to learn host address
     info!("UDP target bound on {bind_addr}, waiting for host...");
 
     let queue = udp_kit::new_std_queue(4096);
@@ -86,25 +86,54 @@ pub async fn run(
         }
     }
 
-    // Spawn fast telemetry streaming
+    // Cancel token — cancelled when interface goes down
+    let conn_token = CancellationToken::new();
+
+    // Monitor interface state — cancel all tasks when host disconnects
     tokio::spawn({
         let stack = stack.clone();
+        let state_notify = state_notify.clone();
+        let token = conn_token.clone();
         async move {
-            fast_telemetry_stream(stack, &TELEMETRY, state_mutex).await;
+            loop {
+                let _ = state_notify.wait().await;
+                let state = stack.manage_profile(|im| im.interface_state(()));
+                if matches!(state, Some(InterfaceState::Down)) {
+                    warn!("UDP host disconnected, stopping connection tasks");
+                    token.cancel();
+                    break;
+                }
+            }
         }
     });
 
-    // Run protocol servers (blocks forever)
-    let endpoints = stack.endpoints();
-    run_all_servers_with_config(
-        endpoints,
-        device_info,
-        state_mutex,
-        fault_registry,
-        runtime_config,
-        foc_freq_hz,
-    )
-    .await;
+    // Spawn fast telemetry streaming
+    tokio::spawn({
+        let stack = stack.clone();
+        let token = conn_token.clone();
+        async move {
+            tokio::select! {
+                _ = token.cancelled() => {}
+                _ = fast_telemetry_stream(stack, &TELEMETRY, state_mutex) => {}
+            }
+        }
+    });
 
+    // Run protocol servers until disconnect
+    let endpoints = stack.endpoints();
+    let token = conn_token.clone();
+    tokio::select! {
+        _ = token.cancelled() => {}
+        _ = run_all_servers_with_config(
+            endpoints,
+            device_info,
+            state_mutex,
+            fault_registry,
+            runtime_config,
+            foc_freq_hz,
+        ) => {}
+    }
+
+    info!("UDP session ended");
     Ok(())
 }
