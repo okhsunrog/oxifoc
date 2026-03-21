@@ -1675,6 +1675,79 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "drm"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98888c4bbd601524c11a7ed63f814b8825f420514f78e96f752c437ae9cbb5d1"
+dependencies = [
+ "bitflags 2.10.0",
+ "bytemuck",
+ "drm-ffi 0.8.0",
+ "drm-fourcc",
+ "rustix 0.38.44",
+]
+
+[[package]]
+name = "drm"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80bc8c5c6c2941f70a55c15f8d9f00f9710ebda3ffda98075f996a0e6c92756f"
+dependencies = [
+ "bitflags 2.10.0",
+ "bytemuck",
+ "drm-ffi 0.9.1",
+ "drm-fourcc",
+ "libc",
+ "rustix 0.38.44",
+]
+
+[[package]]
+name = "drm-ffi"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97c98727e48b7ccb4f4aea8cfe881e5b07f702d17b7875991881b41af7278d53"
+dependencies = [
+ "drm-sys 0.7.0",
+ "rustix 0.38.44",
+]
+
+[[package]]
+name = "drm-ffi"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51a91c9b32ac4e8105dec255e849e0d66e27d7c34d184364fb93e469db08f690"
+dependencies = [
+ "drm-sys 0.8.1",
+ "rustix 1.1.2",
+]
+
+[[package]]
+name = "drm-fourcc"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0aafbcdb8afc29c1a7ee5fbe53b5d62f4565b35a042a662ca9fecd0b54dae6f4"
+
+[[package]]
+name = "drm-sys"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd39dde40b6e196c2e8763f23d119ddb1a8714534bf7d77fa97a65b0feda3986"
+dependencies = [
+ "libc",
+ "linux-raw-sys 0.6.5",
+]
+
+[[package]]
+name = "drm-sys"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecc8e1361066d91f5ffccff060a3c3be9c3ecde15be2959c1937595f7a82a9f8"
+dependencies = [
+ "libc",
+ "linux-raw-sys 0.9.4",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2317,6 +2390,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "gbm"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce852e998d3ca5e4a97014fb31c940dc5ef344ec7d364984525fd11e8a547e6a"
+dependencies = [
+ "bitflags 2.10.0",
+ "drm 0.14.1",
+ "drm-fourcc",
+ "gbm-sys",
+ "libc",
+]
+
+[[package]]
+name = "gbm-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c13a5f2acc785d8fb6bf6b7ab6bfb0ef5dad4f4d97e8e70bb8e470722312f76f"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "generator"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2679,7 +2774,7 @@ dependencies = [
  "libc",
  "nix 0.27.1",
  "pkg-config",
- "udev",
+ "udev 0.8.0",
  "windows-sys 0.48.0",
 ]
 
@@ -2702,11 +2797,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "i-slint-backend-linuxkms"
+version = "1.16.0"
+source = "git+https://github.com/slint-ui/slint.git#2dfc24f3a4ef076cec0fcd9dd313712903f0973b"
+dependencies = [
+ "calloop 0.14.3",
+ "drm 0.14.1",
+ "gbm",
+ "glutin",
+ "i-slint-common",
+ "i-slint-core",
+ "i-slint-renderer-skia",
+ "input",
+ "memmap2",
+ "nix 0.30.1",
+ "raw-window-handle",
+ "xkbcommon",
+]
+
+[[package]]
 name = "i-slint-backend-selector"
 version = "1.16.0"
 source = "git+https://github.com/slint-ui/slint.git#2dfc24f3a4ef076cec0fcd9dd313712903f0973b"
 dependencies = [
  "cfg-if",
+ "i-slint-backend-linuxkms",
  "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
@@ -3135,6 +3250,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "input"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbdc09524a91f9cacd26f16734ff63d7dc650daffadd2b6f84d17a285bd875a9"
+dependencies = [
+ "bitflags 2.10.0",
+ "input-sys",
+ "libc",
+ "log",
+ "udev 0.9.3",
+]
+
+[[package]]
+name = "input-sys"
+version = "1.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd4f5b4d1c00331c5245163aacfe5f20be75b564c7112d45893d4ae038119eb0"
+
+[[package]]
 name = "integer-sqrt"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3418,6 +3552,18 @@ name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a385b1be4e5c3e362ad2ffa73c392e53f031eaa5b7d648e64cd87f27f6063d7"
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
 
 [[package]]
 name = "linux-raw-sys"
@@ -4555,6 +4701,8 @@ dependencies = [
  "slint",
  "slint-build",
  "slint-wgpu-plot",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5717,7 +5865,6 @@ dependencies = [
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
- "i-slint-renderer-femtovg",
  "i-slint-renderer-software",
  "num-traits",
  "once_cell",
@@ -5757,6 +5904,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "slint",
+ "wgpu",
 ]
 
 [[package]]
@@ -5897,6 +6045,7 @@ dependencies = [
  "bytemuck",
  "cfg_aliases",
  "core-graphics 0.24.0",
+ "drm 0.12.0",
  "fastrand",
  "foreign-types",
  "js-sys",
@@ -6542,6 +6691,18 @@ name = "udev"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50051c6e22be28ee6f217d50014f3bc29e81c20dc66ff7ca0d5c5226e1dcc5a1"
+dependencies = [
+ "io-lifetimes",
+ "libc",
+ "libudev-sys",
+ "pkg-config",
+]
+
+[[package]]
+name = "udev"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af4e37e9ea4401fc841ff54b9ddfc9be1079b1e89434c1a6a865dd68980f7e9f"
 dependencies = [
  "io-lifetimes",
  "libc",
@@ -7929,6 +8090,17 @@ name = "xcursor"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bec9e4a500ca8864c5b47b8b482a73d62e4237670e5b5f1d6b9e3cae50f28f2b"
+
+[[package]]
+name = "xkbcommon"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7a974f48060a14e95705c01f24ad9c3345022f4d97441b8a36beb7ed5c4a02d"
+dependencies = [
+ "libc",
+ "memmap2",
+ "xkeysym",
+]
 
 [[package]]
 name = "xkbcommon-dl"

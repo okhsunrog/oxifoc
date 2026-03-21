@@ -8,21 +8,93 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::RecvTimeoutError;
 use oxifoc_core::types::{AdcSample, ControlMode};
 use oxifoc_host_lib::{
-    HostCommand, HostConfig, HostRuntime, ProbeInfo, SerialPortInfo, TransportType, init_tracing,
-    list_probes, list_serial_ports, start_host,
+    HostCommand, HostConfig, HostRuntime, ProbeInfo, SerialPortInfo, TransportType, list_probes,
+    list_serial_ports, start_host,
 };
 use slint::wgpu_28::WGPUConfiguration;
 use slint::{
-    GraphicsAPI, Image, ModelRc, RenderingState, SharedString, StandardListViewItem, VecModel,
+    GraphicsAPI, Image, Model, ModelRc, RenderingState, SharedString, StandardListViewItem,
+    VecModel,
 };
 use slint_wgpu_plot::{PlotBuffer, PlotConfig, PlotRenderer, required_wgpu_settings};
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 const CAPACITY: usize = 32768;
 const UI_UPDATE_HZ: u64 = 30;
+const MAX_LOG_LINES: usize = 2000;
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];
 
+/// Tracing layer that sends log messages to a crossbeam channel for the UI.
+struct UiLogLayer {
+    tx: crossbeam_channel::Sender<(String, i32)>,
+}
+
+impl<S: tracing::Subscriber> Layer<S> for UiLogLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let level = match *event.metadata().level() {
+            tracing::Level::TRACE => 0,
+            tracing::Level::DEBUG => 1,
+            tracing::Level::INFO => 2,
+            tracing::Level::WARN => 3,
+            tracing::Level::ERROR => 4,
+        };
+
+        // Format the message
+        let mut visitor = MessageVisitor(String::new());
+        event.record(&mut visitor);
+
+        let target = event.metadata().target();
+        let prefix = match level {
+            3 => "WARN ",
+            4 => "ERROR",
+            1 => "DEBUG",
+            0 => "TRACE",
+            _ => "INFO ",
+        };
+        let line = if target == "device" {
+            format!("[{prefix}] [device] {}", visitor.0)
+        } else {
+            format!("[{prefix}] {}", visitor.0)
+        };
+
+        let _ = self.tx.try_send((line, level));
+    }
+}
+
+struct MessageVisitor(String);
+
+impl tracing::field::Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{:?}", value);
+        }
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.0 = value.to_string();
+        }
+    }
+}
+
 fn main() {
-    init_tracing();
+    // Set up tracing with both stderr output and UI channel
+    let (log_tx, log_rx) = crossbeam_channel::bounded::<(String, i32)>(512);
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_target(false))
+        .with(UiLogLayer { tx: log_tx })
+        .init();
 
     // Configure the WGPU backend (required for GPU chart rendering).
     // The largest chart has 3 channels (phase currents).
@@ -33,6 +105,44 @@ fn main() {
         .expect("Failed to initialise WGPU backend");
 
     let app = App::new().unwrap();
+
+    // ── Log model ───────────────────────────────────────────────────────────
+    let log_model = std::rc::Rc::new(VecModel::<LogMessage>::default());
+    app.set_log_messages(ModelRc::from(log_model.clone()));
+
+    {
+        let weak = app.as_weak();
+        thread::spawn(move || {
+            while let Ok((text, level)) = log_rx.recv() {
+                let text = SharedString::from(&text);
+                let _ = weak.upgrade_in_event_loop(move |app| {
+                    let model = app.get_log_messages();
+                    model
+                        .as_any()
+                        .downcast_ref::<VecModel<LogMessage>>()
+                        .unwrap()
+                        .push(LogMessage { text, level });
+                    // Trim old messages to prevent unbounded growth
+                    while model.row_count() > MAX_LOG_LINES {
+                        model
+                            .as_any()
+                            .downcast_ref::<VecModel<LogMessage>>()
+                            .unwrap()
+                            .remove(0);
+                    }
+                });
+            }
+        });
+    }
+
+    {
+        let model = log_model.clone();
+        app.on_clear_log(move || {
+            while model.row_count() > 0 {
+                model.remove(0);
+            }
+        });
+    }
 
     // ── Shared state ──────────────────────────────────────────────────────────
     let ports_list: Arc<std::sync::Mutex<Vec<SerialPortInfo>>> =

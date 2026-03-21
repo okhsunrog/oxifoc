@@ -7,8 +7,10 @@ edition = "2024"
 oxifoc-host-lib = { path = "../oxifoc-host-lib" }
 oxifoc-core = { workspace = true, features = ["icd"] }
 slint-wgpu-plot = { path = "../slint-wgpu-plot" }
-slint = { workspace = true, features = ["backend-winit", "renderer-femtovg-wgpu", "accessibility"] }
+slint = { workspace = true, features = ["backend-winit", "renderer-skia", "accessibility"] }
 crossbeam-channel = { workspace = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [build-dependencies]
 slint-build = { workspace = true }

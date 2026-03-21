@@ -38,5 +38,6 @@ crossbeam-channel = "0.5.15"
 clap = { version = "4.5", features = ["derive"] }
 toml = "0.9"
 slint = { git = "https://github.com/slint-ui/slint.git", default-features = false, features = ["std", "unstable-wgpu-28", "compat-1-2"] }
+wgpu = { version = "28", default-features = false, features = ["wgsl", "vulkan"] }
 slint-build = { git = "https://github.com/slint-ui/slint.git" }
 bytemuck = { version = "1", features = ["derive"] }

@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 slint = { workspace = true }
 bytemuck = { workspace = true }
+wgpu = { workspace = true }

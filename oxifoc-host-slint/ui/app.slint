@@ -1,6 +1,11 @@
 import { VerticalBox, HorizontalBox, Button, ComboBox, Slider, CheckBox,
-         StandardListView, LineEdit, GroupBox, ScrollView, GridBox } from "std-widgets.slint";
+         StandardListView, LineEdit, GroupBox, ScrollView, GridBox, ListView, Palette } from "std-widgets.slint";
 import { PlotWidget } from "@slint-wgpu-plot/plot.slint";
+
+export struct LogMessage {
+    text: string,
+    level: int, // 0=trace, 1=debug, 2=info, 3=warn, 4=error
+}
 
 export component App inherits Window {
     title: "Oxifoc Host";
@@ -53,6 +58,10 @@ export component App inherits Window {
     out property <length> temp-w:     temp-plot.requested-texture-width;
     out property <length> temp-h:     temp-plot.requested-texture-height;
 
+    // ── Log panel ──
+    in property <[LogMessage]> log-messages;
+    callback clear-log();
+
     // ── Callbacks ──
     callback refresh-serial-ports();
     callback refresh-probes();
@@ -83,23 +92,28 @@ export component App inherits Window {
             alignment: center;
 
             Button {
-                text: root.transport-mode == 0 ? "● Serial" : "○ Serial";
+                text: "Serial";
+                primary: root.transport-mode == 0;
                 clicked => { root.transport-mode = 0; }
             }
             Button {
-                text: root.transport-mode == 1 ? "● RTT" : "○ RTT";
+                text: "RTT";
+                primary: root.transport-mode == 1;
                 clicked => { root.transport-mode = 1; }
             }
             Button {
-                text: root.transport-mode == 2 ? "● TCP" : "○ TCP";
+                text: "TCP";
+                primary: root.transport-mode == 2;
                 clicked => { root.transport-mode = 2; }
             }
             Button {
-                text: root.transport-mode == 3 ? "● UDP" : "○ UDP";
+                text: "UDP";
+                primary: root.transport-mode == 3;
                 clicked => { root.transport-mode = 3; }
             }
             Button {
-                text: root.transport-mode == 4 ? "● USB" : "○ USB";
+                text: "USB";
+                primary: root.transport-mode == 4;
                 clicked => { root.transport-mode = 4; }
             }
         }
@@ -396,6 +410,68 @@ export component App inherits Window {
             vertical-stretch: 1;
             title: "FET Temperature (°C)";
             texture: root.temp-texture;
+        }
+
+        // ── Log panel ──
+        Rectangle {
+            property <bool> is-dark: Palette.color-scheme == ColorScheme.dark;
+            vertical-stretch: 1;
+            background: is-dark ? #1e1e2e : #f5f5f5;
+            border-radius: 4px;
+            min-height: 120px;
+
+            VerticalLayout {
+                spacing: 0px;
+
+                // Header
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 4px;
+                    padding-top: 4px;
+                    padding-bottom: 4px;
+
+                    Text {
+                        text: "Log";
+                        color: Palette.foreground;
+                        font-size: 12px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button {
+                        text: "Clear";
+                        clicked => { root.clear-log(); }
+                    }
+                }
+
+                // Log messages
+                log-view := ListView {
+                    for msg[index] in root.log-messages: Rectangle {
+                        height: msg-text.preferred-height + 4px;
+
+                        msg-text := Text {
+                            text: msg.text;
+                            color: msg.level == 4 ? (is-dark ? #f38ba8 : #d32f2f)
+                                 : msg.level == 3 ? (is-dark ? #f9e2af : #e65100)
+                                 : msg.level == 2 ? (is-dark ? #a6e3a1 : #2e7d32)
+                                 : msg.level == 1 ? (is-dark ? #89b4fa : #1565c0)
+                                 : (is-dark ? #6c7086 : #9e9e9e);
+                            font-family: "monospace";
+                            font-size: 11px;
+                            x: 8px;
+                            width: parent.width - 16px;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Auto-scroll when new messages arrive
+                property <int> scroll-trigger: root.log-messages.length;
+                changed scroll-trigger => {
+                    log-view.viewport-y = -100000px;
+                }
+            }
         }
     }
 }
