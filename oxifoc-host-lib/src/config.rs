@@ -27,6 +27,22 @@ pub struct HostConfig {
     pub elf: Option<String>,        // path to device ELF with .defmt
     pub stream_defmt: Option<bool>, // default: true
     pub stream_ergot: Option<bool>, // default: true
+
+    /// Reconnection policy for COBS-stream transports (TCP, Serial, RTT).
+    /// None = use default (infinite retries)
+    pub reconnect: Option<ReconnectPolicy>,
+}
+
+/// Controls how the host handles transport disconnection/failure.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReconnectPolicy {
+    /// Disconnect immediately on failure, no retries
+    None,
+    /// Retry up to N times, then give up
+    Limited(u32),
+    /// Retry forever (default behavior)
+    Infinite,
 }
 
 impl HostConfig {
@@ -56,6 +72,10 @@ impl HostConfig {
                 None
             }
         }
+    }
+
+    pub fn reconnect_policy(&self) -> ReconnectPolicy {
+        self.reconnect.unwrap_or(ReconnectPolicy::Infinite)
     }
 
     pub fn stream_defmt(&self) -> bool {

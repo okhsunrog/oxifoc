@@ -29,7 +29,7 @@ use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-pub use config::HostConfig;
+pub use config::{HostConfig, ReconnectPolicy};
 pub use discovery::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
 pub use transport::{TransportConfig, TransportType};
 
@@ -284,15 +284,35 @@ where
 
     // Defmt decoder spawned on first successful connection
     let mut defmt_started = false;
+    let policy = cfg.reconnect_policy();
+    let mut connect_attempts: u32 = 0;
 
     loop {
         // Try to connect
         let transport = tokio::select! {
             result = connect_fn() => {
                 match result {
-                    Ok(t) => t,
+                    Ok(t) => {
+                        connect_attempts = 0; // reset on success
+                        t
+                    }
                     Err(e) => {
-                        tracing::warn!("Transport connect failed: {:?}", e);
+                        connect_attempts += 1;
+                        tracing::warn!("Transport connect failed (attempt {}): {:?}", connect_attempts, e);
+
+                        // Check reconnect policy
+                        match policy {
+                            config::ReconnectPolicy::None => {
+                                tracing::info!("Reconnect policy: none — giving up");
+                                break;
+                            }
+                            config::ReconnectPolicy::Limited(max) if connect_attempts >= max => {
+                                tracing::info!("Reconnect policy: exhausted {} attempts — giving up", max);
+                                break;
+                            }
+                            _ => {} // Infinite or Limited with attempts remaining
+                        }
+
                         // Wait before retrying, but respect cancel
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_secs(2)) => continue,
