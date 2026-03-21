@@ -4,7 +4,7 @@ pub mod transport;
 
 use anyhow::{Context, Result};
 use core::pin::pin;
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, Sender, unbounded as crossbeam_unbounded};
 use defmt_decoder::{DecodeError, Table};
 use defmt_parser::Level as DefmtLevel;
 use ergot::net_stack::NetStackHandle;
@@ -53,7 +53,7 @@ pub enum HostCommand {
 
 pub struct HostRuntime {
     pub adc_rx: Receiver<AdcSample>,
-    pub cmd_tx: Sender<HostCommand>,
+    pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
     cancel_token: CancellationToken,
 }
@@ -82,8 +82,8 @@ impl HostRuntime {
 }
 
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
-    let (adc_tx, adc_rx) = unbounded::<AdcSample>();
-    let (cmd_tx, cmd_rx) = unbounded::<HostCommand>();
+    let (adc_tx, adc_rx) = crossbeam_unbounded::<AdcSample>();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
     let cancel_token = CancellationToken::new();
 
@@ -100,7 +100,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
 fn spawn_backend(
     config: HostConfig,
     adc_tx: Sender<AdcSample>,
-    cmd_rx: Receiver<HostCommand>,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
 ) {
@@ -123,7 +123,7 @@ const ERGOT_MTU: u16 = 512;
 async fn backend_main(
     cfg: HostConfig,
     adc_tx: Sender<AdcSample>,
-    cmd_rx: Receiver<HostCommand>,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
@@ -214,7 +214,7 @@ async fn run_cobs_stream(
     transport: transport::CobsStreamTransport,
     cfg: &HostConfig,
     adc_tx: Sender<AdcSample>,
-    cmd_rx: Receiver<HostCommand>,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
@@ -254,7 +254,7 @@ async fn run_cobs_stream(
 fn spawn_protocol_tasks<NS>(
     stack: &NS,
     adc_tx: Sender<AdcSample>,
-    cmd_rx: Receiver<HostCommand>,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
 ) where
@@ -354,13 +354,14 @@ fn spawn_protocol_tasks<NS>(
         let stack = stack.clone();
         let poll_rate = adc_poll_rate.clone();
         async move {
+            let mut cmd_rx = cmd_rx;
             let ns = stack.stack();
             let device_addr = Address {
                 network_id: 1,
                 node_id: 2,
                 port_id: 0,
             };
-            while let Ok(cmd) = cmd_rx.recv() {
+            while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
                     HostCommand::Motor(mc) => {
                         let res = ns
