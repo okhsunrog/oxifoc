@@ -71,7 +71,7 @@ pub async fn run(
                 loop {
                     let _ = state_notify.wait().await;
                     let state = stack.manage_profile(|im| im.interface_state(()));
-                    if matches!(state, Some(InterfaceState::Down)) {
+                    if matches!(state, Some(InterfaceState::Down | InterfaceState::Inactive)) {
                         warn!("Host disconnected, stopping connection tasks");
                         token.cancel();
                         break;
