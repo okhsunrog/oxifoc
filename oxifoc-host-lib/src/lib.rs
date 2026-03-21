@@ -214,6 +214,7 @@ async fn backend_main(
         // Framed transports: UDP, USB — no reconnection loop (yet)
         TransportConfig::Udp { host, port } => {
             let stack = transport::udp::connect(&host, port).await?;
+            device_info_handshake(&stack, &info_tx, &connected_flag).await;
             spawn_protocol_tasks(
                 &stack,
                 fast_tx,
@@ -230,6 +231,7 @@ async fn backend_main(
         }
         TransportConfig::Usb => {
             let stack = transport::usb::connect().await?;
+            device_info_handshake(&stack, &info_tx, &connected_flag).await;
             spawn_protocol_tasks(
                 &stack,
                 fast_tx,
@@ -437,6 +439,46 @@ where
 
     info!("Host backend shutdown complete");
     Ok(())
+}
+
+/// Run DeviceInfo handshake for non-COBS transports (UDP, USB).
+async fn device_info_handshake<NS>(
+    stack: &NS,
+    info_tx: &Sender<oxifoc_core::types::DeviceInfo>,
+    connected_flag: &Arc<AtomicBool>,
+) where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    use ergot::Address;
+    let device_addr = Address { network_id: 1, node_id: 2, port_id: 0 };
+    let ns = stack.stack();
+    let mut backoff = Duration::from_millis(100);
+    for attempt in 1..=10u32 {
+        let fut = ns.endpoints().request::<oxifoc_core::icd::InfoEndpoint>(
+            device_addr, &(), Some("device_info"),
+        );
+        match tokio::time::timeout(Duration::from_millis(800), fut).await {
+            Ok(Ok(dev_info)) => {
+                info!("Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A",
+                    dev_info.hw.as_str(), dev_info.sw.as_str(),
+                    dev_info.mcu.as_str(), dev_info.uuid.as_str(),
+                    dev_info.foc_freq_hz, dev_info.max_current_a);
+                let _ = info_tx.send(dev_info);
+                connected_flag.store(true, Ordering::Relaxed);
+                return;
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("DeviceInfo attempt {} failed: {:?}", attempt, e);
+            }
+            Err(_) => {
+                tracing::warn!("DeviceInfo attempt {} timed out", attempt);
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(2));
+    }
+    tracing::warn!("Device info not received after retries; continuing without it");
+    connected_flag.store(true, Ordering::Relaxed);
 }
 
 /// Wait until the interface is Active. Returns immediately if already Active.
