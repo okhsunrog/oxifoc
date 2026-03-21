@@ -57,9 +57,6 @@ struct Args {
     /// Maximum phase current (A)
     #[arg(long, default_value_t = 40.0)]
     max_current: f32,
-    /// UDP host address to connect to (only for UDP transport)
-    #[arg(long, default_value = "127.0.0.1:2024")]
-    udp_host: String,
 }
 
 #[tokio::main]
@@ -112,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Transport::Udp => {
             udp_server::run(
-                args.port, &args.udp_host, args.foc_freq, args.max_current,
+                args.port, args.foc_freq, args.max_current,
                 &STATE, &FAULT_REGISTRY, &RUNTIME_CONFIG,
             ).await
         }
