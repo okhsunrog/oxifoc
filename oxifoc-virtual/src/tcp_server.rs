@@ -29,6 +29,7 @@ const ERGOT_MTU: u16 = 512;
 pub async fn run(
     port: u16,
     foc_freq_hz: u32,
+    max_current_a: f32,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<VirtualFault>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
@@ -95,7 +96,7 @@ pub async fn run(
                 let device_info = DeviceInfo {
                     hw, sw, mcu, uuid,
                     foc_freq_hz,
-                    max_current_a: 40.0,
+                    max_current_a,
                 };
 
                 tokio::select! {

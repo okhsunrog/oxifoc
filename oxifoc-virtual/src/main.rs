@@ -25,11 +25,20 @@ static RUNTIME_CONFIG: critical_section::Mutex<
     },
 ));
 
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+enum Transport {
+    Tcp,
+    Udp,
+}
+
 #[derive(Parser)]
 #[command(name = "oxifoc-virtual")]
-#[command(about = "Virtual motor controller with ergot protocol over TCP")]
+#[command(about = "Virtual motor controller with ergot protocol")]
 struct Args {
-    /// TCP port to listen on
+    /// Transport protocol
+    #[arg(short, long, default_value = "tcp")]
+    transport: Transport,
+    /// Listen port
     #[arg(short, long, default_value_t = 2025)]
     port: u16,
     /// Simulated FOC frequency in Hz
@@ -41,6 +50,12 @@ struct Args {
     /// DC bus voltage (V)
     #[arg(long, default_value_t = 24.0)]
     vbus: f32,
+    /// Motor pole pairs
+    #[arg(long, default_value_t = 7)]
+    pole_pairs: u8,
+    /// Maximum phase current (A)
+    #[arg(long, default_value_t = 40.0)]
+    max_current: f32,
 }
 
 #[tokio::main]
@@ -53,11 +68,9 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     tracing::info!(
-        "oxifoc-virtual: port={}, foc={}Hz, batch={}, vbus={}V",
-        args.port,
-        args.foc_freq,
-        args.batch,
-        args.vbus
+        "oxifoc-virtual: {:?} port={}, foc={}Hz, batch={}, vbus={}V, pp={}, max_i={}A",
+        args.transport, args.port, args.foc_freq, args.batch, args.vbus,
+        args.pole_pairs, args.max_current,
     );
 
     // Storage worker uses !Send futures (sequential-storage internals),
@@ -85,6 +98,16 @@ async fn main() -> anyhow::Result<()> {
         &FAULT_REGISTRY,
     ));
 
-    // Run TCP server (blocks on accept loop)
-    tcp_server::run(args.port, args.foc_freq, &STATE, &FAULT_REGISTRY, &RUNTIME_CONFIG).await
+    // Run server (blocks on accept/recv loop)
+    match args.transport {
+        Transport::Tcp => {
+            tcp_server::run(
+                args.port, args.foc_freq, args.max_current,
+                &STATE, &FAULT_REGISTRY, &RUNTIME_CONFIG,
+            ).await
+        }
+        Transport::Udp => {
+            todo!("UDP transport not yet implemented for oxifoc-virtual")
+        }
+    }
 }
