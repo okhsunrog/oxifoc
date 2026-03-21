@@ -32,13 +32,13 @@ pub const BOARD: BoardConfig = BoardConfig {
 };
 
 /// NTC configuration for FET temperature sensing on PB14
-/// Low-side 10k NTC with 4.7k pull-up resistor
+/// High-side 10k NTC (RT1) with 4.7k pull-down (R60) to GND
 pub const NTC: NtcConfig = NtcConfig {
     r_fixed_ohm: 4700.0,
     r0_ohm: 10_000.0,
     beta: 3455.0,
     t0_k: 273.15 + 25.0,
-    topology: NtcTopology::LowSide,
+    topology: NtcTopology::HighSide,
 };
 
 // ============================================================================
@@ -49,8 +49,7 @@ pub const NTC: NtcConfig = NtcConfig {
 ///
 /// Central source of truth for PWM frequency and timing.
 /// Used by motor.rs for timer setup and control/foc.rs for dt calculation.
-pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
-// To change frequency: MotorPwmConfig::new().with_pwm_freq(25_000)
+pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(500);
 
 // ============================================================================
 // Timing Configuration
