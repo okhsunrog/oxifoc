@@ -18,5 +18,7 @@
 //! ```
 
 pub mod servers;
+pub mod streaming;
 
 pub use servers::*;
+pub use streaming::*;

@@ -24,6 +24,7 @@ const ERGOT_MTU: u16 = 512;
 
 pub async fn run(
     port: u16,
+    foc_freq_hz: u32,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<VirtualFault>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
@@ -61,6 +62,7 @@ pub async fn run(
                     state_mutex,
                     fault_registry,
                     runtime_config,
+                    foc_freq_hz,
                 )
                 .await;
             }

@@ -141,7 +141,7 @@ pub struct HallSensorData {
     pub seq: u32,
 }
 
-/// Raw ADC sample data
+/// Raw ADC sample data (legacy poll-based, kept for compatibility)
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct AdcSample {
@@ -157,6 +157,104 @@ pub struct AdcSample {
     pub fet_temp_c_x10: u16,
     /// Monotonic sequence number
     pub seq: u32,
+}
+
+// ============================================================================
+// Streaming Telemetry Types (push-based via Topics)
+// ============================================================================
+
+/// High-frequency motor control telemetry (streamed at configurable rate, default 1kHz)
+///
+/// Contains FOC loop outputs in engineering units. Firmware pushes this
+/// every N FOC cycles (configurable decimation).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct FastTelemetry {
+    /// Phase A current in milliamps
+    pub ia_ma: i32,
+    /// Phase B current in milliamps
+    pub ib_ma: i32,
+    /// Phase C current in milliamps
+    pub ic_ma: i32,
+    /// D-axis current in milliamps
+    pub id_ma: i32,
+    /// Q-axis current in milliamps
+    pub iq_ma: i32,
+    /// D-axis voltage in millivolts
+    pub vd_mv: i32,
+    /// Q-axis voltage in millivolts
+    pub vq_mv: i32,
+    /// Electrical angle in 0.001 radian units
+    pub angle_mrad: i32,
+    /// Electrical RPM
+    pub erpm: i32,
+    /// Duty cycle in 0.1% units (0-1000)
+    pub duty_x10: i16,
+    /// Raw Hall sensor state (0-7)
+    pub hall_state: u8,
+    /// Monotonic sequence number
+    pub seq: u32,
+}
+
+/// Low-frequency system telemetry (streamed at configurable rate, default 10Hz)
+///
+/// Contains slowly-changing system health data. Firmware pushes this
+/// at a lower rate since these values don't change rapidly.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SlowTelemetry {
+    /// DC bus voltage in millivolts
+    pub vbus_mv: u32,
+    /// FET temperature in 0.1°C units
+    pub fet_temp_c_x10: u16,
+    /// Motor temperature in 0.1°C units (0 if not available)
+    pub motor_temp_c_x10: u16,
+    /// Board temperature in 0.1°C units (0 if not available)
+    pub board_temp_c_x10: u16,
+    /// Current motor state
+    pub motor_state: MotorState,
+    /// Current control mode
+    pub control_mode: ControlMode,
+    /// Number of active faults
+    pub fault_count: u8,
+    /// Monotonic sequence number
+    pub seq: u32,
+}
+
+// TODO: EnergyTelemetry — add when energy tracking is implemented
+// Will include: amp_hours, amp_hours_charged, watt_hours, watt_hours_charged,
+// tachometer (electrical revolutions). Streamed at ~1 Hz.
+
+/// Telemetry rate configuration
+///
+/// Host sends this to configure the firmware's telemetry streaming rates.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct TelemetryConfig {
+    /// Fast telemetry decimation: FOC cycles per sample.
+    /// E.g. at 20kHz FOC: 20 = 1kHz, 1 = 20kHz, 40 = 500Hz.
+    pub fast_divider: u16,
+    /// Slow telemetry rate in Hz (1-100, default 10)
+    pub slow_rate_hz: u8,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            fast_divider: 20, // 1kHz at 20kHz FOC
+            slow_rate_hz: 10,
+        }
+    }
+}
+
+/// Acknowledgment for telemetry config change
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct TelemetryConfigAck {
+    /// Actual fast rate in Hz after applying the divider
+    pub actual_fast_hz: u16,
+    /// Actual slow rate in Hz
+    pub actual_slow_hz: u8,
 }
 
 /// Basic device information

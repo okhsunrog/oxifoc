@@ -1,4 +1,4 @@
-//! Interface Control Document (ICD) - Ergot endpoint definitions
+//! Interface Control Document (ICD) - Ergot endpoint and topic definitions
 //!
 //! This module defines the communication protocol between host applications
 //! and motor controller firmware using the ergot framework.
@@ -8,56 +8,74 @@
 //! This module is only available when the `icd` feature is enabled.
 //! It automatically enables the `types` feature for shared type definitions.
 //!
-//! # Endpoints
+//! # Topics (push-based streaming, device → host)
 //!
-//! | Endpoint | Request | Response | Topic | Description |
-//! |----------|---------|----------|-------|-------------|
-//! | `ButtonEndpoint` | `ButtonEvent` | `()` | `event/button` | Button events from device |
-//! | `InfoEndpoint` | `()` | `DeviceInfo` | `req/device_info` | Device information query |
-//! | `MotorEndpoint` | `ControlMode` | `MotorStatus` | `cmd/motor` | Motor control commands |
-//! | `AdcSampleEndpoint` | `()` | `AdcSample` | `req/adc` | ADC sample poll |
-//! | `HallSensorEndpoint` | `()` | `HallSensorData` | `req/hall` | Hall sensor data poll |
-//! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | `cmd/fault` | Fault query/clear |
+//! | Topic | Message | Description |
+//! |-------|---------|-------------|
+//! | `FastTelemetryTopic` | `FastTelemetry` | High-frequency motor data (default 1kHz) |
+//! | `SlowTelemetryTopic` | `SlowTelemetry` | System health data (default 10Hz) |
+//!
+//! # Endpoints (request/response)
+//!
+//! | Endpoint | Request | Response | Description |
+//! |----------|---------|----------|-------------|
+//! | `InfoEndpoint` | `()` | `DeviceInfo` | Device information query |
+//! | `MotorEndpoint` | `ControlMode` | `MotorStatus` | Motor control commands |
+//! | `TelemetryConfigEndpoint` | `TelemetryConfig` | `TelemetryConfigAck` | Configure streaming rates |
+//! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
+//! | `DetectEndpoint` | `DetectRequest` | `DetectResponse` | Motor detection |
+//! | `ButtonEndpoint` | `ButtonEvent` | `()` | Button events from device |
 
-use ergot::endpoint;
+use ergot::{endpoint, topic};
 
 // Re-export all types for convenience
 pub use crate::types::*;
 
 // ============================================================================
-// Endpoint Definitions
+// Topic Definitions (push-based streaming)
+// ============================================================================
+
+// Fast telemetry topic (device → host)
+// Firmware pushes motor control data at configurable rate (default 1kHz).
+// Contains phase currents, dq currents/voltages, angle, RPM, hall state.
+topic!(FastTelemetryTopic, FastTelemetry, "telemetry/fast");
+
+// Slow telemetry topic (device → host)
+// Firmware pushes system health data at lower rate (default 10Hz).
+// Contains bus voltage, temperatures, motor state, fault count.
+topic!(SlowTelemetryTopic, SlowTelemetry, "telemetry/slow");
+
+// TODO: EnergyTelemetryTopic — add when energy tracking is implemented
+// topic!(EnergyTelemetryTopic, EnergyTelemetry, "telemetry/energy");
+
+// ============================================================================
+// Endpoint Definitions (request/response)
 // ============================================================================
 
 // Button event endpoint (device → host)
-// Device sends button events to host when user presses hardware button.
 endpoint!(ButtonEndpoint, ButtonEvent, (), "event/button");
 
 // Device info endpoint (host → device)
-// Host queries device for hardware and software version information.
 endpoint!(InfoEndpoint, (), DeviceInfo, "req/device_info");
 
 // Motor control endpoint (host → device)
-// Host sends control mode, device responds with current status.
 endpoint!(MotorEndpoint, ControlMode, MotorStatus, "cmd/motor");
 
-// ADC sample endpoint (host → device)
-// Host polls device for current ADC readings (phase currents, voltage, temperature).
-endpoint!(AdcSampleEndpoint, (), AdcSample, "req/adc");
-
-// Hall sensor endpoint (host → device)
-// Host polls device for Hall sensor data (angle, direction, state).
-endpoint!(HallSensorEndpoint, (), HallSensorData, "req/hall");
+// Telemetry rate configuration endpoint (host → device)
+// Host configures fast/slow telemetry streaming rates.
+endpoint!(TelemetryConfigEndpoint, TelemetryConfig, TelemetryConfigAck, "cmd/telemetry_config");
 
 // Fault management endpoint (host → device)
-// Host queries/clears faults. Responds with current fault state.
 endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
 
 // Motor detection endpoint (host → device)
-// Host sends detection parameters, device runs the full detection sequence
-// (R, L, flux linkage, PI tuning) and returns the results.
 endpoint!(DetectEndpoint, DetectRequest, DetectResponse, "cmd/detect");
 
 // Configuration endpoint (host → device)
-// Host reads/writes persistent configuration stored in flash.
 #[cfg(feature = "storage")]
 endpoint!(ConfigEndpoint, ConfigRequest, ConfigResponse, "cmd/config");
+
+// Legacy endpoints — kept for backward compatibility during migration
+// TODO: Remove once all host tools use topic-based telemetry
+endpoint!(AdcSampleEndpoint, (), AdcSample, "req/adc");
+endpoint!(HallSensorEndpoint, (), HallSensorData, "req/hall");

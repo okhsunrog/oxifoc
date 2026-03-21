@@ -86,5 +86,5 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // Run TCP server (blocks on accept loop)
-    tcp_server::run(args.port, &STATE, &FAULT_REGISTRY, &RUNTIME_CONFIG).await
+    tcp_server::run(args.port, args.foc_freq, &STATE, &FAULT_REGISTRY, &RUNTIME_CONFIG).await
 }

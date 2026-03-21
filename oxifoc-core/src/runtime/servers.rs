@@ -25,6 +25,7 @@
 
 use core::cell::RefCell;
 use core::pin::pin;
+use core::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 
 use critical_section::Mutex as CriticalSectionMutex;
 use embassy_futures::join::{join, join5};
@@ -35,12 +36,23 @@ use crate::foc::hall_sensor::Direction;
 use crate::icd::{
     AdcSample, AdcSampleEndpoint, ControlMode, DeviceInfo, FaultEndpoint, FaultRequest,
     FaultResponse, HallSensorData, HallSensorEndpoint, InfoEndpoint, MotorEndpoint, MotorStatus,
+    TelemetryConfig, TelemetryConfigAck, TelemetryConfigEndpoint,
 };
 #[cfg(feature = "storage")]
 use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
 use crate::state::{CMD_CHANNEL, MotorControlState};
 #[cfg(feature = "storage")]
 use crate::storage::{ConfigKey, ConfigPayload, FLASH_CHANNEL, FlashOperation, RuntimeConfig};
+
+// ============================================================================
+// Telemetry rate control (shared between config endpoint and streaming tasks)
+// ============================================================================
+
+/// Fast telemetry divider: FOC cycles per sample (default 20 = 1kHz at 20kHz FOC)
+pub static FAST_TELEM_DIVIDER: AtomicU16 = AtomicU16::new(20);
+
+/// Slow telemetry rate in Hz (default 10)
+pub static SLOW_TELEM_RATE_HZ: AtomicU8 = AtomicU8::new(10);
 
 /// Device info server - responds to info requests from host
 ///
@@ -341,6 +353,40 @@ pub async fn config_server<NS, const N: usize>(
     }
 }
 
+/// Telemetry config server - handles rate change requests from host
+///
+/// Allows host to adjust fast/slow telemetry streaming rates at runtime.
+pub async fn telemetry_config_server<NS, const N: usize>(
+    endpoints: Endpoints<NS>,
+    foc_freq_hz: u32,
+) where
+    NS: NetStackHandle,
+{
+    let server = endpoints.bounded_server::<TelemetryConfigEndpoint, N>(Some("telemetry_config"));
+    let server = pin!(server);
+    let mut h = server.attach();
+
+    loop {
+        let _ = h
+            .serve(|cfg: &TelemetryConfig| {
+                let divider = cfg.fast_divider.max(1);
+                let slow_hz = cfg.slow_rate_hz.clamp(1, 100);
+
+                FAST_TELEM_DIVIDER.store(divider, Ordering::Relaxed);
+                SLOW_TELEM_RATE_HZ.store(slow_hz, Ordering::Relaxed);
+
+                let actual_fast_hz = (foc_freq_hz / divider as u32) as u16;
+                async move {
+                    TelemetryConfigAck {
+                        actual_fast_hz,
+                        actual_slow_hz: slow_hz,
+                    }
+                }
+            })
+            .await;
+    }
+}
+
 /// Run all protocol servers concurrently in a single task
 ///
 /// This is the recommended way to run servers - it uses `join` to run
@@ -385,28 +431,7 @@ pub async fn run_all_servers<NS, F>(
     device_info: DeviceInfo,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<F>,
-) where
-    NS: NetStackHandle + Clone,
-    F: PlatformFault,
-{
-    join5(
-        info_server::<NS, 2>(endpoints.clone(), device_info, state_mutex),
-        hall_sensor_server::<NS, 2>(endpoints.clone(), state_mutex),
-        adc_sample_server::<NS, 2>(endpoints.clone(), state_mutex),
-        motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
-        fault_server::<NS, F, 2>(endpoints, fault_registry),
-    )
-    .await;
-}
-
-/// Run all protocol servers including config endpoint.
-#[cfg(feature = "storage")]
-pub async fn run_all_servers_with_config<NS, F>(
-    endpoints: Endpoints<NS>,
-    device_info: DeviceInfo,
-    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-    fault_registry: &'static FaultRegistry<F>,
-    runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
+    foc_freq_hz: u32,
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
@@ -419,7 +444,36 @@ pub async fn run_all_servers_with_config<NS, F>(
             motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),
-        config_server::<NS, 2>(endpoints, runtime_config),
+        telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
+    )
+    .await;
+}
+
+/// Run all protocol servers including config endpoint.
+#[cfg(feature = "storage")]
+pub async fn run_all_servers_with_config<NS, F>(
+    endpoints: Endpoints<NS>,
+    device_info: DeviceInfo,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    fault_registry: &'static FaultRegistry<F>,
+    runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
+    foc_freq_hz: u32,
+) where
+    NS: NetStackHandle + Clone,
+    F: PlatformFault,
+{
+    join(
+        join5(
+            info_server::<NS, 2>(endpoints.clone(), device_info, state_mutex),
+            hall_sensor_server::<NS, 2>(endpoints.clone(), state_mutex),
+            adc_sample_server::<NS, 2>(endpoints.clone(), state_mutex),
+            motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
+            fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
+        ),
+        join(
+            config_server::<NS, 2>(endpoints.clone(), runtime_config),
+            telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
+        ),
     )
     .await;
 }
