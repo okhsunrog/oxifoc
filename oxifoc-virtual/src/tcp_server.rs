@@ -120,13 +120,19 @@ pub async fn run(
             let token = conn_token.clone();
             async move {
                 // Wait until interface is Active (has net_id from first incoming frame)
-                loop {
-                    tokio::select! {
-                        _ = token.cancelled() => return,
-                        _ = state_notify.wait() => {
-                            let state = stack.manage_profile(|im| im.interface_state(()));
-                            if matches!(state, Some(InterfaceState::Active { .. })) {
-                                break;
+                let already_active = stack
+                    .manage_profile(|im| {
+                        matches!(im.interface_state(()), Some(InterfaceState::Active { .. }))
+                    });
+                if !already_active {
+                    loop {
+                        tokio::select! {
+                            _ = token.cancelled() => return,
+                            _ = state_notify.wait() => {
+                                let active = stack.manage_profile(|im| {
+                                    matches!(im.interface_state(()), Some(InterfaceState::Active { .. }))
+                                });
+                                if active { break; }
                             }
                         }
                     }

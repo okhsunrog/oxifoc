@@ -419,12 +419,18 @@ where
     Ok(())
 }
 
-/// Wait until the interface transitions back to Active.
+/// Wait until the interface is Active. Returns immediately if already Active.
 async fn wait_for_active(
     state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
     stack: &ergot::toolkits::tokio_stream::EdgeStack,
 ) {
     use ergot::interface_manager::{InterfaceState, Profile};
+    // Check current state first — may already be Active
+    let state = stack.manage_profile(|im| im.interface_state(()));
+    if matches!(state, Some(InterfaceState::Active { .. })) {
+        return;
+    }
+    // Wait for state change notification
     loop {
         let _ = state_notify.wait().await;
         let state = stack.manage_profile(|im| im.interface_state(()));
@@ -529,6 +535,10 @@ fn spawn_protocol_tasks<NS>(
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = ticker.tick() => {
+                        // Only poll when connected — avoid NoRouteToDest spam
+                        if !connected_flag.load(Ordering::Relaxed) {
+                            continue;
+                        }
                         let fut = ns.endpoints()
                             .request::<SlowTelemetryEndpoint>(device_addr, &(), Some("slow_telem"));
                         if let Ok(Ok(sample)) = tokio::time::timeout(
