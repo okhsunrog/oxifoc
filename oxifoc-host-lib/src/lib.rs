@@ -9,14 +9,17 @@ use defmt_decoder::{DecodeError, Table};
 use defmt_parser::Level as DefmtLevel;
 use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
-use oxifoc_core::icd::{AdcSampleEndpoint, ButtonEndpoint, MotorEndpoint};
-use oxifoc_core::types::{AdcSample, ButtonEvent, ControlMode};
+use oxifoc_core::icd::{
+    ButtonEndpoint, FastTelemetryTopic, MotorEndpoint, SlowTelemetryTopic,
+    TelemetryConfig, TelemetryConfigEndpoint,
+};
+use oxifoc_core::types::{ButtonEvent, ControlMode, FastTelemetry, SlowTelemetry};
 use std::{
     fs,
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -41,18 +44,18 @@ pub fn init_tracing() {
         .try_init();
 }
 
-/// Default ADC polling rate in Hz
-pub const DEFAULT_ADC_POLL_RATE_HZ: u32 = 60;
-
 #[derive(Clone)]
 pub enum HostCommand {
     Motor(ControlMode),
-    /// Set ADC polling rate (0 = disabled, 1-255 = rate in Hz)
-    SetAdcPollRate(u8),
+    /// Configure telemetry streaming rates
+    SetTelemetryConfig(TelemetryConfig),
 }
 
 pub struct HostRuntime {
-    pub adc_rx: Receiver<AdcSample>,
+    /// Fast telemetry receiver (currents, dq, angle, RPM — default 1kHz)
+    pub fast_rx: Receiver<FastTelemetry>,
+    /// Slow telemetry receiver (vbus, temps, state — default 10Hz)
+    pub slow_rx: Receiver<SlowTelemetry>,
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
     cancel_token: CancellationToken,
@@ -82,15 +85,24 @@ impl HostRuntime {
 }
 
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
-    let (adc_tx, adc_rx) = crossbeam_unbounded::<AdcSample>();
+    let (fast_tx, fast_rx) = crossbeam_unbounded::<FastTelemetry>();
+    let (slow_tx, slow_rx) = crossbeam_unbounded::<SlowTelemetry>();
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
     let cancel_token = CancellationToken::new();
 
-    spawn_backend(cfg, adc_tx, cmd_rx, connected.clone(), cancel_token.clone());
+    spawn_backend(
+        cfg,
+        fast_tx,
+        slow_tx,
+        cmd_rx,
+        connected.clone(),
+        cancel_token.clone(),
+    );
 
     HostRuntime {
-        adc_rx,
+        fast_rx,
+        slow_rx,
         cmd_tx,
         connected,
         cancel_token,
@@ -99,7 +111,8 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
 
 fn spawn_backend(
     config: HostConfig,
-    adc_tx: Sender<AdcSample>,
+    fast_tx: Sender<FastTelemetry>,
+    slow_tx: Sender<SlowTelemetry>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
@@ -108,7 +121,8 @@ fn spawn_backend(
         let rt = Runtime::new().expect("Failed to create tokio runtime");
         if let Err(e) = rt.block_on(backend_main(
             config,
-            adc_tx,
+            fast_tx,
+            slow_tx,
             cmd_rx,
             connected_flag,
             cancel_token,
@@ -122,7 +136,8 @@ const ERGOT_MTU: u16 = 512;
 
 async fn backend_main(
     cfg: HostConfig,
-    adc_tx: Sender<AdcSample>,
+    fast_tx: Sender<FastTelemetry>,
+    slow_tx: Sender<SlowTelemetry>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
@@ -144,7 +159,8 @@ async fn backend_main(
             run_cobs_stream(
                 transport,
                 &cfg,
-                adc_tx,
+                fast_tx,
+                slow_tx,
                 cmd_rx,
                 connected_flag,
                 cancel_token,
@@ -156,7 +172,8 @@ async fn backend_main(
             run_cobs_stream(
                 transport,
                 &cfg,
-                adc_tx,
+                fast_tx,
+                slow_tx,
                 cmd_rx,
                 connected_flag,
                 cancel_token,
@@ -168,7 +185,8 @@ async fn backend_main(
             run_cobs_stream(
                 transport,
                 &cfg,
-                adc_tx,
+                fast_tx,
+                slow_tx,
                 cmd_rx,
                 connected_flag,
                 cancel_token,
@@ -180,7 +198,8 @@ async fn backend_main(
             let stack = transport::udp::connect(&host, port).await?;
             spawn_protocol_tasks(
                 &stack,
-                adc_tx,
+                fast_tx,
+                slow_tx,
                 cmd_rx,
                 connected_flag.clone(),
                 cancel_token.clone(),
@@ -195,7 +214,8 @@ async fn backend_main(
             let stack = transport::usb::connect().await?;
             spawn_protocol_tasks(
                 &stack,
-                adc_tx,
+                fast_tx,
+                slow_tx,
                 cmd_rx,
                 connected_flag.clone(),
                 cancel_token.clone(),
@@ -213,7 +233,8 @@ async fn backend_main(
 async fn run_cobs_stream(
     transport: transport::CobsStreamTransport,
     cfg: &HostConfig,
-    adc_tx: Sender<AdcSample>,
+    fast_tx: Sender<FastTelemetry>,
+    slow_tx: Sender<SlowTelemetry>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
@@ -234,7 +255,8 @@ async fn run_cobs_stream(
 
     spawn_protocol_tasks(
         &stack,
-        adc_tx,
+        fast_tx,
+        slow_tx,
         cmd_rx,
         connected_flag.clone(),
         cancel_token.clone(),
@@ -253,7 +275,8 @@ async fn run_cobs_stream(
 
 fn spawn_protocol_tasks<NS>(
     stack: &NS,
-    adc_tx: Sender<AdcSample>,
+    fast_tx: Sender<FastTelemetry>,
+    slow_tx: Sender<SlowTelemetry>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
@@ -290,58 +313,48 @@ fn spawn_protocol_tasks<NS>(
         }
     });
 
-    // ADC polling task
-    let adc_poll_rate = Arc::new(AtomicU8::new(DEFAULT_ADC_POLL_RATE_HZ as u8));
+    // Fast telemetry subscriber (receive push-based motor data from device)
     tokio::spawn({
-        use ergot::Address;
         let stack = stack.clone();
-        let connected_flag = connected_flag.clone();
-        let poll_rate = adc_poll_rate.clone();
         let token = cancel_token.clone();
         async move {
             let ns = stack.stack();
-            let device_addr = Address {
-                network_id: 1,
-                node_id: 2,
-                port_id: 0,
-            };
+            let receiver =
+                ns.topics().single_receiver::<FastTelemetryTopic>(Some("fast_telem"));
+            let mut pinned = pin!(receiver);
+            let mut hdl = pinned.as_mut().subscribe();
 
-            while !connected_flag.load(Ordering::Relaxed) {
-                tokio::select! {
-                    _ = token.cancelled() => return,
-                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
-                }
-            }
-
-            tracing::info!(
-                "ADC polling started at {}Hz",
-                poll_rate.load(Ordering::Relaxed)
-            );
+            tracing::info!("Fast telemetry subscriber started");
 
             loop {
-                let rate_hz = poll_rate.load(Ordering::Relaxed);
-                if rate_hz == 0 {
-                    tokio::select! {
-                        _ = token.cancelled() => break,
-                        _ = tokio::time::sleep(Duration::from_millis(100)) => continue,
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    msg = hdl.recv() => {
+                        let _ = fast_tx.send(msg.t);
                     }
                 }
+            }
+        }
+    });
 
-                let interval = Duration::from_micros(1_000_000 / rate_hz as u64);
-                let mut ticker = tokio::time::interval(interval);
-                let current_rate = rate_hz;
+    // Slow telemetry subscriber (receive push-based system health data)
+    tokio::spawn({
+        let stack = stack.clone();
+        let token = cancel_token.clone();
+        async move {
+            let ns = stack.stack();
+            let receiver =
+                ns.topics().single_receiver::<SlowTelemetryTopic>(Some("slow_telem"));
+            let mut pinned = pin!(receiver);
+            let mut hdl = pinned.as_mut().subscribe();
 
-                while poll_rate.load(Ordering::Relaxed) == current_rate {
-                    tokio::select! {
-                        _ = token.cancelled() => return,
-                        _ = ticker.tick() => {
-                            let fut = ns
-                                .endpoints()
-                                .request::<AdcSampleEndpoint>(device_addr, &(), Some("adc"));
-                            if let Ok(Ok(sample)) = tokio::time::timeout(Duration::from_millis(100), fut).await {
-                                let _ = adc_tx.send(sample);
-                            }
-                        }
+            tracing::info!("Slow telemetry subscriber started");
+
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    msg = hdl.recv() => {
+                        let _ = slow_tx.send(msg.t);
                     }
                 }
             }
@@ -352,7 +365,6 @@ fn spawn_protocol_tasks<NS>(
     tokio::spawn({
         use ergot::Address;
         let stack = stack.clone();
-        let poll_rate = adc_poll_rate.clone();
         async move {
             let mut cmd_rx = cmd_rx;
             let ns = stack.stack();
@@ -374,10 +386,17 @@ fn spawn_protocol_tasks<NS>(
                             Err(e) => tracing::warn!("Motor command failed: {:?}", e),
                         }
                     }
-                    HostCommand::SetAdcPollRate(rate_hz) => {
-                        let old_rate = poll_rate.load(Ordering::Relaxed);
-                        poll_rate.store(rate_hz, Ordering::Relaxed);
-                        tracing::info!("ADC poll rate changed: {}Hz -> {}Hz", old_rate, rate_hz);
+                    HostCommand::SetTelemetryConfig(cfg) => {
+                        tracing::info!("Setting telemetry config: {:?}", cfg);
+                        let res = ns
+                            .endpoints()
+                            .request::<TelemetryConfigEndpoint>(device_addr, &cfg, Some("telem_cfg"))
+                            .await;
+                        match &res {
+                            Ok(ack) => tracing::info!("Telemetry config ack: fast={}Hz, slow={}Hz",
+                                ack.actual_fast_hz, ack.actual_slow_hz),
+                            Err(e) => tracing::warn!("Telemetry config failed: {:?}", e),
+                        }
                     }
                 }
             }

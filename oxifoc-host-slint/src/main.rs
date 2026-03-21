@@ -5,8 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::RecvTimeoutError;
-use oxifoc_core::types::{AdcSample, ControlMode};
+use oxifoc_core::types::ControlMode;
 use oxifoc_host_lib::{
     HostCommand, HostConfig, HostRuntime, ProbeInfo, SerialPortInfo, TransportType, list_probes,
     list_serial_ports, start_host,
@@ -382,7 +381,8 @@ fn main() {
             app.set_error_text("".into());
 
             let host_runtime = start_host(config);
-            let adc_rx = host_runtime.adc_rx.clone();
+            let fast_rx = host_runtime.fast_rx.clone();
+            let slow_rx = host_runtime.slow_rx.clone();
             let connected = host_runtime.connected.clone();
             *rt.lock().unwrap() = Some(host_runtime);
 
@@ -392,7 +392,7 @@ fn main() {
             let vb2 = vb.clone();
             let tb2 = tb.clone();
             thread::spawn(move || {
-                adc_poll_loop(weak2, adc_rx, connected, stop2, cb2, vb2, tb2);
+                telemetry_loop(weak2, fast_rx, slow_rx, connected, stop2, cb2, vb2, tb2);
             });
 
             app.set_page("main".into());
@@ -498,9 +498,10 @@ fn refresh_probes(app: &App, probes: &Arc<std::sync::Mutex<Vec<ProbeInfo>>>) {
     app.set_selected_probe(-1);
 }
 
-fn adc_poll_loop(
+fn telemetry_loop(
     weak: slint::Weak<App>,
-    adc_rx: crossbeam_channel::Receiver<AdcSample>,
+    fast_rx: crossbeam_channel::Receiver<oxifoc_core::types::FastTelemetry>,
+    slow_rx: crossbeam_channel::Receiver<oxifoc_core::types::SlowTelemetry>,
     connected: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     currents_buf: Arc<PlotBuffer>,
@@ -511,38 +512,52 @@ fn adc_poll_loop(
     let ui_interval = Duration::from_millis(1000 / UI_UPDATE_HZ);
 
     while !stop.load(Ordering::Relaxed) {
-        match adc_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(sample) => {
-                // Push to ring buffers on every sample — no rate limiting.
-                currents_buf.push_frame(&[sample.ia as f32, sample.ib as f32, sample.ic as f32]);
-                vbus_buf.push_frame(&[sample.vbus_mv as f32 / 1000.0]);
-                temp_buf.push_frame(&[sample.fet_temp_c_x10 as f32 / 10.0]);
+        // Drain fast telemetry (high frequency — push to plot buffers)
+        let mut got_fast = false;
+        while let Ok(sample) = fast_rx.try_recv() {
+            got_fast = true;
+            currents_buf.push_frame(&[
+                sample.ia_ma as f32 / 1000.0,
+                sample.ib_ma as f32 / 1000.0,
+                sample.ic_ma as f32 / 1000.0,
+            ]);
 
-                // Throttle the text telemetry updates to UI_UPDATE_HZ.
-                if last_ui_update.elapsed() >= ui_interval {
-                    last_ui_update = Instant::now();
-                    let is_conn = connected.load(Ordering::Relaxed);
-                    let s = sample;
-                    let _ = weak.upgrade_in_event_loop(move |app| {
-                        app.set_is_connected(is_conn);
-                        app.set_ia_text(format!("{}", s.ia).into());
-                        app.set_ib_text(format!("{}", s.ib).into());
-                        app.set_ic_text(format!("{}", s.ic).into());
-                        app.set_vbus_text(format!("{:.2} V", s.vbus_mv as f32 / 1000.0).into());
-                        app.set_temp_text(
-                            format!("{:.1} °C", s.fet_temp_c_x10 as f32 / 10.0).into(),
-                        );
-                        app.set_seq_text(format!("{}", s.seq).into());
-                    });
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {
+            // Throttle text updates for fast telemetry
+            if last_ui_update.elapsed() >= ui_interval {
+                last_ui_update = Instant::now();
                 let is_conn = connected.load(Ordering::Relaxed);
                 let _ = weak.upgrade_in_event_loop(move |app| {
                     app.set_is_connected(is_conn);
+                    app.set_ia_text(format!("{:.2} A", sample.ia_ma as f32 / 1000.0).into());
+                    app.set_ib_text(format!("{:.2} A", sample.ib_ma as f32 / 1000.0).into());
+                    app.set_ic_text(format!("{:.2} A", sample.ic_ma as f32 / 1000.0).into());
+                    app.set_seq_text(format!("{}", sample.seq).into());
                 });
             }
-            Err(RecvTimeoutError::Disconnected) => break,
+        }
+
+        // Drain slow telemetry (low frequency — update dashboard)
+        while let Ok(sample) = slow_rx.try_recv() {
+            vbus_buf.push_frame(&[sample.vbus_mv as f32 / 1000.0]);
+            temp_buf.push_frame(&[sample.fet_temp_c_x10 as f32 / 10.0]);
+
+            let is_conn = connected.load(Ordering::Relaxed);
+            let _ = weak.upgrade_in_event_loop(move |app| {
+                app.set_is_connected(is_conn);
+                app.set_vbus_text(format!("{:.2} V", sample.vbus_mv as f32 / 1000.0).into());
+                app.set_temp_text(
+                    format!("{:.1} °C", sample.fet_temp_c_x10 as f32 / 10.0).into(),
+                );
+            });
+        }
+
+        // If no data arrived, check connection status
+        if !got_fast {
+            let is_conn = connected.load(Ordering::Relaxed);
+            let _ = weak.upgrade_in_event_loop(move |app| {
+                app.set_is_connected(is_conn);
+            });
+            thread::sleep(Duration::from_millis(10));
         }
     }
 }

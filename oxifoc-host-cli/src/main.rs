@@ -243,19 +243,21 @@ fn list_devices() -> Result<()> {
 fn run_monitor(runtime: &oxifoc_host_lib::HostRuntime, duration: Duration) -> Result<()> {
     use crossbeam_channel::RecvTimeoutError;
 
-    println!("Streaming ADC samples for {:?}...", duration);
+    println!("Streaming telemetry for {:?}...", duration);
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
-        match runtime.adc_rx.recv_timeout(Duration::from_millis(500)) {
+        // Print fast telemetry
+        match runtime.fast_rx.recv_timeout(Duration::from_millis(500)) {
             Ok(sample) => {
                 println!(
-                    "#{:>5} ia:{:>6} ib:{:>6} ic:{:>6} vbus:{:>6.1}V fet:{:>5.1}C",
+                    "#{:>5} ia:{:>7.2}A ib:{:>7.2}A ic:{:>7.2}A id:{:>7.2}A iq:{:>7.2}A erpm:{:>6}",
                     sample.seq,
-                    sample.ia,
-                    sample.ib,
-                    sample.ic,
-                    sample.vbus_mv as f32 / 1000.0,
-                    sample.fet_temp_c_x10 as f32 / 10.0,
+                    sample.ia_ma as f32 / 1000.0,
+                    sample.ib_ma as f32 / 1000.0,
+                    sample.ic_ma as f32 / 1000.0,
+                    sample.id_ma as f32 / 1000.0,
+                    sample.iq_ma as f32 / 1000.0,
+                    sample.erpm,
                 );
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -264,8 +266,18 @@ fn run_monitor(runtime: &oxifoc_host_lib::HostRuntime, duration: Duration) -> Re
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
-                bail!("ADC channel disconnected");
+                bail!("Telemetry channel disconnected");
             }
+        }
+        // Print slow telemetry when available
+        if let Ok(slow) = runtime.slow_rx.try_recv() {
+            println!(
+                "  [sys] vbus:{:.1}V fet:{:.1}°C motor:{:.1}°C faults:{}",
+                slow.vbus_mv as f32 / 1000.0,
+                slow.fet_temp_c_x10 as f32 / 10.0,
+                slow.motor_temp_c_x10 as f32 / 10.0,
+                slow.fault_count,
+            );
         }
     }
 

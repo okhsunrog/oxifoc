@@ -15,7 +15,8 @@ use tracing::info;
 use oxifoc_core::foc::fault::FaultRegistry;
 use oxifoc_core::icd::DeviceInfo;
 use oxifoc_core::runtime::servers::run_all_servers_with_config;
-use oxifoc_core::state::MotorControlState;
+use oxifoc_core::runtime::streaming::{fast_telemetry_stream, slow_telemetry_stream};
+use oxifoc_core::state::{MotorControlState, TELEMETRY};
 use oxifoc_core::storage::RuntimeConfig;
 
 use crate::fault::VirtualFault;
@@ -65,6 +66,20 @@ pub async fn run(
                     foc_freq_hz,
                 )
                 .await;
+            }
+        });
+
+        // Telemetry streaming tasks for this connection
+        tokio::spawn({
+            let stack = stack.clone();
+            async move {
+                fast_telemetry_stream(stack, &TELEMETRY, state_mutex).await;
+            }
+        });
+        tokio::spawn({
+            let stack = stack.clone();
+            async move {
+                slow_telemetry_stream(stack, state_mutex, fault_registry).await;
             }
         });
     }
