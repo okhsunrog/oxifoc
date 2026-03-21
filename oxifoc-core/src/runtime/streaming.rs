@@ -36,13 +36,28 @@ pub async fn fast_telemetry_stream<NS>(
 ) where
     NS: NetStackHandle + Clone,
 {
-    let mut receiver = telemetry_watch.receiver().unwrap();
+    let mut receiver = match telemetry_watch.receiver() {
+        Some(r) => r,
+        None => {
+            #[cfg(feature = "log")]
+            log::error!("Failed to create TELEMETRY watch receiver (max receivers reached)");
+            return;
+        }
+    };
     let mut cycle_count: u32 = 0;
     let mut seq: u32 = 0;
+
+    #[cfg(feature = "log")]
+    log::info!("fast_telemetry_stream: waiting for first FOC output...");
 
     loop {
         let foc = receiver.changed().await;
         cycle_count = cycle_count.wrapping_add(1);
+
+        #[cfg(feature = "log")]
+        if cycle_count == 1 {
+            log::info!("fast_telemetry_stream: received first FOC output");
+        }
 
         let divider = FAST_TELEM_DIVIDER.load(Ordering::Relaxed) as u32;
         if divider == 0 || cycle_count % divider != 0 {
@@ -86,7 +101,12 @@ pub async fn fast_telemetry_stream<NS>(
             seq,
         };
 
-        let _ = stack.stack().topics().broadcast::<FastTelemetryTopic>(&msg, None);
+        let result = stack.stack().topics().broadcast::<FastTelemetryTopic>(&msg, None);
+
+        #[cfg(feature = "log")]
+        if seq <= 3 {
+            log::info!("fast_telemetry broadcast seq={} result={:?}", seq, result);
+        }
     }
 }
 

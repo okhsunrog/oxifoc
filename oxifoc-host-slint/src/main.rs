@@ -21,6 +21,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 const CAPACITY: usize = 32768;
+const VISIBLE_SAMPLES: u32 = 2000; // ~2 seconds at 1kHz fast telemetry
 const UI_UPDATE_HZ: u64 = 30;
 const MAX_LOG_LINES: usize = 2000;
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];
@@ -173,6 +174,7 @@ fn main() {
         app.window()
             .set_rendering_notifier(move |state, graphics_api| match state {
                 RenderingState::RenderingSetup => {
+                    tracing::info!("RenderingSetup: graphics_api = {:?}", graphics_api);
                     if let GraphicsAPI::WGPU28 { device, queue, .. } = graphics_api {
                         cr = Some(PlotRenderer::new(
                             device,
@@ -180,8 +182,8 @@ fn main() {
                             PlotConfig {
                                 num_channels: 3,
                                 capacity: CAPACITY,
-                                y_min: 0.0,
-                                y_max: 4095.0,
+                                y_min: -2.0,
+                                y_max: 2.0,
                                 channel_colors: vec![
                                     [0.133, 0.827, 0.933, 1.0], // cyan  – Phase A
                                     [0.545, 0.361, 0.965, 1.0], // violet – Phase B
@@ -217,7 +219,7 @@ fn main() {
                     if let (Some(app), Some(cr), Some(vr), Some(tr)) =
                         (app_weak.upgrade(), cr.as_mut(), vr.as_mut(), tr.as_mut())
                     {
-                        let vis = CAPACITY as u32;
+                        let vis = VISIBLE_SAMPLES;
 
                         let tex = cr.render(
                             &cb,
