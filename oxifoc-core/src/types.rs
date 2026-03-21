@@ -227,22 +227,20 @@ pub struct SlowTelemetry {
 
 /// Telemetry rate configuration
 ///
-/// Host sends this to configure the firmware's telemetry streaming rates.
+/// Host sends this to configure the firmware's fast telemetry streaming rate.
+/// Slow telemetry is poll-based (host controls the rate).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TelemetryConfig {
     /// Fast telemetry decimation: FOC cycles per sample.
     /// E.g. at 20kHz FOC: 20 = 1kHz, 1 = 20kHz, 40 = 500Hz.
     pub fast_divider: u16,
-    /// Slow telemetry rate in Hz (1-100, default 10)
-    pub slow_rate_hz: u8,
 }
 
 impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
             fast_divider: 20, // 1kHz at 20kHz FOC
-            slow_rate_hz: 10,
         }
     }
 }
@@ -253,8 +251,6 @@ impl Default for TelemetryConfig {
 pub struct TelemetryConfigAck {
     /// Actual fast rate in Hz after applying the divider
     pub actual_fast_hz: u16,
-    /// Actual slow rate in Hz
-    pub actual_slow_hz: u8,
 }
 
 /// Basic device information

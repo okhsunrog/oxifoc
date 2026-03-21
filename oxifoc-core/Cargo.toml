@@ -28,7 +28,7 @@ serde = { version = "1.0", default-features = false, features = ["derive"] }
 postcard-schema = { version = "0.2.5", features = ["derive", "heapless-v0_9"] }
 
 # Ergot protocol framework (for icd feature)
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "9a145ac", optional = true }
+ergot = { workspace = true, optional = true }
 
 # Async runtime support (for runtime feature)
 embassy-time = { version = "0.5.1", optional = true }

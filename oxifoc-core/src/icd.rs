@@ -40,10 +40,10 @@ pub use crate::types::*;
 // Contains phase currents, dq currents/voltages, angle, RPM, hall state.
 topic!(FastTelemetryTopic, FastTelemetry, "telemetry/fast");
 
-// Slow telemetry topic (device → host)
-// Firmware pushes system health data at lower rate (default 10Hz).
-// Contains bus voltage, temperatures, motor state, fault count.
-topic!(SlowTelemetryTopic, SlowTelemetry, "telemetry/slow");
+// Slow telemetry endpoint (host polls device)
+// Host periodically requests system health data (~10Hz).
+// Serves as both telemetry and heartbeat for device-side liveness tracking.
+endpoint!(SlowTelemetryEndpoint, (), SlowTelemetry, "req/telemetry_slow");
 
 // TODO: EnergyTelemetryTopic — add when energy tracking is implemented
 // topic!(EnergyTelemetryTopic, EnergyTelemetry, "telemetry/energy");

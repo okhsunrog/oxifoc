@@ -29,6 +29,7 @@ strip = true
 
 [workspace.dependencies]
 oxifoc-core = { path = "oxifoc-core" }
+ergot = { path = "../ergot/crates/ergot" }
 tokio = { version = "1.45", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

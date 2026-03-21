@@ -1,8 +1,7 @@
-//! Telemetry streaming tasks (push-based via Topics)
+//! Telemetry streaming (push-based via Topics)
 //!
-//! These tasks read from the global state and broadcast telemetry
-//! via ergot Topics. Unlike request/response servers, these push
-//! data continuously at configurable rates.
+//! Fast telemetry is pushed continuously via ergot Topics.
+//! Slow telemetry is poll-based (endpoint server in servers.rs).
 
 use core::cell::RefCell;
 use core::sync::atomic::Ordering;
@@ -13,11 +12,10 @@ use embassy_sync::watch::Watch;
 use ergot::net_stack::NetStackHandle;
 
 use crate::foc::controller::FocOutput;
-use crate::foc::fault::{FaultRegistry, PlatformFault};
-use crate::icd::{FastTelemetry, FastTelemetryTopic, SlowTelemetry, SlowTelemetryTopic};
+use crate::icd::{FastTelemetry, FastTelemetryTopic};
 use crate::state::MotorControlState;
 
-use super::servers::{FAST_TELEM_DIVIDER, SLOW_TELEM_RATE_HZ};
+use super::servers::FAST_TELEM_DIVIDER;
 
 /// Run fast telemetry streaming task.
 ///
@@ -110,57 +108,3 @@ pub async fn fast_telemetry_stream<NS>(
     }
 }
 
-/// Run slow telemetry streaming task.
-///
-/// Periodically reads system health data from state and broadcasts
-/// `SlowTelemetry` via the topic at `SLOW_TELEM_RATE_HZ`.
-///
-/// # Arguments
-/// * `stack` - Ergot net stack for topic broadcasting
-/// * `state_mutex` - For reading ADC/temperature/motor state
-/// * `fault_registry` - For fault count
-pub async fn slow_telemetry_stream<NS, F>(
-    stack: NS,
-    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-    fault_registry: &'static FaultRegistry<F>,
-) where
-    NS: NetStackHandle + Clone,
-    F: PlatformFault,
-{
-    let mut seq: u32 = 0;
-
-    loop {
-        let rate_hz = SLOW_TELEM_RATE_HZ.load(Ordering::Relaxed).max(1);
-        let interval_ms = 1000u64 / rate_hz as u64;
-
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(interval_ms)).await;
-
-        let (vbus_mv, fet_temp, motor_temp, board_temp, motor_state, control_mode) =
-            critical_section::with(|cs| {
-                let state = state_mutex.borrow(cs).borrow();
-                (
-                    state.last_adc.vbus_mv,
-                    state.last_adc.fet_temp_c_x10().unwrap_or(0),
-                    state.last_adc.motor_temp_c_x10().unwrap_or(0),
-                    state.last_adc.board_temp_c_x10().unwrap_or(0),
-                    state.motor_state,
-                    state.control_mode,
-                )
-            });
-
-        seq = seq.wrapping_add(1);
-
-        let msg = SlowTelemetry {
-            vbus_mv,
-            fet_temp_c_x10: fet_temp,
-            motor_temp_c_x10: motor_temp,
-            board_temp_c_x10: board_temp,
-            motor_state,
-            control_mode,
-            fault_count: fault_registry.count() as u8,
-            seq,
-        };
-
-        let _ = stack.stack().topics().broadcast::<SlowTelemetryTopic>(&msg, None);
-    }
-}

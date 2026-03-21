@@ -68,41 +68,41 @@ export component PlotWidget inherits Rectangle {
             height: root.title-height;
         }
 
-        // Main plot area with Y-axis labels
-        HorizontalLayout {
+        // Main plot area with Y-axis labels and X-axis below
+        VerticalLayout {
             spacing: 0px;
             vertical-stretch: 1;
 
-            // Y-axis labels column
-            Rectangle {
-                width: root.y-label-width;
-                clip: true;
-
-                for i in (root.y-divisions + 1): Text {
-                    property <float> y-val: root.y-max - i * (root.y-max - root.y-min) / root.y-divisions;
-                    property <float> y-frac: i / root.y-divisions;
-                    x: 0;
-                    // Clamp top/bottom labels to stay inside the column
-                    y: y-frac <= 0.0 ? 0px
-                     : y-frac >= 1.0 ? parent.height - self.height
-                     : y-frac * parent.height - self.height / 2;
-                    width: root.y-label-width - 4px;
-                    horizontal-alignment: right;
-                    text: abs(self.y-val) >= 10.0 ? "\{Math.round(self.y-val)}"
-                        : abs(self.y-val) < 0.01 ? "0"
-                        : "\{Math.round(self.y-val * 100) / 100}";
-                    font-size: 10px;
-                    color: root.label-color;
-                }
-            }
-
-            // Plot area (grid + texture)
-            VerticalLayout {
+            // Y-axis + plot area row
+            HorizontalLayout {
                 spacing: 0px;
-                horizontal-stretch: 1;
+                vertical-stretch: 1;
 
+                // Y-axis labels column
+                Rectangle {
+                    width: root.y-label-width;
+                    clip: true;
+
+                    for i in (root.y-divisions + 1): Text {
+                        property <float> y-val: root.y-max - i * (root.y-max - root.y-min) / root.y-divisions;
+                        property <float> y-frac: i / root.y-divisions;
+                        x: 0;
+                        y: y-frac <= 0.0 ? 0px
+                         : y-frac >= 1.0 ? parent.height - self.height
+                         : y-frac * parent.height - self.height / 2;
+                        width: root.y-label-width - 4px;
+                        horizontal-alignment: right;
+                        text: abs(self.y-val) >= 10.0 ? "\{Math.round(self.y-val)}"
+                            : abs(self.y-val) < 0.01 ? "0"
+                            : "\{Math.round(self.y-val * 100) / 100}";
+                        font-size: 10px;
+                        color: root.label-color;
+                    }
+                }
+
+                // Plot area
                 plot-area := Rectangle {
-                    vertical-stretch: 1;
+                    horizontal-stretch: 1;
                     background: root.plot-bg;
                     border-width: 1px;
                     border-color: root.plot-border-color;
@@ -136,7 +136,7 @@ export component PlotWidget inherits Rectangle {
                         background: root.axis-color;
                     }
 
-                    // Waveform texture (transparent background from shader)
+                    // Waveform texture
                     Image {
                         width: parent.width;
                         height: parent.height;
@@ -180,15 +180,24 @@ export component PlotWidget inherits Rectangle {
                         }
                     }
                 }
+            }
+
+            // X-axis labels row (spans full width, indented by y-label-width)
+            HorizontalLayout {
+                spacing: 0px;
+                height: root.x-label-height;
+
+                // Empty spacer matching Y-axis column width
+                Rectangle { width: root.y-label-width; }
 
                 // X-axis labels
                 Rectangle {
-                    height: root.x-label-height;
+                    horizontal-stretch: 1;
 
                     for i in (root.x-divisions + 1): Text {
                         property <float> abs-time: Math.round(root.time-window * (root.x-divisions - i) / root.x-divisions * 10) / 10;
                         x: i * (parent.width / root.x-divisions) - self.width / 2;
-                        y: 2px;
+                        y: 1px;
                         text: i == root.x-divisions ? "0s" : "-\{self.abs-time}s";
                         font-size: 10px;
                         color: root.label-color;

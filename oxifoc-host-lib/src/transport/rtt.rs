@@ -125,12 +125,16 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
                 RTT_UP_CHANNEL_ERGOT
             ));
         }
-        if rtt.down_channel(RTT_DOWN_CHANNEL_ERGOT).is_none() {
-            return Err(anyhow!(
+        let down_ch = rtt.down_channel(RTT_DOWN_CHANNEL_ERGOT).ok_or_else(|| {
+            anyhow!(
                 "RTT down channel {} (ergot) not found",
                 RTT_DOWN_CHANNEL_ERGOT
-            ));
-        }
+            )
+        })?;
+
+        // Send a COBS frame boundary so the device can flush any stale
+        // partial frame from a previous session and sync cleanly.
+        let _ = down_ch.write(&mut core, &[0]);
     }
 
     // Set up channels between blocking RTT thread and async world.

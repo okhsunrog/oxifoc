@@ -48,7 +48,7 @@ oxifoc-g4 = { path = "../oxifoc-g4" }
 # Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
 # transport-uart adds: defmt-sink-network (for network forwarding)
 # transport-rtt adds: rtt (for RTT transport wrappers)
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "9a145ac", default-features = false, features = [
+ergot = { path = "../../ergot/crates/ergot", default-features = false, features = [
     "embedded-io-async-v0_7",
     "disable-cache-padding",
     "defmt-sink-rtt",

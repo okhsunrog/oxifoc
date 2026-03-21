@@ -25,7 +25,7 @@
 
 use core::cell::RefCell;
 use core::pin::pin;
-use core::sync::atomic::{AtomicU16, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use critical_section::Mutex as CriticalSectionMutex;
 use embassy_futures::join::{join, join5};
@@ -36,7 +36,8 @@ use crate::foc::hall_sensor::Direction;
 use crate::icd::{
     AdcSample, AdcSampleEndpoint, ControlMode, DeviceInfo, FaultEndpoint, FaultRequest,
     FaultResponse, HallSensorData, HallSensorEndpoint, InfoEndpoint, MotorEndpoint, MotorStatus,
-    TelemetryConfig, TelemetryConfigAck, TelemetryConfigEndpoint,
+    SlowTelemetry, SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigAck,
+    TelemetryConfigEndpoint,
 };
 #[cfg(feature = "storage")]
 use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
@@ -50,9 +51,6 @@ use crate::storage::{ConfigKey, ConfigPayload, FLASH_CHANNEL, FlashOperation, Ru
 
 /// Fast telemetry divider: FOC cycles per sample (default 20 = 1kHz at 20kHz FOC)
 pub static FAST_TELEM_DIVIDER: AtomicU16 = AtomicU16::new(20);
-
-/// Slow telemetry rate in Hz (default 10)
-pub static SLOW_TELEM_RATE_HZ: AtomicU8 = AtomicU8::new(10);
 
 /// Device info server - responds to info requests from host
 ///
@@ -370,16 +368,66 @@ pub async fn telemetry_config_server<NS, const N: usize>(
         let _ = h
             .serve(|cfg: &TelemetryConfig| {
                 let divider = cfg.fast_divider.max(1);
-                let slow_hz = cfg.slow_rate_hz.clamp(1, 100);
-
                 FAST_TELEM_DIVIDER.store(divider, Ordering::Relaxed);
-                SLOW_TELEM_RATE_HZ.store(slow_hz, Ordering::Relaxed);
 
                 let actual_fast_hz = (foc_freq_hz / divider as u32) as u16;
                 async move {
-                    TelemetryConfigAck {
-                        actual_fast_hz,
-                        actual_slow_hz: slow_hz,
+                    TelemetryConfigAck { actual_fast_hz }
+                }
+            })
+            .await;
+    }
+}
+
+/// Slow telemetry server — responds to host poll requests
+///
+/// Returns current system health data (vbus, temperatures, motor state, faults).
+/// Host polls this at ~10Hz, which doubles as a heartbeat for device-side
+/// liveness tracking.
+pub async fn slow_telemetry_server<NS, F, const N: usize>(
+    endpoints: Endpoints<NS>,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    fault_registry: &'static FaultRegistry<F>,
+) where
+    NS: NetStackHandle,
+    F: PlatformFault,
+{
+    let server = endpoints.bounded_server::<SlowTelemetryEndpoint, N>(Some("slow_telem"));
+    let server = pin!(server);
+    let mut h = server.attach();
+    let mut seq: u32 = 0;
+
+    loop {
+        seq = seq.wrapping_add(1);
+        let current_seq = seq;
+
+        let _ = h
+            .serve(|_: &()| {
+                let (vbus_mv, fet_temp, motor_temp, board_temp, motor_state, control_mode) =
+                    critical_section::with(|cs| {
+                        let state = state_mutex.borrow(cs).borrow();
+                        (
+                            state.last_adc.vbus_mv,
+                            state.last_adc.fet_temp_c_x10().unwrap_or(0),
+                            state.last_adc.motor_temp_c_x10().unwrap_or(0),
+                            state.last_adc.board_temp_c_x10().unwrap_or(0),
+                            state.motor_state,
+                            state.control_mode,
+                        )
+                    });
+
+                let fault_count = fault_registry.count() as u8;
+
+                async move {
+                    SlowTelemetry {
+                        vbus_mv,
+                        fet_temp_c_x10: fet_temp,
+                        motor_temp_c_x10: motor_temp,
+                        board_temp_c_x10: board_temp,
+                        motor_state,
+                        control_mode,
+                        fault_count,
+                        seq: current_seq,
                     }
                 }
             })
@@ -444,7 +492,10 @@ pub async fn run_all_servers<NS, F>(
             motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),
-        telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
+        join(
+            slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
+            telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
+        ),
     )
     .await;
 }
@@ -471,8 +522,11 @@ pub async fn run_all_servers_with_config<NS, F>(
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),
         join(
-            config_server::<NS, 2>(endpoints.clone(), runtime_config),
-            telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
+            slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
+            join(
+                config_server::<NS, 2>(endpoints.clone(), runtime_config),
+                telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
+            ),
         ),
     )
     .await;

@@ -21,7 +21,6 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 const CAPACITY: usize = 32768;
-const VISIBLE_SAMPLES: u32 = 2000; // ~2 seconds at 1kHz fast telemetry
 const UI_UPDATE_HZ: u64 = 30;
 const MAX_LOG_LINES: usize = 2000;
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];

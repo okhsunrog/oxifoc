@@ -10,7 +10,7 @@ use defmt_parser::Level as DefmtLevel;
 use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::icd::{
-    ButtonEndpoint, FastTelemetryTopic, MotorEndpoint, SlowTelemetryTopic,
+    ButtonEndpoint, FastTelemetryTopic, MotorEndpoint, SlowTelemetryEndpoint,
     TelemetryConfig, TelemetryConfigEndpoint,
 };
 use oxifoc_core::types::{ButtonEvent, ControlMode, FastTelemetry, SlowTelemetry};
@@ -153,11 +153,13 @@ async fn backend_main(
     let transport_config = cfg.transport_config()?;
 
     match transport_config {
-        // COBS-stream transports: TCP, Serial, RTT
+        // COBS-stream transports: TCP, Serial, RTT — support reconnection
         TransportConfig::Tcp { host, port } => {
-            let transport = transport::tcp::connect(&host, port).await?;
-            run_cobs_stream(
-                transport,
+            run_cobs_stream_with_reconnect(
+                move || {
+                    let host = host.clone();
+                    async move { transport::tcp::connect(&host, port).await }
+                },
                 &cfg,
                 fast_tx,
                 slow_tx,
@@ -168,9 +170,11 @@ async fn backend_main(
             .await
         }
         TransportConfig::Serial { path, baud } => {
-            let transport = transport::serial::connect(&path, baud).await?;
-            run_cobs_stream(
-                transport,
+            run_cobs_stream_with_reconnect(
+                move || {
+                    let path = path.clone();
+                    async move { transport::serial::connect(&path, baud).await }
+                },
                 &cfg,
                 fast_tx,
                 slow_tx,
@@ -181,9 +185,12 @@ async fn backend_main(
             .await
         }
         TransportConfig::Rtt { probe, chip } => {
-            let transport = transport::rtt::connect(probe.as_deref(), &chip).await?;
-            run_cobs_stream(
-                transport,
+            run_cobs_stream_with_reconnect(
+                move || {
+                    let probe = probe.clone();
+                    let chip = chip.clone();
+                    async move { transport::rtt::connect(probe.as_deref(), &chip).await }
+                },
                 &cfg,
                 fast_tx,
                 slow_tx,
@@ -193,7 +200,7 @@ async fn backend_main(
             )
             .await
         }
-        // Framed transports: UDP, USB
+        // Framed transports: UDP, USB — no reconnection loop (yet)
         TransportConfig::Udp { host, port } => {
             let stack = transport::udp::connect(&host, port).await?;
             spawn_protocol_tasks(
@@ -229,30 +236,31 @@ async fn backend_main(
     }
 }
 
-/// Set up a COBS-stream transport (TCP, serial, RTT) and run the protocol.
-async fn run_cobs_stream(
-    transport: transport::CobsStreamTransport,
+/// Set up a COBS-stream transport with automatic reconnection.
+///
+/// Protocol tasks (telemetry, commands) are spawned once and survive reconnections.
+/// Only the transport stream is re-established when the link goes down.
+async fn run_cobs_stream_with_reconnect<F, Fut>(
+    connect_fn: F,
     cfg: &HostConfig,
     fast_tx: Sender<FastTelemetry>,
     slow_tx: Sender<SlowTelemetry>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
-) -> Result<()> {
+) -> Result<()>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<transport::CobsStreamTransport>>,
+{
+    use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
     use ergot::toolkits::tokio_stream as stream_kit;
 
     let queue = stream_kit::new_std_queue(4096);
     let stack = stream_kit::new_controller_stack(&queue, ERGOT_MTU);
+    let state_notify = Arc::new(stream_kit::WaitQueue::new());
 
-    stream_kit::register_controller_stream(
-        stack.clone(),
-        transport.reader,
-        transport.writer,
-        queue,
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("Interface already active"))?;
-
+    // Protocol tasks are spawned once — they operate on the stack, not the transport
     spawn_protocol_tasks(
         &stack,
         fast_tx,
@@ -262,13 +270,119 @@ async fn run_cobs_stream(
         cancel_token.clone(),
     );
 
-    if cfg.stream_defmt() {
-        start_defmt_decoder(cfg, &stack, transport.defmt_reader)?;
+    // Defmt decoder spawned on first successful connection
+    let mut defmt_started = false;
+
+    loop {
+        // Try to connect
+        let transport = tokio::select! {
+            result = connect_fn() => {
+                match result {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::warn!("Transport connect failed: {:?}", e);
+                        // Wait before retrying, but respect cancel
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(2)) => continue,
+                            _ = cancel_token.cancelled() => break,
+                        }
+                    }
+                }
+            }
+            _ = cancel_token.cancelled() => break,
+        };
+
+        info!("Transport connected, registering stream...");
+
+        // Register the stream on the (reusable) stack
+        let reg_result = stream_kit::register_controller_stream(
+            stack.clone(),
+            transport.reader,
+            transport.writer,
+            queue.clone(),
+            Some(LivenessConfig { timeout_ms: 3000 }),
+            Some(state_notify.clone()),
+        )
+        .await;
+
+        if let Err(_) = reg_result {
+            tracing::warn!("Stream registration failed (interface not in Down state), retrying...");
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                _ = cancel_token.cancelled() => break,
+            }
+        }
+
+        // Start defmt decoder on first connection (if configured)
+        if !defmt_started && cfg.stream_defmt() {
+            start_defmt_decoder(cfg, &stack, transport.defmt_reader)?;
+            defmt_started = true;
+        }
+
+        // Monitor interface state — update connected_flag and handle disconnect
+        loop {
+            tokio::select! {
+                _ = state_notify.wait() => {
+                    let state = stack.manage_profile(|im| im.interface_state(()));
+                    let is_active = matches!(state, Some(InterfaceState::Active { .. }));
+                    let was_active = connected_flag.swap(is_active, Ordering::Relaxed);
+
+                    if !was_active && is_active {
+                        info!("Interface active — device connected");
+                    } else if was_active && !is_active {
+                        tracing::warn!("Interface went down, waiting for recovery...");
+
+                        // Wait for recovery (frames resume) with a deadline.
+                        // If the link was just temporarily idle, it will recover.
+                        // If the transport is actually dead, we'll time out and reconnect.
+                        let recovered = tokio::time::timeout(
+                            Duration::from_secs(10),
+                            wait_for_active(&state_notify, &stack),
+                        ).await.is_ok();
+
+                        if recovered {
+                            info!("Connection recovered");
+                            connected_flag.store(true, Ordering::Relaxed);
+                        } else {
+                            tracing::warn!("Recovery timeout, reconnecting transport...");
+                            connected_flag.store(false, Ordering::Relaxed);
+                            break; // Exit inner loop → reconnect
+                        }
+                    }
+                }
+                _ = cancel_token.cancelled() => {
+                    info!("Host backend shutdown complete");
+                    return Ok(());
+                }
+            }
+        }
+
+        // Brief delay before reconnecting
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = cancel_token.cancelled() => break,
+        }
+
+        info!("Attempting reconnection...");
     }
 
-    cancel_token.cancelled().await;
     info!("Host backend shutdown complete");
     Ok(())
+}
+
+/// Wait until the interface transitions back to Active.
+async fn wait_for_active(
+    state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
+    stack: &ergot::toolkits::tokio_stream::EdgeStack,
+) {
+    use ergot::interface_manager::{InterfaceState, Profile};
+    loop {
+        let _ = state_notify.wait().await;
+        let state = stack.manage_profile(|im| im.interface_state(()));
+        if matches!(state, Some(InterfaceState::Active { .. })) {
+            return;
+        }
+    }
 }
 
 // ── Protocol tasks (generic over any NetStackHandle) ─────────────────────────
@@ -337,24 +451,42 @@ fn spawn_protocol_tasks<NS>(
         }
     });
 
-    // Slow telemetry subscriber (receive push-based system health data)
+    // Slow telemetry poller (request/response — also serves as heartbeat)
     tokio::spawn({
+        use ergot::Address;
         let stack = stack.clone();
+        let connected_flag = connected_flag.clone();
         let token = cancel_token.clone();
         async move {
             let ns = stack.stack();
-            let receiver =
-                ns.topics().single_receiver::<SlowTelemetryTopic>(Some("slow_telem"));
-            let mut pinned = pin!(receiver);
-            let mut hdl = pinned.as_mut().subscribe();
+            let device_addr = Address {
+                network_id: 1,
+                node_id: 2,
+                port_id: 0,
+            };
 
-            tracing::info!("Slow telemetry subscriber started");
+            // Wait for initial connection
+            while !connected_flag.load(Ordering::Relaxed) {
+                tokio::select! {
+                    _ = token.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
 
+            tracing::info!("Slow telemetry polling started (10Hz)");
+
+            let mut ticker = tokio::time::interval(Duration::from_millis(100)); // 10Hz
             loop {
                 tokio::select! {
                     _ = token.cancelled() => break,
-                    msg = hdl.recv() => {
-                        let _ = slow_tx.send(msg.t);
+                    _ = ticker.tick() => {
+                        let fut = ns.endpoints()
+                            .request::<SlowTelemetryEndpoint>(device_addr, &(), Some("slow_telem"));
+                        if let Ok(Ok(sample)) = tokio::time::timeout(
+                            Duration::from_millis(500), fut
+                        ).await {
+                            let _ = slow_tx.send(sample);
+                        }
                     }
                 }
             }
@@ -393,8 +525,8 @@ fn spawn_protocol_tasks<NS>(
                             .request::<TelemetryConfigEndpoint>(device_addr, &cfg, Some("telem_cfg"))
                             .await;
                         match &res {
-                            Ok(ack) => tracing::info!("Telemetry config ack: fast={}Hz, slow={}Hz",
-                                ack.actual_fast_hz, ack.actual_slow_hz),
+                            Ok(ack) => tracing::info!("Telemetry config ack: fast={}Hz",
+                                ack.actual_fast_hz),
                             Err(e) => tracing::warn!("Telemetry config failed: {:?}", e),
                         }
                     }
