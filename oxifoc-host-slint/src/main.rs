@@ -423,13 +423,18 @@ fn main() {
             let app = weak.unwrap();
             let duty = app.get_duty();
             let iq_target = duty * 0.1;
-            if let Some(ref runtime) = *rt.lock().unwrap() {
-                let _ = runtime
-                    .cmd_tx
-                    .send(HostCommand::Motor(ControlMode::CurrentControl {
-                        iq_target,
-                        id_target: 0.0,
-                    }));
+            let guard = rt.lock().unwrap();
+            if let Some(ref runtime) = *guard {
+                tracing::info!("Motor start: duty={duty:.0}%, iq_target={iq_target:.2}A");
+                match runtime.cmd_tx.send(HostCommand::Motor(ControlMode::CurrentControl {
+                    iq_target,
+                    id_target: 0.0,
+                })) {
+                    Ok(()) => tracing::debug!("Motor command sent"),
+                    Err(e) => tracing::error!("Failed to send motor command: {e}"),
+                }
+            } else {
+                tracing::warn!("Motor start clicked but no runtime");
             }
         });
     }
@@ -438,10 +443,15 @@ fn main() {
     {
         let rt = runtime.clone();
         app.on_motor_stop(move || {
-            if let Some(ref runtime) = *rt.lock().unwrap() {
-                let _ = runtime
-                    .cmd_tx
-                    .send(HostCommand::Motor(ControlMode::Stopped));
+            let guard = rt.lock().unwrap();
+            if let Some(ref runtime) = *guard {
+                tracing::info!("Motor stop");
+                match runtime.cmd_tx.send(HostCommand::Motor(ControlMode::Stopped)) {
+                    Ok(()) => tracing::debug!("Stop command sent"),
+                    Err(e) => tracing::error!("Failed to send stop command: {e}"),
+                }
+            } else {
+                tracing::warn!("Motor stop clicked but no runtime");
             }
         });
     }

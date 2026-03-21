@@ -363,13 +363,15 @@ fn spawn_protocol_tasks<NS>(
             };
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
-                    HostCommand::Motor(mc) => {
+                    HostCommand::Motor(ref mc) => {
+                        tracing::info!("Sending motor command: {:?}", mc);
                         let res = ns
                             .endpoints()
-                            .request::<MotorEndpoint>(device_addr, &mc, Some("motor"))
+                            .request::<MotorEndpoint>(device_addr, mc, Some("motor"))
                             .await;
-                        if let Err(e) = res {
-                            tracing::warn!("Motor command failed: {:?}", e);
+                        match &res {
+                            Ok(status) => tracing::info!("Motor response: {:?}", status),
+                            Err(e) => tracing::warn!("Motor command failed: {:?}", e),
                         }
                     }
                     HostCommand::SetAdcPollRate(rate_hz) => {
