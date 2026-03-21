@@ -394,8 +394,24 @@ fn main() {
             let host_runtime = start_host(config);
             let fast_rx = host_runtime.fast_rx.clone();
             let slow_rx = host_runtime.slow_rx.clone();
+            let info_rx = host_runtime.device_info_rx.clone();
             let connected = host_runtime.connected.clone();
             *rt.lock().unwrap() = Some(host_runtime);
+
+            // Device info listener — runs once on connection
+            let weak_info = weak.clone();
+            thread::spawn(move || {
+                if let Ok(info) = info_rx.recv() {
+                    let _ = weak_info.upgrade_in_event_loop(move |app| {
+                        app.set_device_hw(info.hw.as_str().into());
+                        app.set_device_sw(info.sw.as_str().into());
+                        app.set_device_mcu(info.mcu.as_str().into());
+                        app.set_device_uuid(info.uuid.as_str().into());
+                        app.set_device_foc_hz(info.foc_freq_hz as i32);
+                        app.set_device_max_current(info.max_current_a);
+                    });
+                }
+            });
 
             let weak2 = weak.clone();
             let stop2 = stop.clone();

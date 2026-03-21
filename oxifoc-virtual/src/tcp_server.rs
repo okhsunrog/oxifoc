@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use critical_section::Mutex as CriticalSectionMutex;
-use ergot::interface_manager::{InterfaceState, Profile};
+use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
 use ergot::toolkits::tokio_stream::{self as stream_kit, EdgeStack, WaitQueue, register_target_stream};
 use heapless::String;
 use tokio::net::TcpListener;
@@ -52,7 +52,7 @@ pub async fn run(
             rx,
             tx,
             queue,
-            None,
+            Some(LivenessConfig { timeout_ms: 3000 }),
             Some(state_notify.clone()),
         )
         .await
@@ -86,9 +86,17 @@ pub async fn run(
             async move {
                 let mut hw: String<32> = String::new();
                 let mut sw: String<32> = String::new();
+                let mut mcu: String<32> = String::new();
+                let mut uuid: String<32> = String::new();
                 let _ = hw.push_str("Virtual-BLDC");
                 let _ = sw.push_str("oxifoc-virtual-0.1.0");
-                let device_info = DeviceInfo { hw, sw };
+                let _ = mcu.push_str("x86_64 (virtual)");
+                let _ = uuid.push_str("00000000-virtual");
+                let device_info = DeviceInfo {
+                    hw, sw, mcu, uuid,
+                    foc_freq_hz,
+                    max_current_a: 40.0,
+                };
 
                 tokio::select! {
                     _ = run_all_servers_with_config(
@@ -105,10 +113,24 @@ pub async fn run(
         });
 
         // Telemetry streaming tasks for this connection
+        // Wait for Active state before broadcasting to avoid NoRouteToDest errors
         tokio::spawn({
             let stack = stack.clone();
+            let state_notify = state_notify.clone();
             let token = conn_token.clone();
             async move {
+                // Wait until interface is Active (has net_id from first incoming frame)
+                loop {
+                    tokio::select! {
+                        _ = token.cancelled() => return,
+                        _ = state_notify.wait() => {
+                            let state = stack.manage_profile(|im| im.interface_state(()));
+                            if matches!(state, Some(InterfaceState::Active { .. })) {
+                                break;
+                            }
+                        }
+                    }
+                }
                 tokio::select! {
                     _ = token.cancelled() => {}
                     _ = fast_telemetry_stream(stack, &TELEMETRY, state_mutex) => {}

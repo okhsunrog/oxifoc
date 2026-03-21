@@ -34,6 +34,14 @@ export component App inherits Window {
     // ── Main page state ──
     in property <bool> is-connected: false;
 
+    // ── Device info (set once on connection) ──
+    in property <string> device-hw: "";
+    in property <string> device-sw: "";
+    in property <string> device-mcu: "";
+    in property <string> device-uuid: "";
+    in property <int> device-foc-hz: 0;
+    in property <float> device-max-current: 0;
+
     // ── Motor control ──
     in-out property <float> duty: 10;
     in-out property <float> time-window: 2.0;
@@ -333,8 +341,17 @@ export component App inherits Window {
                 background: root.is-connected ? #22c55e : #eab308;
             }
             Text {
-                text: root.is-connected ? "Connected" : "Connecting...";
+                text: root.is-connected
+                    ? root.device-hw != "" ? "\{root.device-hw} (\{root.device-mcu})" : "Connected"
+                    : "Connecting...";
                 vertical-alignment: center;
+            }
+            if root.device-sw != "" : Text {
+                text: root.device-sw;
+                vertical-alignment: center;
+                color: Palette.foreground;
+                opacity: 0.6;
+                font-size: 11px;
             }
             Rectangle { horizontal-stretch: 1; }
             Button {

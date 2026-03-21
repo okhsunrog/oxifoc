@@ -54,8 +54,10 @@ pub enum HostCommand {
 pub struct HostRuntime {
     /// Fast telemetry receiver (currents, dq, angle, RPM — default 1kHz)
     pub fast_rx: Receiver<FastTelemetry>,
-    /// Slow telemetry receiver (vbus, temps, state — default 10Hz)
+    /// Slow telemetry receiver (vbus, temps, state — polled at 10Hz)
     pub slow_rx: Receiver<SlowTelemetry>,
+    /// Device info receiver (sent once on connection)
+    pub device_info_rx: Receiver<oxifoc_core::types::DeviceInfo>,
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
     cancel_token: CancellationToken,
@@ -87,6 +89,7 @@ impl HostRuntime {
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (fast_tx, fast_rx) = crossbeam_unbounded::<FastTelemetry>();
     let (slow_tx, slow_rx) = crossbeam_unbounded::<SlowTelemetry>();
+    let (info_tx, device_info_rx) = crossbeam_unbounded::<oxifoc_core::types::DeviceInfo>();
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
     let cancel_token = CancellationToken::new();
@@ -95,6 +98,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         cfg,
         fast_tx,
         slow_tx,
+        info_tx,
         cmd_rx,
         connected.clone(),
         cancel_token.clone(),
@@ -103,6 +107,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     HostRuntime {
         fast_rx,
         slow_rx,
+        device_info_rx,
         cmd_tx,
         connected,
         cancel_token,
@@ -113,6 +118,7 @@ fn spawn_backend(
     config: HostConfig,
     fast_tx: Sender<FastTelemetry>,
     slow_tx: Sender<SlowTelemetry>,
+    info_tx: Sender<oxifoc_core::types::DeviceInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
@@ -123,6 +129,7 @@ fn spawn_backend(
             config,
             fast_tx,
             slow_tx,
+            info_tx,
             cmd_rx,
             connected_flag,
             cancel_token,
@@ -138,6 +145,7 @@ async fn backend_main(
     cfg: HostConfig,
     fast_tx: Sender<FastTelemetry>,
     slow_tx: Sender<SlowTelemetry>,
+    info_tx: Sender<oxifoc_core::types::DeviceInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
@@ -163,6 +171,7 @@ async fn backend_main(
                 &cfg,
                 fast_tx,
                 slow_tx,
+                info_tx,
                 cmd_rx,
                 connected_flag,
                 cancel_token,
@@ -178,6 +187,7 @@ async fn backend_main(
                 &cfg,
                 fast_tx,
                 slow_tx,
+                info_tx,
                 cmd_rx,
                 connected_flag,
                 cancel_token,
@@ -194,6 +204,7 @@ async fn backend_main(
                 &cfg,
                 fast_tx,
                 slow_tx,
+                info_tx,
                 cmd_rx,
                 connected_flag,
                 cancel_token,
@@ -245,6 +256,7 @@ async fn run_cobs_stream_with_reconnect<F, Fut>(
     cfg: &HostConfig,
     fast_tx: Sender<FastTelemetry>,
     slow_tx: Sender<SlowTelemetry>,
+    info_tx: Sender<oxifoc_core::types::DeviceInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
     cancel_token: CancellationToken,
@@ -305,11 +317,48 @@ where
         )
         .await;
 
-        if let Err(_) = reg_result {
+        if reg_result.is_err() {
             tracing::warn!("Stream registration failed (interface not in Down state), retrying...");
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
                 _ = cancel_token.cancelled() => break,
+            }
+        }
+
+        // Wait for the interface to become Active before doing anything
+        tokio::select! {
+            _ = wait_for_active(&state_notify, &stack) => {}
+            _ = cancel_token.cancelled() => break,
+        }
+
+        // DeviceInfo handshake — runs on each (re)connection
+        {
+            use ergot::Address;
+            let device_addr = Address { network_id: 1, node_id: 2, port_id: 0 };
+            let mut backoff = Duration::from_millis(100);
+            for attempt in 1..=10u32 {
+                let fut = stack.endpoints().request::<oxifoc_core::icd::InfoEndpoint>(
+                    device_addr, &(), Some("device_info"),
+                );
+                match tokio::time::timeout(Duration::from_millis(800), fut).await {
+                    Ok(Ok(dev_info)) => {
+                        info!("Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A",
+                            dev_info.hw.as_str(), dev_info.sw.as_str(),
+                            dev_info.mcu.as_str(), dev_info.uuid.as_str(),
+                            dev_info.foc_freq_hz, dev_info.max_current_a);
+                        let _ = info_tx.send(dev_info);
+                        connected_flag.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("DeviceInfo attempt {} failed: {:?}", attempt, e);
+                    }
+                    Err(_) => {
+                        tracing::warn!("DeviceInfo attempt {} timed out", attempt);
+                    }
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(2));
             }
         }
 
@@ -535,46 +584,6 @@ fn spawn_protocol_tasks<NS>(
         }
     });
 
-    // Device info handshake
-    tokio::spawn({
-        use ergot::Address;
-        let stack = stack.clone();
-        let connected_flag = connected_flag.clone();
-        async move {
-            let ns = stack.stack();
-            let device_addr = Address {
-                network_id: 1,
-                node_id: 2,
-                port_id: 0,
-            };
-            let mut backoff = Duration::from_millis(100);
-            for attempt in 1..=10u32 {
-                let fut = ns.endpoints().request::<oxifoc_core::icd::InfoEndpoint>(
-                    device_addr,
-                    &(),
-                    Some("device_info"),
-                );
-                match tokio::time::timeout(Duration::from_millis(800), fut).await {
-                    Ok(Ok(info)) => {
-                        let hw = info.hw.as_str();
-                        let sw = info.sw.as_str();
-                        tracing::info!("Device connected: hw='{}' sw='{}'", hw, sw);
-                        connected_flag.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!("DeviceInfo attempt {} failed: {:?}", attempt, e);
-                    }
-                    Err(_) => {
-                        tracing::warn!("DeviceInfo attempt {} timed out", attempt);
-                    }
-                }
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(2));
-            }
-            tracing::warn!("Device info not received after retries; continuing without it");
-        }
-    });
 }
 
 // ── Defmt decoding ───────────────────────────────────────────────────────────

@@ -53,9 +53,17 @@ pub async fn protocol_servers() {
     // Build device info
     let mut hw: String<32> = String::new();
     let mut sw: String<32> = String::new();
+    let mut mcu: String<32> = String::new();
+    let mut uuid: String<32> = String::new();
     let _ = hw.push_str("Simple FOCer 2 (F405)");
     let _ = sw.push_str("oxifoc-0.1.0");
-    let device_info = DeviceInfo { hw, sw };
+    let _ = mcu.push_str("STM32F405RG");
+    let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
+    let device_info = DeviceInfo {
+        hw, sw, mcu, uuid,
+        foc_freq_hz: crate::config::PWM_CONFIG.pwm_freq_hz,
+        max_current_a: crate::config::BOARD.max_phase_current_a,
+    };
 
     oxifoc_core::runtime::run_all_servers(
         STACK.endpoints(),

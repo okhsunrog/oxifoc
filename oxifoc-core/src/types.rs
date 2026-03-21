@@ -253,13 +253,21 @@ pub struct TelemetryConfigAck {
     pub actual_fast_hz: u16,
 }
 
-/// Basic device information
+/// Device information returned on initial handshake
 #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
 pub struct DeviceInfo {
     /// Hardware identifier (e.g., "B-G431B-ESC1")
     pub hw: String<32>,
     /// Software version (e.g., "oxifoc-0.1.0")
     pub sw: String<32>,
+    /// MCU chip name (e.g., "STM32G431CB")
+    pub mcu: String<32>,
+    /// 96-bit unique device ID (STM32 UID, hex-encoded)
+    pub uuid: String<32>,
+    /// FOC loop frequency in Hz (e.g., 20000)
+    pub foc_freq_hz: u32,
+    /// Hardware peak current limit in Amps
+    pub max_current_a: f32,
 }
 
 impl Default for DeviceInfo {
@@ -267,6 +275,10 @@ impl Default for DeviceInfo {
         Self {
             hw: String::new(),
             sw: String::new(),
+            mcu: String::new(),
+            uuid: String::new(),
+            foc_freq_hz: 0,
+            max_current_a: 0.0,
         }
     }
 }
