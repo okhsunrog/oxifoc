@@ -105,8 +105,7 @@ fn main() {
     let app = App::new().unwrap();
 
     // ── Log model ───────────────────────────────────────────────────────────
-    let log_model = std::rc::Rc::new(VecModel::<LogMessage>::default());
-    app.set_log_messages(ModelRc::from(log_model.clone()));
+    app.set_log_messages(ModelRc::new(VecModel::<LogMessage>::default()));
 
     {
         let weak = app.as_weak();
@@ -115,18 +114,17 @@ fn main() {
                 let text = SharedString::from(&text);
                 let _ = weak.upgrade_in_event_loop(move |app| {
                     let model = app.get_log_messages();
-                    model
+                    let vec_model = model
                         .as_any()
                         .downcast_ref::<VecModel<LogMessage>>()
-                        .unwrap()
-                        .push(LogMessage { text, level });
-                    // Trim old messages to prevent unbounded growth
-                    while model.row_count() > MAX_LOG_LINES {
-                        model
-                            .as_any()
-                            .downcast_ref::<VecModel<LogMessage>>()
-                            .unwrap()
-                            .remove(0);
+                        .unwrap();
+                    vec_model.push(LogMessage { text, level });
+                    // Batch-trim old messages to avoid O(n) per removal
+                    if vec_model.row_count() > MAX_LOG_LINES {
+                        let to_remove = vec_model.row_count() - MAX_LOG_LINES + MAX_LOG_LINES / 4;
+                        for _ in 0..to_remove {
+                            vec_model.remove(0);
+                        }
                     }
                 });
             }
@@ -134,10 +132,10 @@ fn main() {
     }
 
     {
-        let model = log_model.clone();
+        let weak = app.as_weak();
         app.on_clear_log(move || {
-            while model.row_count() > 0 {
-                model.remove(0);
+            if let Some(app) = weak.upgrade() {
+                app.set_log_messages(ModelRc::new(VecModel::<LogMessage>::default()));
             }
         });
     }

@@ -4,7 +4,7 @@ pub mod transport;
 
 use anyhow::{Context, Result};
 use core::pin::pin;
-use crossbeam_channel::{Receiver, Sender, unbounded as crossbeam_unbounded};
+use crossbeam_channel::{Receiver, Sender};
 use defmt_decoder::{DecodeError, Table};
 use defmt_parser::Level as DefmtLevel;
 use ergot::net_stack::NetStackHandle;
@@ -89,9 +89,9 @@ impl HostRuntime {
 }
 
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
-    let (fast_tx, fast_rx) = crossbeam_unbounded::<FastTelemetry>();
-    let (slow_tx, slow_rx) = crossbeam_unbounded::<SlowTelemetry>();
-    let (info_tx, device_info_rx) = crossbeam_unbounded::<oxifoc_core::types::DeviceInfo>();
+    let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(4096);
+    let (slow_tx, slow_rx) = crossbeam_channel::bounded::<SlowTelemetry>(64);
+    let (info_tx, device_info_rx) = crossbeam_channel::bounded::<oxifoc_core::types::DeviceInfo>(4);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
     let fast_hz = Arc::new(AtomicU16::new(0));
@@ -222,9 +222,11 @@ async fn backend_main(
             )
             .await
         }
-        // Framed transports: UDP, USB — no reconnection loop (yet)
+        // Framed transports: UDP, USB — liveness-tracked with state notifications
         TransportConfig::Udp { host, port } => {
-            let stack = transport::udp::connect(&host, port).await?;
+            let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
+            let stack =
+                transport::udp::connect(&host, port, Some(state_notify.clone())).await?;
             device_info_handshake(&stack, &info_tx, &connected_flag).await;
             enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
             spawn_protocol_tasks(
@@ -238,7 +240,22 @@ async fn backend_main(
             if cfg.stream_defmt() {
                 start_defmt_decoder(&cfg, &stack, None)?;
             }
-            cancel_token.cancelled().await;
+            // Monitor interface state — clear connected flag on Down
+            loop {
+                tokio::select! {
+                    _ = state_notify.wait() => {
+                        use ergot::interface_manager::{InterfaceState, Profile};
+                        let state = stack.stack().manage_profile(|im| im.interface_state(()));
+                        let is_active = matches!(state, Some(InterfaceState::Active { .. }));
+                        connected_flag.store(is_active, Ordering::Relaxed);
+                        if matches!(state, Some(InterfaceState::Down)) {
+                            tracing::warn!("UDP interface went Down (liveness timeout)");
+                            break;
+                        }
+                    }
+                    _ = cancel_token.cancelled() => break,
+                }
+            }
             Ok(())
         }
         TransportConfig::Usb => {

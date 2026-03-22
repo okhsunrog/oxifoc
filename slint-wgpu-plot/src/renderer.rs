@@ -52,6 +52,13 @@ pub struct PlotRenderer {
     /// Reused scratch space for the CPU→GPU copy; allocated once.
     scratch: Vec<f32>,
     config: PlotConfig,
+    /// Last write_pos seen — skip upload+render when unchanged.
+    last_write_pos: u32,
+    /// Track whether we need to re-render due to resize (even if data unchanged).
+    last_width: u32,
+    last_height: u32,
+    last_visible: u32,
+    last_view_offset: u32,
 }
 
 impl PlotRenderer {
@@ -173,6 +180,11 @@ impl PlotRenderer {
             bind_group,
             scratch: Vec::with_capacity(config.capacity * config.num_channels),
             config,
+            last_write_pos: u32::MAX, // force first render
+            last_width: 0,
+            last_height: 0,
+            last_visible: 0,
+            last_view_offset: u32::MAX,
         }
     }
 
@@ -210,16 +222,33 @@ impl PlotRenderer {
     ) -> (wgpu::Texture, f32, f32) {
         let width = width.max(1);
         let height = height.max(1);
+        let vis = visible_samples.clamp(2, buffer.capacity as u32);
+        let wp = buffer.write_pos();
 
-        if self.texture.size().width != width || self.texture.size().height != height {
+        // Check if anything changed since last render
+        let needs_resize = width != self.last_width || height != self.last_height;
+        let needs_render = wp != self.last_write_pos
+            || vis != self.last_visible
+            || view_offset != self.last_view_offset
+            || needs_resize;
+
+        if needs_resize {
             self.texture = Self::make_texture(&self.device, width, height);
         }
+
+        if !needs_render {
+            return (self.texture.clone(), self.config.y_min, self.config.y_max);
+        }
+
+        self.last_write_pos = wp;
+        self.last_width = width;
+        self.last_height = height;
+        self.last_visible = vis;
+        self.last_view_offset = view_offset;
 
         buffer.copy_to(&mut self.scratch);
         self.queue
             .write_buffer(&self.samples_buffer, 0, bytemuck::cast_slice(&self.scratch));
-
-        let vis = visible_samples.clamp(2, buffer.capacity as u32);
 
         // Compute Y range from visible window only (auto-range)
         let (y_min, y_max) = if self.config.auto_range {
@@ -311,6 +340,9 @@ impl PlotRenderer {
             rpass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
+        // Cache Y range for skip-render path
+        self.config.y_min = y_min;
+        self.config.y_max = y_max;
         (self.texture.clone(), y_min, y_max)
     }
 

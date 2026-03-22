@@ -2,13 +2,21 @@
 //!
 //! UDP is packet-framed (no COBS needed). Uses ergot's `tokio_udp` toolkit directly.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
+use ergot::interface_manager::LivenessConfig;
 use ergot::interface_manager::profiles::direct_edge::tokio_udp::InterfaceKind;
+use ergot::toolkits::tokio_stream::WaitQueue;
 use ergot::toolkits::tokio_udp::{self, EdgeStack};
 use tokio::net::UdpSocket;
 use tracing::info;
 
-pub async fn connect(host: &str, port: u16) -> Result<EdgeStack> {
+pub async fn connect(
+    host: &str,
+    port: u16,
+    state_notify: Option<Arc<WaitQueue>>,
+) -> Result<EdgeStack> {
     let addr = format!("{host}:{port}");
     info!("Connecting to UDP: {}", addr);
 
@@ -30,8 +38,8 @@ pub async fn connect(host: &str, port: u16) -> Result<EdgeStack> {
         socket,
         &queue,
         InterfaceKind::Controller,
-        None,
-        None,
+        Some(LivenessConfig { timeout_ms: 3000 }),
+        state_notify,
     )
     .await
     .map_err(|_| anyhow::anyhow!("UDP interface already active"))?;
