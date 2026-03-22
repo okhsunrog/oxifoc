@@ -933,6 +933,7 @@ fn main() {
                             max_current_a,
                             kp_current,
                             ki_current,
+                            hall_calibrated: _,
                         })) => {
                             app.set_detect_resistance(SharedString::from(format!(
                                 "{resistance_ohm:.4}"

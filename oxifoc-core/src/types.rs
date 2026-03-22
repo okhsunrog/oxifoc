@@ -355,6 +355,9 @@ pub enum DetectResponse {
         kp_current: f32,
         /// Current loop integral gain
         ki_current: f32,
+        /// Hall sensor calibration: true if hall angles were measured.
+        /// GUI should read hall angles via config endpoint if true.
+        hall_calibrated: bool,
     },
     /// Detection failed.
     Error(DetectError),

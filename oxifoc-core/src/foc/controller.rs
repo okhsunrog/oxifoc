@@ -154,7 +154,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Values above 1.0 request over-modulation; keep within 0.0–1.0 for
     /// predictable behavior.
     pub fn with_modulation_limit(mut self, limit: f32) -> Self {
-        self.modulation_limit = limit.clamp(0.0, 1.2);
+        self.modulation_limit = crate::foc::clamp_f32(limit, 0.0, 1.2);
         self
     }
 

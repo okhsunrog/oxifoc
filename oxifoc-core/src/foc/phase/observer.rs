@@ -138,7 +138,7 @@ impl BackEmfObserver {
     pub fn new(r: f32, l: f32, lambda: f32) -> Self {
         // Observer gain: 1e-3 / λ² (VESC formula)
         let gain = if lambda > 0.0 {
-            (1e-3 / (lambda * lambda)).clamp(1e3, 1e9)
+            crate::foc::clamp_f32(1e-3 / (lambda * lambda), 1e3, 1e9)
         } else {
             1e6
         };
@@ -196,7 +196,7 @@ impl BackEmfObserver {
 
         // Update confidence based on flux magnitude
         let flux_ratio = flux_mag / self.lambda;
-        self.confidence = flux_ratio.clamp(0.0, 1.0);
+        self.confidence = crate::foc::clamp_f32(flux_ratio, 0.0, 1.0);
     }
 
     /// Get estimated electrical phase (radians)
@@ -228,7 +228,7 @@ impl BackEmfObserver {
         self.r = r;
         self.l = l;
         self.lambda = lambda.max(1e-6);
-        self.gain = (1e-3 / (self.lambda * self.lambda)).clamp(1e3, 1e9);
+        self.gain = crate::foc::clamp_f32(1e-3 / (self.lambda * self.lambda), 1e3, 1e9);
     }
 
     /// Set PLL gains

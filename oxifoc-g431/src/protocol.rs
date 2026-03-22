@@ -242,7 +242,7 @@ pub async fn state_monitor() {
 pub async fn detect_server() {
     use core::pin::pin;
 
-    use crate::calibration::{DetectionParams, run_full_detection};
+    use crate::calibration::{DetectionParams, calibrate_hall_default, run_full_detection};
     use crate::cordic::CordicSinCos;
     use oxifoc_core::foc::detection::DetectionError;
     use oxifoc_core::foc::detection::MotorSize;
@@ -291,6 +291,31 @@ pub async fn detect_server() {
                                 result.params.inductance_q_h,
                                 result.params.flux_linkage_wb,
                             );
+
+                            // Step 5: Hall sensor calibration (best-effort, doesn't fail detection)
+                            let hall_calibrated = match calibrate_hall_default().await {
+                                Ok(hall_result) => {
+                                    defmt::info!("Hall calibration OK");
+                                    // Store in runtime config so GUI can read via config endpoint
+                                    use oxifoc_core::storage::HallCalibrationConfig;
+                                    let hall_cfg = HallCalibrationConfig {
+                                        angles: hall_result.angles,
+                                        valid: hall_result.valid,
+                                    };
+                                    critical_section::with(|cs| {
+                                        crate::RUNTIME_CONFIG
+                                            .borrow(cs)
+                                            .borrow_mut()
+                                            .hall_calibration = Some(hall_cfg);
+                                    });
+                                    true
+                                }
+                                Err(e) => {
+                                    defmt::warn!("Hall calibration failed (no halls?): {}", e);
+                                    false
+                                }
+                            };
+
                             DetectResponse::Ok {
                                 resistance_ohm: result.params.resistance_ohm,
                                 inductance_d_h: result.params.inductance_d_h,
@@ -300,6 +325,7 @@ pub async fn detect_server() {
                                 max_current_a: result.params.max_current_a,
                                 kp_current: result.kp_current,
                                 ki_current: result.ki_current,
+                                hall_calibrated,
                             }
                         }
                         Err(e) => {

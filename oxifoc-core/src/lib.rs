@@ -127,6 +127,20 @@ pub mod runtime;
 pub mod foc {
     use core::f32::consts::TAU;
 
+    /// Panic-free f32 clamp. Equivalent to `f32::clamp()` but without the
+    /// `debug_assert!(min <= max)` that pulls in `core::fmt::float` (~4KB)
+    /// when `opt-level = "z"` changes inlining decisions.
+    #[inline(always)]
+    pub fn clamp_f32(val: f32, min: f32, max: f32) -> f32 {
+        if val < min {
+            min
+        } else if val > max {
+            max
+        } else {
+            val
+        }
+    }
+
     /// Wrap angle to [0, 2π)
     #[inline]
     pub fn wrap_angle(angle: f32) -> f32 {

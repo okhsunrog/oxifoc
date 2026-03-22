@@ -232,7 +232,7 @@ impl HallSensor {
     /// `drift * gain` per sample. VESC uses 0.01 (1% per cycle).
     /// Higher = faster correction but more aggressive.
     pub fn set_drift_correction_gain(&mut self, gain: f32) {
-        self.drift_correction_gain = gain.clamp(0.0, 1.0);
+        self.drift_correction_gain = crate::foc::clamp_f32(gain, 0.0, 1.0);
     }
 
     /// Get drift correction gain

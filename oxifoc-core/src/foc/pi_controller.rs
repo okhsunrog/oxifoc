@@ -173,7 +173,7 @@ impl ClampedPI {
             self.max
         };
         let (min, max) = if min <= max { (min, max) } else { (max, min) };
-        let clamped = raw.clamp(min, max);
+        let clamped = crate::foc::clamp_f32(raw, min, max);
 
         // Back-calculation anti-windup
         if raw != clamped {

@@ -79,7 +79,7 @@ impl CurrentLimits {
         }
         let limit = self.max_current_a;
         // D-axis priority: clamp id first
-        let id = id_target.clamp(-limit, limit);
+        let id = crate::foc::clamp_f32(id_target, -limit, limit);
         // Q-axis gets the remaining circular budget
         let iq_budget_sq = limit * limit - id * id;
         let iq_budget = if iq_budget_sq > 0.0 {
@@ -90,7 +90,7 @@ impl CurrentLimits {
         } else {
             0.0
         };
-        let iq = iq_target.clamp(-iq_budget, iq_budget);
+        let iq = crate::foc::clamp_f32(iq_target, -iq_budget, iq_budget);
         (id, iq)
     }
 
@@ -411,7 +411,8 @@ where
 
         // Clamp open-loop current to the target limit
         let current = if self.current_limits.max_current_a > 0.0 {
-            current.clamp(
+            crate::foc::clamp_f32(
+                current,
                 -self.current_limits.max_current_a,
                 self.current_limits.max_current_a,
             )
@@ -518,7 +519,7 @@ where
 
         // Duty sign determines direction
         let forward = duty >= 0.0;
-        let duty_abs = duty.abs().clamp(0.0, 1.0);
+        let duty_abs = crate::foc::clamp_f32(duty.abs(), 0.0, 1.0);
         let raw_duty = (duty_abs * self.pwm.max_duty() as f32) as u16;
 
         // Generate and apply phase states

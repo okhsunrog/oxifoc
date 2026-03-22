@@ -112,7 +112,8 @@ pub fn calculate_current_gains_limited(
 
     // Use the more limiting bandwidth
     let actual_bandwidth = target_bandwidth.min(max_bandwidth_from_kp);
-    let actual_bandwidth = actual_bandwidth.clamp(MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
+    let actual_bandwidth =
+        crate::foc::clamp_f32(actual_bandwidth, MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
 
     let (kp, ki) = calculate_current_gains(resistance, inductance, actual_bandwidth);
     (kp, ki, actual_bandwidth)
@@ -150,7 +151,8 @@ pub fn calculate_foc_gains(params: &MotorParams, bandwidth_rad_s: f32) -> Option
         return None;
     };
 
-    let bandwidth = bandwidth_rad_s.clamp(MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
+    let bandwidth =
+        crate::foc::clamp_f32(bandwidth_rad_s, MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
 
     let (kp_d, ki_d) = calculate_current_gains(params.resistance_ohm, ld, bandwidth);
     let (kp_q, ki_q) = calculate_current_gains(params.resistance_ohm, lq, bandwidth);
@@ -197,9 +199,11 @@ pub fn estimate_bandwidth(inductance_h: f32, pwm_freq_hz: f32) -> f32 {
         3000.0
     };
 
-    suggested
-        .min(max_from_pwm)
-        .clamp(MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S)
+    crate::foc::clamp_f32(
+        suggested.min(max_from_pwm),
+        MIN_BANDWIDTH_RAD_S,
+        MAX_BANDWIDTH_RAD_S,
+    )
 }
 
 /// Calculate observer gain from motor parameters.
@@ -220,7 +224,7 @@ pub fn calculate_observer_gain(flux_linkage_wb: f32) -> Option<f32> {
     let gain = 1e-3 / (flux_linkage_wb * flux_linkage_wb);
 
     // Clamp to reasonable range
-    Some(gain.clamp(1e3, 1e9))
+    Some(crate::foc::clamp_f32(gain, 1e3, 1e9))
 }
 
 #[cfg(test)]
