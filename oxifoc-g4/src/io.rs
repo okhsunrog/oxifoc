@@ -30,6 +30,10 @@ pub struct UartWriter {
 }
 
 impl UartWriter {
+    /// Max bytes per write — must not exceed the BufferedUart TX ring buffer
+    /// capacity, otherwise embassy returns BufferTooLong.
+    pub const MAX_WRITE: usize = 512;
+
     pub fn new(inner: BufferedUartTx<'static>) -> Self {
         Self { inner }
     }
@@ -41,7 +45,11 @@ impl ErrorType for UartWriter {
 
 impl Write for UartWriter {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.inner.write(buf).await
+        // Embassy's BufferedUartTx rejects writes where buf.len() exceeds the
+        // ring buffer capacity (BufferTooLong). The ergot TX worker can pass
+        // large chunks from the OUTQ stream consumer, so cap to a safe size.
+        let chunk = &buf[..buf.len().min(Self::MAX_WRITE)];
+        self.inner.write(chunk).await
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {

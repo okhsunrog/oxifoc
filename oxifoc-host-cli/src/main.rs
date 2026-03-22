@@ -119,7 +119,15 @@ fn main() -> Result<()> {
     }
 
     // Build config from CLI args or load from file
-    let cfg = build_config(&cli)?;
+    let mut cfg = build_config(&cli)?;
+
+    // Set fast_hz in config so backend enables telemetry at connect time
+    if let Command::Monitor { fast_hz, .. } = &cli.command {
+        if *fast_hz > 0 {
+            cfg.fast_hz = Some(*fast_hz);
+        }
+    }
+
     let runtime = start_host(cfg);
 
     let wait = Duration::from_secs(cli.wait_secs);
@@ -154,17 +162,7 @@ fn main() -> Result<()> {
                 .context("send stop command")?;
             println!("Stop command sent");
         }
-        Command::Monitor { seconds, fast_hz } => {
-            if fast_hz > 0 {
-                runtime
-                    .cmd_tx
-                    .send(HostCommand::SetTelemetryConfig(
-                        oxifoc_core::icd::TelemetryConfig { fast_hz },
-                    ))
-                    .context("send telemetry config")?;
-                // Wait for device to process config and start streaming
-                std::thread::sleep(Duration::from_millis(500));
-            }
+        Command::Monitor { seconds, .. } => {
             run_monitor(&runtime, Duration::from_secs(seconds))?;
         }
     }

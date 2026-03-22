@@ -572,10 +572,14 @@ async fn device_info_handshake<NS>(
 }
 
 /// Send TelemetryConfig to enable fast telemetry streaming on the device.
+/// Skips sending if fast_hz is 0 (don't actively disable — device defaults to off).
 async fn enable_fast_telemetry<NS>(stack: &NS, fast_hz: u16, fast_hz_flag: &Arc<AtomicU16>)
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
+    if fast_hz == 0 {
+        return;
+    }
     use ergot::Address;
     let device_addr = Address {
         network_id: 1,
