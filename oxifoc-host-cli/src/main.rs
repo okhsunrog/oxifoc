@@ -90,15 +90,21 @@ enum Command {
     },
     /// Stop the motor
     Stop,
-    /// Monitor ADC samples for a duration
+    /// Monitor telemetry for a duration
     Monitor {
         #[arg(
             short,
             long,
             default_value_t = 10,
-            help = "How long to stream ADC samples (seconds)"
+            help = "How long to stream telemetry (seconds)"
         )]
         seconds: u64,
+        #[arg(
+            long,
+            default_value_t = 1000,
+            help = "Fast telemetry rate in Hz (0 = disabled)"
+        )]
+        fast_hz: u16,
     },
 }
 
@@ -148,7 +154,19 @@ fn main() -> Result<()> {
                 .context("send stop command")?;
             println!("Stop command sent");
         }
-        Command::Monitor { seconds } => run_monitor(&runtime, Duration::from_secs(seconds))?,
+        Command::Monitor { seconds, fast_hz } => {
+            if fast_hz > 0 {
+                runtime
+                    .cmd_tx
+                    .send(HostCommand::SetTelemetryConfig(
+                        oxifoc_core::icd::TelemetryConfig { fast_hz },
+                    ))
+                    .context("send telemetry config")?;
+                // Wait for device to process config and start streaming
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            run_monitor(&runtime, Duration::from_secs(seconds))?;
+        }
     }
 
     Ok(())
