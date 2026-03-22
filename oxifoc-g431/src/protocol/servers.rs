@@ -84,9 +84,20 @@ pub async fn protocol_servers() {
     .await
 }
 
+/// Fast telemetry streaming task — drains bbqueue and broadcasts batches
+#[embassy_executor::task]
+pub async fn fast_telemetry_task() {
+    oxifoc_core::runtime::streaming::fast_telemetry_stream(
+        &STACK,
+        crate::config::PWM_CONFIG.pwm_freq_hz,
+    )
+    .await
+}
+
 // ========== Task Spawning ==========
 
 /// Spawn all protocol server tasks
 pub fn spawn_servers(spawner: &Spawner) {
     spawner.spawn(protocol_servers().unwrap());
+    spawner.spawn(fast_telemetry_task().unwrap());
 }

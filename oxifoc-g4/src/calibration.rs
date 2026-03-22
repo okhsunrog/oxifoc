@@ -4,8 +4,12 @@
 
 #![allow(dead_code)]
 
+use core::cell::RefCell;
+use core::future::poll_fn;
 use core::sync::atomic::{AtomicU16, Ordering};
+use core::task::Poll;
 
+use critical_section::Mutex as CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::config::BoardConfig;
@@ -14,7 +18,7 @@ use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::detection::sweep::{self, DetectionHardware, HallReader};
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::motor::ControlMode;
-use oxifoc_core::state;
+use oxifoc_core::state::{self, MotorControlState};
 
 // Re-export types from core for convenience
 pub use oxifoc_core::foc::detection::sweep::{DetectionParams, DetectionResult};
@@ -43,12 +47,7 @@ impl oxifoc_core::timer::Timer for EmbassyTimer {
 
 /// G4-family hardware abstraction for motor detection.
 pub struct G4DetectionHardware {
-    telem_rx: embassy_sync::watch::Receiver<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        FocOutput,
-        2,
-    >,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
@@ -58,13 +57,14 @@ pub struct G4DetectionHardware {
 impl G4DetectionHardware {
     /// Create a new G4 detection hardware instance.
     pub fn new(
+        state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
         ia: &'static AtomicU16,
         ib: &'static AtomicU16,
         ic: &'static AtomicU16,
         board: &'static BoardConfig,
     ) -> Self {
         Self {
-            telem_rx: state::TELEMETRY.receiver().unwrap(),
+            state_mutex,
             ia,
             ib,
             ic,
@@ -75,12 +75,26 @@ impl G4DetectionHardware {
 
 impl DetectionHardware for G4DetectionHardware {
     fn send_command(&self, mode: ControlMode) {
-        // Send ControlMode directly to the state channel
         let _ = state::CMD_CHANNEL.try_send(mode);
     }
 
     async fn wait_telemetry(&mut self) -> FocOutput {
-        self.telem_rx.changed().await
+        // Wait for ISR to complete a FOC cycle.
+        // First poll: register waker and return Pending.
+        // ISR calls TELEM_WAKER.wake() → executor re-polls → Ready.
+        let mut registered = false;
+        poll_fn(|cx| {
+            if registered {
+                Poll::Ready(())
+            } else {
+                state::TELEM_WAKER.register(cx.waker());
+                registered = true;
+                Poll::Pending
+            }
+        })
+        .await;
+        // Read latest FOC output from shared state
+        critical_section::with(|cs| self.state_mutex.borrow(cs).borrow().last_foc)
     }
 
     fn read_phase_currents(&self) -> (f32, f32, f32) {
@@ -112,12 +126,13 @@ impl HallReader for G4HallReader {
 /// Measure motor phase resistance.
 pub async fn measure_resistance(
     params: &ResistanceParams,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
-    let mut hw = G4DetectionHardware::new(ia, ib, ic, board);
+    let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
     sweep::measure_resistance::<_, EmbassyTimer>(&mut hw, params).await
 }
 
@@ -125,58 +140,63 @@ pub async fn measure_resistance(
 pub async fn measure_inductance(
     params: &InductanceParams,
     pwm_freq_hz: f32,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<(f32, f32), DetectionError> {
-    let mut hw = G4DetectionHardware::new(ia, ib, ic, board);
+    let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
     sweep::measure_inductance::<_, EmbassyTimer>(&mut hw, params, pwm_freq_hz).await
 }
 
 /// Measure motor flux linkage via open-loop spinning.
 pub async fn measure_flux_linkage(
     params: &FluxLinkageParams,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
-    let mut hw = G4DetectionHardware::new(ia, ib, ic, board);
+    let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
     sweep::measure_flux_linkage::<_, EmbassyTimer>(&mut hw, params).await
 }
 
 /// Run full motor parameter detection sequence.
 pub async fn run_full_detection(
     params: DetectionParams,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<DetectionResult, DetectionError> {
-    let mut hw = G4DetectionHardware::new(ia, ib, ic, board);
+    let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
     sweep::run_full_detection::<_, EmbassyTimer>(&mut hw, params).await
 }
 
 /// Run Hall sensor calibration.
 pub async fn calibrate_hall(
     params: HallCalibrationParams,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<HallCalibrationResult, DetectionError> {
-    let mut hw = G4DetectionHardware::new(ia, ib, ic, board);
+    let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
     let reader = G4HallReader;
     sweep::calibrate_hall::<_, EmbassyTimer, _>(&mut hw, &reader, params).await
 }
 
 /// Calibrate Hall sensors with default parameters.
 pub async fn calibrate_hall_default(
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<HallCalibrationResult, DetectionError> {
-    calibrate_hall(HallCalibrationParams::default(), ia, ib, ic, board).await
+    calibrate_hall(HallCalibrationParams::default(), state_mutex, ia, ib, ic, board).await
 }

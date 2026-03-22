@@ -8,7 +8,7 @@ use core::cell::RefCell;
 use critical_section::Mutex as CriticalSectionMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_sync::watch::Watch;
+use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::foc::controller::FocOutput;
 use crate::foc::phase::PhaseProvider;
@@ -26,8 +26,10 @@ use crate::types::MotorState;
 /// Command channel - servers send ControlMode here, ISR receives them
 pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, ControlMode, 4> = Channel::new();
 
-/// Telemetry watch - ISR broadcasts, streaming tasks can subscribe
-pub static TELEMETRY: Watch<CriticalSectionRawMutex, FocOutput, 2> = Watch::new();
+/// Waker for FOC cycle completion — ISR wakes after `update_telemetry()`.
+/// Used by calibration/detection to synchronize with individual FOC cycles.
+/// The listener reads `last_foc` from the state mutex after waking.
+pub static TELEM_WAKER: AtomicWaker = AtomicWaker::new();
 
 // ============================================================================
 // State Structure
@@ -214,6 +216,6 @@ pub fn update_telemetry(
         state.update_foc(foc);
     });
 
-    // Broadcast to any subscribers
-    TELEMETRY.sender().send(foc);
+    // Wake calibration/detection task if waiting for FOC cycle
+    TELEM_WAKER.wake();
 }
