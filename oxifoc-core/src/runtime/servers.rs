@@ -59,8 +59,10 @@ pub async fn info_server<NS, const N: usize>(
 
     loop {
         let info = device_info.clone();
-        let _ = h
+        let result = h
             .serve(|_req: &()| {
+                #[cfg(feature = "defmt")]
+                defmt::info!("DeviceInfo request received");
                 // Mark link as active on first request
                 critical_section::with(|cs| {
                     state_mutex.borrow(cs).borrow_mut().set_link_active();
@@ -68,6 +70,11 @@ pub async fn info_server<NS, const N: usize>(
                 async move { info }
             })
             .await;
+        #[cfg(feature = "defmt")]
+        defmt::info!(
+            "DeviceInfo response send result: {:?}",
+            defmt::Debug2Format(&result)
+        );
     }
 }
 
@@ -299,6 +306,14 @@ where
                 };
 
                 FAST_TELEM_PERIOD.store(period, Ordering::Relaxed);
+
+                #[cfg(feature = "defmt")]
+                defmt::info!(
+                    "TelemetryConfig rx: fast_hz={}, period={}, actual={}Hz",
+                    cfg.fast_hz,
+                    period,
+                    actual_fast_hz
+                );
 
                 #[cfg(feature = "log")]
                 log::info!(

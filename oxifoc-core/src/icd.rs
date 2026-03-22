@@ -38,7 +38,7 @@ pub use crate::types::*;
 /// Liveness timeout in milliseconds for all ergot transports.
 /// If no frames are received within this period, the interface transitions
 /// to Inactive (COBS streams) or Down (UDP).
-pub const LIVENESS_TIMEOUT_MS: u64 = 1000;
+pub const LIVENESS_TIMEOUT_MS: u64 = 5000;
 
 // ============================================================================
 // Topic Definitions (push-based streaming)

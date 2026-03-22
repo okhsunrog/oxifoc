@@ -87,7 +87,13 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
         .attach(chip, Permissions::default())
         .context("Failed to attach to target")?;
 
-    info!("Attached to target, scanning for RTT...");
+    info!("Attached to target, resetting device...");
+    {
+        let mut core = session.core(0).context("Failed to get core 0")?;
+        core.reset().context("Failed to reset target")?;
+    }
+
+    info!("Scanning for RTT...");
 
     {
         let mut core = session.core(0).context("Failed to get core 0")?;

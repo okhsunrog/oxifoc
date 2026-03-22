@@ -266,6 +266,7 @@ async fn backend_main(
                 slow_tx,
                 cmd_rx,
                 connected_flag.clone(),
+                fast_hz_flag.clone(),
                 cancel_token.clone(),
             );
             if cfg.stream_defmt() {
@@ -299,6 +300,7 @@ async fn backend_main(
                 slow_tx,
                 cmd_rx,
                 connected_flag.clone(),
+                fast_hz_flag.clone(),
                 cancel_token.clone(),
             );
             if cfg.stream_defmt() {
@@ -344,6 +346,7 @@ where
         slow_tx,
         cmd_rx,
         connected_flag.clone(),
+        fast_hz_flag.clone(),
         cancel_token.clone(),
     );
 
@@ -419,15 +422,15 @@ where
         }
 
         // DeviceInfo handshake — runs on each (re)connection
-        {
+        let handshake_ok = {
             use ergot::Address;
             let device_addr = Address {
                 network_id: 1,
                 node_id: 2,
                 port_id: 0,
             };
-            let mut backoff = Duration::from_millis(100);
-            for attempt in 1..=10u32 {
+            let mut ok = false;
+            for attempt in 1..=3u32 {
                 let fut = stack.endpoints().request::<oxifoc_core::icd::InfoEndpoint>(
                     device_addr,
                     &(),
@@ -446,6 +449,7 @@ where
                         );
                         let _ = info_tx.send(dev_info);
                         connected_flag.store(true, Ordering::Relaxed);
+                        ok = true;
                         break;
                     }
                     Ok(Err(e)) => {
@@ -455,9 +459,22 @@ where
                         tracing::warn!("DeviceInfo attempt {} timed out", attempt);
                     }
                 }
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(2));
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
+            ok
+        };
+
+        if !handshake_ok {
+            tracing::warn!("Handshake failed after 3 attempts, reconnecting...");
+            connected_flag.store(false, Ordering::Relaxed);
+            // Tear down before reconnecting so workers release the transport
+            stack.manage_profile(|im| im.teardown());
+            tokio::task::yield_now().await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                _ = cancel_token.cancelled() => break,
+            }
+            continue; // back to reconnect loop
         }
 
         // Enable fast telemetry streaming on device
@@ -507,11 +524,20 @@ where
             }
         }
 
-        // Brief delay before reconnecting
+        // Tear down old interface so workers release the transport (e.g., serial port)
+        info!("Calling teardown...");
+        stack.manage_profile(|im| im.teardown());
+        info!("Teardown complete, waiting for workers to exit...");
+
+        // Yield to let worker tasks process the close signal and drop
+        tokio::task::yield_now().await;
+
+        // Wait for workers to fully exit and release the transport
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
             _ = cancel_token.cancelled() => break,
         }
+        info!("Post-teardown wait complete");
 
         info!("Attempting reconnection...");
     }
@@ -637,6 +663,7 @@ fn spawn_protocol_tasks<NS>(
     slow_tx: Sender<SlowTelemetry>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
+    fast_hz_flag: Arc<AtomicU16>,
     cancel_token: CancellationToken,
 ) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
@@ -748,6 +775,7 @@ fn spawn_protocol_tasks<NS>(
     tokio::spawn({
         use ergot::Address;
         let stack = stack.clone();
+        let fast_hz_flag = fast_hz_flag;
         async move {
             let mut cmd_rx = cmd_rx;
             let ns = stack.stack();
@@ -760,31 +788,32 @@ fn spawn_protocol_tasks<NS>(
                 match cmd {
                     HostCommand::Motor(ref mc) => {
                         tracing::info!("Sending motor command: {:?}", mc);
-                        let res = ns
-                            .endpoints()
-                            .request::<MotorEndpoint>(device_addr, mc, Some("motor"))
-                            .await;
-                        match &res {
-                            Ok(status) => tracing::info!("Motor response: {:?}", status),
-                            Err(e) => tracing::warn!("Motor command failed: {:?}", e),
+                        let fut =
+                            ns.endpoints()
+                                .request::<MotorEndpoint>(device_addr, mc, Some("motor"));
+                        match tokio::time::timeout(Duration::from_secs(2), fut).await {
+                            Ok(Ok(status)) => tracing::info!("Motor response: {:?}", status),
+                            Ok(Err(e)) => tracing::warn!("Motor command failed: {:?}", e),
+                            Err(_) => tracing::warn!("Motor command timed out"),
                         }
                     }
                     HostCommand::SetTelemetryConfig(cfg) => {
                         tracing::info!("Setting telemetry config: {:?}", cfg);
-                        let res = ns
-                            .endpoints()
-                            .request::<TelemetryConfigEndpoint>(
-                                device_addr,
-                                &cfg,
-                                Some("telem_cfg"),
-                            )
-                            .await;
-                        match &res {
-                            Ok(ack) => tracing::info!(
-                                "Telemetry config ack: fast={}Hz",
-                                ack.actual_fast_hz
-                            ),
-                            Err(e) => tracing::warn!("Telemetry config failed: {:?}", e),
+                        let fut = ns.endpoints().request::<TelemetryConfigEndpoint>(
+                            device_addr,
+                            &cfg,
+                            Some("telemetry_config"),
+                        );
+                        match tokio::time::timeout(Duration::from_secs(2), fut).await {
+                            Ok(Ok(ack)) => {
+                                tracing::info!(
+                                    "Telemetry config ack: fast={}Hz",
+                                    ack.actual_fast_hz
+                                );
+                                fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
+                            }
+                            Ok(Err(e)) => tracing::warn!("Telemetry config failed: {:?}", e),
+                            Err(_) => tracing::warn!("Telemetry config timed out"),
                         }
                     }
                     HostCommand::ConfigRead(group_id, reply_tx) => {

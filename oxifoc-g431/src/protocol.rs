@@ -4,7 +4,11 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use static_cell::StaticCell;
 
 use crate::config::MAX_PACKET_SIZE;
+#[cfg(feature = "transport-uart")]
+use crate::config::UART_BAUD;
 use crate::transport::{Queue, Stack};
+use embedded_io_async::Write;
+use ergot::interface_manager::{InterfaceState, Profile};
 
 // ========== Ergot Stack ==========
 
@@ -75,12 +79,51 @@ pub async fn run_rx(
     }
 }
 
+/// Maximum COBS-encoded frame size (the largest grant the sink can produce).
+/// Formula: n + n/254 + 1 (same as cobs::max_encoding_length)
+#[cfg(feature = "transport-uart")]
+const MAX_WIRE_BYTES: usize = MAX_PACKET_SIZE + MAX_PACKET_SIZE / 254 + 1;
+
+/// Time to transmit one max-sized frame at the configured baud rate.
+/// 10 bits per byte (8N1). 3x safety margin for interrupt latency.
+#[cfg(feature = "transport-uart")]
+const TX_TIMEOUT_US: u64 = (MAX_WIRE_BYTES as u64 * 10 * 1_000_000) / (UART_BAUD as u64) * 3;
+
 /// Worker task for outgoing ergot data via UART (transport-uart only)
+///
+/// When the interface is not Active, frames are discarded from the queue
+/// without writing to UART — this prevents stale telemetry frames from
+/// blocking new protocol responses after a disconnect.
+///
+/// Writes have a timeout derived from the maximum frame size and baud rate,
+/// so a stuck UART TX cannot block the queue permanently.
 #[cfg(feature = "transport-uart")]
 #[embassy_executor::task]
 pub async fn run_tx_uart(mut tx: UartWriter) {
+    let consumer = OUTQ.stream_consumer();
     loop {
-        let _ = tx_worker(&mut tx, OUTQ.stream_consumer()).await;
+        let grant = consumer.wait_read().await;
+        let len = grant.len();
+
+        let is_active = STACK.manage_profile(|im| {
+            matches!(im.interface_state(()), Some(InterfaceState::Active { .. }))
+        });
+
+        if is_active {
+            let mut remaining = &grant[..];
+            while !remaining.is_empty() {
+                match embassy_time::with_timeout(
+                    embassy_time::Duration::from_micros(TX_TIMEOUT_US),
+                    tx.write(remaining),
+                )
+                .await
+                {
+                    Ok(Ok(n)) => remaining = &remaining[n..],
+                    _ => break, // Timeout or error — drop this frame
+                }
+            }
+        }
+        grant.release(len);
     }
 }
 
@@ -173,10 +216,17 @@ pub async fn state_monitor() {
                 // Stop fast telemetry streaming
                 FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);
 
-                // Drain stale data from the bbqueue
+                // Drain stale data from the fast telemetry bbqueue
                 let cons = FAST_TELEM_Q.framed_consumer();
                 while let Ok(grant) = cons.read() {
                     grant.release();
+                }
+
+                // Yield to let the TX worker drain the outgoing queue.
+                // It discards frames since the interface is not Active.
+                // Yield enough times to drain worst case (~50 frames in 2KB queue).
+                for _ in 0..64 {
+                    embassy_futures::yield_now().await;
                 }
             }
             _ => {}

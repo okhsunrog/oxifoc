@@ -10,4 +10,4 @@ rustflags = ["-C", "target-feature=+vfp2,-fp64"]
 
 [env]
 # Show all defmt levels unless overridden
-DEFMT_LOG = "info"
+DEFMT_LOG = "debug"

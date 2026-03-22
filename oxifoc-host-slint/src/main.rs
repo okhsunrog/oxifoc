@@ -531,6 +531,15 @@ fn main() {
                 _ => return,
             };
 
+            // Set fast_hz so the backend enables telemetry at connect time
+            let rates = [100u16, 500, 1000, 2000, 5000, 10000, 20000];
+            let idx = app.get_stream_rate_index() as usize;
+            let hz = rates.get(idx).copied().unwrap_or(1000);
+            let config = HostConfig {
+                fast_hz: Some(hz),
+                ..config
+            };
+
             app.set_error_text("".into());
 
             let host_runtime = start_host(config);

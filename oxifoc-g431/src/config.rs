@@ -65,8 +65,11 @@ pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 /// Size of outgoing packet queue
 pub const OUT_QUEUE_SIZE: usize = 2048;
 
-/// Maximum size of a single packet
-pub const MAX_PACKET_SIZE: usize = 512;
+/// Maximum size of a single ergot packet (COBS-encoded).
+/// Sized for the largest actual payload: FastTelemetryBatch<8> = 8×44 + header ≈ 380 bytes.
+/// Smaller MTU reduces the OUTQ grant size (grant_exact requests max_encoding_length(MTU)),
+/// leaving more room for concurrent protocol responses while streaming.
+pub const MAX_PACKET_SIZE: usize = 400;
 
 // ============================================================================
 // UART Transport Configuration
@@ -76,4 +79,7 @@ pub const MAX_PACKET_SIZE: usize = 512;
 pub const UART_BAUD: u32 = 921_600;
 
 #[cfg(feature = "transport-uart")]
-pub const UART_BUF_LEN: usize = 512;
+pub const UART_TX_BUF_LEN: usize = 512;
+
+#[cfg(feature = "transport-uart")]
+pub const UART_RX_BUF_LEN: usize = 1024;

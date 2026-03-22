@@ -19,9 +19,6 @@ pub async fn connect(path: &str, baud: u32) -> Result<CobsStreamTransport> {
     if let Err(e) = port.clear(tokio_serial::ClearBuffer::All) {
         warn!("Failed to clear serial buffers: {:?}", e);
     }
-    // Send a COBS frame boundary so the device can flush any stale
-    // partial frame from a previous session and sync cleanly.
-    let _ = std::io::Write::write_all(&mut port, &[0]);
 
     let (reader, writer) = tokio::io::split(port);
 

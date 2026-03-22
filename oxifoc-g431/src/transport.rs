@@ -26,7 +26,7 @@ use ergot::transport::rtt::{RttReader, RttWriter};
 
 use crate::config::OUT_QUEUE_SIZE;
 #[cfg(feature = "transport-uart")]
-use crate::config::{UART_BAUD, UART_BUF_LEN};
+use crate::config::{UART_BAUD, UART_RX_BUF_LEN, UART_TX_BUF_LEN};
 use ergot::exports::bbqueue::traits::coordination::cas::AtomicCoord;
 use ergot::toolkits::embedded_io_async_v0_7 as kit;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
@@ -48,9 +48,9 @@ pub type RxWorker = kit::RxWorker<&'static Queue, CriticalSectionRawMutex, RttRe
 
 /// UART buffers (only for UART transport)
 #[cfg(feature = "transport-uart")]
-static UART_TX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
+static UART_TX_BUF: StaticCell<[u8; UART_TX_BUF_LEN]> = StaticCell::new();
 #[cfg(feature = "transport-uart")]
-static UART_RX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
+static UART_RX_BUF: StaticCell<[u8; UART_RX_BUF_LEN]> = StaticCell::new();
 
 /// RTT defmt channel storage (for UART mode - hybrid defmt sink)
 #[cfg(feature = "transport-uart")]
@@ -84,15 +84,15 @@ pub fn init_uart(
     pb4: Peri<'static, peripherals::PB4>,
     pb3: Peri<'static, peripherals::PB3>,
 ) -> UartTransport {
-    // Initialize RTT for defmt (hybrid: RTT + network forwarding)
-    let _defmt_consumer = {
+    // Initialize RTT for defmt (RTT only — no network forwarding)
+    {
         let channels = rtt_init! {
             up: {
                 0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
             }
         };
         let defmt_up = RTT_DEFMT_UP.init(channels.up.0);
-        defmt_sink::init_network_and_rtt(defmt_up)
+        defmt_sink::init_rtt(defmt_up);
     };
 
     defmt::info!("Oxifoc starting - ergot over USART2 VCP + defmt sink");
@@ -102,8 +102,8 @@ pub fn init_uart(
     uart_cfg.baudrate = UART_BAUD;
     uart_cfg.parity = Parity::ParityNone;
     uart_cfg.stop_bits = StopBits::STOP1;
-    let tx_buf = UART_TX_BUF.init([0u8; UART_BUF_LEN]);
-    let rx_buf = UART_RX_BUF.init([0u8; UART_BUF_LEN]);
+    let tx_buf = UART_TX_BUF.init([0u8; UART_TX_BUF_LEN]);
+    let rx_buf = UART_RX_BUF.init([0u8; UART_RX_BUF_LEN]);
     let uart = BufferedUart::new(usart2, pb4, pb3, tx_buf, rx_buf, Irqs, uart_cfg)
         .expect("USART2 init failed");
     let (uart_tx, uart_rx) = uart.split();

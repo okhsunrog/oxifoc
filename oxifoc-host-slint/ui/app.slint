@@ -48,7 +48,7 @@ export component App inherits Window {
     in-out property <int> active-tab: 0;
 
     // ── Fast telemetry streaming ──
-    in-out property <int> stream-rate-index: 2;  // default 1000 Hz
+    in-out property <int> stream-rate-index: 0;  // default 100 Hz
     in property <bool> streaming: false;
     callback stream-start();
     callback stream-stop();
