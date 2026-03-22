@@ -43,14 +43,14 @@ pub fn build_fast_telemetry(
     seq: u32,
 ) -> FastTelemetry {
     FastTelemetry {
-        ia_ma: (foc.ia * 1000.0) as i32,
-        ib_ma: (foc.ib * 1000.0) as i32,
-        ic_ma: (foc.ic * 1000.0) as i32,
-        id_ma: (foc.id * 1000.0) as i32,
-        iq_ma: (foc.iq * 1000.0) as i32,
-        vd_mv: (foc.vd * 1000.0) as i32,
-        vq_mv: (foc.vq * 1000.0) as i32,
-        angle_mrad: (foc.angle_rad * 1000.0) as i32,
+        ia: foc.ia,
+        ib: foc.ib,
+        ic: foc.ic,
+        id: foc.id,
+        iq: foc.iq,
+        vd: foc.vd,
+        vq: foc.vq,
+        angle_rad: foc.angle_rad,
         erpm: (velocity_rad_s * 60.0 / core::f32::consts::TAU) as i32,
         duty_x10: 0, // TODO: compute from duties when available
         hall_state,

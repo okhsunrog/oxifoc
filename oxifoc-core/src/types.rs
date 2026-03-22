@@ -140,29 +140,29 @@ pub struct MotorStatus {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg_attr(feature = "runtime", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct FastTelemetry {
-    /// Phase A current in milliamps
-    pub ia_ma: i32,
-    /// Phase B current in milliamps
-    pub ib_ma: i32,
-    /// Phase C current in milliamps
-    pub ic_ma: i32,
-    /// D-axis current in milliamps
-    pub id_ma: i32,
-    /// Q-axis current in milliamps
-    pub iq_ma: i32,
-    /// D-axis voltage in millivolts
-    pub vd_mv: i32,
-    /// Q-axis voltage in millivolts
-    pub vq_mv: i32,
-    /// Electrical angle in 0.001 radian units
-    pub angle_mrad: i32,
+    /// Phase A current in Amps
+    pub ia: f32,
+    /// Phase B current in Amps
+    pub ib: f32,
+    /// Phase C current in Amps
+    pub ic: f32,
+    /// D-axis current in Amps
+    pub id: f32,
+    /// Q-axis current in Amps
+    pub iq: f32,
+    /// D-axis voltage in Volts
+    pub vd: f32,
+    /// Q-axis voltage in Volts
+    pub vq: f32,
+    /// Electrical angle in radians
+    pub angle_rad: f32,
     /// Electrical RPM
     pub erpm: i32,
     /// Duty cycle in 0.1% units (0-1000)
     pub duty_x10: i16,
     /// Raw Hall sensor state (0-7)
     pub hall_state: u8,
-    /// Explicit padding for bytemuck::Pod (not serialized on the wire)
+    /// Explicit padding for bytemuck::Pod
     #[serde(skip)]
     pub _pad: u8,
     /// Monotonic sequence number

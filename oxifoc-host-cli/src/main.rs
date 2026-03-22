@@ -251,13 +251,7 @@ fn run_monitor(runtime: &oxifoc_host_lib::HostRuntime, duration: Duration) -> Re
             Ok(sample) => {
                 println!(
                     "#{:>5} ia:{:>7.2}A ib:{:>7.2}A ic:{:>7.2}A id:{:>7.2}A iq:{:>7.2}A erpm:{:>6}",
-                    sample.seq,
-                    sample.ia_ma as f32 / 1000.0,
-                    sample.ib_ma as f32 / 1000.0,
-                    sample.ic_ma as f32 / 1000.0,
-                    sample.id_ma as f32 / 1000.0,
-                    sample.iq_ma as f32 / 1000.0,
-                    sample.erpm,
+                    sample.seq, sample.ia, sample.ib, sample.ic, sample.id, sample.iq, sample.erpm,
                 );
             }
             Err(RecvTimeoutError::Timeout) => {

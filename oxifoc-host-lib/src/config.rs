@@ -89,7 +89,7 @@ impl HostConfig {
         self.stream_ergot.unwrap_or(true)
     }
     pub fn fast_hz(&self) -> u16 {
-        self.fast_hz.unwrap_or(20000)
+        self.fast_hz.unwrap_or(0)
     }
 
     pub fn serial_path(&self) -> String {

@@ -285,11 +285,7 @@ fn main() {
                     {
                         while let Ok(sample) = rx.try_recv() {
                             if !currents_paused {
-                                cb.push_frame(&[
-                                    sample.ia_ma as f32 / 1000.0,
-                                    sample.ib_ma as f32 / 1000.0,
-                                    sample.ic_ma as f32 / 1000.0,
-                                ]);
+                                cb.push_frame(&[sample.ia, sample.ib, sample.ic]);
                             }
                             last_fast = Some(sample);
                         }
@@ -315,18 +311,9 @@ fn main() {
                         // Update connection status + text from latest samples
                         app.set_is_connected(conn.load(std::sync::atomic::Ordering::Relaxed));
                         if let Some(s) = last_fast {
-                            app.set_ia_text(SharedString::from(format!(
-                                "{:.2} A",
-                                s.ia_ma as f32 / 1000.0
-                            )));
-                            app.set_ib_text(SharedString::from(format!(
-                                "{:.2} A",
-                                s.ib_ma as f32 / 1000.0
-                            )));
-                            app.set_ic_text(SharedString::from(format!(
-                                "{:.2} A",
-                                s.ic_ma as f32 / 1000.0
-                            )));
+                            app.set_ia_text(SharedString::from(format!("{:.2} A", s.ia)));
+                            app.set_ib_text(SharedString::from(format!("{:.2} A", s.ib)));
+                            app.set_ic_text(SharedString::from(format!("{:.2} A", s.ic)));
                             app.set_erpm_text(SharedString::from(format!("{}", s.erpm)));
                             let pole_pairs = app.get_pole_pairs().max(1);
                             let rpm = s.erpm / pole_pairs;
@@ -352,6 +339,7 @@ fn main() {
                             1000.0
                         };
                         app.set_fast_sample_rate(fast_rate);
+                        app.set_streaming(actual_hz > 0);
 
                         // Per-plot time windows and view offsets (each plot can be independently paused/zoomed)
                         let c_tw = app.get_currents_time_window();
@@ -658,6 +646,39 @@ fn main() {
                 }
             } else {
                 tracing::warn!("Motor stop clicked but no runtime");
+            }
+        });
+    }
+
+    // ── Stream start ─────────────────────────────────────────────────────────
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_stream_start(move || {
+            let guard = rt.lock().unwrap();
+            if let Some(ref runtime) = *guard {
+                let app = weak.unwrap();
+                let rates = [100u16, 500, 1000, 2000, 5000, 10000, 20000];
+                let idx = app.get_stream_rate_index() as usize;
+                let hz = rates.get(idx).copied().unwrap_or(1000);
+                tracing::info!("Starting fast telemetry at {} Hz", hz);
+                let _ = runtime.cmd_tx.send(HostCommand::SetTelemetryConfig(
+                    oxifoc_core::icd::TelemetryConfig { fast_hz: hz },
+                ));
+            }
+        });
+    }
+
+    // ── Stream stop ──────────────────────────────────────────────────────────
+    {
+        let rt = runtime.clone();
+        app.on_stream_stop(move || {
+            let guard = rt.lock().unwrap();
+            if let Some(ref runtime) = *guard {
+                tracing::info!("Stopping fast telemetry");
+                let _ = runtime.cmd_tx.send(HostCommand::SetTelemetryConfig(
+                    oxifoc_core::icd::TelemetryConfig { fast_hz: 0 },
+                ));
             }
         });
     }

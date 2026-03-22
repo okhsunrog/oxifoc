@@ -45,6 +45,13 @@ export component App inherits Window {
     // ── Motor control ──
     in-out property <float> duty: 10;
     in-out property <int> pole-pairs: 7;
+    in-out property <int> active-tab: 0;
+
+    // ── Fast telemetry streaming ──
+    in-out property <int> stream-rate-index: 2;  // default 1000 Hz
+    in property <bool> streaming: false;
+    callback stream-start();
+    callback stream-stop();
 
     // ── Telemetry (formatted strings from Rust) ──
     in property <string> ia-text:   "0";
@@ -385,397 +392,349 @@ export component App inherits Window {
     // ═══════════════════════════════════════════
     main-page := VerticalLayout {
         visible: root.page == "main";
-        padding: 12px;
-        spacing: 8px;
+        padding: 8px;
+        spacing: 4px;
 
-        // ── Status bar ──
-        HorizontalLayout {
-            spacing: 10px;
-            alignment: start;
-
-            Rectangle {
-                width: 12px;
-                height: 12px;
-                border-radius: 6px;
-                background: root.is-connected ? #22c55e : #eab308;
-            }
-            Text {
-                text: root.is-connected
-                    ? root.device-hw != "" ? "\{root.device-hw} (\{root.device-mcu})" : "Connected"
-                    : "Connecting...";
-                vertical-alignment: center;
-            }
-            if root.device-sw != "" : Text {
-                text: root.device-sw;
-                vertical-alignment: center;
-                color: Palette.foreground;
-                opacity: 0.6;
-                font-size: 11px;
-            }
-            Rectangle { horizontal-stretch: 1; }
-            Button {
-                text: "Disconnect";
-                clicked => { root.disconnect-device(); }
-            }
-        }
-
-        // ── Motor preset + pole pairs ──
+        // ── Top bar: status + controls + telemetry ──
         HorizontalLayout {
             spacing: 8px;
-            alignment: start;
 
-            Text { text: "Motor:"; vertical-alignment: center; }
-            ComboBox {
-                model: root.preset-names;
-                current-index <=> root.selected-preset;
-                selected(idx) => { root.preset-changed(idx); }
-                min-width: 200px;
-            }
-            Text { text: "Pole pairs:"; vertical-alignment: center; }
-            SpinBox {
-                minimum: 1;
-                maximum: 50;
-                value <=> root.pole-pairs;
-                min-width: 80px;
-            }
-        }
-
-        // ── Motor control ──
-        HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
-
-            Text { text: "Duty (%)"; vertical-alignment: center; }
-            Slider {
-                minimum: 0;
-                maximum: 100;
-                value <=> root.duty;
-                min-width: 120px;
-            }
-            Text {
-                text: "\{round(root.duty)}%";
-                vertical-alignment: center;
-                min-width: 35px;
-            }
-            Button {
-                text: "Start";
-                primary: true;
-                clicked => { root.motor-start(); }
-            }
-            Button {
-                text: "Stop";
-                clicked => { root.motor-stop(); }
-            }
-        }
-
-        TabWidget {
-            Tab {
-                title: "Monitor";
-
-                VerticalLayout {
-                    padding: 4px;
-                    spacing: 8px;
-
-                    // ── Telemetry ──
-                    Rectangle {
-                        background: Palette.alternate-background;
-                        border-radius: 4px;
-                        min-height: 60px;
-
-                        GridLayout {
-                            padding: 10px;
-                            spacing: 6px;
-
-                            Row {
-                                Text { text: "Phase A:"; }
-                                Text { text: root.ia-text;   font-weight: 600; }
-                                Text { text: "Phase B:"; }
-                                Text { text: root.ib-text;   font-weight: 600; }
-                                Text { text: "Phase C:"; }
-                                Text { text: root.ic-text;   font-weight: 600; }
-                            }
-                            Row {
-                                Text { text: "ERPM:"; }
-                                Text { text: root.erpm-text; font-weight: 600; }
-                                Text { text: "RPM:"; }
-                                Text { text: root.rpm-text;  font-weight: 600; }
-                                Text { text: "Pole pairs:"; }
-                                Text { text: root.pole-pairs; font-weight: 600; }
-                            }
-                            Row {
-                                Text { text: "VBUS:"; }
-                                Text { text: root.vbus-text; font-weight: 600; }
-                                Text { text: "Temp:"; }
-                                Text { text: root.temp-text; font-weight: 600; }
-                                Text { text: "Seq:"; }
-                                Text { text: root.seq-text;  font-weight: 600; }
-                            }
-                        }
-                    }
-
-                    // ── Charts ──
-                    currents-plot := PlotWidget {
-            vertical-stretch: 2;
-            title: "Phase Currents (A)";
-            texture: root.currents-texture;
-            y-min: root.currents-y-min;
-            y-max: root.currents-y-max;
-            y-divisions: 4;
-            time-window: 2.0;
-            x-divisions: 5;
-            sample-rate: root.fast-sample-rate;
-            legend-labels: ["Phase A", "Phase B", "Phase C"];
-            legend-colors: [#22d3ee, #8b5cf6, #f97316];
-        }
-
-        vbus-plot := PlotWidget {
-            vertical-stretch: 1;
-            title: "Bus Voltage (V)";
-            texture: root.vbus-texture;
-            y-min: root.vbus-y-min;
-            y-max: root.vbus-y-max;
-            y-divisions: 3;
-            time-window: 2.0;
-            x-divisions: 5;
-            sample-rate: 10.0;
-            legend-labels: ["VBUS"];
-            legend-colors: [#eab308];
-        }
-
-        temp-plot := PlotWidget {
-            vertical-stretch: 1;
-            title: "FET Temperature (°C)";
-            texture: root.temp-texture;
-            y-min: root.temp-y-min;
-            y-max: root.temp-y-max;
-            y-divisions: 3;
-            time-window: 2.0;
-            x-divisions: 5;
-            sample-rate: 10.0;
-            legend-labels: ["FET"];
-            legend-colors: [#ef4444];
-        }
-
-                } // end VerticalLayout inside Monitor tab
-            } // end Monitor Tab
-
-            Tab {
-                title: "Config";
-
-                VerticalLayout {
-                    padding: 8px;
-                    spacing: 8px;
-
-                    // Config group selector
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-
-                        Text { text: "Config group:"; vertical-alignment: center; }
-                        ComboBox {
-                            model: ["Motor Params", "Current Limits", "Voltage Limits", "PI Gains"];
-                            current-index <=> root.config-group;
-                            min-width: 160px;
-                        }
-                        Button {
-                            text: "Read";
-                            clicked => { root.config-read(); }
-                        }
-                        Button {
-                            text: "Write";
-                            primary: true;
-                            clicked => { root.config-write(); }
-                        }
-                        Rectangle { horizontal-stretch: 1; }
-                        if root.config-status != "" : Text {
-                            text: root.config-status;
-                            vertical-alignment: center;
-                            color: root.config-status == "OK" ? #22c55e : #eab308;
-                            font-size: 11px;
-                        }
-                    }
-
-                    // Motor Params fields
-                    if root.config-group == 0 : GridLayout {
-                        spacing: 6px;
-                        Row {
-                            Text { text: "Resistance (Ω):"; }
-                            LineEdit { text <=> root.cfg-resistance; min-width: 120px; }
-                            Text { text: "Inductance D (H):"; }
-                            LineEdit { text <=> root.cfg-inductance-d; min-width: 120px; }
-                        }
-                        Row {
-                            Text { text: "Inductance Q (H):"; }
-                            LineEdit { text <=> root.cfg-inductance-q; min-width: 120px; }
-                            Text { text: "Flux linkage (Wb):"; }
-                            LineEdit { text <=> root.cfg-flux-linkage; min-width: 120px; }
-                        }
-                        Row {
-                            Text { text: "Pole pairs:"; }
-                            LineEdit { text <=> root.cfg-pole-pairs; min-width: 120px; }
-                        }
-                    }
-
-                    // Current Limits fields
-                    if root.config-group == 1 : GridLayout {
-                        spacing: 6px;
-                        Row {
-                            Text { text: "Max Iq (A):"; }
-                            LineEdit { text <=> root.cfg-max-iq; min-width: 120px; }
-                            Text { text: "Max phase current (A):"; }
-                            LineEdit { text <=> root.cfg-max-phase-current; min-width: 120px; }
-                        }
-                    }
-
-                    // Voltage Limits fields
-                    if root.config-group == 2 : GridLayout {
-                        spacing: 6px;
-                        Row {
-                            Text { text: "Min VBUS (mV):"; }
-                            LineEdit { text <=> root.cfg-min-vbus; min-width: 120px; }
-                            Text { text: "Max VBUS (mV):"; }
-                            LineEdit { text <=> root.cfg-max-vbus; min-width: 120px; }
-                        }
-                    }
-
-                    // PI Gains fields
-                    if root.config-group == 3 : GridLayout {
-                        spacing: 6px;
-                        Row {
-                            Text { text: "Kp:"; }
-                            LineEdit { text <=> root.cfg-kp; min-width: 120px; }
-                            Text { text: "Ki:"; }
-                            LineEdit { text <=> root.cfg-ki; min-width: 120px; }
-                        }
-                        Row {
-                            Text { text: "Bandwidth (rad/s):"; }
-                            LineEdit { text <=> root.cfg-bandwidth; min-width: 120px; }
-                        }
-                    }
-
-                    Rectangle { vertical-stretch: 1; }
-                }
-            } // end Config Tab
-
-            Tab {
-                title: "Detection";
-
-                VerticalLayout {
-                    padding: 8px;
-                    spacing: 8px;
-
-                    // Detection parameters
-                    GridLayout {
-                        spacing: 6px;
-                        Row {
-                            Text { text: "Max power loss (W):"; }
-                            LineEdit { text <=> root.detect-max-loss; min-width: 100px; }
-                            Text { text: "Open-loop ERPM:"; }
-                            LineEdit { text <=> root.detect-openloop-erpm; min-width: 100px; }
-                        }
-                        Row {
-                            Text { text: "Sensorless ERPM:"; }
-                            LineEdit { text <=> root.detect-sensorless-erpm; min-width: 100px; }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-
-                        Button {
-                            text: "Start Detection";
-                            primary: true;
-                            clicked => { root.detect-start(); }
-                        }
-                        if root.detect-resistance != "" : Button {
-                            text: "Apply to Config";
-                            clicked => { root.detect-apply(); }
-                        }
-                        Rectangle { horizontal-stretch: 1; }
-                        if root.detect-status != "" : Text {
-                            text: root.detect-status;
-                            vertical-alignment: center;
-                            color: root.detect-status == "OK" ? #22c55e
-                                : root.detect-status == "Running..." ? #eab308
-                                : #ef4444;
-                            font-size: 11px;
-                        }
-                    }
-
-                    // Results
-                    if root.detect-resistance != "" : Rectangle {
-                        background: Palette.alternate-background;
-                        border-radius: 4px;
-
-                        GridLayout {
-                            padding: 10px;
-                            spacing: 6px;
-                            Row {
-                                Text { text: "Resistance (Ω):"; }
-                                Text { text: root.detect-resistance; font-weight: 600; }
-                                Text { text: "Inductance D (H):"; }
-                                Text { text: root.detect-inductance-d; font-weight: 600; }
-                            }
-                            Row {
-                                Text { text: "Inductance Q (H):"; }
-                                Text { text: root.detect-inductance-q; font-weight: 600; }
-                                Text { text: "Flux linkage (Wb):"; }
-                                Text { text: root.detect-flux-linkage; font-weight: 600; }
-                            }
-                            Row {
-                                Text { text: "Kv (RPM/V):"; }
-                                Text { text: root.detect-kv; font-weight: 600; }
-                                Text { text: "Max current (A):"; }
-                                Text { text: root.detect-max-current; font-weight: 600; }
-                            }
-                            Row {
-                                Text { text: "Kp:"; }
-                                Text { text: root.detect-kp; font-weight: 600; }
-                                Text { text: "Ki:"; }
-                                Text { text: root.detect-ki; font-weight: 600; }
-                            }
-                        }
-                    }
-
-                    Rectangle { vertical-stretch: 1; }
-                }
-            } // end Detection Tab
-        } // end TabWidget
-
-        // ── Log panel ──
-        Rectangle {
-            property <bool> is-dark: Palette.color-scheme == ColorScheme.dark;
-            vertical-stretch: 1;
-            background: is-dark ? #1e1e2e : #f5f5f5;
-            border-radius: 4px;
-            min-height: 120px;
-
+            // Left: status + motor controls
             VerticalLayout {
-                spacing: 0px;
+                spacing: 4px;
+                min-width: 320px;
+                max-width: 400px;
 
-                // Header
+                HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        width: 10px; height: 10px; border-radius: 5px;
+                        background: root.is-connected ? #22c55e : #eab308;
+                    }
+                    Text {
+                        text: root.is-connected
+                            ? root.device-hw != "" ? "\{root.device-hw}" : "Connected"
+                            : "Connecting...";
+                        vertical-alignment: center;
+                        font-size: 11px;
+                    }
+                    if root.device-sw != "" : Text {
+                        text: root.device-sw;
+                        vertical-alignment: center;
+                        color: Palette.foreground;
+                        opacity: 0.5;
+                        font-size: 10px;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: "Disconnect"; clicked => { root.disconnect-device(); } }
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text { text: "Duty"; vertical-alignment: center; font-size: 11px; }
+                    Slider { minimum: 0; maximum: 100; value <=> root.duty; min-width: 80px; }
+                    Text { text: "\{round(root.duty)}%"; vertical-alignment: center; min-width: 30px; font-size: 11px; }
+                    Button { text: "Start"; primary: true; clicked => { root.motor-start(); } }
+                    Button { text: "Stop"; clicked => { root.motor-stop(); } }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text { text: "Stream"; vertical-alignment: center; font-size: 11px; }
+                    ComboBox {
+                        model: ["100 Hz", "500 Hz", "1000 Hz", "2000 Hz", "5000 Hz", "10000 Hz", "20000 Hz"];
+                        current-index <=> root.stream-rate-index;
+                        min-width: 90px;
+                    }
+                    Button {
+                        text: root.streaming ? "Stop" : "Start";
+                        primary: !root.streaming;
+                        clicked => { if root.streaming { root.stream-stop(); } else { root.stream-start(); } }
+                    }
+                }
+            }
+
+            // Right: compact telemetry dashboard
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Palette.alternate-background;
+                border-radius: 4px;
+
+                GridLayout {
+                    padding: 6px;
+                    spacing: 2px;
+
+                    Row {
+                        Text { text: "Ia:"; font-size: 11px; }
+                        Text { text: root.ia-text; font-weight: 600; font-size: 11px; }
+                        Text { text: "Ib:"; font-size: 11px; }
+                        Text { text: root.ib-text; font-weight: 600; font-size: 11px; }
+                        Text { text: "Ic:"; font-size: 11px; }
+                        Text { text: root.ic-text; font-weight: 600; font-size: 11px; }
+                        Text { text: "VBUS:"; font-size: 11px; }
+                        Text { text: root.vbus-text; font-weight: 600; font-size: 11px; }
+                    }
+                    Row {
+                        Text { text: "ERPM:"; font-size: 11px; }
+                        Text { text: root.erpm-text; font-weight: 600; font-size: 11px; }
+                        Text { text: "RPM:"; font-size: 11px; }
+                        Text { text: root.rpm-text; font-weight: 600; font-size: 11px; }
+                        Text { text: "Temp:"; font-size: 11px; }
+                        Text { text: root.temp-text; font-weight: 600; font-size: 11px; }
+                        Text { text: "Seq:"; font-size: 11px; }
+                        Text { text: root.seq-text; font-weight: 600; font-size: 11px; }
+                    }
+                }
+            }
+        }
+
+        // ── Main content: sidebar tabs + content area ──
+        HorizontalLayout {
+            spacing: 4px;
+            vertical-stretch: 1;
+
+            // Sidebar navigation
+            VerticalLayout {
+                spacing: 2px;
+                min-width: 80px;
+                max-width: 80px;
+
+                Button {
+                    text: "Monitor";
+                    primary: root.active-tab == 0;
+                    clicked => { root.active-tab = 0; }
+                }
+                Button {
+                    text: "Config";
+                    primary: root.active-tab == 1;
+                    clicked => { root.active-tab = 1; }
+                }
+                Button {
+                    text: "Detect";
+                    primary: root.active-tab == 2;
+                    clicked => { root.active-tab = 2; }
+                }
+                Button {
+                    text: "Log";
+                    primary: root.active-tab == 3;
+                    clicked => { root.active-tab = 3; }
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+
+            // ═══ Content area ═══
+            Rectangle {
+                horizontal-stretch: 1;
+
+            // ── Monitor tab ──
+            VerticalLayout {
+                visible: root.active-tab == 0;
+                spacing: 4px;
+
+                currents-plot := PlotWidget {
+                    vertical-stretch: 3;
+                    title: "Phase Currents (A)";
+                    texture: root.currents-texture;
+                    y-min: root.currents-y-min;
+                    y-max: root.currents-y-max;
+                    y-divisions: 4;
+                    time-window: 2.0;
+                    x-divisions: 5;
+                    sample-rate: root.fast-sample-rate;
+                    legend-labels: ["Phase A", "Phase B", "Phase C"];
+                    legend-colors: [#22d3ee, #8b5cf6, #f97316];
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+                    vertical-stretch: 1;
+
+                    vbus-plot := PlotWidget {
+                        horizontal-stretch: 1;
+                        title: "Bus Voltage (V)";
+                        texture: root.vbus-texture;
+                        y-min: root.vbus-y-min;
+                        y-max: root.vbus-y-max;
+                        y-divisions: 3;
+                        time-window: 2.0;
+                        x-divisions: 5;
+                        sample-rate: 10.0;
+                        legend-labels: ["VBUS"];
+                        legend-colors: [#eab308];
+                    }
+
+                    temp-plot := PlotWidget {
+                        horizontal-stretch: 1;
+                        title: "FET Temperature (°C)";
+                        texture: root.temp-texture;
+                        y-min: root.temp-y-min;
+                        y-max: root.temp-y-max;
+                        y-divisions: 3;
+                        time-window: 2.0;
+                        x-divisions: 5;
+                        sample-rate: 10.0;
+                        legend-labels: ["FET"];
+                        legend-colors: [#ef4444];
+                    }
+                }
+            }
+
+            // ── Config tab ──
+            if root.active-tab == 1 : VerticalLayout {
+                padding: 8px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text { text: "Config group:"; vertical-alignment: center; }
+                    ComboBox {
+                        model: ["Motor Params", "Current Limits", "Voltage Limits", "PI Gains"];
+                        current-index <=> root.config-group;
+                        min-width: 160px;
+                    }
+                    Button { text: "Read"; clicked => { root.config-read(); } }
+                    Button { text: "Write"; primary: true; clicked => { root.config-write(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    if root.config-status != "" : Text {
+                        text: root.config-status;
+                        vertical-alignment: center;
+                        color: root.config-status == "OK" ? #22c55e : #eab308;
+                        font-size: 11px;
+                    }
+                }
+
+                if root.config-group == 0 : GridLayout {
+                    spacing: 6px;
+                    Row {
+                        Text { text: "Resistance (Ω):"; } LineEdit { text <=> root.cfg-resistance; min-width: 120px; }
+                        Text { text: "Inductance D (H):"; } LineEdit { text <=> root.cfg-inductance-d; min-width: 120px; }
+                    }
+                    Row {
+                        Text { text: "Inductance Q (H):"; } LineEdit { text <=> root.cfg-inductance-q; min-width: 120px; }
+                        Text { text: "Flux linkage (Wb):"; } LineEdit { text <=> root.cfg-flux-linkage; min-width: 120px; }
+                    }
+                    Row { Text { text: "Pole pairs:"; } LineEdit { text <=> root.cfg-pole-pairs; min-width: 120px; } }
+                }
+                if root.config-group == 1 : GridLayout {
+                    spacing: 6px;
+                    Row {
+                        Text { text: "Max Iq (A):"; } LineEdit { text <=> root.cfg-max-iq; min-width: 120px; }
+                        Text { text: "Max phase current (A):"; } LineEdit { text <=> root.cfg-max-phase-current; min-width: 120px; }
+                    }
+                }
+                if root.config-group == 2 : GridLayout {
+                    spacing: 6px;
+                    Row {
+                        Text { text: "Min VBUS (mV):"; } LineEdit { text <=> root.cfg-min-vbus; min-width: 120px; }
+                        Text { text: "Max VBUS (mV):"; } LineEdit { text <=> root.cfg-max-vbus; min-width: 120px; }
+                    }
+                }
+                if root.config-group == 3 : GridLayout {
+                    spacing: 6px;
+                    Row {
+                        Text { text: "Kp:"; } LineEdit { text <=> root.cfg-kp; min-width: 120px; }
+                        Text { text: "Ki:"; } LineEdit { text <=> root.cfg-ki; min-width: 120px; }
+                    }
+                    Row { Text { text: "Bandwidth (rad/s):"; } LineEdit { text <=> root.cfg-bandwidth; min-width: 120px; } }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+            }
+
+            // ── Detection tab ──
+            if root.active-tab == 2 : VerticalLayout {
+                padding: 8px;
+                spacing: 8px;
+
+                // Motor preset + pole pairs (moved here from top level)
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text { text: "Motor:"; vertical-alignment: center; }
+                    ComboBox {
+                        model: root.preset-names;
+                        current-index <=> root.selected-preset;
+                        selected(idx) => { root.preset-changed(idx); }
+                        min-width: 200px;
+                    }
+                    Text { text: "Pole pairs:"; vertical-alignment: center; }
+                    SpinBox { minimum: 1; maximum: 50; value <=> root.pole-pairs; min-width: 80px; }
+                }
+
+                GridLayout {
+                    spacing: 6px;
+                    Row {
+                        Text { text: "Max power loss (W):"; } LineEdit { text <=> root.detect-max-loss; min-width: 100px; }
+                        Text { text: "Open-loop ERPM:"; } LineEdit { text <=> root.detect-openloop-erpm; min-width: 100px; }
+                    }
+                    Row {
+                        Text { text: "Sensorless ERPM:"; } LineEdit { text <=> root.detect-sensorless-erpm; min-width: 100px; }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Button { text: "Start Detection"; primary: true; clicked => { root.detect-start(); } }
+                    if root.detect-resistance != "" : Button { text: "Apply to Config"; clicked => { root.detect-apply(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    if root.detect-status != "" : Text {
+                        text: root.detect-status;
+                        vertical-alignment: center;
+                        color: root.detect-status == "OK" ? #22c55e
+                            : root.detect-status == "Running..." ? #eab308
+                            : #ef4444;
+                        font-size: 11px;
+                    }
+                }
+
+                if root.detect-resistance != "" : Rectangle {
+                    background: Palette.alternate-background;
+                    border-radius: 4px;
+                    GridLayout {
+                        padding: 10px;
+                        spacing: 6px;
+                        Row {
+                            Text { text: "Resistance (Ω):"; } Text { text: root.detect-resistance; font-weight: 600; }
+                            Text { text: "Inductance D (H):"; } Text { text: root.detect-inductance-d; font-weight: 600; }
+                        }
+                        Row {
+                            Text { text: "Inductance Q (H):"; } Text { text: root.detect-inductance-q; font-weight: 600; }
+                            Text { text: "Flux linkage (Wb):"; } Text { text: root.detect-flux-linkage; font-weight: 600; }
+                        }
+                        Row {
+                            Text { text: "Kv (RPM/V):"; } Text { text: root.detect-kv; font-weight: 600; }
+                            Text { text: "Max current (A):"; } Text { text: root.detect-max-current; font-weight: 600; }
+                        }
+                        Row {
+                            Text { text: "Kp:"; } Text { text: root.detect-kp; font-weight: 600; }
+                            Text { text: "Ki:"; } Text { text: root.detect-ki; font-weight: 600; }
+                        }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+            }
+
+            // ── Log tab ──
+            if root.active-tab == 3 : VerticalLayout {
+
+                property <bool> is-dark: Palette.color-scheme == ColorScheme.dark;
+
                 HorizontalLayout {
                     padding-left: 8px;
                     padding-right: 4px;
                     padding-top: 4px;
                     padding-bottom: 4px;
 
-                    Text {
-                        text: "Log";
-                        color: Palette.foreground;
-                        font-size: 12px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                    }
+                    Text { text: "Log"; font-size: 12px; font-weight: 600; vertical-alignment: center; }
                     Rectangle { horizontal-stretch: 1; }
-                    Button {
-                        text: "Clear";
-                        clicked => { root.clear-log(); }
-                    }
+                    Button { text: "Clear"; clicked => { root.clear-log(); } }
                 }
 
-                // Log messages
                 log-view := ListView {
                     for msg[index] in root.log-messages: Rectangle {
                         height: msg-text.preferred-height + 4px;
@@ -797,12 +756,13 @@ export component App inherits Window {
                     }
                 }
 
-                // Auto-scroll when new messages arrive
                 property <int> scroll-trigger: root.log-messages.length;
                 changed scroll-trigger => {
                     log-view.viewport-y = -100000px;
                 }
             }
-        }
-    }
+
+            } // end content Rectangle
+        } // end main content HorizontalLayout
+    } // end main-page
 }
