@@ -68,8 +68,10 @@ pub async fn init(
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
 
-    // Build current sensor and phase manager
-    let current_sensor = G431CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
+    // Build current sensor with reconstruction (unipolar shunts, no Vref/2 bias)
+    let mut current_sensor =
+        G431CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
+    current_sensor.enable_reconstruction();
     crate::sensors::hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
     let phase_manager = PhaseManager::with_hall(hall_proxy);
@@ -115,10 +117,15 @@ pub async fn init(
 
     // Enable ADC interrupt and PWM outputs.
     // Order: install handles → enable interrupt → enable PWM triggers.
-    // Enable ADC interrupt now that handles are installed
+    // ADC1_2 at priority 0 (highest) — FOC loop is the most time-critical ISR.
+    // TIM6 (hall polling) runs at default priority and can be preempted by this.
     unsafe {
-        <embassy_stm32::interrupt::typelevel::ADC1_2 as embassy_stm32::interrupt::typelevel::Interrupt>::unpend();
-        <embassy_stm32::interrupt::typelevel::ADC1_2 as embassy_stm32::interrupt::typelevel::Interrupt>::enable();
+        use embassy_stm32::interrupt::typelevel::Interrupt;
+        let irq = embassy_stm32::interrupt::ADC1_2;
+        cortex_m::peripheral::NVIC::unmask(irq);
+        cortex_m::peripheral::NVIC::set_priority(&mut cortex_m::Peripherals::steal().NVIC, irq, 0);
+        <embassy_stm32::interrupt::typelevel::ADC1_2 as Interrupt>::unpend();
+        <embassy_stm32::interrupt::typelevel::ADC1_2 as Interrupt>::enable();
     }
     motor_pwm.enable_outputs();
 

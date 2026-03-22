@@ -163,6 +163,9 @@ pub mod foc {
     /// Shunt resistor current sensing
     pub mod current_sense;
 
+    /// Sector-based phase current reconstruction for unipolar shunt sensing
+    pub mod current_reconstruction;
+
     /// Hall sensor calibration algorithm
     pub mod hall_calibration;
 

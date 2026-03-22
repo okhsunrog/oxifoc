@@ -356,8 +356,9 @@ where
             return Err("Overcurrent: measured current exceeds limit");
         }
 
-        // Set PWM duties
+        // Set PWM duties and feed to current sensor for next-cycle reconstruction
         self.pwm.set_duties(out.duties);
+        self.current_sensor.update_duties(out.duties);
 
         // Update phase provider for next step (feeds observer if present)
         self.phase.update(
@@ -434,8 +435,9 @@ where
             return Err("Overcurrent: measured current exceeds limit");
         }
 
-        // Set PWM duties
+        // Set PWM duties and feed to current sensor for next-cycle reconstruction
         self.pwm.set_duties(out.duties);
+        self.current_sensor.update_duties(out.duties);
 
         // Update phase provider (for sensor tracking, even in open-loop)
         self.phase.update(
@@ -469,6 +471,7 @@ where
         let mut out = self.controller.apply_dq(vd, vq, angle_rad, max_duty);
 
         self.pwm.set_duties(out.duties);
+        self.current_sensor.update_duties(out.duties);
 
         // Read currents for telemetry and phase observer
         if self.current_sensor.is_calibrated() {
