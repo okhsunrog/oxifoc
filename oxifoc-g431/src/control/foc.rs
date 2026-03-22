@@ -269,7 +269,7 @@ fn ADC1_2() {
             FAST_TELEM_PERIOD, build_fast_telemetry, push_fast_telemetry,
         };
         let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
-        if period != 0 && (*SEQ) % period == 0 {
+        if period != 0 && (*SEQ).is_multiple_of(&period) {
             let (hall_state, velocity_rad_s) = hall_snapshot
                 .map(|h| (h.state, h.velocity_rad_s))
                 .unwrap_or((0, 0.0));

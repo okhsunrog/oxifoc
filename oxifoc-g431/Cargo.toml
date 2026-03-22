@@ -50,6 +50,7 @@ oxifoc-g4 = { path = "../oxifoc-g4" }
 # transport-rtt adds: rtt (for RTT transport wrappers)
 ergot = { git = "https://github.com/okhsunrog/ergot", branch = "liveness-tracking-and-state-notifications", default-features = false, features = [
     "embedded-io-async-v0_7",
+    "embassy-time",
     "disable-cache-padding",
     "defmt-sink-rtt",
 ] }

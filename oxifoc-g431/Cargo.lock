@@ -192,7 +192,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=liveness-tracking-and-state-notifications#504a03105da0a82883f3353c89f89e9d173887a3"
+source = "git+https://github.com/okhsunrog/ergot?branch=liveness-tracking-and-state-notifications#16c81f03b2e04d5a43d6dfc4e520f261346a73f1"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -770,7 +770,7 @@ checksum = "a357d28ed41a50f9c765dbfe56cbc04a64e53e5fc58ba79fbc34c10ef3df831f"
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=liveness-tracking-and-state-notifications#504a03105da0a82883f3353c89f89e9d173887a3"
+source = "git+https://github.com/okhsunrog/ergot?branch=liveness-tracking-and-state-notifications#16c81f03b2e04d5a43d6dfc4e520f261346a73f1"
 dependencies = [
  "bbqueue 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cobs 0.3.0",

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-oxifoc-core = { workspace = true, features = ["icd"] }
+oxifoc-core = { workspace = true, features = ["icd", "storage"] }
 ergot = { workspace = true, features = ["tokio-std", "tokio-serial-v5", "nusb-v0_1", "defmtlog"] }
 
 tokio = { workspace = true }

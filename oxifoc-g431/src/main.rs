@@ -36,6 +36,22 @@ oxifoc_core::define_platform_state!(fault::G431Fault);
 use motor::MotorPwm;
 use protocol::{DeviceState, RECV_BUF, SCRATCH_BUF, STACK, get_device_state, set_device_state};
 
+/// Global runtime config — loaded from flash at boot, read by config_server for protocol access.
+pub static RUNTIME_CONFIG: critical_section::Mutex<
+    core::cell::RefCell<oxifoc_core::storage::RuntimeConfig>,
+> = critical_section::Mutex::new(core::cell::RefCell::new(
+    oxifoc_core::storage::RuntimeConfig {
+        motor_params: None,
+        hall_calibration: None,
+        dc_offsets: None,
+        current_limits: None,
+        voltage_limits: None,
+        pwm_config: None,
+        pi_gains: None,
+        hall_tuning: None,
+    },
+));
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // ========== STEP 1: Initialize Clock ==========
@@ -69,6 +85,8 @@ async fn main(spawner: Spawner) {
     let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
     spawner.spawn(storage::storage_worker(flash).unwrap());
     let runtime_config = storage::CONFIG_LOADED.wait().await;
+    // Store in static for config_server protocol access
+    critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
     defmt::info!("Config loaded from flash");
 
     // ========== STEP 6: Initialize Motor PWM ==========

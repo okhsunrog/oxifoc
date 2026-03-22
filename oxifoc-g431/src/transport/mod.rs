@@ -6,6 +6,8 @@
 
 pub mod io;
 
+use ergot::interface_manager::LivenessConfig;
+use ergot::exports::maitake_sync::WaitQueue;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
@@ -28,6 +30,10 @@ use crate::config::{UART_BAUD, UART_BUF_LEN};
 use ergot::exports::bbqueue::traits::coordination::cas::AtomicCoord;
 use ergot::toolkits::embedded_io_async_v0_7 as kit;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
+use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
+
+/// State notification queue — woken on interface state transitions
+pub static STATE_NOTIFY: WaitQueue = WaitQueue::new();
 
 // Type aliases for our application
 pub type Queue = kit::Queue<OUT_QUEUE_SIZE, AtomicCoord>;
@@ -101,7 +107,11 @@ pub fn init_uart(
     let uart = BufferedUart::new(usart2, pb4, pb3, tx_buf, rx_buf, Irqs, uart_cfg)
         .expect("USART2 init failed");
     let (uart_tx, uart_rx) = uart.split();
-    let rx_worker = RxWorker::new_target(stack, UartReader::new(uart_rx), ());
+    let rx_worker = RxWorker::new_target(stack, UartReader::new(uart_rx), ())
+        .with_liveness(LivenessConfig {
+            timeout_ms: LIVENESS_TIMEOUT_MS,
+        })
+        .with_state_notify(&STATE_NOTIFY);
 
     UartTransport {
         rx_worker,
@@ -144,7 +154,11 @@ pub fn init_rtt(stack: &'static Stack) -> RttTransport {
     let rtt_rx = RttReader::new(ergot_down);
     let rtt_tx = RttWriter::new(ergot_up);
 
-    let rx_worker = RxWorker::new_target(stack, rtt_rx, ());
+    let rx_worker = RxWorker::new_target(stack, rtt_rx, ())
+        .with_liveness(LivenessConfig {
+            timeout_ms: LIVENESS_TIMEOUT_MS,
+        })
+        .with_state_notify(&STATE_NOTIFY);
 
     RttTransport {
         rx_worker,

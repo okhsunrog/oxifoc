@@ -1,4 +1,4 @@
-import { VerticalBox, HorizontalBox, Button, ComboBox, Slider, CheckBox,
+import { VerticalBox, HorizontalBox, Button, ComboBox, Slider, CheckBox, SpinBox,
          StandardListView, LineEdit, GroupBox, ScrollView, GridBox, ListView, Palette } from "std-widgets.slint";
 import { PlotWidget } from "@slint-wgpu-plot/plot.slint";
 
@@ -44,6 +44,7 @@ export component App inherits Window {
 
     // ── Motor control ──
     in-out property <float> duty: 10;
+    in-out property <int> pole-pairs: 7;
 
     // ── Telemetry (formatted strings from Rust) ──
     in property <string> ia-text:   "0";
@@ -51,6 +52,8 @@ export component App inherits Window {
     in property <string> ic-text:   "0";
     in property <string> vbus-text: "0.00 V";
     in property <string> temp-text: "0.0 °C";
+    in property <string> erpm-text: "0";
+    in property <string> rpm-text:  "0";
     in property <string> seq-text:  "0";
 
     // ── Chart textures and auto-range (set by Rust after each render) ──
@@ -89,6 +92,11 @@ export component App inherits Window {
     // ── Log panel ──
     in property <[LogMessage]> log-messages;
     callback clear-log();
+
+    // ── Motor presets ──
+    in property <[string]> preset-names;
+    in-out property <int> selected-preset: 0;
+    callback preset-changed(string);
 
     // ── Callbacks ──
     callback refresh-serial-ports();
@@ -373,7 +381,28 @@ export component App inherits Window {
             }
         }
 
-        // ── Motor control + Time window ──
+        // ── Motor preset + pole pairs ──
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+
+            Text { text: "Motor:"; vertical-alignment: center; }
+            ComboBox {
+                model: root.preset-names;
+                current-index <=> root.selected-preset;
+                selected(idx) => { root.preset-changed(idx); }
+                min-width: 200px;
+            }
+            Text { text: "Pole pairs:"; vertical-alignment: center; }
+            SpinBox {
+                minimum: 1;
+                maximum: 50;
+                value <=> root.pole-pairs;
+                min-width: 80px;
+            }
+        }
+
+        // ── Motor control ──
         HorizontalLayout {
             spacing: 8px;
             alignment: start;
@@ -418,6 +447,14 @@ export component App inherits Window {
                     Text { text: root.ib-text;   font-weight: 600; }
                     Text { text: "Phase C:"; }
                     Text { text: root.ic-text;   font-weight: 600; }
+                }
+                Row {
+                    Text { text: "ERPM:"; }
+                    Text { text: root.erpm-text; font-weight: 600; }
+                    Text { text: "RPM:"; }
+                    Text { text: root.rpm-text;  font-weight: 600; }
+                    Text { text: "Pole pairs:"; }
+                    Text { text: root.pole-pairs; font-weight: 600; }
                 }
                 Row {
                     Text { text: "VBUS:"; }

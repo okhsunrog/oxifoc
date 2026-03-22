@@ -10,8 +10,8 @@ use defmt_parser::Level as DefmtLevel;
 use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::icd::{
-    ButtonEndpoint, FastTelemetryTopic, MotorEndpoint, SlowTelemetryEndpoint, TelemetryConfig,
-    TelemetryConfigEndpoint,
+    ButtonEndpoint, ConfigEndpoint, FastTelemetryTopic, MotorEndpoint, SlowTelemetryEndpoint,
+    TelemetryConfig, TelemetryConfigEndpoint,
 };
 use oxifoc_core::types::{ButtonEvent, ControlMode, FastTelemetry, SlowTelemetry};
 use std::{
@@ -44,11 +44,20 @@ pub fn init_tracing() {
         .try_init();
 }
 
-#[derive(Clone)]
 pub enum HostCommand {
     Motor(ControlMode),
     /// Configure telemetry streaming rates
     SetTelemetryConfig(TelemetryConfig),
+    /// Read a config group from the device
+    ConfigRead(
+        oxifoc_core::types::ConfigGroupId,
+        tokio::sync::oneshot::Sender<Result<oxifoc_core::types::ConfigResponse>>,
+    ),
+    /// Write a config group to the device
+    ConfigWrite(
+        oxifoc_core::types::ConfigWrite,
+        tokio::sync::oneshot::Sender<Result<oxifoc_core::types::ConfigResponse>>,
+    ),
 }
 
 pub struct HostRuntime {
@@ -752,6 +761,26 @@ fn spawn_protocol_tasks<NS>(
                             ),
                             Err(e) => tracing::warn!("Telemetry config failed: {:?}", e),
                         }
+                    }
+                    HostCommand::ConfigRead(group_id, reply_tx) => {
+                        use oxifoc_core::types::ConfigRequest;
+                        tracing::info!("Reading config group: {:?}", group_id);
+                        let req = ConfigRequest::Read(group_id);
+                        let res = ns
+                            .endpoints()
+                            .request::<ConfigEndpoint>(device_addr, &req, Some("config"))
+                            .await;
+                        let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
+                    }
+                    HostCommand::ConfigWrite(write, reply_tx) => {
+                        use oxifoc_core::types::ConfigRequest;
+                        tracing::info!("Writing config: {:?}", write);
+                        let req = ConfigRequest::Write(write);
+                        let res = ns
+                            .endpoints()
+                            .request::<ConfigEndpoint>(device_addr, &req, Some("config"))
+                            .await;
+                        let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
                     }
                 }
             }

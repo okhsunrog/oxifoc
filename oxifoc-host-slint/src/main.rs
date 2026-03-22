@@ -1,5 +1,7 @@
 slint::include_modules!();
 
+mod presets;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -136,6 +138,28 @@ fn main() {
         app.on_clear_log(move || {
             if let Some(app) = weak.upgrade() {
                 app.set_log_messages(ModelRc::new(VecModel::<LogMessage>::default()));
+            }
+        });
+    }
+
+    // ── Motor presets ─────────────────────────────────────────────────────────
+    {
+        let names: Vec<SharedString> = presets::preset_names()
+            .into_iter()
+            .map(SharedString::from)
+            .collect();
+        let model = ModelRc::new(VecModel::from(names));
+        app.set_preset_names(model);
+        // Default to first preset's pole pairs
+        app.set_pole_pairs(presets::PRESETS[0].pole_pairs as i32);
+    }
+    {
+        let weak = app.as_weak();
+        app.on_preset_changed(move |name| {
+            if let Some(app) = weak.upgrade()
+                && let Some(preset) = presets::PRESETS.iter().find(|p| p.name == name.as_str())
+            {
+                app.set_pole_pairs(preset.pole_pairs as i32);
             }
         });
     }
@@ -294,6 +318,10 @@ fn main() {
                                 "{:.2} A",
                                 s.ic_ma as f32 / 1000.0
                             )));
+                            app.set_erpm_text(SharedString::from(format!("{}", s.erpm)));
+                            let pole_pairs = app.get_pole_pairs().max(1);
+                            let rpm = s.erpm / pole_pairs;
+                            app.set_rpm_text(SharedString::from(format!("{}", rpm)));
                             app.set_seq_text(SharedString::from(format!("{}", s.seq)));
                         }
                         if let Some(s) = last_slow {
