@@ -97,9 +97,8 @@ pub async fn foc_loop(
                 FAST_TELEM_PERIOD, build_fast_telemetry, push_fast_telemetry,
             };
             let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
-            if period != 0 && seq % period == 0 {
-                let telem =
-                    build_fast_telemetry(&last_foc_out, out.hall_state, out.omega_e, seq);
+            if period != 0 && seq.is_multiple_of(period) {
+                let telem = build_fast_telemetry(&last_foc_out, out.hall_state, out.omega_e, seq);
                 push_fast_telemetry(&telem);
             }
         }

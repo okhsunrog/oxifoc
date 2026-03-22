@@ -154,14 +154,15 @@ fn main() {
     let temp_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // °C
 
     // Actual fast telemetry rate — set by HostRuntime after device ack
-    let fast_hz: Arc<std::sync::atomic::AtomicU16> =
-        Arc::new(std::sync::atomic::AtomicU16::new(0));
+    let fast_hz: Arc<std::sync::atomic::AtomicU16> = Arc::new(std::sync::atomic::AtomicU16::new(0));
 
     // Shared telemetry receivers — set on connect, read in BeforeRendering
-    let fast_rx_slot: Arc<std::sync::Mutex<Option<crossbeam_channel::Receiver<oxifoc_core::types::FastTelemetry>>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let slow_rx_slot: Arc<std::sync::Mutex<Option<crossbeam_channel::Receiver<oxifoc_core::types::SlowTelemetry>>>> =
-        Arc::new(std::sync::Mutex::new(None));
+    let fast_rx_slot: Arc<
+        std::sync::Mutex<Option<crossbeam_channel::Receiver<oxifoc_core::types::FastTelemetry>>>,
+    > = Arc::new(std::sync::Mutex::new(None));
+    let slow_rx_slot: Arc<
+        std::sync::Mutex<Option<crossbeam_channel::Receiver<oxifoc_core::types::SlowTelemetry>>>,
+    > = Arc::new(std::sync::Mutex::new(None));
     let connected_flag: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     refresh_serial_ports(&app, &ports_list);
@@ -246,32 +247,32 @@ fn main() {
 
                     // Drain telemetry — always consume from channel, only write to buffer if not paused
                     let mut last_fast = None;
-                    if let Ok(guard) = frx.try_lock() {
-                        if let Some(ref rx) = *guard {
-                            while let Ok(sample) = rx.try_recv() {
-                                if !currents_paused {
-                                    cb.push_frame(&[
-                                        sample.ia_ma as f32 / 1000.0,
-                                        sample.ib_ma as f32 / 1000.0,
-                                        sample.ic_ma as f32 / 1000.0,
-                                    ]);
-                                }
-                                last_fast = Some(sample);
+                    if let Ok(guard) = frx.try_lock()
+                        && let Some(ref rx) = *guard
+                    {
+                        while let Ok(sample) = rx.try_recv() {
+                            if !currents_paused {
+                                cb.push_frame(&[
+                                    sample.ia_ma as f32 / 1000.0,
+                                    sample.ib_ma as f32 / 1000.0,
+                                    sample.ic_ma as f32 / 1000.0,
+                                ]);
                             }
+                            last_fast = Some(sample);
                         }
                     }
                     let mut last_slow = None;
-                    if let Ok(guard) = srx.try_lock() {
-                        if let Some(ref rx) = *guard {
-                            while let Ok(sample) = rx.try_recv() {
-                                if !vbus_paused {
-                                    vb.push_frame(&[sample.vbus_mv as f32 / 1000.0]);
-                                }
-                                if !temp_paused {
-                                    tb.push_frame(&[sample.fet_temp_c_x10 as f32 / 10.0]);
-                                }
-                                last_slow = Some(sample);
+                    if let Ok(guard) = srx.try_lock()
+                        && let Some(ref rx) = *guard
+                    {
+                        while let Ok(sample) = rx.try_recv() {
+                            if !vbus_paused {
+                                vb.push_frame(&[sample.vbus_mv as f32 / 1000.0]);
                             }
+                            if !temp_paused {
+                                tb.push_frame(&[sample.fet_temp_c_x10 as f32 / 10.0]);
+                            }
+                            last_slow = Some(sample);
                         }
                     }
 
@@ -281,19 +282,38 @@ fn main() {
                         // Update connection status + text from latest samples
                         app.set_is_connected(conn.load(std::sync::atomic::Ordering::Relaxed));
                         if let Some(s) = last_fast {
-                            app.set_ia_text(SharedString::from(format!("{:.2} A", s.ia_ma as f32 / 1000.0)));
-                            app.set_ib_text(SharedString::from(format!("{:.2} A", s.ib_ma as f32 / 1000.0)));
-                            app.set_ic_text(SharedString::from(format!("{:.2} A", s.ic_ma as f32 / 1000.0)));
+                            app.set_ia_text(SharedString::from(format!(
+                                "{:.2} A",
+                                s.ia_ma as f32 / 1000.0
+                            )));
+                            app.set_ib_text(SharedString::from(format!(
+                                "{:.2} A",
+                                s.ib_ma as f32 / 1000.0
+                            )));
+                            app.set_ic_text(SharedString::from(format!(
+                                "{:.2} A",
+                                s.ic_ma as f32 / 1000.0
+                            )));
                             app.set_seq_text(SharedString::from(format!("{}", s.seq)));
                         }
                         if let Some(s) = last_slow {
-                            app.set_vbus_text(SharedString::from(format!("{:.2} V", s.vbus_mv as f32 / 1000.0)));
-                            app.set_temp_text(SharedString::from(format!("{:.1} °C", s.fet_temp_c_x10 as f32 / 10.0)));
+                            app.set_vbus_text(SharedString::from(format!(
+                                "{:.2} V",
+                                s.vbus_mv as f32 / 1000.0
+                            )));
+                            app.set_temp_text(SharedString::from(format!(
+                                "{:.1} °C",
+                                s.fet_temp_c_x10 as f32 / 10.0
+                            )));
                         }
 
                         // Set sample rate for plot interaction
                         let actual_hz = fhz.load(std::sync::atomic::Ordering::Relaxed);
-                        let fast_rate = if actual_hz > 0 { actual_hz as f32 } else { 1000.0 };
+                        let fast_rate = if actual_hz > 0 {
+                            actual_hz as f32
+                        } else {
+                            1000.0
+                        };
                         app.set_fast_sample_rate(fast_rate);
 
                         // Per-plot time windows and view offsets (each plot can be independently paused/zoomed)
@@ -646,4 +666,3 @@ fn refresh_probes(app: &App, probes: &Arc<std::sync::Mutex<Vec<ProbeInfo>>>) {
     app.set_probes(ModelRc::new(VecModel::from(items)));
     app.set_selected_probe(-1);
 }
-

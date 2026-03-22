@@ -246,20 +246,12 @@ pub struct SlowTelemetry {
 /// Host sends this to start/stop fast telemetry streaming.
 /// Device does not stream until host explicitly requests it.
 /// Slow telemetry is poll-based (host controls the rate).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TelemetryConfig {
     /// Desired fast telemetry rate in Hz. 0 = stop streaming.
     /// Device computes the closest achievable rate from FOC frequency.
     pub fast_hz: u16,
-}
-
-impl Default for TelemetryConfig {
-    fn default() -> Self {
-        Self {
-            fast_hz: 0, // disabled by default — host must enable
-        }
-    }
 }
 
 /// Acknowledgment for telemetry config change

@@ -17,12 +17,12 @@ jobs:
         with:
           components: rustfmt
 
-      - name: install Rust nightly (device toolchain)
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: '1.89'
-          targets: thumbv7em-none-eabihf
-          components: rustfmt
+      - name: install device toolchains
+        run: |
+          for crate in oxifoc-g431 oxifoc-g474 oxifoc-f405; do
+            channel=$(grep '^channel' "$crate/rust-toolchain.toml" | sed 's/.*= *"\(.*\)"/\1/')
+            rustup toolchain install "$channel" --target thumbv7em-none-eabihf --component rustfmt
+          done
 
       - name: format check (workspace)
         run: cargo fmt --check --all
@@ -30,7 +30,7 @@ jobs:
       - name: format check (device crates)
         run: |
           for crate in oxifoc-g431 oxifoc-g474 oxifoc-f405; do
-            (cd "$crate" && cargo +1.89 fmt --check)
+            (cd "$crate" && cargo fmt --check)
           done
 
   clippy:
@@ -83,19 +83,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: read toolchain channel
+        id: toolchain
+        run: |
+          channel=$(grep '^channel' rust-toolchain.toml | sed 's/.*= *"\(.*\)"/\1/')
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
       - name: install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: '1.89'
+          toolchain: ${{ steps.toolchain.outputs.channel }}
           targets: thumbv7em-none-eabihf
-          components: clippy
+          components: clippy, llvm-tools
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ matrix.target }}
+
+      - name: install cargo-binutils
+        run: cargo install cargo-binutils
 
       - name: clippy
         run: cargo clippy --quiet -- -D warnings
 
       - name: build release
         run: cargo build --release
+
+      - name: check for bloated symbols
+        run: ../scripts/check_bloat.sh

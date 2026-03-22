@@ -1,6 +1,6 @@
 # This file was automatically generated.
 
 [toolchain]
-channel = "1.89"
-components = ["rust-src", "rustfmt"]
+channel = "nightly-2026-03-22"
+components = ["rust-src", "rustfmt", "llvm-tools"]
 targets = ["thumbv7em-none-eabihf"]

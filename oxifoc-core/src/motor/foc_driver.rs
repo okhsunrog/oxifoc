@@ -72,8 +72,9 @@ impl CurrentLimits {
     /// then iq gets the remaining circular margin. This is correct for
     /// IPM motors where id is used for field weakening.
     #[inline]
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     pub fn clamp_targets(&self, id_target: f32, iq_target: f32) -> (f32, f32) {
-        if self.max_current_a <= 0.0 {
+        if !(self.max_current_a > 0.0) {
             return (id_target, iq_target);
         }
         let limit = self.max_current_a;
@@ -82,7 +83,10 @@ impl CurrentLimits {
         // Q-axis gets the remaining circular budget
         let iq_budget_sq = limit * limit - id * id;
         let iq_budget = if iq_budget_sq > 0.0 {
-            libm::sqrtf(iq_budget_sq)
+            // .max(0.0) lets the compiler prove -iq_budget <= iq_budget,
+            // eliminating clamp's panic branch (sqrtf can't return NaN here,
+            // but LLVM can't prove it).
+            libm::sqrtf(iq_budget_sq).max(0.0)
         } else {
             0.0
         };

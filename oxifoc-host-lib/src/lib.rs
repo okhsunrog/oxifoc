@@ -119,6 +119,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_backend(
     config: HostConfig,
     fast_tx: Sender<FastTelemetry>,
@@ -148,6 +149,7 @@ fn spawn_backend(
 
 const ERGOT_MTU: u16 = 2048;
 
+#[allow(clippy::too_many_arguments)]
 async fn backend_main(
     cfg: HostConfig,
     fast_tx: Sender<FastTelemetry>,
@@ -225,8 +227,7 @@ async fn backend_main(
         // Framed transports: UDP, USB — liveness-tracked with state notifications
         TransportConfig::Udp { host, port } => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
-            let stack =
-                transport::udp::connect(&host, port, Some(state_notify.clone())).await?;
+            let stack = transport::udp::connect(&host, port, Some(state_notify.clone())).await?;
             device_info_handshake(&stack, &info_tx, &connected_flag).await;
             enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
             spawn_protocol_tasks(
@@ -366,7 +367,9 @@ where
             transport.reader,
             transport.writer,
             queue.clone(),
-            Some(LivenessConfig { timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS }),
+            Some(LivenessConfig {
+                timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
+            }),
             Some(state_notify.clone()),
         )
         .await;
@@ -539,11 +542,8 @@ async fn device_info_handshake<NS>(
 }
 
 /// Send TelemetryConfig to enable fast telemetry streaming on the device.
-async fn enable_fast_telemetry<NS>(
-    stack: &NS,
-    fast_hz: u16,
-    fast_hz_flag: &Arc<AtomicU16>,
-) where
+async fn enable_fast_telemetry<NS>(stack: &NS, fast_hz: u16, fast_hz_flag: &Arc<AtomicU16>)
+where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
     use ergot::Address;
@@ -554,11 +554,9 @@ async fn enable_fast_telemetry<NS>(
     };
     let telem_cfg = TelemetryConfig { fast_hz };
     let ns = stack.stack();
-    let fut = ns.endpoints().request::<TelemetryConfigEndpoint>(
-        device_addr,
-        &telem_cfg,
-        None,
-    );
+    let fut = ns
+        .endpoints()
+        .request::<TelemetryConfigEndpoint>(device_addr, &telem_cfg, None);
     match tokio::time::timeout(Duration::from_millis(2000), fut).await {
         Ok(Ok(ack)) => {
             info!(

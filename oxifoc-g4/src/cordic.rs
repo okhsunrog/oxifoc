@@ -32,12 +32,11 @@ impl CordicSinCos {
     /// Configures: Cosine function, 24 iterations (≈20-bit precision),
     /// 1 argument input, 2 result outputs, q1.31 format.
     pub fn init(peri: Peri<'static, peripherals::CORDIC>) {
-        let config = cordic::Config::new(
+        let config = defmt::unwrap!(cordic::Config::new(
             cordic::Function::Cos,
             cordic::Precision::Iters24,
             Default::default(),
-        )
-        .unwrap()
+        ))
         .res_count(cordic::AccessCount::Two);
 
         let cordic = Cordic::new(peri, config);
@@ -54,8 +53,8 @@ impl SinCos for CordicSinCos {
 
         CORDIC_INSTANCE.lock(|cell| {
             let mut cordic = cell.borrow_mut();
-            let cordic = cordic.as_mut().unwrap();
-            cordic.blocking_calc_32bit(&input, &mut output).unwrap();
+            let cordic = defmt::unwrap!(cordic.as_mut());
+            defmt::unwrap!(cordic.blocking_calc_32bit(&input, &mut output));
         });
 
         // Cosine function: primary result = cos, secondary = sin

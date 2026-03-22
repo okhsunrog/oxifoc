@@ -162,7 +162,18 @@ impl ClampedPI {
     /// Controller output clamped to `[min, max]`
     pub fn update(&mut self, setpoint: f32, measurement: f32, dt: f32) -> f32 {
         let raw = self.pi.update(setpoint, measurement, dt);
-        let clamped = raw.clamp(self.min, self.max);
+        let min = if self.min.is_nan() {
+            f32::NEG_INFINITY
+        } else {
+            self.min
+        };
+        let max = if self.max.is_nan() {
+            f32::INFINITY
+        } else {
+            self.max
+        };
+        let (min, max) = if min <= max { (min, max) } else { (max, min) };
+        let clamped = raw.clamp(min, max);
 
         // Back-calculation anti-windup
         if raw != clamped {
