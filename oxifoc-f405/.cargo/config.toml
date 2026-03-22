@@ -1,6 +1,9 @@
 [build]
 target = "thumbv7em-none-eabihf"
 
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+linker = "flip-link"
+
 [target.thumbv7em-none-eabihf]
 runner = ["bash", "../scripts/probe_run_f405.sh"]
 rustflags = ["-C", "target-feature=+vfp2,-fp64"]
