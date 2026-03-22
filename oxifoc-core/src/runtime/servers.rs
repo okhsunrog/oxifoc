@@ -354,10 +354,8 @@ pub async fn config_server<NS, const N: usize>(
 /// Telemetry config server - handles rate change requests from host
 ///
 /// Allows host to adjust fast/slow telemetry streaming rates at runtime.
-pub async fn telemetry_config_server<NS, const N: usize>(
-    endpoints: Endpoints<NS>,
-    foc_freq_hz: u32,
-) where
+pub async fn telemetry_config_server<NS, const N: usize>(endpoints: Endpoints<NS>, foc_freq_hz: u32)
+where
     NS: NetStackHandle,
 {
     let server = endpoints.bounded_server::<TelemetryConfigEndpoint, N>(Some("telemetry_config"));
@@ -371,9 +369,7 @@ pub async fn telemetry_config_server<NS, const N: usize>(
                 FAST_TELEM_DIVIDER.store(divider, Ordering::Relaxed);
 
                 let actual_fast_hz = (foc_freq_hz / divider as u32) as u16;
-                async move {
-                    TelemetryConfigAck { actual_fast_hz }
-                }
+                async move { TelemetryConfigAck { actual_fast_hz } }
             })
             .await;
     }

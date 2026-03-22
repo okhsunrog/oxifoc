@@ -58,7 +58,7 @@ pub async fn fast_telemetry_stream<NS>(
         }
 
         let divider = FAST_TELEM_DIVIDER.load(Ordering::Relaxed) as u32;
-        if divider == 0 || cycle_count % divider != 0 {
+        if divider == 0 || !cycle_count.is_multiple_of(divider) {
             continue;
         }
 
@@ -99,12 +99,14 @@ pub async fn fast_telemetry_stream<NS>(
             seq,
         };
 
-        let result = stack.stack().topics().broadcast::<FastTelemetryTopic>(&msg, None);
+        let _result = stack
+            .stack()
+            .topics()
+            .broadcast::<FastTelemetryTopic>(&msg, None);
 
         #[cfg(feature = "log")]
         if seq <= 3 {
-            log::info!("fast_telemetry broadcast seq={} result={:?}", seq, result);
+            log::info!("fast_telemetry broadcast seq={} result={:?}", seq, _result);
         }
     }
 }
-

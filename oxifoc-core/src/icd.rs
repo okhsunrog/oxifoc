@@ -43,7 +43,12 @@ topic!(FastTelemetryTopic, FastTelemetry, "telemetry/fast");
 // Slow telemetry endpoint (host polls device)
 // Host periodically requests system health data (~10Hz).
 // Serves as both telemetry and heartbeat for device-side liveness tracking.
-endpoint!(SlowTelemetryEndpoint, (), SlowTelemetry, "req/telemetry_slow");
+endpoint!(
+    SlowTelemetryEndpoint,
+    (),
+    SlowTelemetry,
+    "req/telemetry_slow"
+);
 
 // TODO: EnergyTelemetryTopic — add when energy tracking is implemented
 // topic!(EnergyTelemetryTopic, EnergyTelemetry, "telemetry/energy");
@@ -63,7 +68,12 @@ endpoint!(MotorEndpoint, ControlMode, MotorStatus, "cmd/motor");
 
 // Telemetry rate configuration endpoint (host → device)
 // Host configures fast/slow telemetry streaming rates.
-endpoint!(TelemetryConfigEndpoint, TelemetryConfig, TelemetryConfigAck, "cmd/telemetry_config");
+endpoint!(
+    TelemetryConfigEndpoint,
+    TelemetryConfig,
+    TelemetryConfigAck,
+    "cmd/telemetry_config"
+);
 
 // Fault management endpoint (host → device)
 endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");

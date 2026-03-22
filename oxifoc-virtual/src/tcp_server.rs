@@ -9,7 +9,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use critical_section::Mutex as CriticalSectionMutex;
 use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
-use ergot::toolkits::tokio_stream::{self as stream_kit, EdgeStack, WaitQueue, register_target_stream};
+use ergot::toolkits::tokio_stream::{
+    self as stream_kit, EdgeStack, WaitQueue, register_target_stream,
+};
 use heapless::String;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -94,7 +96,10 @@ pub async fn run(
                 let _ = mcu.push_str("x86_64 (virtual)");
                 let _ = uuid.push_str("00000000-virtual");
                 let device_info = DeviceInfo {
-                    hw, sw, mcu, uuid,
+                    hw,
+                    sw,
+                    mcu,
+                    uuid,
                     foc_freq_hz,
                     max_current_a,
                 };
@@ -121,10 +126,9 @@ pub async fn run(
             let token = conn_token.clone();
             async move {
                 // Wait until interface is Active (has net_id from first incoming frame)
-                let already_active = stack
-                    .manage_profile(|im| {
-                        matches!(im.interface_state(()), Some(InterfaceState::Active { .. }))
-                    });
+                let already_active = stack.manage_profile(|im| {
+                    matches!(im.interface_state(()), Some(InterfaceState::Active { .. }))
+                });
                 if !already_active {
                     loop {
                         tokio::select! {

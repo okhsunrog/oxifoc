@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use critical_section::Mutex as CriticalSectionMutex;
-use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
 use ergot::interface_manager::profiles::direct_edge::tokio_udp::InterfaceKind;
+use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
 use ergot::toolkits::tokio_stream::WaitQueue;
 use ergot::toolkits::tokio_udp::{self as udp_kit, EdgeStack};
 use heapless::String;
@@ -157,11 +157,8 @@ pub async fn run(
 }
 
 /// Wait until the interface state matches a predicate.
-async fn wait_for_state<F>(
-    state_notify: &Arc<WaitQueue>,
-    stack: &EdgeStack,
-    predicate: F,
-) where
+async fn wait_for_state<F>(state_notify: &Arc<WaitQueue>, stack: &EdgeStack, predicate: F)
+where
     F: Fn(Option<InterfaceState>) -> bool,
 {
     // Check current state first

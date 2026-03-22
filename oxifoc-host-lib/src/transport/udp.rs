@@ -25,9 +25,16 @@ pub async fn connect(host: &str, port: u16) -> Result<EdgeStack> {
 
     info!("UDP connected to {}", addr);
 
-    tokio_udp::register_edge_interface(&stack, socket, &queue, InterfaceKind::Controller, None, None)
-        .await
-        .map_err(|_| anyhow::anyhow!("UDP interface already active"))?;
+    tokio_udp::register_edge_interface(
+        &stack,
+        socket,
+        &queue,
+        InterfaceKind::Controller,
+        None,
+        None,
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("UDP interface already active"))?;
 
     Ok(stack)
 }

@@ -70,8 +70,13 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     tracing::info!(
         "oxifoc-virtual: {:?} port={}, foc={}Hz, batch={}, vbus={}V, pp={}, max_i={}A",
-        args.transport, args.port, args.foc_freq, args.batch, args.vbus,
-        args.pole_pairs, args.max_current,
+        args.transport,
+        args.port,
+        args.foc_freq,
+        args.batch,
+        args.vbus,
+        args.pole_pairs,
+        args.max_current,
     );
 
     // Storage worker uses !Send futures (sequential-storage internals),
@@ -103,15 +108,25 @@ async fn main() -> anyhow::Result<()> {
     match args.transport {
         Transport::Tcp => {
             tcp_server::run(
-                args.port, args.foc_freq, args.max_current,
-                &STATE, &FAULT_REGISTRY, &RUNTIME_CONFIG,
-            ).await
+                args.port,
+                args.foc_freq,
+                args.max_current,
+                &STATE,
+                &FAULT_REGISTRY,
+                &RUNTIME_CONFIG,
+            )
+            .await
         }
         Transport::Udp => {
             udp_server::run(
-                args.port, args.foc_freq, args.max_current,
-                &STATE, &FAULT_REGISTRY, &RUNTIME_CONFIG,
-            ).await
+                args.port,
+                args.foc_freq,
+                args.max_current,
+                &STATE,
+                &FAULT_REGISTRY,
+                &RUNTIME_CONFIG,
+            )
+            .await
         }
     }
 }

@@ -453,10 +453,12 @@ fn main() {
             let guard = rt.lock().unwrap();
             if let Some(ref runtime) = *guard {
                 tracing::info!("Motor start: duty={duty:.0}%, iq_target={iq_target:.2}A");
-                match runtime.cmd_tx.send(HostCommand::Motor(ControlMode::CurrentControl {
-                    iq_target,
-                    id_target: 0.0,
-                })) {
+                match runtime
+                    .cmd_tx
+                    .send(HostCommand::Motor(ControlMode::CurrentControl {
+                        iq_target,
+                        id_target: 0.0,
+                    })) {
                     Ok(()) => tracing::debug!("Motor command sent"),
                     Err(e) => tracing::error!("Failed to send motor command: {e}"),
                 }
@@ -473,7 +475,10 @@ fn main() {
             let guard = rt.lock().unwrap();
             if let Some(ref runtime) = *guard {
                 tracing::info!("Motor stop");
-                match runtime.cmd_tx.send(HostCommand::Motor(ControlMode::Stopped)) {
+                match runtime
+                    .cmd_tx
+                    .send(HostCommand::Motor(ControlMode::Stopped))
+                {
                     Ok(()) => tracing::debug!("Stop command sent"),
                     Err(e) => tracing::error!("Failed to send stop command: {e}"),
                 }
@@ -525,6 +530,7 @@ fn refresh_probes(app: &App, probes: &Arc<std::sync::Mutex<Vec<ProbeInfo>>>) {
     app.set_selected_probe(-1);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn telemetry_loop(
     weak: slint::Weak<App>,
     fast_rx: crossbeam_channel::Receiver<oxifoc_core::types::FastTelemetry>,
@@ -572,9 +578,7 @@ fn telemetry_loop(
             let _ = weak.upgrade_in_event_loop(move |app| {
                 app.set_is_connected(is_conn);
                 app.set_vbus_text(format!("{:.2} V", sample.vbus_mv as f32 / 1000.0).into());
-                app.set_temp_text(
-                    format!("{:.1} °C", sample.fet_temp_c_x10 as f32 / 10.0).into(),
-                );
+                app.set_temp_text(format!("{:.1} °C", sample.fet_temp_c_x10 as f32 / 10.0).into());
             });
         }
 

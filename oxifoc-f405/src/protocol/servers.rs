@@ -60,7 +60,10 @@ pub async fn protocol_servers() {
     let _ = mcu.push_str("STM32F405RG");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
     let device_info = DeviceInfo {
-        hw, sw, mcu, uuid,
+        hw,
+        sw,
+        mcu,
+        uuid,
         foc_freq_hz: crate::config::PWM_CONFIG.pwm_freq_hz,
         max_current_a: crate::config::BOARD.max_phase_current_a,
     };

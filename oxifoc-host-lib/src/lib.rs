@@ -10,8 +10,8 @@ use defmt_parser::Level as DefmtLevel;
 use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::icd::{
-    ButtonEndpoint, FastTelemetryTopic, MotorEndpoint, SlowTelemetryEndpoint,
-    TelemetryConfig, TelemetryConfigEndpoint,
+    ButtonEndpoint, FastTelemetryTopic, MotorEndpoint, SlowTelemetryEndpoint, TelemetryConfig,
+    TelemetryConfigEndpoint,
 };
 use oxifoc_core::types::{ButtonEvent, ControlMode, FastTelemetry, SlowTelemetry};
 use std::{
@@ -253,6 +253,7 @@ async fn backend_main(
 ///
 /// Protocol tasks (telemetry, commands) are spawned once and survive reconnections.
 /// Only the transport stream is re-established when the link goes down.
+#[allow(clippy::too_many_arguments)]
 async fn run_cobs_stream_with_reconnect<F, Fut>(
     connect_fn: F,
     cfg: &HostConfig,
@@ -356,18 +357,29 @@ where
         // DeviceInfo handshake — runs on each (re)connection
         {
             use ergot::Address;
-            let device_addr = Address { network_id: 1, node_id: 2, port_id: 0 };
+            let device_addr = Address {
+                network_id: 1,
+                node_id: 2,
+                port_id: 0,
+            };
             let mut backoff = Duration::from_millis(100);
             for attempt in 1..=10u32 {
                 let fut = stack.endpoints().request::<oxifoc_core::icd::InfoEndpoint>(
-                    device_addr, &(), Some("device_info"),
+                    device_addr,
+                    &(),
+                    Some("device_info"),
                 );
                 match tokio::time::timeout(Duration::from_millis(800), fut).await {
                     Ok(Ok(dev_info)) => {
-                        info!("Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A",
-                            dev_info.hw.as_str(), dev_info.sw.as_str(),
-                            dev_info.mcu.as_str(), dev_info.uuid.as_str(),
-                            dev_info.foc_freq_hz, dev_info.max_current_a);
+                        info!(
+                            "Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A",
+                            dev_info.hw.as_str(),
+                            dev_info.sw.as_str(),
+                            dev_info.mcu.as_str(),
+                            dev_info.uuid.as_str(),
+                            dev_info.foc_freq_hz,
+                            dev_info.max_current_a
+                        );
                         let _ = info_tx.send(dev_info);
                         connected_flag.store(true, Ordering::Relaxed);
                         break;
@@ -450,19 +462,30 @@ async fn device_info_handshake<NS>(
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
     use ergot::Address;
-    let device_addr = Address { network_id: 1, node_id: 2, port_id: 0 };
+    let device_addr = Address {
+        network_id: 1,
+        node_id: 2,
+        port_id: 0,
+    };
     let ns = stack.stack();
     let mut backoff = Duration::from_millis(100);
     for attempt in 1..=10u32 {
         let fut = ns.endpoints().request::<oxifoc_core::icd::InfoEndpoint>(
-            device_addr, &(), Some("device_info"),
+            device_addr,
+            &(),
+            Some("device_info"),
         );
         match tokio::time::timeout(Duration::from_millis(800), fut).await {
             Ok(Ok(dev_info)) => {
-                info!("Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A",
-                    dev_info.hw.as_str(), dev_info.sw.as_str(),
-                    dev_info.mcu.as_str(), dev_info.uuid.as_str(),
-                    dev_info.foc_freq_hz, dev_info.max_current_a);
+                info!(
+                    "Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A",
+                    dev_info.hw.as_str(),
+                    dev_info.sw.as_str(),
+                    dev_info.mcu.as_str(),
+                    dev_info.uuid.as_str(),
+                    dev_info.foc_freq_hz,
+                    dev_info.max_current_a
+                );
                 let _ = info_tx.send(dev_info);
                 connected_flag.store(true, Ordering::Relaxed);
                 return;
@@ -550,8 +573,9 @@ fn spawn_protocol_tasks<NS>(
         let token = cancel_token.clone();
         async move {
             let ns = stack.stack();
-            let receiver =
-                ns.topics().single_receiver::<FastTelemetryTopic>(Some("fast_telem"));
+            let receiver = ns
+                .topics()
+                .single_receiver::<FastTelemetryTopic>(Some("fast_telem"));
             let mut pinned = pin!(receiver);
             let mut hdl = pinned.as_mut().subscribe();
 
@@ -643,11 +667,17 @@ fn spawn_protocol_tasks<NS>(
                         tracing::info!("Setting telemetry config: {:?}", cfg);
                         let res = ns
                             .endpoints()
-                            .request::<TelemetryConfigEndpoint>(device_addr, &cfg, Some("telem_cfg"))
+                            .request::<TelemetryConfigEndpoint>(
+                                device_addr,
+                                &cfg,
+                                Some("telem_cfg"),
+                            )
                             .await;
                         match &res {
-                            Ok(ack) => tracing::info!("Telemetry config ack: fast={}Hz",
-                                ack.actual_fast_hz),
+                            Ok(ack) => tracing::info!(
+                                "Telemetry config ack: fast={}Hz",
+                                ack.actual_fast_hz
+                            ),
                             Err(e) => tracing::warn!("Telemetry config failed: {:?}", e),
                         }
                     }
@@ -655,7 +685,6 @@ fn spawn_protocol_tasks<NS>(
             }
         }
     });
-
 }
 
 // ── Defmt decoding ───────────────────────────────────────────────────────────
