@@ -234,8 +234,10 @@ pub fn run_detection(
     det_params: DetectionParams,
 ) -> Result<DetectionResult, DetectionError> {
     with_sim(motor_params, vbus, |hw| {
-        block_on(run_full_detection::<VirtualHardware, VirtualTimer>(
-            hw, det_params,
-        ))
+        block_on(run_full_detection::<
+            VirtualHardware,
+            VirtualTimer,
+            crate::foc::trig::LibmSinCos,
+        >(hw, det_params))
     })
 }

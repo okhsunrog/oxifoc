@@ -7,6 +7,7 @@
 
 use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
+use oxifoc_core::foc::trig::SinCos;
 
 use crate::STATE;
 use crate::config::BOARD;
@@ -26,11 +27,11 @@ pub async fn measure_resistance(params: &ResistanceParams) -> Result<f32, Detect
 }
 
 /// Measure motor inductance using rotating HFI.
-pub async fn measure_inductance(
+pub async fn measure_inductance<S: SinCos>(
     params: &InductanceParams,
     pwm_freq_hz: f32,
 ) -> Result<(f32, f32), DetectionError> {
-    oxifoc_g4::calibration::measure_inductance(
+    oxifoc_g4::calibration::measure_inductance::<S>(
         params,
         pwm_freq_hz,
         &STATE,
@@ -51,10 +52,10 @@ pub async fn measure_flux_linkage(params: &FluxLinkageParams) -> Result<f32, Det
 }
 
 /// Run full motor parameter detection sequence.
-pub async fn run_full_detection(
+pub async fn run_full_detection<S: SinCos>(
     params: DetectionParams,
 ) -> Result<DetectionResult, DetectionError> {
-    oxifoc_g4::calibration::run_full_detection(
+    oxifoc_g4::calibration::run_full_detection::<S>(
         params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD,
     )
     .await

@@ -16,6 +16,7 @@ use oxifoc_core::foc::config::BoardConfig;
 use oxifoc_core::foc::controller::FocOutput;
 use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::detection::sweep::{self, DetectionHardware, HallReader};
+use oxifoc_core::foc::trig::SinCos;
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::motor::ControlMode;
 use oxifoc_core::state::{self, MotorControlState};
@@ -137,7 +138,7 @@ pub async fn measure_resistance(
 }
 
 /// Measure motor inductance using rotating HFI.
-pub async fn measure_inductance(
+pub async fn measure_inductance<S: SinCos>(
     params: &InductanceParams,
     pwm_freq_hz: f32,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
@@ -147,7 +148,7 @@ pub async fn measure_inductance(
     board: &'static BoardConfig,
 ) -> Result<(f32, f32), DetectionError> {
     let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
-    sweep::measure_inductance::<_, EmbassyTimer>(&mut hw, params, pwm_freq_hz).await
+    sweep::measure_inductance::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz).await
 }
 
 /// Measure motor flux linkage via open-loop spinning.
@@ -164,7 +165,7 @@ pub async fn measure_flux_linkage(
 }
 
 /// Run full motor parameter detection sequence.
-pub async fn run_full_detection(
+pub async fn run_full_detection<S: SinCos>(
     params: DetectionParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
@@ -173,7 +174,7 @@ pub async fn run_full_detection(
     board: &'static BoardConfig,
 ) -> Result<DetectionResult, DetectionError> {
     let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
-    sweep::run_full_detection::<_, EmbassyTimer>(&mut hw, params).await
+    sweep::run_full_detection::<_, EmbassyTimer, S>(&mut hw, params).await
 }
 
 /// Run Hall sensor calibration.

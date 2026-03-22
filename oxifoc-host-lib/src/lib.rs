@@ -10,8 +10,8 @@ use defmt_parser::Level as DefmtLevel;
 use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::icd::{
-    ButtonEndpoint, ConfigEndpoint, FastTelemetryTopic, MotorEndpoint, SlowTelemetryEndpoint,
-    TelemetryConfig, TelemetryConfigEndpoint,
+    ButtonEndpoint, ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, MotorEndpoint,
+    SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigEndpoint,
 };
 use oxifoc_core::types::{ButtonEvent, ControlMode, FastTelemetry, SlowTelemetry};
 use std::{
@@ -44,19 +44,40 @@ pub fn init_tracing() {
         .try_init();
 }
 
+/// Type alias for config response oneshot channels
+pub type ConfigResponseSender =
+    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::ConfigResponse>>;
+pub type ConfigResponseReceiver =
+    tokio::sync::oneshot::Receiver<Result<oxifoc_core::types::ConfigResponse>>;
+
+/// Create a oneshot channel pair for config request/response
+pub fn config_channel() -> (ConfigResponseSender, ConfigResponseReceiver) {
+    tokio::sync::oneshot::channel()
+}
+
+/// Type alias for detect response oneshot channels
+pub type DetectResponseSender =
+    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::DetectResponse>>;
+pub type DetectResponseReceiver =
+    tokio::sync::oneshot::Receiver<Result<oxifoc_core::types::DetectResponse>>;
+
+/// Create a oneshot channel pair for detect request/response
+pub fn detect_channel() -> (DetectResponseSender, DetectResponseReceiver) {
+    tokio::sync::oneshot::channel()
+}
+
 pub enum HostCommand {
     Motor(ControlMode),
     /// Configure telemetry streaming rates
     SetTelemetryConfig(TelemetryConfig),
     /// Read a config group from the device
-    ConfigRead(
-        oxifoc_core::types::ConfigGroupId,
-        tokio::sync::oneshot::Sender<Result<oxifoc_core::types::ConfigResponse>>,
-    ),
+    ConfigRead(oxifoc_core::types::ConfigGroupId, ConfigResponseSender),
     /// Write a config group to the device
-    ConfigWrite(
-        oxifoc_core::types::ConfigWrite,
-        tokio::sync::oneshot::Sender<Result<oxifoc_core::types::ConfigResponse>>,
+    ConfigWrite(oxifoc_core::types::ConfigWrite, ConfigResponseSender),
+    /// Run motor detection sequence (long-running, ~30s)
+    Detect(
+        oxifoc_core::types::DetectRequest,
+        tokio::sync::oneshot::Sender<Result<oxifoc_core::types::DetectResponse>>,
     ),
 }
 
@@ -781,6 +802,23 @@ fn spawn_protocol_tasks<NS>(
                             .request::<ConfigEndpoint>(device_addr, &req, Some("config"))
                             .await;
                         let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
+                    }
+                    HostCommand::Detect(req, reply_tx) => {
+                        tracing::info!("Starting motor detection: {:?}", req);
+                        let res = tokio::time::timeout(
+                            Duration::from_secs(60),
+                            ns.endpoints().request::<DetectEndpoint>(
+                                device_addr,
+                                &req,
+                                Some("detect"),
+                            ),
+                        )
+                        .await;
+                        let result = match res {
+                            Ok(inner) => inner.map_err(|e| anyhow::anyhow!("{:?}", e)),
+                            Err(_) => Err(anyhow::anyhow!("Detection timed out (60s)")),
+                        };
+                        let _ = reply_tx.send(result);
                     }
                 }
             }

@@ -205,11 +205,13 @@ pub struct FastTelemetry {
 
 /// Batch of fast telemetry samples for efficient network transmission.
 ///
-/// Up to 32 samples per batch (fits within 2048-byte MTU for TCP/serial).
+/// Generic over capacity `N`. The wire format is independent of `N` — postcard
+/// only encodes actual elements. A sender using `FastTelemetryBatch<8>` is
+/// wire-compatible with a receiver using `FastTelemetryBatch<32>`.
 #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct FastTelemetryBatch {
-    pub samples: Vec<FastTelemetry, 32>,
+pub struct FastTelemetryBatch<const N: usize = 32> {
+    pub samples: Vec<FastTelemetry, N>,
 }
 
 /// Low-frequency system telemetry (streamed at configurable rate, default 10Hz)

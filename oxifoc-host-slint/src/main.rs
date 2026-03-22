@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use oxifoc_core::types::ControlMode;
 use oxifoc_host_lib::{
-    HostCommand, HostConfig, HostRuntime, ProbeInfo, SerialPortInfo, TransportType, list_probes,
-    list_serial_ports, start_host,
+    HostCommand, HostConfig, HostRuntime, ProbeInfo, SerialPortInfo, TransportType, config_channel,
+    list_probes, list_serial_ports, start_host,
 };
 use slint::wgpu_28::WGPUConfiguration;
 use slint::{
@@ -160,6 +160,15 @@ fn main() {
                 && let Some(preset) = presets::PRESETS.iter().find(|p| p.name == name.as_str())
             {
                 app.set_pole_pairs(preset.pole_pairs as i32);
+                app.set_detect_max_loss(SharedString::from(format!("{}", preset.max_power_loss_w)));
+                app.set_detect_openloop_erpm(SharedString::from(format!(
+                    "{}",
+                    preset.openloop_erpm
+                )));
+                app.set_detect_sensorless_erpm(SharedString::from(format!(
+                    "{}",
+                    preset.sensorless_erpm
+                )));
             }
         });
     }
@@ -650,6 +659,344 @@ fn main() {
             } else {
                 tracing::warn!("Motor stop clicked but no runtime");
             }
+        });
+    }
+
+    // ── Config read ──────────────────────────────────────────────────────────
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_config_read(move || {
+            let guard = rt.lock().unwrap();
+            let Some(ref runtime) = *guard else {
+                tracing::warn!("Config read clicked but no runtime");
+                return;
+            };
+            let weak = weak.clone();
+            let app = weak.unwrap();
+            let group_idx = app.get_config_group();
+
+            use oxifoc_core::types::ConfigGroupId;
+            let group_id = match group_idx {
+                0 => ConfigGroupId::MotorParams,
+                1 => ConfigGroupId::CurrentLimits,
+                2 => ConfigGroupId::VoltageLimits,
+                3 => ConfigGroupId::PiGains,
+                _ => return,
+            };
+
+            let (tx, rx) = config_channel();
+            if runtime
+                .cmd_tx
+                .send(HostCommand::ConfigRead(group_id, tx))
+                .is_err()
+            {
+                return;
+            }
+
+            thread::spawn(move || {
+                let result = rx.blocking_recv();
+                let _ = weak.upgrade_in_event_loop(move |app| {
+                    use oxifoc_core::types::ConfigResponse;
+                    match result {
+                        Ok(Ok(resp)) => {
+                            match resp {
+                                ConfigResponse::MotorParams(p) => {
+                                    app.set_cfg_resistance(SharedString::from(format!(
+                                        "{}",
+                                        p.resistance_ohm
+                                    )));
+                                    app.set_cfg_inductance_d(SharedString::from(format!(
+                                        "{}",
+                                        p.inductance_d_h
+                                    )));
+                                    app.set_cfg_inductance_q(SharedString::from(format!(
+                                        "{}",
+                                        p.inductance_q_h
+                                    )));
+                                    app.set_cfg_flux_linkage(SharedString::from(format!(
+                                        "{}",
+                                        p.flux_linkage_wb
+                                    )));
+                                    app.set_cfg_pole_pairs(SharedString::from(format!(
+                                        "{}",
+                                        p.pole_pairs
+                                    )));
+                                }
+                                ConfigResponse::CurrentLimits(c) => {
+                                    app.set_cfg_max_iq(SharedString::from(format!(
+                                        "{}",
+                                        c.max_iq_a
+                                    )));
+                                    app.set_cfg_max_phase_current(SharedString::from(format!(
+                                        "{}",
+                                        c.max_phase_current_a
+                                    )));
+                                }
+                                ConfigResponse::VoltageLimits(v) => {
+                                    app.set_cfg_min_vbus(SharedString::from(format!(
+                                        "{}",
+                                        v.min_vbus_mv
+                                    )));
+                                    app.set_cfg_max_vbus(SharedString::from(format!(
+                                        "{}",
+                                        v.max_vbus_mv
+                                    )));
+                                }
+                                ConfigResponse::PiGains(g) => {
+                                    app.set_cfg_kp(SharedString::from(format!("{}", g.kp)));
+                                    app.set_cfg_ki(SharedString::from(format!("{}", g.ki)));
+                                    app.set_cfg_bandwidth(SharedString::from(format!(
+                                        "{}",
+                                        g.bandwidth_rad_s
+                                    )));
+                                }
+                                ConfigResponse::NotFound => {
+                                    app.set_config_status(SharedString::from("Not stored"));
+                                    return;
+                                }
+                                _ => {}
+                            }
+                            app.set_config_status(SharedString::from("OK"));
+                        }
+                        Ok(Err(e)) => {
+                            app.set_config_status(SharedString::from(format!("Error: {e}")));
+                        }
+                        Err(_) => {
+                            app.set_config_status(SharedString::from("No response"));
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    // ── Config write ─────────────────────────────────────────────────────────
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_config_write(move || {
+            let guard = rt.lock().unwrap();
+            let Some(ref runtime) = *guard else {
+                tracing::warn!("Config write clicked but no runtime");
+                return;
+            };
+            let weak = weak.clone();
+            let app = weak.unwrap();
+            let group_idx = app.get_config_group();
+
+            use oxifoc_core::storage::*;
+            use oxifoc_core::types::ConfigWrite;
+
+            let write = match group_idx {
+                0 => {
+                    let r: f32 = app.get_cfg_resistance().parse().unwrap_or(0.0);
+                    let ld: f32 = app.get_cfg_inductance_d().parse().unwrap_or(0.0);
+                    let lq: f32 = app.get_cfg_inductance_q().parse().unwrap_or(0.0);
+                    let fl: f32 = app.get_cfg_flux_linkage().parse().unwrap_or(0.0);
+                    let pp: u8 = app.get_cfg_pole_pairs().parse().unwrap_or(1);
+                    ConfigWrite::MotorParams(MotorParamsConfig {
+                        resistance_ohm: r,
+                        inductance_d_h: ld,
+                        inductance_q_h: lq,
+                        flux_linkage_wb: fl,
+                        pole_pairs: pp,
+                    })
+                }
+                1 => {
+                    let iq: f32 = app.get_cfg_max_iq().parse().unwrap_or(0.0);
+                    let ph: f32 = app.get_cfg_max_phase_current().parse().unwrap_or(0.0);
+                    ConfigWrite::CurrentLimits(CurrentLimitsConfig {
+                        max_iq_a: iq,
+                        max_phase_current_a: ph,
+                    })
+                }
+                2 => {
+                    let min: u32 = app.get_cfg_min_vbus().parse().unwrap_or(0);
+                    let max: u32 = app.get_cfg_max_vbus().parse().unwrap_or(0);
+                    ConfigWrite::VoltageLimits(VoltageLimitsConfig {
+                        min_vbus_mv: min,
+                        max_vbus_mv: max,
+                    })
+                }
+                3 => {
+                    let kp: f32 = app.get_cfg_kp().parse().unwrap_or(0.0);
+                    let ki: f32 = app.get_cfg_ki().parse().unwrap_or(0.0);
+                    let bw: f32 = app.get_cfg_bandwidth().parse().unwrap_or(0.0);
+                    ConfigWrite::PiGains(PiGainsConfig {
+                        kp,
+                        ki,
+                        bandwidth_rad_s: bw,
+                    })
+                }
+                _ => return,
+            };
+
+            let (tx, rx) = config_channel();
+            if runtime
+                .cmd_tx
+                .send(HostCommand::ConfigWrite(write, tx))
+                .is_err()
+            {
+                return;
+            }
+
+            thread::spawn(move || {
+                let result = rx.blocking_recv();
+                let _ = weak.upgrade_in_event_loop(move |app| match result {
+                    Ok(Ok(_)) => {
+                        app.set_config_status(SharedString::from("Written OK"));
+                    }
+                    Ok(Err(e)) => {
+                        app.set_config_status(SharedString::from(format!("Error: {e}")));
+                    }
+                    Err(_) => {
+                        app.set_config_status(SharedString::from("No response"));
+                    }
+                });
+            });
+        });
+    }
+
+    // ── Detect start ─────────────────────────────────────────────────────────
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_detect_start(move || {
+            let guard = rt.lock().unwrap();
+            let Some(ref runtime) = *guard else {
+                return;
+            };
+            let weak = weak.clone();
+            let app = weak.unwrap();
+
+            let pole_pairs = app.get_pole_pairs().max(1) as u8;
+            let max_loss: f32 = app.get_detect_max_loss().parse().unwrap_or(120.0);
+            let openloop_erpm: f32 = app.get_detect_openloop_erpm().parse().unwrap_or(700.0);
+            let sensorless_erpm: f32 = app.get_detect_sensorless_erpm().parse().unwrap_or(4000.0);
+
+            let req = oxifoc_core::types::DetectRequest {
+                pole_pairs,
+                max_power_loss_w: max_loss,
+                openloop_erpm,
+                sensorless_erpm,
+            };
+
+            app.set_detect_status(SharedString::from("Running..."));
+
+            let (tx, rx) = oxifoc_host_lib::detect_channel();
+            if runtime.cmd_tx.send(HostCommand::Detect(req, tx)).is_err() {
+                return;
+            }
+
+            thread::spawn(move || {
+                let result = rx.blocking_recv();
+                let _ = weak.upgrade_in_event_loop(move |app| {
+                    use oxifoc_core::types::DetectResponse;
+                    match result {
+                        Ok(Ok(DetectResponse::Ok {
+                            resistance_ohm,
+                            inductance_d_h,
+                            inductance_q_h,
+                            flux_linkage_wb,
+                            kv_rpm_per_v,
+                            max_current_a,
+                            kp_current,
+                            ki_current,
+                        })) => {
+                            app.set_detect_resistance(SharedString::from(format!(
+                                "{resistance_ohm:.4}"
+                            )));
+                            app.set_detect_inductance_d(SharedString::from(format!(
+                                "{inductance_d_h:.6}"
+                            )));
+                            app.set_detect_inductance_q(SharedString::from(format!(
+                                "{inductance_q_h:.6}"
+                            )));
+                            app.set_detect_flux_linkage(SharedString::from(format!(
+                                "{flux_linkage_wb:.6}"
+                            )));
+                            app.set_detect_kv(SharedString::from(format!("{kv_rpm_per_v:.1}")));
+                            app.set_detect_max_current(SharedString::from(format!(
+                                "{max_current_a:.2}"
+                            )));
+                            app.set_detect_kp(SharedString::from(format!("{kp_current:.4}")));
+                            app.set_detect_ki(SharedString::from(format!("{ki_current:.2}")));
+                            app.set_detect_status(SharedString::from("OK"));
+                        }
+                        Ok(Ok(DetectResponse::Error(e))) => {
+                            app.set_detect_status(SharedString::from(format!("Error: {e:?}")));
+                        }
+                        Ok(Err(e)) => {
+                            app.set_detect_status(SharedString::from(format!("Error: {e}")));
+                        }
+                        Err(_) => {
+                            app.set_detect_status(SharedString::from("No response"));
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    // ── Detect apply to config ──────────────────────────────────────────────
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_detect_apply(move || {
+            let guard = rt.lock().unwrap();
+            let Some(ref runtime) = *guard else {
+                return;
+            };
+            let weak = weak.clone();
+            let app = weak.unwrap();
+
+            use oxifoc_core::storage::{MotorParamsConfig, PiGainsConfig};
+            use oxifoc_core::types::ConfigWrite;
+
+            let r: f32 = app.get_detect_resistance().parse().unwrap_or(0.0);
+            let ld: f32 = app.get_detect_inductance_d().parse().unwrap_or(0.0);
+            let lq: f32 = app.get_detect_inductance_q().parse().unwrap_or(0.0);
+            let fl: f32 = app.get_detect_flux_linkage().parse().unwrap_or(0.0);
+            let pp = app.get_pole_pairs().max(1) as u8;
+            let kp: f32 = app.get_detect_kp().parse().unwrap_or(0.0);
+            let ki: f32 = app.get_detect_ki().parse().unwrap_or(0.0);
+
+            // Write motor params
+            let (tx1, rx1) = config_channel();
+            let _ = runtime.cmd_tx.send(HostCommand::ConfigWrite(
+                ConfigWrite::MotorParams(MotorParamsConfig {
+                    resistance_ohm: r,
+                    inductance_d_h: ld,
+                    inductance_q_h: lq,
+                    flux_linkage_wb: fl,
+                    pole_pairs: pp,
+                }),
+                tx1,
+            ));
+
+            // Write PI gains
+            let (tx2, rx2) = config_channel();
+            let _ = runtime.cmd_tx.send(HostCommand::ConfigWrite(
+                ConfigWrite::PiGains(PiGainsConfig {
+                    kp,
+                    ki,
+                    bandwidth_rad_s: 0.0,
+                }),
+                tx2,
+            ));
+
+            thread::spawn(move || {
+                let r1 = rx1.blocking_recv();
+                let r2 = rx2.blocking_recv();
+                let _ = weak.upgrade_in_event_loop(move |app| {
+                    if r1.is_ok() && r2.is_ok() {
+                        app.set_detect_status(SharedString::from("Applied to config"));
+                    } else {
+                        app.set_detect_status(SharedString::from("Failed to apply"));
+                    }
+                });
+            });
         });
     }
 

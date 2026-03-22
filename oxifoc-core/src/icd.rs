@@ -26,7 +26,7 @@
 //! | `DetectEndpoint` | `DetectRequest` | `DetectResponse` | Motor detection |
 //! | `ButtonEndpoint` | `ButtonEvent` | `()` | Button events from device |
 
-use ergot::{endpoint, topic};
+use ergot::endpoint;
 
 // Re-export all types for convenience
 pub use crate::types::*;
@@ -47,7 +47,17 @@ pub const LIVENESS_TIMEOUT_MS: u64 = 1000;
 // Fast telemetry topic (device → host)
 // Firmware pushes batched motor control data at configurable rate.
 // Host must send TelemetryConfig to enable streaming.
-topic!(FastTelemetryTopic, FastTelemetryBatch, "telemetry/fast");
+// Generic over batch capacity N — wire format is identical regardless of N.
+pub struct FastTelemetryTopic<const N: usize = 32> {
+    _priv: core::marker::PhantomData<()>,
+}
+
+impl<const N: usize> ergot::traits::Topic for FastTelemetryTopic<N> {
+    type Message = FastTelemetryBatch<N>;
+    const PATH: &'static str = "telemetry/fast";
+    const TOPIC_KEY: ergot::traits::Key =
+        ergot::traits::Key::for_path::<FastTelemetryBatch>("telemetry/fast");
+}
 
 // Slow telemetry endpoint (host polls device)
 // Host periodically requests system health data (~10Hz).

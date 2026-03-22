@@ -31,7 +31,10 @@
 //! This allows measuring both Ld and Lq in a single sweep, and is robust
 //! to small rotor position errors.
 
+use core::marker::PhantomData;
+
 use super::types::{DetectionError, InductanceParams};
+use crate::foc::trig::SinCos;
 
 #[cfg(feature = "microfft")]
 use microfft::real::rfft_32;
@@ -85,7 +88,7 @@ pub struct InductanceResult {
 /// Generates a rotating injection vector in the alpha-beta (stator) frame.
 /// The vector completes `HFI_CYCLES_PER_FFT` rotations over `FFT_SIZE` samples.
 #[derive(Clone, Debug)]
-pub struct HfiInjector {
+pub struct HfiInjector<S: SinCos = crate::foc::trig::LibmSinCos> {
     /// Base HFI frequency in rad/s (the carrier frequency)
     omega_hfi: f32,
     /// Voltage amplitude in Volts
@@ -98,9 +101,10 @@ pub struct HfiInjector {
     angle_increment: f32,
     /// Current sample index within FFT window
     sample_index: usize,
+    _sincos: PhantomData<S>,
 }
 
-impl HfiInjector {
+impl<S: SinCos> HfiInjector<S> {
     /// Create a new rotating HFI injector.
     ///
     /// # Arguments
@@ -120,6 +124,7 @@ impl HfiInjector {
             injection_angle: 0.0,
             angle_increment,
             sample_index: 0,
+            _sincos: PhantomData,
         }
     }
 
@@ -132,12 +137,14 @@ impl HfiInjector {
     /// (v_alpha, v_beta) - Voltage to apply in stator frame
     pub fn step(&mut self, dt: f32) -> (f32, f32) {
         // HFI carrier: sin(ω_hfi × t)
-        let hfi_signal = self.voltage_amplitude * libm::sinf(self.hfi_phase);
+        let (hfi_sin, _) = S::sin_cos(self.hfi_phase);
+        let hfi_signal = self.voltage_amplitude * hfi_sin;
 
         // Rotate the injection vector in alpha-beta frame
         // This sweeps through all electrical angles over FFT_SIZE samples
-        let v_alpha = hfi_signal * libm::cosf(self.injection_angle);
-        let v_beta = hfi_signal * libm::sinf(self.injection_angle);
+        let (inj_sin, inj_cos) = S::sin_cos(self.injection_angle);
+        let v_alpha = hfi_signal * inj_cos;
+        let v_beta = hfi_signal * inj_sin;
 
         // Advance HFI carrier phase
         self.hfi_phase += self.omega_hfi * dt;
@@ -201,7 +208,7 @@ impl HfiInjector {
 /// to remove the resistive contamination that would otherwise create
 /// false saliency in SPM motors.
 #[derive(Clone)]
-pub struct InductanceMeasurement {
+pub struct InductanceMeasurement<S: SinCos = crate::foc::trig::LibmSinCos> {
     /// FFT input buffer for inverse inductance samples (1/L)
     samples: [f32; FFT_SIZE],
     /// Current sample index within FFT window
@@ -234,9 +241,10 @@ pub struct InductanceMeasurement {
     hold_current: f32,
     /// Is this the first sample? (skip differential on first)
     first_sample: bool,
+    _sincos: PhantomData<S>,
 }
 
-impl InductanceMeasurement {
+impl<S: SinCos> InductanceMeasurement<S> {
     /// Create a new inductance measurement.
     ///
     /// # Arguments
@@ -264,6 +272,7 @@ impl InductanceMeasurement {
             resistance_ohm: params.resistance_ohm,
             hold_current: params.hold_current_a,
             first_sample: true,
+            _sincos: PhantomData,
         }
     }
 
@@ -309,8 +318,7 @@ impl InductanceMeasurement {
         let di_beta = i_beta - self.prev_i_beta;
 
         // Project di and the previous voltage onto the injection direction
-        let cos_angle = libm::cosf(self.prev_injection_angle);
-        let sin_angle = libm::sinf(self.prev_injection_angle);
+        let (sin_angle, cos_angle) = S::sin_cos(self.prev_injection_angle);
         let di_projected = di_alpha * cos_angle + di_beta * sin_angle;
         let v_projected = v_inj_alpha * cos_angle + v_inj_beta * sin_angle;
 
@@ -319,7 +327,7 @@ impl InductanceMeasurement {
         // excluded.  At injection angle θ the DC hold projects as
         // i_hold·cos(θ); the remainder is the AC ripple caused by HFI.
         let i_projected = self.prev_i_alpha * cos_angle + self.prev_i_beta * sin_angle;
-        let i_hold_proj = self.hold_current * libm::cosf(self.prev_injection_angle);
+        let i_hold_proj = self.hold_current * cos_angle;
         let i_ac_proj = i_projected - i_hold_proj;
         let v_inductive = v_projected - self.resistance_ohm * i_ac_proj;
 
@@ -377,11 +385,10 @@ impl InductanceMeasurement {
         let di_alpha = i_alpha - self.prev_i_alpha;
         let di_beta = i_beta - self.prev_i_beta;
 
-        let cos_angle = libm::cosf(self.prev_injection_angle);
-        let sin_angle = libm::sinf(self.prev_injection_angle);
+        let (sin_angle, cos_angle) = S::sin_cos(self.prev_injection_angle);
         let v_projected = v_inj_alpha * cos_angle + v_inj_beta * sin_angle;
         let i_projected = self.prev_i_alpha * cos_angle + self.prev_i_beta * sin_angle;
-        let i_hold_proj = self.hold_current * libm::cosf(self.prev_injection_angle);
+        let i_hold_proj = self.hold_current * cos_angle;
         let i_ac_proj = i_projected - i_hold_proj;
         let v_inductive = v_projected - self.resistance_ohm * i_ac_proj;
 

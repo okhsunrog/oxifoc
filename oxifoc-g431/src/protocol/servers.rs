@@ -85,10 +85,11 @@ pub async fn protocol_servers() {
     .await
 }
 
-/// Fast telemetry streaming task — drains bbqueue and broadcasts batches
+/// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
+/// Uses batch size of 8 to reduce stack usage (~360B vs ~1.4KB for 32).
 #[embassy_executor::task]
 pub async fn fast_telemetry_task() {
-    oxifoc_core::runtime::streaming::fast_telemetry_stream(
+    oxifoc_core::runtime::streaming::fast_telemetry_stream::<_, 8>(
         &STACK,
         crate::config::PWM_CONFIG.pwm_freq_hz,
     )
@@ -137,6 +138,104 @@ pub async fn state_monitor() {
     }
 }
 
+/// Motor detection server — runs full detection sequence on request.
+/// Separate task because detection takes several seconds and would block
+/// all other protocol servers if joined into protocol_servers().
+#[embassy_executor::task]
+pub async fn detect_server() {
+    use core::pin::pin;
+
+    use crate::calibration::{DetectionParams, run_full_detection};
+    use crate::cordic::CordicSinCos;
+    use oxifoc_core::foc::detection::DetectionError;
+    use oxifoc_core::foc::detection::MotorSize;
+    use oxifoc_core::icd::DetectEndpoint;
+    use oxifoc_core::types::{DetectError, DetectRequest, DetectResponse};
+
+    let endpoints = STACK.endpoints();
+    let server = endpoints.bounded_server::<DetectEndpoint, 2>(Some("detect"));
+    let server = pin!(server);
+    let mut h = server.attach();
+
+    loop {
+        let _ = h
+            .serve(|req: &DetectRequest| {
+                let req = *req; // Copy before async block
+                async move {
+                    defmt::info!(
+                        "Detection requested: pp={} loss={}W erpm={}",
+                        req.pole_pairs,
+                        req.max_power_loss_w,
+                        req.openloop_erpm
+                    );
+
+                    // Stop motor before detection
+                    let _ = oxifoc_core::state::CMD_CHANNEL
+                        .try_send(oxifoc_core::motor::ControlMode::Stopped);
+
+                    let params = DetectionParams {
+                        motor_size: MotorSize::Custom(req.max_power_loss_w),
+                        pole_pairs: req.pole_pairs,
+                        current_max: crate::config::BOARD.max_phase_current_a,
+                        max_power_loss_w: req.max_power_loss_w,
+                        pwm_freq_hz: crate::config::PWM_CONFIG.pwm_freq_hz as f32,
+                        vbus: 24.0, // TODO: read actual VBUS from ADC
+                        openloop_erpm: req.openloop_erpm,
+                    };
+
+                    let response = match run_full_detection::<CordicSinCos>(params).await {
+                        Ok(result) => {
+                            defmt::info!(
+                                "Detection OK: R={}Ω Ld={}H Lq={}H λ={}Wb",
+                                result.params.resistance_ohm,
+                                result.params.inductance_d_h,
+                                result.params.inductance_q_h,
+                                result.params.flux_linkage_wb,
+                            );
+                            DetectResponse::Ok {
+                                resistance_ohm: result.params.resistance_ohm,
+                                inductance_d_h: result.params.inductance_d_h,
+                                inductance_q_h: result.params.inductance_q_h,
+                                flux_linkage_wb: result.params.flux_linkage_wb,
+                                kv_rpm_per_v: result.params.kv_rpm_per_v,
+                                max_current_a: result.params.max_current_a,
+                                kp_current: result.kp_current,
+                                ki_current: result.ki_current,
+                            }
+                        }
+                        Err(e) => {
+                            defmt::warn!("Detection failed: {}", e);
+                            let err = match e {
+                                DetectionError::MotorNotResponding => {
+                                    DetectError::MotorNotResponding
+                                }
+                                DetectionError::OutOfRange => DetectError::OutOfRange,
+                                DetectionError::Timeout => DetectError::Timeout,
+                                DetectionError::HardwareFault => DetectError::HardwareFault,
+                                DetectionError::InsufficientSamples => {
+                                    DetectError::InsufficientSamples
+                                }
+                                DetectionError::LowConfidence => DetectError::LowConfidence,
+                                DetectionError::MissingPrerequisite => {
+                                    DetectError::MissingPrerequisite
+                                }
+                                _ => DetectError::HardwareFault,
+                            };
+                            DetectResponse::Error(err)
+                        }
+                    };
+
+                    // Stop motor after detection
+                    let _ = oxifoc_core::state::CMD_CHANNEL
+                        .try_send(oxifoc_core::motor::ControlMode::Stopped);
+
+                    response
+                }
+            })
+            .await;
+    }
+}
+
 // ========== Task Spawning ==========
 
 /// Spawn all protocol server tasks
@@ -144,4 +243,5 @@ pub fn spawn_servers(spawner: &Spawner) {
     spawner.spawn(protocol_servers().unwrap());
     spawner.spawn(fast_telemetry_task().unwrap());
     spawner.spawn(state_monitor().unwrap());
+    spawner.spawn(detect_server().unwrap());
 }

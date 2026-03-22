@@ -15,22 +15,23 @@ use ergot::net_stack::NetStackHandle;
 use heapless::Vec;
 
 use crate::foc::controller::FocOutput;
-use crate::icd::{FastTelemetryBatch, FastTelemetryTopic};
+use crate::icd::FastTelemetryTopic;
 use crate::types::FastTelemetry;
 
 /// Lock-free queue for ISR → async telemetry transfer.
 ///
 /// ~22 frames of 46 bytes (44 data + 2 header) fit in 1024 bytes.
 /// Churrasco = Inline + Atomic + Polling + Static reference.
-pub static FAST_TELEM_Q: Churrasco<8192> = Churrasco::new();
+pub static FAST_TELEM_Q: Churrasco<4096> = Churrasco::new();
 
 /// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
 /// 0 = streaming disabled. Set by `telemetry_config_server` when host
 /// sends `TelemetryConfig { fast_hz }`.
 pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
 
-/// Maximum samples per batch (fits within 2048-byte MTU for TCP/serial).
-const BATCH_SIZE: usize = 32;
+/// Default maximum samples per batch (fits within 2048-byte MTU for TCP/serial).
+/// Devices can use a smaller batch size via the const generic on `fast_telemetry_stream`.
+pub const DEFAULT_BATCH_SIZE: usize = 32;
 
 /// Build a `FastTelemetry` from FOC output and sensor state.
 ///
@@ -75,7 +76,12 @@ pub fn push_fast_telemetry(telem: &FastTelemetry) {
 /// Drains `FAST_TELEM_Q` on a timer and broadcasts `FastTelemetryBatch`
 /// via the ergot topic system. When streaming is disabled (`FAST_TELEM_PERIOD == 0`),
 /// polls periodically waiting for the host to enable it.
-pub async fn fast_telemetry_stream<NS>(stack: NS, foc_freq_hz: u32)
+///
+/// The const generic `BATCH` controls the maximum samples per broadcast.
+/// Smaller values reduce stack usage at the cost of more frequent broadcasts.
+/// The wire format is compatible regardless of batch size — postcard only
+/// encodes actual elements, and the host deserializes into `Vec<_, 32>`.
+pub async fn fast_telemetry_stream<NS, const BATCH: usize>(stack: NS, foc_freq_hz: u32)
 where
     NS: NetStackHandle + Clone,
 {
@@ -93,10 +99,10 @@ where
             continue;
         }
 
-        // Compute sleep interval: BATCH_SIZE samples at (foc_freq_hz / period) Hz
+        // Compute sleep interval: BATCH samples at (foc_freq_hz / period) Hz
         let sample_hz = foc_freq_hz / period;
         let interval_us = if sample_hz > 0 {
-            (BATCH_SIZE as u64 * 1_000_000) / sample_hz as u64
+            (BATCH as u64 * 1_000_000) / sample_hz as u64
         } else {
             100_000 // fallback 100ms
         };
@@ -105,16 +111,14 @@ where
 
         // Drain bbqueue into batches and broadcast
         loop {
-            let mut batch = FastTelemetryBatch {
-                samples: Vec::new(),
-            };
+            let mut samples: Vec<FastTelemetry, BATCH> = Vec::new();
 
-            while batch.samples.len() < BATCH_SIZE {
+            while samples.len() < BATCH {
                 match cons.read() {
                     Ok(grant) => {
                         if grant.len() == size_of::<FastTelemetry>() {
                             let telem: FastTelemetry = bytemuck::pod_read_unaligned(&grant);
-                            let _ = batch.samples.push(telem);
+                            let _ = samples.push(telem);
                         }
                         grant.release();
                     }
@@ -122,22 +126,24 @@ where
                 }
             }
 
-            if batch.samples.is_empty() {
+            if samples.is_empty() {
                 break; // nothing left to send
             }
 
+            let batch_full = samples.len() == BATCH;
+            let batch = crate::types::FastTelemetryBatch { samples };
             let _result = stack
                 .stack()
                 .topics()
-                .broadcast::<FastTelemetryTopic>(&batch, None);
+                .broadcast::<FastTelemetryTopic<BATCH>>(&batch, None);
 
             #[cfg(feature = "log")]
             if _result.is_err() {
                 log::warn!("fast_telemetry broadcast failed: {:?}", _result);
             }
 
-            // If we got fewer than BATCH_SIZE, the queue is drained
-            if batch.samples.len() < BATCH_SIZE {
+            // If we got fewer than BATCH, the queue is drained
+            if !batch_full {
                 break;
             }
         }

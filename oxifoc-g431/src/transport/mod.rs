@@ -6,8 +6,8 @@
 
 pub mod io;
 
-use ergot::interface_manager::LivenessConfig;
 use ergot::exports::maitake_sync::WaitQueue;
+use ergot::interface_manager::LivenessConfig;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
@@ -88,7 +88,7 @@ pub fn init_uart(
     let _defmt_consumer = {
         let channels = rtt_init! {
             up: {
-                0: { size: 2048, mode: NoBlockSkip, name: "defmt" }
+                0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
             }
         };
         let defmt_up = RTT_DEFMT_UP.init(channels.up.0);

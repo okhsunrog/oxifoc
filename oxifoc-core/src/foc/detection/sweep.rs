@@ -43,6 +43,7 @@ use super::types::{
 use super::voltage_pulse::VoltagePulseMeasurement;
 use crate::foc::controller::FocOutput;
 use crate::foc::transforms;
+use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
 
@@ -230,7 +231,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
 /// # Returns
 /// * `Ok((ld, lq))` - Measured d-axis and q-axis inductance in Henries
 /// * `Err(DetectionError)` - If measurement failed
-pub async fn measure_inductance<H: DetectionHardware, T: Timer>(
+pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     hw: &mut H,
     params: &InductanceParams,
     pwm_freq_hz: f32,
@@ -238,8 +239,9 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer>(
     info!("Starting inductance measurement (rotating HFI)...");
 
     // Create HFI injector and measurement
-    let mut injector = HfiInjector::new(params.hfi_frequency_hz, params.hfi_voltage_v, pwm_freq_hz);
-    let mut measurement = InductanceMeasurement::new(params, pwm_freq_hz);
+    let mut injector =
+        HfiInjector::<S>::new(params.hfi_frequency_hz, params.hfi_voltage_v, pwm_freq_hz);
+    let mut measurement = InductanceMeasurement::<S>::new(params, pwm_freq_hz);
 
     let dt = 1.0 / pwm_freq_hz;
 
@@ -334,7 +336,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer>(
 /// (q-axis).  Works reliably on high-resistance motors where HFI fails.
 ///
 /// Requires previously measured resistance for compensation.
-pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer>(
+pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>(
     hw: &mut H,
     params: &VoltagePulseParams,
     pwm_freq_hz: f32,
@@ -373,8 +375,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer>(
             // Read current before pulse
             let (ia, ib, _) = hw.read_phase_currents();
             let (i_alpha, i_beta) = transforms::clarke(ia, ib);
-            let cos_a = libm::cosf(angle);
-            let sin_a = libm::sinf(angle);
+            let (sin_a, cos_a) = S::sin_cos(angle);
             let id_before = i_alpha * cos_a + i_beta * sin_a;
 
             // Apply voltage step
@@ -715,7 +716,7 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
 /// # Returns
 /// * `Ok(DetectionResult)` - All detected parameters and gains
 /// * `Err(DetectionError)` - If any measurement failed
-pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
+pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     hw: &mut H,
     params: DetectionParams,
 ) -> Result<DetectionResult, DetectionError> {
@@ -771,7 +772,7 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
         ..Default::default()
     };
     let (mut ld, mut lq) =
-        measure_inductance::<H, T>(hw, &inductance_params, params.pwm_freq_hz).await?;
+        measure_inductance::<H, T, S>(hw, &inductance_params, params.pwm_freq_hz).await?;
 
     // If HFI result looks suspicious, fall back to voltage pulse method
     if validate_inductance(ld, lq).is_err() {
@@ -786,7 +787,8 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer>(
             num_pulses: 20,
             settle_time_ms: 200,
         };
-        (ld, lq) = measure_inductance_pulse::<H, T>(hw, &pulse_params, params.pwm_freq_hz).await?;
+        (ld, lq) =
+            measure_inductance_pulse::<H, T, S>(hw, &pulse_params, params.pwm_freq_hz).await?;
     }
 
     result.params.inductance_d_h = ld;
