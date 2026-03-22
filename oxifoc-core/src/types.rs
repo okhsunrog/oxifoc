@@ -66,15 +66,21 @@ pub enum ControlMode {
         /// Target position in radians
         target_pos: f32,
     },
-    /// Open-loop mode for calibration - locks rotor to specified electrical angle
+    /// Open-loop mode — drive motor at commanded electrical angle.
     ///
     /// Uses commanded angle instead of sensor feedback. Current control still
-    /// runs to regulate the applied current. Used for Hall sensor calibration.
+    /// runs to regulate the applied current.
+    ///
+    /// When `velocity_rad_s == 0`: locks rotor at `angle_rad` (calibration use).
+    /// When `velocity_rad_s != 0`: firmware advances angle at the given speed
+    /// (open-loop spinning without hall sensors).
     OpenLoop {
-        /// Target electrical angle (radians, 0 to 2π)
+        /// Initial electrical angle (radians, 0 to 2π)
         angle_rad: f32,
-        /// Current magnitude (Amps) - applied as q-current to lock rotor
+        /// Current magnitude (Amps) - applied as q-current
         current: f32,
+        /// Electrical velocity (rad/s) — 0 = lock, nonzero = spin
+        velocity_rad_s: f32,
     },
     /// Direct voltage mode — apply dq voltages without PI control.
     ///

@@ -177,6 +177,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
             current,
+            velocity_rad_s: 0.0,
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }
@@ -204,6 +205,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
             current,
+            velocity_rad_s: 0.0,
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }
@@ -253,6 +255,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
             current,
+            velocity_rad_s: 0.0,
         });
         T::after_millis(10).await;
     }
@@ -354,6 +357,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
             hw.send_command(ControlMode::OpenLoop {
                 angle_rad: angle,
                 current,
+                velocity_rad_s: 0.0,
             });
             T::after_millis(10).await;
         }
@@ -469,6 +473,7 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: current_angle,
             current: params.current_a,
+            velocity_rad_s: 0.0,
         });
 
         T::after_millis(ramp_delay_ms as u64).await;
@@ -492,6 +497,7 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: current_angle,
             current: params.current_a,
+            velocity_rad_s: 0.0,
         });
 
         T::after_micros(sample_delay_us as u64).await;
@@ -517,6 +523,7 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: current_angle,
             current,
+            velocity_rad_s: 0.0,
         });
 
         T::after_millis(ramp_delay_ms as u64).await;
@@ -572,6 +579,7 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: current_angle,
             current: params.current_a,
+            velocity_rad_s: 0.0,
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }
@@ -589,6 +597,7 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: current_angle,
             current: params.current_a,
+            velocity_rad_s: 0.0,
         });
         T::after_micros(sample_delay_us as u64).await;
 
@@ -608,6 +617,7 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: current_angle,
             current,
+            velocity_rad_s: 0.0,
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }
@@ -655,6 +665,7 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: current_angle,
             current: params.current_a,
+            velocity_rad_s: 0.0,
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }
@@ -901,6 +912,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
             current,
+            velocity_rad_s: 0.0,
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }
@@ -926,6 +938,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
             hw.send_command(ControlMode::OpenLoop {
                 angle_rad,
                 current: params.current_amps,
+                velocity_rad_s: 0.0,
             });
 
             // Wait for rotor to settle
@@ -943,6 +956,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
             current,
+            velocity_rad_s: 0.0,
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }

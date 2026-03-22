@@ -166,6 +166,8 @@ where
     dt: f32,
     /// Current limiting configuration
     current_limits: CurrentLimits,
+    /// Accumulated angle for open-loop velocity mode
+    open_loop_angle: f32,
 }
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
@@ -200,6 +202,7 @@ where
             vbus,
             dt,
             current_limits: CurrentLimits::default(),
+            open_loop_angle: 0.0,
         }
     }
 
@@ -288,9 +291,11 @@ where
                 // TODO: Implement position PI controller
                 Err("Position control not implemented")
             }
-            ControlMode::OpenLoop { angle_rad, current } => {
-                self.step_open_loop(angle_rad, current, dt, now_ticks)
-            }
+            ControlMode::OpenLoop {
+                angle_rad,
+                current,
+                velocity_rad_s,
+            } => self.step_open_loop(angle_rad, current, velocity_rad_s, dt, now_ticks),
             ControlMode::DirectVoltage { vd, vq, angle_rad } => {
                 self.step_direct_voltage(vd, vq, angle_rad, dt, now_ticks)
             }
@@ -371,12 +376,17 @@ where
 
     /// Execute open-loop control step (for calibration)
     ///
-    /// Uses commanded angle instead of sensor feedback to lock rotor position.
+    /// Uses commanded angle instead of sensor feedback.
     /// Current feedback is still used to regulate the applied current.
+    ///
+    /// When `velocity_rad_s == 0`: locks rotor at `angle_rad`.
+    /// When `velocity_rad_s != 0`: advances angle at the given velocity,
+    /// enabling sensorless open-loop spinning.
     fn step_open_loop(
         &mut self,
         angle_rad: f32,
         current: f32,
+        velocity_rad_s: f32,
         dt: f32,
         now_ticks: u64,
     ) -> Result<FocOutput, &'static str> {
@@ -384,6 +394,19 @@ where
         if !self.current_sensor.is_calibrated() {
             return Err("Current sensor not calibrated");
         }
+
+        // Advance angle if velocity is set, otherwise use commanded angle
+        let angle = if velocity_rad_s != 0.0 {
+            self.open_loop_angle += velocity_rad_s * dt;
+            self.open_loop_angle %= core::f32::consts::TAU;
+            if self.open_loop_angle < 0.0 {
+                self.open_loop_angle += core::f32::consts::TAU;
+            }
+            self.open_loop_angle
+        } else {
+            self.open_loop_angle = angle_rad;
+            angle_rad
+        };
 
         // Clamp open-loop current to the target limit
         let current = if self.current_limits.max_current_a > 0.0 {
@@ -401,7 +424,7 @@ where
         let max_duty = self.pwm.max_duty();
         let out = self
             .controller
-            .step(currents, angle_rad, 0.0, current, max_duty, dt);
+            .step(currents, angle, 0.0, current, max_duty, dt);
 
         // Check measured overcurrent
         if self.current_limits.is_overcurrent(out.id, out.iq) {
