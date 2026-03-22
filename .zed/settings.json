@@ -1,0 +1,14 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "linkedProjects": [
+          "Cargo.toml",
+          "oxifoc-g431/Cargo.toml",
+          "oxifoc-f405/Cargo.toml",
+          "ergot/crates/ergot/Cargo.toml"
+        ]
+      }
+    }
+  }
+}
