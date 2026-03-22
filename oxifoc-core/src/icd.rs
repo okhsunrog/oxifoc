@@ -103,8 +103,3 @@ endpoint!(DetectEndpoint, DetectRequest, DetectResponse, "cmd/detect");
 // Configuration endpoint (host → device)
 #[cfg(feature = "storage")]
 endpoint!(ConfigEndpoint, ConfigRequest, ConfigResponse, "cmd/config");
-
-// Legacy endpoints — kept for backward compatibility during migration
-// TODO: Remove once all host tools use topic-based telemetry
-endpoint!(AdcSampleEndpoint, (), AdcSample, "req/adc");
-endpoint!(HallSensorEndpoint, (), HallSensorData, "req/hall");

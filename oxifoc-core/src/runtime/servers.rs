@@ -27,19 +27,17 @@ use core::cell::RefCell;
 use core::pin::pin;
 
 use critical_section::Mutex as CriticalSectionMutex;
-use embassy_futures::join::{join, join5};
+use embassy_futures::join::{join, join3};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
 use crate::foc::fault::{FaultRegistry, PlatformFault};
-use crate::foc::hall_sensor::Direction;
-use crate::icd::{
-    AdcSample, AdcSampleEndpoint, ControlMode, DeviceInfo, FaultEndpoint, FaultRequest,
-    FaultResponse, HallSensorData, HallSensorEndpoint, InfoEndpoint, MotorEndpoint, MotorStatus,
-    SlowTelemetry, SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigAck,
-    TelemetryConfigEndpoint,
-};
 #[cfg(feature = "storage")]
 use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
+use crate::icd::{
+    ControlMode, DeviceInfo, FaultEndpoint, FaultRequest, FaultResponse, InfoEndpoint,
+    MotorEndpoint, MotorStatus, SlowTelemetry, SlowTelemetryEndpoint, TelemetryConfig,
+    TelemetryConfigAck, TelemetryConfigEndpoint,
+};
 use crate::state::{CMD_CHANNEL, MotorControlState};
 #[cfg(feature = "storage")]
 use crate::storage::{ConfigKey, ConfigPayload, FLASH_CHANNEL, FlashOperation, RuntimeConfig};
@@ -75,76 +73,6 @@ pub async fn info_server<NS, const N: usize>(
 
 /// Hall sensor server - responds to Hall sensor data requests
 ///
-/// Returns current Hall sensor state including angle, direction,
-/// raw state, and error count.
-pub async fn hall_sensor_server<NS, const N: usize>(
-    endpoints: Endpoints<NS>,
-    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-) where
-    NS: NetStackHandle,
-{
-    let server = endpoints.bounded_server::<HallSensorEndpoint, N>(Some("hall"));
-    let server = pin!(server);
-    let mut h = server.attach();
-
-    let mut seq: u32 = 0;
-
-    loop {
-        seq = seq.wrapping_add(1);
-        let current_seq = seq;
-
-        let _ = h
-            .serve(|_: &()| {
-                let snapshot =
-                    critical_section::with(|cs| state_mutex.borrow(cs).borrow().last_hall);
-
-                async move {
-                    match snapshot {
-                        Some(s) => HallSensorData {
-                            angle_rad: s.angle_rad,
-                            direction: s.direction,
-                            state: s.state,
-                            error_count: s.error_count,
-                            seq: current_seq,
-                        },
-                        None => HallSensorData {
-                            angle_rad: 0.0,
-                            direction: Direction::Stopped,
-                            state: 0,
-                            error_count: 0,
-                            seq: current_seq,
-                        },
-                    }
-                }
-            })
-            .await;
-    }
-}
-
-/// ADC sample server - responds to ADC data requests
-///
-/// Returns current phase currents, bus voltage, and temperature.
-pub async fn adc_sample_server<NS, const N: usize>(
-    endpoints: Endpoints<NS>,
-    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-) where
-    NS: NetStackHandle,
-{
-    let server = endpoints.bounded_server::<AdcSampleEndpoint, N>(Some("adc"));
-    let server = pin!(server);
-    let mut h = server.attach();
-
-    loop {
-        let _ = h
-            .serve(|_: &()| {
-                let snapshot =
-                    critical_section::with(|cs| state_mutex.borrow(cs).borrow().last_adc.clone());
-                async move { AdcSample::from_snapshot(&snapshot) }
-            })
-            .await;
-    }
-}
-
 /// Motor control server - handles motor control mode changes
 ///
 /// Sends ControlMode to CMD_CHANNEL for ISR processing.
@@ -492,10 +420,8 @@ pub async fn run_all_servers<NS, F>(
     F: PlatformFault,
 {
     join(
-        join5(
+        join3(
             info_server::<NS, 2>(endpoints.clone(), device_info, state_mutex),
-            hall_sensor_server::<NS, 2>(endpoints.clone(), state_mutex),
-            adc_sample_server::<NS, 2>(endpoints.clone(), state_mutex),
             motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),
@@ -521,10 +447,8 @@ pub async fn run_all_servers_with_config<NS, F>(
     F: PlatformFault,
 {
     join(
-        join5(
+        join3(
             info_server::<NS, 2>(endpoints.clone(), device_info, state_mutex),
-            hall_sensor_server::<NS, 2>(endpoints.clone(), state_mutex),
-            adc_sample_server::<NS, 2>(endpoints.clone(), state_mutex),
             motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),

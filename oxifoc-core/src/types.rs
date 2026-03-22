@@ -125,40 +125,6 @@ pub struct MotorStatus {
     pub fault_count: u8,
 }
 
-/// Hall sensor telemetry data
-#[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct HallSensorData {
-    /// Electrical angle in radians (0 to 2π)
-    pub angle_rad: f32,
-    /// Direction of rotation
-    pub direction: Direction,
-    /// Raw Hall state (0-7, where 0 and 7 are invalid)
-    pub state: u8,
-    /// Cumulative error count (invalid states or transitions)
-    pub error_count: u32,
-    /// Monotonic sequence number (wraps on overflow)
-    pub seq: u32,
-}
-
-/// Raw ADC sample data (legacy poll-based, kept for compatibility)
-#[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct AdcSample {
-    /// Phase A current (raw ADC counts)
-    pub ia: u16,
-    /// Phase B current (raw ADC counts)
-    pub ib: u16,
-    /// Phase C current (raw ADC counts)
-    pub ic: u16,
-    /// DC bus voltage in millivolts
-    pub vbus_mv: u32,
-    /// FET temperature in 0.1°C units
-    pub fet_temp_c_x10: u16,
-    /// Monotonic sequence number
-    pub seq: u32,
-}
-
 // ============================================================================
 // Streaming Telemetry Types (push-based via Topics)
 // ============================================================================
@@ -506,33 +472,6 @@ impl MotorState {
             MotorState::Stopped => 0,
             MotorState::Running => 1,
             MotorState::Error => 2,
-        }
-    }
-}
-
-impl HallSensorData {
-    /// Create from a HallSnapshot (internal type)
-    pub fn from_snapshot(snapshot: &crate::foc::sensors::HallSnapshot, seq: u32) -> Self {
-        Self {
-            angle_rad: snapshot.angle_rad,
-            direction: snapshot.direction,
-            state: snapshot.state,
-            error_count: snapshot.error_count,
-            seq,
-        }
-    }
-}
-
-impl AdcSample {
-    /// Create from an AdcSnapshot (internal type)
-    pub fn from_snapshot(snapshot: &crate::foc::sensors::AdcSnapshot) -> Self {
-        Self {
-            ia: snapshot.ia,
-            ib: snapshot.ib,
-            ic: snapshot.ic,
-            vbus_mv: snapshot.vbus_mv,
-            fet_temp_c_x10: snapshot.fet_temp_c_x10().unwrap_or(0),
-            seq: snapshot.seq,
         }
     }
 }
