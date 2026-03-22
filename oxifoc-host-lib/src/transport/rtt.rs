@@ -92,7 +92,8 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
     {
         let mut core = session.core(0).context("Failed to get core 0")?;
         let mut rtt =
-            Rtt::attach_region(&mut core, &ScanRegion::Ram).context("Failed to attach to RTT")?;
+            Rtt::attach_region(&mut core, &ScanRegion::Ranges(vec![0x20000000..0x20008000]))
+                .context("Failed to attach to RTT")?;
 
         info!("RTT attached successfully");
 
@@ -150,7 +151,8 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
     std::thread::spawn(move || {
         let mut core = session.core(0).expect("Failed to get core 0");
         let mut rtt =
-            Rtt::attach_region(&mut core, &ScanRegion::Ram).expect("Failed to attach to RTT");
+            Rtt::attach_region(&mut core, &ScanRegion::Ranges(vec![0x20000000..0x20008000]))
+                .expect("Failed to attach to RTT");
 
         let mut ergot_rx_buf = [0u8; 2048];
         let mut defmt_buf = [0u8; 4096];
