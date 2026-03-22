@@ -31,6 +31,10 @@ pub struct HostConfig {
     /// Reconnection policy for COBS-stream transports (TCP, Serial, RTT).
     /// None = use default (infinite retries)
     pub reconnect: Option<ReconnectPolicy>,
+
+    /// Desired fast telemetry rate in Hz (default 1000).
+    /// Set to 0 to disable fast telemetry streaming.
+    pub fast_hz: Option<u16>,
 }
 
 /// Controls how the host handles transport disconnection/failure.
@@ -83,6 +87,9 @@ impl HostConfig {
     }
     pub fn stream_ergot(&self) -> bool {
         self.stream_ergot.unwrap_or(true)
+    }
+    pub fn fast_hz(&self) -> u16 {
+        self.fast_hz.unwrap_or(20000)
     }
 
     pub fn serial_path(&self) -> String {

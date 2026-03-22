@@ -13,6 +13,8 @@ pub(crate) struct PlotParams {
     visible_samples: u32,
     texture_width: u32,
     texture_height: u32,
+    view_offset: u32,
+    _pad: [u32; 3], // align to 16 bytes for GPU
 }
 
 // Matches the `Colors` struct in shader.wgsl.
@@ -204,6 +206,7 @@ impl PlotRenderer {
         width: u32,
         height: u32,
         visible_samples: u32,
+        view_offset: u32,
     ) -> (wgpu::Texture, f32, f32) {
         let width = width.max(1);
         let height = height.max(1);
@@ -218,26 +221,41 @@ impl PlotRenderer {
 
         let vis = visible_samples.clamp(2, buffer.capacity as u32);
 
-        // Compute Y range from all valid data in buffer (auto-range)
+        // Compute Y range from visible window only (auto-range)
         let (y_min, y_max) = if self.config.auto_range {
             let nch = buffer.num_channels;
+            let cap = buffer.capacity;
+            let wp = buffer.write_pos() as usize;
             let mut lo = f32::INFINITY;
             let mut hi = f32::NEG_INFINITY;
 
-            for v in self.scratch.iter() {
-                if v.is_finite() {
-                    lo = lo.min(*v);
-                    hi = hi.max(*v);
+            // Only scan the visible portion of the ring buffer (accounting for view_offset)
+            let total_offset = (vis as usize + view_offset as usize) % cap;
+            let start = (wp + cap - total_offset) % cap;
+            for i in 0..vis as usize {
+                let frame_idx = (start + i) % cap;
+                let base = frame_idx * nch;
+                for ch in 0..nch {
+                    let v = self.scratch[base + ch];
+                    if v.is_finite() {
+                        lo = lo.min(v);
+                        hi = hi.max(v);
+                    }
                 }
             }
-            let _ = nch; // used implicitly via scratch layout
 
-            if !lo.is_finite() || !hi.is_finite() || (hi - lo).abs() < 1e-6 {
-                // Fallback if no valid data
+            if !lo.is_finite() || !hi.is_finite() {
+                // No valid data at all — use config defaults
                 (self.config.y_min, self.config.y_max)
+            } else if (hi - lo).abs() < 1e-6 {
+                // Constant value — center with reasonable margin
+                let center = lo;
+                let margin = center.abs() * 0.1;
+                let margin = margin.max(0.5);
+                (center - margin, center + margin)
             } else {
                 let margin = (hi - lo) * 0.1;
-                let margin = margin.max(0.01); // minimum margin
+                let margin = margin.max(0.01);
                 (lo - margin, hi + margin)
             }
         } else {
@@ -253,6 +271,8 @@ impl PlotRenderer {
             visible_samples: vis,
             texture_width: width,
             texture_height: height,
+            view_offset,
+            _pad: [0; 3],
         };
 
         let view = self

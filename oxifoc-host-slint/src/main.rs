@@ -3,7 +3,7 @@ slint::include_modules!();
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use oxifoc_core::types::ControlMode;
 use oxifoc_host_lib::{
@@ -21,7 +21,6 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 const CAPACITY: usize = 32768;
-const UI_UPDATE_HZ: u64 = 30;
 const MAX_LOG_LINES: usize = 2000;
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];
 
@@ -156,6 +155,17 @@ fn main() {
     let vbus_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // V
     let temp_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // °C
 
+    // Actual fast telemetry rate — set by HostRuntime after device ack
+    let fast_hz: Arc<std::sync::atomic::AtomicU16> =
+        Arc::new(std::sync::atomic::AtomicU16::new(0));
+
+    // Shared telemetry receivers — set on connect, read in BeforeRendering
+    let fast_rx_slot: Arc<std::sync::Mutex<Option<crossbeam_channel::Receiver<oxifoc_core::types::FastTelemetry>>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let slow_rx_slot: Arc<std::sync::Mutex<Option<crossbeam_channel::Receiver<oxifoc_core::types::SlowTelemetry>>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let connected_flag: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+
     refresh_serial_ports(&app, &ports_list);
     refresh_probes(&app, &probes_list);
 
@@ -165,6 +175,10 @@ fn main() {
         let cb = currents_buf.clone();
         let vb = vbus_buf.clone();
         let tb = temp_buf.clone();
+        let fhz = fast_hz.clone();
+        let frx = fast_rx_slot.clone();
+        let srx = slow_rx_slot.clone();
+        let conn = connected_flag.clone();
 
         let mut cr: Option<PlotRenderer> = None;
         let mut vr: Option<PlotRenderer> = None;
@@ -218,30 +232,114 @@ fn main() {
                     }
                 }
                 RenderingState::BeforeRendering => {
+                    // Read pause states before draining
+                    let currents_paused = app_weak
+                        .upgrade()
+                        .map(|a| a.get_currents_paused())
+                        .unwrap_or(false);
+                    let vbus_paused = app_weak
+                        .upgrade()
+                        .map(|a| a.get_vbus_paused())
+                        .unwrap_or(false);
+                    let temp_paused = app_weak
+                        .upgrade()
+                        .map(|a| a.get_temp_paused())
+                        .unwrap_or(false);
+
+                    // Drain telemetry — always consume from channel, only write to buffer if not paused
+                    let mut last_fast = None;
+                    if let Ok(guard) = frx.try_lock() {
+                        if let Some(ref rx) = *guard {
+                            while let Ok(sample) = rx.try_recv() {
+                                if !currents_paused {
+                                    cb.push_frame(&[
+                                        sample.ia_ma as f32 / 1000.0,
+                                        sample.ib_ma as f32 / 1000.0,
+                                        sample.ic_ma as f32 / 1000.0,
+                                    ]);
+                                }
+                                last_fast = Some(sample);
+                            }
+                        }
+                    }
+                    let mut last_slow = None;
+                    if let Ok(guard) = srx.try_lock() {
+                        if let Some(ref rx) = *guard {
+                            while let Ok(sample) = rx.try_recv() {
+                                if !vbus_paused {
+                                    vb.push_frame(&[sample.vbus_mv as f32 / 1000.0]);
+                                }
+                                if !temp_paused {
+                                    tb.push_frame(&[sample.fet_temp_c_x10 as f32 / 10.0]);
+                                }
+                                last_slow = Some(sample);
+                            }
+                        }
+                    }
+
                     if let (Some(app), Some(cr), Some(vr), Some(tr)) =
                         (app_weak.upgrade(), cr.as_mut(), vr.as_mut(), tr.as_mut())
                     {
-                        let time_window = app.get_time_window();
-                        let vis = (time_window * 1000.0) as u32; // ~1kHz fast telemetry rate
+                        // Update connection status + text from latest samples
+                        app.set_is_connected(conn.load(std::sync::atomic::Ordering::Relaxed));
+                        if let Some(s) = last_fast {
+                            app.set_ia_text(SharedString::from(format!("{:.2} A", s.ia_ma as f32 / 1000.0)));
+                            app.set_ib_text(SharedString::from(format!("{:.2} A", s.ib_ma as f32 / 1000.0)));
+                            app.set_ic_text(SharedString::from(format!("{:.2} A", s.ic_ma as f32 / 1000.0)));
+                            app.set_seq_text(SharedString::from(format!("{}", s.seq)));
+                        }
+                        if let Some(s) = last_slow {
+                            app.set_vbus_text(SharedString::from(format!("{:.2} V", s.vbus_mv as f32 / 1000.0)));
+                            app.set_temp_text(SharedString::from(format!("{:.1} °C", s.fet_temp_c_x10 as f32 / 10.0)));
+                        }
+
+                        // Set sample rate for plot interaction
+                        let actual_hz = fhz.load(std::sync::atomic::Ordering::Relaxed);
+                        let fast_rate = if actual_hz > 0 { actual_hz as f32 } else { 1000.0 };
+                        app.set_fast_sample_rate(fast_rate);
+
+                        // Per-plot time windows and view offsets (each plot can be independently paused/zoomed)
+                        let c_tw = app.get_currents_time_window();
+                        let c_vis = (c_tw * fast_rate) as u32;
+                        let c_off = app.get_currents_view_offset().max(0) as u32;
+
+                        let v_tw = app.get_vbus_time_window();
+                        let v_vis = (v_tw * 10.0) as u32;
+                        let v_off = app.get_vbus_view_offset().max(0) as u32;
+
+                        let t_tw = app.get_temp_time_window();
+                        let t_vis = (t_tw * 10.0) as u32;
+                        let t_off = app.get_temp_view_offset().max(0) as u32;
 
                         let (tex, y_lo, y_hi) = cr.render(
                             &cb,
                             app.get_currents_w() as u32,
                             app.get_currents_h() as u32,
-                            vis,
+                            c_vis,
+                            c_off,
                         );
                         app.set_currents_texture(Image::try_from(tex).unwrap());
                         app.set_currents_y_min(y_lo);
                         app.set_currents_y_max(y_hi);
 
-                        let (tex, y_lo, y_hi) =
-                            vr.render(&vb, app.get_vbus_w() as u32, app.get_vbus_h() as u32, vis);
+                        let (tex, y_lo, y_hi) = vr.render(
+                            &vb,
+                            app.get_vbus_w() as u32,
+                            app.get_vbus_h() as u32,
+                            v_vis,
+                            v_off,
+                        );
                         app.set_vbus_texture(Image::try_from(tex).unwrap());
                         app.set_vbus_y_min(y_lo);
                         app.set_vbus_y_max(y_hi);
 
-                        let (tex, y_lo, y_hi) =
-                            tr.render(&tb, app.get_temp_w() as u32, app.get_temp_h() as u32, vis);
+                        let (tex, y_lo, y_hi) = tr.render(
+                            &tb,
+                            app.get_temp_w() as u32,
+                            app.get_temp_h() as u32,
+                            t_vis,
+                            t_off,
+                        );
                         app.set_temp_texture(Image::try_from(tex).unwrap());
                         app.set_temp_y_min(y_lo);
                         app.set_temp_y_max(y_hi);
@@ -285,9 +383,10 @@ fn main() {
         let probes = probes_list.clone();
         let rt = runtime.clone();
         let stop = stop_adc.clone();
-        let cb = currents_buf.clone();
-        let vb = vbus_buf.clone();
-        let tb = temp_buf.clone();
+        let frx_slot = fast_rx_slot.clone();
+        let srx_slot = slow_rx_slot.clone();
+        let conn_flag = connected_flag.clone();
+        let fhz = fast_hz.clone();
 
         app.on_connect_device(move || {
             let app = weak.unwrap();
@@ -396,7 +495,30 @@ fn main() {
             let slow_rx = host_runtime.slow_rx.clone();
             let info_rx = host_runtime.device_info_rx.clone();
             let connected = host_runtime.connected.clone();
+            let runtime_fast_hz = host_runtime.fast_hz.clone();
             *rt.lock().unwrap() = Some(host_runtime);
+
+            // Store receivers for BeforeRendering to drain into PlotBuffers
+            *frx_slot.lock().unwrap() = Some(fast_rx);
+            *srx_slot.lock().unwrap() = Some(slow_rx);
+
+            // Propagate connected + fast_hz flags for rendering notifier
+            conn_flag.store(true, Ordering::Relaxed);
+            fhz.store(runtime_fast_hz.load(Ordering::Relaxed), Ordering::Relaxed);
+
+            // Continuously propagate flags in background
+            let conn_src = connected;
+            let conn_dst = conn_flag.clone();
+            let fhz_src = runtime_fast_hz;
+            let fhz_dst = fhz.clone();
+            let stop2 = stop.clone();
+            thread::spawn(move || {
+                while !stop2.load(Ordering::Relaxed) {
+                    conn_dst.store(conn_src.load(Ordering::Relaxed), Ordering::Relaxed);
+                    fhz_dst.store(fhz_src.load(Ordering::Relaxed), Ordering::Relaxed);
+                    thread::sleep(Duration::from_millis(100));
+                }
+            });
 
             // Device info listener — runs once on connection
             let weak_info = weak.clone();
@@ -413,15 +535,6 @@ fn main() {
                 }
             });
 
-            let weak2 = weak.clone();
-            let stop2 = stop.clone();
-            let cb2 = cb.clone();
-            let vb2 = vb.clone();
-            let tb2 = tb.clone();
-            thread::spawn(move || {
-                telemetry_loop(weak2, fast_rx, slow_rx, connected, stop2, cb2, vb2, tb2);
-            });
-
             app.set_page("main".into());
         });
     }
@@ -431,8 +544,14 @@ fn main() {
         let weak = app.as_weak();
         let rt = runtime.clone();
         let stop = stop_adc.clone();
+        let frx_slot = fast_rx_slot.clone();
+        let srx_slot = slow_rx_slot.clone();
+        let conn_flag = connected_flag.clone();
         app.on_disconnect_device(move || {
             stop.store(true, Ordering::Relaxed);
+            conn_flag.store(false, Ordering::Relaxed);
+            *frx_slot.lock().unwrap() = None;
+            *srx_slot.lock().unwrap() = None;
             if let Some(runtime) = rt.lock().unwrap().take() {
                 runtime.shutdown();
             }
@@ -530,65 +649,3 @@ fn refresh_probes(app: &App, probes: &Arc<std::sync::Mutex<Vec<ProbeInfo>>>) {
     app.set_selected_probe(-1);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn telemetry_loop(
-    weak: slint::Weak<App>,
-    fast_rx: crossbeam_channel::Receiver<oxifoc_core::types::FastTelemetry>,
-    slow_rx: crossbeam_channel::Receiver<oxifoc_core::types::SlowTelemetry>,
-    connected: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
-    currents_buf: Arc<PlotBuffer>,
-    vbus_buf: Arc<PlotBuffer>,
-    temp_buf: Arc<PlotBuffer>,
-) {
-    let mut last_ui_update = Instant::now();
-    let ui_interval = Duration::from_millis(1000 / UI_UPDATE_HZ);
-
-    while !stop.load(Ordering::Relaxed) {
-        // Drain fast telemetry (high frequency — push to plot buffers)
-        let mut got_fast = false;
-        while let Ok(sample) = fast_rx.try_recv() {
-            got_fast = true;
-            currents_buf.push_frame(&[
-                sample.ia_ma as f32 / 1000.0,
-                sample.ib_ma as f32 / 1000.0,
-                sample.ic_ma as f32 / 1000.0,
-            ]);
-
-            // Throttle text updates for fast telemetry
-            if last_ui_update.elapsed() >= ui_interval {
-                last_ui_update = Instant::now();
-                let is_conn = connected.load(Ordering::Relaxed);
-                let _ = weak.upgrade_in_event_loop(move |app| {
-                    app.set_is_connected(is_conn);
-                    app.set_ia_text(format!("{:.2} A", sample.ia_ma as f32 / 1000.0).into());
-                    app.set_ib_text(format!("{:.2} A", sample.ib_ma as f32 / 1000.0).into());
-                    app.set_ic_text(format!("{:.2} A", sample.ic_ma as f32 / 1000.0).into());
-                    app.set_seq_text(format!("{}", sample.seq).into());
-                });
-            }
-        }
-
-        // Drain slow telemetry (low frequency — update dashboard)
-        while let Ok(sample) = slow_rx.try_recv() {
-            vbus_buf.push_frame(&[sample.vbus_mv as f32 / 1000.0]);
-            temp_buf.push_frame(&[sample.fet_temp_c_x10 as f32 / 10.0]);
-
-            let is_conn = connected.load(Ordering::Relaxed);
-            let _ = weak.upgrade_in_event_loop(move |app| {
-                app.set_is_connected(is_conn);
-                app.set_vbus_text(format!("{:.2} V", sample.vbus_mv as f32 / 1000.0).into());
-                app.set_temp_text(format!("{:.1} °C", sample.fet_temp_c_x10 as f32 / 10.0).into());
-            });
-        }
-
-        // If no data arrived, check connection status
-        if !got_fast {
-            let is_conn = connected.load(Ordering::Relaxed);
-            let _ = weak.upgrade_in_event_loop(move |app| {
-                app.set_is_connected(is_conn);
-            });
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-}

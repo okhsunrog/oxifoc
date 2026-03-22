@@ -12,8 +12,8 @@ pub async fn connect(host: &str, port: u16) -> Result<EdgeStack> {
     let addr = format!("{host}:{port}");
     info!("Connecting to UDP: {}", addr);
 
-    let queue = tokio_udp::new_std_queue(4096);
-    let stack: EdgeStack = tokio_udp::new_controller_stack(&queue, 512);
+    let queue = tokio_udp::new_std_queue(32768);
+    let stack: EdgeStack = tokio_udp::new_controller_stack(&queue, 2048);
 
     let socket = UdpSocket::bind("0.0.0.0:0")
         .await

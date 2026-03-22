@@ -36,9 +36,9 @@ pub use crate::types::*;
 // ============================================================================
 
 // Fast telemetry topic (device → host)
-// Firmware pushes motor control data at configurable rate (default 1kHz).
-// Contains phase currents, dq currents/voltages, angle, RPM, hall state.
-topic!(FastTelemetryTopic, FastTelemetry, "telemetry/fast");
+// Firmware pushes batched motor control data at configurable rate.
+// Host must send TelemetryConfig to enable streaming.
+topic!(FastTelemetryTopic, FastTelemetryBatch, "telemetry/fast");
 
 // Slow telemetry endpoint (host polls device)
 // Host periodically requests system health data (~10Hz).

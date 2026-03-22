@@ -57,6 +57,9 @@ struct Args {
     /// Maximum phase current (A)
     #[arg(long, default_value_t = 40.0)]
     max_current: f32,
+    /// Load torque in N·m (opposes rotation, creates steady-state speed)
+    #[arg(long, default_value_t = 0.0)]
+    load: f32,
 }
 
 #[tokio::main]
@@ -100,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         args.foc_freq,
         args.batch,
         args.vbus,
+        args.load,
         &STATE,
         &FAULT_REGISTRY,
     ));

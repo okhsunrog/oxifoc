@@ -19,7 +19,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -52,7 +52,7 @@ pub enum HostCommand {
 }
 
 pub struct HostRuntime {
-    /// Fast telemetry receiver (currents, dq, angle, RPM — default 1kHz)
+    /// Fast telemetry receiver (currents, dq, angle, RPM)
     pub fast_rx: Receiver<FastTelemetry>,
     /// Slow telemetry receiver (vbus, temps, state — polled at 10Hz)
     pub slow_rx: Receiver<SlowTelemetry>,
@@ -60,6 +60,8 @@ pub struct HostRuntime {
     pub device_info_rx: Receiver<oxifoc_core::types::DeviceInfo>,
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
+    /// Actual fast telemetry rate in Hz (set after device acks TelemetryConfig)
+    pub fast_hz: Arc<AtomicU16>,
     cancel_token: CancellationToken,
 }
 
@@ -92,6 +94,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (info_tx, device_info_rx) = crossbeam_unbounded::<oxifoc_core::types::DeviceInfo>();
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
+    let fast_hz = Arc::new(AtomicU16::new(0));
     let cancel_token = CancellationToken::new();
 
     spawn_backend(
@@ -101,6 +104,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         info_tx,
         cmd_rx,
         connected.clone(),
+        fast_hz.clone(),
         cancel_token.clone(),
     );
 
@@ -110,6 +114,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         device_info_rx,
         cmd_tx,
         connected,
+        fast_hz,
         cancel_token,
     }
 }
@@ -121,6 +126,7 @@ fn spawn_backend(
     info_tx: Sender<oxifoc_core::types::DeviceInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
+    fast_hz_flag: Arc<AtomicU16>,
     cancel_token: CancellationToken,
 ) {
     thread::spawn(move || {
@@ -132,6 +138,7 @@ fn spawn_backend(
             info_tx,
             cmd_rx,
             connected_flag,
+            fast_hz_flag,
             cancel_token,
         )) {
             error!("backend_main error: {:?}", e);
@@ -139,7 +146,7 @@ fn spawn_backend(
     });
 }
 
-const ERGOT_MTU: u16 = 512;
+const ERGOT_MTU: u16 = 2048;
 
 async fn backend_main(
     cfg: HostConfig,
@@ -148,6 +155,7 @@ async fn backend_main(
     info_tx: Sender<oxifoc_core::types::DeviceInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
+    fast_hz_flag: Arc<AtomicU16>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
     let transport_type = cfg.transport_type();
@@ -174,6 +182,7 @@ async fn backend_main(
                 info_tx,
                 cmd_rx,
                 connected_flag,
+                fast_hz_flag,
                 cancel_token,
             )
             .await
@@ -190,6 +199,7 @@ async fn backend_main(
                 info_tx,
                 cmd_rx,
                 connected_flag,
+                fast_hz_flag,
                 cancel_token,
             )
             .await
@@ -207,6 +217,7 @@ async fn backend_main(
                 info_tx,
                 cmd_rx,
                 connected_flag,
+                fast_hz_flag,
                 cancel_token,
             )
             .await
@@ -215,6 +226,7 @@ async fn backend_main(
         TransportConfig::Udp { host, port } => {
             let stack = transport::udp::connect(&host, port).await?;
             device_info_handshake(&stack, &info_tx, &connected_flag).await;
+            enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
             spawn_protocol_tasks(
                 &stack,
                 fast_tx,
@@ -232,6 +244,7 @@ async fn backend_main(
         TransportConfig::Usb => {
             let stack = transport::usb::connect().await?;
             device_info_handshake(&stack, &info_tx, &connected_flag).await;
+            enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
             spawn_protocol_tasks(
                 &stack,
                 fast_tx,
@@ -262,6 +275,7 @@ async fn run_cobs_stream_with_reconnect<F, Fut>(
     info_tx: Sender<oxifoc_core::types::DeviceInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected_flag: Arc<AtomicBool>,
+    fast_hz_flag: Arc<AtomicU16>,
     cancel_token: CancellationToken,
 ) -> Result<()>
 where
@@ -271,7 +285,7 @@ where
     use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
     use ergot::toolkits::tokio_stream as stream_kit;
 
-    let queue = stream_kit::new_std_queue(4096);
+    let queue = stream_kit::new_std_queue(32768);
     let stack = stream_kit::new_controller_stack(&queue, ERGOT_MTU);
     let state_notify = Arc::new(stream_kit::WaitQueue::new());
 
@@ -396,6 +410,9 @@ where
             }
         }
 
+        // Enable fast telemetry streaming on device
+        enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
+
         // Start defmt decoder on first connection (if configured)
         if !defmt_started && cfg.stream_defmt() {
             start_defmt_decoder(cfg, &stack, transport.defmt_reader)?;
@@ -504,6 +521,44 @@ async fn device_info_handshake<NS>(
     connected_flag.store(true, Ordering::Relaxed);
 }
 
+/// Send TelemetryConfig to enable fast telemetry streaming on the device.
+async fn enable_fast_telemetry<NS>(
+    stack: &NS,
+    fast_hz: u16,
+    fast_hz_flag: &Arc<AtomicU16>,
+) where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    use ergot::Address;
+    let device_addr = Address {
+        network_id: 1,
+        node_id: 2,
+        port_id: 0,
+    };
+    let telem_cfg = TelemetryConfig { fast_hz };
+    let ns = stack.stack();
+    let fut = ns.endpoints().request::<TelemetryConfigEndpoint>(
+        device_addr,
+        &telem_cfg,
+        None,
+    );
+    match tokio::time::timeout(Duration::from_millis(2000), fut).await {
+        Ok(Ok(ack)) => {
+            info!(
+                "Telemetry enabled: requested={}Hz, actual={}Hz",
+                fast_hz, ack.actual_fast_hz
+            );
+            fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("Telemetry config failed: {:?}", e);
+        }
+        Err(_) => {
+            tracing::warn!("Telemetry config timed out");
+        }
+    }
+}
+
 /// Wait until the interface is Active. Returns immediately if already Active.
 async fn wait_for_active(
     state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
@@ -575,7 +630,7 @@ fn spawn_protocol_tasks<NS>(
             let ns = stack.stack();
             let receiver = ns
                 .topics()
-                .single_receiver::<FastTelemetryTopic>(Some("fast_telem"));
+                .heap_bounded_receiver::<FastTelemetryTopic>(128, Some("fast_telem"));
             let mut pinned = pin!(receiver);
             let mut hdl = pinned.as_mut().subscribe();
 
@@ -585,7 +640,9 @@ fn spawn_protocol_tasks<NS>(
                 tokio::select! {
                     _ = token.cancelled() => break,
                     msg = hdl.recv() => {
-                        let _ = fast_tx.send(msg.t);
+                        for sample in &msg.t.samples {
+                            let _ = fast_tx.send(*sample);
+                        }
                     }
                 }
             }

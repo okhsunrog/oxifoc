@@ -44,7 +44,6 @@ export component App inherits Window {
 
     // ── Motor control ──
     in-out property <float> duty: 10;
-    in-out property <float> time-window: 2.0;
 
     // ── Telemetry (formatted strings from Rust) ──
     in property <string> ia-text:   "0";
@@ -72,6 +71,20 @@ export component App inherits Window {
     out property <length> vbus-h:     vbus-plot.requested-texture-height;
     out property <length> temp-w:     temp-plot.requested-texture-width;
     out property <length> temp-h:     temp-plot.requested-texture-height;
+
+    // ── Chart pan/zoom state (read by Rust) ──
+    out property <bool> currents-paused: currents-plot.paused;
+    out property <int> currents-view-offset: currents-plot.view-offset;
+    out property <float> currents-time-window: currents-plot.time-window;
+    out property <bool> vbus-paused: vbus-plot.paused;
+    out property <int> vbus-view-offset: vbus-plot.view-offset;
+    out property <float> vbus-time-window: vbus-plot.time-window;
+    out property <bool> temp-paused: temp-plot.paused;
+    out property <int> temp-view-offset: temp-plot.view-offset;
+    out property <float> temp-time-window: temp-plot.time-window;
+
+    // ── Sample rate for plots (set by Rust from actual_fast_hz) ──
+    in property <float> fast-sample-rate: 1000.0;
 
     // ── Log panel ──
     in property <[LogMessage]> log-messages;
@@ -386,21 +399,6 @@ export component App inherits Window {
                 text: "Stop";
                 clicked => { root.motor-stop(); }
             }
-
-            Rectangle { width: 16px; }
-
-            Text { text: "Window:"; vertical-alignment: center; }
-            Slider {
-                minimum: 0.5;
-                maximum: 10.0;
-                value <=> root.time-window;
-                min-width: 120px;
-            }
-            Text {
-                text: "\{round(root.time-window * 10) / 10}s";
-                vertical-alignment: center;
-                min-width: 35px;
-            }
         }
 
         // ── Telemetry ──
@@ -440,8 +438,9 @@ export component App inherits Window {
             y-min: root.currents-y-min;
             y-max: root.currents-y-max;
             y-divisions: 4;
-            time-window: root.time-window;
+            time-window: 2.0;
             x-divisions: 5;
+            sample-rate: root.fast-sample-rate;
             legend-labels: ["Phase A", "Phase B", "Phase C"];
             legend-colors: [#22d3ee, #8b5cf6, #f97316];
         }
@@ -453,8 +452,9 @@ export component App inherits Window {
             y-min: root.vbus-y-min;
             y-max: root.vbus-y-max;
             y-divisions: 3;
-            time-window: root.time-window;
+            time-window: 2.0;
             x-divisions: 5;
+            sample-rate: 10.0;
             legend-labels: ["VBUS"];
             legend-colors: [#eab308];
         }
@@ -466,8 +466,9 @@ export component App inherits Window {
             y-min: root.temp-y-min;
             y-max: root.temp-y-max;
             y-divisions: 3;
-            time-window: root.time-window;
+            time-window: 2.0;
             x-divisions: 5;
+            sample-rate: 10.0;
             legend-labels: ["FET"];
             legend-colors: [#ef4444];
         }

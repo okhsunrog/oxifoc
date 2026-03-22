@@ -21,12 +21,12 @@ use oxifoc_core::foc::fault::FaultRegistry;
 use oxifoc_core::icd::DeviceInfo;
 use oxifoc_core::runtime::servers::run_all_servers_with_config;
 use oxifoc_core::runtime::streaming::fast_telemetry_stream;
-use oxifoc_core::state::{MotorControlState, TELEMETRY};
+use oxifoc_core::state::MotorControlState;
 use oxifoc_core::storage::RuntimeConfig;
 
 use crate::fault::VirtualFault;
 
-const ERGOT_MTU: u16 = 512;
+const ERGOT_MTU: u16 = 2048;
 
 pub async fn run(
     port: u16,
@@ -45,7 +45,7 @@ pub async fn run(
 
         // Create a fresh ergot edge stack for this connection.
         // We are the target (node 2), host is controller (node 1).
-        let queue = stream_kit::new_std_queue(4096);
+        let queue = stream_kit::new_std_queue(32768);
         let stack: EdgeStack = stream_kit::new_target_stack(&queue, ERGOT_MTU);
 
         let (rx, tx) = socket.into_split();
@@ -144,7 +144,7 @@ pub async fn run(
                 }
                 tokio::select! {
                     _ = token.cancelled() => {}
-                    _ = fast_telemetry_stream(stack, &TELEMETRY, state_mutex) => {}
+                    _ = fast_telemetry_stream(stack, foc_freq_hz) => {}
                 }
             }
         });

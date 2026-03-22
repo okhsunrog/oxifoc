@@ -22,6 +22,7 @@ pub async fn foc_loop(
     foc_freq: u32,
     batch: usize,
     vbus: f32,
+    load_torque: f32,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<VirtualFault>,
 ) {
@@ -87,8 +88,20 @@ pub async fn foc_loop(
                 1000,
                 dt,
             );
-            out = motor.step(last_foc_out.v_alpha, last_foc_out.v_beta, 0.0, dt);
+            out = motor.step(last_foc_out.v_alpha, last_foc_out.v_beta, load_torque, dt);
             seq = seq.wrapping_add(1);
+
+            // Fast telemetry: decimation at the source, write to bbqueue
+            use core::sync::atomic::Ordering;
+            use oxifoc_core::runtime::streaming::{
+                FAST_TELEM_PERIOD, build_fast_telemetry, push_fast_telemetry,
+            };
+            let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
+            if period != 0 && seq % period == 0 {
+                let telem =
+                    build_fast_telemetry(&last_foc_out, out.hall_state, out.omega_e, seq);
+                push_fast_telemetry(&telem);
+            }
         }
 
         // Build telemetry snapshots from latest state

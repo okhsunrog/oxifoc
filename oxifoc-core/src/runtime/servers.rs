@@ -25,7 +25,6 @@
 
 use core::cell::RefCell;
 use core::pin::pin;
-use core::sync::atomic::{AtomicU16, Ordering};
 
 use critical_section::Mutex as CriticalSectionMutex;
 use embassy_futures::join::{join, join5};
@@ -44,13 +43,6 @@ use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
 use crate::state::{CMD_CHANNEL, MotorControlState};
 #[cfg(feature = "storage")]
 use crate::storage::{ConfigKey, ConfigPayload, FLASH_CHANNEL, FlashOperation, RuntimeConfig};
-
-// ============================================================================
-// Telemetry rate control (shared between config endpoint and streaming tasks)
-// ============================================================================
-
-/// Fast telemetry divider: FOC cycles per sample (default 20 = 1kHz at 20kHz FOC)
-pub static FAST_TELEM_DIVIDER: AtomicU16 = AtomicU16::new(20);
 
 /// Device info server - responds to info requests from host
 ///
@@ -353,11 +345,16 @@ pub async fn config_server<NS, const N: usize>(
 
 /// Telemetry config server - handles rate change requests from host
 ///
-/// Allows host to adjust fast/slow telemetry streaming rates at runtime.
+/// Telemetry config server — host sends `TelemetryConfig { fast_hz }` to start/stop streaming.
+///
+/// Computes decimation period from FOC frequency and stores in `FAST_TELEM_PERIOD`.
 pub async fn telemetry_config_server<NS, const N: usize>(endpoints: Endpoints<NS>, foc_freq_hz: u32)
 where
     NS: NetStackHandle,
 {
+    use super::streaming::FAST_TELEM_PERIOD;
+    use core::sync::atomic::Ordering;
+
     let server = endpoints.bounded_server::<TelemetryConfigEndpoint, N>(Some("telemetry_config"));
     let server = pin!(server);
     let mut h = server.attach();
@@ -365,10 +362,24 @@ where
     loop {
         let _ = h
             .serve(|cfg: &TelemetryConfig| {
-                let divider = cfg.fast_divider.max(1);
-                FAST_TELEM_DIVIDER.store(divider, Ordering::Relaxed);
+                let (period, actual_fast_hz) = if cfg.fast_hz > 0 {
+                    let period = (foc_freq_hz / cfg.fast_hz.max(1) as u32).max(1);
+                    let actual = (foc_freq_hz / period) as u16;
+                    (period, actual)
+                } else {
+                    (0, 0) // disabled
+                };
 
-                let actual_fast_hz = (foc_freq_hz / divider as u32) as u16;
+                FAST_TELEM_PERIOD.store(period, Ordering::Relaxed);
+
+                #[cfg(feature = "log")]
+                log::info!(
+                    "Telemetry config: fast_hz={}, period={}, actual={}Hz",
+                    cfg.fast_hz,
+                    period,
+                    actual_fast_hz
+                );
+
                 async move { TelemetryConfigAck { actual_fast_hz } }
             })
             .await;

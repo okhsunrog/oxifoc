@@ -1,112 +1,145 @@
-//! Telemetry streaming (push-based via Topics)
+//! Fast telemetry streaming via lock-free bbqueue.
 //!
-//! Fast telemetry is pushed continuously via ergot Topics.
-//! Slow telemetry is poll-based (endpoint server in servers.rs).
+//! ISR/sim writes `FastTelemetry` structs into a bbqueue at the decimated rate.
+//! The async streaming task wakes on a timer, drains the queue, and broadcasts
+//! batches of up to 8 samples as a single ergot topic message.
+//!
+//! Streaming is disabled by default — the host must send `TelemetryConfig`
+//! with a nonzero `fast_hz` to start.
 
-use core::cell::RefCell;
-use core::sync::atomic::Ordering;
+use core::mem::size_of;
+use core::sync::atomic::{AtomicU32, Ordering};
 
-use critical_section::Mutex as CriticalSectionMutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::watch::Watch;
+use bbqueue::nicknames::Churrasco;
 use ergot::net_stack::NetStackHandle;
+use heapless::Vec;
 
 use crate::foc::controller::FocOutput;
-use crate::icd::{FastTelemetry, FastTelemetryTopic};
-use crate::state::MotorControlState;
+use crate::icd::{FastTelemetryBatch, FastTelemetryTopic};
+use crate::types::FastTelemetry;
 
-use super::servers::FAST_TELEM_DIVIDER;
+/// Lock-free queue for ISR → async telemetry transfer.
+///
+/// ~22 frames of 46 bytes (44 data + 2 header) fit in 1024 bytes.
+/// Churrasco = Inline + Atomic + Polling + Static reference.
+pub static FAST_TELEM_Q: Churrasco<8192> = Churrasco::new();
 
-/// Run fast telemetry streaming task.
+/// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
+/// 0 = streaming disabled. Set by `telemetry_config_server` when host
+/// sends `TelemetryConfig { fast_hz }`.
+pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
+
+/// Maximum samples per batch (fits within 2048-byte MTU for TCP/serial).
+const BATCH_SIZE: usize = 32;
+
+/// Build a `FastTelemetry` from FOC output and sensor state.
 ///
-/// Subscribes to the TELEMETRY watch (updated every FOC cycle by ISR),
-/// decimates according to `FAST_TELEM_DIVIDER`, and broadcasts
-/// `FastTelemetry` via the topic.
+/// Callable from ISR (no allocation, pure computation).
+pub fn build_fast_telemetry(
+    foc: &FocOutput,
+    hall_state: u8,
+    velocity_rad_s: f32,
+    seq: u32,
+) -> FastTelemetry {
+    FastTelemetry {
+        ia_ma: (foc.ia * 1000.0) as i32,
+        ib_ma: (foc.ib * 1000.0) as i32,
+        ic_ma: (foc.ic * 1000.0) as i32,
+        id_ma: (foc.id * 1000.0) as i32,
+        iq_ma: (foc.iq * 1000.0) as i32,
+        vd_mv: (foc.vd * 1000.0) as i32,
+        vq_mv: (foc.vq * 1000.0) as i32,
+        angle_mrad: (foc.angle_rad * 1000.0) as i32,
+        erpm: (velocity_rad_s * 60.0 / core::f32::consts::TAU) as i32,
+        duty_x10: 0, // TODO: compute from duties when available
+        hall_state,
+        _pad: 0,
+        seq,
+    }
+}
+
+/// Push a `FastTelemetry` sample into the bbqueue.
 ///
-/// # Arguments
-/// * `stack` - Ergot net stack for topic broadcasting
-/// * `telemetry_watch` - Watch that ISR writes FocOutput to every FOC cycle
-/// * `state_mutex` - For reading hall state
-pub async fn fast_telemetry_stream<NS>(
-    stack: NS,
-    telemetry_watch: &'static Watch<CriticalSectionRawMutex, FocOutput, 2>,
-    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-) where
+/// Called from ISR or sim loop after decimation check.
+/// If the queue is full, the sample is silently dropped (correct for real-time).
+pub fn push_fast_telemetry(telem: &FastTelemetry) {
+    let prod = FAST_TELEM_Q.framed_producer();
+    if let Ok(mut grant) = prod.grant(size_of::<FastTelemetry>() as u16) {
+        grant.copy_from_slice(bytemuck::bytes_of(telem));
+        grant.commit(size_of::<FastTelemetry>() as u16);
+    }
+}
+
+/// Run the fast telemetry streaming task.
+///
+/// Drains `FAST_TELEM_Q` on a timer and broadcasts `FastTelemetryBatch`
+/// via the ergot topic system. When streaming is disabled (`FAST_TELEM_PERIOD == 0`),
+/// polls periodically waiting for the host to enable it.
+pub async fn fast_telemetry_stream<NS>(stack: NS, foc_freq_hz: u32)
+where
     NS: NetStackHandle + Clone,
 {
-    let mut receiver = match telemetry_watch.receiver() {
-        Some(r) => r,
-        None => {
-            #[cfg(feature = "log")]
-            log::error!("Failed to create TELEMETRY watch receiver (max receivers reached)");
-            return;
-        }
-    };
-    let mut cycle_count: u32 = 0;
-    let mut seq: u32 = 0;
+    let cons = FAST_TELEM_Q.framed_consumer();
 
     #[cfg(feature = "log")]
-    log::info!("fast_telemetry_stream: waiting for first FOC output...");
+    log::info!("fast_telemetry_stream: waiting for host to enable streaming");
 
     loop {
-        let foc = receiver.changed().await;
-        cycle_count = cycle_count.wrapping_add(1);
+        let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
 
-        #[cfg(feature = "log")]
-        if cycle_count == 1 {
-            log::info!("fast_telemetry_stream: received first FOC output");
-        }
-
-        let divider = FAST_TELEM_DIVIDER.load(Ordering::Relaxed) as u32;
-        if divider == 0 || !cycle_count.is_multiple_of(divider) {
+        if period == 0 {
+            // Streaming disabled — check again in 100ms
+            embassy_time::Timer::after_millis(100).await;
             continue;
         }
 
-        // Read hall state from shared state
-        let hall_state = critical_section::with(|cs| {
-            state_mutex
-                .borrow(cs)
-                .borrow()
-                .last_hall
-                .map(|h| h.state)
-                .unwrap_or(0)
-        });
-
-        // Read velocity for ERPM calculation
-        let velocity_rad_s = critical_section::with(|cs| {
-            state_mutex
-                .borrow(cs)
-                .borrow()
-                .last_hall
-                .map(|h| h.velocity_rad_s)
-                .unwrap_or(0.0)
-        });
-
-        seq = seq.wrapping_add(1);
-
-        let msg = FastTelemetry {
-            ia_ma: (foc.ia * 1000.0) as i32,
-            ib_ma: (foc.ib * 1000.0) as i32,
-            ic_ma: (foc.ic * 1000.0) as i32,
-            id_ma: (foc.id * 1000.0) as i32,
-            iq_ma: (foc.iq * 1000.0) as i32,
-            vd_mv: (foc.vd * 1000.0) as i32,
-            vq_mv: (foc.vq * 1000.0) as i32,
-            angle_mrad: (foc.angle_rad * 1000.0) as i32,
-            erpm: (velocity_rad_s * 60.0 / core::f32::consts::TAU) as i32,
-            duty_x10: 0, // TODO: compute from duties when available
-            hall_state,
-            seq,
+        // Compute sleep interval: BATCH_SIZE samples at (foc_freq_hz / period) Hz
+        let sample_hz = foc_freq_hz / period;
+        let interval_us = if sample_hz > 0 {
+            (BATCH_SIZE as u64 * 1_000_000) / sample_hz as u64
+        } else {
+            100_000 // fallback 100ms
         };
 
-        let _result = stack
-            .stack()
-            .topics()
-            .broadcast::<FastTelemetryTopic>(&msg, None);
+        embassy_time::Timer::after_micros(interval_us).await;
 
-        #[cfg(feature = "log")]
-        if seq <= 3 {
-            log::info!("fast_telemetry broadcast seq={} result={:?}", seq, _result);
+        // Drain bbqueue into batches and broadcast
+        loop {
+            let mut batch = FastTelemetryBatch {
+                samples: Vec::new(),
+            };
+
+            while batch.samples.len() < BATCH_SIZE {
+                match cons.read() {
+                    Ok(grant) => {
+                        if grant.len() == size_of::<FastTelemetry>() {
+                            let telem: FastTelemetry = bytemuck::pod_read_unaligned(&grant);
+                            let _ = batch.samples.push(telem);
+                        }
+                        grant.release();
+                    }
+                    Err(_) => break, // queue empty
+                }
+            }
+
+            if batch.samples.is_empty() {
+                break; // nothing left to send
+            }
+
+            let _result = stack
+                .stack()
+                .topics()
+                .broadcast::<FastTelemetryTopic>(&batch, None);
+
+            #[cfg(feature = "log")]
+            if _result.is_err() {
+                log::warn!("fast_telemetry broadcast failed: {:?}", _result);
+            }
+
+            // If we got fewer than BATCH_SIZE, the queue is drained
+            if batch.samples.len() < BATCH_SIZE {
+                break;
+            }
         }
     }
 }

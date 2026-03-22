@@ -163,12 +163,16 @@ pub struct AdcSample {
 // Streaming Telemetry Types (push-based via Topics)
 // ============================================================================
 
-/// High-frequency motor control telemetry (streamed at configurable rate, default 1kHz)
+/// High-frequency motor control telemetry (streamed at configurable rate).
 ///
-/// Contains FOC loop outputs in engineering units. Firmware pushes this
-/// every N FOC cycles (configurable decimation).
+/// Contains FOC loop outputs in engineering units. ISR decimates and pushes
+/// to a lock-free bbqueue; async task drains and broadcasts batches.
+///
+/// `#[repr(C)]` with explicit padding for `bytemuck::Pod` (zero-copy ISR→task transfer).
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "runtime", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct FastTelemetry {
     /// Phase A current in milliamps
     pub ia_ma: i32,
@@ -192,8 +196,20 @@ pub struct FastTelemetry {
     pub duty_x10: i16,
     /// Raw Hall sensor state (0-7)
     pub hall_state: u8,
+    /// Explicit padding for bytemuck::Pod (not serialized on the wire)
+    #[serde(skip)]
+    pub _pad: u8,
     /// Monotonic sequence number
     pub seq: u32,
+}
+
+/// Batch of fast telemetry samples for efficient network transmission.
+///
+/// Up to 32 samples per batch (fits within 2048-byte MTU for TCP/serial).
+#[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct FastTelemetryBatch {
+    pub samples: Vec<FastTelemetry, 32>,
 }
 
 /// Low-frequency system telemetry (streamed at configurable rate, default 10Hz)
@@ -227,20 +243,21 @@ pub struct SlowTelemetry {
 
 /// Telemetry rate configuration
 ///
-/// Host sends this to configure the firmware's fast telemetry streaming rate.
+/// Host sends this to start/stop fast telemetry streaming.
+/// Device does not stream until host explicitly requests it.
 /// Slow telemetry is poll-based (host controls the rate).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TelemetryConfig {
-    /// Fast telemetry decimation: FOC cycles per sample.
-    /// E.g. at 20kHz FOC: 20 = 1kHz, 1 = 20kHz, 40 = 500Hz.
-    pub fast_divider: u16,
+    /// Desired fast telemetry rate in Hz. 0 = stop streaming.
+    /// Device computes the closest achievable rate from FOC frequency.
+    pub fast_hz: u16,
 }
 
 impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
-            fast_divider: 20, // 1kHz at 20kHz FOC
+            fast_hz: 0, // disabled by default — host must enable
         }
     }
 }
