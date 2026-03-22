@@ -24,3 +24,4 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tokio-util = { version = "0.7.18", features = ["rt"] }
+socket2 = "0.6.3"

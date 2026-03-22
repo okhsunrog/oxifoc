@@ -3,6 +3,9 @@
 //! Uses DirectEdge target profile. The device binds a port and waits for the
 //! host to send the first packet (learns host address from recv_from).
 //! No pre-configured host address needed.
+//!
+//! After disconnect, waits for interface to reach Down state (workers exited),
+//! then re-registers on the same stack with the same socket.
 
 use core::cell::RefCell;
 use std::sync::Arc;
@@ -38,14 +41,27 @@ pub async fn run(
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
 ) -> Result<()> {
     let bind_addr = format!("0.0.0.0:{port}");
+    info!("UDP target on {bind_addr}");
+
+    let queue = udp_kit::new_std_queue(4096);
+    let stack: EdgeStack = udp_kit::new_target_stack(&queue, ERGOT_MTU);
+    let state_notify = Arc::new(WaitQueue::new());
 
     loop {
-        let socket = UdpSocket::bind(&bind_addr).await?;
-        info!("UDP target bound on {bind_addr}, waiting for host...");
-
-        let queue = udp_kit::new_std_queue(4096);
-        let stack: EdgeStack = udp_kit::new_target_stack(&queue, ERGOT_MTU);
-        let state_notify = Arc::new(WaitQueue::new());
+        // Bind a fresh socket each session (previous one is held by ergot's
+        // Arc until workers exit). SO_REUSEADDR allows rebinding the port.
+        let socket = {
+            let sock = socket2::Socket::new(
+                socket2::Domain::IPV4,
+                socket2::Type::DGRAM,
+                Some(socket2::Protocol::UDP),
+            )?;
+            sock.set_reuse_address(true)?;
+            sock.set_nonblocking(true)?;
+            sock.bind(&bind_addr.parse::<std::net::SocketAddr>()?.into())?;
+            UdpSocket::from_std(sock.into())?
+        };
+        info!("Waiting for host...");
 
         udp_kit::register_edge_interface(
             &stack,
@@ -77,16 +93,11 @@ pub async fn run(
         };
 
         // Wait for interface to become Active (host sent first packet)
-        loop {
-            let _ = state_notify.wait().await;
-            let active = stack.manage_profile(|im| {
-                matches!(im.interface_state(()), Some(InterfaceState::Active { .. }))
-            });
-            if active {
-                info!("UDP host connected");
-                break;
-            }
-        }
+        wait_for_state(&state_notify, &stack, |s| {
+            matches!(s, Some(InterfaceState::Active { .. }))
+        })
+        .await;
+        info!("UDP host connected");
 
         // Cancel token — cancelled when interface goes down
         let conn_token = CancellationToken::new();
@@ -97,15 +108,12 @@ pub async fn run(
             let state_notify = state_notify.clone();
             let token = conn_token.clone();
             async move {
-                loop {
-                    let _ = state_notify.wait().await;
-                    let state = stack.manage_profile(|im| im.interface_state(()));
-                    if matches!(state, Some(InterfaceState::Down | InterfaceState::Inactive)) {
-                        warn!("UDP host disconnected, stopping connection tasks");
-                        token.cancel();
-                        break;
-                    }
-                }
+                wait_for_state(&state_notify, &stack, |s| {
+                    matches!(s, Some(InterfaceState::Down | InterfaceState::Inactive))
+                })
+                .await;
+                warn!("UDP host disconnected, stopping connection tasks");
+                token.cancel();
             }
         });
 
@@ -136,6 +144,37 @@ pub async fn run(
             ) => {}
         }
 
-        info!("UDP session ended, ready for next connection");
+        info!("UDP session ended, waiting for workers to exit...");
+
+        // Wait for state to reach Down (workers fully exited) before re-registering
+        wait_for_state(&state_notify, &stack, |s| {
+            matches!(s, Some(InterfaceState::Down) | None)
+        })
+        .await;
+
+        info!("Ready for next connection");
+    }
+}
+
+/// Wait until the interface state matches a predicate.
+async fn wait_for_state<F>(
+    state_notify: &Arc<WaitQueue>,
+    stack: &EdgeStack,
+    predicate: F,
+) where
+    F: Fn(Option<InterfaceState>) -> bool,
+{
+    // Check current state first
+    let state = stack.manage_profile(|im| im.interface_state(()));
+    if predicate(state) {
+        return;
+    }
+    // Wait for state changes
+    loop {
+        let _ = state_notify.wait().await;
+        let state = stack.manage_profile(|im| im.interface_state(()));
+        if predicate(state) {
+            return;
+        }
     }
 }
