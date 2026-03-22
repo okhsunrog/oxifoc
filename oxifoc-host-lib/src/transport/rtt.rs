@@ -163,8 +163,13 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
                 match channel.read(&mut core, &mut ergot_rx_buf) {
                     Ok(n) if n > 0 => {
                         did_work = true;
-                        let _ = ergot_rx_tx
-                            .blocking_send(Ok(Bytes::copy_from_slice(&ergot_rx_buf[..n])));
+                        if ergot_rx_tx
+                            .blocking_send(Ok(Bytes::copy_from_slice(&ergot_rx_buf[..n])))
+                            .is_err()
+                        {
+                            info!("Ergot rx channel closed, stopping RTT thread");
+                            return;
+                        }
                     }
                     Ok(_) => {}
                     Err(e) => error!("RTT ergot read error: {}", e),
@@ -174,8 +179,15 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
             // 2. Write ergot data to device
             while let Ok(data) = ergot_tx_rx.try_recv() {
                 if let Some(channel) = rtt.down_channel(RTT_DOWN_CHANNEL_ERGOT) {
-                    if let Err(e) = channel.write(&mut core, &data) {
-                        error!("RTT ergot write error: {}", e);
+                    let mut offset = 0;
+                    while offset < data.len() {
+                        match channel.write(&mut core, &data[offset..]) {
+                            Ok(n) => offset += n,
+                            Err(e) => {
+                                error!("RTT ergot write error: {}", e);
+                                break;
+                            }
+                        }
                     }
                     did_work = true;
                 }
@@ -186,8 +198,13 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
                 match channel.read(&mut core, &mut defmt_buf) {
                     Ok(n) if n > 0 => {
                         did_work = true;
-                        let _ =
-                            defmt_rx_tx.blocking_send(Ok(Bytes::copy_from_slice(&defmt_buf[..n])));
+                        if defmt_rx_tx
+                            .blocking_send(Ok(Bytes::copy_from_slice(&defmt_buf[..n])))
+                            .is_err()
+                        {
+                            info!("Defmt rx channel closed, stopping RTT thread");
+                            return;
+                        }
                     }
                     Ok(_) => {}
                     Err(e) => error!("RTT defmt read error: {}", e),

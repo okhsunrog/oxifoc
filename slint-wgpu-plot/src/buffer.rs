@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, Ordering, fence};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Lock-free SPSC ring buffer for real-time visualization.
 ///
@@ -75,10 +75,11 @@ impl PlotBuffer {
                 self.data[dst + ch].store(frames[src + ch].to_bits(), Ordering::Relaxed);
             }
             pos = (pos + 1) % self.capacity;
-            self.write_pos.store(pos as u32, Ordering::Relaxed);
         }
-        // Single Release fence after all frames are written.
-        fence(Ordering::Release);
+        // Update write_pos once after all frames, with Release ordering so
+        // the reader's Acquire on write_pos synchronises with all the
+        // Relaxed sample stores above.
+        self.write_pos.store(pos as u32, Ordering::Release);
     }
 
     /// Reset the buffer: fill with NaN and reset write position.
