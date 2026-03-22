@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_hfi_injector_rotation() {
-        let mut injector = HfiInjector::new(1000.0, 3.0, 20000.0);
+        let mut injector = HfiInjector::<crate::foc::trig::LibmSinCos>::new(1000.0, 3.0, 20000.0);
 
         // Collect injection angles over one FFT window
         let dt = 1.0 / 20000.0;
@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn test_hfi_injector_output() {
-        let mut injector = HfiInjector::new(1000.0, 3.0, 20000.0);
+        let mut injector = HfiInjector::<crate::foc::trig::LibmSinCos>::new(1000.0, 3.0, 20000.0);
         let dt = 1.0 / 20000.0;
 
         // At angle = 0, v_alpha should be non-zero, v_beta should be ~0

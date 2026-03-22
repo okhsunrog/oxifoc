@@ -59,7 +59,7 @@ pub async fn info_server<NS, const N: usize>(
 
     loop {
         let info = device_info.clone();
-        let result = h
+        let _result = h
             .serve(|_req: &()| {
                 #[cfg(feature = "defmt")]
                 defmt::info!("DeviceInfo request received");
@@ -73,7 +73,7 @@ pub async fn info_server<NS, const N: usize>(
         #[cfg(feature = "defmt")]
         defmt::info!(
             "DeviceInfo response send result: {:?}",
-            defmt::Debug2Format(&result)
+            defmt::Debug2Format(&_result)
         );
     }
 }

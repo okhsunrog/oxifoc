@@ -274,7 +274,7 @@ fn ADC1_2() {
 
     // Update global state with telemetry
     // TODO: remove this fallback once motor PSU is connected for testing
-    let foc_telem = foc_telem.unwrap_or(oxifoc_core::foc::controller::FocOutput::default());
+    let foc_telem = foc_telem.unwrap_or_default();
     {
         let foc = foc_telem;
         oxifoc_core::state::update_telemetry(&STATE, adc_snapshot, hall_snapshot, foc);

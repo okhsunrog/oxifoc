@@ -12,7 +12,7 @@ use tracing::{info, warn};
 pub async fn connect(path: &str, baud: u32) -> Result<CobsStreamTransport> {
     info!("Opening serial port {} at {} baud", path, baud);
 
-    let mut port = tokio_serial::new(path, baud)
+    let port = tokio_serial::new(path, baud)
         .open_native_async()
         .with_context(|| format!("Failed to open serial port {}", path))?;
 

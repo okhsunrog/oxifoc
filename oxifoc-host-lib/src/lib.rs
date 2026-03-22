@@ -775,7 +775,6 @@ fn spawn_protocol_tasks<NS>(
     tokio::spawn({
         use ergot::Address;
         let stack = stack.clone();
-        let fast_hz_flag = fast_hz_flag;
         async move {
             let mut cmd_rx = cmd_rx;
             let ns = stack.stack();

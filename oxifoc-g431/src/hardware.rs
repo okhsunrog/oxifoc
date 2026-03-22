@@ -3,7 +3,6 @@
 use assign_resources::assign_resources;
 use embassy_stm32::adc::{Adc, AdcChannel, AdcConfig, Exten, InjectedAdc, SampleTime};
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::interrupt::typelevel::{ADC1_2, Interrupt};
 use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
 use embassy_stm32::{Peri, Peripherals, peripherals};
 use static_cell::StaticCell;

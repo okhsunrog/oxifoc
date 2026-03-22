@@ -55,6 +55,7 @@ pub fn get_device_state() -> DeviceState {
 // ========== Worker Tasks ==========
 
 use embassy_executor::Spawner;
+#[cfg(feature = "transport-rtt")]
 use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
 use heapless::String;
 use oxifoc_core::types::DeviceInfo;

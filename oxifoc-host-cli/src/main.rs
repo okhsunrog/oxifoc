@@ -122,10 +122,10 @@ fn main() -> Result<()> {
     let mut cfg = build_config(&cli)?;
 
     // Set fast_hz in config so backend enables telemetry at connect time
-    if let Command::Monitor { fast_hz, .. } = &cli.command {
-        if *fast_hz > 0 {
-            cfg.fast_hz = Some(*fast_hz);
-        }
+    if let Command::Monitor { fast_hz, .. } = &cli.command
+        && *fast_hz > 0
+    {
+        cfg.fast_hz = Some(*fast_hz);
     }
 
     let runtime = start_host(cfg);
