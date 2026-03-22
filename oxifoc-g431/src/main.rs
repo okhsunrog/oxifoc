@@ -72,6 +72,9 @@ async fn main(spawner: Spawner) {
     // Initialize ADC1/ADC2 with injected conversions
     let adc_handles = hardware::init_adc(p.ADC1, p.ADC2, opamp_channels, p.PA0, p.PB14);
 
+    // Initialize hardware overcurrent protection (COMP1/2/4 + DAC3 → TIM1 BKIN)
+    hardware::init_overcurrent_protection(config::HW_OVERCURRENT_A);
+
     // Initialize LED
     let mut led = hardware::init_led(p.PC6);
 

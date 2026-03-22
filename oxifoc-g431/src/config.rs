@@ -36,7 +36,7 @@ pub const BOARD: BoardConfig = BoardConfig {
 pub const NTC: NtcConfig = NtcConfig {
     r_fixed_ohm: 4700.0,
     r0_ohm: 10_000.0,
-    beta: 3455.0,
+    beta: 3425.0,
     t0_k: 273.15 + 25.0,
     topology: NtcTopology::HighSide,
 };
@@ -50,6 +50,26 @@ pub const NTC: NtcConfig = NtcConfig {
 /// Central source of truth for PWM frequency and timing.
 /// Used by motor.rs for timer setup and control/foc.rs for dt calculation.
 pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(500);
+
+// ============================================================================
+// Hardware Overcurrent Protection
+// ============================================================================
+
+/// Hardware overcurrent trip threshold (amperes, peak per-phase).
+/// This is the COMP+DAC hardware last-resort trip point.
+/// FETs (STL180N6F7): 120A continuous, 480A pulsed. Shunts: 3mΩ.
+/// Set well above software limit (40A) to avoid nuisance trips,
+/// but below absolute hardware limits.
+pub const HW_OVERCURRENT_A: f32 = 80.0;
+
+/// Convert overcurrent threshold to DAC3 12-bit counts.
+/// Raw shunt voltage (no OPAMP gain): V = I × R_shunt.
+/// DAC LSB = 3.3V / 4096 = 0.806mV.
+pub fn overcurrent_dac_counts(amps: f32) -> u16 {
+    let mv = amps * BOARD.shunt_ohms * 1000.0;
+    let counts = mv / (3300.0 / 4096.0);
+    counts as u16
+}
 
 // ============================================================================
 // Timing Configuration

@@ -167,6 +167,18 @@ fn ADC1_2() {
 
     use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
 
+    // Detect hardware overcurrent break event (COMP → TIM1 BKIN cleared MOE)
+    {
+        let sr = embassy_stm32::pac::TIM1.sr().read();
+        if sr.bif(0) {
+            // Clear break interrupt flag
+            embassy_stm32::pac::TIM1
+                .sr()
+                .modify(|w| w.set_bif(0, false));
+            FAULT_REGISTRY.set(G431Fault::OverCurrent);
+        }
+    }
+
     // Local storage for ADC readings
     let mut ia_raw: u16 = 0;
     let mut ib_raw: u16 = 0;

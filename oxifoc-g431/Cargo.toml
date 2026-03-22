@@ -71,11 +71,11 @@ rtt-target = "0.6"
 [profile.dev]
 debug = true
 lto = "fat"
-opt-level = "s"
+opt-level = "z"
 incremental = true
 
 [profile.release]
 debug = 2
 lto = "fat"
-opt-level = "s"
+opt-level = "z"
 incremental = true

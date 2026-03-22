@@ -188,6 +188,83 @@ pub fn init_adc(
     }
 }
 
+/// Initialize hardware overcurrent protection using COMP1/2/4 + DAC3.
+///
+/// Comparators monitor raw shunt voltage (shared pad with OPAMP inputs):
+///   COMP1 INP0 = PA1 (phase A shunt, shared with OPAMP1_VINP)
+///   COMP2 INP0 = PA7 (phase B shunt, shared with OPAMP2_VINP)
+///   COMP4 INP0 = PB0 (phase C shunt, shared with OPAMP3_VINP)
+///
+/// DAC3 (internal-only, no pins) provides programmable threshold on INM:
+///   COMP1 INMSEL=DACA → DAC3_CH1
+///   COMP2 INMSEL=DACA → DAC3_CH2
+///   COMP4 INMSEL=DACA → DAC3_CH2
+///
+/// COMP outputs route to TIM1 BKIN (configured in motor.rs) for
+/// hardware PWM shutdown in nanoseconds — no software in the loop.
+///
+/// Must be called AFTER init_opamps() (pins already in analog mode).
+pub fn init_overcurrent_protection(threshold_amps: f32) {
+    use embassy_stm32::pac;
+    use embassy_stm32::pac::comp::vals as comp_vals;
+    let dac_counts = crate::config::overcurrent_dac_counts(threshold_amps);
+
+    // Enable SYSCFG clock (shared by all COMPs) and DAC3 clock
+    pac::RCC.apb2enr().modify(|w| w.set_syscfgen(true));
+    pac::RCC.ahb2enr().modify(|w| w.set_dac3en(true));
+
+    // --- DAC3: set threshold on both channels ---
+    // Mode 0b001: normal mode, internal (no pin), unbuffered (RM0440 Table 208)
+    pac::DAC3.mcr().modify(|w| {
+        w.set_mode(0, 0b001.into());
+        w.set_mode(1, 0b001.into());
+    });
+    // Enable both channels
+    pac::DAC3.cr().modify(|w| {
+        w.set_en(0, true);
+        w.set_en(1, true);
+    });
+    // Set threshold value (both channels to same value)
+    pac::DAC3.dhr12r(0).write(|w| w.set_dhr(dac_counts));
+    pac::DAC3.dhr12r(1).write(|w| w.set_dhr(dac_counts));
+
+    // --- COMP1: phase A (PA1 = INP0) ---
+    pac::COMP1.csr().write(|w| {
+        w.set_en(true);
+        w.set_inpsel(false); // INP0 = PA1
+        w.set_inmsel(comp_vals::Inm::DACA); // DAC3_CH1
+        w.set_hyst(comp_vals::Hysteresis::HYST10M);
+        w.set_polarity(comp_vals::Polarity::NOT_INVERTED);
+        w.set_blanksel(comp_vals::Blanking::NO_BLANKING);
+    });
+
+    // --- COMP2: phase B (PA7 = INP0) ---
+    pac::COMP2.csr().write(|w| {
+        w.set_en(true);
+        w.set_inpsel(false); // INP0 = PA7
+        w.set_inmsel(comp_vals::Inm::DACA); // DAC3_CH2
+        w.set_hyst(comp_vals::Hysteresis::HYST10M);
+        w.set_polarity(comp_vals::Polarity::NOT_INVERTED);
+        w.set_blanksel(comp_vals::Blanking::NO_BLANKING);
+    });
+
+    // --- COMP4: phase C (PB0 = INP0) ---
+    pac::COMP4.csr().write(|w| {
+        w.set_en(true);
+        w.set_inpsel(false); // INP0 = PB0
+        w.set_inmsel(comp_vals::Inm::DACA); // DAC3_CH2
+        w.set_hyst(comp_vals::Hysteresis::HYST10M);
+        w.set_polarity(comp_vals::Polarity::NOT_INVERTED);
+        w.set_blanksel(comp_vals::Blanking::NO_BLANKING);
+    });
+
+    defmt::info!(
+        "HW overcurrent: COMP1/2/4 + DAC3 @ {}A ({}counts)",
+        threshold_amps,
+        dac_counts,
+    );
+}
+
 /// Initialize LED on PC6
 pub fn init_led(pc6: Peri<'static, peripherals::PC6>) -> Output<'static> {
     Output::new(pc6, Level::Low, Speed::Low)

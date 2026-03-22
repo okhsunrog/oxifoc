@@ -6,6 +6,7 @@ use embassy_stm32::gpio::OutputType;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::Channel;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin, Mms2, Ossr};
+use embassy_stm32::timer::low_level::BreakInputPolarity;
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
 
@@ -83,6 +84,20 @@ impl<'d> MotorPwm<'d> {
         pwm.set_duty(Channel::Ch4, max_duty.saturating_sub(peak_offset));
         // Ch4 NOT enabled here — enable_outputs() does it after ADC handles are installed.
         pwm.set_mms2(Mms2::COMPARE_OC4);
+
+        // Route COMP1/2/4 outputs to TIM1 BKIN for hardware overcurrent protection.
+        // COMP index: COMP1=0, COMP2=1, COMP4=3.
+        // When any comparator output goes high (overcurrent), TIM1 MOE is cleared
+        // and all PWM outputs are forced to safe state in hardware.
+        pwm.set_break_comparator_enable(0, true); // COMP1 (phase A)
+        pwm.set_break_comparator_enable(1, true); // COMP2 (phase B)
+        pwm.set_break_comparator_enable(3, true); // COMP4 (phase C)
+        // Disable external BKIN pin input (AF1.BKINE defaults to 1, pin may float)
+        embassy_stm32::pac::TIM1
+            .af1()
+            .modify(|w| w.set_bkine(false));
+        pwm.set_break_polarity(BreakInputPolarity::ACTIVE_HIGH);
+        pwm.set_break_enable(true);
 
         // Calculate duty limit using shared helper (convert to u16 for helper, then back to u32)
         let duty_limit = pwm::duty_limit(max_duty as u16, config.max_duty_percent) as u32;

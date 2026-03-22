@@ -276,7 +276,9 @@ pub async fn detect_server() {
                         current_max: crate::config::BOARD.max_phase_current_a,
                         max_power_loss_w: req.max_power_loss_w,
                         pwm_freq_hz: crate::config::PWM_CONFIG.pwm_freq_hz as f32,
-                        vbus: 24.0, // TODO: read actual VBUS from ADC
+                        vbus: crate::foc::VBUS_MV.load(core::sync::atomic::Ordering::Relaxed)
+                            as f32
+                            / 1000.0,
                         openloop_erpm: req.openloop_erpm,
                     };
 
