@@ -524,6 +524,12 @@ where
         // Generate and apply phase states
         let states = six_step::commutate(sector, raw_duty, forward);
         self.pwm.set_phase_states(states);
+        // Feed duties to current sensor for reconstruction (Float/Low → 0)
+        let duties = states.map(|s| match s {
+            PhaseState::Pwm(d) => d,
+            PhaseState::Low | PhaseState::Float => 0,
+        });
+        self.current_sensor.update_duties(duties);
 
         // Update phase provider (keep sensor tracking active)
         self.phase.update(
@@ -540,12 +546,6 @@ where
         } else {
             (0.0, 0.0, 0.0)
         };
-
-        // Duty values for telemetry (Float phases report 0)
-        let duties = states.map(|s| match s {
-            PhaseState::Pwm(d) => d,
-            PhaseState::Low | PhaseState::Float => 0,
-        });
 
         Ok(FocOutput {
             ia,
