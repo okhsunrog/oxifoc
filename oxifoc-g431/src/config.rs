@@ -76,4 +76,4 @@ pub const MAX_PACKET_SIZE: usize = 512;
 pub const UART_BAUD: u32 = 115_200;
 
 #[cfg(feature = "transport-uart")]
-pub const UART_BUF_LEN: usize = 1024;
+pub const UART_BUF_LEN: usize = 512;

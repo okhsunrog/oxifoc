@@ -22,7 +22,7 @@ use crate::types::FastTelemetry;
 ///
 /// ~22 frames of 46 bytes (44 data + 2 header) fit in 1024 bytes.
 /// Churrasco = Inline + Atomic + Polling + Static reference.
-pub static FAST_TELEM_Q: Churrasco<4096> = Churrasco::new();
+pub static FAST_TELEM_Q: Churrasco<2048> = Churrasco::new();
 
 /// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
 /// 0 = streaming disabled. Set by `telemetry_config_server` when host

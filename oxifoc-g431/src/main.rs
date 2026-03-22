@@ -19,9 +19,9 @@ use panic_probe as _;
 // Module declarations
 mod calibration;
 mod config;
-mod control;
 mod cordic;
 pub mod fault;
+mod foc;
 mod hardware;
 mod motor;
 mod protocol;
@@ -55,7 +55,7 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // ========== STEP 1: Initialize Clock ==========
-    let p = hardware::peripherals::init_clock();
+    let p = hardware::init_clock();
 
     // ========== STEP 2: Initialize Transport ==========
     #[cfg(feature = "transport-uart")]
@@ -67,15 +67,13 @@ async fn main(spawner: Spawner) {
     // ========== STEP 3: Initialize Hardware Peripherals ==========
 
     // Initialize OPAMPs as PGAs for phase current shunts
-    let opamp_channels =
-        hardware::peripherals::init_opamps(p.OPAMP1, p.OPAMP2, p.OPAMP3, p.PA1, p.PA7, p.PB0);
+    let opamp_channels = hardware::init_opamps(p.OPAMP1, p.OPAMP2, p.OPAMP3, p.PA1, p.PA7, p.PB0);
 
     // Initialize ADC1/ADC2 with injected conversions
-    let adc_handles =
-        hardware::peripherals::init_adc(p.ADC1, p.ADC2, opamp_channels, p.PA0, p.PB14);
+    let adc_handles = hardware::init_adc(p.ADC1, p.ADC2, opamp_channels, p.PA0, p.PB14);
 
     // Initialize LED
-    let mut led = hardware::peripherals::init_led(p.PC6);
+    let mut led = hardware::init_led(p.PC6);
 
     // ========== STEP 4: Split Resources ==========
     let r = split_resources!(p);
@@ -90,9 +88,13 @@ async fn main(spawner: Spawner) {
     defmt::info!("Config loaded from flash");
 
     // ========== STEP 6: Initialize Motor PWM ==========
-    let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
+    defmt::info!("Initializing motor PWM...");
+    let mut motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
+    motor_pwm.emergency_stop(); // Stop PWM triggers until FOC is ready
+    defmt::info!("Motor PWM initialized, outputs disabled");
 
     // ========== STEP 7: Initialize Hall Sensor ==========
+    defmt::info!("Initializing hall sensor...");
     sensors::init_hall(
         r.hall.pb6,
         r.hall.pb7,
@@ -102,7 +104,8 @@ async fn main(spawner: Spawner) {
     );
 
     // ========== STEP 8: Initialize FOC Controller ==========
-    control::init_foc(
+    defmt::debug!("Initializing FOC controller...");
+    foc::init(
         motor_pwm,
         adc_handles.adc1,
         adc_handles.adc2,
@@ -110,12 +113,13 @@ async fn main(spawner: Spawner) {
         &runtime_config,
     )
     .await;
+    defmt::info!("FOC init complete");
 
     // ========== STEP 9: Spawn I/O and Protocol Tasks ==========
 
     // Spawn RX worker
     spawner.spawn(
-        protocol::servers::run_rx(
+        protocol::run_rx(
             transport.rx_worker,
             RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
             SCRATCH_BUF.init_with(|| [0u8; 64]),
@@ -125,13 +129,13 @@ async fn main(spawner: Spawner) {
 
     // Spawn TX worker (transport-specific)
     #[cfg(feature = "transport-uart")]
-    spawner.spawn(protocol::servers::run_tx_uart(transport.tx).unwrap());
+    spawner.spawn(protocol::run_tx_uart(transport.tx).unwrap());
 
     #[cfg(feature = "transport-rtt")]
-    spawner.spawn(protocol::servers::run_tx_rtt(transport.tx).unwrap());
+    spawner.spawn(protocol::run_tx_rtt(transport.tx).unwrap());
 
     // Spawn protocol servers
-    protocol::servers::spawn_servers(&spawner);
+    protocol::spawn_servers(&spawner);
 
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);

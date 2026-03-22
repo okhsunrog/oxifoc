@@ -1,11 +1,37 @@
-//! Hardware peripheral initialization for B-G431B-ESC1
+//! Hardware abstraction layer for B-G431B-ESC1 board
 
+use assign_resources::assign_resources;
 use embassy_stm32::adc::{Adc, AdcChannel, AdcConfig, Exten, InjectedAdc, SampleTime};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::interrupt::typelevel::{ADC1_2, Interrupt};
 use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
 use embassy_stm32::{Peri, Peripherals, peripherals};
 use static_cell::StaticCell;
+
+// ========== Resource Assignments ==========
+
+// Resource assignments for hardware peripherals
+assign_resources! {
+    motor: MotorResources {
+        tim1: TIM1,
+        pa8: PA8,   // Phase A high
+        pc13: PC13, // Phase A low
+        pa9: PA9,   // Phase B high
+        pa12: PA12, // Phase B low
+        pa10: PA10, // Phase C high
+        pb15: PB15, // Phase C low
+    }
+    hall: HallResources {
+        pb6: PB6,   // H1 / Encoder A+
+        pb7: PB7,   // H2 / Encoder B+
+        pb8: PB8,   // H3 / Encoder Z+
+    }
+    storage: StorageResources {
+        flash: FLASH,
+    }
+}
+
+// ========== Peripheral Initialization ==========
 
 /// Initialize STM32G431 clocks and return peripherals
 ///
@@ -152,17 +178,10 @@ pub fn init_adc(
         false, // No interrupt - ADC1 interrupt handles both
     );
 
-    // Enable shared ADC1/ADC2 interrupt
-    // SAFETY: Called during single-threaded initialization after ADC1/ADC2 are configured.
-    // The ADC1_2 ISR (in control/foc.rs) will have valid ADC handles stored in the global
-    // statics before this interrupt fires. Enabling and unpending is safe here because
-    // the ISR is designed to handle being called immediately after enable.
-    unsafe {
-        ADC1_2::unpend();
-        ADC1_2::enable();
-    }
+    // NOTE: ADC1_2 interrupt is NOT enabled here.
+    // It's enabled in foc::init() after ADC handles and PWM outputs are set up.
 
-    defmt::info!("ADC1/ADC2 initialized with TIM1-triggered injected conversions");
+    defmt::info!("ADC1/ADC2 initialized (interrupt deferred to FOC init)");
 
     AdcHandles {
         adc1: injected_adc1,

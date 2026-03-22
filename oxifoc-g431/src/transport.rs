@@ -4,7 +4,8 @@
 //! - UART: ergot over USART2 VCP + defmt over RTT with network forwarding
 //! - RTT: ergot over RTT channels + defmt over separate RTT channel
 
-pub mod io;
+// I/O wrappers — re-exported from oxifoc-g4
+pub use oxifoc_g4::io::*;
 
 use ergot::exports::maitake_sync::WaitQueue;
 use ergot::interface_manager::LivenessConfig;
@@ -18,8 +19,7 @@ use embassy_stm32::{
 };
 #[cfg(feature = "transport-uart")]
 use ergot::logging::defmt_sink;
-#[cfg(feature = "transport-uart")]
-pub use io::{UartReader, UartWriter};
+// UartReader and UartWriter are already available via `pub use oxifoc_g4::io::*` above
 
 #[cfg(feature = "transport-rtt")]
 use ergot::transport::rtt::{RttReader, RttWriter};

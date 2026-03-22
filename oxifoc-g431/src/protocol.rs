@@ -1,20 +1,67 @@
-//! Ergot protocol servers and I/O worker tasks
+//! Protocol layer for ergot communication and device management
+
+use core::sync::atomic::{AtomicU8, Ordering};
+use static_cell::StaticCell;
+
+use crate::config::MAX_PACKET_SIZE;
+use crate::transport::{Queue, Stack};
+
+// ========== Ergot Stack ==========
+
+/// Statically store our outgoing packet buffer
+pub static OUTQ: Queue = Queue::new();
+
+/// Statically store our netstack
+pub static STACK: Stack = ergot::toolkits::embedded_io_async_v0_7::new_target_stack(
+    OUTQ.stream_producer(),
+    MAX_PACKET_SIZE as u16,
+);
+
+/// Buffers for RX worker
+pub static RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
+pub static SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+
+// ========== Device State Management ==========
+
+/// Device operational state
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DeviceState {
+    Boot = 0,
+    WaitingLink = 1,
+    Linked = 2,
+    Error = 3,
+}
+
+static DEVICE_STATE: AtomicU8 = AtomicU8::new(DeviceState::Boot as u8);
+
+pub fn set_device_state(s: DeviceState) {
+    DEVICE_STATE.store(s as u8, Ordering::Relaxed);
+}
+
+pub fn get_device_state() -> DeviceState {
+    match DEVICE_STATE.load(Ordering::Relaxed) {
+        0 => DeviceState::Boot,
+        1 => DeviceState::WaitingLink,
+        2 => DeviceState::Linked,
+        _ => DeviceState::Error,
+    }
+}
+
+// ========== Worker Tasks ==========
 
 use embassy_executor::Spawner;
 use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
 use heapless::String;
 use oxifoc_core::types::DeviceInfo;
 
-use crate::protocol::{OUTQ, STACK};
 use crate::transport::RxWorker;
 use crate::{FAULT_REGISTRY, RUNTIME_CONFIG, STATE};
 
 #[cfg(feature = "transport-uart")]
-use crate::transport::io::UartWriter;
+use crate::transport::UartWriter;
 #[cfg(feature = "transport-rtt")]
 use ergot::transport::rtt::RttWriter;
-
-// ========== Worker Tasks ==========
 
 /// Worker task for incoming ergot data (transport-agnostic)
 #[embassy_executor::task]
@@ -101,7 +148,6 @@ pub async fn fast_telemetry_task() {
 /// so the device doesn't waste cycles broadcasting to nobody.
 #[embassy_executor::task]
 pub async fn state_monitor() {
-    use crate::protocol::{DeviceState, set_device_state};
     use crate::transport::STATE_NOTIFY;
     use core::sync::atomic::Ordering;
     use ergot::interface_manager::{InterfaceState, Profile};

@@ -20,9 +20,9 @@ pub use oxifoc_core::storage::*;
 // Flash Layout
 // ============================================================================
 
-/// Storage region: last 2KB of 128KB flash (1 x 2KB page)
-const STORAGE_START: u32 = 0x1F800; // 126KB offset
-const STORAGE_SIZE: u32 = 2 * 1024;
+/// Storage region: last 4KB of 128KB flash (2 x 2KB pages)
+const STORAGE_START: u32 = 0x1F000; // 124KB offset
+const STORAGE_SIZE: u32 = 4 * 1024;
 const BUFFER_SIZE: usize = 128;
 
 // ============================================================================

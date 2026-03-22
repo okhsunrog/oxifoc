@@ -109,6 +109,19 @@ pub async fn init(
         FocController::<SvpwmModulator, CordicSinCos>::new(initial_vbus_v)
     };
 
+    // Store ADC handles for ISR access (before enabling interrupt/PWM)
+    ADC1_INJECTED.lock(|cell| cell.replace(Some(adc1)));
+    ADC2_INJECTED.lock(|cell| cell.replace(Some(adc2)));
+
+    // Enable ADC interrupt and PWM outputs.
+    // Order: install handles → enable interrupt → enable PWM triggers.
+    // Enable ADC interrupt now that handles are installed
+    unsafe {
+        <embassy_stm32::interrupt::typelevel::ADC1_2 as embassy_stm32::interrupt::typelevel::Interrupt>::unpend();
+        <embassy_stm32::interrupt::typelevel::ADC1_2 as embassy_stm32::interrupt::typelevel::Interrupt>::enable();
+    }
+    motor_pwm.enable_outputs();
+
     // Build FOC driver with dt from PWM config
     let mut foc_driver = FocDriver::new(
         foc_controller,
@@ -123,13 +136,12 @@ pub async fn init(
         oxifoc_core::motor::foc_driver::CurrentLimits::from_max_current(BOARD.max_phase_current_a),
     );
 
-    // Store ADC handles for ISR access
-    ADC1_INJECTED.lock(|cell| cell.replace(Some(adc1)));
-    ADC2_INJECTED.lock(|cell| cell.replace(Some(adc2)));
-
-    // Allow ADC injected conversions to start firing before zero-current calibration.
+    // Allow ADC injected conversions to settle before zero-current calibration.
+    defmt::info!("Waiting 10ms for ADC to settle...");
     Timer::after(Duration::from_millis(10)).await;
+    defmt::info!("Starting current sensor calibration...");
     foc_driver.current_sensor_mut().calibrate().await;
+    defmt::info!("Current sensor calibration done");
 
     // Install FOC driver for ISR-only access.
     FOC_DRIVER.lock(|cell| {

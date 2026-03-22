@@ -11,7 +11,7 @@ use oxifoc_core::foc::trig::SinCos;
 
 use crate::STATE;
 use crate::config::BOARD;
-use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
+use crate::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
 
 // Re-export types from oxifoc-g4 for convenience
 pub use oxifoc_g4::calibration::{

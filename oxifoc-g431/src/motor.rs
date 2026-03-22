@@ -9,7 +9,7 @@ use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwm
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
 
-use crate::hardware::resources::MotorResources;
+use crate::hardware::MotorResources;
 use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm, PhaseState};
 
 /// Motor PWM controller using TIM1 with complementary outputs.
@@ -81,7 +81,7 @@ impl<'d> MotorPwm<'d> {
         // Small offset ensures ADC completes before any switching edges.
         let peak_offset = max_duty / 50; // ~2% margin
         pwm.set_duty(Channel::Ch4, max_duty.saturating_sub(peak_offset));
-        pwm.enable(Channel::Ch4);
+        // Ch4 NOT enabled here — enable_outputs() does it after ADC handles are installed.
         pwm.set_mms2(Mms2::COMPARE_OC4);
 
         // Calculate duty limit using shared helper (convert to u16 for helper, then back to u32)
@@ -94,16 +94,24 @@ impl<'d> MotorPwm<'d> {
             config.max_duty_percent
         );
 
-        // Enable all three phase channels (complementary outputs).
-        pwm.enable(Channel::Ch1);
-        pwm.enable(Channel::Ch2);
-        pwm.enable(Channel::Ch3);
+        // NOTE: Phase channels are NOT enabled here.
+        // Call enable_outputs() after FOC init is complete.
+        // Enabling channels triggers ADC ISR at 20kHz which starves the main task.
 
         Self {
             pwm,
             max_duty,
             duty_limit,
         }
+    }
+
+    /// Enable PWM outputs (phase channels + ADC trigger).
+    /// Call after ADC handles are installed so the ISR can process conversions.
+    pub fn enable_outputs(&mut self) {
+        self.pwm.enable(Channel::Ch4); // ADC trigger via TIM1_TRGO2
+        self.pwm.enable(Channel::Ch1);
+        self.pwm.enable(Channel::Ch2);
+        self.pwm.enable(Channel::Ch3);
     }
 
     /// Emergency stop - disable all phases immediately.
