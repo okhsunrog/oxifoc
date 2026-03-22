@@ -100,8 +100,8 @@ jobs:
         with:
           workspaces: ${{ matrix.target }}
 
-      - name: install cargo-binutils
-        run: cargo install cargo-binutils
+      - name: install cargo-binutils and flip-link
+        run: cargo install cargo-binutils flip-link
 
       - name: clippy
         run: cargo clippy --quiet -- -D warnings
