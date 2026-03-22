@@ -38,7 +38,7 @@ pub async fn connect(
         socket,
         &queue,
         InterfaceKind::Controller,
-        Some(LivenessConfig { timeout_ms: 3000 }),
+        Some(LivenessConfig { timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS }),
         state_notify,
     )
     .await

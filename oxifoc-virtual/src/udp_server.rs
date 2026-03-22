@@ -68,7 +68,7 @@ pub async fn run(
             socket,
             &queue,
             InterfaceKind::Target,
-            Some(LivenessConfig { timeout_ms: 3000 }),
+            Some(LivenessConfig { timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS }),
             Some(state_notify.clone()),
         )
         .await
