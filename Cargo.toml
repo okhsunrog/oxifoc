@@ -42,4 +42,4 @@ slint = { git = "https://github.com/slint-ui/slint.git", default-features = fals
 wgpu = { version = "28", default-features = false, features = ["wgsl", "vulkan"] }
 slint-build = { git = "https://github.com/slint-ui/slint.git" }
 bytemuck = { version = "1", features = ["derive"] }
-bbqueue = { path = "/home/okhsunrog/code/rust/bbqueue/bbqueue" }
+bbqueue = "0.7"
