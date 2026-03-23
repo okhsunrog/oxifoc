@@ -1038,7 +1038,7 @@ fn main() {
                         let l_avg = (inductance_d_h + inductance_q_h) / 2.0;
                         let (kp, ki) = if l_avg > 0.0 && resistance_ohm > 0.0 {
                             // Simple PI tuning: bandwidth = R/L clamped to reasonable range
-                            let bandwidth = (resistance_ohm / l_avg).min(5000.0).max(500.0);
+                            let bandwidth = (resistance_ohm / l_avg).clamp(500.0, 5000.0);
                             (l_avg * bandwidth, resistance_ohm * bandwidth)
                         } else {
                             (0.4, 40.0) // defaults

@@ -263,7 +263,7 @@ pub async fn detect_server() {
         self, FluxLinkageParams, InductanceParams, ResistanceParams, calibrate_hall_default,
     };
     use crate::cordic::CordicSinCos;
-    use oxifoc_core::foc::detection::{DetectionError, MotorSize};
+    use oxifoc_core::foc::detection::MotorSize;
     use oxifoc_core::icd::DetectEndpoint;
     use oxifoc_core::types::{DetectRequest, DetectResponse};
 
@@ -283,9 +283,9 @@ pub async fn detect_server() {
                     let _ = oxifoc_core::state::CMD_CHANNEL
                         .try_send(oxifoc_core::motor::ControlMode::Stopped);
 
-                    let vbus =
-                        crate::foc::VBUS_MV.load(core::sync::atomic::Ordering::Relaxed) as f32
-                            / 1000.0;
+                    let vbus = crate::foc::VBUS_MV.load(core::sync::atomic::Ordering::Relaxed)
+                        as f32
+                        / 1000.0;
                     let board = &crate::config::BOARD;
                     let pwm_hz = crate::config::PWM_CONFIG.pwm_freq_hz as f32;
 
@@ -303,9 +303,10 @@ pub async fn detect_server() {
                             };
                             match calibration::measure_resistance(&probe_params).await {
                                 Ok(r_probe) => {
-                                    let safe_current = libm::sqrtf(max_power_loss_w / r_probe / 1.5)
-                                        .min(board.max_phase_current_a)
-                                        .max(probe_current);
+                                    let safe_current =
+                                        libm::sqrtf(max_power_loss_w / r_probe / 1.5)
+                                            .min(board.max_phase_current_a)
+                                            .max(probe_current);
                                     let params = ResistanceParams {
                                         motor_size: MotorSize::Custom(max_power_loss_w),
                                         current_max: safe_current,
@@ -323,7 +324,10 @@ pub async fn detect_server() {
                             }
                         }
 
-                        DetectRequest::MeasureInductance { max_power_loss_w, resistance_ohm: r } => {
+                        DetectRequest::MeasureInductance {
+                            max_power_loss_w,
+                            resistance_ohm: r,
+                        } => {
                             defmt::info!("Detect: measuring inductance (R={})", r);
                             let safe_current = libm::sqrtf(max_power_loss_w / r / 1.5)
                                 .min(board.max_phase_current_a)
@@ -336,16 +340,26 @@ pub async fn detect_server() {
                                 hold_current_a: hold_current,
                                 ..Default::default()
                             };
-                            match calibration::measure_inductance::<CordicSinCos>(&params, pwm_hz).await {
+                            match calibration::measure_inductance::<CordicSinCos>(&params, pwm_hz)
+                                .await
+                            {
                                 Ok((ld, lq)) => {
                                     defmt::info!("Inductance: Ld={}H Lq={}H", ld, lq);
-                                    DetectResponse::Inductance { inductance_d_h: ld, inductance_q_h: lq }
+                                    DetectResponse::Inductance {
+                                        inductance_d_h: ld,
+                                        inductance_q_h: lq,
+                                    }
                                 }
                                 Err(e) => DetectResponse::Error(map_err(e)),
                             }
                         }
 
-                        DetectRequest::MeasureFlux { max_power_loss_w, resistance_ohm: r, pole_pairs, openloop_erpm } => {
+                        DetectRequest::MeasureFlux {
+                            max_power_loss_w,
+                            resistance_ohm: r,
+                            pole_pairs,
+                            openloop_erpm,
+                        } => {
                             defmt::info!("Detect: measuring flux linkage");
                             let safe_current = libm::sqrtf(max_power_loss_w / r / 1.5)
                                 .min(board.max_phase_current_a)
@@ -363,9 +377,14 @@ pub async fn detect_server() {
                                 Ok(flux) => {
                                     let kv = if flux > 0.0 {
                                         60.0 / (core::f32::consts::TAU * flux * pole_pairs as f32)
-                                    } else { 0.0 };
+                                    } else {
+                                        0.0
+                                    };
                                     defmt::info!("Flux: {}Wb Kv={}RPM/V", flux, kv);
-                                    DetectResponse::FluxLinkage { flux_linkage_wb: flux, kv_rpm_per_v: kv }
+                                    DetectResponse::FluxLinkage {
+                                        flux_linkage_wb: flux,
+                                        kv_rpm_per_v: kv,
+                                    }
                                 }
                                 Err(e) => DetectResponse::Error(map_err(e)),
                             }
@@ -381,9 +400,9 @@ pub async fn detect_server() {
                                             .borrow(cs)
                                             .borrow_mut()
                                             .hall_calibration = Some(HallCalibrationConfig {
-                                                angles: hall_result.angles,
-                                                valid: hall_result.valid,
-                                            });
+                                            angles: hall_result.angles,
+                                            valid: hall_result.valid,
+                                        });
                                     });
                                     defmt::info!("Hall calibration OK");
                                     DetectResponse::HallCalibrated

@@ -48,11 +48,11 @@ use hardware::{AssignedResources, HallResources, MotorResources, StorageResource
 
 // Define platform state with our fault type
 oxifoc_core::define_platform_state!(fault::G474Fault);
-use protocol::{DeviceState, RECV_BUF, STACK, get_device_state, set_device_state};
-#[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
-use protocol::SCRATCH_BUF;
 #[cfg(feature = "transport-usb")]
 use protocol::OUTQ;
+#[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
+use protocol::SCRATCH_BUF;
+use protocol::{DeviceState, RECV_BUF, STACK, get_device_state, set_device_state};
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -117,9 +117,8 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "transport-usb")]
     {
         spawner.spawn(protocol::servers::usb_task(transport.usb_dev).unwrap());
-        spawner.spawn(
-            protocol::servers::run_tx_usb(transport.ep_in, OUTQ.framed_consumer()).unwrap(),
-        );
+        spawner
+            .spawn(protocol::servers::run_tx_usb(transport.ep_in, OUTQ.framed_consumer()).unwrap());
     }
 
     // Spawn protocol servers

@@ -4,30 +4,23 @@ use embassy_executor::Spawner;
 use heapless::String;
 use oxifoc_core::types::DeviceInfo;
 
-use crate::protocol::STACK;
 #[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
 use crate::protocol::OUTQ;
+use crate::protocol::STACK;
 use crate::transport::RxWorker;
 use crate::{FAULT_REGISTRY, STATE};
 
-#[cfg(feature = "transport-uart")]
-use {
-    crate::transport::io::UartWriter,
-    ergot::toolkits::embedded_io_async_v0_7::tx_worker,
-};
-#[cfg(feature = "transport-rtt")]
-use {
-    ergot::toolkits::embedded_io_async_v0_7::tx_worker,
-    ergot::transport::rtt::RttWriter,
-};
 #[cfg(feature = "transport-usb")]
 use {
     crate::transport::AppDriver,
     ergot::{
-        exports::bbqueue::prod_cons::framed::FramedConsumer,
-        toolkits::embassy_usb_v0_6 as usb_kit,
+        exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as usb_kit,
     },
 };
+#[cfg(feature = "transport-uart")]
+use {crate::transport::io::UartWriter, ergot::toolkits::embedded_io_async_v0_7::tx_worker};
+#[cfg(feature = "transport-rtt")]
+use {ergot::toolkits::embedded_io_async_v0_7::tx_worker, ergot::transport::rtt::RttWriter};
 
 // ========== Worker Tasks ==========
 
