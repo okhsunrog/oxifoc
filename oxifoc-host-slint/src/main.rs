@@ -189,6 +189,9 @@ fn main() {
     // Actual fast telemetry rate — set by HostRuntime after device ack
     let fast_hz: Arc<std::sync::atomic::AtomicU16> = Arc::new(std::sync::atomic::AtomicU16::new(0));
 
+    // Pending motor update — set by slider callback, consumed in BeforeRendering (~60Hz throttle)
+    let motor_update_pending = Arc::new(AtomicBool::new(false));
+
     // Shared telemetry receivers — set on connect, read in BeforeRendering
     let fast_rx_slot: Arc<
         std::sync::Mutex<Option<crossbeam_channel::Receiver<oxifoc_core::types::FastTelemetry>>>,
@@ -211,6 +214,8 @@ fn main() {
         let frx = fast_rx_slot.clone();
         let srx = slow_rx_slot.clone();
         let conn = connected_flag.clone();
+        let motor_pending = motor_update_pending.clone();
+        let motor_rt = runtime.clone();
 
         let mut cr: Option<PlotRenderer> = None;
         let mut vr: Option<PlotRenderer> = None;
@@ -308,12 +313,29 @@ fn main() {
                     if let (Some(app), Some(cr), Some(vr), Some(tr)) =
                         (app_weak.upgrade(), cr.as_mut(), vr.as_mut(), tr.as_mut())
                     {
+                        // Throttled motor update: send at most once per frame (~60Hz)
+                        if motor_pending.swap(false, Ordering::Relaxed) {
+                            let iq_target = app.get_iq_target();
+                            if let Ok(guard) = motor_rt.try_lock()
+                                && let Some(ref rt) = *guard
+                            {
+                                let _ = rt.cmd_tx.send(HostCommand::Motor(
+                                    ControlMode::CurrentControl {
+                                        iq_target,
+                                        id_target: 0.0,
+                                    },
+                                ));
+                            }
+                        }
+
                         // Update connection status + text from latest samples
                         app.set_is_connected(conn.load(std::sync::atomic::Ordering::Relaxed));
                         if let Some(s) = last_fast {
                             app.set_ia_text(SharedString::from(format!("{:.2} A", s.ia)));
                             app.set_ib_text(SharedString::from(format!("{:.2} A", s.ib)));
                             app.set_ic_text(SharedString::from(format!("{:.2} A", s.ic)));
+                            app.set_id_text(SharedString::from(format!("{:.2} A", s.id)));
+                            app.set_iq_text(SharedString::from(format!("{:.2} A", s.iq)));
                             app.set_erpm_text(SharedString::from(format!("{}", s.erpm)));
                             let pole_pairs = app.get_pole_pairs().max(1);
                             let rpm = s.erpm / pole_pairs;
@@ -329,6 +351,16 @@ fn main() {
                                 "{:.1} °C",
                                 s.fet_temp_c_x10 as f32 / 10.0
                             )));
+                            let state_str = format!("{:?}", s.motor_state);
+                            app.set_motor_state_text(SharedString::from(state_str));
+                            if s.fault_count > 0 {
+                                app.set_fault_text(SharedString::from(format!(
+                                    "{}",
+                                    s.fault_count
+                                )));
+                            } else {
+                                app.set_fault_text(SharedString::from(""));
+                            }
                         }
 
                         // Set sample rate for plot interaction
@@ -619,18 +651,20 @@ fn main() {
         let weak = app.as_weak();
         app.on_motor_start(move || {
             let app = weak.unwrap();
-            let duty = app.get_duty();
-            let iq_target = duty * 0.1;
+            let iq_target = app.get_iq_target();
             let guard = rt.lock().unwrap();
             if let Some(ref runtime) = *guard {
-                tracing::info!("Motor start: duty={duty:.0}%, iq_target={iq_target:.2}A");
+                tracing::info!("Motor start: iq_target={iq_target:.2}A");
                 match runtime
                     .cmd_tx
                     .send(HostCommand::Motor(ControlMode::CurrentControl {
                         iq_target,
                         id_target: 0.0,
                     })) {
-                    Ok(()) => tracing::debug!("Motor command sent"),
+                    Ok(()) => {
+                        drop(guard);
+                        app.set_motor_running(true);
+                    }
                     Err(e) => tracing::error!("Failed to send motor command: {e}"),
                 }
             } else {
@@ -642,7 +676,9 @@ fn main() {
     // ── Motor stop ────────────────────────────────────────────────────────────
     {
         let rt = runtime.clone();
+        let weak = app.as_weak();
         app.on_motor_stop(move || {
+            let app = weak.unwrap();
             let guard = rt.lock().unwrap();
             if let Some(ref runtime) = *guard {
                 tracing::info!("Motor stop");
@@ -650,12 +686,24 @@ fn main() {
                     .cmd_tx
                     .send(HostCommand::Motor(ControlMode::Stopped))
                 {
-                    Ok(()) => tracing::debug!("Stop command sent"),
+                    Ok(()) => {
+                        drop(guard);
+                        app.set_motor_running(false);
+                    }
                     Err(e) => tracing::error!("Failed to send stop command: {e}"),
                 }
             } else {
                 tracing::warn!("Motor stop clicked but no runtime");
             }
+        });
+    }
+
+    // ── Motor update (live slider changes while running) ─────────────────────
+    // Just sets a flag; the actual send happens in BeforeRendering (~60Hz throttle)
+    {
+        let pending = motor_update_pending.clone();
+        app.on_motor_update(move || {
+            pending.store(true, Ordering::Relaxed);
         });
     }
 

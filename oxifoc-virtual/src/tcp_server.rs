@@ -128,7 +128,7 @@ pub async fn run(
             async move {
                 tokio::select! {
                     _ = token.cancelled() => {}
-                    _ = crate::detect::detect_server(endpoints, vbus, max_current_a) => {}
+                    _ = crate::detect::detect_server(endpoints, vbus, max_current_a, foc_freq_hz) => {}
                 }
             }
         });

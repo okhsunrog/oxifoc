@@ -43,9 +43,11 @@ export component App inherits Window {
     in property <float> device-max-current: 0;
 
     // ── Motor control ──
-    in-out property <float> duty: 10;
+    in-out property <float> iq-target: 1.0;
     in-out property <int> pole-pairs: 7;
     in-out property <int> active-tab: 0;
+    in property <bool> motor-running: false;
+    callback motor-update();  // called when slider changes while motor is running
 
     // ── Fast telemetry streaming ──
     in-out property <int> stream-rate-index: 0;  // default 100 Hz
@@ -57,11 +59,15 @@ export component App inherits Window {
     in property <string> ia-text:   "0";
     in property <string> ib-text:   "0";
     in property <string> ic-text:   "0";
+    in property <string> id-text:   "0";
+    in property <string> iq-text:   "0";
     in property <string> vbus-text: "0.00 V";
     in property <string> temp-text: "0.0 °C";
     in property <string> erpm-text: "0";
     in property <string> rpm-text:  "0";
     in property <string> seq-text:  "0";
+    in property <string> motor-state-text: "Stopped";
+    in property <string> fault-text: "";
 
     // ── Chart textures and auto-range (set by Rust after each render) ──
     in property <image> currents-texture;
@@ -431,11 +437,21 @@ export component App inherits Window {
 
                 HorizontalLayout {
                     spacing: 6px;
-                    Text { text: "Duty"; vertical-alignment: center; font-size: 11px; }
-                    Slider { minimum: 0; maximum: 100; value <=> root.duty; min-width: 80px; }
-                    Text { text: "\{round(root.duty)}%"; vertical-alignment: center; min-width: 30px; font-size: 11px; }
-                    Button { text: "Start"; primary: true; clicked => { root.motor-start(); } }
-                    Button { text: "Stop"; clicked => { root.motor-stop(); } }
+                    Text { text: "Iq"; vertical-alignment: center; font-size: 11px; }
+                    Slider {
+                        minimum: 0; maximum: root.device-max-current > 0 ? root.device-max-current : 20;
+                        value <=> root.iq-target; min-width: 80px;
+                        changed(val) => {
+                            if root.motor-running { root.motor-update(); }
+                        }
+                    }
+                    Text { text: "\{round(root.iq-target * 10) / 10} A"; vertical-alignment: center; min-width: 45px; font-size: 11px; }
+                    Button { text: "Start"; primary: !root.motor-running; clicked => { root.motor-start(); } }
+                    Button {
+                        text: "STOP";
+                        primary: root.motor-running;
+                        clicked => { root.motor-stop(); }
+                    }
                 }
                 HorizontalLayout {
                     spacing: 6px;
@@ -474,12 +490,28 @@ export component App inherits Window {
                         Text { text: root.vbus-text; font-weight: 600; font-size: 11px; }
                     }
                     Row {
+                        Text { text: "Id:"; font-size: 11px; }
+                        Text { text: root.id-text; font-weight: 600; font-size: 11px; }
+                        Text { text: "Iq:"; font-size: 11px; }
+                        Text { text: root.iq-text; font-weight: 600; font-size: 11px; }
                         Text { text: "ERPM:"; font-size: 11px; }
                         Text { text: root.erpm-text; font-weight: 600; font-size: 11px; }
                         Text { text: "RPM:"; font-size: 11px; }
                         Text { text: root.rpm-text; font-weight: 600; font-size: 11px; }
+                    }
+                    Row {
                         Text { text: "Temp:"; font-size: 11px; }
                         Text { text: root.temp-text; font-weight: 600; font-size: 11px; }
+                        Text { text: "State:"; font-size: 11px; }
+                        Text {
+                            text: root.motor-state-text;
+                            font-weight: 600; font-size: 11px;
+                            color: root.motor-state-text == "Running" ? #22c55e
+                                 : root.motor-state-text == "Fault" ? #ef4444
+                                 : Palette.foreground;
+                        }
+                        if root.fault-text != "" : Text { text: "Faults:"; font-size: 11px; color: #ef4444; }
+                        if root.fault-text != "" : Text { text: root.fault-text; font-weight: 600; font-size: 11px; color: #ef4444; }
                         Text { text: "Seq:"; font-size: 11px; }
                         Text { text: root.seq-text; font-weight: 600; font-size: 11px; }
                     }

@@ -39,6 +39,7 @@ pub async fn detect_server<NS: NetStackHandle>(
     endpoints: Endpoints<NS>,
     vbus: f32,
     max_current_a: f32,
+    foc_freq_hz: u32,
 ) {
     let server = endpoints.bounded_server::<DetectEndpoint, 2>(Some("detect"));
     let server = pin!(server);
@@ -49,9 +50,11 @@ pub async fn detect_server<NS: NetStackHandle>(
             .serve(|req: &DetectRequest| {
                 let req = *req;
                 async move {
-                    tokio::task::spawn_blocking(move || run_detect_step(req, vbus, max_current_a))
-                        .await
-                        .unwrap_or(DetectResponse::Error(DetectError::HardwareFault))
+                    tokio::task::spawn_blocking(move || {
+                        run_detect_step(req, vbus, max_current_a, foc_freq_hz)
+                    })
+                    .await
+                    .unwrap_or(DetectResponse::Error(DetectError::HardwareFault))
                 }
             })
             .await;
@@ -63,7 +66,12 @@ pub async fn detect_server<NS: NetStackHandle>(
 /// Each step creates a fresh `VirtualMotor` simulation via `with_sim`, then
 /// runs the real detection algorithm synchronously (all timer delays
 /// immediately advance the simulation — no real time elapses).
-fn run_detect_step(req: DetectRequest, vbus: f32, max_current_a: f32) -> DetectResponse {
+fn run_detect_step(
+    req: DetectRequest,
+    vbus: f32,
+    max_current_a: f32,
+    foc_freq_hz: u32,
+) -> DetectResponse {
     let motor_params = MotorParams::default();
 
     match req {
@@ -123,7 +131,7 @@ fn run_detect_step(req: DetectRequest, vbus: f32, max_current_a: f32) -> DetectR
                     _,
                     VirtualTimer,
                     oxifoc_core::foc::trig::LibmSinCos,
-                >(hw, &params, 20_000.0))
+                >(hw, &params, foc_freq_hz as f32))
             })
             .map(|(ld, lq)| DetectResponse::Inductance {
                 inductance_d_h: ld,
@@ -178,7 +186,19 @@ fn run_detect_step(req: DetectRequest, vbus: f32, max_current_a: f32) -> DetectR
                     params,
                 ))
             })
-            .map(|_| DetectResponse::HallCalibrated)
+            .map(|hall_result| {
+                use oxifoc_core::storage::HallCalibrationConfig;
+                critical_section::with(|cs| {
+                    crate::RUNTIME_CONFIG
+                        .borrow(cs)
+                        .borrow_mut()
+                        .hall_calibration = Some(HallCalibrationConfig {
+                        angles: hall_result.angles,
+                        valid: hall_result.valid,
+                    });
+                });
+                DetectResponse::HallCalibrated
+            })
             .unwrap_or_else(|e| DetectResponse::Error(map_err(e)))
         }
     }
