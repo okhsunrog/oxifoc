@@ -36,6 +36,7 @@ pub async fn run(
     port: u16,
     foc_freq_hz: u32,
     max_current_a: f32,
+    vbus: f32,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<VirtualFault>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
@@ -127,6 +128,18 @@ pub async fn run(
                 tokio::select! {
                     _ = token.cancelled() => {}
                     _ = fast_telemetry_stream::<_, { oxifoc_core::runtime::streaming::DEFAULT_BATCH_SIZE }>(stack, foc_freq_hz) => {}
+                }
+            }
+        });
+
+        // Spawn detect server
+        tokio::spawn({
+            let endpoints = stack.endpoints();
+            let token = conn_token.clone();
+            async move {
+                tokio::select! {
+                    _ = token.cancelled() => {}
+                    _ = crate::detect::detect_server(endpoints, vbus, max_current_a) => {}
                 }
             }
         });

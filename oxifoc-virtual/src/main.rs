@@ -1,3 +1,4 @@
+mod detect;
 mod fault;
 mod sim;
 mod storage;
@@ -115,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
                 args.port,
                 args.foc_freq,
                 args.max_current,
+                args.vbus,
                 &STATE,
                 &FAULT_REGISTRY,
                 &RUNTIME_CONFIG,
@@ -126,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
                 args.port,
                 args.foc_freq,
                 args.max_current,
+                args.vbus,
                 &STATE,
                 &FAULT_REGISTRY,
                 &RUNTIME_CONFIG,

@@ -227,6 +227,15 @@ where
     f(&mut hw)
 }
 
+/// Virtual Hall sensor reader — reads the current Hall state from the simulation.
+pub struct VirtualHallReader;
+
+impl crate::foc::hall_calibration::HallReader for VirtualHallReader {
+    fn read_hall_state(&self) -> u8 {
+        SIM.with(|s| s.borrow().as_ref().unwrap().out.hall_state)
+    }
+}
+
 /// Convenience: run `run_full_detection` against a virtual motor.
 pub fn run_detection(
     motor_params: MotorParams,
