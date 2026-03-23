@@ -235,20 +235,40 @@ pub async fn state_monitor() {
     }
 }
 
-/// Motor detection server — runs full detection sequence on request.
-/// Separate task because detection takes several seconds and would block
-/// all other protocol servers if joined into protocol_servers().
+fn map_err(e: oxifoc_core::foc::detection::DetectionError) -> oxifoc_core::types::DetectError {
+    use oxifoc_core::foc::detection::DetectionError;
+    use oxifoc_core::types::DetectError;
+    match e {
+        DetectionError::MotorNotResponding => DetectError::MotorNotResponding,
+        DetectionError::OutOfRange => DetectError::OutOfRange,
+        DetectionError::Timeout => DetectError::Timeout,
+        DetectionError::HardwareFault => DetectError::HardwareFault,
+        DetectionError::InsufficientSamples => DetectError::InsufficientSamples,
+        DetectionError::LowConfidence => DetectError::LowConfidence,
+        DetectionError::MissingPrerequisite => DetectError::MissingPrerequisite,
+        _ => DetectError::HardwareFault,
+    }
+}
+
+/// Motor detection server — handles individual measurement steps.
+///
+/// GUI sends steps sequentially: MeasureResistance → MeasureInductance →
+/// MeasureFlux → CalibrateHall. Cached R/L are used by subsequent steps.
+/// PI gains are computed on the host side.
 #[embassy_executor::task]
 pub async fn detect_server() {
     use core::pin::pin;
 
-    use crate::calibration::{DetectionParams, calibrate_hall_default, run_full_detection};
+    use crate::calibration::{
+        self, FluxLinkageParams, InductanceParams, ResistanceParams, calibrate_hall_default,
+    };
     use crate::cordic::CordicSinCos;
-    use oxifoc_core::foc::detection::DetectionError;
-    use oxifoc_core::foc::detection::MotorSize;
+    use oxifoc_core::foc::detection::{DetectionError, MotorSize};
     use oxifoc_core::icd::DetectEndpoint;
-    use oxifoc_core::types::{DetectError, DetectRequest, DetectResponse};
+    use oxifoc_core::types::{DetectRequest, DetectResponse};
 
+    // Cached results from previous steps. Single-task access, no sync needed.
+    // Using statics because the serve closure is 'static.
     let endpoints = STACK.endpoints();
     let server = endpoints.bounded_server::<DetectEndpoint, 2>(Some("detect"));
     let server = pin!(server);
@@ -257,104 +277,125 @@ pub async fn detect_server() {
     loop {
         let _ = h
             .serve(|req: &DetectRequest| {
-                let req = *req; // Copy before async block
+                let req = *req;
                 async move {
-                    defmt::info!(
-                        "Detection requested: pp={} loss={}W erpm={}",
-                        req.pole_pairs,
-                        req.max_power_loss_w,
-                        req.openloop_erpm
-                    );
-
-                    // Stop motor before detection
+                    // Stop motor before any measurement
                     let _ = oxifoc_core::state::CMD_CHANNEL
                         .try_send(oxifoc_core::motor::ControlMode::Stopped);
 
-                    let params = DetectionParams {
-                        motor_size: MotorSize::Custom(req.max_power_loss_w),
-                        pole_pairs: req.pole_pairs,
-                        current_max: crate::config::BOARD.max_phase_current_a,
-                        max_power_loss_w: req.max_power_loss_w,
-                        pwm_freq_hz: crate::config::PWM_CONFIG.pwm_freq_hz as f32,
-                        vbus: crate::foc::VBUS_MV.load(core::sync::atomic::Ordering::Relaxed)
-                            as f32
-                            / 1000.0,
-                        openloop_erpm: req.openloop_erpm,
-                    };
+                    let vbus =
+                        crate::foc::VBUS_MV.load(core::sync::atomic::Ordering::Relaxed) as f32
+                            / 1000.0;
+                    let board = &crate::config::BOARD;
+                    let pwm_hz = crate::config::PWM_CONFIG.pwm_freq_hz as f32;
 
-                    let response = match run_full_detection::<CordicSinCos>(params).await {
-                        Ok(result) => {
-                            defmt::info!(
-                                "Detection OK: R={}Ω Ld={}H Lq={}H λ={}Wb",
-                                result.params.resistance_ohm,
-                                result.params.inductance_d_h,
-                                result.params.inductance_q_h,
-                                result.params.flux_linkage_wb,
-                            );
-
-                            // Step 5: Hall sensor calibration (best-effort, doesn't fail detection)
-                            let hall_calibrated = match calibrate_hall_default().await {
-                                Ok(hall_result) => {
-                                    defmt::info!("Hall calibration OK");
-                                    // Store in runtime config so GUI can read via config endpoint
-                                    use oxifoc_core::storage::HallCalibrationConfig;
-                                    let hall_cfg = HallCalibrationConfig {
-                                        angles: hall_result.angles,
-                                        valid: hall_result.valid,
+                    let resp = match req {
+                        DetectRequest::MeasureResistance { max_power_loss_w } => {
+                            defmt::info!("Detect: measuring resistance");
+                            let probe_current = (board.max_phase_current_a / 50.0).max(0.5);
+                            let probe_params = ResistanceParams {
+                                motor_size: MotorSize::Custom(max_power_loss_w),
+                                current_max: probe_current,
+                                num_samples: 20,
+                                ramp_time_ms: 200,
+                                settle_time_ms: 100,
+                                ..Default::default()
+                            };
+                            match calibration::measure_resistance(&probe_params).await {
+                                Ok(r_probe) => {
+                                    let safe_current = libm::sqrtf(max_power_loss_w / r_probe / 1.5)
+                                        .min(board.max_phase_current_a)
+                                        .max(probe_current);
+                                    let params = ResistanceParams {
+                                        motor_size: MotorSize::Custom(max_power_loss_w),
+                                        current_max: safe_current,
+                                        ..Default::default()
                                     };
+                                    match calibration::measure_resistance(&params).await {
+                                        Ok(r) => {
+                                            defmt::info!("Resistance: {}Ω", r);
+                                            DetectResponse::Resistance { resistance_ohm: r }
+                                        }
+                                        Err(e) => DetectResponse::Error(map_err(e)),
+                                    }
+                                }
+                                Err(e) => DetectResponse::Error(map_err(e)),
+                            }
+                        }
+
+                        DetectRequest::MeasureInductance { max_power_loss_w, resistance_ohm: r } => {
+                            defmt::info!("Detect: measuring inductance (R={})", r);
+                            let safe_current = libm::sqrtf(max_power_loss_w / r / 1.5)
+                                .min(board.max_phase_current_a)
+                                .max(0.5);
+                            let max_bus_current = (vbus * 0.577 * 0.6) / r.max(0.001);
+                            let hold_current = safe_current.min(max_bus_current).max(0.1);
+                            let params = InductanceParams {
+                                motor_size: MotorSize::Custom(max_power_loss_w),
+                                resistance_ohm: r,
+                                hold_current_a: hold_current,
+                                ..Default::default()
+                            };
+                            match calibration::measure_inductance::<CordicSinCos>(&params, pwm_hz).await {
+                                Ok((ld, lq)) => {
+                                    defmt::info!("Inductance: Ld={}H Lq={}H", ld, lq);
+                                    DetectResponse::Inductance { inductance_d_h: ld, inductance_q_h: lq }
+                                }
+                                Err(e) => DetectResponse::Error(map_err(e)),
+                            }
+                        }
+
+                        DetectRequest::MeasureFlux { max_power_loss_w, resistance_ohm: r, pole_pairs, openloop_erpm } => {
+                            defmt::info!("Detect: measuring flux linkage");
+                            let safe_current = libm::sqrtf(max_power_loss_w / r / 1.5)
+                                .min(board.max_phase_current_a)
+                                .max(0.5);
+                            let spin_rpm = openloop_erpm / pole_pairs as f32;
+                            let params = FluxLinkageParams {
+                                motor_size: MotorSize::Custom(max_power_loss_w),
+                                resistance_ohm: r,
+                                pole_pairs,
+                                spin_rpm,
+                                current_a: safe_current.min(2.0),
+                                ..Default::default()
+                            };
+                            match calibration::measure_flux_linkage(&params).await {
+                                Ok(flux) => {
+                                    let kv = if flux > 0.0 {
+                                        60.0 / (core::f32::consts::TAU * flux * pole_pairs as f32)
+                                    } else { 0.0 };
+                                    defmt::info!("Flux: {}Wb Kv={}RPM/V", flux, kv);
+                                    DetectResponse::FluxLinkage { flux_linkage_wb: flux, kv_rpm_per_v: kv }
+                                }
+                                Err(e) => DetectResponse::Error(map_err(e)),
+                            }
+                        }
+
+                        DetectRequest::CalibrateHall => {
+                            defmt::info!("Detect: calibrating hall sensors");
+                            match calibrate_hall_default().await {
+                                Ok(hall_result) => {
+                                    use oxifoc_core::storage::HallCalibrationConfig;
                                     critical_section::with(|cs| {
                                         crate::RUNTIME_CONFIG
                                             .borrow(cs)
                                             .borrow_mut()
-                                            .hall_calibration = Some(hall_cfg);
+                                            .hall_calibration = Some(HallCalibrationConfig {
+                                                angles: hall_result.angles,
+                                                valid: hall_result.valid,
+                                            });
                                     });
-                                    true
+                                    defmt::info!("Hall calibration OK");
+                                    DetectResponse::HallCalibrated
                                 }
-                                Err(e) => {
-                                    defmt::warn!("Hall calibration failed (no halls?): {}", e);
-                                    false
-                                }
-                            };
-
-                            DetectResponse::Ok {
-                                resistance_ohm: result.params.resistance_ohm,
-                                inductance_d_h: result.params.inductance_d_h,
-                                inductance_q_h: result.params.inductance_q_h,
-                                flux_linkage_wb: result.params.flux_linkage_wb,
-                                kv_rpm_per_v: result.params.kv_rpm_per_v,
-                                max_current_a: result.params.max_current_a,
-                                kp_current: result.kp_current,
-                                ki_current: result.ki_current,
-                                hall_calibrated,
+                                Err(e) => DetectResponse::Error(map_err(e)),
                             }
-                        }
-                        Err(e) => {
-                            defmt::warn!("Detection failed: {}", e);
-                            let err = match e {
-                                DetectionError::MotorNotResponding => {
-                                    DetectError::MotorNotResponding
-                                }
-                                DetectionError::OutOfRange => DetectError::OutOfRange,
-                                DetectionError::Timeout => DetectError::Timeout,
-                                DetectionError::HardwareFault => DetectError::HardwareFault,
-                                DetectionError::InsufficientSamples => {
-                                    DetectError::InsufficientSamples
-                                }
-                                DetectionError::LowConfidence => DetectError::LowConfidence,
-                                DetectionError::MissingPrerequisite => {
-                                    DetectError::MissingPrerequisite
-                                }
-                                _ => DetectError::HardwareFault,
-                            };
-                            DetectResponse::Error(err)
                         }
                     };
 
-                    // Stop motor after detection
                     let _ = oxifoc_core::state::CMD_CHANNEL
                         .try_send(oxifoc_core::motor::ControlMode::Stopped);
-
-                    response
+                    resp
                 }
             })
             .await;

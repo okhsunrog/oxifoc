@@ -903,67 +903,154 @@ fn main() {
             let pole_pairs = app.get_pole_pairs().max(1) as u8;
             let max_loss: f32 = app.get_detect_max_loss().parse().unwrap_or(120.0);
             let openloop_erpm: f32 = app.get_detect_openloop_erpm().parse().unwrap_or(700.0);
-            let sensorless_erpm: f32 = app.get_detect_sensorless_erpm().parse().unwrap_or(4000.0);
 
-            let req = oxifoc_core::types::DetectRequest {
-                pole_pairs,
-                max_power_loss_w: max_loss,
-                openloop_erpm,
-                sensorless_erpm,
-            };
-
+            // Send sequential detection steps: R → L → flux → hall
+            // Each step is a separate request/response via the same endpoint.
+            let cmd_tx = runtime.cmd_tx.clone();
             app.set_detect_status(SharedString::from("Running..."));
 
-            let (tx, rx) = oxifoc_host_lib::detect_channel();
-            if runtime.cmd_tx.send(HostCommand::Detect(req, tx)).is_err() {
-                return;
-            }
-
             thread::spawn(move || {
-                let result = rx.blocking_recv();
+                use oxifoc_core::types::{DetectRequest, DetectResponse};
+
+                let mut resistance_ohm = 0.0_f32;
+                let mut inductance_d_h = 0.0_f32;
+                let mut inductance_q_h = 0.0_f32;
+                let mut flux_linkage_wb = 0.0_f32;
+                let mut kv_rpm_per_v = 0.0_f32;
+                let mut hall_ok = false;
+                let mut error: Option<String> = None;
+
+                // Helper: send one detect request and wait for response
+                let send_step = |req: DetectRequest| -> Result<DetectResponse, String> {
+                    let (tx, rx) = oxifoc_host_lib::detect_channel();
+                    cmd_tx
+                        .send(HostCommand::Detect(req, tx))
+                        .map_err(|_| "Send failed".to_string())?;
+                    match rx.blocking_recv() {
+                        Ok(Ok(resp)) => Ok(resp),
+                        Ok(Err(e)) => Err(format!("{e}")),
+                        Err(_) => Err("No response".to_string()),
+                    }
+                };
+
+                // Step 1: Resistance
+                match send_step(DetectRequest::MeasureResistance {
+                    max_power_loss_w: max_loss,
+                }) {
+                    Ok(DetectResponse::Resistance { resistance_ohm: r }) => {
+                        resistance_ohm = r;
+                    }
+                    Ok(DetectResponse::Error(e)) => {
+                        error = Some(format!("R: {e:?}"));
+                    }
+                    Ok(_) => {
+                        error = Some("R: unexpected response".to_string());
+                    }
+                    Err(e) => {
+                        error = Some(format!("R: {e}"));
+                    }
+                }
+
+                // Step 2: Inductance
+                if error.is_none() {
+                    match send_step(DetectRequest::MeasureInductance {
+                        max_power_loss_w: max_loss,
+                        resistance_ohm,
+                    }) {
+                        Ok(DetectResponse::Inductance {
+                            inductance_d_h: ld,
+                            inductance_q_h: lq,
+                        }) => {
+                            inductance_d_h = ld;
+                            inductance_q_h = lq;
+                        }
+                        Ok(DetectResponse::Error(e)) => {
+                            error = Some(format!("L: {e:?}"));
+                        }
+                        Ok(_) => {
+                            error = Some("L: unexpected response".to_string());
+                        }
+                        Err(e) => {
+                            error = Some(format!("L: {e}"));
+                        }
+                    }
+                }
+
+                // Step 3: Flux linkage
+                if error.is_none() {
+                    match send_step(DetectRequest::MeasureFlux {
+                        max_power_loss_w: max_loss,
+                        resistance_ohm,
+                        pole_pairs,
+                        openloop_erpm,
+                    }) {
+                        Ok(DetectResponse::FluxLinkage {
+                            flux_linkage_wb: f,
+                            kv_rpm_per_v: kv,
+                        }) => {
+                            flux_linkage_wb = f;
+                            kv_rpm_per_v = kv;
+                        }
+                        Ok(DetectResponse::Error(e)) => {
+                            error = Some(format!("Flux: {e:?}"));
+                        }
+                        Ok(_) => {
+                            error = Some("Flux: unexpected response".to_string());
+                        }
+                        Err(e) => {
+                            error = Some(format!("Flux: {e}"));
+                        }
+                    }
+                }
+
+                // Step 4: Hall calibration (best-effort)
+                if error.is_none() {
+                    match send_step(DetectRequest::CalibrateHall) {
+                        Ok(DetectResponse::HallCalibrated) => {
+                            hall_ok = true;
+                        }
+                        Ok(DetectResponse::Error(_)) => {
+                            // Hall failure is non-fatal — motor may not have hall sensors
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Update UI
                 let _ = weak.upgrade_in_event_loop(move |app| {
-                    use oxifoc_core::types::DetectResponse;
-                    match result {
-                        Ok(Ok(DetectResponse::Ok {
-                            resistance_ohm,
-                            inductance_d_h,
-                            inductance_q_h,
-                            flux_linkage_wb,
-                            kv_rpm_per_v,
-                            max_current_a,
-                            kp_current,
-                            ki_current,
-                            hall_calibrated: _,
-                        })) => {
-                            app.set_detect_resistance(SharedString::from(format!(
-                                "{resistance_ohm:.4}"
-                            )));
-                            app.set_detect_inductance_d(SharedString::from(format!(
-                                "{inductance_d_h:.6}"
-                            )));
-                            app.set_detect_inductance_q(SharedString::from(format!(
-                                "{inductance_q_h:.6}"
-                            )));
-                            app.set_detect_flux_linkage(SharedString::from(format!(
-                                "{flux_linkage_wb:.6}"
-                            )));
-                            app.set_detect_kv(SharedString::from(format!("{kv_rpm_per_v:.1}")));
-                            app.set_detect_max_current(SharedString::from(format!(
-                                "{max_current_a:.2}"
-                            )));
-                            app.set_detect_kp(SharedString::from(format!("{kp_current:.4}")));
-                            app.set_detect_ki(SharedString::from(format!("{ki_current:.2}")));
-                            app.set_detect_status(SharedString::from("OK"));
-                        }
-                        Ok(Ok(DetectResponse::Error(e))) => {
-                            app.set_detect_status(SharedString::from(format!("Error: {e:?}")));
-                        }
-                        Ok(Err(e)) => {
-                            app.set_detect_status(SharedString::from(format!("Error: {e}")));
-                        }
-                        Err(_) => {
-                            app.set_detect_status(SharedString::from("No response"));
-                        }
+                    if let Some(err) = error {
+                        app.set_detect_status(SharedString::from(format!("Error: {err}")));
+                    } else {
+                        app.set_detect_resistance(SharedString::from(format!(
+                            "{resistance_ohm:.4}"
+                        )));
+                        app.set_detect_inductance_d(SharedString::from(format!(
+                            "{inductance_d_h:.6}"
+                        )));
+                        app.set_detect_inductance_q(SharedString::from(format!(
+                            "{inductance_q_h:.6}"
+                        )));
+                        app.set_detect_flux_linkage(SharedString::from(format!(
+                            "{flux_linkage_wb:.6}"
+                        )));
+                        app.set_detect_kv(SharedString::from(format!("{kv_rpm_per_v:.1}")));
+                        // PI gains computed on host side from R and L
+                        let l_avg = (inductance_d_h + inductance_q_h) / 2.0;
+                        let (kp, ki) = if l_avg > 0.0 && resistance_ohm > 0.0 {
+                            // Simple PI tuning: bandwidth = R/L clamped to reasonable range
+                            let bandwidth = (resistance_ohm / l_avg).min(5000.0).max(500.0);
+                            (l_avg * bandwidth, resistance_ohm * bandwidth)
+                        } else {
+                            (0.4, 40.0) // defaults
+                        };
+                        app.set_detect_kp(SharedString::from(format!("{kp:.4}")));
+                        app.set_detect_ki(SharedString::from(format!("{ki:.2}")));
+                        let status = if hall_ok {
+                            "OK (with Hall)"
+                        } else {
+                            "OK (no Hall)"
+                        };
+                        app.set_detect_status(SharedString::from(status));
                     }
                 });
             });

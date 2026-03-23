@@ -312,54 +312,69 @@ pub struct FaultResponse {
 
 /// Motor detection request from host.
 ///
-/// Sent via the `DetectEndpoint` to start the full detection sequence.
-/// Parameters come from a motor preset selected by the user (similar
-/// to VESC Tool's motor size selection).
+/// Motor detection request — one step per request.
+///
+/// Each step is independent. GUI provides all required parameters explicitly
+/// (e.g., resistance from a previous measurement or from saved config).
+/// PI gains are computed on the host side from R and L (like VESC Tool).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct DetectRequest {
-    /// Number of pole pairs (must be set manually)
-    pub pole_pairs: u8,
-    /// Maximum acceptable power dissipation in the motor during
-    /// detection (Watts).  Controls the safe test current via
-    /// `I_max = sqrt(max_power_loss / R / 1.5)`.
-    pub max_power_loss_w: f32,
-    /// Open-loop ERPM for the flux linkage spin-up.
-    /// Converted to mechanical RPM internally.
-    /// Typical: 300 (hub motor) to 1400 (small outrunner).
-    pub openloop_erpm: f32,
-    /// Sensorless transition ERPM — stored in config after detection.
-    /// Not used during measurement, passed through to results.
-    pub sensorless_erpm: f32,
+pub enum DetectRequest {
+    /// Measure phase-to-neutral resistance.
+    MeasureResistance {
+        /// Max power dissipation during test (W). Controls safe test current.
+        max_power_loss_w: f32,
+    },
+    /// Measure d/q-axis inductance via HFI.
+    MeasureInductance {
+        /// Max power dissipation during test (W).
+        max_power_loss_w: f32,
+        /// Previously measured resistance (Ω). GUI provides this.
+        resistance_ohm: f32,
+    },
+    /// Measure flux linkage via open-loop spin.
+    MeasureFlux {
+        /// Max power dissipation during test (W).
+        max_power_loss_w: f32,
+        /// Previously measured resistance (Ω). GUI provides this.
+        resistance_ohm: f32,
+        /// Number of pole pairs.
+        pole_pairs: u8,
+        /// Open-loop ERPM for spin-up.
+        openloop_erpm: f32,
+    },
+    /// Calibrate Hall sensors by sweeping electrical angle.
+    /// No prerequisites — only needs motor connected.
+    CalibrateHall,
 }
 
-/// Motor detection response.
+/// Motor detection response — matches the request step.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DetectResponse {
-    /// Detection succeeded with measured parameters.
-    Ok {
-        /// Phase resistance (Ohms)
+    /// Resistance measurement result.
+    Resistance {
+        /// Phase-to-neutral resistance (Ohms)
         resistance_ohm: f32,
+    },
+    /// Inductance measurement result.
+    Inductance {
         /// d-axis inductance (Henries)
         inductance_d_h: f32,
         /// q-axis inductance (Henries)
         inductance_q_h: f32,
+    },
+    /// Flux linkage measurement result.
+    FluxLinkage {
         /// Flux linkage (Weber)
         flux_linkage_wb: f32,
         /// Motor Kv (RPM/V)
         kv_rpm_per_v: f32,
-        /// Maximum safe continuous current (Amps)
-        max_current_a: f32,
-        /// Current loop proportional gain
-        kp_current: f32,
-        /// Current loop integral gain
-        ki_current: f32,
-        /// Hall sensor calibration: true if hall angles were measured.
-        /// GUI should read hall angles via config endpoint if true.
-        hall_calibrated: bool,
     },
-    /// Detection failed.
+    /// Hall calibration succeeded.
+    /// Read calibration angles via config endpoint (HallCalibration group).
+    HallCalibrated,
+    /// Step failed.
     Error(DetectError),
 }
 
@@ -379,7 +394,7 @@ pub enum DetectError {
     InsufficientSamples,
     /// Measurement too noisy
     LowConfidence,
-    /// Prerequisite measurement not done
+    /// Prerequisite measurement not done (e.g., inductance without resistance)
     MissingPrerequisite,
 }
 
