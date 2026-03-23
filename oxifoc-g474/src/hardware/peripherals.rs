@@ -62,6 +62,15 @@ pub fn init_clock() -> Peripherals {
 
         // Note: LPUART1 clock is configured automatically by Embassy based on the
         // peripheral clock. For 115200 baud, the default PCLK is sufficient.
+
+        // USB 48MHz clock: enable HSI48 with CRS synchronization from USB SOF frames
+        #[cfg(feature = "transport-usb")]
+        {
+            config.rcc.hsi48 = Some(embassy_stm32::rcc::Hsi48Config {
+                sync_from_usb: true,
+            });
+            config.rcc.mux.clk48sel = mux::Clk48sel::HSI48;
+        }
     }
     embassy_stm32::init(config)
 }

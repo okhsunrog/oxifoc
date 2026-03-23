@@ -14,13 +14,23 @@ use crate::transport::{Queue, Stack};
 pub static OUTQ: Queue = Queue::new();
 
 /// Statically store our netstack
+#[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
 pub static STACK: Stack = ergot::toolkits::embedded_io_async_v0_7::new_target_stack(
     OUTQ.stream_producer(),
     MAX_PACKET_SIZE as u16,
 );
 
-/// Buffers for RX worker
+#[cfg(feature = "transport-usb")]
+pub static STACK: Stack = ergot::toolkits::embassy_usb_v0_6::new_target_stack(
+    OUTQ.framed_producer(),
+    MAX_PACKET_SIZE as u16,
+);
+
+/// Buffer for RX worker
 pub static RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
+
+/// Scratch buffer for COBS decoding (UART/RTT only)
+#[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
 pub static SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 
 // ========== Device State Management ==========

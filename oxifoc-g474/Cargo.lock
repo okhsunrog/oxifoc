@@ -74,19 +74,11 @@ dependencies = [
 [[package]]
 name = "bbqueue"
 version = "0.7.0"
-dependencies = [
- "const-init",
- "critical-section",
- "maitake-sync",
-]
-
-[[package]]
-name = "bbqueue"
-version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68917624e17aad88607cb5a5936f6da9b607c48c711e4e9ed101e7189aed28c2"
 dependencies = [
  "const-init",
+ "critical-section",
  "maitake-sync",
 ]
 
@@ -119,6 +111,9 @@ name = "bitflags"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "block-device-driver"
@@ -773,7 +768,7 @@ name = "ergot"
 version = "0.12.0"
 source = "git+https://github.com/okhsunrog/ergot?branch=liveness-tracking-and-state-notifications#2b03d0716327de1e5a4712990b004d8a6ed66ee1"
 dependencies = [
- "bbqueue 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "bbqueue",
  "cobs 0.3.0",
  "cobs-acc",
  "const-fnv1a-hash",
@@ -797,6 +792,7 @@ dependencies = [
  "postcard-schema",
  "rtt-target",
  "serde",
+ "static_cell",
 ]
 
 [[package]]
@@ -1094,7 +1090,8 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "oxifoc-core"
 version = "0.1.0"
 dependencies = [
- "bbqueue 0.7.0",
+ "bbqueue",
+ "bitflags 2.11.0",
  "bytemuck",
  "critical-section",
  "defmt 1.0.1",
@@ -1139,6 +1136,7 @@ dependencies = [
  "embassy-stm32",
  "embassy-sync 0.8.0",
  "embassy-time",
+ "embassy-usb 0.6.0",
  "embedded-io-async 0.7.0",
  "embedded-storage-async",
  "ergot",

@@ -1,22 +1,38 @@
 //! Ergot protocol servers and I/O worker tasks
 
 use embassy_executor::Spawner;
-use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
 use heapless::String;
 use oxifoc_core::types::DeviceInfo;
 
-use crate::protocol::{OUTQ, STACK};
+use crate::protocol::STACK;
+#[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
+use crate::protocol::OUTQ;
 use crate::transport::RxWorker;
 use crate::{FAULT_REGISTRY, STATE};
 
 #[cfg(feature = "transport-uart")]
-use crate::transport::io::UartWriter;
+use {
+    crate::transport::io::UartWriter,
+    ergot::toolkits::embedded_io_async_v0_7::tx_worker,
+};
 #[cfg(feature = "transport-rtt")]
-use ergot::transport::rtt::RttWriter;
+use {
+    ergot::toolkits::embedded_io_async_v0_7::tx_worker,
+    ergot::transport::rtt::RttWriter,
+};
+#[cfg(feature = "transport-usb")]
+use {
+    crate::transport::AppDriver,
+    ergot::{
+        exports::bbqueue::prod_cons::framed::FramedConsumer,
+        toolkits::embassy_usb_v0_6 as usb_kit,
+    },
+};
 
 // ========== Worker Tasks ==========
 
-/// Worker task for incoming ergot data (transport-agnostic)
+/// Worker task for incoming ergot data (UART / RTT)
+#[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
 #[embassy_executor::task]
 pub async fn run_rx(
     mut rcvr: RxWorker,
@@ -28,7 +44,14 @@ pub async fn run_rx(
     }
 }
 
-/// Worker task for outgoing ergot data via UART/LPUART (transport-uart only)
+/// Worker task for incoming ergot data (USB)
+#[cfg(feature = "transport-usb")]
+#[embassy_executor::task]
+pub async fn run_rx(rcvr: RxWorker, recv_buf: &'static mut [u8]) {
+    rcvr.run(recv_buf, usb_kit::USB_FS_MAX_PACKET_SIZE).await;
+}
+
+/// Worker task for outgoing ergot data via UART/LPUART
 #[cfg(feature = "transport-uart")]
 #[embassy_executor::task]
 pub async fn run_tx_uart(mut tx: UartWriter) {
@@ -37,7 +60,7 @@ pub async fn run_tx_uart(mut tx: UartWriter) {
     }
 }
 
-/// Worker task for outgoing ergot data via RTT (transport-rtt only)
+/// Worker task for outgoing ergot data via RTT
 #[cfg(feature = "transport-rtt")]
 #[embassy_executor::task]
 pub async fn run_tx_rtt(mut tx: RttWriter) {
@@ -46,17 +69,36 @@ pub async fn run_tx_rtt(mut tx: RttWriter) {
     }
 }
 
+/// USB device task — runs the USB state machine
+#[cfg(feature = "transport-usb")]
+#[embassy_executor::task]
+pub async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
+    usb.run().await;
+}
+
+/// Worker task for outgoing ergot data via USB bulk endpoint
+#[cfg(feature = "transport-usb")]
+#[embassy_executor::task]
+pub async fn run_tx_usb(
+    mut ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
+    rx: FramedConsumer<&'static crate::transport::Queue>,
+) {
+    usb_kit::tx_worker::<AppDriver, { crate::config::OUT_QUEUE_SIZE }, _>(
+        &mut ep_in,
+        rx,
+        usb_kit::DEFAULT_TIMEOUT_MS_PER_FRAME,
+        usb_kit::USB_FS_MAX_PACKET_SIZE,
+    )
+    .await;
+}
+
 // ========== Protocol Servers ==========
 
 /// All protocol servers running concurrently in a single task
-///
-/// Uses join to run info, hall, adc, and motor servers together.
-/// This is more RAM-efficient than separate tasks.
 #[embassy_executor::task]
 pub async fn protocol_servers() {
     defmt::info!("Starting protocol servers");
 
-    // Build device info
     let mut hw: String<32> = String::new();
     let mut sw: String<32> = String::new();
     let mut mcu: String<32> = String::new();
@@ -86,7 +128,6 @@ pub async fn protocol_servers() {
 
 // ========== Task Spawning ==========
 
-/// Spawn all protocol server tasks
 pub fn spawn_servers(spawner: &Spawner) {
     spawner.spawn(protocol_servers().unwrap());
 }
