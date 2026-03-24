@@ -67,7 +67,9 @@ async fn main(spawner: Spawner) {
     // ========== STEP 3: Initialize Hardware Peripherals ==========
 
     // Initialize OPAMPs as PGAs for phase current shunts
-    let opamp_channels = hardware::init_opamps(p.OPAMP1, p.OPAMP2, p.OPAMP3, p.PA1, p.PA7, p.PB0);
+    let opamp_channels = hardware::init_opamps(
+        p.OPAMP1, p.OPAMP2, p.OPAMP3, p.PA1, p.PA3, p.PA7, p.PA5, p.PB0, p.PB2,
+    );
 
     // Initialize ADC1/ADC2 with injected conversions
     let adc_handles = hardware::init_adc(p.ADC1, p.ADC2, opamp_channels, p.PA0, p.PB14);

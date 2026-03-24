@@ -77,33 +77,48 @@ static OPAMP3_CELL: StaticCell<OpAmp<'static, peripherals::OPAMP3>> = StaticCell
 
 /// Initialize OPAMPs as PGAs for phase current shunts
 ///
-/// OPAMP1: phase A current (PA1/PA3) -> ADC1
-/// OPAMP2: phase B current (PA7/PA5) -> ADC2
-/// OPAMP3: phase C current (PB0/PB2) -> ADC2
+/// OPAMP1: phase A current VINP=PA1, VINM0=PA3 (bias) -> ADC1
+/// OPAMP2: phase B current VINP=PA7, VINM0=PA5 (bias) -> ADC2
+/// OPAMP3: phase C current VINP=PB0, VINM0=PB2 (bias) -> ADC2
+///
+/// PGA mode with VINM0 bias input (PGA_IO0_BIAS): the VINM0 pin provides
+/// the ground reference for the PGA, matching ST MCSDK configuration.
+/// This improves accuracy by referencing the shunt negative (GND) directly
+/// rather than using the chip's internal analog ground.
 ///
 /// All configured for 16x gain with high-speed mode and calibrated.
+#[allow(clippy::too_many_arguments)]
 pub fn init_opamps(
     opamp1: Peri<'static, peripherals::OPAMP1>,
     opamp2: Peri<'static, peripherals::OPAMP2>,
     opamp3: Peri<'static, peripherals::OPAMP3>,
     pa1: Peri<'static, peripherals::PA1>,
+    pa3: Peri<'static, peripherals::PA3>,
     pa7: Peri<'static, peripherals::PA7>,
+    pa5: Peri<'static, peripherals::PA5>,
     pb0: Peri<'static, peripherals::PB0>,
+    pb2: Peri<'static, peripherals::PB2>,
 ) -> OpAmpChannels<'static> {
     let mut opamp1_inst = OpAmp::new(opamp1, OpAmpSpeed::HighSpeed);
     opamp1_inst.calibrate();
     let opamp1_ref = OPAMP1_CELL.init(opamp1_inst);
-    let ia_chan = opamp1_ref.pga_int(pa1, OpAmpGain::Mul16).degrade_adc();
+    let ia_chan = opamp1_ref
+        .pga_biased_int(pa1, pa3, OpAmpGain::Mul16)
+        .degrade_adc();
 
     let mut opamp2_inst = OpAmp::new(opamp2, OpAmpSpeed::HighSpeed);
     opamp2_inst.calibrate();
     let opamp2_ref = OPAMP2_CELL.init(opamp2_inst);
-    let ib_chan = opamp2_ref.pga_int(pa7, OpAmpGain::Mul16).degrade_adc();
+    let ib_chan = opamp2_ref
+        .pga_biased_int(pa7, pa5, OpAmpGain::Mul16)
+        .degrade_adc();
 
     let mut opamp3_inst = OpAmp::new(opamp3, OpAmpSpeed::HighSpeed);
     opamp3_inst.calibrate();
     let opamp3_ref = OPAMP3_CELL.init(opamp3_inst);
-    let ic_chan = opamp3_ref.pga_int(pb0, OpAmpGain::Mul16).degrade_adc();
+    let ic_chan = opamp3_ref
+        .pga_biased_int(pb0, pb2, OpAmpGain::Mul16)
+        .degrade_adc();
 
     OpAmpChannels {
         ia_chan,
