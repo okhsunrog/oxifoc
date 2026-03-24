@@ -255,12 +255,13 @@ mod integration_tests {
             ..Default::default()
         };
 
-        let mut injector = HfiInjector::new(
+        use crate::foc::trig::LibmSinCos;
+        let mut injector = HfiInjector::<LibmSinCos>::new(
             ind_params.hfi_frequency_hz,
             ind_params.hfi_voltage_v,
             PWM_FREQ,
         );
-        let mut measurement = InductanceMeasurement::new(&ind_params, PWM_FREQ);
+        let mut measurement = InductanceMeasurement::<LibmSinCos>::new(&ind_params, PWM_FREQ);
 
         let mut prev_v_a = 0.0f32;
         let mut prev_v_b = 0.0f32;
