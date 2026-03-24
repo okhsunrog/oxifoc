@@ -93,9 +93,7 @@ impl<'d> MotorPwm<'d> {
         pwm.set_break_comparator_enable(1, true); // COMP2 (phase B)
         pwm.set_break_comparator_enable(3, true); // COMP4 (phase C)
         // Disable external BKIN pin input (AF1.BKINE defaults to 1, pin may float)
-        embassy_stm32::pac::TIM1
-            .af1()
-            .modify(|w| w.set_bkine(false));
+        pwm.set_break_input_pin_enable(false);
         pwm.set_break_polarity(BreakInputPolarity::ACTIVE_HIGH);
         pwm.set_break_enable(true);
 

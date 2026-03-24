@@ -214,10 +214,11 @@ pub fn init_overcurrent_protection(threshold_amps: f32) {
     pac::RCC.ahb2enr().modify(|w| w.set_dac3en(true));
 
     // --- DAC3: set threshold on both channels ---
-    // Mode 0b001: normal mode, internal (no pin), unbuffered (RM0440 Table 208)
+    // Mode 0b011: on-chip peripherals only, buffer disabled (RM0440 §22.7.16)
+    // DAC3 has no external pins — only feeds COMP inverting inputs internally.
     pac::DAC3.mcr().modify(|w| {
-        w.set_mode(0, 0b001.into());
-        w.set_mode(1, 0b001.into());
+        w.set_mode(0, 0b011.into());
+        w.set_mode(1, 0b011.into());
     });
     // Enable both channels
     pac::DAC3.cr().modify(|w| {
