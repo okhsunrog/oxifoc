@@ -584,7 +584,8 @@ mod tests {
 
         let mut measurement =
             InductanceMeasurement::<crate::foc::trig::LibmSinCos>::new(&params, pwm_freq_hz);
-        let mut injector = HfiInjector::<crate::foc::trig::LibmSinCos>::new(1000.0, 3.0, pwm_freq_hz);
+        let mut injector =
+            HfiInjector::<crate::foc::trig::LibmSinCos>::new(1000.0, 3.0, pwm_freq_hz);
         let dt = 1.0 / pwm_freq_hz;
 
         // Simulate SPM motor: L = 100µH (same for all angles)

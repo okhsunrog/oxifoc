@@ -312,9 +312,11 @@ fn main() {
                     hfi_frequency_hz: freq,
                     ..Default::default()
                 };
-                block_on(measure_inductance::<VirtualHardware, VirtualTimer, oxifoc_core::foc::trig::LibmSinCos>(
-                    hw, &params, 20_000.0,
-                ))
+                block_on(measure_inductance::<
+                    VirtualHardware,
+                    VirtualTimer,
+                    oxifoc_core::foc::trig::LibmSinCos,
+                >(hw, &params, 20_000.0))
             });
             match l {
                 Ok((ld, lq)) => {
