@@ -18,7 +18,9 @@ defmt = { version = "1.0", optional = true }
 log = { version = "0.4", optional = true }
 
 # FFT for inductance measurement via HFI (required for detection)
-microfft = { version = "0.6" }
+# Only size-32 needed (28 bytes sine table vs 4KB default). No bitrev-tables
+# since Cortex-M4 has hardware RBIT instruction.
+microfft = { version = "0.6", default-features = false, features = ["size-32"] }
 
 # Optional persistent storage
 sequential-storage = { version = "7.1", default-features = false, features = ["postcard"], optional = true }
