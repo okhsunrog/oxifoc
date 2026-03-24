@@ -107,10 +107,8 @@ mod integration_tests {
     use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
     use super::flux_linkage::FluxLinkageMeasurement;
-    #[cfg(feature = "microfft")]
     use super::inductance::{HfiInjector, InductanceMeasurement};
     use super::resistance::ResistanceMeasurement;
-    #[cfg(feature = "microfft")]
     use super::types::InductanceParams;
 
     /// Verify resistance detection against the virtual motor's known R.
@@ -216,7 +214,6 @@ mod integration_tests {
     /// resistance, inductance, back-EMF, and mechanical model. The rotor is
     /// locked at angle 0 with a DC holding voltage, then HFI injection is
     /// applied on top and the current response is fed to InductanceMeasurement.
-    #[cfg(feature = "microfft")]
     #[test]
     fn detect_inductance_matches_virtual_motor() {
         use crate::foc::transforms;
@@ -317,7 +314,6 @@ mod integration_tests {
     ///
     /// Uses the shared [`virtual_harness`] to run `run_full_detection()`
     /// against a VirtualMotor and verify all parameters match ground truth.
-    #[cfg(feature = "microfft")]
     #[test]
     fn run_full_detection_e2e() {
         use super::sweep::DetectionParams;

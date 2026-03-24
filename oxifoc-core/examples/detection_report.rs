@@ -4,7 +4,7 @@
 //! printing a summary table with ground truth comparison.
 //!
 //! ```sh
-//! cargo run -p oxifoc-core --example detection_report --features virtual-motor,microfft,std
+//! cargo run -p oxifoc-core --example detection_report --features virtual-motor,std
 //! ```
 
 use oxifoc_core::foc::detection::sweep::{
@@ -312,7 +312,7 @@ fn main() {
                     hfi_frequency_hz: freq,
                     ..Default::default()
                 };
-                block_on(measure_inductance::<VirtualHardware, VirtualTimer>(
+                block_on(measure_inductance::<VirtualHardware, VirtualTimer, oxifoc_core::foc::trig::LibmSinCos>(
                     hw, &params, 20_000.0,
                 ))
             });

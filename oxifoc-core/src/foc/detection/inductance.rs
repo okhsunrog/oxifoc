@@ -36,7 +36,6 @@ use core::marker::PhantomData;
 use super::types::{DetectionError, InductanceParams};
 use crate::foc::trig::SinCos;
 
-#[cfg(feature = "microfft")]
 use microfft::real::rfft_32;
 
 /// Number of samples for FFT (must be power of 2)
@@ -292,7 +291,6 @@ impl<S: SinCos> InductanceMeasurement<S> {
     ///
     /// # Returns
     /// `true` when a complete FFT window has been processed.
-    #[cfg(feature = "microfft")]
     pub fn record(
         &mut self,
         i_alpha: f32,
@@ -360,66 +358,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
         }
     }
 
-    /// Fallback record method when microfft is not available.
-    #[cfg(not(feature = "microfft"))]
-    pub fn record(
-        &mut self,
-        i_alpha: f32,
-        i_beta: f32,
-        injection_angle: f32,
-        v_inj_alpha: f32,
-        v_inj_beta: f32,
-    ) -> bool {
-        let i_magnitude = libm::sqrtf(i_alpha * i_alpha + i_beta * i_beta);
-        self.current_sum += i_magnitude;
-        self.total_samples += 1;
-
-        if self.first_sample {
-            self.prev_i_alpha = i_alpha;
-            self.prev_i_beta = i_beta;
-            self.prev_injection_angle = injection_angle;
-            self.first_sample = false;
-            return false;
-        }
-
-        let di_alpha = i_alpha - self.prev_i_alpha;
-        let di_beta = i_beta - self.prev_i_beta;
-
-        let (sin_angle, cos_angle) = S::sin_cos(self.prev_injection_angle);
-        let v_projected = v_inj_alpha * cos_angle + v_inj_beta * sin_angle;
-        let i_projected = self.prev_i_alpha * cos_angle + self.prev_i_beta * sin_angle;
-        let i_hold_proj = self.hold_current * cos_angle;
-        let i_ac_proj = i_projected - i_hold_proj;
-        let v_inductive = v_projected - self.resistance_ohm * i_ac_proj;
-
-        let di_magnitude = libm::sqrtf(di_alpha * di_alpha + di_beta * di_beta);
-        let min_v = self.voltage_amplitude * 0.1;
-        let sample = if v_inductive.abs() > min_v {
-            di_magnitude * v_inductive.signum() // preserve sign
-        } else if self.sample_idx > 0 {
-            self.samples[self.sample_idx - 1]
-        } else {
-            0.0
-        };
-
-        self.samples[self.sample_idx] = sample;
-        self.sample_idx += 1;
-
-        self.prev_i_alpha = i_alpha;
-        self.prev_i_beta = i_beta;
-        self.prev_injection_angle = injection_angle;
-
-        if self.sample_idx >= FFT_SIZE {
-            self.process_simple_cycle();
-            self.sample_idx = 0;
-            true
-        } else {
-            false
-        }
-    }
-
     /// Process a complete FFT cycle and extract inductance.
-    #[cfg(feature = "microfft")]
     fn process_fft_cycle(&mut self) {
         // Copy samples for FFT (microfft works in-place)
         let mut fft_input = self.samples;
@@ -465,26 +404,6 @@ impl<S: SinCos> InductanceMeasurement<S> {
         if ld_est.is_finite() && lq_est.is_finite() {
             self.ld_sum += ld_est;
             self.lq_sum += lq_est;
-            self.cycles_completed += 1;
-        }
-    }
-
-    /// Simple cycle processing without FFT (fallback).
-    #[cfg(not(feature = "microfft"))]
-    fn process_simple_cycle(&mut self) {
-        // Find average di amplitude
-        let mut sum = 0.0;
-        for &sample in &self.samples {
-            sum += sample;
-        }
-        let avg_di = sum / FFT_SIZE as f32;
-
-        // Estimate inductance from average: L ≈ V / (f_sample × di)
-        // From V = L × di/dt, and di/dt ≈ di × f_sample
-        if avg_di > 1e-6 {
-            let l_est = self.voltage_amplitude / (self.pwm_freq_hz * avg_di);
-            self.ld_sum += l_est;
-            self.lq_sum += l_est; // Can't distinguish without FFT
             self.cycles_completed += 1;
         }
     }
@@ -652,7 +571,6 @@ mod tests {
         assert!(v_mag > 0.5, "Expected non-zero voltage, got {}", v_mag);
     }
 
-    #[cfg(feature = "microfft")]
     #[test]
     fn test_inductance_measurement_spm() {
         // Test with simulated SPM motor (Ld ≈ Lq)
