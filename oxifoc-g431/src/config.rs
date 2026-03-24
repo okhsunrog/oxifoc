@@ -11,14 +11,15 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 ///
 /// Hardware specs:
 /// - Shunt resistors: 3mΩ (0.003Ω) on phases A, B, C
-/// - OPAMP gain: 16x (configured in hardware/peripherals.rs)
+/// - OPAMP PGA gain: 16x, but shunt sensing circuit has 1.5kΩ series +
+///   22kΩ/2.2kΩ divider that attenuates by 4/7 → effective gain = 64/7 ≈ 9.14
 /// - ADC: 12-bit with 3.3V reference
 /// - VBUS divider: 169k (top, R68) / 18k (bottom, R76) = 187/18 ratio
 /// - Max continuous current: ~40A (FET rating)
 /// - Max VBUS: 45V (FET Vds rating with margin)
 pub const BOARD: BoardConfig = BoardConfig {
     shunt_ohms: 0.003,                // 3mΩ
-    amp_gain: 16.0,                   // 16x OPAMP gain
+    amp_gain: 64.0 / 7.0,             // 16x OPAMP × 4/7 resistor attenuation
     vbus_divider_ratio: 187.0 / 18.0, // 169k + 18k / 18k
     adc_vref_mv: 3300,                // 3.3V
     adc_max_counts: 4095,             // 12-bit
@@ -63,11 +64,19 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(5
 pub const HW_OVERCURRENT_A: f32 = 80.0;
 
 /// Convert overcurrent threshold to DAC3 12-bit counts.
-/// Raw shunt voltage (no OPAMP gain): V = I × R_shunt.
-/// DAC LSB = 3.3V / 4096 = 0.806mV.
+///
+/// The comparator INP pin shares the OPAMP VINP node, which sees the shunt
+/// voltage attenuated by the 1.5kΩ / (22kΩ ∥ 2.2kΩ) resistor network (×4/7)
+/// plus a DC bias of ~127mV from the 22kΩ-to-3.3V / 2.2kΩ-to-GND divider.
+///
+/// V_comp = V_shunt × 4/7 + V_bias
+/// V_shunt = I × R_shunt
+/// V_bias = 3.3V × (1/22k) / (1/1.5k + 1/22k + 1/2.2k) ≈ 0.127V
 pub fn overcurrent_dac_counts(amps: f32) -> u16 {
-    let mv = amps * BOARD.shunt_ohms * 1000.0;
-    let counts = mv / (3300.0 / 4096.0);
+    let shunt_mv = amps * BOARD.shunt_ohms * 1000.0;
+    let bias_mv = 3300.0 * (1.0 / 22.0) / (1.0 / 1.5 + 1.0 / 22.0 + 1.0 / 2.2); // ≈127mV
+    let comp_mv = shunt_mv * (4.0 / 7.0) + bias_mv;
+    let counts = comp_mv / (3300.0 / 4096.0);
     counts as u16
 }
 
