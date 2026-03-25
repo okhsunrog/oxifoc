@@ -184,7 +184,7 @@ impl ShuntCurrentSense {
 mod tests {
     use super::*;
 
-    // B-G431B-ESC1 hardware specs
+    // Generic test values (not board-specific; B-G431B-ESC1 uses amp_gain=64/7≈9.14)
     const SHUNT_OHMS: f32 = 0.003;
     const OPAMP_GAIN: f32 = 16.0;
     const ADC_VREF_MV: u32 = 3300;

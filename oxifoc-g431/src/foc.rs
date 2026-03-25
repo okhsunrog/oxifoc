@@ -146,6 +146,17 @@ pub async fn init(
     // Allow ADC injected conversions to settle before zero-current calibration.
     defmt::info!("Waiting 10ms for ADC to settle...");
     Timer::after(Duration::from_millis(10)).await;
+
+    // Diagnostic: dump raw ADC values before calibration
+    defmt::info!(
+        "Pre-cal raw ADC: ia={} ib={} ic={} vbus_mv={} temp_x10={}",
+        IA_SAMPLE.load(Ordering::Relaxed),
+        IB_SAMPLE.load(Ordering::Relaxed),
+        IC_SAMPLE.load(Ordering::Relaxed),
+        VBUS_MV.load(Ordering::Relaxed),
+        FET_TEMP_C_X10.load(Ordering::Relaxed),
+    );
+
     defmt::info!("Starting current sensor calibration...");
     foc_driver.current_sensor_mut().calibrate().await;
     defmt::info!("Current sensor calibration done");

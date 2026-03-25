@@ -50,7 +50,7 @@ pub const NTC: NtcConfig = NtcConfig {
 ///
 /// Central source of truth for PWM frequency and timing.
 /// Used by motor.rs for timer setup and control/foc.rs for dt calculation.
-pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(500);
+pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(800);
 
 // ============================================================================
 // Hardware Overcurrent Protection

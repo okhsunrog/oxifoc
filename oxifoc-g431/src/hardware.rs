@@ -145,17 +145,17 @@ pub struct AdcHandles<'a> {
 ///
 /// Conversion time = (sample_time + 12.5) cycles per channel.
 ///
-/// ADC1 injected sequence (3 channels, ~134 cycles total ≈ 3.2µs):
-///   - ia:   24.5 + 12.5 = 37 cycles  (phase A current, low impedance)
-///   - vbus: 47.5 + 12.5 = 60 cycles  (16kΩ divider, needs longer sample)
-///   - temp: 24.5 + 12.5 = 37 cycles  (3kΩ NTC divider)
+/// ADC1 injected sequence (3 channels, ~116 cycles total ≈ 2.7µs):
+///   - ia:   6.5 + 12.5 = 19 cycles  (phase A current, low-Z opamp output)
+///   - vbus: 47.5 + 12.5 = 60 cycles (16kΩ divider, needs longer sample)
+///   - temp: 24.5 + 12.5 = 37 cycles (3kΩ NTC divider)
 ///
-/// ADC2 injected sequence (2 channels, ~74 cycles total ≈ 1.7µs):
-///   - ib: 24.5 + 12.5 = 37 cycles  (phase B current)
-///   - ic: 24.5 + 12.5 = 37 cycles  (phase C current)
+/// ADC2 injected sequence (2 channels, ~38 cycles total ≈ 0.9µs):
+///   - ib: 6.5 + 12.5 = 19 cycles  (phase B current, low-Z opamp output)
+///   - ic: 6.5 + 12.5 = 19 cycles  (phase C current, low-Z opamp output)
 ///
 /// Both ADCs triggered simultaneously by TIM1_TRGO2. Phase currents (ia, ib, ic)
-/// are sampled within ~1µs of trigger. ADC1 takes longer due to vbus/temp,
+/// are sampled within ~0.45µs of trigger. ADC1 takes longer due to vbus/temp,
 /// so its interrupt signals completion of both ADCs.
 pub fn init_adc(
     adc1_periph: Peri<'static, peripherals::ADC1>,
@@ -172,9 +172,9 @@ pub fn init_adc(
     let temp_chan = temp_pin.degrade_adc();
     let injected_adc1 = adc1.setup_injected_conversions(
         [
-            (opamp_channels.ia_chan, SampleTime::CYCLES24_5), // Phase A: low-Z opamp output
-            (vbus_chan, SampleTime::CYCLES47_5),              // VBUS: 16kΩ divider impedance
-            (temp_chan, SampleTime::CYCLES24_5),              // Temp: 3kΩ NTC divider
+            (opamp_channels.ia_chan, SampleTime::CYCLES6_5), // Phase A: low-Z opamp output
+            (vbus_chan, SampleTime::CYCLES47_5),             // VBUS: 16kΩ divider impedance
+            (temp_chan, SampleTime::CYCLES24_5),             // Temp: 3kΩ NTC divider
         ],
         embassy_stm32::triggers::TIM1_TRGO2,
         Exten::RISING_EDGE,
@@ -184,8 +184,8 @@ pub fn init_adc(
     // ADC2 injected: phase B and C currents (finishes first, no interrupt)
     let injected_adc2 = adc2.setup_injected_conversions(
         [
-            (opamp_channels.ib_chan, SampleTime::CYCLES24_5), // Phase B: low-Z opamp output
-            (opamp_channels.ic_chan, SampleTime::CYCLES24_5), // Phase C: low-Z opamp output
+            (opamp_channels.ib_chan, SampleTime::CYCLES6_5), // Phase B: low-Z opamp output
+            (opamp_channels.ic_chan, SampleTime::CYCLES6_5), // Phase C: low-Z opamp output
         ],
         embassy_stm32::triggers::TIM1_TRGO2,
         Exten::RISING_EDGE,
@@ -249,7 +249,7 @@ pub fn init_overcurrent_protection(threshold_amps: f32) {
         w.set_en(true);
         w.set_inpsel(false); // INP0 = PA1
         w.set_inmsel(comp_vals::Inm::DACA); // DAC3_CH1
-        w.set_hyst(comp_vals::Hysteresis::HYST10M);
+        w.set_hyst(comp_vals::Hysteresis::NONE);
         w.set_polarity(comp_vals::Polarity::NOT_INVERTED);
         w.set_blanksel(comp_vals::Blanking::NO_BLANKING);
     });
@@ -259,7 +259,7 @@ pub fn init_overcurrent_protection(threshold_amps: f32) {
         w.set_en(true);
         w.set_inpsel(false); // INP0 = PA7
         w.set_inmsel(comp_vals::Inm::DACA); // DAC3_CH2
-        w.set_hyst(comp_vals::Hysteresis::HYST10M);
+        w.set_hyst(comp_vals::Hysteresis::NONE);
         w.set_polarity(comp_vals::Polarity::NOT_INVERTED);
         w.set_blanksel(comp_vals::Blanking::NO_BLANKING);
     });
@@ -269,7 +269,7 @@ pub fn init_overcurrent_protection(threshold_amps: f32) {
         w.set_en(true);
         w.set_inpsel(false); // INP0 = PB0
         w.set_inmsel(comp_vals::Inm::DACA); // DAC3_CH2
-        w.set_hyst(comp_vals::Hysteresis::HYST10M);
+        w.set_hyst(comp_vals::Hysteresis::NONE);
         w.set_polarity(comp_vals::Polarity::NOT_INVERTED);
         w.set_blanksel(comp_vals::Blanking::NO_BLANKING);
     });
