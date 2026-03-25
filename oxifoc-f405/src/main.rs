@@ -39,9 +39,12 @@ async fn main(spawner: Spawner) {
     // ========== STEP 1: Initialize Clock ==========
     let p = hardware::peripherals::init_clock();
 
-    // ========== STEP 2: Initialize LED ==========
-    let led = hardware::peripherals::init_led(p.PC13);
-    spawner.spawn(heartbeat(led).unwrap());
+    // ========== STEP 2: Initialize LEDs ==========
+    // Green LED (PB0) = heartbeat, Red LED (PB1) = fault indicator
+    let green_led = hardware::peripherals::init_green_led(p.PB0);
+    let red_led = hardware::peripherals::init_red_led(p.PB1);
+    spawner.spawn(heartbeat(green_led).unwrap());
+    spawner.spawn(fault_led(red_led).unwrap());
 
     // ========== STEP 3: Initialize USB Transport ==========
     let transport = transport::init_usb(&STACK, p.USB_OTG_FS, p.PA12, p.PA11);
@@ -126,7 +129,7 @@ async fn main(spawner: Spawner) {
 
 // ========== Background Tasks ==========
 
-/// Blink a status LED so we know the scheduler is alive
+/// Blink green LED so we know the scheduler is alive
 #[embassy_executor::task]
 async fn heartbeat(mut led: Output<'static>) {
     loop {
@@ -134,5 +137,18 @@ async fn heartbeat(mut led: Output<'static>) {
         Timer::after(Duration::from_millis(50)).await;
         led.set_high();
         Timer::after(Duration::from_millis(950)).await;
+    }
+}
+
+/// Red LED fault indicator — on when any fault is active
+#[embassy_executor::task]
+async fn fault_led(mut led: Output<'static>) {
+    loop {
+        if FAULT_REGISTRY.any() {
+            led.set_low(); // LED on (active low)
+        } else {
+            led.set_high(); // LED off
+        }
+        Timer::after(Duration::from_millis(100)).await;
     }
 }

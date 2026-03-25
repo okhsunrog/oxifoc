@@ -39,9 +39,14 @@ pub fn init_clock() -> Peripherals {
     embassy_stm32::init(config)
 }
 
-/// Initialize heartbeat LED on PC13
-pub fn init_led(pc13: Peri<'static, peripherals::PC13>) -> Output<'static> {
-    Output::new(pc13, Level::High, Speed::Low)
+/// Initialize green LED on PB0 (heartbeat)
+pub fn init_green_led(pb0: Peri<'static, peripherals::PB0>) -> Output<'static> {
+    Output::new(pb0, Level::High, Speed::Low)
+}
+
+/// Initialize red LED on PB1 (fault indicator)
+pub fn init_red_led(pb1: Peri<'static, peripherals::PB1>) -> Output<'static> {
+    Output::new(pb1, Level::High, Speed::Low)
 }
 
 /// ADC handles for injected conversions
