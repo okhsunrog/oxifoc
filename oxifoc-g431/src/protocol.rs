@@ -338,11 +338,13 @@ pub async fn detect_server() {
                             resistance_ohm: r,
                         } => {
                             defmt::info!("Detect: measuring inductance (R={})", r);
+                            // Limit detection current to 3A for PSU safety
                             let safe_current = libm::sqrtf(max_power_loss_w / r / 1.5)
                                 .min(board.max_phase_current_a)
+                                .min(3.0)
                                 .max(0.5);
                             let max_bus_current = (vbus * 0.577 * 0.6) / r.max(0.001);
-                            let hold_current = safe_current.min(max_bus_current).max(0.1);
+                            let hold_current = safe_current.min(max_bus_current).min(3.0).max(0.1);
                             let params = InductanceParams {
                                 motor_size: MotorSize::Custom(max_power_loss_w),
                                 resistance_ohm: r,
@@ -373,8 +375,10 @@ pub async fn detect_server() {
                             openloop_erpm,
                         } => {
                             defmt::info!("Detect: measuring flux linkage");
+                            // Limit detection current to 3A for PSU safety
                             let safe_current = libm::sqrtf(max_power_loss_w / r / 1.5)
                                 .min(board.max_phase_current_a)
+                                .min(3.0)
                                 .max(0.5);
                             let spin_rpm = openloop_erpm / pole_pairs as f32;
                             let params = FluxLinkageParams {

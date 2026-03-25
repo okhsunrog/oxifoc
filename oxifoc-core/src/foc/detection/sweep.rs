@@ -345,10 +345,10 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
         T::after_millis(10).await;
     }
 
-    // Wait for rotor to settle, then capture steady-state holding voltage
+    // Wait for rotor to settle, then compute holding voltage from R×I
+    // (Don't use PI output — it includes dead time compensation voltage)
     T::after_millis(params.settle_time_ms as u64).await;
-    let telem = hw.wait_telemetry().await;
-    let vd_hold = telem.vd;
+    let vd_hold = params.resistance_ohm * params.hold_current_a;
 
     info!("Starting HFI injection (vd_hold={}V)...", vd_hold);
 
