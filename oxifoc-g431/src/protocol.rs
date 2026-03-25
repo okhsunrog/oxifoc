@@ -317,10 +317,16 @@ pub async fn detect_server() {
                                             defmt::info!("Resistance: {}Ω", r);
                                             DetectResponse::Resistance { resistance_ohm: r }
                                         }
-                                        Err(e) => DetectResponse::Error(map_err(e)),
+                                        Err(e) => {
+                                            defmt::error!("Resistance measurement failed: {}", e);
+                                            DetectResponse::Error(map_err(e))
+                                        }
                                     }
                                 }
-                                Err(e) => DetectResponse::Error(map_err(e)),
+                                Err(e) => {
+                                    defmt::error!("Resistance probe failed: {}", e);
+                                    DetectResponse::Error(map_err(e))
+                                }
                             }
                         }
 
@@ -350,7 +356,10 @@ pub async fn detect_server() {
                                         inductance_q_h: lq,
                                     }
                                 }
-                                Err(e) => DetectResponse::Error(map_err(e)),
+                                Err(e) => {
+                                    defmt::error!("Inductance measurement failed: {}", e);
+                                    DetectResponse::Error(map_err(e))
+                                }
                             }
                         }
 
@@ -386,7 +395,10 @@ pub async fn detect_server() {
                                         kv_rpm_per_v: kv,
                                     }
                                 }
-                                Err(e) => DetectResponse::Error(map_err(e)),
+                                Err(e) => {
+                                    defmt::error!("Flux linkage measurement failed: {}", e);
+                                    DetectResponse::Error(map_err(e))
+                                }
                             }
                         }
 
@@ -407,7 +419,10 @@ pub async fn detect_server() {
                                     defmt::info!("Hall calibration OK");
                                     DetectResponse::HallCalibrated
                                 }
-                                Err(e) => DetectResponse::Error(map_err(e)),
+                                Err(e) => {
+                                    defmt::error!("Hall calibration failed: {}", e);
+                                    DetectResponse::Error(map_err(e))
+                                }
                             }
                         }
                     };

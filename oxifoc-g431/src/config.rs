@@ -25,6 +25,7 @@ pub const BOARD: BoardConfig = BoardConfig {
     adc_max_counts: 4095,             // 12-bit
     initial_vbus_volts: 12.0,         // Conservative default
     max_iq_target_a: 10.0,            // Max torque current
+    invert_current_sign: true,        // Low-side shunts: positive current → ADC below offset
     // Fault thresholds
     max_phase_current_a: 40.0, // Peak phase current limit (FET rating)
     max_vbus_mv: 45_000,       // Overvoltage at 45V (FET Vds margin)
@@ -56,6 +57,7 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(8
 // Hardware Overcurrent Protection
 // ============================================================================
 
+#[allow(dead_code)] // Temporarily unused while COMP protection is disabled
 /// Hardware overcurrent trip threshold (amperes, peak per-phase).
 /// This is the COMP+DAC hardware last-resort trip point.
 /// FETs (STL180N6F7): 120A continuous, 480A pulsed. Shunts: 3mΩ.

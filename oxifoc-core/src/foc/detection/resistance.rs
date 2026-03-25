@@ -115,7 +115,9 @@ impl ResistanceMeasurement {
             return Err(DetectionError::MotorNotResponding);
         }
 
-        let resistance = avg_voltage / avg_current;
+        // Use absolute values: sign depends on Clarke/Park convention
+        // and current sensing polarity, but resistance is always positive.
+        let resistance = avg_voltage.abs() / avg_current.abs();
 
         // Validate result
         if resistance < MIN_VALID_RESISTANCE {
@@ -142,7 +144,7 @@ impl ResistanceMeasurement {
         }
 
         let avg_voltage = self.voltage_sum / self.sample_count as f32;
-        Some(avg_voltage / avg_current)
+        Some(avg_voltage.abs() / avg_current.abs())
     }
 }
 

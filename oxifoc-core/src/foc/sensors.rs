@@ -328,13 +328,15 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
 
     /// Create from board config
     pub fn from_config(config: &super::config::BoardConfig, reader: R) -> Self {
-        Self::new(
+        let mut sensor = Self::new(
             config.shunt_ohms,
             config.amp_gain,
             config.adc_vref_mv,
             config.adc_max_counts,
             reader,
-        )
+        );
+        sensor.converter.set_invert_sign(config.invert_current_sign);
+        sensor
     }
 
     /// Access the underlying converter for calibration

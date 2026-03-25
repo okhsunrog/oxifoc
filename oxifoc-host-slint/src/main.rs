@@ -1036,12 +1036,14 @@ fn main() {
                         resistance_ohm = r;
                     }
                     Ok(DetectResponse::Error(e)) => {
+                        tracing::error!("Detection: R: {e:?}");
                         error = Some(format!("R: {e:?}"));
                     }
                     Ok(_) => {
                         error = Some("R: unexpected response".to_string());
                     }
                     Err(e) => {
+                        tracing::error!("Detection: R: {e}");
                         error = Some(format!("R: {e}"));
                     }
                 }
@@ -1060,12 +1062,14 @@ fn main() {
                             inductance_q_h = lq;
                         }
                         Ok(DetectResponse::Error(e)) => {
+                            tracing::error!("Detection: L: {e:?}");
                             error = Some(format!("L: {e:?}"));
                         }
                         Ok(_) => {
                             error = Some("L: unexpected response".to_string());
                         }
                         Err(e) => {
+                            tracing::error!("Detection: L: {e}");
                             error = Some(format!("L: {e}"));
                         }
                     }
@@ -1087,12 +1091,14 @@ fn main() {
                             kv_rpm_per_v = kv;
                         }
                         Ok(DetectResponse::Error(e)) => {
+                            tracing::error!("Detection: Flux: {e:?}");
                             error = Some(format!("Flux: {e:?}"));
                         }
                         Ok(_) => {
                             error = Some("Flux: unexpected response".to_string());
                         }
                         Err(e) => {
+                            tracing::error!("Detection: Flux: {e}");
                             error = Some(format!("Flux: {e}"));
                         }
                     }

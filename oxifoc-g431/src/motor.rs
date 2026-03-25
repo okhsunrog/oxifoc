@@ -159,6 +159,21 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         self.emergency_stop();
     }
 
+    fn enable(&mut self) {
+        use embassy_stm32::pac;
+        // Set duties to 0 before enabling channels to prevent glitch
+        self.pwm.set_duty(Channel::Ch1, 0);
+        self.pwm.set_duty(Channel::Ch2, 0);
+        self.pwm.set_duty(Channel::Ch3, 0);
+        self.pwm.enable(Channel::Ch1);
+        self.pwm.enable(Channel::Ch2);
+        self.pwm.enable(Channel::Ch3);
+        // Clear any spurious break flag from channel enable transient
+        // and re-enable MOE (Master Output Enable) in case BKIN tripped
+        pac::TIM1.sr().modify(|w| w.set_bif(0, false));
+        pac::TIM1.bdtr().modify(|w| w.set_moe(true));
+    }
+
     fn set_phase_states(&mut self, states: [PhaseState; 3]) {
         const CHANNELS: [Channel; 3] = [Channel::Ch1, Channel::Ch2, Channel::Ch3];
         for (state, &ch) in states.iter().zip(CHANNELS.iter()) {

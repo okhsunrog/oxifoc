@@ -49,6 +49,10 @@ pub struct ShuntCurrentSense {
     adc_vref_mv: u32,
     /// Maximum ADC count (e.g., 4095 for 12-bit)
     adc_max_counts: u16,
+    /// If true, current = (offset - ADC) × scale (MCSDK convention for low-side shunts
+    /// where positive motor current produces ADC values below the zero-current offset).
+    /// If false, current = (ADC - offset) × scale (standard convention).
+    invert_sign: bool,
     /// Zero-current ADC offset for phase A (in ADC counts)
     offset_a: f32,
     /// Zero-current ADC offset for phase B (in ADC counts)
@@ -67,11 +71,21 @@ impl ShuntCurrentSense {
             opamp_gain,
             adc_vref_mv,
             adc_max_counts,
+            invert_sign: false,
             offset_a: adc_max_counts as f32 / 2.0, // Default to mid-scale
             offset_b: adc_max_counts as f32 / 2.0,
             offset_c: adc_max_counts as f32 / 2.0,
             calibrated_phases: 0,
         }
+    }
+
+    /// Set current sensing sign inversion.
+    ///
+    /// When `true`, uses `I = (offset - ADC) × scale` (ST MCSDK convention
+    /// for low-side shunts where positive motor current produces ADC values
+    /// below the zero-current offset). Default is `false`.
+    pub fn set_invert_sign(&mut self, invert: bool) {
+        self.invert_sign = invert;
     }
 
     /// Convert raw ADC counts to current in Amperes
@@ -167,8 +181,14 @@ impl ShuntCurrentSense {
 
     /// Internal helper: convert a single ADC reading to current (A)
     fn adc_to_current(&self, adc_counts: u16, offset: f32) -> f32 {
-        // ADC counts relative to zero-current offset
-        let delta_counts = adc_counts as f32 - offset;
+        // Sign convention depends on shunt topology:
+        // - Normal: I = (ADC - offset) × scale
+        // - Inverted (low-side shunts, MCSDK): I = (offset - ADC) × scale
+        let delta_counts = if self.invert_sign {
+            offset - adc_counts as f32
+        } else {
+            adc_counts as f32 - offset
+        };
 
         // Convert ADC counts to voltage (in millivolts)
         let v_mv = delta_counts * (self.adc_vref_mv as f32) / (self.adc_max_counts as f32);

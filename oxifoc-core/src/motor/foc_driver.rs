@@ -226,6 +226,9 @@ where
     /// When leaving SixStep mode, re-enables all PWM channels that may
     /// have been disabled (floated) during six-step commutation.
     pub fn set_mode(&mut self, mode: ControlMode) {
+        let was_stopped = matches!(self.mode, ControlMode::Stopped);
+        let will_be_active = !matches!(mode, ControlMode::Stopped);
+
         if matches!(self.mode, ControlMode::SixStep { .. })
             && !matches!(mode, ControlMode::SixStep { .. })
         {
@@ -233,6 +236,12 @@ where
             self.pwm
                 .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
         }
+
+        // Re-enable PWM outputs when leaving Stopped mode
+        if was_stopped && will_be_active {
+            self.pwm.enable();
+        }
+
         self.mode = mode;
     }
 
@@ -245,6 +254,13 @@ where
     pub fn set_vbus(&mut self, vbus: f32) {
         self.controller.set_vbus(vbus);
         self.vbus = vbus;
+    }
+
+    /// Set PI controller gains and reset integrators (used by detection)
+    pub fn set_pi_gains(&mut self, kp: f32, ki: f32) {
+        self.controller.id_pi.set_gains(kp, ki);
+        self.controller.iq_pi.set_gains(kp, ki);
+        self.controller.reset();
     }
 
     /// Get bus voltage
@@ -420,13 +436,19 @@ where
             current
         };
 
-        // Read currents and run FOC controller with commanded angle
-        // id_target = 0 (no field weakening in open-loop)
+        // Read currents and run FOC controller with commanded angle.
+        // When stationary (velocity=0): current on d-axis to lock rotor (resistance measurement).
+        // When spinning (velocity≠0): current on q-axis to produce torque.
+        let (id_target, iq_target) = if velocity_rad_s == 0.0 {
+            (current, 0.0)
+        } else {
+            (0.0, current)
+        };
         let currents = self.current_sensor.read_currents();
         let max_duty = self.pwm.max_duty();
         let out = self
             .controller
-            .step(currents, angle, 0.0, current, max_duty, dt);
+            .step(currents, angle, id_target, iq_target, max_duty, dt);
 
         // Check measured overcurrent
         if self.current_limits.is_overcurrent(out.id, out.iq) {
@@ -483,6 +505,10 @@ where
             let (i_alpha, i_beta) = crate::foc::transforms::clarke(currents.0, currents.1);
             out.i_alpha = i_alpha;
             out.i_beta = i_beta;
+            let (sin_a, cos_a) = S::sin_cos(angle_rad);
+            let (id, iq) = crate::foc::transforms::park(i_alpha, i_beta, sin_a, cos_a);
+            out.id = id;
+            out.iq = iq;
         }
 
         self.phase.update(

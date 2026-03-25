@@ -23,6 +23,7 @@
 ///     adc_max_counts: 4095,        // 12-bit ADC
 ///     initial_vbus_volts: 12.0,    // Default VBUS assumption
 ///     max_iq_target_a: 10.0,       // Max torque current
+///     invert_current_sign: true,   // Low-side shunts
 ///     // Fault thresholds
 ///     max_phase_current_a: 40.0,   // Peak phase current limit
 ///     max_vbus_mv: 60_000,         // Overvoltage at 60V
@@ -46,6 +47,9 @@ pub struct BoardConfig {
     pub initial_vbus_volts: f32,
     /// Maximum q-axis current target in Amperes
     pub max_iq_target_a: f32,
+    /// Invert current sensing sign (true for low-side shunts where positive
+    /// motor current produces ADC values below the zero-current offset)
+    pub invert_current_sign: bool,
 
     // Fault thresholds
     /// Maximum peak phase current in Amperes (instantaneous trip)
@@ -189,6 +193,7 @@ mod tests {
         adc_max_counts: 4095,
         initial_vbus_volts: 12.0,
         max_iq_target_a: 10.0,
+        invert_current_sign: false,
         // Fault thresholds
         max_phase_current_a: 40.0,
         max_vbus_mv: 60_000,

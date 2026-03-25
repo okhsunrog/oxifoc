@@ -114,6 +114,15 @@ thread_local! {
 pub struct VirtualHardware;
 
 impl DetectionHardware for VirtualHardware {
+    fn set_pi_gains(&self, kp: f32, ki: f32) {
+        SIM.with(|s| {
+            let mut borrow = s.borrow_mut();
+            let sim = borrow.as_mut().unwrap();
+            sim.foc.id_pi.set_gains(kp, ki);
+            sim.foc.iq_pi.set_gains(kp, ki);
+        });
+    }
+
     fn send_command(&self, mode: ControlMode) {
         SIM.with(|s| {
             let mut borrow = s.borrow_mut();

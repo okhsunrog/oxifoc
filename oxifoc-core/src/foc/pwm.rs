@@ -130,6 +130,14 @@ pub trait PhasePwm {
         // Default: no-op for platforms that handle safety elsewhere.
     }
 
+    /// Re-enable phase outputs after disable().
+    ///
+    /// Called when transitioning from Stopped to an active control mode.
+    /// Default: no-op (platforms where disable is a no-op don't need this).
+    fn enable(&mut self) {
+        // Default: no-op for platforms that handle safety elsewhere.
+    }
+
     /// Set individual phase states for six-step commutation.
     ///
     /// Each element controls one phase: \[A, B, C\].

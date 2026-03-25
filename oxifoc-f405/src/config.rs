@@ -24,6 +24,7 @@ pub const BOARD: BoardConfig = BoardConfig {
     adc_max_counts: 4095,                   // 12-bit
     initial_vbus_volts: 12.0,               // Conservative default
     max_iq_target_a: 10.0,                  // Max torque current
+    invert_current_sign: false,              // DRV8301: standard polarity
     // Fault thresholds
     max_phase_current_a: 60.0, // Peak phase current limit (FET rating)
     max_vbus_mv: 60_000,       // Overvoltage at 60V (12S LiPo max)

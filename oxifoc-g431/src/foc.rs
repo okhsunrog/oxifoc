@@ -195,6 +195,9 @@ fn ADC1_2() {
             embassy_stm32::pac::TIM1
                 .sr()
                 .modify(|w| w.set_bif(0, false));
+            if !FAULT_REGISTRY.any() {
+                defmt::error!("HW overcurrent FAULT: COMP triggered TIM1 BKIN");
+            }
             FAULT_REGISTRY.set(G431Fault::OverCurrent);
         }
     }
@@ -240,6 +243,7 @@ fn ADC1_2() {
     });
 
     // === Fault detection (voltage and temperature) ===
+    let had_fault = FAULT_REGISTRY.any();
     fault::check_voltage_faults(
         vbus_mv,
         &BOARD,
@@ -248,6 +252,9 @@ fn ADC1_2() {
         G431Fault::UnderVoltage,
     );
     fault::check_temperature_fault(temp_c_x10, &BOARD, &FAULT_REGISTRY, G431Fault::OverTemp);
+    if !had_fault && FAULT_REGISTRY.any() {
+        defmt::error!("FAULT detected: vbus={}mV, temp={}", vbus_mv, temp_c_x10);
+    }
 
     // Get current timestamp for FOC and phase manager
     let now_ticks = embassy_time::Instant::now().as_ticks();
@@ -267,7 +274,14 @@ fn ADC1_2() {
             driver.set_vbus(vbus_mv as f32 / 1000.0);
 
             // Process commands from core state channel
+            let prev_mode = driver.mode();
             let mode = oxifoc_core::state::process_commands(&STATE, driver);
+
+            // Clear faults on transition from Stopped to active mode
+            // (spurious COMP trips during PWM enable are expected)
+            if matches!(prev_mode, ControlMode::Stopped) && mode != ControlMode::Stopped {
+                FAULT_REGISTRY.clear_all();
+            }
 
             // If faulted, disable outputs and skip FOC step
             if FAULT_REGISTRY.any() {
@@ -281,6 +295,7 @@ fn ADC1_2() {
             match driver.step(now_ticks) {
                 Ok(telem) => {
                     // Check phase currents for overcurrent (instantaneous)
+                    let before = FAULT_REGISTRY.any();
                     fault::check_current_faults(
                         telem.ia,
                         telem.ib,
@@ -289,9 +304,18 @@ fn ADC1_2() {
                         &FAULT_REGISTRY,
                         G431Fault::OverCurrent,
                     );
+                    if !before && FAULT_REGISTRY.any() {
+                        defmt::error!(
+                            "SW overcurrent FAULT: ia={}, ib={}, ic={}",
+                            telem.ia,
+                            telem.ib,
+                            telem.ic
+                        );
+                    }
                     Some(telem)
                 }
-                Err(_) => {
+                Err(e) => {
+                    defmt::error!("FOC step error: {}", e);
                     // Sensor not ready or other error - disable outputs
                     if mode != ControlMode::Stopped {
                         driver.set_mode(ControlMode::Stopped);

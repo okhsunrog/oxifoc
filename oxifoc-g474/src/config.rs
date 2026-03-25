@@ -27,6 +27,7 @@ pub const BOARD: BoardConfig = BoardConfig {
     adc_max_counts: 4095,      // 12-bit ADC
     initial_vbus_volts: 12.0,  // Conservative default
     max_iq_target_a: 5.0,      // Conservative default for testing
+    invert_current_sign: false, // TODO: verify for this board
     // Fault thresholds
     max_phase_current_a: 10.0, // Conservative limit
     max_vbus_mv: 45_000,       // Max 45V for STL220N6F7

@@ -61,6 +61,12 @@ pub trait DetectionHardware {
     /// Send a control mode command to the FOC driver.
     fn send_command(&self, mode: ControlMode);
 
+    /// Set FOC PI controller gains (Kp, Ki).
+    ///
+    /// Called before detection steps to use conservative gains (VESC-style),
+    /// since motor parameters are unknown at detection time.
+    fn set_pi_gains(&self, kp: f32, ki: f32);
+
     /// Wait for the next telemetry update and return it.
     ///
     /// This should block until new telemetry is available from the FOC ISR.
@@ -164,6 +170,13 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
 ) -> Result<f32, DetectionError> {
     info!("Starting resistance measurement...");
 
+    // Use conservative PI gains for detection — motor parameters are unknown.
+    // VESC uses Kp=0.001/Ki=1.0 but at different dt; these values are scaled
+    // for 20kHz FOC rate and give stable convergence on motors from 0.01Ω to 10Ω.
+    hw.set_pi_gains(0.01, 10.0);
+    // Wait for ISR to apply new gains before sending commands
+    T::after_millis(1).await;
+
     // Calculate safe test current based on motor size
     let test_current = params.current_max / 10.0; // Start conservative
     let test_current = test_current.max(0.5).min(params.current_max);
@@ -171,6 +184,11 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     // Ramp up current at angle 0 (d-axis)
     let ramp_steps = 50u32;
     let ramp_delay_ms = params.ramp_time_ms / ramp_steps;
+
+    debug!(
+        "R meas: test_current={}, ramp_time={}ms, settle={}ms, samples={}",
+        test_current, params.ramp_time_ms, params.settle_time_ms, params.num_samples
+    );
 
     for i in 1..=ramp_steps {
         let current = test_current * (i as f32 / ramp_steps as f32);
@@ -188,12 +206,18 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     // Collect samples
     let mut measurement = ResistanceMeasurement::new(params.num_samples);
 
-    for _ in 0..params.num_samples {
+    for i in 0..params.num_samples {
         // Wait for new telemetry
         let telem = hw.wait_telemetry().await;
 
+        if i == 0 || i == params.num_samples - 1 {
+            debug!(
+                "R meas sample[{}]: vd={}, id={}, ia={}, ib={}, ic={}",
+                i, telem.vd, telem.id, telem.ia, telem.ib, telem.ic
+            );
+        }
+
         // Record Vd and Id from telemetry
-        // In open-loop at angle 0, vd/id are the relevant values
         measurement.record(telem.vd, telem.id);
 
         T::after_micros(params.sample_interval_us as u64).await;
