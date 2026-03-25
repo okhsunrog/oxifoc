@@ -73,12 +73,15 @@ export component App inherits Window {
     in property <image> currents-texture;
     in property <image> vbus-texture;
     in property <image> temp-texture;
+    in property <image> hall-texture;
     in property <float> currents-y-min: -1.0;
     in property <float> currents-y-max: 1.0;
     in property <float> vbus-y-min: 0.0;
     in property <float> vbus-y-max: 60.0;
     in property <float> temp-y-min: 0.0;
     in property <float> temp-y-max: 150.0;
+    in property <float> hall-y-min: 0.0;
+    in property <float> hall-y-max: 7.0;
 
     // ── Chart size feedback ──
     out property <length> currents-w: currents-plot.requested-texture-width;
@@ -87,6 +90,8 @@ export component App inherits Window {
     out property <length> vbus-h:     vbus-plot.requested-texture-height;
     out property <length> temp-w:     temp-plot.requested-texture-width;
     out property <length> temp-h:     temp-plot.requested-texture-height;
+    out property <length> hall-w:     hall-plot.requested-texture-width;
+    out property <length> hall-h:     hall-plot.requested-texture-height;
 
     // ── Chart pan/zoom state (read by Rust) ──
     out property <bool> currents-paused: currents-plot.paused;
@@ -98,6 +103,9 @@ export component App inherits Window {
     out property <bool> temp-paused: temp-plot.paused;
     out property <int> temp-view-offset: temp-plot.view-offset;
     out property <float> temp-time-window: temp-plot.time-window;
+    out property <bool> hall-paused: hall-plot.paused;
+    out property <int> hall-view-offset: hall-plot.view-offset;
+    out property <float> hall-time-window: hall-plot.time-window;
 
     // ── Sample rate for plots (set by Rust from actual_fast_hz) ──
     in property <float> fast-sample-rate: 1000.0;
@@ -607,6 +615,20 @@ export component App inherits Window {
                         legend-labels: ["FET"];
                         legend-colors: [#ef4444];
                     }
+                }
+
+                hall-plot := PlotWidget {
+                    vertical-stretch: 1;
+                    title: "Hall State & eRPM";
+                    texture: root.hall-texture;
+                    y-min: root.hall-y-min;
+                    y-max: root.hall-y-max;
+                    y-divisions: 4;
+                    time-window: 2.0;
+                    x-divisions: 5;
+                    sample-rate: root.fast-sample-rate;
+                    legend-labels: ["Hall State", "eRPM (÷1000)"];
+                    legend-colors: [#4ade80, #60a5fa];
                 }
             }
 

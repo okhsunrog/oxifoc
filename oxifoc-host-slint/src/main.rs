@@ -185,6 +185,7 @@ fn main() {
     let currents_buf = Arc::new(PlotBuffer::new(3, CAPACITY)); // ia, ib, ic
     let vbus_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // V
     let temp_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // °C
+    let hall_buf = Arc::new(PlotBuffer::new(2, CAPACITY)); // hall_state, erpm/1000
 
     // Actual fast telemetry rate — set by HostRuntime after device ack
     let fast_hz: Arc<std::sync::atomic::AtomicU16> = Arc::new(std::sync::atomic::AtomicU16::new(0));
@@ -210,6 +211,7 @@ fn main() {
         let cb = currents_buf.clone();
         let vb = vbus_buf.clone();
         let tb = temp_buf.clone();
+        let hb = hall_buf.clone();
         let fhz = fast_hz.clone();
         let frx = fast_rx_slot.clone();
         let srx = slow_rx_slot.clone();
@@ -220,6 +222,7 @@ fn main() {
         let mut cr: Option<PlotRenderer> = None;
         let mut vr: Option<PlotRenderer> = None;
         let mut tr: Option<PlotRenderer> = None;
+        let mut hr: Option<PlotRenderer> = None;
 
         app.window()
             .set_rendering_notifier(move |state, graphics_api| match state {
@@ -266,6 +269,21 @@ fn main() {
                                 channel_colors: vec![[0.937, 0.267, 0.267, 1.0]], // red
                             },
                         ));
+                        hr = Some(PlotRenderer::new(
+                            device,
+                            queue,
+                            PlotConfig {
+                                num_channels: 2,
+                                capacity: CAPACITY,
+                                y_min: 0.0,
+                                y_max: 7.0,
+                                auto_range: true,
+                                channel_colors: vec![
+                                    [0.290, 0.871, 0.502, 1.0], // green – Hall state
+                                    [0.376, 0.647, 0.980, 1.0], // blue – eRPM/1000
+                                ],
+                            },
+                        ));
                     }
                 }
                 RenderingState::BeforeRendering => {
@@ -282,6 +300,10 @@ fn main() {
                         .upgrade()
                         .map(|a| a.get_temp_paused())
                         .unwrap_or(false);
+                    let hall_paused = app_weak
+                        .upgrade()
+                        .map(|a| a.get_hall_paused())
+                        .unwrap_or(false);
 
                     // Drain telemetry — always consume from channel, only write to buffer if not paused
                     let mut last_fast = None;
@@ -291,6 +313,12 @@ fn main() {
                         while let Ok(sample) = rx.try_recv() {
                             if !currents_paused {
                                 cb.push_frame(&[sample.ia, sample.ib, sample.ic]);
+                            }
+                            if !hall_paused {
+                                hb.push_frame(&[
+                                    sample.hall_state as f32,
+                                    sample.erpm as f32 / 1000.0,
+                                ]);
                             }
                             last_fast = Some(sample);
                         }
@@ -310,9 +338,13 @@ fn main() {
                         }
                     }
 
-                    if let (Some(app), Some(cr), Some(vr), Some(tr)) =
-                        (app_weak.upgrade(), cr.as_mut(), vr.as_mut(), tr.as_mut())
-                    {
+                    if let (Some(app), Some(cr), Some(vr), Some(tr), Some(hr)) = (
+                        app_weak.upgrade(),
+                        cr.as_mut(),
+                        vr.as_mut(),
+                        tr.as_mut(),
+                        hr.as_mut(),
+                    ) {
                         // Throttled motor update: send at most once per frame (~60Hz)
                         if motor_pending.swap(false, Ordering::Relaxed) {
                             let iq_target = app.get_iq_target();
@@ -386,6 +418,10 @@ fn main() {
                         let t_vis = (t_tw * 10.0) as u32;
                         let t_off = app.get_temp_view_offset().max(0) as u32;
 
+                        let h_tw = app.get_hall_time_window();
+                        let h_vis = (h_tw * fast_rate) as u32;
+                        let h_off = app.get_hall_view_offset().max(0) as u32;
+
                         let (tex, y_lo, y_hi) = cr.render(
                             &cb,
                             app.get_currents_w() as u32,
@@ -418,6 +454,17 @@ fn main() {
                         app.set_temp_texture(Image::try_from(tex).unwrap());
                         app.set_temp_y_min(y_lo);
                         app.set_temp_y_max(y_hi);
+
+                        let (tex, y_lo, y_hi) = hr.render(
+                            &hb,
+                            app.get_hall_w() as u32,
+                            app.get_hall_h() as u32,
+                            h_vis,
+                            h_off,
+                        );
+                        app.set_hall_texture(Image::try_from(tex).unwrap());
+                        app.set_hall_y_min(y_lo);
+                        app.set_hall_y_max(y_hi);
 
                         // Keep rendering continuously so charts update with data.
                         app.window().request_redraw();
