@@ -69,9 +69,11 @@ pub async fn init(
     motor_pwm.emergency_stop();
 
     // Build current sensor with reconstruction (unipolar shunts, no Vref/2 bias)
-    let mut current_sensor =
-        G431CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
-    current_sensor.enable_reconstruction();
+    let current_sensor = G431CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
+    // Reconstruction disabled: bias network provides bidirectional sensing
+    // on all three phases (~2573 counts at zero current). Reconstruction
+    // would replace a valid measurement with a noisier computed value.
+    // current_sensor.enable_reconstruction();
     crate::sensors::hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
     let phase_manager = PhaseManager::with_hall(hall_proxy);
