@@ -99,12 +99,18 @@ pub fn init_opamps(
     pb0: Peri<'static, peripherals::PB0>,
     pb2: Peri<'static, peripherals::PB2>,
 ) -> OpAmpChannels<'static> {
+    // Workaround: embassy's OpAmpInternalOutput::drop() clears OPAEN,
+    // and degrade_adc() consumes self triggering Drop. Re-enable via PAC.
+    // See: https://github.com/embassy-rs/embassy/issues/4269
     let mut opamp1_inst = OpAmp::new(opamp1, OpAmpSpeed::HighSpeed);
     opamp1_inst.calibrate();
     let opamp1_ref = OPAMP1_CELL.init(opamp1_inst);
     let ia_chan = opamp1_ref
         .pga_biased_int(pa1, pa3, OpAmpGain::Mul16)
         .degrade_adc();
+    embassy_stm32::pac::OPAMP1
+        .csr()
+        .modify(|w| w.set_opampen(true));
 
     let mut opamp2_inst = OpAmp::new(opamp2, OpAmpSpeed::HighSpeed);
     opamp2_inst.calibrate();
@@ -112,6 +118,9 @@ pub fn init_opamps(
     let ib_chan = opamp2_ref
         .pga_biased_int(pa7, pa5, OpAmpGain::Mul16)
         .degrade_adc();
+    embassy_stm32::pac::OPAMP2
+        .csr()
+        .modify(|w| w.set_opampen(true));
 
     let mut opamp3_inst = OpAmp::new(opamp3, OpAmpSpeed::HighSpeed);
     opamp3_inst.calibrate();
@@ -119,6 +128,9 @@ pub fn init_opamps(
     let ic_chan = opamp3_ref
         .pga_biased_int(pb0, pb2, OpAmpGain::Mul16)
         .degrade_adc();
+    embassy_stm32::pac::OPAMP3
+        .csr()
+        .modify(|w| w.set_opampen(true));
 
     OpAmpChannels {
         ia_chan,
