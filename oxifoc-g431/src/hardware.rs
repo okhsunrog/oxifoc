@@ -77,16 +77,16 @@ static OPAMP3_CELL: StaticCell<OpAmp<'static, peripherals::OPAMP3>> = StaticCell
 
 /// Initialize OPAMPs as PGAs for phase current shunts
 ///
-/// OPAMP1: phase A current VINP=PA1, VINM0=PA3 (bias) -> ADC1
-/// OPAMP2: phase B current VINP=PA7, VINM0=PA5 (bias) -> ADC2
-/// OPAMP3: phase C current VINP=PB0, VINM0=PB2 (bias) -> ADC2
+/// OPAMP1: phase A current VINP=PA1, VINM0=PA3 (bias) -> ADC1_IN13 (internal)
+/// OPAMP2: phase B current VINP=PA7, VINM0=PA5 (bias) -> ADC2_IN16 (internal)
+/// OPAMP3: phase C current VINP=PB0, VINM0=PB2 (bias) -> ADC2_IN18 (internal)
 ///
 /// PGA mode with VINM0 bias input (PGA_IO0_BIAS): the VINM0 pin provides
-/// the ground reference for the PGA, matching ST MCSDK configuration.
-/// This improves accuracy by referencing the shunt negative (GND) directly
-/// rather than using the chip's internal analog ground.
+/// the ground reference for the PGA. All configured for 16x gain, high-speed,
+/// calibrated.
 ///
-/// All configured for 16x gain with high-speed mode and calibrated.
+/// OpAmpInternalOutput handles are stored in statics to prevent embassy's Drop
+/// from disabling the OPAMPs.
 #[allow(clippy::too_many_arguments)]
 pub fn init_opamps(
     opamp1: Peri<'static, peripherals::OPAMP1>,
@@ -99,12 +99,18 @@ pub fn init_opamps(
     pb0: Peri<'static, peripherals::PB0>,
     pb2: Peri<'static, peripherals::PB2>,
 ) -> OpAmpChannels<'static> {
+    // For each OPAMP: configure PGA with bias, get internal ADC channel via
+    // degrade_adc(). We must re-enable OPAEN after degrade_adc() because
+    // embassy's OpAmpInternalOutput::drop disables the OPAMP.
     let mut opamp1_inst = OpAmp::new(opamp1, OpAmpSpeed::HighSpeed);
     opamp1_inst.calibrate();
     let opamp1_ref = OPAMP1_CELL.init(opamp1_inst);
     let ia_chan = opamp1_ref
         .pga_biased_int(pa1, pa3, OpAmpGain::Mul16)
         .degrade_adc();
+    embassy_stm32::pac::OPAMP1
+        .csr()
+        .modify(|w| w.set_opampen(true));
 
     let mut opamp2_inst = OpAmp::new(opamp2, OpAmpSpeed::HighSpeed);
     opamp2_inst.calibrate();
@@ -112,6 +118,9 @@ pub fn init_opamps(
     let ib_chan = opamp2_ref
         .pga_biased_int(pa7, pa5, OpAmpGain::Mul16)
         .degrade_adc();
+    embassy_stm32::pac::OPAMP2
+        .csr()
+        .modify(|w| w.set_opampen(true));
 
     let mut opamp3_inst = OpAmp::new(opamp3, OpAmpSpeed::HighSpeed);
     opamp3_inst.calibrate();
@@ -119,6 +128,9 @@ pub fn init_opamps(
     let ic_chan = opamp3_ref
         .pga_biased_int(pb0, pb2, OpAmpGain::Mul16)
         .degrade_adc();
+    embassy_stm32::pac::OPAMP3
+        .csr()
+        .modify(|w| w.set_opampen(true));
 
     OpAmpChannels {
         ia_chan,
