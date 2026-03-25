@@ -253,7 +253,12 @@ fn ADC1_2() {
     );
     fault::check_temperature_fault(temp_c_x10, &BOARD, &FAULT_REGISTRY, G431Fault::OverTemp);
     if !had_fault && FAULT_REGISTRY.any() {
-        defmt::error!("FAULT detected: vbus={}mV, temp={}", vbus_mv, temp_c_x10);
+        // Log only once per fault episode (not every ISR cycle)
+        static mut LAST_FAULT_SEQ: u32 = 0;
+        if *SEQ > unsafe { LAST_FAULT_SEQ } + 1000 {
+            defmt::error!("FAULT: vbus={}mV, temp={}", vbus_mv, temp_c_x10);
+            unsafe { LAST_FAULT_SEQ = *SEQ };
+        }
     }
 
     // Get current timestamp for FOC and phase manager

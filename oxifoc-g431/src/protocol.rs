@@ -303,9 +303,12 @@ pub async fn detect_server() {
                             };
                             match calibration::measure_resistance(&probe_params).await {
                                 Ok(r_probe) => {
+                                    // Limit detection current to 3A — safe for any PSU,
+                                    // sufficient for accurate 2-point differential measurement.
                                     let safe_current =
                                         libm::sqrtf(max_power_loss_w / r_probe / 1.5)
                                             .min(board.max_phase_current_a)
+                                            .min(3.0)
                                             .max(probe_current);
                                     let params = ResistanceParams {
                                         motor_size: MotorSize::Custom(max_power_loss_w),

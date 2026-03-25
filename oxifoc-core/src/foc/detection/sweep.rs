@@ -171,75 +171,136 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     info!("Starting resistance measurement...");
 
     // Use conservative PI gains for detection — motor parameters are unknown.
-    // VESC uses Kp=0.001/Ki=1.0 but at different dt; these values are scaled
-    // for 20kHz FOC rate and give stable convergence on motors from 0.01Ω to 10Ω.
     hw.set_pi_gains(0.01, 10.0);
-    // Wait for ISR to apply new gains before sending commands
     T::after_millis(1).await;
 
-    // Calculate safe test current based on motor size
-    let test_current = params.current_max / 10.0; // Start conservative
-    let test_current = test_current.max(0.5).min(params.current_max);
+    // DEBUG: hold 1A for 10 seconds for multimeter verification
+    info!("=== CURRENT SENSE VERIFICATION MODE ===");
+    info!("Holding 1A d-axis for 10s — measure current with multimeter on phase A");
+    hw.send_command(ControlMode::OpenLoop {
+        angle_rad: 0.0,
+        current: 1.0,
+        velocity_rad_s: 0.0,
+    });
+    T::after_millis(500).await; // let PI settle
+    for sec in 0..10 {
+        let mut vd_sum = 0.0f32;
+        let mut id_sum = 0.0f32;
+        let mut ia_sum = 0.0f32;
+        for _ in 0..200 {
+            let t = hw.wait_telemetry().await;
+            vd_sum += t.vd;
+            id_sum += t.id;
+            ia_sum += t.ia;
+        }
+        info!(
+            "Hold[{}s]: vd={}, id={}, ia={}",
+            sec + 1,
+            vd_sum / 200.0,
+            id_sum / 200.0,
+            ia_sum / 200.0,
+        );
+        T::after_millis(800).await;
+    }
+    hw.send_command(ControlMode::Stopped);
+    T::after_millis(200).await;
+    info!("=== END VERIFICATION ===");
 
-    // Ramp up current at angle 0 (d-axis)
-    let ramp_steps = 50u32;
-    let ramp_delay_ms = params.ramp_time_ms / ramp_steps;
+    // 2-point differential measurement (MESC-style):
+    // Measure Vd/Id at two steady-state current levels, compute R = ΔV/ΔI.
+    // This eliminates offset errors and inductance contamination (dI/dt=0 at SS).
+    let i_high = params.current_max.max(0.5);
+    let i_low = i_high * 0.2;
+    let settle_cycles = 1000_u64; // 1s settle — ensure PI fully converges and dI/dt→0
+    let sample_count = 2000_u32; // Average over 2000 FOC cycles (~100ms at 20kHz)
 
     debug!(
-        "R meas: test_current={}, ramp_time={}ms, settle={}ms, samples={}",
-        test_current, params.ramp_time_ms, params.settle_time_ms, params.num_samples
+        "R meas: i_low={}, i_high={}, settle={}ms, samples={}",
+        i_low, i_high, settle_cycles, sample_count
     );
 
+    // --- Ramp to low setpoint ---
+    let ramp_steps = 50u32;
     for i in 1..=ramp_steps {
-        let current = test_current * (i as f32 / ramp_steps as f32);
+        let current = i_low * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
             current,
             velocity_rad_s: 0.0,
         });
-        T::after_millis(ramp_delay_ms as u64).await;
+        T::after_millis(4).await;
     }
+    T::after_millis(settle_cycles).await;
 
-    // Wait for settling
-    T::after_millis(params.settle_time_ms as u64).await;
-
-    // Collect samples
-    let mut measurement = ResistanceMeasurement::new(params.num_samples);
-
-    for i in 0..params.num_samples {
-        // Wait for new telemetry
-        let telem = hw.wait_telemetry().await;
-
-        if i == 0 || i == params.num_samples - 1 {
-            debug!(
-                "R meas sample[{}]: vd={}, id={}, ia={}, ib={}, ic={}",
-                i, telem.vd, telem.id, telem.ia, telem.ib, telem.ic
-            );
-        }
-
-        // Record Vd and Id from telemetry
-        measurement.record(telem.vd, telem.id);
-
-        T::after_micros(params.sample_interval_us as u64).await;
+    // Sample at low setpoint
+    let mut vd_low_sum = 0.0f32;
+    let mut id_low_sum = 0.0f32;
+    for _ in 0..sample_count {
+        let t = hw.wait_telemetry().await;
+        vd_low_sum += t.vd;
+        id_low_sum += t.id;
     }
+    let vd_low = vd_low_sum / sample_count as f32;
+    let id_low = id_low_sum / sample_count as f32;
+    debug!("R meas: low point: vd={}, id={}", vd_low, id_low);
 
-    // Ramp down and stop
+    // --- Ramp to high setpoint ---
+    for i in 1..=ramp_steps {
+        let current = i_low + (i_high - i_low) * (i as f32 / ramp_steps as f32);
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: 0.0,
+            current,
+            velocity_rad_s: 0.0,
+        });
+        T::after_millis(4).await;
+    }
+    T::after_millis(settle_cycles).await;
+
+    // Sample at high setpoint
+    let mut vd_high_sum = 0.0f32;
+    let mut id_high_sum = 0.0f32;
+    for _ in 0..sample_count {
+        let t = hw.wait_telemetry().await;
+        vd_high_sum += t.vd;
+        id_high_sum += t.id;
+    }
+    let vd_high = vd_high_sum / sample_count as f32;
+    let id_high = id_high_sum / sample_count as f32;
+    debug!("R meas: high point: vd={}, id={}", vd_high, id_high);
+
+    // --- Ramp down and stop ---
     for i in (0..ramp_steps).rev() {
-        let current = test_current * (i as f32 / ramp_steps as f32);
+        let current = i_high * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
             current,
             velocity_rad_s: 0.0,
         });
-        T::after_millis(ramp_delay_ms as u64).await;
+        T::after_millis(4).await;
     }
-
     hw.send_command(ControlMode::Stopped);
     T::after_millis(100).await;
 
-    // Compute result
-    let resistance = measurement.finish()?;
-    info!("Resistance measurement complete");
+    // --- Compute R = ΔV / ΔI ---
+    let delta_i = id_high - id_low;
+    let delta_v = vd_high - vd_low;
+
+    debug!("R meas: dV={}, dI={}", delta_v, delta_i);
+
+    if delta_i.abs() < 0.1 {
+        return Err(DetectionError::MotorNotResponding);
+    }
+
+    let resistance = (delta_v / delta_i).abs();
+
+    if resistance < 0.001 {
+        return Err(DetectionError::OutOfRange);
+    }
+    if resistance > 100.0 {
+        return Err(DetectionError::MotorNotResponding);
+    }
+
+    info!("Resistance: {} Ohm (dV={}, dI={})", resistance, delta_v, delta_i);
 
     Ok(resistance)
 }
