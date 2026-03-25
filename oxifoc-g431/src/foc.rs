@@ -84,7 +84,7 @@ pub async fn init(
     CordicSinCos::init(cordic_peri);
 
     // Build FOC controller — use stored motor params for PI tuning if available
-    let foc_controller = if let Some(ref mp) = config.motor_params {
+    let mut foc_controller = if let Some(ref mp) = config.motor_params {
         if mp.is_valid() {
             let l_avg = (mp.inductance_d_h + mp.inductance_q_h) / 2.0;
             defmt::info!(
@@ -112,6 +112,9 @@ pub async fn init(
     } else {
         FocController::<SvpwmModulator, CordicSinCos>::new(initial_vbus_v)
     };
+
+    // Configure dead time compensation
+    foc_controller.set_dead_time_comp(PWM_CONFIG.dead_time_ns, PWM_CONFIG.pwm_freq_hz);
 
     // Store ADC handles for ISR access (before enabling interrupt/PWM)
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc1)));

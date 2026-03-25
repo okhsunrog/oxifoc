@@ -79,12 +79,6 @@ impl DetectionHardware for G4DetectionHardware {
         let _ = state::CMD_CHANNEL.try_send(mode);
     }
 
-    fn set_pi_gains(&self, kp: f32, ki: f32) {
-        use core::sync::atomic::Ordering;
-        state::PI_KP_OVERRIDE.store(kp.to_bits(), Ordering::Relaxed);
-        state::PI_KI_OVERRIDE.store(ki.to_bits(), Ordering::Relaxed);
-    }
-
     async fn wait_telemetry(&mut self) -> FocOutput {
         // Wait for ISR to complete a FOC cycle.
         // First poll: register waker and return Pending.

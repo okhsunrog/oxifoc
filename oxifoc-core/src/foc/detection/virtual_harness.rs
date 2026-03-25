@@ -114,22 +114,18 @@ thread_local! {
 pub struct VirtualHardware;
 
 impl DetectionHardware for VirtualHardware {
-    fn set_pi_gains(&self, kp: f32, ki: f32) {
-        SIM.with(|s| {
-            let mut borrow = s.borrow_mut();
-            let sim = borrow.as_mut().unwrap();
-            sim.foc.id_pi.set_gains(kp, ki);
-            sim.foc.iq_pi.set_gains(kp, ki);
-        });
-    }
-
     fn send_command(&self, mode: ControlMode) {
         SIM.with(|s| {
             let mut borrow = s.borrow_mut();
             let sim = borrow.as_mut().unwrap();
 
             match mode {
-                ControlMode::OpenLoop { angle_rad, .. } => {
+                ControlMode::OpenLoop { angle_rad, pi_gains, .. } => {
+                    // Apply PI gains override if provided
+                    if let Some((kp, ki)) = pi_gains {
+                        sim.foc.id_pi.set_gains(kp, ki);
+                        sim.foc.iq_pi.set_gains(kp, ki);
+                    }
                     if !matches!(sim.mode, ControlMode::OpenLoop { .. }) {
                         sim.sim_angle = angle_rad;
                         sim.ol_omega = 0.0;

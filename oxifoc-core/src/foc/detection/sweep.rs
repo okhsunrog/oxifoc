@@ -35,7 +35,6 @@ use super::flux_linkage::{
 };
 use super::inductance::{HfiInjector, InductanceMeasurement, validate_inductance};
 use super::pi_tuning::{calculate_foc_gains, estimate_bandwidth};
-use super::resistance::ResistanceMeasurement;
 use super::types::{
     DetectionError, FluxLinkageParams, InductanceParams, MotorParams, MotorSize, ResistanceParams,
     VoltagePulseParams,
@@ -46,6 +45,12 @@ use crate::foc::transforms;
 use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
+
+/// Conservative PI gains for detection (VESC-style).
+/// Motor parameters are unknown at detection time, so these must be safe
+/// for any motor. Kp=0.01, Ki=10.0 (scaled for 20kHz loop).
+pub const DETECTION_PI_KP: f32 = 0.01;
+pub const DETECTION_PI_KI: f32 = 10.0;
 
 // ============================================================================
 // Hardware Abstraction Trait
@@ -60,12 +65,6 @@ use crate::timer::Timer;
 pub trait DetectionHardware {
     /// Send a control mode command to the FOC driver.
     fn send_command(&self, mode: ControlMode);
-
-    /// Set FOC PI controller gains (Kp, Ki).
-    ///
-    /// Called before detection steps to use conservative gains (VESC-style),
-    /// since motor parameters are unknown at detection time.
-    fn set_pi_gains(&self, kp: f32, ki: f32);
 
     /// Wait for the next telemetry update and return it.
     ///
@@ -170,42 +169,6 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
 ) -> Result<f32, DetectionError> {
     info!("Starting resistance measurement...");
 
-    // Use conservative PI gains for detection — motor parameters are unknown.
-    hw.set_pi_gains(0.01, 10.0);
-    T::after_millis(1).await;
-
-    // DEBUG: hold 1A for 10 seconds for multimeter verification
-    info!("=== CURRENT SENSE VERIFICATION MODE ===");
-    info!("Holding 1A d-axis for 10s — measure current with multimeter on phase A");
-    hw.send_command(ControlMode::OpenLoop {
-        angle_rad: 0.0,
-        current: 1.0,
-        velocity_rad_s: 0.0,
-    });
-    T::after_millis(500).await; // let PI settle
-    for sec in 0..10 {
-        let mut vd_sum = 0.0f32;
-        let mut id_sum = 0.0f32;
-        let mut ia_sum = 0.0f32;
-        for _ in 0..200 {
-            let t = hw.wait_telemetry().await;
-            vd_sum += t.vd;
-            id_sum += t.id;
-            ia_sum += t.ia;
-        }
-        info!(
-            "Hold[{}s]: vd={}, id={}, ia={}",
-            sec + 1,
-            vd_sum / 200.0,
-            id_sum / 200.0,
-            ia_sum / 200.0,
-        );
-        T::after_millis(800).await;
-    }
-    hw.send_command(ControlMode::Stopped);
-    T::after_millis(200).await;
-    info!("=== END VERIFICATION ===");
-
     // 2-point differential measurement (MESC-style):
     // Measure Vd/Id at two steady-state current levels, compute R = ΔV/ΔI.
     // This eliminates offset errors and inductance contamination (dI/dt=0 at SS).
@@ -213,6 +176,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     let i_low = i_high * 0.2;
     let settle_cycles = 1000_u64; // 1s settle — ensure PI fully converges and dI/dt→0
     let sample_count = 2000_u32; // Average over 2000 FOC cycles (~100ms at 20kHz)
+    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
 
     debug!(
         "R meas: i_low={}, i_high={}, settle={}ms, samples={}",
@@ -220,6 +184,8 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     );
 
     // --- Ramp to low setpoint ---
+    // First command carries PI gains override; subsequent commands use None
+    // since gains persist until explicitly changed.
     let ramp_steps = 50u32;
     for i in 1..=ramp_steps {
         let current = i_low * (i as f32 / ramp_steps as f32);
@@ -227,6 +193,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
             angle_rad: 0.0,
             current,
             velocity_rad_s: 0.0,
+            pi_gains: if i == 1 { det_gains } else { None },
         });
         T::after_millis(4).await;
     }
@@ -251,6 +218,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
             angle_rad: 0.0,
             current,
             velocity_rad_s: 0.0,
+            pi_gains: None,
         });
         T::after_millis(4).await;
     }
@@ -275,6 +243,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
             angle_rad: 0.0,
             current,
             velocity_rad_s: 0.0,
+            pi_gains: None,
         });
         T::after_millis(4).await;
     }
@@ -334,6 +303,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
 
     // First, lock rotor at angle 0 with holding current
     let ramp_steps = 50u32;
+    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
 
     for i in 1..=ramp_steps {
         let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
@@ -341,6 +311,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
             angle_rad: 0.0,
             current,
             velocity_rad_s: 0.0,
+            pi_gains: if i == 1 { det_gains } else { None },
         });
         T::after_millis(10).await;
     }
@@ -434,6 +405,8 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
     let ramp_steps = 50u32;
     let mut results = [(0.0f32, 0.0f32); 2]; // (angle, measured_L)
     let angles = [0.0f32, core::f32::consts::FRAC_PI_2];
+    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
+    let mut first_cmd = true;
 
     for (axis, &angle) in angles.iter().enumerate() {
         // Lock rotor at this angle
@@ -443,6 +416,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
                 angle_rad: angle,
                 current,
                 velocity_rad_s: 0.0,
+                pi_gains: if first_cmd { first_cmd = false; det_gains } else { None },
             });
             T::after_millis(10).await;
         }
@@ -546,6 +520,8 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
 
     info!("Ramping up to target speed...");
 
+    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
+
     for i in 1..=ramp_steps {
         let progress = i as f32 / ramp_steps as f32;
         let omega = target_omega_e * progress;
@@ -559,6 +535,7 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
             angle_rad: current_angle,
             current: params.current_a,
             velocity_rad_s: 0.0,
+            pi_gains: if i == 1 { det_gains } else { None },
         });
 
         T::after_millis(ramp_delay_ms as u64).await;
@@ -583,6 +560,7 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
             angle_rad: current_angle,
             current: params.current_a,
             velocity_rad_s: 0.0,
+            pi_gains: None,
         });
 
         T::after_micros(sample_delay_us as u64).await;
@@ -609,6 +587,7 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
             angle_rad: current_angle,
             current,
             velocity_rad_s: 0.0,
+            pi_gains: None,
         });
 
         T::after_millis(ramp_delay_ms as u64).await;
@@ -654,6 +633,8 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
     let ramp_delay_ms = params.ramp_time_ms / ramp_steps;
     let mut current_angle = 0.0f32;
 
+    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
+
     for i in 1..=ramp_steps {
         let progress = i as f32 / ramp_steps as f32;
         let omega = target_omega_e * progress;
@@ -665,6 +646,7 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
             angle_rad: current_angle,
             current: params.current_a,
             velocity_rad_s: 0.0,
+            pi_gains: if i == 1 { det_gains } else { None },
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }
@@ -683,6 +665,7 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
             angle_rad: current_angle,
             current: params.current_a,
             velocity_rad_s: 0.0,
+            pi_gains: None,
         });
         T::after_micros(sample_delay_us as u64).await;
 
@@ -703,6 +686,7 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
             angle_rad: current_angle,
             current,
             velocity_rad_s: 0.0,
+            pi_gains: None,
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }
@@ -740,6 +724,8 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
     let ramp_delay_ms = params.ramp_time_ms / ramp_steps;
     let mut current_angle = 0.0f32;
 
+    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
+
     for i in 1..=ramp_steps {
         let progress = i as f32 / ramp_steps as f32;
         let omega = target_omega_e * progress;
@@ -751,6 +737,7 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
             angle_rad: current_angle,
             current: params.current_a,
             velocity_rad_s: 0.0,
+            pi_gains: if i == 1 { det_gains } else { None },
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }
@@ -991,6 +978,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
     // Step 1: Ramp up current at angle 0 to lock rotor
     let ramp_steps = 100u32;
     let ramp_delay_ms = params.ramp_time_ms / ramp_steps;
+    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
 
     for i in 1..=ramp_steps {
         let current = params.current_amps * (i as f32 / ramp_steps as f32);
@@ -998,6 +986,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
             angle_rad: 0.0,
             current,
             velocity_rad_s: 0.0,
+            pi_gains: if i == 1 { det_gains } else { None },
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }
@@ -1024,6 +1013,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
                 angle_rad,
                 current: params.current_amps,
                 velocity_rad_s: 0.0,
+                pi_gains: None,
             });
 
             // Wait for rotor to settle
@@ -1042,6 +1032,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
             angle_rad: 0.0,
             current,
             velocity_rad_s: 0.0,
+            pi_gains: None,
         });
         T::after_millis(ramp_delay_ms as u64).await;
     }

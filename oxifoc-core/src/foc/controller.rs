@@ -73,6 +73,8 @@ pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> 
     vbus: f32,
     /// Modulation limit as a fraction of `vbus` (0.0–1.0)
     modulation_limit: f32,
+    /// Dead time compensation factor = dead_time_s × pwm_freq_hz (0.0 = disabled)
+    dead_time_comp: f32,
     /// Modulator + SinCos phantom (both are ZSTs)
     _phantom: core::marker::PhantomData<(M, S)>,
 }
@@ -99,6 +101,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             iq_pi: PIController::new(0.4, 40.0),
             vbus: vbus.max(Self::MIN_VBUS),
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
+            dead_time_comp: 0.0,
             _phantom: core::marker::PhantomData,
         }
     }
@@ -145,6 +148,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             iq_pi: PIController::new(kp, ki),
             vbus,
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
+            dead_time_comp: 0.0,
             _phantom: core::marker::PhantomData,
         }
     }
@@ -162,6 +166,43 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     pub fn set_vbus(&mut self, vbus: f32) {
         // Avoid divide-by-zero while tolerating brief brownouts.
         self.vbus = vbus.max(Self::MIN_VBUS);
+    }
+
+    /// Configure dead time compensation from PWM parameters.
+    ///
+    /// Compensates for voltage distortion caused by FET dead time by adjusting
+    /// modulation values based on phase current direction (VESC-style).
+    pub fn set_dead_time_comp(&mut self, dead_time_ns: u32, pwm_freq_hz: u32) {
+        self.dead_time_comp = dead_time_ns as f32 * 1e-9 * pwm_freq_hz as f32;
+    }
+
+    /// Apply dead time compensation to normalized modulation values.
+    ///
+    /// During dead time, body diodes conduct: positive phase current → voltage
+    /// drops, negative → voltage rises. This adds a current-direction-dependent
+    /// correction to the αβ modulation before SVPWM.
+    fn apply_dead_time_comp(
+        mod_alpha: f32,
+        mod_beta: f32,
+        i_alpha: f32,
+        i_beta: f32,
+        comp_factor: f32,
+    ) -> (f32, f32) {
+        if comp_factor == 0.0 {
+            return (mod_alpha, mod_beta);
+        }
+
+        // Reconstruct phase current signs from αβ
+        let (ia, ib, ic) = transforms::inverse_clarke(i_alpha, i_beta);
+        let sign_a = if ia >= 0.0 { 1.0f32 } else { -1.0 };
+        let sign_b = if ib >= 0.0 { 1.0f32 } else { -1.0 };
+        let sign_c = if ic >= 0.0 { 1.0f32 } else { -1.0 };
+
+        // Compensation in αβ frame (VESC formula)
+        let comp_alpha = (1.0 / 3.0) * (2.0 * sign_a - sign_b - sign_c) * comp_factor;
+        let comp_beta = super::constants::FRAC_1_SQRT_3 * (sign_b - sign_c) * comp_factor;
+
+        (mod_alpha - comp_alpha, mod_beta - comp_beta)
     }
 
     /// Current DC bus voltage cached in the controller.
@@ -307,7 +348,14 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // dq -> stationary frame
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
         let inv_vbus = 1.0 / self.vbus;
-        let duties = M::to_duties(v_alpha * inv_vbus, v_beta * inv_vbus, max_duty);
+        let (mod_a, mod_b) = Self::apply_dead_time_comp(
+            v_alpha * inv_vbus,
+            v_beta * inv_vbus,
+            i_alpha,
+            i_beta,
+            self.dead_time_comp,
+        );
+        let duties = M::to_duties(mod_a, mod_b, max_duty);
 
         FocOutput {
             ia,

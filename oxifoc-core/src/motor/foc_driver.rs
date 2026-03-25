@@ -242,6 +242,13 @@ where
             self.pwm.enable();
         }
 
+        // Apply PI gains override if provided (detection uses this)
+        if let ControlMode::OpenLoop { pi_gains: Some((kp, ki)), .. } = mode {
+            self.controller.id_pi.set_gains(kp, ki);
+            self.controller.iq_pi.set_gains(kp, ki);
+            self.controller.reset();
+        }
+
         self.mode = mode;
     }
 
@@ -254,13 +261,6 @@ where
     pub fn set_vbus(&mut self, vbus: f32) {
         self.controller.set_vbus(vbus);
         self.vbus = vbus;
-    }
-
-    /// Set PI controller gains and reset integrators (used by detection)
-    pub fn set_pi_gains(&mut self, kp: f32, ki: f32) {
-        self.controller.id_pi.set_gains(kp, ki);
-        self.controller.iq_pi.set_gains(kp, ki);
-        self.controller.reset();
     }
 
     /// Get bus voltage
@@ -311,6 +311,7 @@ where
                 angle_rad,
                 current,
                 velocity_rad_s,
+                ..
             } => self.step_open_loop(angle_rad, current, velocity_rad_s, dt, now_ticks),
             ControlMode::DirectVoltage { vd, vq, angle_rad } => {
                 self.step_direct_voltage(vd, vq, angle_rad, dt, now_ticks)

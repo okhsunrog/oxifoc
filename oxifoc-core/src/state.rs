@@ -26,13 +26,6 @@ use crate::types::MotorState;
 /// Command channel - servers send ControlMode here, ISR receives them
 pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, ControlMode, 4> = Channel::new();
 
-/// PI gains override — detection sets conservative gains, ISR applies on next cycle.
-/// Encoding: bits [31:0] = f32 Kp, stored via AtomicU32. Zero means "no override".
-pub static PI_KP_OVERRIDE: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-pub static PI_KI_OVERRIDE: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-
 /// Waker for FOC cycle completion — ISR wakes after `update_telemetry()`.
 /// Used by calibration/detection to synchronize with individual FOC cycles.
 /// The listener reads `last_foc` from the state mutex after waking.
@@ -177,18 +170,6 @@ where
     Ph: PhaseProvider,
     S: SinCos,
 {
-    // Apply PI gains override if requested (detection sets conservative gains)
-    {
-        use core::sync::atomic::Ordering;
-        let kp_bits = PI_KP_OVERRIDE.swap(0, Ordering::Relaxed);
-        let ki_bits = PI_KI_OVERRIDE.swap(0, Ordering::Relaxed);
-        if kp_bits != 0 || ki_bits != 0 {
-            let kp = f32::from_bits(kp_bits);
-            let ki = f32::from_bits(ki_bits);
-            foc.set_pi_gains(kp, ki);
-        }
-    }
-
     // Process all pending commands
     while let Ok(mode) = CMD_CHANNEL.try_receive() {
         critical_section::with(|cs| {
