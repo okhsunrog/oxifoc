@@ -34,3 +34,18 @@ pub trait Timer {
     /// Delay for the specified number of microseconds.
     fn after_micros(us: u64) -> impl Future<Output = ()>;
 }
+
+/// Embassy timer implementation for async delays.
+#[cfg(feature = "embassy")]
+pub struct EmbassyTimer;
+
+#[cfg(feature = "embassy")]
+impl Timer for EmbassyTimer {
+    async fn after_millis(ms: u64) {
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(ms)).await;
+    }
+
+    async fn after_micros(us: u64) {
+        embassy_time::Timer::after(embassy_time::Duration::from_micros(us)).await;
+    }
+}

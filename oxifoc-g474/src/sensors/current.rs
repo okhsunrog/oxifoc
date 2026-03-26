@@ -1,4 +1,4 @@
-//! Current sensing — re-exported from oxifoc-g4 with G474 type aliases
+//! Current sensing — uses core's EmbassyCurrentSensor with G474 type aliases
 
-pub use oxifoc_g4::current::G4CurrentSensor as G474CurrentSensor;
-pub use oxifoc_g4::current::G4CurrentSensorExt as G474CurrentSensorExt;
+pub use oxifoc_core::foc::sensors::EmbassyCurrentSensor as G474CurrentSensor;
+pub use oxifoc_core::foc::sensors::EmbassyCurrentSensorExt as G474CurrentSensorExt;

@@ -209,4 +209,8 @@ pub mod foc {
 
     /// Phase management (PhaseProvider, PhaseManager, Observer)
     pub mod phase;
+
+    /// Shared Hall sensor state management for embassy-based platforms
+    #[cfg(feature = "embassy")]
+    pub mod hall_embassy;
 }

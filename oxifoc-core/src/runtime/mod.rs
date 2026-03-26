@@ -20,5 +20,9 @@
 pub mod servers;
 pub mod streaming;
 
+/// UART I/O wrappers implementing embedded-io-async (requires `embassy-hal` feature)
+#[cfg(feature = "embassy-hal")]
+pub mod io;
+
 pub use servers::*;
 pub use streaming::*;

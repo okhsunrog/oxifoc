@@ -1099,8 +1099,10 @@ dependencies = [
  "critical-section",
  "defmt 1.0.1",
  "embassy-futures",
+ "embassy-stm32",
  "embassy-sync 0.8.0",
  "embassy-time",
+ "embedded-io-async 0.7.0",
  "ergot",
  "heapless 0.9.2",
  "libm",
@@ -1108,21 +1110,6 @@ dependencies = [
  "postcard-schema",
  "sequential-storage",
  "serde",
-]
-
-[[package]]
-name = "oxifoc-g4"
-version = "0.1.0"
-dependencies = [
- "cortex-m",
- "critical-section",
- "defmt 1.0.1",
- "embassy-stm32",
- "embassy-sync 0.8.0",
- "embassy-time",
- "embedded-io-async 0.7.0",
- "heapless 0.9.2",
- "oxifoc-core",
 ]
 
 [[package]]
@@ -1147,7 +1134,6 @@ dependencies = [
  "libm",
  "mutex",
  "oxifoc-core",
- "oxifoc-g4",
  "panic-probe",
  "postcard",
  "postcard-schema",

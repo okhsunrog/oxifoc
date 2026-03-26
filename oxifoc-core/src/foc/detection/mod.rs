@@ -91,6 +91,10 @@ pub mod voltage_pulse;
 #[cfg(all(feature = "virtual-motor", any(test, feature = "std")))]
 pub mod virtual_harness;
 
+/// Embassy-based detection hardware (timer, hardware abstraction, hall reader)
+#[cfg(all(feature = "embassy", feature = "runtime"))]
+pub mod embassy_hw;
+
 // Re-export commonly used types for convenience
 pub use types::{
     DcOffsetParams, DcOffsets, DetectionError, FluxLinkageParams, InductanceParams, MotorParams,

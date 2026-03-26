@@ -49,7 +49,7 @@ embassy-embedded-hal = { version = "0.6.0" }
 postcard = "1.1"
 
 # Local crates
-oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage"] }
+oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy"] }
 ergot = { git = "https://github.com/okhsunrog/ergot", branch = "liveness-tracking-and-state-notifications", default-features = false, features = [
     "embassy-usb-v0_6",
     "disable-cache-padding",

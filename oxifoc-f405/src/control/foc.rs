@@ -96,7 +96,7 @@ pub async fn init(
     motor_pwm.enable_outputs();
 
     // Build current sensor and phase manager
-    let current_sensor = F405CurrentSensor::from_board(&BOARD);
+    let current_sensor = F405CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
     crate::sensors::hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
     let phase_manager = PhaseManager::with_hall(hall_proxy);

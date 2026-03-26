@@ -1,4 +1,4 @@
-//! CORDIC hardware-accelerated sin/cos — re-exported from oxifoc-g4
+//! CORDIC hardware-accelerated sin/cos — re-exported from oxifoc-core
 
 #[allow(unused_imports)]
-pub use oxifoc_g4::cordic::*;
+pub use oxifoc_core::foc::trig::CordicSinCos;

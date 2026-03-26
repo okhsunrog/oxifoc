@@ -1,6 +1,7 @@
-//! Calibration and motor parameter detection for STM32G4 platforms
+//! Embassy-based detection hardware implementation
 //!
-//! Implements DetectionHardware trait and provides access to core detection functions.
+//! Provides [`EmbassyDetectionHardware`] and [`EmbassyHallReader`] for platforms
+//! using embassy-time and critical-section mutexes for motor parameter detection.
 
 #![allow(dead_code)]
 
@@ -10,44 +11,30 @@ use core::sync::atomic::{AtomicU16, Ordering};
 use core::task::Poll;
 
 use critical_section::Mutex as CriticalSectionMutex;
-use embassy_time::{Duration, Timer};
 
-use oxifoc_core::foc::config::BoardConfig;
-use oxifoc_core::foc::controller::FocOutput;
-use oxifoc_core::foc::detection::DetectionError;
-use oxifoc_core::foc::detection::sweep::{self, DetectionHardware, HallReader};
-use oxifoc_core::foc::trig::SinCos;
-use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
-use oxifoc_core::motor::ControlMode;
-use oxifoc_core::state::{self, MotorControlState};
+use crate::foc::config::BoardConfig;
+use crate::foc::controller::FocOutput;
+use crate::foc::detection::DetectionError;
+use crate::foc::detection::sweep::{self, DetectionHardware, HallReader};
+use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
+use crate::foc::trig::SinCos;
+use crate::motor::ControlMode;
+use crate::state::{self, MotorControlState};
+use crate::timer::EmbassyTimer;
 
 // Re-export types from core for convenience
-pub use oxifoc_core::foc::detection::sweep::{DetectionParams, DetectionResult};
-pub use oxifoc_core::foc::detection::{FluxLinkageParams, InductanceParams, ResistanceParams};
-
-// ============================================================================
-// Timer Implementation
-// ============================================================================
-
-/// Embassy timer implementation for async delays.
-pub struct EmbassyTimer;
-
-impl oxifoc_core::timer::Timer for EmbassyTimer {
-    async fn after_millis(ms: u64) {
-        Timer::after(Duration::from_millis(ms)).await;
-    }
-
-    async fn after_micros(us: u64) {
-        Timer::after(Duration::from_micros(us)).await;
-    }
-}
+pub use crate::foc::detection::sweep::{DetectionParams, DetectionResult};
+pub use crate::foc::detection::{FluxLinkageParams, InductanceParams, ResistanceParams};
 
 // ============================================================================
 // Hardware Implementation
 // ============================================================================
 
-/// G4-family hardware abstraction for motor detection.
-pub struct G4DetectionHardware {
+/// Embassy-based hardware abstraction for motor detection.
+///
+/// Generic implementation usable on any platform with embassy-time,
+/// critical-section mutexes for state, and atomic ADC samples.
+pub struct EmbassyDetectionHardware {
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
@@ -55,8 +42,8 @@ pub struct G4DetectionHardware {
     board: &'static BoardConfig,
 }
 
-impl G4DetectionHardware {
-    /// Create a new G4 detection hardware instance.
+impl EmbassyDetectionHardware {
+    /// Create a new detection hardware instance.
     pub fn new(
         state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
         ia: &'static AtomicU16,
@@ -74,7 +61,7 @@ impl G4DetectionHardware {
     }
 }
 
-impl DetectionHardware for G4DetectionHardware {
+impl DetectionHardware for EmbassyDetectionHardware {
     fn send_command(&self, mode: ControlMode) {
         let _ = state::CMD_CHANNEL.try_send(mode);
     }
@@ -110,13 +97,21 @@ impl DetectionHardware for G4DetectionHardware {
 // Hall Sensor Reader
 // ============================================================================
 
-/// Hall sensor reader for G4 platforms.
-/// Delegates to the shared hall module.
-pub struct G4HallReader;
+/// Hall sensor reader that delegates to a platform-provided function.
+pub struct EmbassyHallReader {
+    read_fn: fn() -> u8,
+}
 
-impl HallReader for G4HallReader {
+impl EmbassyHallReader {
+    /// Create a new Hall reader with a platform-specific GPIO read function.
+    pub fn new(read_fn: fn() -> u8) -> Self {
+        Self { read_fn }
+    }
+}
+
+impl HallReader for EmbassyHallReader {
     fn read_hall_state(&self) -> u8 {
-        crate::hall::read_hall_state_raw()
+        (self.read_fn)()
     }
 }
 
@@ -133,7 +128,7 @@ pub async fn measure_resistance(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
-    let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
+    let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     sweep::measure_resistance::<_, EmbassyTimer>(&mut hw, params).await
 }
 
@@ -147,7 +142,7 @@ pub async fn measure_inductance<S: SinCos>(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<(f32, f32), DetectionError> {
-    let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
+    let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     sweep::measure_inductance::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz).await
 }
 
@@ -160,7 +155,7 @@ pub async fn measure_flux_linkage(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
-    let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
+    let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     sweep::measure_flux_linkage::<_, EmbassyTimer>(&mut hw, params).await
 }
 
@@ -173,7 +168,7 @@ pub async fn run_full_detection<S: SinCos>(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<DetectionResult, DetectionError> {
-    let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
+    let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     sweep::run_full_detection::<_, EmbassyTimer, S>(&mut hw, params).await
 }
 
@@ -185,9 +180,10 @@ pub async fn calibrate_hall(
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
+    read_hall_fn: fn() -> u8,
 ) -> Result<HallCalibrationResult, DetectionError> {
-    let mut hw = G4DetectionHardware::new(state_mutex, ia, ib, ic, board);
-    let reader = G4HallReader;
+    let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
+    let reader = EmbassyHallReader::new(read_hall_fn);
     sweep::calibrate_hall::<_, EmbassyTimer, _>(&mut hw, &reader, params).await
 }
 
@@ -198,6 +194,16 @@ pub async fn calibrate_hall_default(
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
+    read_hall_fn: fn() -> u8,
 ) -> Result<HallCalibrationResult, DetectionError> {
-    calibrate_hall(HallCalibrationParams::default(), state_mutex, ia, ib, ic, board).await
+    calibrate_hall(
+        HallCalibrationParams::default(),
+        state_mutex,
+        ia,
+        ib,
+        ic,
+        board,
+        read_hall_fn,
+    )
+    .await
 }

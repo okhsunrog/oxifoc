@@ -23,8 +23,7 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 embedded-test = { version = "0.7", features = ["defmt", "external-executor", "embassy"] }
 libm = { version = "0.2", default-features = false }
 
-oxifoc-core = { path = "../../oxifoc-core", features = ["defmt", "algorithms"] }
-oxifoc-g4 = { path = "../../oxifoc-g4" }
+oxifoc-core = { path = "../../oxifoc-core", features = ["defmt", "algorithms", "cordic"] }
 
 [profile.dev]
 debug = true

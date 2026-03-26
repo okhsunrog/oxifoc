@@ -476,6 +476,123 @@ pub mod hall_polling {
 }
 
 // ============================================================================
+// Embassy-based ADC reader and current sensor (feature = "embassy")
+// ============================================================================
+
+#[cfg(feature = "embassy")]
+mod embassy_current {
+    use core::sync::atomic::{AtomicU16, Ordering};
+
+    use super::{CurrentSensor, GenericCurrentSensor, RawCurrentReader};
+    use crate::foc::config::{
+        BoardConfig, DEFAULT_CALIBRATION_DELAY_US, DEFAULT_CALIBRATION_SAMPLES,
+    };
+
+    /// Atomic ADC reader — reads phase currents from `&'static AtomicU16` × 3
+    ///
+    /// Suitable for any platform where the ADC ISR stores raw samples in static atomics.
+    #[derive(Clone, Copy)]
+    pub struct AtomicAdcReader {
+        ia: &'static AtomicU16,
+        ib: &'static AtomicU16,
+        ic: &'static AtomicU16,
+    }
+
+    impl AtomicAdcReader {
+        pub const fn new(
+            ia: &'static AtomicU16,
+            ib: &'static AtomicU16,
+            ic: &'static AtomicU16,
+        ) -> Self {
+            Self { ia, ib, ic }
+        }
+    }
+
+    impl RawCurrentReader for AtomicAdcReader {
+        fn read_raw(&self) -> (u16, u16, u16) {
+            let ia_raw = self.ia.load(Ordering::Relaxed);
+            let ib_raw = self.ib.load(Ordering::Relaxed);
+            let ic_raw = self.ic.load(Ordering::Relaxed);
+            (ia_raw, ib_raw, ic_raw)
+        }
+    }
+
+    /// Embassy current sensor — generic sensor with atomic ADC reader
+    pub type EmbassyCurrentSensor = GenericCurrentSensor<AtomicAdcReader>;
+
+    /// Extension trait for embassy-based current sensor calibration
+    #[allow(async_fn_in_trait)]
+    pub trait EmbassyCurrentSensorExt {
+        /// Create a new current sensor from board config and ADC atomics
+        fn from_board(
+            config: &BoardConfig,
+            ia: &'static AtomicU16,
+            ib: &'static AtomicU16,
+            ic: &'static AtomicU16,
+        ) -> Self;
+
+        /// Calibrate current sense offsets (async)
+        async fn calibrate(&mut self);
+
+        /// Calibrate current sense offsets with custom parameters (async)
+        async fn calibrate_with_params(&mut self, num_samples: usize, delay_us: u64);
+    }
+
+    impl EmbassyCurrentSensorExt for EmbassyCurrentSensor {
+        fn from_board(
+            config: &BoardConfig,
+            ia: &'static AtomicU16,
+            ib: &'static AtomicU16,
+            ic: &'static AtomicU16,
+        ) -> Self {
+            GenericCurrentSensor::from_config(config, AtomicAdcReader::new(ia, ib, ic))
+        }
+
+        async fn calibrate(&mut self) {
+            self.calibrate_with_params(DEFAULT_CALIBRATION_SAMPLES, DEFAULT_CALIBRATION_DELAY_US)
+                .await;
+        }
+
+        async fn calibrate_with_params(&mut self, num_samples: usize, delay_us: u64) {
+            info!(
+                "Calibrating current sense: {} samples, {}us delay",
+                num_samples, delay_us
+            );
+
+            // Collect samples
+            let mut samples = heapless::Vec::<(u16, u16, u16), 1024>::new();
+
+            for i in 0..num_samples.min(1024) {
+                let raw = self.read_raw();
+
+                let _ = samples.push(raw);
+
+                if i % 64 == 0 {
+                    debug!(
+                        "Calibration sample {}: A={} B={} C={}",
+                        i, raw.0, raw.1, raw.2
+                    );
+                }
+
+                embassy_time::Timer::after(embassy_time::Duration::from_micros(delay_us)).await;
+            }
+
+            // Use shared calibration algorithm
+            self.calibrate_offsets(&samples);
+
+            let (oa, ob, oc) = self.converter().get_offsets();
+            info!(
+                "Current sense calibrated: A={} B={} C={}",
+                oa as u16, ob as u16, oc as u16
+            );
+        }
+    }
+}
+
+#[cfg(feature = "embassy")]
+pub use embassy_current::{AtomicAdcReader, EmbassyCurrentSensor, EmbassyCurrentSensorExt};
+
+// ============================================================================
 // Temperature sensors
 // ============================================================================
 

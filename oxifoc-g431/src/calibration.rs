@@ -1,6 +1,6 @@
 //! Calibration and motor parameter detection for G431 platform
 //!
-//! Thin wrappers over oxifoc-g4 shared calibration, providing
+//! Thin wrappers over oxifoc-core shared calibration, providing
 //! platform-specific ADC atomics and board config.
 
 #![allow(dead_code)]
@@ -13,14 +13,14 @@ use crate::STATE;
 use crate::config::BOARD;
 use crate::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
 
-// Re-export types from oxifoc-g4 for convenience
-pub use oxifoc_g4::calibration::{
+// Re-export types from core for convenience
+pub use oxifoc_core::foc::detection::embassy_hw::{
     DetectionParams, DetectionResult, FluxLinkageParams, InductanceParams, ResistanceParams,
 };
 
 /// Measure motor phase resistance.
 pub async fn measure_resistance(params: &ResistanceParams) -> Result<f32, DetectionError> {
-    oxifoc_g4::calibration::measure_resistance(
+    oxifoc_core::foc::detection::embassy_hw::measure_resistance(
         params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD,
     )
     .await
@@ -31,7 +31,7 @@ pub async fn measure_inductance<S: SinCos>(
     params: &InductanceParams,
     pwm_freq_hz: f32,
 ) -> Result<(f32, f32), DetectionError> {
-    oxifoc_g4::calibration::measure_inductance::<S>(
+    oxifoc_core::foc::detection::embassy_hw::measure_inductance::<S>(
         params,
         pwm_freq_hz,
         &STATE,
@@ -45,7 +45,7 @@ pub async fn measure_inductance<S: SinCos>(
 
 /// Measure motor flux linkage via open-loop spinning.
 pub async fn measure_flux_linkage(params: &FluxLinkageParams) -> Result<f32, DetectionError> {
-    oxifoc_g4::calibration::measure_flux_linkage(
+    oxifoc_core::foc::detection::embassy_hw::measure_flux_linkage(
         params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD,
     )
     .await
@@ -55,7 +55,7 @@ pub async fn measure_flux_linkage(params: &FluxLinkageParams) -> Result<f32, Det
 pub async fn run_full_detection<S: SinCos>(
     params: DetectionParams,
 ) -> Result<DetectionResult, DetectionError> {
-    oxifoc_g4::calibration::run_full_detection::<S>(
+    oxifoc_core::foc::detection::embassy_hw::run_full_detection::<S>(
         params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD,
     )
     .await
@@ -65,8 +65,14 @@ pub async fn run_full_detection<S: SinCos>(
 pub async fn calibrate_hall(
     params: HallCalibrationParams,
 ) -> Result<HallCalibrationResult, DetectionError> {
-    oxifoc_g4::calibration::calibrate_hall(
-        params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD,
+    oxifoc_core::foc::detection::embassy_hw::calibrate_hall(
+        params,
+        &STATE,
+        &IA_SAMPLE,
+        &IB_SAMPLE,
+        &IC_SAMPLE,
+        &BOARD,
+        crate::sensors::read_hall_state_raw,
     )
     .await
 }

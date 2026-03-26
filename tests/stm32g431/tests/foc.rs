@@ -14,7 +14,7 @@ mod tests {
         transforms,
         trig::{SinCos, angle_to_cordic_q31, f32_to_q31, q31_to_f32},
     };
-    use oxifoc_g4::cordic::CordicSinCos;
+    use oxifoc_core::foc::trig::CordicSinCos;
 
     const MAX_TRIG_ERR: f32 = 1e-4; // ~20-bit CORDIC precision
     const MAX_Q31_ERR: f32 = 1e-6; // q31 round-trip precision
