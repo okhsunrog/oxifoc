@@ -55,6 +55,7 @@ ergot = { git = "https://github.com/okhsunrog/ergot", branch = "liveness-trackin
     "disable-cache-padding",
     "defmt-sink-rtt",
 ] }
+rtt-target = "0.6"
 
 [profile.dev]
 debug = true

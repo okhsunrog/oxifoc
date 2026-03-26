@@ -36,6 +36,9 @@ oxifoc_core::define_platform_state!(fault::F405Fault);
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // ========== STEP 0: Initialize defmt RTT logging ==========
+    transport::init_defmt_rtt();
+
     // ========== STEP 1: Initialize Clock ==========
     let p = hardware::peripherals::init_clock();
 

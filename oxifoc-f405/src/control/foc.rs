@@ -81,13 +81,19 @@ pub async fn init(
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
 
-    // Configure TIM1 CH4 for ADC triggering at PWM peak
-    motor_pwm.configure_adc_trigger();
-
-    // Store ADC handles for ISR access
+    // Store ADC handles for ISR access (before enabling PWM triggers)
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc1)));
     ADC2_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc2)));
     ADC3_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc3)));
+
+    // Enable ADC interrupt and PWM outputs (CH4 trigger + phase channels).
+    // Order: install ADC handles → enable interrupt → enable PWM triggers.
+    unsafe {
+        use embassy_stm32::interrupt::typelevel::Interrupt;
+        <embassy_stm32::interrupt::typelevel::ADC as Interrupt>::unpend();
+        <embassy_stm32::interrupt::typelevel::ADC as Interrupt>::enable();
+    }
+    motor_pwm.enable_outputs();
 
     // Build current sensor and phase manager
     let current_sensor = F405CurrentSensor::from_board(&BOARD);
@@ -98,7 +104,7 @@ pub async fn init(
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
 
     // Build FOC controller — use stored motor params for PI tuning if available
-    let foc_controller = if let Some(ref mp) = config.motor_params {
+    let mut foc_controller = if let Some(ref mp) = config.motor_params {
         if mp.is_valid() {
             let l_avg = (mp.inductance_d_h + mp.inductance_q_h) / 2.0;
             defmt::info!(
@@ -125,6 +131,9 @@ pub async fn init(
     } else {
         FocController::<_, FastSinCos>::new(initial_vbus_v)
     };
+
+    // Configure dead time compensation
+    foc_controller.set_dead_time_comp(PWM_CONFIG.dead_time_ns, PWM_CONFIG.pwm_freq_hz);
 
     // Build FOC driver with dt from PWM config
     let mut foc_driver = FocDriver::new(

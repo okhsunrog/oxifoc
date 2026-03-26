@@ -1,13 +1,20 @@
 //! USB transport layer for ergot communication
+//!
+//! USB bulk endpoints carry ergot protocol data.
+//! defmt logs go over a separate RTT channel (read via probe-rs).
 
 use embassy_stm32::{Peri, bind_interrupts, peripherals, usb};
 use ergot::{
     exports::bbqueue::traits::coordination::cas::AtomicCoord, toolkits::embassy_usb_v0_6 as kit,
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
+use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 use crate::config::OUT_QUEUE_SIZE;
+
+/// RTT defmt channel storage
+static RTT_DEFMT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 
 // Type aliases for USB-based ergot transport
 pub type AppDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
@@ -17,11 +24,24 @@ pub type RxWorker = kit::RxWorker<&'static Queue, CriticalSectionRawMutex, AppDr
 
 // Static storage for USB transport
 static USB_STORAGE: kit::WireStorage<256, 256, 64, 256> = kit::WireStorage::new();
-static EP_OUT_BUF: StaticCell<[u8; kit::USB_FS_MAX_PACKET_SIZE]> = StaticCell::new();
+// OTG FS endpoint buffer — must be large enough for all EP allocations (control + bulk)
+static EP_OUT_BUF: StaticCell<[u8; 256]> = StaticCell::new();
 
 bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
 });
+
+/// Initialize RTT for defmt logging. Must be called before any defmt macros.
+pub fn init_defmt_rtt() {
+    use ergot::logging::defmt_sink;
+    let channels = rtt_init! {
+        up: {
+            0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
+        }
+    };
+    let defmt_up = RTT_DEFMT_UP.init(channels.up.0);
+    defmt_sink::init_rtt(defmt_up);
+}
 
 /// USB transport configuration and handles
 pub struct UsbTransport {
@@ -37,7 +57,7 @@ pub fn init_usb(
     pa12: Peri<'static, peripherals::PA12>,
     pa11: Peri<'static, peripherals::PA11>,
 ) -> UsbTransport {
-    let ep_out_buf = EP_OUT_BUF.init([0u8; kit::USB_FS_MAX_PACKET_SIZE]);
+    let ep_out_buf = EP_OUT_BUF.init([0u8; 256]);
 
     let mut usb_cfg = embassy_stm32::usb::Config::default();
     // Simple FOCer 2 can stay powered without VBUS; disable detection for flexibility.

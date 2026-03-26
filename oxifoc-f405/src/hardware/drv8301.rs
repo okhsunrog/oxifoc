@@ -79,7 +79,8 @@ pub fn init_spi(
     let cs = Output::new(pc9, Level::High, Speed::VeryHigh);
 
     // EN_GATE pin (enable gate driver, active high)
-    let en_gate = Output::new(pb5, Level::Low, Speed::Low);
+    // Start HIGH — DRV8301 must be enabled before SPI communication
+    let en_gate = Output::new(pb5, Level::High, Speed::Low);
 
     // nFAULT pin with EXTI for interrupt-driven fault detection (active low, pull-up)
     let nfault = ExtiInput::new(pb7, exti7, Pull::Up, exti_irq);
@@ -107,6 +108,9 @@ pub fn configure_and_store_drv8301(
     let mut drv = Drv8301::new(spi_device);
 
     defmt::info!("Configuring DRV8301...");
+
+    // DRV8301 needs time after EN_GATE goes high (tWAKE ≈ 1ms)
+    cortex_m::asm::delay(168_000 * 2); // ~2ms at 168MHz
 
     // Read device ID to verify communication
     match drv.get_device_id() {

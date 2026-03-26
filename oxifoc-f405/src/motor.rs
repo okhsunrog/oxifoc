@@ -78,10 +78,17 @@ impl<'d> MotorPwm<'d> {
             config.max_duty_percent
         );
 
-        // Enable all three channels
-        pwm.enable(Channel::Ch1);
-        pwm.enable(Channel::Ch2);
-        pwm.enable(Channel::Ch3);
+        // Configure CH4 compare for ADC trigger at PWM peak.
+        // CH4 NOT enabled here — enable_outputs() does it after ADC handles are installed.
+        // Note: embassy ComplementaryPwm on F405 only exposes 3 channels (CH1-3),
+        // so CH4 must be configured via PAC directly.
+        let trigger_point = max_duty - max_duty / 50; // ~2% margin from peak
+        embassy_stm32::pac::TIM1.ccr(3).write(|w| w.set_ccr(trigger_point as u16));
+        defmt::info!("TIM1 CH4 ADC trigger at {}", trigger_point);
+
+        // NOTE: Phase channels and CH4 are NOT enabled here.
+        // Call enable_outputs() after ADC handles are installed so the ISR
+        // can process conversions when CH4 starts triggering.
 
         Self {
             pwm,
@@ -90,15 +97,17 @@ impl<'d> MotorPwm<'d> {
         }
     }
 
-    /// Configure TIM1 CH4 to trigger ADC at peak of center-aligned PWM.
-    ///
-    /// Sets CH4 compare near ARR (triangle wave peak) where all low-side
-    /// FETs are ON, optimal for low-side shunt current sampling.
-    /// CH4 is already in PWM mode 1 with preload from ComplementaryPwm::new().
-    pub fn configure_adc_trigger(&mut self) {
-        let trigger_point = self.max_duty - self.max_duty / 50; // ~2% margin from peak
-        self.pwm.set_duty(Channel::Ch4, trigger_point);
-        defmt::info!("TIM1 CH4 ADC trigger at {}", trigger_point);
+    /// Enable PWM outputs (ADC trigger + phase channels).
+    /// Call after ADC handles are installed so the ISR can process conversions.
+    pub fn enable_outputs(&mut self) {
+        // CH4 has no complementary output, so enable via PAC directly
+        // (ComplementaryPwm::enable would try set_ccne(3) which asserts n<3)
+        embassy_stm32::pac::TIM1
+            .ccer()
+            .modify(|w| w.set_cce(3, true));
+        self.pwm.enable(Channel::Ch1);
+        self.pwm.enable(Channel::Ch2);
+        self.pwm.enable(Channel::Ch3);
     }
 
     /// Emergency stop - disable all outputs

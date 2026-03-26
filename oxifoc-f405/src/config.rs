@@ -15,7 +15,7 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 /// - ADC: 12-bit with 3.3V reference
 /// - VBUS divider: 39k / 2.2k = (39 + 2.2) / 2.2 ratio
 /// - Max continuous current: ~60A (FET rating, IRFS7530)
-/// - Max VBUS: 60V (FET Vds rating with margin)
+/// - Max VBUS: 57V (VESC HW_LIM_VIN, FET Vds=60V with margin)
 pub const BOARD: BoardConfig = BoardConfig {
     shunt_ohms: 0.0005,                     // 0.5mΩ (two 1mΩ in parallel)
     amp_gain: 10.0,                         // DRV8301 10 V/V gain
@@ -25,10 +25,10 @@ pub const BOARD: BoardConfig = BoardConfig {
     initial_vbus_volts: 12.0,               // Conservative default
     max_iq_target_a: 10.0,                  // Max torque current
     invert_current_sign: false,              // DRV8301: standard polarity
-    // Fault thresholds
+    // Fault thresholds (matched to VESC hwconf)
     max_phase_current_a: 60.0, // Peak phase current limit (FET rating)
-    max_vbus_mv: 60_000,       // Overvoltage at 60V (12S LiPo max)
-    min_vbus_mv: 8_000,        // Undervoltage at 8V
+    max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN)
+    min_vbus_mv: 6_000,        // Undervoltage at 6V (VESC HW_LIM_VIN)
     max_fet_temp_c: 100.0,     // FET overtemp at 100°C
 };
 
@@ -62,8 +62,8 @@ pub const NTC_MOTOR: NtcConfig = NtcConfig {
 ///
 /// Central source of truth for PWM frequency and timing.
 /// Used by motor.rs for timer setup and control/foc.rs for dt calculation.
-pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
-// To change frequency: MotorPwmConfig::new().with_pwm_freq(25_000)
+pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(360);
+// VESC default dead time for Cheap FOCer 2: 360ns (HW_DEAD_TIME_NSEC fallback)
 
 // ============================================================================
 // Timing Configuration

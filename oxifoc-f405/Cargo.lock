@@ -1353,6 +1353,7 @@ dependencies = [
  "oxifoc-core",
  "panic-probe",
  "postcard",
+ "rtt-target",
  "sequential-storage",
  "static_cell",
 ]

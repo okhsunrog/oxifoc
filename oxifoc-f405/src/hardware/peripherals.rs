@@ -116,11 +116,8 @@ pub fn init_adc(
         true, // Interrupt on ADC3 (all ADCs finish simultaneously)
     );
 
-    // Enable ADC interrupt
-    unsafe {
-        interrupt::typelevel::ADC::unpend();
-        interrupt::typelevel::ADC::enable();
-    }
+    // NOTE: ADC interrupt is NOT enabled here.
+    // foc::init() enables it after installing ADC handles into statics.
 
     defmt::info!("ADC1/ADC2/ADC3 initialized with TIM1_CC4-triggered injected conversions");
 
