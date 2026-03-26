@@ -1,4 +1,4 @@
-# Oxifoc
+# OxiFOC
 
 Field-Oriented Control (FOC) firmware for STM32 motor controllers, written in Rust with [Embassy](https://embassy.dev/). Device-host communication uses [ergot](https://github.com/jamesmunns/ergot).
 
