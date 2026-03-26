@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use ergot::interface_manager::LivenessConfig;
-use ergot::interface_manager::profiles::direct_edge::tokio_udp::InterfaceKind;
 use ergot::toolkits::tokio_stream::WaitQueue;
 use ergot::toolkits::tokio_udp::{self, EdgeStack};
 use tokio::net::UdpSocket;
@@ -33,11 +32,10 @@ pub async fn connect(
 
     info!("UDP connected to {}", addr);
 
-    tokio_udp::register_edge_interface(
+    tokio_udp::register_edge_controller_interface(
         &stack,
         socket,
         &queue,
-        InterfaceKind::Controller,
         Some(LivenessConfig {
             timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
         }),

@@ -11,9 +11,11 @@ test = false
 bench = false
 
 [features]
-default = ["transport-usb"]
+default = ["transport-usb", "transport-uart"]
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
-transport-usb = ["ergot/embassy-usb-v0_6", "ergot/defmt-sink-rtt"]
+transport-usb = []
+# UART on USART3 (PB10 TX / PB11 RX) for Cheap FOCer 2
+transport-uart = []
 
 [dependencies]
 # Embassy + Cortex-M
@@ -37,6 +39,7 @@ heapless = { version = "0.9.2", default-features = false }
 mutex = "1.0.2"
 static_cell = "2.1"
 assign-resources = "0.5.0"
+embedded-io-async = "0.7"
 
 # Gate driver
 drv8301-dd = { version = "0.2.0", features = ["defmt"] }
@@ -49,14 +52,18 @@ embassy-embedded-hal = { version = "0.6.0" }
 postcard = "1.1"
 
 # Local crates
-oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy"] }
-ergot = { git = "https://github.com/okhsunrog/ergot", branch = "liveness-tracking-and-state-notifications", default-features = false, features = [
+oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy", "embassy-hal"] }
+ergot = { git = "https://github.com/okhsunrog/ergot", branch = "unified-router", default-features = false, features = [
     "embassy-usb-v0_6",
+    "embedded-io-async-v0_7",
+    "nostd-seed-router",
+    "embassy-time",
     "disable-cache-padding",
     "defmt-sink-rtt",
 ] }
 rtt-target = "0.6"
 libm = "0.2.16"
+serde = { version = "1.0.228", default-features = false }
 
 [profile.dev]
 debug = true
@@ -69,8 +76,3 @@ debug = 2
 lto = "fat"
 opt-level = 3
 incremental = true
-
-# Override workspace ergot with jamesmunns/main for USB suspend support
-[patch."https://github.com/okhsunrog/ergot"]
-ergot = { git = "https://github.com/jamesmunns/ergot", branch = "main" }
-

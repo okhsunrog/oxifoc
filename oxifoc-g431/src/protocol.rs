@@ -6,20 +6,9 @@ use static_cell::StaticCell;
 use crate::config::MAX_PACKET_SIZE;
 #[cfg(feature = "transport-uart")]
 use crate::config::UART_BAUD;
-use crate::transport::{Queue, Stack};
+use crate::transport::Stack;
 use embedded_io_async::Write;
 use ergot::interface_manager::{InterfaceState, Profile};
-
-// ========== Ergot Stack ==========
-
-/// Statically store our outgoing packet buffer
-pub static OUTQ: Queue = Queue::new();
-
-/// Statically store our netstack
-pub static STACK: Stack = ergot::toolkits::embedded_io_async_v0_7::new_target_stack(
-    OUTQ.stream_producer(),
-    MAX_PACKET_SIZE as u16,
-);
 
 /// Buffers for RX worker
 pub static RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
@@ -55,8 +44,6 @@ pub fn get_device_state() -> DeviceState {
 // ========== Worker Tasks ==========
 
 use embassy_executor::Spawner;
-#[cfg(feature = "transport-rtt")]
-use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
 use heapless::String;
 use oxifoc_core::types::DeviceInfo;
 
@@ -76,7 +63,9 @@ pub async fn run_rx(
     scratch_buf: &'static mut [u8],
 ) {
     loop {
-        let _ = rcvr.run(recv_buf, scratch_buf).await;
+        let _ = rcvr
+            .run(InterfaceState::Inactive, recv_buf, scratch_buf)
+            .await;
     }
 }
 
@@ -100,14 +89,17 @@ const TX_TIMEOUT_US: u64 = (MAX_WIRE_BYTES as u64 * 10 * 1_000_000) / (UART_BAUD
 /// so a stuck UART TX cannot block the queue permanently.
 #[cfg(feature = "transport-uart")]
 #[embassy_executor::task]
-pub async fn run_tx_uart(mut tx: UartWriter) {
-    let consumer = OUTQ.stream_consumer();
+pub async fn run_tx_uart(mut tx: UartWriter, stack: &'static Stack, ident: u8) {
+    let consumer = crate::transport::OUTQ.stream_consumer();
     loop {
         let grant = consumer.wait_read().await;
         let len = grant.len();
 
-        let is_active = STACK.manage_profile(|im| {
-            matches!(im.interface_state(()), Some(InterfaceState::Active { .. }))
+        let is_active = stack.manage_profile(|im| {
+            matches!(
+                im.interface_state(ident),
+                Some(InterfaceState::Active { .. })
+            )
         });
 
         if is_active {
@@ -131,9 +123,12 @@ pub async fn run_tx_uart(mut tx: UartWriter) {
 /// Worker task for outgoing ergot data via RTT (transport-rtt only)
 #[cfg(feature = "transport-rtt")]
 #[embassy_executor::task]
-pub async fn run_tx_rtt(mut tx: RttWriter) {
+pub async fn run_tx_rtt(mut tx: RttWriter, stack: &'static Stack, ident: u8) {
+    use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
+    // TODO: add active check like UART if needed
+    let _ = (stack, ident);
     loop {
-        let _ = tx_worker(&mut tx, OUTQ.stream_consumer()).await;
+        let _ = tx_worker(&mut tx, crate::transport::OUTQ.stream_consumer()).await;
     }
 }
 
@@ -144,7 +139,7 @@ pub async fn run_tx_rtt(mut tx: RttWriter) {
 /// Uses join to run info, hall, adc, and motor servers together.
 /// This is more RAM-efficient than separate tasks.
 #[embassy_executor::task]
-pub async fn protocol_servers() {
+pub async fn protocol_servers(stack: &'static Stack) {
     defmt::info!("Starting protocol servers");
 
     // Build device info
@@ -166,7 +161,7 @@ pub async fn protocol_servers() {
     };
 
     oxifoc_core::runtime::run_all_servers_with_config(
-        STACK.endpoints(),
+        stack.endpoints(),
         device_info,
         &STATE,
         &FAULT_REGISTRY,
@@ -179,9 +174,9 @@ pub async fn protocol_servers() {
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
 /// Uses batch size of 8 to reduce stack usage (~360B vs ~1.4KB for 32).
 #[embassy_executor::task]
-pub async fn fast_telemetry_task() {
+pub async fn fast_telemetry_task(stack: &'static Stack) {
     oxifoc_core::runtime::streaming::fast_telemetry_stream::<_, 8>(
-        &STACK,
+        stack,
         crate::config::PWM_CONFIG.pwm_freq_hz,
     )
     .await
@@ -191,7 +186,7 @@ pub async fn fast_telemetry_task() {
 /// On disconnect, disables fast telemetry streaming and drains the bbqueue
 /// so the device doesn't waste cycles broadcasting to nobody.
 #[embassy_executor::task]
-pub async fn state_monitor() {
+pub async fn state_monitor(stack: &'static Stack, ident: u8) {
     use crate::transport::STATE_NOTIFY;
     use core::sync::atomic::Ordering;
     use ergot::interface_manager::{InterfaceState, Profile};
@@ -199,7 +194,7 @@ pub async fn state_monitor() {
 
     loop {
         STATE_NOTIFY.wait().await.unwrap();
-        let state = STACK.manage_profile(|im| im.interface_state(()));
+        let state = stack.manage_profile(|im| im.interface_state(ident));
         match state {
             Some(InterfaceState::Active { .. }) => {
                 defmt::info!("Interface active — linked");
@@ -250,13 +245,8 @@ fn map_err(e: oxifoc_core::foc::detection::DetectionError) -> oxifoc_core::types
     }
 }
 
-/// Motor detection server — handles individual measurement steps.
-///
-/// GUI sends steps sequentially: MeasureResistance → MeasureInductance →
-/// MeasureFlux → CalibrateHall. Cached R/L are used by subsequent steps.
-/// PI gains are computed on the host side.
 #[embassy_executor::task]
-pub async fn detect_server() {
+pub async fn detect_server(stack: &'static Stack) {
     use core::pin::pin;
 
     use crate::calibration::{
@@ -267,9 +257,7 @@ pub async fn detect_server() {
     use oxifoc_core::icd::DetectEndpoint;
     use oxifoc_core::types::{DetectRequest, DetectResponse};
 
-    // Cached results from previous steps. Single-task access, no sync needed.
-    // Using statics because the serve closure is 'static.
-    let endpoints = STACK.endpoints();
+    let endpoints = stack.endpoints();
     let server = endpoints.bounded_server::<DetectEndpoint, 2>(Some("detect"));
     let server = pin!(server);
     let mut h = server.attach();
@@ -279,7 +267,6 @@ pub async fn detect_server() {
             .serve(|req: &DetectRequest| {
                 let req = *req;
                 async move {
-                    // Stop motor before any measurement
                     let _ = oxifoc_core::state::CMD_CHANNEL
                         .try_send(oxifoc_core::motor::ControlMode::Stopped);
 
@@ -303,8 +290,6 @@ pub async fn detect_server() {
                             };
                             match calibration::measure_resistance(&probe_params).await {
                                 Ok(r_probe) => {
-                                    // Limit detection current to 3A — safe for any PSU,
-                                    // sufficient for accurate 2-point differential measurement.
                                     let safe_current =
                                         libm::sqrtf(max_power_loss_w / r_probe / 1.5)
                                             .min(board.max_phase_current_a)
@@ -338,7 +323,6 @@ pub async fn detect_server() {
                             resistance_ohm: r,
                         } => {
                             defmt::info!("Detect: measuring inductance (R={})", r);
-                            // Limit detection current to 3A for PSU safety
                             let safe_current = oxifoc_core::foc::clamp_f32(
                                 libm::sqrtf(max_power_loss_w / r / 1.5)
                                     .min(board.max_phase_current_a),
@@ -381,7 +365,6 @@ pub async fn detect_server() {
                             openloop_erpm,
                         } => {
                             defmt::info!("Detect: measuring flux linkage");
-                            // Limit detection current to 3A for PSU safety
                             let safe_current = oxifoc_core::foc::clamp_f32(
                                 libm::sqrtf(max_power_loss_w / r / 1.5)
                                     .min(board.max_phase_current_a),
@@ -453,10 +436,9 @@ pub async fn detect_server() {
 
 // ========== Task Spawning ==========
 
-/// Spawn all protocol server tasks
-pub fn spawn_servers(spawner: &Spawner) {
-    spawner.spawn(protocol_servers().unwrap());
-    spawner.spawn(fast_telemetry_task().unwrap());
-    spawner.spawn(state_monitor().unwrap());
-    spawner.spawn(detect_server().unwrap());
+pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, ident: u8) {
+    spawner.spawn(protocol_servers(stack).unwrap());
+    spawner.spawn(fast_telemetry_task(stack).unwrap());
+    spawner.spawn(state_monitor(stack, ident).unwrap());
+    spawner.spawn(detect_server(stack).unwrap());
 }

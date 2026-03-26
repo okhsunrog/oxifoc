@@ -28,4 +28,9 @@ assign_resources! {
         pc7: PC7,   // Hall sensor 2
         pc8: PC8,   // Hall sensor 3
     }
+    uart: UartResources {
+        usart3: USART3,
+        pb10: PB10,  // USART3 TX
+        pb11: PB11,  // USART3 RX
+    }
 }

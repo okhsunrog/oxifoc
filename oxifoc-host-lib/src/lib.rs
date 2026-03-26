@@ -7,8 +7,10 @@ use core::pin::pin;
 use crossbeam_channel::{Receiver, Sender};
 use defmt_decoder::{DecodeError, Table};
 use defmt_parser::Level as DefmtLevel;
+use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
 use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
+use ergot::Address;
 use oxifoc_core::icd::{
     ButtonEndpoint, ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, MotorEndpoint,
     SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigEndpoint,
@@ -32,6 +34,27 @@ use tracing::{error, info};
 pub use config::{HostConfig, ReconnectPolicy};
 pub use discovery::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
 pub use transport::{TransportConfig, TransportType};
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+/// Address of the device (Router) on the direct link.
+///
+/// The device is the central node (node_id=1) on net_id=1.
+/// The host is the edge node (node_id=2).
+const DEVICE_ADDR: Address = Address {
+    network_id: 1,
+    node_id: 1,
+    port_id: 0,
+};
+const ERGOT_MTU: u16 = 2048;
+const ERGOT_QUEUE_SIZE: usize = 32768;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(800);
+const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+const RECOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+const DETECT_TIMEOUT: Duration = Duration::from_secs(60);
+
+// ── Public API ───────────────────────────────────────────────────────────────
 
 pub fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -68,29 +91,18 @@ pub fn detect_channel() -> (DetectResponseSender, DetectResponseReceiver) {
 
 pub enum HostCommand {
     Motor(ControlMode),
-    /// Configure telemetry streaming rates
     SetTelemetryConfig(TelemetryConfig),
-    /// Read a config group from the device
     ConfigRead(oxifoc_core::types::ConfigGroupId, ConfigResponseSender),
-    /// Write a config group to the device
     ConfigWrite(oxifoc_core::types::ConfigWrite, ConfigResponseSender),
-    /// Run motor detection sequence (long-running, ~30s)
-    Detect(
-        oxifoc_core::types::DetectRequest,
-        tokio::sync::oneshot::Sender<Result<oxifoc_core::types::DetectResponse>>,
-    ),
+    Detect(oxifoc_core::types::DetectRequest, DetectResponseSender),
 }
 
 pub struct HostRuntime {
-    /// Fast telemetry receiver (currents, dq, angle, RPM)
     pub fast_rx: Receiver<FastTelemetry>,
-    /// Slow telemetry receiver (vbus, temps, state — polled at 10Hz)
     pub slow_rx: Receiver<SlowTelemetry>,
-    /// Device info receiver (sent once on connection)
     pub device_info_rx: Receiver<oxifoc_core::types::DeviceInfo>,
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
-    /// Actual fast telemetry rate in Hz (set after device acks TelemetryConfig)
     pub fast_hz: Arc<AtomicU16>,
     cancel_token: CancellationToken,
 }
@@ -100,7 +112,6 @@ impl HostRuntime {
         if self.connected.load(Ordering::Relaxed) {
             return true;
         }
-
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if self.connected.load(Ordering::Relaxed) {
@@ -108,7 +119,6 @@ impl HostRuntime {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-
         self.connected.load(Ordering::Relaxed)
     }
 
@@ -118,25 +128,47 @@ impl HostRuntime {
     }
 }
 
+// ── Backend context ──────────────────────────────────────────────────────────
+
+/// Shared state passed through the backend instead of many individual arguments.
+struct BackendCtx {
+    fast_tx: Sender<FastTelemetry>,
+    slow_tx: Sender<SlowTelemetry>,
+    info_tx: Sender<oxifoc_core::types::DeviceInfo>,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
+    connected: Arc<AtomicBool>,
+    fast_hz: Arc<AtomicU16>,
+    cancel: CancellationToken,
+}
+
+// ── Entry point ──────────────────────────────────────────────────────────────
+
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(4096);
     let (slow_tx, slow_rx) = crossbeam_channel::bounded::<SlowTelemetry>(64);
-    let (info_tx, device_info_rx) = crossbeam_channel::bounded::<oxifoc_core::types::DeviceInfo>(4);
+    let (info_tx, device_info_rx) =
+        crossbeam_channel::bounded::<oxifoc_core::types::DeviceInfo>(4);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
     let fast_hz = Arc::new(AtomicU16::new(0));
     let cancel_token = CancellationToken::new();
 
-    spawn_backend(
-        cfg,
+    let ctx = BackendCtx {
         fast_tx,
         slow_tx,
         info_tx,
         cmd_rx,
-        connected.clone(),
-        fast_hz.clone(),
-        cancel_token.clone(),
-    );
+        connected: connected.clone(),
+        fast_hz: fast_hz.clone(),
+        cancel: cancel_token.clone(),
+    };
+
+    thread::spawn(move || {
+        let rt = Runtime::new().expect("Failed to create tokio runtime");
+        if let Err(e) = rt.block_on(backend_main(cfg, ctx)) {
+            error!("backend_main error: {:?}", e);
+        }
+    });
 
     HostRuntime {
         fast_rx,
@@ -149,47 +181,9 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn spawn_backend(
-    config: HostConfig,
-    fast_tx: Sender<FastTelemetry>,
-    slow_tx: Sender<SlowTelemetry>,
-    info_tx: Sender<oxifoc_core::types::DeviceInfo>,
-    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
-    connected_flag: Arc<AtomicBool>,
-    fast_hz_flag: Arc<AtomicU16>,
-    cancel_token: CancellationToken,
-) {
-    thread::spawn(move || {
-        let rt = Runtime::new().expect("Failed to create tokio runtime");
-        if let Err(e) = rt.block_on(backend_main(
-            config,
-            fast_tx,
-            slow_tx,
-            info_tx,
-            cmd_rx,
-            connected_flag,
-            fast_hz_flag,
-            cancel_token,
-        )) {
-            error!("backend_main error: {:?}", e);
-        }
-    });
-}
+// ── Backend dispatch ─────────────────────────────────────────────────────────
 
-const ERGOT_MTU: u16 = 2048;
-
-#[allow(clippy::too_many_arguments)]
-async fn backend_main(
-    cfg: HostConfig,
-    fast_tx: Sender<FastTelemetry>,
-    slow_tx: Sender<SlowTelemetry>,
-    info_tx: Sender<oxifoc_core::types::DeviceInfo>,
-    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
-    connected_flag: Arc<AtomicBool>,
-    fast_hz_flag: Arc<AtomicU16>,
-    cancel_token: CancellationToken,
-) -> Result<()> {
+async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
     let transport_type = cfg.transport_type();
     info!("Oxifoc Host backend - transport: {:?}", transport_type);
 
@@ -201,7 +195,6 @@ async fn backend_main(
     let transport_config = cfg.transport_config()?;
 
     match transport_config {
-        // COBS-stream transports: TCP, Serial, RTT — support reconnection
         TransportConfig::Tcp { host, port } => {
             run_cobs_stream_with_reconnect(
                 move || {
@@ -209,13 +202,7 @@ async fn backend_main(
                     async move { transport::tcp::connect(&host, port).await }
                 },
                 &cfg,
-                fast_tx,
-                slow_tx,
-                info_tx,
-                cmd_rx,
-                connected_flag,
-                fast_hz_flag,
-                cancel_token,
+                ctx,
             )
             .await
         }
@@ -226,13 +213,7 @@ async fn backend_main(
                     async move { transport::serial::connect(&path, baud).await }
                 },
                 &cfg,
-                fast_tx,
-                slow_tx,
-                info_tx,
-                cmd_rx,
-                connected_flag,
-                fast_hz_flag,
-                cancel_token,
+                ctx,
             )
             .await
         }
@@ -244,113 +225,81 @@ async fn backend_main(
                     async move { transport::rtt::connect(probe.as_deref(), &chip).await }
                 },
                 &cfg,
-                fast_tx,
-                slow_tx,
-                info_tx,
-                cmd_rx,
-                connected_flag,
-                fast_hz_flag,
-                cancel_token,
+                ctx,
             )
             .await
         }
-        // Framed transports: UDP, USB — liveness-tracked with state notifications
         TransportConfig::Udp { host, port } => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
-            let stack = transport::udp::connect(&host, port, Some(state_notify.clone())).await?;
-            device_info_handshake(&stack, &info_tx, &connected_flag).await;
-            enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
-            spawn_protocol_tasks(
-                &stack,
-                fast_tx,
-                slow_tx,
-                cmd_rx,
-                connected_flag.clone(),
-                fast_hz_flag.clone(),
-                cancel_token.clone(),
-            );
-            if cfg.stream_defmt() {
-                start_defmt_decoder(&cfg, &stack, None)?;
-            }
-            // Monitor interface state — clear connected flag on Down
-            loop {
-                tokio::select! {
-                    _ = state_notify.wait() => {
-                        use ergot::interface_manager::{InterfaceState, Profile};
-                        let state = stack.stack().manage_profile(|im| im.interface_state(()));
-                        let is_active = matches!(state, Some(InterfaceState::Active { .. }));
-                        connected_flag.store(is_active, Ordering::Relaxed);
-                        if matches!(state, Some(InterfaceState::Down)) {
-                            tracing::warn!("UDP interface went Down (liveness timeout)");
-                            break;
-                        }
-                    }
-                    _ = cancel_token.cancelled() => break,
-                }
-            }
-            Ok(())
+            let stack =
+                transport::udp::connect(&host, port, Some(state_notify.clone())).await?;
+            run_framed_transport(stack, state_notify, &cfg, ctx).await
         }
         TransportConfig::Usb => {
-            let stack = transport::usb::connect().await?;
-            device_info_handshake(&stack, &info_tx, &connected_flag).await;
-            enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
-            spawn_protocol_tasks(
-                &stack,
-                fast_tx,
-                slow_tx,
-                cmd_rx,
-                connected_flag.clone(),
-                fast_hz_flag.clone(),
-                cancel_token.clone(),
-            );
-            if cfg.stream_defmt() {
-                start_defmt_decoder(&cfg, &stack, None)?;
-            }
-            cancel_token.cancelled().await;
-            Ok(())
+            let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
+            let stack = transport::usb::connect(Some(state_notify.clone())).await?;
+            run_framed_transport(stack, state_notify, &cfg, ctx).await
         }
     }
 }
 
-/// Set up a COBS-stream transport with automatic reconnection.
-///
-/// Protocol tasks (telemetry, commands) are spawned once and survive reconnections.
-/// Only the transport stream is re-established when the link goes down.
-#[allow(clippy::too_many_arguments)]
+// ── Framed transport runner (UDP, USB) ───────────────────────────────────────
+
+async fn run_framed_transport<NS>(
+    stack: NS,
+    state_notify: Arc<ergot::toolkits::tokio_stream::WaitQueue>,
+    cfg: &HostConfig,
+    ctx: BackendCtx,
+) -> Result<()>
+where
+    NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>> + Clone + Send + Sync + 'static,
+    NS::Mutex: Send + Sync,
+    NS::Profile: Send,
+    NS::Target: Send,
+{
+    let connected = ctx.connected.clone();
+    let fast_hz_flag = ctx.fast_hz.clone();
+    let cancel = ctx.cancel.clone();
+    let info_tx = ctx.info_tx.clone();
+
+    device_info_handshake(&stack, &info_tx, &connected).await;
+    enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
+    spawn_protocol_tasks(&stack, ctx);
+    if cfg.stream_defmt() {
+        start_defmt_decoder(cfg, &stack, None)?;
+    }
+    monitor_state_until_down(&state_notify, &stack, &connected, &cancel).await;
+    Ok(())
+}
+
+// ── COBS stream with reconnection ────────────────────────────────────────────
+
 async fn run_cobs_stream_with_reconnect<F, Fut>(
     connect_fn: F,
     cfg: &HostConfig,
-    fast_tx: Sender<FastTelemetry>,
-    slow_tx: Sender<SlowTelemetry>,
-    info_tx: Sender<oxifoc_core::types::DeviceInfo>,
-    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
-    connected_flag: Arc<AtomicBool>,
-    fast_hz_flag: Arc<AtomicU16>,
-    cancel_token: CancellationToken,
+    ctx: BackendCtx,
 ) -> Result<()>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<transport::CobsStreamTransport>>,
 {
-    use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
+    use ergot::interface_manager::profiles::direct_edge::{EdgeFrameProcessor, EDGE_NODE_ID};
+    use ergot::interface_manager::transports::tokio_cobs_stream;
     use ergot::toolkits::tokio_stream as stream_kit;
 
-    let queue = stream_kit::new_std_queue(32768);
-    let stack = stream_kit::new_controller_stack(&queue, ERGOT_MTU);
+    let queue = stream_kit::new_std_queue(ERGOT_QUEUE_SIZE);
+    // Host is an edge device connecting to a device-side Router
+    let stack = stream_kit::new_target_stack(&queue, ERGOT_MTU);
     let state_notify = Arc::new(stream_kit::WaitQueue::new());
 
-    // Protocol tasks are spawned once — they operate on the stack, not the transport
-    spawn_protocol_tasks(
-        &stack,
-        fast_tx,
-        slow_tx,
-        cmd_rx,
-        connected_flag.clone(),
-        fast_hz_flag.clone(),
-        cancel_token.clone(),
-    );
+    let connected = ctx.connected.clone();
+    let fast_hz_flag = ctx.fast_hz.clone();
+    let cancel = ctx.cancel.clone();
+    let info_tx = ctx.info_tx.clone();
 
-    // Defmt decoder spawned on first successful connection
+    // Protocol tasks are spawned once — they operate on the stack, not the transport
+    spawn_protocol_tasks(&stack, ctx);
+
     let mut defmt_started = false;
     let policy = cfg.reconnect_policy();
     let mut connect_attempts: u32 = 0;
@@ -361,45 +310,52 @@ where
             result = connect_fn() => {
                 match result {
                     Ok(t) => {
-                        connect_attempts = 0; // reset on success
+                        connect_attempts = 0;
                         t
                     }
                     Err(e) => {
                         connect_attempts += 1;
                         tracing::warn!("Transport connect failed (attempt {}): {:?}", connect_attempts, e);
 
-                        // Check reconnect policy
                         match policy {
                             config::ReconnectPolicy::None => {
-                                tracing::info!("Reconnect policy: none — giving up");
+                                info!("Reconnect policy: none — giving up");
                                 break;
                             }
                             config::ReconnectPolicy::Limited(max) if connect_attempts >= max => {
-                                tracing::info!("Reconnect policy: exhausted {} attempts — giving up", max);
+                                info!("Reconnect policy: exhausted {} attempts — giving up", max);
                                 break;
                             }
-                            _ => {} // Infinite or Limited with attempts remaining
+                            _ => {}
                         }
 
-                        // Wait before retrying, but respect cancel
                         tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_secs(2)) => continue,
-                            _ = cancel_token.cancelled() => break,
+                            _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
+                            _ = cancel.cancelled() => break,
                         }
                     }
                 }
             }
-            _ = cancel_token.cancelled() => break,
+            _ = cancel.cancelled() => break,
         };
 
         info!("Transport connected, registering stream...");
 
-        // Register the stream on the (reusable) stack
-        let reg_result = stream_kit::register_controller_stream(
+        let reg_result = tokio_cobs_stream::register_edge::<
+            _,
+            ergot::interface_manager::interface_impls::tokio_stream::TokioStreamInterface,
+            _,
+            _,
+        >(
             stack.clone(),
             transport.reader,
             transport.writer,
             queue.clone(),
+            EdgeFrameProcessor::new_controller(1),
+            InterfaceState::Active {
+                net_id: 1,
+                node_id: EDGE_NODE_ID,
+            },
             Some(LivenessConfig {
                 timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
             }),
@@ -408,137 +364,66 @@ where
         .await;
 
         if reg_result.is_err() {
-            tracing::warn!("Stream registration failed (interface not in Down state), retrying...");
+            tracing::warn!(
+                "Stream registration failed (interface not in Down state), retrying..."
+            );
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
-                _ = cancel_token.cancelled() => break,
+                _ = cancel.cancelled() => break,
             }
         }
 
-        // Wait for the interface to become Active before doing anything
+        // Wait for the interface to become Active
         tokio::select! {
             _ = wait_for_active(&state_notify, &stack) => {}
-            _ = cancel_token.cancelled() => break,
+            _ = cancel.cancelled() => break,
         }
 
-        // DeviceInfo handshake — runs on each (re)connection
-        let handshake_ok = {
-            use ergot::Address;
-            let device_addr = Address {
-                network_id: 1,
-                node_id: 2,
-                port_id: 0,
-            };
-            let mut ok = false;
-            for attempt in 1..=3u32 {
-                let fut = stack.endpoints().request::<oxifoc_core::icd::InfoEndpoint>(
-                    device_addr,
-                    &(),
-                    Some("device_info"),
-                );
-                match tokio::time::timeout(Duration::from_millis(800), fut).await {
-                    Ok(Ok(dev_info)) => {
-                        info!(
-                            "Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A",
-                            dev_info.hw.as_str(),
-                            dev_info.sw.as_str(),
-                            dev_info.mcu.as_str(),
-                            dev_info.uuid.as_str(),
-                            dev_info.foc_freq_hz,
-                            dev_info.max_current_a
-                        );
-                        let _ = info_tx.send(dev_info);
-                        connected_flag.store(true, Ordering::Relaxed);
-                        ok = true;
-                        break;
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!("DeviceInfo attempt {} failed: {:?}", attempt, e);
-                    }
-                    Err(_) => {
-                        tracing::warn!("DeviceInfo attempt {} timed out", attempt);
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-            ok
-        };
+        // DeviceInfo handshake on each (re)connection
+        let handshake_ok =
+            device_info_handshake(&stack, &info_tx, &connected).await;
 
         if !handshake_ok {
-            tracing::warn!("Handshake failed after 3 attempts, reconnecting...");
-            connected_flag.store(false, Ordering::Relaxed);
-            // Tear down before reconnecting so workers release the transport
+            tracing::warn!("Handshake failed, reconnecting...");
+            connected.store(false, Ordering::Relaxed);
             stack.manage_profile(|im| im.teardown());
             tokio::task::yield_now().await;
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
-                _ = cancel_token.cancelled() => break,
+                _ = tokio::time::sleep(RECONNECT_DELAY) => {}
+                _ = cancel.cancelled() => break,
             }
-            continue; // back to reconnect loop
+            continue;
         }
 
-        // Enable fast telemetry streaming on device
         enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
 
-        // Start defmt decoder on first connection (if configured)
         if !defmt_started && cfg.stream_defmt() {
             start_defmt_decoder(cfg, &stack, transport.defmt_reader)?;
             defmt_started = true;
         }
 
-        // Monitor interface state — update connected_flag and handle disconnect
-        loop {
-            tokio::select! {
-                _ = state_notify.wait() => {
-                    let state = stack.manage_profile(|im| im.interface_state(()));
-                    let is_active = matches!(state, Some(InterfaceState::Active { .. }));
-                    let was_active = connected_flag.swap(is_active, Ordering::Relaxed);
+        // Monitor interface state with recovery
+        let disconnected = monitor_state_with_recovery(
+            &state_notify,
+            &stack,
+            &connected,
+            &cancel,
+        )
+        .await;
 
-                    if !was_active && is_active {
-                        info!("Interface active — device connected");
-                    } else if was_active && !is_active {
-                        tracing::warn!("Interface inactive, waiting for recovery...");
-
-                        // Wait for recovery (frames resume) with a deadline.
-                        // If the link was just temporarily idle, it will recover.
-                        // If the transport is actually dead, we'll time out and reconnect.
-                        let recovered = tokio::time::timeout(
-                            Duration::from_secs(10),
-                            wait_for_active(&state_notify, &stack),
-                        ).await.is_ok();
-
-                        if recovered {
-                            info!("Connection recovered");
-                            connected_flag.store(true, Ordering::Relaxed);
-                        } else {
-                            tracing::warn!("Recovery timeout, reconnecting transport...");
-                            connected_flag.store(false, Ordering::Relaxed);
-                            break; // Exit inner loop → reconnect
-                        }
-                    }
-                }
-                _ = cancel_token.cancelled() => {
-                    info!("Host backend shutdown complete");
-                    return Ok(());
-                }
-            }
+        if !disconnected {
+            // Cancelled
+            break;
         }
 
-        // Tear down old interface so workers release the transport (e.g., serial port)
+        // Tear down old interface so workers release the transport
         info!("Calling teardown...");
         stack.manage_profile(|im| im.teardown());
-        info!("Teardown complete, waiting for workers to exit...");
-
-        // Yield to let worker tasks process the close signal and drop
         tokio::task::yield_now().await;
-
-        // Wait for workers to fully exit and release the transport
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
-            _ = cancel_token.cancelled() => break,
+            _ = tokio::time::sleep(RECONNECT_DELAY) => {}
+            _ = cancel.cancelled() => break,
         }
-        info!("Post-teardown wait complete");
-
         info!("Attempting reconnection...");
     }
 
@@ -546,29 +431,115 @@ where
     Ok(())
 }
 
-/// Run DeviceInfo handshake for non-COBS transports (UDP, USB).
+// ── State monitoring ─────────────────────────────────────────────────────────
+
+/// Monitor interface state, updating the connected flag.
+/// Returns when the interface goes Down or cancel fires.
+async fn monitor_state_until_down<NS>(
+    state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
+    stack: &NS,
+    connected: &Arc<AtomicBool>,
+    cancel: &CancellationToken,
+) where
+    NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>>,
+{
+    loop {
+        tokio::select! {
+            _ = state_notify.wait() => {
+                let state = stack.stack().manage_profile(|im| im.interface_state(()));
+                let is_active = matches!(state, Some(InterfaceState::Active { .. }));
+                connected.store(is_active, Ordering::Relaxed);
+                if matches!(state, Some(InterfaceState::Down)) {
+                    tracing::warn!("Interface went Down");
+                    break;
+                }
+            }
+            _ = cancel.cancelled() => break,
+        }
+    }
+}
+
+/// Monitor interface state with recovery support (for COBS streams).
+/// Returns `true` if disconnected (needs reconnect), `false` if cancelled.
+async fn monitor_state_with_recovery(
+    state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
+    stack: &ergot::toolkits::tokio_stream::EdgeStack,
+    connected: &Arc<AtomicBool>,
+    cancel: &CancellationToken,
+) -> bool {
+    loop {
+        tokio::select! {
+            _ = state_notify.wait() => {
+                let state = stack.manage_profile(|im| im.interface_state(()));
+                let is_active = matches!(state, Some(InterfaceState::Active { .. }));
+                let was_active = connected.swap(is_active, Ordering::Relaxed);
+
+                if !was_active && is_active {
+                    info!("Interface active — device connected");
+                } else if was_active && !is_active {
+                    tracing::warn!("Interface inactive, waiting for recovery...");
+
+                    let recovered = tokio::time::timeout(
+                        RECOVERY_TIMEOUT,
+                        wait_for_active(state_notify, stack),
+                    ).await.is_ok();
+
+                    if recovered {
+                        info!("Connection recovered");
+                        connected.store(true, Ordering::Relaxed);
+                    } else {
+                        tracing::warn!("Recovery timeout, reconnecting transport...");
+                        connected.store(false, Ordering::Relaxed);
+                        return true; // needs reconnect
+                    }
+                }
+            }
+            _ = cancel.cancelled() => return false,
+        }
+    }
+}
+
+/// Wait until the interface is Active.
+async fn wait_for_active<NS>(
+    state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
+    stack: &NS,
+) where
+    NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>>,
+{
+    let state = stack.stack().manage_profile(|im| im.interface_state(()));
+    if matches!(state, Some(InterfaceState::Active { .. })) {
+        return;
+    }
+    loop {
+        let _ = state_notify.wait().await;
+        let state = stack.stack().manage_profile(|im| im.interface_state(()));
+        if matches!(state, Some(InterfaceState::Active { .. })) {
+            return;
+        }
+    }
+}
+
+// ── Device handshake & telemetry setup ───────────────────────────────────────
+
+/// Run DeviceInfo handshake with retries and exponential backoff.
+/// Returns `true` on success.
 async fn device_info_handshake<NS>(
     stack: &NS,
     info_tx: &Sender<oxifoc_core::types::DeviceInfo>,
-    connected_flag: &Arc<AtomicBool>,
-) where
+    connected: &Arc<AtomicBool>,
+) -> bool
+where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
-    use ergot::Address;
-    let device_addr = Address {
-        network_id: 1,
-        node_id: 2,
-        port_id: 0,
-    };
     let ns = stack.stack();
     let mut backoff = Duration::from_millis(100);
     for attempt in 1..=10u32 {
         let fut = ns.endpoints().request::<oxifoc_core::icd::InfoEndpoint>(
-            device_addr,
+            DEVICE_ADDR,
             &(),
             Some("device_info"),
         );
-        match tokio::time::timeout(Duration::from_millis(800), fut).await {
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, fut).await {
             Ok(Ok(dev_info)) => {
                 info!(
                     "Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A",
@@ -580,8 +551,8 @@ async fn device_info_handshake<NS>(
                     dev_info.max_current_a
                 );
                 let _ = info_tx.send(dev_info);
-                connected_flag.store(true, Ordering::Relaxed);
-                return;
+                connected.store(true, Ordering::Relaxed);
+                return true;
             }
             Ok(Err(e)) => {
                 tracing::warn!("DeviceInfo attempt {} failed: {:?}", attempt, e);
@@ -594,11 +565,11 @@ async fn device_info_handshake<NS>(
         backoff = (backoff * 2).min(Duration::from_secs(2));
     }
     tracing::warn!("Device info not received after retries; continuing without it");
-    connected_flag.store(true, Ordering::Relaxed);
+    connected.store(true, Ordering::Relaxed);
+    false
 }
 
-/// Send TelemetryConfig to enable fast telemetry streaming on the device.
-/// Skips sending if fast_hz is 0 (don't actively disable — device defaults to off).
+/// Send TelemetryConfig to enable fast telemetry streaming.
 async fn enable_fast_telemetry<NS>(stack: &NS, fast_hz: u16, fast_hz_flag: &Arc<AtomicU16>)
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
@@ -606,18 +577,12 @@ where
     if fast_hz == 0 {
         return;
     }
-    use ergot::Address;
-    let device_addr = Address {
-        network_id: 1,
-        node_id: 2,
-        port_id: 0,
-    };
     let telem_cfg = TelemetryConfig { fast_hz };
     let ns = stack.stack();
     let fut = ns
         .endpoints()
-        .request::<TelemetryConfigEndpoint>(device_addr, &telem_cfg, None);
-    match tokio::time::timeout(Duration::from_millis(2000), fut).await {
+        .request::<TelemetryConfigEndpoint>(DEVICE_ADDR, &telem_cfg, None);
+    match tokio::time::timeout(COMMAND_TIMEOUT, fut).await {
         Ok(Ok(ack)) => {
             info!(
                 "Telemetry enabled: requested={}Hz, actual={}Hz",
@@ -625,53 +590,49 @@ where
             );
             fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
         }
-        Ok(Err(e)) => {
-            tracing::warn!("Telemetry config failed: {:?}", e);
-        }
-        Err(_) => {
-            tracing::warn!("Telemetry config timed out");
-        }
+        Ok(Err(e)) => tracing::warn!("Telemetry config failed: {:?}", e),
+        Err(_) => tracing::warn!("Telemetry config timed out"),
     }
 }
 
-/// Wait until the interface is Active. Returns immediately if already Active.
-async fn wait_for_active(
-    state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
-    stack: &ergot::toolkits::tokio_stream::EdgeStack,
-) {
-    use ergot::interface_manager::{InterfaceState, Profile};
-    // Check current state first — may already be Active
-    let state = stack.manage_profile(|im| im.interface_state(()));
-    if matches!(state, Some(InterfaceState::Active { .. })) {
-        return;
-    }
-    // Wait for state change notification
-    loop {
-        let _ = state_notify.wait().await;
-        let state = stack.manage_profile(|im| im.interface_state(()));
-        if matches!(state, Some(InterfaceState::Active { .. })) {
-            return;
-        }
-    }
-}
+// ── Protocol tasks ───────────────────────────────────────────────────────────
 
-// ── Protocol tasks (generic over any NetStackHandle) ─────────────────────────
-
-fn spawn_protocol_tasks<NS>(
-    stack: &NS,
-    fast_tx: Sender<FastTelemetry>,
-    slow_tx: Sender<SlowTelemetry>,
-    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
-    connected_flag: Arc<AtomicBool>,
-    fast_hz_flag: Arc<AtomicU16>,
-    cancel_token: CancellationToken,
-) where
+fn spawn_protocol_tasks<NS>(stack: &NS, ctx: BackendCtx)
+where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
     NS::Target: Send,
 {
-    // Button event server
+    spawn_button_server(stack);
+    spawn_fast_telemetry_subscriber(stack, ctx.fast_tx, ctx.cancel.clone());
+    spawn_slow_telemetry_poller(
+        stack,
+        ctx.slow_tx,
+        ctx.connected.clone(),
+        ctx.cancel.clone(),
+    );
+
+    // Command handler — owns cmd_rx
+    tokio::spawn({
+        let stack = stack.clone();
+        let fast_hz_flag = ctx.fast_hz;
+        let mut cmd_rx = ctx.cmd_rx;
+        async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                handle_command(&stack, cmd, &fast_hz_flag).await;
+            }
+        }
+    });
+}
+
+fn spawn_button_server<NS>(stack: &NS)
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+    NS::Mutex: Send + Sync,
+    NS::Profile: Send,
+    NS::Target: Send,
+{
     tokio::spawn({
         let stack = stack.clone();
         async move {
@@ -697,11 +658,20 @@ fn spawn_protocol_tasks<NS>(
             }
         }
     });
+}
 
-    // Fast telemetry subscriber (receive push-based motor data from device)
+fn spawn_fast_telemetry_subscriber<NS>(
+    stack: &NS,
+    fast_tx: Sender<FastTelemetry>,
+    cancel: CancellationToken,
+) where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+    NS::Mutex: Send + Sync,
+    NS::Profile: Send,
+    NS::Target: Send,
+{
     tokio::spawn({
         let stack = stack.clone();
-        let token = cancel_token.clone();
         async move {
             let ns = stack.stack();
             let receiver = ns
@@ -709,12 +679,10 @@ fn spawn_protocol_tasks<NS>(
                 .heap_bounded_receiver::<FastTelemetryTopic>(128, Some("fast_telem"));
             let mut pinned = pin!(receiver);
             let mut hdl = pinned.as_mut().subscribe();
-
-            tracing::info!("Fast telemetry subscriber started");
-
+            info!("Fast telemetry subscriber started");
             loop {
                 tokio::select! {
-                    _ = token.cancelled() => break,
+                    _ = cancel.cancelled() => break,
                     msg = hdl.recv() => {
                         for sample in &msg.t.samples {
                             let _ = fast_tx.send(*sample);
@@ -724,42 +692,43 @@ fn spawn_protocol_tasks<NS>(
             }
         }
     });
+}
 
-    // Slow telemetry poller (request/response — also serves as heartbeat)
+fn spawn_slow_telemetry_poller<NS>(
+    stack: &NS,
+    slow_tx: Sender<SlowTelemetry>,
+    connected: Arc<AtomicBool>,
+    cancel: CancellationToken,
+) where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+    NS::Mutex: Send + Sync,
+    NS::Profile: Send,
+    NS::Target: Send,
+{
     tokio::spawn({
-        use ergot::Address;
         let stack = stack.clone();
-        let connected_flag = connected_flag.clone();
-        let token = cancel_token.clone();
         async move {
             let ns = stack.stack();
-            let device_addr = Address {
-                network_id: 1,
-                node_id: 2,
-                port_id: 0,
-            };
 
             // Wait for initial connection
-            while !connected_flag.load(Ordering::Relaxed) {
+            while !connected.load(Ordering::Relaxed) {
                 tokio::select! {
-                    _ = token.cancelled() => return,
+                    _ = cancel.cancelled() => return,
                     _ = tokio::time::sleep(Duration::from_millis(100)) => {}
                 }
             }
 
-            tracing::info!("Slow telemetry polling started (10Hz)");
-
-            let mut ticker = tokio::time::interval(Duration::from_millis(100)); // 10Hz
+            info!("Slow telemetry polling started (10Hz)");
+            let mut ticker = tokio::time::interval(Duration::from_millis(100));
             loop {
                 tokio::select! {
-                    _ = token.cancelled() => break,
+                    _ = cancel.cancelled() => break,
                     _ = ticker.tick() => {
-                        // Only poll when connected — avoid NoRouteToDest spam
-                        if !connected_flag.load(Ordering::Relaxed) {
+                        if !connected.load(Ordering::Relaxed) {
                             continue;
                         }
                         let fut = ns.endpoints()
-                            .request::<SlowTelemetryEndpoint>(device_addr, &(), Some("slow_telem"));
+                            .request::<SlowTelemetryEndpoint>(DEVICE_ADDR, &(), Some("slow_telem"));
                         if let Ok(Ok(sample)) = tokio::time::timeout(
                             Duration::from_millis(500), fut
                         ).await {
@@ -770,92 +739,76 @@ fn spawn_protocol_tasks<NS>(
             }
         }
     });
+}
 
-    // Motor command handler
-    tokio::spawn({
-        use ergot::Address;
-        let stack = stack.clone();
-        async move {
-            let mut cmd_rx = cmd_rx;
-            let ns = stack.stack();
-            let device_addr = Address {
-                network_id: 1,
-                node_id: 2,
-                port_id: 0,
-            };
-            while let Some(cmd) = cmd_rx.recv().await {
-                match cmd {
-                    HostCommand::Motor(ref mc) => {
-                        tracing::info!("Sending motor command: {:?}", mc);
-                        let fut =
-                            ns.endpoints()
-                                .request::<MotorEndpoint>(device_addr, mc, Some("motor"));
-                        match tokio::time::timeout(Duration::from_secs(2), fut).await {
-                            Ok(Ok(status)) => tracing::info!("Motor response: {:?}", status),
-                            Ok(Err(e)) => tracing::warn!("Motor command failed: {:?}", e),
-                            Err(_) => tracing::warn!("Motor command timed out"),
-                        }
-                    }
-                    HostCommand::SetTelemetryConfig(cfg) => {
-                        tracing::info!("Setting telemetry config: {:?}", cfg);
-                        let fut = ns.endpoints().request::<TelemetryConfigEndpoint>(
-                            device_addr,
-                            &cfg,
-                            Some("telemetry_config"),
-                        );
-                        match tokio::time::timeout(Duration::from_secs(2), fut).await {
-                            Ok(Ok(ack)) => {
-                                tracing::info!(
-                                    "Telemetry config ack: fast={}Hz",
-                                    ack.actual_fast_hz
-                                );
-                                fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
-                            }
-                            Ok(Err(e)) => tracing::warn!("Telemetry config failed: {:?}", e),
-                            Err(_) => tracing::warn!("Telemetry config timed out"),
-                        }
-                    }
-                    HostCommand::ConfigRead(group_id, reply_tx) => {
-                        use oxifoc_core::types::ConfigRequest;
-                        tracing::info!("Reading config group: {:?}", group_id);
-                        let req = ConfigRequest::Read(group_id);
-                        let res = ns
-                            .endpoints()
-                            .request::<ConfigEndpoint>(device_addr, &req, Some("config"))
-                            .await;
-                        let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
-                    }
-                    HostCommand::ConfigWrite(write, reply_tx) => {
-                        use oxifoc_core::types::ConfigRequest;
-                        tracing::info!("Writing config: {:?}", write);
-                        let req = ConfigRequest::Write(write);
-                        let res = ns
-                            .endpoints()
-                            .request::<ConfigEndpoint>(device_addr, &req, Some("config"))
-                            .await;
-                        let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
-                    }
-                    HostCommand::Detect(req, reply_tx) => {
-                        tracing::info!("Starting motor detection: {:?}", req);
-                        let res = tokio::time::timeout(
-                            Duration::from_secs(60),
-                            ns.endpoints().request::<DetectEndpoint>(
-                                device_addr,
-                                &req,
-                                Some("detect"),
-                            ),
-                        )
-                        .await;
-                        let result = match res {
-                            Ok(inner) => inner.map_err(|e| anyhow::anyhow!("{:?}", e)),
-                            Err(_) => Err(anyhow::anyhow!("Detection timed out (60s)")),
-                        };
-                        let _ = reply_tx.send(result);
-                    }
-                }
+async fn handle_command<NS>(ns: &NS, cmd: HostCommand, fast_hz_flag: &Arc<AtomicU16>)
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    let s = ns.stack();
+    match cmd {
+        HostCommand::Motor(ref mc) => {
+            tracing::info!("Sending motor command: {:?}", mc);
+            let fut = s
+                .endpoints()
+                .request::<MotorEndpoint>(DEVICE_ADDR, mc, Some("motor"));
+            match tokio::time::timeout(COMMAND_TIMEOUT, fut).await {
+                Ok(Ok(status)) => tracing::info!("Motor response: {:?}", status),
+                Ok(Err(e)) => tracing::warn!("Motor command failed: {:?}", e),
+                Err(_) => tracing::warn!("Motor command timed out"),
             }
         }
-    });
+        HostCommand::SetTelemetryConfig(cfg) => {
+            tracing::info!("Setting telemetry config: {:?}", cfg);
+            let fut = s.endpoints().request::<TelemetryConfigEndpoint>(
+                DEVICE_ADDR,
+                &cfg,
+                Some("telemetry_config"),
+            );
+            match tokio::time::timeout(COMMAND_TIMEOUT, fut).await {
+                Ok(Ok(ack)) => {
+                    tracing::info!("Telemetry config ack: fast={}Hz", ack.actual_fast_hz);
+                    fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
+                }
+                Ok(Err(e)) => tracing::warn!("Telemetry config failed: {:?}", e),
+                Err(_) => tracing::warn!("Telemetry config timed out"),
+            }
+        }
+        HostCommand::ConfigRead(group_id, reply_tx) => {
+            use oxifoc_core::types::ConfigRequest;
+            tracing::info!("Reading config group: {:?}", group_id);
+            let req = ConfigRequest::Read(group_id);
+            let res = s
+                .endpoints()
+                .request::<ConfigEndpoint>(DEVICE_ADDR, &req, Some("config"))
+                .await;
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
+        }
+        HostCommand::ConfigWrite(write, reply_tx) => {
+            use oxifoc_core::types::ConfigRequest;
+            tracing::info!("Writing config: {:?}", write);
+            let req = ConfigRequest::Write(write);
+            let res = s
+                .endpoints()
+                .request::<ConfigEndpoint>(DEVICE_ADDR, &req, Some("config"))
+                .await;
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
+        }
+        HostCommand::Detect(req, reply_tx) => {
+            tracing::info!("Starting motor detection: {:?}", req);
+            let res = tokio::time::timeout(
+                DETECT_TIMEOUT,
+                s.endpoints()
+                    .request::<DetectEndpoint>(DEVICE_ADDR, &req, Some("detect")),
+            )
+            .await;
+            let result = match res {
+                Ok(inner) => inner.map_err(|e| anyhow::anyhow!("{:?}", e)),
+                Err(_) => Err(anyhow::anyhow!("Detection timed out (60s)")),
+            };
+            let _ = reply_tx.send(result);
+        }
+    }
 }
 
 // ── Defmt decoding ───────────────────────────────────────────────────────────
@@ -902,7 +855,7 @@ where
                         }
                         Err(DecodeError::UnexpectedEof) => break,
                         Err(DecodeError::Malformed) => {
-                            tracing::error!("Malformed defmt frame");
+                            error!("Malformed defmt frame");
                             break;
                         }
                     }
@@ -944,7 +897,6 @@ where
                     .heap_bounded_receiver::<ErgotDefmtRxOwnedTopic>(32, Some("defmt"));
                 let sub = pin!(sub);
                 let mut hdl = sub.subscribe();
-
                 loop {
                     let msg = hdl.recv().await;
                     match table.decode(&msg.t.frame) {

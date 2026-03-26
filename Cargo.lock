@@ -1087,7 +1087,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=liveness-tracking-and-state-notifications#2b03d0716327de1e5a4712990b004d8a6ed66ee1"
+source = "git+https://github.com/okhsunrog/ergot?branch=unified-router#91e7d784e5fd13f7ae2dfac3b0d84de5e68a12e7"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -1490,7 +1490,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -2110,7 +2110,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=liveness-tracking-and-state-notifications#2b03d0716327de1e5a4712990b004d8a6ed66ee1"
+source = "git+https://github.com/okhsunrog/ergot?branch=unified-router#91e7d784e5fd13f7ae2dfac3b0d84de5e68a12e7"
 dependencies = [
  "bbqueue",
  "cobs 0.3.0",
@@ -2130,6 +2130,7 @@ dependencies = [
  "postcard",
  "postcard-schema",
  "rand",
+ "rand_core 0.9.5",
  "serde",
  "tokio",
  "tokio-serial",

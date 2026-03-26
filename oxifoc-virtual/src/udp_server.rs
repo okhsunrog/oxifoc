@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use critical_section::Mutex as CriticalSectionMutex;
-use ergot::interface_manager::profiles::direct_edge::tokio_udp::InterfaceKind;
 use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
 use ergot::toolkits::tokio_stream::WaitQueue;
 use ergot::toolkits::tokio_udp::{self as udp_kit, EdgeStack};
@@ -64,11 +63,10 @@ pub async fn run(
         };
         info!("Waiting for host...");
 
-        udp_kit::register_edge_interface(
+        udp_kit::register_edge_target_interface(
             &stack,
             socket,
             &queue,
-            InterfaceKind::Target,
             Some(LivenessConfig {
                 timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
             }),

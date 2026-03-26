@@ -252,7 +252,7 @@ fn ADC() {
     // Build ADC snapshot
     *SEQ = SEQ.wrapping_add(1);
     let adc_snapshot = AdcSnapshot::new(ia_raw, ib_raw, ic_raw, vbus_mv, *SEQ)
-        .with_temp(TempSensorId::Board, board_temp_c_x10)
+        .with_temp(TempSensorId::Fet, board_temp_c_x10)
         .with_temp(TempSensorId::Motor, motor_temp_c_x10);
 
     // Get Hall snapshot

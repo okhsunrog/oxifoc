@@ -1,21 +1,12 @@
-//! Protocol layer for ergot communication over USB
+//! Protocol layer for ergot communication over USB + UART
 
 pub mod servers;
 
-use crate::config::MAX_PACKET_SIZE;
-use crate::transport::{Queue, Stack};
 use static_cell::StaticCell;
 
-// ========== Ergot Stack ==========
+use crate::config::MAX_PACKET_SIZE;
 
-/// Statically store our outgoing packet buffer
-pub static OUTQ: Queue = ergot::toolkits::embassy_usb_v0_6::Queue::new();
-
-/// Statically store our netstack
-pub static STACK: Stack = ergot::toolkits::embassy_usb_v0_6::new_target_stack(
-    OUTQ.framed_producer(),
-    MAX_PACKET_SIZE as u16,
-);
-
-/// Buffer for RX worker
-pub static RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
+/// Buffers for RX workers
+pub static USB_RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
+pub static UART_RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
+pub static UART_SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();

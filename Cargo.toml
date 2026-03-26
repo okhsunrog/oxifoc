@@ -29,7 +29,7 @@ strip = true
 
 [workspace.dependencies]
 oxifoc-core = { path = "oxifoc-core" }
-ergot = { git = "https://github.com/okhsunrog/ergot", branch = "liveness-tracking-and-state-notifications" }
+ergot = { git = "https://github.com/okhsunrog/ergot", branch = "unified-router" }
 tokio = { version = "1.45", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

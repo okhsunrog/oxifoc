@@ -76,8 +76,20 @@ pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 // Protocol Configuration
 // ============================================================================
 
-/// Size of outgoing packet queue for ergot over USB
-pub const OUT_QUEUE_SIZE: usize = 4096;
+/// Size of outgoing packet queue for ergot over USB (framed)
+pub const USB_OUT_QUEUE_SIZE: usize = 4096;
+
+/// Size of outgoing packet queue for ergot over UART (COBS stream)
+pub const UART_OUT_QUEUE_SIZE: usize = 4096;
 
 /// Maximum packet size for ergot framing
 pub const MAX_PACKET_SIZE: usize = 512;
+
+/// UART baud rate for USART3 (Cheap FOCer 2 external connector)
+pub const UART_BAUD: u32 = 921_600;
+
+/// UART TX buffer size
+pub const UART_TX_BUF_LEN: usize = 2048;
+
+/// UART RX buffer size
+pub const UART_RX_BUF_LEN: usize = 512;

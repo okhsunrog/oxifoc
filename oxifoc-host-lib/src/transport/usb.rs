@@ -1,17 +1,24 @@
 //! USB transport via nusb bulk endpoints.
 //!
 //! USB is packet-framed (no COBS needed). Uses ergot's `nusb_v0_1` toolkit
-//! with the Router profile (handles single device fine, also supports multi-device).
+//! with the DirectEdge profile — the host is an edge device connecting to a
+//! device-side Router.
 
 use anyhow::{Result, anyhow};
-use ergot::toolkits::nusb_v0_1::{RouterStack, find_new_devices, register_router_interface};
+use ergot::interface_manager::InterfaceState;
+use ergot::interface_manager::profiles::direct_edge::{DirectEdge, EdgeFrameProcessor, EDGE_NODE_ID};
+use ergot::interface_manager::utils::framed_stream;
+use ergot::toolkits::nusb_v0_1::{EdgeStack, find_new_devices, register_edge_interface};
 use std::collections::HashSet;
+use std::sync::Arc;
 use tracing::info;
 
 const MTU: u16 = 512;
 const OUT_BUFFER_SIZE: usize = 4096;
 
-pub async fn connect() -> Result<RouterStack> {
+pub async fn connect(
+    state_notify: Option<Arc<ergot::toolkits::tokio_stream::WaitQueue>>,
+) -> Result<EdgeStack> {
     info!("Searching for ergot USB devices...");
 
     let devices = find_new_devices(&HashSet::new()).await;
@@ -25,11 +32,26 @@ pub async fn connect() -> Result<RouterStack> {
         device.info.usb_product.as_deref().unwrap_or("unknown")
     );
 
-    let stack: RouterStack = RouterStack::new();
-    register_router_interface(&stack, device, MTU, OUT_BUFFER_SIZE)
-        .await
-        .map_err(|_| anyhow!("Failed to register USB interface (out of net IDs)"))?;
+    let queue = ergot::interface_manager::utils::std::new_std_queue(OUT_BUFFER_SIZE);
+    let stack = EdgeStack::new_with_profile(DirectEdge::new_target(
+        framed_stream::Sink::new_from_handle(queue.clone(), MTU),
+    ));
 
-    info!("USB device registered");
+    register_edge_interface(
+        &stack,
+        device,
+        &queue,
+        EdgeFrameProcessor::new_controller(1),
+        InterfaceState::Active {
+            net_id: 1,
+            node_id: EDGE_NODE_ID,
+        },
+        MTU,
+        state_notify,
+    )
+    .await
+    .map_err(|_| anyhow!("Failed to register USB edge interface"))?;
+
+    info!("USB device registered (DirectEdge controller)");
     Ok(stack)
 }

@@ -34,7 +34,7 @@ use hardware::{AssignedResources, HallResources, MotorResources, StorageResource
 // Define platform state with our fault type
 oxifoc_core::define_platform_state!(fault::G431Fault);
 use motor::MotorPwm;
-use protocol::{DeviceState, RECV_BUF, SCRATCH_BUF, STACK, get_device_state, set_device_state};
+use protocol::{DeviceState, RECV_BUF, SCRATCH_BUF, get_device_state, set_device_state};
 
 /// Global runtime config — loaded from flash at boot, read by config_server for protocol access.
 pub static RUNTIME_CONFIG: critical_section::Mutex<
@@ -57,14 +57,18 @@ async fn main(spawner: Spawner) {
     // ========== STEP 1: Initialize Clock ==========
     let p = hardware::init_clock();
 
-    // ========== STEP 2: Initialize Transport ==========
+    // ========== STEP 2: Initialize RNG + Ergot Router Stack ==========
+    let rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
+    let stack = transport::init_stack(rng);
+
+    // ========== STEP 3: Initialize Transport ==========
     #[cfg(feature = "transport-uart")]
-    let transport = transport::init_uart(&STACK, p.USART2, p.PB4, p.PB3);
+    let (transport, ident) = transport::init_uart(stack, p.USART2, p.PB4, p.PB3);
 
     #[cfg(feature = "transport-rtt")]
-    let transport = transport::init_rtt(&STACK);
+    let (transport, ident) = transport::init_rtt(stack);
 
-    // ========== STEP 3: Initialize Hardware Peripherals ==========
+    // ========== STEP 4: Initialize Hardware Peripherals ==========
 
     // Initialize OPAMPs as PGAs for phase current shunts
     let opamp_channels = hardware::init_opamps(
@@ -82,10 +86,10 @@ async fn main(spawner: Spawner) {
     // Initialize LED
     let mut led = hardware::init_led(p.PC6);
 
-    // ========== STEP 4: Split Resources ==========
+    // ========== STEP 5: Split Resources ==========
     let r = split_resources!(p);
 
-    // ========== STEP 5: Initialize Persistent Storage ==========
+    // ========== STEP 6: Initialize Persistent Storage ==========
     let flash = embassy_stm32::flash::Flash::new_blocking(r.storage.flash);
     let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
     spawner.spawn(storage::storage_worker(flash).unwrap());
@@ -94,13 +98,13 @@ async fn main(spawner: Spawner) {
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
     defmt::info!("Config loaded from flash");
 
-    // ========== STEP 6: Initialize Motor PWM ==========
+    // ========== STEP 7: Initialize Motor PWM ==========
     defmt::info!("Initializing motor PWM...");
     let mut motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
     motor_pwm.emergency_stop(); // Stop PWM triggers until FOC is ready
     defmt::info!("Motor PWM initialized, outputs disabled");
 
-    // ========== STEP 7: Initialize Hall Sensor ==========
+    // ========== STEP 8: Initialize Hall Sensor ==========
     defmt::info!("Initializing hall sensor...");
     sensors::init_hall(
         r.hall.pb6,
@@ -110,7 +114,7 @@ async fn main(spawner: Spawner) {
         config::TIMEBASE_TICKS_PER_SEC,
     );
 
-    // ========== STEP 8: Initialize FOC Controller ==========
+    // ========== STEP 9: Initialize FOC Controller ==========
     defmt::debug!("Initializing FOC controller...");
     foc::init(
         motor_pwm,
@@ -122,7 +126,7 @@ async fn main(spawner: Spawner) {
     .await;
     defmt::info!("FOC init complete");
 
-    // ========== STEP 9: Spawn I/O and Protocol Tasks ==========
+    // ========== STEP 10: Spawn I/O and Protocol Tasks ==========
 
     // Spawn RX worker
     spawner.spawn(
@@ -136,20 +140,20 @@ async fn main(spawner: Spawner) {
 
     // Spawn TX worker (transport-specific)
     #[cfg(feature = "transport-uart")]
-    spawner.spawn(protocol::run_tx_uart(transport.tx).unwrap());
+    spawner.spawn(protocol::run_tx_uart(transport.tx, stack, ident).unwrap());
 
     #[cfg(feature = "transport-rtt")]
-    spawner.spawn(protocol::run_tx_rtt(transport.tx).unwrap());
+    spawner.spawn(protocol::run_tx_rtt(transport.tx, stack, ident).unwrap());
 
     // Spawn protocol servers
-    protocol::spawn_servers(&spawner);
+    protocol::spawn_servers(&spawner, stack, ident);
 
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);
 
     defmt::info!("All tasks spawned, entering LED status loop");
 
-    // ========== STEP 10: LED Status Loop ==========
+    // ========== STEP 11: LED Status Loop ==========
     // Shows device state via blink patterns
     loop {
         match get_device_state() {

@@ -263,7 +263,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/jamesmunns/ergot?branch=main#e5632fa8daacdb9a9be03ed7fe083325e0e6d74c"
+source = "git+https://github.com/okhsunrog/ergot?branch=unified-router#9b55dceecbe3a7ce3fa2b2503a3029bfd0ba05fd"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -943,7 +943,7 @@ dependencies = [
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/jamesmunns/ergot?branch=main#e5632fa8daacdb9a9be03ed7fe083325e0e6d74c"
+source = "git+https://github.com/okhsunrog/ergot?branch=unified-router#9b55dceecbe3a7ce3fa2b2503a3029bfd0ba05fd"
 dependencies = [
  "bbqueue",
  "cobs 0.3.0",
@@ -968,6 +968,7 @@ dependencies = [
  "portable-atomic",
  "postcard",
  "postcard-schema",
+ "rand_core 0.9.5",
  "rtt-target",
  "serde",
  "static_cell",
@@ -1318,8 +1319,10 @@ dependencies = [
  "critical-section",
  "defmt 1.0.1",
  "embassy-futures",
+ "embassy-stm32",
  "embassy-sync 0.8.0",
  "embassy-time",
+ "embedded-io-async 0.7.0",
  "ergot",
  "heapless 0.9.2",
  "libm",
@@ -1347,6 +1350,7 @@ dependencies = [
  "embassy-time",
  "embassy-usb 0.6.0",
  "embedded-hal-bus",
+ "embedded-io-async 0.7.0",
  "embedded-storage-async",
  "ergot",
  "heapless 0.9.2",
@@ -1357,6 +1361,7 @@ dependencies = [
  "postcard",
  "rtt-target",
  "sequential-storage",
+ "serde",
  "static_cell",
 ]
 
