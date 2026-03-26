@@ -82,9 +82,7 @@ async fn main(spawner: Spawner) {
         )
         .unwrap(),
     );
-    spawner.spawn(
-        protocol::servers::run_uart_tx(uart_transport.tx, stack, uart_ident).unwrap(),
-    );
+    spawner.spawn(protocol::servers::run_uart_tx(uart_transport.tx, stack, uart_ident).unwrap());
     protocol::servers::spawn_servers(&spawner, stack, usb_ident, uart_ident);
 
     // ========== STEP 8: Initialize Persistent Storage ==========
@@ -120,9 +118,7 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 11: Initialize ADCs ==========
     let adc_handles = hardware::peripherals::init_adc(
-        p.ADC1, p.ADC2, p.ADC3, p.PC0, p.PA3,
-        p.PC1, p.PC4,
-        p.PC2, p.PC3,
+        p.ADC1, p.ADC2, p.ADC3, p.PC0, p.PA3, p.PC1, p.PC4, p.PC2, p.PC3,
     );
 
     // ========== STEP 12: Initialize Motor PWM ==========

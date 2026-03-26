@@ -6,32 +6,13 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use static_cell::StaticCell;
 
 use crate::config::MAX_PACKET_SIZE;
-use crate::transport::{Queue, Stack};
 
-// ========== Ergot Stack ==========
+/// Buffer for RX workers
+pub static USB_RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
+pub static UART_RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
 
-/// Statically store our outgoing packet buffer
-pub static OUTQ: Queue = Queue::new();
-
-/// Statically store our netstack
-#[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
-pub static STACK: Stack = ergot::toolkits::embedded_io_async_v0_7::new_target_stack(
-    OUTQ.stream_producer(),
-    MAX_PACKET_SIZE as u16,
-);
-
-#[cfg(feature = "transport-usb")]
-pub static STACK: Stack = ergot::toolkits::embassy_usb_v0_6::new_target_stack(
-    OUTQ.framed_producer(),
-    MAX_PACKET_SIZE as u16,
-);
-
-/// Buffer for RX worker
-pub static RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
-
-/// Scratch buffer for COBS decoding (UART/RTT only)
-#[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
-pub static SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+/// Scratch buffer for COBS decoding (UART only)
+pub static UART_SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 
 // ========== Device State Management ==========
 

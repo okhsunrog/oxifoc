@@ -187,7 +187,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=liveness-tracking-and-state-notifications#2b03d0716327de1e5a4712990b004d8a6ed66ee1"
+source = "git+https://github.com/okhsunrog/ergot?branch=unified-router#40ac99a6b86eaa1160b41c1f83e1eb90cf8f89bd"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -766,7 +766,7 @@ checksum = "a357d28ed41a50f9c765dbfe56cbc04a64e53e5fc58ba79fbc34c10ef3df831f"
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=liveness-tracking-and-state-notifications#2b03d0716327de1e5a4712990b004d8a6ed66ee1"
+source = "git+https://github.com/okhsunrog/ergot?branch=unified-router#40ac99a6b86eaa1160b41c1f83e1eb90cf8f89bd"
 dependencies = [
  "bbqueue",
  "cobs 0.3.0",
@@ -777,6 +777,7 @@ dependencies = [
  "defmt 1.0.1",
  "embassy-futures",
  "embassy-net",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "embassy-usb 0.5.1",
  "embassy-usb 0.6.0",
@@ -790,6 +791,7 @@ dependencies = [
  "portable-atomic",
  "postcard",
  "postcard-schema",
+ "rand_core 0.9.5",
  "rtt-target",
  "serde",
  "static_cell",

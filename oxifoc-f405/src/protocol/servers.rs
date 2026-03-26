@@ -3,14 +3,11 @@
 use embassy_executor::Spawner;
 use embedded_io_async::Write;
 use ergot::{
-    exports::bbqueue::prod_cons::framed::FramedConsumer,
-    toolkits::embassy_usb_v0_6 as usb_kit,
+    exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as usb_kit,
 };
 use heapless::String;
 
-use crate::transport::{
-    AppDriver, Stack, UartRxWorker, UartWriter, UsbQueue, UsbRxWorker,
-};
+use crate::transport::{AppDriver, Stack, UartRxWorker, UartWriter, UsbQueue, UsbRxWorker};
 use crate::{FAULT_REGISTRY, STATE};
 use oxifoc_core::types::DeviceInfo;
 
@@ -52,7 +49,9 @@ pub async fn run_uart_rx(
 ) {
     use ergot::interface_manager::InterfaceState;
     loop {
-        let _ = rcvr.run(InterfaceState::Inactive, recv_buf, scratch_buf).await;
+        let _ = rcvr
+            .run(InterfaceState::Inactive, recv_buf, scratch_buf)
+            .await;
     }
 }
 

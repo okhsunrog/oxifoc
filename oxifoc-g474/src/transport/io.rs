@@ -1,4 +1,3 @@
-//! I/O wrappers — re-exported from oxifoc-core (UART transport only)
+//! I/O wrappers — re-exported from oxifoc-core
 
-#[cfg(feature = "transport-uart")]
 pub use oxifoc_core::runtime::io::*;

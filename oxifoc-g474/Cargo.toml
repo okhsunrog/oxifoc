@@ -10,15 +10,6 @@ path = "src/main.rs"
 test = false
 bench = false
 
-[features]
-default = ["transport-uart"]
-# UART over ST-Link VCP: ergot over serial, defmt over RTT + network forwarding
-transport-uart = ["ergot/defmt-sink-network"]
-# RTT via debug probe: ergot over RTT channels, defmt over separate RTT channel
-transport-rtt = ["ergot/rtt"]
-# USB bulk via embassy-usb: ergot over USB FS, defmt over RTT
-transport-usb = ["ergot/embassy-usb-v0_6", "dep:embassy-usb"]
-
 [dependencies]
 # Embassy dependencies (main branch with async flash support for G4)
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
@@ -26,7 +17,7 @@ embassy-futures = { version = "0.1.2" }
 embassy-stm32 = { version = "0.6.0", features = ["stm32g474re", "time-driver-tim2", "unstable-pac", "dual-bank", "defmt"] }
 embassy-sync = { version = "0.8.0" }
 embassy-time = { version = "0.5.1", features = ["tick-hz-32_768"] }
-embassy-usb = { version = "0.6.0", optional = true }
+embassy-usb = { version = "0.6.0" }
 
 # Cortex-M dependencies
 cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
@@ -46,12 +37,12 @@ mutex = "1.0.2"
 
 # Local dependencies
 # runtime feature includes icd (endpoints) and types (shared structs)
-oxifoc-core = { path = "../oxifoc-core", features = ["runtime", "defmt", "storage", "embassy", "cordic"] }
-# Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
-# transport-uart adds: defmt-sink-network (for network forwarding)
-# transport-rtt adds: rtt (for RTT transport wrappers)
+oxifoc-core = { path = "../oxifoc-core", features = ["runtime", "defmt", "storage", "embassy", "cordic", "embassy-hal"] }
 ergot = { git = "https://github.com/okhsunrog/ergot", branch = "unified-router", default-features = false, features = [
+    "embassy-usb-v0_6",
     "embedded-io-async-v0_7",
+    "nostd-seed-router",
+    "embassy-time",
     "disable-cache-padding",
     "defmt-sink-rtt",
 ] }

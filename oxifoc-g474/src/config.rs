@@ -70,18 +70,21 @@ pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 // Protocol Configuration
 // ============================================================================
 
-/// Size of outgoing packet queue
-pub const OUT_QUEUE_SIZE: usize = 2048;
-
 /// Maximum size of a single packet
 pub const MAX_PACKET_SIZE: usize = 512;
 
 // ============================================================================
-// UART Transport Configuration
+// Transport Configuration
 // ============================================================================
 
-#[cfg(feature = "transport-uart")]
+/// Size of outgoing packet queue for USB (framed)
+pub const USB_OUT_QUEUE_SIZE: usize = 2048;
+
+/// Size of outgoing packet queue for UART (COBS stream)
+pub const UART_OUT_QUEUE_SIZE: usize = 2048;
+
+/// LPUART1 baud rate (ST-LINK VCP)
 pub const UART_BAUD: u32 = 115_200;
 
-#[cfg(feature = "transport-uart")]
+/// UART TX/RX buffer size
 pub const UART_BUF_LEN: usize = 1024;

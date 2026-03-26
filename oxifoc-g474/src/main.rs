@@ -1,20 +1,6 @@
 #![no_std]
 #![no_main]
 
-// Compile-time check: exactly one transport must be enabled
-#[cfg(all(feature = "transport-uart", feature = "transport-rtt"))]
-compile_error!("Cannot enable both transport-uart and transport-rtt simultaneously.");
-#[cfg(all(feature = "transport-uart", feature = "transport-usb"))]
-compile_error!("Cannot enable both transport-uart and transport-usb simultaneously.");
-#[cfg(all(feature = "transport-rtt", feature = "transport-usb"))]
-compile_error!("Cannot enable both transport-rtt and transport-usb simultaneously.");
-#[cfg(not(any(
-    feature = "transport-uart",
-    feature = "transport-rtt",
-    feature = "transport-usb"
-)))]
-compile_error!("Must enable exactly one of: transport-uart, transport-rtt, transport-usb.");
-
 use embassy_executor::Spawner;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::flash::InterruptHandler as FlashInterruptHandler;
@@ -48,11 +34,7 @@ use hardware::{AssignedResources, HallResources, MotorResources, StorageResource
 
 // Define platform state with our fault type
 oxifoc_core::define_platform_state!(fault::G474Fault);
-#[cfg(feature = "transport-usb")]
-use protocol::OUTQ;
-#[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
-use protocol::SCRATCH_BUF;
-use protocol::{DeviceState, RECV_BUF, STACK, get_device_state, set_device_state};
+use protocol::{DeviceState, get_device_state, set_device_state};
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -61,75 +43,68 @@ async fn main(spawner: Spawner) {
 
     defmt::info!("NUCLEO-G474RE clock initialized: 170MHz SYSCLK from 24MHz HSE");
 
-    // ========== STEP 2: Initialize Transport ==========
-    #[cfg(feature = "transport-uart")]
-    let transport = transport::init_uart(&STACK, p.LPUART1, p.PA2, p.PA3);
+    // ========== STEP 2: Initialize defmt RTT + RNG + Ergot Router Stack ==========
+    transport::init_defmt_rtt();
 
-    #[cfg(feature = "transport-rtt")]
-    let transport = transport::init_rtt(&STACK);
+    let rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
+    let stack = transport::init_stack(rng);
 
-    #[cfg(feature = "transport-usb")]
-    let transport = transport::init_usb(&STACK, p.USB, p.PA12, p.PA11);
+    // ========== STEP 3: Initialize UART Transport (LPUART1 VCP) ==========
+    let (uart_transport, uart_ident) = transport::init_uart(stack, p.LPUART1, p.PA2, p.PA3);
 
-    // ========== STEP 3: Initialize Hardware Peripherals ==========
+    // ========== STEP 4: Initialize USB Transport ==========
+    let (usb_transport, usb_ident) = transport::init_usb(stack, p.USB, p.PA12, p.PA11);
+
+    // ========== STEP 5: Initialize Hardware Peripherals ==========
 
     // Initialize user LED (PA5 on NUCLEO-G474RE)
     let mut led = hardware::peripherals::init_led(p.PA5);
 
-    // ========== STEP 4: Split Resources ==========
+    // ========== STEP 6: Split Resources ==========
     let r = split_resources!(p);
 
-    // ========== STEP 5: Initialize Persistent Storage ==========
+    // ========== STEP 7: Initialize Persistent Storage ==========
     let flash = embassy_stm32::flash::Flash::new(r.storage.flash, FlashIrqs);
     spawner.spawn(storage::storage_worker(flash).unwrap());
     let _runtime_config = storage::CONFIG_LOADED.wait().await;
     defmt::info!("Config loaded from flash");
 
-    // ========== STEP 6: Spawn I/O and Protocol Tasks ==========
+    // ========== STEP 8: Spawn Transport and Protocol Tasks ==========
 
-    // Spawn RX worker
-    #[cfg(any(feature = "transport-uart", feature = "transport-rtt"))]
+    // Spawn USB tasks
+    spawner.spawn(protocol::servers::usb_task(usb_transport.usb_dev).unwrap());
     spawner.spawn(
-        protocol::servers::run_rx(
-            transport.rx_worker,
-            RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-            SCRATCH_BUF.init_with(|| [0u8; 64]),
+        protocol::servers::run_usb_rx(
+            usb_transport.rx_worker,
+            protocol::USB_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
         )
         .unwrap(),
     );
-
-    #[cfg(feature = "transport-usb")]
     spawner.spawn(
-        protocol::servers::run_rx(
-            transport.rx_worker,
-            RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+        protocol::servers::run_usb_tx(usb_transport.ep_in, transport::USB_OUTQ.framed_consumer())
+            .unwrap(),
+    );
+
+    // Spawn UART tasks
+    spawner.spawn(
+        protocol::servers::run_uart_rx(
+            uart_transport.rx_worker,
+            protocol::UART_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+            protocol::UART_SCRATCH_BUF.init_with(|| [0u8; 64]),
         )
         .unwrap(),
     );
-
-    // Spawn TX worker (transport-specific)
-    #[cfg(feature = "transport-uart")]
-    spawner.spawn(protocol::servers::run_tx_uart(transport.tx).unwrap());
-
-    #[cfg(feature = "transport-rtt")]
-    spawner.spawn(protocol::servers::run_tx_rtt(transport.tx).unwrap());
-
-    #[cfg(feature = "transport-usb")]
-    {
-        spawner.spawn(protocol::servers::usb_task(transport.usb_dev).unwrap());
-        spawner
-            .spawn(protocol::servers::run_tx_usb(transport.ep_in, OUTQ.framed_consumer()).unwrap());
-    }
+    spawner.spawn(protocol::servers::run_uart_tx(uart_transport.tx, stack, uart_ident).unwrap());
 
     // Spawn protocol servers
-    protocol::servers::spawn_servers(&spawner);
+    protocol::servers::spawn_servers(&spawner, stack, usb_ident, uart_ident);
 
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);
 
     defmt::info!("All tasks spawned, entering LED status loop");
 
-    // ========== STEP 7: LED Status Loop ==========
+    // ========== STEP 9: LED Status Loop ==========
     loop {
         match get_device_state() {
             DeviceState::Boot => {

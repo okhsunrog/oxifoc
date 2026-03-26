@@ -9,16 +9,16 @@ pub use oxifoc_core::runtime::io::*;
 use embassy_stm32::rng;
 use embassy_stm32::usb;
 use embassy_stm32::{Peri, bind_interrupts, peripherals};
+use ergot::NetStack;
 use ergot::exports::bbqueue::traits::coordination::cas::AtomicCoord;
 use ergot::exports::maitake_sync::WaitQueue;
+use ergot::interface_manager::LivenessConfig;
 use ergot::interface_manager::interface_impls::embassy_usb::EmbassyInterface;
 use ergot::interface_manager::interface_impls::embedded_io::IoInterface;
 use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
 use ergot::interface_manager::utils::{cobs_stream, framed_stream};
-use ergot::interface_manager::LivenessConfig;
 use ergot::toolkits::embassy_usb_v0_6 as usb_kit;
 use ergot::toolkits::embedded_io_async_v0_7 as io_kit;
-use ergot::NetStack;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
@@ -149,7 +149,10 @@ pub fn init_usb(
     let (usb_dev, ep_in, ep_out) = USB_STORAGE.init_ergot(driver, usb_dev_cfg);
 
     // Register USB interface on Router
-    let usb_sink = McSink::Usb(framed_stream::Sink::new(USB_OUTQ.framed_producer(), crate::config::MAX_PACKET_SIZE as u16));
+    let usb_sink = McSink::Usb(framed_stream::Sink::new(
+        USB_OUTQ.framed_producer(),
+        crate::config::MAX_PACKET_SIZE as u16,
+    ));
     let usb_ident = stack
         .manage_profile(|router| router.register_interface(usb_sink))
         .expect("USB interface registration failed");
@@ -157,7 +160,11 @@ pub fn init_usb(
     let rx_worker = UsbRxWorker::new(
         stack,
         ep_out,
-        RouterFrameProcessor::new(stack.manage_profile(|router| router.net_id_of(usb_ident)).unwrap()),
+        RouterFrameProcessor::new(
+            stack
+                .manage_profile(|router| router.net_id_of(usb_ident))
+                .unwrap(),
+        ),
         usb_ident,
     )
     .with_liveness(LivenessConfig { timeout_ms: 3000 })
@@ -206,7 +213,10 @@ pub fn init_uart(
     let (uart_tx, uart_rx) = uart.split();
 
     // Register UART interface on Router
-    let uart_sink = McSink::Uart(cobs_stream::Sink::new(UART_OUTQ.stream_producer(), crate::config::MAX_PACKET_SIZE as u16));
+    let uart_sink = McSink::Uart(cobs_stream::Sink::new(
+        UART_OUTQ.stream_producer(),
+        crate::config::MAX_PACKET_SIZE as u16,
+    ));
     let uart_ident = stack
         .manage_profile(|router| router.register_interface(uart_sink))
         .expect("UART interface registration failed");
@@ -214,7 +224,11 @@ pub fn init_uart(
     let rx_worker = UartRxWorker::new(
         stack,
         UartReader::new(uart_rx),
-        RouterFrameProcessor::new(stack.manage_profile(|router| router.net_id_of(uart_ident)).unwrap()),
+        RouterFrameProcessor::new(
+            stack
+                .manage_profile(|router| router.net_id_of(uart_ident))
+                .unwrap(),
+        ),
         uart_ident,
     )
     .with_liveness(LivenessConfig {

@@ -11,6 +11,7 @@
 pub use oxifoc_core::runtime::io::*;
 
 use embassy_stm32::{bind_interrupts, peripherals, rng};
+use ergot::NetStack;
 use ergot::exports::bbqueue::traits::coordination::cas::AtomicCoord;
 use ergot::exports::maitake_sync::WaitQueue;
 use ergot::interface_manager::LivenessConfig;
@@ -19,7 +20,6 @@ use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
 use ergot::interface_manager::transports::eio::RxWorker as EioRxWorker;
 use ergot::interface_manager::utils::cobs_stream;
 use ergot::toolkits::embedded_io_async_v0_7 as kit;
-use ergot::NetStack;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 use rtt_target::{ChannelMode::*, rtt_init};
@@ -129,7 +129,10 @@ pub fn init_uart(
     let (uart_tx, uart_rx) = uart.split();
 
     // Register UART interface on Router
-    let sink = cobs_stream::Sink::new(OUTQ.stream_producer(), crate::config::MAX_PACKET_SIZE as u16);
+    let sink = cobs_stream::Sink::new(
+        OUTQ.stream_producer(),
+        crate::config::MAX_PACKET_SIZE as u16,
+    );
     let ident = stack
         .manage_profile(|router| router.register_interface(sink))
         .expect("UART interface registration failed");
@@ -193,7 +196,10 @@ pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
     let rtt_tx = RttWriter::new(ergot_up);
 
     // Register RTT interface on Router
-    let sink = cobs_stream::Sink::new(OUTQ.stream_producer(), crate::config::MAX_PACKET_SIZE as u16);
+    let sink = cobs_stream::Sink::new(
+        OUTQ.stream_producer(),
+        crate::config::MAX_PACKET_SIZE as u16,
+    );
     let ident = stack
         .manage_profile(|router| router.register_interface(sink))
         .expect("RTT interface registration failed");
@@ -201,16 +207,11 @@ pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
         .manage_profile(|router| router.net_id_of(ident))
         .unwrap();
 
-    let rx_worker = RxWorker::new(
-        stack,
-        rtt_rx,
-        RouterFrameProcessor::new(net_id),
-        ident,
-    )
-    .with_liveness(LivenessConfig {
-        timeout_ms: LIVENESS_TIMEOUT_MS,
-    })
-    .with_state_notify(&STATE_NOTIFY);
+    let rx_worker = RxWorker::new(stack, rtt_rx, RouterFrameProcessor::new(net_id), ident)
+        .with_liveness(LivenessConfig {
+            timeout_ms: LIVENESS_TIMEOUT_MS,
+        })
+        .with_state_notify(&STATE_NOTIFY);
 
     (
         RttTransport {

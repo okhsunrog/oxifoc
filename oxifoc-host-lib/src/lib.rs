@@ -7,10 +7,10 @@ use core::pin::pin;
 use crossbeam_channel::{Receiver, Sender};
 use defmt_decoder::{DecodeError, Table};
 use defmt_parser::Level as DefmtLevel;
+use ergot::Address;
 use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
 use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
-use ergot::Address;
 use oxifoc_core::icd::{
     ButtonEndpoint, ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, MotorEndpoint,
     SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigEndpoint,
@@ -146,8 +146,7 @@ struct BackendCtx {
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(4096);
     let (slow_tx, slow_rx) = crossbeam_channel::bounded::<SlowTelemetry>(64);
-    let (info_tx, device_info_rx) =
-        crossbeam_channel::bounded::<oxifoc_core::types::DeviceInfo>(4);
+    let (info_tx, device_info_rx) = crossbeam_channel::bounded::<oxifoc_core::types::DeviceInfo>(4);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
     let fast_hz = Arc::new(AtomicU16::new(0));
@@ -231,8 +230,7 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
         }
         TransportConfig::Udp { host, port } => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
-            let stack =
-                transport::udp::connect(&host, port, Some(state_notify.clone())).await?;
+            let stack = transport::udp::connect(&host, port, Some(state_notify.clone())).await?;
             run_framed_transport(stack, state_notify, &cfg, ctx).await
         }
         TransportConfig::Usb => {
@@ -283,7 +281,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<transport::CobsStreamTransport>>,
 {
-    use ergot::interface_manager::profiles::direct_edge::{EdgeFrameProcessor, EDGE_NODE_ID};
+    use ergot::interface_manager::profiles::direct_edge::{EDGE_NODE_ID, EdgeFrameProcessor};
     use ergot::interface_manager::transports::tokio_cobs_stream;
     use ergot::toolkits::tokio_stream as stream_kit;
 
@@ -364,9 +362,7 @@ where
         .await;
 
         if reg_result.is_err() {
-            tracing::warn!(
-                "Stream registration failed (interface not in Down state), retrying..."
-            );
+            tracing::warn!("Stream registration failed (interface not in Down state), retrying...");
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
                 _ = cancel.cancelled() => break,
@@ -380,8 +376,7 @@ where
         }
 
         // DeviceInfo handshake on each (re)connection
-        let handshake_ok =
-            device_info_handshake(&stack, &info_tx, &connected).await;
+        let handshake_ok = device_info_handshake(&stack, &info_tx, &connected).await;
 
         if !handshake_ok {
             tracing::warn!("Handshake failed, reconnecting...");
@@ -403,13 +398,8 @@ where
         }
 
         // Monitor interface state with recovery
-        let disconnected = monitor_state_with_recovery(
-            &state_notify,
-            &stack,
-            &connected,
-            &cancel,
-        )
-        .await;
+        let disconnected =
+            monitor_state_with_recovery(&state_notify, &stack, &connected, &cancel).await;
 
         if !disconnected {
             // Cancelled
