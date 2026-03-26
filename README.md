@@ -88,13 +88,32 @@ ISR (20kHz) → decimation (atomic period) → bbqueue (2KB) → async drain →
 
 46 bytes/sample (ia/ib/ic/id/iq/vd/vq/angle/erpm/duty/hall/seq). Zero overhead when disabled. Overflow drops samples silently.
 
+## Network Architecture
+
+All devices communicate via [ergot](https://github.com/jamesmunns/ergot) — a lightweight embedded networking protocol with automatic routing and address assignment.
+
+Every motor controller runs as a **Router** — when standalone it acts as a root, when connected to another controller it becomes a bridge. Host apps and peripherals connect as **Edge** devices. This means identical firmware regardless of network topology.
+
+```
+Motor Controller (Root Router)
+├── PC ─────────────────── Edge (USB / UART / RTT)
+├── Secondary Motor Ctrl ─ Bridge Router (CAN FD)
+│   └── ...               (its own edge devices)
+├── BMS ──────────────── Edge (CAN FD)
+└── nRF52840 ──────────── Bridge Router (UART / SPI)
+    ├── ESK8 Remote ───── Edge (BLE)
+    └── Android App ───── Edge (BLE)
+```
+
+Roles are determined by topology, not firmware — disconnect two controllers and each becomes its own root. The host app discovers and addresses all devices in the network automatically through the routing tree.
+
 ## Hardware
 
 | Board | MCU | Current Sensing | Communication | Gate Driver |
 |-------|-----|-----------------|---------------|-------------|
 | B-G431B-ESC1 | STM32G431CB | 3 op-amps (PGA x16) | UART / RTT | Integrated |
-| Cheap FOCer 2 | STM32F405RG | DRV8301 (10 V/V) | USB | DRV8301 SPI |
-| NUCLEO-G474RE + IHM08M1 | STM32G474RE | External op-amps | UART / RTT | L6398 |
+| Cheap FOCer 2 | STM32F405RG | DRV8301 (10 V/V) | USB + UART | DRV8301 SPI |
+| NUCLEO-G474RE + IHM08M1 | STM32G474RE | External op-amps | USB + LPUART | L6398 |
 
 All platforms: 20 kHz center-aligned PWM, TIM1-triggered injected ADC, Hall polling via TIM6 (5 us, 7-read majority voting), persistent config in internal flash (`sequential-storage` + `postcard`).
 
@@ -104,9 +123,9 @@ All platforms: 20 kHz center-aligned PWM, TIM1-triggered injected ADC, Hall poll
 
 **CLI** (`oxifoc-host-cli`) — Command-line monitor, motor control, detection.
 
-**Virtual device** (`oxifoc-virtual`) — Simulated motor controller over TCP. Host tools connect exactly as to real hardware.
+**Virtual device** (`oxifoc-virtual`) — Simulated motor controller over TCP/UDP. Host tools connect exactly as to real hardware.
 
-Transports: Serial (UART VCP), RTT (probe-rs), TCP (virtual), USB (Cheap FOCer 2).
+Transports: Serial (UART VCP), RTT (probe-rs), TCP (virtual), UDP (virtual), USB (nusb).
 
 ## Building
 
