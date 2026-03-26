@@ -20,13 +20,13 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 /// - Max current: ~15A peak (limited by shunt power dissipation)
 #[allow(dead_code)]
 pub const BOARD: BoardConfig = BoardConfig {
-    shunt_ohms: 0.33,          // 0.33Ω shunt resistors
-    amp_gain: 16.0,            // Using internal OPAMP with 16x gain (PGA mode)
-    vbus_divider_ratio: 19.12, // (560k + 30.9k) / 30.9k = 19.12
-    adc_vref_mv: 3300,         // 3.3V
-    adc_max_counts: 4095,      // 12-bit ADC
-    initial_vbus_volts: 12.0,  // Conservative default
-    max_iq_target_a: 5.0,      // Conservative default for testing
+    shunt_ohms: 0.33,           // 0.33Ω shunt resistors
+    amp_gain: 16.0,             // Using internal OPAMP with 16x gain (PGA mode)
+    vbus_divider_ratio: 19.12,  // (560k + 30.9k) / 30.9k = 19.12
+    adc_vref_mv: 3300,          // 3.3V
+    adc_max_counts: 4095,       // 12-bit ADC
+    initial_vbus_volts: 12.0,   // Conservative default
+    max_iq_target_a: 5.0,       // Conservative default for testing
     invert_current_sign: false, // TODO: verify for this board
     // Fault thresholds
     max_phase_current_a: 10.0, // Conservative limit

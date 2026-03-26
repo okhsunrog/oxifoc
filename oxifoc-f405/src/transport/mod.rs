@@ -5,13 +5,17 @@
 
 use embassy_stm32::{Peri, bind_interrupts, peripherals, usb};
 use ergot::{
-    exports::bbqueue::traits::coordination::cas::AtomicCoord, toolkits::embassy_usb_v0_6 as kit,
+    exports::{bbqueue::traits::coordination::cas::AtomicCoord, maitake_sync::WaitQueue},
+    toolkits::embassy_usb_v0_6 as kit,
 };
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 use crate::config::OUT_QUEUE_SIZE;
+
+/// State notification queue — woken on interface state transitions (connect/disconnect)
+pub static STATE_NOTIFY: WaitQueue = WaitQueue::new();
 
 /// RTT defmt channel storage
 static RTT_DEFMT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
@@ -71,7 +75,9 @@ pub fn init_usb(
     usb_dev_cfg.serial_number = Some("simple-focer2");
 
     let (usb_dev, ep_in, ep_out) = USB_STORAGE.init_ergot(driver, usb_dev_cfg);
-    let rx_worker = kit::RxWorker::new(stack, ep_out);
+    let rx_worker = kit::RxWorker::new(stack, ep_out)
+        .with_liveness(ergot::interface_manager::LivenessConfig { timeout_ms: 3000 })
+        .with_state_notify(&STATE_NOTIFY);
 
     UsbTransport {
         usb_dev,

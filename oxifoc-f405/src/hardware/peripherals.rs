@@ -1,11 +1,10 @@
 //! Peripheral initialization for STM32F405
 
 use embassy_stm32::adc::{Adc, AdcChannel, Exten, InjectedAdc, SampleTime};
-use embassy_stm32::interrupt::typelevel::Interrupt;
 use embassy_stm32::{
     Config as StmConfig, Peri, Peripherals,
     gpio::{Level, Output, Speed},
-    interrupt, peripherals,
+    peripherals,
     time::Hertz,
 };
 

@@ -120,7 +120,11 @@ impl DetectionHardware for VirtualHardware {
             let sim = borrow.as_mut().unwrap();
 
             match mode {
-                ControlMode::OpenLoop { angle_rad, pi_gains, .. } => {
+                ControlMode::OpenLoop {
+                    angle_rad,
+                    pi_gains,
+                    ..
+                } => {
                     // Apply PI gains override if provided
                     if let Some((kp, ki)) = pi_gains {
                         sim.foc.id_pi.set_gains(kp, ki);

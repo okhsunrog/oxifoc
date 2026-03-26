@@ -339,12 +339,18 @@ pub async fn detect_server() {
                         } => {
                             defmt::info!("Detect: measuring inductance (R={})", r);
                             // Limit detection current to 3A for PSU safety
-                            let safe_current = libm::sqrtf(max_power_loss_w / r / 1.5)
-                                .min(board.max_phase_current_a)
-                                .min(3.0)
-                                .max(0.5);
+                            let safe_current = oxifoc_core::foc::clamp_f32(
+                                libm::sqrtf(max_power_loss_w / r / 1.5)
+                                    .min(board.max_phase_current_a),
+                                0.5,
+                                3.0,
+                            );
                             let max_bus_current = (vbus * 0.577 * 0.6) / r.max(0.001);
-                            let hold_current = safe_current.min(max_bus_current).min(3.0).max(0.1);
+                            let hold_current = oxifoc_core::foc::clamp_f32(
+                                safe_current.min(max_bus_current),
+                                0.1,
+                                3.0,
+                            );
                             let params = InductanceParams {
                                 motor_size: MotorSize::Custom(max_power_loss_w),
                                 resistance_ohm: r,
@@ -376,10 +382,12 @@ pub async fn detect_server() {
                         } => {
                             defmt::info!("Detect: measuring flux linkage");
                             // Limit detection current to 3A for PSU safety
-                            let safe_current = libm::sqrtf(max_power_loss_w / r / 1.5)
-                                .min(board.max_phase_current_a)
-                                .min(3.0)
-                                .max(0.5);
+                            let safe_current = oxifoc_core::foc::clamp_f32(
+                                libm::sqrtf(max_power_loss_w / r / 1.5)
+                                    .min(board.max_phase_current_a),
+                                0.5,
+                                3.0,
+                            );
                             let spin_rpm = openloop_erpm / pole_pairs as f32;
                             let params = FluxLinkageParams {
                                 motor_size: MotorSize::Custom(max_power_loss_w),

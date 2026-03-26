@@ -243,7 +243,11 @@ where
         }
 
         // Apply PI gains override if provided (detection uses this)
-        if let ControlMode::OpenLoop { pi_gains: Some((kp, ki)), .. } = mode {
+        if let ControlMode::OpenLoop {
+            pi_gains: Some((kp, ki)),
+            ..
+        } = mode
+        {
             self.controller.id_pi.set_gains(kp, ki);
             self.controller.iq_pi.set_gains(kp, ki);
             self.controller.reset();

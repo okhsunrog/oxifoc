@@ -269,7 +269,10 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
         return Err(DetectionError::MotorNotResponding);
     }
 
-    info!("Resistance: {} Ohm (dV={}, dI={})", resistance, delta_v, delta_i);
+    info!(
+        "Resistance: {} Ohm (dV={}, dI={})",
+        resistance, delta_v, delta_i
+    );
 
     Ok(resistance)
 }
@@ -416,7 +419,12 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
                 angle_rad: angle,
                 current,
                 velocity_rad_s: 0.0,
-                pi_gains: if first_cmd { first_cmd = false; det_gains } else { None },
+                pi_gains: if first_cmd {
+                    first_cmd = false;
+                    det_gains
+                } else {
+                    None
+                },
             });
             T::after_millis(10).await;
         }

@@ -3,7 +3,7 @@
 //! Implements DetectionHardware trait using the same pattern as oxifoc-g4,
 //! with platform-specific ADC atomics and board config.
 
-#![allow(dead_code)] // Public API not yet wired to protocol handlers
+#![allow(dead_code)]
 
 use core::cell::RefCell;
 use core::future::poll_fn;
@@ -211,4 +211,44 @@ pub async fn calibrate_hall_default(
         board,
     )
     .await
+}
+
+// ============================================================================
+// Convenience wrappers using platform statics (for detect_server)
+// ============================================================================
+
+use crate::STATE;
+use crate::config::BOARD;
+use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
+
+/// Measure resistance using platform statics.
+pub async fn measure_resistance_ez(params: &ResistanceParams) -> Result<f32, DetectionError> {
+    measure_resistance(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
+}
+
+/// Measure inductance using platform statics.
+pub async fn measure_inductance_ez<S: SinCos>(
+    params: &InductanceParams,
+    pwm_freq_hz: f32,
+) -> Result<(f32, f32), DetectionError> {
+    measure_inductance::<S>(
+        params,
+        pwm_freq_hz,
+        &STATE,
+        &IA_SAMPLE,
+        &IB_SAMPLE,
+        &IC_SAMPLE,
+        &BOARD,
+    )
+    .await
+}
+
+/// Measure flux linkage using platform statics.
+pub async fn measure_flux_linkage_ez(params: &FluxLinkageParams) -> Result<f32, DetectionError> {
+    measure_flux_linkage(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
+}
+
+/// Calibrate Hall sensors using platform statics.
+pub async fn calibrate_hall_default_ez() -> Result<HallCalibrationResult, DetectionError> {
+    calibrate_hall_default(&STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
 }

@@ -27,7 +27,7 @@ check-device:
     for crate in {{ device_crates }}; do
         echo "$crate: fmt + clippy + build..."
         (cd "$crate" && cargo fmt --check) || exit 1
-        (cd "$crate" && cargo clippy --quiet -- -D warnings 2>&1 | filter) || exit 1
+        (cd "$crate" && cargo clippy --quiet -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
         (cd "$crate" && cargo build --release --quiet 2>&1 | filter) || exit 1
     done
 

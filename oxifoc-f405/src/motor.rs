@@ -83,7 +83,9 @@ impl<'d> MotorPwm<'d> {
         // Note: embassy ComplementaryPwm on F405 only exposes 3 channels (CH1-3),
         // so CH4 must be configured via PAC directly.
         let trigger_point = max_duty - max_duty / 50; // ~2% margin from peak
-        embassy_stm32::pac::TIM1.ccr(3).write(|w| w.set_ccr(trigger_point as u16));
+        embassy_stm32::pac::TIM1
+            .ccr(3)
+            .write(|w| w.set_ccr(trigger_point as u16));
         defmt::info!("TIM1 CH4 ADC trigger at {}", trigger_point);
 
         // NOTE: Phase channels and CH4 are NOT enabled here.

@@ -303,7 +303,22 @@ fn ADC() {
     });
 
     // Update global state with telemetry
-    if let Some(foc) = foc_telem {
+    let foc_telem = foc_telem.unwrap_or_default();
+    {
+        let foc = foc_telem;
         oxifoc_core::state::update_telemetry(&STATE, adc_snapshot, hall_snapshot, foc);
+
+        // Fast telemetry: decimation at the source, write to bbqueue
+        use oxifoc_core::runtime::streaming::{
+            FAST_TELEM_PERIOD, build_fast_telemetry, push_fast_telemetry,
+        };
+        let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
+        if period != 0 && (*SEQ).is_multiple_of(period) {
+            let (hall_state, velocity_rad_s) = hall_snapshot
+                .map(|h| (h.state, h.velocity_rad_s))
+                .unwrap_or((0, 0.0));
+            let telem = build_fast_telemetry(&foc, hall_state, velocity_rad_s, *SEQ);
+            push_fast_telemetry(&telem);
+        }
     }
 }

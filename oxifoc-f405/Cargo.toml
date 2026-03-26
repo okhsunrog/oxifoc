@@ -56,6 +56,7 @@ ergot = { git = "https://github.com/okhsunrog/ergot", branch = "liveness-trackin
     "defmt-sink-rtt",
 ] }
 rtt-target = "0.6"
+libm = "0.2.16"
 
 [profile.dev]
 debug = true
@@ -68,4 +69,8 @@ debug = 2
 lto = "fat"
 opt-level = 3
 incremental = true
+
+# Override workspace ergot with jamesmunns/main for USB suspend support
+[patch."https://github.com/okhsunrog/ergot"]
+ergot = { git = "https://github.com/jamesmunns/ergot", branch = "main" }
 
