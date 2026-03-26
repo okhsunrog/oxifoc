@@ -42,6 +42,7 @@ pub fn init_estimator(timebase_ticks_per_sec: u64) {
 /// Handles edge detection, timestamp capture, and estimator update internally.
 ///
 /// Invalid states (0 and 7) are silently ignored.
+#[inline]
 pub fn update_hall_state(state: u8) {
     // Edge detection via static mutable — safe because this is called only from a single ISR
     static mut LAST_STATE: u8 = 0;
