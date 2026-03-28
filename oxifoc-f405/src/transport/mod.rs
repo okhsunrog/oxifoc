@@ -99,8 +99,9 @@ bind_interrupts!(pub struct RngIrqs {
 
 // ========== Initialization ==========
 
-/// Initialize RTT for defmt logging. Must be called before any defmt macros.
-pub fn init_defmt_rtt() {
+/// Initialize RTT + network for defmt logging. Must be called before any defmt macros.
+/// Returns a DefmtConsumer for forwarding frames over the ergot network.
+pub fn init_defmt() -> ergot::logging::defmt_sink::DefmtConsumer {
     use ergot::logging::defmt_sink;
     let channels = rtt_init! {
         up: {
@@ -108,7 +109,7 @@ pub fn init_defmt_rtt() {
         }
     };
     let defmt_up = RTT_DEFMT_UP.init(channels.up.0);
-    defmt_sink::init_rtt(defmt_up);
+    defmt_sink::init_network_and_rtt(defmt_up)
 }
 
 /// Initialize the ergot Router stack with hardware RNG.

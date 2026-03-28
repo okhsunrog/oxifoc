@@ -53,7 +53,7 @@ pub async fn info_server<NS, const N: usize>(
 ) where
     NS: NetStackHandle,
 {
-    let server = endpoints.bounded_server::<HardwareInfoEndpoint, N>(Some("device_info"));
+    let server = endpoints.bounded_server::<HardwareInfoEndpoint, N>(Some("hardware_info"));
     let server = pin!(server);
     let mut h = server.attach();
 

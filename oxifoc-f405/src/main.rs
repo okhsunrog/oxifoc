@@ -35,8 +35,8 @@ oxifoc_core::define_platform_state!(fault::F405Fault);
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // ========== STEP 0: Initialize defmt RTT logging ==========
-    transport::init_defmt_rtt();
+    // ========== STEP 0: Initialize defmt logging (RTT + network) ==========
+    let defmt_consumer = transport::init_defmt();
 
     // ========== STEP 1: Initialize Clock ==========
     let p = hardware::peripherals::init_clock();
@@ -83,7 +83,7 @@ async fn main(spawner: Spawner) {
         .unwrap(),
     );
     spawner.spawn(protocol::servers::run_uart_tx(uart_transport.tx, stack, uart_ident).unwrap());
-    protocol::servers::spawn_servers(&spawner, stack, usb_ident, uart_ident);
+    protocol::servers::spawn_servers(&spawner, stack, usb_ident, uart_ident, defmt_consumer);
 
     // ========== STEP 8: Initialize Persistent Storage ==========
     let flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH);

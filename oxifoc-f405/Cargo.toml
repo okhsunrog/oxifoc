@@ -60,6 +60,7 @@ ergot = { git = "https://github.com/okhsunrog/ergot", branch = "mtu-discovery", 
     "embassy-time",
     "disable-cache-padding",
     "defmt-sink-rtt",
+    "defmt-sink-network",
 ] }
 rtt-target = "0.6"
 libm = "0.2.16"

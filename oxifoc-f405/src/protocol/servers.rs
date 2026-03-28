@@ -390,6 +390,16 @@ fn map_err(e: oxifoc_core::foc::detection::DetectionError) -> oxifoc_core::types
     }
 }
 
+/// Forward defmt frames from the network bbqueue to the ergot defmt topic.
+/// Connected hosts receive these on `ErgotDefmtRxOwnedTopic`.
+#[embassy_executor::task]
+pub async fn defmt_forwarder(
+    consumer: ergot::logging::defmt_sink::DefmtConsumer,
+    stack: &'static Stack,
+) {
+    ergot::logging::defmt_sink::forward_to_ergot_topic(&consumer, stack, None).await
+}
+
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
@@ -403,9 +413,16 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
 // ========== Task Spawning ==========
 
 /// Spawn all protocol server tasks
-pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, usb_ident: u8, uart_ident: u8) {
+pub fn spawn_servers(
+    spawner: &Spawner,
+    stack: &'static Stack,
+    usb_ident: u8,
+    uart_ident: u8,
+    defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
+) {
     spawner.spawn(protocol_servers(stack).unwrap());
     spawner.spawn(fast_telemetry_task(stack).unwrap());
     spawner.spawn(state_monitor(stack, usb_ident, uart_ident).unwrap());
     spawner.spawn(detect_server(stack).unwrap());
+    spawner.spawn(defmt_forwarder(defmt_consumer, stack).unwrap());
 }
