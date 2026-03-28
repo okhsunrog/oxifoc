@@ -94,7 +94,7 @@ pub async fn connect(device: &Device, state_notify: Option<Arc<WaitQueue>>) -> R
         let _ = im.set_interface_state(
             (),
             InterfaceState::Active {
-                net_id: 1,
+                net_id: 0,
                 node_id: EDGE_NODE_ID,
             },
         );
@@ -133,7 +133,7 @@ async fn ble_rx_worker(
     mut notifications: impl futures::Stream<Item = Result<Vec<u8>, bluest::Error>> + Unpin + Send,
     state_notify: Option<Arc<WaitQueue>>,
 ) {
-    let mut processor = EdgeFrameProcessor::new_controller(1);
+    let mut processor = EdgeFrameProcessor::new();
 
     loop {
         match notifications.next().await {

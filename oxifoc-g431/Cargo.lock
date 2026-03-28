@@ -187,7 +187,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=mtu-discovery#e9688ec21fd1a6384fea3b02a22dcfff9c8e45e3"
+source = "git+https://github.com/okhsunrog/ergot?branch=link-local-addressing#daea6b1fe6db6f770b939aa1f2d8dad27041b323"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -765,7 +765,7 @@ checksum = "a357d28ed41a50f9c765dbfe56cbc04a64e53e5fc58ba79fbc34c10ef3df831f"
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=mtu-discovery#e9688ec21fd1a6384fea3b02a22dcfff9c8e45e3"
+source = "git+https://github.com/okhsunrog/ergot?branch=link-local-addressing#daea6b1fe6db6f770b939aa1f2d8dad27041b323"
 dependencies = [
  "bbqueue",
  "cobs 0.3.0",

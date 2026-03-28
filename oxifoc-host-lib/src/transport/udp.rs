@@ -20,7 +20,7 @@ pub async fn connect(
     info!("Connecting to UDP: {}", addr);
 
     let queue = tokio_udp::new_std_queue(32768);
-    let stack: EdgeStack = tokio_udp::new_controller_stack(&queue, 2048);
+    let stack: EdgeStack = tokio_udp::new_target_stack(&queue, 2048);
 
     let socket = UdpSocket::bind("0.0.0.0:0")
         .await
@@ -32,7 +32,7 @@ pub async fn connect(
 
     info!("UDP connected to {}", addr);
 
-    tokio_udp::register_edge_controller_interface(
+    tokio_udp::register_edge_target_interface(
         &stack,
         socket,
         &queue,

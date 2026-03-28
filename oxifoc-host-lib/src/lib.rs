@@ -39,12 +39,12 @@ pub use transport::{TransportConfig, TransportType};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/// Address of the device (Router) on the direct link.
+/// Link-local address of the directly connected device (Router).
 ///
-/// The device is the central node (node_id=1) on net_id=1.
-/// The host is the edge node (node_id=2).
+/// Uses net_id=0 ("link-local"): the router rewrites this to the real net_id.
+/// node_id=1 is CENTRAL_NODE_ID (the router side of the link).
 const DEVICE_ADDR: Address = Address {
-    network_id: 1,
+    network_id: 0,
     node_id: 1,
     port_id: 0,
 };
@@ -358,9 +358,9 @@ where
             transport.reader,
             transport.writer,
             queue.clone(),
-            EdgeFrameProcessor::new_controller(1),
+            EdgeFrameProcessor::new(),
             InterfaceState::Active {
-                net_id: 1,
+                net_id: 0,
                 node_id: EDGE_NODE_ID,
             },
             Some(LivenessConfig {

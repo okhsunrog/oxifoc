@@ -43,9 +43,9 @@ pub async fn connect(
         &stack,
         device,
         &queue,
-        EdgeFrameProcessor::new_controller(1),
+        EdgeFrameProcessor::new(),
         InterfaceState::Active {
-            net_id: 1,
+            net_id: 0,
             node_id: EDGE_NODE_ID,
         },
         MTU,
@@ -54,6 +54,6 @@ pub async fn connect(
     .await
     .map_err(|_| anyhow!("Failed to register USB edge interface"))?;
 
-    info!("USB device registered (DirectEdge controller)");
+    info!("USB device registered (DirectEdge)");
     Ok(stack)
 }
