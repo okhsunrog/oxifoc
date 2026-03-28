@@ -1,7 +1,7 @@
 # oxifoc — FOC motor controller monorepo
 
 # Device firmware crates (excluded from workspace, different toolchain)
-device_crates := "oxifoc-g431 oxifoc-g474 oxifoc-f405"
+device_crates := "oxifoc-g431 oxifoc-g474 oxifoc-f405 oxifoc-bridge"
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:

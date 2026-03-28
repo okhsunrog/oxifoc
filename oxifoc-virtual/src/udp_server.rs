@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use oxifoc_core::foc::fault::FaultRegistry;
-use oxifoc_core::icd::DeviceInfo;
+use oxifoc_core::icd::HardwareInfo;
 use oxifoc_core::runtime::servers::run_all_servers_with_config;
 use oxifoc_core::runtime::streaming::fast_telemetry_stream;
 use oxifoc_core::state::MotorControlState;
@@ -84,7 +84,7 @@ pub async fn run(
         let _ = sw.push_str("oxifoc-virtual-0.1.0");
         let _ = mcu.push_str("x86_64 (virtual)");
         let _ = uuid.push_str("00000000-virtual");
-        let device_info = DeviceInfo {
+        let device_info = HardwareInfo {
             hw,
             sw,
             mcu,

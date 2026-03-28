@@ -19,7 +19,7 @@
 //!
 //! | Endpoint | Request | Response | Description |
 //! |----------|---------|----------|-------------|
-//! | `InfoEndpoint` | `()` | `DeviceInfo` | Device information query |
+//! | `HardwareInfoEndpoint` | `()` | `HardwareInfo` | Hardware information query |
 //! | `MotorEndpoint` | `ControlMode` | `MotorStatus` | Motor control commands |
 //! | `TelemetryConfigEndpoint` | `TelemetryConfig` | `TelemetryConfigAck` | Configure streaming rates |
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
@@ -79,8 +79,8 @@ endpoint!(
 // Button event endpoint (device → host)
 endpoint!(ButtonEndpoint, ButtonEvent, (), "event/button");
 
-// Device info endpoint (host → device)
-endpoint!(InfoEndpoint, (), DeviceInfo, "req/device_info");
+// Hardware info endpoint (host → device)
+endpoint!(HardwareInfoEndpoint, (), HardwareInfo, "req/hardware_info");
 
 // Motor control endpoint (host → device)
 endpoint!(MotorEndpoint, ControlMode, MotorStatus, "cmd/motor");

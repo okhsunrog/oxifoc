@@ -45,7 +45,7 @@ pub fn get_device_state() -> DeviceState {
 
 use embassy_executor::Spawner;
 use heapless::String;
-use oxifoc_core::types::DeviceInfo;
+use oxifoc_core::types::HardwareInfo;
 
 use crate::transport::RxWorker;
 use crate::{FAULT_REGISTRY, RUNTIME_CONFIG, STATE};
@@ -151,7 +151,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
     let _ = sw.push_str("oxifoc-0.1.0");
     let _ = mcu.push_str("STM32G431CB");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
-    let device_info = DeviceInfo {
+    let device_info = HardwareInfo {
         hw,
         sw,
         mcu,

@@ -3,14 +3,58 @@ name = "oxifoc-host-slint"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "oxifoc-host-slint"
+path = "src/main.rs"
+
+[features]
+default = ["desktop"]
+desktop = ["slint/backend-winit", "slint/renderer-skia", "oxifoc-host-lib/desktop"]
+android = ["slint/backend-android-activity-06"]
+
 [dependencies]
-oxifoc-host-lib = { path = "../oxifoc-host-lib" }
+oxifoc-host-lib = { path = "../oxifoc-host-lib", default-features = false }
 oxifoc-core = { workspace = true, features = ["icd", "storage"] }
 slint-wgpu-plot = { path = "../slint-wgpu-plot" }
-slint = { workspace = true, features = ["backend-winit", "renderer-skia", "accessibility"] }
+slint = { workspace = true, features = ["accessibility"] }
 crossbeam-channel = { workspace = true }
+tokio = { workspace = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [build-dependencies]
 slint-build = { workspace = true }
+
+[package.metadata.android]
+package = "com.oxifoc.host"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 23
+target_sdk_version = 33
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.bluetooth_le"
+required = true
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.BLUETOOTH_SCAN"
+min_sdk_version = 31
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.BLUETOOTH_CONNECT"
+min_sdk_version = 31
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.ACCESS_FINE_LOCATION"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.BLUETOOTH"
+max_sdk_version = 30
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.BLUETOOTH_ADMIN"
+max_sdk_version = 30

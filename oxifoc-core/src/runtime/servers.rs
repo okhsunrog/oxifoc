@@ -13,7 +13,7 @@
 //! // In platform - single task wrapper
 //! #[embassy_executor::task]
 //! pub async fn protocol_servers() {
-//!     let device_info = DeviceInfo { hw: "My Board", sw: "v0.1.0" };
+//!     let device_info = HardwareInfo { hw: "My Board", sw: "v0.1.0" };
 //!     oxifoc_core::runtime::run_all_servers(
 //!         STACK.endpoints(),
 //!         device_info,
@@ -34,7 +34,7 @@ use crate::foc::fault::{FaultRegistry, PlatformFault};
 #[cfg(feature = "storage")]
 use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
 use crate::icd::{
-    ControlMode, DeviceInfo, FaultEndpoint, FaultRequest, FaultResponse, InfoEndpoint,
+    ControlMode, FaultEndpoint, FaultRequest, FaultResponse, HardwareInfo, HardwareInfoEndpoint,
     MotorEndpoint, MotorStatus, SlowTelemetry, SlowTelemetryEndpoint, TelemetryConfig,
     TelemetryConfigAck, TelemetryConfigEndpoint,
 };
@@ -48,12 +48,12 @@ use crate::storage::{ConfigKey, ConfigPayload, FLASH_CHANNEL, FlashOperation, Ru
 /// Also marks the communication link as active on first request.
 pub async fn info_server<NS, const N: usize>(
     endpoints: Endpoints<NS>,
-    device_info: DeviceInfo,
+    device_info: HardwareInfo,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
 ) where
     NS: NetStackHandle,
 {
-    let server = endpoints.bounded_server::<InfoEndpoint, N>(Some("device_info"));
+    let server = endpoints.bounded_server::<HardwareInfoEndpoint, N>(Some("device_info"));
     let server = pin!(server);
     let mut h = server.attach();
 
@@ -62,7 +62,7 @@ pub async fn info_server<NS, const N: usize>(
         let _result = h
             .serve(|_req: &()| {
                 #[cfg(feature = "defmt")]
-                defmt::info!("DeviceInfo request received");
+                defmt::info!("HardwareInfo request received");
                 // Mark link as active on first request
                 critical_section::with(|cs| {
                     state_mutex.borrow(cs).borrow_mut().set_link_active();
@@ -72,7 +72,7 @@ pub async fn info_server<NS, const N: usize>(
             .await;
         #[cfg(feature = "defmt")]
         defmt::info!(
-            "DeviceInfo response send result: {:?}",
+            "HardwareInfo response send result: {:?}",
             defmt::Debug2Format(&_result)
         );
     }
@@ -414,7 +414,7 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
 ///
 ///     oxifoc_core::runtime::run_all_servers(
 ///         STACK.endpoints(),
-///         DeviceInfo { hw, sw },
+///         HardwareInfo { hw, sw },
 ///         &STATE,
 ///         &FAULT_REGISTRY,
 ///     ).await
@@ -426,7 +426,7 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
 /// to include the configuration endpoint.
 pub async fn run_all_servers<NS, F>(
     endpoints: Endpoints<NS>,
-    device_info: DeviceInfo,
+    device_info: HardwareInfo,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<F>,
     foc_freq_hz: u32,
@@ -452,7 +452,7 @@ pub async fn run_all_servers<NS, F>(
 #[cfg(feature = "storage")]
 pub async fn run_all_servers_with_config<NS, F>(
     endpoints: Endpoints<NS>,
-    device_info: DeviceInfo,
+    device_info: HardwareInfo,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<F>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,

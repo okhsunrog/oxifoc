@@ -32,6 +32,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 pub use config::{HostConfig, ReconnectPolicy};
+pub use discovery::{BleDeviceInfo, scan_ble_devices};
+#[cfg(feature = "desktop")]
 pub use discovery::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
 pub use transport::{TransportConfig, TransportType};
 
@@ -100,7 +102,7 @@ pub enum HostCommand {
 pub struct HostRuntime {
     pub fast_rx: Receiver<FastTelemetry>,
     pub slow_rx: Receiver<SlowTelemetry>,
-    pub device_info_rx: Receiver<oxifoc_core::types::DeviceInfo>,
+    pub device_info_rx: Receiver<oxifoc_core::types::HardwareInfo>,
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
     pub fast_hz: Arc<AtomicU16>,
@@ -134,7 +136,7 @@ impl HostRuntime {
 struct BackendCtx {
     fast_tx: Sender<FastTelemetry>,
     slow_tx: Sender<SlowTelemetry>,
-    info_tx: Sender<oxifoc_core::types::DeviceInfo>,
+    info_tx: Sender<oxifoc_core::types::HardwareInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected: Arc<AtomicBool>,
     fast_hz: Arc<AtomicU16>,
@@ -146,7 +148,7 @@ struct BackendCtx {
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(4096);
     let (slow_tx, slow_rx) = crossbeam_channel::bounded::<SlowTelemetry>(64);
-    let (info_tx, device_info_rx) = crossbeam_channel::bounded::<oxifoc_core::types::DeviceInfo>(4);
+    let (info_tx, device_info_rx) = crossbeam_channel::bounded::<oxifoc_core::types::HardwareInfo>(4);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
     let fast_hz = Arc::new(AtomicU16::new(0));
@@ -205,6 +207,7 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
             )
             .await
         }
+        #[cfg(feature = "desktop")]
         TransportConfig::Serial { path, baud } => {
             run_cobs_stream_with_reconnect(
                 move || {
@@ -216,6 +219,7 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
             )
             .await
         }
+        #[cfg(feature = "desktop")]
         TransportConfig::Rtt { probe, chip } => {
             run_cobs_stream_with_reconnect(
                 move || {
@@ -236,6 +240,11 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
         TransportConfig::Usb => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
             let stack = transport::usb::connect(Some(state_notify.clone())).await?;
+            run_framed_transport(stack, state_notify, &cfg, ctx).await
+        }
+        TransportConfig::Ble { device } => {
+            let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
+            let stack = transport::ble::connect(&device, Some(state_notify.clone())).await?;
             run_framed_transport(stack, state_notify, &cfg, ctx).await
         }
     }
@@ -260,7 +269,7 @@ where
     let cancel = ctx.cancel.clone();
     let info_tx = ctx.info_tx.clone();
 
-    device_info_handshake(&stack, &info_tx, &connected).await;
+    hardware_info_handshake(&stack, &info_tx, &connected).await;
     enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
     spawn_protocol_tasks(&stack, ctx);
     if cfg.stream_defmt() {
@@ -375,8 +384,8 @@ where
             _ = cancel.cancelled() => break,
         }
 
-        // DeviceInfo handshake on each (re)connection
-        let handshake_ok = device_info_handshake(&stack, &info_tx, &connected).await;
+        // HardwareInfo handshake on each (re)connection
+        let handshake_ok = hardware_info_handshake(&stack, &info_tx, &connected).await;
 
         if !handshake_ok {
             tracing::warn!("Handshake failed, reconnecting...");
@@ -511,11 +520,11 @@ async fn wait_for_active<NS>(
 
 // ── Device handshake & telemetry setup ───────────────────────────────────────
 
-/// Run DeviceInfo handshake with retries and exponential backoff.
+/// Run HardwareInfo handshake with retries and exponential backoff.
 /// Returns `true` on success.
-async fn device_info_handshake<NS>(
+async fn hardware_info_handshake<NS>(
     stack: &NS,
-    info_tx: &Sender<oxifoc_core::types::DeviceInfo>,
+    info_tx: &Sender<oxifoc_core::types::HardwareInfo>,
     connected: &Arc<AtomicBool>,
 ) -> bool
 where
@@ -524,10 +533,10 @@ where
     let ns = stack.stack();
     let mut backoff = Duration::from_millis(100);
     for attempt in 1..=10u32 {
-        let fut = ns.endpoints().request::<oxifoc_core::icd::InfoEndpoint>(
+        let fut = ns.endpoints().request::<oxifoc_core::icd::HardwareInfoEndpoint>(
             DEVICE_ADDR,
             &(),
-            Some("device_info"),
+            Some("hardware_info"),
         );
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, fut).await {
             Ok(Ok(dev_info)) => {
@@ -545,10 +554,10 @@ where
                 return true;
             }
             Ok(Err(e)) => {
-                tracing::warn!("DeviceInfo attempt {} failed: {:?}", attempt, e);
+                tracing::warn!("HardwareInfo attempt {} failed: {:?}", attempt, e);
             }
             Err(_) => {
-                tracing::warn!("DeviceInfo attempt {} timed out", attempt);
+                tracing::warn!("HardwareInfo attempt {} timed out", attempt);
             }
         }
         tokio::time::sleep(backoff).await;

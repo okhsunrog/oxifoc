@@ -3,11 +3,18 @@
 //! Provides enumeration of available devices for each transport type:
 //! - Serial ports (via tokio_serial, which re-exports mio_serial/serialport)
 //! - Debug probes for RTT (via probe-rs)
+//! - BLE devices (via bluest)
 
+use bluest::Adapter;
+use futures::StreamExt;
+#[cfg(feature = "desktop")]
 use probe_rs::probe::list::Lister;
+#[cfg(feature = "desktop")]
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::time::Duration;
 
+#[cfg(feature = "desktop")]
 /// Information about a discovered serial port.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SerialPortInfo {
@@ -25,6 +32,7 @@ pub struct SerialPortInfo {
     pub product: Option<String>,
 }
 
+#[cfg(feature = "desktop")]
 impl fmt::Display for SerialPortInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(ref product) = self.product {
@@ -37,6 +45,7 @@ impl fmt::Display for SerialPortInfo {
     }
 }
 
+#[cfg(feature = "desktop")]
 /// Information about a discovered debug probe (for RTT transport).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProbeInfo {
@@ -52,6 +61,7 @@ pub struct ProbeInfo {
     pub probe_type: String,
 }
 
+#[cfg(feature = "desktop")]
 impl fmt::Display for ProbeInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(ref serial) = self.serial_number {
@@ -66,6 +76,7 @@ impl fmt::Display for ProbeInfo {
     }
 }
 
+#[cfg(feature = "desktop")]
 /// List all available serial ports.
 ///
 /// Returns information about each discovered port including USB metadata
@@ -102,6 +113,7 @@ pub fn list_serial_ports() -> Vec<SerialPortInfo> {
     }
 }
 
+#[cfg(feature = "desktop")]
 /// List all available debug probes (for RTT transport).
 ///
 /// Uses probe-rs to enumerate connected debug probes such as
@@ -133,7 +145,87 @@ pub fn list_probes() -> Vec<ProbeInfo> {
         .collect()
 }
 
-#[cfg(test)]
+/// Information about a discovered BLE device.
+#[derive(Debug, Clone)]
+pub struct BleDeviceInfo {
+    /// The bluest device handle (used for connecting)
+    pub device: bluest::Device,
+    /// Device ID string (MAC address on Linux/Android, opaque on macOS)
+    pub id: String,
+    /// Local name advertised by the device (if any)
+    pub name: Option<String>,
+    /// RSSI in dBm (if available)
+    pub rssi: Option<i16>,
+}
+
+impl fmt::Display for BleDeviceInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(ref name) = self.name {
+            write!(f, "{name} ({})", self.id)?;
+        } else {
+            write!(f, "{}", self.id)?;
+        }
+        if let Some(rssi) = self.rssi {
+            write!(f, " [{rssi} dBm]")?;
+        }
+        Ok(())
+    }
+}
+
+/// Scan for BLE devices for the given duration.
+///
+/// Returns all discovered peripherals with their device handles.
+/// Uses bluest's async stream-based scanning.
+pub async fn scan_ble_devices(scan_duration: Duration) -> Vec<BleDeviceInfo> {
+    match scan_ble_devices_inner(scan_duration).await {
+        Ok(devices) => devices,
+        Err(e) => {
+            tracing::warn!("BLE scan failed: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+async fn scan_ble_devices_inner(scan_duration: Duration) -> anyhow::Result<Vec<BleDeviceInfo>> {
+    let adapter = Adapter::default().await?;
+    adapter.wait_available().await?;
+
+    let services: &[bluest::Uuid] = &[];
+    let mut scan: std::pin::Pin<
+        Box<dyn futures::Stream<Item = bluest::AdvertisingDevice> + Send + '_>,
+    > = Box::pin(adapter.scan(services).await?);
+    let mut devices: Vec<BleDeviceInfo> = Vec::new();
+
+    let collect = async {
+        while let Some(adv) = scan.next().await {
+            let name = adv.adv_data.local_name.clone();
+            let rssi = adv.rssi;
+            // Deduplicate: update existing entry or add new one
+            if let Some(existing) = devices.iter_mut().find(|d| d.device == adv.device) {
+                existing.name = name.or(existing.name.take());
+                existing.rssi = rssi.or(existing.rssi);
+            } else {
+                let id = format!("{}", adv.device.id());
+                devices.push(BleDeviceInfo {
+                    device: adv.device,
+                    id,
+                    name,
+                    rssi,
+                });
+            }
+        }
+    };
+
+    let _ = tokio::time::timeout(scan_duration, collect).await;
+    drop(scan);
+
+    // Sort by RSSI descending (strongest signal first)
+    devices.sort_by(|a, b| b.rssi.unwrap_or(i16::MIN).cmp(&a.rssi.unwrap_or(i16::MIN)));
+
+    Ok(devices)
+}
+
+#[cfg(all(test, feature = "desktop"))]
 mod tests {
     use super::*;
 

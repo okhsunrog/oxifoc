@@ -29,6 +29,9 @@ export component App inherits Window {
     in-out property <string> tcp-port: "2025";
     in-out property <string> udp-host: "127.0.0.1";
     in-out property <string> udp-port: "2025";
+    in property <[StandardListViewItem]> ble-devices;
+    in-out property <int> selected-ble: -1;
+    in-out property <bool> ble-scanning: false;
     in property <string> error-text: "";
 
     // ── Main page state ──
@@ -160,6 +163,7 @@ export component App inherits Window {
     // ── Callbacks ──
     callback refresh-serial-ports();
     callback refresh-probes();
+    callback scan-ble();
     callback connect-device();
     callback disconnect-device();
     callback motor-start();
@@ -210,6 +214,11 @@ export component App inherits Window {
                 text: "USB";
                 primary: root.transport-mode == 4;
                 clicked => { root.transport-mode = 4; }
+            }
+            Button {
+                text: "BLE";
+                primary: root.transport-mode == 5;
+                clicked => { root.transport-mode = 5; }
             }
         }
 
@@ -385,6 +394,34 @@ export component App inherits Window {
             }
         }
 
+        // ── BLE config ──
+        if root.transport-mode == 5 : VerticalLayout {
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Text {
+                    text: "BLE Devices";
+                    font-size: 16px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Button {
+                    text: root.ble-scanning ? "Scanning..." : "Scan";
+                    enabled: !root.ble-scanning;
+                    clicked => { root.scan-ble(); }
+                }
+            }
+
+            StandardListView {
+                model: root.ble-devices;
+                current-item <=> root.selected-ble;
+                min-height: 200px;
+            }
+        }
+
         // ── Connect button ──
         HorizontalLayout {
             alignment: center;
@@ -396,7 +433,9 @@ export component App inherits Window {
                        : root.transport-mode == 1 ? (root.selected-probe >= 0 && root.chip-name != "")
                        : root.transport-mode == 2 ? (root.tcp-host != "" && root.tcp-port != "")
                        : root.transport-mode == 3 ? (root.udp-host != "" && root.udp-port != "")
-                       : true; // USB always enabled
+                       : root.transport-mode == 4 ? true // USB always enabled
+                       : root.transport-mode == 5 ? root.selected-ble >= 0
+                       : true;
                 clicked => { root.connect-device(); }
             }
         }

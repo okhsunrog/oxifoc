@@ -100,8 +100,8 @@ Motor Controller (Root Router)
 ├── Secondary Motor Ctrl ─ Bridge Router (CAN FD)
 │   └── ...               (its own edge devices)
 ├── BMS ──────────────── Edge (CAN FD)
-└── nRF52840 ──────────── Bridge Router (UART / SPI)
-    ├── ESK8 Remote ───── Edge (BLE)
+└── ESP32-C6 ──────────── Bridge Router (UART + BLE)
+    ├── ESK8 Remote ───── Edge (BLE, ESP32-C6)
     └── Android App ───── Edge (BLE)
 ```
 

@@ -3,16 +3,24 @@ name = "oxifoc-host-lib"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["desktop"]
+desktop = [
+    "dep:probe-rs",
+    "dep:tokio-serial",
+    "ergot/tokio-serial-v5",
+]
+
 [dependencies]
 oxifoc-core = { workspace = true, features = ["icd", "storage"] }
-ergot = { workspace = true, features = ["tokio-std", "tokio-serial-v5", "nusb-v0_1", "defmtlog"] }
+ergot = { workspace = true, features = ["tokio-std", "nusb-v0_1", "defmtlog"] }
 
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }
-tokio-serial = "5.4.4"
 
-# RTT transport via probe-rs
-probe-rs = "0.28"
+# Desktop-only transports
+tokio-serial = { version = "5.4.4", optional = true }
+probe-rs = { version = "0.28", optional = true }
 
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -27,3 +35,4 @@ toml = { workspace = true }
 tokio-stream = "0.1.18"
 bytes = "1.11.1"
 futures = "0.3.32"
+bluest = { git = "https://github.com/okhsunrog/bluest", branch = "android-full-impl", features = ["unstable"] }

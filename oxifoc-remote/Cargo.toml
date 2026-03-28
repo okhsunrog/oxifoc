@@ -1,0 +1,78 @@
+[package]
+edition      = "2024"
+name         = "oxifoc-remote"
+rust-version = "1.88"
+version      = "0.1.0"
+
+[[bin]]
+name = "oxifoc-remote"
+path = "./src/bin/main.rs"
+test = false
+
+[[test]]
+harness = false
+name    = "hello_test"
+
+[lib]
+test = false
+
+[dependencies]
+esp-hal = { git = "https://github.com/esp-rs/esp-hal.git", features = ["defmt", "esp32c6", "unstable"] }
+
+esp-rtos = { git = "https://github.com/esp-rs/esp-hal.git", features = [
+  "defmt",
+  "embassy",
+  "esp-alloc",
+  "esp-radio",
+  "esp32c6",
+] }
+
+defmt                  = "1.0.1"
+esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal.git", features = ["defmt", "esp32c6"] }
+
+bt-hci = "0.8.0"
+embassy-executor = { version = "0.9.1", features = ["defmt"] }
+embassy-time = { version = "0.5.0", features = ["defmt"] }
+embedded-io = { version = "0.7.1", features = ["defmt"] }
+embedded-io-async = { version = "0.7.0", features = ["defmt"] }
+esp-alloc = { git = "https://github.com/esp-rs/esp-hal.git", features = ["defmt"] }
+esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", features = [
+  "ble",
+  "defmt",
+  "esp-alloc",
+  "esp32c6",
+  "unstable",
+] }
+panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
+rtt-target = { version = "0.6.2", features = ["defmt"] }
+trouble-host = { git = "https://github.com/embassy-rs/trouble.git", features = ["gatt"] }
+
+critical-section = "1.2.0"
+static_cell      = "2.1.1"
+ergot = { git = "https://github.com/okhsunrog/ergot", branch = "mtu-discovery", version = "0.12.0", default-features = false, features = ["embassy-time", "disable-cache-padding", "defmt-v1"] }
+mutex = "1.0.2"
+serde = { version = "1.0.228", default-features = false, features = ["derive"] }
+postcard-schema = "0.2.5"
+embassy-futures = "0.1.2"
+bbqueue = "0.7"
+heapless = { version = "0.9", default-features = false }
+oxifoc-core = { version = "0.1.0", path = "../oxifoc-core", features = ["icd", "defmt"] }
+
+[dev-dependencies]
+embedded-test = { version = "0.7.0", features = [
+  "defmt",
+  "embassy",
+  "external-executor",
+] }
+
+# For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
+[profile.dev]
+# The default debug profile is too slow and too big for resource-constrained devices.
+# Always build with some optimizations enabled.
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1     # LLVM can perform better optimizations using a single thread
+debug         = 2     # prefer slower builds but better debugging experience
+lto           = 'fat'
+opt-level     = 's'

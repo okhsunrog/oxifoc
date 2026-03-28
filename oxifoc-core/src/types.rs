@@ -239,9 +239,9 @@ pub struct TelemetryConfigAck {
     pub actual_fast_hz: u16,
 }
 
-/// Device information returned on initial handshake
+/// Hardware information returned on initial handshake
 #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
-pub struct DeviceInfo {
+pub struct HardwareInfo {
     /// Hardware identifier (e.g., "B-G431B-ESC1")
     pub hw: String<32>,
     /// Software version (e.g., "oxifoc-0.1.0")
@@ -256,7 +256,7 @@ pub struct DeviceInfo {
     pub max_current_a: f32,
 }
 
-impl Default for DeviceInfo {
+impl Default for HardwareInfo {
     fn default() -> Self {
         Self {
             hw: String::new(),

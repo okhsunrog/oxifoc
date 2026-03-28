@@ -7,13 +7,17 @@ pub struct HostConfig {
     /// Transport type: "serial" (default), "rtt", "tcp", "udp", or "usb"
     pub transport: Option<TransportType>,
 
-    // RTT transport options
+    // RTT transport options (desktop only)
+    #[cfg(feature = "desktop")]
     pub probe: Option<String>, // e.g. "0483:374b:<serial>" or "0483:374b"
-    pub chip: Option<String>,  // e.g. "STM32G431CBTx"
+    #[cfg(feature = "desktop")]
+    pub chip: Option<String>, // e.g. "STM32G431CBTx"
 
-    // Serial transport options
+    // Serial transport options (desktop only)
+    #[cfg(feature = "desktop")]
     pub serial_path: Option<String>, // e.g. "/dev/ttyACM0"
-    pub serial_baud: Option<u32>,    // e.g. 921600
+    #[cfg(feature = "desktop")]
+    pub serial_baud: Option<u32>, // e.g. 921600
 
     // TCP transport options
     pub tcp_host: Option<String>, // e.g. "127.0.0.1"
@@ -22,6 +26,11 @@ pub struct HostConfig {
     // UDP transport options
     pub udp_host: Option<String>, // e.g. "127.0.0.1"
     pub udp_port: Option<u16>,    // e.g. 2025
+
+    // BLE transport options
+    /// Bluest device handle (set programmatically from scan results, not from config file)
+    #[serde(skip)]
+    pub ble_device: Option<bluest::Device>,
 
     // Common options
     pub elf: Option<String>,        // path to device ELF with .defmt
@@ -92,12 +101,14 @@ impl HostConfig {
         self.fast_hz.unwrap_or(0)
     }
 
+    #[cfg(feature = "desktop")]
     pub fn serial_path(&self) -> String {
         self.serial_path
             .clone()
             .unwrap_or_else(|| "/dev/ttyACM0".to_string())
     }
 
+    #[cfg(feature = "desktop")]
     pub fn serial_baud(&self) -> u32 {
         self.serial_baud.unwrap_or(921_600)
     }
@@ -108,10 +119,12 @@ impl HostConfig {
 
     pub fn transport_config(&self) -> anyhow::Result<TransportConfig> {
         match self.transport_type() {
+            #[cfg(feature = "desktop")]
             TransportType::Serial => Ok(TransportConfig::Serial {
                 path: self.serial_path(),
                 baud: self.serial_baud(),
             }),
+            #[cfg(feature = "desktop")]
             TransportType::Rtt => {
                 let chip = self.chip.clone().ok_or_else(|| {
                     anyhow::anyhow!("RTT transport requires 'chip' to be specified in config")
@@ -136,6 +149,12 @@ impl HostConfig {
                 port: self.udp_port.unwrap_or(2025),
             }),
             TransportType::Usb => Ok(TransportConfig::Usb),
+            TransportType::Ble => {
+                let device = self.ble_device.clone().ok_or_else(|| {
+                    anyhow::anyhow!("BLE transport requires a device from scan results")
+                })?;
+                Ok(TransportConfig::Ble { device })
+            }
         }
     }
 }

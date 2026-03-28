@@ -7,7 +7,10 @@
 //! - UDP — framed (no COBS)
 //! - USB (via nusb bulk endpoints) — framed (no COBS)
 
+pub mod ble;
+#[cfg(feature = "desktop")]
 pub mod rtt;
+#[cfg(feature = "desktop")]
 pub mod serial;
 pub mod tcp;
 pub mod udp;
@@ -20,10 +23,12 @@ use tokio::io::{AsyncRead, AsyncWrite};
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportType {
-    /// Serial port (UART over USB VCP) - default
-    #[default]
+    /// Serial port (UART over USB VCP) - default on desktop
+    #[cfg_attr(feature = "desktop", default)]
+    #[cfg(feature = "desktop")]
     Serial,
     /// RTT via debug probe (probe-rs)
+    #[cfg(feature = "desktop")]
     Rtt,
     /// TCP connection (for oxifoc-virtual or remote devices)
     Tcp,
@@ -31,16 +36,36 @@ pub enum TransportType {
     Udp,
     /// USB bulk (via nusb, ergot device class)
     Usb,
+    /// BLE (via bluest) - default on Android
+    #[cfg_attr(not(feature = "desktop"), default)]
+    Ble,
 }
 
 /// Configuration for transport selection.
 #[derive(Debug, Clone)]
 pub enum TransportConfig {
-    Serial { path: String, baud: u32 },
-    Rtt { probe: Option<String>, chip: String },
-    Tcp { host: String, port: u16 },
-    Udp { host: String, port: u16 },
+    #[cfg(feature = "desktop")]
+    Serial {
+        path: String,
+        baud: u32,
+    },
+    #[cfg(feature = "desktop")]
+    Rtt {
+        probe: Option<String>,
+        chip: String,
+    },
+    Tcp {
+        host: String,
+        port: u16,
+    },
+    Udp {
+        host: String,
+        port: u16,
+    },
     Usb,
+    Ble {
+        device: bluest::Device,
+    },
 }
 
 /// A COBS-stream transport (TCP, serial, RTT).

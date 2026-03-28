@@ -9,7 +9,7 @@ use heapless::String;
 
 use crate::transport::{AppDriver, Stack, UartRxWorker, UartWriter, UsbQueue, UsbRxWorker};
 use crate::{FAULT_REGISTRY, STATE};
-use oxifoc_core::types::DeviceInfo;
+use oxifoc_core::types::HardwareInfo;
 
 // ========== Worker Tasks ==========
 
@@ -116,7 +116,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
     let _ = sw.push_str("oxifoc-0.1.0");
     let _ = mcu.push_str("STM32F405RG");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
-    let device_info = DeviceInfo {
+    let device_info = HardwareInfo {
         hw,
         sw,
         mcu,

@@ -263,7 +263,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=unified-router#9b55dceecbe3a7ce3fa2b2503a3029bfd0ba05fd"
+source = "git+https://github.com/okhsunrog/ergot?branch=mtu-discovery#e9688ec21fd1a6384fea3b02a22dcfff9c8e45e3"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -943,7 +943,7 @@ dependencies = [
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=unified-router#9b55dceecbe3a7ce3fa2b2503a3029bfd0ba05fd"
+source = "git+https://github.com/okhsunrog/ergot?branch=mtu-discovery#e9688ec21fd1a6384fea3b02a22dcfff9c8e45e3"
 dependencies = [
  "bbqueue",
  "cobs 0.3.0",
