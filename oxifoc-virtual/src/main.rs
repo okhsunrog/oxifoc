@@ -5,6 +5,18 @@ mod storage;
 mod tcp_server;
 mod udp_server;
 
+pub struct TokioTimer;
+
+impl oxifoc_core::timer::Timer for TokioTimer {
+    async fn after_millis(ms: u64) {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    }
+
+    async fn after_micros(us: u64) {
+        tokio::time::sleep(std::time::Duration::from_micros(us)).await;
+    }
+}
+
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 

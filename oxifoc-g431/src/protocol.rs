@@ -175,7 +175,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
 /// Uses batch size of 8 to reduce stack usage (~360B vs ~1.4KB for 32).
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    oxifoc_core::runtime::streaming::fast_telemetry_stream::<_, 8>(
+    oxifoc_core::runtime::streaming::fast_telemetry_stream::<_, 8, oxifoc_core::timer::EmbassyTimer>(
         stack,
         crate::config::PWM_CONFIG.pwm_freq_hz,
     )

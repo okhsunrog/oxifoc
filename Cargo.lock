@@ -5188,7 +5188,6 @@ dependencies = [
  "anyhow",
  "clap",
  "critical-section",
- "embassy-time",
  "ergot",
  "heapless 0.9.2",
  "oxifoc-core",

@@ -14,7 +14,6 @@ oxifoc-core = { workspace = true, features = [
 ] }
 
 ergot = { workspace = true, features = ["tokio-std"] }
-embassy-time = { version = "0.5.1", features = ["generic-queue-8"] }
 tokio = { workspace = true }
 critical-section = { version = "1.2", features = ["std"] }
 sequential-storage = { version = "7.1", features = ["postcard", "_test"] }

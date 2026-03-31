@@ -403,7 +403,7 @@ pub async fn defmt_forwarder(
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    oxifoc_core::runtime::streaming::fast_telemetry_stream::<_, 8>(
+    oxifoc_core::runtime::streaming::fast_telemetry_stream::<_, 8, oxifoc_core::timer::EmbassyTimer>(
         stack,
         crate::config::PWM_CONFIG.pwm_freq_hz,
     )

@@ -16,6 +16,7 @@ use heapless::Vec;
 
 use crate::foc::controller::FocOutput;
 use crate::icd::FastTelemetryTopic;
+use crate::timer::Timer;
 use crate::types::FastTelemetry;
 
 /// Lock-free queue for ISR → async telemetry transfer.
@@ -81,7 +82,7 @@ pub fn push_fast_telemetry(telem: &FastTelemetry) {
 /// Smaller values reduce stack usage at the cost of more frequent broadcasts.
 /// The wire format is compatible regardless of batch size — postcard only
 /// encodes actual elements, and the host deserializes into `Vec<_, 32>`.
-pub async fn fast_telemetry_stream<NS, const BATCH: usize>(stack: NS, foc_freq_hz: u32)
+pub async fn fast_telemetry_stream<NS, const BATCH: usize, T: Timer>(stack: NS, foc_freq_hz: u32)
 where
     NS: NetStackHandle + Clone,
 {
@@ -95,7 +96,7 @@ where
 
         if period == 0 {
             // Streaming disabled — check again in 100ms
-            embassy_time::Timer::after_millis(100).await;
+            T::after_millis(100).await;
             continue;
         }
 
@@ -107,7 +108,7 @@ where
             100_000 // fallback 100ms
         };
 
-        embassy_time::Timer::after_micros(interval_us).await;
+        T::after_micros(interval_us).await;
 
         // Drain bbqueue into batches and broadcast
         loop {

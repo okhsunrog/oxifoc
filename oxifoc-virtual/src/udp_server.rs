@@ -125,7 +125,7 @@ pub async fn run(
             async move {
                 tokio::select! {
                     _ = token.cancelled() => {}
-                    _ = fast_telemetry_stream::<_, { oxifoc_core::runtime::streaming::DEFAULT_BATCH_SIZE }>(stack, foc_freq_hz) => {}
+                    _ = fast_telemetry_stream::<_, { oxifoc_core::runtime::streaming::DEFAULT_BATCH_SIZE }, crate::TokioTimer>(stack, foc_freq_hz) => {}
                 }
             }
         });
