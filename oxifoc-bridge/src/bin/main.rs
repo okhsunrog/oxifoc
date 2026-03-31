@@ -158,11 +158,13 @@ async fn main(spawner: Spawner) -> ! {
         // HardwareInfo endpoint server
         info_server(stack),
         // Ergot device discovery handler
-        stack.services().device_info_handler::<2>(&ergot::well_known::DeviceInfo {
-            name: Some("Oxifoc Bridge".try_into().unwrap_or_default()),
-            description: Some("BLE+UART bridge".try_into().unwrap_or_default()),
-            unique_id: 0,
-        }),
+        stack
+            .services()
+            .device_info_handler::<2>(&ergot::well_known::DeviceInfo {
+                name: Some("Oxifoc Bridge".try_into().unwrap_or_default()),
+                description: Some("BLE+UART bridge".try_into().unwrap_or_default()),
+                unique_id: 0,
+            }),
         // UART RX worker
         async {
             let recv_buf = RECV_BUF.init_with(|| [0u8; 512]);
@@ -269,6 +271,7 @@ async fn ble_runner<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) 
 
 // ========== BLE advertise ==========
 
+#[allow(clippy::large_stack_frames)]
 async fn advertise<'v, 's, C: Controller>(
     peripheral: &mut Peripheral<'v, C, DefaultPacketPool>,
     server: &'s NusServer<'v>,
@@ -299,6 +302,7 @@ async fn advertise<'v, 's, C: Controller>(
 
 // ========== BLE NUS connection handler ==========
 
+#[allow(clippy::large_stack_frames)]
 async fn nus_connection_task<P: PacketPool>(
     stack: &'static transport::Stack,
     server: &NusServer<'_>,
@@ -322,13 +326,13 @@ async fn nus_connection_task<P: PacketPool>(
                     break;
                 }
                 GattConnectionEvent::Gatt { event } => {
-                    if let GattEvent::Write(ref write_event) = event {
-                        if write_event.handle() == rx_handle {
-                            let data = write_event.data();
-                            let changed = processor.process_frame(data, &stack, ble_ident);
-                            if changed {
-                                transport::STATE_NOTIFY.wake_all();
-                            }
+                    if let GattEvent::Write(ref write_event) = event
+                        && write_event.handle() == rx_handle
+                    {
+                        let data = write_event.data();
+                        let changed = processor.process_frame(data, &stack, ble_ident);
+                        if changed {
+                            transport::STATE_NOTIFY.wake_all();
                         }
                     }
                     match event.accept() {
@@ -355,6 +359,7 @@ async fn nus_connection_task<P: PacketPool>(
 
 // ========== Info server ==========
 
+#[allow(clippy::large_stack_frames)]
 async fn info_server(stack: &'static transport::Stack) {
     use core::pin::pin;
 

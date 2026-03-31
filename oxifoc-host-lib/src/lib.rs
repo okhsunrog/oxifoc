@@ -148,7 +148,8 @@ struct BackendCtx {
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(4096);
     let (slow_tx, slow_rx) = crossbeam_channel::bounded::<SlowTelemetry>(64);
-    let (info_tx, device_info_rx) = crossbeam_channel::bounded::<oxifoc_core::types::HardwareInfo>(4);
+    let (info_tx, device_info_rx) =
+        crossbeam_channel::bounded::<oxifoc_core::types::HardwareInfo>(4);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
     let fast_hz = Arc::new(AtomicU16::new(0));
@@ -533,11 +534,13 @@ where
     let ns = stack.stack();
     let mut backoff = Duration::from_millis(100);
     for attempt in 1..=10u32 {
-        let fut = ns.endpoints().request::<oxifoc_core::icd::HardwareInfoEndpoint>(
-            DEVICE_ADDR,
-            &(),
-            Some("hardware_info"),
-        );
+        let fut = ns
+            .endpoints()
+            .request::<oxifoc_core::icd::HardwareInfoEndpoint>(
+                DEVICE_ADDR,
+                &(),
+                Some("hardware_info"),
+            );
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, fut).await {
             Ok(Ok(dev_info)) => {
                 info!(

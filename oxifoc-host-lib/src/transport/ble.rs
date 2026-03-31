@@ -140,10 +140,8 @@ async fn ble_rx_worker(
             Some(Ok(data)) => {
                 debug!("[ble rx] {} bytes", data.len());
                 let changed = processor.process_frame(&data, &stack, ());
-                if changed {
-                    if let Some(ref n) = state_notify {
-                        n.wake_all();
-                    }
+                if changed && let Some(ref n) = state_notify {
+                    n.wake_all();
                 }
             }
             Some(Err(e)) => {

@@ -187,7 +187,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=unified-router#40ac99a6b86eaa1160b41c1f83e1eb90cf8f89bd"
+source = "git+https://github.com/okhsunrog/ergot?branch=link-local-addressing#1dee24bfeeae4c41ce747add045e6e7ac24c0da3"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -766,7 +766,7 @@ checksum = "a357d28ed41a50f9c765dbfe56cbc04a64e53e5fc58ba79fbc34c10ef3df831f"
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/okhsunrog/ergot?branch=unified-router#40ac99a6b86eaa1160b41c1f83e1eb90cf8f89bd"
+source = "git+https://github.com/okhsunrog/ergot?branch=link-local-addressing#1dee24bfeeae4c41ce747add045e6e7ac24c0da3"
 dependencies = [
  "bbqueue",
  "cobs 0.3.0",

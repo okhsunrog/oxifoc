@@ -66,7 +66,7 @@ algorithms = []
 
 # Async runtime with state management and protocol servers
 # Requires icd for endpoints and algorithms for control logic
-runtime = ["icd", "algorithms", "dep:embassy-time", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section", "dep:bbqueue", "dep:bytemuck"]
+runtime = ["icd", "algorithms", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section", "dep:bbqueue", "dep:bytemuck"]
 
 # Virtual motor simulation for testing without hardware
 # Useful for host-side integration tests and GUI simulation mode
