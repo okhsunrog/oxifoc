@@ -175,9 +175,12 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
             set_device_state(DeviceState::Linked);
             any_was_active = true;
         } else if !any_active && any_was_active {
-            defmt::info!("All interfaces down — stopping motor, waiting for link");
+            defmt::info!("All interfaces down — stopping motor + telemetry, waiting for link");
             // Fail-safe: drop link_active so the FOC loop forces ControlMode::Stopped.
             critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_inactive());
+            // Stop streaming telemetry into a dead link (host re-enables on reconnect).
+            oxifoc_core::runtime::streaming::FAST_TELEM_PERIOD
+                .store(0, core::sync::atomic::Ordering::Relaxed);
             set_device_state(DeviceState::WaitingLink);
             any_was_active = false;
         }

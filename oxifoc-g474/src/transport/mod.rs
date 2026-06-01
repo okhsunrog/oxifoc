@@ -223,7 +223,9 @@ pub fn init_usb(
         .unwrap();
 
     let rx_worker = UsbRxWorkerType::new(stack, ep_out, RouterFrameProcessor::new(net_id), ident)
-        .with_liveness(LivenessConfig { timeout_ms: 3000 })
+        .with_liveness(LivenessConfig {
+            timeout_ms: crate::config::USB_LIVENESS_TIMEOUT_MS,
+        })
         .with_state_notify(&STATE_NOTIFY);
 
     (

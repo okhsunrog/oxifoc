@@ -73,6 +73,10 @@ pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
 /// Maximum size of a single packet
 pub const MAX_PACKET_SIZE: usize = 512;
 
+/// USB liveness timeout (ms): mark the USB interface Down if no frame arrives
+/// within this window. Shorter than the UART/ICD timeout for faster reaction.
+pub const USB_LIVENESS_TIMEOUT_MS: u64 = 3000;
+
 // ============================================================================
 // Transport Configuration
 // ============================================================================

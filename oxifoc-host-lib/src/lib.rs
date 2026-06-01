@@ -12,10 +12,10 @@ use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
 use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::icd::{
-    ButtonEndpoint, ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, MotorEndpoint,
+    ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, MotorEndpoint,
     SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigEndpoint,
 };
-use oxifoc_core::types::{ButtonEvent, ControlMode, FastTelemetry, SlowTelemetry};
+use oxifoc_core::types::{ControlMode, FastTelemetry, SlowTelemetry};
 use std::{
     fs,
     path::Path,
@@ -566,8 +566,7 @@ where
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(2));
     }
-    tracing::warn!("Device info not received after retries; continuing without it");
-    connected.store(true, Ordering::Relaxed);
+    tracing::warn!("Device info not received after retries; giving up — caller will reconnect");
     false
 }
 
@@ -606,7 +605,6 @@ where
     NS::Profile: Send,
     NS::Target: Send,
 {
-    spawn_button_server(stack);
     spawn_fast_telemetry_subscriber(stack, ctx.fast_tx, ctx.cancel.clone());
     spawn_slow_telemetry_poller(
         stack,
@@ -623,40 +621,6 @@ where
         async move {
             while let Some(cmd) = cmd_rx.recv().await {
                 handle_command(&stack, cmd, &fast_hz_flag).await;
-            }
-        }
-    });
-}
-
-fn spawn_button_server<NS>(stack: &NS)
-where
-    NS: NetStackHandle + Clone + Send + Sync + 'static,
-    NS::Mutex: Send + Sync,
-    NS::Profile: Send,
-    NS::Target: Send,
-{
-    tokio::spawn({
-        let stack = stack.clone();
-        async move {
-            let ns = stack.stack();
-            let server = ns
-                .endpoints()
-                .bounded_server::<ButtonEndpoint, 8>(Some("button"));
-            let server = pin!(server);
-            let mut h = server.attach();
-            loop {
-                let _ = h
-                    .serve(|event: &ButtonEvent| {
-                        let ev = *event;
-                        async move {
-                            match ev {
-                                ButtonEvent::SingleClick => tracing::info!("Button: SINGLE"),
-                                ButtonEvent::DoubleClick => tracing::info!("Button: DOUBLE"),
-                                ButtonEvent::Hold => tracing::info!("Button: HOLD"),
-                            }
-                        }
-                    })
-                    .await;
             }
         }
     });

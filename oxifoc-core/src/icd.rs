@@ -24,7 +24,6 @@
 //! | `TelemetryConfigEndpoint` | `TelemetryConfig` | `TelemetryConfigAck` | Configure streaming rates |
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
 //! | `DetectEndpoint` | `DetectRequest` | `DetectResponse` | Motor detection |
-//! | `ButtonEndpoint` | `ButtonEvent` | `()` | Button events from device |
 
 use ergot::endpoint;
 
@@ -76,9 +75,6 @@ endpoint!(
 // Endpoint Definitions (request/response)
 // ============================================================================
 
-// Button event endpoint (device → host)
-endpoint!(ButtonEndpoint, ButtonEvent, (), "event/button");
-
 // Hardware info endpoint (host → device)
 endpoint!(HardwareInfoEndpoint, (), HardwareInfo, "req/hardware_info");
 
@@ -97,7 +93,11 @@ endpoint!(
 // Fault management endpoint (host → device)
 endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
 
-// Motor detection endpoint (host → device)
+// Motor detection endpoint (host → device).
+// NOTE: detection is an ACTION, not idempotent across runs — a retried request
+// would re-run characterization. Do not auto-retry on the host. TODO: dedup by
+// request-id, and make the handler a no-op / return Busy while a detection is
+// already in progress.
 endpoint!(DetectEndpoint, DetectRequest, DetectResponse, "cmd/detect");
 
 // Configuration endpoint (host → device)

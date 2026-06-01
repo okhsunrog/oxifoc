@@ -269,18 +269,6 @@ impl Default for HardwareInfo {
     }
 }
 
-/// Button events from hardware
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ButtonEvent {
-    /// Single button click
-    SingleClick,
-    /// Double click detected
-    DoubleClick,
-    /// Button held down
-    Hold,
-}
-
 // ============================================================================
 // Fault Protocol Types
 // ============================================================================
