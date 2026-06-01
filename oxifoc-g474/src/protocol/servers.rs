@@ -171,10 +171,13 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
                 usb_active,
                 uart_active
             );
+            critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_active());
             set_device_state(DeviceState::Linked);
             any_was_active = true;
         } else if !any_active && any_was_active {
-            defmt::info!("All interfaces down — waiting for link");
+            defmt::info!("All interfaces down — stopping motor, waiting for link");
+            // Fail-safe: drop link_active so the FOC loop forces ControlMode::Stopped.
+            critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_inactive());
             set_device_state(DeviceState::WaitingLink);
             any_was_active = false;
         }

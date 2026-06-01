@@ -110,6 +110,12 @@ impl MotorControlState {
     pub fn set_link_active(&mut self) {
         self.link_active = true;
     }
+
+    /// Mark link as inactive (host disconnected / liveness timed out).
+    /// [`process_commands`] forces [`ControlMode::Stopped`] while inactive.
+    pub fn set_link_inactive(&mut self) {
+        self.link_active = false;
+    }
 }
 
 impl Default for MotorControlState {
@@ -191,6 +197,16 @@ where
             }
             foc.set_mode(mode);
         });
+    }
+
+    // Fail-safe: while the link is inactive (liveness timed out / host gone),
+    // force Stopped regardless of the last commanded mode. After reconnect the
+    // host must send a fresh command to run again. This runs in the ISR, so it
+    // does not depend on any async task to react to link loss.
+    let link_active = critical_section::with(|cs| state_mutex.borrow(cs).borrow().link_active);
+    if !link_active && foc.mode() != ControlMode::Stopped {
+        critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
+        foc.set_mode(ControlMode::Stopped);
     }
 
     foc.mode()
