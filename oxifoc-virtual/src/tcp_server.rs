@@ -1,7 +1,8 @@
 //! Ergot TCP server — accepts a single host connection and runs protocol servers.
 //!
-//! Uses DirectEdge target profile (same topology as real embedded devices).
-//! The host connects as controller (node 1), we are the target (node 2).
+//! Registers a `Router` profile (central, node 1) over the COBS stream, matching
+//! the real device firmware: the host connects as an edge and the Router assigns
+//! it a net_id, so its link-local frames are routed rather than dropped.
 
 use core::cell::RefCell;
 use std::sync::Arc;
