@@ -87,7 +87,11 @@ impl DetectionBackend for VirtualBackend {
         tokio::task::spawn_blocking(move || {
             with_sim(MotorParams::default(), vbus, |hw| {
                 let hall_reader = VirtualHallReader;
-                block_on(calibrate_hall::<_, VirtualTimer, _>(hw, &hall_reader, params))
+                block_on(calibrate_hall::<_, VirtualTimer, _>(
+                    hw,
+                    &hall_reader,
+                    params,
+                ))
             })
         })
         .await

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use oxifoc_core::types::ControlMode;
+use oxifoc_core::types::{ControlMode, DetectRequest};
 use oxifoc_host_lib::{
     HostCommand, HostConfig, TransportType, init_tracing, list_probes, list_serial_ports,
     start_host,
@@ -16,6 +16,15 @@ enum Transport {
     Tcp,
     Udp,
     Usb,
+}
+
+/// A motor-detection step with no prerequisites (drivable standalone).
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DetectStep {
+    /// Measure phase-to-neutral resistance
+    Resistance,
+    /// Calibrate Hall sensors
+    Hall,
 }
 
 #[derive(Parser)]
@@ -106,6 +115,18 @@ enum Command {
         )]
         fast_hz: u16,
     },
+    /// Run a motor-detection step (effectively-once: retried under a stable id,
+    /// the device dedups so the measurement runs at most once)
+    Detect {
+        #[arg(value_enum)]
+        step: DetectStep,
+        #[arg(
+            long,
+            default_value_t = 10.0,
+            help = "Max power dissipation during the test (W)"
+        )]
+        max_power_w: f32,
+    },
 }
 
 fn main() -> Result<()> {
@@ -168,6 +189,36 @@ fn main() -> Result<()> {
         }
         Command::Monitor { seconds, .. } => {
             run_monitor(&runtime, Duration::from_secs(seconds))?;
+        }
+        Command::Detect { step, max_power_w } => {
+            let req = match step {
+                DetectStep::Resistance => DetectRequest::MeasureResistance {
+                    max_power_loss_w: max_power_w,
+                },
+                DetectStep::Hall => DetectRequest::CalibrateHall,
+            };
+            println!("Detection started: {:?}", req);
+            let (tx, mut rx) = oxifoc_host_lib::detect_channel();
+            runtime
+                .cmd_tx
+                .send(HostCommand::Detect(req, tx))
+                .context("send detect command")?;
+            // The detect oneshot is async; poll it (no tokio runtime on this
+            // thread). Bounded by a generous deadline (detection can be slow).
+            let deadline = Instant::now() + Duration::from_secs(70);
+            loop {
+                if let Ok(res) = rx.try_recv() {
+                    match res {
+                        Ok(resp) => println!("Detect result: {:?}", resp),
+                        Err(e) => eprintln!("Detect failed: {:?}", e),
+                    }
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    bail!("Detection timed out");
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
         }
     }
 
