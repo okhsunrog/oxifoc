@@ -23,6 +23,33 @@ pub use crate::foc::hall_sensor::Direction;
 pub use crate::foc::fault::{FaultCategory, FaultInfo};
 
 // ============================================================================
+// Delivery / idempotency-key wire types
+// ============================================================================
+
+/// A client-chosen request id, stable across retries of the same logical
+/// request. The server deduplicates on it so a non-idempotent action runs at
+/// most once. See the `delivery` module for the full ladder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
+pub struct ReqId(pub u64);
+
+/// A request payload tagged with a [`ReqId`] — the wire envelope for a
+/// deduplicated (effectively-once) endpoint. Mirrors an HTTP idempotency key.
+#[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+pub struct Keyed<T> {
+    /// Stable across retries; the dedup key.
+    pub id: ReqId,
+    /// The actual request.
+    pub inner: T,
+}
+
+impl<T> Keyed<T> {
+    /// Tag a request with an id.
+    pub fn new(id: ReqId, inner: T) -> Self {
+        Self { id, inner }
+    }
+}
+
+// ============================================================================
 // Motor State Types
 // ============================================================================
 

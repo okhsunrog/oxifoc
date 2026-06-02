@@ -230,208 +230,55 @@ pub async fn state_monitor(stack: &'static Stack, ident: u8) {
     }
 }
 
-fn map_err(e: oxifoc_core::foc::detection::DetectionError) -> oxifoc_core::types::DetectError {
-    use oxifoc_core::foc::detection::DetectionError;
-    use oxifoc_core::types::DetectError;
-    match e {
-        DetectionError::MotorNotResponding => DetectError::MotorNotResponding,
-        DetectionError::OutOfRange => DetectError::OutOfRange,
-        DetectionError::Timeout => DetectError::Timeout,
-        DetectionError::HardwareFault => DetectError::HardwareFault,
-        DetectionError::InsufficientSamples => DetectError::InsufficientSamples,
-        DetectionError::LowConfidence => DetectError::LowConfidence,
-        DetectionError::MissingPrerequisite => DetectError::MissingPrerequisite,
-        _ => DetectError::HardwareFault,
+/// Detection backend for the G431 platform: the raw measurements bound to the
+/// shared calibration code (which uses the platform ADC statics + board config).
+struct G431Backend;
+
+impl oxifoc_core::runtime::DetectionBackend for G431Backend {
+    fn vbus(&self) -> f32 {
+        crate::foc::VBUS_MV.load(core::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+    }
+    async fn measure_resistance(
+        &mut self,
+        params: &oxifoc_core::foc::detection::types::ResistanceParams,
+    ) -> Result<f32, oxifoc_core::foc::detection::DetectionError> {
+        crate::calibration::measure_resistance(params).await
+    }
+    async fn measure_inductance(
+        &mut self,
+        params: &oxifoc_core::foc::detection::types::InductanceParams,
+        pwm_freq_hz: f32,
+    ) -> Result<(f32, f32), oxifoc_core::foc::detection::DetectionError> {
+        crate::calibration::measure_inductance::<crate::cordic::CordicSinCos>(params, pwm_freq_hz)
+            .await
+    }
+    async fn measure_flux(
+        &mut self,
+        params: &oxifoc_core::foc::detection::types::FluxLinkageParams,
+    ) -> Result<f32, oxifoc_core::foc::detection::DetectionError> {
+        crate::calibration::measure_flux_linkage(params).await
+    }
+    async fn calibrate_hall(
+        &mut self,
+        params: oxifoc_core::foc::hall_calibration::HallCalibrationParams,
+    ) -> Result<
+        oxifoc_core::foc::hall_calibration::HallCalibrationResult,
+        oxifoc_core::foc::detection::DetectionError,
+    > {
+        crate::calibration::calibrate_hall(params).await
     }
 }
 
 #[embassy_executor::task]
 pub async fn detect_server(stack: &'static Stack) {
-    use core::pin::pin;
-
-    use crate::calibration::{
-        self, FluxLinkageParams, InductanceParams, ResistanceParams, calibrate_hall_default,
-    };
-    use crate::cordic::CordicSinCos;
-    use oxifoc_core::foc::detection::MotorSize;
-    use oxifoc_core::icd::DetectEndpoint;
-    use oxifoc_core::types::{DetectRequest, DetectResponse};
-
-    let endpoints = stack.endpoints();
-    let server = endpoints.bounded_server::<DetectEndpoint, 2>(Some("detect"));
-    let server = pin!(server);
-    let mut h = server.attach();
-
-    loop {
-        let _ = h
-            .serve(|req: &DetectRequest| {
-                let req = *req;
-                async move {
-                    let _ = oxifoc_core::state::CMD_CHANNEL
-                        .try_send(oxifoc_core::motor::ControlMode::Stopped);
-
-                    let vbus = crate::foc::VBUS_MV.load(core::sync::atomic::Ordering::Relaxed)
-                        as f32
-                        / 1000.0;
-                    let board = &crate::config::BOARD;
-                    let pwm_hz = crate::config::PWM_CONFIG.pwm_freq_hz as f32;
-
-                    let resp = match req {
-                        DetectRequest::MeasureResistance { max_power_loss_w } => {
-                            defmt::info!("Detect: measuring resistance");
-                            let probe_current = (board.max_phase_current_a / 50.0).max(0.5);
-                            let probe_params = ResistanceParams {
-                                motor_size: MotorSize::Custom(max_power_loss_w),
-                                current_max: probe_current,
-                                num_samples: 20,
-                                ramp_time_ms: 200,
-                                settle_time_ms: 100,
-                                ..Default::default()
-                            };
-                            match calibration::measure_resistance(&probe_params).await {
-                                Ok(r_probe) => {
-                                    let safe_current =
-                                        libm::sqrtf(max_power_loss_w / r_probe / 1.5)
-                                            .min(board.max_phase_current_a)
-                                            .min(3.0)
-                                            .max(probe_current);
-                                    let params = ResistanceParams {
-                                        motor_size: MotorSize::Custom(max_power_loss_w),
-                                        current_max: safe_current,
-                                        ..Default::default()
-                                    };
-                                    match calibration::measure_resistance(&params).await {
-                                        Ok(r) => {
-                                            defmt::info!("Resistance: {}Ω", r);
-                                            DetectResponse::Resistance { resistance_ohm: r }
-                                        }
-                                        Err(e) => {
-                                            defmt::error!("Resistance measurement failed: {}", e);
-                                            DetectResponse::Error(map_err(e))
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    defmt::error!("Resistance probe failed: {}", e);
-                                    DetectResponse::Error(map_err(e))
-                                }
-                            }
-                        }
-
-                        DetectRequest::MeasureInductance {
-                            max_power_loss_w,
-                            resistance_ohm: r,
-                        } => {
-                            defmt::info!("Detect: measuring inductance (R={})", r);
-                            let safe_current = oxifoc_core::foc::clamp_f32(
-                                libm::sqrtf(max_power_loss_w / r / 1.5)
-                                    .min(board.max_phase_current_a),
-                                0.5,
-                                3.0,
-                            );
-                            let max_bus_current = (vbus * 0.577 * 0.6) / r.max(0.001);
-                            let hold_current = oxifoc_core::foc::clamp_f32(
-                                safe_current.min(max_bus_current),
-                                0.1,
-                                3.0,
-                            );
-                            let params = InductanceParams {
-                                motor_size: MotorSize::Custom(max_power_loss_w),
-                                resistance_ohm: r,
-                                hold_current_a: hold_current,
-                                ..Default::default()
-                            };
-                            match calibration::measure_inductance::<CordicSinCos>(&params, pwm_hz)
-                                .await
-                            {
-                                Ok((ld, lq)) => {
-                                    defmt::info!("Inductance: Ld={}H Lq={}H", ld, lq);
-                                    DetectResponse::Inductance {
-                                        inductance_d_h: ld,
-                                        inductance_q_h: lq,
-                                    }
-                                }
-                                Err(e) => {
-                                    defmt::error!("Inductance measurement failed: {}", e);
-                                    DetectResponse::Error(map_err(e))
-                                }
-                            }
-                        }
-
-                        DetectRequest::MeasureFlux {
-                            max_power_loss_w,
-                            resistance_ohm: r,
-                            pole_pairs,
-                            openloop_erpm,
-                        } => {
-                            defmt::info!("Detect: measuring flux linkage");
-                            let safe_current = oxifoc_core::foc::clamp_f32(
-                                libm::sqrtf(max_power_loss_w / r / 1.5)
-                                    .min(board.max_phase_current_a),
-                                0.5,
-                                3.0,
-                            );
-                            let spin_rpm = openloop_erpm / pole_pairs as f32;
-                            let params = FluxLinkageParams {
-                                motor_size: MotorSize::Custom(max_power_loss_w),
-                                resistance_ohm: r,
-                                pole_pairs,
-                                spin_rpm,
-                                current_a: safe_current.min(2.0),
-                                ..Default::default()
-                            };
-                            match calibration::measure_flux_linkage(&params).await {
-                                Ok(flux) => {
-                                    let kv = if flux > 0.0 {
-                                        60.0 / (core::f32::consts::TAU * flux * pole_pairs as f32)
-                                    } else {
-                                        0.0
-                                    };
-                                    defmt::info!("Flux: {}Wb Kv={}RPM/V", flux, kv);
-                                    DetectResponse::FluxLinkage {
-                                        flux_linkage_wb: flux,
-                                        kv_rpm_per_v: kv,
-                                    }
-                                }
-                                Err(e) => {
-                                    defmt::error!("Flux linkage measurement failed: {}", e);
-                                    DetectResponse::Error(map_err(e))
-                                }
-                            }
-                        }
-
-                        DetectRequest::CalibrateHall => {
-                            defmt::info!("Detect: calibrating hall sensors");
-                            match calibrate_hall_default().await {
-                                Ok(hall_result) => {
-                                    use oxifoc_core::storage::HallCalibrationConfig;
-                                    critical_section::with(|cs| {
-                                        crate::RUNTIME_CONFIG
-                                            .borrow(cs)
-                                            .borrow_mut()
-                                            .hall_calibration = Some(HallCalibrationConfig {
-                                            angles: hall_result.angles,
-                                            valid: hall_result.valid,
-                                        });
-                                    });
-                                    defmt::info!("Hall calibration OK");
-                                    DetectResponse::HallCalibrated
-                                }
-                                Err(e) => {
-                                    defmt::error!("Hall calibration failed: {}", e);
-                                    DetectResponse::Error(map_err(e))
-                                }
-                            }
-                        }
-                    };
-
-                    let _ = oxifoc_core::state::CMD_CHANNEL
-                        .try_send(oxifoc_core::motor::ControlMode::Stopped);
-                    resp
-                }
-            })
-            .await;
-    }
+    oxifoc_core::runtime::detect_server(
+        stack.endpoints(),
+        G431Backend,
+        crate::config::BOARD.max_phase_current_a.min(3.0),
+        crate::config::PWM_CONFIG.pwm_freq_hz,
+        Some(&RUNTIME_CONFIG),
+    )
+    .await
 }
 
 // ========== Task Spawning ==========

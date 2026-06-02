@@ -52,7 +52,7 @@ embassy-embedded-hal = { version = "0.6.0" }
 postcard = "1.1"
 
 # Local crates
-oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy", "embassy-hal"] }
+oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy", "embassy-hal", "delivery"] }
 ergot = { git = "https://github.com/okhsunrog/ergot", branch = "link-local-addressing", default-features = false, features = [
     "embassy-usb-v0_6",
     "embedded-io-async-v0_7",

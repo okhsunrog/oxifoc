@@ -43,9 +43,9 @@ mod policy;
 pub use client::{Reliable, ReliableExt};
 pub use policy::{Decision, GiveUp, Outcome, RetryPolicy};
 
+pub use crate::types::{Keyed, ReqId};
+
 use ergot::traits::Endpoint;
-use postcard_schema::Schema;
-use serde::{Deserialize, Serialize};
 
 mod sealed {
     pub trait Sealed {}
@@ -85,29 +85,6 @@ pub trait Command: Endpoint {
     type Delivery: DeliveryClass;
     /// Tuned default retry budget for this command.
     const POLICY: RetryPolicy = RetryPolicy::DEFAULT;
-}
-
-/// A client-chosen request id, stable across retries of the *same* logical
-/// request. The server dedups on it so a [`Deduplicated`] action runs at most
-/// once. Mirrors an HTTP idempotency key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
-pub struct ReqId(pub u64);
-
-/// A request payload tagged with a [`ReqId`]. The wire envelope for
-/// [`Deduplicated`] commands.
-#[derive(Clone, Debug, Serialize, Deserialize, Schema)]
-pub struct Keyed<T> {
-    /// Stable across retries; the dedup key.
-    pub id: ReqId,
-    /// The actual request.
-    pub inner: T,
-}
-
-impl<T> Keyed<T> {
-    /// Tag a request with an id.
-    pub fn new(id: ReqId, inner: T) -> Self {
-        Self { id, inner }
-    }
 }
 
 /// The outcome of a reliable send, told in terms of *what the caller may

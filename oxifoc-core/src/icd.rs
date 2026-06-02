@@ -94,11 +94,14 @@ endpoint!(
 endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
 
 // Motor detection endpoint (host → device).
-// NOTE: detection is an ACTION, not idempotent across runs — a retried request
-// would re-run characterization. Do not auto-retry on the host. TODO: dedup by
-// request-id, and make the handler a no-op / return Busy while a detection is
-// already in progress.
-endpoint!(DetectEndpoint, DetectRequest, DetectResponse, "cmd/detect");
+//
+// Detection is a non-idempotent ACTION, so its request carries a `ReqId`
+// (`Keyed<DetectRequest>`): the device deduplicates on it (see
+// `oxifoc_core::runtime::detect`), making it safely retryable as
+// effectively-once. Classified `Deduplicated` below. The `endpoint!` macro
+// takes a single type token, hence the alias.
+pub type KeyedDetectRequest = Keyed<DetectRequest>;
+endpoint!(DetectEndpoint, KeyedDetectRequest, DetectResponse, "cmd/detect");
 
 // Configuration endpoint (host → device)
 #[cfg(feature = "storage")]
@@ -117,10 +120,14 @@ endpoint!(ConfigEndpoint, ConfigRequest, ConfigResponse, "cmd/config");
 #[cfg(feature = "delivery")]
 mod delivery_classes {
     use super::*;
-    use crate::delivery::{Command, Idempotent};
+    use crate::delivery::{Command, Deduplicated, Idempotent};
 
     impl Command for HardwareInfoEndpoint {
         type Delivery = Idempotent;
+    }
+    // Detection is the one action: deduplicated, not idempotent.
+    impl Command for DetectEndpoint {
+        type Delivery = Deduplicated;
     }
     impl Command for SlowTelemetryEndpoint {
         type Delivery = Idempotent;

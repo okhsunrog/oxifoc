@@ -11,6 +11,7 @@ oxifoc-core = { workspace = true, features = [
     "storage",
     "std",
     "log",
+    "delivery",
 ] }
 
 ergot = { workspace = true, features = ["tokio-std"] }

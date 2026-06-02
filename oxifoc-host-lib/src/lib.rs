@@ -15,13 +15,15 @@ use oxifoc_core::icd::{
     ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, MotorEndpoint,
     SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigEndpoint,
 };
-use oxifoc_core::types::{ControlMode, FastTelemetry, SlowTelemetry};
+use oxifoc_core::delivery::{ReliableExt, RetryPolicy};
+use oxifoc_core::timer::Timer;
+use oxifoc_core::types::{ControlMode, FastTelemetry, Keyed, ReqId, SlowTelemetry};
 use std::{
     fs,
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU16, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -54,7 +56,31 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(800);
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
-const DETECT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Effectively-once budget for motor detection: one ~60 s attempt, plus room
+/// for a single retry whose (cached) response returns near-instantly.
+const DETECT_POLICY: RetryPolicy = RetryPolicy {
+    deadline_ms: 70_000,
+    base_backoff_ms: 500,
+    max_backoff_ms: 2_000,
+    attempt_timeout_ms: 60_000,
+};
+
+/// Tokio-backed timer for the reliable-delivery client driver.
+struct TokioTimer;
+impl Timer for TokioTimer {
+    async fn after_millis(ms: u64) {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+    }
+    async fn after_micros(us: u64) {
+        tokio::time::sleep(Duration::from_micros(us)).await;
+    }
+}
+
+/// Monotonic idempotency-key source for deduplicated requests (detection).
+fn next_detect_id() -> ReqId {
+    static CTR: AtomicU64 = AtomicU64::new(1);
+    ReqId(CTR.fetch_add(1, Ordering::Relaxed))
+}
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -762,16 +788,20 @@ where
         }
         HostCommand::Detect(req, reply_tx) => {
             tracing::info!("Starting motor detection: {:?}", req);
-            let res = tokio::time::timeout(
-                DETECT_TIMEOUT,
-                s.endpoints()
-                    .request::<DetectEndpoint>(DEVICE_ADDR, &req, Some("detect")),
-            )
-            .await;
-            let result = match res {
-                Ok(inner) => inner.map_err(|e| anyhow::anyhow!("{:?}", e)),
-                Err(_) => Err(anyhow::anyhow!("Detection timed out (60s)")),
-            };
+            // Effectively-once: a stable id across retries. If the (slow)
+            // response is lost, a retry returns the device's cached result
+            // instead of re-running characterization.
+            let keyed = Keyed::new(next_detect_id(), req);
+            let client = ns.clone().reliable::<TokioTimer>();
+            let res = client
+                .effectively_once::<DetectEndpoint>(
+                    DEVICE_ADDR,
+                    &keyed,
+                    Some("detect"),
+                    &DETECT_POLICY,
+                )
+                .await;
+            let result = res.map_err(|e| anyhow::anyhow!("{:?}", e));
             let _ = reply_tx.send(result);
         }
     }
