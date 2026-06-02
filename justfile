@@ -61,6 +61,15 @@ cli *ARGS:
 gui:
     cargo run -p oxifoc-host-slint
 
+# Run the virtual device as a TCP Router on :2025 (extra args after `virtual`)
+virtual *ARGS:
+    cargo run -p oxifoc-virtual -- --transport tcp --port 2025 {{ ARGS }}
+
+# End-to-end test: spawns the virtual Router and drives it via host-lib
+# (HardwareInfo handshake, at_least_once Motor, effectively_once Detect).
+e2e:
+    cargo test -p oxifoc-virtual --test e2e_tcp
+
 # Clean all build artifacts
 clean:
     cargo clean
