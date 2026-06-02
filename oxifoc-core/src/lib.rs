@@ -97,6 +97,15 @@ pub mod types;
 #[cfg(feature = "icd")]
 pub mod icd;
 
+/// Delivery semantics (requires `delivery` feature)
+///
+/// A typed ladder of delivery guarantees over ergot's at-most-once transport:
+/// - `Command` + delivery classes (Idempotent / Deduplicated / AtMostOnce)
+/// - a pure, testable retry policy
+/// - `Keyed`/`ReqId` and server-side dedup for effectively-once
+#[cfg(feature = "delivery")]
+pub mod delivery;
+
 /// Motor state management (requires `runtime` feature)
 ///
 /// Centralized state management for motor control:

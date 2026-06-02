@@ -60,6 +60,12 @@ default = ["algorithms"]
 # Interface Control Document - ergot endpoints and wire types
 icd = ["dep:ergot"]
 
+# Delivery semantics — typed at-most/at-least/effectively-once ladder over ergot.
+# Contract + pure retry policy + server-side dedup. The client driver is generic
+# over `timer::Timer`, so it works on host (tokio) and device (embassy) alike.
+# embassy-futures is used only for its runtime-agnostic `select` (per-attempt timeout).
+delivery = ["icd", "dep:embassy-futures"]
+
 # FOC algorithms (transforms, SVPWM, PI controllers, etc.)
 # This is the core motor control math, no extra dependencies
 algorithms = []

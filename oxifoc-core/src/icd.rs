@@ -103,3 +103,39 @@ endpoint!(DetectEndpoint, DetectRequest, DetectResponse, "cmd/detect");
 // Configuration endpoint (host → device)
 #[cfg(feature = "storage")]
 endpoint!(ConfigEndpoint, ConfigRequest, ConfigResponse, "cmd/config");
+
+// ============================================================================
+// Delivery semantics classification (requires `delivery` feature)
+// ============================================================================
+//
+// Every command declares where it sits on the delivery ladder. All endpoints
+// below are idempotent by construction — reads and absolute setpoints — so the
+// host may `at_least_once` them (retry on timeout is safe). The one action,
+// `DetectEndpoint`, is intentionally NOT classified here yet: it becomes
+// `Deduplicated` (with a `Keyed<DetectRequest>` payload) when the server-side
+// dedup lands, so the compiler keeps it off the blind-retry path until then.
+#[cfg(feature = "delivery")]
+mod delivery_classes {
+    use super::*;
+    use crate::delivery::{Command, Idempotent};
+
+    impl Command for HardwareInfoEndpoint {
+        type Delivery = Idempotent;
+    }
+    impl Command for SlowTelemetryEndpoint {
+        type Delivery = Idempotent;
+    }
+    impl Command for MotorEndpoint {
+        type Delivery = Idempotent;
+    }
+    impl Command for TelemetryConfigEndpoint {
+        type Delivery = Idempotent;
+    }
+    impl Command for FaultEndpoint {
+        type Delivery = Idempotent;
+    }
+    #[cfg(feature = "storage")]
+    impl Command for ConfigEndpoint {
+        type Delivery = Idempotent;
+    }
+}
