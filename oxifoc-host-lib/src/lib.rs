@@ -55,7 +55,15 @@ const ERGOT_QUEUE_SIZE: usize = 32768;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(800);
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(10);
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+/// Retry budget for idempotent setpoints (motor / telemetry-config / config):
+/// a few attempts within a ~2 s total budget. Safe to retry on timeout because
+/// these are absolute setpoints / PUT-like config writes.
+const SETPOINT_POLICY: RetryPolicy = RetryPolicy {
+    deadline_ms: 2_000,
+    base_backoff_ms: 50,
+    max_backoff_ms: 400,
+    attempt_timeout_ms: 600,
+};
 /// Effectively-once budget for motor detection: one ~60 s attempt, plus room
 /// for a single retry whose (cached) response returns near-instantly.
 const DETECT_POLICY: RetryPolicy = RetryPolicy {
@@ -605,20 +613,19 @@ where
         return;
     }
     let telem_cfg = TelemetryConfig { fast_hz };
-    let ns = stack.stack();
-    let fut = ns
-        .endpoints()
-        .request::<TelemetryConfigEndpoint>(DEVICE_ADDR, &telem_cfg, None);
-    match tokio::time::timeout(COMMAND_TIMEOUT, fut).await {
-        Ok(Ok(ack)) => {
+    let client = stack.clone().reliable::<TokioTimer>();
+    match client
+        .at_least_once::<TelemetryConfigEndpoint>(DEVICE_ADDR, &telem_cfg, None, &SETPOINT_POLICY)
+        .await
+    {
+        Ok(ack) => {
             info!(
                 "Telemetry enabled: requested={}Hz, actual={}Hz",
                 fast_hz, ack.actual_fast_hz
             );
             fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
         }
-        Ok(Err(e)) => tracing::warn!("Telemetry config failed: {:?}", e),
-        Err(_) => tracing::warn!("Telemetry config timed out"),
+        Err(e) => tracing::warn!("Telemetry config failed: {:?}", e),
     }
 }
 
@@ -737,42 +744,42 @@ async fn handle_command<NS>(ns: &NS, cmd: HostCommand, fast_hz_flag: &Arc<Atomic
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
-    let s = ns.stack();
+    let client = ns.clone().reliable::<TokioTimer>();
     match cmd {
         HostCommand::Motor(ref mc) => {
             tracing::info!("Sending motor command: {:?}", mc);
-            let fut = s
-                .endpoints()
-                .request::<MotorEndpoint>(DEVICE_ADDR, mc, Some("motor"));
-            match tokio::time::timeout(COMMAND_TIMEOUT, fut).await {
-                Ok(Ok(status)) => tracing::info!("Motor response: {:?}", status),
-                Ok(Err(e)) => tracing::warn!("Motor command failed: {:?}", e),
-                Err(_) => tracing::warn!("Motor command timed out"),
+            match client
+                .at_least_once::<MotorEndpoint>(DEVICE_ADDR, mc, Some("motor"), &SETPOINT_POLICY)
+                .await
+            {
+                Ok(status) => tracing::info!("Motor response: {:?}", status),
+                Err(e) => tracing::warn!("Motor command failed: {:?}", e),
             }
         }
         HostCommand::SetTelemetryConfig(cfg) => {
             tracing::info!("Setting telemetry config: {:?}", cfg);
-            let fut = s.endpoints().request::<TelemetryConfigEndpoint>(
-                DEVICE_ADDR,
-                &cfg,
-                Some("telemetry_config"),
-            );
-            match tokio::time::timeout(COMMAND_TIMEOUT, fut).await {
-                Ok(Ok(ack)) => {
+            match client
+                .at_least_once::<TelemetryConfigEndpoint>(
+                    DEVICE_ADDR,
+                    &cfg,
+                    Some("telemetry_config"),
+                    &SETPOINT_POLICY,
+                )
+                .await
+            {
+                Ok(ack) => {
                     tracing::info!("Telemetry config ack: fast={}Hz", ack.actual_fast_hz);
                     fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
                 }
-                Ok(Err(e)) => tracing::warn!("Telemetry config failed: {:?}", e),
-                Err(_) => tracing::warn!("Telemetry config timed out"),
+                Err(e) => tracing::warn!("Telemetry config failed: {:?}", e),
             }
         }
         HostCommand::ConfigRead(group_id, reply_tx) => {
             use oxifoc_core::types::ConfigRequest;
             tracing::info!("Reading config group: {:?}", group_id);
             let req = ConfigRequest::Read(group_id);
-            let res = s
-                .endpoints()
-                .request::<ConfigEndpoint>(DEVICE_ADDR, &req, Some("config"))
+            let res = client
+                .at_least_once::<ConfigEndpoint>(DEVICE_ADDR, &req, Some("config"), &SETPOINT_POLICY)
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
         }
@@ -780,9 +787,8 @@ where
             use oxifoc_core::types::ConfigRequest;
             tracing::info!("Writing config: {:?}", write);
             let req = ConfigRequest::Write(write);
-            let res = s
-                .endpoints()
-                .request::<ConfigEndpoint>(DEVICE_ADDR, &req, Some("config"))
+            let res = client
+                .at_least_once::<ConfigEndpoint>(DEVICE_ADDR, &req, Some("config"), &SETPOINT_POLICY)
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
         }
@@ -792,7 +798,6 @@ where
             // response is lost, a retry returns the device's cached result
             // instead of re-running characterization.
             let keyed = Keyed::new(next_detect_id(), req);
-            let client = ns.clone().reliable::<TokioTimer>();
             let res = client
                 .effectively_once::<DetectEndpoint>(
                     DEVICE_ADDR,
