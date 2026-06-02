@@ -154,6 +154,9 @@ fn main() -> Result<()> {
                 "Start command sent with duty {}% (iq={:.1}A)",
                 duty, iq_target
             );
+            // cmd_tx is async; give the backend time to deliver the command
+            // (at_least_once round-trip) before the process exits.
+            std::thread::sleep(Duration::from_millis(800));
         }
         Command::Stop => {
             runtime
@@ -161,6 +164,7 @@ fn main() -> Result<()> {
                 .send(HostCommand::Motor(ControlMode::Stopped))
                 .context("send stop command")?;
             println!("Stop command sent");
+            std::thread::sleep(Duration::from_millis(800));
         }
         Command::Monitor { seconds, .. } => {
             run_monitor(&runtime, Duration::from_secs(seconds))?;

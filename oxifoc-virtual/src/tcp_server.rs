@@ -8,11 +8,16 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use critical_section::Mutex as CriticalSectionMutex;
+use ergot::exports::mutex::raw_impls::cs::CriticalSectionRawMutex;
+use ergot::interface_manager::interface_impls::tokio_stream::TokioStreamInterface;
+use ergot::interface_manager::profiles::router::Router;
+use ergot::interface_manager::transports::tokio_cobs_stream::register_router;
 use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
-use ergot::toolkits::tokio_stream::{
-    self as stream_kit, EdgeStack, WaitQueue, register_target_stream,
-};
+use ergot::net_stack::ArcNetStack;
+use ergot::toolkits::tokio_stream::WaitQueue;
 use heapless::String;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -27,6 +32,15 @@ use oxifoc_core::storage::RuntimeConfig;
 use crate::fault::VirtualFault;
 
 const ERGOT_MTU: u16 = 2048;
+
+/// Per-connection Router sizing: one TCP client → one interface, no downstream
+/// seed routes. Virtual emulates the device-side Router (central, node 1).
+const ROUTER_SLOTS: usize = 2;
+const ROUTER_SEEDS: usize = 0;
+type RouterStack = ArcNetStack<
+    CriticalSectionRawMutex,
+    Router<TokioStreamInterface, StdRng, ROUTER_SLOTS, ROUTER_SEEDS>,
+>;
 
 pub async fn run(
     port: u16,
@@ -44,25 +58,30 @@ pub async fn run(
         let (socket, addr) = listener.accept().await?;
         info!("Client connected: {addr}");
 
-        // Create a fresh ergot edge stack for this connection.
-        // We are the target (node 2), host is controller (node 1).
-        let queue = stream_kit::new_std_queue(32768);
-        let stack: EdgeStack = stream_kit::new_target_stack(&queue, ERGOT_MTU);
+        // Fresh ergot Router stack for this connection. Virtual emulates the
+        // device-side Router (central, node 1); the host connects as an edge and
+        // the Router assigns it a net_id, so its link-local frames are routed
+        // instead of dropped. `register_router` returns the interface `ident`
+        // (used for state queries below) and only succeeds once Active.
+        let stack: RouterStack =
+            ArcNetStack::new_with_profile(Router::new(StdRng::seed_from_u64(0x0F0C_5EED)));
 
         let (rx, tx) = socket.into_split();
         let state_notify = Arc::new(WaitQueue::new());
-        register_target_stream(
-            stack.clone(),
-            rx,
-            tx,
-            queue,
-            Some(LivenessConfig {
-                timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
-            }),
-            Some(state_notify.clone()),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("Interface already active"))?;
+        let ident =
+            register_router::<_, TokioStreamInterface, StdRng, _, _, ROUTER_SLOTS, ROUTER_SEEDS>(
+                stack.clone(),
+                rx,
+                tx,
+                ERGOT_MTU,
+                32768,
+                Some(LivenessConfig {
+                    timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
+                }),
+                Some(state_notify.clone()),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("router interface registration failed"))?;
 
         // Cancel token for this connection — cancelled when interface goes down
         let conn_token = CancellationToken::new();
@@ -75,7 +94,7 @@ pub async fn run(
             async move {
                 loop {
                     let _ = state_notify.wait().await;
-                    let state = stack.manage_profile(|im| im.interface_state(()));
+                    let state = stack.manage_profile(|im| im.interface_state(ident));
                     if matches!(state, Some(InterfaceState::Down | InterfaceState::Inactive)) {
                         warn!("Host disconnected, stopping connection tasks");
                         token.cancel();
@@ -142,7 +161,10 @@ pub async fn run(
             async move {
                 // Wait until interface is Active (has net_id from first incoming frame)
                 let already_active = stack.manage_profile(|im| {
-                    matches!(im.interface_state(()), Some(InterfaceState::Active { .. }))
+                    matches!(
+                        im.interface_state(ident),
+                        Some(InterfaceState::Active { .. })
+                    )
                 });
                 if !already_active {
                     loop {
@@ -150,7 +172,7 @@ pub async fn run(
                             _ = token.cancelled() => return,
                             _ = state_notify.wait() => {
                                 let active = stack.manage_profile(|im| {
-                                    matches!(im.interface_state(()), Some(InterfaceState::Active { .. }))
+                                    matches!(im.interface_state(ident), Some(InterfaceState::Active { .. }))
                                 });
                                 if active { break; }
                             }
