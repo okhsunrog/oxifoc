@@ -41,7 +41,7 @@ jobs:
       - name: install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libudev-dev libfontconfig-dev
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libudev-dev libfontconfig-dev libdbus-1-dev pkg-config
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -61,7 +61,7 @@ jobs:
       - name: install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libudev-dev libfontconfig-dev
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libudev-dev libfontconfig-dev libdbus-1-dev pkg-config
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
