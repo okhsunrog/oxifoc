@@ -19,15 +19,15 @@ use embassy_futures::join::{join, join4};
 use embassy_futures::select::{Either, select};
 use embassy_time::Timer;
 
+use ergot::NetStack;
 use ergot::interface_manager::profiles::direct_edge::{
-    DirectEdge, EdgeFrameProcessor, EDGE_NODE_ID,
+    DirectEdge, EDGE_NODE_ID, EdgeFrameProcessor,
 };
 use ergot::interface_manager::utils::framed_stream;
 use ergot::interface_manager::{FrameProcessor, InterfaceState, Profile};
-use ergot::NetStack;
 
-use oxifoc_remote::transport;
 use oxifoc_core::icd::{HardwareInfo, HardwareInfoEndpoint};
+use oxifoc_remote::transport;
 
 use defmt::{error, info, warn};
 
@@ -103,11 +103,13 @@ async fn main(_spawner: Spawner) -> ! {
         // HardwareInfo endpoint server
         info_server(stack),
         // Ergot device discovery handler
-        stack.services().device_info_handler::<2>(&ergot::well_known::DeviceInfo {
-            name: Some("Oxifoc Remote".try_into().unwrap_or_default()),
-            description: Some("ESK8 remote ctrl".try_into().unwrap_or_default()),
-            unique_id: 0,
-        }),
+        stack
+            .services()
+            .device_info_handler::<2>(&ergot::well_known::DeviceInfo {
+                name: Some("Oxifoc Remote".try_into().unwrap_or_default()),
+                description: Some("ESK8 remote ctrl".try_into().unwrap_or_default()),
+                unique_id: 0,
+            }),
         // Connect + application loop
         async {
             loop {
@@ -134,17 +136,16 @@ async fn main(_spawner: Spawner) -> ! {
                         }
 
                         // Create GATT client
-                        let client = match GattClient::<_, DefaultPacketPool, 10>::new(
-                            &ble_stack, &conn,
-                        )
-                        .await
-                        {
-                            Ok(c) => c,
-                            Err(_e) => {
-                                error!("[ble] GATT client creation failed");
-                                continue;
-                            }
-                        };
+                        let client =
+                            match GattClient::<_, DefaultPacketPool, 10>::new(&ble_stack, &conn)
+                                .await
+                            {
+                                Ok(c) => c,
+                                Err(_e) => {
+                                    error!("[ble] GATT client creation failed");
+                                    continue;
+                                }
+                            };
 
                         // Run GATT client task + NUS connection
                         let _ = join(client.task(), async {
@@ -173,6 +174,11 @@ async fn main(_spawner: Spawner) -> ! {
 }
 
 /// NUS session: discover service, subscribe, run bidirectional loop.
+#[allow(
+    clippy::large_stack_frames,
+    reason = "async BLE NUS future holds Notification<512> + DefaultPacketPool \
+    buffers; it lives in embassy task storage, not the call stack."
+)]
 async fn nus_session<C: Controller>(
     stack: &'static transport::Stack,
     client: &GattClient<'_, C, DefaultPacketPool, 10>,
@@ -180,16 +186,16 @@ async fn nus_session<C: Controller>(
 ) {
     // NUS UUIDs
     let nus_uuid = Uuid::new_long([
-        0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00,
-        0x40, 0x6e,
+        0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40,
+        0x6e,
     ]);
     let rx_uuid = Uuid::new_long([
-        0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x02, 0x00,
-        0x40, 0x6e,
+        0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x02, 0x00, 0x40,
+        0x6e,
     ]);
     let tx_uuid = Uuid::new_long([
-        0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x03, 0x00,
-        0x40, 0x6e,
+        0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x03, 0x00, 0x40,
+        0x6e,
     ]);
 
     // Discover NUS service

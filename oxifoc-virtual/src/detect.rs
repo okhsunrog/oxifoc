@@ -36,7 +36,7 @@ impl DetectionBackend for VirtualBackend {
         &mut self,
         params: &ResistanceParams,
     ) -> Result<f32, DetectionError> {
-        let params = params.clone();
+        let params = *params;
         let vbus = self.vbus;
         tokio::task::spawn_blocking(move || {
             with_sim(MotorParams::default(), vbus, |hw| {
@@ -52,7 +52,7 @@ impl DetectionBackend for VirtualBackend {
         params: &InductanceParams,
         pwm_freq_hz: f32,
     ) -> Result<(f32, f32), DetectionError> {
-        let params = params.clone();
+        let params = *params;
         let vbus = self.vbus;
         tokio::task::spawn_blocking(move || {
             with_sim(MotorParams::default(), vbus, |hw| {
@@ -68,7 +68,7 @@ impl DetectionBackend for VirtualBackend {
     }
 
     async fn measure_flux(&mut self, params: &FluxLinkageParams) -> Result<f32, DetectionError> {
-        let params = params.clone();
+        let params = *params;
         let vbus = self.vbus;
         tokio::task::spawn_blocking(move || {
             with_sim(MotorParams::default(), vbus, |hw| {

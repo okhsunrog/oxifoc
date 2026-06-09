@@ -11,11 +11,11 @@ use ergot::Address;
 use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
 use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
-use oxifoc_core::icd::{
-    ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, MotorEndpoint,
-    SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigEndpoint,
-};
 use oxifoc_core::delivery::{ReliableExt, RetryPolicy};
+use oxifoc_core::icd::{
+    ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, MotorEndpoint, SlowTelemetryEndpoint,
+    TelemetryConfig, TelemetryConfigEndpoint,
+};
 use oxifoc_core::timer::Timer;
 use oxifoc_core::types::{ControlMode, FastTelemetry, Keyed, ReqId, SlowTelemetry};
 use std::{
@@ -779,7 +779,12 @@ where
             tracing::info!("Reading config group: {:?}", group_id);
             let req = ConfigRequest::Read(group_id);
             let res = client
-                .at_least_once::<ConfigEndpoint>(DEVICE_ADDR, &req, Some("config"), &SETPOINT_POLICY)
+                .at_least_once::<ConfigEndpoint>(
+                    DEVICE_ADDR,
+                    &req,
+                    Some("config"),
+                    &SETPOINT_POLICY,
+                )
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
         }
@@ -788,7 +793,12 @@ where
             tracing::info!("Writing config: {:?}", write);
             let req = ConfigRequest::Write(write);
             let res = client
-                .at_least_once::<ConfigEndpoint>(DEVICE_ADDR, &req, Some("config"), &SETPOINT_POLICY)
+                .at_least_once::<ConfigEndpoint>(
+                    DEVICE_ADDR,
+                    &req,
+                    Some("config"),
+                    &SETPOINT_POLICY,
+                )
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
         }

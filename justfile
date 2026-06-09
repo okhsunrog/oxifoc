@@ -1,7 +1,7 @@
 # oxifoc — FOC motor controller monorepo
 
 # Device firmware crates (excluded from workspace, different toolchain)
-device_crates := "oxifoc-g431 oxifoc-g474 oxifoc-f405 oxifoc-bridge"
+device_crates := "oxifoc-g431 oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
@@ -65,10 +65,11 @@ gui:
 virtual *ARGS:
     cargo run -p oxifoc-virtual -- --transport tcp --port 2025 {{ ARGS }}
 
-# End-to-end test: spawns the virtual Router and drives it via host-lib
-# (HardwareInfo handshake, at_least_once Motor, effectively_once Detect).
+# End-to-end test: spawns the virtual Router and drives it via host-lib over
+# both TCP and UDP (HardwareInfo handshake, at_least_once Motor,
+# effectively_once Detect).
 e2e:
-    cargo test -p oxifoc-virtual --test e2e_tcp
+    cargo test -p oxifoc-virtual --test e2e
 
 # Clean all build artifacts
 clean:

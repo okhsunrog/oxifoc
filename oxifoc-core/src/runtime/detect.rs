@@ -102,7 +102,7 @@ pub async fn detect_server<NS, B>(
 
         let resp = match &cache {
             // Hit: replay without re-running the (physical) measurement.
-            Some((cached_id, resp)) if *cached_id == id => resp.clone(),
+            Some((cached_id, resp)) if *cached_id == id => *resp,
             // Miss: stop the motor, measure, leave the motor stopped, cache.
             _ => {
                 let _ = CMD_CHANNEL.try_send(ControlMode::Stopped);
@@ -117,7 +117,7 @@ pub async fn detect_server<NS, B>(
                 let _ = CMD_CHANNEL.try_send(ControlMode::Stopped);
                 // Success-only cache: a transient error stays retryable.
                 if !matches!(resp, DetectResponse::Error(_)) {
-                    cache = Some((id, resp.clone()));
+                    cache = Some((id, resp));
                 }
                 resp
             }
@@ -185,7 +185,10 @@ async fn run_step<B: DetectionBackend>(
                 hold_current_a: hold_current,
                 ..Default::default()
             };
-            match backend.measure_inductance(&params, foc_freq_hz as f32).await {
+            match backend
+                .measure_inductance(&params, foc_freq_hz as f32)
+                .await
+            {
                 Ok((ld, lq)) => DetectResponse::Inductance {
                     inductance_d_h: ld,
                     inductance_q_h: lq,
@@ -229,7 +232,10 @@ async fn run_step<B: DetectionBackend>(
         }
 
         DetectRequest::CalibrateHall => {
-            match backend.calibrate_hall(HallCalibrationParams::default()).await {
+            match backend
+                .calibrate_hall(HallCalibrationParams::default())
+                .await
+            {
                 Ok(result) => {
                     // Persist in memory if the platform has a config store; the
                     // host then writes it to flash via the config endpoint.

@@ -101,7 +101,12 @@ endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
 // effectively-once. Classified `Deduplicated` below. The `endpoint!` macro
 // takes a single type token, hence the alias.
 pub type KeyedDetectRequest = Keyed<DetectRequest>;
-endpoint!(DetectEndpoint, KeyedDetectRequest, DetectResponse, "cmd/detect");
+endpoint!(
+    DetectEndpoint,
+    KeyedDetectRequest,
+    DetectResponse,
+    "cmd/detect"
+);
 
 // Configuration endpoint (host → device)
 #[cfg(feature = "storage")]

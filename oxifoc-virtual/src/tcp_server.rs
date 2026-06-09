@@ -69,20 +69,21 @@ pub async fn run(
 
         let (rx, tx) = socket.into_split();
         let state_notify = Arc::new(WaitQueue::new());
-        let ident =
-            register_router::<_, TokioStreamInterface, StdRng, _, _, ROUTER_SLOTS, ROUTER_SEEDS>(
-                stack.clone(),
-                rx,
-                tx,
-                ERGOT_MTU,
-                32768,
-                Some(LivenessConfig {
-                    timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
-                }),
-                Some(state_notify.clone()),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("router interface registration failed"))?;
+        // No turbofish: M/SS (and CC on branches that have it) infer from the
+        // `RouterStack` type alias, keeping this portable across ergot branches.
+        let ident = register_router(
+            stack.clone(),
+            rx,
+            tx,
+            ERGOT_MTU,
+            32768,
+            Some(LivenessConfig {
+                timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
+            }),
+            Some(state_notify.clone()),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("router interface registration failed"))?;
 
         // Cancel token for this connection — cancelled when interface goes down
         let conn_token = CancellationToken::new();

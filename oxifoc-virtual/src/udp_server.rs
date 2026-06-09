@@ -1,21 +1,31 @@
 //! Ergot UDP server — binds a UDP socket and runs protocol servers.
 //!
-//! Uses DirectEdge target profile. The device binds a port and waits for the
-//! host to send the first packet (learns host address from recv_from).
-//! No pre-configured host address needed.
+//! Registers a `Router` profile (central, node 1), matching the real device
+//! firmware and the TCP server: the host reaches us as a link-local edge and
+//! the Router assigns it a net_id, so its frames are routed rather than dropped
+//! as spoofed (which happens if both sides are DirectEdge node-2 targets).
 //!
-//! After disconnect, waits for interface to reach Down state (workers exited),
-//! then re-registers on the same stack with the same socket.
+//! Unlike TCP there is no connection to accept: the socket is bound to a
+//! well-known port and left *unconnected*. ergot's UDP `register_router` learns
+//! the host's address from the first datagram it receives and replies with
+//! `send_to`. After a liveness timeout the interface goes Down; we rebind a
+//! fresh socket (SO_REUSEADDR) and wait for the next host.
 
 use core::cell::RefCell;
 use std::sync::Arc;
 
 use anyhow::Result;
 use critical_section::Mutex as CriticalSectionMutex;
+use ergot::exports::mutex::raw_impls::cs::CriticalSectionRawMutex;
+use ergot::interface_manager::interface_impls::tokio_udp::TokioUdpInterface;
+use ergot::interface_manager::profiles::router::Router;
+use ergot::interface_manager::transports::tokio_udp::register_router;
 use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
+use ergot::net_stack::ArcNetStack;
 use ergot::toolkits::tokio_stream::WaitQueue;
-use ergot::toolkits::tokio_udp::{self as udp_kit, EdgeStack};
 use heapless::String;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -31,6 +41,15 @@ use crate::fault::VirtualFault;
 
 const ERGOT_MTU: u16 = 2048;
 
+/// Per-session Router sizing: one host → one interface, no downstream seed
+/// routes and no bus node-claim slots (no shared segment here).
+const ROUTER_SLOTS: usize = 2;
+const ROUTER_SEEDS: usize = 0;
+type RouterStack = ArcNetStack<
+    CriticalSectionRawMutex,
+    Router<TokioUdpInterface, StdRng, ROUTER_SLOTS, ROUTER_SEEDS>,
+>;
+
 pub async fn run(
     port: u16,
     foc_freq_hz: u32,
@@ -41,15 +60,11 @@ pub async fn run(
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
 ) -> Result<()> {
     let bind_addr = format!("0.0.0.0:{port}");
-    info!("UDP target on {bind_addr}");
-
-    let queue = udp_kit::new_std_queue(32768);
-    let stack: EdgeStack = udp_kit::new_target_stack(&queue, ERGOT_MTU);
-    let state_notify = Arc::new(WaitQueue::new());
+    info!("UDP Router on {bind_addr}");
 
     loop {
-        // Bind a fresh socket each session (previous one is held by ergot's
-        // Arc until workers exit). SO_REUSEADDR allows rebinding the port.
+        // Bind a fresh *unconnected* socket each session. SO_REUSEADDR lets us
+        // rebind the same port after the previous session's workers exit.
         let socket = {
             let sock = socket2::Socket::new(
                 socket2::Domain::IPV4,
@@ -63,19 +78,60 @@ pub async fn run(
         };
         info!("Waiting for host...");
 
-        udp_kit::register_edge_target_interface(
-            &stack,
+        // Fresh Router stack for this session. The host reaches us as a
+        // link-local edge; the Router assigns it a net_id and routes its frames.
+        let stack: RouterStack =
+            ArcNetStack::new_with_profile(Router::new(StdRng::seed_from_u64(0x0F0C_5EED)));
+        let state_notify = Arc::new(WaitQueue::new());
+
+        // No turbofish: M/SS (and CC on branches that have it) infer from the
+        // `RouterStack` type alias, keeping this portable across ergot branches.
+        let ident = register_router(
+            stack.clone(),
             socket,
-            &queue,
+            ERGOT_MTU,
+            32768,
             Some(LivenessConfig {
                 timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
             }),
             Some(state_notify.clone()),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("UDP interface already active"))?;
+        .map_err(|_| anyhow::anyhow!("UDP router interface registration failed"))?;
 
-        // Build device info
+        // Cancel token for this session — cancelled when the interface goes Down
+        // (liveness timeout after the host stops sending).
+        let conn_token = CancellationToken::new();
+
+        // Monitor interface state — cancel all tasks when the host disconnects.
+        // The interface is Active from registration (net_id assigned); on a
+        // liveness timeout ergot sets it Down and then *deregisters* it (state
+        // becomes None), so treat anything that is no longer Active as a
+        // disconnect rather than matching Down specifically (which would race
+        // the deregister).
+        tokio::spawn({
+            let stack = stack.clone();
+            let state_notify = state_notify.clone();
+            let token = conn_token.clone();
+            async move {
+                loop {
+                    let active = stack.manage_profile(|im| {
+                        matches!(
+                            im.interface_state(ident),
+                            Some(InterfaceState::Active { .. })
+                        )
+                    });
+                    if !active {
+                        warn!("Host disconnected, stopping connection tasks");
+                        token.cancel();
+                        break;
+                    }
+                    let _ = state_notify.wait().await;
+                }
+            }
+        });
+
+        // Build device info.
         let mut hw: String<32> = String::new();
         let mut sw: String<32> = String::new();
         let mut mcu: String<32> = String::new();
@@ -93,32 +149,9 @@ pub async fn run(
             max_current_a,
         };
 
-        // Wait for interface to become Active (host sent first packet)
-        wait_for_state(&state_notify, &stack, |s| {
-            matches!(s, Some(InterfaceState::Active { .. }))
-        })
-        .await;
-        info!("UDP host connected");
-
-        // Cancel token — cancelled when interface goes down
-        let conn_token = CancellationToken::new();
-
-        // Monitor interface state — cancel all tasks when host disconnects
-        tokio::spawn({
-            let stack = stack.clone();
-            let state_notify = state_notify.clone();
-            let token = conn_token.clone();
-            async move {
-                wait_for_state(&state_notify, &stack, |s| {
-                    matches!(s, Some(InterfaceState::Down | InterfaceState::Inactive))
-                })
-                .await;
-                warn!("UDP host disconnected, stopping connection tasks");
-                token.cancel();
-            }
-        });
-
-        // Spawn fast telemetry streaming
+        // Fast telemetry streaming. Broadcasts are gated by the host enabling
+        // streaming; until the Router has learned the peer, frames simply queue
+        // in the tx worker, so no Active-state wait is needed.
         tokio::spawn({
             let stack = stack.clone();
             let token = conn_token.clone();
@@ -130,7 +163,7 @@ pub async fn run(
             }
         });
 
-        // Spawn detect server
+        // Detect server for this session.
         tokio::spawn({
             let endpoints = stack.endpoints();
             let token = conn_token.clone();
@@ -142,7 +175,7 @@ pub async fn run(
             }
         });
 
-        // Run protocol servers until disconnect
+        // Run protocol servers until the host disconnects.
         let endpoints = stack.endpoints();
         let token = conn_token.clone();
         tokio::select! {
@@ -159,32 +192,15 @@ pub async fn run(
 
         info!("UDP session ended, waiting for workers to exit...");
 
-        // Wait for state to reach Down (workers fully exited) before re-registering
-        wait_for_state(&state_notify, &stack, |s| {
-            matches!(s, Some(InterfaceState::Down) | None)
-        })
-        .await;
+        // Wait for the interface to fully tear down before rebinding the port.
+        loop {
+            let state = stack.manage_profile(|im| im.interface_state(ident));
+            if matches!(state, Some(InterfaceState::Down) | None) {
+                break;
+            }
+            let _ = state_notify.wait().await;
+        }
 
         info!("Ready for next connection");
-    }
-}
-
-/// Wait until the interface state matches a predicate.
-async fn wait_for_state<F>(state_notify: &Arc<WaitQueue>, stack: &EdgeStack, predicate: F)
-where
-    F: Fn(Option<InterfaceState>) -> bool,
-{
-    // Check current state first
-    let state = stack.manage_profile(|im| im.interface_state(()));
-    if predicate(state) {
-        return;
-    }
-    // Wait for state changes
-    loop {
-        let _ = state_notify.wait().await;
-        let state = stack.manage_profile(|im| im.interface_state(()));
-        if predicate(state) {
-            return;
-        }
     }
 }
