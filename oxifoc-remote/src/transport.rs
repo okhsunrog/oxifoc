@@ -15,7 +15,10 @@ use mutex::raw_impls::cs::CriticalSectionRawMutex;
 
 pub const BLE_QUEUE_SIZE: usize = 1024;
 
-/// BLE NUS MTU: PacketPool MTU (512) - L2CAP (4) - ATT (3) = 505
+/// BLE NUS MTU: PacketPool MTU (512) - L2CAP (4) - ATT (3) = 505.
+///
+/// Physical ATT cap (notification payload = ATT_MTU-3), not a tunable — the
+/// remote exchanges only commands and slow telemetry, which fit comfortably.
 pub const BLE_MTU: u16 = 505;
 
 // ========== Queue types ==========

@@ -18,10 +18,21 @@ use mutex::raw_impls::cs::CriticalSectionRawMutex;
 
 // ========== Constants ==========
 
-pub const UART_QUEUE_SIZE: usize = 2048;
+/// Sized to hold one max-size UART frame plus headroom for small frames, so a
+/// telemetry burst can't starve protocol responses.
+pub const UART_QUEUE_SIZE: usize = 4096;
 pub const BLE_QUEUE_SIZE: usize = 1024;
-pub const UART_MTU: u16 = 512;
-/// BLE NUS MTU: PacketPool MTU (512) - L2CAP header (4) - ATT header (3) = 505
+/// Matches the host stack's ERGOT_MTU (2048) so the bridge is transparent for
+/// anything the rest of the system can emit. The STM32 firmwares cap their own
+/// frames at MAX_PACKET_SIZE (400-512), so device->bridge traffic is far below
+/// this; the limit matters for host->device frames routed through the bridge.
+pub const UART_MTU: u16 = 2048;
+/// BLE NUS MTU: PacketPool MTU (512) - L2CAP header (4) - ATT header (3) = 505.
+///
+/// This is a physical ATT cap, not a tunable: GATT notifications carry at most
+/// ATT_MTU-3 bytes and OS stacks (Android/macOS via bluest) top out near 512.
+/// Frames larger than this cannot traverse the BLE leg — when streaming
+/// telemetry over BLE, the batch size must be configured to fit.
 pub const BLE_MTU: u16 = 505;
 pub const UART_BAUD: u32 = 921_600;
 pub const LIVENESS_TIMEOUT_MS: u64 = 5000;

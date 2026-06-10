@@ -149,7 +149,9 @@ async fn main(spawner: Spawner) -> ! {
     spawner.must_spawn(run_uart_tx(uart_tx, stack, upstream_ident));
 
     // ========== Run all tasks ==========
-    static RECV_BUF: static_cell::StaticCell<[u8; 512]> = static_cell::StaticCell::new();
+    // Must hold one max-size incoming UART frame (see transport::UART_MTU).
+    static RECV_BUF: static_cell::StaticCell<[u8; transport::UART_MTU as usize]> =
+        static_cell::StaticCell::new();
     static SCRATCH_BUF: static_cell::StaticCell<[u8; 64]> = static_cell::StaticCell::new();
 
     let _ = join5(
@@ -167,7 +169,7 @@ async fn main(spawner: Spawner) -> ! {
             }),
         // UART RX worker
         async {
-            let recv_buf = RECV_BUF.init_with(|| [0u8; 512]);
+            let recv_buf = RECV_BUF.init_with(|| [0u8; transport::UART_MTU as usize]);
             let scratch_buf = SCRATCH_BUF.init_with(|| [0u8; 64]);
             let _ = uart_rx_worker
                 .run(InterfaceState::Inactive, recv_buf, scratch_buf)
