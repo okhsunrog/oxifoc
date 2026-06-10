@@ -1,7 +1,7 @@
 //! FOC (Field-Oriented Control) management and ADC interrupt handling
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI16, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::{Peri, interrupt, peripherals};
@@ -32,7 +32,7 @@ pub static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
 /// Latest measured DC bus voltage in millivolts (updated in ADC interrupt).
 pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
 /// Latest measured FET temperature in 0.1°C units (updated in ADC interrupt).
-pub static FET_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
+pub static FET_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 
 // ========== ADC Handles ==========
 
@@ -132,7 +132,7 @@ fn ADC1_2() {
     let mut ib_raw: u16 = 0;
     let mut ic_raw: u16 = 0;
     let mut vbus_mv: u32 = 0;
-    let mut temp_c_x10: u16 = 0;
+    let mut temp_c_x10: i16 = 0;
 
     // Read ADC1 injected: phase A current, VBUS voltage, FET temperature
     ADC1_INJECTED.lock(|cell| {
@@ -146,12 +146,7 @@ fn ADC1_2() {
             VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
             // Convert temperature raw ADC to 0.1°C units
-            let temp_c = NTC.temp_c_from_adc(samples[2], BOARD.adc_max_counts);
-            temp_c_x10 = if temp_c.is_finite() && temp_c >= 0.0 {
-                (temp_c * 10.0) as u16
-            } else {
-                0
-            };
+            temp_c_x10 = NTC.temp_c_x10_from_adc(samples[2], BOARD.adc_max_counts);
             FET_TEMP_C_X10.store(temp_c_x10, Ordering::Relaxed);
         }
     });

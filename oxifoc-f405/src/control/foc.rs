@@ -12,7 +12,7 @@
 #![allow(dead_code)] // Public API not yet wired to protocol handlers
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI16, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::{interrupt, peripherals};
@@ -43,9 +43,9 @@ pub static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
 /// Latest measured DC bus voltage in millivolts (updated in ADC interrupt).
 pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
 /// Latest board temperature in 0.1°C units (updated in ADC interrupt).
-pub static BOARD_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
+pub static BOARD_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 /// Latest motor temperature in 0.1°C units (updated in ADC interrupt).
-pub static MOTOR_TEMP_C_X10: AtomicU16 = AtomicU16::new(0);
+pub static MOTOR_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 
 // ========== ADC Handles ==========
 
@@ -167,12 +167,7 @@ fn ADC() {
     IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
     // Convert board temperature raw ADC to 0.1°C units
-    let board_temp_c = NTC_BOARD.temp_c_from_adc(board_temp_raw, BOARD.adc_max_counts);
-    let board_temp_c_x10 = if board_temp_c.is_finite() && board_temp_c >= 0.0 {
-        (board_temp_c * 10.0) as u16
-    } else {
-        0
-    };
+    let board_temp_c_x10 = NTC_BOARD.temp_c_x10_from_adc(board_temp_raw, BOARD.adc_max_counts);
     BOARD_TEMP_C_X10.store(board_temp_c_x10, Ordering::Relaxed);
 
     // Read ADC2 injected data (phase B current + motor temp)
@@ -187,12 +182,7 @@ fn ADC() {
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
 
     // Convert motor temperature raw ADC to 0.1°C units
-    let motor_temp_c = NTC_MOTOR.temp_c_from_adc(motor_temp_raw, BOARD.adc_max_counts);
-    let motor_temp_c_x10 = if motor_temp_c.is_finite() && motor_temp_c >= 0.0 {
-        (motor_temp_c * 10.0) as u16
-    } else {
-        0
-    };
+    let motor_temp_c_x10 = NTC_MOTOR.temp_c_x10_from_adc(motor_temp_raw, BOARD.adc_max_counts);
     MOTOR_TEMP_C_X10.store(motor_temp_c_x10, Ordering::Relaxed);
 
     // Read ADC3 injected data (phase C current + VBUS)

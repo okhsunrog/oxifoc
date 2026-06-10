@@ -261,11 +261,11 @@ pub struct SlowTelemetry {
     /// DC bus voltage in millivolts
     pub vbus_mv: u32,
     /// FET temperature in 0.1°C units
-    pub fet_temp_c_x10: u16,
+    pub fet_temp_c_x10: i16,
     /// Motor temperature in 0.1°C units (0 if not available)
-    pub motor_temp_c_x10: u16,
+    pub motor_temp_c_x10: i16,
     /// Board temperature in 0.1°C units (0 if not available)
-    pub board_temp_c_x10: u16,
+    pub board_temp_c_x10: i16,
     /// Current motor state
     pub motor_state: MotorState,
     /// Current control mode

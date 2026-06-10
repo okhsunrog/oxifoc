@@ -378,10 +378,14 @@ pub fn check_voltage_faults<F: PlatformFault>(
 ) {
     if vbus_mv > board.max_vbus_mv && !registry.has_category(FaultCategory::OverVoltage) {
         registry.set(ov_fault);
+        #[cfg(feature = "defmt")]
+        defmt::error!("OverVoltage FAULT: vbus = {} mV", vbus_mv);
     }
 
     if vbus_mv < board.min_vbus_mv && !registry.has_category(FaultCategory::UnderVoltage) {
         registry.set(uv_fault);
+        #[cfg(feature = "defmt")]
+        defmt::error!("UnderVoltage FAULT: vbus = {} mV", vbus_mv);
     } else if vbus_mv > board.min_vbus_mv + VOLTAGE_HYSTERESIS_MV
         && registry.has_category(FaultCategory::UnderVoltage)
     {
@@ -396,7 +400,7 @@ pub fn check_voltage_faults<F: PlatformFault>(
 #[cfg(feature = "runtime")]
 #[inline]
 pub fn check_temperature_fault<F: PlatformFault>(
-    temp_c_x10: u16,
+    temp_c_x10: i16,
     board: &BoardConfig,
     registry: &FaultRegistry<F>,
     ot_fault: F,
@@ -404,6 +408,8 @@ pub fn check_temperature_fault<F: PlatformFault>(
     let temp_c = temp_c_x10 as f32 / 10.0;
     if temp_c > board.max_fet_temp_c && !registry.has_category(FaultCategory::OverTemp) {
         registry.set(ot_fault);
+        #[cfg(feature = "defmt")]
+        defmt::error!("OverTemp FAULT: {} x0.1°C", temp_c_x10);
     }
 }
 

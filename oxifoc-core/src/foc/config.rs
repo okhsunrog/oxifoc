@@ -156,6 +156,22 @@ pub struct NtcConfig {
 }
 
 impl NtcConfig {
+    /// Convert raw ADC value to temperature in 0.1 °C units, saturated to
+    /// the i16 range and with non-finite results mapped to 0.
+    ///
+    /// Signed on purpose: sub-zero ambient is a legitimate reading, and
+    /// clamping it to 0 (as the platform ISRs used to) lies in telemetry.
+    #[inline]
+    pub fn temp_c_x10_from_adc(&self, raw: u16, adc_max_counts: u16) -> i16 {
+        let temp_c = self.temp_c_from_adc(raw, adc_max_counts);
+        if temp_c.is_finite() {
+            // `as` saturates at the i16 bounds (and maps NaN to 0).
+            (temp_c * 10.0) as i16
+        } else {
+            0
+        }
+    }
+
     /// Convert raw ADC value to temperature in Celsius
     ///
     /// Uses the Beta model: T = 1 / (ln(R/R0)/Beta + 1/T0) - 273.15

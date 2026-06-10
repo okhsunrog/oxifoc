@@ -642,7 +642,7 @@ pub struct AdcSnapshot {
     pub vbus_mv: u32,
     /// Temperature readings: (sensor_id, value in 0.1°C)
     /// Using a fixed array to avoid heap allocation
-    pub temps: [(TempSensorId, u16); 4],
+    pub temps: [(TempSensorId, i16); 4],
     /// Number of valid temperature entries
     pub temp_count: u8,
     /// Sequence counter
@@ -691,7 +691,7 @@ impl AdcSnapshot {
     }
 
     /// Add a temperature reading
-    pub fn with_temp(mut self, sensor: TempSensorId, temp_c_x10: u16) -> Self {
+    pub fn with_temp(mut self, sensor: TempSensorId, temp_c_x10: i16) -> Self {
         if (self.temp_count as usize) < self.temps.len() {
             self.temps[self.temp_count as usize] = (sensor, temp_c_x10);
             self.temp_count += 1;
@@ -700,7 +700,7 @@ impl AdcSnapshot {
     }
 
     /// Get temperature for a specific sensor
-    pub fn get_temp(&self, sensor: TempSensorId) -> Option<u16> {
+    pub fn get_temp(&self, sensor: TempSensorId) -> Option<i16> {
         self.temps[..self.temp_count as usize]
             .iter()
             .find(|(id, _)| *id == sensor)
@@ -708,17 +708,17 @@ impl AdcSnapshot {
     }
 
     /// Get FET temperature (convenience method)
-    pub fn fet_temp_c_x10(&self) -> Option<u16> {
+    pub fn fet_temp_c_x10(&self) -> Option<i16> {
         self.get_temp(TempSensorId::Fet)
     }
 
     /// Get board temperature (convenience method)
-    pub fn board_temp_c_x10(&self) -> Option<u16> {
+    pub fn board_temp_c_x10(&self) -> Option<i16> {
         self.get_temp(TempSensorId::Board)
     }
 
     /// Get motor temperature (convenience method)
-    pub fn motor_temp_c_x10(&self) -> Option<u16> {
+    pub fn motor_temp_c_x10(&self) -> Option<i16> {
         self.get_temp(TempSensorId::Motor)
     }
 }
