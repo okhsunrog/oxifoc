@@ -42,6 +42,25 @@ pub enum DriverCommand {
     SetPhaseSource(crate::foc::phase::PhaseSource),
 }
 
+impl DriverCommand {
+    /// All numeric payloads are finite (and gains/limits positive where
+    /// zero makes no sense). Wire input is arbitrary bits — non-finite
+    /// commands are dropped at the boundary instead of feeding NaN into
+    /// the control loop.
+    pub fn is_sane(&self) -> bool {
+        match *self {
+            DriverCommand::SetMode(mode) => mode.is_finite(),
+            DriverCommand::SetCurrentLimits(limits) => {
+                limits.max_current_a.is_finite() && limits.overcurrent_threshold_a.is_finite()
+            }
+            DriverCommand::SetPiGains { kp, ki } => {
+                kp.is_finite() && ki.is_finite() && kp > 0.0 && ki >= 0.0
+            }
+            DriverCommand::SetPhaseSource(source) => source.is_finite(),
+        }
+    }
+}
+
 /// Command channel - servers send DriverCommands here, ISR receives them
 pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, DriverCommand, 8> = Channel::new();
 
@@ -210,6 +229,12 @@ where
 {
     // Process all pending commands
     while let Ok(cmd) = CMD_CHANNEL.try_receive() {
+        // NaN/inf payloads die here, not in the PI loop.
+        if !cmd.is_sane() {
+            #[cfg(feature = "defmt")]
+            defmt::warn!("Dropping non-finite driver command");
+            continue;
+        }
         let mode = match cmd {
             DriverCommand::SetMode(mode) => mode,
             DriverCommand::SetCurrentLimits(limits) => {

@@ -123,6 +123,38 @@ pub enum PhaseSourceError {
 }
 
 impl PhaseSource {
+    /// All f32 payload fields are finite (see `ControlMode::is_finite`).
+    pub fn is_finite(&self) -> bool {
+        match *self {
+            PhaseSource::Hall
+            | PhaseSource::Encoder
+            | PhaseSource::Observer
+            | PhaseSource::Hfi
+            | PhaseSource::Manual
+            | PhaseSource::OpenLoop => true,
+            PhaseSource::HallToObserver {
+                blend_low,
+                blend_high,
+            }
+            | PhaseSource::EncoderToObserver {
+                blend_low,
+                blend_high,
+            } => blend_low.is_finite() && blend_high.is_finite(),
+            PhaseSource::HallWithFallback {
+                blend_low,
+                blend_high,
+                timeout_us: _,
+            } => blend_low.is_finite() && blend_high.is_finite(),
+            PhaseSource::HfiToObserver {
+                min_vel,
+                min_confidence,
+            } => min_vel.is_finite() && min_confidence.is_finite(),
+            PhaseSource::HfiToHall { switch_vel } | PhaseSource::HfiToEncoder { switch_vel } => {
+                switch_vel.is_finite()
+            }
+        }
+    }
+
     /// Check if this source requires a Hall sensor
     pub fn requires_hall(&self) -> bool {
         matches!(

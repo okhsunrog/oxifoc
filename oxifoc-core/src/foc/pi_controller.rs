@@ -113,6 +113,11 @@ impl PIController {
         self.kp = kp;
         self.ki = ki;
     }
+
+    /// Current gains (kp, ki)
+    pub fn gains(&self) -> (f32, f32) {
+        (self.kp, self.ki)
+    }
 }
 
 /// PI Controller with internal rectangular clamping and anti-windup

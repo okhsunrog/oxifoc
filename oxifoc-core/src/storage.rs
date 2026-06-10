@@ -95,7 +95,15 @@ impl PostcardValue<'_> for MotorParamsConfig {}
 impl MotorParamsConfig {
     /// Check if parameters are valid (have been calibrated)
     pub fn is_valid(&self) -> bool {
-        self.resistance_ohm > 0.0 && self.pole_pairs > 0
+        // `> 0.0` rejects NaN for R/L (NaN comparisons are false); the flux
+        // check needs the explicit is_finite. Inductances feed PI tuning
+        // directly — a NaN there becomes NaN gains and garbage duties.
+        self.resistance_ohm > 0.0
+            && self.inductance_d_h > 0.0
+            && self.inductance_q_h > 0.0
+            && self.flux_linkage_wb.is_finite()
+            && self.flux_linkage_wb >= 0.0
+            && self.pole_pairs > 0
     }
 }
 
@@ -434,4 +442,35 @@ where
     load!(hall_tuning, HallTuning);
 
     cfg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn motor_params_validity_rejects_non_finite() {
+        let good = MotorParamsConfig {
+            resistance_ohm: 0.1,
+            inductance_d_h: 1e-4,
+            inductance_q_h: 3e-4,
+            flux_linkage_wb: 0.02,
+            pole_pairs: 7,
+        };
+        assert!(good.is_valid());
+
+        // NaN anywhere numeric must invalidate — these feed PI tuning and
+        // the observers directly.
+        for f in [
+            |p: &mut MotorParamsConfig| p.resistance_ohm = f32::NAN,
+            |p: &mut MotorParamsConfig| p.inductance_d_h = f32::NAN,
+            |p: &mut MotorParamsConfig| p.inductance_q_h = 0.0,
+            |p: &mut MotorParamsConfig| p.flux_linkage_wb = f32::NAN,
+            |p: &mut MotorParamsConfig| p.flux_linkage_wb = f32::INFINITY,
+        ] {
+            let mut bad = good.clone();
+            f(&mut bad);
+            assert!(!bad.is_valid(), "must reject {:?}", bad);
+        }
+    }
 }

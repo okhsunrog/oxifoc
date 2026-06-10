@@ -17,9 +17,6 @@ board docs.
 
 ## Firmware / core
 
-- [ ] NaN guards at the driver boundary: `is_finite` checks on targets/vbus
-  entering `FocDriver::set_mode`/`step` — a NaN from a corrupted config or
-  bad host input currently rides through the PI into the duties.
 - [ ] `FLASH_DONE` is signaled by the storage workers but never awaited:
   either remove it or use it for a true write-through ack in
   `config_server` (respond Ok only after the flash write completed).

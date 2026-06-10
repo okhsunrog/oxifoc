@@ -150,6 +150,41 @@ pub enum ControlMode {
 ///
 /// Note: Fault information is now platform-specific. Use the platform's
 /// fault endpoint to get detailed fault information.
+impl ControlMode {
+    /// All f32 payload fields are finite.
+    ///
+    /// Wire input is arbitrary bits: a NaN/inf target doesn't panic (float
+    /// math never does), but it propagates through the PI loop into a
+    /// garbage SVPWM vector. Commands failing this check must be dropped
+    /// at the boundary.
+    pub fn is_finite(&self) -> bool {
+        match *self {
+            ControlMode::Stopped | ControlMode::Coast => true,
+            ControlMode::CurrentControl {
+                iq_target,
+                id_target,
+            } => iq_target.is_finite() && id_target.is_finite(),
+            ControlMode::VelocityControl { target_vel } => target_vel.is_finite(),
+            ControlMode::PositionControl { target_pos } => target_pos.is_finite(),
+            ControlMode::OpenLoop {
+                angle_rad,
+                current,
+                velocity_rad_s,
+                pi_gains,
+            } => {
+                angle_rad.is_finite()
+                    && current.is_finite()
+                    && velocity_rad_s.is_finite()
+                    && pi_gains.is_none_or(|(kp, ki)| kp.is_finite() && ki.is_finite())
+            }
+            ControlMode::DirectVoltage { vd, vq, angle_rad } => {
+                vd.is_finite() && vq.is_finite() && angle_rad.is_finite()
+            }
+            ControlMode::SixStep { duty } => duty.is_finite(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MotorStatus {

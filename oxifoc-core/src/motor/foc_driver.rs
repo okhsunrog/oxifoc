@@ -786,6 +786,100 @@ mod tests {
         assert_eq!(mirrored, PhaseSource::Hfi);
     }
 
+    /// Non-finite numbers must die at the command boundary: a NaN target
+    /// reaching the PI loop turns the SVPWM output into a garbage voltage
+    /// vector (bounded by the saturating casts, but still a mechanical
+    /// jolt until the overcurrent check reacts).
+    #[test]
+    fn process_commands_rejects_non_finite_payloads() {
+        use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
+        use crate::foc::phase::PhaseManager;
+        use crate::foc::trig::LibmSinCos;
+        use crate::state::{CMD_CHANNEL, DriverCommand, MotorControlState, process_commands};
+        use core::cell::RefCell;
+        use critical_section::Mutex as CriticalSectionMutex;
+
+        #[derive(Clone, Copy, PartialEq)]
+        struct TestFault;
+        impl PlatformFault for TestFault {
+            fn category(&self) -> FaultCategory {
+                FaultCategory::OverCurrent
+            }
+            fn details(&self) -> heapless::String<128> {
+                heapless::String::new()
+            }
+            fn is_recoverable(&self) -> bool {
+                false
+            }
+            fn is_critical(&self) -> bool {
+                true
+            }
+        }
+
+        let state: CriticalSectionMutex<RefCell<MotorControlState>> =
+            CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        let registry: FaultRegistry<TestFault> = FaultRegistry::new();
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+
+        // NaN current target must be dropped — driver stays Stopped.
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+            iq_target: f32::NAN,
+            id_target: 0.0,
+        }));
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(
+            driver.mode(),
+            ControlMode::Stopped,
+            "NaN current target must be rejected"
+        );
+
+        // Infinite direct voltage likewise.
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::DirectVoltage {
+            vd: f32::INFINITY,
+            vq: 0.0,
+            angle_rad: 0.0,
+        }));
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(driver.mode(), ControlMode::Stopped);
+
+        // NaN PI gains must not reach the controller.
+        let gains_before = driver.controller().id_pi.gains();
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetPiGains {
+            kp: f32::NAN,
+            ki: 100.0,
+        });
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(
+            driver.controller().id_pi.gains(),
+            gains_before,
+            "NaN gains must be rejected"
+        );
+
+        // A finite command still works.
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+            iq_target: 1.0,
+            id_target: 0.0,
+        }));
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(
+            driver.mode(),
+            ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0
+            }
+        );
+    }
+
     #[test]
     fn config_limits_clamp_to_hardware_ceiling() {
         // Stored config must never raise limits above the board's hardware
