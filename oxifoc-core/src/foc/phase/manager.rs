@@ -267,7 +267,12 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
         if source.requires_observer() && !self.observer.is_configured() {
             return Err(PhaseSourceError::ObserverNotConfigured);
         }
-        // Note: HFI check would go here when fully implemented
+        // HFI sources need the estimator that actually generates a carrier:
+        // with any other observer in the (single) slot, injection() stays
+        // zero and the source would silently never produce an estimate.
+        if source.requires_hfi() && !self.observer.is_hfi() {
+            return Err(PhaseSourceError::HfiNotConfigured);
+        }
 
         self.source = source;
         // Crossover memory belongs to the previous source's thresholds.
@@ -552,10 +557,9 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
 
             PhaseSource::Hfi => {
                 // HFI estimate straight from the (HFI) observer. No readiness
-                // gate: HFI is valid from standstill by design. NOTE: the
-                // estimator needs its injection applied by the control loop
-                // (HfiObserver::get_injection) — runtime wiring through
-                // FocDriver is not in place yet.
+                // gate: HFI is valid from standstill by design. The carrier
+                // reaches the motor via PhaseProvider::injection() →
+                // FocController::step_with_injection in FocDriver.
                 match (self.observer.phase(), self.observer.velocity()) {
                     (Some(angle), Some(vel)) => PhaseOutput {
                         angle,
@@ -707,6 +711,21 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
         }
     }
 
+    /// Whether the HFI estimate is currently carrying (or may need to
+    /// carry) commutation, so its carrier must be injected. Above the
+    /// crossover latch the fast source commutates and injection stops —
+    /// keeping the carrier on at speed only costs losses and acoustic
+    /// noise while the saliency response degrades anyway.
+    fn hfi_injection_active(&self) -> bool {
+        match self.source {
+            PhaseSource::Hfi => true,
+            PhaseSource::HfiToObserver { .. }
+            | PhaseSource::HfiToHall { .. }
+            | PhaseSource::HfiToEncoder { .. } => !self.crossover_latched,
+            _ => false,
+        }
+    }
+
     /// Blend sensor output with observer based on velocity
     fn blend_with_observer(
         &mut self,
@@ -801,6 +820,14 @@ impl<H: AngleSensor, E: AngleSensor> PhaseProvider for PhaseManager<H, E> {
 
         // Compute output based on source (with potential fallback)
         self.output = self.compute_phase_with_fallback(hall_sample, encoder_sample);
+    }
+
+    fn injection(&self) -> (f32, f32) {
+        if self.hfi_injection_active() {
+            self.observer.injection()
+        } else {
+            (0.0, 0.0)
+        }
     }
 }
 
@@ -942,6 +969,53 @@ mod tests {
         assert_eq!(compute_blend(100.0, 200.0, 400.0), 0.0);
         assert_eq!(compute_blend(300.0, 200.0, 400.0), 0.5);
         assert_eq!(compute_blend(500.0, 200.0, 400.0), 1.0);
+    }
+
+    #[test]
+    fn injection_forwarded_only_in_hfi_regimes() {
+        use crate::foc::phase::{HfiObserver, Observer};
+
+        let mut phase = PhaseManager::sensorless();
+        phase.set_observer(Observer::Hfi(HfiObserver::new(1000.0, 3.0)));
+
+        // Manual source: HFI estimator configured but not commutating —
+        // injecting would just heat the motor during calibration.
+        assert_eq!(phase.injection(), (0.0, 0.0));
+
+        // Pure HFI: carrier must flow (fresh carrier phase 0 → vd = A).
+        phase.set_source(PhaseSource::Hfi).unwrap();
+        let (vd, vq) = phase.injection();
+        assert!(vd.abs() > 1.0, "expected carrier voltage, got vd = {}", vd);
+        assert_eq!(vq, 0.0, "pulsating injection is d-axis only");
+
+        // Crossover source: inject below the latch, stop above it.
+        phase
+            .set_source(PhaseSource::HfiToObserver {
+                min_vel: 100.0,
+                min_confidence: 0.5,
+            })
+            .unwrap();
+        assert!(phase.injection().0.abs() > 1.0);
+        phase.crossover_latched = true;
+        assert_eq!(phase.injection(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn hfi_source_rejected_without_hfi_observer() {
+        use crate::foc::phase::{BackEmfObserver, Observer};
+
+        // A back-EMF observer in the slot can't generate a carrier, so the
+        // HFI sources would silently never estimate anything.
+        let mut phase = PhaseManager::sensorless();
+        assert_eq!(
+            phase.set_source(PhaseSource::Hfi),
+            Err(PhaseSourceError::HfiNotConfigured)
+        );
+        phase.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 1e-4, 0.01)));
+        assert_eq!(
+            phase.set_source(PhaseSource::Hfi),
+            Err(PhaseSourceError::HfiNotConfigured)
+        );
     }
 
     #[test]

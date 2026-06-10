@@ -67,4 +67,16 @@ pub trait PhaseProvider {
     /// * `input` - Voltages and currents from the current step
     /// * `now_ticks` - Current timestamp in sensor's tick timebase
     fn update(&mut self, input: &PhaseInput, now_ticks: u64);
+
+    /// dq voltage to inject this cycle (HFI carrier), in the rotor frame
+    /// at [`get`](Self::get)'s angle.
+    ///
+    /// The control loop must read this BETWEEN `get()` and `update()` and
+    /// add it to the PI outputs (`FocController::step_with_injection`):
+    /// the estimator demodulates the currents fed to the next `update()`
+    /// against this exact carrier sample, and `update()` then advances the
+    /// carrier. Default: no injection (sources without HFI).
+    fn injection(&self) -> (f32, f32) {
+        (0.0, 0.0)
+    }
 }

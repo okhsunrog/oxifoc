@@ -106,6 +106,22 @@ impl Observer {
         }
     }
 
+    /// Carrier voltage to inject this cycle (dq frame, at the estimated
+    /// angle). Zero for observers that don't inject — only HFI needs the
+    /// control loop's cooperation. See [`HfiObserver::get_injection`].
+    pub fn injection(&self) -> (f32, f32) {
+        match self {
+            Observer::Hfi(o) => o.get_injection(),
+            Observer::None | Observer::BackEmf(_) => (0.0, 0.0),
+        }
+    }
+
+    /// Whether this observer is an HFI estimator (needs carrier injection
+    /// from the control loop to function at all).
+    pub fn is_hfi(&self) -> bool {
+        matches!(self, Observer::Hfi(_))
+    }
+
     /// Check if observer is configured
     pub fn is_configured(&self) -> bool {
         !matches!(self, Observer::None)

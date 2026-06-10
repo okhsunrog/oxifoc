@@ -362,12 +362,17 @@ where
         let phase_out = self.phase.get();
         let angle_rad = phase_out.angle;
 
+        // HFI carrier for this cycle (zero for non-HFI sources). Must be
+        // read between get() and update(): the estimator demodulates the
+        // currents fed to update() against this exact carrier sample.
+        let (vd_inject, vq_inject) = self.phase.injection();
+
         // Read currents and run FOC controller
         let currents = self.current_sensor.read_currents();
         let max_duty = self.pwm.max_duty();
-        let out = self
-            .controller
-            .step(currents, angle_rad, id_target, iq_target, max_duty, dt);
+        let out = self.controller.step_with_injection(
+            currents, angle_rad, id_target, iq_target, vd_inject, vq_inject, max_duty, dt,
+        );
 
         // Layer 2: Check measured current against hard overcurrent limit
         if self.current_limits.is_overcurrent(out.id, out.iq) {
@@ -617,5 +622,127 @@ where
     /// Get reference to FOC controller
     pub fn controller(&self) -> &FocController<SvpwmModulator, S> {
         &self.controller
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockPwm {
+        duties: [u16; 3],
+    }
+
+    impl PhasePwm for MockPwm {
+        fn max_duty(&self) -> u16 {
+            1000
+        }
+        fn set_duties(&mut self, duties: [u16; 3]) {
+            self.duties = duties;
+        }
+    }
+
+    struct MockCurrentSensor {
+        currents: (f32, f32, f32),
+    }
+
+    impl CurrentSensor for MockCurrentSensor {
+        fn read_currents(&self) -> (f32, f32, f32) {
+            self.currents
+        }
+        fn read_raw(&self) -> (u16, u16, u16) {
+            (0, 0, 0)
+        }
+        fn is_calibrated(&self) -> bool {
+            true
+        }
+        fn get_offsets(&self) -> (f32, f32, f32) {
+            (0.0, 0.0, 0.0)
+        }
+    }
+
+    /// Closed-loop HFI through the full runtime path: FocDriver in
+    /// CurrentControl with a PhaseManager(HfiObserver) source must apply
+    /// the estimator's carrier injection itself — no detection-mode help.
+    /// The rotor is parked away from the initial estimate; only the
+    /// injected carrier can reveal its position (saliency), so this fails
+    /// if the driver drops the injection anywhere along the path.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn current_control_drives_hfi_estimator() {
+        use crate::foc::phase::{HfiObserver, Observer, PhaseManager, PhaseSource};
+        use crate::foc::trig::LibmSinCos;
+        use crate::virtual_motor::{MotorParams, VirtualMotor};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        const ROTOR_ANGLE: f32 = 1.2;
+        // Same IPM as the estimator-level HFI tests: 3:1 saliency, heavy
+        // rotor + friction so the injection itself doesn't move it.
+        let params = MotorParams {
+            r: 0.1,
+            ld: 100e-6,
+            lq: 300e-6,
+            lambda: 0.02,
+            pole_pairs: 4,
+            j: 1e-2,
+            friction_b: 5e-2,
+            hall_offset: 0.0,
+        };
+        let mut motor = VirtualMotor::new(params);
+        motor.set_angle(ROTOR_ANGLE);
+
+        // 1000 rad/s current loop — well below the 1 kHz carrier, so the
+        // PI regulates the fundamental without eating the carrier response.
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            24.0,
+        );
+        let mut mgr = PhaseManager::sensorless();
+        mgr.set_observer(Observer::Hfi(HfiObserver::new(1000.0, 3.0)));
+        mgr.set_source(PhaseSource::Hfi).unwrap();
+
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            mgr,
+            DT,
+        );
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 0.0,
+            id_target: 0.0,
+        });
+
+        let mut out = crate::virtual_motor::VirtualMotorOutput::default();
+        for step in 1..20_000u64 {
+            driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+            let telem = driver.step(step * 50).expect("FOC step failed");
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        }
+
+        // HFI is 2θ-periodic: fold the error to the saliency period.
+        let true_angle = crate::foc::wrap_angle(out.angle_rad);
+        let raw_err = crate::foc::angle_difference(driver.phase().get().angle, true_angle).abs();
+        let err = raw_err.min(core::f32::consts::PI - raw_err);
+        assert!(
+            err < 0.1,
+            "HFI did not converge through FocDriver: est {} vs rotor {} (err {} mod π)",
+            driver.phase().get().angle,
+            true_angle,
+            err
+        );
+        assert!(
+            driver.phase().observer().confidence() > 0.5,
+            "converged HFI must report confidence, got {}",
+            driver.phase().observer().confidence()
+        );
+        assert!(
+            crate::foc::angle_difference(out.angle_rad, ROTOR_ANGLE).abs() < 0.15,
+            "injection moved the rotor: {} rad",
+            out.angle_rad
+        );
     }
 }
