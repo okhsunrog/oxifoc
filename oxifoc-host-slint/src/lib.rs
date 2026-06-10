@@ -489,6 +489,10 @@ pub fn main() {
                     drop(cr.take());
                     drop(vr.take());
                     drop(tr.take());
+                    // hr too — leaking it kept a wgpu Device/Queue alive past
+                    // the graphics context and rendered with a stale device
+                    // after a context recreate.
+                    drop(hr.take());
                 }
                 _ => {}
             })

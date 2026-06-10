@@ -89,8 +89,12 @@ pub async fn detect_server<NS, B>(
     let server = core::pin::pin!(server);
     let mut h = server.attach();
 
-    // Single-entry dedup cache: a retry with the same id replays this response.
-    let mut cache: Option<(ReqId, DetectResponse)> = None;
+    // Single-entry dedup cache: a retry with the same id AND the same request
+    // replays this response. The payload must be compared too — host ids are
+    // only unique within one process, so a freshly started host can reuse an
+    // old id for a *different* step and would otherwise get the stale answer
+    // replayed (e.g. a Resistance result for a CalibrateHall request).
+    let mut cache: Option<(ReqId, DetectRequest, DetectResponse)> = None;
 
     loop {
         // Owned request + header — nothing borrowed across the measurement await.
@@ -102,7 +106,11 @@ pub async fn detect_server<NS, B>(
 
         let resp = match &cache {
             // Hit: replay without re-running the (physical) measurement.
-            Some((cached_id, resp)) if *cached_id == id => *resp,
+            Some((cached_id, cached_req, resp))
+                if *cached_id == id && *cached_req == msg.t.inner =>
+            {
+                *resp
+            }
             // Miss: stop the motor, measure, leave the motor stopped, cache.
             _ => {
                 let _ = CMD_CHANNEL.try_send(ControlMode::Stopped);
@@ -117,7 +125,7 @@ pub async fn detect_server<NS, B>(
                 let _ = CMD_CHANNEL.try_send(ControlMode::Stopped);
                 // Success-only cache: a transient error stays retryable.
                 if !matches!(resp, DetectResponse::Error(_)) {
-                    cache = Some((id, resp));
+                    cache = Some((id, msg.t.inner, resp));
                 }
                 resp
             }

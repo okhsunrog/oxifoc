@@ -85,9 +85,21 @@ impl Timer for TokioTimer {
 }
 
 /// Monotonic idempotency-key source for deduplicated requests (detection).
+///
+/// Seeded from wall-clock nanos: the device-side dedup cache outlives host
+/// processes and matches on `ReqId`, so two runs both starting at id 1 would
+/// make the device replay the previous run's cached response instead of
+/// executing the new (possibly different) request.
 fn next_detect_id() -> ReqId {
-    static CTR: AtomicU64 = AtomicU64::new(1);
-    ReqId(CTR.fetch_add(1, Ordering::Relaxed))
+    static CTR: std::sync::OnceLock<AtomicU64> = std::sync::OnceLock::new();
+    let ctr = CTR.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        AtomicU64::new(nanos | 1)
+    });
+    ReqId(ctr.fetch_add(1, Ordering::Relaxed))
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -308,7 +320,12 @@ where
     enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
     spawn_protocol_tasks(&stack, ctx);
     if cfg.stream_defmt() {
-        start_defmt_decoder(cfg, &stack, None)?;
+        // defmt decoding is a debugging nicety — a missing/unreadable ELF
+        // (e.g. connecting to the virtual device with no firmware build)
+        // must not kill an already-established connection.
+        if let Err(e) = start_defmt_decoder(cfg, &stack, None) {
+            tracing::warn!("defmt decoder unavailable, continuing without it: {e:#}");
+        }
     }
     monitor_state_until_down(&state_notify, &stack, &connected, &cancel).await;
     Ok(())
@@ -437,8 +454,14 @@ where
         enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
 
         if !defmt_started && cfg.stream_defmt() {
-            start_defmt_decoder(cfg, &stack, transport.defmt_reader)?;
-            defmt_started = true;
+            // Non-fatal: see the framed-transport path. Retried on the next
+            // reconnect in case the ELF appears after a firmware build.
+            match start_defmt_decoder(cfg, &stack, transport.defmt_reader) {
+                Ok(()) => defmt_started = true,
+                Err(e) => {
+                    tracing::warn!("defmt decoder unavailable, continuing without it: {e:#}");
+                }
+            }
         }
 
         // Monitor interface state with recovery
@@ -586,7 +609,11 @@ where
                     dev_info.foc_freq_hz,
                     dev_info.max_current_a
                 );
-                let _ = info_tx.send(dev_info);
+                // try_send: the consumer may have stopped reading (the GUI's
+                // info listener reads exactly one message). A blocking send
+                // on this bounded channel would wedge the whole backend after
+                // a few reconnects. Dropping a handshake info is harmless.
+                let _ = info_tx.try_send(dev_info);
                 connected.store(true, Ordering::Relaxed);
                 return true;
             }
@@ -684,7 +711,11 @@ fn spawn_fast_telemetry_subscriber<NS>(
                     _ = cancel.cancelled() => break,
                     msg = hdl.recv() => {
                         for sample in &msg.t.samples {
-                            let _ = fast_tx.send(*sample);
+                            // try_send: drop-on-full is the right semantics
+                            // for telemetry. A blocking send would park this
+                            // tokio worker whenever the UI stops draining
+                            // (e.g. minimized window stops the render loop).
+                            let _ = fast_tx.try_send(*sample);
                         }
                     }
                 }
@@ -731,7 +762,9 @@ fn spawn_slow_telemetry_poller<NS>(
                         if let Ok(Ok(sample)) = tokio::time::timeout(
                             Duration::from_millis(500), fut
                         ).await {
-                            let _ = slow_tx.send(sample);
+                            // try_send: see fast telemetry — never block the
+                            // runtime on a slow/absent consumer.
+                            let _ = slow_tx.try_send(sample);
                         }
                     }
                 }

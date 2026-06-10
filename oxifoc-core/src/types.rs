@@ -335,7 +335,9 @@ pub struct FaultResponse {
 /// Each step is independent. GUI provides all required parameters explicitly
 /// (e.g., resistance from a previous measurement or from saved config).
 /// PI gains are computed on the host side from R and L (like VESC Tool).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
+// PartialEq: the device-side dedup cache verifies the request payload, not
+// just the ReqId — see runtime/detect.rs.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DetectRequest {
     /// Measure phase-to-neutral resistance.
