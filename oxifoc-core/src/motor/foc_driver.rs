@@ -519,6 +519,16 @@ where
             let (id, iq) = crate::foc::transforms::park(i_alpha, i_beta, sin_a, cos_a);
             out.id = id;
             out.iq = iq;
+
+            // No PI loop reins the current in here — the commanded voltage
+            // is applied verbatim — so the measured check is the only
+            // software protection this mode has.
+            if self.current_limits.is_overcurrent(out.id, out.iq) {
+                self.pwm.disable();
+                self.controller.reset();
+                self.mode = ControlMode::Stopped;
+                return Err("Overcurrent: measured current exceeds limit");
+            }
         }
 
         self.phase.update(
@@ -583,6 +593,16 @@ where
         } else {
             (0.0, 0.0, 0.0)
         };
+
+        // Six-step has no current loop at all; check the measured magnitude
+        // in αβ (same magnitude as dq — Park preserves it).
+        let (i_alpha, i_beta) = crate::foc::transforms::clarke(ia, ib);
+        if self.current_limits.is_overcurrent(i_alpha, i_beta) {
+            self.pwm.disable();
+            self.controller.reset();
+            self.mode = ControlMode::Stopped;
+            return Err("Overcurrent: measured current exceeds limit");
+        }
 
         Ok(FocOutput {
             ia,
@@ -659,6 +679,68 @@ mod tests {
         fn get_offsets(&self) -> (f32, f32, f32) {
             (0.0, 0.0, 0.0)
         }
+    }
+
+    /// Every mode that energizes the motor and can read currents must trip
+    /// the measured-overcurrent protection. DirectVoltage has no PI loop to
+    /// rein the current in, and six-step has no current loop at all — a
+    /// shorted phase in those modes must not cook the FETs just because
+    /// the mode is "simple".
+    #[test]
+    fn direct_voltage_trips_overcurrent() {
+        use crate::foc::trig::LibmSinCos;
+
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                // ~26 A magnitude — far above the 13 A threshold below.
+                currents: (20.0, -10.0, -10.0),
+            },
+            crate::foc::phase::PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+        driver.set_mode(ControlMode::DirectVoltage {
+            vd: 1.0,
+            vq: 0.0,
+            angle_rad: 0.0,
+        });
+
+        let res = driver.step(0);
+        assert!(res.is_err(), "overcurrent must abort the DirectVoltage step");
+        assert_eq!(
+            driver.mode(),
+            ControlMode::Stopped,
+            "overcurrent must latch Stopped"
+        );
+    }
+
+    #[test]
+    fn six_step_trips_overcurrent() {
+        use crate::foc::trig::LibmSinCos;
+
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (20.0, -10.0, -10.0),
+            },
+            crate::foc::phase::PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+        driver.set_mode(ControlMode::SixStep { duty: 0.2 });
+
+        let res = driver.step(0);
+        assert!(res.is_err(), "overcurrent must abort the six-step step");
+        assert_eq!(
+            driver.mode(),
+            ControlMode::Stopped,
+            "overcurrent must latch Stopped"
+        );
     }
 
     /// Closed-loop HFI through the full runtime path: FocDriver in
