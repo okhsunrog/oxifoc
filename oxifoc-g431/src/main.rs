@@ -106,13 +106,7 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 8: Initialize Hall Sensor ==========
     defmt::info!("Initializing hall sensor...");
-    sensors::init_hall(
-        r.hall.pb6,
-        r.hall.pb7,
-        r.hall.pb8,
-        p.TIM6,
-        config::TIMEBASE_TICKS_PER_SEC,
-    );
+    sensors::init_hall(r.hall.pb6, r.hall.pb7, r.hall.pb8, p.TIM4);
 
     // ========== STEP 9: Initialize FOC Controller ==========
     defmt::debug!("Initializing FOC controller...");

@@ -100,7 +100,8 @@ pub async fn init(
     // Enable ADC interrupt and PWM outputs.
     // Order: install handles → enable interrupt → enable PWM triggers.
     // ADC1_2 at priority 0 (highest) — FOC loop is the most time-critical ISR.
-    // TIM6 (hall polling) runs at default priority and can be preempted by this.
+    // TIM4 (hall capture) runs below it; edge timestamps are latched in
+    // hardware, so that delay is harmless.
     unsafe {
         use embassy_stm32::interrupt::typelevel::Interrupt;
         let irq = embassy_stm32::interrupt::ADC1_2;
@@ -229,8 +230,9 @@ fn ADC1_2() {
     );
     fault::check_temperature_fault(temp_c_x10, &BOARD, &FAULT_REGISTRY, G431Fault::OverTemp);
 
-    // Get current timestamp for FOC and phase manager
-    let now_ticks = embassy_time::Instant::now().as_ticks();
+    // Hall-domain timestamp (TIM4 µs ticks) for FOC and phase manager —
+    // must match the tick domain of the hall edge timestamps.
+    let now_ticks = crate::sensors::hall::now_ticks();
 
     // Build ADC snapshot
     *SEQ = SEQ.wrapping_add(1);

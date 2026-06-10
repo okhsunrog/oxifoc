@@ -83,13 +83,6 @@ pub fn overcurrent_dac_counts(amps: f32) -> u16 {
 }
 
 // ============================================================================
-// Timing Configuration
-// ============================================================================
-
-/// Timebase for Hall interpolation (match embassy_time ticks)
-pub const TIMEBASE_TICKS_PER_SEC: u64 = embassy_time::TICK_HZ;
-
-// ============================================================================
 // Protocol Configuration
 // ============================================================================
 

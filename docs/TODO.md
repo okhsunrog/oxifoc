@@ -91,8 +91,6 @@ model f32).
   `.rodata` (~14 KB, mostly postcard schema tables), consider
   `panic_immediate_abort`.
 - [ ] VSQRT (`vsqrt.f32`) instead of `libm::sqrtf` on Cortex-M4F hot paths.
-- [ ] Revisit TIM6 hall-polling rate (5 µs currently).
-- [ ] µs hall ticks on all platforms (consistent timebase).
 - [ ] f405/g474 build with `opt-level = 3`, g431 with `"z"` (flash
   pressure). Intentional, but unmeasured: check what `"z"` would cost
   f405/g474 in ISR time, or whether it matters at all at 20 kHz.
@@ -117,6 +115,12 @@ loop, GUI `unwrap_or(0.0)` field parsing, dead `oxifoc-virtual
 
 ## Hardware bench (waiting for the rig)
 
+- [ ] **Validate timer-capture hall acquisition** (2026-06-10 migration:
+  TIM4/TIM3 XOR + input capture replaced 200 kHz TIM6 polling; hall ticks
+  are now 1 MHz hardware timestamps). Hand-spin the motor and check:
+  hall states cycle 1→3→2→6→4→5, velocity magnitude is sane (a wrong
+  TIM clock assumption would skew it 2×), `OVERCAPTURES` stays 0, and
+  calibration (`read_hall_state_raw`) still reads pins in AF mode.
 - [ ] Re-run motor detection — stored Flipsky params are 1.5× off after
   the SVPWM normalization fix.
 - [ ] OCP with the BKF break filter under real load (g431).

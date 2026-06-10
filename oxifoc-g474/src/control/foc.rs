@@ -173,7 +173,9 @@ fn ADC1_2() {
     );
 
     // Get current timestamp for FOC and phase manager
-    let now_ticks = embassy_time::Instant::now().as_ticks();
+    // Hall-domain timestamp (capture-timer us ticks) for FOC and phase
+    // manager - must match the tick domain of the hall edge timestamps.
+    let now_ticks = crate::sensors::hall::now_ticks();
 
     // Build ADC snapshot
     *SEQ = SEQ.wrapping_add(1);

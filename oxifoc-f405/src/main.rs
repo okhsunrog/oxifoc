@@ -130,7 +130,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(hardware::drv8301::nfault_monitor_task(nfault).unwrap());
 
     // ========== STEP 10: Initialize Hall Sensor ==========
-    sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8, p.TIM6);
+    sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8, p.TIM3);
 
     // ========== STEP 11: Initialize ADCs ==========
     let adc_handles = hardware::peripherals::init_adc(

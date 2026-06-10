@@ -2,10 +2,16 @@
 //!
 //! Provides the static `HALL_ESTIMATOR`, update/query functions, and
 //! `HallAngleProxy` implementing `AngleSensor`. Platform crates keep
-//! GPIO init, TIM6 setup, and the ISR itself — the ISR body simply
-//! calls [`update_hall_state`] with the already-voted state.
+//! GPIO/timer init and the capture ISR itself — the ISR body calls
+//! [`update_hall_edge`] with the GPIO state and the hardware-latched
+//! capture timestamp.
+//!
+//! All timestamps live in the hall capture timer's tick domain (µs on the
+//! current boards), NOT `embassy_time` ticks. The platform registers its
+//! tick source via [`set_tick_source`] so the convenience `AngleSensor`
+//! methods that need "now" stay in the same domain as the edge timestamps.
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
@@ -15,31 +21,49 @@ use super::sensors::{AngleSample, AngleSensor, HallSensorTrait, HallSnapshot};
 // ========== Hall Estimator (shared state) ==========
 
 /// Hall estimator — the single source of truth for Hall sensor state.
-/// Accessed by TIM6 ISR (write via [`update_hall_state`]) and telemetry tasks (read).
+/// Accessed by the capture ISR (write via [`update_hall_edge`]) and telemetry tasks (read).
 static HALL_ESTIMATOR: CriticalSectionMutex<RefCell<Option<HallSensor>>> =
     CriticalSectionMutex::new(RefCell::new(None));
+
+/// Platform tick source for "now" in the hall tick domain, registered at init.
+/// Used by the convenience `AngleSensor` methods (`read_angle`/`read_direction`);
+/// the control path always receives explicit ticks from the FOC ISR.
+static TICK_SOURCE: CriticalSectionMutex<Cell<Option<fn() -> u64>>> =
+    CriticalSectionMutex::new(Cell::new(None));
 
 // ========== Initialization ==========
 
 /// Create the Hall estimator in the global static.
 ///
-/// Must be called once during platform init, before enabling the TIM6 interrupt.
+/// Must be called once during platform init, before enabling the capture interrupt.
 ///
 /// # Arguments
-/// * `timebase_ticks_per_sec` — Timebase frequency for Hall interpolation
-///   (typically `embassy_time::TICK_HZ`).
+/// * `timebase_ticks_per_sec` — Tick rate of the hall capture timer
+///   (1 MHz on the current boards).
 pub fn init_estimator(timebase_ticks_per_sec: u64) {
     HALL_ESTIMATOR.lock(|est| {
         est.replace(Some(HallSensor::new(timebase_ticks_per_sec)));
     });
 }
 
+/// Register the platform's hall-domain tick source ("now" in the same ticks
+/// as the edge timestamps fed to [`update_hall_edge`]).
+pub fn set_tick_source(f: fn() -> u64) {
+    TICK_SOURCE.lock(|c| c.set(Some(f)));
+}
+
+fn hall_now_ticks() -> u64 {
+    TICK_SOURCE.lock(|c| c.get()).map(|f| f()).unwrap_or(0)
+}
+
 // ========== ISR Entry Point ==========
 
-/// Update Hall state from the platform ISR.
+/// Feed one hall edge from the platform capture ISR.
 ///
-/// Call this from the TIM6 ISR after performing majority voting on GPIO reads.
-/// Handles edge detection, timestamp capture, and estimator update internally.
+/// `ticks` is the hardware-latched capture timestamp (extended to 64 bits),
+/// so ISR latency does not affect edge timing. Same-state calls are ignored:
+/// a glitch that bounces through the input filter produces two captures that
+/// land back on the previous state.
 ///
 /// Transitions into invalid states (0 and 7) are forwarded to the estimator
 /// too: they bump its error counter and reset its edge tracking, which is
@@ -48,23 +72,22 @@ pub fn init_estimator(timebase_ticks_per_sec: u64) {
 /// swallowed here while the phase free-runs on the last velocity. VESC does
 /// the same (invalid reading → `m_ang_hall_int_prev = -1` → fallback).
 #[inline]
-pub fn update_hall_state(state: u8) {
-    // Edge detection via static mutable — safe because this is called only from a single ISR
+pub fn update_hall_edge(state: u8, ticks: u64) {
+    // Edge memory via static mutable — safe because this is called only from
+    // a single ISR (the hall capture timer's).
     static mut LAST_STATE: u8 = 0;
 
-    // SAFETY: called only from a single ISR context (TIM6_DAC)
+    // SAFETY: called only from a single ISR context
     let last = unsafe { LAST_STATE };
 
     if state != last {
-        let ticks = embassy_time::Instant::now().as_ticks();
-
         HALL_ESTIMATOR.lock(|est| {
             if let Some(h) = est.borrow_mut().as_mut() {
                 let _ = h.update_sample(state, ticks);
             }
         });
 
-        // SAFETY: called only from a single ISR context (TIM6_DAC)
+        // SAFETY: called only from a single ISR context
         unsafe {
             LAST_STATE = state;
         }
@@ -152,13 +175,13 @@ impl AngleSensor for HallAngleProxy {
     }
 
     fn read_angle(&self) -> f32 {
-        let now = embassy_time::Instant::now().as_ticks();
-        self.sample(now).map(|s| s.angle).unwrap_or(0.0)
+        self.sample(hall_now_ticks())
+            .map(|s| s.angle)
+            .unwrap_or(0.0)
     }
 
     fn read_direction(&self) -> Direction {
-        let now = embassy_time::Instant::now().as_ticks();
-        self.sample(now)
+        self.sample(hall_now_ticks())
             .map(|s| s.direction)
             .unwrap_or(Direction::Stopped)
     }

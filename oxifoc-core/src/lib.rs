@@ -222,4 +222,7 @@ pub mod foc {
     /// Shared Hall sensor state management for embassy-based platforms
     #[cfg(feature = "embassy")]
     pub mod hall_embassy;
+
+    /// 16-bit timer capture → 64-bit timestamp extension (hall edge timebase)
+    pub mod capture_timebase;
 }
