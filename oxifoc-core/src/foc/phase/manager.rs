@@ -552,8 +552,10 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
 
             PhaseSource::Hfi => {
                 // HFI estimate straight from the (HFI) observer. No readiness
-                // gate: HFI is valid from standstill by design; the estimator
-                // itself is still a stub (see HfiObserver).
+                // gate: HFI is valid from standstill by design. NOTE: the
+                // estimator needs its injection applied by the control loop
+                // (HfiObserver::get_injection) — runtime wiring through
+                // FocDriver is not in place yet.
                 match (self.observer.phase(), self.observer.velocity()) {
                     (Some(angle), Some(vel)) => PhaseOutput {
                         angle,
@@ -604,8 +606,8 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
 
             // NOTE on the HfiToX sources: the manager holds a single
             // `Observer` slot, so "HFI plus back-EMF observer" cannot truly
-            // coexist yet — full zero-speed HFI needs the HfiObserver
-            // implementation and a dual-estimator slot. What IS fixed here:
+            // coexist yet — HfiToObserver needs a dual-estimator slot (the
+            // HFI estimator itself is implemented). What IS fixed here:
             // the low-speed side returns the live HFI estimate instead of a
             // frozen copy of the previous output, and the switchovers carry
             // hysteresis (`crossover_latched`) instead of chattering on a

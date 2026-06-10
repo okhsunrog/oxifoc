@@ -78,8 +78,7 @@ impl Observer {
         match self {
             Observer::None => false,
             Observer::BackEmf(o) => o.is_ready(),
-            // HFI estimation is a stub (no demodulation yet) — never ready.
-            Observer::Hfi(_) => false,
+            Observer::Hfi(o) => o.is_ready(),
         }
     }
 
@@ -345,24 +344,42 @@ impl BackEmfObserver {
 #[derive(Clone, Debug)]
 pub struct HfiObserver {
     // Injection parameters
-    frequency: f32, // Injection frequency (Hz)
-    amplitude: f32, // Injection amplitude (V)
-    phase_inj: f32, // Current injection phase
+    frequency: f32,     // Injection frequency (Hz)
+    amplitude: f32,     // Injection amplitude (V)
+    carrier_phase: f32, // Carrier phase of the sample get_injection() returns
 
-    // Demodulation state
+    // Demodulation state (see update() for the math)
+    id_lp: f32,       // slow (fundamental) d-current tracker
+    iq_lp: f32,       // slow (fundamental) q-current tracker
+    eps_filt: f32,    // demodulated q-channel error (A)
+    amp_d_filt: f32,  // demodulated d-channel carrier amplitude (A)
+    err_quality: f32, // LPF of |normalized error|, for confidence
+
     phase_est: f32,    // Estimated rotor phase
     velocity_est: f32, // Estimated velocity
-
-    // PLL state
-    pll_integrator: f32,
 
     // Tuning
     pll_kp: f32,
     pll_ki: f32,
+    min_hf_current: f32, // d-channel carrier amplitude floor (A)
 
     // State
     confidence: f32,
 }
+
+/// Fundamental-tracker low-pass time constant (s). Its cutoff must sit well
+/// below the carrier so the high-pass residual keeps the carrier content.
+const HFI_FUND_TAU_S: f32 = 0.005;
+
+/// Demodulation low-pass time constant (s) — a few carrier periods.
+const HFI_DEMOD_TAU_S: f32 = 0.002;
+
+/// Error-quality low-pass time constant (s), for confidence/readiness.
+const HFI_QUALITY_TAU_S: f32 = 0.01;
+
+/// Default d-channel carrier-amplitude floor (A): below this no injection
+/// response is measurably flowing and the estimate is meaningless.
+pub const HFI_MIN_HF_CURRENT_A: f32 = 0.05;
 
 impl HfiObserver {
     /// Create a new HFI observer
@@ -374,46 +391,99 @@ impl HfiObserver {
         Self {
             frequency,
             amplitude,
-            phase_inj: 0.0,
+            carrier_phase: 0.0,
+            id_lp: 0.0,
+            iq_lp: 0.0,
+            eps_filt: 0.0,
+            amp_d_filt: 0.0,
+            err_quality: 1.0, // start "unlocked"
             phase_est: 0.0,
             velocity_est: 0.0,
-            pll_integrator: 0.0,
             pll_kp: 100.0,
             pll_ki: 2000.0,
+            min_hf_current: HFI_MIN_HF_CURRENT_A,
             confidence: 0.0,
         }
     }
 
-    /// Update observer with new measurements
+    /// Update observer with new measurements.
     ///
-    /// Note: Full HFI implementation requires:
-    /// 1. Injecting Vd = amplitude * sin(2π * frequency * t)
-    /// 2. Measuring Id response
-    /// 3. Demodulating to extract position error
+    /// # Contract with the control loop
     ///
-    /// This is a placeholder - actual implementation needs integration
-    /// with the FOC controller's injection mode.
+    /// Each FOC cycle must call [`get_injection`](Self::get_injection)
+    /// first, apply the returned dq voltage at [`phase`](Self::phase), and
+    /// then call `update` with the resulting currents — the demodulator
+    /// correlates them with the same carrier sample that produced them,
+    /// and `update` advances the carrier afterwards.
+    ///
+    /// # Math (pulsating d-axis injection)
+    ///
+    /// With `v_d̂ = A·cos(θc)` injected on the *estimated* d axis and an
+    /// estimation error `e = θ̂ − θ`, the carrier current measured back in
+    /// the estimated frame is (R and rotation neglected at the carrier
+    /// frequency):
+    ///
+    /// ```text
+    /// i_d̂ = (A·sin θc / ωc) · (cos²e/Ld + sin²e/Lq)
+    /// i_q̂ = (A·sin θc / 2ωc) · sin 2e · (1/Lq − 1/Ld)
+    /// ```
+    ///
+    /// Synchronous demodulation by `sin θc` and low-passing gives a DC
+    /// error channel `ε ∝ sin 2e · (1/Lq − 1/Ld)` and an always-positive
+    /// d channel used for normalization (gains become independent of
+    /// A, ωc and the absolute inductance) and for the "is any carrier
+    /// current flowing at all" confidence floor. The saliency is
+    /// 2θ-periodic, so the lock point carries a π ambiguity — polarity
+    /// detection (saturation pulse) is not implemented yet.
     pub fn update(&mut self, input: &ObserverInput) {
         let dt = input.dt;
         if dt <= 0.0 {
             return;
         }
 
-        // Advance injection phase
-        self.phase_inj += TAU * self.frequency * dt;
-        if self.phase_inj > TAU {
-            self.phase_inj -= TAU;
-        }
+        // Measured currents into the estimated rotor frame.
+        let (s_est, c_est) = (libm::sinf(self.phase_est), libm::cosf(self.phase_est));
+        let (id, iq) = crate::foc::transforms::park(input.i_alpha, input.i_beta, s_est, c_est);
 
-        // TODO: Full HFI demodulation requires:
-        // - Current injection from FOC controller
-        // - Band-pass filtering of current response
-        // - Demodulation to extract position error signal
-        // - PLL tracking of position
+        // Split carrier content from the fundamental.
+        let a_f = (dt / HFI_FUND_TAU_S).min(1.0);
+        self.id_lp += a_f * (id - self.id_lp);
+        self.iq_lp += a_f * (iq - self.iq_lp);
+        let hf_id = id - self.id_lp;
+        let hf_iq = iq - self.iq_lp;
 
-        // Placeholder: just advance based on velocity
-        self.phase_est += self.velocity_est * dt;
-        self.phase_est = wrap_angle(self.phase_est);
+        // Synchronous demodulation with the carrier sample that generated
+        // this response (see the call contract above).
+        let dem = libm::sinf(self.carrier_phase);
+        let a_d = (dt / HFI_DEMOD_TAU_S).min(1.0);
+        self.eps_filt += a_d * (hf_iq * dem - self.eps_filt);
+        self.amp_d_filt += a_d * (hf_id * dem - self.amp_d_filt);
+
+        // Normalized error: ∝ sin(2e) scaled by the saliency. The sign
+        // below makes e = 0 the stable PLL equilibrium for normal saliency
+        // (Ld < Lq) with this codebase's Park convention — validated
+        // closed-loop against the salient VirtualMotor (a flipped sign
+        // locks exactly 90° off). Inverse-saliency machines (Ld > Lq)
+        // would need it inverted — not supported yet.
+        let norm = self.amp_d_filt.abs().max(self.min_hf_current * 0.5);
+        let err = self.eps_filt / norm;
+
+        // PLL tracking.
+        self.velocity_est += self.pll_ki * err * dt;
+        self.phase_est = wrap_angle(self.phase_est + (self.velocity_est + self.pll_kp * err) * dt);
+
+        // Confidence: a real carrier response is flowing AND the error
+        // channel has settled near zero (locked).
+        let a_q = (dt / HFI_QUALITY_TAU_S).min(1.0);
+        self.err_quality += a_q * (err.abs() - self.err_quality);
+        self.confidence = if self.amp_d_filt.abs() > self.min_hf_current * 0.5 {
+            crate::foc::clamp_f32(1.0 - 2.0 * self.err_quality, 0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        // Advance the carrier for the next get_injection().
+        self.carrier_phase = wrap_angle(self.carrier_phase + TAU * self.frequency * dt);
     }
 
     /// Get estimated electrical phase (radians)
@@ -431,21 +501,33 @@ impl HfiObserver {
         self.confidence
     }
 
+    /// Whether the estimate is trustworthy: carrier current measurably
+    /// flowing and the demodulated error settled near zero.
+    pub fn is_ready(&self) -> bool {
+        self.confidence >= 0.5
+    }
+
     /// Reset observer state
     pub fn reset(&mut self) {
-        self.phase_inj = 0.0;
+        self.carrier_phase = 0.0;
+        self.id_lp = 0.0;
+        self.iq_lp = 0.0;
+        self.eps_filt = 0.0;
+        self.amp_d_filt = 0.0;
+        self.err_quality = 1.0;
         self.phase_est = 0.0;
         self.velocity_est = 0.0;
-        self.pll_integrator = 0.0;
         self.confidence = 0.0;
     }
 
-    /// Get injection voltage for current step
+    /// Get the injection voltage for the current FOC cycle.
     ///
-    /// Returns (vd_inject, vq_inject) to be added to FOC output.
-    /// Call this at the PWM frequency to get the injection signal.
+    /// Returns `(vd_inject, vq_inject)` to apply in the estimated rotor
+    /// frame (at [`phase`](Self::phase)) — e.g. via
+    /// `FocController::step_with_injection` or `apply_dq`. Must be called
+    /// before [`update`](Self::update) each cycle; see the contract there.
     pub fn get_injection(&self) -> (f32, f32) {
-        let vd = self.amplitude * libm::sinf(self.phase_inj);
+        let vd = self.amplitude * libm::cosf(self.carrier_phase);
         (vd, 0.0)
     }
 
@@ -558,6 +640,113 @@ mod tests {
         assert!(
             err.abs() < 0.15,
             "phase error {} rad under load (L·I = λ) — missing −L·Δi term?",
+            err
+        );
+    }
+
+    /// |angle error| folded to the saliency period: HFI is 2θ-periodic, so
+    /// without polarity detection θ and θ+π are equally valid lock points.
+    #[cfg(feature = "virtual-motor")]
+    fn angle_err_mod_pi(a: f32, b: f32) -> f32 {
+        let err = angle_difference(a, b).abs();
+        err.min(core::f32::consts::PI - err)
+    }
+
+    /// Closed-loop HFI harness: pulsating injection on the estimated d axis
+    /// through the real FocController voltage path into a salient
+    /// VirtualMotor. Returns (observer, final motor output).
+    #[cfg(feature = "virtual-motor")]
+    fn run_hfi_sim(
+        rotor_angle: f32,
+        load_torque: f32,
+        steps: usize,
+    ) -> (HfiObserver, crate::virtual_motor::VirtualMotorOutput) {
+        use crate::foc::controller::FocController;
+        use crate::foc::pwm::SvpwmModulator;
+        use crate::foc::transforms;
+        use crate::virtual_motor::{MotorParams, VirtualMotor};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        // IPM with 3:1 saliency; heavy rotor + friction so the injection
+        // itself doesn't move it.
+        let params = MotorParams {
+            r: 0.1,
+            ld: 100e-6,
+            lq: 300e-6,
+            lambda: 0.02,
+            pole_pairs: 4,
+            j: 1e-2,
+            friction_b: 5e-2,
+            hall_offset: 0.0,
+        };
+        let mut motor = VirtualMotor::new(params);
+        motor.set_angle(rotor_angle);
+
+        let foc = FocController::<SvpwmModulator>::new(24.0);
+        let mut obs = HfiObserver::new(1000.0, 3.0);
+
+        let mut out = crate::virtual_motor::VirtualMotorOutput::default();
+        for _ in 0..steps {
+            let (vd_inj, vq_inj) = obs.get_injection();
+            let telem = foc.apply_dq(vd_inj, vq_inj, obs.phase(), 1000);
+            out = motor.step(telem.v_alpha, telem.v_beta, load_torque, DT);
+            let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
+            obs.update(&ObserverInput {
+                v_alpha: telem.v_alpha,
+                v_beta: telem.v_beta,
+                i_alpha: i_a,
+                i_beta: i_b,
+                dt: DT,
+            });
+        }
+        (obs, out)
+    }
+
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn hfi_finds_rotor_angle_at_standstill() {
+        // Rotor parked 1.2 rad away from the initial estimate; the observer
+        // must find it from saliency alone, without moving the rotor.
+        let (obs, out) = run_hfi_sim(1.2, 0.0, 20_000);
+
+        let err = angle_err_mod_pi(obs.phase(), wrap_angle(out.angle_rad));
+        assert!(
+            err < 0.1,
+            "HFI did not converge: est {} vs rotor {} (err {} rad mod π)",
+            obs.phase(),
+            wrap_angle(out.angle_rad),
+            err
+        );
+        assert!(
+            angle_difference(out.angle_rad, 1.2).abs() < 0.15,
+            "injection moved the rotor: {} rad",
+            out.angle_rad
+        );
+        assert!(
+            obs.confidence() > 0.5,
+            "converged HFI must report confidence, got {}",
+            obs.confidence()
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn hfi_tracks_slow_rotation() {
+        // External load torque turns the rotor slowly (well below any
+        // back-EMF-observable speed); HFI must keep tracking.
+        let (obs, out) = run_hfi_sim(0.3, 0.5, 30_000);
+
+        assert!(
+            out.omega_e.abs() > 5.0,
+            "rotor should be turning under load: ωe = {}",
+            out.omega_e
+        );
+        let err = angle_err_mod_pi(obs.phase(), wrap_angle(out.angle_rad));
+        assert!(
+            err < 0.15,
+            "HFI lost a slowly turning rotor: est {} vs {} (err {})",
+            obs.phase(),
+            wrap_angle(out.angle_rad),
             err
         );
     }
