@@ -6,8 +6,8 @@ use embassy_stm32::gpio::OutputType;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::Channel;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin, Mms2, Ossr};
-use embassy_stm32::timer::low_level::BreakInputPolarity;
 use embassy_stm32::timer::low_level::CountingMode;
+use embassy_stm32::timer::low_level::{BreakInputPolarity, FilterValue};
 use embassy_stm32::timer::simple_pwm::PwmPin;
 
 use crate::hardware::MotorResources;
@@ -95,6 +95,12 @@ impl<'d> MotorPwm<'d> {
         // Disable external BKIN pin input (AF1.BKINE defaults to 1, pin may float)
         pwm.set_break_input_pin_enable(false);
         pwm.set_break_polarity(BreakInputPolarity::ACTIVE_HIGH);
+        // Digital glitch filter on the break input: the comparators see
+        // switching-edge noise on the shunt signals and trip falsely without
+        // it. ST's MCSDK project for this same board uses BreakFilter=4
+        // (fSAMPLING=fDTS/2, N=6) with COMP hysteresis/blanking both off —
+        // a real overcurrent easily outlasts the 6-sample filter.
+        pwm.set_break_filter(FilterValue::FDTS_DIV2_N6);
         pwm.set_break_enable(true);
 
         // Calculate duty limit using shared helper (convert to u16 for helper, then back to u32)

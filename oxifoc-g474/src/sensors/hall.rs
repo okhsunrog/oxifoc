@@ -53,8 +53,12 @@ pub fn init_hall(
     unsafe {
         interrupt::typelevel::TIM6_DAC::unpend();
         cortex_m::peripheral::NVIC::unmask(interrupt::TIM6_DAC);
+        // NVIC::set_priority takes the RAW 8-bit IPR value; STM32 implements
+        // only the upper 4 bits, so a raw 1 would silently become priority 0
+        // — the same level as the FOC ADC ISR, which this poller must NOT
+        // preempt or delay. Shift into the implemented bits for a real level 1.
         let mut nvic = cortex_m::peripheral::Peripherals::steal().NVIC;
-        nvic.set_priority(interrupt::TIM6_DAC, 1);
+        nvic.set_priority(interrupt::TIM6_DAC, 1 << 4);
     }
 
     defmt::info!(

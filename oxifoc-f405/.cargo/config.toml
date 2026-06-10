@@ -6,6 +6,10 @@ linker = "flip-link"
 
 [target.thumbv7em-none-eabihf]
 runner = ["bash", "../scripts/probe_run_f405.sh"]
+# DO NOT REMOVE these target features:
+#  +vfp2  — required by the `sreg` register class in oxifoc-core's q31 inline asm
+#  -fp64  — without it LLVM emits double-precision FPU instructions the
+#           FPv4-SP-D16 FPU doesn't support, and the board hangs at runtime
 rustflags = ["-C", "target-feature=+vfp2,-fp64"]
 
 [env]

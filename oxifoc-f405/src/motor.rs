@@ -143,6 +143,22 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         self.emergency_stop();
     }
 
+    fn enable(&mut self) {
+        // Must be overridden: the trait default is a no-op, but our disable()
+        // turns the channels off, so FocDriver's Stopped→active transition
+        // (set_mode → pwm.enable()) would otherwise write duties into disabled
+        // channels and the motor could never start in FOC modes.
+        // Set duties to 0 before enabling channels to prevent a glitch.
+        self.pwm.set_duty(Channel::Ch1, 0);
+        self.pwm.set_duty(Channel::Ch2, 0);
+        self.pwm.set_duty(Channel::Ch3, 0);
+        self.pwm.enable(Channel::Ch1);
+        self.pwm.enable(Channel::Ch2);
+        self.pwm.enable(Channel::Ch3);
+        // CH4 (ADC trigger) is never disabled by emergency_stop(), so the
+        // sampling/ISR chain keeps running across disable/enable cycles.
+    }
+
     fn set_phase_states(&mut self, states: [PhaseState; 3]) {
         const CHANNELS: [Channel; 3] = [Channel::Ch1, Channel::Ch2, Channel::Ch3];
         for (state, &ch) in states.iter().zip(CHANNELS.iter()) {

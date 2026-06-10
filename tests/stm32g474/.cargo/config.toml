@@ -3,6 +3,10 @@ target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
 runner = "probe-rs run --chip STM32G474RETx"
+# DO NOT REMOVE these target features:
+#  +vfp2  — required by the `sreg` register class in oxifoc-core's q31 inline asm
+#  -fp64  — without it LLVM emits double-precision FPU instructions the
+#           FPv4-SP-D16 FPU doesn't support, and the board hangs at runtime
 rustflags = ["-C", "target-feature=+vfp2,-fp64"]
 
 [env]
