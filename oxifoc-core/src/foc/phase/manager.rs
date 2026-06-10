@@ -1693,7 +1693,8 @@ mod tests {
             let telem = foc.step_with_injection(
                 (out.ia, out.ib, out.ic),
                 angle,
-                0.0,
+                0.0, // velocity (no decoupling configured here)
+                0.0, // id_target
                 iq_target,
                 vd_inj,
                 vq_inj,

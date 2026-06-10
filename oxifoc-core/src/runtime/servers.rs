@@ -372,6 +372,17 @@ pub async fn config_server<NS, const N: usize>(
                                     let _ = CMD_CHANNEL.try_send(
                                         crate::state::DriverCommand::SetPiGains { kp, ki },
                                     );
+                                    // New inductances/flux also re-arm the
+                                    // dq-decoupling feedforward, same as boot.
+                                    let _ = CMD_CHANNEL.try_send(
+                                        crate::state::DriverCommand::SetDecoupling(
+                                            crate::foc::controller::Decoupling {
+                                                ld_h: v.inductance_d_h,
+                                                lq_h: v.inductance_q_h,
+                                                flux_linkage_wb: v.flux_linkage_wb,
+                                            },
+                                        ),
+                                    );
                                 }
                                 _ => {}
                             }

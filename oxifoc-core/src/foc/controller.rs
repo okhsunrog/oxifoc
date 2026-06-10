@@ -59,6 +59,36 @@ impl FocOutput {
     }
 }
 
+/// Motor parameters for dq decoupling and back-EMF feedforward.
+///
+/// In the rotor frame the axes are cross-coupled through the speed
+/// voltages: −ω·Lq·iq disturbs the d axis, +ω·(Ld·id + λ) the q axis.
+/// Feeding these terms forward lifts the disturbance off the PI loops,
+/// whose pole-placement tuning assumes a decoupled R-L plant — without
+/// it the loop bandwidth degrades as speed rises.
+#[derive(Clone, Copy, Debug)]
+pub struct Decoupling {
+    /// d-axis inductance (H)
+    pub ld_h: f32,
+    /// q-axis inductance (H)
+    pub lq_h: f32,
+    /// Permanent-magnet flux linkage (Wb) — the back-EMF feedforward term
+    pub flux_linkage_wb: f32,
+}
+
+impl Decoupling {
+    /// Finite, physically meaningful values only — this multiplies the
+    /// measured velocity straight into the output voltage.
+    pub fn is_valid(&self) -> bool {
+        self.ld_h.is_finite()
+            && self.lq_h.is_finite()
+            && self.flux_linkage_wb.is_finite()
+            && self.ld_h > 0.0
+            && self.lq_h > 0.0
+            && self.flux_linkage_wb >= 0.0
+    }
+}
+
 /// Field-Oriented Controller (current loop)
 ///
 /// The controller is hardware-agnostic: it consumes measured currents and
@@ -75,6 +105,9 @@ pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> 
     modulation_limit: f32,
     /// Dead time compensation factor = dead_time_s × pwm_freq_hz (0.0 = disabled)
     dead_time_comp: f32,
+    /// dq decoupling + back-EMF feedforward; None = plain PI (motor
+    /// parameters unknown, e.g. before detection)
+    decoupling: Option<Decoupling>,
     /// Modulator + SinCos phantom (both are ZSTs)
     _phantom: core::marker::PhantomData<(M, S)>,
 }
@@ -117,6 +150,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             vbus: vbus.max(Self::MIN_VBUS),
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
             dead_time_comp: 0.0,
+            decoupling: None,
             _phantom: core::marker::PhantomData,
         }
     }
@@ -164,8 +198,22 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             vbus,
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
             dead_time_comp: 0.0,
+            decoupling: None,
             _phantom: core::marker::PhantomData,
         }
+    }
+
+    /// Enable (or disable with `None`) dq decoupling + back-EMF
+    /// feedforward. Invalid parameters (non-finite, non-positive
+    /// inductances) disable it — feedforward multiplies velocity straight
+    /// into output voltage, so garbage here is worse than none.
+    pub fn set_decoupling(&mut self, decoupling: Option<Decoupling>) {
+        self.decoupling = decoupling.filter(Decoupling::is_valid);
+    }
+
+    /// Active decoupling parameters, if any.
+    pub fn decoupling(&self) -> Option<Decoupling> {
+        self.decoupling
     }
 
     /// Build a controller from the stored runtime config, the way every
@@ -185,7 +233,13 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
                 mp.flux_linkage_wb,
                 mp.pole_pairs
             );
-            Self::from_motor_params(mp.resistance_ohm, l_avg, vbus)
+            let mut foc = Self::from_motor_params(mp.resistance_ohm, l_avg, vbus);
+            foc.set_decoupling(Some(Decoupling {
+                ld_h: mp.inductance_d_h,
+                lq_h: mp.inductance_q_h,
+                flux_linkage_wb: mp.flux_linkage_wb,
+            }));
+            foc
         } else if let Some(ref pg) = config.pi_gains {
             let mut foc = Self::new(vbus);
             foc.id_pi.set_gains(pg.kp, pg.ki);
@@ -333,8 +387,10 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         max_duty: u16,
         dt: f32,
     ) -> FocOutput {
+        // Zero velocity = decoupling feedforward off; fine for the
+        // detection/test contexts this entry point serves.
         self.step_with_injection(
-            currents, angle_rad, id_target, iq_target, 0.0, 0.0, max_duty, dt,
+            currents, angle_rad, 0.0, id_target, iq_target, 0.0, 0.0, max_duty, dt,
         )
     }
 
@@ -347,6 +403,8 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// # Arguments
     /// * `currents`   - (ia, ib, ic) phase currents in Amps
     /// * `angle_rad`  - electrical angle in radians
+    /// * `vel_rad_s`  - electrical velocity in rad/s (decoupling feedforward;
+    ///   pass 0.0 to disable for this step)
     /// * `id_target`  - d-axis current target (flux)
     /// * `iq_target`  - q-axis current target (torque)
     /// * `vd_inject`  - d-axis voltage to inject (V)
@@ -362,6 +420,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         &mut self,
         currents: (f32, f32, f32),
         angle_rad: f32,
+        vel_rad_s: f32,
         id_target: f32,
         iq_target: f32,
         vd_inject: f32,
@@ -377,9 +436,21 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // Stationary -> rotating frame
         let (id, iq) = transforms::park(i_alpha, i_beta, sin_theta, cos_theta);
 
-        // Current controllers (dq frame) + optional HFI injection
-        let vd_raw = self.id_pi.update(id_target, id, dt) + vd_inject;
-        let vq_raw = self.iq_pi.update(iq_target, iq, dt) + vq_inject;
+        // dq decoupling + back-EMF feedforward (rotor-frame speed voltages):
+        //   vd_ff = −ω·Lq·iq        vq_ff = +ω·(Ld·id + λ)
+        // Added before the circular limit so anti-windup sees the true
+        // saturation, including the feedforward's share of it.
+        let (vd_ff, vq_ff) = match self.decoupling {
+            Some(d) => (
+                -vel_rad_s * d.lq_h * iq,
+                vel_rad_s * (d.ld_h * id + d.flux_linkage_wb),
+            ),
+            None => (0.0, 0.0),
+        };
+
+        // Current controllers (dq frame) + feedforward + optional HFI injection
+        let vd_raw = self.id_pi.update(id_target, id, dt) + vd_ff + vd_inject;
+        let vq_raw = self.iq_pi.update(iq_target, iq, dt) + vq_ff + vq_inject;
 
         // Circular voltage limiting: constrain |V| ≤ vbus × modulation_limit
         // Preserves voltage vector direction (unlike independent axis clamping)
@@ -477,6 +548,59 @@ mod tests {
                         v_mag,
                         v_limit
                     );
+                }
+
+                #[test]
+                fn decoupling_feedforward_produces_speed_voltages() {
+                    // Zero-gain PI isolates the feedforward path: the output
+                    // must be exactly the rotor-frame speed voltages
+                    // vd = −ω·Lq·iq, vq = ω·(Ld·id + λ).
+                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(24.0);
+                    foc.id_pi.set_gains(0.0, 0.0);
+                    foc.iq_pi.set_gains(0.0, 0.0);
+                    foc.set_decoupling(Some(Decoupling {
+                        ld_h: 100e-6,
+                        lq_h: 300e-6,
+                        flux_linkage_wb: 0.02,
+                    }));
+
+                    let omega = 200.0; // electrical rad/s
+                    // angle = 0 → id = iα, iq = iβ (trivial Park)
+                    let telem = foc.step_with_injection(
+                        (1.0, 0.5, -1.5),
+                        0.0,
+                        omega,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1000,
+                        DT,
+                    );
+
+                    let vd_expected = -omega * 300e-6 * telem.iq;
+                    let vq_expected = omega * (100e-6 * telem.id + 0.02);
+                    assert!(
+                        (telem.vd - vd_expected).abs() < 1e-4,
+                        "vd {} != expected {}",
+                        telem.vd,
+                        vd_expected
+                    );
+                    assert!(
+                        (telem.vq - vq_expected).abs() < 1e-4,
+                        "vq {} != expected {}",
+                        telem.vq,
+                        vq_expected
+                    );
+
+                    // Garbage params must disable the feedforward, not feed
+                    // NaN·ω into the output voltage.
+                    foc.set_decoupling(Some(Decoupling {
+                        ld_h: f32::NAN,
+                        lq_h: 300e-6,
+                        flux_linkage_wb: 0.02,
+                    }));
+                    assert!(foc.decoupling().is_none());
                 }
 
                 #[test]

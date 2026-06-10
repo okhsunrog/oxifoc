@@ -39,6 +39,8 @@ pub enum DriverCommand {
     SetCurrentLimits(crate::motor::foc_driver::CurrentLimits),
     /// Apply current-loop PI gains (post-detection tune, config write)
     SetPiGains { kp: f32, ki: f32 },
+    /// Apply dq-decoupling/back-EMF feedforward params (post-detection)
+    SetDecoupling(crate::foc::controller::Decoupling),
     /// Switch the angle source (hall / observer / HFI / crossovers)
     SetPhaseSource(crate::foc::phase::PhaseSource),
 }
@@ -57,6 +59,7 @@ impl DriverCommand {
             DriverCommand::SetPiGains { kp, ki } => {
                 kp.is_finite() && ki.is_finite() && kp > 0.0 && ki >= 0.0
             }
+            DriverCommand::SetDecoupling(d) => d.is_valid(),
             DriverCommand::SetPhaseSource(source) => source.is_finite(),
         }
     }
@@ -272,6 +275,10 @@ where
             DriverCommand::SetPiGains { kp, ki } => {
                 foc.controller_mut().id_pi.set_gains(kp, ki);
                 foc.controller_mut().iq_pi.set_gains(kp, ki);
+                continue;
+            }
+            DriverCommand::SetDecoupling(d) => {
+                foc.controller_mut().set_decoupling(Some(d));
                 continue;
             }
             DriverCommand::SetPhaseSource(source) => {

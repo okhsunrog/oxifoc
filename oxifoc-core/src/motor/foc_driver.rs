@@ -406,11 +406,21 @@ where
         // currents fed to update() against this exact carrier sample.
         let (vd_inject, vq_inject) = self.phase.injection();
 
-        // Read currents and run FOC controller
+        // Read currents and run FOC controller. The estimated electrical
+        // velocity drives the dq-decoupling feedforward (no-op when no
+        // motor params are configured).
         let currents = self.current_sensor.read_currents();
         let max_duty = self.pwm.max_duty();
         let out = self.controller.step_with_injection(
-            currents, angle_rad, id_target, iq_target, vd_inject, vq_inject, max_duty, dt,
+            currents,
+            angle_rad,
+            phase_out.velocity,
+            id_target,
+            iq_target,
+            vd_inject,
+            vq_inject,
+            max_duty,
+            dt,
         );
 
         // Layer 2: Check measured current against hard overcurrent limit
