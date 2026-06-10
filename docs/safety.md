@@ -137,8 +137,9 @@ of stop.
 ## Non-idempotent endpoints (track these)
 
 - **`DetectEndpoint`** — motor characterization is an action, **not idempotent**
-  across runs. TODO: dedup by `req_id`, and guarantee no-op / `Busy` while a
-  detection is already in progress.
+  across runs. Handled: the detect server dedups by `req_id` (replayed request
+  returns the cached response, payload verified), and requests are served one
+  at a time by the single server loop.
 
 ## Open questions / TODO
 

@@ -147,6 +147,11 @@ cargo test -p oxifoc-core --features virtual-motor  # Virtual motor + detection
 cd tests/stm32g431 && cargo test                    # On-target (requires hardware)
 ```
 
+## Development Status
+
+Known gaps and planned work are tracked in [docs/TODO.md](docs/TODO.md);
+safety-layer roadmap in [docs/safety.md](docs/safety.md).
+
 ## License
 
 Licensed under either of:
