@@ -42,7 +42,7 @@ static TIM_DRIVER: CriticalSectionMutex<RefCell<Option<Timer<'static, peripheral
     CriticalSectionMutex::new(RefCell::new(None));
 
 /// 16-bit CCR/CNT → 64-bit tick extension (overflow accounting).
-static TIMEBASE: CaptureTimebase = CaptureTimebase::new();
+static TIMEBASE: CaptureTimebase<u16> = CaptureTimebase::new();
 
 /// Capture overruns: an edge arrived before the previous one was picked up,
 /// so one timestamp was lost (the estimator then sees a wider sector).

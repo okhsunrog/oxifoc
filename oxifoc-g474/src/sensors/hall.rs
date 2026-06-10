@@ -1,13 +1,21 @@
-//! Hall sensor management for G474 (NUCLEO-G474RE)
+//! Hall sensor management for NUCLEO-G474RE + X-NUCLEO-IHM08M1
 //!
-//! Hall acquisition via the TIM4 hall-sensor interface — same wiring as
-//! G431: PB6/PB7/PB8 are TIM4_CH1/2/3 (AF2). `CR2.TI1S` XORs the three
-//! inputs into TI1; IC1 captures the filtered XOR signal on both edges, so
-//! every hall transition latches its timestamp in hardware. The capture ISR
-//! (below the FOC ISR in priority) only picks the latched value up — its
-//! latency does not affect hall timing. The ICF input filter (~6 µs stable
-//! window) replaces the 7-read majority vote, and the free-running 1 MHz
-//! counter replaces 32768 Hz embassy timestamps.
+//! Hall acquisition via the TIM2 hall-sensor interface. The shield's J3
+//! hall/encoder connector lands on PA15/PB3/PB10 (see
+//! docs/nucleo-g474re-ihm08m1.md), which are exactly TIM2_CH1/CH2/CH3
+//! (AF1). `CR2.TI1S` XORs the three inputs into TI1; IC1 captures the
+//! filtered XOR signal on both edges, so every hall transition latches its
+//! timestamp in hardware — the capture ISR (below the FOC ISR in priority)
+//! only picks the latched value up. The ICF input filter (~6 µs stable
+//! window) provides hardware debounce.
+//!
+//! TIM2 is 32-bit: at 1 MHz the counter wraps every ~71.6 minutes (vs
+//! 65.5 ms for the 16-bit timers on G431/F405); the same `CaptureTimebase`
+//! extends it to 64 bits. The embassy time driver was moved to TIM5 to
+//! free TIM2 for this (Cargo.toml `time-driver-tim5`).
+//!
+//! Hall pull-ups come from the shield (JP3 closed); MCU pull-ups are
+//! enabled too — both is fine.
 
 #![allow(dead_code)] // Motor stack dormant until the IHM08M1 shield is connected
 
@@ -25,28 +33,30 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use oxifoc_core::foc::capture_timebase::CaptureTimebase;
 use oxifoc_core::foc::hall_embassy::{set_tick_source, update_hall_edge};
 
-// Re-export shared items from core
+// Re-export shared items from core (consumed by control/foc.rs once the
+// motor stack is re-enabled).
+#[allow(unused_imports)]
 pub use oxifoc_core::foc::hall_embassy::{
     HallAngleProxy, apply_stored_config, get_snapshot, init_estimator,
 };
 
-/// Hall timebase tick rate: TIM4 counts at 1 MHz.
+/// Hall timebase tick rate: TIM2 counts at 1 MHz.
 pub const HALL_TICKS_PER_SEC: u64 = 1_000_000;
 
-/// Keeps TIM4 alive (RCC enabled / not reused); the ISR talks to
-/// `pac::TIM4` directly and never takes this lock.
-static TIM_DRIVER: CriticalSectionMutex<RefCell<Option<Timer<'static, peripherals::TIM4>>>> =
+/// Keeps TIM2 alive (RCC enabled / not reused); the ISR talks to
+/// `pac::TIM2` directly and never takes this lock.
+static TIM_DRIVER: CriticalSectionMutex<RefCell<Option<Timer<'static, peripherals::TIM2>>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
-/// 16-bit CCR/CNT → 64-bit tick extension (overflow accounting).
-static TIMEBASE: CaptureTimebase = CaptureTimebase::new();
+/// 32-bit CCR/CNT → 64-bit tick extension (overflow accounting).
+static TIMEBASE: CaptureTimebase<u32> = CaptureTimebase::new();
 
 /// Capture overruns: an edge arrived before the previous one was picked up,
 /// so one timestamp was lost (the estimator then sees a wider sector).
 /// Diagnostics only.
 pub static OVERCAPTURES: AtomicU32 = AtomicU32::new(0);
 
-/// "Now" in hall ticks (µs), assembled from TIM4 CNT + overflow count.
+/// "Now" in hall ticks (µs), assembled from TIM2 CNT + overflow count.
 ///
 /// Valid after [`init_hall`]. Safe from any context: the FOC ISR cannot
 /// observe a torn overflow update (the writer holds a critical section),
@@ -55,18 +65,18 @@ pub fn now_ticks() -> u64 {
     TIMEBASE.now(|| {
         // CNT before UIF: if the wrap lands between the two reads, UIF is
         // seen with an upper-half CNT and correctly not re-counted.
-        let cnt = pac::TIM4.cnt().read().cnt();
-        let uif = pac::TIM4.sr().read().uif();
+        let cnt = pac::TIM2.cnt().read();
+        let uif = pac::TIM2.sr().read().uif();
         (cnt, uif)
     })
 }
 
-/// Clear selected TIM4 status flags. SR is rc_w0: writing 1 leaves a flag
+/// Clear selected TIM2 status flags. SR is rc_w0: writing 1 leaves a flag
 /// untouched, 0 clears it — write the complement mask (ST LL does the same)
 /// instead of read-modify-write, which would also clear any flag that set
 /// between the read and the write.
 fn clear_flags(uif: bool, cc1of: bool) {
-    let mut v = pac::TIM4.sr().read();
+    let mut v = pac::TIM2.sr().read();
     v.0 = u32::MAX;
     if uif {
         v.set_uif(false);
@@ -74,55 +84,61 @@ fn clear_flags(uif: bool, cc1of: bool) {
     if cc1of {
         v.set_ccof(0, false);
     }
-    pac::TIM4.sr().write_value(v);
+    pac::TIM2.sr().write_value(v);
 }
 
-/// Initialize hall acquisition: pins to TIM4 AF, XOR + capture setup.
+/// Initialize hall acquisition: pins to TIM2 AF, XOR + capture setup.
 pub fn init_hall(
-    pb6: Peri<'static, peripherals::PB6>,
-    pb7: Peri<'static, peripherals::PB7>,
-    pb8: Peri<'static, peripherals::PB8>,
-    tim4: Peri<'static, peripherals::TIM4>,
+    pa15: Peri<'static, peripherals::PA15>,
+    pb3: Peri<'static, peripherals::PB3>,
+    pb10: Peri<'static, peripherals::PB10>,
+    tim2: Peri<'static, peripherals::TIM2>,
 ) {
-    // Pins to TIM4 channel inputs with pull-ups (CapturePin sets AF).
+    // Pins to TIM2 channel inputs with pull-ups (CapturePin sets AF).
     // GPIO IDR still reflects pin levels in AF mode, so raw state reads
     // for calibration keep working.
-    let ch1: CapturePin<'static, peripherals::TIM4, Ch1> = CapturePin::new(pb6, Pull::Up);
-    let ch2: CapturePin<'static, peripherals::TIM4, Ch2> = CapturePin::new(pb7, Pull::Up);
-    let ch3: CapturePin<'static, peripherals::TIM4, Ch3> = CapturePin::new(pb8, Pull::Up);
+    let ch1: CapturePin<'static, peripherals::TIM2, Ch1> = CapturePin::new(pa15, Pull::Up);
+    let ch2: CapturePin<'static, peripherals::TIM2, Ch2> = CapturePin::new(pb3, Pull::Up);
+    let ch3: CapturePin<'static, peripherals::TIM2, Ch3> = CapturePin::new(pb10, Pull::Up);
     core::mem::forget((ch1, ch2, ch3));
 
     init_estimator(HALL_TICKS_PER_SEC);
     set_tick_source(now_ticks);
 
-    let timer = Timer::new(tim4);
+    let timer = Timer::new(tim2);
     let clk = timer.get_clock_frequency().0 as u64;
-    // Derive PSC from the actual RCC config — TIM4 is on APB1, whose timer
+    // Derive PSC from the actual RCC config — TIM2 is on APB1, whose timer
     // clock doubles when the APB prescaler is > 1. Hardcoding would
     // silently skew every hall velocity by that factor.
     let psc = clk / HALL_TICKS_PER_SEC - 1;
     defmt::assert!(
         clk.is_multiple_of(HALL_TICKS_PER_SEC) && psc <= u16::MAX as u64,
-        "TIM4 clock {} not divisible to 1 MHz",
+        "TIM2 clock {} not divisible to 1 MHz",
         clk
     );
-    let regs = timer.regs_gp16();
-    regs.psc().write_value(psc as u16);
-    regs.arr().write(|w| w.set_arr(0xFFFF));
+    // PSC/CR1/CR2/CCMR/CCER/EGR/SR share the GP16 register layout; CNT and
+    // ARR are the 32-bit registers (regs_gp32).
+    let regs16 = timer.regs_gp16();
+    let regs32 = timer.regs_gp32();
+    regs16.psc().write_value(psc as u16);
+    regs32.arr().write_value(0xFFFF_FFFF);
     // f_DTS = timer clock / 4; ICF = f_DTS/32, 8 samples: the XOR signal
-    // must be stable ~6 µs before an edge is accepted. Hardware debounce
-    // replacing the 7-read majority vote — and unlike software voting, the
-    // filter delay is identical for every edge, so it cancels in velocity
-    // math.
-    regs.cr1().modify(|w| w.set_ckd(pac::timer::vals::Ckd::DIV4));
+    // must be stable ~6 µs before an edge is accepted. Hardware debounce —
+    // the filter delay is identical for every edge, so it cancels in
+    // velocity math.
+    regs16
+        .cr1()
+        .modify(|w| w.set_ckd(pac::timer::vals::Ckd::DIV4));
     // XOR CH1^CH2^CH3 → TI1: any single hall transition flips parity.
-    regs.cr2().modify(|w| w.set_ti1s(pac::timer::vals::Ti1s::XOR));
+    regs16
+        .cr2()
+        .modify(|w| w.set_ti1s(pac::timer::vals::Ti1s::XOR));
     timer.set_input_ti_selection(Channel::Ch1, InputTISelection::Normal);
     timer.set_input_capture_filter(Channel::Ch1, pac::timer::vals::FilterValue::FDTS_DIV32_N8);
     timer.set_input_capture_mode(Channel::Ch1, InputCaptureMode::BothEdges);
     // Latch PSC into the shadow register (UG sets UIF as a side effect —
     // clear before enabling interrupts).
-    regs.egr().write(|w| w.set_ug(true));
+    regs16.egr().write(|w| w.set_ug(true));
     clear_flags(true, true);
     timer.enable_channel(Channel::Ch1, true);
     timer.enable_input_interrupt(Channel::Ch1, true);
@@ -132,41 +148,43 @@ pub fn init_hall(
     TIM_DRIVER.lock(|cell| cell.replace(Some(timer)));
 
     unsafe {
-        interrupt::typelevel::TIM4::unpend();
-        cortex_m::peripheral::NVIC::unmask(interrupt::TIM4);
+        interrupt::typelevel::TIM2::unpend();
+        cortex_m::peripheral::NVIC::unmask(interrupt::TIM2);
         let mut nvic = cortex_m::peripheral::Peripherals::steal().NVIC;
         // NVIC::set_priority takes the RAW 8-bit IPR value; STM32 implements
         // only the upper 4 bits. Below the FOC ADC ISR is fine: edge
         // timestamps are latched in hardware, so delaying this handler only
         // delays when the estimator learns of the edge, not the timestamp.
-        nvic.set_priority(interrupt::TIM4, 1 << 4);
+        nvic.set_priority(interrupt::TIM2, 1 << 4);
     }
 
     defmt::info!(
-        "Hall: TIM4 XOR capture @ 1 MHz (clk {} Hz, psc {}), H1=PB6 H2=PB7 H3=PB8",
+        "Hall: TIM2 XOR capture @ 1 MHz (clk {} Hz, psc {}), H1=PA15 H2=PB3 H3=PB10",
         clk,
         psc
     );
 }
 
-/// Read Hall state from GPIOB IDR in a single register access.
-/// PB6=H1 (bit 0), PB7=H2 (bit 1), PB8=H3 (bit 2)
+/// Read Hall state from GPIO. Unlike G431/F405 the three inputs span two
+/// ports (shield routing): H1=PA15 (bit 0), H2=PB3 (bit 1), H3=PB10 (bit 2).
 #[inline(always)]
-fn read_hall_idr() -> u8 {
-    ((pac::GPIOB.idr().read().0 >> 6) & 0b111) as u8
+fn read_hall_state() -> u8 {
+    let a = pac::GPIOA.idr().read().0;
+    let b = pac::GPIOB.idr().read().0;
+    (((a >> 15) & 1) | (((b >> 3) & 1) << 1) | (((b >> 10) & 1) << 2)) as u8
 }
 
 /// Read raw Hall sensor state from GPIO (public for calibration).
 #[inline]
 pub fn read_hall_state_raw() -> u8 {
-    read_hall_idr()
+    read_hall_state()
 }
 
-/// TIM4 capture/update interrupt: extend the hardware-latched edge
+/// TIM2 capture/update interrupt: extend the hardware-latched edge
 /// timestamp and feed the estimator.
 #[interrupt]
-fn TIM4() {
-    let regs = pac::TIM4;
+fn TIM2() {
+    let regs = pac::TIM2;
     let sr = regs.sr().read();
 
     if sr.ccof(0) {
@@ -176,9 +194,9 @@ fn TIM4() {
 
     if sr.ccif(0) {
         // Reading CCR1 clears CC1IF.
-        let captured = regs.ccr(0).read().0 as u16;
+        let captured = regs.ccr(0).read();
         let ticks = TIMEBASE.capture(captured, sr.uif(), || clear_flags(true, false));
-        update_hall_edge(read_hall_idr(), ticks);
+        update_hall_edge(read_hall_state(), ticks);
     } else if sr.uif() {
         TIMEBASE.overflow(|| clear_flags(true, false));
     }

@@ -14,7 +14,7 @@ bench = false
 # Embassy dependencies (main branch with async flash support for G4)
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-futures = { version = "0.1.2" }
-embassy-stm32 = { version = "0.6.0", features = ["stm32g474re", "time-driver-tim2", "unstable-pac", "dual-bank", "defmt"] }
+embassy-stm32 = { version = "0.6.0", features = ["stm32g474re", "time-driver-tim5", "unstable-pac", "dual-bank", "defmt"] }
 embassy-sync = { version = "0.8.0" }
 embassy-time = { version = "0.5.1", features = ["tick-hz-32_768"] }
 embassy-usb = { version = "0.6.0" }

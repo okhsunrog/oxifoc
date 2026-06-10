@@ -24,11 +24,12 @@ mod safety;
 mod storage;
 mod transport;
 
-// Motor-related modules (commented out until IHM08M1 shield is connected)
+// Motor-related modules (commented out until IHM08M1 shield is connected).
+// `sensors` is compiled to keep the TIM2 hall module from rotting.
 // mod calibration;
 // mod control;
 // mod motor;
-// mod sensors;
+mod sensors;
 
 use hardware::{AssignedResources, HallResources, MotorResources, StorageResources};
 

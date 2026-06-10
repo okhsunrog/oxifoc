@@ -28,6 +28,16 @@ board docs.
 - [ ] g474 motor modules are commented out until the IHM08M1 shield is
   connected; `control/foc.rs` is kept in sync by hand but not
   compile-checked.
+- [ ] **g474 + IHM08M1: remaining work before enabling the motor stack**
+  (see [nucleo-g474re-ihm08m1.md](nucleo-g474re-ihm08m1.md)). Done
+  2026-06-11: hall on TIM2/PA15+PB3+PB10 (32-bit captures via generic
+  `CaptureTimebase<u32>`), time driver tim2 → tim5, resources.rs pins +
+  CN comments, `mod sensors` compiled to prevent rot. Still open when
+  the shield arrives: re-enable control/motor/calibration modules
+  (their foc.rs must take now_ticks from sensors::hall like g431), ADC
+  channels per the mapping doc (PA0/PC1/PC0, VBUS PA1, NTC PC2), BKIN
+  on PA6 (+PA11 as BKIN2), **keep PB15/PB14 Hi-Z** (tied to UL gate /
+  BKIN nets with wrong G474 AFs).
 
 ## VirtualMotor model fidelity (from moteus sim comparison, 2026-06-10)
 

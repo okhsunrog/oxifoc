@@ -13,22 +13,22 @@ assign_resources! {
     motor: MotorResources {
         tim1: TIM1,
         // Phase U: TIM1_CH1/CH1N
-        pa8: PA8,   // UH - Phase U high (TIM1_CH1) - CN10-21
+        pa8: PA8,   // UH - Phase U high (TIM1_CH1) - CN10-23
         pa7: PA7,   // UL - Phase U low (TIM1_CH1N) - CN10-15
         // Phase V: TIM1_CH2/CH2N
-        pa9: PA9,   // VH - Phase V high (TIM1_CH2) - CN10-19
+        pa9: PA9,   // VH - Phase V high (TIM1_CH2) - CN10-21
         pb0: PB0,   // VL - Phase V low (TIM1_CH2N) - CN7-34
         // Phase W: TIM1_CH3/CH3N
         pa10: PA10, // WH - Phase W high (TIM1_CH3) - CN10-33
-        pb1: PB1,   // WL - Phase W low (TIM1_CH3N) - CN7-30
+        pb1: PB1,   // WL - Phase W low (TIM1_CH3N) - CN10-24
     }
 
-    // Hall sensor inputs for X-NUCLEO-IHM08M1
-    // Active low, directly from motor Hall sensors
+    // Hall sensor inputs for X-NUCLEO-IHM08M1 (J3, pull-ups via shield JP3)
+    // All three are TIM2 CH1/CH2/CH3 (AF1) — see docs/nucleo-g474re-ihm08m1.md
     hall: HallResources {
-        pb6: PB6,   // H1 - CN10-17
-        pb7: PB7,   // H2 - CN7-21
-        pb8: PB8,   // H3 - CN10-3
+        pa15: PA15, // H1 / Enc A - CN7-17  (TIM2_CH1)
+        pb3: PB3,   // H2 / Enc B - CN10-31 (TIM2_CH2)
+        pb10: PB10, // H3 / Enc Z - CN10-25 (TIM2_CH3)
     }
 
     // Persistent storage (always available)
