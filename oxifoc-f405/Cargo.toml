@@ -75,5 +75,6 @@ incremental = true
 [profile.release]
 debug = 2
 lto = "fat"
+codegen-units = 1
 opt-level = 3
 incremental = true

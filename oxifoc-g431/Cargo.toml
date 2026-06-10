@@ -78,6 +78,6 @@ incremental = true
 [profile.release]
 debug = 2
 lto = "fat"
-opt-level = "z"
 codegen-units = 1
+opt-level = "z"
 incremental = true
