@@ -1,6 +1,9 @@
 # Project TODO / backlog
 
-Working list of known gaps and planned work. Safety-specific items live in
+Working list of known gaps and planned work. A full external review
+with verified bugs, gap analysis and a borrow-list from reference
+projects (VESC/MESC/moteus/ODrive/MCSDK) lives in
+[review-2026-06-10.md](review-2026-06-10.md); items below reference it. Safety-specific items live in
 [safety.md](safety.md#open-questions--todo); hardware bring-up notes in the
 board docs.
 
