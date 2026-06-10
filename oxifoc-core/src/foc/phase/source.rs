@@ -6,7 +6,9 @@
 ///
 /// Specifies where the electrical angle comes from for FOC control.
 /// Supports hardware sensors, software observers, and hybrid modes.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
+)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PhaseSource {
     // =========================================================================

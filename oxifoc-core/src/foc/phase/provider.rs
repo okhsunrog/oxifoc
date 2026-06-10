@@ -79,4 +79,13 @@ pub trait PhaseProvider {
     fn injection(&self) -> (f32, f32) {
         (0.0, 0.0)
     }
+
+    /// Request a switch of the angle source (host command).
+    ///
+    /// Returns whether the request was applied. The default declines:
+    /// simple providers have exactly one source. `PhaseManager` overrides
+    /// this with its validated [`set_source`](super::PhaseManager::set_source).
+    fn request_source(&mut self, _source: super::source::PhaseSource) -> bool {
+        false
+    }
 }

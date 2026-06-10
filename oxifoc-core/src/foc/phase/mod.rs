@@ -51,6 +51,9 @@ mod provider;
 mod source;
 
 pub use manager::{HallHealth, OpenLoopOverride, PhaseFault, PhaseManager};
-pub use observer::{BackEmfObserver, HfiObserver, Observer, ObserverInput};
+pub use observer::{
+    BackEmfObserver, HFI_DEFAULT_AMPLITUDE_RATIO, HFI_DEFAULT_FREQ_HZ, HfiObserver, Observer,
+    ObserverInput,
+};
 pub use provider::{PhaseInput, PhaseOutput, PhaseProvider};
 pub use source::{PhaseSource, PhaseSourceError};

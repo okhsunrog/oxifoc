@@ -237,8 +237,19 @@ pub struct SlowTelemetry {
     pub control_mode: ControlMode,
     /// Number of active faults
     pub fault_count: u8,
+    /// Active phase source (Hall / Observer / HFI / crossovers)
+    pub phase_source: crate::foc::phase::PhaseSource,
     /// Monotonic sequence number
     pub seq: u32,
+}
+
+/// Response to a phase-source change request.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct PhaseSourceAck {
+    /// Whether the command was enqueued to the control ISR. Confirm the
+    /// actual switch via `SlowTelemetry::phase_source`.
+    pub enqueued: bool,
 }
 
 // TODO: EnergyTelemetry — add when energy tracking is implemented

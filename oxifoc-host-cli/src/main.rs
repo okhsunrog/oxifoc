@@ -99,6 +99,17 @@ enum Command {
     },
     /// Stop the motor
     Stop,
+    /// Select the angle source for commutation
+    Source {
+        #[arg(value_enum)]
+        source: SourceArg,
+        #[arg(
+            long,
+            default_value_t = 150.0,
+            help = "Crossover velocity for blended sources (electrical rad/s)"
+        )]
+        switch_vel: f32,
+    },
     /// Monitor telemetry for a duration
     Monitor {
         #[arg(
@@ -127,6 +138,20 @@ enum Command {
         )]
         max_power_w: f32,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SourceArg {
+    /// Hall sensors only
+    Hall,
+    /// Hall with observer fallback + velocity blend (default sensored mode)
+    HallFallback,
+    /// Back-EMF observer only (needs spin-up)
+    Observer,
+    /// HFI only (zero/low speed, salient motors)
+    Hfi,
+    /// HFI at standstill, blend to the back-EMF observer at speed
+    HfiObserver,
 }
 
 fn main() -> Result<()> {
@@ -185,6 +210,32 @@ fn main() -> Result<()> {
                 .send(HostCommand::Motor(ControlMode::Stopped))
                 .context("send stop command")?;
             println!("Stop command sent");
+            std::thread::sleep(Duration::from_millis(800));
+        }
+        Command::Source { source, switch_vel } => {
+            use oxifoc_core::foc::phase::PhaseSource;
+            let ps = match source {
+                SourceArg::Hall => PhaseSource::Hall,
+                SourceArg::HallFallback => PhaseSource::HallWithFallback {
+                    blend_low: switch_vel,
+                    blend_high: switch_vel * 2.0,
+                    timeout_us: 100_000,
+                },
+                SourceArg::Observer => PhaseSource::Observer,
+                SourceArg::Hfi => PhaseSource::Hfi,
+                SourceArg::HfiObserver => PhaseSource::HfiToObserver {
+                    min_vel: switch_vel,
+                    min_confidence: 0.5,
+                },
+            };
+            runtime
+                .cmd_tx
+                .send(HostCommand::SetPhaseSource(ps))
+                .context("send phase source command")?;
+            println!(
+                "Phase source command sent: {:?} (confirm via monitor — telemetry reports the active source)",
+                ps
+            );
             std::thread::sleep(Duration::from_millis(800));
         }
         Command::Monitor { seconds, .. } => {

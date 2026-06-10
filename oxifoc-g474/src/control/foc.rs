@@ -68,9 +68,12 @@ pub async fn init(
     // Build current sensor and phase manager
     let current_sensor = G474CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
     let hall_proxy = HallAngleProxy::new();
-    let phase_manager = PhaseManager::with_hall(hall_proxy);
     let initial_vbus_v =
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
+    let mut phase_manager = PhaseManager::with_hall(hall_proxy);
+    // Arm the sensorless estimators (back-EMF + HFI) from detected motor
+    // params; the angle source stays Hall until the host switches it.
+    phase_manager.configure_observers_from_config(config, initial_vbus_v);
 
     // Initialize CORDIC hardware for fast sin/cos in FOC loop
     CordicSinCos::init(cordic_peri);

@@ -719,6 +719,73 @@ mod tests {
         }
     }
 
+    /// SetPhaseSource through the command channel: a valid source switches
+    /// the manager (and mirrors into shared state), an invalid one is
+    /// rejected and leaves everything unchanged.
+    #[test]
+    fn process_commands_switches_phase_source() {
+        use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
+        use crate::foc::phase::{HfiObserver, PhaseManager, PhaseSource};
+        use crate::foc::trig::LibmSinCos;
+        use crate::state::{CMD_CHANNEL, DriverCommand, MotorControlState, process_commands};
+        use core::cell::RefCell;
+        use critical_section::Mutex as CriticalSectionMutex;
+
+        #[derive(Clone, Copy, PartialEq)]
+        struct TestFault;
+        impl PlatformFault for TestFault {
+            fn category(&self) -> FaultCategory {
+                FaultCategory::OverCurrent
+            }
+            fn details(&self) -> heapless::String<128> {
+                heapless::String::new()
+            }
+            fn is_recoverable(&self) -> bool {
+                false
+            }
+            fn is_critical(&self) -> bool {
+                true
+            }
+        }
+
+        let state: CriticalSectionMutex<RefCell<MotorControlState>> =
+            CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        let registry: FaultRegistry<TestFault> = FaultRegistry::new();
+
+        let mut mgr = PhaseManager::sensorless();
+        mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            mgr,
+            1.0 / 20_000.0,
+        );
+        // The driver must stay linked so process_commands doesn't force Stopped.
+        critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+
+        // Valid switch: HFI estimator is configured.
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetPhaseSource(PhaseSource::Hfi));
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(driver.phase().source(), PhaseSource::Hfi);
+        let mirrored = critical_section::with(|cs| state.borrow(cs).borrow().phase_source);
+        assert_eq!(mirrored, PhaseSource::Hfi);
+
+        // Invalid switch: no hall sensor on a sensorless manager.
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetPhaseSource(PhaseSource::Hall));
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(
+            driver.phase().source(),
+            PhaseSource::Hfi,
+            "invalid source must be rejected, not applied"
+        );
+        let mirrored = critical_section::with(|cs| state.borrow(cs).borrow().phase_source);
+        assert_eq!(mirrored, PhaseSource::Hfi);
+    }
+
     #[test]
     fn config_limits_clamp_to_hardware_ceiling() {
         // Stored config must never raise limits above the board's hardware

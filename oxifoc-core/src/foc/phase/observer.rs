@@ -397,6 +397,13 @@ pub const HFI_MIN_HF_CURRENT_A: f32 = 0.05;
 /// the polarity probe.
 pub const HFI_READY_CONFIDENCE: f32 = 0.5;
 
+/// Default HFI carrier frequency (Hz) when configuring from stored params.
+pub const HFI_DEFAULT_FREQ_HZ: f32 = 1000.0;
+
+/// Default HFI carrier amplitude as a fraction of vbus (3 V at 24 V — the
+/// operating point validated in the closed-loop sims; bench-tune per motor).
+pub const HFI_DEFAULT_AMPLITUDE_RATIO: f32 = 0.125;
+
 /// Polarity probe: drive cycles per pulse. At 20 kHz this is 0.4 ms — with
 /// the carrier amplitude on Ld in the 100 µH range the current reaches
 /// ~V·t/Ld ≈ 10 A, enough to move the iron along its saturation curve.

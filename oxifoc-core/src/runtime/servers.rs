@@ -31,6 +31,7 @@ use embassy_futures::join::{join, join3};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
 use crate::foc::fault::{FaultRegistry, PlatformFault};
+use crate::icd::PhaseSourceEndpoint;
 #[cfg(feature = "storage")]
 use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
 use crate::icd::{
@@ -448,6 +449,8 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
                             state.control_mode,
                         )
                     });
+                let phase_source =
+                    critical_section::with(|cs| state_mutex.borrow(cs).borrow().phase_source);
 
                 let fault_count = fault_registry.count() as u8;
 
@@ -460,9 +463,40 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
                         motor_state,
                         control_mode,
                         fault_count,
+                        phase_source,
                         seq: current_seq,
                     }
                 }
+            })
+            .await;
+    }
+}
+
+/// Phase source server — host selects the angle source (hall / observer /
+/// HFI / crossovers).
+///
+/// The command is enqueued to the control ISR; validation happens there
+/// (sensor present, estimators configured), so the ack only confirms
+/// enqueueing. The host reads the actually-active source back via
+/// `SlowTelemetry::phase_source`.
+pub async fn phase_source_server<NS, const N: usize>(endpoints: Endpoints<NS>)
+where
+    NS: NetStackHandle,
+{
+    use crate::foc::phase::PhaseSource;
+    use crate::types::PhaseSourceAck;
+
+    let server = endpoints.bounded_server::<PhaseSourceEndpoint, N>(Some("phase_source"));
+    let server = pin!(server);
+    let mut h = server.attach();
+
+    loop {
+        let _ = h
+            .serve(|source: &PhaseSource| {
+                let enqueued = CMD_CHANNEL
+                    .try_send(crate::state::DriverCommand::SetPhaseSource(*source))
+                    .is_ok();
+                async move { PhaseSourceAck { enqueued } }
             })
             .await;
     }
@@ -523,8 +557,9 @@ pub async fn run_all_servers<NS, F>(
             motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),
-        join(
+        join3(
             slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
+            phase_source_server::<NS, 2>(endpoints.clone()),
             telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
         ),
     )
@@ -553,13 +588,14 @@ pub async fn run_all_servers_with_config<NS, F>(
         ),
         join(
             slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
-            join(
+            join3(
                 config_server::<NS, 2>(
                     endpoints.clone(),
                     runtime_config,
                     state_mutex,
                     hw_max_current_a,
                 ),
+                phase_source_server::<NS, 2>(endpoints.clone()),
                 telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
             ),
         ),

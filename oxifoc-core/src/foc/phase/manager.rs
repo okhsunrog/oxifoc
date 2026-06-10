@@ -863,6 +863,10 @@ impl<H: AngleSensor, E: AngleSensor> PhaseProvider for PhaseManager<H, E> {
         self.output = self.compute_phase_with_fallback(hall_sample, encoder_sample);
     }
 
+    fn request_source(&mut self, source: PhaseSource) -> bool {
+        self.set_source(source).is_ok()
+    }
+
     fn injection(&self) -> (f32, f32) {
         if self.hfi_injection_active()
             && let Some(hfi) = &self.hfi
@@ -870,6 +874,45 @@ impl<H: AngleSensor, E: AngleSensor> PhaseProvider for PhaseManager<H, E> {
             hfi.get_injection()
         } else {
             (0.0, 0.0)
+        }
+    }
+}
+
+// ============================================================================
+// Configuration from stored runtime config
+// ============================================================================
+
+#[cfg(feature = "storage")]
+impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
+    /// Configure the software estimators from stored motor parameters.
+    ///
+    /// With valid detected params both slots are armed: a back-EMF observer
+    /// (R, L_avg, λ) and an HFI estimator with default carrier settings.
+    /// The sources stay untouched — the estimators only run; the host
+    /// selects a sensorless source explicitly when it wants one.
+    pub fn configure_observers_from_config(
+        &mut self,
+        config: &crate::storage::RuntimeConfig,
+        vbus: f32,
+    ) {
+        use super::observer::{
+            BackEmfObserver, HFI_DEFAULT_AMPLITUDE_RATIO, HFI_DEFAULT_FREQ_HZ, Observer,
+        };
+
+        if let Some(ref mp) = config.motor_params
+            && mp.is_valid()
+            && mp.flux_linkage_wb > 0.0
+        {
+            let l_avg = (mp.inductance_d_h + mp.inductance_q_h) / 2.0;
+            self.set_observer(Observer::BackEmf(BackEmfObserver::new(
+                mp.resistance_ohm,
+                l_avg,
+                mp.flux_linkage_wb,
+            )));
+            self.set_hfi_observer(HfiObserver::new(
+                HFI_DEFAULT_FREQ_HZ,
+                vbus * HFI_DEFAULT_AMPLITUDE_RATIO,
+            ));
         }
     }
 }

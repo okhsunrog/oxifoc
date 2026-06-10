@@ -38,6 +38,8 @@ pub enum DriverCommand {
     SetCurrentLimits(crate::motor::foc_driver::CurrentLimits),
     /// Apply current-loop PI gains (post-detection tune, config write)
     SetPiGains { kp: f32, ki: f32 },
+    /// Switch the angle source (hall / observer / HFI / crossovers)
+    SetPhaseSource(crate::foc::phase::PhaseSource),
 }
 
 /// Command channel - servers send DriverCommands here, ISR receives them
@@ -70,6 +72,9 @@ pub struct MotorControlState {
     pub last_foc: FocOutput,
     /// Link active flag (host has connected)
     pub link_active: bool,
+    /// Active phase source (mirrors the driver's PhaseManager; updated when
+    /// a SetPhaseSource command is applied)
+    pub phase_source: crate::foc::phase::PhaseSource,
 }
 
 impl MotorControlState {
@@ -82,6 +87,7 @@ impl MotorControlState {
             last_adc: AdcSnapshot::empty(),
             last_foc: FocOutput::empty(),
             link_active: false,
+            phase_source: crate::foc::phase::PhaseSource::Hall,
         }
     }
 
@@ -213,6 +219,21 @@ where
             DriverCommand::SetPiGains { kp, ki } => {
                 foc.controller_mut().id_pi.set_gains(kp, ki);
                 foc.controller_mut().iq_pi.set_gains(kp, ki);
+                continue;
+            }
+            DriverCommand::SetPhaseSource(source) => {
+                // The provider validates (sensor present, estimators
+                // configured). On success mirror the active source into the
+                // shared state so the host can read it back via telemetry —
+                // an invalid request simply leaves the source unchanged.
+                if foc.phase_mut().request_source(source) {
+                    critical_section::with(|cs| {
+                        state_mutex.borrow(cs).borrow_mut().phase_source = source;
+                    });
+                } else {
+                    #[cfg(feature = "defmt")]
+                    defmt::warn!("Phase source change rejected");
+                }
                 continue;
             }
         };

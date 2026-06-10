@@ -139,6 +139,7 @@ pub fn detect_channel() -> (DetectResponseSender, DetectResponseReceiver) {
 
 pub enum HostCommand {
     Motor(ControlMode),
+    SetPhaseSource(oxifoc_core::foc::phase::PhaseSource),
     SetTelemetryConfig(TelemetryConfig),
     ConfigRead(oxifoc_core::types::ConfigGroupId, ConfigResponseSender),
     ConfigWrite(oxifoc_core::types::ConfigWrite, ConfigResponseSender),
@@ -787,6 +788,21 @@ where
             {
                 Ok(status) => tracing::info!("Motor response: {:?}", status),
                 Err(e) => tracing::warn!("Motor command failed: {:?}", e),
+            }
+        }
+        HostCommand::SetPhaseSource(source) => {
+            tracing::info!("Setting phase source: {:?}", source);
+            match client
+                .at_least_once::<oxifoc_core::icd::PhaseSourceEndpoint>(
+                    DEVICE_ADDR,
+                    &source,
+                    Some("phase_source"),
+                    &SETPOINT_POLICY,
+                )
+                .await
+            {
+                Ok(ack) => tracing::info!("Phase source response: {:?}", ack),
+                Err(e) => tracing::warn!("Phase source command failed: {:?}", e),
             }
         }
         HostCommand::SetTelemetryConfig(cfg) => {

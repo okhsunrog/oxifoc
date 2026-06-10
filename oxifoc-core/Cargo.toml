@@ -80,7 +80,7 @@ runtime = ["icd", "algorithms", "dep:embassy-sync", "dep:embassy-futures", "dep:
 virtual-motor = []
 
 # std support (enables std-dependent features)
-std = []
+std = ["critical-section?/std"]
 
 # defmt support for embedded logging
 defmt = ["dep:defmt", "heapless/defmt"]

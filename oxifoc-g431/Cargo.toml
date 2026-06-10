@@ -79,4 +79,5 @@ incremental = true
 debug = 2
 lto = "fat"
 opt-level = "z"
+codegen-units = 1
 incremental = true
