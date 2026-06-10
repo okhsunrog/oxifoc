@@ -366,4 +366,254 @@ mod tests {
             utilization
         );
     }
+
+    // ========== Benchmarks: estimators + math primitives ==========
+    //
+    // These size the perf-optimization candidates: the estimators call libm
+    // (atan2f, sinf/cosf) directly every ISR cycle, and with dual slots both
+    // run concurrently on top of bench_foc_step's controller cost.
+
+    /// Time `f` per call with DWT. Returns (min, max, avg) cycles.
+    /// ~2-cycle counter-read overhead is included identically everywhere.
+    fn bench_loop(n: u32, mut f: impl FnMut(u32)) -> (u32, u32, u32) {
+        let mut min = u32::MAX;
+        let mut max = 0u32;
+        let mut total = 0u64;
+        for i in 0..n {
+            let start = dwt_cycles();
+            f(i);
+            let end = dwt_cycles();
+            let elapsed = end.wrapping_sub(start);
+            total += elapsed as u64;
+            min = min.min(elapsed);
+            max = max.max(elapsed);
+        }
+        (min, max, (total / n as u64) as u32)
+    }
+
+    fn report(name: &str, (min, max, avg): (u32, u32, u32)) {
+        defmt::info!(
+            "  {=str}: avg {=u32} / min {=u32} / max {=u32} cycles",
+            name,
+            avg,
+            min,
+            max
+        );
+    }
+
+    /// Hardware single-precision square root (14 cycles on M4F).
+    #[inline]
+    fn vsqrtf(x: f32) -> f32 {
+        let r: f32;
+        unsafe {
+            core::arch::asm!(
+                "vsqrt.f32 {o}, {i}",
+                o = out(sreg) r,
+                i = in(sreg) x,
+                options(pure, nomem, nostack),
+            )
+        };
+        r
+    }
+
+    /// VESC-style polynomial atan2 (utils_fast_atan2), |err| ≲ 0.005 rad.
+    #[inline]
+    fn fast_atan2(y: f32, x: f32) -> f32 {
+        let abs_y = libm::fabsf(y) + 1e-20;
+        let angle = if x >= 0.0 {
+            let r = (x - abs_y) / (x + abs_y);
+            let rsq = r * r;
+            (0.1963 * rsq - 0.9817) * r + core::f32::consts::FRAC_PI_4
+        } else {
+            let r = (x + abs_y) / (abs_y - x);
+            let rsq = r * r;
+            (0.1963 * rsq - 0.9817) * r + 3.0 * core::f32::consts::FRAC_PI_4
+        };
+        if y < 0.0 { -angle } else { angle }
+    }
+
+    #[test]
+    fn bench_trig_sincos(_state: TestState) {
+        use oxifoc_core::foc::trig::FastSinCos;
+
+        const N: u32 = 1024;
+        let mut angles = [0.0f32; 64];
+        for (i, a) in angles.iter_mut().enumerate() {
+            *a = (i as f32) * 0.0981 - PI; // spread over [-π, π)
+        }
+
+        let baseline = bench_loop(N, |i| {
+            core::hint::black_box(angles[(i & 63) as usize]);
+        });
+        let libm_sc = bench_loop(N, |i| {
+            let a = angles[(i & 63) as usize];
+            core::hint::black_box((libm::sinf(a), libm::cosf(a)));
+        });
+        let fast_sc = bench_loop(N, |i| {
+            let a = angles[(i & 63) as usize];
+            core::hint::black_box(FastSinCos::sin_cos(a));
+        });
+        let cordic_sc = bench_loop(N, |i| {
+            let a = angles[(i & 63) as usize];
+            core::hint::black_box(CordicSinCos::sin_cos(a));
+        });
+
+        defmt::info!("=== sin+cos pair ===");
+        report("baseline (loop+load)", baseline);
+        report("libm sinf+cosf", libm_sc);
+        report("FastSinCos", fast_sc);
+        report("CordicSinCos", cordic_sc);
+    }
+
+    #[test]
+    fn bench_sqrt(_state: TestState) {
+        const N: u32 = 1024;
+        let mut values = [0.0f32; 64];
+        for (i, v) in values.iter_mut().enumerate() {
+            *v = 0.01 + (i as f32) * 13.7;
+        }
+
+        let libm_sqrt = bench_loop(N, |i| {
+            core::hint::black_box(libm::sqrtf(values[(i & 63) as usize]));
+        });
+        let hw_sqrt = bench_loop(N, |i| {
+            core::hint::black_box(vsqrtf(values[(i & 63) as usize]));
+        });
+
+        // Accuracy: vsqrt.f32 is IEEE-correctly-rounded, must match libm.
+        let mut max_diff = 0.0f32;
+        for &v in &values {
+            let d = libm::fabsf(libm::sqrtf(v) - vsqrtf(v));
+            max_diff = if d > max_diff { d } else { max_diff };
+        }
+
+        defmt::info!("=== sqrtf ===");
+        report("libm sqrtf", libm_sqrt);
+        report("vsqrt.f32", hw_sqrt);
+        defmt::info!("  max |libm - vsqrt| = {=f32}", max_diff);
+    }
+
+    #[test]
+    fn bench_atan2(_state: TestState) {
+        use oxifoc_core::foc::trig::FastSinCos;
+
+        const N: u32 = 1024;
+        // Points around the unit circle (the observer's x1/x2 use case).
+        let mut pts = [(0.0f32, 0.0f32); 64];
+        for (i, p) in pts.iter_mut().enumerate() {
+            let a = (i as f32) * 0.0981 - PI;
+            let (s, c) = FastSinCos::sin_cos(a);
+            *p = (s * 0.02, c * 0.02); // flux-linkage magnitude scale
+        }
+
+        let libm_at = bench_loop(N, |i| {
+            let (y, x) = pts[(i & 63) as usize];
+            core::hint::black_box(libm::atan2f(y, x));
+        });
+        let fast_at = bench_loop(N, |i| {
+            let (y, x) = pts[(i & 63) as usize];
+            core::hint::black_box(fast_atan2(y, x));
+        });
+
+        // Accuracy of the polynomial vs libm over a fine sweep.
+        let mut max_err = 0.0f32;
+        for i in 0..1024u32 {
+            let a = (i as f32) * 0.006_135_9 - PI;
+            let (s, c) = (libm::sinf(a), libm::cosf(a));
+            let e = libm::fabsf(fast_atan2(s, c) - libm::atan2f(s, c));
+            max_err = if e > max_err { e } else { max_err };
+        }
+
+        defmt::info!("=== atan2 ===");
+        report("libm atan2f", libm_at);
+        report("fast_atan2 (poly)", fast_at);
+        defmt::info!("  poly max error vs libm: {=f32} rad", max_err);
+    }
+
+    #[test]
+    fn bench_backemf_observer(_state: TestState) {
+        use oxifoc_core::foc::phase::{BackEmfObserver, ObserverInput};
+        use oxifoc_core::foc::trig::FastSinCos;
+
+        const DT: f32 = 50e-6;
+        const OMEGA: f32 = 300.0; // electrical rad/s
+
+        // Flipsky-5065-scale motor
+        let mut obs = BackEmfObserver::new(0.05, 15e-6, 0.005);
+
+        // Precomputed rotating inputs (one electrical period, reused).
+        let mut inputs = [ObserverInput {
+            v_alpha: 0.0,
+            v_beta: 0.0,
+            i_alpha: 0.0,
+            i_beta: 0.0,
+            dt: DT,
+        }; 64];
+        for (i, inp) in inputs.iter_mut().enumerate() {
+            let theta = (i as f32) * core::f32::consts::TAU / 64.0;
+            let (s, c) = FastSinCos::sin_cos(theta);
+            inp.v_alpha = -2.0 * s;
+            inp.v_beta = 2.0 * c;
+            inp.i_alpha = -5.0 * s;
+            inp.i_beta = 5.0 * c;
+        }
+
+        // Let the PLL lock so we time the steady tracking path.
+        for i in 0..2048u32 {
+            obs.update(&inputs[(i & 63) as usize]);
+        }
+
+        let stats = bench_loop(1024, |i| {
+            obs.update(&inputs[(i & 63) as usize]);
+            core::hint::black_box(&obs);
+        });
+
+        defmt::info!("=== BackEmfObserver::update (per ISR cycle) ===");
+        report("update", stats);
+    }
+
+    #[test]
+    fn bench_hfi_observer(_state: TestState) {
+        use oxifoc_core::foc::phase::{HfiObserver, ObserverInput};
+        use oxifoc_core::foc::trig::FastSinCos;
+
+        const DT: f32 = 50e-6;
+
+        let mut hfi = HfiObserver::new(1000.0, 3.0);
+        // Mark polarity resolved → steady tracking path, no probe branches.
+        hfi.set_phase(0.3);
+
+        // Carrier-modulated currents (synthetic; demod cost is
+        // data-independent, only the branch structure matters).
+        let mut inputs = [ObserverInput {
+            v_alpha: 0.0,
+            v_beta: 0.0,
+            i_alpha: 0.0,
+            i_beta: 0.0,
+            dt: DT,
+        }; 64];
+        for (i, inp) in inputs.iter_mut().enumerate() {
+            let carrier = (i as f32) * core::f32::consts::TAU * (1000.0 * DT);
+            let (s, _) = FastSinCos::sin_cos(carrier);
+            let (rs, rc) = FastSinCos::sin_cos(0.3);
+            inp.i_alpha = 0.8 * s * rc;
+            inp.i_beta = 0.8 * s * rs;
+        }
+
+        for i in 0..2048u32 {
+            let _ = hfi.get_injection();
+            hfi.update(&inputs[(i & 63) as usize]);
+        }
+
+        // Per-cycle cost = get_injection (carrier synth) + update (demod+PLL),
+        // exactly what the FOC ISR pays while HFI is active.
+        let stats = bench_loop(1024, |i| {
+            core::hint::black_box(hfi.get_injection());
+            hfi.update(&inputs[(i & 63) as usize]);
+            core::hint::black_box(&hfi);
+        });
+
+        defmt::info!("=== HfiObserver get_injection+update (per ISR cycle) ===");
+        report("injection+update", stats);
+    }
 }
