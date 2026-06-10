@@ -413,14 +413,14 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
         self.open_loop_override.timer = 0.0;
     }
 
-    /// Update Hall health status based on sample availability
-    fn update_hall_health(&mut self, sample_valid: bool, now_ticks: u64) {
+    /// Update Hall health status from sample availability and staleness.
+    fn update_hall_health(&mut self, sample_valid: bool, stale: bool, now_ticks: u64) {
         // Skip if Hall is not configured
         if matches!(self.hall_health, HallHealth::NotPresent) {
             return;
         }
 
-        if sample_valid {
+        if sample_valid && !stale {
             // Hall is working - clear failures
             if self.hall_health != HallHealth::Ok {
                 self.hall_health = HallHealth::Ok;
@@ -434,12 +434,17 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
                 self.hall_failure_ticks = Some(now_ticks);
             }
 
-            // Determine failure type: invalid state (immediate) or timeout (stale)
-            // For now, we treat None samples as invalid state
-            // TODO: Add timeout detection via HallSensor::is_stale() when we have
-            // access to the Hall sensor trait methods
-            self.hall_health = HallHealth::Invalid;
-            self.set_fault(PhaseFault::HallInvalidState);
+            if stale {
+                // Edges stopped while the rotor was spinning (velocity-
+                // adaptive check in the sensor) — dead cable / dead sensor.
+                self.hall_health = HallHealth::Stale;
+                self.set_fault(PhaseFault::HallTimeout);
+            } else {
+                // No valid sample at all (invalid 0/7 states, never seen an
+                // edge, ...).
+                self.hall_health = HallHealth::Invalid;
+                self.set_fault(PhaseFault::HallInvalidState);
+            }
         }
     }
 
@@ -471,38 +476,33 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
             // Observer not ready - use open-loop override if available
             self.set_fault(PhaseFault::ObserverNotReady);
 
-            if self.open_loop_override.active && self.open_loop_override.timer > 0.0 {
-                // Return open-loop override output
-                Some(PhaseOutput {
-                    angle: self.open_loop_override.angle,
-                    velocity: self.open_loop_override.velocity,
-                })
-            } else {
-                // Activate open-loop override for recovery
-                // Use last known output angle and minimum velocity
+            if !self.open_loop_override.active {
+                // Activate open-loop override for recovery, continuing from
+                // the last known output angle at minimum velocity.
                 self.activate_open_loop_override(self.output.angle, DEFAULT_OPENLOOP_MIN_VEL);
-                Some(PhaseOutput {
-                    angle: self.open_loop_override.angle,
-                    velocity: self.open_loop_override.velocity,
-                })
             }
+            Some(PhaseOutput {
+                angle: self.open_loop_override.angle,
+                velocity: self.open_loop_override.velocity,
+            })
         }
     }
 
-    /// Update open-loop override state (advance angle, decrement timer)
+    /// Update open-loop override state (advance angle, decrement timer).
+    ///
+    /// The override stays active until a real source (hall or a ready
+    /// observer) takes over — `try_observer_fallback` deactivates it then.
+    /// The timer is purely informational dwell time; it does NOT terminate
+    /// the override, because dropping to a dead sensor at its expiry would
+    /// be strictly worse than continuing open loop (VESC keeps its
+    /// observer-override running for the same reason).
     fn update_open_loop_override(&mut self, dt: f32) {
         if self.open_loop_override.active {
             // Advance angle based on velocity
             self.open_loop_override.angle += self.open_loop_override.velocity * dt;
             self.open_loop_override.angle = wrap_angle(self.open_loop_override.angle);
 
-            // Decrement timer
-            self.open_loop_override.timer -= dt;
-            if self.open_loop_override.timer <= 0.0 {
-                self.open_loop_override.timer = 0.0;
-                // Note: We don't deactivate here - let it continue until
-                // Hall or observer comes back
-            }
+            self.open_loop_override.timer = (self.open_loop_override.timer - dt).max(0.0);
         }
     }
 
@@ -712,13 +712,19 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
         blend_low: f32,
         blend_high: f32,
     ) -> PhaseOutput {
-        let blend = compute_blend(sensor.velocity.abs(), blend_low, blend_high);
-
         // An unconverged observer must not pull the output anywhere — the
         // sensor stays authoritative until the observer is actually locked.
         if !self.observer.is_ready() {
             return sensor;
         }
+
+        // Speed reference for regime selection: the faster of the two
+        // estimates. Using the sensor velocity alone is perverse when the
+        // sensor dies at speed — its decaying estimate drags the blend back
+        // toward trusting the dying sensor MORE, while the (ready) observer
+        // still reports the true speed.
+        let obs_speed = self.observer.velocity().unwrap_or(0.0).abs();
+        let blend = compute_blend(sensor.velocity.abs().max(obs_speed), blend_low, blend_high);
 
         // π-flip guard: back-EMF observers carry a half-turn ambiguity from
         // standstill. While the sensor still has any weight it is the truth
@@ -756,11 +762,22 @@ impl<H: AngleSensor, E: AngleSensor> PhaseProvider for PhaseManager<H, E> {
     fn update(&mut self, input: &PhaseInput, now_ticks: u64) {
         // Sample hardware sensors. The stateful path matters for hall: it
         // carries the rate limiter that smooths sector-edge discontinuities.
-        let hall_sample = self.hall.sample_mut(now_ticks);
+        // A stale hall (edges stopped while spinning) is treated as having
+        // no sample at all, so every consumer below falls back uniformly.
+        let hall_stale = self.hall.is_stale(now_ticks);
+        let hall_sample = if hall_stale {
+            None
+        } else {
+            self.hall.sample_mut(now_ticks)
+        };
         let encoder_sample = self.encoder.sample_mut(now_ticks);
 
-        // Update Hall health tracking based on sample availability
-        self.update_hall_health(hall_sample.is_some(), now_ticks);
+        // Hall health is only meaningful for sources that consume hall data:
+        // an idle hall during Manual-angle calibration or pure-observer
+        // operation is not a failure.
+        if self.source.requires_hall() {
+            self.update_hall_health(hall_sample.is_some(), hall_stale, now_ticks);
+        }
 
         // Update observer (always runs for potential fallback)
         self.observer.update(&ObserverInput {
@@ -1237,15 +1254,22 @@ mod tests {
         );
     }
 
-    /// Closed-loop sensorless integration: VirtualMotor + FocController +
+    /// Closed-loop sensorless harness: VirtualMotor + FocController +
     /// PhaseManager(HallSensor + BackEmfObserver), HallWithFallback source.
     ///
-    /// Spins the motor from standstill on hall commutation, crosses over to
-    /// the observer through the blend band, and checks that the managed
-    /// angle tracks the true rotor angle continuously the whole way.
-    #[test]
+    /// Spins from standstill on hall commutation; hall edges stop being fed
+    /// after `hall_until_step` (cable-cut simulation). Returns the manager,
+    /// final motor output and the largest one-cycle angle jump seen above
+    /// the hall interpolation regime.
     #[cfg(feature = "virtual-motor")]
-    fn closed_loop_hall_to_observer_crossover() {
+    fn run_sensorless_sim(
+        total_steps: u64,
+        hall_until_step: u64,
+    ) -> (
+        PhaseManager<crate::foc::hall_sensor::HallSensor>,
+        crate::virtual_motor::VirtualMotorOutput,
+        f32,
+    ) {
         use crate::foc::controller::FocController;
         use crate::foc::hall_sensor::HallSensor;
         use crate::foc::phase::{BackEmfObserver, Observer};
@@ -1292,11 +1316,10 @@ mod tests {
         let mut prev_angle: Option<f32> = None;
         let mut max_step_at_speed = 0.0f32;
 
-        for step in 1..20_000u64 {
-            // 1 s total
+        for step in 1..total_steps {
             let t_us = step * 50;
 
-            if out.hall_state != last_hall_state {
+            if step < hall_until_step && out.hall_state != last_hall_state {
                 mgr.hall_mut().update(out.hall_state, t_us);
                 last_hall_state = out.hall_state;
             }
@@ -1331,6 +1354,16 @@ mod tests {
                 prev_angle = None;
             }
         }
+
+        (mgr, out, max_step_at_speed)
+    }
+
+    /// Spin-up through the blend band to pure observer, halls healthy.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn closed_loop_hall_to_observer_crossover() {
+        const DT: f32 = 1.0 / 20_000.0;
+        let (mgr, out, max_step_at_speed) = run_sensorless_sim(20_000, u64::MAX);
 
         // Motor must have spun up past the blend band → pure observer.
         assert!(
@@ -1372,6 +1405,72 @@ mod tests {
             max_step_at_speed,
             nominal_step
         );
+    }
+
+    /// Hall cable cut at full speed: the manager must detect the stale
+    /// sensor (edges stopped arriving although the rotor demonstrably
+    /// spins), raise HallTimeout, and keep tracking on the observer alone.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn closed_loop_hall_dropout_at_speed() {
+        // 1 s with halls, then 0.3 s with the cable cut.
+        let (mgr, out, max_step_at_speed) = run_sensorless_sim(26_000, 20_000);
+
+        assert!(
+            out.omega_e > 400.0,
+            "motor must still be spinning: ωe = {}",
+            out.omega_e
+        );
+        assert!(
+            mgr.has_fault(PhaseFault::HallTimeout),
+            "stale hall at speed must raise HallTimeout (health: {:?})",
+            mgr.hall_health()
+        );
+
+        // Observer must be carrying the commutation accurately.
+        let true_angle = wrap_angle(out.angle_rad);
+        let err = crate::foc::angle_difference(mgr.get().angle, true_angle).abs();
+        assert!(
+            err < 0.25,
+            "angle lost after hall dropout: managed {} vs true {} (err {})",
+            mgr.get().angle,
+            true_angle,
+            err
+        );
+
+        // And the handoff itself must have been continuous.
+        let nominal_step = out.omega_e * (1.0 / 20_000.0);
+        assert!(
+            max_step_at_speed < nominal_step + 0.15,
+            "angle jumped {} rad during hall dropout handoff",
+            max_step_at_speed
+        );
+    }
+
+    /// Sources that don't use the hall sensor must not raise hall faults:
+    /// a manager doing Manual-angle calibration with an idle (or absent)
+    /// hall signal is not a failure condition.
+    #[test]
+    fn no_hall_faults_in_sources_that_ignore_hall() {
+        let mut mock_hall = MockHallSensor::new();
+        mock_hall.set_valid(false); // nothing on the hall lines
+        let mut phase = PhaseManager::with_hall(mock_hall);
+        phase.set_source(PhaseSource::Manual).unwrap();
+
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            1000,
+        );
+
+        assert!(
+            phase.faults().is_empty(),
+            "Manual source must not raise hall faults, got {:?}",
+            phase.faults()
+        );
+        assert!(!phase.is_open_loop_override_active());
     }
 
     #[test]

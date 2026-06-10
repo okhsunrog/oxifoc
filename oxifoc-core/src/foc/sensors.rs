@@ -82,6 +82,14 @@ pub trait AngleSensor {
         self.sample(now_ticks)
     }
 
+    /// Whether the sensor's data has implausibly stopped updating (e.g. a
+    /// hall estimator whose edges ceased while the rotor was demonstrably
+    /// spinning). Default: never stale — absolute encoders and mocks have
+    /// no notion of edge timing.
+    fn is_stale(&self, _now_ticks: u64) -> bool {
+        false
+    }
+
     /// Read electrical angle in radians (0..2π). Default uses `sample`.
     fn read_angle(&self) -> f32 {
         self.sample(0).map(|s| s.angle).unwrap_or(0.0)

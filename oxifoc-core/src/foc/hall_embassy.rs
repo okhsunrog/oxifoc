@@ -41,7 +41,12 @@ pub fn init_estimator(timebase_ticks_per_sec: u64) {
 /// Call this from the TIM6 ISR after performing majority voting on GPIO reads.
 /// Handles edge detection, timestamp capture, and estimator update internally.
 ///
-/// Invalid states (0 and 7) are silently ignored.
+/// Transitions into invalid states (0 and 7) are forwarded to the estimator
+/// too: they bump its error counter and reset its edge tracking, which is
+/// how a disconnected cable (pull-ups read 0b111 / 0b000) becomes visible to
+/// the phase manager as `HallInvalidState` instead of being silently
+/// swallowed here while the phase free-runs on the last velocity. VESC does
+/// the same (invalid reading → `m_ang_hall_int_prev = -1` → fallback).
 #[inline]
 pub fn update_hall_state(state: u8) {
     // Edge detection via static mutable — safe because this is called only from a single ISR
@@ -50,7 +55,7 @@ pub fn update_hall_state(state: u8) {
     // SAFETY: called only from a single ISR context (TIM6_DAC)
     let last = unsafe { LAST_STATE };
 
-    if state != last && state != 0 && state != 7 {
+    if state != last {
         let ticks = embassy_time::Instant::now().as_ticks();
 
         HALL_ESTIMATOR.lock(|est| {

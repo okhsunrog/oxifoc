@@ -75,6 +75,17 @@ pub const DEFAULT_DRIFT_CORRECTION_GAIN: f32 = 0.01;
 /// VESC uses 1.5 (allows 50% overshoot for transients)
 pub const DEFAULT_RATE_LIMIT_FACTOR: f32 = 1.5;
 
+/// Sector-time multiple for velocity-adaptive staleness detection
+/// ([`HallSensor::is_stale_at_speed`]). At the last estimated speed an edge
+/// is expected every `angle_per_state / |vel|` seconds; if more than this
+/// many expected sector times pass with no edge, the sensor is dead or the
+/// rotor stopped far faster than physics allows.
+pub const STALE_SECTOR_MULTIPLE: f32 = 8.0;
+
+/// Absolute floor for the velocity-adaptive staleness window (seconds), so
+/// jitter at very high speed can't produce sub-millisecond false trips.
+pub const STALE_MIN_WINDOW_S: f32 = 0.002;
+
 /// Default Hall sensor timeout (microseconds)
 /// If no valid Hall edge is received for this duration, sensor is considered stale.
 /// 100ms is reasonable for low-speed detection.
@@ -282,6 +293,29 @@ impl HallSensor {
         }
     }
 
+    /// Velocity-adaptive staleness: edges stopped arriving although the
+    /// last estimate says the rotor should keep producing them.
+    ///
+    /// Unlike [`is_stale`](Self::is_stale) (fixed timeout), this never
+    /// trips at standstill — a stopped motor legitimately produces no
+    /// edges — and reacts within a few sector times at speed (a cable cut
+    /// at 700 rad/s is detected in ~12 ms instead of the 100 ms fixed
+    /// timeout). VESC reaches the same behavior through its decaying
+    /// `hall_dt` interpolation clamp.
+    pub fn is_stale_at_speed(&self, now_ticks: u64) -> bool {
+        let Some(dt_ticks) = self.time_since_edge(now_ticks) else {
+            // No edge ever seen: "no data yet", not "data stopped".
+            return false;
+        };
+        let vel = self.elec_velocity.abs();
+        if vel < 1.0 {
+            return false;
+        }
+        let dt_s = dt_ticks as f32 / self.ticks_per_sec as f32;
+        let expected_sector_s = self.angle_per_state / vel;
+        dt_s > (expected_sector_s * STALE_SECTOR_MULTIPLE).max(STALE_MIN_WINDOW_S)
+    }
+
     /// Get time since last Hall edge in ticks.
     ///
     /// Returns `None` if no edge has been received yet.
@@ -324,10 +358,14 @@ impl HallSensor {
         // Check for invalid states (all low or all high)
         if raw_state == 0 || raw_state > 6 {
             self.error_count += 1;
-            // Reset for clean recovery - next valid edge starts fresh
+            // Reset for clean recovery - next valid edge starts fresh.
             // This prevents bogus velocity calculation from stale timestamps
-            // after Hall sensor glitch or cable disconnect/reconnect (VESC-style)
+            // after Hall sensor glitch or cable disconnect/reconnect
+            // (VESC-style). Velocity/direction are cleared too: after a
+            // disconnect they describe a rotor we can no longer see.
             self.last_edge_ticks = None;
+            self.elec_velocity = 0.0;
+            self.direction = Direction::Stopped;
             return None;
         }
 
@@ -787,6 +825,10 @@ impl AngleSensor for HallSensor {
         self.sample_at_mut(now_ticks)
     }
 
+    fn is_stale(&self, now_ticks: u64) -> bool {
+        self.is_stale_at_speed(now_ticks)
+    }
+
     fn error_count(&self) -> u32 {
         self.error_count
     }
@@ -1221,6 +1263,49 @@ mod tests {
             step,
             max_step
         );
+    }
+
+    #[test]
+    fn stale_at_speed_trips_after_missing_edges() {
+        let mut hall = HallSensor::new(1_000_000);
+        let mut t = 0u64;
+        for s in CW_SEQ.iter().cycle().take(12) {
+            hall.update(*s, t).unwrap();
+            t += 1000; // 1 ms per sector
+        }
+        // Healthy: well within the expected edge cadence.
+        assert!(!hall.is_stale_at_speed(t));
+        assert!(!hall.is_stale_at_speed(t + 3_000));
+        // Cable cut: 8 expected sector times (8 ms) with no edge.
+        assert!(hall.is_stale_at_speed(t + 9_000));
+    }
+
+    #[test]
+    fn stale_at_speed_never_trips_at_standstill() {
+        // A motor that was never moved (or stopped cleanly) produces no
+        // edges — that is not staleness.
+        let hall = HallSensor::new(1_000_000);
+        assert!(!hall.is_stale_at_speed(10_000_000));
+
+        let mut hall = HallSensor::new(1_000_000);
+        hall.update(1, 0).unwrap(); // single state, velocity 0
+        assert!(!hall.is_stale_at_speed(10_000_000));
+    }
+
+    #[test]
+    fn invalid_state_clears_velocity() {
+        let mut hall = HallSensor::new(1_000_000);
+        let mut t = 0u64;
+        for s in CW_SEQ.iter().cycle().take(12) {
+            hall.update(*s, t).unwrap();
+            t += 1000;
+        }
+        assert!(hall.electrical_velocity().abs() > 500.0);
+        // Disconnect: all-low reading. Stale velocity/direction describe a
+        // rotor we can no longer see.
+        assert!(hall.update(0, t).is_none());
+        assert_eq!(hall.electrical_velocity(), 0.0);
+        assert_eq!(hall.direction(), Direction::Stopped);
     }
 
     #[test]

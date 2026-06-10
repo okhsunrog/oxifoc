@@ -283,12 +283,19 @@ fn ADC1_2() {
 
             // Process commands from core state channel
             let prev_mode = driver.mode();
-            let mode = oxifoc_core::state::process_commands(&STATE, driver);
+            let mode = oxifoc_core::state::process_commands(&STATE, driver, &FAULT_REGISTRY);
 
-            // Clear faults on transition from Stopped to active mode
-            // (spurious COMP trips during PWM enable are expected)
+            // Spurious COMP/BKIN trips during PWM channel enable used to
+            // latch an OverCurrent fault right at start (the BKF break
+            // filter now suppresses these at the source, and enable()
+            // clears BIF + re-arms MOE). Scoped to the OverCurrent
+            // category: clearing the whole registry here would bypass the
+            // host-acknowledged fault latch for unrelated faults. A real
+            // latched OverCurrent can't reach this line — process_commands
+            // refuses the Stopped→active transition while any critical
+            // fault is registered.
             if matches!(prev_mode, ControlMode::Stopped) && mode != ControlMode::Stopped {
-                FAULT_REGISTRY.clear_all();
+                FAULT_REGISTRY.clear(oxifoc_core::foc::fault::FaultCategory::OverCurrent);
             }
 
             // If faulted, disable outputs and skip FOC step

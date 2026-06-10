@@ -265,7 +265,7 @@ fn ADC() {
             driver.set_vbus(vbus_mv as f32 / 1000.0);
 
             // Process commands from core state channel
-            let mode = oxifoc_core::state::process_commands(&STATE, driver);
+            let mode = oxifoc_core::state::process_commands(&STATE, driver, &FAULT_REGISTRY);
 
             // If faulted, disable outputs and skip FOC step
             if FAULT_REGISTRY.any() {

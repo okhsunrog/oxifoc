@@ -68,9 +68,16 @@ impl MotorControlState {
         }
     }
 
-    /// Set motor to stopped state
+    /// Set motor to stopped state.
+    ///
+    /// Deliberately does NOT exit [`MotorState::Error`]: a Stop command (or
+    /// the link-loss failsafe, which routes through here) must not un-latch
+    /// faults — only [`clear_error`](Self::clear_error) may, after the host
+    /// explicitly cleared the fault registry.
     pub fn set_stopped(&mut self) {
-        self.motor_state = MotorState::Stopped;
+        if self.motor_state != MotorState::Error {
+            self.motor_state = MotorState::Stopped;
+        }
         self.control_mode = ControlMode::Stopped;
     }
 
@@ -166,23 +173,39 @@ macro_rules! define_platform_state {
 ///
 /// # Returns
 /// The current ControlMode after processing commands
-pub fn process_commands<P, C, Ph, S>(
+pub fn process_commands<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     foc: &mut FocDriver<P, C, Ph, S>,
+    fault_registry: &crate::foc::fault::FaultRegistry<F>,
 ) -> ControlMode
 where
     P: PhasePwm,
     C: CurrentSensor,
     Ph: PhaseProvider,
     S: SinCos,
+    F: crate::foc::fault::PlatformFault,
 {
     // Process all pending commands
     while let Ok(mode) = CMD_CHANNEL.try_receive() {
         critical_section::with(|cs| {
             let mut state = state_mutex.borrow(cs).borrow_mut();
 
-            // Can't change mode if in error state (must clear fault first)
-            if state.motor_state == MotorState::Error && mode != ControlMode::Stopped {
+            // Exit the Error latch only once the host has explicitly cleared
+            // the fault registry (FaultRequest::Clear via fault_server).
+            // Critical faults never auto-clear, so the acknowledgement stays
+            // mandatory — but after it the next command works without a
+            // separate "clear error" verb.
+            if state.motor_state == MotorState::Error && !fault_registry.any() {
+                state.clear_error();
+            }
+
+            // Can't change mode if in error state (must clear faults first),
+            // and never start running with an active critical fault even if
+            // the Error latch was missed (belt and braces: the latch is set
+            // by platform glue, the registry by the fault checkers).
+            if mode != ControlMode::Stopped
+                && (state.motor_state == MotorState::Error || fault_registry.any_critical())
+            {
                 return;
             }
 
@@ -234,4 +257,25 @@ pub fn update_telemetry(
 
     // Wake calibration/detection task if waiting for FOC cycle
     TELEM_WAKER.wake();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_does_not_clear_error_latch() {
+        // A Stopped command (or the link-loss failsafe, which uses the same
+        // path) must not silently un-latch the Error state: only an explicit
+        // fault clear may. Otherwise "stop, then run" bypasses every latched
+        // fault.
+        let mut st = MotorControlState::new();
+        st.set_error();
+        st.set_stopped();
+        assert_eq!(st.motor_state, MotorState::Error, "Stop cleared the latch");
+        assert_eq!(st.control_mode, ControlMode::Stopped);
+
+        st.clear_error();
+        assert_eq!(st.motor_state, MotorState::Stopped);
+    }
 }
