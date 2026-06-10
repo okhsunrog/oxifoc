@@ -75,16 +75,24 @@ impl BoardConfig {
 
     /// Convert 3 raw ADC readings to phase currents in Amps
     ///
-    /// Assumes mid-scale (adc_max_counts/2) is zero current.
+    /// Assumes mid-scale (adc_max_counts/2) is zero current and honors
+    /// `invert_current_sign` like the runtime sense path does.
     /// Scale = Vref / (adc_max * R_shunt * gain)
+    ///
+    /// Note: this uses the *theoretical* mid-scale offset, not measured
+    /// calibration offsets — fine for rough conversion, but prefer the
+    /// calibrated `CurrentSensor` path for control.
     #[inline]
     pub fn convert_raw_currents(&self, raw_a: u16, raw_b: u16, raw_c: u16) -> (f32, f32, f32) {
         let offset = self.adc_max_counts as f32 / 2.0;
-        let scale = self.adc_vref_mv as f32
+        let mut scale = self.adc_vref_mv as f32
             / 1000.0
             / self.adc_max_counts as f32
             / self.shunt_ohms
             / self.amp_gain;
+        if self.invert_current_sign {
+            scale = -scale;
+        }
         (
             (raw_a as f32 - offset) * scale,
             (raw_b as f32 - offset) * scale,
@@ -206,6 +214,30 @@ mod tests {
         // Mid-scale ADC (1.65V) with 10.39x divider = ~17.1V
         let vbus = TEST_BOARD.vbus_mv_from_adc(2048);
         assert!(vbus > 17000 && vbus < 17500);
+    }
+
+    #[test]
+    fn convert_raw_currents_honors_invert_flag() {
+        // The B-G431B-ESC1 (the struct's own doc example) needs
+        // invert_current_sign: true — without honoring it this helper hands
+        // sign-flipped currents to everything sign-sensitive in detection
+        // (HFI dq separation, flux-linkage sign, observer input).
+        let inverted = BoardConfig {
+            invert_current_sign: true,
+            ..TEST_BOARD
+        };
+        // Raw above mid-scale = positive voltage at the ADC; with inversion
+        // that must read as NEGATIVE motor current (and vice versa).
+        let (ia, _, _) = inverted.convert_raw_currents(3000, 2048, 2048);
+        assert!(
+            ia < 0.0,
+            "inverted board: raw>mid must be negative, got {}",
+            ia
+        );
+        let (ia_n, _, _) = TEST_BOARD.convert_raw_currents(3000, 2048, 2048);
+        assert!(ia_n > 0.0, "non-inverted board: raw>mid must be positive");
+        // Same magnitude either way
+        assert!((ia + ia_n).abs() < 1e-6);
     }
 
     #[test]

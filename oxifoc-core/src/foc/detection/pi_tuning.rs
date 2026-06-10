@@ -209,7 +209,9 @@ pub fn estimate_bandwidth(inductance_h: f32, pwm_freq_hz: f32) -> f32 {
 /// Calculate observer gain from motor parameters.
 ///
 /// The observer gain is used for sensorless FOC to estimate rotor position.
-/// Based on VESC's formula: gain = 1e-3 / λ²
+/// Delegates to the single VESC formula (`gain = 0.5e3 / λ²`, the value the
+/// VESC detection wizard stores: conf_general.c:1181) so there is exactly one
+/// source of truth, and clamps the result to a sane range.
 ///
 /// # Arguments
 /// * `flux_linkage_wb` - Motor flux linkage in Weber
@@ -221,9 +223,7 @@ pub fn calculate_observer_gain(flux_linkage_wb: f32) -> Option<f32> {
         return None;
     }
 
-    let gain = 1e-3 / (flux_linkage_wb * flux_linkage_wb);
-
-    // Clamp to reasonable range
+    let gain = super::flux_linkage::calculate_observer_gain(flux_linkage_wb);
     Some(crate::foc::clamp_f32(gain, 1e3, 1e9))
 }
 
@@ -302,17 +302,23 @@ mod tests {
 
     #[test]
     fn test_calculate_observer_gain() {
-        // λ = 10mWb => gain = 1e-3 / (0.01)² = 10, but clamped to min 1e3
+        // Must match the VESC detection-wizard formula gain = 0.5e3/λ²
+        // (conf_general.c:1181) — the same one flux_linkage.rs implements.
+        // λ = 10mWb => 0.5e3 / (0.01)² = 5e6
         let gain = calculate_observer_gain(0.01).unwrap();
-        assert!((gain - 1e3).abs() < 1.0); // Clamped to minimum
+        assert!((gain - 5e6).abs() < 1e3);
 
-        // λ = 1mWb => gain = 1e-3 / (0.001)² = 1e3
-        let gain2 = calculate_observer_gain(0.001).unwrap();
-        assert!((gain2 - 1e3).abs() < 1.0);
+        // λ = 5mWb (typical hobby motor) => 0.5e3 / (0.005)² = 2e7
+        let gain2 = calculate_observer_gain(0.005).unwrap();
+        assert!((gain2 - 2e7).abs() < 1e4);
 
-        // λ = 0.1mWb => gain = 1e-3 / (0.0001)² = 1e5
-        let gain3 = calculate_observer_gain(0.0001).unwrap();
-        assert!((gain3 - 1e5).abs() < 1e3);
+        // Both call sites must agree (one source of truth)
+        let from_flux = crate::foc::detection::flux_linkage::calculate_observer_gain(0.005);
+        assert!((gain2 - from_flux).abs() < 1.0);
+
+        // Huge flux linkage clamps to the minimum
+        let gain3 = calculate_observer_gain(1.0).unwrap();
+        assert!((gain3 - 1e3).abs() < 1.0);
 
         // Invalid flux linkage
         assert!(calculate_observer_gain(0.0).is_none());

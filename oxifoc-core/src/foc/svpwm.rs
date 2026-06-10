@@ -15,11 +15,17 @@ use super::constants::{FRAC_1_SQRT_3 as ONE_BY_SQRT3, FRAC_2_SQRT_3 as TWO_BY_SQ
 
 /// Space Vector PWM modulation
 ///
-/// Converts α-β frame voltages to 3-phase PWM duty cycles.
+/// Converts α-β frame *modulation* values to 3-phase PWM duty cycles.
+///
+/// A modulation vector of magnitude `m` produces a phase-to-neutral voltage
+/// of `(2/3)·m·vbus`, so desired volts must be scaled by `1.5 / vbus` before
+/// calling this (VESC: `voltage_normalize = 1.5 / v_bus`). The magnitude must
+/// not exceed √3/2 ≈ 0.866 to stay out of overmodulation (same contract as
+/// VESC's `foc_svm`).
 ///
 /// # Arguments
-/// * `alpha` - Alpha axis voltage (normalized -1.0 to 1.0)
-/// * `beta` - Beta axis voltage (normalized -1.0 to 1.0)
+/// * `alpha` - Alpha axis modulation (volts × 1.5 / vbus)
+/// * `beta` - Beta axis modulation (volts × 1.5 / vbus)
 /// * `max_duty` - Maximum duty cycle value (e.g., 1000 for TIM ARR=1000)
 ///
 /// # Returns
@@ -33,11 +39,11 @@ use super::constants::{FRAC_1_SQRT_3 as ONE_BY_SQRT3, FRAC_2_SQRT_3 as TWO_BY_SQ
 /// let v_alpha = 2.0; // desired α-axis voltage
 /// let v_beta = 3.0;  // desired β-axis voltage
 ///
-/// // Normalize to -1..1 range
-/// let alpha_norm = v_alpha / vbus;
-/// let beta_norm = v_beta / vbus;
+/// // Volts → modulation: m = 1.5 × v / vbus
+/// let alpha_mod = 1.5 * v_alpha / vbus;
+/// let beta_mod = 1.5 * v_beta / vbus;
 ///
-/// let duties = space_vector_pwm(alpha_norm, beta_norm, 1000);
+/// let duties = space_vector_pwm(alpha_mod, beta_mod, 1000);
 /// assert!(duties.iter().all(|&duty| duty <= 1000));
 /// ```
 pub fn space_vector_pwm(alpha: f32, beta: f32, max_duty: u16) -> [u16; 3] {

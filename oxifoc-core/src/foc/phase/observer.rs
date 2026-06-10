@@ -98,17 +98,23 @@ impl Observer {
 
 /// Back-EMF flux observer for sensorless FOC
 ///
-/// Based on VESC's flux observer implementation. Estimates rotor position
-/// by integrating back-EMF voltage to obtain flux linkage, then uses
-/// a PLL to extract phase and velocity.
+/// MXLEMMING-style flux observer (original algorithm by David Molony, MESC
+/// project; also available in VESC as `FOC_OBSERVER_MXLEMMING`,
+/// foc_math.c). Integrates `(v − R·i)·dt − L·Δi` to track the rotor flux
+/// vector directly, truncates each component to ±λ to bleed off integrator
+/// drift, then uses a PLL to extract phase and velocity.
 ///
 /// Works well at medium to high speeds where back-EMF is measurable.
 /// At low speeds, HFI should be used instead.
 #[derive(Clone, Debug)]
 pub struct BackEmfObserver {
     // Flux integrator state
-    x1: f32, // α-axis flux estimate
-    x2: f32, // β-axis flux estimate
+    x1: f32, // α-axis rotor flux estimate (Wb)
+    x2: f32, // β-axis rotor flux estimate (Wb)
+
+    // Previous currents for the incremental −L·Δi stator-flux removal
+    i_alpha_last: f32,
+    i_beta_last: f32,
 
     // PLL state
     phase_pll: f32,    // PLL-filtered phase
@@ -120,7 +126,6 @@ pub struct BackEmfObserver {
     lambda: f32, // Flux linkage (Wb)
 
     // Observer tuning
-    gain: f32,   // Observer gain
     pll_kp: f32, // PLL proportional gain
     pll_ki: f32, // PLL integral gain
 
@@ -136,22 +141,16 @@ impl BackEmfObserver {
     /// * `l` - Phase inductance (H)
     /// * `lambda` - Flux linkage (Wb)
     pub fn new(r: f32, l: f32, lambda: f32) -> Self {
-        // Observer gain: 1e-3 / λ² (VESC formula)
-        let gain = if lambda > 0.0 {
-            crate::foc::clamp_f32(1e-3 / (lambda * lambda), 1e3, 1e9)
-        } else {
-            1e6
-        };
-
         Self {
             x1: 0.0,
             x2: 0.0,
+            i_alpha_last: 0.0,
+            i_beta_last: 0.0,
             phase_pll: 0.0,
             velocity_pll: 0.0,
             r,
             l,
             lambda: lambda.max(1e-6),
-            gain,
             pll_kp: 1000.0,
             pll_ki: 20000.0,
             confidence: 0.0,
@@ -165,38 +164,42 @@ impl BackEmfObserver {
             return;
         }
 
-        // Back-EMF estimation: e = v - R*i - L*di/dt
-        // For flux observer: dψ/dt = v - R*i
-        // ψ = ∫(v - R*i)dt
+        // MXLEMMING flux integrator: x += (v − R·i)·dt − L·Δi
+        //
+        // ∫(v − R·i) is the *total* stator flux; the rotor flux is that minus
+        // L·i. Removing L·i incrementally keeps x tracking the rotor flux
+        // directly, so the estimated angle stays unbiased under load (without
+        // this term a q-axis current of L·I = λ skews the angle by 45°).
+        self.x1 += (input.v_alpha - self.r * input.i_alpha) * dt
+            - self.l * (input.i_alpha - self.i_alpha_last);
+        self.x2 += (input.v_beta - self.r * input.i_beta) * dt
+            - self.l * (input.i_beta - self.i_beta_last);
+        self.i_alpha_last = input.i_alpha;
+        self.i_beta_last = input.i_beta;
 
-        // Flux integrator (simplified - full implementation includes correction term)
-        let e_alpha = input.v_alpha - self.r * input.i_alpha;
-        let e_beta = input.v_beta - self.r * input.i_beta;
+        // Component-wise truncation to ±λ is the MXLEMMING correction
+        // mechanism: instead of an explicit gain·error feedback term it bleeds
+        // off integrator drift (DC offsets in v/i measurements) every cycle,
+        // because the true rotor flux components never exceed λ.
+        self.x1 = crate::foc::clamp_f32(self.x1, -self.lambda, self.lambda);
+        self.x2 = crate::foc::clamp_f32(self.x2, -self.lambda, self.lambda);
 
-        self.x1 += e_alpha * dt;
-        self.x2 += e_beta * dt;
-
-        // Limit flux magnitude to prevent runaway
-        let flux_mag = libm::sqrtf(self.x1 * self.x1 + self.x2 * self.x2);
-        let max_flux = self.lambda * 2.0;
-        if flux_mag > max_flux {
-            let scale = max_flux / flux_mag;
-            self.x1 *= scale;
-            self.x2 *= scale;
-        }
-
-        // Extract phase from flux
+        // Extract phase from the rotor flux vector
         let phase_raw = libm::atan2f(self.x2, self.x1);
 
-        // PLL tracking
-        let phase_error = wrap_angle(phase_raw - self.phase_pll);
+        // PLL tracking. The error must be the SIGNED shortest angular distance
+        // (like VESC's foc_pll_run): wrapping to [0, 2π) would make the error
+        // always non-negative and the velocity integrator could only grow.
+        let phase_error = crate::foc::angle_difference(phase_raw, self.phase_pll);
         self.velocity_pll += self.pll_ki * phase_error * dt;
-        self.phase_pll += (self.velocity_pll + self.pll_kp * phase_error) * dt;
-        self.phase_pll = wrap_angle(self.phase_pll);
+        self.phase_pll =
+            wrap_angle(self.phase_pll + (self.velocity_pll + self.pll_kp * phase_error) * dt);
 
-        // Update confidence based on flux magnitude
-        let flux_ratio = flux_mag / self.lambda;
-        self.confidence = crate::foc::clamp_f32(flux_ratio, 0.0, 1.0);
+        // Confidence: how close the estimated flux magnitude is to λ.
+        // A weak heuristic — measurement offsets can also saturate the
+        // integrator — but cheap and monotonic during real spin-up.
+        let flux_mag = libm::sqrtf(self.x1 * self.x1 + self.x2 * self.x2);
+        self.confidence = crate::foc::clamp_f32(flux_mag / self.lambda, 0.0, 1.0);
     }
 
     /// Get estimated electrical phase (radians)
@@ -218,6 +221,8 @@ impl BackEmfObserver {
     pub fn reset(&mut self) {
         self.x1 = 0.0;
         self.x2 = 0.0;
+        self.i_alpha_last = 0.0;
+        self.i_beta_last = 0.0;
         self.phase_pll = 0.0;
         self.velocity_pll = 0.0;
         self.confidence = 0.0;
@@ -228,7 +233,6 @@ impl BackEmfObserver {
         self.r = r;
         self.l = l;
         self.lambda = lambda.max(1e-6);
-        self.gain = crate::foc::clamp_f32(1e-3 / (self.lambda * self.lambda), 1e3, 1e9);
     }
 
     /// Set PLL gains
@@ -398,6 +402,88 @@ impl HfiObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foc::angle_difference;
+
+    /// Drive the observer with ideal PMSM terminal quantities for `steps`
+    /// cycles and return the final true flux angle.
+    ///
+    /// The stator current is placed on the q axis (90° ahead of the flux),
+    /// like a loaded motor under FOC. Voltages follow the PMSM model
+    /// v = R·i + L·di/dt + e with e = ωλ·(−sinθ, cosθ).
+    #[allow(clippy::too_many_arguments)] // test helper, positional args read fine
+    fn run_observer(
+        obs: &mut BackEmfObserver,
+        r: f32,
+        l: f32,
+        lambda: f32,
+        omega: f32,
+        i_q: f32,
+        steps: usize,
+        dt: f32,
+    ) -> f32 {
+        let mut theta: f32 = 1.0;
+        for _ in 0..steps {
+            let theta_next = wrap_angle(theta + omega * dt);
+            let (i_a, i_b) = (-i_q * libm::sinf(theta), i_q * libm::cosf(theta));
+            let (i_a_next, i_b_next) =
+                (-i_q * libm::sinf(theta_next), i_q * libm::cosf(theta_next));
+            let v_a = r * i_a + l * (i_a_next - i_a) / dt - omega * lambda * libm::sinf(theta);
+            let v_b = r * i_b + l * (i_b_next - i_b) / dt + omega * lambda * libm::cosf(theta);
+            obs.update(&ObserverInput {
+                v_alpha: v_a,
+                v_beta: v_b,
+                i_alpha: i_a,
+                i_beta: i_b,
+                dt,
+            });
+            theta = theta_next;
+        }
+        theta
+    }
+
+    #[test]
+    fn back_emf_observer_converges_at_no_load() {
+        // The PLL must lock onto a rotating flux vector. A PLL whose phase
+        // error is wrapped to [0, 2π) (always non-negative) can only spin its
+        // velocity estimate up and never converges — the error must be the
+        // signed angle difference, like VESC's foc_pll_run (foc_math.c:227).
+        let (r, l, lambda) = (0.1, 50e-6, 0.005);
+        let omega = 300.0; // rad/s electrical
+        let dt = 5e-5; // 20 kHz
+        let mut obs = BackEmfObserver::new(r, l, lambda);
+        let theta = run_observer(&mut obs, r, l, lambda, omega, 0.0, 40_000, dt);
+
+        assert!(
+            (obs.velocity() - omega).abs() < 0.05 * omega,
+            "velocity {} did not lock to {}",
+            obs.velocity(),
+            omega
+        );
+        let err = angle_difference(obs.phase(), theta);
+        assert!(err.abs() < 0.1, "phase error {} rad too large", err);
+        assert!(obs.confidence() > 0.5, "confidence {}", obs.confidence());
+    }
+
+    #[test]
+    fn back_emf_observer_unbiased_under_load() {
+        // The observer integrates total stator flux ∫(v − R·i); the rotor flux
+        // is that minus L·i. Without the −L·Δi correction (VESC MXLEMMING,
+        // foc_math.c:118-137) a q-axis load current of L·I = λ skews the
+        // estimated angle by atan(L·I/λ) = 45°.
+        let (r, l, lambda) = (0.1, 500e-6, 0.005);
+        let omega = 300.0;
+        let i_q = 10.0; // L·I = 0.005 = λ
+        let dt = 5e-5;
+        let mut obs = BackEmfObserver::new(r, l, lambda);
+        let theta = run_observer(&mut obs, r, l, lambda, omega, i_q, 40_000, dt);
+
+        let err = angle_difference(obs.phase(), theta);
+        assert!(
+            err.abs() < 0.15,
+            "phase error {} rad under load (L·I = λ) — missing −L·Δi term?",
+            err
+        );
+    }
 
     #[test]
     fn test_observer_none() {

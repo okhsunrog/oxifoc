@@ -80,8 +80,23 @@ pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> 
 }
 
 impl<M: Modulator, S: SinCos> FocController<M, S> {
-    /// Conservative default modulation limit (keeps us inside linear SVPWM)
+    /// Conservative default modulation limit (keeps us inside linear SVPWM).
+    ///
+    /// This limit is in *volt* space: |V| ≤ vbus × limit. 1/√3 is the maximum
+    /// sinusoidal phase-to-neutral amplitude SVPWM can produce without
+    /// overmodulation (VESC uses the same bound: `max_v_mag = ONE_BY_SQRT3 *
+    /// v_bus`, mcpwm_foc.c:4660). After the volts→modulation conversion this
+    /// corresponds to a modulation magnitude of 1.5 × 1/√3 = √3/2.
     pub const DEFAULT_MODULATION_LIMIT: f32 = 0.577; // ≈ 1/√3
+
+    /// Volts → modulation conversion: m = VOLTS_TO_MOD × v / vbus.
+    ///
+    /// The VESC-style SVPWM produces a phase-to-neutral voltage of
+    /// (2/3)·m·vbus for a modulation input m (derivable from sector 1:
+    /// ta−tb = t1, tb−tc = t2 ⟹ va_n = (2t1+t2)/(3·ARR)·vbus = (2/3)·α·vbus),
+    /// so converting volts to modulation requires the reciprocal factor 1.5
+    /// (VESC: `voltage_normalize = 1.5 / v_bus`, mcpwm_foc.c:4684).
+    const VOLTS_TO_MOD: f32 = 1.5;
 
     /// Minimum bus voltage to avoid divide-by-zero (used in both `new` and `set_vbus`).
     const MIN_VBUS: f32 = 0.5;
@@ -178,9 +193,17 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
     /// Apply dead time compensation to normalized modulation values.
     ///
-    /// During dead time, body diodes conduct: positive phase current → voltage
-    /// drops, negative → voltage rises. This adds a current-direction-dependent
-    /// correction to the αβ modulation before SVPWM.
+    /// During dead time the body diode of the leg carrying positive current
+    /// conducts to the negative rail, so the phase *loses* `t_dt × f_pwm` of
+    /// duty in the current direction (and gains it for negative current). The
+    /// command is therefore *increased* along the phase current sign, like
+    /// MESC's `CCR += deadtime_comp` for positive current (MESCpwm.c:172-177).
+    ///
+    /// Note: VESC instead leaves the command uncompensated and subtracts this
+    /// same term when estimating the actually-applied voltage for its observer
+    /// (update_valpha_vbeta, mcpwm_foc.c). Compensating the command keeps the
+    /// applied voltage close to the commanded one, so our telemetry vαβ stays
+    /// valid as observer input without a separate estimate.
     fn apply_dead_time_comp(
         mod_alpha: f32,
         mod_beta: f32,
@@ -198,11 +221,12 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let sign_b = if ib >= 0.0 { 1.0f32 } else { -1.0 };
         let sign_c = if ic >= 0.0 { 1.0f32 } else { -1.0 };
 
-        // Compensation in αβ frame (VESC formula)
+        // Per-phase ±comp_factor mapped to the αβ frame through the Clarke
+        // transform: α gets (2·sa − sb − sc)/3, β gets (sb − sc)/√3.
         let comp_alpha = (1.0 / 3.0) * (2.0 * sign_a - sign_b - sign_c) * comp_factor;
         let comp_beta = super::constants::FRAC_1_SQRT_3 * (sign_b - sign_c) * comp_factor;
 
-        (mod_alpha - comp_alpha, mod_beta - comp_beta)
+        (mod_alpha + comp_alpha, mod_beta + comp_beta)
     }
 
     /// Current DC bus voltage cached in the controller.
@@ -244,8 +268,8 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         };
 
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
-        let inv_vbus = 1.0 / self.vbus;
-        let duties = M::to_duties(v_alpha * inv_vbus, v_beta * inv_vbus, max_duty);
+        let volts_to_mod = Self::VOLTS_TO_MOD / self.vbus;
+        let duties = M::to_duties(v_alpha * volts_to_mod, v_beta * volts_to_mod, max_duty);
 
         FocOutput {
             angle_rad,
@@ -347,10 +371,10 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
         // dq -> stationary frame
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
-        let inv_vbus = 1.0 / self.vbus;
+        let volts_to_mod = Self::VOLTS_TO_MOD / self.vbus;
         let (mod_a, mod_b) = Self::apply_dead_time_comp(
-            v_alpha * inv_vbus,
-            v_beta * inv_vbus,
+            v_alpha * volts_to_mod,
+            v_beta * volts_to_mod,
             i_alpha,
             i_beta,
             self.dead_time_comp,
@@ -484,4 +508,70 @@ mod tests {
 
     foc_controller_tests!(libm, LibmSinCos);
     foc_controller_tests!(fast, FastSinCos);
+
+    /// Average phase-to-neutral αβ voltage that a duty triple applies over one
+    /// PWM period, assuming ideal half-bridges (leg voltage = duty/max × vbus).
+    fn alpha_beta_from_duties(duties: [u16; 3], max_duty: u16, vbus: f32) -> (f32, f32) {
+        let leg: [f32; 3] = core::array::from_fn(|i| duties[i] as f32 / max_duty as f32 * vbus);
+        let neutral = (leg[0] + leg[1] + leg[2]) / 3.0;
+        transforms::clarke(leg[0] - neutral, leg[1] - neutral)
+    }
+
+    #[test]
+    fn duty_path_applies_commanded_voltage() {
+        // Regression test for the volts→modulation normalization.
+        //
+        // The VESC SVPWM algorithm produces a phase-to-neutral voltage of
+        // (2/3)·m·vbus for a modulation input m, so the conversion from volts
+        // must be m = 1.5·v/vbus (VESC mcpwm_foc.c:4684,
+        // "voltage_normalize = 1/(2/3*V_bus)"). With a plain 1/vbus the motor
+        // receives only 2/3 of the commanded voltage and every quantity derived
+        // from commanded volts (R/L/λ detection, observer input) is off by 1.5×.
+        let vbus = 24.0;
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(vbus);
+        let max_duty = 1000u16;
+        // One duty LSB is vbus/max_duty of leg voltage; allow a few for truncation.
+        let tol = 3.0 * vbus / max_duty as f32;
+        for angle_deg in (0..360).step_by(30) {
+            let angle = (angle_deg as f32).to_radians();
+            // |V| ≈ 5.1 V, far below the 13.8 V modulation limit — no clamping.
+            let out = foc.apply_dq(1.0, 5.0, angle, max_duty);
+            let (va, vb) = alpha_beta_from_duties(out.duties, max_duty, vbus);
+            assert!(
+                (va - out.v_alpha).abs() < tol,
+                "applied v_alpha {} != commanded {} at {}°",
+                va,
+                out.v_alpha,
+                angle_deg
+            );
+            assert!(
+                (vb - out.v_beta).abs() < tol,
+                "applied v_beta {} != commanded {} at {}°",
+                vb,
+                out.v_beta,
+                angle_deg
+            );
+        }
+    }
+
+    #[test]
+    fn dead_time_comp_pushes_voltage_in_current_direction() {
+        // During dead time the body diode of the leg carrying positive current
+        // conducts to the negative rail, so the phase *loses* voltage in the
+        // current direction. The command must therefore be increased along the
+        // current sign — MESC does exactly `CCR += deadtime_comp` for positive
+        // phase current (MESCpwm.c:172-177). Subtracting doubles the distortion
+        // instead of cancelling it.
+        let comp = 0.02; // 1 µs dead time × 20 kHz PWM
+        // Current along +α: ia > 0, ib < 0, ic < 0.
+        let (ma, _) = FocController::<SvpwmModulator, LibmSinCos>::apply_dead_time_comp(
+            0.5, 0.0, 10.0, 0.0, comp,
+        );
+        assert!(ma > 0.5, "mod_alpha must increase with ia > 0, got {}", ma);
+        // Current along +β: ib > 0, ic < 0.
+        let (_, mb) = FocController::<SvpwmModulator, LibmSinCos>::apply_dead_time_comp(
+            0.0, 0.5, 0.0, 10.0, comp,
+        );
+        assert!(mb > 0.5, "mod_beta must increase with iβ > 0, got {}", mb);
+    }
 }

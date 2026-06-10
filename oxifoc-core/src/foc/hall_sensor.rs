@@ -390,8 +390,12 @@ impl HallSensor {
         self.last_edge_ticks = Some(t_ticks);
         self.angle = angle_raw;
 
-        // Reset rate-limited angle to sector on Hall edge (fresh start)
-        self.rate_limited_angle = angle_raw;
+        // Deliberately NOT snapping rate_limited_angle here: the edge is
+        // where the up-to-60° discontinuity happens, i.e. exactly what the
+        // rate limiter exists to smooth. VESC keeps its rate-limited angle
+        // across transitions and always slews it by at most one step
+        // (foc_math.c:665-672). The low-speed path in sample_at_mut() still
+        // re-syncs it to the sector angle, which covers startup.
 
         Some(self.angle)
     }
@@ -502,19 +506,23 @@ impl HallSensor {
         // Current sector angle from calibration (direct raw state lookup)
         let sector_angle = self.calib.angle_for_state(self.raw_state);
 
+        // Decayed velocity: see decayed_velocity() — a stopping motor must
+        // not keep reporting (and integrating) the last edge speed forever.
+        let velocity = self.decayed_velocity(dt);
+
         // Check if velocity is below interpolation threshold (compare in eRPM)
-        if Self::vel_to_erpm(self.elec_velocity) < self.interp_min_erpm {
+        if Self::vel_to_erpm(velocity) < self.interp_min_erpm {
             // Low speed: use sector angle directly, no interpolation
             // This prevents oscillation during direction reversals
             return Some(AngleSample {
                 angle: sector_angle,
-                omega: self.elec_velocity,
+                omega: velocity,
                 direction: self.direction,
             });
         }
 
         // High speed: interpolate using velocity
-        let interpolated = wrap_angle(self.angle + self.elec_velocity * dt);
+        let interpolated = wrap_angle(self.angle + velocity * dt);
 
         // Check drift from sector angle and apply soft correction
         let drift = angle_difference(interpolated, sector_angle);
@@ -531,9 +539,25 @@ impl HallSensor {
 
         Some(AngleSample {
             angle: final_angle,
-            omega: self.elec_velocity,
+            omega: velocity,
             direction: self.direction,
         })
+    }
+
+    /// Velocity estimate bounded by the time already waited since the last
+    /// edge.
+    ///
+    /// If the motor were really still doing `|elec_velocity|`, an edge would
+    /// have arrived within one sector time — so once `dt_from_edge` exceeds
+    /// that, the only consistent estimate is `angle_per_state / dt_from_edge`,
+    /// which decays toward zero at standstill. VESC gets the same behavior by
+    /// dividing by `max(hall_dt_now, hall_dt_last)`, where `hall_dt_now`
+    /// keeps growing after the last edge (foc_math.c:645). This also bounds
+    /// the interpolation advance to at most one sector past the last edge.
+    #[inline]
+    fn decayed_velocity(&self, dt_from_edge: f32) -> f32 {
+        let vel_limit = self.angle_per_state / dt_from_edge.max(1e-9);
+        crate::foc::clamp_f32(self.elec_velocity, -vel_limit, vel_limit)
     }
 
     /// Interpolated sample at `now_ticks` with full VESC-style processing.
@@ -561,20 +585,24 @@ impl HallSensor {
         // Current sector angle from calibration (direct raw state lookup)
         let sector_angle = self.calib.angle_for_state(self.raw_state);
 
+        // Decayed velocity (see decayed_velocity()): also moves us to the
+        // low-speed path once the edges stop coming.
+        let velocity = self.decayed_velocity(dt_from_edge);
+
         // Check if velocity is below interpolation threshold (compare in eRPM)
-        if Self::vel_to_erpm(self.elec_velocity) < self.interp_min_erpm {
+        if Self::vel_to_erpm(velocity) < self.interp_min_erpm {
             // Low speed: use sector angle directly, no interpolation
             // This prevents oscillation during direction reversals
             self.rate_limited_angle = sector_angle;
             return Some(AngleSample {
                 angle: sector_angle,
-                omega: self.elec_velocity,
+                omega: velocity,
                 direction: self.direction,
             });
         }
 
         // High speed: interpolate using velocity
-        let target_angle = wrap_angle(self.angle + self.elec_velocity * dt_from_edge);
+        let target_angle = wrap_angle(self.angle + velocity * dt_from_edge);
 
         // === SOFT DRIFT CORRECTION (VESC-style) ===
         // Check drift from sector angle
@@ -592,7 +620,7 @@ impl HallSensor {
         // max_step = max(|velocity|, min_vel_from_erpm) * dt * rate_limit_factor
         // Convert interp_min_erpm to rad/s for this calculation
         let min_vel_rad_s = self.interp_min_erpm * TAU / 60.0;
-        let effective_vel = self.elec_velocity.abs().max(min_vel_rad_s);
+        let effective_vel = velocity.abs().max(min_vel_rad_s);
         let max_step = effective_vel * dt_sample * self.rate_limit_factor;
 
         // Calculate desired step from current rate-limited angle
@@ -614,7 +642,7 @@ impl HallSensor {
 
         Some(AngleSample {
             angle: self.rate_limited_angle,
-            omega: self.elec_velocity,
+            omega: velocity,
             direction: self.direction,
         })
     }
@@ -1139,5 +1167,83 @@ mod tests {
         hall.update(1, 0).unwrap();
         assert!(!hall.is_stale(49_999)); // Just before 50ms
         assert!(hall.is_stale(50_001)); // Just after 50ms
+    }
+
+    /// CW raw-state sequence (one electrical revolution = 6 edges).
+    const CW_SEQ: [u8; 6] = [1, 3, 2, 6, 4, 5];
+
+    #[test]
+    fn rate_limiter_smooths_early_hall_edge() {
+        // An edge arriving earlier than interpolation predicted is exactly the
+        // discontinuity the rate limiter exists for. VESC never snaps its
+        // rate-limited angle on an edge (foc_math.c:665-672: it always slews
+        // by at most angle_step toward the target). Snapping in update()
+        // disables the limiter at the worst possible moment.
+        let mut hall = HallSensor::new(1_000_000); // µs ticks
+        let mut idx = 0usize;
+        let mut t = 0u64;
+        let mut last_out = 0.0f32;
+
+        // Steady rotation: edge every 500 µs (≈20k eRPM), 20 kHz sampling.
+        for _ in 0..11 {
+            hall.update(CW_SEQ[idx % 6], t).unwrap();
+            idx += 1;
+            for k in 1..10u64 {
+                last_out = hall.sample_at_mut(t + k * 50).unwrap().angle;
+            }
+            t += 500;
+        }
+        // Final steady edge, sampled only up to +200 µs…
+        hall.update(CW_SEQ[idx % 6], t).unwrap();
+        idx += 1;
+        for k in 1..=4u64 {
+            last_out = hall.sample_at_mut(t + k * 50).unwrap().angle;
+        }
+        // …then the next edge arrives at +250 µs — twice as early as expected.
+        hall.update(CW_SEQ[idx % 6], t + 250).unwrap();
+        let out = hall.sample_at_mut(t + 300).unwrap().angle;
+
+        let step = angle_difference(out, last_out).abs();
+        // The limiter bound uses the (now doubled) post-edge velocity estimate
+        // over the 100 µs between the two samples (t+200 → t+300).
+        let max_step = hall.electrical_velocity().abs() * 100e-6 * DEFAULT_RATE_LIMIT_FACTOR + 1e-3;
+        assert!(
+            step <= max_step,
+            "angle jumped {} rad across an early hall edge (rate limit {})",
+            step,
+            max_step
+        );
+    }
+
+    #[test]
+    fn velocity_estimate_decays_when_edges_stop() {
+        // A motor that stops mid-sector stops producing edges; the estimate
+        // must be bounded by the time already waited — if the motor were
+        // still doing |vel|, an edge would have arrived within one sector
+        // time. VESC bounds interpolation speed the same way through
+        // max(hall_dt_now, hall_dt_last), which keeps growing after the last
+        // edge (foc_math.c:645). Holding the last edge speed forever feeds
+        // phantom velocity into blending logic and telemetry.
+        let mut hall = HallSensor::new(1_000_000);
+        let mut t = 0u64;
+        for s in CW_SEQ.iter().cycle().take(12) {
+            hall.update(*s, t).unwrap();
+            t += 1000; // 1 ms per sector ≈ 10k eRPM
+        }
+        let running = hall.sample_at(t).unwrap().omega.abs();
+        assert!(
+            running > 500.0,
+            "sanity: motor was spinning, got {}",
+            running
+        );
+
+        // 50 ms after the last edge, with no new edges:
+        let stale = hall.sample_at(t + 50_000).unwrap();
+        assert!(
+            stale.omega.abs() < 0.05 * running,
+            "stale velocity {} did not decay (running was {})",
+            stale.omega,
+            running
+        );
     }
 }
