@@ -14,7 +14,7 @@ graph TD
 
     FocDriver --> PhasePwm["<b>PhasePwm</b><br/>set_duties · disable · enable<br/>set_phase_states (six-step)"]
     FocDriver --> CurrentSensor["<b>CurrentSensor</b><br/>read_currents · calibrate<br/>update_duties (reconstruction)"]
-    FocDriver --> PhaseProvider["<b>PhaseProvider</b><br/>get() → angle, velocity<br/>update(vαβ, iαβ, dt)"]
+    FocDriver --> PhaseProvider["<b>PhaseProvider</b><br/>get() → angle, velocity<br/>injection() → HFI carrier<br/>update(vαβ, iαβ, dt)"]
     FocDriver --> SinCos["<b>SinCos</b><br/>sin_cos(θ) → (sin, cos)<br/>LibmSinCos · FastSinCos · CordicSinCos"]
 
     FocDriver --> FocController["<b>FocController&lt;M, S&gt;</b><br/>Clarke · Park · PI · Inv. Park<br/>Dead time comp · Voltage clamping"]
@@ -22,14 +22,19 @@ graph TD
 
     PhaseProvider --> PhaseManager["<b>PhaseManager&lt;H, E&gt;</b><br/>Source selection · Health tracking<br/>Observer fallback · Open-loop override"]
     PhaseManager --> AngleSensor["<b>AngleSensor</b><br/>HallSensor · Encoder · NoSensor"]
-    PhaseManager --> Observer["<b>Observer</b><br/>BackEmfObserver · HfiObserver"]
+    PhaseManager --> Observer["<b>Observer slot</b><br/>BackEmfObserver"]
+    PhaseManager --> Hfi["<b>HFI slot</b><br/>HfiObserver<br/>carrier + polarity probe"]
 ```
 
 Platform crates implement `PhasePwm` (TIM1 complementary PWM), `CurrentSensor` (shunt ADC reading), and `SinCos` (CORDIC hardware or software libm). Everything else is shared.
 
 ### Phase Source Selection
 
-`PhaseManager` supports multiple angle estimation strategies with runtime switching:
+`PhaseManager` supports multiple angle estimation strategies with runtime
+switching (host command `cmd/phase_source`; the active source is reported
+back via slow telemetry). Both software estimators run concurrently in
+dedicated slots and are armed automatically from stored motor parameters
+at boot:
 
 | Source | Use Case |
 |--------|----------|
@@ -39,7 +44,7 @@ Platform crates implement `PhasePwm` (TIM1 complementary PWM), `CurrentSensor` (
 | `Hfi` | High-frequency injection sensorless (zero/low speed) |
 | `HallToObserver` | Hall at low speed, velocity-blended crossover to observer |
 | `HallWithFallback` | Hall → Observer with automatic fallback on Hall failure |
-| `HfiToObserver` | HFI startup → observer crossover |
+| `HfiToObserver` | HFI at standstill, velocity-blended crossover to observer |
 | `Manual` / `OpenLoop` | Calibration and detection |
 
 ### Motor Detection

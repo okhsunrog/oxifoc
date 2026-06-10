@@ -15,17 +15,19 @@ This document describes the FOC (Field-Oriented Control) architecture for the ox
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                            User Application                              │
-│  • Set control mode (current, velocity, position)                       │
-│  • Configure phase source (Hall, Encoder, Observer, Hybrid)             │
-│  • Run calibration procedures                                            │
+│                       Host / User Application                            │
+│  • Set control mode (current, open-loop, direct voltage, six-step)      │
+│  • Select phase source (Hall, Encoder, Observer, HFI, crossovers)       │
+│  • Run calibration/detection procedures, read/write stored config       │
 └─────────────────────────────────┬───────────────────────────────────────┘
-                                  │
+                                  │ ergot endpoints → CMD_CHANNEL
                                   ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                             FocDriver<P, C, Phase>                       │
-│  • Orchestrates control loop execution                                   │
-│  • Manages control modes (Stopped, Current, OpenLoop, HfiInjection)     │
+│                          FocDriver<P, C, Phase, S>                       │
+│  • Orchestrates control loop execution (mutated only inside the ISR)    │
+│  • Manages control modes (Stopped, Current, OpenLoop, DirectVoltage,    │
+│    Coast, SixStep, ...)                                                  │
+│  • Enforces current limits (target clamp + measured overcurrent)        │
 │  • Delegates phase estimation to PhaseProvider                          │
 └───────────┬─────────────────────┬─────────────────────┬─────────────────┘
             │                     │                     │
@@ -35,9 +37,10 @@ This document describes the FOC (Field-Oriented Control) architecture for the ox
     │   (trait)     │    │   (trait)     │    │      (trait)          │
     │               │    │               │    │                       │
     │ • set_duties  │    │ • read_currents│   │ • get() → PhaseOutput │
-    │ • max_duty    │    │ • is_calibrated│   │ • update(PhaseInput)  │
-    │ • disable     │    │ • get_offsets │    │                       │
-    └───────────────┘    └───────────────┘    └───────────┬───────────┘
+    │ • max_duty    │    │ • is_calibrated│   │ • injection()         │
+    │ • disable     │    │ • get_offsets │    │ • update(PhaseInput)  │
+    └───────────────┘    └───────────────┘    │ • request_source()    │
+                                              └───────────┬───────────┘
                                                           │
                                               implements  │
                                                           ▼
@@ -45,10 +48,14 @@ This document describes the FOC (Field-Oriented Control) architecture for the ox
                               │         PhaseManager<H, E>                  │
                               │  • Manages Hall sensor (H)                  │
                               │  • Manages Encoder (E)                      │
-                              │  • Manages Observer (sensorless)            │
+                              │  • Two concurrent estimator slots:          │
+                              │    back-EMF Observer + HFI                  │
                               │  • Handles source selection & blending      │
                               └────────────────────────────────────────────┘
 ```
+
+The command path from the host into the ISR-owned driver is described in
+[Command Path and Communication](#command-path-and-communication).
 
 ---
 
@@ -59,14 +66,14 @@ This document describes the FOC (Field-Oriented Control) architecture for the ox
 The main motor driver that orchestrates FOC control.
 
 ```rust
-pub struct FocDriver<P, C, Phase>
+pub struct FocDriver<P, C, Phase, S: SinCos = LibmSinCos>
 where
     P: PhasePwm,
     C: CurrentSensor,
     Phase: PhaseProvider,
 {
-    // FOC controller
-    controller: FocController,
+    // FOC controller (current loop, parameterized over SVPWM + trig impl)
+    controller: FocController<SvpwmModulator, S>,
     // PWM output
     pwm: P,
     // Current sensor
@@ -77,15 +84,28 @@ where
     mode: ControlMode,
     // Bus voltage (V)
     vbus: f32,
+    // Control loop period in seconds (1/pwm_freq, from MotorPwmConfig::dt_s())
+    dt: f32,
+    // Current limiting (target clamp + measured overcurrent threshold)
+    current_limits: CurrentLimits,
+    // Accumulated angle for open-loop velocity mode
+    open_loop_angle: f32,
 }
 ```
 
 **Responsibilities:**
 - Execute the FOC current control loop
-- Handle control mode transitions
-- Coordinate with PhaseProvider for angle estimation
+- Handle control mode transitions (PWM re-enable on Stopped→active,
+  phase-state restore when leaving SixStep, PI gain override on OpenLoop entry)
+- Coordinate with PhaseProvider for angle estimation and HFI carrier injection
+- Enforce current limits: clamp commanded targets (circular, d-axis priority)
+  and latch `Stopped` + disable PWM when the *measured* dq current exceeds
+  `overcurrent_threshold_a` — in every mode that energizes the motor,
+  including DirectVoltage and SixStep
 
-**Key simplification:** FocDriver has only 3 type parameters. All phase/angle complexity is delegated to `PhaseProvider`.
+**Key simplification:** All phase/angle complexity is delegated to
+`PhaseProvider`. The fourth type parameter `S: SinCos` defaults to
+`LibmSinCos`; platforms with hardware trig (G431 CORDIC) substitute their own.
 
 ### 2. PhaseProvider Trait
 
@@ -100,7 +120,7 @@ pub struct PhaseOutput {
 }
 
 /// Input for phase provider update
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct PhaseInput {
     pub v_alpha: f32,    // Commanded α voltage (for observer)
     pub v_beta: f32,     // Commanded β voltage (for observer)
@@ -116,6 +136,19 @@ pub trait PhaseProvider {
 
     /// Update with latest measurements (called at END of control step)
     fn update(&mut self, input: &PhaseInput, now_ticks: u64);
+
+    /// dq voltage to inject this cycle (HFI carrier), in the rotor frame
+    /// at get()'s angle. Default: no injection.
+    fn injection(&self) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+
+    /// Request a switch of the angle source (host command). Returns whether
+    /// the request was applied. Default declines: simple providers have
+    /// exactly one source.
+    fn request_source(&mut self, _source: PhaseSource) -> bool {
+        false
+    }
 }
 ```
 
@@ -123,6 +156,13 @@ pub trait PhaseProvider {
 - `get()` is called first to obtain the angle for Park/Clarke transforms
 - `update()` is called last with the commanded voltages (needed by observers)
 - This creates a one-sample delay for observers, which is standard practice
+- `injection()` must be read BETWEEN `get()` and `update()`: the HFI
+  estimator demodulates the currents fed to the next `update()` against this
+  exact carrier sample, and `update()` then advances the carrier.
+  `FocDriver::step_current_control` feeds the result into
+  `FocController::step_with_injection`
+- `request_source()` is the validated entry point for host-side source
+  switching; `PhaseManager` overrides it with its `set_source()`
 
 ### 3. PhaseManager
 
@@ -138,8 +178,11 @@ where
     hall: H,
     encoder: E,
 
-    // Software estimator
+    // Software estimators. Two slots run concurrently so the HfiToX
+    // crossovers can hand over between them: `hfi` covers zero/low speed
+    // (needs carrier injection), `observer` covers medium/high speed.
     observer: Observer,
+    hfi: Option<HfiObserver>,
 
     // Configuration
     source: PhaseSource,
@@ -159,6 +202,10 @@ where
 
     // Open-loop override for Hall failure recovery
     open_loop_override: OpenLoopOverride,
+
+    // Hysteresis memory for the HfiToX crossovers: true = running on the
+    // high-speed source (observer/hall/encoder), false = on HFI.
+    crossover_latched: bool,
 
     // Fault tracking
     faults: HeaplessVec<PhaseFault, 4>,
@@ -180,16 +227,26 @@ pub enum PhaseFault {
 
 **Responsibilities:**
 - Sample hardware sensors (Hall, Encoder)
-- Update software observer
+- Update **both** software estimators every cycle (always, for
+  fallback/crossover readiness)
 - Select/blend angle sources based on `PhaseSource`
 - Track Hall sensor health and trigger fallback
+- Generate the HFI carrier via `injection()` when an HFI source is
+  commutating (off once a crossover is fully latched onto the fast source)
 - Provide unified phase output to FocDriver
 
 **Fallback Chain:**
 When Hall fails, PhaseManager automatically falls back:
-1. **Hall** → try Observer
+1. **Hall** → try Observer (gated on `is_ready()`, not merely configured)
 2. **Observer not ready** → use OpenLoop override
-3. **OpenLoop** → maintain minimum velocity until observer syncs
+3. **OpenLoop** → maintain minimum velocity until a real source takes over
+
+With the `storage` feature, `configure_observers_from_config()` arms both
+estimator slots from stored motor parameters: a `BackEmfObserver` from
+(R, L_avg, λ) plus an `HfiObserver` with default carrier settings
+(`HFI_DEFAULT_FREQ_HZ`, `vbus × HFI_DEFAULT_AMPLITUDE_RATIO`). The active
+source is left untouched — the estimators only run; the host selects a
+sensorless source explicitly when it wants one.
 
 ---
 
@@ -197,7 +254,9 @@ When Hall fails, PhaseManager automatically falls back:
 
 ### PhaseSource Enum
 
-Specifies where electrical angle comes from:
+Specifies where electrical angle comes from. `PhaseSource` is a wire type
+(serde + postcard schema) — the host selects it via the
+`PhaseSourceEndpoint`.
 
 ```rust
 pub enum PhaseSource {
@@ -214,23 +273,23 @@ pub enum PhaseSource {
         blend_low: f32,      // Start blending (electrical rad/s)
         blend_high: f32,     // Full observer (electrical rad/s)
     },
+    EncoderToObserver {      // Encoder at low speed, observer at high speed
+        blend_low: f32,
+        blend_high: f32,
+    },
     HallWithFallback {       // Hall with automatic observer fallback
         blend_low: f32,      // Start blending (electrical rad/s)
         blend_high: f32,     // Full observer (electrical rad/s)
         timeout_us: u32,     // Hall timeout before fallback
     },
-    EncoderToObserver {      // Encoder at low speed, observer at high speed
-        blend_low: f32,
-        blend_high: f32,
+    HfiToObserver {          // HFI startup, blend to observer
+        min_vel: f32,        // Fully on observer at this velocity (rad/s)
+        min_confidence: f32, // Minimum observer confidence (0.0-1.0)
     },
-    HfiToObserver {          // HFI startup, transition to observer
-        min_vel: f32,
-        min_confidence: f32,
-    },
-    HfiToHall {              // HFI startup, transition to Hall
+    HfiToHall {              // HFI startup, switch to Hall (with hysteresis)
         switch_vel: f32,
     },
-    HfiToEncoder {           // HFI startup, transition to encoder
+    HfiToEncoder {           // HFI startup, switch to encoder (with hysteresis)
         switch_vel: f32,
     },
 
@@ -256,11 +315,47 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
         if source.requires_observer() && !self.observer.is_configured() {
             return Err(PhaseSourceError::ObserverNotConfigured);
         }
+        // HFI sources need the estimator that actually generates a carrier
+        if source.requires_hfi() && self.hfi.is_none() {
+            return Err(PhaseSourceError::HfiNotConfigured);
+        }
+
         self.source = source;
+        // Crossover memory belongs to the previous source's thresholds.
+        self.crossover_latched = false;
         Ok(())
     }
 }
 ```
+
+The trait-level `request_source()` simply wraps this:
+`self.set_source(source).is_ok()`.
+
+### HFI Crossover Semantics
+
+The `HfiToX` sources use the `crossover_latched` hysteresis flag plus
+`CROSSOVER_HYSTERESIS = 0.2`:
+
+- **HfiToObserver** is a velocity **blend**, not a sharp switch: the output
+  blends from HFI to the observer across the band
+  `[min_vel·(1 − CROSSOVER_HYSTERESIS), min_vel]`. A sharp switch is not
+  enough here — the HFI demod/PLL lag grows with speed, so at the crossover
+  the two estimates legitimately disagree by tenths of a radian; blending
+  absorbs that. The blend is only taken when the observer is ready AND its
+  confidence ≥ `min_confidence`; the speed reference is the faster of the
+  two velocity estimates.
+- `crossover_latched` marks the fully-blended regime (`blend ≥ 1.0`). Only
+  there is the carrier injection switched off (`injection()` returns zero) —
+  keeping the carrier on at speed only costs losses and acoustic noise while
+  the saliency response degrades anyway.
+- Re-entering the band from above (or losing observer readiness) reseeds the
+  HFI estimator from the last managed output via `set_phase()`/
+  `set_velocity()` — its own estimate drifted while the carrier was off, and
+  the trusted angle also resolves the HFI π ambiguity.
+- **HfiToHall/HfiToEncoder** are sharp switches with the same hysteresis
+  band: switch up at `switch_vel`, drop back to HFI only below
+  `switch_vel × (1 − CROSSOVER_HYSTERESIS)` or on sensor failure (again
+  reseeding HFI from the last output).
 
 ---
 
@@ -278,8 +373,28 @@ pub struct AngleSample {
 }
 
 pub trait AngleSensor {
-    /// Sample angle at given timestamp
+    /// Sample angle at given timestamp (None = no valid sample right now)
     fn sample(&self, now_ticks: u64) -> Option<AngleSample>;
+
+    /// Stateful snapshot for the control path. Default delegates to sample();
+    /// sensors with cross-call smoothing state (e.g. the Hall estimator's
+    /// VESC-style rate limiter) override this.
+    fn sample_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
+        self.sample(now_ticks)
+    }
+
+    /// Whether the sensor's data has implausibly stopped updating (e.g. hall
+    /// edges ceased while the rotor was demonstrably spinning).
+    /// Default: never stale.
+    fn is_stale(&self, _now_ticks: u64) -> bool {
+        false
+    }
+
+    /// Read electrical angle in radians (0..2π). Default uses sample().
+    fn read_angle(&self) -> f32 { /* default via sample() */ }
+
+    /// Read rotation direction. Default uses sample().
+    fn read_direction(&self) -> Direction { /* default via sample() */ }
 
     /// Error count for diagnostics
     fn error_count(&self) -> u32;
@@ -352,27 +467,32 @@ The `HallSensor` struct provides VESC-style features:
 ```rust
 pub struct HallSensor {
     // Calibration: 8-entry raw-state table (direct lookup, no logical conversion)
-    calib: HallCalibration,  // raw_table: [f32; 8], valid: [bool; 8]
+    calib: HallCalibration,  // raw_table: [f32; 8], valid: [bool; 8], advance_rad
 
     // VESC-compatible interpolation parameters
-    interp_min_erpm: f32,         // Threshold below which interpolation is disabled (default: 500)
-    max_drift_rad: f32,           // Max drift before soft correction (default: π/6 = 30°)
-    drift_correction_gain: f32,   // Pull-back rate (default: 0.01 = 1% per sample)
-    rate_limit_factor: f32,       // Max angle step multiplier (default: 1.5)
+    interp_min_erpm: f32,         // Threshold below which interpolation is disabled
+    max_drift_rad: f32,           // Max drift before soft correction
+    drift_correction_gain: f32,   // Pull-back rate (VESC default: 0.01)
+    rate_limit_factor: f32,       // Max angle step multiplier (VESC default: 1.5)
 
     // State tracking
     direction_reversed: bool,     // True on direction change (for velocity handling)
     timeout_ticks: u64,           // Timeout for stale detection
+    // ... edge timestamps, velocity estimate, rate-limited angle, error counter
 }
 
 impl HallSensor {
-    /// Check if Hall sensor data is stale (no edges for timeout period)
+    /// Timebase-aware constructor (ticks of a caller-provided clock)
+    pub fn new(ticks_per_sec: u64) -> Self;
+
+    /// Check if Hall sensor data is stale (velocity-adaptive edge timeout)
     pub fn is_stale(&self, now_ticks: u64) -> bool;
 
     /// Set minimum eRPM for interpolation (VESC-style)
     pub fn set_interp_min_erpm(&mut self, erpm: f32);
 
     /// Interpolated sample with soft drift correction and rate limiting
+    /// (backs the AngleSensor::sample_mut override)
     pub fn sample_at_mut(&mut self, now_ticks: u64) -> Option<AngleSample>;
 }
 ```
@@ -431,23 +551,23 @@ pub enum EncoderType {
    (Hall-specific)       (Encoder-specific)
           │                     │
           ▼                     ▼
-   Platform impls        Platform impls
-   (F405HallSensor)      (F405Encoder)
+   Core/platform impls   Platform impls
+   (HallSensor,          (planned)
+    HallAngleProxy)
 ```
 
 ---
 
 ## Observer Integration
 
-### Observer Enum
+### Estimator Slots
 
-Runtime-switchable observer implementations:
+`PhaseManager` carries **two** estimator slots that run concurrently:
 
 ```rust
 pub enum Observer {
     None,
     BackEmf(BackEmfObserver),
-    Hfi(HfiObserver),
 }
 
 impl Observer {
@@ -455,7 +575,13 @@ impl Observer {
     pub fn phase(&self) -> Option<f32>;
     pub fn velocity(&self) -> Option<f32>;
     pub fn confidence(&self) -> f32;
+    /// Convergence gate: all fallback/crossover decisions use this, not
+    /// phase().is_some() — a configured-but-frozen observer returns a phase.
+    pub fn is_ready(&self) -> bool;
+    /// Seed the estimate from a trusted external source (sensor handoff)
+    pub fn seed(&mut self, angle: f32, velocity: f32);
     pub fn is_configured(&self) -> bool;
+    pub fn reset(&mut self);
 }
 
 pub struct ObserverInput {
@@ -467,15 +593,32 @@ pub struct ObserverInput {
 }
 ```
 
+`Observer` is the back-EMF/"fast" slot — it deliberately has **no** HFI
+variant. The HFI estimator lives in its own dedicated slot
+(`hfi: Option<HfiObserver>`, set via `set_hfi_observer()`): it needs carrier
+injection plumbed through the control loop, and the HfiToObserver crossover
+requires both estimators to run concurrently. `PhaseManager::update()` feeds
+the same `ObserverInput` to both slots every cycle.
+
 ### Back-EMF Observer
 
-VESC-style flux observer for sensorless operation:
+MXLEMMING-style flux observer (original algorithm by David Molony, MESC
+project; also available in VESC as `FOC_OBSERVER_MXLEMMING`). Integrates
+`(v − R·i)·dt − L·Δi` to track the rotor flux vector directly, truncates each
+component to ±λ to bleed off integrator drift, then uses a PLL to extract
+phase and velocity.
 
 ```rust
 pub struct BackEmfObserver {
-    // Observer state
-    x1: f32,              // Flux linkage α component
-    x2: f32,              // Flux linkage β component
+    // Flux integrator state
+    x1: f32,              // α-axis rotor flux estimate (Wb)
+    x2: f32,              // β-axis rotor flux estimate (Wb)
+
+    // Previous currents for the incremental −L·Δi stator-flux removal
+    i_alpha_last: f32,
+    i_beta_last: f32,
+
+    // PLL state
     phase_pll: f32,       // PLL-filtered phase
     velocity_pll: f32,    // PLL-filtered velocity
 
@@ -485,17 +628,60 @@ pub struct BackEmfObserver {
     lambda: f32,          // Flux linkage (Wb)
 
     // Tuning
-    gain: f32,            // Observer gain
     pll_kp: f32,          // PLL proportional gain
     pll_ki: f32,          // PLL integral gain
+
+    // State
+    confidence: f32,      // Flux magnitude / λ (0-1)
+    phase_err_filt: f32,  // Low-passed |PLL phase error|, for readiness
 }
 ```
+
+There is no explicit observer gain — the ±λ truncation *is* the MXLEMMING
+correction mechanism. Readiness (`is_ready()`) requires all three of:
+- confidence ≥ `READY_MIN_CONFIDENCE` (flux magnitude near λ),
+- PLL locked (filtered |phase error| < `READY_MAX_PHASE_ERR_RAD`),
+- |velocity| ≥ `READY_MIN_VELOCITY` (back-EMF observable at all — at
+  standstill the first two can hold on pure integrator memory).
+
+### HFI Observer
+
+High-frequency injection estimator for zero/low speed, based on magnetic
+saliency (Ld ≠ Lq). Pulsating **d-axis** injection: each cycle the control
+loop reads `get_injection()` → `(A·cos θc, 0)` in the estimated rotor frame,
+applies it via `FocController::step_with_injection`, and the next `update()`
+synchronously demodulates the resulting carrier currents by `sin θc`. The
+demodulated q channel gives an error ∝ `sin 2e · (1/Lq − 1/Ld)`; the
+always-positive d channel normalizes it (gains independent of A, ωc and
+absolute inductance) and provides the "is any carrier current flowing"
+confidence floor. A PLL tracks the normalized error.
+
+The saliency signal is 2θ-periodic, so the PLL lock carries a **π ambiguity**.
+It is resolved by a saturation-probe state machine
+(`Pending → Probing → Done`):
+- After the first PLL lock (confidence crosses `HFI_READY_CONFIDENCE`) the
+  carrier is suspended and palindromic ±d pulses (+,−,−,+ — cancels
+  first-order bias from residual current decay) are injected, with
+  zero-voltage gaps between them for current decay.
+- A pulse aligned with the magnet flux saturates the iron → lower incremental
+  Ld → larger current. If the −d̂ pulses consistently draw more current, the
+  estimate is flipped by π. An ambiguous result (no measurable saturation,
+  e.g. SPM motors) keeps the current lock.
+- `is_ready()` requires confidence ≥ `HFI_READY_CONFIDENCE` **and** resolved
+  polarity. `set_phase()` from a trusted source (sensor handoff, crossover
+  reseed) marks polarity resolved directly — no probe needed.
 
 ---
 
 ## Control Modes
 
 ### ControlMode Enum
+
+`ControlMode` lives in `oxifoc-core/src/types.rs` (it is a wire type) and is
+re-exported from `motor::foc_driver`. There is no separate "HfiInjection"
+mode — HFI is a *phase source*; runtime HFI runs in `CurrentControl` via the
+`PhaseProvider::injection()` path, and detection-time injection uses
+`DirectVoltage`.
 
 ```rust
 pub enum ControlMode {
@@ -522,25 +708,49 @@ pub enum ControlMode {
         target_pos: f32,
     },
 
-    /// Open-loop mode for calibration - locks rotor to specified electrical angle
+    /// Open-loop mode — drive motor at commanded electrical angle.
+    /// velocity_rad_s == 0: lock rotor at angle_rad (calibration).
+    /// velocity_rad_s != 0: firmware advances the angle (open-loop spin).
     OpenLoop {
-        /// Target electrical angle (radians, 0 to 2π)
+        /// Initial electrical angle (radians, 0 to 2π)
         angle_rad: f32,
-        /// Current magnitude (Amps) - applied as q-current to lock rotor
+        /// Current magnitude (Amps)
         current: f32,
+        /// Electrical velocity (rad/s) — 0 = lock, nonzero = spin
+        velocity_rad_s: f32,
+        /// Optional PI gains override (kp, ki), applied on mode entry.
+        /// Used by detection when motor params are unknown.
+        pi_gains: Option<(f32, f32)>,
     },
 
-    /// HFI injection mode for inductance measurement
-    HfiInjection {
-        /// DC current to hold rotor in place (Amps)
-        hold_current: f32,
-        /// d-axis voltage to inject (V)
-        vd_inject: f32,
-        /// q-axis voltage to inject (V)
-        vq_inject: f32,
+    /// Direct voltage mode — apply dq voltages without PI control.
+    /// Used for measurement modes (HFI inductance detection) and bringup.
+    DirectVoltage {
+        /// d-axis voltage (V)
+        vd: f32,
+        /// q-axis voltage (V)
+        vq: f32,
+        /// Electrical angle (radians)
+        angle_rad: f32,
+    },
+
+    /// Coast mode — all FETs off (high-impedance), motor spins freely.
+    /// Used during spin-down flux linkage measurement.
+    Coast,
+
+    /// Six-step (trapezoidal) commutation — voltage-mode bringup drive.
+    /// Sign of duty determines direction.
+    SixStep {
+        /// Duty cycle (-1.0 to 1.0)
+        duty: f32,
     },
 }
 ```
+
+All energizing modes that can read currents trip the measured-overcurrent
+protection — including `DirectVoltage` (no PI loop reins the current in, so
+the measured check is its only software protection) and `SixStep` (checked on
+the αβ magnitude, since there is no dq frame).
 
 ### Control Loops (Planned)
 
@@ -559,21 +769,10 @@ pub enum OuterLoopType {
     Pi(PiLoop),
     PiWithFeedforward(PiWithFeedforward),
 }
-
-/// All control loops (PLANNED)
-pub struct ControlLoops {
-    /// Current controller (always present)
-    pub current: FocController,
-
-    /// Velocity outer loop (optional)
-    pub velocity: OuterLoopType,
-
-    /// Position outer loop (optional)
-    pub position: OuterLoopType,
-}
 ```
 
-When implemented, FocDriver will contain `ControlLoops` and velocity/position modes will cascade through the outer loops to generate current targets.
+When implemented, velocity/position modes will cascade through the outer
+loops to generate current targets.
 
 ---
 
@@ -586,14 +785,21 @@ The detection module provides async functions for measuring motor parameters. Th
 ```rust
 /// Hardware abstraction for motor detection routines.
 pub trait DetectionHardware {
-    /// Send a control mode command to the FOC loop.
+    /// Send a control mode command to the FOC driver.
     fn send_command(&self, mode: ControlMode);
 
     /// Wait for next FOC telemetry (PWM-synchronized).
-    async fn wait_telemetry(&mut self) -> FocTelemetry;
+    fn wait_telemetry(&mut self) -> impl Future<Output = FocOutput>;
 
     /// Read raw phase currents (ia, ib, ic) in Amps.
     fn read_phase_currents(&self) -> (f32, f32, f32);
+
+    /// Read coast-down telemetry (v_alpha, v_beta, omega_e) during
+    /// spin-down flux measurement. Default returns zeros (triggers
+    /// fallback to driven measurement).
+    fn read_coast_telemetry(&self) -> (f32, f32, f32) {
+        (0.0, 0.0, 0.0)
+    }
 }
 ```
 
@@ -605,51 +811,46 @@ Platform-agnostic async timer for detection delays:
 /// Platform-agnostic timer trait for async delays.
 pub trait Timer {
     /// Delay for the specified number of milliseconds.
-    async fn after_millis(ms: u64);
+    fn after_millis(ms: u64) -> impl Future<Output = ()>;
 
     /// Delay for the specified number of microseconds.
-    async fn after_micros(us: u64);
+    fn after_micros(us: u64) -> impl Future<Output = ()>;
 }
 ```
 
 ### Detection Functions
 
 ```rust
-/// Measure motor phase resistance
-pub async fn measure_resistance<H, T>(hw: &mut H, params: &ResistanceParams)
-    -> Result<f32, DetectionError>
-where
-    H: DetectionHardware,
-    T: Timer;
+/// Measure motor phase resistance (2-point differential, MESC-style)
+pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
+    hw: &mut H, params: &ResistanceParams,
+) -> Result<f32, DetectionError>;
 
 /// Measure motor inductance using rotating HFI
-pub async fn measure_inductance<H, T>(hw: &mut H, params: &InductanceParams, pwm_freq_hz: f32)
-    -> Result<(f32, f32), DetectionError>  // (Ld, Lq)
-where
-    H: DetectionHardware,
-    T: Timer;
+pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
+    hw: &mut H, params: &InductanceParams, pwm_freq_hz: f32,
+) -> Result<(f32, f32), DetectionError>;  // (Ld, Lq)
+
+/// Measure motor inductance using voltage pulses (alternative method)
+pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>(
+    hw: &mut H, params: &VoltagePulseParams, pwm_freq_hz: f32,
+) -> Result<(f32, f32), DetectionError>;
 
 /// Measure motor flux linkage via open-loop spinning
-pub async fn measure_flux_linkage<H, T>(hw: &mut H, params: &FluxLinkageParams)
-    -> Result<f32, DetectionError>
-where
-    H: DetectionHardware,
-    T: Timer;
+/// (plus measure_flux_linkage_magnitude / measure_flux_linkage_spindown variants)
+pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
+    hw: &mut H, params: &FluxLinkageParams,
+) -> Result<f32, DetectionError>;
 
 /// Run full motor parameter detection sequence
-pub async fn run_full_detection<H, T>(hw: &mut H, params: DetectionParams)
-    -> Result<DetectionResult, DetectionError>
-where
-    H: DetectionHardware,
-    T: Timer;
+pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
+    hw: &mut H, params: DetectionParams,
+) -> Result<DetectionResult, DetectionError>;
 
 /// Calibrate Hall sensors
-pub async fn calibrate_hall<H, T, R>(hw: &mut H, reader: &R, params: HallCalibrationParams)
-    -> Result<HallCalibrationResult, DetectionError>
-where
-    H: DetectionHardware,
-    T: Timer,
-    R: HallReader;
+pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
+    hw: &mut H, reader: &R, params: HallCalibrationParams,
+) -> Result<HallCalibrationResult, DetectionError>;
 ```
 
 ---
@@ -658,57 +859,85 @@ where
 
 ### Main Control Step
 
+`step()` takes only `now_ticks` — the loop period `dt` is stored in the
+driver (set at construction from the PWM config).
+
 ```rust
-impl<P: PhasePwm, C: CurrentSensor, Phase: PhaseProvider> FocDriver<P, C, Phase> {
-    pub fn step(&mut self, dt: f32, now_ticks: u64) -> Result<FocTelemetry, &'static str> {
+impl<P: PhasePwm, C: CurrentSensor, Phase: PhaseProvider, S: SinCos> FocDriver<P, C, Phase, S> {
+    pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, &'static str> {
+        let dt = self.dt;
         match self.mode {
             ControlMode::Stopped => {
                 self.pwm.disable();
                 self.phase.update(&PhaseInput { dt, ..Default::default() }, now_ticks);
-                Ok(FocTelemetry::default())
+                Ok(FocOutput::default())
             }
             ControlMode::CurrentControl { iq_target, id_target } => {
                 self.step_current_control(iq_target, id_target, dt, now_ticks)
             }
-            ControlMode::OpenLoop { angle_rad, current } => {
-                self.step_open_loop(angle_rad, current, dt, now_ticks)
+            ControlMode::OpenLoop { angle_rad, current, velocity_rad_s, .. } => {
+                self.step_open_loop(angle_rad, current, velocity_rad_s, dt, now_ticks)
             }
-            ControlMode::HfiInjection { hold_current, vd_inject, vq_inject } => {
-                self.step_hfi_injection(hold_current, vd_inject, vq_inject, dt, now_ticks)
+            ControlMode::DirectVoltage { vd, vq, angle_rad } => {
+                self.step_direct_voltage(vd, vq, angle_rad, dt, now_ticks)
             }
-            // Velocity/Position control not yet implemented
-            _ => Err("Control mode not implemented")
+            ControlMode::Coast => { /* all phases Float, reset PI, update phase */ }
+            ControlMode::SixStep { duty } => self.step_six_step(duty, dt, now_ticks),
+            ControlMode::VelocityControl { .. } => Err("Velocity control not implemented"),
+            ControlMode::PositionControl { .. } => Err("Position control not implemented"),
         }
     }
 
     fn step_current_control(&mut self, iq_target: f32, id_target: f32, dt: f32, now_ticks: u64)
-        -> Result<FocTelemetry, &'static str>
+        -> Result<FocOutput, &'static str>
     {
-        // 1. Get phase estimate (from previous update)
+        // 0. Sensor must be calibrated
+        if !self.current_sensor.is_calibrated() {
+            return Err("Current sensor not calibrated");
+        }
+
+        // 1. Layer 1: clamp current targets (circular, d-axis priority)
+        let (id_target, iq_target) = self.current_limits.clamp_targets(id_target, iq_target);
+
+        // 2. Get phase estimate (from previous update)
         let phase_out = self.phase.get();
-        let angle = phase_out.angle;
+        let angle_rad = phase_out.angle;
 
-        // 2. Read phase currents
+        // 3. HFI carrier for this cycle (zero for non-HFI sources). Must be
+        //    read between get() and update(): the estimator demodulates the
+        //    currents fed to update() against this exact carrier sample.
+        let (vd_inject, vq_inject) = self.phase.injection();
+
+        // 4. Read currents and run FOC controller (PI outputs + injection)
         let currents = self.current_sensor.read_currents();
-        let (i_alpha, i_beta) = transforms::clarke(currents.0, currents.1);
-
-        // 3. Run FOC controller
         let max_duty = self.pwm.max_duty();
-        let telem = self.controller.step(currents, angle, id_target, iq_target, max_duty, dt);
+        let out = self.controller.step_with_injection(
+            currents, angle_rad, id_target, iq_target, vd_inject, vq_inject, max_duty, dt,
+        );
 
-        // 4. Set PWM duties
-        self.pwm.set_duties(telem.duties);
+        // 5. Layer 2: measured overcurrent → disable PWM, latch Stopped
+        if self.current_limits.is_overcurrent(out.id, out.iq) {
+            self.pwm.disable();
+            self.controller.reset();
+            self.mode = ControlMode::Stopped;
+            return Err("Overcurrent: measured current exceeds limit");
+        }
 
-        // 5. Update phase provider for next iteration
+        // 6. Set PWM duties; feed duties to the current sensor for
+        //    next-cycle reconstruction
+        self.pwm.set_duties(out.duties);
+        self.current_sensor.update_duties(out.duties);
+
+        // 7. Update phase provider for next iteration (feeds both estimators)
         self.phase.update(&PhaseInput {
-            v_alpha: telem.v_alpha,
-            v_beta: telem.v_beta,
-            i_alpha,
-            i_beta,
+            v_alpha: out.v_alpha,
+            v_beta: out.v_beta,
+            i_alpha: out.i_alpha,
+            i_beta: out.i_beta,
             dt,
         }, now_ticks);
 
-        Ok(telem)
+        Ok(out)
     }
 }
 ```
@@ -717,20 +946,42 @@ impl<P: PhasePwm, C: CurrentSensor, Phase: PhaseProvider> FocDriver<P, C, Phase>
 
 ```rust
 impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
-    fn compute_phase(&self, hall: Option<AngleSample>, enc: Option<AngleSample>) -> PhaseOutput {
+    fn compute_phase_with_fallback(
+        &mut self,
+        hall_sample: Option<AngleSample>,
+        encoder_sample: Option<AngleSample>,
+    ) -> PhaseOutput {
         match self.source {
-            PhaseSource::Hall => sample_to_output(hall, &self.output),
-            PhaseSource::Encoder => sample_to_output(enc, &self.output),
-            PhaseSource::Observer => {
-                if let (Some(angle), Some(vel)) = (self.observer.phase(), self.observer.velocity()) {
-                    PhaseOutput { angle, velocity: vel }
+            PhaseSource::Hall => {
+                // VESC-style: Hall first, observer fallback if Hall failed
+                if let Some(sample) = hall_sample {
+                    PhaseOutput { angle: sample.angle, velocity: sample.omega }
                 } else {
-                    self.output
+                    self.try_observer_fallback().unwrap_or(self.output)
                 }
             }
+            PhaseSource::Encoder => sample_to_output(encoder_sample, &self.output),
+            PhaseSource::Observer => {
+                // Pure sensorless: only commutate from a converged observer;
+                // hold the last output (and raise ObserverNotReady) otherwise.
+                /* ... gated on self.observer.is_ready() ... */
+            }
+            PhaseSource::Hfi => {
+                // HFI estimate straight from the dedicated slot. No readiness
+                // gate: HFI is valid from standstill by design.
+                self.hfi_output().unwrap_or(self.output)
+            }
             PhaseSource::HallToObserver { blend_low, blend_high } => {
-                let sensor = sample_to_output(hall, &self.output);
+                if hall_sample.is_none() {
+                    return self.try_observer_fallback().unwrap_or(self.output);
+                }
+                let sensor = sample_to_output(hall_sample, &self.output);
                 self.blend_with_observer(sensor, blend_low, blend_high)
+            }
+            PhaseSource::HfiToObserver { min_vel, min_confidence } => {
+                // Velocity blend across [min_vel·(1−CROSSOVER_HYSTERESIS), min_vel]
+                // with crossover_latched hysteresis + HFI reseed on the way down
+                /* ... see "HFI Crossover Semantics" ... */
             }
             PhaseSource::Manual => PhaseOutput { angle: self.manual_angle, velocity: 0.0 },
             PhaseSource::OpenLoop => PhaseOutput {
@@ -742,6 +993,129 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
     }
 }
 ```
+
+`blend_with_observer` additionally guards against the back-EMF observer's
+half-turn ambiguity: while the sensor still has any blend weight, a >90°
+disagreement means the observer locked onto the inverted flux vector and it
+is reseeded from the sensor instead of being blended toward.
+
+---
+
+## Command Path and Communication
+
+The `FocDriver` is owned by the platform's FOC ISR and mutated only there.
+Every async-side request to change it goes through a single ordered channel:
+
+```rust
+/// Command for the ISR-owned FocDriver (oxifoc-core/src/state.rs)
+pub enum DriverCommand {
+    /// Change control mode (start/stop/targets)
+    SetMode(ControlMode),
+    /// Apply current limits (already clamped to the board ceiling)
+    SetCurrentLimits(CurrentLimits),
+    /// Apply current-loop PI gains (post-detection tune, config write)
+    SetPiGains { kp: f32, ki: f32 },
+    /// Switch the angle source (hall / observer / HFI / crossovers)
+    SetPhaseSource(PhaseSource),
+}
+
+/// Servers send DriverCommands here, ISR receives them
+pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, DriverCommand, 8> = Channel::new();
+```
+
+One channel (rather than per-purpose signals) keeps commands sequenced:
+"set limits, then start" arrives exactly that way.
+
+`state::process_commands()` drains the channel inside the ISR and:
+- **Validates** each command with `DriverCommand::is_sane()` — wire input is
+  arbitrary bits, so non-finite (NaN/inf) payloads are dropped at the
+  boundary instead of feeding the PI loop
+- Applies `SetMode` only when not in the Error latch / no critical fault is
+  registered (the Error latch is exited only after the host explicitly
+  cleared the fault registry)
+- Applies `SetPhaseSource` via `PhaseProvider::request_source()` (the
+  manager validates sensor/estimator availability) and, on success,
+  **mirrors the applied source into `MotorControlState.phase_source`** so
+  the host can read it back via telemetry
+- Enforces a link-loss failsafe: while the link is inactive (liveness timed
+  out), the driver is forced to `Stopped` regardless of the last commanded
+  mode
+
+### Shared ISR Helpers
+
+Platform ISRs only read their ADCs and call two shared helpers from core:
+
+```rust
+// One FOC cycle of driver work (oxifoc-core/src/state.rs):
+// commands → fault gating → driver.step() → measured-current fault check
+pub fn run_foc_cycle<P, C, Ph, S, F>(
+    state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
+    fault_registry: &FaultRegistry<F>,
+    driver: &mut FocDriver<P, C, Ph, S>,
+    vbus_v: f32,
+    now_ticks: u64,
+    board: &BoardConfig,
+    overcurrent_fault: F,
+) -> Option<FocOutput>;
+
+// Publish one cycle's telemetry (oxifoc-core/src/runtime/streaming.rs):
+// update global state (waking calibration/detection listeners) and, when
+// fast streaming is enabled, push a decimated sample into the lock-free queue
+pub fn publish_cycle_telemetry(state_mutex, adc, hall, foc, seq);
+```
+
+### Protocol Endpoints
+
+Ergot endpoints (defined in `oxifoc-core/src/icd.rs`) are served by the
+generic servers in `runtime/servers.rs`:
+
+| Endpoint | Path | Request → Response |
+|----------|------|--------------------|
+| `HardwareInfoEndpoint` | `req/hardware_info` | `()` → `HardwareInfo` |
+| `MotorEndpoint` | `cmd/motor` | `ControlMode` → `MotorStatus` |
+| `PhaseSourceEndpoint` | `cmd/phase_source` | `PhaseSource` → `PhaseSourceAck` |
+| `TelemetryConfigEndpoint` | `cmd/telemetry_config` | `TelemetryConfig` → `TelemetryConfigAck` |
+| `SlowTelemetryEndpoint` | `req/telemetry_slow` | `()` → `SlowTelemetry` |
+| `FaultEndpoint` | `cmd/fault` | `FaultRequest` → `FaultResponse` |
+| `DetectEndpoint` | `cmd/detect` | `Keyed<DetectRequest>` → `DetectResponse` |
+| `ConfigEndpoint` | `cmd/config` | `ConfigRequest` → `ConfigResponse` |
+
+Notable wire-type details:
+- `PhaseSource` is itself a wire type; `PhaseSourceAck.enqueued` is an
+  *honest* ack — it only confirms the command was enqueued to the ISR. The
+  ISR-side switch can still reject an invalid source, so the host reads the
+  actually-active source back via `SlowTelemetry::phase_source`.
+- `SlowTelemetry` temperatures are `i16` in 0.1 °C units (signed —
+  sub-zero temperatures are representable): `fet_temp_c_x10`,
+  `motor_temp_c_x10`, `board_temp_c_x10`.
+- Detection is the one non-idempotent action: its request carries a `ReqId`
+  and the device deduplicates on it (effectively-once retries).
+
+### Config Pipeline
+
+Persistent config uses `sequential-storage` (postcard map) behind a generic
+worker, `storage::run_storage_worker()`: it loads all config groups at boot
+(signalling `CONFIG_LOADED`), then serves `FLASH_CHANNEL` forever and signals
+`FLASH_DONE` (success/failure) after every operation.
+
+`config_server` (in `runtime/servers.rs`) handles host requests:
+- **Writes are refused with `ConfigResponse::Busy` while the motor is
+  Running** — internal-flash erase stalls the whole chip (up to seconds for
+  an F4 sector), which would starve the FOC ISR with the motor energized.
+- **Write-through ack**: `Ok` is returned only after `FLASH_DONE` confirms
+  the flash write. The in-memory `RuntimeConfig` mirror is updated only after
+  the persist succeeds, so it always mirrors what is actually stored.
+- **Documented invariant**: `config_server` is the *only* `FLASH_CHANNEL`
+  producer, so each `FLASH_DONE` pairs 1:1 with its operation.
+- **Live-apply** (via `CMD_CHANNEL`, taking effect without reboot):
+  - `CurrentLimits` — clamped through `CurrentLimits::from_config_clamped`:
+    the config can lower limits but never raise them above the board's
+    hardware ceiling; zero/negative values mean "not set" and fall back to
+    board defaults (a config cannot switch protection off)
+  - `PiGains` — applied verbatim
+  - `MotorParams` — retunes the current loop (`calculate_current_gains` from
+    R and L_avg), same as boot does
+- `ResetAll` erases storage and restores board-default current limits.
 
 ---
 
@@ -760,48 +1134,78 @@ let phase = PhaseManager::with_encoder_only(encoder);
 let phase = PhaseManager::with_hall(hall_sensor)
     .with_encoder(encoder);
 
-// Sensorless only
+// Sensorless: arm both estimator slots
 let mut phase = PhaseManager::sensorless();
 phase.set_observer(Observer::BackEmf(BackEmfObserver::new(r, l, lambda)));
+phase.set_hfi_observer(HfiObserver::new(1000.0, 3.0)); // freq (Hz), amplitude (V)
+
+// Or arm both slots from stored motor params (storage feature):
+phase.configure_observers_from_config(&config, vbus);
 ```
 
 ### Constructing FocDriver
 
 ```rust
-let driver = FocDriver::new(controller, pwm, current_sensor, phase);
+// dt comes from the PWM config (1/pwm_freq)
+let driver = FocDriver::new(controller, pwm, current_sensor, phase, PWM_CONFIG.dt_s());
 ```
 
-### Full Example (F405)
+### Full Example (G431)
+
+Condensed from `oxifoc-g431/src/foc.rs`:
 
 ```rust
 // Initialize hardware
-let pwm = MotorPwm::new(tim1, pa8, pa9, pa10, pb13, pb14, pb15);
-let current = F405CurrentSensor::new();
-let hall = F405HallSensor::new();
+let current_sensor = G431CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
+let mut phase_manager = PhaseManager::with_hall(HallAngleProxy::new());
 
-// Create phase manager with Hall + sensorless hybrid
-let mut phase = PhaseManager::with_hall(hall);
-phase.set_observer(Observer::BackEmf(BackEmfObserver::new(
-    0.1,    // R = 100mΩ
-    0.0001, // L = 100µH
-    0.01,   // λ = 10mWb
-)));
-phase.set_source(PhaseSource::HallToObserver {
-    blend_low: 300.0,   // Start blending at 300 rad/s
-    blend_high: 600.0,  // Full sensorless at 600 rad/s
-})?;
+// Arm the sensorless estimators (back-EMF + HFI) from detected motor
+// params; the angle source stays Hall until the host switches it.
+phase_manager.configure_observers_from_config(config, initial_vbus_v);
 
-// Create controller and driver
-let controller = FocController::new(vbus);
-let mut driver = FocDriver::new(controller, pwm, current, phase);
+// Controller from stored config (motor params → PI gains → defaults),
+// hardware CORDIC for sin/cos
+let foc_controller =
+    FocController::<SvpwmModulator, CordicSinCos>::from_runtime_config(config, initial_vbus_v);
 
-// Start motor
-driver.set_mode(ControlMode::CurrentControl { iq_target: 5.0, id_target: 0.0 });
+// Build FOC driver with dt from PWM config
+let mut foc_driver = FocDriver::new(
+    foc_controller,
+    motor_pwm,
+    current_sensor,
+    phase_manager,
+    PWM_CONFIG.dt_s(),
+);
 
-// In ISR
-loop {
-    let telem = driver.step(DT, now_ticks)?;
-    // ... publish telemetry
+// Current limits: stored config (clamped to the board ceiling) or board defaults
+foc_driver.set_current_limits(CurrentLimits::from_stored(
+    config.current_limits.as_ref(),
+    BOARD.max_phase_current_a,
+));
+
+foc_driver.current_sensor_mut().calibrate().await;
+FOC_DRIVER.lock(|cell| cell.replace(Some(foc_driver)));
+
+// In the ADC ISR: read ADCs, then call the shared cycle helpers from core
+#[interrupt]
+fn ADC1_2() {
+    // ... read injected ADC samples (ia/ib/ic, vbus, temp), check
+    //     voltage/temperature faults, build AdcSnapshot/HallSnapshot ...
+
+    let foc_telem = FOC_DRIVER.lock(|cell| {
+        cell.borrow_mut().as_mut().and_then(|driver| {
+            oxifoc_core::state::run_foc_cycle(
+                &STATE, &FAULT_REGISTRY, driver,
+                vbus_mv as f32 / 1000.0, now_ticks, &BOARD,
+                G431Fault::OverCurrent,
+            )
+        })
+    });
+
+    oxifoc_core::runtime::streaming::publish_cycle_telemetry(
+        &STATE, adc_snapshot, hall_snapshot,
+        foc_telem.unwrap_or_default(), seq,
+    );
 }
 ```
 
@@ -816,9 +1220,16 @@ PhaseManager provides additional methods when specific sensor types are availabl
 impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
     pub fn set_source(&mut self, source: PhaseSource) -> Result<(), PhaseSourceError>;
     pub fn set_observer(&mut self, observer: Observer);
+    pub fn set_hfi_observer(&mut self, hfi: HfiObserver);
+    pub fn hfi_observer(&self) -> Option<&HfiObserver>;
     pub fn set_manual_angle(&mut self, angle: f32);
     pub fn has_hall(&self) -> bool;
     pub fn has_encoder(&self) -> bool;
+}
+
+// Storage-backed configuration (feature = "storage")
+impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
+    pub fn configure_observers_from_config(&mut self, config: &RuntimeConfig, vbus: f32);
 }
 
 // Hall-specific methods (only when H: HallSensorTrait)
@@ -840,65 +1251,79 @@ impl<H: HallSensorTrait, E: AngleSensor> PhaseManager<H, E> {
 ```
 oxifoc-core/src/
 ├── lib.rs
-├── timer.rs                 # Timer trait for async delays
+├── timer.rs                 # Timer trait for async delays (+ EmbassyTimer)
 ├── fmt.rs                   # Logging macros (defmt/log/none)
-├── foc/
-│   ├── mod.rs
-│   ├── config.rs            # Board configuration
+├── types.rs                 # Wire types: ControlMode, telemetry, config protocol
+├── icd.rs                   # Ergot endpoints/topics (MotorEndpoint, PhaseSourceEndpoint, ...)
+├── state.rs                 # MotorControlState, CMD_CHANNEL, DriverCommand,
+│                            #   process_commands(), run_foc_cycle()
+├── storage.rs               # Config groups, FLASH_CHANNEL, run_storage_worker()
+├── virtual_motor.rs         # PMSM simulation model (closed-loop tests, virtual platform)
+├── delivery/                # Delivery-semantics ladder (idempotent/deduplicated)
+├── runtime/
+│   ├── servers.rs           # Protocol servers (motor, config, fault, phase_source, ...)
+│   ├── streaming.rs         # Fast telemetry queue, publish_cycle_telemetry()
+│   ├── detect.rs            # Detection server (deduplicated action)
+│   └── io.rs
+├── foc/                     # (inline module in lib.rs)
+│   ├── config.rs            # BoardConfig
 │   ├── constants.rs         # Math constants (√3, 1/√3, etc.)
-│   ├── controller.rs        # FocController (current loop)
+│   ├── controller.rs        # FocController (step / step_with_injection / apply_dq)
 │   ├── current_sense.rs     # ShuntCurrentSense helper
-│   ├── fault.rs             # Fault registry
+│   ├── current_reconstruction.rs
+│   ├── fault.rs             # Fault registry + shared fault checkers
 │   ├── hall_calibration.rs  # HallCalibrator, HallCalibrationResult
 │   ├── hall_sensor.rs       # HallSensor struct
+│   ├── hall_embassy.rs      # Embassy hall estimator + HallAngleProxy
 │   ├── pi_controller.rs     # PI controller with anti-windup
-│   ├── pwm.rs               # PhasePwm trait
+│   ├── pwm.rs               # PhasePwm trait, SvpwmModulator
 │   ├── sensors.rs           # AngleSensor, CurrentSensor, HallSensorTrait, etc.
 │   ├── svpwm.rs             # Space Vector PWM modulator
 │   ├── transforms.rs        # Clarke, Park transforms
+│   ├── trig.rs              # SinCos trait (LibmSinCos; platforms add CORDIC)
 │   ├── phase/
-│   │   ├── mod.rs
-│   │   ├── provider.rs      # PhaseProvider trait
-│   │   ├── manager.rs       # PhaseManager struct
+│   │   ├── provider.rs      # PhaseProvider trait (get/update/injection/request_source)
+│   │   ├── manager.rs       # PhaseManager (dual estimator slots, crossovers)
 │   │   ├── source.rs        # PhaseSource enum
 │   │   └── observer.rs      # Observer enum, BackEmfObserver, HfiObserver
 │   └── detection/
-│       ├── mod.rs
 │       ├── types.rs         # MotorParams, DetectionError, etc.
-│       ├── sweep.rs         # Async detection (DetectionHardware, Timer traits)
+│       ├── sweep.rs         # DetectionHardware trait, async detection sequences
 │       ├── resistance.rs    # Resistance measurement algorithms
 │       ├── inductance.rs    # Inductance measurement (rotating HFI)
+│       ├── voltage_pulse.rs # Pulse-based inductance measurement
 │       ├── flux_linkage.rs  # Flux linkage measurement
 │       ├── dc_offset.rs     # DC offset calibration
-│       └── pi_tuning.rs     # Auto PI tuning
+│       ├── pi_tuning.rs     # Auto PI tuning
+│       ├── embassy_hw.rs    # Shared embassy DetectionHardware impl
+│       └── virtual_harness.rs
 └── motor/
-    ├── mod.rs
-    └── foc_driver.rs        # FocDriver struct, ControlMode
+    ├── foc_driver.rs        # FocDriver, CurrentLimits (ControlMode re-export)
+    └── six_step.rs          # Six-step commutation tables
+
+oxifoc-g431/src/             # STM32G431 platform (B-G431B-ESC1), flat layout
+├── main.rs
+├── config.rs                # BoardConfig, PWM config, NTC
+├── foc.rs                   # ADC ISR + FOC driver init
+├── cordic.rs                # CordicSinCos (hardware trig)
+├── calibration.rs           # DetectionHardware glue
+├── hardware.rs / motor.rs / sensors.rs
+├── protocol.rs / transport.rs
+├── fault.rs / storage.rs
 
 oxifoc-f405/src/             # STM32F405 platform
 ├── main.rs
-├── config.rs                # BoardConfig for F405
-├── calibration.rs           # EmbassyTimer, F405DetectionHardware
-├── hardware/                # Hardware initialization
-├── sensors/                 # F405HallSensor, current sensing
-├── control/
-│   └── foc.rs               # ISR, FOC task
-├── motor/
-├── protocol/
-└── transport/
-
-oxifoc-g431/src/             # STM32G431 platform
-├── main.rs
-├── config.rs                # BoardConfig for G431
-├── calibration.rs           # EmbassyTimer, G431DetectionHardware
-├── hardware/
-├── sensors/
-├── control/
-│   └── foc.rs
-├── motor/
-├── protocol/
-└── transport/
+├── config.rs
+├── calibration.rs
+├── control/foc.rs           # ISR, FOC task
+├── hardware/ sensors/ protocol/ transport/
+├── fault.rs / motor.rs / storage.rs
 ```
+
+Other crates in the repo: `oxifoc-g474` (STM32G474 platform),
+`oxifoc-virtual` (host-side virtual motor controller), `oxifoc-host-lib` /
+`oxifoc-host-cli` / `oxifoc-host-slint` (host tooling), `oxifoc-bridge` /
+`oxifoc-remote` (ESP32-C6 wireless link).
 
 ---
 
@@ -907,35 +1332,45 @@ oxifoc-g431/src/             # STM32G431 platform
 | Component | Responsibility | Location |
 |-----------|---------------|----------|
 | **FocDriver** | Control loop orchestration | `motor/foc_driver.rs` |
+| **CurrentLimits** | Target clamp + overcurrent threshold | `motor/foc_driver.rs` |
 | **FocController** | Current loop math | `foc/controller.rs` |
 | **PhaseProvider** | Phase angle abstraction | `foc/phase/provider.rs` |
-| **PhaseManager** | Sensor/observer management | `foc/phase/manager.rs` |
-| **PhaseSource** | Source selection enum | `foc/phase/source.rs` |
-| **Observer** | Sensorless estimation | `foc/phase/observer.rs` |
+| **PhaseManager** | Sensor/estimator management | `foc/phase/manager.rs` |
+| **PhaseSource** | Source selection enum (wire type) | `foc/phase/source.rs` |
+| **Observer / BackEmfObserver** | Back-EMF (fast) estimator slot | `foc/phase/observer.rs` |
+| **HfiObserver** | HFI (low-speed) estimator slot | `foc/phase/observer.rs` |
 | **AngleSensor** | Base sensor trait | `foc/sensors.rs` |
 | **HallSensorTrait** | Hall-specific interface | `foc/sensors.rs` |
 | **EncoderSensorTrait** | Encoder-specific interface | `foc/sensors.rs` |
 | **CurrentSensor** | Current measurement trait | `foc/sensors.rs` |
+| **DriverCommand / CMD_CHANNEL** | Ordered command path into the ISR | `state.rs` |
+| **run_foc_cycle / publish_cycle_telemetry** | Shared per-cycle ISR work | `state.rs` / `runtime/streaming.rs` |
+| **config_server / run_storage_worker** | Persistent config pipeline | `runtime/servers.rs` / `storage.rs` |
 | **DetectionHardware** | Detection abstraction | `foc/detection/sweep.rs` |
 | **Timer** | Async delay abstraction | `timer.rs` |
 
 ### Key Design Decisions
 
-1. **PhaseManager owns sensors and observer** - Single place for all angle source management
-2. **FocDriver delegates phase to PhaseProvider** - Clean separation, only 3 type parameters
-3. **Traits extend AngleSensor** - Common base for PhaseManager, specific traits for calibration
-4. **Enums for runtime flexibility** - PhaseSource, Observer are runtime-switchable
-5. **Generics for hardware** - Zero-cost abstraction for platform-specific implementations
-6. **Conditional methods** - Hall/Encoder-specific APIs only appear when relevant
-7. **Async detection with traits** - DetectionHardware + Timer allow platform-agnostic detection code
+1. **PhaseManager owns sensors and both estimator slots** - Single place for all angle source management
+2. **FocDriver delegates phase to PhaseProvider** - Clean separation; HFI carrier flows through the same trait (`injection()`)
+3. **Dual estimator slots** - Back-EMF observer and HFI run concurrently so crossovers can hand over with hysteresis and reseeding
+4. **Traits extend AngleSensor** - Common base for PhaseManager, specific traits for calibration
+5. **Enums for runtime flexibility** - PhaseSource, Observer, ControlMode are runtime-switchable
+6. **Single ordered command channel** - All async→ISR mutation goes through CMD_CHANNEL with boundary validation (`is_sane()`)
+7. **Generics for hardware** - Zero-cost abstraction for platform-specific implementations (incl. hardware trig via `SinCos`)
+8. **Conditional methods** - Hall/Encoder-specific APIs only appear when relevant
+9. **Async detection with traits** - DetectionHardware + Timer allow platform-agnostic detection code
 
 ### Implementation Status
 
 | Feature | Status |
 |---------|--------|
 | Current control (FOC) | ✅ Implemented |
-| Open-loop control | ✅ Implemented |
-| HFI injection mode | ✅ Implemented |
+| Open-loop control (lock + spin) | ✅ Implemented |
+| Direct voltage mode | ✅ Implemented |
+| Coast mode | ✅ Implemented |
+| Six-step (trapezoidal) mode | ✅ Implemented |
+| Measured-overcurrent protection (all energizing modes) | ✅ Implemented |
 | Hall sensor support | ✅ Implemented (VESC-compatible) |
 | Hall 8-entry raw calibration | ✅ Implemented |
 | Hall soft drift correction | ✅ Implemented |
@@ -945,13 +1380,16 @@ oxifoc-g431/src/             # STM32G431 platform
 | Hall → Observer fallback | ✅ Implemented |
 | Hall calibration | ✅ Implemented |
 | Resistance detection | ✅ Implemented |
-| Inductance detection (HFI) | ✅ Implemented |
+| Inductance detection (HFI + pulse) | ✅ Implemented |
 | Flux linkage detection | ✅ Implemented |
-| Back-EMF observer | 🔄 Implemented (untested) |
+| Back-EMF observer (MXLEMMING) | ✅ Implemented (closed-loop sim validated) |
+| HFI angle tracking (pulsating injection + polarity probe) | ✅ Implemented (closed-loop sim validated) |
+| HFI ↔ sensor/observer crossovers | ✅ Implemented |
+| Persistent config storage | ✅ Implemented |
+| Runtime phase source switching (host endpoint) | ✅ Implemented |
 | Velocity control | 📋 Planned |
 | Position control | 📋 Planned |
 | Outer loop controllers | 📋 Planned |
 | Encoder support | 📋 Trait defined, hardware impl planned |
-| HFI angle tracking | 📋 Planned |
 | Field weakening | 📋 Planned |
 | MTPA (Max Torque Per Amp) | 📋 Planned |
