@@ -49,6 +49,7 @@ fn motor_catalog() -> Vec<MotorDef> {
                 j: 5e-6,
                 friction_b: 1e-5,
                 hall_offset: 0.0,
+                ..MotorParams::default()
             },
             vbus: 12.0,
             motor_size: MotorSize::Mini,
@@ -65,6 +66,7 @@ fn motor_catalog() -> Vec<MotorDef> {
                 j: 3e-4,
                 friction_b: 5e-5,
                 hall_offset: 0.0,
+                ..MotorParams::default()
             },
             vbus: 24.0,
             motor_size: MotorSize::Small,
@@ -81,6 +83,7 @@ fn motor_catalog() -> Vec<MotorDef> {
                 j: 1e-3,
                 friction_b: 1e-3,
                 hall_offset: 0.0,
+                ..MotorParams::default()
             },
             vbus: 48.0,
             motor_size: MotorSize::Medium,
@@ -97,6 +100,7 @@ fn motor_catalog() -> Vec<MotorDef> {
                 j: 5e-3,
                 friction_b: 5e-3,
                 hall_offset: 0.0,
+                ..MotorParams::default()
             },
             vbus: 72.0,
             motor_size: MotorSize::Large,
@@ -114,6 +118,7 @@ fn motor_catalog() -> Vec<MotorDef> {
                 j: 5e-4,
                 friction_b: 1e-4,
                 hall_offset: 0.0,
+                ..MotorParams::default()
             },
             vbus: 48.0,
             motor_size: MotorSize::Medium,
@@ -130,6 +135,7 @@ fn motor_catalog() -> Vec<MotorDef> {
                 j: 2e-3,
                 friction_b: 1e-3,
                 hall_offset: 0.0,
+                ..MotorParams::default()
             },
             vbus: 96.0,
             motor_size: MotorSize::Large,
@@ -147,6 +153,7 @@ fn motor_catalog() -> Vec<MotorDef> {
                 j: 5e-5,
                 friction_b: 0.004,
                 hall_offset: 0.0,
+                ..MotorParams::default()
             },
             vbus: 24.0,
             motor_size: MotorSize::Small,
@@ -163,6 +170,7 @@ fn motor_catalog() -> Vec<MotorDef> {
                 j: 2e-5,
                 friction_b: 0.005,
                 hall_offset: 0.0,
+                ..MotorParams::default()
             },
             vbus: 24.0,
             motor_size: MotorSize::Small,
@@ -179,6 +187,7 @@ fn motor_catalog() -> Vec<MotorDef> {
                 j: 2e-4,
                 friction_b: 1e-3,
                 hall_offset: 0.0,
+                ..MotorParams::default()
             },
             vbus: 48.0,
             motor_size: MotorSize::Medium,

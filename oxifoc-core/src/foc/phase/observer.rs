@@ -381,6 +381,25 @@ pub struct HfiObserver {
 
     // State
     confidence: f32,
+
+    // Polarity probe state (π-ambiguity resolution, see update())
+    polarity: HfiPolarity,
+    probe_step: u32, // cycle index into the probe schedule
+    probe_acc: f32,  // Σ sign·|id| over the probe pulses
+    probe_ref: f32,  // Σ |id| (significance reference)
+}
+
+/// Polarity resolution state. The saliency signal is 2θ-periodic, so the
+/// PLL lock carries a π ambiguity that only magnetic saturation (or a
+/// trusted sensor seed) can resolve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HfiPolarity {
+    /// PLL not locked yet; the probe starts when confidence crosses ready.
+    Pending,
+    /// Saturation probe running: carrier suspended, ±d pulses injected.
+    Probing,
+    /// Resolved: probed, seeded from a sensor, or ambiguous-kept.
+    Done,
 }
 
 /// Fundamental-tracker low-pass time constant (s). Its cutoff must sit well
@@ -396,6 +415,28 @@ const HFI_QUALITY_TAU_S: f32 = 0.01;
 /// Default d-channel carrier-amplitude floor (A): below this no injection
 /// response is measurably flowing and the estimate is meaningless.
 pub const HFI_MIN_HF_CURRENT_A: f32 = 0.05;
+
+/// Confidence threshold for [`HfiObserver::is_ready`] and for starting
+/// the polarity probe.
+pub const HFI_READY_CONFIDENCE: f32 = 0.5;
+
+/// Polarity probe: drive cycles per pulse. At 20 kHz this is 0.4 ms — with
+/// the carrier amplitude on Ld in the 100 µH range the current reaches
+/// ~V·t/Ld ≈ 10 A, enough to move the iron along its saturation curve.
+const HFI_POLARITY_PULSE_CYCLES: u32 = 8;
+
+/// Polarity probe: zero-voltage cycles after each pulse so the current
+/// (τ = L/R, typically ~1 ms) decays before the opposite-sign pulse.
+const HFI_POLARITY_GAP_CYCLES: u32 = 24;
+
+/// Polarity probe pulse signs. The palindromic (+,−,−,+) order cancels the
+/// first-order bias from residual current decaying across the schedule.
+const HFI_POLARITY_PATTERN: [f32; 4] = [1.0, -1.0, -1.0, 1.0];
+
+/// Significance floor for the flip decision: |Σ sign·|id|| must exceed this
+/// fraction of Σ|id|. Below it there is no measurable saturation asymmetry
+/// (SPM motor, probe too weak) and the current lock is kept as-is.
+const HFI_POLARITY_MIN_RATIO: f32 = 0.05;
 
 impl HfiObserver {
     /// Create a new HFI observer
@@ -419,6 +460,10 @@ impl HfiObserver {
             pll_ki: 2000.0,
             min_hf_current: HFI_MIN_HF_CURRENT_A,
             confidence: 0.0,
+            polarity: HfiPolarity::Pending,
+            probe_step: 0,
+            probe_acc: 0.0,
+            probe_ref: 0.0,
         }
     }
 
@@ -468,6 +513,16 @@ impl HfiObserver {
         let hf_id = id - self.id_lp;
         let hf_iq = iq - self.iq_lp;
 
+        // While the polarity probe runs, the carrier is suspended and the
+        // currents are pulse responses — feeding them to the demodulator or
+        // PLL would corrupt the lock. Only the fundamental trackers above
+        // keep running (so post-probe re-entry starts from the residual
+        // current level); everything else is frozen until the probe ends.
+        if self.polarity == HfiPolarity::Probing {
+            self.update_polarity_probe(id);
+            return;
+        }
+
         // Synchronous demodulation with the carrier sample that generated
         // this response (see the call contract above).
         let dem = libm::sinf(self.carrier_phase);
@@ -500,6 +555,44 @@ impl HfiObserver {
 
         // Advance the carrier for the next get_injection().
         self.carrier_phase = wrap_angle(self.carrier_phase + TAU * self.frequency * dt);
+
+        // First PLL lock → resolve the π ambiguity before reporting ready.
+        if self.polarity == HfiPolarity::Pending && self.confidence >= HFI_READY_CONFIDENCE {
+            self.polarity = HfiPolarity::Probing;
+            self.probe_step = 0;
+            self.probe_acc = 0.0;
+            self.probe_ref = 0.0;
+        }
+    }
+
+    /// One cycle of the saturation probe (see [`get_injection`](Self::get_injection)
+    /// for the matching voltage schedule).
+    ///
+    /// A d-axis pulse aligned with the magnet flux saturates the iron →
+    /// lower incremental Ld → larger current for the same volt-seconds.
+    /// If the pulses along −d̂ consistently draw more current than +d̂,
+    /// the estimated d axis points at the magnet's south pole: flip π.
+    fn update_polarity_probe(&mut self, id: f32) {
+        const SLOT: u32 = HFI_POLARITY_PULSE_CYCLES + HFI_POLARITY_GAP_CYCLES;
+        let slot = (self.probe_step / SLOT) as usize;
+        let pos = self.probe_step % SLOT;
+
+        // Sample at the last drive cycle of each pulse — peak response.
+        if slot < HFI_POLARITY_PATTERN.len() && pos == HFI_POLARITY_PULSE_CYCLES - 1 {
+            self.probe_acc += HFI_POLARITY_PATTERN[slot] * id.abs();
+            self.probe_ref += id.abs();
+        }
+
+        self.probe_step += 1;
+        if self.probe_step >= HFI_POLARITY_PATTERN.len() as u32 * SLOT {
+            if self.probe_acc < -HFI_POLARITY_MIN_RATIO * self.probe_ref {
+                self.phase_est = wrap_angle(self.phase_est + core::f32::consts::PI);
+            }
+            // Ambiguous result (|acc| under the floor) keeps the current
+            // lock: with no measurable saturation we cannot do better, and
+            // retrying would just stall readiness forever.
+            self.polarity = HfiPolarity::Done;
+        }
     }
 
     /// Get estimated electrical phase (radians)
@@ -518,9 +611,11 @@ impl HfiObserver {
     }
 
     /// Whether the estimate is trustworthy: carrier current measurably
-    /// flowing and the demodulated error settled near zero.
+    /// flowing, the demodulated error settled near zero, AND the π
+    /// ambiguity resolved — commutating on a possibly-flipped angle would
+    /// produce torque in the wrong direction.
     pub fn is_ready(&self) -> bool {
-        self.confidence >= 0.5
+        self.confidence >= HFI_READY_CONFIDENCE && self.polarity == HfiPolarity::Done
     }
 
     /// Reset observer state
@@ -534,6 +629,10 @@ impl HfiObserver {
         self.phase_est = 0.0;
         self.velocity_est = 0.0;
         self.confidence = 0.0;
+        self.polarity = HfiPolarity::Pending;
+        self.probe_step = 0;
+        self.probe_acc = 0.0;
+        self.probe_ref = 0.0;
     }
 
     /// Get the injection voltage for the current FOC cycle.
@@ -542,7 +641,19 @@ impl HfiObserver {
     /// frame (at [`phase`](Self::phase)) — e.g. via
     /// `FocController::step_with_injection` or `apply_dq`. Must be called
     /// before [`update`](Self::update) each cycle; see the contract there.
+    ///
+    /// During the polarity probe this returns the ±d saturation pulses
+    /// instead of the carrier.
     pub fn get_injection(&self) -> (f32, f32) {
+        if self.polarity == HfiPolarity::Probing {
+            const SLOT: u32 = HFI_POLARITY_PULSE_CYCLES + HFI_POLARITY_GAP_CYCLES;
+            let slot = (self.probe_step / SLOT) as usize;
+            let pos = self.probe_step % SLOT;
+            if slot < HFI_POLARITY_PATTERN.len() && pos < HFI_POLARITY_PULSE_CYCLES {
+                return (HFI_POLARITY_PATTERN[slot] * self.amplitude, 0.0);
+            }
+            return (0.0, 0.0);
+        }
         let vd = self.amplitude * libm::cosf(self.carrier_phase);
         (vd, 0.0)
     }
@@ -559,9 +670,19 @@ impl HfiObserver {
         self.pll_ki = ki;
     }
 
+    /// Whether the π ambiguity has been resolved (saturation probe done
+    /// or estimate seeded from a trusted sensor).
+    pub fn polarity_resolved(&self) -> bool {
+        self.polarity == HfiPolarity::Done
+    }
+
     /// Set initial phase estimate (for handoff from other source)
+    ///
+    /// A trusted external angle carries no π ambiguity, so this also marks
+    /// polarity as resolved — no saturation probe needed.
     pub fn set_phase(&mut self, phase: f32) {
         self.phase_est = wrap_angle(phase);
+        self.polarity = HfiPolarity::Done;
     }
 
     /// Set initial velocity estimate (for handoff from other source)
@@ -670,11 +791,13 @@ mod tests {
 
     /// Closed-loop HFI harness: pulsating injection on the estimated d axis
     /// through the real FocController voltage path into a salient
-    /// VirtualMotor. Returns (observer, final motor output).
+    /// VirtualMotor. `sat_k` enables d-axis saturation (needed for the
+    /// polarity tests). Returns (observer, final motor output).
     #[cfg(feature = "virtual-motor")]
     fn run_hfi_sim(
         rotor_angle: f32,
         load_torque: f32,
+        sat_k: f32,
         steps: usize,
     ) -> (HfiObserver, crate::virtual_motor::VirtualMotorOutput) {
         use crate::foc::controller::FocController;
@@ -694,6 +817,7 @@ mod tests {
             j: 1e-2,
             friction_b: 5e-2,
             hall_offset: 0.0,
+            sat_k,
         };
         let mut motor = VirtualMotor::new(params);
         motor.set_angle(rotor_angle);
@@ -723,7 +847,7 @@ mod tests {
     fn hfi_finds_rotor_angle_at_standstill() {
         // Rotor parked 1.2 rad away from the initial estimate; the observer
         // must find it from saliency alone, without moving the rotor.
-        let (obs, out) = run_hfi_sim(1.2, 0.0, 20_000);
+        let (obs, out) = run_hfi_sim(1.2, 0.0, 0.0, 20_000);
 
         let err = angle_err_mod_pi(obs.phase(), wrap_angle(out.angle_rad));
         assert!(
@@ -750,7 +874,7 @@ mod tests {
     fn hfi_tracks_slow_rotation() {
         // External load torque turns the rotor slowly (well below any
         // back-EMF-observable speed); HFI must keep tracking.
-        let (obs, out) = run_hfi_sim(0.3, 0.5, 30_000);
+        let (obs, out) = run_hfi_sim(0.3, 0.5, 0.0, 30_000);
 
         assert!(
             out.omega_e.abs() > 5.0,
@@ -761,6 +885,48 @@ mod tests {
         assert!(
             err < 0.15,
             "HFI lost a slowly turning rotor: est {} vs {} (err {})",
+            obs.phase(),
+            wrap_angle(out.angle_rad),
+            err
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn hfi_polarity_probe_corrects_pi_flipped_lock() {
+        // Rotor at 2.5 rad, estimate starting at 0: the PLL's nearest
+        // saliency equilibrium is the flipped one (e = −π), so it locks
+        // π off. With saturation modeled (sat_k > 0) the polarity probe
+        // must detect the inverted d axis and flip the estimate — the
+        // final angle must match FULL-circle, not just mod π.
+        let (obs, out) = run_hfi_sim(2.5, 0.0, 0.05, 20_000);
+
+        assert!(
+            obs.polarity_resolved(),
+            "probe must have run and resolved polarity"
+        );
+        let err = angle_difference(obs.phase(), wrap_angle(out.angle_rad)).abs();
+        assert!(
+            err < 0.15,
+            "polarity not corrected: est {} vs rotor {} (err {} rad full-circle)",
+            obs.phase(),
+            wrap_angle(out.angle_rad),
+            err
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn hfi_polarity_probe_keeps_correct_lock() {
+        // Rotor at 1.2 rad: the PLL locks on the true d axis. The probe
+        // must confirm (not flip) it.
+        let (obs, out) = run_hfi_sim(1.2, 0.0, 0.05, 20_000);
+
+        assert!(obs.polarity_resolved());
+        let err = angle_difference(obs.phase(), wrap_angle(out.angle_rad)).abs();
+        assert!(
+            err < 0.15,
+            "correct lock was flipped: est {} vs rotor {} (err {} rad full-circle)",
             obs.phase(),
             wrap_angle(out.angle_rad),
             err

@@ -664,9 +664,10 @@ mod tests {
     /// Closed-loop HFI through the full runtime path: FocDriver in
     /// CurrentControl with a PhaseManager(HfiObserver) source must apply
     /// the estimator's carrier injection itself — no detection-mode help.
-    /// The rotor is parked away from the initial estimate; only the
-    /// injected carrier can reveal its position (saliency), so this fails
-    /// if the driver drops the injection anywhere along the path.
+    /// The rotor is parked on the far side (2.5 rad: the PLL's nearest
+    /// saliency lock is the π-flipped one), so this exercises BOTH the
+    /// carrier path and the saturation polarity probe under an active PI
+    /// loop that partially fights the probe pulses.
     #[test]
     #[cfg(feature = "virtual-motor")]
     fn current_control_drives_hfi_estimator() {
@@ -675,9 +676,10 @@ mod tests {
         use crate::virtual_motor::{MotorParams, VirtualMotor};
 
         const DT: f32 = 1.0 / 20_000.0;
-        const ROTOR_ANGLE: f32 = 1.2;
+        const ROTOR_ANGLE: f32 = 2.5;
         // Same IPM as the estimator-level HFI tests: 3:1 saliency, heavy
-        // rotor + friction so the injection itself doesn't move it.
+        // rotor + friction so the injection itself doesn't move it, plus
+        // d-axis saturation so the polarity probe has a signal.
         let params = MotorParams {
             r: 0.1,
             ld: 100e-6,
@@ -687,6 +689,7 @@ mod tests {
             j: 1e-2,
             friction_b: 5e-2,
             hall_offset: 0.0,
+            sat_k: 0.05,
         };
         let mut motor = VirtualMotor::new(params);
         motor.set_angle(ROTOR_ANGLE);
@@ -723,20 +726,20 @@ mod tests {
             out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
         }
 
-        // HFI is 2θ-periodic: fold the error to the saliency period.
+        // Full-circle match: the polarity probe must have corrected the
+        // π-flipped initial lock through the driver path.
         let true_angle = crate::foc::wrap_angle(out.angle_rad);
-        let raw_err = crate::foc::angle_difference(driver.phase().get().angle, true_angle).abs();
-        let err = raw_err.min(core::f32::consts::PI - raw_err);
+        let err = crate::foc::angle_difference(driver.phase().get().angle, true_angle).abs();
         assert!(
-            err < 0.1,
-            "HFI did not converge through FocDriver: est {} vs rotor {} (err {} mod π)",
+            err < 0.15,
+            "HFI did not converge through FocDriver: est {} vs rotor {} (err {} full-circle)",
             driver.phase().get().angle,
             true_angle,
             err
         );
         assert!(
-            driver.phase().observer().confidence() > 0.5,
-            "converged HFI must report confidence, got {}",
+            driver.phase().observer().is_ready(),
+            "HFI must be ready (locked + polarity resolved), confidence {}",
             driver.phase().observer().confidence()
         );
         assert!(

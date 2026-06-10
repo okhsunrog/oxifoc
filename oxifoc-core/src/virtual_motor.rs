@@ -58,6 +58,24 @@ pub struct MotorParams {
     /// back-EMF zero crossing.  Zero means ideal alignment; real motors
     /// typically have ±5–15° of mechanical tolerance (×pole_pairs electrical).
     pub hall_offset: f32,
+    /// D-axis magnetic saturation coefficient (1/A). 0 = linear (default).
+    ///
+    /// Models the incremental-inductance asymmetry that HFI polarity
+    /// detection relies on: positive id adds to the PM flux and saturates
+    /// the iron (`Ld_eff` drops), negative id demagnetizes it (`Ld_eff`
+    /// rises): `Ld_eff = Ld / (1 + sat_k·id)`, clamped to 0.25–4× Ld.
+    /// Only the d-axis current dynamics use `Ld_eff`; torque and the
+    /// q-axis equation keep the nominal Ld (the model stays minimal).
+    pub sat_k: f32,
+}
+
+impl MotorParams {
+    /// Incremental d-axis inductance at the given d current (see
+    /// [`sat_k`](Self::sat_k)).
+    fn ld_eff(&self, id: f32) -> f32 {
+        let denom = crate::foc::clamp_f32(1.0 + self.sat_k * id, 0.25, 4.0);
+        self.ld / denom
+    }
 }
 
 impl Default for MotorParams {
@@ -76,6 +94,7 @@ impl Default for MotorParams {
             j: 1e-4,
             friction_b: 1e-4,
             hall_offset: 0.0,
+            sat_k: 0.0,
         }
     }
 }
@@ -116,7 +135,6 @@ pub struct VirtualMotor {
     params: MotorParams,
     // Integrator state
     id: f32,
-    id_int: f32, // integral state: id_int = id + lambda/ld
     iq: f32,
     omega_e: f32, // electrical angular velocity (rad/s)
     phi: f32,     // electrical rotor angle (rad)
@@ -126,16 +144,10 @@ pub struct VirtualMotor {
 
 impl VirtualMotor {
     /// Create a new virtual motor with the given parameters.
-    ///
-    /// The integrators are initialised so that all *currents* start at zero
-    /// (the PM flux is accounted for in `id_int`).
     pub fn new(params: MotorParams) -> Self {
-        // Pre-load id_int so that id = id_int - lambda/ld = 0 at t=0
-        let id_int = params.lambda / params.ld;
         Self {
             params,
             id: 0.0,
-            id_int,
             iq: 0.0,
             omega_e: 0.0,
             phi: 0.0,
@@ -174,7 +186,6 @@ impl VirtualMotor {
 
         // Zero current — no electromagnetic torque
         self.id = 0.0;
-        self.id_int = p.lambda / p.ld; // reset so id = id_int - λ/Ld = 0
         self.iq = 0.0;
 
         // Mechanical dynamics: only friction + external load
@@ -232,10 +243,10 @@ impl VirtualMotor {
         let vd = self.cos_phi * v_alpha + self.sin_phi * v_beta;
         let vq = self.cos_phi * v_beta - self.sin_phi * v_alpha;
 
-        // ── D-axis current (flux model with PM offset) ────────────────────────
-        // Ld·did/dt = Vd − R·id + ωe·Lq·iq
-        self.id_int += (vd + self.omega_e * p.lq * self.iq - p.r * self.id) * dt / p.ld;
-        self.id = self.id_int - p.lambda / p.ld;
+        // ── D-axis current ────────────────────────────────────────────────────
+        // Ld_eff·did/dt = Vd − R·id + ωe·Lq·iq
+        // Ld_eff(id) models d-axis saturation when sat_k ≠ 0 (HFI polarity).
+        self.id += (vd + self.omega_e * p.lq * self.iq - p.r * self.id) * dt / p.ld_eff(self.id);
 
         // ── Q-axis current ────────────────────────────────────────────────────
         // Lq·diq/dt = Vq − R·iq − ωe·(Ld·id + λPM)
