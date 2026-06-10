@@ -17,9 +17,6 @@ board docs.
 
 ## Firmware / core
 
-- [ ] `FLASH_DONE` is signaled by the storage workers but never awaited:
-  either remove it or use it for a true write-through ack in
-  `config_server` (respond Ok only after the flash write completed).
 - [ ] Virtual device only simulates `CurrentControl`/`Stopped`; OpenLoop,
   DirectVoltage and SixStep are accepted and ignored (limits/gains
   commands too).

@@ -4,8 +4,6 @@
 //! True async flash — non-blocking operations from bank 2
 //! while firmware runs from bank 1.
 
-#![allow(dead_code)]
-
 use defmt::info;
 use embassy_executor::task;
 use embassy_stm32::flash::{Async, Flash as StmFlash, WRITE_SIZE};
@@ -74,39 +72,4 @@ pub async fn storage_worker(flash: AsyncFlash) {
     );
 
     run_storage_worker(&mut storage, buf).await
-}
-
-// ============================================================================
-// Public Save Helpers
-// ============================================================================
-
-pub async fn save_motor_params(config: MotorParamsConfig) {
-    FLASH_CHANNEL
-        .send(FlashOperation::Save(
-            ConfigKey::MotorParams,
-            ConfigPayload::MotorParams(config),
-        ))
-        .await;
-}
-
-pub async fn save_hall_calibration(config: HallCalibrationConfig) {
-    FLASH_CHANNEL
-        .send(FlashOperation::Save(
-            ConfigKey::HallCalibration,
-            ConfigPayload::HallCalibration(config),
-        ))
-        .await;
-}
-
-pub async fn save_dc_offsets(config: DcOffsetsConfig) {
-    FLASH_CHANNEL
-        .send(FlashOperation::Save(
-            ConfigKey::DcOffsets,
-            ConfigPayload::DcOffsets(config),
-        ))
-        .await;
-}
-
-pub async fn erase_all_config() {
-    FLASH_CHANNEL.send(FlashOperation::EraseAll).await;
 }

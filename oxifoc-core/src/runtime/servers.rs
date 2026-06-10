@@ -41,7 +41,9 @@ use crate::icd::{
 };
 use crate::state::{CMD_CHANNEL, MotorControlState};
 #[cfg(feature = "storage")]
-use crate::storage::{ConfigKey, ConfigPayload, FLASH_CHANNEL, FlashOperation, RuntimeConfig};
+use crate::storage::{
+    ConfigKey, ConfigPayload, FLASH_CHANNEL, FLASH_DONE, FlashOperation, RuntimeConfig,
+};
 
 /// Device info server - responds to info requests from host
 ///
@@ -197,86 +199,97 @@ pub async fn config_server<NS, const N: usize>(
     loop {
         let _ = h
             .serve(|req: &ConfigRequest| {
-                let motor_running = critical_section::with(|cs| {
-                    state_mutex.borrow(cs).borrow().motor_state == MotorState::Running
-                });
-                let response = match req {
-                    ConfigRequest::Read(group) => {
-                        let cfg =
-                            critical_section::with(|cs| runtime_config.borrow(cs).borrow().clone());
-                        match group {
-                            ConfigGroupId::MotorParams => match cfg.motor_params {
-                                Some(v) => ConfigResponse::MotorParams(v),
-                                None => ConfigResponse::NotFound,
-                            },
-                            ConfigGroupId::HallCalibration => match cfg.hall_calibration {
-                                Some(v) => ConfigResponse::HallCalibration(v),
-                                None => ConfigResponse::NotFound,
-                            },
-                            ConfigGroupId::DcOffsets => match cfg.dc_offsets {
-                                Some(v) => ConfigResponse::DcOffsets(v),
-                                None => ConfigResponse::NotFound,
-                            },
-                            ConfigGroupId::CurrentLimits => match cfg.current_limits {
-                                Some(v) => ConfigResponse::CurrentLimits(v),
-                                None => ConfigResponse::NotFound,
-                            },
-                            ConfigGroupId::VoltageLimits => match cfg.voltage_limits {
-                                Some(v) => ConfigResponse::VoltageLimits(v),
-                                None => ConfigResponse::NotFound,
-                            },
-                            ConfigGroupId::PwmConfig => match cfg.pwm_config {
-                                Some(v) => ConfigResponse::PwmConfig(v),
-                                None => ConfigResponse::NotFound,
-                            },
-                            ConfigGroupId::PiGains => match cfg.pi_gains {
-                                Some(v) => ConfigResponse::PiGains(v),
-                                None => ConfigResponse::NotFound,
-                            },
-                            ConfigGroupId::HallTuning => match cfg.hall_tuning {
-                                Some(v) => ConfigResponse::HallTuning(v),
-                                None => ConfigResponse::NotFound,
-                            },
+                let req = req.clone();
+                async move {
+                    let motor_running = critical_section::with(|cs| {
+                        state_mutex.borrow(cs).borrow().motor_state == MotorState::Running
+                    });
+                    match req {
+                        ConfigRequest::Read(group) => {
+                            let cfg = critical_section::with(|cs| {
+                                runtime_config.borrow(cs).borrow().clone()
+                            });
+                            match group {
+                                ConfigGroupId::MotorParams => match cfg.motor_params {
+                                    Some(v) => ConfigResponse::MotorParams(v),
+                                    None => ConfigResponse::NotFound,
+                                },
+                                ConfigGroupId::HallCalibration => match cfg.hall_calibration {
+                                    Some(v) => ConfigResponse::HallCalibration(v),
+                                    None => ConfigResponse::NotFound,
+                                },
+                                ConfigGroupId::DcOffsets => match cfg.dc_offsets {
+                                    Some(v) => ConfigResponse::DcOffsets(v),
+                                    None => ConfigResponse::NotFound,
+                                },
+                                ConfigGroupId::CurrentLimits => match cfg.current_limits {
+                                    Some(v) => ConfigResponse::CurrentLimits(v),
+                                    None => ConfigResponse::NotFound,
+                                },
+                                ConfigGroupId::VoltageLimits => match cfg.voltage_limits {
+                                    Some(v) => ConfigResponse::VoltageLimits(v),
+                                    None => ConfigResponse::NotFound,
+                                },
+                                ConfigGroupId::PwmConfig => match cfg.pwm_config {
+                                    Some(v) => ConfigResponse::PwmConfig(v),
+                                    None => ConfigResponse::NotFound,
+                                },
+                                ConfigGroupId::PiGains => match cfg.pi_gains {
+                                    Some(v) => ConfigResponse::PiGains(v),
+                                    None => ConfigResponse::NotFound,
+                                },
+                                ConfigGroupId::HallTuning => match cfg.hall_tuning {
+                                    Some(v) => ConfigResponse::HallTuning(v),
+                                    None => ConfigResponse::NotFound,
+                                },
+                            }
                         }
-                    }
-                    ConfigRequest::Write(write) if motor_running => {
-                        let _ = write;
-                        ConfigResponse::Busy
-                    }
-                    ConfigRequest::Write(write) => {
-                        let (key, payload) = match write.clone() {
-                            ConfigWrite::MotorParams(v) => {
-                                (ConfigKey::MotorParams, ConfigPayload::MotorParams(v))
+                        ConfigRequest::Write(_) | ConfigRequest::ResetAll if motor_running => {
+                            ConfigResponse::Busy
+                        }
+                        ConfigRequest::Write(write) => {
+                            let (key, payload) = match write.clone() {
+                                ConfigWrite::MotorParams(v) => {
+                                    (ConfigKey::MotorParams, ConfigPayload::MotorParams(v))
+                                }
+                                ConfigWrite::CurrentLimits(v) => {
+                                    (ConfigKey::CurrentLimits, ConfigPayload::CurrentLimits(v))
+                                }
+                                ConfigWrite::VoltageLimits(v) => {
+                                    (ConfigKey::VoltageLimits, ConfigPayload::VoltageLimits(v))
+                                }
+                                ConfigWrite::PwmConfig(v) => {
+                                    (ConfigKey::PwmConfig, ConfigPayload::PwmConfig(v))
+                                }
+                                ConfigWrite::PiGains(v) => {
+                                    (ConfigKey::PiGains, ConfigPayload::PiGains(v))
+                                }
+                                ConfigWrite::HallTuning(v) => {
+                                    (ConfigKey::HallTuning, ConfigPayload::HallTuning(v))
+                                }
+                            };
+                            // Write-through ack: this server is the only
+                            // FLASH_CHANNEL producer, so FLASH_DONE pairs
+                            // 1:1 with our operation. Reset before sending
+                            // to discard any stale signal.
+                            FLASH_DONE.reset();
+                            if FLASH_CHANNEL
+                                .try_send(FlashOperation::Save(key, payload))
+                                .is_err()
+                            {
+                                return ConfigResponse::Error;
                             }
-                            ConfigWrite::CurrentLimits(v) => {
-                                (ConfigKey::CurrentLimits, ConfigPayload::CurrentLimits(v))
+                            if !FLASH_DONE.wait().await {
+                                // Flash write failed: report it, and leave
+                                // the in-memory copy alone — it must keep
+                                // mirroring what is actually persisted.
+                                return ConfigResponse::Error;
                             }
-                            ConfigWrite::VoltageLimits(v) => {
-                                (ConfigKey::VoltageLimits, ConfigPayload::VoltageLimits(v))
-                            }
-                            ConfigWrite::PwmConfig(v) => {
-                                (ConfigKey::PwmConfig, ConfigPayload::PwmConfig(v))
-                            }
-                            ConfigWrite::PiGains(v) => {
-                                (ConfigKey::PiGains, ConfigPayload::PiGains(v))
-                            }
-                            ConfigWrite::HallTuning(v) => {
-                                (ConfigKey::HallTuning, ConfigPayload::HallTuning(v))
-                            }
-                        };
-                        if FLASH_CHANNEL
-                            .try_send(FlashOperation::Save(key, payload))
-                            .is_err()
-                        {
-                            // Queue full — do NOT claim success, and leave the
-                            // in-memory copy alone (it must keep mirroring
-                            // what's actually persisted).
-                            ConfigResponse::Error
-                        } else {
-                            // Update in-memory config
+
+                            // Persisted — now update the in-memory mirror.
                             critical_section::with(|cs| {
                                 let mut cfg = runtime_config.borrow(cs).borrow_mut();
-                                match write {
+                                match &write {
                                     ConfigWrite::MotorParams(v) => {
                                         cfg.motor_params = Some(v.clone())
                                     }
@@ -288,7 +301,9 @@ pub async fn config_server<NS, const N: usize>(
                                     }
                                     ConfigWrite::PwmConfig(v) => cfg.pwm_config = Some(v.clone()),
                                     ConfigWrite::PiGains(v) => cfg.pi_gains = Some(v.clone()),
-                                    ConfigWrite::HallTuning(v) => cfg.hall_tuning = Some(v.clone()),
+                                    ConfigWrite::HallTuning(v) => {
+                                        cfg.hall_tuning = Some(v.clone())
+                                    }
                                 }
                             });
                             // Make the write take effect on the live driver,
@@ -335,12 +350,14 @@ pub async fn config_server<NS, const N: usize>(
                             }
                             ConfigResponse::Ok
                         }
-                    }
-                    ConfigRequest::ResetAll if motor_running => ConfigResponse::Busy,
-                    ConfigRequest::ResetAll => {
-                        if FLASH_CHANNEL.try_send(FlashOperation::EraseAll).is_err() {
-                            ConfigResponse::Error
-                        } else {
+                        ConfigRequest::ResetAll => {
+                            FLASH_DONE.reset();
+                            if FLASH_CHANNEL.try_send(FlashOperation::EraseAll).is_err() {
+                                return ConfigResponse::Error;
+                            }
+                            if !FLASH_DONE.wait().await {
+                                return ConfigResponse::Error;
+                            }
                             critical_section::with(|cs| {
                                 *runtime_config.borrow(cs).borrow_mut() = RuntimeConfig::default();
                             });
@@ -355,13 +372,13 @@ pub async fn config_server<NS, const N: usize>(
                             ConfigResponse::Ok
                         }
                     }
-                };
-                async move { response }
+                }
             })
             .await;
     }
 }
 
+/// Telemetry config server
 /// Telemetry config server - handles rate change requests from host
 ///
 /// Telemetry config server — host sends `TelemetryConfig { fast_hz }` to start/stop streaming.
