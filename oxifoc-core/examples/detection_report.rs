@@ -342,10 +342,14 @@ fn main() {
     println!("  {:-<22} {:->10} {:->10} {:->10}", "", "", "", "");
     for def in &catalog {
         let p = def.params;
+        // Same parameterization as run_full_detection: per-motor speed cap
+        // from openloop_erpm and a back-EMF rise target of 0.2·vbus.
         let flux_params = FluxLinkageParams {
             motor_size: def.motor_size,
             resistance_ohm: p.r,
             pole_pairs: p.pole_pairs,
+            spin_rpm: def.openloop_erpm / p.pole_pairs as f32,
+            v_target: 0.2 * def.vbus,
             ..Default::default()
         };
         let l_avg = (p.ld + p.lq) / 2.0;

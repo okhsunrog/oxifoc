@@ -201,32 +201,37 @@ impl FluxLinkageMeasurement {
 }
 
 // ============================================================================
-// Magnitude-based driven flux linkage measurement (VESC-style)
+// Back-EMF-vector driven flux linkage measurement
 // ============================================================================
 
-/// Accumulator for magnitude-based driven flux linkage measurement.
+/// Accumulator for driven flux linkage measurement via the back-EMF vector.
 ///
-/// Uses the VESC approach: voltage and current magnitudes instead of
-/// q-axis components.  This is **rotation-invariant** — angle tracking
-/// errors do not affect the result.
+/// Solves the steady-state rotating-frame voltage equations for the
+/// back-EMF vector and takes its magnitude:
 ///
-///   `λ = (|V| − R·|I|) / ωe − |I|·L`
+///   `e_d = vd − R·id + ωe·L·iq`
+///   `e_q = vq − R·iq − ωe·L·id`
+///   `λ = |e⃗| / ωe`
 ///
-/// The `|I|·L` term compensates for the cross-coupling reactance
-/// `ωe·Ld·id` that appears in the q-axis voltage equation of the dq
-/// model.  When using vector magnitudes instead of axis-decomposed
-/// values, this term would otherwise inflate the apparent back-EMF.
-/// It is **not** a transient di/dt term — it arises from the steady-
-/// state rotating-frame voltage equations.
+/// This is exact at steady state for **any** load angle. That matters in
+/// open-loop drive: the rotor pulls its d axis onto the current vector, so
+/// it leads the command frame by up to 90° and the back-EMF ends up nearly
+/// perpendicular to the current. VESC's scalar approximation
+/// `(|V| − R·|I|)/ω − |I|·L` subtracts the resistive drop as if it were
+/// collinear with V and picks up a ≈ −R·|I|/ω bias there (tens of percent
+/// for small high-R motors); the vector form has no such geometry
+/// assumption. e⃗ is DC in the command frame at steady state, so the
+/// components are averaged separately before taking the magnitude.
 ///
-/// Requires both R and L from previous detection steps.
+/// Requires both R and L from previous detection steps (SPM assumption:
+/// L = (Ld+Lq)/2 is used for both axes).
 #[derive(Clone, Debug)]
 pub struct MagnitudeFluxMeasurement {
     resistance_ohm: f32,
-    /// Average inductance (Henries) for cross-coupling compensation.
+    /// Average inductance (Henries) for the reactance term.
     inductance_h: f32,
-    v_mag_sum: f32,
-    i_mag_sum: f32,
+    e_d_sum: f32,
+    e_q_sum: f32,
     omega_sum: f32,
     sample_count: u32,
     min_samples: u32,
@@ -243,8 +248,8 @@ impl MagnitudeFluxMeasurement {
         Self {
             resistance_ohm,
             inductance_h,
-            v_mag_sum: 0.0,
-            i_mag_sum: 0.0,
+            e_d_sum: 0.0,
+            e_q_sum: 0.0,
             omega_sum: 0.0,
             sample_count: 0,
             min_samples,
@@ -252,12 +257,11 @@ impl MagnitudeFluxMeasurement {
     }
 
     /// Record a sample using all four dq components.
-    ///
-    /// Computes magnitudes internally: `|V| = √(vd²+vq²)`, `|I| = √(id²+iq²)`.
     #[inline]
     pub fn record(&mut self, vd: f32, vq: f32, id: f32, iq: f32, omega_e: f32) {
-        self.v_mag_sum += libm::sqrtf(vd * vd + vq * vq);
-        self.i_mag_sum += libm::sqrtf(id * id + iq * iq);
+        // Back out the back-EMF vector from the steady-state dq equations.
+        self.e_d_sum += vd - self.resistance_ohm * id + omega_e * self.inductance_h * iq;
+        self.e_q_sum += vq - self.resistance_ohm * iq - omega_e * self.inductance_h * id;
         self.omega_sum += omega_e;
         self.sample_count += 1;
     }
@@ -269,16 +273,16 @@ impl MagnitudeFluxMeasurement {
         }
 
         let n = self.sample_count as f32;
-        let avg_v = self.v_mag_sum / n;
-        let avg_i = self.i_mag_sum / n;
+        let avg_e_d = self.e_d_sum / n;
+        let avg_e_q = self.e_q_sum / n;
         let avg_omega = self.omega_sum / n;
 
         if avg_omega.abs() < MIN_VALID_OMEGA {
             return Err(DetectionError::LowConfidence);
         }
 
-        // VESC formula: λ = (|V| - R·|I|) / ω - |I|·L
-        let flux = (avg_v - self.resistance_ohm * avg_i) / avg_omega - avg_i * self.inductance_h;
+        // λ = |e⃗| / ω
+        let flux = libm::sqrtf(avg_e_d * avg_e_d + avg_e_q * avg_e_q) / avg_omega.abs();
 
         if !(MIN_VALID_FLUX..=MAX_VALID_FLUX).contains(&flux) {
             return Err(DetectionError::OutOfRange);
@@ -528,6 +532,51 @@ pub fn validate_flux_linkage(flux_linkage: f32) -> Result<(), DetectionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Synthesize exact steady-state command-frame quantities for an SPM
+    /// motor spinning synchronously at `omega` with the stator current on
+    /// the command q axis and the rotor d axis leading the command frame by
+    /// `gamma` radians:
+    ///   e⃗ = jωλ∠γ  →  e_d = −ωλ·sin γ,  e_q = ωλ·cos γ
+    ///   v⃗ = R·i⃗ + jωL·i⃗ + e⃗,  i⃗ = (0, I)  →  jωL·i⃗ = (−ωLI, 0)
+    fn steady_state_dq(r: f32, l: f32, lambda: f32, i: f32, omega: f32, gamma: f32) -> [f32; 4] {
+        let (s, c) = (libm::sinf(gamma), libm::cosf(gamma));
+        let vd = -omega * l * i - omega * lambda * s;
+        let vq = r * i + omega * lambda * c;
+        [vd, vq, 0.0, i]
+    }
+
+    #[test]
+    fn driven_flux_is_load_angle_invariant() {
+        // In open-loop drive the rotor pulls its d axis onto the current
+        // vector, so at light load it LEADS the command frame by ~90°
+        // (γ ≈ π/2) and the back-EMF is nearly perpendicular to the
+        // current. The scalar VESC formula (|V| − R|I|)/ω − |I|L subtracts
+        // R|I| as if it were collinear with V and is biased by ≈ −RI/ω
+        // there. The exact relation e⃗ = V⃗ − R·i⃗ − jωL·i⃗, λ = |e⃗|/ω holds
+        // for ANY load angle.
+        let (r, l, lambda, i, omega) = (0.5, 0.5e-3, 0.01, 2.0, 300.0);
+
+        for gamma_deg in [0.0f32, 30.0, 60.0, 90.0] {
+            let gamma = gamma_deg.to_radians();
+            let [vd, vq, id, iq] = steady_state_dq(r, l, lambda, i, omega, gamma);
+
+            let mut m = MagnitudeFluxMeasurement::new(r, l, 10);
+            for _ in 0..10 {
+                m.record(vd, vq, id, iq, omega);
+            }
+            let est = m.finish().unwrap();
+            let err = (est - lambda).abs() / lambda;
+            assert!(
+                err < 0.02,
+                "λ error {:.1}% at load angle {}° (est {:.4} vs true {:.4})",
+                err * 100.0,
+                gamma_deg,
+                est,
+                lambda
+            );
+        }
+    }
 
     #[test]
     fn test_flux_measurement_basic() {

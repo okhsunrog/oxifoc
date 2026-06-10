@@ -221,6 +221,9 @@ async fn run_step<B: DetectionBackend>(
                 pole_pairs,
                 spin_rpm,
                 current_a: safe_current.min(2.0),
+                // Ramp until back-EMF dominates R·I (VESC's duty-0.3 idea);
+                // spin_rpm above remains the hard speed cap.
+                v_target: 0.2 * backend.vbus(),
                 ..Default::default()
             };
             match backend.measure_flux(&params).await {

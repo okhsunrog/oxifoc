@@ -495,22 +495,173 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
     Ok((ld, lq))
 }
 
-/// Measure motor flux linkage via open-loop spinning.
+/// Maximum electrical angular velocity for open-loop spin-up ramps,
+/// independent of the (mechanical) `spin_rpm` cap. Mirrors VESC's
+/// 12000 ERPM ceiling in the flux-linkage wizard.
+const SPINUP_MAX_OMEGA_E: f32 = 12_000.0 * core::f32::consts::TAU / 60.0;
+
+/// Fraction of the running |V| maximum below which the rotor is considered
+/// desynchronized during spin-up. A synced rotor contributes ω·λ of
+/// back-EMF; on sync loss that contribution disappears and |V| collapses.
+/// Same criterion as VESC (`duty_now < duty_max * 0.7`).
+const SPINUP_SYNC_LOSS_RATIO: f32 = 0.7;
+
+/// Lock the rotor, then spin it up in open loop and return the electrical
+/// angular velocity the firmware is left integrating at (rad/s).
 ///
-/// Spins motor in open-loop mode and measures back-EMF.
+/// Uses `OpenLoop { velocity_rad_s != 0 }`, where the *firmware* advances
+/// the angle every FOC cycle (`FocDriver::step_open_loop`) — the host only
+/// ramps the velocity setpoint. The previous approach stepped the angle
+/// from this async task, which at speed meant near-π jumps per command
+/// that a real rotor cannot follow (it only ever worked against the
+/// simulator, which smoothed the steps).
 ///
-/// # Arguments
-/// * `hw` - Hardware abstraction implementation
-/// * `params` - Flux linkage measurement parameters
+/// The ramp runs until one of (VESC conf_general flux wizard behavior):
+/// * `|V| ≥ params.v_target` (if nonzero) — fast enough that back-EMF
+///   dominates the resistive drop;
+/// * the `spin_rpm` / [`SPINUP_MAX_OMEGA_E`] speed cap is reached;
+/// * |V| collapses below [`SPINUP_SYNC_LOSS_RATIO`] of its running max
+///   after the early ramp → `Err(MotorNotResponding)`.
+async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    params: &FluxLinkageParams,
+) -> Result<f32, DetectionError> {
+    let omega_cap = (params.spin_rpm * core::f32::consts::TAU * params.pole_pairs as f32 / 60.0)
+        .min(SPINUP_MAX_OMEGA_E);
+
+    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
+
+    // ── Capture: bring the current up on a slowly creeping frame ──────
+    // Locking with d-axis current (velocity 0) and then starting the ramp
+    // would jump the current vector 90° to the q axis in one FOC cycle,
+    // kicking the rotor into a poorly damped swing that corrupts the first
+    // seconds of |V|. Instead the current grows from zero with the command
+    // frame already advancing slowly, so the rotor is captured gently —
+    // the same effect as VESC's lock via set_openloop_current.
+    info!("Capturing rotor...");
+    const CAPTURE_OMEGA_E: f32 = core::f32::consts::TAU; // 1 elec rev/s
+    const CAPTURE_STEPS: u32 = 20;
+    const CAPTURE_TIME_MS: u64 = 400;
+    for i in 1..=CAPTURE_STEPS {
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: 0.0, // ignored: velocity mode
+            current: params.current_a * i as f32 / CAPTURE_STEPS as f32,
+            velocity_rad_s: CAPTURE_OMEGA_E,
+            pi_gains: if i == 1 { det_gains } else { None },
+        });
+        T::after_millis(CAPTURE_TIME_MS / CAPTURE_STEPS as u64).await;
+    }
+
+    // Resistive |V| baseline at near-zero speed. The v_target criterion
+    // must measure the back-EMF *rise* above this: for high-R motors the
+    // R·I drop alone can exceed any absolute voltage target (e.g. a gimbal
+    // motor at 8 Ω × 1.3 A = 10 V on a 12 V bus), which would end the ramp
+    // on its first step.
+    let mut v_baseline = 0.0f32;
+    const BASELINE_SAMPLES: u32 = 10;
+    for _ in 0..BASELINE_SAMPLES {
+        let telem = hw.wait_telemetry().await;
+        v_baseline += libm::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+        T::after_micros(500).await;
+    }
+    v_baseline /= BASELINE_SAMPLES as f32;
+
+    info!("Ramping up (velocity mode)...");
+    let ramp_steps = 100u32;
+    let step_ms = (params.ramp_time_ms / ramp_steps).max(1) as u64;
+    // Low-passed |V| for the sync check: rotor swing after disturbances
+    // modulates the back-EMF at a few Hz, and small motors run this whole
+    // ramp at well under a volt — raw samples would trip the threshold on
+    // ripple alone.
+    let mut v_filt = 0.0f32;
+    let mut v_filt_max = 0.0f32;
+    // Below this |V| the sync check is meaningless: nothing but resistive
+    // drop and measurement noise. R may be unknown (spin-down path), hence
+    // the absolute floor.
+    let v_check_floor = (3.0 * params.resistance_ohm * params.current_a).max(0.25);
+    let mut omega = CAPTURE_OMEGA_E;
+
+    for i in 1..=ramp_steps {
+        omega = CAPTURE_OMEGA_E + (omega_cap - CAPTURE_OMEGA_E) * i as f32 / ramp_steps as f32;
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: 0.0, // ignored: firmware integrates velocity
+            current: params.current_a,
+            velocity_rad_s: omega,
+            pi_gains: None,
+        });
+        T::after_millis(step_ms).await;
+
+        let telem = hw.wait_telemetry().await;
+        let v_mag = libm::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+        v_filt = if i == 1 {
+            v_mag
+        } else {
+            0.85 * v_filt + 0.15 * v_mag
+        };
+        v_filt_max = v_filt_max.max(v_filt);
+
+        // Sync loss: the back-EMF contribution vanished (VESC checks
+        // duty_now < 0.7 × duty_max the same way). Only meaningful once
+        // |V| has risen clear of the resistive-drop floor and past the
+        // early ramp transients.
+        if i > ramp_steps / 2
+            && v_filt_max > v_check_floor
+            && v_filt < SPINUP_SYNC_LOSS_RATIO * v_filt_max
+        {
+            hw.send_command(ControlMode::Stopped);
+            return Err(DetectionError::MotorNotResponding);
+        }
+
+        // Back-EMF rise above the resistive baseline reached the target —
+        // fast enough for the flux formulas.
+        if params.v_target > 0.0 && v_filt - v_baseline >= params.v_target {
+            break;
+        }
+    }
+
+    Ok(omega)
+}
+
+/// Ramp the open-loop velocity (and current) back to zero, then stop.
+async fn ramp_down_open_loop<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    current_a: f32,
+    omega_e: f32,
+    ramp_time_ms: u32,
+) {
+    let ramp_steps = 50u32;
+    let step_ms = (ramp_time_ms / ramp_steps).max(1) as u64;
+    for i in (0..ramp_steps).rev() {
+        let progress = i as f32 / ramp_steps as f32;
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: 0.0,
+            current: current_a * progress,
+            velocity_rad_s: omega_e * progress,
+            pi_gains: None,
+        });
+        T::after_millis(step_ms).await;
+    }
+    hw.send_command(ControlMode::Stopped);
+    T::after_millis(100).await;
+}
+
+/// Measure motor flux linkage via open-loop spinning (q-axis components).
 ///
-/// # Returns
-/// * `Ok(f32)` - Measured flux linkage in Weber
-/// * `Err(DetectionError)` - If measurement failed
+/// `λ = (Vq − R·Iq) / ωe` in the **command** frame.
+///
+/// # Accuracy warning
+///
+/// In open-loop drive the rotor's d axis pulls onto the current vector, so
+/// the rotor leads the command frame by up to 90° and the back-EMF is not
+/// aligned with the command q axis — this method underestimates λ by the
+/// load-angle cosine. It is kept for comparison/diagnostics;
+/// [`measure_flux_linkage_magnitude`] (back-EMF vector, load-angle
+/// invariant) is what [`run_full_detection`] uses as the driven fallback.
 pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     params: &FluxLinkageParams,
 ) -> Result<f32, DetectionError> {
-    info!("Starting flux linkage measurement...");
+    info!("Starting flux linkage measurement (q-axis)...");
 
     if params.resistance_ohm <= 0.0 {
         return Err(DetectionError::MissingPrerequisite);
@@ -518,114 +669,44 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
 
     let mut measurement = FluxLinkageMeasurement::from_params(params)?;
 
-    // Calculate target electrical angular velocity
-    let target_omega_e = params.spin_rpm * core::f32::consts::TAU * params.pole_pairs as f32 / 60.0;
-
-    // Ramp up to target speed (open-loop)
-    let ramp_steps = 100u32;
-    let ramp_delay_ms = params.ramp_time_ms / ramp_steps;
-    let mut current_angle = 0.0f32;
-
-    info!("Ramping up to target speed...");
-
-    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
-
-    for i in 1..=ramp_steps {
-        let progress = i as f32 / ramp_steps as f32;
-        let omega = target_omega_e * progress;
-
-        // Advance angle
-        let dt = params.ramp_time_ms as f32 / 1000.0 / ramp_steps as f32;
-        current_angle += omega * dt;
-        current_angle %= core::f32::consts::TAU;
-
-        hw.send_command(ControlMode::OpenLoop {
-            angle_rad: current_angle,
-            current: params.current_a,
-            velocity_rad_s: 0.0,
-            pi_gains: if i == 1 { det_gains } else { None },
-        });
-
-        T::after_millis(ramp_delay_ms as u64).await;
-    }
-
-    // Wait for settling at target speed
-    info!("Settling at target speed...");
+    let omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
     T::after_millis(params.settle_time_ms as u64).await;
 
-    // Collect samples while spinning
+    // The firmware integrates the angle at the FOC rate, so the actual
+    // electrical speed IS the commanded one (synchronous machine; sync
+    // loss is detected during the ramp).
     info!("Collecting flux linkage samples...");
-
-    let sample_delay_us = 500u32; // 2kHz sampling
-    let dt = 1.0 / 2000.0;
-
     for _ in 0..params.num_samples {
-        // Advance angle at target speed
-        current_angle += target_omega_e * dt;
-        current_angle %= core::f32::consts::TAU;
-
-        hw.send_command(ControlMode::OpenLoop {
-            angle_rad: current_angle,
-            current: params.current_a,
-            velocity_rad_s: 0.0,
-            pi_gains: None,
-        });
-
-        T::after_micros(sample_delay_us as u64).await;
-
-        // Get telemetry
+        T::after_micros(500).await; // ~2 kHz sampling
         let telem = hw.wait_telemetry().await;
-
-        // Record Vq, Iq, and angular velocity
-        measurement.record(telem.vq, telem.iq, target_omega_e);
+        measurement.record(telem.vq, telem.iq, omega_e);
     }
 
-    // Ramp down and stop
-    info!("Ramping down...");
-    for i in (0..ramp_steps).rev() {
-        let progress = i as f32 / ramp_steps as f32;
-        let omega = target_omega_e * progress;
+    ramp_down_open_loop::<H, T>(hw, params.current_a, omega_e, params.ramp_time_ms).await;
 
-        let dt = params.ramp_time_ms as f32 / 1000.0 / ramp_steps as f32;
-        current_angle += omega * dt;
-        current_angle %= core::f32::consts::TAU;
-
-        let current = params.current_a * progress;
-        hw.send_command(ControlMode::OpenLoop {
-            angle_rad: current_angle,
-            current,
-            velocity_rad_s: 0.0,
-            pi_gains: None,
-        });
-
-        T::after_millis(ramp_delay_ms as u64).await;
-    }
-
-    hw.send_command(ControlMode::Stopped);
-    T::after_millis(100).await;
-
-    // Compute result
     let flux_linkage = measurement.finish()?;
     info!("Flux linkage measurement complete");
-
     Ok(flux_linkage)
 }
 
-/// Measure flux linkage using magnitude-based VESC formula.
+/// Measure flux linkage via the back-EMF vector (driven, load-angle
+/// invariant).
 ///
-/// Same open-loop spin procedure as [`measure_flux_linkage`] but uses
-/// voltage and current **magnitudes** instead of q-axis components:
+/// Same open-loop spin as [`measure_flux_linkage`], but solves the full
+/// steady-state dq equations for the back-EMF vector:
 ///
-///   `λ = (|V| − R·|I|) / ωe − |I|·L`
+///   `e⃗ = V⃗ − R·i⃗ − jωL·i⃗`,  `λ = |e⃗| / ωe`
 ///
-/// This is rotation-invariant — angle tracking lag does not affect the
-/// result.  Requires both R and L from earlier detection steps.
+/// Exact at steady state for any load angle (see
+/// [`MagnitudeFluxMeasurement`]), unlike both the q-axis method and
+/// VESC's scalar `(|V| − R|I|)/ω − |I|L` approximation. Requires both R
+/// and L from earlier detection steps.
 pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     params: &FluxLinkageParams,
     inductance_h: f32,
 ) -> Result<f32, DetectionError> {
-    info!("Starting magnitude-based flux linkage measurement...");
+    info!("Starting back-EMF-vector flux linkage measurement...");
 
     if params.resistance_ohm <= 0.0 {
         return Err(DetectionError::MissingPrerequisite);
@@ -634,76 +715,20 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
     let mut measurement =
         MagnitudeFluxMeasurement::new(params.resistance_ohm, inductance_h, params.num_samples);
 
-    let target_omega_e = params.spin_rpm * core::f32::consts::TAU * params.pole_pairs as f32 / 60.0;
-
-    // Ramp up (identical to driven method)
-    let ramp_steps = 100u32;
-    let ramp_delay_ms = params.ramp_time_ms / ramp_steps;
-    let mut current_angle = 0.0f32;
-
-    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
-
-    for i in 1..=ramp_steps {
-        let progress = i as f32 / ramp_steps as f32;
-        let omega = target_omega_e * progress;
-        let dt = params.ramp_time_ms as f32 / 1000.0 / ramp_steps as f32;
-        current_angle += omega * dt;
-        current_angle %= core::f32::consts::TAU;
-
-        hw.send_command(ControlMode::OpenLoop {
-            angle_rad: current_angle,
-            current: params.current_a,
-            velocity_rad_s: 0.0,
-            pi_gains: if i == 1 { det_gains } else { None },
-        });
-        T::after_millis(ramp_delay_ms as u64).await;
-    }
-
+    let omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
     T::after_millis(params.settle_time_ms as u64).await;
 
-    // Collect samples — record all 4 dq components
-    let sample_delay_us = 500u32;
-    let dt = 1.0 / 2000.0;
-
+    info!("Collecting flux linkage samples...");
     for _ in 0..params.num_samples {
-        current_angle += target_omega_e * dt;
-        current_angle %= core::f32::consts::TAU;
-
-        hw.send_command(ControlMode::OpenLoop {
-            angle_rad: current_angle,
-            current: params.current_a,
-            velocity_rad_s: 0.0,
-            pi_gains: None,
-        });
-        T::after_micros(sample_delay_us as u64).await;
-
+        T::after_micros(500).await; // ~2 kHz sampling
         let telem = hw.wait_telemetry().await;
-        measurement.record(telem.vd, telem.vq, telem.id, telem.iq, target_omega_e);
+        measurement.record(telem.vd, telem.vq, telem.id, telem.iq, omega_e);
     }
 
-    // Ramp down
-    for i in (0..ramp_steps).rev() {
-        let progress = i as f32 / ramp_steps as f32;
-        let omega = target_omega_e * progress;
-        let dt = params.ramp_time_ms as f32 / 1000.0 / ramp_steps as f32;
-        current_angle += omega * dt;
-        current_angle %= core::f32::consts::TAU;
-
-        let current = params.current_a * progress;
-        hw.send_command(ControlMode::OpenLoop {
-            angle_rad: current_angle,
-            current,
-            velocity_rad_s: 0.0,
-            pi_gains: None,
-        });
-        T::after_millis(ramp_delay_ms as u64).await;
-    }
-
-    hw.send_command(ControlMode::Stopped);
-    T::after_millis(100).await;
+    ramp_down_open_loop::<H, T>(hw, params.current_a, omega_e, params.ramp_time_ms).await;
 
     let flux = measurement.finish()?;
-    info!("Magnitude-based flux linkage measurement complete");
+    info!("Back-EMF-vector flux linkage measurement complete");
     Ok(flux)
 }
 
@@ -725,30 +750,8 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
 ) -> Result<f32, DetectionError> {
     info!("Starting spin-down flux linkage measurement...");
 
-    let target_omega_e = params.spin_rpm * core::f32::consts::TAU * params.pole_pairs as f32 / 60.0;
-
-    // ── Spin-up (open-loop ramp, same as driven method) ────────────────
-    let ramp_steps = 100u32;
-    let ramp_delay_ms = params.ramp_time_ms / ramp_steps;
-    let mut current_angle = 0.0f32;
-
-    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
-
-    for i in 1..=ramp_steps {
-        let progress = i as f32 / ramp_steps as f32;
-        let omega = target_omega_e * progress;
-        let dt = params.ramp_time_ms as f32 / 1000.0 / ramp_steps as f32;
-        current_angle += omega * dt;
-        current_angle %= core::f32::consts::TAU;
-
-        hw.send_command(ControlMode::OpenLoop {
-            angle_rad: current_angle,
-            current: params.current_a,
-            velocity_rad_s: 0.0,
-            pi_gains: if i == 1 { det_gains } else { None },
-        });
-        T::after_millis(ramp_delay_ms as u64).await;
-    }
+    // ── Spin-up (shared open-loop ramp, firmware-integrated angle) ─────
+    let _omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
 
     // Hold at speed briefly to ensure steady state
     T::after_millis(params.settle_time_ms as u64).await;
@@ -903,32 +906,25 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
         pole_pairs: params.pole_pairs,
         spin_rpm,
         current_a: safe_current.min(2.0), // cap to safe level
+        // Ramp until the phase voltage reaches ~20% of vbus (VESC spins its
+        // flux wizard to duty 0.3 ≈ the same), so back-EMF dominates R·I.
+        v_target: 0.2 * params.vbus,
         ..Default::default()
     };
     info!("Step 3/4: Flux linkage measurement (spin-down)");
     match measure_flux_linkage_spindown::<H, T>(hw, &flux_params).await {
         Ok(flux) => result.params.flux_linkage_wb = flux,
         Err(DetectionError::InsufficientSamples) => {
-            // Motor can't coast — fall back to driven measurement.
-            // Try both q-axis and magnitude methods, pick the better one.
-            info!("Spin-down failed (motor stopped too fast), falling back to driven methods");
+            // Motor can't coast (high friction / geared) — fall back to the
+            // driven back-EMF-vector method. The q-axis method is NOT used
+            // here: in open loop the rotor leads the command frame by up to
+            // 90°, which biases it by the load-angle cosine.
+            info!("Spin-down failed (motor stopped too fast), falling back to driven method");
             T::after_millis(500).await;
 
-            // Try magnitude first (angle-invariant, better on most motors).
-            // Fall back to q-axis if magnitude fails (high-R motors).
             let l_avg = result.params.inductance_avg_h;
-            let lam_m = measure_flux_linkage_magnitude::<H, T>(hw, &flux_params, l_avg).await;
-            result.params.flux_linkage_wb = match lam_m {
-                Ok(m) => {
-                    info!("Using magnitude flux (angle-invariant)");
-                    m
-                }
-                Err(_) => {
-                    info!("Magnitude flux failed, falling back to q-axis");
-                    T::after_millis(500).await;
-                    measure_flux_linkage::<H, T>(hw, &flux_params).await?
-                }
-            };
+            result.params.flux_linkage_wb =
+                measure_flux_linkage_magnitude::<H, T>(hw, &flux_params, l_avg).await?;
         }
         Err(e) => return Err(e),
     }

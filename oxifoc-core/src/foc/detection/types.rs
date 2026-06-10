@@ -277,11 +277,22 @@ pub struct FluxLinkageParams {
     /// ignored by spin-down method.
     pub resistance_ohm: f32,
 
-    /// Target mechanical RPM for measurement
+    /// Maximum mechanical RPM for the spin-up ramp. With `v_target > 0`
+    /// the ramp usually stops earlier (see below); this is the hard cap.
     pub spin_rpm: f32,
 
     /// Open-loop current during spin-up (Amps)
     pub current_a: f32,
+
+    /// Voltage-magnitude target for the spin-up ramp (Volts), 0 = disabled.
+    ///
+    /// The driven flux methods degrade when the resistive drop R·I is
+    /// comparable to the back-EMF ω·λ, so instead of spinning to a fixed
+    /// RPM the ramp continues until |V| reaches this target — the same
+    /// idea as VESC ramping its open loop to duty 0.3 (≈ 0.2·vbus of
+    /// phase voltage, conf_general.c) rather than to a speed. Callers
+    /// that know vbus should set ≈ `0.2 × vbus`.
+    pub v_target: f32,
 
     /// Time to ramp up to target RPM (milliseconds)
     pub ramp_time_ms: u32,
@@ -306,8 +317,11 @@ impl Default for FluxLinkageParams {
         Self {
             motor_size: MotorSize::Medium,
             resistance_ohm: 0.0,
-            spin_rpm: 500.0,
+            // Generous cap: with v_target set, the voltage target normally
+            // ends the ramp well before this speed is reached.
+            spin_rpm: 1500.0,
             current_a: 2.0,
+            v_target: 0.0,
             ramp_time_ms: 2000,
             settle_time_ms: 1000,
             num_samples: 200,

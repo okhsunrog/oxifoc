@@ -49,7 +49,7 @@ Automated parameter measurement, platform-agnostic via `DetectionHardware` trait
 ```mermaid
 graph LR
     R["<b>Resistance</b><br/>2-point differential<br/>R = ΔV/ΔI (MESC-style)"] --> L["<b>Inductance</b><br/>Rotating HFI + FFT<br/>Separates Ld/Lq via 2nd harmonic"]
-    L --> F["<b>Flux Linkage</b><br/>Open-loop spin<br/>Magnitude-based measurement"]
+    L --> F["<b>Flux Linkage</b><br/>Spin-down back-EMF<br/>Driven fallback: e⃗ = V⃗ − R·i⃗ − jωL·i⃗"]
     F --> PI["<b>PI Auto-tune</b><br/>Kp = L·ω_bw<br/>Ki = R·ω_bw"]
     R --> Hall["<b>Hall Calibration</b><br/>Electrical revolution sweep<br/>State→angle mapping"]
 ```

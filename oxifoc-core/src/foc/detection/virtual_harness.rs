@@ -14,7 +14,6 @@
 //! let result = VirtualHarness::run_detection(motor, 24.0, det);
 //! ```
 
-use core::f32::consts::TAU;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::cell::RefCell;
 
@@ -25,7 +24,7 @@ use crate::foc::detection::sweep::{
 use crate::foc::detection::types::DetectionError;
 use crate::foc::pi_controller::PIController;
 use crate::foc::pwm::SvpwmModulator;
-use crate::foc::{angle_difference, wrap_angle};
+use crate::foc::wrap_angle;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
@@ -42,8 +41,6 @@ struct SimState {
     mode: ControlMode,
     sim_angle: f32,
     ol_omega: f32,
-    prev_cmd_angle: f32,
-    steps_since_send: u64,
 }
 
 impl SimState {
@@ -60,26 +57,37 @@ impl SimState {
             mode: ControlMode::Stopped,
             sim_angle: 0.0,
             ol_omega: 0.0,
-            prev_cmd_angle: 0.0,
-            steps_since_send: 0,
         }
     }
 
     fn step_one(&mut self) -> FocOutput {
-        if matches!(self.mode, ControlMode::OpenLoop { .. }) && self.ol_omega.abs() > 0.1 {
+        // Mirror FocDriver::step_open_loop: a nonzero velocity integrates the
+        // angle every FOC cycle.
+        if matches!(self.mode, ControlMode::OpenLoop { .. }) && self.ol_omega != 0.0 {
             self.sim_angle = wrap_angle(self.sim_angle + self.ol_omega * DT);
         }
-        self.steps_since_send += 1;
 
         let telem = match self.mode {
-            ControlMode::OpenLoop { current, .. } => self.foc.step(
-                (self.out.ia, self.out.ib, self.out.ic),
-                self.sim_angle,
-                current,
-                0.0,
-                MAX_DUTY,
-                DT,
-            ),
+            ControlMode::OpenLoop { current, .. } => {
+                // Same current placement as the firmware: d-axis when locked
+                // (velocity 0, holds the rotor), q-axis when spinning
+                // (produces torque). The harness used to put it on d in both
+                // cases, which hid the open-loop load-angle geometry from
+                // every flux-method comparison.
+                let (id_t, iq_t) = if self.ol_omega == 0.0 {
+                    (current, 0.0)
+                } else {
+                    (0.0, current)
+                };
+                self.foc.step(
+                    (self.out.ia, self.out.ib, self.out.ic),
+                    self.sim_angle,
+                    id_t,
+                    iq_t,
+                    MAX_DUTY,
+                    DT,
+                )
+            }
             ControlMode::DirectVoltage { vd, vq, angle_rad } => {
                 self.foc.apply_dq(vd, vq, angle_rad, MAX_DUTY)
             }
@@ -122,6 +130,7 @@ impl DetectionHardware for VirtualHardware {
             match mode {
                 ControlMode::OpenLoop {
                     angle_rad,
+                    velocity_rad_s,
                     pi_gains,
                     ..
                 } => {
@@ -130,20 +139,17 @@ impl DetectionHardware for VirtualHardware {
                         sim.foc.id_pi.set_gains(kp, ki);
                         sim.foc.iq_pi.set_gains(kp, ki);
                     }
-                    if !matches!(sim.mode, ControlMode::OpenLoop { .. }) {
-                        sim.sim_angle = angle_rad;
-                        sim.ol_omega = 0.0;
+                    // Mirror FocDriver::step_open_loop exactly: with a
+                    // velocity the angle keeps integrating from wherever it
+                    // is (set_mode does not reset it); with velocity 0 the
+                    // commanded angle is used directly. The old harness
+                    // reconstructed a velocity from successive commanded
+                    // angles, i.e. it simulated a smooth rotation the real
+                    // firmware never produced for host-paced angle steps.
+                    sim.ol_omega = velocity_rad_s;
+                    if velocity_rad_s == 0.0 {
+                        sim.sim_angle = wrap_angle(angle_rad);
                     }
-                    if sim.steps_since_send > 0 && sim.steps_since_send < 2000 {
-                        let elapsed = sim.steps_since_send as f32 * DT;
-                        let wrapped = angle_difference(angle_rad, sim.prev_cmd_angle);
-                        let expected = sim.ol_omega * elapsed;
-                        let n = ((expected - wrapped) / TAU).round();
-                        let delta = wrapped + n * TAU;
-                        sim.ol_omega = delta / elapsed;
-                    }
-                    sim.prev_cmd_angle = angle_rad;
-                    sim.steps_since_send = 0;
                 }
                 ControlMode::Coast => sim.foc.reset(),
                 ControlMode::Stopped => {
