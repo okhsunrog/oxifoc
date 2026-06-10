@@ -23,14 +23,17 @@ pub struct ObserverInput {
 }
 
 /// Runtime-switchable observer implementations
+///
+/// This is the back-EMF/"fast" estimator slot of `PhaseManager`. The HFI
+/// estimator lives in its own dedicated slot ([`HfiObserver`] directly):
+/// it needs carrier injection plumbed through the control loop, and the
+/// HfiToObserver crossover requires both estimators to run concurrently.
 #[derive(Clone, Debug)]
 pub enum Observer {
     /// No observer configured
     None,
     /// Back-EMF flux observer (VESC-style)
     BackEmf(BackEmfObserver),
-    /// High-frequency injection observer
-    Hfi(HfiObserver),
 }
 
 #[allow(clippy::derivable_impls)] // Other variants have data, can't derive
@@ -46,7 +49,6 @@ impl Observer {
         match self {
             Observer::None => {}
             Observer::BackEmf(o) => o.update(input),
-            Observer::Hfi(o) => o.update(input),
         }
     }
 
@@ -55,7 +57,6 @@ impl Observer {
         match self {
             Observer::None => None,
             Observer::BackEmf(o) => Some(o.phase()),
-            Observer::Hfi(o) => Some(o.phase()),
         }
     }
 
@@ -64,7 +65,6 @@ impl Observer {
         match self {
             Observer::None => None,
             Observer::BackEmf(o) => Some(o.velocity()),
-            Observer::Hfi(o) => Some(o.velocity()),
         }
     }
 
@@ -78,7 +78,6 @@ impl Observer {
         match self {
             Observer::None => false,
             Observer::BackEmf(o) => o.is_ready(),
-            Observer::Hfi(o) => o.is_ready(),
         }
     }
 
@@ -90,10 +89,6 @@ impl Observer {
                 o.force_phase(angle);
                 o.set_velocity(velocity);
             }
-            Observer::Hfi(o) => {
-                o.set_phase(angle);
-                o.set_velocity(velocity);
-            }
         }
     }
 
@@ -102,24 +97,7 @@ impl Observer {
         match self {
             Observer::None => 0.0,
             Observer::BackEmf(o) => o.confidence(),
-            Observer::Hfi(o) => o.confidence(),
         }
-    }
-
-    /// Carrier voltage to inject this cycle (dq frame, at the estimated
-    /// angle). Zero for observers that don't inject — only HFI needs the
-    /// control loop's cooperation. See [`HfiObserver::get_injection`].
-    pub fn injection(&self) -> (f32, f32) {
-        match self {
-            Observer::Hfi(o) => o.get_injection(),
-            Observer::None | Observer::BackEmf(_) => (0.0, 0.0),
-        }
-    }
-
-    /// Whether this observer is an HFI estimator (needs carrier injection
-    /// from the control loop to function at all).
-    pub fn is_hfi(&self) -> bool {
-        matches!(self, Observer::Hfi(_))
     }
 
     /// Check if observer is configured
@@ -132,7 +110,6 @@ impl Observer {
         match self {
             Observer::None => {}
             Observer::BackEmf(o) => o.reset(),
-            Observer::Hfi(o) => o.reset(),
         }
     }
 }

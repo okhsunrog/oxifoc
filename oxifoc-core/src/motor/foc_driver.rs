@@ -671,7 +671,7 @@ mod tests {
     #[test]
     #[cfg(feature = "virtual-motor")]
     fn current_control_drives_hfi_estimator() {
-        use crate::foc::phase::{HfiObserver, Observer, PhaseManager, PhaseSource};
+        use crate::foc::phase::{HfiObserver, PhaseManager, PhaseSource};
         use crate::foc::trig::LibmSinCos;
         use crate::virtual_motor::{MotorParams, VirtualMotor};
 
@@ -702,7 +702,7 @@ mod tests {
             24.0,
         );
         let mut mgr = PhaseManager::sensorless();
-        mgr.set_observer(Observer::Hfi(HfiObserver::new(1000.0, 3.0)));
+        mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
         mgr.set_source(PhaseSource::Hfi).unwrap();
 
         let mut driver = FocDriver::new(
@@ -737,10 +737,11 @@ mod tests {
             true_angle,
             err
         );
+        let hfi = driver.phase().hfi_observer().unwrap();
         assert!(
-            driver.phase().observer().is_ready(),
+            hfi.is_ready(),
             "HFI must be ready (locked + polarity resolved), confidence {}",
-            driver.phase().observer().confidence()
+            hfi.confidence()
         );
         assert!(
             crate::foc::angle_difference(out.angle_rad, ROTOR_ANGLE).abs() < 0.15,
