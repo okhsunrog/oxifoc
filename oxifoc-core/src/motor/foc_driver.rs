@@ -43,10 +43,11 @@ pub struct CurrentLimits {
 
 impl Default for CurrentLimits {
     fn default() -> Self {
-        Self {
-            max_current_a: 0.0,
-            overcurrent_threshold_a: 0.0,
-        }
+        // Conservative bench-safe fallback, NOT "protection off": a platform
+        // that forgets set_current_limits() gets a 5 A motor, not an
+        // unprotected one. Explicit zeros still mean "no limit" where a
+        // test or sim genuinely wants that.
+        Self::from_max_current(5.0)
     }
 }
 
@@ -719,12 +720,24 @@ mod tests {
         }
     }
 
+    /// CMD_CHANNEL and FLASH_OP_PENDING are process-wide globals — tests
+    /// that touch them must not run concurrently. Also drains any stale
+    /// commands a previous test left behind.
+    #[cfg(feature = "runtime")]
+    fn cmd_channel_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        while crate::state::CMD_CHANNEL.try_receive().is_ok() {}
+        guard
+    }
+
     /// SetPhaseSource through the command channel: a valid source switches
     /// the manager (and mirrors into shared state), an invalid one is
     /// rejected and leaves everything unchanged.
     #[test]
     #[cfg(feature = "runtime")]
     fn process_commands_switches_phase_source() {
+        let _serial = cmd_channel_lock();
         use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
         use crate::foc::phase::{HfiObserver, PhaseManager, PhaseSource};
         use crate::foc::trig::LibmSinCos;
@@ -794,6 +807,7 @@ mod tests {
     #[test]
     #[cfg(feature = "runtime")]
     fn process_commands_rejects_non_finite_payloads() {
+        let _serial = cmd_channel_lock();
         use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
         use crate::foc::phase::PhaseManager;
         use crate::foc::trig::LibmSinCos;
@@ -872,6 +886,90 @@ mod tests {
             iq_target: 1.0,
             id_target: 0.0,
         }));
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(
+            driver.mode(),
+            ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0
+            }
+        );
+    }
+
+    /// Motor start must be refused while a flash operation is in flight:
+    /// internal-flash erase stalls the chip, which must never overlap an
+    /// energized motor. This is the ISR half of the config server's
+    /// Busy-gate TOCTOU fix (the server arms FLASH_OP_PENDING before
+    /// re-checking the motor state).
+    #[test]
+    #[cfg(feature = "runtime")]
+    fn process_commands_blocks_start_during_flash_op() {
+        use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
+        use crate::foc::phase::PhaseManager;
+        use crate::foc::trig::LibmSinCos;
+        use crate::state::{
+            CMD_CHANNEL, DriverCommand, FlashPendingGuard, MotorControlState, process_commands,
+        };
+        use core::cell::RefCell;
+        use critical_section::Mutex as CriticalSectionMutex;
+
+        let _serial = cmd_channel_lock();
+
+        #[derive(Clone, Copy, PartialEq)]
+        struct TestFault;
+        impl PlatformFault for TestFault {
+            fn category(&self) -> FaultCategory {
+                FaultCategory::OverCurrent
+            }
+            fn details(&self) -> heapless::String<128> {
+                heapless::String::new()
+            }
+            fn is_recoverable(&self) -> bool {
+                false
+            }
+            fn is_critical(&self) -> bool {
+                true
+            }
+        }
+
+        let state: CriticalSectionMutex<RefCell<MotorControlState>> =
+            CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        let registry: FaultRegistry<TestFault> = FaultRegistry::new();
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+
+        let run_cmd = DriverCommand::SetMode(ControlMode::CurrentControl {
+            iq_target: 1.0,
+            id_target: 0.0,
+        });
+
+        // Flash op in flight: the start must be refused.
+        let pending = FlashPendingGuard::arm();
+        let _ = CMD_CHANNEL.try_send(run_cmd);
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(
+            driver.mode(),
+            ControlMode::Stopped,
+            "start must be blocked while a flash operation is pending"
+        );
+
+        // Stop must stay allowed mid-operation — it is the safe direction.
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::Stopped));
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(driver.mode(), ControlMode::Stopped);
+
+        // Flag cleared (guard dropped): the same start goes through.
+        drop(pending);
+        let _ = CMD_CHANNEL.try_send(run_cmd);
         process_commands(&state, &mut driver, &registry);
         assert_eq!(
             driver.mode(),
@@ -1024,6 +1122,9 @@ mod tests {
             mgr,
             DT,
         );
+        // Carrier + polarity-probe currents exceed the bench-safe default
+        // limits — give the test the board-scale ceiling explicitly.
+        driver.set_current_limits(CurrentLimits::from_max_current(40.0));
         driver.set_mode(ControlMode::CurrentControl {
             iq_target: 0.0,
             id_target: 0.0,

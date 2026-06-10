@@ -4,6 +4,7 @@
 //! Platforms instantiate the state with their own fault types.
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use critical_section::Mutex as CriticalSectionMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -68,6 +69,33 @@ pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, DriverCommand, 8> = Cha
 /// Used by calibration/detection to synchronize with individual FOC cycles.
 /// The listener reads `last_foc` from the state mutex after waking.
 pub static TELEM_WAKER: AtomicWaker = AtomicWaker::new();
+
+/// True while a flash operation is queued or running. Internal-flash erase
+/// stalls the whole chip (code executes from the same flash), so it must
+/// never overlap an energized motor.
+///
+/// Closes the TOCTOU gap in the config server's Busy check from both ends:
+/// the server arms this flag *before* re-checking the motor state, and
+/// [`process_commands`] refuses to start the motor while it is set — so
+/// whichever side wins the race, the unsafe overlap is impossible.
+pub static FLASH_OP_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// RAII guard for [`FLASH_OP_PENDING`]: clears the flag on every exit
+/// path, including the early returns on flash errors.
+pub struct FlashPendingGuard(());
+
+impl FlashPendingGuard {
+    pub fn arm() -> Self {
+        FLASH_OP_PENDING.store(true, Ordering::SeqCst);
+        FlashPendingGuard(())
+    }
+}
+
+impl Drop for FlashPendingGuard {
+    fn drop(&mut self) {
+        FLASH_OP_PENDING.store(false, Ordering::SeqCst);
+    }
+}
 
 // ============================================================================
 // State Structure
@@ -281,6 +309,14 @@ where
             if mode != ControlMode::Stopped
                 && (state.motor_state == MotorState::Error || fault_registry.any_critical())
             {
+                return;
+            }
+
+            // A queued flash write/erase would stall the chip mid-spin —
+            // refuse to start until it finishes (see FLASH_OP_PENDING).
+            if mode != ControlMode::Stopped && FLASH_OP_PENDING.load(Ordering::SeqCst) {
+                #[cfg(feature = "defmt")]
+                defmt::warn!("Motor start rejected: flash operation in flight");
                 return;
             }
 

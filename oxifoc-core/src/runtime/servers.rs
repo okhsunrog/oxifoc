@@ -275,6 +275,20 @@ pub async fn config_server<NS, const N: usize>(
                                     (ConfigKey::DcOffsets, ConfigPayload::DcOffsets(v))
                                 }
                             };
+                            // TOCTOU guard: arm the pending flag, then
+                            // re-check the motor state. The ISR refuses to
+                            // start the motor while the flag is set (the
+                            // Busy fast path above ran before the flag was
+                            // armed, so it alone is not enough). The guard
+                            // clears the flag on every return path.
+                            let _flash_pending = crate::state::FlashPendingGuard::arm();
+                            let motor_running = critical_section::with(|cs| {
+                                state_mutex.borrow(cs).borrow().motor_state
+                                    == MotorState::Running
+                            });
+                            if motor_running {
+                                return ConfigResponse::Busy;
+                            }
                             // Write-through ack: this server is the only
                             // FLASH_CHANNEL producer, so FLASH_DONE pairs
                             // 1:1 with our operation. Reset before sending
@@ -364,6 +378,15 @@ pub async fn config_server<NS, const N: usize>(
                             ConfigResponse::Ok
                         }
                         ConfigRequest::ResetAll => {
+                            // Same TOCTOU guard as the Write arm above.
+                            let _flash_pending = crate::state::FlashPendingGuard::arm();
+                            let motor_running = critical_section::with(|cs| {
+                                state_mutex.borrow(cs).borrow().motor_state
+                                    == MotorState::Running
+                            });
+                            if motor_running {
+                                return ConfigResponse::Busy;
+                            }
                             FLASH_DONE.reset();
                             if FLASH_CHANNEL.try_send(FlashOperation::EraseAll).is_err() {
                                 return ConfigResponse::Error;
