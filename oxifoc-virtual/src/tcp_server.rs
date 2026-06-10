@@ -48,6 +48,7 @@ pub async fn run(
     foc_freq_hz: u32,
     max_current_a: f32,
     vbus: f32,
+    motor_params: oxifoc_core::virtual_motor::MotorParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<VirtualFault>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
@@ -150,7 +151,7 @@ pub async fn run(
             async move {
                 tokio::select! {
                     _ = token.cancelled() => {}
-                    _ = crate::detect::detect_server(endpoints, vbus, max_current_a, foc_freq_hz) => {}
+                    _ = crate::detect::detect_server(endpoints, vbus, max_current_a, foc_freq_hz, motor_params) => {}
                 }
             }
         });

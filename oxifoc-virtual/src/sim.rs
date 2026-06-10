@@ -23,13 +23,13 @@ pub async fn foc_loop(
     batch: usize,
     vbus: f32,
     load_torque: f32,
+    params: MotorParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<VirtualFault>,
 ) {
     let _ = fault_registry; // available for future fault injection
 
     let dt = 1.0 / foc_freq as f32;
-    let params = MotorParams::default();
 
     let kp = params.ld * 1000.0;
     let ki = params.r * 1000.0;

@@ -50,9 +50,9 @@ struct Cli {
     #[arg(long)]
     serial_path: Option<String>,
 
-    /// Serial baud rate
-    #[arg(long, default_value_t = 921600)]
-    baud: u32,
+    /// Serial baud rate (overrides config file; default: config value, else 921600)
+    #[arg(long)]
+    baud: Option<u32>,
 
     /// Debug probe identifier (VID:PID or VID:PID:SERIAL). Required for RTT transport if not in config.
     #[arg(long)]
@@ -295,7 +295,11 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
         cfg.serial_path = Some(path.clone());
     }
 
-    cfg.serial_baud = Some(cli.baud);
+    // Only an explicitly passed --baud overrides the config file; the
+    // host-lib accessor falls back to 921600 when neither is set.
+    if let Some(baud) = cli.baud {
+        cfg.serial_baud = Some(baud);
+    }
 
     if let Some(ref probe) = cli.probe {
         cfg.probe = Some(probe.clone());

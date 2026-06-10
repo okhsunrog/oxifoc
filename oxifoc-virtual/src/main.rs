@@ -111,12 +111,20 @@ async fn main() -> anyhow::Result<()> {
     });
     tracing::info!("Config loaded from mock flash");
 
+    // One motor parameter set for both the live sim and the detection
+    // backend — CLI flags override the defaults here, nowhere else.
+    let motor_params = oxifoc_core::virtual_motor::MotorParams {
+        pole_pairs: args.pole_pairs,
+        ..Default::default()
+    };
+
     // Spawn simulation loop
     tokio::spawn(sim::foc_loop(
         args.foc_freq,
         args.batch,
         args.vbus,
         args.load,
+        motor_params,
         &STATE,
         &FAULT_REGISTRY,
     ));
@@ -129,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
                 args.foc_freq,
                 args.max_current,
                 args.vbus,
+                motor_params,
                 &STATE,
                 &FAULT_REGISTRY,
                 &RUNTIME_CONFIG,
@@ -141,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
                 args.foc_freq,
                 args.max_current,
                 args.vbus,
+                motor_params,
                 &STATE,
                 &FAULT_REGISTRY,
                 &RUNTIME_CONFIG,

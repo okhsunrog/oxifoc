@@ -282,32 +282,74 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
         }
         TransportConfig::Udp { host, port } => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
-            let stack = transport::udp::connect(&host, port, Some(state_notify.clone())).await?;
-            run_framed_transport(stack, state_notify, &cfg, ctx).await
+            let (stack, queue) = transport::udp::new_stack(ERGOT_QUEUE_SIZE, ERGOT_MTU);
+            let register_fn = {
+                let stack = stack.clone();
+                let notify = state_notify.clone();
+                async move || {
+                    transport::udp::register(&stack, &queue, &host, port, Some(notify.clone()))
+                        .await
+                }
+            };
+            run_framed_with_reconnect(stack, register_fn, state_notify, &cfg, ctx).await
         }
         TransportConfig::Usb => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
-            let stack = transport::usb::connect(Some(state_notify.clone())).await?;
-            run_framed_transport(stack, state_notify, &cfg, ctx).await
+            let (stack, queue) = transport::usb::new_stack();
+            let register_fn = {
+                let stack = stack.clone();
+                let notify = state_notify.clone();
+                async move || transport::usb::register(&stack, &queue, Some(notify.clone())).await
+            };
+            run_framed_with_reconnect(stack, register_fn, state_notify, &cfg, ctx).await
         }
         TransportConfig::Ble { device } => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
-            let stack = transport::ble::connect(&device, Some(state_notify.clone())).await?;
-            run_framed_transport(stack, state_notify, &cfg, ctx).await
+            let (stack, queue) = transport::ble::new_stack();
+            let register_fn = {
+                let stack = stack.clone();
+                let notify = state_notify.clone();
+                let mut workers = Vec::new();
+                async move || {
+                    transport::ble::register(
+                        &stack,
+                        &queue,
+                        &device,
+                        Some(notify.clone()),
+                        &mut workers,
+                    )
+                    .await
+                }
+            };
+            run_framed_with_reconnect(stack, register_fn, state_notify, &cfg, ctx).await
         }
     }
 }
 
-// ── Framed transport runner (UDP, USB) ───────────────────────────────────────
+// ── Framed transport runner (UDP, USB, BLE) ──────────────────────────────────
 
-async fn run_framed_transport<NS>(
+/// Run a packet-framed transport with the same reconnect loop the COBS
+/// stream path uses: the stack lives forever, `register_fn` attaches a fresh
+/// connection onto it for every attempt (it only succeeds while the
+/// interface is Down — i.e. after a teardown), and a failed handshake or a
+/// dead interface tears down and retries per the configured policy.
+async fn run_framed_with_reconnect<NS, I>(
     stack: NS,
+    mut register_fn: impl AsyncFnMut() -> Result<()>,
     state_notify: Arc<ergot::toolkits::tokio_stream::WaitQueue>,
     cfg: &HostConfig,
     ctx: BackendCtx,
 ) -> Result<()>
 where
-    NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>> + Clone + Send + Sync + 'static,
+    // Concrete DirectEdge profile (not just `Profile`): teardown() is an
+    // inherent method on it, and all framed stacks (UDP/USB/BLE) are
+    // DirectEdge targets.
+    NS: NetStackHandle<Profile = ergot::interface_manager::profiles::direct_edge::DirectEdge<I>>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    I: ergot::interface_manager::Interface,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
     NS::Target: Send,
@@ -317,18 +359,103 @@ where
     let cancel = ctx.cancel.clone();
     let info_tx = ctx.info_tx.clone();
 
-    hardware_info_handshake(&stack, &info_tx, &connected).await;
-    enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
+    // Protocol tasks are spawned once — they operate on the stack, not the
+    // per-connection interface.
     spawn_protocol_tasks(&stack, ctx);
-    if cfg.stream_defmt() {
-        // defmt decoding is a debugging nicety — a missing/unreadable ELF
-        // (e.g. connecting to the virtual device with no firmware build)
-        // must not kill an already-established connection.
-        if let Err(e) = start_defmt_decoder(cfg, &stack, None) {
-            tracing::warn!("defmt decoder unavailable, continuing without it: {e:#}");
+
+    let mut defmt_started = false;
+    let policy = cfg.reconnect_policy();
+    let mut connect_attempts: u32 = 0;
+
+    loop {
+        let reg_result = tokio::select! {
+            r = register_fn() => r,
+            _ = cancel.cancelled() => break,
+        };
+
+        if let Err(e) = reg_result {
+            connect_attempts += 1;
+            tracing::warn!(
+                "Framed transport connect failed (attempt {}): {:?}",
+                connect_attempts,
+                e
+            );
+
+            match policy {
+                config::ReconnectPolicy::None => {
+                    info!("Reconnect policy: none — giving up");
+                    break;
+                }
+                config::ReconnectPolicy::Limited(max) if connect_attempts >= max => {
+                    info!("Reconnect policy: exhausted {} attempts — giving up", max);
+                    break;
+                }
+                _ => {}
+            }
+
+            tokio::select! {
+                _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
+                _ = cancel.cancelled() => break,
+            }
         }
+        connect_attempts = 0;
+
+        // Wait for the interface to become Active
+        tokio::select! {
+            _ = wait_for_active(&state_notify, &stack) => {}
+            _ = cancel.cancelled() => break,
+        }
+
+        // HardwareInfo handshake on each (re)connection
+        let handshake_ok = hardware_info_handshake(&stack, &info_tx, &connected).await;
+
+        if !handshake_ok {
+            tracing::warn!("Handshake failed, reconnecting...");
+            connected.store(false, Ordering::Relaxed);
+            stack.stack().manage_profile(|im| im.teardown());
+            tokio::task::yield_now().await;
+            tokio::select! {
+                _ = tokio::time::sleep(RECONNECT_DELAY) => {}
+                _ = cancel.cancelled() => break,
+            }
+            continue;
+        }
+
+        enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
+
+        if !defmt_started && cfg.stream_defmt() {
+            // defmt decoding is a debugging nicety — a missing/unreadable ELF
+            // (e.g. connecting to the virtual device with no firmware build)
+            // must not kill an already-established connection.
+            match start_defmt_decoder(cfg, &stack, None) {
+                Ok(()) => defmt_started = true,
+                Err(e) => {
+                    tracing::warn!("defmt decoder unavailable, continuing without it: {e:#}");
+                }
+            }
+        }
+
+        // Monitor interface state with recovery
+        let disconnected =
+            monitor_state_with_recovery(&state_notify, &stack, &connected, &cancel).await;
+
+        if !disconnected {
+            // Cancelled
+            break;
+        }
+
+        // Tear down the old interface so workers release the connection
+        info!("Calling teardown...");
+        stack.stack().manage_profile(|im| im.teardown());
+        tokio::task::yield_now().await;
+        tokio::select! {
+            _ = tokio::time::sleep(RECONNECT_DELAY) => {}
+            _ = cancel.cancelled() => break,
+        }
+        info!("Attempting reconnection...");
     }
-    monitor_state_until_down(&state_notify, &stack, &connected, &cancel).await;
+
+    info!("Host backend shutdown complete");
     Ok(())
 }
 
@@ -491,44 +618,21 @@ where
 
 // ── State monitoring ─────────────────────────────────────────────────────────
 
-/// Monitor interface state, updating the connected flag.
-/// Returns when the interface goes Down or cancel fires.
-async fn monitor_state_until_down<NS>(
+/// Monitor interface state with recovery support.
+/// Returns `true` if disconnected (needs reconnect), `false` if cancelled.
+async fn monitor_state_with_recovery<NS>(
     state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
     stack: &NS,
     connected: &Arc<AtomicBool>,
     cancel: &CancellationToken,
-) where
+) -> bool
+where
     NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>>,
 {
     loop {
         tokio::select! {
             _ = state_notify.wait() => {
                 let state = stack.stack().manage_profile(|im| im.interface_state(()));
-                let is_active = matches!(state, Some(InterfaceState::Active { .. }));
-                connected.store(is_active, Ordering::Relaxed);
-                if matches!(state, Some(InterfaceState::Down)) {
-                    tracing::warn!("Interface went Down");
-                    break;
-                }
-            }
-            _ = cancel.cancelled() => break,
-        }
-    }
-}
-
-/// Monitor interface state with recovery support (for COBS streams).
-/// Returns `true` if disconnected (needs reconnect), `false` if cancelled.
-async fn monitor_state_with_recovery(
-    state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
-    stack: &ergot::toolkits::tokio_stream::EdgeStack,
-    connected: &Arc<AtomicBool>,
-    cancel: &CancellationToken,
-) -> bool {
-    loop {
-        tokio::select! {
-            _ = state_notify.wait() => {
-                let state = stack.manage_profile(|im| im.interface_state(()));
                 let is_active = matches!(state, Some(InterfaceState::Active { .. }));
                 let was_active = connected.swap(is_active, Ordering::Relaxed);
 

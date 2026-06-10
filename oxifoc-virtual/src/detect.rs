@@ -25,6 +25,9 @@ use oxifoc_core::virtual_motor::MotorParams;
 /// Detection backend backed by the virtual-motor simulation.
 struct VirtualBackend {
     vbus: f32,
+    /// Simulated motor under test — same parameter set the live sim runs
+    /// (CLI overrides like --pole-pairs land here, not in defaults).
+    params: MotorParams,
 }
 
 impl DetectionBackend for VirtualBackend {
@@ -38,8 +41,9 @@ impl DetectionBackend for VirtualBackend {
     ) -> Result<f32, DetectionError> {
         let params = *params;
         let vbus = self.vbus;
+        let params_m = self.params;
         tokio::task::spawn_blocking(move || {
-            with_sim(MotorParams::default(), vbus, |hw| {
+            with_sim(params_m, vbus, |hw| {
                 block_on(measure_resistance::<_, VirtualTimer>(hw, &params))
             })
         })
@@ -54,8 +58,9 @@ impl DetectionBackend for VirtualBackend {
     ) -> Result<(f32, f32), DetectionError> {
         let params = *params;
         let vbus = self.vbus;
+        let params_m = self.params;
         tokio::task::spawn_blocking(move || {
-            with_sim(MotorParams::default(), vbus, |hw| {
+            with_sim(params_m, vbus, |hw| {
                 block_on(measure_inductance::<_, VirtualTimer, LibmSinCos>(
                     hw,
                     &params,
@@ -70,8 +75,9 @@ impl DetectionBackend for VirtualBackend {
     async fn measure_flux(&mut self, params: &FluxLinkageParams) -> Result<f32, DetectionError> {
         let params = *params;
         let vbus = self.vbus;
+        let params_m = self.params;
         tokio::task::spawn_blocking(move || {
-            with_sim(MotorParams::default(), vbus, |hw| {
+            with_sim(params_m, vbus, |hw| {
                 block_on(measure_flux_linkage::<_, VirtualTimer>(hw, &params))
             })
         })
@@ -84,8 +90,9 @@ impl DetectionBackend for VirtualBackend {
         params: HallCalibrationParams,
     ) -> Result<HallCalibrationResult, DetectionError> {
         let vbus = self.vbus;
+        let params_m = self.params;
         tokio::task::spawn_blocking(move || {
-            with_sim(MotorParams::default(), vbus, |hw| {
+            with_sim(params_m, vbus, |hw| {
                 let hall_reader = VirtualHallReader;
                 block_on(calibrate_hall::<_, VirtualTimer, _>(
                     hw,
@@ -106,10 +113,14 @@ pub async fn detect_server<NS: NetStackHandle>(
     vbus: f32,
     max_current_a: f32,
     foc_freq_hz: u32,
+    motor_params: MotorParams,
 ) {
     core_detect_server(
         endpoints,
-        VirtualBackend { vbus },
+        VirtualBackend {
+            vbus,
+            params: motor_params,
+        },
         max_current_a,
         foc_freq_hz,
         Some(&crate::RUNTIME_CONFIG),

@@ -42,8 +42,39 @@ pub type EdgeStack = ArcNetStack<
     DirectEdge<BleNusInterface>,
 >;
 
-/// Connect to an oxifoc bridge device over BLE NUS.
-pub async fn connect(device: &Device, state_notify: Option<Arc<WaitQueue>>) -> Result<EdgeStack> {
+pub fn new_stack() -> (EdgeStack, StdQueue) {
+    let queue = ergot::interface_manager::utils::std::new_std_queue(OUT_BUFFER_SIZE);
+    let stack = EdgeStack::new_with_profile(DirectEdge::new_target(
+        framed_stream::Sink::new_from_handle(queue.clone(), BLE_MTU),
+    ));
+    (stack, queue)
+}
+
+/// Connect to an oxifoc bridge device over BLE NUS and register it onto the
+/// (long-lived) stack. Only succeeds while the interface is Down, i.e. on
+/// first connect or after a teardown.
+///
+/// `workers` carries the rx/tx task handles between reconnects: the old
+/// tasks are aborted before new ones attach, so the bbqueue never ends up
+/// with two competing consumers.
+pub async fn register(
+    stack: &EdgeStack,
+    queue: &StdQueue,
+    device: &Device,
+    state_notify: Option<Arc<WaitQueue>>,
+    workers: &mut Vec<tokio::task::JoinHandle<()>>,
+) -> Result<()> {
+    for handle in workers.drain(..) {
+        handle.abort();
+    }
+
+    // Same precondition the ergot toolkits enforce: never double-activate.
+    let is_down = stack
+        .manage_profile(|im| matches!(im.interface_state(()), Some(InterfaceState::Down) | None));
+    if !is_down {
+        return Err(anyhow!("BLE interface not in Down state"));
+    }
+
     // Connect via adapter
     let adapter = Adapter::default()
         .await
@@ -84,12 +115,6 @@ pub async fn connect(device: &Device, state_notify: Option<Arc<WaitQueue>>) -> R
 
     info!("NUS service discovered (RX + TX characteristics)");
 
-    // Create ergot stack
-    let queue = ergot::interface_manager::utils::std::new_std_queue(OUT_BUFFER_SIZE);
-    let stack = EdgeStack::new_with_profile(DirectEdge::new_target(
-        framed_stream::Sink::new_from_handle(queue.clone(), BLE_MTU),
-    ));
-
     stack.manage_profile(|im| {
         let _ = im.set_interface_state(
             (),
@@ -107,7 +132,7 @@ pub async fn connect(device: &Device, state_notify: Option<Arc<WaitQueue>>) -> R
     // Spawn RX worker — tx_char moved in so notify() borrow is 'static
     let rx_stack = stack.clone();
     let rx_notify = state_notify.clone();
-    tokio::spawn(async move {
+    workers.push(tokio::spawn(async move {
         let notifications = match tx_char.notify().await {
             Ok(n) => n,
             Err(e) => {
@@ -116,15 +141,16 @@ pub async fn connect(device: &Device, state_notify: Option<Arc<WaitQueue>>) -> R
             }
         };
         ble_rx_worker(rx_stack, notifications, rx_notify).await;
-    });
+    }));
 
     // Spawn TX worker
-    tokio::spawn(async move {
-        ble_tx_worker(queue, rx_char).await;
-    });
+    let tx_queue = queue.clone();
+    workers.push(tokio::spawn(async move {
+        ble_tx_worker(tx_queue, rx_char).await;
+    }));
 
     info!("BLE NUS transport registered");
-    Ok(stack)
+    Ok(())
 }
 
 /// RX worker: reads NUS TX notifications and feeds them to ergot.
