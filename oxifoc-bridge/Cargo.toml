@@ -8,6 +8,7 @@ version      = "0.1.0"
 name = "oxifoc-bridge"
 path = "./src/bin/main.rs"
 test = false
+bench = false
 
 [[test]]
 harness = false
@@ -15,6 +16,7 @@ name    = "hello_test"
 
 [lib]
 test = false
+bench = false
 
 [dependencies]
 esp-hal = { git = "https://github.com/esp-rs/esp-hal.git", rev = "7b8b9a3a79cfb80d47cbaea38d44d735841ca8f0", features = ["defmt", "esp32c6", "unstable"] }
