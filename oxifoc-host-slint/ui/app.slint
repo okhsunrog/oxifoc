@@ -52,6 +52,12 @@ export component App inherits Window {
     in property <bool> motor-running: false;
     callback motor-update();  // called when slider changes while motor is running
 
+    // Phase source (commutation angle source): requested via the combo,
+    // active source read back from slow telemetry.
+    in-out property <int> phase-source-index: 0;
+    in property <string> phase-source-text: "";
+    callback phase-source-changed();
+
     // ── Fast telemetry streaming ──
     in-out property <int> stream-rate-index: 0;  // default 100 Hz
     in property <bool> streaming: false;
@@ -515,6 +521,16 @@ export component App inherits Window {
                         clicked => { if root.streaming { root.stream-stop(); } else { root.stream-start(); } }
                     }
                 }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text { text: "Source"; vertical-alignment: center; font-size: 11px; }
+                    ComboBox {
+                        model: ["Hall", "Hall+Fallback", "Observer", "HFI", "HFI→Observer"];
+                        current-index <=> root.phase-source-index;
+                        min-width: 90px;
+                        selected => { root.phase-source-changed(); }
+                    }
+                }
             }
 
             // Right: compact telemetry dashboard
@@ -558,6 +574,8 @@ export component App inherits Window {
                                  : root.motor-state-text == "Fault" ? #ef4444
                                  : Palette.foreground;
                         }
+                        Text { text: "Src:"; font-size: 11px; }
+                        Text { text: root.phase-source-text; font-weight: 600; font-size: 11px; }
                         if root.fault-text != "" : Text { text: "Faults:"; font-size: 11px; color: #ef4444; }
                         if root.fault-text != "" : Text { text: root.fault-text; font-weight: 600; font-size: 11px; color: #ef4444; }
                         Text { text: "Seq:"; font-size: 11px; }

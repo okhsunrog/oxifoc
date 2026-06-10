@@ -43,6 +43,7 @@ type RouterStack = ArcNetStack<
     Router<TokioStreamInterface, StdRng, ROUTER_SLOTS, ROUTER_SEEDS>,
 >;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     port: u16,
     foc_freq_hz: u32,

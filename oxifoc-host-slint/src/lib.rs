@@ -35,6 +35,46 @@ const CAPACITY: usize = 32768;
 const MAX_LOG_LINES: usize = 2000;
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];
 
+/// Short display label for the active phase source from slow telemetry.
+fn phase_source_label(src: oxifoc_core::foc::phase::PhaseSource) -> &'static str {
+    use oxifoc_core::foc::phase::PhaseSource as P;
+    match src {
+        P::Hall => "Hall",
+        P::Encoder => "Encoder",
+        P::Observer => "Observer",
+        P::Hfi => "HFI",
+        P::HallToObserver { .. } => "Hall→Obs",
+        P::EncoderToObserver { .. } => "Enc→Obs",
+        P::HallWithFallback { .. } => "Hall+FB",
+        P::HfiToObserver { .. } => "HFI→Obs",
+        P::HfiToHall { .. } => "HFI→Hall",
+        P::HfiToEncoder { .. } => "HFI→Enc",
+        P::Manual => "Manual",
+        P::OpenLoop => "OpenLoop",
+    }
+}
+
+/// Parse a numeric text field for a config/detect write. A typo must abort
+/// the write with a visible error, not silently become 0 (and end up in
+/// flash as e.g. 0 Ω). Records the first failing field in `err`; the
+/// returned default never reaches the device because the caller bails out
+/// when `err` is set.
+fn parse_field<T: std::str::FromStr + Default>(
+    name: &str,
+    value: &SharedString,
+    err: &mut Option<String>,
+) -> T {
+    match value.trim().parse() {
+        Ok(v) => v,
+        Err(_) => {
+            if err.is_none() {
+                *err = Some(format!("Invalid {name}: '{}'", value.as_str()));
+            }
+            T::default()
+        }
+    }
+}
+
 /// Tracing layer that sends log messages to a crossbeam channel for the UI.
 struct UiLogLayer {
     tx: crossbeam_channel::Sender<(String, i32)>,
@@ -400,6 +440,9 @@ pub fn main() {
                             )));
                             let state_str = format!("{:?}", s.motor_state);
                             app.set_motor_state_text(SharedString::from(state_str));
+                            app.set_phase_source_text(SharedString::from(phase_source_label(
+                                s.phase_source,
+                            )));
                             if s.fault_count > 0 {
                                 app.set_fault_text(SharedString::from(format!(
                                     "{}",
@@ -825,6 +868,46 @@ pub fn main() {
         });
     }
 
+    // ── Phase source switch ──────────────────────────────────────────────────
+    // Fire-and-forget like the CLI `source` command: the device validates
+    // (sensor present, estimators configured) and the actually-active source
+    // reads back via SlowTelemetry.phase_source ("Src:" in the dashboard).
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_phase_source_changed(move || {
+            use oxifoc_core::foc::phase::PhaseSource;
+            // Same crossover defaults the CLI uses (electrical rad/s).
+            const SWITCH_VEL: f32 = 150.0;
+
+            let app = weak.unwrap();
+            let ps = match app.get_phase_source_index() {
+                0 => PhaseSource::Hall,
+                1 => PhaseSource::HallWithFallback {
+                    blend_low: SWITCH_VEL,
+                    blend_high: SWITCH_VEL * 2.0,
+                    timeout_us: 100_000,
+                },
+                2 => PhaseSource::Observer,
+                3 => PhaseSource::Hfi,
+                4 => PhaseSource::HfiToObserver {
+                    min_vel: SWITCH_VEL,
+                    min_confidence: 0.5,
+                },
+                _ => return,
+            };
+            let guard = rt.lock().unwrap();
+            if let Some(ref runtime) = *guard {
+                tracing::info!("Phase source request: {ps:?}");
+                if let Err(e) = runtime.cmd_tx.send(HostCommand::SetPhaseSource(ps)) {
+                    tracing::error!("Failed to send phase source command: {e}");
+                }
+            } else {
+                tracing::warn!("Phase source changed but no runtime");
+            }
+        });
+    }
+
     // ── Stream start ─────────────────────────────────────────────────────────
     {
         let rt = runtime.clone();
@@ -984,13 +1067,15 @@ pub fn main() {
             use oxifoc_core::storage::*;
             use oxifoc_core::types::ConfigWrite;
 
+            let mut parse_err: Option<String> = None;
+            let err = &mut parse_err;
             let write = match group_idx {
                 0 => {
-                    let r: f32 = app.get_cfg_resistance().parse().unwrap_or(0.0);
-                    let ld: f32 = app.get_cfg_inductance_d().parse().unwrap_or(0.0);
-                    let lq: f32 = app.get_cfg_inductance_q().parse().unwrap_or(0.0);
-                    let fl: f32 = app.get_cfg_flux_linkage().parse().unwrap_or(0.0);
-                    let pp: u8 = app.get_cfg_pole_pairs().parse().unwrap_or(1);
+                    let r: f32 = parse_field("resistance", &app.get_cfg_resistance(), err);
+                    let ld: f32 = parse_field("inductance d", &app.get_cfg_inductance_d(), err);
+                    let lq: f32 = parse_field("inductance q", &app.get_cfg_inductance_q(), err);
+                    let fl: f32 = parse_field("flux linkage", &app.get_cfg_flux_linkage(), err);
+                    let pp: u8 = parse_field("pole pairs", &app.get_cfg_pole_pairs(), err);
                     ConfigWrite::MotorParams(MotorParamsConfig {
                         resistance_ohm: r,
                         inductance_d_h: ld,
@@ -1000,25 +1085,26 @@ pub fn main() {
                     })
                 }
                 1 => {
-                    let iq: f32 = app.get_cfg_max_iq().parse().unwrap_or(0.0);
-                    let ph: f32 = app.get_cfg_max_phase_current().parse().unwrap_or(0.0);
+                    let iq: f32 = parse_field("max iq", &app.get_cfg_max_iq(), err);
+                    let ph: f32 =
+                        parse_field("max phase current", &app.get_cfg_max_phase_current(), err);
                     ConfigWrite::CurrentLimits(CurrentLimitsConfig {
                         max_iq_a: iq,
                         max_phase_current_a: ph,
                     })
                 }
                 2 => {
-                    let min: u32 = app.get_cfg_min_vbus().parse().unwrap_or(0);
-                    let max: u32 = app.get_cfg_max_vbus().parse().unwrap_or(0);
+                    let min: u32 = parse_field("min vbus", &app.get_cfg_min_vbus(), err);
+                    let max: u32 = parse_field("max vbus", &app.get_cfg_max_vbus(), err);
                     ConfigWrite::VoltageLimits(VoltageLimitsConfig {
                         min_vbus_mv: min,
                         max_vbus_mv: max,
                     })
                 }
                 3 => {
-                    let kp: f32 = app.get_cfg_kp().parse().unwrap_or(0.0);
-                    let ki: f32 = app.get_cfg_ki().parse().unwrap_or(0.0);
-                    let bw: f32 = app.get_cfg_bandwidth().parse().unwrap_or(0.0);
+                    let kp: f32 = parse_field("kp", &app.get_cfg_kp(), err);
+                    let ki: f32 = parse_field("ki", &app.get_cfg_ki(), err);
+                    let bw: f32 = parse_field("bandwidth", &app.get_cfg_bandwidth(), err);
                     ConfigWrite::PiGains(PiGainsConfig {
                         kp,
                         ki,
@@ -1027,6 +1113,12 @@ pub fn main() {
                 }
                 _ => return,
             };
+
+            // A typo must never reach flash as a zero — abort the write.
+            if let Some(msg) = parse_err {
+                app.set_config_status(SharedString::from(msg));
+                return;
+            }
 
             let (tx, rx) = config_channel();
             if runtime
@@ -1067,8 +1159,18 @@ pub fn main() {
             let app = weak.unwrap();
 
             let pole_pairs = app.get_pole_pairs().max(1) as u8;
-            let max_loss: f32 = app.get_detect_max_loss().parse().unwrap_or(120.0);
-            let openloop_erpm: f32 = app.get_detect_openloop_erpm().parse().unwrap_or(700.0);
+            let mut parse_err: Option<String> = None;
+            let max_loss: f32 =
+                parse_field("max power loss", &app.get_detect_max_loss(), &mut parse_err);
+            let openloop_erpm: f32 = parse_field(
+                "open-loop ERPM",
+                &app.get_detect_openloop_erpm(),
+                &mut parse_err,
+            );
+            if let Some(msg) = parse_err {
+                app.set_detect_status(SharedString::from(msg));
+                return;
+            }
 
             // Send sequential detection steps: R → L → flux → hall
             // Each step is a separate request/response via the same endpoint.
@@ -1244,13 +1346,19 @@ pub fn main() {
             use oxifoc_core::storage::{MotorParamsConfig, PiGainsConfig};
             use oxifoc_core::types::ConfigWrite;
 
-            let r: f32 = app.get_detect_resistance().parse().unwrap_or(0.0);
-            let ld: f32 = app.get_detect_inductance_d().parse().unwrap_or(0.0);
-            let lq: f32 = app.get_detect_inductance_q().parse().unwrap_or(0.0);
-            let fl: f32 = app.get_detect_flux_linkage().parse().unwrap_or(0.0);
+            let mut parse_err: Option<String> = None;
+            let err = &mut parse_err;
+            let r: f32 = parse_field("resistance", &app.get_detect_resistance(), err);
+            let ld: f32 = parse_field("inductance d", &app.get_detect_inductance_d(), err);
+            let lq: f32 = parse_field("inductance q", &app.get_detect_inductance_q(), err);
+            let fl: f32 = parse_field("flux linkage", &app.get_detect_flux_linkage(), err);
             let pp = app.get_pole_pairs().max(1) as u8;
-            let kp: f32 = app.get_detect_kp().parse().unwrap_or(0.0);
-            let ki: f32 = app.get_detect_ki().parse().unwrap_or(0.0);
+            let kp: f32 = parse_field("kp", &app.get_detect_kp(), err);
+            let ki: f32 = parse_field("ki", &app.get_detect_ki(), err);
+            if let Some(msg) = parse_err {
+                app.set_detect_status(SharedString::from(msg));
+                return;
+            }
 
             // Write motor params
             let (tx1, rx1) = config_channel();
