@@ -99,26 +99,21 @@ model f32).
 
 ## From external review (verified pending / host side)
 
-- [ ] `oxifoc-virtual --pole-pairs`: reported as dead (sim and detect
-  backends allegedly use `MotorParams::default()`); needs verification —
-  the flag IS passed in main.rs, check where it stops propagating.
-- [ ] CLI `--baud` has `default_value_t`, so it always overrides
-  `serial_baud` from oxifoc-host.toml — config value never applies.
-- [ ] Framed transports (UDP/USB/BLE): handshake result ignored and no
-  reconnect loop, unlike the COBS path — a UDP host that loses link is
-  dead until manual reconnect.
-- [ ] GUI parses numeric fields with `unwrap_or(0.0)` — a typo in the
-  resistance field silently writes 0 Ω to flash.
 - [ ] **F405 ADC trigger suspicion (bench)**: ADC triggers from TIM1_CH4
   compare, which fires twice per period in center-aligned mode (G431
   correctly uses TRGO2/COMPARE_OC4, one edge). May work by accident
   (second trigger lands in a still-running injected sequence). Verify
   ISR rate on hardware or move F405 to TRGO.
+- [ ] Host command queue is strictly serial: a `Stop` queued behind a
+  running `Detect` waits for it (up to the ~70 s retry budget). The
+  device-side link failsafe covers the safety angle, but the UX is
+  wrong — route Stop around the queue or cancel in-flight detect.
 
-## Host tools
-
-- [ ] GUI (Slint): phase-source switcher + display of
-  `SlowTelemetry.phase_source` (CLI `source` command already works).
+2026-06-10: fixed the other review host items — CLI `--baud` config
+override, framed-transport (UDP/USB/BLE) handshake check + reconnect
+loop, GUI `unwrap_or(0.0)` field parsing, dead `oxifoc-virtual
+--pole-pairs` — and added the GUI phase-source switcher with
+`SlowTelemetry.phase_source` read-back. See git log.
 
 ## Hardware bench (waiting for the rig)
 
