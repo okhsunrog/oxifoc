@@ -31,14 +31,15 @@ Status legend: **[done]** implemented · **[planned]** not yet · **[idea]** to 
 |------|--------------------|-----------|---------------|--------|
 | 1. Link gate | Host disconnected / link silent | ergot liveness → `state_notify` → `state_monitor` clears `link_active` → FOC forces `Stopped` | liveness timeout (3–5 s today) | **[done]** |
 | 2. ISR command-staleness deadman | Host alive but not commanding; **async executor hung** | Stamp `last_cmd_tick` in ISR when draining `CMD_CHANNEL`; if `now - last_cmd_tick > thr` → configurable failsafe mode | ~ multiple of command period (e.g. 60–100 ms) | **[planned]** |
-| 3. Independent watchdog (IWDG) | **FOC ISR itself stopped** (hardfault, clock fault, priority lock) | IWDG petted from the FOC ISR; if even the ISR stops → MCU reset → PWM goes high-Z/off | IWDG period | **[planned]** |
+| 3. Panic/HardFault gate kill | **Firmware panicked / hard-faulted** | Custom handlers clear `TIM1 BDTR.MOE` (+ EN_GATE low on F405) *before* any reporting (`safety.rs` per board) | immediate | **[done]** |
+| 4. Independent watchdog (IWDG) | **FOC ISR itself stopped** (lockup, clock fault, priority lock) | IWDG petted from the FOC ISR; if even the ISR stops → MCU reset → PWM goes high-Z/off | 100 ms (G431) / 1 s (F405) | **[done]** (G474 pending — FOC ISR dormant) |
 
 Key insight: Layer 1 is **async-executor-dependent** (liveness runs in the RX
 worker; `link_active` is cleared by the async `state_monitor`). If the executor
 hangs, Layer 1 does **not** fire. Layer 2 (ISR-resident) survives executor
 starvation and **subsumes Layer 1's coverage** — once Layer 2 exists, the
-Layer 1 gate can be removed or folded in as one input. Layer 3 is the hardware
-backstop below both.
+Layer 1 gate can be removed or folded in as one input. Layers 3 and 4 are the
+backstops below both.
 
 ### Layer 1 — link gate (implemented)
 
@@ -64,12 +65,34 @@ rely on Layer 2's tighter threshold once it lands.
   to standstill), not a one-shot `Stopped` command.
 - Behaviour configurable (coast vs smooth brake vs hold).
 
-### Layer 3 — IWDG (planned)
+### Layer 3 — panic/HardFault gate kill (implemented)
 
-- Pet the IWDG from the FOC ISR (the most reliable context).
-- On expiry the MCU resets; ensure the reset state leaves PWM safe (outputs
-  off / high-Z). See *Boot-time recovery* — a watchdog reset while moving is a
+Each STM32 firmware has its own `safety.rs` replacing `panic_probe`: the
+panic handler and the HardFault exception clear `TIM1 BDTR.MOE` first (raw
+PAC write, no peripheral ownership needed; F405 additionally drops the
+DRV8301 EN_GATE pin), then report over defmt and halt. Standalone, the halt
+ends in an IWDG reset; under a debugger UDF / vector catch halts the core
+for inspection.
+
+### Layer 4 — IWDG (implemented; G474 pending)
+
+- Armed right after `foc::init` (the ISR is the sole feeder, so never
+  earlier), petted at the end of every ADC ISR cycle via a raw `IWDG.KR`
+  write.
+- Timeout must outlive the longest CPU stall with no ISR running — an
+  internal-flash erase stalls the chip since code executes from the same
+  flash: **100 ms on G431** (page erase ~25 ms), **1 s on F405** (16 KB
+  sector erase up to ~500 ms). Config writes are additionally blocked while
+  the motor runs (Busy gate + `FLASH_OP_PENDING` TOCTOU guard), so a stall
+  with the motor energized cannot happen by design; the IWDG margin is the
+  backstop.
+- `DBGMCU` freezes the IWDG while the core is halted, so breakpoints don't
+  reset the chip.
+- After an IWDG reset the PWM peripheral comes up disabled (outputs
+  high-Z). See *Boot-time recovery* — a watchdog reset while moving is a
   specific, dangerous case.
+- **G474**: not armed — the FOC ISR (its feeder) is dormant until the
+  IHM08M1 shield is connected. The panic hooks are in place.
 
 ## Boot-time recovery (idea / planned)
 
@@ -144,7 +167,9 @@ of stop.
 ## Open questions / TODO
 
 - [ ] Layer 2: ISR command-staleness deadman + configurable failsafe mode.
-- [ ] Layer 3: IWDG petted from FOC ISR; verify reset → PWM safe.
+- [x] Layer 3/4: panic/HardFault gate kill + IWDG petted from FOC ISR.
+- [ ] G474: arm the IWDG when the motor modules (FOC ISR) wake up.
+- [ ] Bench: verify IWDG reset → PWM safe on real hardware (induce a hang).
 - [ ] Boot: reset-reason read + spinning-motor detection + flying-restart sync.
 - [ ] Configurable post-watchdog policy (controlled coast / regen / hold).
 - [ ] Once Layer 2 exists, fold/remove the Layer 1 `link_active` gate.

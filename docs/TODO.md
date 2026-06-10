@@ -29,6 +29,60 @@ board docs.
   connected; `control/foc.rs` is kept in sync by hand but not
   compile-checked.
 
+## VirtualMotor model fidelity (from moteus sim comparison, 2026-06-10)
+
+Keep every new effect behind an optional param defaulting to ideal (the
+`sat_k` pattern) so existing tests stay pinned. High-priority items
+de-risk the sensorless bench; run `detection_report` before/after each.
+
+- [ ] **Sub-stepping** (~10 internal Euler steps per `step()`). Not for
+  stability — to break the shared-discretization circularity: the sim's
+  per-step `di = (v − R·i)·dt/L` is exactly the model the estimators
+  assume, so detection errors near 0.0% are partly self-confirmation.
+  Sub-stepping approximates the continuous plant and makes the
+  estimators' own discretization error visible. Free accuracy audit
+  before the bench.
+- [ ] **Dead-time voltage distortion**: `v_err = −sign(i_phase)·v_dt`,
+  `v_dt ≈ t_dead·f_pwm·vbus`. Three algorithms claim dead-time
+  robustness and none of it is currently exercised in sim: 2-point R
+  measurement (exists to cancel this bias), HFI inductance via
+  `apply_dq` (skips dead-time comp), flux observer (integrates
+  commanded, not actual volts). Add to a couple of catalog rows and
+  watch the error columns.
+- [ ] **Current quantization + noise**: 12-bit ADC over the shunt range
+  plus deterministic Gaussian noise (seeded xorshift, no_std, no `rand`
+  dep). Makes HFI demod SNR honest (the carrier-amplitude floor in
+  `observer.rs` was tuned on noiseless currents) and shows whether
+  `check_current_faults` needs a persistence filter.
+- [ ] **One-cycle PWM delay in the closed-loop test harness** (not the
+  model): apply the previous step's v_αβ, like moteus's `prior_pwm`.
+  Observer/crossover tests then see the phase lag real hardware always
+  has.
+- [ ] **Q-axis saturation** `Lq_eff = Lq/(1 + sat_kq·|iq|)` — the
+  classic HFI failure mode: saliency ratio collapses under load. Lets a
+  test pin "HFI confidence drops with iq, manager falls back to
+  observer", which the PhaseManager logic supports but the sim cannot
+  currently trigger.
+- [ ] **Vbus sag**: `vbus = vbus0 − i_bus·R_esr`. Realistic UV-dip /
+  regen-OV scenarios for the fault checkers (currently tested with
+  hand-fed constants); groundwork for MESC-style dynamic Vmax if
+  borrowed.
+- [ ] **Coulomb friction + ω² load**: `T_load += T_c·sign(ω) + k_d·ω²`.
+  Coulomb matters for standstill HFI / open-loop starts (stiction is
+  where startup stumbles on real hardware); ω² makes the drone/eskate
+  catalog rows physically meaningful.
+- [ ] Later, with the velocity loop: **coupled dynamometer mode** (two
+  VirtualMotors on a shared shaft, mirroring moteus's
+  `simulation_dynamometer_test.cc`) so speed-control tests run against
+  an active load and can later be mirrored on a physical rig.
+- [ ] Later: **hall glitches** (rare 0/7 states, edge bounce) to cover
+  invalid-state recovery in closed loop; **cogging** only if/when
+  anticogging calibration lands.
+
+Explicitly not planned: temperature model, iron losses, f64/unwrapped
+position (only needed once a position loop exists; keep the no_std
+model f32).
+
 ## Size / performance
 
 - [ ] **g431 flash headroom is ~3.3 KB** (123 564 / 126 976 bytes) after
