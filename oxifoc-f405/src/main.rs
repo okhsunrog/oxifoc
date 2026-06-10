@@ -6,9 +6,6 @@ use embassy_stm32::gpio::Output;
 use embassy_stm32::{bind_interrupts, exti, interrupt};
 use embassy_time::{Duration, Timer};
 
-// Use panic-probe for panics
-use panic_probe as _;
-
 // Bind EXTI9_5 interrupt for nFAULT monitoring (PB7/EXTI7)
 bind_interrupts!(struct ExtiIrqs {
     EXTI9_5 => exti::InterruptHandler<interrupt::typelevel::EXTI9_5>;
@@ -22,6 +19,8 @@ pub mod fault;
 mod hardware;
 mod motor;
 mod protocol;
+// Panic/HardFault handlers (gate kill) + IWDG live here.
+mod safety;
 mod sensors;
 mod storage;
 mod transport;
@@ -143,6 +142,9 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 13: Initialize FOC Controller ==========
     control::foc::init(motor_pwm, adc_handles, &runtime_config).await;
+
+    // FOC ISR is running now — arm the watchdog it feeds.
+    safety::arm_watchdog(p.IWDG);
 
     defmt::info!(
         "F405 pin map: PWM PA8/PA9/PA10 + PB13/14/15, DRV8301 EN_GATE=PB5, nFAULT=PB7, \

@@ -6,9 +6,6 @@ use embassy_stm32::bind_interrupts;
 use embassy_stm32::flash::InterruptHandler as FlashInterruptHandler;
 use embassy_time::{Duration, Timer};
 
-// Use panic-probe for panics
-use panic_probe as _;
-
 // Bind FLASH interrupt for async flash operations
 bind_interrupts!(struct FlashIrqs {
     FLASH => FlashInterruptHandler;
@@ -21,6 +18,9 @@ mod cordic;
 pub mod fault;
 mod hardware;
 mod protocol;
+// Panic/HardFault handlers (gate kill). IWDG arming goes here too once
+// the motor modules wake up — see the module docs.
+mod safety;
 mod storage;
 mod transport;
 

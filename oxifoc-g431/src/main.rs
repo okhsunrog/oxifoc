@@ -13,9 +13,6 @@ compile_error!("Must enable either transport-uart or transport-rtt feature.");
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 
-// Use panic-probe for panics
-use panic_probe as _;
-
 // Module declarations
 mod calibration;
 mod config;
@@ -25,6 +22,8 @@ mod foc;
 mod hardware;
 mod motor;
 mod protocol;
+// Panic/HardFault handlers (gate kill) + IWDG live here.
+mod safety;
 mod sensors;
 mod storage;
 mod transport;
@@ -126,6 +125,9 @@ async fn main(spawner: Spawner) {
     )
     .await;
     defmt::info!("FOC init complete");
+
+    // FOC ISR is running now — arm the watchdog it feeds.
+    safety::arm_watchdog(p.IWDG);
 
     // ========== STEP 10: Spawn I/O and Protocol Tasks ==========
 

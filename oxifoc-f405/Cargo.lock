@@ -1358,22 +1358,11 @@ dependencies = [
  "libm",
  "mutex",
  "oxifoc-core",
- "panic-probe",
  "postcard",
  "rtt-target",
  "sequential-storage",
  "serde",
  "static_cell",
-]
-
-[[package]]
-name = "panic-probe"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd402d00b0fb94c5aee000029204a46884b1262e0c443f166d86d2c0747e1a1a"
-dependencies = [
- "cortex-m",
- "defmt 1.0.1",
 ]
 
 [[package]]

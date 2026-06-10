@@ -250,4 +250,7 @@ fn ADC() {
         foc_telem.unwrap_or_default(),
         *SEQ,
     );
+
+    // Feed the IWDG: a completed FOC cycle is the board's liveness signal.
+    crate::safety::feed_watchdog();
 }
