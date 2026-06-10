@@ -28,10 +28,11 @@ board docs.
 
 ## Size / performance
 
-- [ ] **g431 flash headroom is ~2.4 KB** (124 556 / 126 976 bytes with
-  `opt-level = "z"`, `codegen-units = 1`). Next sizable feature may not
-  fit. Candidates: trim `.rodata` (13.7 KB, mostly postcard schema
-  tables), feature-gate unused transports.
+- [ ] **g431 flash headroom is ~1.4 KB** (125 508 / 126 976 bytes with
+  `opt-level = "z"`, `codegen-units = 1`; upstream-ergot bump + fault
+  logging cost ~1 KB). Next feature likely won't fit. Candidates: trim
+  `.rodata` (~14 KB, mostly postcard schema tables), feature-gate unused
+  transports.
 - [ ] VSQRT (`vsqrt.f32`) instead of `libm::sqrtf` on Cortex-M4F hot paths.
 - [ ] Revisit TIM6 hall-polling rate (5 µs currently).
 - [ ] µs hall ticks on all platforms (consistent timebase).
