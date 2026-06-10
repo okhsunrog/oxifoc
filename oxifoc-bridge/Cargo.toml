@@ -51,7 +51,7 @@ trouble-host = { git = "https://github.com/embassy-rs/trouble.git", rev = "dc15b
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "9ffebef8a5111a76e3c5423088ccb657b2faf806", version = "0.12.0", default-features = false, features = ["embedded-io-async-v0_7", "nostd-seed-router", "embassy-time", "disable-cache-padding", "defmt-v1"] }
+ergot = { git = "https://github.com/jamesmunns/ergot", rev = "f61a4109683f8798e93b6ed812bc7e44220857f5", version = "0.12.0", default-features = false, features = ["embedded-io-async-v0_7", "nostd-seed-router", "embassy-time", "disable-cache-padding", "defmt-v1"] }
 mutex = "1.0.2"
 serde = { version = "1.0.228", default-features = false, features = ["derive"] }
 postcard-schema = "0.2.5"
