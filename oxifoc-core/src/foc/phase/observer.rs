@@ -4,7 +4,9 @@
 //! Includes back-EMF observer for medium/high speed and HFI for low/zero speed.
 
 use core::f32::consts::TAU;
+use core::marker::PhantomData;
 
+use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::wrap_angle;
 
 /// Input for observer update
@@ -229,8 +231,10 @@ impl BackEmfObserver {
         self.x1 = crate::foc::clamp_f32(self.x1, -self.lambda, self.lambda);
         self.x2 = crate::foc::clamp_f32(self.x2, -self.lambda, self.lambda);
 
-        // Extract phase from the rotor flux vector
-        let phase_raw = libm::atan2f(self.x2, self.x1);
+        // Extract phase from the rotor flux vector. The polynomial atan2's
+        // ≤0.011 rad error feeds a PLL that low-passes it — negligible next
+        // to dead-time distortion, and 3.7× cheaper than libm in the ISR.
+        let phase_raw = crate::foc::fast_math::atan2f(self.x2, self.x1);
 
         // PLL tracking. The error must be the SIGNED shortest angular distance
         // (like VESC's foc_pll_run): wrapping to [0, 2π) would make the error
@@ -247,7 +251,7 @@ impl BackEmfObserver {
         // Confidence: how close the estimated flux magnitude is to λ.
         // A weak heuristic — measurement offsets can also saturate the
         // integrator — but cheap and monotonic during real spin-up.
-        let flux_mag = libm::sqrtf(self.x1 * self.x1 + self.x2 * self.x2);
+        let flux_mag = crate::foc::fast_math::sqrtf(self.x1 * self.x1 + self.x2 * self.x2);
         self.confidence = crate::foc::clamp_f32(flux_mag / self.lambda, 0.0, 1.0);
     }
 
@@ -308,10 +312,14 @@ impl BackEmfObserver {
 
     /// Force phase to specific value (for testing or handoff from other source)
     pub fn force_phase(&mut self, phase: f32) {
+        use crate::foc::trig::{FastSinCos, SinCos};
         self.phase_pll = wrap_angle(phase);
-        // Also set flux state to match
-        self.x1 = self.lambda * libm::cosf(phase);
-        self.x2 = self.lambda * libm::sinf(phase);
+        // Also set flux state to match. FastSinCos (not libm): this runs in
+        // the ISR on crossover reseed, and libm's f64-softfloat sinf would
+        // blow the cycle budget on its own (-fp64 targets).
+        let (s, c) = FastSinCos::sin_cos(phase);
+        self.x1 = self.lambda * c;
+        self.x2 = self.lambda * s;
         // Seeded from a trusted source: flux magnitude is exactly λ and the
         // PLL is on target by construction.
         self.confidence = 1.0;
@@ -334,8 +342,15 @@ impl BackEmfObserver {
 /// to estimate rotor position based on magnetic saliency (Ld ≠ Lq).
 ///
 /// Works at zero and low speeds where back-EMF is too small to measure.
+///
+/// Generic over the sin/cos backend `S` — three trig calls run every ISR
+/// cycle, and `libm`'s f64-based sinf/cosf cost ~6200 cycles/pair on the
+/// `-fp64` Cortex-M4F targets (150% of the ISR budget on their own; see
+/// docs/perf-bench-2026-06-11.md). Firmware picks `CordicSinCos` (G4) or
+/// `FastSinCos` (F405); the `LibmSinCos` default keeps host sims maximally
+/// accurate.
 #[derive(Clone, Debug)]
-pub struct HfiObserver {
+pub struct HfiObserver<S: SinCos = LibmSinCos> {
     // Injection parameters
     frequency: f32,     // Injection frequency (Hz)
     amplitude: f32,     // Injection amplitude (V)
@@ -364,6 +379,9 @@ pub struct HfiObserver {
     probe_step: u32, // cycle index into the probe schedule
     probe_acc: f32,  // Σ sign·|id| over the probe pulses
     probe_ref: f32,  // Σ |id| (significance reference)
+
+    // sin/cos backend marker (ZST)
+    _sincos: PhantomData<S>,
 }
 
 /// Polarity resolution state. The saliency signal is 2θ-periodic, so the
@@ -423,7 +441,8 @@ const HFI_POLARITY_PATTERN: [f32; 4] = [1.0, -1.0, -1.0, 1.0];
 const HFI_POLARITY_MIN_RATIO: f32 = 0.05;
 
 impl HfiObserver {
-    /// Create a new HFI observer
+    /// Create a new HFI observer (with the default `LibmSinCos` backend —
+    /// rebind via [`with_sincos`](Self::with_sincos) for firmware).
     ///
     /// # Arguments
     /// * `frequency` - Injection frequency (Hz), typically 500-2000 Hz
@@ -448,6 +467,34 @@ impl HfiObserver {
             probe_step: 0,
             probe_acc: 0.0,
             probe_ref: 0.0,
+            _sincos: PhantomData,
+        }
+    }
+}
+
+impl<S: SinCos> HfiObserver<S> {
+    /// Rebind the sin/cos backend (state-preserving, fields move as-is).
+    pub fn with_sincos<S2: SinCos>(self) -> HfiObserver<S2> {
+        HfiObserver {
+            frequency: self.frequency,
+            amplitude: self.amplitude,
+            carrier_phase: self.carrier_phase,
+            id_lp: self.id_lp,
+            iq_lp: self.iq_lp,
+            eps_filt: self.eps_filt,
+            amp_d_filt: self.amp_d_filt,
+            err_quality: self.err_quality,
+            phase_est: self.phase_est,
+            velocity_est: self.velocity_est,
+            pll_kp: self.pll_kp,
+            pll_ki: self.pll_ki,
+            min_hf_current: self.min_hf_current,
+            confidence: self.confidence,
+            polarity: self.polarity,
+            probe_step: self.probe_step,
+            probe_acc: self.probe_acc,
+            probe_ref: self.probe_ref,
+            _sincos: PhantomData,
         }
     }
 
@@ -487,7 +534,7 @@ impl HfiObserver {
         }
 
         // Measured currents into the estimated rotor frame.
-        let (s_est, c_est) = (libm::sinf(self.phase_est), libm::cosf(self.phase_est));
+        let (s_est, c_est) = S::sin_cos(self.phase_est);
         let (id, iq) = crate::foc::transforms::park(input.i_alpha, input.i_beta, s_est, c_est);
 
         // Split carrier content from the fundamental.
@@ -509,7 +556,7 @@ impl HfiObserver {
 
         // Synchronous demodulation with the carrier sample that generated
         // this response (see the call contract above).
-        let dem = libm::sinf(self.carrier_phase);
+        let dem = S::sin_cos(self.carrier_phase).0;
         let a_d = (dt / HFI_DEMOD_TAU_S).min(1.0);
         self.eps_filt += a_d * (hf_iq * dem - self.eps_filt);
         self.amp_d_filt += a_d * (hf_id * dem - self.amp_d_filt);
@@ -638,7 +685,7 @@ impl HfiObserver {
             }
             return (0.0, 0.0);
         }
-        let vd = self.amplitude * libm::cosf(self.carrier_phase);
+        let vd = self.amplitude * S::sin_cos(self.carrier_phase).1;
         (vd, 0.0)
     }
 

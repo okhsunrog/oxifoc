@@ -210,6 +210,9 @@ pub mod foc {
     /// Coordinate transformations (Clarke, Park, and their inverses)
     pub mod transforms;
 
+    /// Fast hot-path scalar math (hardware sqrt, polynomial atan2)
+    pub mod fast_math;
+
     /// Trigonometric abstractions (SinCos trait, q1.31 helpers for CORDIC)
     pub mod trig;
 

@@ -12,6 +12,7 @@ use super::provider::{PhaseInput, PhaseOutput, PhaseProvider};
 use super::source::{PhaseSource, PhaseSourceError};
 use crate::foc::hall_calibration::HallCalibrationResult;
 use crate::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait, NoSensor};
+use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::{angle_difference, wrap_angle};
 
 /// Hysteresis band for the sharp HFI↔sensor crossovers (fraction of the
@@ -108,10 +109,11 @@ pub enum PhaseFault {
 ///     blend_high: 600.0,
 /// })?;
 /// ```
-pub struct PhaseManager<H = NoSensor, E = NoSensor>
+pub struct PhaseManager<H = NoSensor, E = NoSensor, S = LibmSinCos>
 where
     H: AngleSensor,
     E: AngleSensor,
+    S: SinCos,
 {
     // Hardware sensors
     hall: H,
@@ -120,8 +122,11 @@ where
     // Software estimators. Two slots run concurrently so the HfiToX
     // crossovers can hand over between them: `hfi` covers zero/low speed
     // (needs carrier injection), `observer` covers medium/high speed.
+    // `S` is the HFI sin/cos backend (CORDIC on G4, FastSinCos on F405);
+    // constructors pin the `LibmSinCos` default — firmware rebinds via
+    // `with_sincos`.
     observer: Observer,
-    hfi: Option<HfiObserver>,
+    hfi: Option<HfiObserver<S>>,
 
     // Configuration
     source: PhaseSource,
@@ -222,6 +227,30 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
     }
 }
 
+impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
+    /// Rebind the HFI sin/cos backend (state-preserving). Firmware calls
+    /// this right after construction: CORDIC on G4, FastSinCos on F405.
+    pub fn with_sincos<S2: SinCos>(self) -> PhaseManager<H, E, S2> {
+        PhaseManager {
+            hall: self.hall,
+            encoder: self.encoder,
+            observer: self.observer,
+            hfi: self.hfi.map(HfiObserver::with_sincos),
+            source: self.source,
+            output: self.output,
+            manual_angle: self.manual_angle,
+            open_loop_angle: self.open_loop_angle,
+            open_loop_velocity: self.open_loop_velocity,
+            ticks_per_sec: self.ticks_per_sec,
+            hall_health: self.hall_health,
+            hall_failure_ticks: self.hall_failure_ticks,
+            open_loop_override: self.open_loop_override,
+            crossover_latched: self.crossover_latched,
+            faults: self.faults,
+        }
+    }
+}
+
 impl<E: AngleSensor> PhaseManager<NoSensor, E> {
     /// Create a phase manager with encoder only
     pub fn with_encoder_only(encoder: E) -> Self {
@@ -249,7 +278,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
 // Common implementation for all PhaseManager variants
 // ============================================================================
 
-impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
+impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Set the timebase for tick conversions
     pub fn set_ticks_per_sec(&mut self, ticks_per_sec: u64) {
         self.ticks_per_sec = ticks_per_sec.max(1);
@@ -303,17 +332,17 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
     }
 
     /// Set the HFI estimator (dedicated low-speed slot)
-    pub fn set_hfi_observer(&mut self, hfi: HfiObserver) {
+    pub fn set_hfi_observer(&mut self, hfi: HfiObserver<S>) {
         self.hfi = Some(hfi);
     }
 
     /// Get HFI estimator reference
-    pub fn hfi_observer(&self) -> Option<&HfiObserver> {
+    pub fn hfi_observer(&self) -> Option<&HfiObserver<S>> {
         self.hfi.as_ref()
     }
 
     /// Get mutable HFI estimator reference
-    pub fn hfi_observer_mut(&mut self) -> Option<&mut HfiObserver> {
+    pub fn hfi_observer_mut(&mut self) -> Option<&mut HfiObserver<S>> {
         self.hfi.as_mut()
     }
 
@@ -812,7 +841,7 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
 // PhaseProvider implementation
 // ============================================================================
 
-impl<H: AngleSensor, E: AngleSensor> PhaseProvider for PhaseManager<H, E> {
+impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H, E, S> {
     fn get(&self) -> PhaseOutput {
         self.output
     }
@@ -883,7 +912,7 @@ impl<H: AngleSensor, E: AngleSensor> PhaseProvider for PhaseManager<H, E> {
 // ============================================================================
 
 #[cfg(feature = "storage")]
-impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
+impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Configure the software estimators from stored motor parameters.
     ///
     /// With valid detected params both slots are armed: a back-EMF observer
@@ -909,10 +938,10 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
                 l_avg,
                 mp.flux_linkage_wb,
             )));
-            self.set_hfi_observer(HfiObserver::new(
-                HFI_DEFAULT_FREQ_HZ,
-                vbus * HFI_DEFAULT_AMPLITUDE_RATIO,
-            ));
+            self.set_hfi_observer(
+                HfiObserver::new(HFI_DEFAULT_FREQ_HZ, vbus * HFI_DEFAULT_AMPLITUDE_RATIO)
+                    .with_sincos(),
+            );
         }
     }
 }
@@ -921,7 +950,7 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
 // Conditional methods for Hall sensor
 // ============================================================================
 
-impl<H: HallSensorTrait, E: AngleSensor> PhaseManager<H, E> {
+impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Set Hall calibration table
     pub fn set_hall_calibration(&mut self, table: [f32; 6]) {
         self.hall.set_calibration(table);

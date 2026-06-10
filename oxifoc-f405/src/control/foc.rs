@@ -65,7 +65,7 @@ pub static ADC3_INJECTED: CriticalSectionMutex<
 // ========== FOC Control ==========
 
 /// FOC driver storage (mutated only inside the ADC ISR)
-type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor>;
+type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor, FastSinCos>;
 type FocDriverType = FocDriver<MotorPwm<'static>, F405CurrentSensor, PhaseManagerType, FastSinCos>;
 static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
@@ -101,7 +101,7 @@ pub async fn init(
     let hall_proxy = HallAngleProxy::new();
     let initial_vbus_v =
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
-    let mut phase_manager = PhaseManager::with_hall(hall_proxy);
+    let mut phase_manager = PhaseManager::with_hall(hall_proxy).with_sincos::<FastSinCos>();
     // Arm the sensorless estimators (back-EMF + HFI) from detected motor
     // params; the angle source stays Hall until the host switches it.
     phase_manager.configure_observers_from_config(config, initial_vbus_v);

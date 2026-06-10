@@ -345,7 +345,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let v_limit_sq = v_limit * v_limit;
 
         let (vd, vq) = if v_mag_sq > v_limit_sq {
-            let scale = v_limit / ::libm::sqrtf(v_mag_sq);
+            let scale = v_limit / crate::foc::fast_math::sqrtf(v_mag_sq);
             (vd * scale, vq * scale)
         } else {
             (vd, vq)
@@ -459,7 +459,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let v_limit_sq = v_limit * v_limit;
 
         let (vd, vq) = if v_mag_sq > v_limit_sq {
-            let scale = v_limit / ::libm::sqrtf(v_mag_sq);
+            let scale = v_limit / crate::foc::fast_math::sqrtf(v_mag_sq);
             let vd = vd_raw * scale;
             let vq = vq_raw * scale;
             // Coordinated anti-windup: feed saturation back to both PI integrators

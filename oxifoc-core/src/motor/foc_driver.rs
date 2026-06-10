@@ -125,7 +125,7 @@ impl CurrentLimits {
             // .max(0.0) lets the compiler prove -iq_budget <= iq_budget,
             // eliminating clamp's panic branch (sqrtf can't return NaN here,
             // but LLVM can't prove it).
-            libm::sqrtf(iq_budget_sq).max(0.0)
+            crate::foc::fast_math::sqrtf(iq_budget_sq).max(0.0)
         } else {
             0.0
         };

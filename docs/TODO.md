@@ -33,11 +33,28 @@ board docs.
   2026-06-11: hall on TIM2/PA15+PB3+PB10 (32-bit captures via generic
   `CaptureTimebase<u32>`), time driver tim2 → tim5, resources.rs pins +
   CN comments, `mod sensors` compiled to prevent rot. Still open when
-  the shield arrives: re-enable control/motor/calibration modules
-  (their foc.rs must take now_ticks from sensors::hall like g431), ADC
-  channels per the mapping doc (PA0/PC1/PC0, VBUS PA1, NTC PC2), BKIN
-  on PA6 (+PA11 as BKIN2), **keep PB15/PB14 Hi-Z** (tied to UL gate /
-  BKIN nets with wrong G474 AFs).
+  the shield arrives (hardware audit 2026-06-11):
+  - **config.rs BOARD has IHM07M1 constants**: shunt 0.33 Ω + internal
+    OPAMP ×16 are wrong — IHM08M1 has 0.010 Ω 1W shunts (R43-45, BOM)
+    and its own conditioning op-amps (JP1/JP2 closed for FOC). Get the
+    gain/offset from the schematic Fig. 5 or ST Workbench board params.
+    VBUS ratio 19.12 ≈ accidentally right (shield: 169k/9.31k = 19.15).
+  - **CURRENT REF is mandatory and missing**: OCP comparator threshold
+    = filtered PWM on PB4 (TIM3_CH1). Undriven → reference at GND →
+    BKIN trips instantly, the bridge will not start at all.
+  - **BKIN PA6 (AF6), active-LOW** ("goes to ground", UM1996 §4.1.2)
+    + BKF filter; optional PA11 = BKIN2. Plus BKIN-flag check in the
+    FOC ISR + MOE re-arm (port from g431 when control/foc.rs wakes).
+  - ADC injected per the mapping doc: ADC1 = PA0/IN1 + PA1/IN2 +
+    PC2/IN8, ADC2 = PC1/IN7 + PC0/IN6, TRGO2 trigger; **delete** the
+    commented-out internal-OPAMP plan in peripherals.rs (the shield
+    conditions signals externally).
+  - Re-enable control/motor/calibration (foc.rs already edited to take
+    now_ticks from sensors::hall); GPIO_BEMF (PC9) off for FOC; arm
+    IWDG; **keep PB15/PB14 Hi-Z**.
+  - Shield jumpers (factory default is 1-shunt/6-step!): J5/J6 → 3-Sh,
+    JP1+JP2 closed, remove C3/C5/C7, JP3 closed, J9 open, Nucleo
+    JP5 → E5V.
 
 ## VirtualMotor model fidelity (from moteus sim comparison, 2026-06-10)
 
@@ -95,15 +112,26 @@ model f32).
 
 ## Size / performance
 
-- [ ] **g431 flash headroom is ~3.3 KB** (123 564 / 126 976 bytes) after
-  enabling `build-std = ["core"]` (libcore rebuilt with opt-level="z";
-  the shipped one is opt-level=3). When it runs out again: trim
-  `.rodata` (~14 KB, mostly postcard schema tables), consider
-  `panic_immediate_abort`.
-- [ ] VSQRT (`vsqrt.f32`) instead of `libm::sqrtf` on Cortex-M4F hot paths.
+Hot-path math reworked 2026-06-11 after on-target benchmarks
+([perf-bench-2026-06-11.md](perf-bench-2026-06-11.md)): HFI estimator
+generic over SinCos (CORDIC on G4, FastSinCos on F405), `vsqrt.f32` +
+polynomial atan2 in `fast_math`. HFI went from >150% of the 20 kHz ISR
+budget to 13.9% — it was unusable on hardware before this.
+
+- [ ] **g431 flash headroom is ~1.4 KB** (125 504 / 126 976). Recovery
+  options, in order: switch the cold detection paths (hall_calibration
+  sin/cos accumulators, flux-linkage gamma, HfiInjector's LibmSinCos
+  default) off libm sinf/cosf — that's what still pins the f64
+  softfloat machinery in flash; then trim `.rodata` (~14 KB, mostly
+  postcard schema tables). NOTE: `panic_immediate_abort` is OFF the
+  table — it would bypass the gate-kill panic handler in safety.rs.
 - [ ] f405/g474 build with `opt-level = 3`, g431 with `"z"` (flash
   pressure). Intentional, but unmeasured: check what `"z"` would cost
   f405/g474 in ISR time, or whether it matters at all at 20 kHz.
+- [ ] Live ISR utilization counter (DWT CYCCNT min/max/avg →
+  SlowTelemetry or defmt once a second): the bench numbers are from the
+  test profile; the shipped "z" build should be confirmed in situ. Also
+  settles the F405 double-trigger suspicion via the measured ISR rate.
 
 ## From external review (verified pending / host side)
 

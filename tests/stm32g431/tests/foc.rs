@@ -491,6 +491,8 @@ mod tests {
         report("libm sqrtf", libm_sqrt);
         report("vsqrt.f32", hw_sqrt);
         defmt::info!("  max |libm - vsqrt| = {=f32}", max_diff);
+        // vsqrt.f32 is IEEE correctly rounded — any difference is a bug.
+        defmt::assert!(max_diff == 0.0, "vsqrt diverged from libm");
     }
 
     #[test]
@@ -528,6 +530,8 @@ mod tests {
         report("libm atan2f", libm_at);
         report("fast_atan2 (poly)", fast_at);
         defmt::info!("  poly max error vs libm: {=f32} rad", max_err);
+        // The documented bound for the polynomial used in the observer.
+        defmt::assert!(max_err < 0.011, "fast_atan2 error grew: {} rad", max_err);
     }
 
     #[test]
@@ -536,7 +540,6 @@ mod tests {
         use oxifoc_core::foc::trig::FastSinCos;
 
         const DT: f32 = 50e-6;
-        const OMEGA: f32 = 300.0; // electrical rad/s
 
         // Flipsky-5065-scale motor
         let mut obs = BackEmfObserver::new(0.05, 15e-6, 0.005);
@@ -613,7 +616,80 @@ mod tests {
             core::hint::black_box(&hfi);
         });
 
+        // Same workload with the CORDIC backend the g431 firmware uses.
+        let mut hfi_c = HfiObserver::new(1000.0, 3.0).with_sincos::<CordicSinCos>();
+        hfi_c.set_phase(0.3);
+        for i in 0..2048u32 {
+            let _ = hfi_c.get_injection();
+            hfi_c.update(&inputs[(i & 63) as usize]);
+        }
+        let stats_c = bench_loop(1024, |i| {
+            core::hint::black_box(hfi_c.get_injection());
+            hfi_c.update(&inputs[(i & 63) as usize]);
+            core::hint::black_box(&hfi_c);
+        });
+
         defmt::info!("=== HfiObserver get_injection+update (per ISR cycle) ===");
-        report("injection+update", stats);
+        report("libm backend", stats);
+        report("CORDIC backend", stats_c);
+    }
+
+    /// The CORDIC-backed HFI estimator must track the same trajectory as the
+    /// libm-backed reference on identical inputs — CORDIC's ~1e-4 trig error
+    /// must not accumulate into a meaningful phase divergence through the
+    /// demodulator + PLL.
+    #[test]
+    fn hfi_cordic_vs_libm_parity(_state: TestState) {
+        use oxifoc_core::foc::phase::{HfiObserver, ObserverInput};
+        use oxifoc_core::foc::trig::FastSinCos;
+
+        const DT: f32 = 50e-6;
+
+        let mut reference: HfiObserver = HfiObserver::new(1000.0, 3.0);
+        let mut cordic = HfiObserver::new(1000.0, 3.0).with_sincos::<CordicSinCos>();
+        reference.set_phase(0.3);
+        cordic.set_phase(0.3);
+
+        let mut max_inj_diff = 0.0f32;
+        for i in 0..4096u32 {
+            let carrier = (i as f32) * core::f32::consts::TAU * (1000.0 * DT);
+            let (s, _) = FastSinCos::sin_cos(carrier);
+            let (rs, rc) = FastSinCos::sin_cos(0.3);
+            let input = ObserverInput {
+                v_alpha: 0.0,
+                v_beta: 0.0,
+                i_alpha: 0.8 * s * rc,
+                i_beta: 0.8 * s * rs,
+                dt: DT,
+            };
+
+            let (vd_r, _) = reference.get_injection();
+            let (vd_c, _) = cordic.get_injection();
+            let d = libm::fabsf(vd_r - vd_c);
+            max_inj_diff = if d > max_inj_diff { d } else { max_inj_diff };
+
+            reference.update(&input);
+            cordic.update(&input);
+        }
+
+        let dphase = libm::fabsf(oxifoc_core::foc::angle_difference(
+            reference.phase(),
+            cordic.phase(),
+        ));
+        let dvel = libm::fabsf(reference.velocity() - cordic.velocity());
+
+        defmt::info!(
+            "HFI parity after 4096 cycles: dphase={=f32} rad, dvel={=f32} rad/s, max inj diff={=f32} V",
+            dphase,
+            dvel,
+            max_inj_diff
+        );
+        defmt::assert!(dphase < 0.01, "phase diverged: {} rad", dphase);
+        defmt::assert!(dvel < 1.0, "velocity diverged: {} rad/s", dvel);
+        defmt::assert!(
+            max_inj_diff < 3.0 * 1e-3,
+            "carrier injection diverged: {} V",
+            max_inj_diff
+        );
     }
 }

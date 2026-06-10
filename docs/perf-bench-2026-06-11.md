@@ -50,6 +50,39 @@ Notes:
 | `BackEmfObserver::update` | 1092 | 1009 | 1158 | 12.8% |
 | `HfiObserver` `get_injection`+`update` | **12751** | 6876 | 13597 | **150%** |
 
+## After the fix (same day)
+
+The estimators were reworked based on the numbers above (commit on
+2026-06-11): `HfiObserver` is generic over the `SinCos` backend (CORDIC
+on G4, FastSinCos on F405, libm default for host sims), the back-EMF
+observer uses `fast_math::atan2f` + `fast_math::sqrtf` (hardware
+`vsqrt.f32` behind a target cfg, bit-identical to libm), and the
+controller/current-limit hot paths use the hardware sqrt too.
+
+Re-measured on the same board:
+
+| path | before | after | % of 8500 |
+|---|---|---|---|
+| `FocController::step` | 745 | 738 | 8.7% |
+| `BackEmfObserver::update` | 1092 | **890** | 10.5% |
+| `HfiObserver` per cycle (firmware backend) | 12751–16257 | **1182** | **13.9%** |
+
+Worst-case sensorless cycle (controller + both estimator slots in a
+crossover regime): ≈ 2810 cycles ≈ **33% of budget** — was impossible
+(>170%).
+
+Hardware parity check (`hfi_cordic_vs_libm_parity`): CORDIC-backed vs
+libm-backed HFI on 4096 identical input cycles — phase diff **1.8e-7
+rad**, velocity diff 1e-4 rad/s, injection diff 4.3e-6 V. The trig
+backends are interchangeable for the estimator.
+
+Flash cost on g431: **+664 bytes** (FastSinCos polynomial + vsqrt +
+backend-conversion code); libm's sinf/cosf did NOT drop out because the
+cold detection paths (hall_calibration accumulators, flux-linkage gamma,
+HfiInjector) still reference them. Switching those to FastSinCos would
+shed the f64 softfloat machinery — recorded in TODO as the next flash
+recovery when headroom (now ~1.4 KB) runs out.
+
 ## Conclusions (action list)
 
 1. **HFI cannot run at 20 kHz as-is** — 150% of the ISR budget on its

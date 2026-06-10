@@ -30,6 +30,7 @@ pub trait SinCos {
 }
 
 /// Software sin/cos using libm (accurate but slow, ~400-600 cycles on M4F)
+#[derive(Clone, Copy, Debug, Default)]
 pub struct LibmSinCos;
 
 impl SinCos for LibmSinCos {
@@ -54,6 +55,7 @@ impl SinCos for LibmSinCos {
 ///
 /// Accuracy is sufficient for FOC motor control where ADC resolution (12 bits)
 /// and PWM timer resolution (10-12 bits) are the limiting factors.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct FastSinCos;
 
 /// Compute sin(x) for x in [0, π/2] using degree-7 minimax polynomial.
@@ -213,6 +215,7 @@ mod cordic_impl {
     /// Must call [`init()`](Self::init) once before first use.
     /// Uses the embassy CORDIC driver with Cosine function (primary=cos, secondary=sin),
     /// 1 argument input, 2 result outputs, q1.31 format.
+    #[derive(Clone, Copy, Debug, Default)]
     pub struct CordicSinCos;
 
     impl CordicSinCos {
