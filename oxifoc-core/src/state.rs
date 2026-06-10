@@ -23,8 +23,25 @@ use crate::types::MotorState;
 // Global Communication Channels
 // ============================================================================
 
-/// Command channel - servers send ControlMode here, ISR receives them
-pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, ControlMode, 4> = Channel::new();
+/// Command for the ISR-owned FocDriver.
+///
+/// The driver is mutated only inside the FOC ISR; every async-side request
+/// to change it goes through [`CMD_CHANNEL`] and is applied in order by
+/// [`process_commands`]. One channel (rather than per-purpose signals)
+/// keeps the commands sequenced: "set limits, then start" arrives exactly
+/// that way.
+#[derive(Clone, Copy, Debug)]
+pub enum DriverCommand {
+    /// Change control mode (start/stop/targets)
+    SetMode(ControlMode),
+    /// Apply current limits (already clamped to the board ceiling)
+    SetCurrentLimits(crate::motor::foc_driver::CurrentLimits),
+    /// Apply current-loop PI gains (post-detection tune, config write)
+    SetPiGains { kp: f32, ki: f32 },
+}
+
+/// Command channel - servers send DriverCommands here, ISR receives them
+pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, DriverCommand, 8> = Channel::new();
 
 /// Waker for FOC cycle completion — ISR wakes after `update_telemetry()`.
 /// Used by calibration/detection to synchronize with individual FOC cycles.
@@ -186,7 +203,19 @@ where
     F: crate::foc::fault::PlatformFault,
 {
     // Process all pending commands
-    while let Ok(mode) = CMD_CHANNEL.try_receive() {
+    while let Ok(cmd) = CMD_CHANNEL.try_receive() {
+        let mode = match cmd {
+            DriverCommand::SetMode(mode) => mode,
+            DriverCommand::SetCurrentLimits(limits) => {
+                foc.set_current_limits(limits);
+                continue;
+            }
+            DriverCommand::SetPiGains { kp, ki } => {
+                foc.controller_mut().id_pi.set_gains(kp, ki);
+                foc.controller_mut().iq_pi.set_gains(kp, ki);
+                continue;
+            }
+        };
         critical_section::with(|cs| {
             let mut state = state_mutex.borrow(cs).borrow_mut();
 

@@ -100,7 +100,7 @@ pub async fn motor_command_server<NS, F, const N: usize>(
         let _ = h
             .serve(|mode: &ControlMode| {
                 // Send control mode to the ISR via channel
-                let _ = CMD_CHANNEL.try_send(*mode);
+                let _ = CMD_CHANNEL.try_send(crate::state::DriverCommand::SetMode(*mode));
 
                 // Return current status
                 let status = critical_section::with(|cs| {
@@ -168,15 +168,26 @@ pub async fn fault_server<NS, F, const N: usize>(
 ///
 /// Reads from the shared RuntimeConfig, writes go through FLASH_CHANNEL
 /// to the platform's storage worker task.
+///
+/// Writes are refused with [`ConfigResponse::Busy`] while the motor is
+/// running: internal-flash erase stalls the whole chip (single-bank parts;
+/// up to seconds for an F4 sector), which would starve the FOC ISR with
+/// the motor energized.
+///
+/// `hw_max_current_a` is the board's hardware phase-current ceiling —
+/// current-limit writes are clamped to it and applied to the live driver
+/// via [`crate::state::LIMITS_SIGNAL`].
 #[cfg(feature = "storage")]
 pub async fn config_server<NS, const N: usize>(
     endpoints: Endpoints<NS>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    hw_max_current_a: f32,
 ) where
     NS: NetStackHandle,
 {
     use crate::icd::ConfigGroupId;
-    use crate::types::ConfigWrite;
+    use crate::types::{ConfigWrite, MotorState};
 
     let server = endpoints.bounded_server::<ConfigEndpoint, N>(Some("config"));
     let server = pin!(server);
@@ -185,6 +196,9 @@ pub async fn config_server<NS, const N: usize>(
     loop {
         let _ = h
             .serve(|req: &ConfigRequest| {
+                let motor_running = critical_section::with(|cs| {
+                    state_mutex.borrow(cs).borrow().motor_state == MotorState::Running
+                });
                 let response = match req {
                     ConfigRequest::Read(group) => {
                         let cfg =
@@ -224,6 +238,10 @@ pub async fn config_server<NS, const N: usize>(
                             },
                         }
                     }
+                    ConfigRequest::Write(write) if motor_running => {
+                        let _ = write;
+                        ConfigResponse::Busy
+                    }
                     ConfigRequest::Write(write) => {
                         let (key, payload) = match write.clone() {
                             ConfigWrite::MotorParams(v) => {
@@ -245,31 +263,96 @@ pub async fn config_server<NS, const N: usize>(
                                 (ConfigKey::HallTuning, ConfigPayload::HallTuning(v))
                             }
                         };
-                        let _ = FLASH_CHANNEL.try_send(FlashOperation::Save(key, payload));
-                        // Update in-memory config
-                        critical_section::with(|cs| {
-                            let mut cfg = runtime_config.borrow(cs).borrow_mut();
+                        if FLASH_CHANNEL
+                            .try_send(FlashOperation::Save(key, payload))
+                            .is_err()
+                        {
+                            // Queue full — do NOT claim success, and leave the
+                            // in-memory copy alone (it must keep mirroring
+                            // what's actually persisted).
+                            ConfigResponse::Error
+                        } else {
+                            // Update in-memory config
+                            critical_section::with(|cs| {
+                                let mut cfg = runtime_config.borrow(cs).borrow_mut();
+                                match write {
+                                    ConfigWrite::MotorParams(v) => {
+                                        cfg.motor_params = Some(v.clone())
+                                    }
+                                    ConfigWrite::CurrentLimits(v) => {
+                                        cfg.current_limits = Some(v.clone())
+                                    }
+                                    ConfigWrite::VoltageLimits(v) => {
+                                        cfg.voltage_limits = Some(v.clone())
+                                    }
+                                    ConfigWrite::PwmConfig(v) => cfg.pwm_config = Some(v.clone()),
+                                    ConfigWrite::PiGains(v) => cfg.pi_gains = Some(v.clone()),
+                                    ConfigWrite::HallTuning(v) => cfg.hall_tuning = Some(v.clone()),
+                                }
+                            });
+                            // Make the write take effect on the live driver,
+                            // not only at the next boot.
                             match write {
-                                ConfigWrite::MotorParams(v) => cfg.motor_params = Some(v.clone()),
+                                // Limits: clamped to the board ceiling.
                                 ConfigWrite::CurrentLimits(v) => {
-                                    cfg.current_limits = Some(v.clone())
+                                    let _ = CMD_CHANNEL.try_send(
+                                        crate::state::DriverCommand::SetCurrentLimits(
+                                            crate::motor::foc_driver::CurrentLimits::from_config_clamped(
+                                                v.max_iq_a,
+                                                v.max_phase_current_a,
+                                                hw_max_current_a,
+                                            ),
+                                        ),
+                                    );
                                 }
-                                ConfigWrite::VoltageLimits(v) => {
-                                    cfg.voltage_limits = Some(v.clone())
+                                // Explicit PI gains apply verbatim.
+                                ConfigWrite::PiGains(v) => {
+                                    let _ = CMD_CHANNEL.try_send(
+                                        crate::state::DriverCommand::SetPiGains {
+                                            kp: v.kp,
+                                            ki: v.ki,
+                                        },
+                                    );
                                 }
-                                ConfigWrite::PwmConfig(v) => cfg.pwm_config = Some(v.clone()),
-                                ConfigWrite::PiGains(v) => cfg.pi_gains = Some(v.clone()),
-                                ConfigWrite::HallTuning(v) => cfg.hall_tuning = Some(v.clone()),
+                                // New motor params (post-detection write):
+                                // retune the current loop the same way boot
+                                // does, otherwise the driver keeps the
+                                // conservative detection gains until reboot.
+                                ConfigWrite::MotorParams(v) if v.is_valid() => {
+                                    let l_avg = (v.inductance_d_h + v.inductance_q_h) / 2.0;
+                                    let (kp, ki) =
+                                        crate::foc::detection::pi_tuning::calculate_current_gains(
+                                            v.resistance_ohm,
+                                            l_avg,
+                                            crate::foc::detection::pi_tuning::DEFAULT_BANDWIDTH_RAD_S,
+                                        );
+                                    let _ = CMD_CHANNEL.try_send(
+                                        crate::state::DriverCommand::SetPiGains { kp, ki },
+                                    );
+                                }
+                                _ => {}
                             }
-                        });
-                        ConfigResponse::Ok
+                            ConfigResponse::Ok
+                        }
                     }
+                    ConfigRequest::ResetAll if motor_running => ConfigResponse::Busy,
                     ConfigRequest::ResetAll => {
-                        let _ = FLASH_CHANNEL.try_send(FlashOperation::EraseAll);
-                        critical_section::with(|cs| {
-                            *runtime_config.borrow(cs).borrow_mut() = RuntimeConfig::default();
-                        });
-                        ConfigResponse::Ok
+                        if FLASH_CHANNEL.try_send(FlashOperation::EraseAll).is_err() {
+                            ConfigResponse::Error
+                        } else {
+                            critical_section::with(|cs| {
+                                *runtime_config.borrow(cs).borrow_mut() = RuntimeConfig::default();
+                            });
+                            // Stored limits are gone — restore board defaults.
+                            let _ = CMD_CHANNEL.try_send(
+                                crate::state::DriverCommand::SetCurrentLimits(
+                                    crate::motor::foc_driver::CurrentLimits::from_max_current(
+                                        hw_max_current_a,
+                                    ),
+                                ),
+                            );
+                            ConfigResponse::Ok
+                        }
                     }
                 };
                 async move { response }
@@ -457,6 +540,7 @@ pub async fn run_all_servers_with_config<NS, F>(
     fault_registry: &'static FaultRegistry<F>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     foc_freq_hz: u32,
+    hw_max_current_a: f32,
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
@@ -470,7 +554,12 @@ pub async fn run_all_servers_with_config<NS, F>(
         join(
             slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
             join(
-                config_server::<NS, 2>(endpoints.clone(), runtime_config),
+                config_server::<NS, 2>(
+                    endpoints.clone(),
+                    runtime_config,
+                    state_mutex,
+                    hw_max_current_a,
+                ),
                 telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
             ),
         ),

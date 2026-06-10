@@ -493,6 +493,9 @@ mod config_types {
         NotFound,
         /// Flash operation failed
         Error,
+        /// Refused: motor is running. Flash writes stall the chip (sector
+        /// erase takes up to seconds on F405) and would glitch the FOC loop.
+        Busy,
     }
 }
 

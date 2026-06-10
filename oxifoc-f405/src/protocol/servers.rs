@@ -175,8 +175,11 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
             any_was_active = false;
 
             // Stop the motor
-            let _ =
-                oxifoc_core::state::CMD_CHANNEL.try_send(oxifoc_core::motor::ControlMode::Stopped);
+            let _ = oxifoc_core::state::CMD_CHANNEL.try_send(
+                oxifoc_core::state::DriverCommand::SetMode(
+                    oxifoc_core::motor::ControlMode::Stopped,
+                ),
+            );
 
             // Stop fast telemetry streaming
             FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);

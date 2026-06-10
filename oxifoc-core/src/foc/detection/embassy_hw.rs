@@ -63,7 +63,7 @@ impl EmbassyDetectionHardware {
 
 impl DetectionHardware for EmbassyDetectionHardware {
     fn send_command(&self, mode: ControlMode) {
-        let _ = state::CMD_CHANNEL.try_send(mode);
+        let _ = state::CMD_CHANNEL.try_send(state::DriverCommand::SetMode(mode));
     }
 
     async fn wait_telemetry(&mut self) -> FocOutput {

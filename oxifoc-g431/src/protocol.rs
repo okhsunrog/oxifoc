@@ -167,6 +167,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
         &FAULT_REGISTRY,
         &RUNTIME_CONFIG,
         crate::config::PWM_CONFIG.pwm_freq_hz,
+        crate::config::BOARD.max_phase_current_a,
     )
     .await
 }
@@ -206,8 +207,11 @@ pub async fn state_monitor(stack: &'static Stack, ident: u8) {
 
                 // Stop the motor
                 defmt::info!("Interface is down — stopping the motor");
-                let _ = oxifoc_core::state::CMD_CHANNEL
-                    .try_send(oxifoc_core::motor::ControlMode::Stopped);
+                let _ = oxifoc_core::state::CMD_CHANNEL.try_send(
+                    oxifoc_core::state::DriverCommand::SetMode(
+                        oxifoc_core::motor::ControlMode::Stopped,
+                    ),
+                );
 
                 // Stop fast telemetry streaming
                 FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);

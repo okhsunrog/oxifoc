@@ -55,7 +55,13 @@ pub async fn foc_loop(
         interval.tick().await;
 
         // Process commands from protocol servers
-        while let Ok(mode) = CMD_CHANNEL.try_receive() {
+        while let Ok(cmd) = CMD_CHANNEL.try_receive() {
+            // The virtual device has no FocDriver — only mode commands
+            // affect the simulation; limits/gains commands are accepted
+            // and ignored.
+            let state::DriverCommand::SetMode(mode) = cmd else {
+                continue;
+            };
             control_mode = mode;
             critical_section::with(|cs| {
                 let mut s = state_mutex.borrow(cs).borrow_mut();

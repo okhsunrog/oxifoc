@@ -60,6 +60,34 @@ impl CurrentLimits {
         }
     }
 
+    /// Build limits from a host-written config, clamped to the board's
+    /// hardware ceiling.
+    ///
+    /// The stored config can lower the limits but never raise them above
+    /// what the board hardware tolerates; zero/negative config values mean
+    /// "not set" and fall back to the board defaults — a config must not be
+    /// able to switch protection off.
+    ///
+    /// # Arguments
+    /// * `cfg_max_iq_a` - configured target-current limit (A)
+    /// * `cfg_max_phase_a` - configured instantaneous overcurrent threshold (A)
+    /// * `hw_max_a` - board hardware phase-current ceiling (A)
+    pub fn from_config_clamped(cfg_max_iq_a: f32, cfg_max_phase_a: f32, hw_max_a: f32) -> Self {
+        let board = Self::from_max_current(hw_max_a);
+        Self {
+            max_current_a: if cfg_max_iq_a > 0.0 {
+                cfg_max_iq_a.min(board.max_current_a)
+            } else {
+                board.max_current_a
+            },
+            overcurrent_threshold_a: if cfg_max_phase_a > 0.0 {
+                cfg_max_phase_a.min(board.overcurrent_threshold_a)
+            } else {
+                board.overcurrent_threshold_a
+            },
+        }
+    }
+
     /// Check if current limiting is enabled
     #[inline]
     pub fn is_enabled(&self) -> bool {
@@ -681,6 +709,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn config_limits_clamp_to_hardware_ceiling() {
+        // Stored config must never raise limits above the board's hardware
+        // ceiling, and zero/negative config values (= "not set") fall back
+        // to the board defaults instead of disabling protection.
+        let hw_max = 10.0;
+
+        // Normal config below the ceiling: passes through.
+        let l = CurrentLimits::from_config_clamped(5.0, 8.0, hw_max);
+        assert_eq!(l.max_current_a, 5.0);
+        assert_eq!(l.overcurrent_threshold_a, 8.0);
+
+        // Config above the ceiling: clamped to the board limits.
+        let board = CurrentLimits::from_max_current(hw_max);
+        let l = CurrentLimits::from_config_clamped(50.0, 100.0, hw_max);
+        assert_eq!(l.max_current_a, board.max_current_a);
+        assert_eq!(l.overcurrent_threshold_a, board.overcurrent_threshold_a);
+
+        // Zeroed config: board defaults, NOT disabled protection.
+        let l = CurrentLimits::from_config_clamped(0.0, 0.0, hw_max);
+        assert_eq!(l.max_current_a, board.max_current_a);
+        assert_eq!(l.overcurrent_threshold_a, board.overcurrent_threshold_a);
+    }
+
     /// Every mode that energizes the motor and can read currents must trip
     /// the measured-overcurrent protection. DirectVoltage has no PI loop to
     /// rein the current in, and six-step has no current loop at all — a
@@ -709,7 +761,10 @@ mod tests {
         });
 
         let res = driver.step(0);
-        assert!(res.is_err(), "overcurrent must abort the DirectVoltage step");
+        assert!(
+            res.is_err(),
+            "overcurrent must abort the DirectVoltage step"
+        );
         assert_eq!(
             driver.mode(),
             ControlMode::Stopped,

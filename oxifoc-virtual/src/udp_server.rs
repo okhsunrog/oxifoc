@@ -187,6 +187,7 @@ pub async fn run(
                 fault_registry,
                 runtime_config,
                 foc_freq_hz,
+                max_current_a,
             ) => {}
         }
 

@@ -113,7 +113,8 @@ pub async fn detect_server<NS, B>(
             }
             // Miss: stop the motor, measure, leave the motor stopped, cache.
             _ => {
-                let _ = CMD_CHANNEL.try_send(ControlMode::Stopped);
+                let _ = CMD_CHANNEL
+                    .try_send(crate::state::DriverCommand::SetMode(ControlMode::Stopped));
                 let resp = run_step(
                     &mut backend,
                     msg.t.inner,
@@ -122,7 +123,8 @@ pub async fn detect_server<NS, B>(
                     runtime_config,
                 )
                 .await;
-                let _ = CMD_CHANNEL.try_send(ControlMode::Stopped);
+                let _ = CMD_CHANNEL
+                    .try_send(crate::state::DriverCommand::SetMode(ControlMode::Stopped));
                 // Success-only cache: a transient error stays retryable.
                 if !matches!(resp, DetectResponse::Error(_)) {
                     cache = Some((id, msg.t.inner, resp));
