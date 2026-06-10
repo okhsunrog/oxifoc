@@ -8,13 +8,13 @@ use defmt_rtt as _;
 mod tests {
     use core::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
 
+    use oxifoc_core::foc::trig::CordicSinCos;
     use oxifoc_core::foc::{
         controller::FocController,
         pwm::SvpwmModulator,
         transforms,
         trig::{SinCos, angle_to_cordic_q31, f32_to_q31, q31_to_f32},
     };
-    use oxifoc_core::foc::trig::CordicSinCos;
 
     const MAX_TRIG_ERR: f32 = 1e-4; // ~20-bit CORDIC precision
     const MAX_Q31_ERR: f32 = 1e-6; // q31 round-trip precision
@@ -96,10 +96,18 @@ mod tests {
         let cases: [(f32, f32, f32); 6] = [
             (0.0, 0.0, 1.0),
             (FRAC_PI_6, 0.5, 0.866_025_4),
-            (FRAC_PI_4, core::f32::consts::FRAC_1_SQRT_2, core::f32::consts::FRAC_1_SQRT_2),
+            (
+                FRAC_PI_4,
+                core::f32::consts::FRAC_1_SQRT_2,
+                core::f32::consts::FRAC_1_SQRT_2,
+            ),
             (FRAC_PI_2, 1.0, 0.0),
             (PI, 0.0, -1.0),
-            (-FRAC_PI_4, -core::f32::consts::FRAC_1_SQRT_2, core::f32::consts::FRAC_1_SQRT_2),
+            (
+                -FRAC_PI_4,
+                -core::f32::consts::FRAC_1_SQRT_2,
+                core::f32::consts::FRAC_1_SQRT_2,
+            ),
         ];
 
         for (angle, exp_sin, exp_cos) in cases {
@@ -343,10 +351,18 @@ mod tests {
         let budget_cycles = SYSCLK_HZ / 20_000; // 50µs at 170MHz = 8500 cycles
         let utilization = (avg_cycles as u64 * 100) / budget_cycles as u64;
 
-        defmt::info!("=== FOC step benchmark ({} iterations @ {}MHz) ===", N, SYSCLK_HZ / 1_000_000);
+        defmt::info!(
+            "=== FOC step benchmark ({} iterations @ {}MHz) ===",
+            N,
+            SYSCLK_HZ / 1_000_000
+        );
         defmt::info!("  avg: {} cycles ({} ns)", avg_cycles, avg_ns);
         defmt::info!("  min: {} cycles ({} ns)", min_cycles, min_ns);
         defmt::info!("  max: {} cycles ({} ns)", max_cycles, max_ns);
-        defmt::info!("  50us budget: {} cycles, utilization: {}%", budget_cycles, utilization);
+        defmt::info!(
+            "  50us budget: {} cycles, utilization: {}%",
+            budget_cycles,
+            utilization
+        );
     }
 }

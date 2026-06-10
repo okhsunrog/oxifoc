@@ -35,4 +35,4 @@ toml = { workspace = true }
 tokio-stream = "0.1.18"
 bytes = "1.11.1"
 futures = "0.3.32"
-bluest = { git = "https://github.com/okhsunrog/bluest", branch = "android-full-impl", features = ["unstable"] }
+bluest = { git = "https://github.com/okhsunrog/bluest", rev = "9cb9dbcad63d7d2ffe18a20f87b7ffe1cb670537", features = ["unstable"] }

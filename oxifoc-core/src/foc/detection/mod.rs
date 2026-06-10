@@ -227,7 +227,6 @@ mod integration_tests {
         let params = MotorParams::default(); // Ld = Lq = 0.5 mH (SPM)
 
         let mut motor = VirtualMotor::new(params);
-        let mut out = VirtualMotorOutput::default();
 
         // Phase 1: lock rotor at angle 0 with DC holding voltage
         // At steady state: V = R × I, so V_hold = R × I_hold
@@ -235,18 +234,10 @@ mod integration_tests {
         let hold_v = hold_current * params.r; // 1.0V for 2A × 0.5Ω
         for _ in 0..4_000 {
             // 200ms settle — alpha axis only (angle 0)
-            out = motor.step(hold_v, 0.0, 0.0, DT);
+            motor.step(hold_v, 0.0, 0.0, DT);
         }
 
         // Phase 2: inject HFI and collect inductance samples
-        let ind_params = InductanceParams {
-            hfi_frequency_hz: 1000.0,
-            hfi_voltage_v: 3.0,
-            num_cycles: 10,
-            hold_current_a: hold_current,
-            ..Default::default()
-        };
-
         let ind_params = InductanceParams {
             hfi_frequency_hz: 1000.0,
             hfi_voltage_v: 3.0,
@@ -272,7 +263,7 @@ mod integration_tests {
             let (v_inj_a, v_inj_b) = injector.step(DT);
 
             // Apply holding voltage + HFI injection
-            out = motor.step(hold_v + v_inj_a, v_inj_b, 0.0, DT);
+            let out = motor.step(hold_v + v_inj_a, v_inj_b, 0.0, DT);
 
             let (i_alpha, i_beta) = transforms::clarke(out.ia, out.ib);
             measurement.record(i_alpha, i_beta, injection_angle, prev_v_a, prev_v_b);

@@ -290,6 +290,9 @@ async fn nus_session<C: Controller>(
 
 // ========== Info server ==========
 
+// HardwareInfo + the pinned server future live in this frame (~1.5 KB);
+// same situation as the other allows in this file.
+#[allow(clippy::large_stack_frames)]
 async fn info_server(stack: &'static transport::Stack) {
     use core::pin::pin;
 

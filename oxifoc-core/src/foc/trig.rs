@@ -281,14 +281,6 @@ mod tests {
         libm::cosf(x)
     }
 
-    /// Maximum absolute error across an array of (computed, expected) pairs
-    fn max_abs_err(pairs: &[(f32, f32)]) -> f32 {
-        pairs
-            .iter()
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0_f32, f32::max)
-    }
-
     // ── LibmSinCos tests ────────────────────────────────────────────────────
 
     #[test]

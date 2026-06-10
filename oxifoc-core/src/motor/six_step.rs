@@ -133,8 +133,8 @@ mod tests {
         for sector in 0..6 {
             let states = commutate(sector, 1000, true);
             let has_pwm = states.iter().any(|s| matches!(s, PhaseState::Pwm(_)));
-            let has_low = states.iter().any(|s| *s == PhaseState::Low);
-            let has_float = states.iter().any(|s| *s == PhaseState::Float);
+            let has_low = states.contains(&PhaseState::Low);
+            let has_float = states.contains(&PhaseState::Float);
             assert!(has_pwm, "sector {sector} missing Pwm");
             assert!(has_low, "sector {sector} missing Low");
             assert!(has_float, "sector {sector} missing Float");
@@ -146,8 +146,8 @@ mod tests {
         for sector in 0..6 {
             let states = commutate(sector, 1000, false);
             let has_pwm = states.iter().any(|s| matches!(s, PhaseState::Pwm(_)));
-            let has_low = states.iter().any(|s| *s == PhaseState::Low);
-            let has_float = states.iter().any(|s| *s == PhaseState::Float);
+            let has_low = states.contains(&PhaseState::Low);
+            let has_float = states.contains(&PhaseState::Float);
             assert!(has_pwm, "sector {sector} rev missing Pwm");
             assert!(has_low, "sector {sector} rev missing Low");
             assert!(has_float, "sector {sector} rev missing Float");

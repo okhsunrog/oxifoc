@@ -17,9 +17,9 @@ name    = "hello_test"
 test = false
 
 [dependencies]
-esp-hal = { git = "https://github.com/esp-rs/esp-hal.git", features = ["defmt", "esp32c6", "unstable"] }
+esp-hal = { git = "https://github.com/esp-rs/esp-hal.git", rev = "7b8b9a3a79cfb80d47cbaea38d44d735841ca8f0", features = ["defmt", "esp32c6", "unstable"] }
 
-esp-rtos = { git = "https://github.com/esp-rs/esp-hal.git", features = [
+esp-rtos = { git = "https://github.com/esp-rs/esp-hal.git", rev = "7b8b9a3a79cfb80d47cbaea38d44d735841ca8f0", features = [
   "defmt",
   "embassy",
   "esp-alloc",
@@ -28,15 +28,15 @@ esp-rtos = { git = "https://github.com/esp-rs/esp-hal.git", features = [
 ] }
 
 defmt                  = "1.0.1"
-esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal.git", features = ["defmt", "esp32c6"] }
+esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal.git", rev = "7b8b9a3a79cfb80d47cbaea38d44d735841ca8f0", features = ["defmt", "esp32c6"] }
 
 bt-hci = "0.8.0"
 embassy-executor = { version = "0.9.1", features = ["defmt"] }
 embassy-time = { version = "0.5.0", features = ["defmt"] }
 embedded-io = { version = "0.7.1", features = ["defmt"] }
 embedded-io-async = { version = "0.7.0", features = ["defmt"] }
-esp-alloc = { git = "https://github.com/esp-rs/esp-hal.git", features = ["defmt"] }
-esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", features = [
+esp-alloc = { git = "https://github.com/esp-rs/esp-hal.git", rev = "7b8b9a3a79cfb80d47cbaea38d44d735841ca8f0", features = ["defmt"] }
+esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", rev = "7b8b9a3a79cfb80d47cbaea38d44d735841ca8f0", features = [
   "ble",
   "defmt",
   "esp-alloc",
@@ -45,11 +45,11 @@ esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", features = [
 ] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
-trouble-host = { git = "https://github.com/embassy-rs/trouble.git", features = ["gatt"] }
+trouble-host = { git = "https://github.com/embassy-rs/trouble.git", rev = "dc15b9e09fd8e4ba031ec462c3bf2c972bda99f8", features = ["gatt"] }
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
-ergot = { git = "https://github.com/okhsunrog/ergot", branch = "udp-link-local-peer", version = "0.12.0", default-features = false, features = ["embassy-time", "disable-cache-padding", "defmt-v1"] }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "9ffebef8a5111a76e3c5423088ccb657b2faf806", version = "0.12.0", default-features = false, features = ["embassy-time", "disable-cache-padding", "defmt-v1"] }
 mutex = "1.0.2"
 serde = { version = "1.0.228", default-features = false, features = ["derive"] }
 postcard-schema = "0.2.5"

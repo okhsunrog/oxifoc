@@ -3,6 +3,9 @@
 # Device firmware crates (excluded from workspace, different toolchain)
 device_crates := "oxifoc-g431 oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
 
+# On-target test crates (run on hardware; compiled here so they don't rot)
+target_test_crates := "tests/stm32g431 tests/stm32g474 tests/stm32f405"
+
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
     @just check-host
@@ -15,7 +18,7 @@ check-host:
     echo "rustfmt (workspace)..."
     cargo fmt --check --all
     echo "clippy (workspace)..."
-    cargo clippy --workspace --quiet -- -D warnings
+    cargo clippy --workspace --all-targets --quiet -- -D warnings
     echo "tests (workspace)..."
     output=$(cargo test --workspace --quiet 2>&1) || { echo "$output"; exit 1; }
 
@@ -30,6 +33,11 @@ check-device:
         (cd "$crate" && cargo clippy --quiet -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
         (cd "$crate" && cargo build --release --quiet 2>&1 | filter) || exit 1
     done
+    for crate in {{ target_test_crates }}; do
+        echo "$crate: fmt + compile..."
+        (cd "$crate" && cargo fmt --check) || exit 1
+        (cd "$crate" && cargo build --tests --quiet 2>&1 | filter) || exit 1
+    done
 
 # Format all code (workspace + device crates)
 fmt:
@@ -37,7 +45,7 @@ fmt:
     set -euo pipefail
     echo "rustfmt..."
     cargo fmt --all
-    for crate in {{ device_crates }}; do
+    for crate in {{ device_crates }} {{ target_test_crates }}; do
         (cd "$crate" && cargo fmt)
     done
 
@@ -74,4 +82,4 @@ e2e:
 # Clean all build artifacts
 clean:
     cargo clean
-    for crate in {{ device_crates }}; do (cd "$crate" && cargo clean); done
+    for crate in {{ device_crates }} {{ target_test_crates }}; do (cd "$crate" && cargo clean); done

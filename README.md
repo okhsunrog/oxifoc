@@ -130,9 +130,9 @@ Transports: Serial (UART VCP), RTT (probe-rs), TCP (virtual), UDP (virtual), USB
 ## Building
 
 ```bash
-just check         # fmt + clippy + tests (workspace + all device firmware)
-just build g431    # Build device firmware (release)
-just flash g431    # Flash via probe-rs
+just check                # fmt + clippy + tests (workspace + all device firmware)
+just build oxifoc-g431    # Build device firmware (release)
+just flash oxifoc-g431    # Flash via probe-rs
 just gui           # Run Slint GUI
 just cli -- list   # Run CLI
 ```

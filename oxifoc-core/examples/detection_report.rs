@@ -8,12 +8,9 @@
 //! ```
 
 use oxifoc_core::foc::detection::sweep::{
-    DetectionParams, measure_flux_linkage, measure_flux_linkage_magnitude,
-    measure_flux_linkage_spindown, measure_inductance, measure_inductance_pulse,
+    DetectionParams, measure_flux_linkage, measure_flux_linkage_magnitude, measure_inductance,
 };
-use oxifoc_core::foc::detection::types::{
-    FluxLinkageParams, InductanceParams, MotorSize, VoltagePulseParams,
-};
+use oxifoc_core::foc::detection::types::{FluxLinkageParams, InductanceParams, MotorSize};
 use oxifoc_core::foc::detection::virtual_harness::{
     VirtualHardware, VirtualTimer, block_on, run_detection, with_sim,
 };

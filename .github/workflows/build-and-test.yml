@@ -33,6 +33,12 @@ jobs:
             (cd "$crate" && cargo fmt --check)
           done
 
+      - name: format check (on-target test crates)
+        run: |
+          for crate in tests/stm32g431 tests/stm32g474 tests/stm32f405; do
+            (cd "$crate" && cargo fmt --check)
+          done
+
   clippy:
     runs-on: ubuntu-latest
     steps:
@@ -51,7 +57,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: clippy (workspace)
-        run: cargo clippy --workspace --quiet -- -D warnings
+        # --locked: git deps are pinned to revs; never let CI silently re-resolve.
+        # --all-targets: lint tests/examples/benches too, not just lib+bins.
+        run: cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -69,7 +77,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
   device:
     strategy:
@@ -104,13 +112,21 @@ jobs:
         run: cargo install cargo-binutils flip-link
 
       - name: clippy
-        run: cargo clippy --quiet -- -D warnings
+        run: cargo clippy --all-targets --locked --quiet -- -D warnings
 
       - name: build release
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: check for bloated symbols
         run: ../scripts/check_bloat.sh
+
+      - name: compile on-target tests
+        # Can't run without hardware, but compiling keeps them from rotting
+        # (a stale ergot rev once survived in their lockfile unnoticed).
+        working-directory: ${{ github.workspace }}
+        run: |
+          chip="${{ matrix.target }}"
+          cd "tests/stm32${chip#oxifoc-}" && cargo build --tests --locked
 
   device-esp:
     strategy:
@@ -145,10 +161,10 @@ jobs:
         run: cargo install cargo-binutils
 
       - name: clippy
-        run: cargo clippy --quiet -- -D warnings
+        run: cargo clippy --all-targets --locked --quiet -- -D warnings
 
       - name: build release
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: check for bloated symbols
         run: ../scripts/check_bloat.sh
