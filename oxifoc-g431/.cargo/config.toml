@@ -15,3 +15,9 @@ rustflags = ["-C", "target-feature=+vfp2,-fp64"]
 [env]
 # Show all defmt levels unless overridden
 DEFMT_LOG = "debug"
+
+# Rebuild libcore with this profile's opt-level="z" + LTO instead of the
+# shipped opt-level=3 build — saves flash on the 128K part. Requires the
+# rust-src component (already in rust-toolchain.toml).
+[unstable]
+build-std = ["core"]

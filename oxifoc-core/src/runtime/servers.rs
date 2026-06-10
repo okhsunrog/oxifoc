@@ -267,6 +267,13 @@ pub async fn config_server<NS, const N: usize>(
                                 ConfigWrite::HallTuning(v) => {
                                     (ConfigKey::HallTuning, ConfigPayload::HallTuning(v))
                                 }
+                                ConfigWrite::HallCalibration(v) => (
+                                    ConfigKey::HallCalibration,
+                                    ConfigPayload::HallCalibration(v),
+                                ),
+                                ConfigWrite::DcOffsets(v) => {
+                                    (ConfigKey::DcOffsets, ConfigPayload::DcOffsets(v))
+                                }
                             };
                             // Write-through ack: this server is the only
                             // FLASH_CHANNEL producer, so FLASH_DONE pairs
@@ -303,6 +310,12 @@ pub async fn config_server<NS, const N: usize>(
                                     ConfigWrite::PiGains(v) => cfg.pi_gains = Some(v.clone()),
                                     ConfigWrite::HallTuning(v) => {
                                         cfg.hall_tuning = Some(v.clone())
+                                    }
+                                    ConfigWrite::HallCalibration(v) => {
+                                        cfg.hall_calibration = Some(v.clone())
+                                    }
+                                    ConfigWrite::DcOffsets(v) => {
+                                        cfg.dc_offsets = Some(v.clone())
                                     }
                                 }
                             });

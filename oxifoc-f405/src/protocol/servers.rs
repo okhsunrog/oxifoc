@@ -172,11 +172,15 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
                 uart_active
             );
             any_was_active = true;
+            critical_section::with(|cs| crate::STATE.borrow(cs).borrow_mut().set_link_active());
         } else if !any_active && any_was_active {
             defmt::info!("All interfaces down — stopping motor, disabling telemetry");
             any_was_active = false;
 
-            // Stop the motor
+            // Stop the motor. The channel send is best-effort; the
+            // authoritative failsafe is link_active=false, which makes
+            // process_commands force Stopped from inside the ISR.
+            critical_section::with(|cs| crate::STATE.borrow(cs).borrow_mut().set_link_inactive());
             let _ = oxifoc_core::state::CMD_CHANNEL.try_send(
                 oxifoc_core::state::DriverCommand::SetMode(
                     oxifoc_core::motor::ControlMode::Stopped,

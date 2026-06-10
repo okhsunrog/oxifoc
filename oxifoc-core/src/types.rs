@@ -511,6 +511,10 @@ mod config_types {
         PwmConfig(crate::storage::PwmConfigStored),
         PiGains(crate::storage::PiGainsConfig),
         HallTuning(crate::storage::HallTuningConfig),
+        /// Hall calibration result (written by the host after CalibrateHall)
+        HallCalibration(crate::storage::HallCalibrationConfig),
+        /// Current-sensor DC offsets
+        DcOffsets(crate::storage::DcOffsetsConfig),
     }
 
     /// Configuration response

@@ -200,13 +200,17 @@ pub async fn state_monitor(stack: &'static Stack, ident: u8) {
             Some(InterfaceState::Active { .. }) => {
                 defmt::info!("Interface active — linked");
                 set_device_state(DeviceState::Linked);
+                critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_active());
             }
             Some(InterfaceState::Inactive) | Some(InterfaceState::Down) | None => {
                 defmt::info!("Interface inactive/down — waiting for link");
                 set_device_state(DeviceState::WaitingLink);
 
-                // Stop the motor
+                // Stop the motor. The channel send is best-effort; the
+                // authoritative failsafe is link_active=false, which makes
+                // process_commands force Stopped from inside the ISR.
                 defmt::info!("Interface is down — stopping the motor");
+                critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_inactive());
                 let _ = oxifoc_core::state::CMD_CHANNEL.try_send(
                     oxifoc_core::state::DriverCommand::SetMode(
                         oxifoc_core::motor::ControlMode::Stopped,

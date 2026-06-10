@@ -130,6 +130,27 @@ impl AngleSensor for HallAngleProxy {
         HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(|h| h.sample_at(now_ticks)))
     }
 
+    // The trait defaults would silently drop the estimator's stateful
+    // behavior: sample_mut carries the VESC-style rate limiter (smooths
+    // sector-edge angle jumps for the control path) and is_stale the
+    // velocity-adaptive dead-sensor detection that drives the HallTimeout
+    // fault + observer fallback. Both must reach the shared estimator.
+    fn sample_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
+        HALL_ESTIMATOR.lock(|est| {
+            est.borrow_mut()
+                .as_mut()
+                .and_then(|h| h.sample_at_mut(now_ticks))
+        })
+    }
+
+    fn is_stale(&self, now_ticks: u64) -> bool {
+        HALL_ESTIMATOR.lock(|est| {
+            est.borrow()
+                .as_ref()
+                .is_some_and(|h| h.is_stale_at_speed(now_ticks))
+        })
+    }
+
     fn read_angle(&self) -> f32 {
         let now = embassy_time::Instant::now().as_ticks();
         self.sample(now).map(|s| s.angle).unwrap_or(0.0)

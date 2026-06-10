@@ -723,6 +723,7 @@ mod tests {
     /// the manager (and mirrors into shared state), an invalid one is
     /// rejected and leaves everything unchanged.
     #[test]
+    #[cfg(feature = "runtime")]
     fn process_commands_switches_phase_source() {
         use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
         use crate::foc::phase::{HfiObserver, PhaseManager, PhaseSource};
@@ -791,6 +792,7 @@ mod tests {
     /// vector (bounded by the saturating casts, but still a mechanical
     /// jolt until the overcurrent check reacts).
     #[test]
+    #[cfg(feature = "runtime")]
     fn process_commands_rejects_non_finite_payloads() {
         use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
         use crate::foc::phase::PhaseManager;
