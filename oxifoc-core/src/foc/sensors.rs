@@ -73,6 +73,15 @@ pub trait AngleSensor {
     /// fall back to another source.
     fn sample(&self, now_ticks: u64) -> Option<AngleSample>;
 
+    /// Stateful snapshot for the control path. Default delegates to
+    /// [`sample`](Self::sample); sensors with cross-call smoothing state
+    /// (e.g. the Hall estimator's VESC-style rate limiter, which caps angle
+    /// slew across edge discontinuities) override this so the FOC loop gets
+    /// the smoothed estimate. Telemetry/diagnostics keep using `sample`.
+    fn sample_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
+        self.sample(now_ticks)
+    }
+
     /// Read electrical angle in radians (0..2π). Default uses `sample`.
     fn read_angle(&self) -> f32 {
         self.sample(0).map(|s| s.angle).unwrap_or(0.0)

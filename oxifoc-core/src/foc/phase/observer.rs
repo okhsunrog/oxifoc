@@ -68,6 +68,36 @@ impl Observer {
         }
     }
 
+    /// Whether the observer's estimate can be trusted for commutation.
+    ///
+    /// Unlike [`phase`](Self::phase), which returns a value for any
+    /// *configured* observer (including one frozen at 0 with zero
+    /// confidence), this checks actual convergence. All fallback and
+    /// crossover decisions must gate on this.
+    pub fn is_ready(&self) -> bool {
+        match self {
+            Observer::None => false,
+            Observer::BackEmf(o) => o.is_ready(),
+            // HFI estimation is a stub (no demodulation yet) — never ready.
+            Observer::Hfi(_) => false,
+        }
+    }
+
+    /// Seed the estimate from a trusted external source (sensor handoff).
+    pub fn seed(&mut self, angle: f32, velocity: f32) {
+        match self {
+            Observer::None => {}
+            Observer::BackEmf(o) => {
+                o.force_phase(angle);
+                o.set_velocity(velocity);
+            }
+            Observer::Hfi(o) => {
+                o.set_phase(angle);
+                o.set_velocity(velocity);
+            }
+        }
+    }
+
     /// Get observer confidence (0.0-1.0)
     pub fn confidence(&self) -> f32 {
         match self {
@@ -130,8 +160,28 @@ pub struct BackEmfObserver {
     pll_ki: f32, // PLL integral gain
 
     // State
-    confidence: f32, // Confidence estimate (0-1)
+    confidence: f32,     // Confidence estimate (0-1)
+    phase_err_filt: f32, // Low-passed |PLL phase error| (rad), for readiness
 }
+
+/// Minimum confidence (flux magnitude / λ) for [`BackEmfObserver::is_ready`].
+pub const READY_MIN_CONFIDENCE: f32 = 0.5;
+
+/// Maximum filtered PLL phase error (rad) for "locked" in
+/// [`BackEmfObserver::is_ready`]. ~11°: a converged PLL tracks well under
+/// this; a diverging one sits near π.
+pub const READY_MAX_PHASE_ERR_RAD: f32 = 0.2;
+
+/// Minimum |electrical velocity| (rad/s) for [`BackEmfObserver::is_ready`].
+///
+/// Below this the back-EMF is too small to observe — flux magnitude and a
+/// locked PLL can both look fine at standstill on pure integrator memory.
+/// ~286 eRPM; well under typical sensor→observer crossover bands.
+pub const READY_MIN_VELOCITY: f32 = 30.0;
+
+/// Time constant (s) of the PLL phase-error low-pass used for readiness.
+/// Slow enough to ride out per-revolution ripple at crossover speeds.
+const PHASE_ERR_FILTER_TAU_S: f32 = 0.01;
 
 impl BackEmfObserver {
     /// Create a new back-EMF observer with motor parameters
@@ -154,6 +204,9 @@ impl BackEmfObserver {
             pll_kp: 1000.0,
             pll_ki: 20000.0,
             confidence: 0.0,
+            // Start "unlocked": a fresh observer must not look ready until
+            // the PLL has actually tracked something.
+            phase_err_filt: core::f32::consts::PI,
         }
     }
 
@@ -195,6 +248,10 @@ impl BackEmfObserver {
         self.phase_pll =
             wrap_angle(self.phase_pll + (self.velocity_pll + self.pll_kp * phase_error) * dt);
 
+        // Track lock quality for is_ready(): low-passed |phase error|.
+        let alpha = (dt / PHASE_ERR_FILTER_TAU_S).min(1.0);
+        self.phase_err_filt += alpha * (phase_error.abs() - self.phase_err_filt);
+
         // Confidence: how close the estimated flux magnitude is to λ.
         // A weak heuristic — measurement offsets can also saturate the
         // integrator — but cheap and monotonic during real spin-up.
@@ -217,6 +274,21 @@ impl BackEmfObserver {
         self.confidence
     }
 
+    /// Whether the estimate is trustworthy for commutation.
+    ///
+    /// Three independent criteria, all required:
+    /// - flux magnitude near λ (the integrator has built up a real flux
+    ///   vector, not just noise),
+    /// - PLL locked (filtered |phase error| small — a diverging PLL sits
+    ///   near π),
+    /// - enough speed for back-EMF to be observable at all (at standstill
+    ///   the first two can hold on pure integrator memory).
+    pub fn is_ready(&self) -> bool {
+        self.confidence >= READY_MIN_CONFIDENCE
+            && self.phase_err_filt < READY_MAX_PHASE_ERR_RAD
+            && self.velocity_pll.abs() >= READY_MIN_VELOCITY
+    }
+
     /// Reset observer state
     pub fn reset(&mut self) {
         self.x1 = 0.0;
@@ -226,6 +298,7 @@ impl BackEmfObserver {
         self.phase_pll = 0.0;
         self.velocity_pll = 0.0;
         self.confidence = 0.0;
+        self.phase_err_filt = core::f32::consts::PI;
     }
 
     /// Set motor parameters
@@ -247,6 +320,10 @@ impl BackEmfObserver {
         // Also set flux state to match
         self.x1 = self.lambda * libm::cosf(phase);
         self.x2 = self.lambda * libm::sinf(phase);
+        // Seeded from a trusted source: flux magnitude is exactly λ and the
+        // PLL is on target by construction.
+        self.confidence = 1.0;
+        self.phase_err_filt = 0.0;
     }
 
     /// Set velocity estimate (for testing or handoff from other source)

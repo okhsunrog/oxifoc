@@ -779,6 +779,14 @@ impl AngleSensor for HallSensor {
         self.sample_at(now_ticks)
     }
 
+    fn sample_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
+        // Full VESC-style path: rate limiting smooths the up-to-60° angle
+        // discontinuities at hall edges (worst during hard acceleration,
+        // when the velocity estimate lags and the interpolation undershoots
+        // each sector). The immutable sample_at() has no limiter state.
+        self.sample_at_mut(now_ticks)
+    }
+
     fn error_count(&self) -> u32 {
         self.error_count
     }

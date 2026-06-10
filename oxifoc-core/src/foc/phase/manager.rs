@@ -12,7 +12,13 @@ use super::provider::{PhaseInput, PhaseOutput, PhaseProvider};
 use super::source::{PhaseSource, PhaseSourceError};
 use crate::foc::hall_calibration::HallCalibrationResult;
 use crate::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait, NoSensor};
-use crate::foc::wrap_angle;
+use crate::foc::{angle_difference, wrap_angle};
+
+/// Hysteresis band for the sharp HFI↔sensor crossovers (fraction of the
+/// switch velocity). Switch up at `switch_vel`, back down only below
+/// `switch_vel × (1 − this)` — otherwise velocity noise around the single
+/// threshold chatters between two discontinuous angle sources.
+pub const CROSSOVER_HYSTERESIS: f32 = 0.2;
 
 // ============================================================================
 // Hall Health Tracking (VESC-style)
@@ -134,6 +140,10 @@ where
     // Open-loop override state (for Hall failure recovery)
     open_loop_override: OpenLoopOverride,
 
+    // Hysteresis memory for the HfiToX crossovers: true = running on the
+    // high-speed source (observer/hall/encoder), false = on HFI.
+    crossover_latched: bool,
+
     // Fault tracking
     faults: HeaplessVec<PhaseFault, 4>,
 }
@@ -158,6 +168,7 @@ impl PhaseManager<NoSensor, NoSensor> {
             hall_health: HallHealth::NotPresent,
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
+            crossover_latched: false,
             faults: HeaplessVec::new(),
         }
     }
@@ -179,6 +190,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_health: HallHealth::Ok,
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
+            crossover_latched: false,
             faults: HeaplessVec::new(),
         }
     }
@@ -198,6 +210,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_health: self.hall_health,
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
+            crossover_latched: self.crossover_latched,
             faults: self.faults,
         }
     }
@@ -219,6 +232,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             hall_health: HallHealth::NotPresent,
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
+            crossover_latched: false,
             faults: HeaplessVec::new(),
         }
     }
@@ -256,6 +270,8 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
         // Note: HFI check would go here when fully implemented
 
         self.source = source;
+        // Crossover memory belongs to the previous source's thresholds.
+        self.crossover_latched = false;
         Ok(())
     }
 
@@ -429,16 +445,28 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
 
     /// Try to get observer output for fallback, with open-loop override as last resort
     fn try_observer_fallback(&mut self) -> Option<PhaseOutput> {
-        if let (Some(angle), Some(vel)) = (self.observer.phase(), self.observer.velocity()) {
-            // Observer is ready - deactivate any open-loop override
+        // Gate on is_ready(), not phase().is_some(): every *configured*
+        // observer returns a phase, including one frozen at 0 with zero
+        // confidence. Handing it commutation on a sensor dropout would swap
+        // a good angle for garbage.
+        let ready_output = if self.observer.is_ready() {
+            match (self.observer.phase(), self.observer.velocity()) {
+                (Some(angle), Some(vel)) => Some(PhaseOutput {
+                    angle,
+                    velocity: vel,
+                }),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        if let Some(out) = ready_output {
             self.clear_fault(PhaseFault::ObserverNotReady);
             if self.open_loop_override.active {
                 self.deactivate_open_loop_override();
             }
-            Some(PhaseOutput {
-                angle,
-                velocity: vel,
-            })
+            Some(out)
         } else {
             // Observer not ready - use open-loop override if available
             self.set_fault(PhaseFault::ObserverNotReady);
@@ -505,27 +533,33 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
             PhaseSource::Encoder => sample_to_output(encoder_sample, &self.output),
 
             PhaseSource::Observer => {
-                if let (Some(angle), Some(vel)) = (self.observer.phase(), self.observer.velocity())
-                {
-                    PhaseOutput {
-                        angle,
-                        velocity: vel,
+                // Pure sensorless: only commutate from a converged observer;
+                // hold the last output (and raise the fault) otherwise.
+                if self.observer.is_ready() {
+                    self.clear_fault(PhaseFault::ObserverNotReady);
+                    match (self.observer.phase(), self.observer.velocity()) {
+                        (Some(angle), Some(vel)) => PhaseOutput {
+                            angle,
+                            velocity: vel,
+                        },
+                        _ => self.output,
                     }
                 } else {
+                    self.set_fault(PhaseFault::ObserverNotReady);
                     self.output
                 }
             }
 
             PhaseSource::Hfi => {
-                // HFI uses observer internally
-                if let (Some(angle), Some(vel)) = (self.observer.phase(), self.observer.velocity())
-                {
-                    PhaseOutput {
+                // HFI estimate straight from the (HFI) observer. No readiness
+                // gate: HFI is valid from standstill by design; the estimator
+                // itself is still a stub (see HfiObserver).
+                match (self.observer.phase(), self.observer.velocity()) {
+                    (Some(angle), Some(vel)) => PhaseOutput {
                         angle,
                         velocity: vel,
-                    }
-                } else {
-                    self.output
+                    },
+                    _ => self.output,
                 }
             }
 
@@ -568,52 +602,94 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
                 self.blend_with_observer(sensor, blend_low, blend_high)
             }
 
+            // NOTE on the HfiToX sources: the manager holds a single
+            // `Observer` slot, so "HFI plus back-EMF observer" cannot truly
+            // coexist yet — full zero-speed HFI needs the HfiObserver
+            // implementation and a dual-estimator slot. What IS fixed here:
+            // the low-speed side returns the live HFI estimate instead of a
+            // frozen copy of the previous output, and the switchovers carry
+            // hysteresis (`crossover_latched`) instead of chattering on a
+            // single velocity threshold.
             PhaseSource::HfiToObserver {
                 min_vel,
                 min_confidence,
             } => {
-                // Use HFI until observer has sufficient velocity and confidence
                 let obs_vel = self.observer.velocity().unwrap_or(0.0).abs();
                 let obs_conf = self.observer.confidence();
 
-                if obs_vel >= min_vel && obs_conf >= min_confidence {
-                    // Switch to observer
-                    if let (Some(angle), Some(vel)) =
-                        (self.observer.phase(), self.observer.velocity())
+                if self.crossover_latched {
+                    if obs_vel < min_vel * (1.0 - CROSSOVER_HYSTERESIS) || !self.observer.is_ready()
                     {
-                        PhaseOutput {
-                            angle,
-                            velocity: vel,
-                        }
-                    } else {
-                        self.output
+                        self.crossover_latched = false;
                     }
-                } else {
-                    // Stay on HFI
-                    self.output
+                } else if self.observer.is_ready()
+                    && obs_vel >= min_vel
+                    && obs_conf >= min_confidence
+                {
+                    self.crossover_latched = true;
+                }
+
+                // Either side comes from the estimator (single slot); the
+                // latch decides which trust regime we are in.
+                match (self.observer.phase(), self.observer.velocity()) {
+                    (Some(angle), Some(vel)) => PhaseOutput {
+                        angle,
+                        velocity: vel,
+                    },
+                    _ => self.output,
                 }
             }
 
             PhaseSource::HfiToHall { switch_vel } => {
-                // If Hall failed, stay on HFI
-                if hall_sample.is_none() {
-                    return self.output;
-                }
                 let hall = sample_to_output(hall_sample, &self.output);
-                if hall.velocity.abs() >= switch_vel {
+                if self.crossover_latched {
+                    // Drop back to HFI only below the hysteresis band or on
+                    // hall failure.
+                    if hall_sample.is_none()
+                        || hall.velocity.abs() < switch_vel * (1.0 - CROSSOVER_HYSTERESIS)
+                    {
+                        self.crossover_latched = false;
+                    }
+                } else if hall_sample.is_some() && hall.velocity.abs() >= switch_vel {
+                    self.crossover_latched = true;
+                }
+
+                if self.crossover_latched {
                     hall
                 } else {
-                    // Stay on HFI (use current output)
-                    self.output
+                    // Live HFI estimate, not a frozen copy of the last output.
+                    match (self.observer.phase(), self.observer.velocity()) {
+                        (Some(angle), Some(vel)) => PhaseOutput {
+                            angle,
+                            velocity: vel,
+                        },
+                        _ => self.output,
+                    }
                 }
             }
 
             PhaseSource::HfiToEncoder { switch_vel } => {
                 let enc = sample_to_output(encoder_sample, &self.output);
-                if enc.velocity.abs() >= switch_vel {
+                if self.crossover_latched {
+                    if encoder_sample.is_none()
+                        || enc.velocity.abs() < switch_vel * (1.0 - CROSSOVER_HYSTERESIS)
+                    {
+                        self.crossover_latched = false;
+                    }
+                } else if encoder_sample.is_some() && enc.velocity.abs() >= switch_vel {
+                    self.crossover_latched = true;
+                }
+
+                if self.crossover_latched {
                     enc
                 } else {
-                    self.output
+                    match (self.observer.phase(), self.observer.velocity()) {
+                        (Some(angle), Some(vel)) => PhaseOutput {
+                            angle,
+                            velocity: vel,
+                        },
+                        _ => self.output,
+                    }
                 }
             }
 
@@ -631,12 +707,30 @@ impl<H: AngleSensor, E: AngleSensor> PhaseManager<H, E> {
 
     /// Blend sensor output with observer based on velocity
     fn blend_with_observer(
-        &self,
+        &mut self,
         sensor: PhaseOutput,
         blend_low: f32,
         blend_high: f32,
     ) -> PhaseOutput {
         let blend = compute_blend(sensor.velocity.abs(), blend_low, blend_high);
+
+        // An unconverged observer must not pull the output anywhere — the
+        // sensor stays authoritative until the observer is actually locked.
+        if !self.observer.is_ready() {
+            return sensor;
+        }
+
+        // π-flip guard: back-EMF observers carry a half-turn ambiguity from
+        // standstill. While the sensor still has any weight it is the truth
+        // reference — a >90° disagreement means the observer locked onto the
+        // inverted flux vector, and blending toward it collapses torque
+        // mid-crossover. Reseed instead of blending.
+        if blend < 1.0
+            && let Some(obs_angle) = self.observer.phase()
+            && angle_difference(obs_angle, sensor.angle).abs() > core::f32::consts::FRAC_PI_2
+        {
+            self.observer.seed(sensor.angle, sensor.velocity);
+        }
 
         if let (Some(obs_angle), Some(obs_vel)) = (self.observer.phase(), self.observer.velocity())
         {
@@ -660,9 +754,10 @@ impl<H: AngleSensor, E: AngleSensor> PhaseProvider for PhaseManager<H, E> {
     }
 
     fn update(&mut self, input: &PhaseInput, now_ticks: u64) {
-        // Sample hardware sensors
-        let hall_sample = self.hall.sample(now_ticks);
-        let encoder_sample = self.encoder.sample(now_ticks);
+        // Sample hardware sensors. The stateful path matters for hall: it
+        // carries the rate limiter that smooths sector-edge discontinuities.
+        let hall_sample = self.hall.sample_mut(now_ticks);
+        let encoder_sample = self.encoder.sample_mut(now_ticks);
 
         // Update Hall health tracking based on sample availability
         self.update_hall_health(hall_sample.is_some(), now_ticks);
@@ -876,6 +971,7 @@ mod tests {
     struct MockHallSensor {
         valid: bool,
         angle: f32,
+        omega: f32,
     }
 
     impl MockHallSensor {
@@ -883,11 +979,17 @@ mod tests {
             Self {
                 valid: true,
                 angle: 0.5,
+                omega: 100.0,
             }
         }
 
         fn set_valid(&mut self, valid: bool) {
             self.valid = valid;
+        }
+
+        fn set_reading(&mut self, angle: f32, omega: f32) {
+            self.angle = angle;
+            self.omega = omega;
         }
     }
 
@@ -896,7 +998,7 @@ mod tests {
             if self.valid {
                 Some(AngleSample {
                     angle: self.angle,
-                    omega: 100.0,
+                    omega: self.omega,
                     direction: crate::foc::hall_sensor::Direction::Clockwise,
                 })
             } else {
@@ -1018,6 +1120,258 @@ mod tests {
         let output2 = phase.get();
         // Angle should have advanced
         assert!(output2.angle != output.angle || output.velocity > 0.0);
+    }
+
+    #[test]
+    fn unconverged_observer_does_not_take_over_on_hall_failure() {
+        use crate::foc::phase::{BackEmfObserver, Observer};
+
+        // A freshly constructed observer is configured but NOT converged:
+        // its phase is frozen at 0 with zero confidence. Handing it the
+        // commutation on a Hall dropout swaps a good angle for garbage.
+        // The manager must treat it as not-ready: raise ObserverNotReady
+        // and use the open-loop override instead.
+        let mock_hall = MockHallSensor::new();
+        let mut phase = PhaseManager::with_hall(mock_hall);
+        phase.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 1e-4, 0.01)));
+
+        phase.hall_mut().set_valid(false);
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            0,
+        );
+
+        assert!(
+            phase.has_fault(PhaseFault::ObserverNotReady),
+            "unconverged observer must raise ObserverNotReady"
+        );
+        assert!(
+            phase.is_open_loop_override_active(),
+            "must fall back to open-loop override, not the frozen observer"
+        );
+    }
+
+    #[test]
+    fn blend_reseeds_pi_flipped_observer_from_sensor() {
+        use crate::foc::phase::{BackEmfObserver, Observer};
+        use core::f32::consts::PI;
+
+        // Back-EMF observers started from standstill have a π ambiguity.
+        // When the sensor is still trustworthy, a half-turn disagreement
+        // means the observer is flipped — it must be reseeded from the
+        // sensor instead of letting the blend pull the output toward the
+        // inverted angle (torque collapse mid-crossover).
+        let mut mock_hall = MockHallSensor::new();
+        let hall_angle = 1.0f32;
+        mock_hall.set_reading(hall_angle, 400.0); // mid blend band
+        let mut phase = PhaseManager::with_hall(mock_hall);
+
+        let mut observer = BackEmfObserver::new(0.1, 1e-4, 0.01);
+        observer.force_phase(hall_angle + PI); // flipped
+        observer.set_velocity(400.0);
+        phase.set_observer(Observer::BackEmf(observer));
+        phase
+            .set_source(PhaseSource::HallToObserver {
+                blend_low: 300.0,
+                blend_high: 600.0,
+            })
+            .unwrap();
+
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            0,
+        );
+
+        let out = phase.get();
+        let err = crate::foc::angle_difference(out.angle, hall_angle).abs();
+        assert!(
+            err < 0.3,
+            "output {} drifted {} rad toward the flipped observer (hall at {})",
+            out.angle,
+            err,
+            hall_angle
+        );
+    }
+
+    #[test]
+    fn blend_ignores_unready_observer() {
+        use crate::foc::phase::{BackEmfObserver, Observer};
+
+        // In the blend band with an unconverged observer the sensor must
+        // stay authoritative — blending with a frozen phase-0 estimate
+        // drags the output toward garbage.
+        let mut mock_hall = MockHallSensor::new();
+        let hall_angle = 2.0f32;
+        mock_hall.set_reading(hall_angle, 450.0); // mid blend band
+        let mut phase = PhaseManager::with_hall(mock_hall);
+        phase.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 1e-4, 0.01)));
+        phase
+            .set_source(PhaseSource::HallToObserver {
+                blend_low: 300.0,
+                blend_high: 600.0,
+            })
+            .unwrap();
+
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            0,
+        );
+
+        let out = phase.get();
+        let err = crate::foc::angle_difference(out.angle, hall_angle).abs();
+        assert!(
+            err < 0.05,
+            "output {} must equal the hall angle {} while observer is not ready (err {})",
+            out.angle,
+            hall_angle,
+            err
+        );
+    }
+
+    /// Closed-loop sensorless integration: VirtualMotor + FocController +
+    /// PhaseManager(HallSensor + BackEmfObserver), HallWithFallback source.
+    ///
+    /// Spins the motor from standstill on hall commutation, crosses over to
+    /// the observer through the blend band, and checks that the managed
+    /// angle tracks the true rotor angle continuously the whole way.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn closed_loop_hall_to_observer_crossover() {
+        use crate::foc::controller::FocController;
+        use crate::foc::hall_sensor::HallSensor;
+        use crate::foc::phase::{BackEmfObserver, Observer};
+        use crate::foc::pwm::SvpwmModulator;
+        use crate::foc::transforms;
+        use crate::foc::trig::LibmSinCos;
+        use crate::virtual_motor::{MotorParams, VirtualMotor};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        const VBUS: f32 = 24.0;
+        // High friction so the motor settles around ωe ≈ 700 rad/s — well
+        // above the blend band but below voltage saturation.
+        let params = MotorParams {
+            friction_b: 2e-3,
+            ..MotorParams::default()
+        };
+
+        let mut motor = VirtualMotor::new(params);
+        let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            params.r, params.ld, VBUS,
+        );
+
+        // Prime the hall estimator with the initial rotor state so the
+        // manager sees a working sensor from the start.
+        let mut out = motor.step(0.0, 0.0, 0.0, DT);
+        let mut hall = HallSensor::new(1_000_000); // µs timebase
+        hall.update(out.hall_state, 0);
+        let mut last_hall_state = out.hall_state;
+
+        let mut mgr = PhaseManager::with_hall(hall);
+        mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            params.lambda,
+        )));
+        mgr.set_source(PhaseSource::HallWithFallback {
+            blend_low: 150.0,
+            blend_high: 300.0,
+            timeout_us: 100_000,
+        })
+        .unwrap();
+
+        let iq_target = 2.0;
+        let mut prev_angle: Option<f32> = None;
+        let mut max_step_at_speed = 0.0f32;
+
+        for step in 1..20_000u64 {
+            // 1 s total
+            let t_us = step * 50;
+
+            if out.hall_state != last_hall_state {
+                mgr.hall_mut().update(out.hall_state, t_us);
+                last_hall_state = out.hall_state;
+            }
+
+            let angle = mgr.get().angle;
+            let telem = foc.step((out.ia, out.ib, out.ic), angle, 0.0, iq_target, 1000, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+
+            let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
+            mgr.update(
+                &PhaseInput {
+                    v_alpha: telem.v_alpha,
+                    v_beta: telem.v_beta,
+                    i_alpha: i_a,
+                    i_beta: i_b,
+                    dt: DT,
+                },
+                t_us,
+            );
+
+            // Continuity: above the hall interpolation regime the managed
+            // angle must never jump (π flips, blend discontinuities). Below
+            // it, 60° sector snaps are expected hall behavior.
+            let new_angle = mgr.get().angle;
+            if out.omega_e > 100.0 {
+                if let Some(prev) = prev_angle {
+                    let jump = crate::foc::angle_difference(new_angle, prev).abs();
+                    max_step_at_speed = max_step_at_speed.max(jump);
+                }
+                prev_angle = Some(new_angle);
+            } else {
+                prev_angle = None;
+            }
+        }
+
+        // Motor must have spun up past the blend band → pure observer.
+        assert!(
+            out.omega_e > 400.0,
+            "motor did not spin up: ωe = {}",
+            out.omega_e
+        );
+        assert!(
+            mgr.observer().is_ready(),
+            "observer must be converged at speed"
+        );
+
+        // Managed angle tracks the true rotor angle.
+        let true_angle = wrap_angle(out.angle_rad);
+        let err = crate::foc::angle_difference(mgr.get().angle, true_angle).abs();
+        assert!(
+            err < 0.25,
+            "managed angle {} vs true {} (err {} rad)",
+            mgr.get().angle,
+            true_angle,
+            err
+        );
+
+        // Velocity estimate agrees with the true electrical speed.
+        let vel_err = (mgr.get().velocity - out.omega_e).abs() / out.omega_e;
+        assert!(
+            vel_err < 0.10,
+            "managed velocity {} vs true {} ({}%)",
+            mgr.get().velocity,
+            out.omega_e,
+            vel_err * 100.0
+        );
+
+        // No angle discontinuities across the whole crossover.
+        let nominal_step = out.omega_e * DT;
+        assert!(
+            max_step_at_speed < nominal_step + 0.15,
+            "angle jumped {} rad in one cycle (nominal step {})",
+            max_step_at_speed,
+            nominal_step
+        );
     }
 
     #[test]
