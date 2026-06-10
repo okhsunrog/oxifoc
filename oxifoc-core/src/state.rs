@@ -264,6 +264,87 @@ where
     foc.mode()
 }
 
+/// One FOC cycle of driver work, shared by every platform ISR.
+///
+/// Call inside the platform's FOC_DRIVER lock after reading the ADC:
+/// applies pending [`DriverCommand`]s, gates on faults, runs the FOC step
+/// and checks the measured currents. Returns the cycle telemetry, or None
+/// when the step was skipped (faulted) or failed.
+pub fn run_foc_cycle<P, C, Ph, S, F>(
+    state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
+    fault_registry: &crate::foc::fault::FaultRegistry<F>,
+    driver: &mut FocDriver<P, C, Ph, S>,
+    vbus_v: f32,
+    now_ticks: u64,
+    board: &crate::foc::config::BoardConfig,
+    overcurrent_fault: F,
+) -> Option<FocOutput>
+where
+    P: PhasePwm,
+    C: CurrentSensor,
+    Ph: PhaseProvider,
+    S: SinCos,
+    F: crate::foc::fault::PlatformFault,
+{
+    driver.set_vbus(vbus_v);
+
+    let prev_mode = driver.mode();
+    let mode = process_commands(state_mutex, driver, fault_registry);
+
+    // Spurious break-input trips during PWM channel enable can latch an
+    // OverCurrent fault right at start (seen on G431: COMP→BKIN glitch when
+    // MOE re-arms). Scoped to the OverCurrent category: clearing the whole
+    // registry here would bypass the host-acknowledged fault latch for
+    // unrelated faults. A real latched OverCurrent cannot reach this line —
+    // process_commands refuses the Stopped→active transition while any
+    // critical fault is registered.
+    if matches!(prev_mode, ControlMode::Stopped) && mode != ControlMode::Stopped {
+        fault_registry.clear(crate::foc::fault::FaultCategory::OverCurrent);
+    }
+
+    // If faulted, disable outputs and skip the FOC step
+    if fault_registry.any() {
+        if mode != ControlMode::Stopped {
+            driver.set_mode(ControlMode::Stopped);
+        }
+        return None;
+    }
+
+    match driver.step(now_ticks) {
+        Ok(telem) => {
+            // Instantaneous phase-current fault check
+            let before = fault_registry.any();
+            crate::foc::fault::check_current_faults(
+                telem.ia,
+                telem.ib,
+                telem.ic,
+                board,
+                fault_registry,
+                overcurrent_fault,
+            );
+            if !before && fault_registry.any() {
+                #[cfg(feature = "defmt")]
+                defmt::error!(
+                    "SW overcurrent FAULT: ia={}, ib={}, ic={}",
+                    telem.ia,
+                    telem.ib,
+                    telem.ic
+                );
+            }
+            Some(telem)
+        }
+        Err(_e) => {
+            #[cfg(feature = "defmt")]
+            defmt::error!("FOC step error: {}", _e);
+            // Sensor not ready or other error - disable outputs
+            if mode != ControlMode::Stopped {
+                driver.set_mode(ControlMode::Stopped);
+            }
+            None
+        }
+    }
+}
+
 /// Update state with new telemetry from ISR
 ///
 /// Call this after running FOC step to update the global state

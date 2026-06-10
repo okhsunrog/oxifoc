@@ -168,6 +168,36 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         }
     }
 
+    /// Build a controller from the stored runtime config, the way every
+    /// board boots: detected motor params win (pole-placement tuning),
+    /// explicit stored PI gains come second, conservative defaults last.
+    #[cfg(feature = "storage")]
+    pub fn from_runtime_config(config: &crate::storage::RuntimeConfig, vbus: f32) -> Self {
+        if let Some(ref mp) = config.motor_params
+            && mp.is_valid()
+        {
+            let l_avg = (mp.inductance_d_h + mp.inductance_q_h) / 2.0;
+            #[cfg(feature = "defmt")]
+            defmt::info!(
+                "Using stored motor params: R={=f32}, L={=f32}, λ={=f32}, pp={}",
+                mp.resistance_ohm,
+                l_avg,
+                mp.flux_linkage_wb,
+                mp.pole_pairs
+            );
+            Self::from_motor_params(mp.resistance_ohm, l_avg, vbus)
+        } else if let Some(ref pg) = config.pi_gains {
+            let mut foc = Self::new(vbus);
+            foc.id_pi.set_gains(pg.kp, pg.ki);
+            foc.iq_pi.set_gains(pg.kp, pg.ki);
+            #[cfg(feature = "defmt")]
+            defmt::info!("Using stored PI gains: kp={=f32}, ki={=f32}", pg.kp, pg.ki);
+            foc
+        } else {
+            Self::new(vbus)
+        }
+    }
+
     /// Override the modulation limit (fraction of `vbus`).
     ///
     /// Values above 1.0 request over-modulation; keep within 0.0–1.0 for

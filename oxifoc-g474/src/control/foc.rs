@@ -54,12 +54,13 @@ static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
 
 // ========== Initialization ==========
 
-/// Initialize FOC driver with motor PWM and sensors
+/// Initialize FOC driver with motor PWM, sensors, and stored config.
 pub async fn init(
     mut motor_pwm: MotorPwm<'static>,
     adc1: InjectedAdc<peripherals::ADC1, 3>,
     adc2: InjectedAdc<peripherals::ADC2, 2>,
     cordic_peri: Peri<'static, peripherals::CORDIC>,
+    config: &oxifoc_core::storage::RuntimeConfig,
 ) {
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
@@ -74,17 +75,20 @@ pub async fn init(
     // Initialize CORDIC hardware for fast sin/cos in FOC loop
     CordicSinCos::init(cordic_peri);
 
-    // Build FOC driver with dt from PWM config
+    // Build FOC driver with dt from PWM config; controller and limits come
+    // from the stored config (motor params → PI gains → defaults).
     let mut foc_driver = FocDriver::new(
-        FocController::<SvpwmModulator, CordicSinCos>::new(initial_vbus_v),
+        FocController::<SvpwmModulator, CordicSinCos>::from_runtime_config(
+            config,
+            initial_vbus_v,
+        ),
         motor_pwm,
         current_sensor,
         phase_manager,
         PWM_CONFIG.dt_s(),
     );
-
-    // Set current limits from board config
-    foc_driver.set_current_limits(oxifoc_core::motor::foc_driver::CurrentLimits::from_max_current(
+    foc_driver.set_current_limits(oxifoc_core::motor::foc_driver::CurrentLimits::from_stored(
+        config.current_limits.as_ref(),
         BOARD.max_phase_current_a,
     ));
 
@@ -181,49 +185,27 @@ fn ADC1_2() {
     // Get Hall snapshot
     let hall_snapshot = crate::sensors::hall::get_snapshot(now_ticks);
 
-    // Run FOC control loop (skip if faulted with non-recoverable fault)
+    // Run FOC control loop (shared cycle logic in core)
     let foc_telem = FOC_DRIVER.lock(|cell| {
-        if let Some(driver) = cell.borrow_mut().as_mut() {
-            // Update bus voltage
-            driver.set_vbus(vbus_mv as f32 / 1000.0);
-
-            // Process commands from core state channel
-            let mode = oxifoc_core::state::process_commands(&STATE, driver, &FAULT_REGISTRY);
-
-            // If faulted, disable outputs and skip FOC step
-            if FAULT_REGISTRY.any() {
-                if mode != ControlMode::Stopped {
-                    driver.set_mode(ControlMode::Stopped);
-                }
-                return None;
-            }
-
-            // Run FOC step (dt is stored in driver from PWM_CONFIG)
-            match driver.step(now_ticks) {
-                Ok(telem) => {
-                    // Check phase currents for overcurrent (instantaneous)
-                    fault::check_current_faults(
-                        telem.ia, telem.ib, telem.ic,
-                        &BOARD, &FAULT_REGISTRY,
-                        G474Fault::OverCurrent,
-                    );
-                    Some(telem)
-                }
-                Err(_) => {
-                    // Sensor not ready or other error - disable outputs
-                    if mode != ControlMode::Stopped {
-                        driver.set_mode(ControlMode::Stopped);
-                    }
-                    None
-                }
-            }
-        } else {
-            None
-        }
+        cell.borrow_mut().as_mut().and_then(|driver| {
+            oxifoc_core::state::run_foc_cycle(
+                &STATE,
+                &FAULT_REGISTRY,
+                driver,
+                vbus_mv as f32 / 1000.0,
+                now_ticks,
+                &BOARD,
+                G474Fault::OverCurrent,
+            )
+        })
     });
 
-    // Update global state with telemetry
-    if let Some(foc) = foc_telem {
-        oxifoc_core::state::update_telemetry(&STATE, adc_snapshot, hall_snapshot, foc);
-    }
+    // Update global state + fast telemetry stream
+    oxifoc_core::runtime::streaming::publish_cycle_telemetry(
+        &STATE,
+        adc_snapshot,
+        hall_snapshot,
+        foc_telem.unwrap_or_default(),
+        *SEQ,
+    );
 }

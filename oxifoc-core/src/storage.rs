@@ -336,3 +336,102 @@ mod channels {
 
 #[cfg(feature = "runtime")]
 pub use channels::*;
+
+// ============================================================================
+// Shared Storage Worker (generic over the platform flash driver)
+// ============================================================================
+
+/// Storage worker loop: loads all configs at boot, signals
+/// [`CONFIG_LOADED`], then serves [`FLASH_CHANNEL`] forever.
+///
+/// The platform provides the flash driver and the storage range; everything
+/// else (key layout, load order, operation handling) is identical across
+/// boards and lives here.
+#[cfg(all(feature = "runtime", feature = "storage"))]
+pub async fn run_storage_worker<F>(
+    storage: &mut sequential_storage::map::MapStorage<
+        ConfigKey,
+        F,
+        sequential_storage::cache::NoCache,
+    >,
+    buf: &mut [u8],
+) -> !
+where
+    F: embedded_storage_async::nor_flash::NorFlash,
+{
+    // Boot-time: load all stored configs
+    let cfg = load_all(storage, buf).await;
+    CONFIG_LOADED.signal(cfg);
+
+    // Runtime: handle write operations
+    loop {
+        let op = FLASH_CHANNEL.receive().await;
+
+        let success = match op {
+            FlashOperation::Save(key, payload) => {
+                let result = match payload {
+                    ConfigPayload::MotorParams(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::HallCalibration(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::DcOffsets(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::CurrentLimits(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::VoltageLimits(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::PwmConfig(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::PiGains(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::HallTuning(v) => storage.store_item(buf, &key, &v).await,
+                };
+                if result.is_err() {
+                    #[cfg(feature = "defmt")]
+                    defmt::error!("Failed to save config");
+                }
+                result.is_ok()
+            }
+            FlashOperation::EraseAll => {
+                let result = storage.erase_all().await;
+                if result.is_err() {
+                    #[cfg(feature = "defmt")]
+                    defmt::error!("Failed to erase storage");
+                }
+                result.is_ok()
+            }
+        };
+
+        FLASH_DONE.signal(success);
+    }
+}
+
+/// Load all stored configs. Missing keys (or any read error) become None.
+#[cfg(all(feature = "runtime", feature = "storage"))]
+async fn load_all<F>(
+    storage: &mut sequential_storage::map::MapStorage<
+        ConfigKey,
+        F,
+        sequential_storage::cache::NoCache,
+    >,
+    buf: &mut [u8],
+) -> RuntimeConfig
+where
+    F: embedded_storage_async::nor_flash::NorFlash,
+{
+    let mut cfg = RuntimeConfig::default();
+
+    macro_rules! load {
+        ($field:ident, $key:ident) => {
+            cfg.$field = storage
+                .fetch_item(buf, &ConfigKey::$key)
+                .await
+                .ok()
+                .flatten();
+        };
+    }
+
+    load!(motor_params, MotorParams);
+    load!(hall_calibration, HallCalibration);
+    load!(dc_offsets, DcOffsets);
+    load!(current_limits, CurrentLimits);
+    load!(voltage_limits, VoltageLimits);
+    load!(pwm_config, PwmConfig);
+    load!(pi_gains, PiGains);
+    load!(hall_tuning, HallTuning);
+
+    cfg
+}

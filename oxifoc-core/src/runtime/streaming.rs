@@ -30,6 +30,28 @@ pub static FAST_TELEM_Q: Churrasco<2048> = Churrasco::new();
 /// sends `TelemetryConfig { fast_hz }`.
 pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
 
+/// Publish one cycle's telemetry, shared by every platform ISR: update the
+/// global state (waking calibration/detection listeners) and, when fast
+/// streaming is enabled, push a decimated sample into the bbqueue.
+pub fn publish_cycle_telemetry(
+    state_mutex: &critical_section::Mutex<core::cell::RefCell<crate::state::MotorControlState>>,
+    adc: crate::foc::sensors::AdcSnapshot,
+    hall: Option<crate::foc::sensors::HallSnapshot>,
+    foc: crate::foc::controller::FocOutput,
+    seq: u32,
+) {
+    crate::state::update_telemetry(state_mutex, adc, hall, foc);
+
+    let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
+    if period != 0 && seq.is_multiple_of(period) {
+        let (hall_state, velocity_rad_s) = hall
+            .map(|h| (h.state, h.velocity_rad_s))
+            .unwrap_or((0, 0.0));
+        let telem = build_fast_telemetry(&foc, hall_state, velocity_rad_s, seq);
+        push_fast_telemetry(&telem);
+    }
+}
+
 /// Default maximum samples per batch (fits within 2048-byte MTU for TCP/serial).
 /// Devices can use a smaller batch size via the const generic on `fast_telemetry_stream`.
 pub const DEFAULT_BATCH_SIZE: usize = 32;

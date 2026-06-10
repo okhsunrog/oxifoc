@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-use defmt::{debug, error, info};
+use defmt::info;
 use embassy_executor::task;
 use embassy_stm32::flash::{Async, Flash as StmFlash, WRITE_SIZE};
 use sequential_storage::cache::NoCache;
@@ -67,82 +67,13 @@ pub async fn storage_worker(flash: AsyncFlash) {
     let mut storage: Storage = MapStorage::new(flash, config, NoCache::new());
 
     info!(
-        "Storage worker started (async flash), range: {:#x}..{:#x}, write_size: {}",
+        "Storage worker started, range: {:#x}..{:#x}, write_size: {}",
         STORAGE_START,
         STORAGE_START + STORAGE_SIZE,
         WRITE_SIZE
     );
 
-    // Boot-time: load all stored configs
-    let cfg = load_all(&mut storage, buf).await;
-    CONFIG_LOADED.signal(cfg);
-
-    // Runtime: handle write operations
-    loop {
-        let op = FLASH_CHANNEL.receive().await;
-        debug!("Flash operation received");
-
-        let success = match op {
-            FlashOperation::Save(key, payload) => {
-                let result = match payload {
-                    ConfigPayload::MotorParams(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::HallCalibration(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::DcOffsets(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::CurrentLimits(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::VoltageLimits(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::PwmConfig(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::PiGains(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::HallTuning(v) => storage.store_item(buf, &key, &v).await,
-                };
-                match result {
-                    Ok(_) => true,
-                    Err(e) => {
-                        error!("Failed to save config: {:?}", e);
-                        false
-                    }
-                }
-            }
-            FlashOperation::EraseAll => match storage.erase_all().await {
-                Ok(_) => true,
-                Err(e) => {
-                    error!("Failed to erase storage: {:?}", e);
-                    false
-                }
-            },
-        };
-
-        if success {
-            debug!("Flash operation succeeded");
-        }
-        FLASH_DONE.signal(success);
-    }
-}
-
-/// Load all stored configs. Missing keys return None.
-async fn load_all(storage: &mut Storage, buf: &mut [u8]) -> RuntimeConfig {
-    let mut cfg = RuntimeConfig::default();
-
-    macro_rules! load {
-        ($field:ident, $key:ident) => {
-            cfg.$field = storage
-                .fetch_item(buf, &ConfigKey::$key)
-                .await
-                .ok()
-                .flatten();
-        };
-    }
-
-    load!(motor_params, MotorParams);
-    load!(hall_calibration, HallCalibration);
-    load!(dc_offsets, DcOffsets);
-    load!(current_limits, CurrentLimits);
-    load!(voltage_limits, VoltageLimits);
-    load!(pwm_config, PwmConfig);
-    load!(pi_gains, PiGains);
-    load!(hall_tuning, HallTuning);
-
-    info!("Loaded config from flash");
-    cfg
+    run_storage_worker(&mut storage, buf).await
 }
 
 // ============================================================================

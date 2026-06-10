@@ -88,6 +88,16 @@ impl CurrentLimits {
         }
     }
 
+    /// Limits for boot: the stored config (clamped) when present, board
+    /// defaults otherwise.
+    #[cfg(feature = "storage")]
+    pub fn from_stored(cfg: Option<&crate::storage::CurrentLimitsConfig>, hw_max_a: f32) -> Self {
+        match cfg {
+            Some(c) => Self::from_config_clamped(c.max_iq_a, c.max_phase_current_a, hw_max_a),
+            None => Self::from_max_current(hw_max_a),
+        }
+    }
+
     /// Check if current limiting is enabled
     #[inline]
     pub fn is_enabled(&self) -> bool {

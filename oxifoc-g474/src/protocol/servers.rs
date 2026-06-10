@@ -128,12 +128,14 @@ pub async fn protocol_servers(stack: &'static Stack) {
         max_current_a: crate::config::BOARD.max_phase_current_a,
     };
 
-    oxifoc_core::runtime::run_all_servers(
+    oxifoc_core::runtime::run_all_servers_with_config(
         stack.endpoints(),
         device_info,
         &STATE,
         &FAULT_REGISTRY,
+        &crate::RUNTIME_CONFIG,
         crate::config::PWM_CONFIG.pwm_freq_hz,
+        crate::config::BOARD.max_phase_current_a,
     )
     .await
 }
