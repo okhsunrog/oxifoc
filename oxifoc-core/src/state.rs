@@ -20,6 +20,13 @@ use crate::foc::trig::SinCos;
 use crate::motor::{ControlMode, FocDriver};
 use crate::types::MotorState;
 
+/// Maximum |ω_e| (electrical rad/s) at which a `Brake` (windings-short)
+/// command is accepted — above this the short-circuit current is governed by
+/// back-EMF against the motor impedance, outside any control loop. Kept a
+/// little above the failsafe standstill threshold (20 rad/s default) so a
+/// rider standing next to the board can always engage it. Bench-tune.
+pub const BRAKE_ENTRY_MAX_E_RAD_S: f32 = 50.0;
+
 // ============================================================================
 // Global Communication Channels
 // ============================================================================
@@ -362,6 +369,36 @@ where
                 return;
             }
 
+            // Brake (windings shorted) is only safe to enter near standstill:
+            // at speed the short-circuit current is set by back-EMF against
+            // the motor impedance (→ λ/L), outside any control loop. Reject
+            // and keep the current mode; the host must slow down first.
+            if mode == ControlMode::Brake
+                && foc.phase().get().velocity.abs() > BRAKE_ENTRY_MAX_E_RAD_S
+            {
+                #[cfg(feature = "defmt")]
+                defmt::warn!("Brake rejected: rotor not near standstill");
+                return;
+            }
+
+            // After a failsafe engagement (deadman or link loss) the host
+            // must acknowledge with an explicit safe mode before a running
+            // mode is accepted again — "throttle back to neutral". Without
+            // this, a reconnecting host replaying its last setpoint (or a
+            // wedged app that resumes affirming) would relaunch the board
+            // right after the failsafe stopped it. The rejected SetMode
+            // still stamped the deadman above (liveness ≠ acceptance).
+            if foc.failsafe_latched()
+                && !matches!(
+                    mode,
+                    ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+                )
+            {
+                #[cfg(feature = "defmt")]
+                defmt::warn!("Mode rejected: failsafe latched, acknowledge with Stopped first");
+                return;
+            }
+
             // Apply the control mode
             match mode {
                 ControlMode::Stopped => {
@@ -381,10 +418,24 @@ where
     // ControlledStop regen-brakes the board to rest). Runs in the ISR, so it
     // doesn't depend on any async task to react to link loss; the faster
     // command-staleness deadman in `run_foc_cycle` arms the same path. After
-    // reconnect the host must send a fresh command to run again.
+    // reconnect the host must acknowledge with Stopped before running again
+    // (failsafe latch).
+    //
+    // The safe standing states are exempt, same as the deadman: a parked
+    // board must stay braked through link loss (Brake), and a commanded
+    // free-wheel stays a free-wheel (Coast) — "braking" Coast would drive
+    // the current loop into floated phases anyway. The shared state is NOT
+    // forced to stopped here: the failsafe is still actively driving the
+    // motor (up to brake_time_s) — it syncs at the failsafe terminal in
+    // `run_foc_cycle`, so e.g. the config server's motor-running gate can't
+    // admit a flash stall mid-brake.
     let link_active = critical_section::with(|cs| state_mutex.borrow(cs).borrow().link_active);
-    if !link_active && foc.mode() != ControlMode::Stopped {
-        critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
+    if !link_active
+        && !matches!(
+            foc.mode(),
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+        )
+    {
         foc.enter_failsafe();
     }
 
@@ -454,7 +505,8 @@ where
         return None;
     }
 
-    match driver.step(now_ticks) {
+    let was_failsafe = driver.failsafe_active();
+    let result = match driver.step(now_ticks) {
         Ok(telem) => {
             // Instantaneous phase-current fault check
             let before = fault_registry.any();
@@ -487,7 +539,18 @@ where
             driver.failsafe_reset();
             None
         }
+    };
+
+    // The failsafe terminal transition (brake finished / aborted → Stopped)
+    // happens inside step(); mirror it into the shared state so telemetry
+    // and the config server's motor-running gate see the truth. While the
+    // brake is still running the state stays Running — a flash stall must
+    // not be admitted mid-brake.
+    if was_failsafe && !driver.failsafe_active() {
+        critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
     }
+
+    result
 }
 
 /// Update state with new telemetry from ISR

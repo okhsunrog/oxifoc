@@ -54,6 +54,10 @@ Now that Layer 2 exists, this gate **routes through the same failsafe policy**
 (`process_commands` → `FocDriver::enter_failsafe`) rather than a hard `Stopped`,
 and the liveness timeout was shortened 5 s → 1 s
 ([`LIVENESS_TIMEOUT_MS`](../oxifoc-core/src/icd.rs)). Layer 2 is the fast net.
+The gate exempts the safe standing states (`Stopped`/`Coast`/`Brake`) and does
+not force the shared state to stopped while the brake still runs — that syncs
+at the failsafe terminal in `run_foc_cycle`, so the config server's
+motor-running gate can't admit a flash stall mid-brake.
 
 ### Layer 2 — ISR command-staleness deadman (implemented 2026-06-11)
 
@@ -77,6 +81,37 @@ with no further input, host-configurable via `FailsafeConfigStored` (ConfigKey
   to a full stop on Hall (tracks to zero); sensorless-only it brakes to the
   observer floor then coasts (the velocity estimate is unreliable near zero).
   Aborts to high-Z if regen pushes the bus into the OverVoltage fault.
+
+**Scope.** The deadman covers only the *drive* modes (`CurrentControl`, plus
+velocity/position once they exist) — what a vehicle rides on. Exempt:
+
+- `Stopped`/`Coast`/`Brake` — safe standing states (parking `Brake` = all
+  low-side FETs on / windings shorted, added 2026-06-11): they need no
+  affirmation, and a parked board must stay braked through link loss, so the
+  Layer-1 gate skips them too. `Brake` entry is speed-gated in
+  `process_commands` (`BRAKE_ENTRY_MAX_E_RAD_S`): shorting the windings at
+  speed dumps an uncontrolled back-EMF-driven current (→ λ/L) through the
+  FETs. Note it is a *viscous* brake (torque ∝ speed, dissipated in the
+  motor, zero draw at standstill) — on a slope the board creeps; true
+  position hold is a future position-loop feature (see TODO).
+- `OpenLoop`/`DirectVoltage`/`SixStep` — bench/calibration modes: on-device
+  detection dwells up to ~1 s between `SetMode`s (R-measurement settle),
+  which a 150 ms deadman would cut mid-measurement. The Layer-1 link gate
+  (1 s) still covers them against a dead host.
+
+**Re-arm latch.** Every failsafe engagement latches `failsafe_latched` in
+`FocDriver`; while latched, `process_commands` rejects running modes (the
+rejected `SetMode` still stamps the deadman — liveness ≠ acceptance) until
+the host acknowledges with an explicit `Stopped`/`Coast`/`Brake` — "throttle
+back to neutral", as on RC/e-bike systems. Defense in depth: host-lib also
+drops its active setpoint on disconnect (and sends affirms from the same
+task as commands, so an affirm can't overtake a Stop), but the device does
+not trust the host — a reconnecting host replaying a stale throttle cannot
+relaunch the board.
+
+`enter_failsafe` is bumpless (seeds the ramp from the commanded
+`CurrentControl`/`OpenLoop` q-current) and restores six-step-floated phases
+before driving the current loop.
 
 Open: bench-tune the brake constants and confirm no OV trip under regen (see
 [TODO.md](TODO.md#safety)).

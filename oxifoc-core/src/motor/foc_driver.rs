@@ -238,6 +238,12 @@ where
     /// Self-contained failsafe sequence, armed when the deadman/link-loss
     /// fires, stepped every cycle until it cuts PWM.
     failsafe_ctrl: FailsafeController,
+    /// Set on every failsafe engagement; while set, `process_commands`
+    /// rejects running modes — the host must acknowledge with an explicit
+    /// safe mode (Stopped / Coast / Brake, "throttle back to neutral")
+    /// first, so a reconnecting host replaying a stale setpoint can't
+    /// relaunch the board. Cleared by `set_mode` applying a safe mode.
+    failsafe_latched: bool,
     /// Over-voltage trip (V) for the proactive regen-brake derate (0 = off,
     /// rely on the OV fault backstop). Set from the board config at boot.
     ov_threshold_v: f32,
@@ -282,6 +288,7 @@ where
             last_cmd_tick: None,
             failsafe_cfg: FailsafeConfig::default(),
             failsafe_ctrl: FailsafeController::new(),
+            failsafe_latched: false,
             ov_threshold_v: 0.0,
         }
     }
@@ -369,10 +376,30 @@ where
     }
 
     /// Whether the command link has gone stale while the motor is running —
-    /// the deadman trigger. False while Stopped/Coast (nothing to fail safe
-    /// toward) or while the failsafe already runs.
+    /// the deadman trigger.
+    ///
+    /// Only the *drive* modes are covered (CurrentControl, plus the velocity/
+    /// position loops once they exist) — those are what a vehicle rides on,
+    /// and the host re-affirms them every 50 ms. Exempt:
+    /// - Stopped/Coast/Brake — safe standing states: nothing to fail safe
+    ///   toward, and a parking brake must persist through link loss.
+    /// - OpenLoop/DirectVoltage/SixStep — bench/calibration modes: on-device
+    ///   detection sets one and then dwells up to ~1 s between `SetMode`s
+    ///   (e.g. the R-measurement settle), which a 150 ms deadman would cut
+    ///   mid-measurement. The Layer-1 link gate (1 s liveness) still covers
+    ///   them against a dead host.
+    ///
+    /// Also false while the failsafe already runs.
     pub fn deadman_expired(&self, now_ticks: u64) -> bool {
-        if matches!(self.mode, ControlMode::Stopped | ControlMode::Coast) {
+        if matches!(
+            self.mode,
+            ControlMode::Stopped
+                | ControlMode::Coast
+                | ControlMode::Brake
+                | ControlMode::OpenLoop { .. }
+                | ControlMode::DirectVoltage { .. }
+                | ControlMode::SixStep { .. }
+        ) {
             return false;
         }
         if self.failsafe_ctrl.is_active() {
@@ -390,25 +417,44 @@ where
     /// Arm the failsafe sequence (deadman or link-loss). Idempotent. Falls
     /// back to Coast when the current sensor isn't calibrated — the brake
     /// needs the current loop, which refuses to run uncalibrated.
+    ///
+    /// Also latches `failsafe_latched`: after any failsafe engagement the
+    /// host must explicitly acknowledge with a safe mode (Stopped / Coast /
+    /// Brake) before a running mode is accepted again — see the gate in
+    /// `process_commands`. Defense in depth against a reconnecting host
+    /// replaying a stale throttle.
     pub fn enter_failsafe(&mut self) {
         if self.failsafe_ctrl.is_active() {
             return;
         }
+        self.failsafe_latched = true;
         let policy = if self.current_sensor.is_calibrated() {
             self.failsafe_cfg.policy
         } else {
             FailsafePolicy::Coast
         };
-        // Bumpless: seed the ramp from the q-current currently commanded.
+        // The failsafe drives through the normal current-control path, which
+        // assumes all three phases are PWM-able — but six-step commutation
+        // floats one phase per sector. Restore them (mirrors the
+        // SixStep-exit housekeeping in `set_mode`, which the failsafe
+        // bypasses).
+        if matches!(self.mode, ControlMode::SixStep { .. }) {
+            self.pwm
+                .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
+        }
+        // Bumpless: seed the ramp from the q-current currently commanded
+        // (OpenLoop applies its `current` as the q-target).
         let current_iq = match self.mode {
             ControlMode::CurrentControl { iq_target, .. } => iq_target,
+            ControlMode::OpenLoop { current, .. } => current,
             _ => 0.0,
         };
         self.failsafe_ctrl.arm(current_iq, policy);
     }
 
     /// Clear the failsafe sequence (a fresh command re-armed control, or a
-    /// fault took over).
+    /// fault took over). Does NOT clear the re-arm latch — only an explicit
+    /// safe-mode command does (see `set_mode`).
     pub fn failsafe_reset(&mut self) {
         self.failsafe_ctrl.reset();
     }
@@ -416,6 +462,13 @@ where
     /// Whether the failsafe is currently carrying the motor.
     pub fn failsafe_active(&self) -> bool {
         self.failsafe_ctrl.is_active()
+    }
+
+    /// Whether a failsafe engagement is awaiting an explicit safe-mode
+    /// acknowledgement (Stopped / Coast / Brake) before running modes are
+    /// accepted again. Checked by the `process_commands` gate.
+    pub fn failsafe_latched(&self) -> bool {
+        self.failsafe_latched
     }
 
     /// Set control mode
@@ -428,6 +481,15 @@ where
         // in-progress failsafe brake. (The failsafe's own terminal Stop sets
         // `self.mode` directly, not through here, so it doesn't self-cancel.)
         self.failsafe_ctrl.reset();
+
+        // A safe-mode command is the explicit "throttle back to neutral"
+        // acknowledgement that releases the post-failsafe re-arm latch.
+        if matches!(
+            mode,
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+        ) {
+            self.failsafe_latched = false;
+        }
 
         let was_stopped = matches!(self.mode, ControlMode::Stopped);
         let will_be_active = !matches!(mode, ControlMode::Stopped);
@@ -495,8 +557,8 @@ where
         }
         match self.mode {
             ControlMode::Stopped => {
-                // Safe-off: all low-side ON (brake) or all OFF depending on
-                // platform.  `disable()` is the platform's emergency-stop.
+                // Safe-off: `disable()` is the platform's emergency-stop
+                // (all channels off / high-Z on the current boards).
                 self.pwm.disable();
                 // The previous cycle's command WAS applied before this stop
                 // took effect — let the estimators integrate it, then decay
@@ -538,6 +600,20 @@ where
                 Ok(FocOutput::default())
             }
             ControlMode::SixStep { duty } => self.step_six_step(duty, dt, now_ticks),
+            ControlMode::Brake => {
+                // Parking brake: all low-side FETs on — windings shorted to
+                // ground. Speed-proportional drag, energy dissipates in the
+                // motor; zero draw at standstill. Entry is speed-gated at the
+                // command boundary (see `process_commands`).
+                use super::super::foc::pwm::PhaseState;
+                self.pwm
+                    .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
+                self.controller.reset();
+                // Terminal voltage is zero while shorted; let the estimators
+                // integrate that (current still flows when the rotor moves).
+                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
+                Ok(FocOutput::default())
+            }
         }
     }
 
@@ -880,6 +956,11 @@ where
     /// Get reference to FOC controller
     pub fn controller(&self) -> &FocController<SvpwmModulator, S> {
         &self.controller
+    }
+
+    /// Get reference to the PWM output (tests / diagnostics).
+    pub fn pwm(&self) -> &P {
+        &self.pwm
     }
 }
 
@@ -1245,6 +1326,233 @@ mod tests {
             driver.failsafe_active(),
             "link loss must arm the configured failsafe policy"
         );
+
+        // …and latches: with the link back, a replayed running setpoint (a
+        // reconnecting host's stale throttle) must be rejected until an
+        // explicit safe-mode acknowledgement.
+        critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+        assert!(driver.failsafe_latched());
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+            iq_target: 5.0,
+            id_target: 0.0,
+        }));
+        process_commands(&state, &mut driver, &registry);
+        assert!(
+            driver.failsafe_active(),
+            "running mode while latched must be rejected, not cancel the brake"
+        );
+        assert!(driver.failsafe_latched());
+
+        // Stopped acknowledges ("throttle back to neutral"): latch clears…
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::Stopped));
+        process_commands(&state, &mut driver, &registry);
+        assert!(!driver.failsafe_latched());
+        assert!(!driver.failsafe_active());
+        assert_eq!(driver.mode(), ControlMode::Stopped);
+
+        // …and a fresh running command is accepted again.
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+            iq_target: 2.0,
+            id_target: 0.0,
+        }));
+        process_commands(&state, &mut driver, &registry);
+        assert!(matches!(driver.mode(), ControlMode::CurrentControl { .. }));
+    }
+
+    /// Bench/calibration modes are exempt from the deadman: on-device
+    /// detection dwells up to ~1 s between `SetMode`s, which a 150 ms
+    /// deadman would cut mid-measurement. Drive modes stay covered.
+    #[test]
+    fn deadman_exempts_bench_modes() {
+        use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
+
+        let foc = FocController::<SvpwmModulator, crate::foc::trig::LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            crate::foc::phase::PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        driver.set_failsafe(FailsafeConfig {
+            policy: FailsafePolicy::Coast,
+            staleness_timeout_us: 1_000,
+            ..FailsafeConfig::default()
+        });
+        driver.note_command_tick(0);
+
+        for mode in [
+            ControlMode::OpenLoop {
+                angle_rad: 0.0,
+                current: 3.0,
+                velocity_rad_s: 0.0,
+                pi_gains: None,
+            },
+            ControlMode::DirectVoltage {
+                vd: 1.0,
+                vq: 0.0,
+                angle_rad: 0.0,
+            },
+            ControlMode::SixStep { duty: 0.2 },
+        ] {
+            driver.set_mode(mode);
+            assert!(
+                !driver.deadman_expired(1_000_000),
+                "bench mode {mode:?} must be deadman-exempt"
+            );
+        }
+
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 2.0,
+            id_target: 0.0,
+        });
+        assert!(
+            driver.deadman_expired(1_000_000),
+            "drive mode stays covered"
+        );
+    }
+
+    /// `enter_failsafe` from SixStep must restore the floated phases before
+    /// driving the current loop (mirrors the SixStep-exit housekeeping in
+    /// `set_mode`, which the failsafe bypasses).
+    #[test]
+    fn enter_failsafe_restores_six_step_phases() {
+        use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
+
+        /// MockPwm that records the last forced phase states.
+        struct StatePwm {
+            states: Option<[PhaseState; 3]>,
+        }
+        impl PhasePwm for StatePwm {
+            fn max_duty(&self) -> u16 {
+                1000
+            }
+            fn set_duties(&mut self, _duties: [u16; 3]) {}
+            fn set_phase_states(&mut self, states: [PhaseState; 3]) {
+                self.states = Some(states);
+            }
+        }
+
+        let foc = FocController::<SvpwmModulator, crate::foc::trig::LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            StatePwm { states: None },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            crate::foc::phase::PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        driver.set_failsafe(FailsafeConfig {
+            policy: FailsafePolicy::ControlledStop,
+            ..FailsafeConfig::default()
+        });
+        driver.set_mode(ControlMode::SixStep { duty: 0.2 });
+        // Run a six-step cycle so the commutation floats a phase.
+        let _ = driver.step(1_000);
+
+        driver.enter_failsafe();
+        assert_eq!(
+            driver.pwm().states,
+            Some([PhaseState::Low, PhaseState::Low, PhaseState::Low]),
+            "failsafe from SixStep must un-float all phases"
+        );
+    }
+
+    /// Brake (windings short) is speed-gated at the command boundary, and
+    /// once engaged it is a safe standing state: exempt from the deadman and
+    /// from the link-loss failsafe — a parked board must stay braked.
+    #[test]
+    #[cfg(feature = "runtime")]
+    fn brake_speed_gated_and_survives_link_loss() {
+        let _serial = cmd_channel_lock();
+        use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
+        use crate::foc::phase::{PhaseInput, PhaseOutput, PhaseProvider};
+        use crate::foc::trig::LibmSinCos;
+        use crate::state::{CMD_CHANNEL, DriverCommand, MotorControlState, process_commands};
+        use core::cell::RefCell;
+        use critical_section::Mutex as CriticalSectionMutex;
+
+        #[derive(Clone, Copy, PartialEq)]
+        struct TestFault;
+        impl PlatformFault for TestFault {
+            fn category(&self) -> FaultCategory {
+                FaultCategory::OverCurrent
+            }
+            fn details(&self) -> heapless::String<128> {
+                heapless::String::new()
+            }
+            fn is_recoverable(&self) -> bool {
+                false
+            }
+            fn is_critical(&self) -> bool {
+                true
+            }
+        }
+
+        /// Phase provider with a directly settable velocity estimate.
+        struct MockPhase {
+            vel: f32,
+        }
+        impl PhaseProvider for MockPhase {
+            fn get(&self) -> PhaseOutput {
+                PhaseOutput {
+                    angle: 0.0,
+                    velocity: self.vel,
+                }
+            }
+            fn update(&mut self, _input: &PhaseInput, _now_ticks: u64) {}
+        }
+
+        let state: CriticalSectionMutex<RefCell<MotorControlState>> =
+            CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        let registry: FaultRegistry<TestFault> = FaultRegistry::new();
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            MockPhase { vel: 300.0 },
+            1.0 / 20_000.0,
+        );
+
+        critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+            iq_target: 2.0,
+            id_target: 0.0,
+        }));
+        process_commands(&state, &mut driver, &registry);
+
+        // Spinning fast → Brake is rejected, mode unchanged.
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::Brake));
+        process_commands(&state, &mut driver, &registry);
+        assert!(
+            matches!(driver.mode(), ControlMode::CurrentControl { .. }),
+            "Brake at speed must be rejected, got {:?}",
+            driver.mode()
+        );
+
+        // Near standstill → accepted.
+        driver.phase_mut().vel = 5.0;
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::Brake));
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(driver.mode(), ControlMode::Brake);
+
+        // Safe standing state: no deadman, however stale the command link.
+        assert!(!driver.deadman_expired(u64::MAX / 2));
+
+        // Link loss must NOT kick a parked board out of the brake.
+        critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_inactive());
+        process_commands(&state, &mut driver, &registry);
+        assert!(!driver.failsafe_active(), "brake is exempt from link-loss");
+        assert_eq!(driver.mode(), ControlMode::Brake);
+
+        // And the Brake step drives all-low-side without erroring.
+        assert!(driver.step(1_000).is_ok());
     }
 
     #[test]
@@ -1511,7 +1819,15 @@ mod tests {
             (params.ld + params.lq) / 2.0,
             24.0,
         );
-        let mut driver = FocDriver::new(foc, MockPwm { duties: [0; 3] }, MockCurrentSensor { currents: (0.0, 0.0, 0.0) }, mgr, DT);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            mgr,
+            DT,
+        );
         driver.set_current_limits(CurrentLimits::from_max_current(40.0));
         driver.set_failsafe(FailsafeConfig {
             policy: FailsafePolicy::ControlledStop,
@@ -1553,13 +1869,23 @@ mod tests {
             }
         }
 
-        assert!(peak_omega > 50.0, "motor should have spun up, peak ωe = {peak_omega}");
+        assert!(
+            peak_omega > 50.0,
+            "motor should have spun up, peak ωe = {peak_omega}"
+        );
         assert!(
             out.omega_e.abs() < 25.0,
             "failsafe must brake to ~standstill, ωe = {}",
             out.omega_e
         );
-        assert_eq!(driver.mode(), ControlMode::Stopped, "ends Stopped after the brake");
-        assert!(!driver.failsafe_active(), "failsafe cleared at the terminal");
+        assert_eq!(
+            driver.mode(),
+            ControlMode::Stopped,
+            "ends Stopped after the brake"
+        );
+        assert!(
+            !driver.failsafe_active(),
+            "failsafe cleared at the terminal"
+        );
     }
 }

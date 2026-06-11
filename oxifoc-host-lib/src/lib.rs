@@ -792,46 +792,53 @@ where
         ctx.cancel.clone(),
     );
 
-    // The active drive setpoint, shared between the command handler (which
-    // updates it) and the affirmation task (which resends it). None =
-    // Stopped/Coast = nothing to affirm.
-    let active_setpoint: Arc<std::sync::Mutex<Option<ControlMode>>> =
-        Arc::new(std::sync::Mutex::new(None));
-
-    // Command handler — owns cmd_rx
+    // Command handler + command-staleness affirmation, in ONE task so every
+    // send is strictly ordered: an affirm of the previous setpoint can never
+    // be in flight concurrently with a fresh command (in particular a Stop)
+    // and land after it on the wire.
+    //
+    // Affirmation: while connected with a drive setpoint active, resend it
+    // every AFFIRM_INTERVAL so the device's ISR deadman stays fed (absent
+    // that, the device fail-safes after ~150 ms). The setpoint is idempotent
+    // (MotorEndpoint is `Idempotent`), so re-sending the same absolute value
+    // is safe. Fire-and-forget (no retry).
+    //
+    // On disconnect the setpoint is dropped: a reconnect must never resurrect
+    // a stale throttle — the device latches its failsafe and waits for an
+    // explicit Stopped + fresh user intent, and we must not fight that.
+    //
+    // Known trade-off of the single task: a long-running command (a 60 s
+    // Detect, a config op on a struggling link) starves affirms, so the
+    // device fail-safes. That is the safe direction — those ops don't run
+    // while riding (the device refuses them with the motor running), and a
+    // link bad enough to stall a 2 s setpoint send *should* trip the deadman.
     tokio::spawn({
         let stack = stack.clone();
         let fast_hz_flag = ctx.fast_hz;
-        let active_setpoint = active_setpoint.clone();
-        let mut cmd_rx = ctx.cmd_rx;
-        async move {
-            while let Some(cmd) = cmd_rx.recv().await {
-                handle_command(&stack, cmd, &fast_hz_flag, &active_setpoint).await;
-            }
-        }
-    });
-
-    // Command-staleness affirmation: while connected with a drive setpoint
-    // active, resend it every AFFIRM_INTERVAL so the device's ISR deadman
-    // stays fed (absent that, the device fail-safes after ~150 ms). The
-    // setpoint is idempotent (MotorEndpoint is `Idempotent`), so re-sending
-    // the same absolute value is safe. Fire-and-forget (no retry).
-    tokio::spawn({
-        let stack = stack.clone();
         let connected = ctx.connected.clone();
         let cancel = ctx.cancel.clone();
+        let mut cmd_rx = ctx.cmd_rx;
         async move {
+            let mut active_setpoint: Option<ControlMode> = None;
             let mut ticker = tokio::time::interval(AFFIRM_INTERVAL);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
+                    cmd = cmd_rx.recv() => {
+                        let Some(cmd) = cmd else { break };
+                        handle_command(&stack, cmd, &fast_hz_flag, &mut active_setpoint).await;
+                    }
                     _ = ticker.tick() => {
                         if !connected.load(Ordering::Relaxed) {
+                            if active_setpoint.take().is_some() {
+                                tracing::info!(
+                                    "link down: dropping active setpoint (no auto-resume on reconnect)"
+                                );
+                            }
                             continue;
                         }
-                        let mode = *active_setpoint.lock().unwrap();
-                        if let Some(mode) = mode {
+                        if let Some(mode) = active_setpoint {
                             let client = stack.clone().reliable::<TokioTimer>();
                             let _ = client
                                 .at_least_once::<MotorEndpoint>(
@@ -940,23 +947,25 @@ async fn handle_command<NS>(
     ns: &NS,
     cmd: HostCommand,
     fast_hz_flag: &Arc<AtomicU16>,
-    active_setpoint: &Arc<std::sync::Mutex<Option<ControlMode>>>,
+    active_setpoint: &mut Option<ControlMode>,
 ) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
     let client = ns.clone().reliable::<TokioTimer>();
     match cmd {
         HostCommand::Motor(ref mc) => {
-            // Track the active drive setpoint for the affirmation task. A
+            // Track the active drive setpoint for the affirmation tick. A
             // running mode must keep being re-affirmed to hold off the device
-            // deadman; Stopped/Coast clear it (the device is meant to be
-            // off/coasting, no affirmation owed).
-            *active_setpoint.lock().unwrap() =
-                if matches!(mc, ControlMode::Stopped | ControlMode::Coast) {
-                    None
-                } else {
-                    Some(*mc)
-                };
+            // deadman; Stopped/Coast/Brake clear it (safe standing states,
+            // exempt from the device deadman — no affirmation owed).
+            *active_setpoint = if matches!(
+                mc,
+                ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+            ) {
+                None
+            } else {
+                Some(*mc)
+            };
             tracing::info!("Sending motor command: {:?}", mc);
             match client
                 .at_least_once::<MotorEndpoint>(DEVICE_ADDR, mc, Some("motor"), &SETPOINT_POLICY)

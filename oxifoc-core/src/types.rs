@@ -140,6 +140,17 @@ pub enum ControlMode {
         /// Duty cycle (-1.0 to 1.0)
         duty: f32,
     },
+    /// Brake mode — all low-side FETs on, windings shorted (parking brake).
+    ///
+    /// Resists motion with speed-proportional torque and dissipates the
+    /// energy in the motor (no regen, no bus pumping); draws nothing at
+    /// standstill, so it can be held indefinitely. It is a *viscous* brake,
+    /// not a position hold — on a slope the board creeps slowly.
+    ///
+    /// Entry is speed-gated at the command boundary: shorting the windings
+    /// at speed dumps an uncontrolled current (~λ/L) through the FETs, so
+    /// `process_commands` rejects it above a small velocity threshold.
+    Brake,
 }
 
 // ============================================================================
@@ -159,7 +170,7 @@ impl ControlMode {
     /// at the boundary.
     pub fn is_finite(&self) -> bool {
         match *self {
-            ControlMode::Stopped | ControlMode::Coast => true,
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake => true,
             ControlMode::CurrentControl {
                 iq_target,
                 id_target,

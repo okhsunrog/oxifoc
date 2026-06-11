@@ -99,6 +99,8 @@ enum Command {
     },
     /// Stop the motor
     Stop,
+    /// Engage the parking brake (short the windings; near-standstill only)
+    Brake,
     /// Select the angle source for commutation
     Source {
         #[arg(value_enum)]
@@ -219,6 +221,14 @@ fn main() -> Result<()> {
                 .send(HostCommand::Motor(ControlMode::Stopped))
                 .context("send stop command")?;
             println!("Stop command sent");
+            std::thread::sleep(Duration::from_millis(800));
+        }
+        Command::Brake => {
+            runtime
+                .cmd_tx
+                .send(HostCommand::Motor(ControlMode::Brake))
+                .context("send brake command")?;
+            println!("Brake command sent (rejected by the device unless near standstill)");
             std::thread::sleep(Duration::from_millis(800));
         }
         Command::Source {

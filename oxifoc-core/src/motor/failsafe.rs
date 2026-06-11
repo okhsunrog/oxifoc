@@ -300,7 +300,9 @@ impl FailsafeController {
                 let reversed = omega_e * brake_sign > 0.0;
 
                 // Terminate: reversed past zero, held standstill, or out of time.
-                if reversed || standstill_s >= STANDSTILL_DEBOUNCE_S || elapsed_s >= cfg.brake_time_s
+                if reversed
+                    || standstill_s >= STANDSTILL_DEBOUNCE_S
+                    || elapsed_s >= cfg.brake_time_s
                 {
                     self.phase = Phase::Done;
                     return FailsafeAction::Stop;
@@ -421,7 +423,15 @@ mod tests {
         let mut c = FailsafeController::new();
         c.arm(8.0, FailsafePolicy::RampToZero);
         // First cycle still drives a (reduced) current, not Stop.
-        match c.step(300.0, DT, &cfg(FailsafePolicy::RampToZero), 40.0, 0.0, 0.0, true) {
+        match c.step(
+            300.0,
+            DT,
+            &cfg(FailsafePolicy::RampToZero),
+            40.0,
+            0.0,
+            0.0,
+            true,
+        ) {
             FailsafeAction::Drive { iq_target, .. } => assert!(iq_target < 8.0 && iq_target > 0.0),
             FailsafeAction::Stop => panic!("should ramp, not stop immediately"),
         }
@@ -492,7 +502,15 @@ mod tests {
         // Terminal is stable: the controller stays in Done (returning Stop)
         // until the *driver* resets it on the Stop action.
         assert_eq!(
-            c.step(5.0, DT, &cfg(FailsafePolicy::ControlledStop), 40.0, 0.0, 0.0, true),
+            c.step(
+                5.0,
+                DT,
+                &cfg(FailsafePolicy::ControlledStop),
+                40.0,
+                0.0,
+                0.0,
+                true
+            ),
             FailsafeAction::Stop
         );
     }

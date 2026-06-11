@@ -20,10 +20,43 @@ Failsafe-layer *design* and rationale live in [safety.md](safety.md).
   active setpoint every 50 ms (`AFFIRM_POLICY`, no retry). Liveness shortened
   5 s → 1 s; the Layer-1 `link_active` gate now routes through the same
   failsafe policy. `oxifoc-core/src/motor/failsafe.rs` + closed-loop test.
+- [x] **Layer 2 hardening from self-review** (2026-06-11): re-arm latch
+  (running modes rejected after any failsafe engagement until an explicit
+  `Stopped`/`Coast`/`Brake` acknowledgement); host-lib drops the active
+  setpoint on disconnect and sends affirms from the command-handler task
+  (ordering — an affirm can never land after a Stop); deadman exempts the
+  bench modes (`OpenLoop`/`DirectVoltage`/`SixStep` — detection dwells up to
+  1 s between `SetMode`s, Layer-1 still covers them); link gate exempts
+  `Coast`/`Brake` and no longer forces the shared state to stopped at arm
+  time (syncs at the failsafe terminal instead — no flash stall mid-brake);
+  `enter_failsafe` restores six-step-floated phases and seeds bumpless from
+  `OpenLoop.current` too.
 - [ ] **Bench-tune the regen-brake** on real hardware: `brake_current_a`,
   `standstill_rad_s`, and the low-speed coast floor (sensorless velocity is
   unreliable near zero — Hall brakes to a stop, observer-only to its floor
-  then coasts). Confirm no OV trip on the bus during regen.
+  then coasts). Confirm no OV trip on the bus during regen. Also bench-tune
+  `BRAKE_ENTRY_MAX_E_RAD_S` (parking-brake entry gate) and verify the
+  windings-short current at that speed is comfortably inside FET ratings.
+- [ ] **Parking brake follow-ups** (`ControlMode::Brake` — windings short —
+  added 2026-06-11; speed-gated entry, exempt from deadman/link-loss):
+  - Ramp-into-brake: a `Brake` command at speed is currently rejected;
+    nicer is auto-substituting the ControlledStop ramp with `Brake` as the
+    terminal state instead of high-Z (also wanted for the failsafe itself —
+    a board that brakes to a stop on a slope then shouldn't roll away).
+  - GUI button + remote mapping.
+- [ ] **ControlledStop v2** (slope-independent, see review discussion
+  2026-06-11): decel-limited velocity ramp via a shared `VelocityLoop` block
+  (own instance, fixed conservative gains) instead of constant current;
+  replace the fixed `brake_time_s` give-up with a "|ω| not decreasing" detector
+  (+ long hard cap); configurable terminal state high-Z vs `Brake`. Document
+  in safety.md the physical limit: regen into a full battery on a long
+  descent cannot guarantee a stop (OV derate sheds the brake) — dissipative
+  braking (short/heat) is the only electrical answer there.
+- [ ] **Position hold** (after position control lands): true hold-in-place —
+  position loop with the target latched at engage (creep-free on a slope,
+  unlike the viscous `Brake`), at the cost of battery drain and heat. Cascade:
+  position P → shared `VelocityLoop` → current loop. `Brake` stays the
+  zero-power default; hold is the opt-in upgrade.
 - [ ] Integrating current/voltage fault detector (replace the single-sample
   trip — nuisance-trips on regen/EMI); signed open-loop override
   (direction = sign of last velocity). [review.md §3]
@@ -47,7 +80,7 @@ Failsafe-layer *design* and rationale live in [safety.md](safety.md).
 ## Firmware / core
 
 - [ ] Virtual device only simulates `CurrentControl`/`Stopped`; OpenLoop,
-  DirectVoltage and SixStep are accepted and ignored (limits/gains
+  DirectVoltage, SixStep and Brake are accepted and ignored (limits/gains
   commands too).
 - [ ] Remaining ISR dedup: ADC snapshot assembly + voltage/temp fault
   checks are still per-platform copies (small).
