@@ -32,78 +32,42 @@ Actionable-список ведётся в [TODO.md](TODO.md); safety-дизай�
 | Таймбаза `tick-hz-32_768` (квантование hall) | устарело: hall перешёл на аппаратный capture-таймер 1 МГц (TI1S XOR + IC), не `embassy_time` ✔ |
 | HFI 150% бюджета ISR (libm sinf/cosf) | SinCos-backend (CORDIC G4 / FastSinCos F405) + `fast_math` → HFI 13.9%, см. [perf-bench](perf-bench-2026-06-11.md) ✔ |
 
+Исправлено 2026-06-11 (вторая сессия, после этого ревью):
+
+| Пункт | Где исправлено |
+|---|---|
+| **HIGH** F405 SPI в critical section | `Drv8301Spi` (шина+CS) владеется `nfault_monitor_task`; в CS-мьютексе только EN_GATE GPIO; мёртвые хелперы удалены |
+| **HIGH** F405 FOC ISR без приоритета | `control/foc.rs`: NVIC priority 0 для ADC, как на G431 |
+| F405 OverTemp не critical + температура мотора | `OverTemp` в critical; `BoardConfig.max_motor_temp_c` + `check_temperature_threshold` (NTC мотора PC4, 120 °C) |
+| Detection: spin-down мёртв на железе | `DetectionHardware::supports_coast_telemetry` (default false) — честный пропуск с логом вместо spin-up→нули→«fallback»; реализация по фазным делителям — bench |
+| Detection: `Ld ≤ Lq` зашито | знаковый Re(bin2) вместо магнитуды; quadrature-компонент копится, доминирующий Im → warn «lock far off d» (`axes_aligned`) |
+| Detection: эскалация тока без power-гейта при `None` | проекция мощности по последнему известному R перед эскалацией |
+| Detection: `measure_resistance` без проверки сходимости | id вне ±30% от setpoint → `UnexpectedMotion` (общий таймаут `wait_telemetry` — ещё открыт) |
+| g431: нет const_assert на storage-перекрытие | портирован из f405/g474 (`FIRMWARE_END_OFFSET` уже был в build.rs) |
+| Host: `HostRuntime` без `Drop` | `impl Drop { cancel() }` + GUI connect делает take()+shutdown+drop старого слота |
+| Host: Stop ждёт за Detect в очереди | Detect спавнится в side-task (device всё равно отказывает детекции при работающем моторе) |
+| RTT: expect() в потоке + скан 32 КБ | `ScanRegion::Ram` (по описанию чипа); все ошибки пробы → io::Error в reader — линк ломается видимо |
+| CLI fire-and-forget + `--duty`=ток | `HostCommand::MotorAck` (oneshot-ответ), exit≠0 без подтверждения; `start --iq <A>` |
+| GUI: молчаливый дроп телеметрии / RPM из пресета / motor_running | предупреждение по измеренному rate vs acked; pole pairs из stored MotorParams устройства; сброс на disconnect |
+| Layer-2 deadman (крупнейший safety-разрыв §3) | реализован и расширен: ISR-deadman 150 мс, failsafe v2 (decel-рампа, no-progress watchdog, терминал ParkBrake), re-arm latch, ramp-into-brake; см. safety.md |
+| Velocity loop не реализован (§3 Алгоритмы) | `foc/velocity.rs` + `VelocityControl` в драйвере; sensorless-деградация в coast; персист + GUI |
+| Stale «Temporarily disabled» OCP-комментарий | удалён (функция живая, зовётся из main) |
+
 ---
 
 ## 1. Открытые баги и проблемы корректности
 
 ### HIGH
 
-- **F405: SPI к DRV8301 внутри critical section маскирует FOC ISR.** ✔
-  `drv8301.rs:35` — `DRV_CONFIG: CriticalSectionMutex`; `nfault_monitor_task`
-  (`:244-249`) делает блокирующий `get_fault_status()` по SPI внутри `.lock()`.
-  `critical-section-single-core` ⇒ PRIMASK гасит все прерывания, включая
-  контурный ADC ISR, на десятки мкс — ровно в момент gate-fault'а. Подъём
-  приоритета ISR не спасает (PRIMASK маскирует независимо от приоритета).
-  Фикс: вынести SPI-устройство из CS-мьютекса (владеть им в задаче-мониторе
-  или async SPI + non-CS mutex). _Также `get_fault_status` (`:281`),
-  `reset_faults` (`:308`)._
-- **F405: FOC ISR на дефолтном приоритете.** ✔ `control/foc.rs:91-95` зовёт
-  `ADC::enable()` без `set_priority`. G431 (`foc.rs:109`) ставит `0`.
-  Comms-ISR (USB/UART) джиттерят/вытесняют контур — а это актуатор. Фикс:
-  `NVIC::set_priority(.., ADC, 0)` как на G431.
+_Пусто — оба пункта (F405 SPI-in-CS, приоритет FOC ISR) исправлены
+2026-06-11, см. §0._
 
 ### MEDIUM
 
-- **F405: `OverTemp` не critical + температура мотора не фолтится.** ✔
-  `f405/fault.rs:94` — critical только `OverCurrent|OverVoltage|DrvFault`
-  (G431/G474 включают `OverTemp`), так что перегретую плату можно перезапустить
-  командой (`process_commands` блокирует старт только по `any_critical()`).
-  `control/foc.rs:211` зовёт `check_temperature_fault` только для `board_temp`;
-  `motor_temp_c_x10` считается (`:185`) и телеметрируется (`:227`), но не
-  проверяется — перегрев мотора молча игнорируется. `BoardConfig` не имеет
-  поля порога температуры мотора. Фикс: `OverTemp` в critical + порог/проверка
-  для мотора.
-- **Detection: spin-down-flux — мёртвый путь на железе.** ✔ [новое]
-  `EmbassyDetectionHardware` (`embassy_hw.rs:64-94`) не переопределяет
-  `read_coast_telemetry()`; дефолт трейта (`sweep.rs:90`) возвращает `(0,0,0)`
-  ⇒ `omega_e=0 < min_omega` ⇒ `InsufficientSamples` ⇒ всегда fallback на
-  driven-метод. «R-независимое» измерение λ, заявленное в коде как основное
-  (`sweep.rs:895`), на плате не выполняется **никогда** (работает только в
-  virtual-harness, который его переопределяет). Фикс: реализовать
-  `read_coast_telemetry` (ADC делителей фазного напряжения + observer ωe) или
-  перестать его рекламировать; логировать, что взят fallback.
-- **Detection: `Ld ≤ Lq` зашито конструктивно.** ✔ `inductance.rs:385` —
-  `amplitude = |bin2|·2/N ≥ 0`, `inv_ld = offset+amplitude ≥ inv_lq`. Использована
-  только **магнитуда** бина-2 (фаза выброшена) ⇒ inverse saliency и
-  перепутанные d/q (lock-angle на 90° мимо) не детектируются; downstream
-  `kp_q ≥ kp_d` всегда. Фикс: комплексный бин-2 относительно фазы инжекции.
-- **Detection: `find_safe_test_current` эскалирует ток без проверки мощности
-  при неудачном замере.** [агент] `resistance.rs:180-193` — `test_current *= 1.5`
-  выполняется и когда `quick_measure` вернул `None`, а power-guard — только в
-  ветке `Some`. Флакающий замер на низком токе ⇒ безудержная эскалация к
-  `current_max` без теплового гейта. (Публичный API; `run_full_detection` его
-  не зовёт, но любой другой вызыватель — тепловой риск.)
-- **Detection: `measure_resistance` без проверки сходимости/таймаута/движения.**
-  [агент] `sweep.rs:177-251` слепо усредняет `vd`/`id` и делит `R=ΔV/ΔI`; если
-  ротор не залочен (cogging, осциллирующий PI) — правдоподобно-неверный R,
-  отравляющий весь downstream (inductance comp, PI tuning). Бэкстоп —
-  только overcurrent-trip. Есть неиспользуемый `UnexpectedMotion`
-  (`types.rs:173`). Фикс: проверять, что `id` достиг setpoint, + общий таймаут.
-- **g431: нет const_assert на перекрытие storage-региона с прошивкой.** ✔
-  `g431/storage.rs:22` хардкодит `0x1F000` без проверки; f405/g474 имеют
-  `const _: () = assert!(STORAGE_START >= FIRMWARE_END_OFFSET)`. На 128 КБ
-  single-bank рост прошивки за 124 КБ молча сотрёт свой код при первой записи
-  конфига — кирпич. Фикс: портировать assert + `FIRMWARE_END_OFFSET` build.rs.
-- **Host: `HostRuntime` без `Drop` → утечка tokio-рантайма+потока на каждый
-  reconnect.** [агент] `host-slint/lib.rs:745` перезаписывает `Some(HostRuntime)`
-  без `shutdown()`; `CancellationToken` не отменяется, старый транспорт держит
-  порт. Фикс: `impl Drop { cancel_token.cancel() }` + `take()`+shutdown старого
-  слота.
-- **Host: `Motor(Stopped)` ждёт до ~70 с за `Detect` в одной command-queue.**
-  [агент] `host-lib/lib.rs:787` — single drain, `Detect` с `deadline_ms:70_000`;
-  GUI цепляет 4 detect-шага. Аварийный Stop блокируется (safety закрыта
-  device-side deadman'ом, но UX неверный). Фикс: внеочередной канал для
-  Motor/Stop или отмена in-flight detect.
+- **Detection: `measure_resistance` — общий таймаут `wait_telemetry`.**
+  Остаток пункта (проверка сходимости id сделана): если FOC ISR молчит,
+  sample-loop ждёт вечно. Низкий риск (ISR прикрыт IWDG), но select с
+  таймаутом был бы чище.
 
 ### LOW
 
@@ -157,12 +121,8 @@ Actionable-список ведётся в [TODO.md](TODO.md); safety-дизай�
 
 ### Безопасность
 
-- **Link-loss failsafe = 3–5 с; быстрый ISR-deadman (Layer 2) не реализован.**
-  [safety.md] `icd.rs:42` `LIVENESS_TIMEOUT_MS=5000`; единственный гейт —
-  async `state_monitor` по liveness, зависит от живого executor'а. Это
-  задокументированный **planned** пункт (safety.md, Layer 2), не регресс, но
-  крупнейший safety-разрыв слоя. Промежуточно — укоротить liveness; целево —
-  `last_cmd_tick` в ISR-дрейне CMD_CHANNEL + self-contained failsafe-режим.
+- ~~Link-loss failsafe / Layer-2 deadman~~ — **сделано 2026-06-11** (см. §0
+  и safety.md: deadman 150 мс + failsafe v2 + защёлка + parking brake).
 - **Single-sample overcurrent/voltage без persistence-фильтра.**
   `fault.rs:422-436` и `foc_driver.is_overcurrent` латчат по одному ADC-сэмплу;
   nuisance-trip на regen/EMI = опасный обрыв момента на ходу. VESC/MESC —
@@ -179,8 +139,9 @@ Actionable-список ведётся в [TODO.md](TODO.md); safety-дизай�
 
 ### Алгоритмы (разрыв с VESC/MESC)
 
-- **Velocity/Position контуры не реализованы** (`foc_driver.rs:401-408` → `Err`),
-  хотя wire-типы есть и host может прислать. `ClampedPI` лежит готовый.
+- **Position-контур не реализован** (velocity сделан 2026-06-11 —
+  `foc/velocity.rs`, каскад для position готов; нужен unwrapped-источник
+  позиции).
 - **Нет field weakening и MTPA.**
 - **Нет автоопределения pole pairs и offset-калибровки энкодера.**
 - **Нет настоящей overmodulation-стратегии:** `modulation_limit` принимает до
@@ -212,10 +173,6 @@ Actionable-список ведётся в [TODO.md](TODO.md); safety-дизай�
   (`servers.rs:103`) возвращает OK и pre-command статус даже при дропе; конфиг
   `MotorParams` шлёт 2 команды (`SetPiGains`+`SetDecoupling`) — на полном
   канале вторая молча теряется ⇒ полу-применённая конфигурация. [агент]
-- **Stale-комментарий:** g431 `init_overcurrent_protection` помечен
-  «Temporarily disabled» (`hardware.rs:234`, `config.rs:60`), но OCP реально
-  **включён** (BKIN от компараторов + BKF-фильтр в `motor.rs:88-104`, зовётся
-  из `main.rs:84`). Для safety-фичи протухший «disabled» — сам по себе риск. ✔
 - **RMW статус-регистра TIM1** (`sr().modify` для bif, `g431/motor.rs:179`) —
   rc_w0, RMW может сбросить чужие pending-флаги; писать complement-mask. ✔
 - **`FaultResponse` молча обрезает до 8 из 16 фолтов** (`servers.rs:154`,
@@ -229,16 +186,8 @@ Actionable-список ведётся в [TODO.md](TODO.md); safety-дизай�
   нулевой. `FaultEndpoint` не использует ни один host-инструмент. [агент]
 - Нет `protocol_version` в `HardwareInfo` (схема postcard без self-description;
   меняется без ошибки → молчаливый мусор при рассинхроне). [TODO]
-- RTT: `expect()` в detached-потоке (`rtt.rs:159`) = молча мёртвый транспорт
-  без reconnect; скан control-block hardcoded `0x20000000..0x20008000` —
-  сломается на F405/G474 (RAM > 32 КБ). [агент]
-- CLI: `start`/`stop`/`source` — fire-and-forget со sleep'ами, exit code 0
-  всегда; `--duty` на самом деле ток (`duty × 0.1 A`) при вводящем в
-  заблуждение help'е. [агент]
-- GUI: combo до 20 кГц телеметрии не влезает в 921600 baud — молчаливый дроп
-  без индикации (`actual_fast_hz` есть в ack, но не сверяется); RPM делится на
-  pole pairs из UI-пресета, а не из устройства (`HardwareInfo` без pole_pairs).
-  `motor_running` не сбрасывается на disconnect. [агент]
+- ~~RTT expect()/32K-скан, CLI fire-and-forget/`--duty`, GUI дроп/RPM/
+  motor_running~~ — **сделано 2026-06-11**, см. §0.
 - bridge/remote: пейринг по hardcoded MAC; тесты-заглушки (`assert_eq!(1+1,2)`).
 - Reconnect state machine хоста не покрыт тестами; slint-wgpu-plot без тестов —
   индексная арифметика кольца (`renderer.rs:262-274`) при большом zoom-out +
@@ -296,18 +245,21 @@ Actionable-список ведётся в [TODO.md](TODO.md); safety-дизай�
 3. **MC_DURATION fault:** дешёвый прямой детект перерасхода бюджета FOC-цикла (контур не уложился в период PWM → fault) (`mc_tasks_foc.c:655-658`).
 4. Компенсация задержки Park/inverse-Park скоростью в dpp × фактор (фиксированная точка, `mc_tasks_foc.c:719,740`).
 
-## 5. Приоритеты (сводно)
+## 5. Приоритеты (сводно, обновлено 2026-06-11 после второй сессии)
 
-1. **F405-glue (live-плата):** SPI вне critical section → приоритет FOC ISR 0 →
-   `OverTemp` critical + проверка температуры мотора.
-2. **Detection:** реализовать/убрать spin-down (`read_coast_telemetry`);
-   комплексный бин-2 (snять `Ld≤Lq`); проверить pipeline-skew на стенде.
-3. **Safety:** Layer-2 ISR command-staleness deadman (укоротить liveness как
-   промежуточный шаг); интегрирующий current/voltage детектор вместо
-   односэмплового; знаковый open-loop override.
-4. **Корректность по мелочи:** g431 storage const_assert; host `HostRuntime::Drop`;
-   Stop вне command-queue; снять stale «disabled» комментарий OCP.
-5. **Алгоритмы (дёшево→дорого):** velocity loop → graduated derating →
+Пункты 1–4 старого списка закрыты (см. §0). Остаток:
+
+1. **Дешёвые code-only мелочи (§1 LOW + §3):** TIM1 SR RMW
+   (complement-mask); знаковый open-loop override; pure-Hfi гейт
+   resolved-polarity; hall staleness fixed-timeout backstop; `has_hall()`
+   на холодном старте; `LAST_STATE` сентинел 0xFF; dt `wrapping_sub` гард;
+   `FaultResponse` индикатор усечения; `CMD_CHANNEL.try_send` ack;
+   `wait_for_active` таймаут на connect; anti-windup ff-вклад;
+   atan2f(0,0)-коммент; icd doc-rot; `wait_telemetry` таймаут.
+2. **Стенд (§2 + хвосты):** ADC double-trigger (обе платы); pipeline-skew
+   индуктивности; spin-down по фазным делителям; интегрирующий
+   current/voltage детектор; bench-тюнинг failsafe/velocity/brake.
+3. **Алгоритмы (дёшево→дорого):** position loop → graduated derating →
    FW V2 (MESC) → MTPA.
-6. **Архитектура:** вынос glue в core до оживления g474; fault-injection в
-   oxifoc-virtual; protocol_version в HardwareInfo.
+4. **Архитектура:** вынос ISR-glue в core до оживления g474; fault-injection
+   в oxifoc-virtual; protocol_version в HardwareInfo; bridge/remote.
