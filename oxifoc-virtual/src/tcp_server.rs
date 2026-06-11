@@ -131,17 +131,18 @@ pub async fn run(
                 };
 
                 tokio::select! {
-                    _ = run_all_servers_with_config(
-                        endpoints,
-                        device_info,
-                        state_mutex,
-                        fault_registry,
-                        runtime_config,
-                        foc_freq_hz,
-                        max_current_a,
-                    ) => {}
-                    _ = token.cancelled() => {}
-                }
+                                _ = run_all_servers_with_config(
+                                    endpoints,
+                                    device_info,
+                                    state_mutex,
+                                    fault_registry,
+                                    runtime_config,
+                                    foc_freq_hz,
+                                    max_current_a,
+                    true,
+                ) => {}
+                                _ = token.cancelled() => {}
+                            }
             }
         });
 

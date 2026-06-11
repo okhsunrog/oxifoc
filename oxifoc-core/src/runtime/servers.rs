@@ -169,13 +169,18 @@ pub async fn fault_server<NS, F, const N: usize>(
 
 /// Configuration server - handles config read/write/reset requests
 ///
-/// Reads from the shared RuntimeConfig, writes go through FLASH_CHANNEL
-/// to the platform's storage worker task.
+/// Reads from the shared RuntimeConfig. Two write modes:
 ///
-/// Writes are refused with [`ConfigResponse::Busy`] while the motor is
-/// running: internal-flash erase stalls the whole chip (single-bank parts;
-/// up to seconds for an F4 sector), which would starve the FOC ISR with
-/// the motor energized.
+/// * `persist = true` — writes go through FLASH_CHANNEL to the platform's
+///   storage worker task, then mirror into RAM. Writes are refused with
+///   [`ConfigResponse::Busy`] while the motor is running: internal-flash
+///   erase stalls the whole chip (single-bank parts; up to seconds for an
+///   F4 sector), which would starve the FOC ISR with the motor energized.
+/// * `persist = false` — **RAM-backed**: no flash exists (baked-config
+///   profile); writes update the in-RAM config + live-apply only. Nothing
+///   can stall, so writes are allowed with the motor running — live tuning
+///   on the bench. Lost at reboot by design: the host extracts the result
+///   with `config dump --rust` and bakes it into the next build.
 ///
 /// `hw_max_current_a` is the board's hardware phase-current ceiling —
 /// current-limit writes are clamped to it and applied to the live driver
@@ -186,6 +191,7 @@ pub async fn config_server<NS, const N: usize>(
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     hw_max_current_a: f32,
+    persist: bool,
 ) where
     NS: NetStackHandle,
 {
@@ -252,9 +258,10 @@ pub async fn config_server<NS, const N: usize>(
                                 },
                             }
                         }
-                        ConfigRequest::Write(_) | ConfigRequest::ResetAll if motor_running => {
+                        ConfigRequest::Write(_) if persist && motor_running => {
                             ConfigResponse::Busy
                         }
+                        ConfigRequest::ResetAll if motor_running => ConfigResponse::Busy,
                         ConfigRequest::Write(write) => {
                             let (key, payload) = match write.clone() {
                                 ConfigWrite::MotorParams(v) => {
@@ -289,39 +296,46 @@ pub async fn config_server<NS, const N: usize>(
                                     (ConfigKey::Velocity, ConfigPayload::Velocity(v))
                                 }
                             };
-                            // TOCTOU guard: arm the pending flag, then
-                            // re-check the motor state. The ISR refuses to
-                            // start the motor while the flag is set (the
-                            // Busy fast path above ran before the flag was
-                            // armed, so it alone is not enough). The guard
-                            // clears the flag on every return path.
-                            let _flash_pending = crate::state::FlashPendingGuard::arm();
-                            let motor_running = critical_section::with(|cs| {
-                                state_mutex.borrow(cs).borrow().motor_state
-                                    == MotorState::Running
-                            });
-                            if motor_running {
-                                return ConfigResponse::Busy;
-                            }
-                            // Write-through ack: this server is the only
-                            // FLASH_CHANNEL producer, so FLASH_DONE pairs
-                            // 1:1 with our operation. Reset before sending
-                            // to discard any stale signal.
-                            FLASH_DONE.reset();
-                            if FLASH_CHANNEL
-                                .try_send(FlashOperation::Save(key, payload))
-                                .is_err()
-                            {
-                                return ConfigResponse::Error;
-                            }
-                            if !FLASH_DONE.wait().await {
-                                // Flash write failed: report it, and leave
-                                // the in-memory copy alone — it must keep
-                                // mirroring what is actually persisted.
-                                return ConfigResponse::Error;
+                            if persist {
+                                // TOCTOU guard: arm the pending flag, then
+                                // re-check the motor state. The ISR refuses to
+                                // start the motor while the flag is set (the
+                                // Busy fast path above ran before the flag was
+                                // armed, so it alone is not enough). The guard
+                                // clears the flag on every return path.
+                                let _flash_pending = crate::state::FlashPendingGuard::arm();
+                                let motor_running = critical_section::with(|cs| {
+                                    state_mutex.borrow(cs).borrow().motor_state
+                                        == MotorState::Running
+                                });
+                                if motor_running {
+                                    return ConfigResponse::Busy;
+                                }
+                                // Write-through ack: this server is the only
+                                // FLASH_CHANNEL producer, so FLASH_DONE pairs
+                                // 1:1 with our operation. Reset before sending
+                                // to discard any stale signal.
+                                FLASH_DONE.reset();
+                                if FLASH_CHANNEL
+                                    .try_send(FlashOperation::Save(key, payload))
+                                    .is_err()
+                                {
+                                    return ConfigResponse::Error;
+                                }
+                                if !FLASH_DONE.wait().await {
+                                    // Flash write failed: report it, and leave
+                                    // the in-memory copy alone — it must keep
+                                    // mirroring what is actually persisted.
+                                    return ConfigResponse::Error;
+                                }
+                            } else {
+                                // RAM-backed: nothing to persist; the (key,
+                                // payload) pair is only needed by the flash
+                                // path.
+                                let _ = (key, payload);
                             }
 
-                            // Persisted — now update the in-memory mirror.
+                            // Update the in-memory mirror.
                             critical_section::with(|cs| {
                                 let mut cfg = runtime_config.borrow(cs).borrow_mut();
                                 match &write {
@@ -425,21 +439,23 @@ pub async fn config_server<NS, const N: usize>(
                             ConfigResponse::Ok
                         }
                         ConfigRequest::ResetAll => {
-                            // Same TOCTOU guard as the Write arm above.
-                            let _flash_pending = crate::state::FlashPendingGuard::arm();
-                            let motor_running = critical_section::with(|cs| {
-                                state_mutex.borrow(cs).borrow().motor_state
-                                    == MotorState::Running
-                            });
-                            if motor_running {
-                                return ConfigResponse::Busy;
-                            }
-                            FLASH_DONE.reset();
-                            if FLASH_CHANNEL.try_send(FlashOperation::EraseAll).is_err() {
-                                return ConfigResponse::Error;
-                            }
-                            if !FLASH_DONE.wait().await {
-                                return ConfigResponse::Error;
+                            if persist {
+                                // Same TOCTOU guard as the Write arm above.
+                                let _flash_pending = crate::state::FlashPendingGuard::arm();
+                                let motor_running = critical_section::with(|cs| {
+                                    state_mutex.borrow(cs).borrow().motor_state
+                                        == MotorState::Running
+                                });
+                                if motor_running {
+                                    return ConfigResponse::Busy;
+                                }
+                                FLASH_DONE.reset();
+                                if FLASH_CHANNEL.try_send(FlashOperation::EraseAll).is_err() {
+                                    return ConfigResponse::Error;
+                                }
+                                if !FLASH_DONE.wait().await {
+                                    return ConfigResponse::Error;
+                                }
                             }
                             critical_section::with(|cs| {
                                 *runtime_config.borrow(cs).borrow_mut() = RuntimeConfig::default();
@@ -668,6 +684,7 @@ pub async fn run_all_servers<NS, F>(
 
 /// Run all protocol servers including config endpoint.
 #[cfg(feature = "storage")]
+#[allow(clippy::too_many_arguments)] // flat board-init facade; a struct would just move the names
 pub async fn run_all_servers_with_config<NS, F>(
     endpoints: Endpoints<NS>,
     device_info: HardwareInfo,
@@ -676,6 +693,7 @@ pub async fn run_all_servers_with_config<NS, F>(
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     foc_freq_hz: u32,
     hw_max_current_a: f32,
+    persist: bool,
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
@@ -694,6 +712,7 @@ pub async fn run_all_servers_with_config<NS, F>(
                     runtime_config,
                     state_mutex,
                     hw_max_current_a,
+                    persist,
                 ),
                 phase_source_server::<NS, 2>(endpoints.clone()),
                 telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),

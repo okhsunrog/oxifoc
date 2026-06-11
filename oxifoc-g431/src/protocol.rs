@@ -168,6 +168,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
         &RUNTIME_CONFIG,
         crate::config::PWM_CONFIG.pwm_freq_hz,
         crate::config::BOARD.max_phase_current_a,
+        cfg!(feature = "storage"),
     )
     .await
 }
@@ -240,8 +241,10 @@ pub async fn state_monitor(stack: &'static Stack, ident: u8) {
 
 /// Detection backend for the G431 platform: the raw measurements bound to the
 /// shared calibration code (which uses the platform ADC statics + board config).
+#[cfg(feature = "detection")]
 struct G431Backend;
 
+#[cfg(feature = "detection")]
 impl oxifoc_core::runtime::DetectionBackend for G431Backend {
     fn vbus(&self) -> f32 {
         crate::foc::VBUS_MV.load(core::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
@@ -277,6 +280,7 @@ impl oxifoc_core::runtime::DetectionBackend for G431Backend {
     }
 }
 
+#[cfg(feature = "detection")]
 #[embassy_executor::task]
 pub async fn detect_server(stack: &'static Stack) {
     oxifoc_core::runtime::detect_server(
@@ -295,5 +299,6 @@ pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, ident: u8) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
     spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, ident)));
+    #[cfg(feature = "detection")]
     spawner.spawn(defmt::unwrap!(detect_server(stack)));
 }

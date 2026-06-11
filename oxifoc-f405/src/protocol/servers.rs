@@ -133,6 +133,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
         &crate::RUNTIME_CONFIG,
         crate::config::PWM_CONFIG.pwm_freq_hz,
         crate::config::BOARD.max_phase_current_a,
+        true,
     )
     .await
 }

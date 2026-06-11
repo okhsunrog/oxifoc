@@ -162,6 +162,7 @@ pub mod hall {
     }
 
     /// Read raw Hall sensor state from GPIO (public for calibration).
+    #[cfg(feature = "detection")]
     #[inline]
     pub fn read_hall_state_raw() -> u8 {
         read_hall_idr()
@@ -197,7 +198,10 @@ pub mod current {
 }
 
 pub use current::{G431CurrentSensor, G431CurrentSensorExt};
-pub use hall::{HallAngleProxy, init_hall, read_hall_state_raw};
+pub use hall::{HallAngleProxy, init_hall};
+// Raw hall-pin read is only consumed by hall calibration (detection).
+#[cfg(feature = "detection")]
+pub use hall::read_hall_state_raw;
 
 // Re-export HallSnapshot from core (used by hall module but also exposed for external use)
 #[allow(unused_imports)]

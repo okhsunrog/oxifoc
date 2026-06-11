@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use oxifoc_core::types::{ControlMode, DetectRequest};
 use oxifoc_host_lib::{
-    HostCommand, HostConfig, HostRuntime, TransportType, init_tracing, list_probes,
+    HostCommand, HostConfig, HostRuntime, TransportType, config_channel, init_tracing, list_probes,
     list_serial_ports, motor_channel, start_host,
 };
 
@@ -24,6 +24,176 @@ fn send_motor_acked(
     rx.blocking_recv()
         .context("backend dropped the motor command")?
         .context("motor command not acknowledged by the device")
+}
+
+/// Read one config group (None when the device has nothing stored for it).
+fn read_group(
+    runtime: &HostRuntime,
+    group: oxifoc_core::types::ConfigGroupId,
+) -> Result<Option<oxifoc_core::types::ConfigResponse>> {
+    use oxifoc_core::types::ConfigResponse;
+    let (tx, rx) = config_channel();
+    runtime
+        .cmd_tx
+        .send(HostCommand::ConfigRead(group, tx))
+        .context("send config read")?;
+    let resp = rx
+        .blocking_recv()
+        .context("backend dropped the config read")?
+        .context("config read failed")?;
+    Ok(match resp {
+        ConfigResponse::NotFound => None,
+        other => Some(other),
+    })
+}
+
+/// Dump every config group; `--rust` renders a ready-to-paste
+/// `baked_config.rs` body for the baked firmware profile.
+fn dump_config(runtime: &HostRuntime, rust: bool) -> Result<()> {
+    use oxifoc_core::types::{ConfigGroupId as G, ConfigResponse as R};
+
+    let groups = [
+        G::MotorParams,
+        G::HallCalibration,
+        G::DcOffsets,
+        G::CurrentLimits,
+        G::VoltageLimits,
+        G::PwmConfig,
+        G::PiGains,
+        G::HallTuning,
+        G::Failsafe,
+        G::Velocity,
+    ];
+    let mut read = Vec::new();
+    for g in groups {
+        read.push((g, read_group(runtime, g)?));
+    }
+
+    if !rust {
+        for (g, resp) in &read {
+            match resp {
+                Some(r) => println!("{g:?}: {r:?}"),
+                None => println!("{g:?}: (not stored)"),
+            }
+        }
+        return Ok(());
+    }
+
+    // Rust emission: field-by-field so the output is stable, readable code.
+    // f32 via {:?} renders the shortest round-trip literal.
+    let mut fields: Vec<(&str, Option<String>)> = Vec::new();
+    for (_, resp) in read {
+        match resp {
+            Some(R::MotorParams(v)) => fields.push((
+                "motor_params",
+                Some(format!(
+                    "MotorParamsConfig {{\n            resistance_ohm: {:?},\n            inductance_d_h: {:?},\n            inductance_q_h: {:?},\n            flux_linkage_wb: {:?},\n            pole_pairs: {},\n        }}",
+                    v.resistance_ohm, v.inductance_d_h, v.inductance_q_h, v.flux_linkage_wb, v.pole_pairs
+                )),
+            )),
+            Some(R::HallCalibration(v)) => fields.push((
+                "hall_calibration",
+                Some(format!(
+                    "HallCalibrationConfig {{\n            angles: {:?},\n            valid: {:?},\n        }}",
+                    v.angles, v.valid
+                )),
+            )),
+            Some(R::DcOffsets(v)) => fields.push((
+                "dc_offsets",
+                Some(format!(
+                    "DcOffsetsConfig {{\n            phase_a: {:?},\n            phase_b: {:?},\n            phase_c: {:?},\n        }}",
+                    v.phase_a, v.phase_b, v.phase_c
+                )),
+            )),
+            Some(R::CurrentLimits(v)) => fields.push((
+                "current_limits",
+                Some(format!(
+                    "CurrentLimitsConfig {{\n            max_iq_a: {:?},\n            max_phase_current_a: {:?},\n        }}",
+                    v.max_iq_a, v.max_phase_current_a
+                )),
+            )),
+            Some(R::VoltageLimits(v)) => fields.push((
+                "voltage_limits",
+                Some(format!(
+                    "VoltageLimitsConfig {{\n            min_vbus_mv: {},\n            max_vbus_mv: {},\n        }}",
+                    v.min_vbus_mv, v.max_vbus_mv
+                )),
+            )),
+            Some(R::PwmConfig(v)) => fields.push((
+                "pwm_config",
+                Some(format!(
+                    "PwmConfigStored {{\n            freq_hz: {},\n            max_duty_percent: {},\n        }}",
+                    v.freq_hz, v.max_duty_percent
+                )),
+            )),
+            Some(R::PiGains(v)) => fields.push((
+                "pi_gains",
+                Some(format!(
+                    "PiGainsConfig {{\n            kp: {:?},\n            ki: {:?},\n            bandwidth_rad_s: {:?},\n        }}",
+                    v.kp, v.ki, v.bandwidth_rad_s
+                )),
+            )),
+            Some(R::HallTuning(v)) => fields.push((
+                "hall_tuning",
+                Some(format!(
+                    "HallTuningConfig {{\n            interp_min_erpm: {:?},\n            drift_correction_gain: {:?},\n            rate_limit_factor: {:?},\n            timeout_us: {},\n        }}",
+                    v.interp_min_erpm, v.drift_correction_gain, v.rate_limit_factor, v.timeout_us
+                )),
+            )),
+            Some(R::Failsafe(v)) => fields.push((
+                "failsafe",
+                Some(format!(
+                    "FailsafeConfigStored {{\n            staleness_timeout_ms: {},\n            policy: {},\n            brake_current_a: {:?},\n            ramp_ms: {:?},\n            brake_time_ms: {:?},\n            standstill_rad_s: {:?},\n            decel_rad_s2: {:?},\n            terminal: {},\n        }}",
+                    v.staleness_timeout_ms, v.policy, v.brake_current_a, v.ramp_ms, v.brake_time_ms, v.standstill_rad_s, v.decel_rad_s2, v.terminal
+                )),
+            )),
+            Some(R::Velocity(v)) => fields.push((
+                "velocity",
+                Some(format!(
+                    "VelocityConfigStored {{\n            kp: {:?},\n            ki: {:?},\n            accel_limit: {:?},\n        }}",
+                    v.kp, v.ki, v.accel_limit
+                )),
+            )),
+            Some(_) => {}
+            None => {}
+        }
+    }
+    let field_names = [
+        "motor_params",
+        "hall_calibration",
+        "dc_offsets",
+        "current_limits",
+        "voltage_limits",
+        "pwm_config",
+        "pi_gains",
+        "hall_tuning",
+        "failsafe",
+        "velocity",
+    ];
+
+    println!("//! Compiled-in configuration for the baked profile (`storage` feature off).");
+    println!("//!");
+    println!("//! Generated by `oxifoc-host-cli config dump --rust`. Regenerate after");
+    println!("//! re-detection or re-tuning, then rebuild and reflash.");
+    println!();
+    println!("use oxifoc_core::storage::*;");
+    println!();
+    println!("/// The baked configuration.");
+    println!("pub fn baked() -> RuntimeConfig {{");
+    println!("    RuntimeConfig {{");
+    for name in field_names {
+        match fields
+            .iter()
+            .find(|(n, _)| *n == name)
+            .and_then(|(_, v)| v.as_ref())
+        {
+            Some(body) => println!("        {name}: Some({body}),"),
+            None => println!("        {name}: None,"),
+        }
+    }
+    println!("    }}");
+    println!("}}");
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -156,6 +326,11 @@ enum Command {
         )]
         fast_hz: u16,
     },
+    /// Device configuration operations
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Run a motor-detection step (effectively-once: retried under a stable id,
     /// the device dedups so the measurement runs at most once)
     Detect {
@@ -167,6 +342,17 @@ enum Command {
             help = "Max power dissipation during the test (W)"
         )]
         max_power_w: f32,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Read every config group from the device and print it.
+    /// --rust emits a ready-to-paste `baked_config.rs` body (the baked
+    /// firmware profile compiles the configuration in; see flash-size.md).
+    Dump {
+        #[arg(long, help = "Emit Rust code for src/baked_config.rs")]
+        rust: bool,
     },
 }
 
@@ -279,6 +465,9 @@ fn main() -> Result<()> {
         Command::Monitor { seconds, .. } => {
             run_monitor(&runtime, Duration::from_secs(seconds))?;
         }
+        Command::Config { action } => match action {
+            ConfigAction::Dump { rust } => dump_config(&runtime, rust)?,
+        },
         Command::Detect { step, max_power_w } => {
             let req = match step {
                 DetectStep::Resistance => DetectRequest::MeasureResistance {

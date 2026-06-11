@@ -181,17 +181,18 @@ pub async fn run(
         let endpoints = stack.endpoints();
         let token = conn_token.clone();
         tokio::select! {
-            _ = token.cancelled() => {}
-            _ = run_all_servers_with_config(
-                endpoints,
-                device_info,
-                state_mutex,
-                fault_registry,
-                runtime_config,
-                foc_freq_hz,
-                max_current_a,
-            ) => {}
-        }
+                _ = token.cancelled() => {}
+                _ = run_all_servers_with_config(
+                    endpoints,
+                    device_info,
+                    state_mutex,
+                    fault_registry,
+                    runtime_config,
+                    foc_freq_hz,
+                    max_current_a,
+            true,
+        ) => {}
+            }
 
         info!("UDP session ended, waiting for workers to exit...");
 

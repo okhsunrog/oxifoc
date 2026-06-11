@@ -41,6 +41,13 @@ check-device:
         (cd "$crate" && cargo fmt --check) || exit 1
         (cd "$crate" && cargo build --tests --quiet 2>&1 | filter) || exit 1
     done
+    # g431 non-default profiles must not rot (default = baked + detection):
+    # the flash-backed storage profile and the detection-off reserve.
+    echo "oxifoc-g431 (--features storage): clippy + build..."
+    (cd oxifoc-g431 && cargo clippy --quiet --features storage -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
+    (cd oxifoc-g431 && cargo build --release --quiet --features storage 2>&1 | filter) || exit 1
+    echo "oxifoc-g431 (no detection): build..."
+    (cd oxifoc-g431 && cargo build --release --quiet --no-default-features --features transport-uart 2>&1 | filter) || exit 1
 
 # Format all code (workspace + device crates)
 fmt:
@@ -86,15 +93,20 @@ e2e:
 size:
     #!/usr/bin/env bash
     set -euo pipefail
-    for crate in oxifoc-g431 oxifoc-g474 oxifoc-f405; do
-        (cd "$crate" && cargo build --release --quiet 2>/dev/null) || { echo "$crate: build failed"; exit 1; }
-        elf="$crate/target/thumbv7em-none-eabihf/release/$crate"
-        limit_k=$(grep -oP 'FLASH\s*:\s*ORIGIN[^,]*,\s*LENGTH\s*=\s*\K[0-9]+(?=K)' "$crate/memory.x")
-        limit=$((limit_k * 1024))
-        used=$(arm-none-eabi-size "$elf" | tail -1 | awk '{print $1+$2}')
-        printf "%-14s %7d / %7d bytes (%2d%%), headroom %d\n" \
-            "$crate" "$used" "$limit" "$((used * 100 / limit))" "$((limit - used))"
-    done
+    measure() { # crate label limit_file extra_flags...
+        local crate="$1" label="$2" memx="$3"; shift 3
+        (cd "$crate" && cargo build --release --quiet "$@" 2>/dev/null) || { echo "$label: build failed"; exit 1; }
+        local elf="$crate/target/thumbv7em-none-eabihf/release/$crate"
+        local limit_k=$(grep -oP 'FLASH\s*:\s*ORIGIN[^,]*,\s*LENGTH\s*=\s*\K[0-9]+(?=K)' "$crate/$memx")
+        local limit=$((limit_k * 1024))
+        local used=$(arm-none-eabi-size "$elf" | tail -1 | awk '{print $1+$2}')
+        printf "%-24s %7d / %7d bytes (%2d%%), headroom %d\n" \
+            "$label" "$used" "$limit" "$((used * 100 / limit))" "$((limit - used))"
+    }
+    measure oxifoc-g431 "oxifoc-g431 (baked)" memory-baked.x
+    measure oxifoc-g431 "oxifoc-g431 (storage)" memory-storage.x --features storage
+    measure oxifoc-g474 oxifoc-g474 memory.x
+    measure oxifoc-f405 oxifoc-f405 memory.x
 
 # Clean all build artifacts
 clean:

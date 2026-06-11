@@ -210,12 +210,13 @@ model f32).
 
 ## Size / performance
 
-**⚠ g431 flash headroom is down to 2 000 B (98%)** after the 2026-06-11
-safety/velocity work (deadman+failsafe, Brake, VelocityLoop, two config
-groups ≈ +6.3 KB). The storage `const_assert` makes overflow a build error,
-not a brick — but the next feature on g431 needs a recovery pass first:
-see [flash-size.md](flash-size.md) (measured reserves: detection gate
-−14.7 KB is the big lever).
+g431 flash pressure resolved 2026-06-11 by switching its default to the
+**baked-config profile** (no runtime flash storage, config compiled in via
+`baked_config.rs`, RAM-backed config server, full 128K flash): 107 356 B,
+headroom **23.7 KB**. The `storage` feature restores the old behavior
+(2.3 KB headroom). Full analysis, per-feature costs and the reserve ladder
+(detection-off → symmetric two-image split) live in
+[flash-size.md](flash-size.md).
 
 Hot-path math reworked 2026-06-11 after on-target benchmarks
 ([perf-bench-2026-06-11.md](perf-bench-2026-06-11.md)): HFI estimator

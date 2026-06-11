@@ -1,9 +1,19 @@
 fn main() {
-    println!("cargo:rerun-if-changed=memory.x");
+    println!("cargo:rerun-if-changed=memory-storage.x");
+    println!("cargo:rerun-if-changed=memory-baked.x");
+
+    // The flash layout follows the `storage` feature: with flash-backed
+    // config the last 4KB are reserved (124K program), the baked profile
+    // gets the full 128K. See docs/flash-size.md.
+    let memory_x = if std::env::var_os("CARGO_FEATURE_STORAGE").is_some() {
+        "memory-storage.x"
+    } else {
+        "memory-baked.x"
+    };
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     println!("cargo:rustc-link-search={}", out_dir);
-    std::fs::copy("memory.x", std::path::Path::new(&out_dir).join("memory.x")).unwrap();
+    std::fs::copy(memory_x, std::path::Path::new(&out_dir).join("memory.x")).unwrap();
 
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
@@ -11,7 +21,7 @@ fn main() {
 
     // Parse FLASH region from memory.x and export firmware end offset for compile-time checks.
     // storage.rs uses this to verify STORAGE_START doesn't overlap firmware.
-    let memory_x = std::fs::read_to_string("memory.x").unwrap();
+    let memory_x = std::fs::read_to_string(memory_x).unwrap();
     let (origin, length) = parse_flash_region(&memory_x);
     let firmware_end_offset = origin - 0x0800_0000 + length;
     println!("cargo:rustc-env=FIRMWARE_END_OFFSET={firmware_end_offset}");

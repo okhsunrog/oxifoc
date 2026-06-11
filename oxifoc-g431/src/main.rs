@@ -14,6 +14,7 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 
 // Module declarations
+#[cfg(feature = "detection")]
 mod calibration;
 mod config;
 mod cordic;
@@ -25,7 +26,11 @@ mod protocol;
 // Panic/HardFault handlers (gate kill) + IWDG live here.
 mod safety;
 mod sensors;
+#[cfg(feature = "storage")]
 mod storage;
+// Compiled-in configuration for the baked profile (no flash storage).
+#[cfg(not(feature = "storage"))]
+mod baked_config;
 mod transport;
 
 use hardware::{AssignedResources, HallResources, MotorResources, StorageResources};
@@ -91,14 +96,27 @@ async fn main(spawner: Spawner) {
     // ========== STEP 5: Split Resources ==========
     let r = split_resources!(p);
 
-    // ========== STEP 6: Initialize Persistent Storage ==========
-    let flash = embassy_stm32::flash::Flash::new_blocking(r.storage.flash);
-    let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
-    spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
-    let runtime_config = storage::CONFIG_LOADED.wait().await;
+    // ========== STEP 6: Load Configuration ==========
+    #[cfg(feature = "storage")]
+    let runtime_config = {
+        let flash = embassy_stm32::flash::Flash::new_blocking(r.storage.flash);
+        let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
+        spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
+        let cfg = storage::CONFIG_LOADED.wait().await;
+        defmt::info!("Config loaded from flash");
+        cfg
+    };
+    #[cfg(not(feature = "storage"))]
+    let runtime_config = {
+        // Baked profile: configuration is compiled in; the config server is
+        // RAM-backed (live tuning works, nothing persists across reboots —
+        // extract with `oxifoc-host-cli config dump --rust` and rebuild).
+        let _ = r.storage.flash;
+        defmt::info!("Config: baked (no flash storage)");
+        baked_config::baked()
+    };
     // Store in static for config_server protocol access
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
-    defmt::info!("Config loaded from flash");
 
     // ========== STEP 7: Initialize Motor PWM ==========
     defmt::info!("Initializing motor PWM...");

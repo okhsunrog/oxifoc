@@ -5,13 +5,14 @@ measure, what to watch when adding code, what has been done, and what
 reserves exist when a board runs out again. Perf-side numbers (cycle
 counts) live in [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 
-## Current state (2026-06-11)
+## Current state (2026-06-11, after the baked-config switch)
 
-| board | flash used | region | headroom | pressure |
+| board | profile | flash used | region | headroom |
 |---|---|---|---|---|
-| g431 (B-G431B-ESC1) | 118 668 | 124K (4K reserved for config) | **8.3 KB** | the constrained one |
-| g474 (Nucleo + IHM08M1) | 155 584 | 256K (bank 1; bank 2 = config) | 104 KB | none |
-| f405 | 232 072 | 768K (sectors 0–9) | 554 KB | none |
+| g431 (B-G431B-ESC1) | **baked (default)** | 107 356 | **128K** (no storage region) | **23.7 KB** |
+| g431 | `--features storage` | 124 704 | 124K (4K config) | 2.3 KB |
+| g474 (Nucleo + IHM08M1) | storage | 159 664 | 256K (bank 1; bank 2 = config) | 102 KB |
+| f405 | storage | 242 116 | 768K (sectors 0–9) | 544 KB |
 
 `flash used` = `.vector_table + .text + .rodata + .data` (everything
 that occupies flash; `.data` is load-image). Run `just size` for live
@@ -118,6 +119,72 @@ Panic handler kept `defmt::error!("PANIC: {}", Display2Format(info))`:
 full panic text over RTT costs only 240 B once dependency fmt is gone
 (measured), and the gate-kill ordering in safety.rs is untouched.
 
+## g431 profiles: baked config (2026-06-11)
+
+The 2026-06-11 safety/velocity work (deadman + failsafe, parking brake,
+velocity loop, two config groups) cost **+6.2 KB** and dropped the g431
+storage-profile headroom to ~2 KB. Per-commit attribution (rebuilt at each
+commit): deadman+failsafe +3 344 B, brake+hardening +484 B, velocity loop
++680 B, ControlledStop v2 +676 B, velocity config persistence +828 B.
+
+Measurements of candidate diets (temporary-patch builds, 2026-06-11):
+
+| build | size | note |
+|---|---|---|
+| full (detection + storage) | 124 880 | the crisis state |
+| no detection | 109 732 | −15.1 KB |
+| detection, **no storage** | 99 340 | −25.5 KB (!) |
+| no detection, no storage | 83 888 | −41.0 KB |
+
+Key finding: **flash storage + config server cost −25.5 KB**, far more than
+the −15.9 KB previously estimated — the config server drags in the postcard
+codecs for every group, the TOCTOU machinery and a fat ergot server state
+machine. So the decisive lever was removing runtime persistence, not
+detection.
+
+**Decision: g431 defaults to the *baked-config* profile.** The `storage`
+crate feature (default-off on g431) switches profiles:
+
+- **baked (default)**: configuration is compiled in (`src/baked_config.rs`),
+  memory.x grants the full 128K to code, the config server runs RAM-backed
+  (reads/writes/live-apply work — live tuning on the bench — but nothing
+  persists across reboots). Detection stays in. Workflow: flash → detect →
+  tune live → `oxifoc-host-cli config dump --rust > src/baked_config.rs` →
+  rebuild → reflash.
+- **storage**: the previous behavior (flash worker, 124K memory.x,
+  persistent writes). f405/g474 keep this as their default — they have
+  flash to spare and persistence is convenient there.
+
+`build.rs` picks `memory-baked.x` (128K) or `memory-storage.x` (124K) from
+the feature; `just check` compiles both g431 profiles plus the
+detection-off build so none of them rot; `just size` reports both profiles.
+
+### Why NOT a separate detection firmware (the two-image idea, evaluated)
+
+A detect/run firmware split only makes sense if the detect image also
+*removes* run-only functionality — otherwise detect ⊇ run, and the moment
+run stops fitting, detect stopped fitting earlier. Right now a "detect
+image" would just be the run image + detection (+15.5 KB), pointless while
+a single image holds everything with ~24 KB of headroom. The ladder when
+pressure returns:
+
+1. **Now**: one g431 image, baked profile — detection + safety + velocity,
+   ~24 KB headroom.
+2. **When tight**: build with `--no-default-features --features
+   transport-uart` (detection off, −15.5 KB) — re-detection then needs a
+   temporary reflash with detection on.
+3. **Last resort**: the symmetric two-image split — requires core feature
+   gates for the *run-only* subsystems detection doesn't need (sensorless
+   estimators, velocity loop, failsafe machinery ≈ 8–13 KB): detect image =
+   run − those + detection. Only then are two images genuinely
+   complementary. Gating safety behind features is unpleasant; do this only
+   under real pressure.
+
+Additional measured idea for later: the per-config-group cost is dominated
+by postcard codecs (+828 B for a 3-field group) — check whether the
+`postcard_schema::Schema` derives are needed on-device at all or only by
+the host; gating them could shave ~1 KB per group.
+
 ## Measured reserves (when g431 gets tight again)
 
 Measured 2026-06-11 by temporarily removing the root reference and
@@ -132,12 +199,10 @@ age:
 - **`transport-rtt` instead of `transport-uart`: −2.6 KB.** Already a
   feature flag. Trade-off: device only talks through a debug probe —
   not for field use; default stays UART.
-- **No persistent storage: −15.9 KB** (storage_worker task +
-  sequential-storage + flash driver + config postcard codecs; overlaps
-  with the detection number — they share the config codecs, don't sum
-  them). No feature gate exists; only worth building for a
-  hypothetical hardcoded-config minimal target, pairs with
-  detection-off.
+- **No persistent storage: −25.5 KB measured 2026-06-11** (storage_worker
+  task + sequential-storage + flash driver + config server + postcard
+  codecs; the old −15.9 KB estimate missed the config-server share).
+  **This is now the g431 default** (baked profile, see above).
 
 ## Dead ends (evaluated, rejected)
 
