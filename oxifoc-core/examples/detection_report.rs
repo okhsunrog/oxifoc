@@ -316,6 +316,7 @@ fn main() {
                     resistance_ohm: r_val,
                     hold_current_a: hold,
                     hfi_frequency_hz: freq,
+                    vbus: def.vbus,
                     ..Default::default()
                 };
                 block_on(measure_inductance::<
@@ -356,12 +357,12 @@ fn main() {
         let flux_params = FluxLinkageParams {
             motor_size: def.motor_size,
             resistance_ohm: p.r,
+            inductance_h: (p.ld + p.lq) / 2.0,
             pole_pairs: p.pole_pairs,
             spin_rpm: def.openloop_erpm / p.pole_pairs as f32,
             v_target: 0.2 * def.vbus,
             ..Default::default()
         };
-        let l_avg = (p.ld + p.lq) / 2.0;
 
         let qaxis = with_sim(p, def.vbus, |hw| {
             block_on(measure_flux_linkage::<VirtualHardware, VirtualTimer>(
@@ -378,7 +379,7 @@ fn main() {
             block_on(measure_flux_linkage_magnitude::<
                 VirtualHardware,
                 VirtualTimer,
-            >(hw, &flux_params, l_avg))
+            >(hw, &flux_params))
         });
         let m_s = match mag {
             Ok(v) => format!("{:+.1}%", err_pct(v, p.lambda)),

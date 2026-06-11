@@ -418,6 +418,9 @@ pub enum DetectRequest {
         max_power_loss_w: f32,
         /// Previously measured resistance (Ω). GUI provides this.
         resistance_ohm: f32,
+        /// Previously measured average inductance (H), 0.0 = unknown.
+        /// Trims the ωL·i reactance term of the back-EMF-vector method.
+        inductance_h: f32,
         /// Number of pole pairs.
         pole_pairs: u8,
         /// Open-loop ERPM for spin-up.

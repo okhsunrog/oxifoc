@@ -168,9 +168,15 @@ async fn run_step<B: DetectionBackend>(
             };
             match backend.measure_resistance(&probe).await {
                 Ok(r_probe) => {
+                    // Clamp by the bus too: the thermal formula alone asks a
+                    // high-R motor for more voltage than the bus has, the PI
+                    // saturates short of the setpoint and the settle check
+                    // aborts the measurement (same clamp as run_full_detection).
+                    let max_bus_current = (backend.vbus() * 0.577 * 0.85) / r_probe.max(0.001);
                     let safe_current =
                         crate::foc::fast_math::sqrtf(max_power_loss_w / r_probe / 1.5)
                             .min(max_current_a)
+                            .min(max_bus_current)
                             .max(probe_current);
                     let params = ResistanceParams {
                         motor_size: MotorSize::Custom(max_power_loss_w),
@@ -199,6 +205,7 @@ async fn run_step<B: DetectionBackend>(
                 motor_size: MotorSize::Custom(max_power_loss_w),
                 resistance_ohm: r,
                 hold_current_a: hold_current,
+                vbus: backend.vbus(),
                 ..Default::default()
             };
             match backend
@@ -216,16 +223,19 @@ async fn run_step<B: DetectionBackend>(
         DetectRequest::MeasureFlux {
             max_power_loss_w,
             resistance_ohm: r,
+            inductance_h,
             pole_pairs,
             openloop_erpm,
         } => {
             let safe_current = crate::foc::fast_math::sqrtf(max_power_loss_w / r / 1.5)
                 .min(max_current_a)
+                .min((backend.vbus() * 0.577 * 0.85) / r.max(0.001))
                 .max(0.5);
             let spin_rpm = openloop_erpm / pole_pairs as f32;
             let params = FluxLinkageParams {
                 motor_size: MotorSize::Custom(max_power_loss_w),
                 resistance_ohm: r,
+                inductance_h,
                 pole_pairs,
                 spin_rpm,
                 current_a: safe_current.min(2.0),

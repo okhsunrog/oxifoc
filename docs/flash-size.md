@@ -5,14 +5,13 @@ measure, what to watch when adding code, what has been done, and what
 reserves exist when a board runs out again. Perf-side numbers (cycle
 counts) live in [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 
-## Current state (2026-06-11, after the baked-config switch)
+## Current state (2026-06-12, after the storage-profile removal)
 
 | board | profile | flash used | region | headroom |
 |---|---|---|---|---|
-| g431 (B-G431B-ESC1) | **baked (default)** | 107 356 | **128K** (no storage region) | **23.7 KB** |
-| g431 | `--features storage` | 124 704 | 124K (4K config) | 2.3 KB |
-| g474 (Nucleo + IHM08M1) | storage | 159 664 | 256K (bank 1; bank 2 = config) | 102 KB |
-| f405 | storage | 242 116 | 768K (sectors 0–9) | 544 KB |
+| g431 (B-G431B-ESC1) | **baked (the only profile)** | 110 380 | **128K** (no storage region) | **20.2 KB** |
+| g474 (Nucleo + IHM08M1) | storage | 161 040 | 256K (bank 1; bank 2 = config) | 99 KB |
+| f405 | storage | 245 860 | 768K (sectors 0–9) | 528 KB |
 
 `flash used` = `.vector_table + .text + .rodata + .data` (everything
 that occupies flash; `.data` is load-image). Run `just size` for live
@@ -114,6 +113,8 @@ remaining "compiler flag" win; everything below is about code.
 | 2026-06-11 | `defmt::unwrap!` conversion (14 sites) + defmt features on deps (`4089675`) | **−1 116 B** |
 | | **total** | **126 656 → 118 668** |
 | 2026-06-11 | same defmt treatment ported to f405/g474 (38 sites; embassy-usb defmt too) | f405 −1 044 B, g474 −1 024 B |
+| 2026-06-12 | detection review fixes: guaranteed-delivery `send_command` (async, ~27 await sites), adaptive HFI amplitude, magnitude flux method replacing q-axis in the per-step server, bus-voltage clamps | **+1 760 B** (108 620 → 110 380 baked) |
+| 2026-06-12 | **g431 storage profile removed** (see below) — that +1 760 B overflowed the 124K storage layout by ~700 B, forcing the standing decision | storage profile gone; baked unaffected |
 
 Panic handler kept `defmt::error!("PANIC: {}", Display2Format(info))`:
 full panic text over RTT costs only 240 B once dependency fmt is gone
@@ -142,22 +143,31 @@ codecs for every group, the TOCTOU machinery and a fat ergot server state
 machine. So the decisive lever was removing runtime persistence, not
 detection.
 
-**Decision: g431 defaults to the *baked-config* profile.** The `storage`
-crate feature (default-off on g431) switches profiles:
+**Decision (2026-06-11): g431 defaults to the *baked-config* profile.**
+**Decision (2026-06-12): the g431 `storage` profile is REMOVED entirely** —
+the 2026-06-12 detection fixes (+1 760 B) overflowed the 124K storage layout
+by ~700 B, and rather than dieting a reserve profile nobody flashes, the
+board gave up runtime persistence for good. The 4K config region belongs to
+code now.
 
-- **baked (default)**: configuration is compiled in (`src/baked_config.rs`),
-  memory.x grants the full 128K to code, the config server runs RAM-backed
-  (reads/writes/live-apply work — live tuning on the bench — but nothing
-  persists across reboots). Detection stays in. Workflow: flash → detect →
-  tune live → `oxifoc-host-cli config dump --rust > src/baked_config.rs` →
-  rebuild → reflash.
-- **storage**: the previous behavior (flash worker, 124K memory.x,
-  persistent writes). f405/g474 keep this as their default — they have
-  flash to spare and persistence is convenient there.
+What g431 has (the only profile):
 
-`build.rs` picks `memory-baked.x` (128K) or `memory-storage.x` (124K) from
-the feature; `just check` compiles both g431 profiles plus the
-detection-off build so none of them rot; `just size` reports both profiles.
+- Configuration is compiled in (`src/baked_config.rs`), memory.x grants the
+  full 128K to code, the config server runs RAM-backed (reads/writes/
+  live-apply work — live tuning on the bench — but nothing persists across
+  reboots; the server reports persist-capable = false). Detection stays in.
+  Workflow: flash → detect → tune live →
+  `oxifoc-host-cli config dump --rust > src/baked_config.rs` → rebuild →
+  reflash.
+- f405/g474 keep flash-backed storage as their default — they have flash to
+  spare and persistence is convenient there.
+
+Removed with the profile: `oxifoc-g431/src/storage.rs` (flash worker +
+sequential-storage), `memory-storage.x` + the `build.rs` feature switch and
+its `FIRMWARE_END_OFFSET` overlap assert (nothing to overlap any more),
+the `sequential-storage`/`embedded-storage-async`/`embassy-embedded-hal`
+deps, and the storage-profile steps in `just check`/`just size`. To ever
+bring it back: revert the removal commit — but it must re-fit in 124K.
 
 ### Why NOT a separate detection firmware (the two-image idea, evaluated)
 
@@ -202,7 +212,10 @@ age:
 - **No persistent storage: −25.5 KB measured 2026-06-11** (storage_worker
   task + sequential-storage + flash driver + config server + postcard
   codecs; the old −15.9 KB estimate missed the config-server share).
-  **This is now the g431 default** (baked profile, see above).
+  **Spent: this is now the only g431 configuration** (storage profile
+  removed 2026-06-12, see above) — no longer a reserve. The RAM-backed
+  config server itself is still compiled in; gating the per-group postcard
+  codecs (~1 KB/group, see above) remains an unspent idea.
 
 ## Dead ends (evaluated, rejected)
 

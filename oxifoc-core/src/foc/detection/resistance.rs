@@ -20,7 +20,7 @@
 //! 3. Stop when I²R × 1.5 >= max_power_loss / 5
 //! 4. Final accurate measurement at that safe current
 
-use super::types::{DetectionError, MotorSize, ResistanceParams};
+use super::types::{DetectionError, MotorSize};
 
 /// Minimum valid resistance in Ohms (below this suggests short circuit)
 const MIN_VALID_RESISTANCE: f32 = 0.001;
@@ -148,66 +148,6 @@ impl ResistanceMeasurement {
     }
 }
 
-/// Find the optimal test current for resistance measurement.
-///
-/// Uses VESC's iterative approach:
-/// 1. Start with a small current (current_max / 50)
-/// 2. Measure resistance quickly
-/// 3. Increase by 1.5× if power dissipation is within limits
-/// 4. Stop when I²R × 1.5 >= max_power_loss / 5
-///
-/// # Arguments
-/// * `params` - Measurement parameters
-/// * `quick_measure` - Callback to quickly measure R at a given current
-///   Returns Some(resistance) or None if measurement failed
-///
-/// # Returns
-/// The optimal test current in Amps
-pub fn find_safe_test_current<F>(params: &ResistanceParams, mut quick_measure: F) -> f32
-where
-    F: FnMut(f32) -> Option<f32>,
-{
-    let max_power_loss = params.motor_size.max_power_loss_w();
-    let power_limit = max_power_loss / 5.0;
-
-    let mut test_current = params.current_max / 50.0;
-    if test_current < params.current_min * 1.1 {
-        test_current = params.current_min * 1.1;
-    }
-
-    let mut last_valid_current = test_current;
-    let mut last_r: Option<f32> = None;
-
-    while test_current < params.current_max {
-        match quick_measure(test_current) {
-            Some(r) => {
-                last_r = Some(r);
-                // Check power dissipation: I²R × 1.5
-                let power = test_current * test_current * r * 1.5;
-                if power >= power_limit {
-                    break;
-                }
-                last_valid_current = test_current;
-            }
-            None => {
-                // A flaky measurement must not escalate past the thermal
-                // gate: project the dissipation at this current with the
-                // last known R before trying an even higher one.
-                if let Some(r) = last_r {
-                    let projected = test_current * test_current * r * 1.5;
-                    if projected >= power_limit {
-                        break;
-                    }
-                }
-            }
-        }
-
-        test_current *= 1.5;
-    }
-
-    last_valid_current
-}
-
 /// Calculate maximum safe continuous current from measured resistance.
 ///
 /// Formula: I_max = sqrt(max_power_loss / R / 1.5)
@@ -242,7 +182,9 @@ pub fn validate_resistance(resistance: f32, motor_size: MotorSize) -> Result<(),
         return Err(DetectionError::MotorNotResponding);
     }
 
-    // Additional sanity checks based on motor size
+    // Sanity check against the expected range for the declared motor size.
+    // The value may still be physically real (mislabeled size), so this is
+    // LowConfidence — distinguishable from the hard open/short gates above.
     let expected_range = match motor_size {
         MotorSize::Mini => (0.01, 10.0),   // 10mΩ - 10Ω
         MotorSize::Small => (0.01, 5.0),   // 10mΩ - 5Ω
@@ -252,8 +194,7 @@ pub fn validate_resistance(resistance: f32, motor_size: MotorSize) -> Result<(),
     };
 
     if resistance < expected_range.0 || resistance > expected_range.1 {
-        // Just a warning - don't fail, the measurement might still be valid
-        // In a real implementation, this could set a low-confidence flag
+        return Err(DetectionError::LowConfidence);
     }
 
     Ok(())
@@ -321,25 +262,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_safe_test_current() {
-        let params = ResistanceParams {
-            motor_size: MotorSize::Medium, // 120W max
-            current_max: 20.0,
-            current_min: 0.5,
-            ..Default::default()
-        };
-
-        // Simulate a motor with R = 0.1Ω
-        let current = find_safe_test_current(&params, |_i| Some(0.1));
-
-        // Power limit = 120/5 = 24W
-        // At I²R×1.5 = 24W -> I² = 24/(0.1×1.5) = 160 -> I = 12.6A
-        // Starting at 0.4A, multiplying by 1.5: 0.4, 0.6, 0.9, 1.35, 2.0, 3.0, 4.5, 6.75, 10.1, 15.2
-        // Should stop around 10A (before exceeding power limit)
-        assert!(current > 5.0 && current < 15.0);
-    }
-
-    #[test]
     fn test_calculate_max_current() {
         // R = 0.1Ω, Medium motor (120W)
         // I_max = sqrt(120 / 0.1 / 1.5) = sqrt(800) = 28.3A
@@ -358,6 +280,15 @@ mod tests {
 
         // Invalid: too high (open circuit)
         assert!(validate_resistance(200.0, MotorSize::Medium).is_err());
+
+        // Physically real but implausible for the declared size:
+        // soft LowConfidence, not the hard open/short errors.
+        assert_eq!(
+            validate_resistance(8.0, MotorSize::Medium),
+            Err(DetectionError::LowConfidence)
+        );
+        // The same 8 Ω is normal for a Mini gimbal motor.
+        assert!(validate_resistance(8.0, MotorSize::Mini).is_ok());
     }
 
     #[test]

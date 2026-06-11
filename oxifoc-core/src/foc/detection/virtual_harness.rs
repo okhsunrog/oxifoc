@@ -122,7 +122,7 @@ thread_local! {
 pub struct VirtualHardware;
 
 impl DetectionHardware for VirtualHardware {
-    fn send_command(&self, mode: ControlMode) {
+    async fn send_command(&self, mode: ControlMode) {
         SIM.with(|s| {
             let mut borrow = s.borrow_mut();
             let sim = borrow.as_mut().unwrap();

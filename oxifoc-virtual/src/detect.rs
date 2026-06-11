@@ -9,7 +9,7 @@
 use ergot::net_stack::NetStackHandle;
 use ergot::net_stack::endpoints::Endpoints;
 use oxifoc_core::foc::detection::sweep::{
-    calibrate_hall, measure_flux_linkage, measure_inductance, measure_resistance,
+    calibrate_hall, measure_flux_linkage_magnitude, measure_inductance, measure_resistance,
 };
 use oxifoc_core::foc::detection::types::{
     DetectionError, FluxLinkageParams, InductanceParams, ResistanceParams,
@@ -78,7 +78,11 @@ impl DetectionBackend for VirtualBackend {
         let params_m = self.params;
         tokio::task::spawn_blocking(move || {
             with_sim(params_m, vbus, |hw| {
-                block_on(measure_flux_linkage::<_, VirtualTimer>(hw, &params))
+                // Back-EMF-vector method, not q-axis: load-angle invariant
+                // (the q-axis method is biased by up to −90% in open loop).
+                block_on(measure_flux_linkage_magnitude::<_, VirtualTimer>(
+                    hw, &params,
+                ))
             })
         })
         .await

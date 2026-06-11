@@ -62,8 +62,14 @@ impl EmbassyDetectionHardware {
 }
 
 impl DetectionHardware for EmbassyDetectionHardware {
-    fn send_command(&self, mode: ControlMode) {
-        let _ = state::CMD_CHANNEL.try_send(state::DriverCommand::SetMode(mode));
+    async fn send_command(&self, mode: ControlMode) {
+        // send().await, not try_send: the ISR drains the channel every FOC
+        // cycle, so this parks for at most ~50 µs — and a silently dropped
+        // command would corrupt the measurement (the HFI loop pairs each
+        // current sample with the voltage commanded one cycle earlier).
+        state::CMD_CHANNEL
+            .send(state::DriverCommand::SetMode(mode))
+            .await;
     }
 
     async fn wait_telemetry(&mut self) -> FocOutput {
@@ -147,6 +153,12 @@ pub async fn measure_inductance<S: SinCos>(
 }
 
 /// Measure motor flux linkage via open-loop spinning.
+///
+/// Uses the back-EMF-vector (magnitude) method: in open-loop drive the
+/// rotor leads the command frame by up to 90°, which biases the q-axis
+/// method by the load-angle cosine (up to −90% on light motors). The
+/// vector method is load-angle invariant; `params.inductance_h` (0.0 if
+/// unknown) trims its `ωL·i` reactance term.
 pub async fn measure_flux_linkage(
     params: &FluxLinkageParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
@@ -156,7 +168,7 @@ pub async fn measure_flux_linkage(
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
-    sweep::measure_flux_linkage::<_, EmbassyTimer>(&mut hw, params).await
+    sweep::measure_flux_linkage_magnitude::<_, EmbassyTimer>(&mut hw, params).await
 }
 
 /// Run full motor parameter detection sequence.

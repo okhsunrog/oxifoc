@@ -360,4 +360,52 @@ mod integration_tests {
         assert!(result.params.kv_rpm_per_v > 50.0);
         assert!(result.params.max_current_a > 0.0);
     }
+
+    /// Regression: high-R motor on a low bus (gimbal-class).
+    ///
+    /// The thermal safe-current formula alone (√(P/R/1.5) = 1.29 A at 8 Ω /
+    /// 20 W) demands 10.3 V of the ~6.9 V a 12 V bus can drive — without the
+    /// bus-voltage clamp the resistance step saturates short of its setpoint
+    /// and aborts with `UnexpectedMotion`, failing the whole sequence.
+    #[test]
+    fn run_full_detection_high_r_low_vbus() {
+        use super::sweep::DetectionParams;
+        use super::types::MotorSize;
+        use super::virtual_harness::run_detection;
+
+        let motor_params = MotorParams {
+            r: 8.0,
+            ld: 3e-3,
+            lq: 3e-3,
+            lambda: 0.005,
+            pole_pairs: 11,
+            j: 5e-6,
+            friction_b: 1e-5,
+            hall_offset: 0.0,
+            ..MotorParams::default()
+        };
+
+        let det_params = DetectionParams {
+            motor_size: MotorSize::Mini,
+            pole_pairs: motor_params.pole_pairs,
+            current_max: 10.0,
+            max_power_loss_w: 20.0,
+            pwm_freq_hz: 20_000.0,
+            vbus: 12.0,
+            openloop_erpm: 1400.0,
+        };
+
+        let result = run_detection(motor_params, 12.0, det_params)
+            .expect("gimbal-class detection must survive the low bus");
+
+        let r_err = (result.params.resistance_ohm - motor_params.r).abs() / motor_params.r;
+        assert!(r_err < 0.05, "R error {:.1}%", r_err * 100.0);
+
+        let l_err = (result.params.inductance_avg_h - motor_params.ld).abs() / motor_params.ld;
+        assert!(l_err < 0.15, "L error {:.1}%", l_err * 100.0);
+
+        let lam_err =
+            (result.params.flux_linkage_wb - motor_params.lambda).abs() / motor_params.lambda;
+        assert!(lam_err < 0.05, "λ error {:.1}%", lam_err * 100.0);
+    }
 }

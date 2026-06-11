@@ -1434,6 +1434,7 @@ pub fn main() {
                     match send_step(DetectRequest::MeasureFlux {
                         max_power_loss_w: max_loss,
                         resistance_ohm,
+                        inductance_h: (inductance_d_h + inductance_q_h) / 2.0,
                         pole_pairs,
                         openloop_erpm,
                     }) {

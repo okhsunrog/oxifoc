@@ -209,6 +209,37 @@ hall rate-limiter/drift-коррекция.
 
 ---
 
+## 1ter. РЕВЬЮ ДЕТЕКЦИИ 2026-06-12 (пятая сессия: detection/* целиком + сравнение с VESC/MESC)
+
+**ВСЁ НИЖЕ ИСПРАВЛЕНО в той же сессии.** Прочитано целиком: detection/*
+(~5200 строк), runtime/detect.rs, VESC `mcpwm_foc_measure_*` +
+`conf_general_measure_flux_linkage_openloop`, MESC `MESCmeasure.c`.
+Диагностика через `detection_report` (все фейлы воспроизведены и устранены:
+таблица полной детекции — 10/10 моторов зелёные, λ 0.0% везде).
+
+| Пункт | Причина | Где исправлено |
+|---|---|---|
+| HIGH: Micro-gimbal-класс (high-R + низкая шина) валит детекцию | `safe_current = √(P/R/1.5)` без оглядки на шину: 1.29 А × 8 Ом = 10.3 В при доступных 6.9 В → PI насыщается → settle-чек → `UnexpectedMotion` | bus-кламп `vbus·0.577·0.85/R` в `run_full_detection` (sweep.rs) и `runtime/detect.rs` (R- и flux-шаги); регрессионный тест `run_full_detection_high_r_low_vbus` |
+| HIGH: пошаговый `MeasureFlux` (GUI/CLI путь!) мерил λ q-axis методом | смещение на cos(load angle) до −98% в open loop; все 3 бэкенда (g431/f405/virtual) звали `measure_flux_linkage` | `embassy_hw::measure_flux_linkage` и virtual-бэкенд → `measure_flux_linkage_magnitude`; `inductance_h` добавлен в `FluxLinkageParams` + `DetectRequest::MeasureFlux` (GUI передаёт L с предыдущего шага) |
+| MED: driven flux занижался при open-loop hunting (IPM −11.7%) | качание ротора затухает с τ≈2J/b (секунды), settle 1 с + окно 100 мс усредняли компоненты качающегося e⃗ (VESC: 1 с + 10 с усреднения; MESC: обсервер в closed-loop ~3.4 с) | дефолты `FluxLinkageParams`: settle 3 с, окно 1 с (2000 сэмплов); spin-down кэпнут 500 сэмплами (коаст ограничен физикой); IPM traction: −11.7% → −1.7% |
+| MED: фиксированная амплитуда HFI 3 В | ripple = V/(ωL): 6.4 А на 15 µH-моторе, 32 мА на гимбале (под шумом АЦП на железе); VESC итерирует duty до целевого тока | адаптация в `measure_inductance`: 8 FFT-окон скаутят L → V = I_target·\|Z\| (I_target = 0.25·hold), кламп к headroom шины (`InductanceParams.vbus`); частота остаётся 5 кГц = fs/4 — в симе лучшая из 1/2/5 кГц (ниже частота → больше возмущение ротора → Lq до −34%) |
+| MED: `embassy_hw::send_command` = `let _ = try_send` | молчаливый дроп ломает спаривание (V,di) в HFI-цикле без следа | `DetectionHardware::send_command` стал async; embassy: `CMD_CHANNEL.send().await` (ISR дренирует каждый цикл — ждать ≤50 мкс); остальные try_send в прошивке проверены: foc_driver — тесты, FLASH_CHANNEL — обрабатывает ошибку |
+| LOW: PI-гейны без voltage-лимита | kp·I_max мог превышать шину для high-R/L моторов | bandwidth в `run_full_detection` ограничен `(vbus·0.577/I_max)/L_avg` |
+| LOW: HFI не отличал открытую фазу от мотора | range-гейты пропускали шумовые 1/L | `InductanceMeasurement::finish`: `avg_current < 0.3·hold` → `MotorNotResponding` |
+| LOW: мёртвый код | `find_safe_test_current` не подключён (sweep делает 2-точечный замер инлайн); пустая size-range ветка в `validate_resistance` | первый удалён; вторая возвращает `LowConfidence` |
+
+Флеш-эффект: +1 760 Б на g431 (гарантированная доставка + адаптивный HFI +
+magnitude-метод) → storage-профиль g431 (124K) перестал влезать → **профиль
+удалён совсем** (решение зафиксировано в flash-size.md: полные 128K коду,
+конфиг только baked + RAM-backed live-tuning).
+
+_Не исправлено (стенд/осознанно): Lq −2…−3% на высокоиндуктивных моторах при
+5 кГц (возмущение ротора, физика инжекции); дублирование сэмплов на
+zero-crossing несущей при fs/4 (безвредно); детекционные PI 0.01/10 в 10×
+горячее VESC-овских 0.001/1.0 — проверить на стенде._
+
+---
+
 ## 2. Подозрение (нужен стенд)
 
 - **F405: ADC injected-триггер срабатывает дважды за период PWM.** [агент,

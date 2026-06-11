@@ -318,9 +318,16 @@ pub struct SpinDownFluxMeasurement {
 impl SpinDownFluxMeasurement {
     /// Create from flux linkage parameters.
     ///
-    /// Uses `params.num_samples` and `params.min_coast_omega_e`.
+    /// Uses `params.num_samples` (capped at 500) and
+    /// `params.min_coast_omega_e`. The cap decouples this method from the
+    /// driven-method window size: `num_samples` defaults to a full second
+    /// of sampling to average out open-loop rotor hunting, but a coasting
+    /// motor only spends so long above the ω floor — demanding the driven
+    /// window here would force the fallback on motors whose coast is
+    /// perfectly measurable. 500 samples (~0.25 s) is statistically ample
+    /// for the V/ω ratio.
     pub fn from_params(params: &super::types::FluxLinkageParams) -> Self {
-        Self::new(params.num_samples, params.min_coast_omega_e)
+        Self::new(params.num_samples.min(500), params.min_coast_omega_e)
     }
 
     /// Create a new spin-down flux measurement.

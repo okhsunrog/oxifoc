@@ -64,7 +64,14 @@ pub const DETECTION_PI_KI: f32 = 10.0;
 /// Async delays are provided separately via the [`Timer`] trait.
 pub trait DetectionHardware {
     /// Send a control mode command to the FOC driver.
-    fn send_command(&self, mode: ControlMode);
+    ///
+    /// Must guarantee delivery (await channel space if needed): a silently
+    /// dropped command mid-sweep desynchronizes the measurement — e.g. the
+    /// HFI loop pairs each recorded current with the voltage it commanded
+    /// one cycle earlier, and a dropped `DirectVoltage` corrupts that
+    /// pairing with no trace. The FOC ISR drains the command channel every
+    /// cycle (50 µs), so awaiting is cheap and bounded.
+    fn send_command(&self, mode: ControlMode) -> impl Future<Output = ()>;
 
     /// Wait for the next telemetry update and return it.
     ///
@@ -230,7 +237,8 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
             current,
             velocity_rad_s: 0.0,
             pi_gains: if i == 1 { det_gains } else { None },
-        });
+        })
+        .await;
         T::after_millis(4).await;
     }
     T::after_millis(settle_cycles).await;
@@ -241,7 +249,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     let (vd_low, id_low) = match sample_vd_id::<H, T>(hw, sample_count, 2000).await {
         Ok(avg) => avg,
         Err(e) => {
-            hw.send_command(ControlMode::Stopped);
+            hw.send_command(ControlMode::Stopped).await;
             return Err(e);
         }
     };
@@ -255,7 +263,8 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
             current,
             velocity_rad_s: 0.0,
             pi_gains: None,
-        });
+        })
+        .await;
         T::after_millis(4).await;
     }
     T::after_millis(settle_cycles).await;
@@ -264,7 +273,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     let (vd_high, id_high) = match sample_vd_id::<H, T>(hw, sample_count, 2000).await {
         Ok(avg) => avg,
         Err(e) => {
-            hw.send_command(ControlMode::Stopped);
+            hw.send_command(ControlMode::Stopped).await;
             return Err(e);
         }
     };
@@ -278,10 +287,11 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
             current,
             velocity_rad_s: 0.0,
             pi_gains: None,
-        });
+        })
+        .await;
         T::after_millis(4).await;
     }
-    hw.send_command(ControlMode::Stopped);
+    hw.send_command(ControlMode::Stopped).await;
     T::after_millis(100).await;
 
     // --- Compute R = ΔV / ΔI ---
@@ -325,63 +335,63 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     Ok(resistance)
 }
 
-/// Measure motor inductance using rotating HFI.
+/// Amplitude adaptation context for the HFI loop.
+struct HfiAdapt {
+    /// Carrier angular frequency (rad/s) for the |Z| solve.
+    omega: f32,
+    /// Phase resistance (Ω) for the |Z| solve.
+    r: f32,
+    /// Target ripple current (A).
+    i_target: f32,
+    /// Amplitude clamp range (V).
+    v_min: f32,
+    v_max: f32,
+}
+
+/// Run the HFI collection loop: rotating injection riding on `vd_hold`,
+/// recording into `measurement` until it reports complete.
 ///
-/// Injects a rotating high-frequency voltage vector in α-β frame
-/// and analyzes current response using FFT.
+/// With `adapt` set, the first [`HFI_PROBE_CYCLES`] windows act as an
+/// amplitude scout: the interim L estimate solves `V = I_target · |Z|`,
+/// the injector amplitude is re-scaled and the accumulators restart, so
+/// only properly-scaled windows reach the final result.
 ///
-/// # Arguments
-/// * `hw` - Hardware abstraction implementation
-/// * `params` - Inductance measurement parameters
-/// * `pwm_freq_hz` - PWM frequency in Hz
-///
-/// # Returns
-/// * `Ok((ld, lq))` - Measured d-axis and q-axis inductance in Henries
-/// * `Err(DetectionError)` - If measurement failed
-pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
+/// Leaves the motor in `DirectVoltage { vd: vd_hold }` — the caller ramps
+/// down.
+async fn hfi_collect<H: DetectionHardware, S: SinCos>(
     hw: &mut H,
-    params: &InductanceParams,
-    pwm_freq_hz: f32,
-) -> Result<(f32, f32), DetectionError> {
-    info!("Starting inductance measurement (rotating HFI)...");
-
-    // Create HFI injector and measurement
-    let mut injector =
-        HfiInjector::<S>::new(params.hfi_frequency_hz, params.hfi_voltage_v, pwm_freq_hz);
-    let mut measurement = InductanceMeasurement::<S>::new(params, pwm_freq_hz);
-
-    let dt = 1.0 / pwm_freq_hz;
-
-    // First, lock rotor at angle 0 with holding current
-    let ramp_steps = 50u32;
-    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
-
-    for i in 1..=ramp_steps {
-        let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
-        hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current,
-            velocity_rad_s: 0.0,
-            pi_gains: if i == 1 { det_gains } else { None },
-        });
-        T::after_millis(10).await;
-    }
-
-    // Wait for rotor to settle, then compute holding voltage from R×I
-    // (Don't use PI output — it includes dead time compensation voltage)
-    T::after_millis(params.settle_time_ms as u64).await;
-    let vd_hold = params.resistance_ohm * params.hold_current_a;
-
-    info!("Starting HFI injection (vd_hold={}V)...", vd_hold);
-
-    // Switch to DirectVoltage mode — no PI interference during measurement.
-    // The captured vd_hold maintains the holding force, HFI injection is added on top.
+    injector: &mut HfiInjector<S>,
+    measurement: &mut InductanceMeasurement<S>,
+    vd_hold: f32,
+    dt: f32,
+    mut adapt: Option<HfiAdapt>,
+) {
+    // DirectVoltage mode — no PI interference during measurement.
+    // The captured vd_hold maintains the holding force, HFI injection is
+    // added on top.
     let mut first_iteration = true;
     let mut prev_injection_angle = 0.0f32;
     let mut prev_v_alpha_inj = 0.0f32;
     let mut prev_v_beta_inj = 0.0f32;
 
     while !measurement.is_complete() {
+        if adapt.is_some() && measurement.cycles_completed() >= HFI_PROBE_CYCLES {
+            // On a failed scout (no interim estimate) keep the configured
+            // amplitude — finish() reports the real error downstream.
+            if let Some(l_avg) = measurement.interim_l_avg() {
+                let a = adapt.take().unwrap();
+                let z = crate::foc::fast_math::sqrtf(a.r * a.r + a.omega * l_avg * a.omega * l_avg);
+                let v_run = crate::foc::clamp_f32(a.i_target * z, a.v_min, a.v_max);
+                info!("HFI amplitude adapted: {}V", v_run);
+                injector.set_amplitude(v_run);
+                injector.reset();
+                measurement.restart(v_run);
+                first_iteration = true;
+            } else {
+                adapt = None;
+            }
+        }
+
         // Wait for current PWM cycle to complete (synced to ADC ISR)
         let _telem = hw.wait_telemetry().await;
 
@@ -409,13 +419,113 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
             vd: vd_hold + v_alpha_inj,
             vq: v_beta_inj,
             angle_rad: 0.0,
-        });
+        })
+        .await;
 
         prev_injection_angle = injection_angle;
         prev_v_alpha_inj = v_alpha_inj;
         prev_v_beta_inj = v_beta_inj;
         first_iteration = false;
     }
+}
+
+/// Number of FFT windows for the amplitude-scouting probe phase.
+const HFI_PROBE_CYCLES: u32 = 8;
+
+/// Target HFI ripple current as a fraction of the holding current — large
+/// enough to clear the ADC noise floor, small enough that the rotor stays
+/// firmly locked and the total current stays inside the thermal budget.
+const HFI_RIPPLE_FRACTION: f32 = 0.25;
+
+/// Measure motor inductance using rotating HFI.
+///
+/// Injects a rotating high-frequency voltage vector in α-β frame and
+/// analyzes the current response using FFT. Runs in two passes: a short
+/// probe at `params.hfi_voltage_v` scouts L, then the main pass re-solves
+/// the amplitude for a target ripple current (a fraction of the holding
+/// current), clamped to the bus-voltage headroom when `params.vbus` is set.
+///
+/// # Arguments
+/// * `hw` - Hardware abstraction implementation
+/// * `params` - Inductance measurement parameters
+/// * `pwm_freq_hz` - PWM frequency in Hz
+///
+/// # Returns
+/// * `Ok((ld, lq))` - Measured d-axis and q-axis inductance in Henries
+/// * `Err(DetectionError)` - If measurement failed
+pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
+    hw: &mut H,
+    params: &InductanceParams,
+    pwm_freq_hz: f32,
+) -> Result<(f32, f32), DetectionError> {
+    info!("Starting inductance measurement (rotating HFI)...");
+
+    let dt = 1.0 / pwm_freq_hz;
+
+    // First, lock rotor at angle 0 with holding current
+    let ramp_steps = 50u32;
+    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
+
+    for i in 1..=ramp_steps {
+        let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: 0.0,
+            current,
+            velocity_rad_s: 0.0,
+            pi_gains: if i == 1 { det_gains } else { None },
+        })
+        .await;
+        T::after_millis(10).await;
+    }
+
+    // Wait for rotor to settle, then compute holding voltage from R×I
+    // (Don't use PI output — it includes dead time compensation voltage)
+    T::after_millis(params.settle_time_ms as u64).await;
+    let vd_hold = params.resistance_ohm * params.hold_current_a;
+
+    // Voltage headroom above the holding voltage (when vbus is known):
+    // commanding beyond this saturates against the bus mid-carrier and
+    // distorts the injection waveform.
+    let headroom = if params.vbus > 0.0 {
+        ((params.vbus * 0.577 - vd_hold) * 0.9).max(0.1)
+    } else {
+        f32::INFINITY
+    };
+
+    // ── Adaptive injection amplitude ────────────────────────────────────
+    // A fixed amplitude gives a ripple current of V/(ω·L) — a quantity
+    // that spans two orders of magnitude across real motors (amps on a
+    // 15 µH outrunner, tens of mA on a 3 mH gimbal). VESC solves this by
+    // stepping the injection duty until the response current reaches the
+    // measurement target (mcpwm_foc_measure_inductance_current); here the
+    // first few FFT windows scout L at the configured amplitude, then the
+    // amplitude is re-solved for the target ripple and the accumulators
+    // restart (see hfi_collect).
+    let probe_v = params.hfi_voltage_v.min(headroom);
+    let adapt = HfiAdapt {
+        omega: params.hfi_frequency_hz * core::f32::consts::TAU,
+        r: params.resistance_ohm,
+        i_target: (HFI_RIPPLE_FRACTION * params.hold_current_a).max(0.05),
+        v_min: 0.2,
+        v_max: headroom.min(params.hfi_voltage_v * 10.0),
+    };
+    info!(
+        "HFI injection (probe v={}V, vd_hold={}V)...",
+        probe_v, vd_hold
+    );
+
+    let mut injector = HfiInjector::<S>::new(params.hfi_frequency_hz, probe_v, pwm_freq_hz);
+    let mut measurement = InductanceMeasurement::<S>::new(params, pwm_freq_hz);
+    measurement.restart(probe_v);
+    hfi_collect::<H, S>(
+        hw,
+        &mut injector,
+        &mut measurement,
+        vd_hold,
+        dt,
+        Some(adapt),
+    )
+    .await;
 
     // Ramp down holding voltage
     info!("HFI measurement complete, ramping down...");
@@ -426,11 +536,12 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
             vd,
             vq: 0.0,
             angle_rad: 0.0,
-        });
+        })
+        .await;
         T::after_millis(10).await;
     }
 
-    hw.send_command(ControlMode::Stopped);
+    hw.send_command(ControlMode::Stopped).await;
     T::after_millis(100).await;
 
     // Compute result
@@ -473,7 +584,8 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
                 } else {
                     None
                 },
-            });
+            })
+            .await;
             T::after_millis(10).await;
         }
         T::after_millis(params.settle_time_ms as u64).await;
@@ -502,7 +614,8 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
                 vd: vd_hold + params.pulse_voltage_v,
                 vq: 0.0,
                 angle_rad: angle,
-            });
+            })
+            .await;
             hw.wait_telemetry().await; // one PWM period
 
             // Read current after pulse
@@ -517,7 +630,8 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
                 vd: vd_hold,
                 vq: 0.0,
                 angle_rad: angle,
-            });
+            })
+            .await;
             hw.wait_telemetry().await;
         }
 
@@ -530,10 +644,11 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
                 vd,
                 vq: 0.0,
                 angle_rad: angle,
-            });
+            })
+            .await;
             T::after_millis(10).await;
         }
-        hw.send_command(ControlMode::Stopped);
+        hw.send_command(ControlMode::Stopped).await;
         T::after_millis(200).await;
     }
 
@@ -596,7 +711,8 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
             current: params.current_a * i as f32 / CAPTURE_STEPS as f32,
             velocity_rad_s: CAPTURE_OMEGA_E,
             pi_gains: if i == 1 { det_gains } else { None },
-        });
+        })
+        .await;
         T::after_millis(CAPTURE_TIME_MS / CAPTURE_STEPS as u64).await;
     }
 
@@ -636,7 +752,8 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
             current: params.current_a,
             velocity_rad_s: omega,
             pi_gains: None,
-        });
+        })
+        .await;
         T::after_millis(step_ms).await;
 
         let telem = hw.wait_telemetry().await;
@@ -656,7 +773,7 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
             && v_filt_max > v_check_floor
             && v_filt < SPINUP_SYNC_LOSS_RATIO * v_filt_max
         {
-            hw.send_command(ControlMode::Stopped);
+            hw.send_command(ControlMode::Stopped).await;
             return Err(DetectionError::MotorNotResponding);
         }
 
@@ -686,10 +803,11 @@ async fn ramp_down_open_loop<H: DetectionHardware, T: Timer>(
             current: current_a * progress,
             velocity_rad_s: omega_e * progress,
             pi_gains: None,
-        });
+        })
+        .await;
         T::after_millis(step_ms).await;
     }
-    hw.send_command(ControlMode::Stopped);
+    hw.send_command(ControlMode::Stopped).await;
     T::after_millis(100).await;
 }
 
@@ -747,12 +865,12 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
 ///
 /// Exact at steady state for any load angle (see
 /// [`MagnitudeFluxMeasurement`]), unlike both the q-axis method and
-/// VESC's scalar `(|V| − R|I|)/ω − |I|L` approximation. Requires both R
-/// and L from earlier detection steps.
+/// VESC's scalar `(|V| − R|I|)/ω − |I|L` approximation. Requires R from an
+/// earlier detection step; `params.inductance_h` trims the `ωL·i`
+/// reactance term and may be 0.0 when L is unknown.
 pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     params: &FluxLinkageParams,
-    inductance_h: f32,
 ) -> Result<f32, DetectionError> {
     info!("Starting back-EMF-vector flux linkage measurement...");
 
@@ -760,8 +878,11 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
         return Err(DetectionError::MissingPrerequisite);
     }
 
-    let mut measurement =
-        MagnitudeFluxMeasurement::new(params.resistance_ohm, inductance_h, params.num_samples);
+    let mut measurement = MagnitudeFluxMeasurement::new(
+        params.resistance_ohm,
+        params.inductance_h,
+        params.num_samples,
+    );
 
     let omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
     T::after_millis(params.settle_time_ms as u64).await;
@@ -805,7 +926,7 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
     T::after_millis(params.settle_time_ms as u64).await;
 
     // ── Release: coast with all FETs off ───────────────────────────────
-    hw.send_command(ControlMode::Coast);
+    hw.send_command(ControlMode::Coast).await;
 
     // Wait for currents to decay (a few L/R time constants)
     T::after_millis(20).await;
@@ -831,7 +952,7 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
     }
 
     // ── Stop ───────────────────────────────────────────────────────────
-    hw.send_command(ControlMode::Stopped);
+    hw.send_command(ControlMode::Stopped).await;
     T::after_millis(100).await;
 
     let flux = measurement.finish()?;
@@ -883,9 +1004,16 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     let r_probe = measure_resistance::<H, T>(hw, &probe_params).await?;
     T::after_millis(200).await;
 
-    // Safe current: I = sqrt(max_power_loss / R / 1.5), capped to hardware limit
+    // Safe current: I = sqrt(max_power_loss / R / 1.5), capped to the
+    // hardware limit AND to what the bus can actually drive through R —
+    // the thermal formula alone asks a high-R motor for more voltage than
+    // the bus has (a 20 W gimbal at 8 Ω on 12 V needs 10.3 V of the 6.9 V
+    // available), the PI saturates short of the setpoint and the settle
+    // check aborts the measurement.
+    let max_bus_current = (params.vbus * 0.577 * 0.85) / r_probe.max(0.001);
     let safe_current = crate::foc::fast_math::sqrtf(params.max_power_loss_w / r_probe / 1.5)
         .min(params.current_max)
+        .min(max_bus_current)
         .max(probe_current);
     info!("Safe test current found");
 
@@ -911,6 +1039,7 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
         motor_size: params.motor_size,
         resistance_ohm: r,
         hold_current_a: hold_current,
+        vbus: params.vbus,
         ..Default::default()
     };
     let (mut ld, mut lq) =
@@ -954,6 +1083,7 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
         pole_pairs: params.pole_pairs,
         spin_rpm,
         current_a: safe_current.min(2.0), // cap to safe level
+        inductance_h: result.params.inductance_avg_h,
         // Ramp until the phase voltage reaches ~20% of vbus (VESC spins its
         // flux wizard to duty 0.3 ≈ the same), so back-EMF dominates R·I.
         v_target: 0.2 * params.vbus,
@@ -971,9 +1101,8 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
                 info!("Spin-down failed (motor stopped too fast), falling back to driven method");
                 T::after_millis(500).await;
 
-                let l_avg = result.params.inductance_avg_h;
                 result.params.flux_linkage_wb =
-                    measure_flux_linkage_magnitude::<H, T>(hw, &flux_params, l_avg).await?;
+                    measure_flux_linkage_magnitude::<H, T>(hw, &flux_params).await?;
             }
             Err(e) => return Err(e),
         }
@@ -982,23 +1111,32 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
         // R-independent spin-down method cannot run; go straight to the
         // driven method instead of wasting a spin-up/coast cycle.
         info!("Step 3/4: Flux linkage (driven method — no coast telemetry on this hardware)");
-        let l_avg = result.params.inductance_avg_h;
         result.params.flux_linkage_wb =
-            measure_flux_linkage_magnitude::<H, T>(hw, &flux_params, l_avg).await?;
+            measure_flux_linkage_magnitude::<H, T>(hw, &flux_params).await?;
     }
     result.params.calculate_kv();
 
+    // Calculate max current (needed below for the gain voltage limit)
+    result.params.calculate_max_current(params.motor_size);
+
     // Step 4: Calculate PI gains
     info!("Step 4/4: PI auto-tuning");
-    let bandwidth = estimate_bandwidth(result.params.inductance_avg_h, params.pwm_freq_hz);
+    let mut bandwidth = estimate_bandwidth(result.params.inductance_avg_h, params.pwm_freq_hz);
+    // Voltage limit: a worst-case current step of i_max must not demand
+    // more than the bus can give (V ≈ Kp·ΔI, Kp = L·ω_bw). Without this a
+    // high-R/high-L motor gets gains that slam the PI into saturation on
+    // every transient.
+    let i_max = result.params.max_current_a.min(params.current_max);
+    let l_avg = result.params.inductance_avg_h;
+    if i_max > 0.0 && l_avg > 0.0 {
+        let bw_voltage_limit = (params.vbus * 0.577 / i_max) / l_avg;
+        bandwidth = bandwidth.min(bw_voltage_limit);
+    }
     if let Some(gains) = calculate_foc_gains(&result.params, bandwidth) {
         // Use average of d/q gains for simplicity
         result.kp_current = (gains.kp_d + gains.kp_q) / 2.0;
         result.ki_current = (gains.ki_d + gains.ki_q) / 2.0;
     }
-
-    // Calculate max current
-    result.params.calculate_max_current(params.motor_size);
 
     info!("Detection complete!");
 
@@ -1049,7 +1187,8 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
             current,
             velocity_rad_s: 0.0,
             pi_gains: if i == 1 { det_gains } else { None },
-        });
+        })
+        .await;
         T::after_millis(ramp_delay_ms as u64).await;
     }
 
@@ -1076,7 +1215,8 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
                 current: params.current_amps,
                 velocity_rad_s: 0.0,
                 pi_gains: None,
-            });
+            })
+            .await;
 
             // Wait for rotor to settle
             T::after_micros(params.step_delay_us as u64).await;
@@ -1095,12 +1235,13 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
             current,
             velocity_rad_s: 0.0,
             pi_gains: None,
-        });
+        })
+        .await;
         T::after_millis(ramp_delay_ms as u64).await;
     }
 
     // Stop motor
-    hw.send_command(ControlMode::Stopped);
+    hw.send_command(ControlMode::Stopped).await;
     T::after_millis(100).await;
 
     // Step 4: Compute result

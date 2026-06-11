@@ -169,6 +169,12 @@ impl<S: SinCos> HfiInjector<S> {
         self.sample_index = 0;
     }
 
+    /// Change the injection amplitude (e.g. mid-measurement adaptation).
+    #[inline]
+    pub fn set_amplitude(&mut self, voltage_amplitude: f32) {
+        self.voltage_amplitude = voltage_amplitude;
+    }
+
     /// Get current sample index within FFT window.
     #[inline]
     pub fn sample_index(&self) -> usize {
@@ -447,6 +453,36 @@ impl<S: SinCos> InductanceMeasurement<S> {
         self.cycles_completed
     }
 
+    /// Interim average inductance ((Ld+Lq)/2) over the windows so far.
+    ///
+    /// Used by the amplitude-adaptation pass of `measure_inductance` to
+    /// re-solve the injection voltage from a few scouting windows.
+    pub fn interim_l_avg(&self) -> Option<f32> {
+        if self.cycles_completed == 0 {
+            return None;
+        }
+        let n = self.cycles_completed as f32;
+        Some((self.ld_sum / n + self.lq_sum / n) / 2.0)
+    }
+
+    /// Restart accumulation with a new injection amplitude, keeping the
+    /// configuration (target cycles, R compensation, hold current).
+    ///
+    /// The amplitude must be updated together with the sample state: it
+    /// feeds the carrier zero-crossing clamp (`0.1 × amplitude`).
+    pub fn restart(&mut self, voltage_amplitude: f32) {
+        self.sample_idx = 0;
+        self.cycles_completed = 0;
+        self.ld_sum = 0.0;
+        self.lq_sum = 0.0;
+        self.saliency_sum = 0.0;
+        self.quadrature_sum = 0.0;
+        self.current_sum = 0.0;
+        self.total_samples = 0;
+        self.first_sample = true;
+        self.voltage_amplitude = voltage_amplitude;
+    }
+
     /// Whether the saliency axes look aligned with the rotor lock.
     ///
     /// The quadrature (Im bin-2) component is the 45°-off saliency — near
@@ -505,6 +541,14 @@ impl<S: SinCos> InductanceMeasurement<S> {
         } else {
             0.0
         };
+
+        // The holding current must actually be flowing: a disconnected
+        // phase still yields plausible-looking 1/L samples from noise, and
+        // the range gates above can't tell. |i| averages ≥ the DC hold for
+        // a connected motor, so well under half of it means open circuit.
+        if self.hold_current > 0.05 && avg_current < 0.3 * self.hold_current {
+            return Err(DetectionError::MotorNotResponding);
+        }
 
         Ok(InductanceResult {
             ld,

@@ -252,6 +252,13 @@ pub struct InductanceParams {
     /// Used to compensate for the resistive voltage drop in the 1/L
     /// calculation.  Set to 0.0 when unknown.
     pub resistance_ohm: f32,
+
+    /// DC bus voltage (Volts), 0.0 = unknown.
+    ///
+    /// When known, the injection amplitude is clamped to the voltage
+    /// headroom left above the holding voltage (`vbus·0.577 − R·I_hold`),
+    /// so the commanded vector never saturates against the bus mid-window.
+    pub vbus: f32,
 }
 
 impl Default for InductanceParams {
@@ -264,6 +271,7 @@ impl Default for InductanceParams {
             num_cycles: 100,
             settle_time_ms: 200,
             resistance_ohm: 0.0,
+            vbus: 0.0,
         }
     }
 }
@@ -277,6 +285,14 @@ pub struct FluxLinkageParams {
     /// Previously measured resistance (Ohms) — required for driven method,
     /// ignored by spin-down method.
     pub resistance_ohm: f32,
+
+    /// Previously measured average inductance (Henries), 0.0 = unknown.
+    ///
+    /// Used by the driven back-EMF-vector method for the `ωL·i` reactance
+    /// term. With 0.0 the method still works (load-angle invariance does
+    /// not depend on it); the term only trims a small residual that grows
+    /// with `L·I/λ`. Ignored by the q-axis and spin-down methods.
+    pub inductance_h: f32,
 
     /// Maximum mechanical RPM for the spin-up ramp. With `v_target > 0`
     /// the ramp usually stops earlier (see below); this is the hard cap.
@@ -318,14 +334,22 @@ impl Default for FluxLinkageParams {
         Self {
             motor_size: MotorSize::Medium,
             resistance_ohm: 0.0,
+            inductance_h: 0.0,
             // Generous cap: with v_target set, the voltage target normally
             // ends the ramp well before this speed is reached.
             spin_rpm: 1500.0,
             current_a: 2.0,
             v_target: 0.0,
             ramp_time_ms: 2000,
-            settle_time_ms: 1000,
-            num_samples: 200,
+            // In open-loop drive the rotor hunts around the synchronous
+            // point with a decay time of ~2J/b — seconds for high-inertia
+            // low-friction motors. Averaging the e⃗ components over an
+            // oscillating load angle shrinks |e⃗| (cos factor), biasing λ
+            // low (−12% on an IPM traction sim at 1 s/100 ms). VESC settles
+            // 1 s and then averages for 10 s; 3 s + a 1 s window gets within
+            // ~2% at a fraction of that.
+            settle_time_ms: 3000,
+            num_samples: 2000,
             pole_pairs: 7,
             min_coast_omega_e: 50.0,
         }
