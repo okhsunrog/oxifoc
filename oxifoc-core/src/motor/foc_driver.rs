@@ -15,6 +15,7 @@ use crate::foc::phase::{PhaseInput, PhaseProvider};
 use crate::foc::pwm::{PhasePwm, PhaseState, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::{LibmSinCos, SinCos};
+use crate::motor::failsafe::{FailsafeAction, FailsafeConfig, FailsafeController, FailsafePolicy};
 use crate::motor::six_step;
 
 // Re-export ControlMode from types (single source of truth)
@@ -227,6 +228,19 @@ where
     /// period's middle). Advance the Park angle by vel·dt·k so the vector
     /// lands where the rotor will be. 0 = off.
     phase_advance_cycles: f32,
+    /// Tick (in the ISR `now_ticks` domain) of the last fresh setpoint drained
+    /// from the command channel. `None` until the first command. The
+    /// command-staleness deadman compares `now_ticks - last_cmd_tick` against
+    /// `failsafe_cfg.staleness_timeout_us`.
+    last_cmd_tick: Option<u64>,
+    /// Cached failsafe tuning (timeout + reaction policy). Host-tunable.
+    failsafe_cfg: FailsafeConfig,
+    /// Self-contained failsafe sequence, armed when the deadman/link-loss
+    /// fires, stepped every cycle until it cuts PWM.
+    failsafe_ctrl: FailsafeController,
+    /// Over-voltage trip (V) for the proactive regen-brake derate (0 = off,
+    /// rely on the OV fault backstop). Set from the board config at boot.
+    ov_threshold_v: f32,
 }
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
@@ -265,6 +279,10 @@ where
             v_alpha_prev: 0.0,
             v_beta_prev: 0.0,
             phase_advance_cycles: DEFAULT_PHASE_ADVANCE_CYCLES,
+            last_cmd_tick: None,
+            failsafe_cfg: FailsafeConfig::default(),
+            failsafe_ctrl: FailsafeController::new(),
+            ov_threshold_v: 0.0,
         }
     }
 
@@ -319,11 +337,98 @@ where
         &self.current_limits
     }
 
+    /// Cache the failsafe tuning (deadman timeout + reaction policy + brake
+    /// params). Sane values only — garbage is ignored so a bad config can't
+    /// disable the deadman or the brake.
+    pub fn set_failsafe(&mut self, cfg: FailsafeConfig) {
+        if cfg.is_sane() {
+            self.failsafe_cfg = cfg;
+        }
+    }
+
+    /// Active failsafe config.
+    pub fn failsafe_config(&self) -> FailsafeConfig {
+        self.failsafe_cfg
+    }
+
+    /// Set the over-voltage trip (V) used for the proactive regen-brake
+    /// derate (0 = off → rely on the OV fault backstop). From the board
+    /// config at boot.
+    pub fn set_ov_threshold(&mut self, volts: f32) {
+        self.ov_threshold_v = if volts.is_finite() && volts > 0.0 {
+            volts
+        } else {
+            0.0
+        };
+    }
+
+    /// Stamp a fresh setpoint arrival (called from the ISR when a `SetMode`
+    /// is drained). The deadman's "positive affirmation".
+    pub fn note_command_tick(&mut self, now_ticks: u64) {
+        self.last_cmd_tick = Some(now_ticks);
+    }
+
+    /// Whether the command link has gone stale while the motor is running —
+    /// the deadman trigger. False while Stopped/Coast (nothing to fail safe
+    /// toward) or while the failsafe already runs.
+    pub fn deadman_expired(&self, now_ticks: u64) -> bool {
+        if matches!(self.mode, ControlMode::Stopped | ControlMode::Coast) {
+            return false;
+        }
+        if self.failsafe_ctrl.is_active() {
+            return false;
+        }
+        match self.last_cmd_tick {
+            // Running implies a SetMode was drained this-or-an-earlier cycle
+            // (which stamps), so this arm is effectively unreachable; treat a
+            // missing stamp as not-stale (defensive).
+            None => false,
+            Some(t) => now_ticks.wrapping_sub(t) > self.failsafe_cfg.staleness_timeout_us,
+        }
+    }
+
+    /// Arm the failsafe sequence (deadman or link-loss). Idempotent. Falls
+    /// back to Coast when the current sensor isn't calibrated — the brake
+    /// needs the current loop, which refuses to run uncalibrated.
+    pub fn enter_failsafe(&mut self) {
+        if self.failsafe_ctrl.is_active() {
+            return;
+        }
+        let policy = if self.current_sensor.is_calibrated() {
+            self.failsafe_cfg.policy
+        } else {
+            FailsafePolicy::Coast
+        };
+        // Bumpless: seed the ramp from the q-current currently commanded.
+        let current_iq = match self.mode {
+            ControlMode::CurrentControl { iq_target, .. } => iq_target,
+            _ => 0.0,
+        };
+        self.failsafe_ctrl.arm(current_iq, policy);
+    }
+
+    /// Clear the failsafe sequence (a fresh command re-armed control, or a
+    /// fault took over).
+    pub fn failsafe_reset(&mut self) {
+        self.failsafe_ctrl.reset();
+    }
+
+    /// Whether the failsafe is currently carrying the motor.
+    pub fn failsafe_active(&self) -> bool {
+        self.failsafe_ctrl.is_active()
+    }
+
     /// Set control mode
     ///
     /// When leaving SixStep mode, re-enables all PWM channels that may
     /// have been disabled (floated) during six-step commutation.
     pub fn set_mode(&mut self, mode: ControlMode) {
+        // Any explicit mode set is an authoritative override: a fresh host
+        // command (re-arm after link loss) or a fault-stop both cancel an
+        // in-progress failsafe brake. (The failsafe's own terminal Stop sets
+        // `self.mode` directly, not through here, so it doesn't self-cancel.)
+        self.failsafe_ctrl.reset();
+
         let was_stopped = matches!(self.mode, ControlMode::Stopped);
         let will_be_active = !matches!(mode, ControlMode::Stopped);
 
@@ -383,6 +488,11 @@ where
     /// * `Err(&str)` - Error message if sensors not ready or overcurrent detected
     pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, &'static str> {
         let dt = self.dt;
+        // Failsafe overrides the commanded mode while it runs (ramp-down /
+        // regen-brake / coast), then cuts PWM and clears itself.
+        if self.failsafe_ctrl.is_active() {
+            return self.step_failsafe(dt, now_ticks);
+        }
         match self.mode {
             ControlMode::Stopped => {
                 // Safe-off: all low-side ON (brake) or all OFF depending on
@@ -428,6 +538,39 @@ where
                 Ok(FocOutput::default())
             }
             ControlMode::SixStep { duty } => self.step_six_step(duty, dt, now_ticks),
+        }
+    }
+
+    /// Run one cycle of the active failsafe sequence (see
+    /// [`crate::motor::failsafe`]). `Drive` actions are routed back through
+    /// the normal current-control path so the current-limit clamp and the
+    /// measured-overcurrent trip still apply — the brake never bypasses
+    /// protection. The terminal `Stop` cuts PWM and clears the controller.
+    fn step_failsafe(&mut self, dt: f32, now_ticks: u64) -> Result<FocOutput, &'static str> {
+        let omega_e = self.phase.get().velocity;
+        let angle_trustworthy = self.phase.angle_trustworthy();
+        let action = self.failsafe_ctrl.step(
+            omega_e,
+            dt,
+            &self.failsafe_cfg,
+            self.current_limits.max_current_a,
+            self.vbus,
+            self.ov_threshold_v,
+            angle_trustworthy,
+        );
+        match action {
+            FailsafeAction::Drive {
+                id_target,
+                iq_target,
+            } => self.step_current_control(iq_target, id_target, dt, now_ticks),
+            FailsafeAction::Stop => {
+                self.pwm.disable();
+                self.controller.reset();
+                self.mode = ControlMode::Stopped;
+                self.failsafe_ctrl.reset();
+                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
+                Ok(FocOutput::default())
+            }
         }
     }
 
@@ -1036,6 +1179,74 @@ mod tests {
         );
     }
 
+    /// Link loss must route through the configured failsafe policy (arm the
+    /// controller), not the legacy instant hard-Stop — `process_commands`
+    /// forces this whenever `link_active` is false and the motor is running.
+    #[test]
+    #[cfg(feature = "runtime")]
+    fn link_loss_arms_failsafe_policy() {
+        let _serial = cmd_channel_lock();
+        use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
+        use crate::foc::phase::PhaseManager;
+        use crate::foc::trig::LibmSinCos;
+        use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
+        use crate::state::{CMD_CHANNEL, DriverCommand, MotorControlState, process_commands};
+        use core::cell::RefCell;
+        use critical_section::Mutex as CriticalSectionMutex;
+
+        #[derive(Clone, Copy, PartialEq)]
+        struct TestFault;
+        impl PlatformFault for TestFault {
+            fn category(&self) -> FaultCategory {
+                FaultCategory::OverCurrent
+            }
+            fn details(&self) -> heapless::String<128> {
+                heapless::String::new()
+            }
+            fn is_recoverable(&self) -> bool {
+                false
+            }
+            fn is_critical(&self) -> bool {
+                true
+            }
+        }
+
+        let state: CriticalSectionMutex<RefCell<MotorControlState>> =
+            CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        let registry: FaultRegistry<TestFault> = FaultRegistry::new();
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        driver.set_failsafe(FailsafeConfig {
+            policy: FailsafePolicy::ControlledStop,
+            ..FailsafeConfig::default()
+        });
+
+        // Link up, start running.
+        critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+        let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+            iq_target: 2.0,
+            id_target: 0.0,
+        }));
+        process_commands(&state, &mut driver, &registry);
+        assert!(!driver.failsafe_active());
+
+        // Link drops → next drain arms the failsafe controller (not a hard Stop).
+        critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_inactive());
+        process_commands(&state, &mut driver, &registry);
+        assert!(
+            driver.failsafe_active(),
+            "link loss must arm the configured failsafe policy"
+        );
+    }
+
     #[test]
     fn config_limits_clamp_to_hardware_ceiling() {
         // Stored config must never raise limits above the board's hardware
@@ -1215,5 +1426,140 @@ mod tests {
             "injection moved the rotor: {} rad",
             out.angle_rad
         );
+    }
+
+    /// The ISR-resident deadman: a running driver with no fresh setpoint for
+    /// longer than the staleness timeout arms the failsafe; a fresh
+    /// `note_command_tick` (and `set_mode`) re-arms normal control.
+    #[test]
+    fn deadman_arms_failsafe_on_stale_command() {
+        use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
+
+        let foc = FocController::<SvpwmModulator, crate::foc::trig::LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            crate::foc::phase::PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        driver.set_failsafe(FailsafeConfig {
+            policy: FailsafePolicy::Coast,
+            staleness_timeout_us: 1_000, // 1 ms
+            ..FailsafeConfig::default()
+        });
+
+        // Stopped: deadman never fires, however stale.
+        assert!(!driver.deadman_expired(1_000_000));
+
+        // Running + affirmed: not stale yet.
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 2.0,
+            id_target: 0.0,
+        });
+        driver.note_command_tick(0);
+        assert!(!driver.deadman_expired(500));
+        assert!(!driver.failsafe_active());
+
+        // Past the timeout with no fresh command → arm.
+        assert!(driver.deadman_expired(2_000));
+        driver.enter_failsafe();
+        assert!(driver.failsafe_active());
+
+        // A fresh command re-arms control: set_mode clears the failsafe, and
+        // the new stamp un-stales the deadman.
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 2.0,
+            id_target: 0.0,
+        });
+        driver.note_command_tick(2_000);
+        assert!(!driver.failsafe_active());
+        assert!(!driver.deadman_expired(2_500));
+    }
+
+    /// Closed-loop: spin a VirtualMotor up on Hall, stop affirming, and the
+    /// ControlledStop policy must regen-brake it to a near standstill and end
+    /// Stopped. Drives the failsafe through the real current-control path.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn controlled_stop_brakes_spinning_motor_to_standstill() {
+        use crate::foc::hall_sensor::HallSensor;
+        use crate::foc::phase::PhaseManager;
+        use crate::foc::trig::LibmSinCos;
+        use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
+        use crate::virtual_motor::{MotorParams, VirtualMotor};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        // Light rotor + some friction so it both spins up and brakes quickly.
+        let params = MotorParams {
+            friction_b: 2e-3,
+            ..MotorParams::default()
+        };
+        let mut motor = VirtualMotor::new(params);
+
+        // Prime the hall estimator with the initial rotor state.
+        let mut out = motor.step(0.0, 0.0, 0.0, DT);
+        let mut hall = HallSensor::new(1_000_000); // µs timebase
+        hall.update(out.hall_state, 0);
+        let mut last_hall = out.hall_state;
+
+        let mgr = PhaseManager::with_hall(hall); // default source = Hall
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            24.0,
+        );
+        let mut driver = FocDriver::new(foc, MockPwm { duties: [0; 3] }, MockCurrentSensor { currents: (0.0, 0.0, 0.0) }, mgr, DT);
+        driver.set_current_limits(CurrentLimits::from_max_current(40.0));
+        driver.set_failsafe(FailsafeConfig {
+            policy: FailsafePolicy::ControlledStop,
+            staleness_timeout_us: 5_000,
+            brake_current_a: 20.0,
+            ramp_s: 0.02,
+            brake_time_s: 2.0,
+            standstill_rad_s: 20.0,
+        });
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 3.0,
+            id_target: 0.0,
+        });
+
+        const STOP_AFFIRMING_AT: u64 = 30_000; // 1.5 s of drive, then go silent
+        let mut peak_omega = 0.0f32;
+        for step in 1..70_000u64 {
+            let now = step * 50; // µs
+
+            if out.hall_state != last_hall {
+                driver.phase_mut().hall_mut().update(out.hall_state, now);
+                last_hall = out.hall_state;
+            }
+            driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+
+            // Emulate run_foc_cycle's deadman (host affirms, then stops).
+            if step < STOP_AFFIRMING_AT {
+                driver.note_command_tick(now);
+            }
+            if driver.deadman_expired(now) {
+                driver.enter_failsafe();
+            }
+
+            let telem = driver.step(now).unwrap_or_default();
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+
+            if step < STOP_AFFIRMING_AT {
+                peak_omega = peak_omega.max(out.omega_e.abs());
+            }
+        }
+
+        assert!(peak_omega > 50.0, "motor should have spun up, peak ωe = {peak_omega}");
+        assert!(
+            out.omega_e.abs() < 25.0,
+            "failsafe must brake to ~standstill, ωe = {}",
+            out.omega_e
+        );
+        assert_eq!(driver.mode(), ControlMode::Stopped, "ends Stopped after the brake");
+        assert!(!driver.failsafe_active(), "failsafe cleared at the terminal");
     }
 }

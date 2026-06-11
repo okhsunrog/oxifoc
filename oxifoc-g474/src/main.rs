@@ -49,6 +49,7 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
         pwm_config: None,
         pi_gains: None,
         hall_tuning: None,
+        failsafe: None,
     },
 ));
 

@@ -41,6 +41,7 @@ pub async fn storage_worker() {
                     ConfigPayload::PwmConfig(v) => storage.store_item(&mut buf, &key, &v).await,
                     ConfigPayload::PiGains(v) => storage.store_item(&mut buf, &key, &v).await,
                     ConfigPayload::HallTuning(v) => storage.store_item(&mut buf, &key, &v).await,
+                    ConfigPayload::Failsafe(v) => storage.store_item(&mut buf, &key, &v).await,
                 };
                 match result {
                     Ok(_) => true,

@@ -128,6 +128,13 @@ pub async fn init(
         BOARD.max_phase_current_a,
     ));
 
+    // Failsafe: command-staleness deadman + reaction policy from stored config
+    // (or board defaults); the OV trip feeds the regen-brake derate.
+    foc_driver.set_failsafe(oxifoc_core::motor::failsafe::FailsafeConfig::from_stored(
+        config.failsafe.as_ref(),
+    ));
+    foc_driver.set_ov_threshold(BOARD.max_vbus_mv as f32 / 1000.0);
+
     // Allow ADC injected conversions to start firing before zero-current calibration.
     Timer::after(Duration::from_millis(10)).await;
     foc_driver.current_sensor_mut().calibrate().await;

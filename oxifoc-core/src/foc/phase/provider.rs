@@ -88,4 +88,14 @@ pub trait PhaseProvider {
     fn request_source(&mut self, _source: super::source::PhaseSource) -> bool {
         false
     }
+
+    /// Whether the angle estimate can be trusted down to (near) standstill.
+    ///
+    /// Used by the failsafe regen-brake, which must not commutate blind: a
+    /// hardware sensor tracks the rotor to a full stop, but a pure back-EMF
+    /// observer loses lock below its speed floor, so braking on it near zero
+    /// speed would mis-commutate. Default `true` (direct-sensor providers).
+    fn angle_trustworthy(&self) -> bool {
+        true
+    }
 }

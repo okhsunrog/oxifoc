@@ -499,6 +499,7 @@ mod config_types {
         PwmConfig,
         PiGains,
         HallTuning,
+        Failsafe,
     }
 
     /// Config write payload — one variant per group
@@ -515,6 +516,8 @@ mod config_types {
         HallCalibration(crate::storage::HallCalibrationConfig),
         /// Current-sensor DC offsets
         DcOffsets(crate::storage::DcOffsetsConfig),
+        /// Command-staleness deadman + failsafe policy
+        Failsafe(crate::storage::FailsafeConfigStored),
     }
 
     /// Configuration response
@@ -539,6 +542,8 @@ mod config_types {
         HallCalibration(crate::storage::HallCalibrationConfig),
         /// DC offsets
         DcOffsets(crate::storage::DcOffsetsConfig),
+        /// Failsafe (deadman + policy)
+        Failsafe(crate::storage::FailsafeConfigStored),
         /// Requested group has no stored value
         NotFound,
         /// Flash operation failed

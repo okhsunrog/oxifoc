@@ -39,7 +39,13 @@ use crate::foc::phase::PhaseSource;
 /// Liveness timeout in milliseconds for all ergot transports.
 /// If no frames are received within this period, the interface transitions
 /// to Inactive (COBS streams) or Down (UDP).
-pub const LIVENESS_TIMEOUT_MS: u64 = 5000;
+///
+/// The ISR-resident command-staleness deadman (≈150 ms, transport-agnostic)
+/// is the real fast safety net now, so this transport-level liveness only
+/// needs to be tight enough to drop a dead link reasonably; 1 s is the
+/// conservative interim (500 ms risks BLE flapping — this constant is shared
+/// across all transports). See docs/safety.md (Layer 1 vs Layer 2).
+pub const LIVENESS_TIMEOUT_MS: u64 = 1000;
 
 // ============================================================================
 // Topic Definitions (push-based streaming)

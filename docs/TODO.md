@@ -9,16 +9,21 @@ actionable is collected here.
 
 ## Safety
 
-Failsafe-layer *design* and rationale live in [safety.md](safety.md); the
-remaining work:
+Failsafe-layer *design* and rationale live in [safety.md](safety.md).
 
-- [ ] **Layer 2: ISR command-staleness deadman** + configurable failsafe mode.
-  The only link-loss gate today is async-executor-dependent and 3–5 s
-  ([review.md](review.md) §1, §3). Stamp `last_cmd_tick` in the ISR
-  `CMD_CHANNEL` drain; force a self-contained failsafe mode past a small
-  threshold.
-- [ ] Shorten control-link liveness timeout (interim, until Layer 2).
-- [ ] Once Layer 2 exists, fold/remove the Layer 1 `link_active` gate.
+- [x] **Layer 2: ISR command-staleness deadman + configurable failsafe**
+  (2026-06-11). `FocDriver` stamps `last_cmd_tick` on every drained `SetMode`;
+  `run_foc_cycle` arms a self-contained failsafe past `staleness_timeout`
+  (default 150 ms), ISR-resident so it survives an executor hang. Policy
+  (Coast / RampToZero / ControlledStop-regen-brake-to-standstill) is
+  host-configurable (`FailsafeConfigStored`, ConfigKey 9). Host re-affirms the
+  active setpoint every 50 ms (`AFFIRM_POLICY`, no retry). Liveness shortened
+  5 s → 1 s; the Layer-1 `link_active` gate now routes through the same
+  failsafe policy. `oxifoc-core/src/motor/failsafe.rs` + closed-loop test.
+- [ ] **Bench-tune the regen-brake** on real hardware: `brake_current_a`,
+  `standstill_rad_s`, and the low-speed coast floor (sensorless velocity is
+  unreliable near zero — Hall brakes to a stop, observer-only to its floor
+  then coasts). Confirm no OV trip on the bus during regen.
 - [ ] Integrating current/voltage fault detector (replace the single-sample
   trip — nuisance-trips on regen/EMI); signed open-loop override
   (direction = sign of last velocity). [review.md §3]

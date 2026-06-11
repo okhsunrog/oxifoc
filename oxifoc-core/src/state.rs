@@ -43,6 +43,8 @@ pub enum DriverCommand {
     SetDecoupling(crate::foc::controller::Decoupling),
     /// Switch the angle source (hall / observer / HFI / crossovers)
     SetPhaseSource(crate::foc::phase::PhaseSource),
+    /// Apply failsafe tuning (deadman timeout + reaction policy + brake params)
+    SetFailsafe(crate::motor::failsafe::FailsafeConfig),
 }
 
 impl DriverCommand {
@@ -61,6 +63,7 @@ impl DriverCommand {
             }
             DriverCommand::SetDecoupling(d) => d.is_valid(),
             DriverCommand::SetPhaseSource(source) => source.is_finite(),
+            DriverCommand::SetFailsafe(cfg) => cfg.is_sane(),
         }
     }
 }
@@ -258,6 +261,28 @@ where
     S: SinCos,
     F: crate::foc::fault::PlatformFault,
 {
+    let mut saw_set_mode = false;
+    process_commands_inner(state_mutex, foc, fault_registry, &mut saw_set_mode)
+}
+
+/// Like [`process_commands`] but reports whether a `SetMode` was drained on
+/// this call via `saw_set_mode` — the command-staleness deadman's "fresh
+/// affirmation" signal (set even for a `SetMode` the gates reject: a rejected
+/// command still proves the host is alive). [`run_foc_cycle`] uses this entry
+/// point; external callers and tests keep using [`process_commands`].
+pub fn process_commands_inner<P, C, Ph, S, F>(
+    state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
+    foc: &mut FocDriver<P, C, Ph, S>,
+    fault_registry: &crate::foc::fault::FaultRegistry<F>,
+    saw_set_mode: &mut bool,
+) -> ControlMode
+where
+    P: PhasePwm,
+    C: CurrentSensor,
+    Ph: PhaseProvider,
+    S: SinCos,
+    F: crate::foc::fault::PlatformFault,
+{
     // Process all pending commands
     while let Ok(cmd) = CMD_CHANNEL.try_receive() {
         // NaN/inf payloads die here, not in the PI loop.
@@ -267,7 +292,12 @@ where
             continue;
         }
         let mode = match cmd {
-            DriverCommand::SetMode(mode) => mode,
+            DriverCommand::SetMode(mode) => {
+                // Fresh setpoint from the host — feed the deadman. Set even if
+                // the gates below reject the mode: liveness ≠ acceptance.
+                *saw_set_mode = true;
+                mode
+            }
             DriverCommand::SetCurrentLimits(limits) => {
                 foc.set_current_limits(limits);
                 continue;
@@ -294,6 +324,11 @@ where
                     #[cfg(feature = "defmt")]
                     defmt::warn!("Phase source change rejected");
                 }
+                continue;
+            }
+            DriverCommand::SetFailsafe(cfg) => {
+                // Config, not a setpoint — does NOT affirm the deadman.
+                foc.set_failsafe(cfg);
                 continue;
             }
         };
@@ -341,13 +376,16 @@ where
     }
 
     // Fail-safe: while the link is inactive (liveness timed out / host gone),
-    // force Stopped regardless of the last commanded mode. After reconnect the
-    // host must send a fresh command to run again. This runs in the ISR, so it
-    // does not depend on any async task to react to link loss.
+    // bring the motor down via the configured failsafe policy regardless of
+    // the last commanded mode (Coast policy reproduces the legacy hard Stop;
+    // ControlledStop regen-brakes the board to rest). Runs in the ISR, so it
+    // doesn't depend on any async task to react to link loss; the faster
+    // command-staleness deadman in `run_foc_cycle` arms the same path. After
+    // reconnect the host must send a fresh command to run again.
     let link_active = critical_section::with(|cs| state_mutex.borrow(cs).borrow().link_active);
     if !link_active && foc.mode() != ControlMode::Stopped {
         critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
-        foc.set_mode(ControlMode::Stopped);
+        foc.enter_failsafe();
     }
 
     foc.mode()
@@ -378,7 +416,20 @@ where
     driver.set_vbus(vbus_v);
 
     let prev_mode = driver.mode();
-    let mode = process_commands(state_mutex, driver, fault_registry);
+    let mut saw_set_mode = false;
+    let mode = process_commands_inner(state_mutex, driver, fault_registry, &mut saw_set_mode);
+
+    // Command-staleness deadman (ISR-resident — survives an async-executor
+    // hang): stamp on a fresh setpoint, otherwise arm the configured failsafe
+    // once the command link goes stale while running. See docs/safety.md
+    // (Layer 2). The Layer-1 link gate inside process_commands also routes
+    // through the same failsafe path.
+    if saw_set_mode {
+        driver.note_command_tick(now_ticks);
+    }
+    if driver.deadman_expired(now_ticks) {
+        driver.enter_failsafe();
+    }
 
     // Spurious break-input trips during PWM channel enable can latch an
     // OverCurrent fault right at start (seen on G431: COMP→BKIN glitch when
@@ -396,6 +447,10 @@ where
         if mode != ControlMode::Stopped {
             driver.set_mode(ControlMode::Stopped);
         }
+        // A fault takes over from any in-progress failsafe brake (e.g. the
+        // OverVoltage that regen braking can itself raise) — drop to high-Z
+        // and don't resume braking into the same fault after it clears.
+        driver.failsafe_reset();
         return None;
     }
 
@@ -429,6 +484,7 @@ where
             if mode != ControlMode::Stopped {
                 driver.set_mode(ControlMode::Stopped);
             }
+            driver.failsafe_reset();
             None
         }
     }

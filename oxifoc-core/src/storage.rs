@@ -40,6 +40,8 @@ pub enum ConfigKey {
     PiGains = 7,
     /// Hall interpolation tuning
     HallTuning = 8,
+    /// Command-staleness deadman + failsafe policy
+    Failsafe = 9,
 }
 
 impl Key for ConfigKey {
@@ -64,6 +66,7 @@ impl Key for ConfigKey {
             6 => Self::PwmConfig,
             7 => Self::PiGains,
             8 => Self::HallTuning,
+            9 => Self::Failsafe,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -273,6 +276,44 @@ impl Default for HallTuningConfig {
     }
 }
 
+/// Command-staleness deadman + failsafe reaction (see
+/// [`crate::motor::failsafe`]). Stored in ms / u8 for compactness; the driver
+/// converts to its runtime form via `FailsafeConfig::from_stored`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct FailsafeConfigStored {
+    /// Command-staleness threshold (ms) before the failsafe arms.
+    pub staleness_timeout_ms: u32,
+    /// Reaction policy, as `FailsafePolicy as u8` (0=Coast, 1=RampToZero,
+    /// 2=ControlledStop; unknown → Coast).
+    pub policy: u8,
+    /// Regen-brake current intent (A).
+    pub brake_current_a: f32,
+    /// q-current slew time (ms).
+    pub ramp_ms: f32,
+    /// Maximum brake duration (ms).
+    pub brake_time_ms: f32,
+    /// |ω_e| (electrical rad/s) treated as stopped.
+    pub standstill_rad_s: f32,
+}
+
+impl PostcardValue<'_> for FailsafeConfigStored {}
+
+impl Default for FailsafeConfigStored {
+    /// Longboard default: brake to a controlled stop on link loss (mirrors
+    /// `FailsafeConfig::default`).
+    fn default() -> Self {
+        Self {
+            staleness_timeout_ms: 150,
+            policy: 2, // ControlledStop
+            brake_current_a: 15.0,
+            ramp_ms: 100.0,
+            brake_time_ms: 3000.0,
+            standstill_rad_s: 20.0,
+        }
+    }
+}
+
 // ============================================================================
 // Runtime Config Aggregate
 // ============================================================================
@@ -290,6 +331,7 @@ pub struct RuntimeConfig {
     pub pwm_config: Option<PwmConfigStored>,
     pub pi_gains: Option<PiGainsConfig>,
     pub hall_tuning: Option<HallTuningConfig>,
+    pub failsafe: Option<FailsafeConfigStored>,
 }
 
 // ============================================================================
@@ -318,6 +360,7 @@ pub enum ConfigPayload {
     PwmConfig(PwmConfigStored),
     PiGains(PiGainsConfig),
     HallTuning(HallTuningConfig),
+    Failsafe(FailsafeConfigStored),
 }
 
 // ============================================================================
@@ -386,6 +429,7 @@ where
                     ConfigPayload::PwmConfig(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::PiGains(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::HallTuning(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::Failsafe(v) => storage.store_item(buf, &key, &v).await,
                 };
                 if result.is_err() {
                     #[cfg(feature = "defmt")]
@@ -440,6 +484,7 @@ where
     load!(pwm_config, PwmConfig);
     load!(pi_gains, PiGains);
     load!(hall_tuning, HallTuning);
+    load!(failsafe, Failsafe);
 
     cfg
 }

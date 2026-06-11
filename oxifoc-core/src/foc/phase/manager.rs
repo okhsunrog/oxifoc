@@ -962,6 +962,31 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.set_source(source).is_ok()
     }
 
+    /// Trustworthy down to standstill when a hardware sensor backs the active
+    /// source (Hall/Encoder track to a stop), or when HFI is locked (valid at
+    /// zero speed by design). A pure back-EMF observer is only trusted while
+    /// `is_ready()` — it drops below its speed floor, so the failsafe brake
+    /// coasts the last bit instead of commutating blind.
+    fn angle_trustworthy(&self) -> bool {
+        match self.source {
+            PhaseSource::Hall
+            | PhaseSource::Encoder
+            | PhaseSource::Manual
+            | PhaseSource::OpenLoop
+            | PhaseSource::HallToObserver { .. }
+            | PhaseSource::HallWithFallback { .. }
+            | PhaseSource::EncoderToObserver { .. }
+            | PhaseSource::HfiToHall { .. }
+            | PhaseSource::HfiToEncoder { .. } => true,
+            PhaseSource::Observer => self.observer.is_ready(),
+            PhaseSource::Hfi
+            | PhaseSource::HfiToObserver { .. }
+            | PhaseSource::HfiToObserverVolts { .. } => {
+                self.hfi.as_ref().is_some_and(|h| h.is_ready()) || self.observer.is_ready()
+            }
+        }
+    }
+
     fn injection(&self) -> (f32, f32) {
         if self.hfi_injection_active()
             && let Some(hfi) = &self.hfi

@@ -242,6 +242,10 @@ pub async fn config_server<NS, const N: usize>(
                                     Some(v) => ConfigResponse::HallTuning(v),
                                     None => ConfigResponse::NotFound,
                                 },
+                                ConfigGroupId::Failsafe => match cfg.failsafe {
+                                    Some(v) => ConfigResponse::Failsafe(v),
+                                    None => ConfigResponse::NotFound,
+                                },
                             }
                         }
                         ConfigRequest::Write(_) | ConfigRequest::ResetAll if motor_running => {
@@ -273,6 +277,9 @@ pub async fn config_server<NS, const N: usize>(
                                 ),
                                 ConfigWrite::DcOffsets(v) => {
                                     (ConfigKey::DcOffsets, ConfigPayload::DcOffsets(v))
+                                }
+                                ConfigWrite::Failsafe(v) => {
+                                    (ConfigKey::Failsafe, ConfigPayload::Failsafe(v))
                                 }
                             };
                             // TOCTOU guard: arm the pending flag, then
@@ -331,6 +338,7 @@ pub async fn config_server<NS, const N: usize>(
                                     ConfigWrite::DcOffsets(v) => {
                                         cfg.dc_offsets = Some(v.clone())
                                     }
+                                    ConfigWrite::Failsafe(v) => cfg.failsafe = Some(v.clone()),
                                 }
                             });
                             // Make the write take effect on the live driver,
@@ -381,6 +389,16 @@ pub async fn config_server<NS, const N: usize>(
                                                 lq_h: v.inductance_q_h,
                                                 flux_linkage_wb: v.flux_linkage_wb,
                                             },
+                                        ),
+                                    );
+                                }
+                                // Failsafe tuning applies to the live driver.
+                                ConfigWrite::Failsafe(v) => {
+                                    let _ = CMD_CHANNEL.try_send(
+                                        crate::state::DriverCommand::SetFailsafe(
+                                            crate::motor::failsafe::FailsafeConfig::from_stored(Some(
+                                                &v,
+                                            )),
                                         ),
                                     );
                                 }

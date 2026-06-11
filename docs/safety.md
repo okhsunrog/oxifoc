@@ -29,8 +29,8 @@ Status legend: **[done]** implemented · **[planned]** not yet · **[idea]** to 
 
 | Layer | Failure it catches | Mechanism | Reaction time | Status |
 |------|--------------------|-----------|---------------|--------|
-| 1. Link gate | Host disconnected / link silent | ergot liveness → `state_notify` → `state_monitor` clears `link_active` → FOC forces `Stopped` | liveness timeout (3–5 s today) | **[done]** |
-| 2. ISR command-staleness deadman | Host alive but not commanding; **async executor hung** | Stamp `last_cmd_tick` in ISR when draining `CMD_CHANNEL`; if `now - last_cmd_tick > thr` → configurable failsafe mode | ~ multiple of command period (e.g. 60–100 ms) | **[planned]** |
+| 1. Link gate | Host disconnected / link silent | ergot liveness → `state_notify` → `state_monitor` clears `link_active` → FOC routes through the failsafe policy | liveness timeout (1 s) | **[done]** |
+| 2. ISR command-staleness deadman | Host alive but not commanding; **async executor hung** | Stamp `last_cmd_tick` in ISR when draining `CMD_CHANNEL`; if `now - last_cmd_tick > thr` → configurable failsafe mode | ~150 ms (configurable) | **[done]** |
 | 3. Panic/HardFault gate kill | **Firmware panicked / hard-faulted** | Custom handlers clear `TIM1 BDTR.MOE` (+ EN_GATE low on F405) *before* any reporting (`safety.rs` per board) | immediate | **[done]** |
 | 4. Independent watchdog (IWDG) | **FOC ISR itself stopped** (lockup, clock fault, priority lock) | IWDG petted from the FOC ISR; if even the ISR stops → MCU reset → PWM goes high-Z/off | 100 ms (G431) / 1 s (F405) | **[done]** (G474 pending — FOC ISR dormant) |
 
@@ -50,20 +50,36 @@ calls `MotorControlState::set_link_inactive()` → `process_commands`
 while `!link_active`. After reconnect the host must send a fresh command to run
 again.
 
-Caveat (today): liveness timeout is 3–5 s, so up to several seconds of
-uncommanded running after a disconnect. Shorten the control-link liveness, or
-rely on Layer 2's tighter threshold once it lands.
+Now that Layer 2 exists, this gate **routes through the same failsafe policy**
+(`process_commands` → `FocDriver::enter_failsafe`) rather than a hard `Stopped`,
+and the liveness timeout was shortened 5 s → 1 s
+([`LIVENESS_TIMEOUT_MS`](../oxifoc-core/src/icd.rs)). Layer 2 is the fast net.
 
-### Layer 2 — ISR command-staleness deadman (planned)
+### Layer 2 — ISR command-staleness deadman (implemented 2026-06-11)
 
-- Stamp `last_cmd_tick = now` inside the ISR `CMD_CHANNEL` drain (no
-  cross-context atomic needed — the check is ISR-local).
-- Threshold = a small multiple of the host's command period, **not** the
-  liveness timeout. This is the fast safety reaction.
-- The failsafe must be a **self-contained control mode** the FOC runs every
-  cycle without further input (ramp current to zero / configurable regen brake
-  to standstill), not a one-shot `Stopped` command.
-- Behaviour configurable (coast vs smooth brake vs hold).
+`FocDriver` carries `last_cmd_tick`; `process_commands` stamps it on every
+drained `SetMode` (the host re-affirms the active setpoint every 50 ms —
+`AFFIRM_POLICY` in host-lib, fire-and-forget so a dying link isn't masked by
+retries). `run_foc_cycle` checks `now_ticks - last_cmd_tick > staleness_timeout`
+(default 150 ms) while running and, if stale, calls `enter_failsafe()`. It is
+ISR-resident (`now_ticks` is the 1 MHz hall capture timer), so it survives an
+async-executor hang where Layer 1 can't fire.
+
+The failsafe is a self-contained controller
+([`motor/failsafe.rs`](../oxifoc-core/src/motor/failsafe.rs)) run every cycle
+with no further input, host-configurable via `FailsafeConfigStored` (ConfigKey
+9):
+
+- **Coast** — cut PWM (high-Z / free-wheel); reproduces the legacy hard Stop.
+- **RampToZero** — slew the q-current to zero, then coast.
+- **ControlledStop** — ramp to zero, then **regen-brake to a standstill**
+  (unidirectional, capped, OV-derated) so the board stops on link loss. Brakes
+  to a full stop on Hall (tracks to zero); sensorless-only it brakes to the
+  observer floor then coasts (the velocity estimate is unreliable near zero).
+  Aborts to high-Z if regen pushes the bus into the OverVoltage fault.
+
+Open: bench-tune the brake constants and confirm no OV trip under regen (see
+[TODO.md](TODO.md#safety)).
 
 ### Layer 3 — panic/HardFault gate kill (implemented)
 
@@ -177,9 +193,10 @@ of stop.
 
 ## Open questions / TODO
 
-Done: Layer 3/4 (panic/HardFault gate kill + IWDG petted from the FOC ISR).
+Done: Layers 1–4 (link gate, ISR command-staleness deadman + configurable
+failsafe, panic/HardFault gate kill, IWDG from the FOC ISR).
 
-The remaining actionable items (Layer 2 deadman, liveness shortening, G474
-IWDG, flying-restart, post-watchdog policy, idempotency helpers) live in the
-single backlog — [TODO.md](TODO.md#safety). This file keeps the failsafe
-*design*; what's still to build is tracked there.
+The remaining actionable items (bench-tune the regen-brake, G474 IWDG,
+flying-restart, post-watchdog policy, idempotency helpers, integrating fault
+detector) live in the single backlog — [TODO.md](TODO.md#safety). This file
+keeps the failsafe *design*; what's still to build is tracked there.
