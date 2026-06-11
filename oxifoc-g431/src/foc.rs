@@ -185,10 +185,8 @@ fn ADC1_2() {
     {
         let sr = embassy_stm32::pac::TIM1.sr().read();
         if sr.bif(0) {
-            // Clear break interrupt flag
-            embassy_stm32::pac::TIM1
-                .sr()
-                .modify(|w| w.set_bif(0, false));
+            // Clear the break flag (race-free rc_w0 complement write).
+            oxifoc_core::clear_rc_w0!(embassy_stm32::pac::TIM1.sr(), |w| w.set_bif(0, false));
             if !FAULT_REGISTRY.any() {
                 defmt::error!("HW overcurrent FAULT: COMP triggered TIM1 BKIN");
             }

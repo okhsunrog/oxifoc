@@ -81,6 +81,44 @@ pub mod timer;
 /// High-level motor driver combining FOC with sensors and PWM
 pub mod motor;
 
+/// Race-free clear of selected **rc_w0** status flags (STM32 `TIMx_SR` and
+/// friends: "write 0 to clear, writing 1 has no effect").
+///
+/// Starts from an all-ones template and lets the closure body zero exactly
+/// the flags to clear, then performs a single volatile write — the written
+/// value is a compile-time constant (`mvn`+`str` on Cortex-M), so unlike
+/// `reg.modify(...)` there is no read→write window in which a flag set by
+/// hardware gets written back as 0 and silently erased. This is the same
+/// pattern as ST HAL's `SR = ~FLAG` and embassy's time driver ("RMWing
+/// won't work, they can miss interrupts", `time_driver/gp16.rs`).
+///
+/// A macro rather than a function so the fieldset type (`SrAdv`/`SrGp16`/
+/// `SrGp32`, no common raw-access trait) is inferred at the call site —
+/// and so the safe pattern has a name: the near-identical
+/// `reg.write(|w| w.set_x(false))` starts from *zeros* and clears every
+/// flag in the register.
+///
+/// **Only valid for rc_w0 registers.** On rc_w1 registers (e.g. G4 ADC ISR,
+/// "write 1 to clear") an all-ones write would clear everything — do not
+/// use this there.
+///
+/// ```ignore
+/// oxifoc_core::clear_rc_w0!(pac::TIM1.sr(), |w| w.set_bif(0, false));
+/// oxifoc_core::clear_rc_w0!(pac::TIM4.sr(), |w| {
+///     w.set_uif(false);
+///     w.set_ccof(0, false);
+/// });
+/// ```
+#[macro_export]
+macro_rules! clear_rc_w0 {
+    ($reg:expr, |$w:ident| $body:expr) => {{
+        $reg.write(|$w| {
+            $w.0 = !0;
+            $body;
+        });
+    }};
+}
+
 /// Shared types for protocol communication
 ///
 /// Contains serializable types shared between firmware and host applications:

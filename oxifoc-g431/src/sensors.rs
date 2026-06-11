@@ -63,20 +63,17 @@ pub mod hall {
         })
     }
 
-    /// Clear selected TIM4 status flags. SR is rc_w0: writing 1 leaves a
-    /// flag untouched, 0 clears it — write the complement mask (ST LL does
-    /// the same) instead of read-modify-write, which would also clear any
-    /// flag that set between the read and the write.
+    /// Clear selected TIM4 status flags (race-free rc_w0 complement write,
+    /// see [`oxifoc_core::clear_rc_w0`]).
     fn clear_flags(uif: bool, cc1of: bool) {
-        let mut v = pac::TIM4.sr().read();
-        v.0 = u32::MAX;
-        if uif {
-            v.set_uif(false);
-        }
-        if cc1of {
-            v.set_ccof(0, false);
-        }
-        pac::TIM4.sr().write_value(v);
+        oxifoc_core::clear_rc_w0!(pac::TIM4.sr(), |w| {
+            if uif {
+                w.set_uif(false);
+            }
+            if cc1of {
+                w.set_ccof(0, false);
+            }
+        });
     }
 
     /// Initialize hall acquisition: pins to TIM4 AF, XOR + capture setup.

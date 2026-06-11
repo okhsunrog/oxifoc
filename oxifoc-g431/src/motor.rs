@@ -176,13 +176,7 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         self.pwm.enable(Channel::Ch3);
         // Clear any spurious break flag from channel enable transient
         // and re-enable MOE (Master Output Enable) in case BKIN tripped.
-        // SR is rc_w0: write the complement mask (1 = leave, 0 = clear)
-        // instead of read-modify-write, which would also clear any other
-        // flag that set between the read and the write.
-        let mut sr = pac::TIM1.sr().read();
-        sr.0 = u32::MAX;
-        sr.set_bif(0, false);
-        pac::TIM1.sr().write_value(sr);
+        oxifoc_core::clear_rc_w0!(pac::TIM1.sr(), |w| w.set_bif(0, false));
         pac::TIM1.bdtr().modify(|w| w.set_moe(true));
     }
 
