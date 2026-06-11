@@ -21,6 +21,9 @@ check-host:
     cargo clippy --workspace --all-targets --quiet -- -D warnings
     echo "tests (workspace)..."
     output=$(cargo test --workspace --quiet 2>&1) || { echo "$output"; exit 1; }
+    echo "oxifoc-core without detection (gate must not rot)..."
+    cargo check -p oxifoc-core --quiet --no-default-features \
+        --features algorithms,runtime,storage,delivery,defmt,embassy,virtual-motor,std
 
 # Device firmware: fmt + clippy + build (all targets)
 check-device:

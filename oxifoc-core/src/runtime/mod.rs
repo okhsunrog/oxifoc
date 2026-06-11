@@ -25,7 +25,7 @@ pub mod streaming;
 /// Requires `delivery` (for the dedup combinator) and `storage` (to persist
 /// the Hall calibration result). Platforms provide a [`detect::DetectionBackend`]
 /// and call [`detect::detect_server`] instead of hand-rolling the serve loop.
-#[cfg(all(feature = "delivery", feature = "storage"))]
+#[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
 pub mod detect;
 
 /// UART I/O wrappers implementing embedded-io-async (requires `embassy-hal` feature)
@@ -35,5 +35,5 @@ pub mod io;
 pub use servers::*;
 pub use streaming::*;
 
-#[cfg(all(feature = "delivery", feature = "storage"))]
+#[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
 pub use detect::{DetectionBackend, detect_server};

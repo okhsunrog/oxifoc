@@ -218,6 +218,7 @@ pub fn estimate_bandwidth(inductance_h: f32, pwm_freq_hz: f32) -> f32 {
 ///
 /// # Returns
 /// Observer gain, or None if flux linkage is invalid
+#[cfg(feature = "detection")]
 pub fn calculate_observer_gain(flux_linkage_wb: f32) -> Option<f32> {
     if flux_linkage_wb <= 0.0 {
         return None;
@@ -301,6 +302,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "detection")]
     fn test_calculate_observer_gain() {
         // Must match the VESC detection-wizard formula gain = 0.5e3/λ²
         // (conf_general.c:1181) — the same one flux_linkage.rs implements.

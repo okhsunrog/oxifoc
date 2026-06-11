@@ -67,32 +67,42 @@
 pub mod types;
 
 /// Enhanced DC offset calibration for current sensors
+#[cfg(feature = "detection")]
 pub mod dc_offset;
 
 /// Flux linkage (λ) measurement via open-loop spinning
+#[cfg(feature = "detection")]
 pub mod flux_linkage;
 
 /// Inductance (Ld, Lq) measurement via HFI injection
+#[cfg(feature = "detection")]
 pub mod inductance;
 
 /// Auto PI controller tuning from measured parameters
 pub mod pi_tuning;
 
 /// Phase resistance measurement
+#[cfg(feature = "detection")]
 pub mod resistance;
 
 /// Async detection sweeps (requires platform implementation)
+#[cfg(feature = "detection")]
 pub mod sweep;
 
 /// Inductance measurement via voltage pulse (fallback for HFI)
+#[cfg(feature = "detection")]
 pub mod voltage_pulse;
 
 /// Virtual motor harness for detection testing and benchmarking
-#[cfg(all(feature = "virtual-motor", any(test, feature = "std")))]
+#[cfg(all(
+    feature = "detection",
+    feature = "virtual-motor",
+    any(test, feature = "std")
+))]
 pub mod virtual_harness;
 
 /// Embassy-based detection hardware (timer, hardware abstraction, hall reader)
-#[cfg(all(feature = "embassy", feature = "runtime"))]
+#[cfg(all(feature = "detection", feature = "embassy", feature = "runtime"))]
 pub mod embassy_hw;
 
 // Re-export commonly used types for convenience
@@ -103,7 +113,7 @@ pub use types::{
 
 /// Integration tests: feed VirtualMotor output into detection accumulators
 /// and verify the detected values match the known motor parameters.
-#[cfg(all(test, feature = "virtual-motor"))]
+#[cfg(all(test, feature = "detection", feature = "virtual-motor"))]
 mod integration_tests {
     use crate::foc::controller::FocController;
     use crate::foc::pi_controller::PIController;
