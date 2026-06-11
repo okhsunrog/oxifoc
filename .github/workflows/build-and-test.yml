@@ -79,6 +79,14 @@ jobs:
       - name: tests
         run: cargo test --workspace --locked
 
+      - name: oxifoc-core without detection (feature gate must not rot)
+        # Mirrors the check in `just check-host`. No build disables the
+        # default-on `detection` feature yet, so without this the gated-off
+        # configuration would only ever be compiled here.
+        run: >
+          cargo check -p oxifoc-core --locked --no-default-features
+          --features algorithms,runtime,storage,delivery,defmt,embassy,virtual-motor,std
+
   device:
     strategy:
       fail-fast: false
