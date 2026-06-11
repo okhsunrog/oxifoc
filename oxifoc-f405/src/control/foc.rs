@@ -231,8 +231,8 @@ fn ADC() {
         &FAULT_REGISTRY,
         F405Fault::OverTemp,
     );
-    // Motor winding NTC (PC4) — measured and telemetered since bring-up but
-    // never fault-checked; an overheating motor must trip like the FETs do.
+    // Motor winding NTC (PC4): trips OverTemp past the board's motor-temp
+    // limit, so an overheating motor faults the same way the FETs do.
     fault::check_temperature_threshold(
         motor_temp_c_x10,
         BOARD.max_motor_temp_c,
