@@ -57,7 +57,7 @@ Actionable-список ведётся в [TODO.md](TODO.md); safety-дизай�
 
 | Пункт | Где исправлено |
 |---|---|
-| TIM1 SR RMW (rc_w0) | `g431/motor.rs::enable`: complement-mask write вместо `sr().modify` (тот же паттерн, что `clear_flags` в sensors.rs) |
+| TIM1 SR RMW (rc_w0) | `g431/motor.rs::enable` + ISR в `foc.rs` (второе место нашлось при пере-ревью — вызов был разбит переносом строки и не попал под grep); теперь все 5 мест через `oxifoc_core::clear_rc_w0!`; гонка `modify` верифицирована по asm — см. [register-access.md](register-access.md) |
 | Open-loop override всегда `+52 rad/s` | `manager.rs::try_observer_fallback`: знак от последней известной скорости (`output.velocity`) |
 | Pure-Hfi без гейта resolved-polarity | iq-гейт в `foc_driver::step_current_control`: при `!angle_trustworthy()` iq=0, id и коммутация остаются (инжекция/probe держат frame, гейт самоснимается на lock). Гейтить угол в менеджере нельзя — сломал бы frame-alignment probe |
 | `has_hall()` ложно-отрицателен до первого edge | `AngleSensor::is_present()` (default true, `NoSensor`→false, `HallAngleProxy`→estimator создан); `has_hall`/`has_encoder` структурные, не «есть данные» |
