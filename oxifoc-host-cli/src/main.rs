@@ -101,6 +101,11 @@ enum Command {
     Stop,
     /// Engage the parking brake (short the windings; near-standstill only)
     Brake,
+    /// Run velocity control at the given electrical rad/s (sign = direction)
+    Velocity {
+        #[arg(allow_hyphen_values = true, help = "Target velocity, electrical rad/s")]
+        rad_s: f32,
+    },
     /// Select the angle source for commutation
     Source {
         #[arg(value_enum)]
@@ -229,6 +234,16 @@ fn main() -> Result<()> {
                 .send(HostCommand::Motor(ControlMode::Brake))
                 .context("send brake command")?;
             println!("Brake command sent (rejected by the device unless near standstill)");
+            std::thread::sleep(Duration::from_millis(800));
+        }
+        Command::Velocity { rad_s } => {
+            runtime
+                .cmd_tx
+                .send(HostCommand::Motor(ControlMode::VelocityControl {
+                    target_vel: rad_s,
+                }))
+                .context("send velocity command")?;
+            println!("Velocity command sent: {rad_s} electrical rad/s");
             std::thread::sleep(Duration::from_millis(800));
         }
         Command::Source {

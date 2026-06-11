@@ -52,6 +52,8 @@ pub enum DriverCommand {
     SetPhaseSource(crate::foc::phase::PhaseSource),
     /// Apply failsafe tuning (deadman timeout + reaction policy + brake params)
     SetFailsafe(crate::motor::failsafe::FailsafeConfig),
+    /// Apply cruise velocity-loop tuning (gains + accel limit)
+    SetVelocityConfig(crate::foc::velocity::VelocityLoopConfig),
 }
 
 impl DriverCommand {
@@ -71,6 +73,7 @@ impl DriverCommand {
             DriverCommand::SetDecoupling(d) => d.is_valid(),
             DriverCommand::SetPhaseSource(source) => source.is_finite(),
             DriverCommand::SetFailsafe(cfg) => cfg.is_sane(),
+            DriverCommand::SetVelocityConfig(cfg) => cfg.is_sane(),
         }
     }
 }
@@ -336,6 +339,11 @@ where
             DriverCommand::SetFailsafe(cfg) => {
                 // Config, not a setpoint — does NOT affirm the deadman.
                 foc.set_failsafe(cfg);
+                continue;
+            }
+            DriverCommand::SetVelocityConfig(cfg) => {
+                // Config, not a setpoint — does NOT affirm the deadman.
+                foc.set_velocity_config(cfg);
                 continue;
             }
         };

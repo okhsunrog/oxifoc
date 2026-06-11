@@ -216,6 +216,9 @@ pub mod foc {
     /// Trigonometric abstractions (SinCos trait, q1.31 helpers for CORDIC)
     pub mod trig;
 
+    /// Velocity control loop building block (slew-limited reference + PI)
+    pub mod velocity;
+
     /// Motor parameter detection (R, L, λ)
     pub mod detection;
 

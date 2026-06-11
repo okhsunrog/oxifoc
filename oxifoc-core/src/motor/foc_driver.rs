@@ -15,6 +15,7 @@ use crate::foc::phase::{PhaseInput, PhaseProvider};
 use crate::foc::pwm::{PhasePwm, PhaseState, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::{LibmSinCos, SinCos};
+use crate::foc::velocity::{VelocityLoop, VelocityLoopConfig};
 use crate::motor::failsafe::{FailsafeAction, FailsafeConfig, FailsafeController, FailsafePolicy};
 use crate::motor::six_step;
 
@@ -247,6 +248,11 @@ where
     /// Over-voltage trip (V) for the proactive regen-brake derate (0 = off,
     /// rely on the OV fault backstop). Set from the board config at boot.
     ov_threshold_v: f32,
+    /// Cruise velocity loop for `ControlMode::VelocityControl`: slew-limited
+    /// ω reference + clamped PI → iq, routed through the normal current
+    /// loop. Host-tunable (motor/load dependent); reset bumpless on mode
+    /// entry. The failsafe does NOT use this instance (own gains, planned).
+    velocity_loop: VelocityLoop,
 }
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
@@ -290,6 +296,7 @@ where
             failsafe_ctrl: FailsafeController::new(),
             failsafe_latched: false,
             ov_threshold_v: 0.0,
+            velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
         }
     }
 
@@ -356,6 +363,19 @@ where
     /// Active failsafe config.
     pub fn failsafe_config(&self) -> FailsafeConfig {
         self.failsafe_cfg
+    }
+
+    /// Tune the cruise velocity loop (gains + accel limit). Sane values
+    /// only — garbage is ignored. Takes effect immediately; the loop state
+    /// (ramp/integrator) is preserved, so retuning mid-ride is bumpy only
+    /// to the extent the gains differ.
+    pub fn set_velocity_config(&mut self, cfg: VelocityLoopConfig) {
+        self.velocity_loop.set_config(cfg);
+    }
+
+    /// Active velocity-loop tuning.
+    pub fn velocity_config(&self) -> VelocityLoopConfig {
+        self.velocity_loop.config()
     }
 
     /// Set the over-voltage trip (V) used for the proactive regen-brake
@@ -443,10 +463,12 @@ where
                 .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
         }
         // Bumpless: seed the ramp from the q-current currently commanded
-        // (OpenLoop applies its `current` as the q-target).
+        // (OpenLoop applies its `current` as the q-target; VelocityControl's
+        // last PI output is what the current loop was just driven with).
         let current_iq = match self.mode {
             ControlMode::CurrentControl { iq_target, .. } => iq_target,
             ControlMode::OpenLoop { current, .. } => current,
+            ControlMode::VelocityControl { .. } => self.velocity_loop.last_iq(),
             _ => 0.0,
         };
         self.failsafe_ctrl.arm(current_iq, policy);
@@ -505,6 +527,17 @@ where
         // Re-enable PWM outputs when leaving Stopped mode
         if was_stopped && will_be_active {
             self.pwm.enable();
+        }
+
+        // Entering velocity mode from another mode: re-arm the loop bumpless
+        // — reference ramp seeded at the measured velocity, integrator
+        // cleared. A retarget *within* velocity mode keeps the loop state
+        // (the ramp carries the reference to the new target).
+        if matches!(mode, ControlMode::VelocityControl { .. })
+            && !matches!(self.mode, ControlMode::VelocityControl { .. })
+        {
+            let omega = self.phase.get().velocity;
+            self.velocity_loop.reset(omega);
         }
 
         // Apply PI gains override if provided (detection uses this)
@@ -570,9 +603,8 @@ where
                 iq_target,
                 id_target,
             } => self.step_current_control(iq_target, id_target, dt, now_ticks),
-            ControlMode::VelocityControl { .. } => {
-                // TODO: Implement velocity PI controller
-                Err("Velocity control not implemented")
+            ControlMode::VelocityControl { target_vel } => {
+                self.step_velocity_control(target_vel, dt, now_ticks)
             }
             ControlMode::PositionControl { .. } => {
                 // TODO: Implement position PI controller
@@ -648,6 +680,28 @@ where
                 Ok(FocOutput::default())
             }
         }
+    }
+
+    /// Execute one velocity-control cycle: the cruise loop turns the ω
+    /// target into an iq command (slew-limited reference + clamped PI, see
+    /// [`crate::foc::velocity`]), routed through the normal current loop so
+    /// the current-limit clamp and overcurrent trip still apply.
+    fn step_velocity_control(
+        &mut self,
+        target_vel: f32,
+        dt: f32,
+        now_ticks: u64,
+    ) -> Result<FocOutput, &'static str> {
+        // Velocity needs a usable estimate; a source that can't track (e.g.
+        // observer below its floor) makes the loop integrate garbage.
+        if !self.phase.angle_trustworthy() {
+            return Err("Velocity control: angle source not trustworthy");
+        }
+        let omega = self.phase.get().velocity;
+        let iq_target =
+            self.velocity_loop
+                .step(target_vel, omega, self.current_limits.max_current_a, dt);
+        self.step_current_control(iq_target, 0.0, dt, now_ticks)
     }
 
     /// Execute current control step
@@ -1886,6 +1940,88 @@ mod tests {
         assert!(
             !driver.failsafe_active(),
             "failsafe cleared at the terminal"
+        );
+    }
+
+    /// Closed-loop velocity control: spin a VirtualMotor on Hall via
+    /// `ControlMode::VelocityControl`, assert it tracks the target, then
+    /// retarget (no loop reset — the ramp carries it) and track again.
+    /// Exercises the full cascade: velocity loop → current loop → SVPWM.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn velocity_control_tracks_target_on_virtual_motor() {
+        use crate::foc::hall_sensor::HallSensor;
+        use crate::foc::phase::PhaseManager;
+        use crate::foc::trig::LibmSinCos;
+        use crate::foc::velocity::VelocityLoopConfig;
+        use crate::virtual_motor::{MotorParams, VirtualMotor};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        let params = MotorParams::default();
+        let mut motor = VirtualMotor::new(params);
+
+        // Prime the hall estimator with the initial rotor state.
+        let mut out = motor.step(0.0, 0.0, 0.0, DT);
+        let mut hall = HallSensor::new(1_000_000); // µs timebase
+        hall.update(out.hall_state, 0);
+        let mut last_hall = out.hall_state;
+
+        let mgr = PhaseManager::with_hall(hall); // default source = Hall
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            24.0,
+        );
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            mgr,
+            DT,
+        );
+        driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+        // Soft gains + a moderate ramp: hall only updates the velocity
+        // estimate at edges (~7 ms apart at these speeds), so the loop must
+        // not change the speed much within one edge interval — aggressive
+        // gains turn the stale estimate into a limit cycle (seen with
+        // kp=0.05: ±100 rad/s oscillation around the target).
+        driver.set_velocity_config(VelocityLoopConfig {
+            kp: 0.008,
+            ki: 0.2,
+            accel_limit: 400.0, // erad/s²
+        });
+
+        // Track 300 electrical rad/s from standstill (1.5 s), then retarget
+        // downward within velocity mode (ramped, no reset) for another 1.5 s.
+        const RETARGET_AT: u64 = 30_000;
+        driver.set_mode(ControlMode::VelocityControl { target_vel: 300.0 });
+        for step in 1..=60_000u64 {
+            let now = step * 50; // µs
+            if step == RETARGET_AT {
+                assert!(
+                    (out.omega_e - 300.0).abs() < 30.0,
+                    "should track 300 erad/s, got {}",
+                    out.omega_e
+                );
+                // Stay well clear of zero: hall velocity is degenerate
+                // through standstill/reversal (edge intervals blow up) —
+                // a cruise loop never legitimately crosses zero anyway.
+                driver.set_mode(ControlMode::VelocityControl { target_vel: 150.0 });
+            }
+            if out.hall_state != last_hall {
+                driver.phase_mut().hall_mut().update(out.hall_state, now);
+                last_hall = out.hall_state;
+            }
+            driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+            let telem = driver.step(now).unwrap_or_default();
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        }
+        assert!(
+            (out.omega_e - 150.0).abs() < 25.0,
+            "should track 150 erad/s after retarget, got {}",
+            out.omega_e
         );
     }
 }

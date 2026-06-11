@@ -45,18 +45,48 @@ Failsafe-layer *design* and rationale live in [safety.md](safety.md).
     a board that brakes to a stop on a slope then shouldn't roll away).
   - GUI button + remote mapping.
 - [ ] **ControlledStop v2** (slope-independent, see review discussion
-  2026-06-11): decel-limited velocity ramp via a shared `VelocityLoop` block
-  (own instance, fixed conservative gains) instead of constant current;
-  replace the fixed `brake_time_s` give-up with a "|ω| not decreasing" detector
-  (+ long hard cap); configurable terminal state high-Z vs `Brake`. Document
-  in safety.md the physical limit: regen into a full battery on a long
-  descent cannot guarantee a stop (OV derate sheds the brake) — dissipative
-  braking (short/heat) is the only electrical answer there.
+  2026-06-11): decel-limited velocity ramp via the shared `VelocityLoop`
+  block (now in `foc/velocity.rs` — own instance, fixed conservative gains)
+  instead of constant current; replace the fixed `brake_time_s` give-up with
+  a "|ω| not decreasing" detector (+ long hard cap); configurable terminal
+  state high-Z vs `Brake`. Document in safety.md the physical limit: regen
+  into a full battery on a long descent cannot guarantee a stop (OV derate
+  sheds the brake) — dissipative braking (short/heat) is the only electrical
+  answer there.
 - [ ] **Position hold** (after position control lands): true hold-in-place —
   position loop with the target latched at engage (creep-free on a slope,
   unlike the viscous `Brake`), at the cost of battery drain and heat. Cascade:
   position P → shared `VelocityLoop` → current loop. `Brake` stays the
   zero-power default; hold is the opt-in upgrade.
+
+## Velocity control (foundation landed 2026-06-11)
+
+`foc/velocity.rs`: `SlewLimiter` + `VelocityLoop` (slew-limited ω reference →
+`ClampedPI` → iq, back-calculation anti-windup, bumpless `reset(ω)`).
+`ControlMode::VelocityControl` is implemented in `FocDriver` (cruise instance,
+host-tunable via `DriverCommand::SetVelocityConfig`, bumpless on mode entry,
+covered by the deadman + host affirm, failsafe seeds from `last_iq()`).
+CLI: `oxifoc-host-cli velocity <erad/s>`. Closed-loop virtual test passes.
+
+Key tuning constraint (learned in sim, will bite on hardware too): a hall
+source updates the velocity estimate only at edges (6/electrical rev), so the
+loop must not change speed significantly within one edge interval —
+aggressive kp/ki produce a ±100 rad/s limit cycle around the target. Defaults
+are deliberately soft (kp 0.01, ki 0.2, accel 500 erad/s²).
+
+- [ ] Persist `VelocityLoopConfig` (new `ConfigKey`/`ConfigWrite` group like
+  Failsafe) + GUI tuning panel; until then it's runtime-only via the command.
+- [ ] Velocity loop refuses an untrustworthy angle source (`step` errors →
+  driver stops). Decide the sensorless story: cruise on observer is fine
+  above its floor; near the floor it should degrade (drop to torque-neutral
+  / coast) rather than hard-stop.
+- [ ] Hall-velocity lag dominates the loop bandwidth — consider feeding the
+  loop a less laggy estimate (observer velocity when available, or
+  hall-with-extrapolation) before chasing tighter gains.
+- [ ] Bench: tune kp/ki/accel for the Flipsky + board mass; verify behavior
+  across the hall→observer crossover.
+- [ ] PositionControl: position P → `omega_target` into the same loop
+  (cascade); needs an unwrapped position source first.
 - [ ] Integrating current/voltage fault detector (replace the single-sample
   trip — nuisance-trips on regen/EMI); signed open-loop override
   (direction = sign of last velocity). [review.md §3]
