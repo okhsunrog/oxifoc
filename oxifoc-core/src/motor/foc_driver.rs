@@ -24,6 +24,22 @@ use crate::motor::six_step;
 // Re-export ControlMode from types (single source of truth)
 pub use crate::types::ControlMode;
 
+/// Why a [`FocDriver::step`] cycle could not run. Typed so `run_foc_cycle`
+/// can route each cause differently: an overcurrent trip must latch a
+/// host-visible fault (it already cut PWM), a calibration gap must not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum StepError {
+    /// Current sensor offsets not calibrated yet.
+    NotCalibrated,
+    /// Measured dq current magnitude exceeded
+    /// [`CurrentLimits::overcurrent_threshold_a`]; PWM was disabled and the
+    /// mode forced to Stopped before returning.
+    Overcurrent,
+    /// Requested control mode is not implemented yet (position control).
+    NotImplemented,
+}
+
 /// Default commutation phase advance (PWM cycles): ADC samples at the PWM
 /// center, the resulting duties latch at the next update event and act
 /// (on average) at the middle of that period — one full cycle later. At
@@ -461,6 +477,13 @@ where
         if !self.current_sensor.is_calibrated() {
             return false;
         }
+        if self.failsafe_ctrl.is_active() {
+            // A stop is already in progress (failsafe brake) — `arm` would
+            // be a no-op and silently drop the user's parking-brake intent.
+            // Adopt the terminal; the running sequence finishes into Brake.
+            self.failsafe_ctrl.set_terminal(FailsafeTerminal::ParkBrake);
+            return true;
+        }
         self.arm_failsafe_with(FailsafePolicy::ControlledStop, FailsafeTerminal::ParkBrake);
         true
     }
@@ -495,6 +518,23 @@ where
             ControlMode::OpenLoop { current, .. } => current,
             ControlMode::VelocityControl { .. } => self.velocity_loop.last_iq(),
             _ => 0.0,
+        };
+        // Bound the seed: mode payloads are finite-checked at the command
+        // boundary but not clamped, and the RampDown duration scales with
+        // the seed (slew = brake_current_a/ramp_s) — an absurd value must
+        // not stretch the failsafe ramp toward forever. The physically
+        // delivered current was never above the limit anyway, so clamping
+        // keeps the ramp bumpless. NaN (nothing upstream should produce
+        // one, but the failsafe must not hinge on that) seeds from zero.
+        let seed_bound = if self.current_limits.max_current_a > 0.0 {
+            self.current_limits.max_current_a
+        } else {
+            10.0 * self.failsafe_cfg.brake_current_a
+        };
+        let current_iq = if current_iq.is_finite() {
+            crate::foc::clamp_f32(current_iq, -seed_bound, seed_bound)
+        } else {
+            0.0
         };
         self.failsafe_ctrl.arm(current_iq, policy, terminal);
     }
@@ -606,7 +646,7 @@ where
     /// # Returns
     /// * `Ok(FocOutput)` - Control telemetry on success
     /// * `Err(&str)` - Error message if sensors not ready or overcurrent detected
-    pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, &'static str> {
+    pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, StepError> {
         let dt = self.dt;
         // Failsafe overrides the commanded mode while it runs (ramp-down /
         // regen-brake / coast), then cuts PWM and clears itself.
@@ -633,7 +673,7 @@ where
             }
             ControlMode::PositionControl { .. } => {
                 // TODO: Implement position PI controller
-                Err("Position control not implemented")
+                Err(StepError::NotImplemented)
             }
             ControlMode::OpenLoop {
                 angle_rad,
@@ -666,10 +706,43 @@ where
                 self.pwm
                     .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
                 self.controller.reset();
-                // Terminal voltage is zero while shorted; let the estimators
-                // integrate that (current still flows when the rotor moves).
-                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
-                Ok(FocOutput::default())
+                self.current_sensor.update_duties([0; 3]);
+
+                // The short-circuit current is real and measurable (the low
+                // sides conduct continuously, so low-side shunts see the
+                // phase currents and the ADC keeps triggering): read it, so
+                // the brake is not a protection blind spot — a parked board
+                // shoved fast (downhill runaway) must still trip — and so
+                // telemetry/estimators see the truth instead of zeros.
+                let (ia, ib, ic) = if self.current_sensor.is_calibrated() {
+                    self.current_sensor.read_currents()
+                } else {
+                    (0.0, 0.0, 0.0)
+                };
+                let (i_alpha, i_beta) = crate::foc::transforms::clarke(ia, ib);
+                // αβ magnitude equals the dq magnitude (Park preserves it);
+                // no current loop runs here, so this check is the only
+                // software protection the mode has. Trip → high-Z: a coast
+                // is safer than an uncontrolled short at whatever speed
+                // produced this much current.
+                if self.current_limits.is_overcurrent(i_alpha, i_beta) {
+                    self.pwm.disable();
+                    self.mode = ControlMode::Stopped;
+                    return Err(StepError::Overcurrent);
+                }
+
+                // Terminal voltage is zero while shorted; the estimators
+                // integrate that with the real circulating currents.
+                self.update_phase_with_prev_voltage(0.0, 0.0, i_alpha, i_beta, dt, now_ticks);
+                Ok(FocOutput {
+                    ia,
+                    ib,
+                    ic,
+                    i_alpha,
+                    i_beta,
+                    angle_rad: self.phase.get().angle,
+                    ..Default::default()
+                })
             }
         }
     }
@@ -679,7 +752,7 @@ where
     /// the normal current-control path so the current-limit clamp and the
     /// measured-overcurrent trip still apply — the brake never bypasses
     /// protection. The terminal `Stop` cuts PWM and clears the controller.
-    fn step_failsafe(&mut self, dt: f32, now_ticks: u64) -> Result<FocOutput, &'static str> {
+    fn step_failsafe(&mut self, dt: f32, now_ticks: u64) -> Result<FocOutput, StepError> {
         let omega_e = self.phase.get().velocity;
         let angle_trustworthy = self.phase.angle_trustworthy();
         let action = self.failsafe_ctrl.step(
@@ -728,7 +801,7 @@ where
         target_vel: f32,
         dt: f32,
         now_ticks: u64,
-    ) -> Result<FocOutput, &'static str> {
+    ) -> Result<FocOutput, StepError> {
         // Velocity needs a usable estimate; a source that can't track (e.g.
         // a back-EMF observer below its speed floor) makes the loop
         // integrate garbage. Degrade to zero torque while staying in the
@@ -759,10 +832,10 @@ where
         id_target: f32,
         dt: f32,
         now_ticks: u64,
-    ) -> Result<FocOutput, &'static str> {
+    ) -> Result<FocOutput, StepError> {
         // Check sensor calibration
         if !self.current_sensor.is_calibrated() {
-            return Err("Current sensor not calibrated");
+            return Err(StepError::NotCalibrated);
         }
 
         // Layer 1: Clamp current targets (prevents absurd commands)
@@ -817,7 +890,7 @@ where
             self.pwm.disable();
             self.controller.reset();
             self.mode = ControlMode::Stopped;
-            return Err("Overcurrent: measured current exceeds limit");
+            return Err(StepError::Overcurrent);
         }
 
         // Set PWM duties and feed to current sensor for next-cycle reconstruction
@@ -854,10 +927,10 @@ where
         velocity_rad_s: f32,
         dt: f32,
         now_ticks: u64,
-    ) -> Result<FocOutput, &'static str> {
+    ) -> Result<FocOutput, StepError> {
         // Check sensor calibration
         if !self.current_sensor.is_calibrated() {
-            return Err("Current sensor not calibrated");
+            return Err(StepError::NotCalibrated);
         }
 
         // Advance angle if velocity is set, otherwise use commanded angle
@@ -903,7 +976,7 @@ where
             self.pwm.disable();
             self.controller.reset();
             self.mode = ControlMode::Stopped;
-            return Err("Overcurrent: measured current exceeds limit");
+            return Err(StepError::Overcurrent);
         }
 
         // Set PWM duties and feed to current sensor for next-cycle reconstruction
@@ -935,7 +1008,7 @@ where
         angle_rad: f32,
         dt: f32,
         now_ticks: u64,
-    ) -> Result<FocOutput, &'static str> {
+    ) -> Result<FocOutput, StepError> {
         let max_duty = self.pwm.max_duty();
         let mut out = self.controller.apply_dq(vd, vq, angle_rad, max_duty);
 
@@ -963,7 +1036,7 @@ where
                 self.pwm.disable();
                 self.controller.reset();
                 self.mode = ControlMode::Stopped;
-                return Err("Overcurrent: measured current exceeds limit");
+                return Err(StepError::Overcurrent);
             }
         }
 
@@ -992,7 +1065,7 @@ where
         duty: f32,
         dt: f32,
         now_ticks: u64,
-    ) -> Result<FocOutput, &'static str> {
+    ) -> Result<FocOutput, StepError> {
         // Get current electrical angle from phase provider
         let phase_out = self.phase.get();
         let sector = six_step::angle_to_sector(phase_out.angle);
@@ -1030,7 +1103,7 @@ where
             self.pwm.disable();
             self.controller.reset();
             self.mode = ControlMode::Stopped;
-            return Err("Overcurrent: measured current exceeds limit");
+            return Err(StepError::Overcurrent);
         }
 
         Ok(FocOutput {

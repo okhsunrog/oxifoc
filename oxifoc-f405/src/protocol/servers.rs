@@ -175,18 +175,17 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
             any_was_active = true;
             critical_section::with(|cs| crate::STATE.borrow(cs).borrow_mut().set_link_active());
         } else if !any_active && any_was_active {
-            defmt::info!("All interfaces down — stopping motor, disabling telemetry");
+            defmt::info!("All interfaces down — failsafe via link gate, disabling telemetry");
             any_was_active = false;
 
-            // Stop the motor. The channel send is best-effort; the
-            // authoritative failsafe is link_active=false, which makes
-            // process_commands force Stopped from inside the ISR.
+            // Drop link_active — the ISR link gate routes a running motor
+            // through the configured failsafe policy. Deliberately NO
+            // SetMode(Stopped) here: a queued Stopped would be applied by
+            // process_commands and `set_mode` cancels an in-progress
+            // failsafe brake (and clears the re-arm latch) — turning the
+            // ControlledStop into a coast one liveness-timeout after the
+            // deadman armed it.
             critical_section::with(|cs| crate::STATE.borrow(cs).borrow_mut().set_link_inactive());
-            let _ = oxifoc_core::state::CMD_CHANNEL.try_send(
-                oxifoc_core::state::DriverCommand::SetMode(
-                    oxifoc_core::motor::ControlMode::Stopped,
-                ),
-            );
 
             // Stop fast telemetry streaming
             FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);

@@ -519,6 +519,11 @@ where
         // OverVoltage that regen braking can itself raise) — drop to high-Z
         // and don't resume braking into the same fault after it clears.
         driver.failsafe_reset();
+        // Mirror into the shared state: without this the host kept seeing
+        // Running after a fault stop (and the config server's motor-running
+        // gate stayed Busy forever). The Error latch is released by
+        // process_commands once the host clears the registry.
+        critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_error());
         return None;
     }
 
@@ -549,7 +554,21 @@ where
         Err(_e) => {
             #[cfg(feature = "defmt")]
             defmt::error!("FOC step error: {}", _e);
-            // Sensor not ready or other error - disable outputs
+            if matches!(_e, crate::motor::foc_driver::StepError::Overcurrent) {
+                // The driver tripped its dq-magnitude protection (and cut
+                // PWM itself). Surface it: latch the fault so the host sees
+                // the cause and restart stays blocked until an explicit
+                // clear — previously this trip was silent (the per-phase
+                // registry check below only runs on Ok-telemetry, and its
+                // threshold differs from the dq one).
+                fault_registry.set(overcurrent_fault);
+                critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_error());
+            } else {
+                // Couldn't run (sensor not calibrated / unimplemented
+                // mode): mirror the stop so the host doesn't see a phantom
+                // Running.
+                critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
+            }
             if mode != ControlMode::Stopped {
                 driver.set_mode(ControlMode::Stopped);
             }

@@ -133,6 +133,15 @@ pub fn init_hall(
 
     TIM_DRIVER.lock(|cell| cell.replace(Some(timer)));
 
+    // Seed the estimator with the boot-time hall state: the sector is known
+    // from the pin levels before any edge arrives. Without this, `sample()`
+    // is None until the rotor moves — on a sensored cold start the first
+    // torque command would commutate via the open-loop recovery override
+    // instead of the actual angle. A disconnected cable (pull-ups read
+    // 0b111) surfaces immediately as an invalid state. Safe: the capture
+    // interrupt is not unmasked yet.
+    update_hall_edge(read_hall_idr(), now_ticks());
+
     unsafe {
         interrupt::typelevel::TIM3::unpend();
         cortex_m::peripheral::NVIC::unmask(interrupt::TIM3);

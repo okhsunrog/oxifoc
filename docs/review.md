@@ -101,6 +101,21 @@ wrapping_sub dt, icd doc-rot) исправлены 2026-06-11 (третья се
 
 ## 1bis. ПОВТОРНОЕ ПОЛНОЕ РЕВЬЮ 2026-06-11 (четвёртая сессия, вручную)
 
+**ВСЁ НИЖЕ ИСПРАВЛЕНО в той же сессии** (кроме «спящий g474» — архитектурный
+пункт §5.4). Где исправлено:
+
+| Пункт | Где исправлено |
+|---|---|
+| HIGH: легаси Stopped при link-down | try_send удалён из `g431/protocol.rs` и `f405/protocol/servers.rs` state-мониторов; ISR link-гейт — единственный механизм; комментарий объясняет, почему Stopped сюда класть нельзя |
+| HIGH: `brake_current_a = 0` вешает RampDown | `is_sane` требует `> 0.0`; сверху — `MAX_STALENESS_TIMEOUT_US = 5 c` (заодно LOW про «deadman off легальным конфигом»); seed в `arm_failsafe_with` клампится к current-limit (или 10×brake) и гардится `is_finite` (NaN/гигантский OpenLoop-payload растягивал ramp почти навсегда); регрессионные тесты в failsafe.rs |
+| MED: state-рассинхрон на fault/Err | `run_foc_cycle`: fault-гейт → `state.set_error()` (Error-латч теперь живой, host снимает через fault clear); Err-ветка → `set_stopped()` |
+| MED: внутренний OC-трип без фолта | `StepError` enum (NotCalibrated/Overcurrent/NotImplemented) вместо `&'static str`; `run_foc_cycle` на `Overcurrent` латчит `overcurrent_fault` + `set_error()` |
+| MED: Brake слеп по токам | Brake-arm читает токи (low-side шунты видят циркулирующий ток), αβ-магнитуда через `is_overcurrent` (trip → high-Z + StepError::Overcurrent → фолт), эстиматоры кормятся реальными i при v=0, телеметрия честная |
+| MED: hall-сектор не посеян на boot | все 3 платы: `update_hall_edge(<GPIO IDR>, now_ticks())` в `init_hall` после `timer.start()` до NVIC unmask; обрыв кабеля (0b111) виден сразу на boot |
+| LOW: terminal при активном failsafe | `FailsafeController::set_terminal()`; `enter_brake_ramp` при активной последовательности обновляет терминал вместо no-op + тест |
+| LOW: detect-брекетинг try_send | `send().await` (консистентно с config-сервером) |
+
+
 _Прочитано целиком: foc_driver, failsafe, velocity, state, manager, observer,
 controller, pi_controller, hall_sensor, hall_embassy, fault, capture_timebase,
 current_sense, streaming, detect, storage(types), svpwm(ядро); платы: g431
@@ -336,10 +351,8 @@ hall rate-limiter/drift-коррекция.
 
 ## 5. Приоритеты (сводно, обновлено 2026-06-11 после четвёртой сессии)
 
-1. **Находки повторного ревью (§1bis):** 2 HIGH (легаси-Stopped убивает
-   failsafe; brake_current_a=0 вешает RampDown) + 4 MEDIUM (state-рассинхрон
-   на fault/Err; внутренний OC-трип без фолта; Brake слеп по токам;
-   hall-сектор не посеян на boot) + 4 LOW.
+1. ~~Находки повторного ревью (§1bis)~~ — **исправлены в той же сессии**,
+   см. таблицу в §1bis. Остался только архитектурный «спящий g474» (§5.4).
 2. **Стенд (§2 + хвосты):** ADC double-trigger (обе платы); pipeline-skew
    индуктивности; spin-down по фазным делителям; интегрирующий
    current/voltage детектор; bench-тюнинг failsafe/velocity/brake.

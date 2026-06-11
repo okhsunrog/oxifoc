@@ -205,11 +205,21 @@ impl FailsafeConfig {
         }
     }
 
+    /// Upper bound on the deadman staleness timeout (µs). The host affirms
+    /// every 50 ms; anything beyond a few seconds is indistinguishable from
+    /// "deadman off", which a config write must never be able to express.
+    pub const MAX_STALENESS_TIMEOUT_US: u64 = 5_000_000;
+
     /// All numeric fields finite and in a usable range.
+    ///
+    /// `brake_current_a` must be strictly positive: it sets the RampDown
+    /// slew rate, and a zero would freeze the ramp at the seeded current —
+    /// a failsafe that drives the last commanded torque forever.
     pub fn is_sane(&self) -> bool {
         self.staleness_timeout_us > 0
+            && self.staleness_timeout_us <= Self::MAX_STALENESS_TIMEOUT_US
             && self.brake_current_a.is_finite()
-            && self.brake_current_a >= 0.0
+            && self.brake_current_a > 0.0
             && self.ramp_s.is_finite()
             && self.ramp_s > 0.0
             && self.brake_time_s.is_finite()
@@ -290,6 +300,14 @@ impl FailsafeController {
     /// fault took over).
     pub fn reset(&mut self) {
         self.phase = Phase::Inactive;
+    }
+
+    /// Change what a clean stop leaves behind, mid-sequence. Used when a
+    /// user Brake command arrives while a stop is already in progress —
+    /// `arm` is idempotent then, but the user's parking-brake intent must
+    /// not be silently dropped. The give-up paths still always end high-Z.
+    pub fn set_terminal(&mut self, terminal: FailsafeTerminal) {
+        self.terminal = terminal;
     }
 
     /// Arm from the q-current currently being commanded (bumpless), the
@@ -782,6 +800,33 @@ mod tests {
             ..FailsafeConfig::default()
         };
         assert!(!bad.is_sane());
+        // Zero brake current would freeze RampDown at the seeded iq (slew
+        // = brake/ramp_s = 0) — a failsafe driving the last commanded
+        // torque forever. Must be rejected outright.
+        let bad = FailsafeConfig {
+            brake_current_a: 0.0,
+            ..FailsafeConfig::default()
+        };
+        assert!(!bad.is_sane());
+        // A staleness timeout beyond the cap is "deadman off" in disguise.
+        let bad = FailsafeConfig {
+            staleness_timeout_us: FailsafeConfig::MAX_STALENESS_TIMEOUT_US + 1,
+            ..FailsafeConfig::default()
+        };
+        assert!(!bad.is_sane());
+    }
+
+    /// A user Brake command while a stop is already running must not be
+    /// silently dropped: the terminal switches to ParkBrake mid-sequence.
+    #[test]
+    fn set_terminal_updates_running_sequence() {
+        let mut c = FailsafeController::new();
+        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
+        c.set_terminal(FailsafeTerminal::ParkBrake);
+        // Run to a clean stop from standstill speed: must end in the brake.
+        let cfg = cfg(FailsafePolicy::ControlledStop);
+        let (_iq, _cycles, terminal) = run_to_done(&mut c, 5.0, &cfg, 40.0, true, 100_000);
+        assert_eq!(terminal, FailsafeAction::EngageBrake);
     }
 
     #[test]
