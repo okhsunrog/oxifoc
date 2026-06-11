@@ -1,346 +1,183 @@
 # Project TODO / backlog
 
-Single backlog for all known gaps and planned work. The **analysis** behind
-these items — verified bugs, gap analysis, and a borrow-list from reference
-projects (VESC/MESC/moteus/ODrive/MCSDK) — lives in [review.md](review.md);
-the failsafe **design** in [safety.md](safety.md); hardware bring-up facts in
-the board docs. Those docs no longer keep their own TODO lists — everything
-actionable is collected here.
+Единый бэклог открытой работы. Правило: **сделанное удаляется** (история —
+git log и [archive/](archive/)), решения с обоснованием — в
+[decisions.md](decisions.md), анализ/идеи — в [notes/](notes/), дизайн
+failsafe — в [safety.md](safety.md). Карта документации — [README.md](README.md).
 
 ## Safety
 
-Failsafe-layer *design* and rationale live in [safety.md](safety.md).
+- [ ] **Bench-tune regen-brake**: `brake_current_a`, `standstill_rad_s`,
+  low-speed coast floor; подтвердить отсутствие OV-трипа на шине при regen;
+  `BRAKE_ENTRY_MAX_E_RAD_S` (гейт входа в parking brake) + ток короткого
+  замыкания обмоток на этой скорости внутри рейтингов FET.
+- [ ] **Parking brake follow-ups**: кнопка в GUI + маппинг на пульт.
+- [ ] **Dissipative braking near OV** (спуск с полной батареей, см.
+  safety.md): когда OV-derate срезает regen-тормоз — рассеивать энергию в
+  обмотках (active short / d-ток) с термоконтролем. Нужен стенд.
+- [ ] **Position hold** (после position control): захват цели на engage,
+  каскад position P → `VelocityLoop` → ток. `Brake` остаётся дефолтом.
+- [ ] **Интегрирующий current/voltage fault-детектор** вместо
+  односэмплового трипа (nuisance-trip на regen/EMI = обрыв момента на
+  ходу). Референсы: VESC `mc_interface.c:1881`, MESC динамические пороги.
+- [ ] G474: взвести IWDG, когда оживут motor-модули (FOC ISR).
+- [ ] Bench: IWDG reset → PWM safe на железе (спровоцировать hang).
+- [ ] Boot: чтение reset-reason + детект крутящегося мотора +
+  flying-restart синхронизация.
+- [ ] Конфигурируемая post-watchdog политика (coast / regen / hold).
+- [ ] `Idempotent` marker trait + `call`/`call_once` хелперы в host-lib.
 
-- [x] **Layer 2: ISR command-staleness deadman + configurable failsafe**
-  (2026-06-11). `FocDriver` stamps `last_cmd_tick` on every drained `SetMode`;
-  `run_foc_cycle` arms a self-contained failsafe past `staleness_timeout`
-  (default 150 ms), ISR-resident so it survives an executor hang. Policy
-  (Coast / RampToZero / ControlledStop-regen-brake-to-standstill) is
-  host-configurable (`FailsafeConfigStored`, ConfigKey 9). Host re-affirms the
-  active setpoint every 50 ms (`AFFIRM_POLICY`, no retry). Liveness shortened
-  5 s → 1 s; the Layer-1 `link_active` gate now routes through the same
-  failsafe policy. `oxifoc-core/src/motor/failsafe.rs` + closed-loop test.
-- [x] **Layer 2 hardening from self-review** (2026-06-11): re-arm latch
-  (running modes rejected after any failsafe engagement until an explicit
-  `Stopped`/`Coast`/`Brake` acknowledgement); host-lib drops the active
-  setpoint on disconnect and sends affirms from the command-handler task
-  (ordering — an affirm can never land after a Stop); deadman exempts the
-  bench modes (`OpenLoop`/`DirectVoltage`/`SixStep` — detection dwells up to
-  1 s between `SetMode`s, Layer-1 still covers them); link gate exempts
-  `Coast`/`Brake` and no longer forces the shared state to stopped at arm
-  time (syncs at the failsafe terminal instead — no flash stall mid-brake);
-  `enter_failsafe` restores six-step-floated phases and seeds bumpless from
-  `OpenLoop.current` too.
-- [ ] **Bench-tune the regen-brake** on real hardware: `brake_current_a`,
-  `standstill_rad_s`, and the low-speed coast floor (sensorless velocity is
-  unreliable near zero — Hall brakes to a stop, observer-only to its floor
-  then coasts). Confirm no OV trip on the bus during regen. Also bench-tune
-  `BRAKE_ENTRY_MAX_E_RAD_S` (parking-brake entry gate) and verify the
-  windings-short current at that speed is comfortably inside FET ratings.
-- [x] **ControlledStop v2 + ramp-into-brake** (2026-06-11): the failsafe
-  brake is now a decel-limited velocity ramp (`decel_rad_s2`) through the
-  failsafe's own `VelocityLoop` instance (fixed soft gains) — slope-
-  independent felt deceleration up to the current cap; no-progress watchdog
-  (2 s) + 10 s hard cap replace the blunt 3 s timeout; configurable clean-
-  stop terminal high-Z vs `ParkBrake` (default ParkBrake — the stopped board
-  holds on a slope). A user `Brake` command at speed now substitutes the
-  same ramp ending in `Brake` (no re-arm latch) instead of being rejected.
-  Give-up paths never short windings at speed. Physical limit (regen into a
-  full battery) documented in safety.md.
-- [ ] **Parking brake follow-ups**: GUI button + remote mapping.
-- [ ] **Dissipative braking near OV** (the full-battery descent gap, see
-  safety.md): when the OV derate starts shedding regen brake, dump the
-  energy in the windings instead (active short / d-axis current) with
-  thermal supervision. The only electrical answer to "full battery, long
-  hill"; needs bench work.
-- [ ] **Position hold** (after position control lands): true hold-in-place —
-  position loop with the target latched at engage (creep-free on a slope,
-  unlike the viscous `Brake`), at the cost of battery drain and heat. Cascade:
-  position P → shared `VelocityLoop` → current loop. `Brake` stays the
-  zero-power default; hold is the opt-in upgrade.
-- [ ] Integrating current/voltage fault detector (replace the single-sample
-  trip — nuisance-trips on regen/EMI). [review.md §3] (Signed open-loop
-  override done 2026-06-11: direction = sign of last velocity.)
-- [x] **Bus (supply) current limits** (2026-06-11): VESC-style
-  `bus_in_max_a` / `bus_regen_max_a` in `CurrentLimits` (`< 0` = off,
-  regen `0` = lab-PSU safe — no energy into the supply, ControlledStop
-  degrades to coast via no-progress, windings-short Brake unaffected).
-  Clamp in `step_current_control` covers all regen-capable paths. This is
-  the first column of the VESC override matrix — graduated derating
-  (temp/voltage/ERPM writing effective limits) builds on it later.
-- [ ] G474: arm the IWDG when the motor modules (FOC ISR) wake up.
-- [ ] Bench: verify IWDG reset → PWM safe on real hardware (induce a hang).
-- [ ] Boot: reset-reason read + spinning-motor detection + flying-restart sync.
-- [ ] Configurable post-watchdog policy (controlled coast / regen / hold).
-- [ ] `Idempotent` marker trait + `call`/`call_once` helpers in host-lib.
+## Velocity / position
 
-## Velocity control (foundation landed 2026-06-11)
+Тюнинг-ограничение (выучено в симе): hall обновляет оценку скорости только
+по эджам (6/эл.оборот) — агрессивные kp/ki дают ±100 rad/s limit cycle.
+Дефолты намеренно мягкие (kp 0.01, ki 0.2, accel 500 erad/s²).
 
-`foc/velocity.rs`: `SlewLimiter` + `VelocityLoop` (slew-limited ω reference →
-`ClampedPI` → iq, back-calculation anti-windup, bumpless `reset(ω)`).
-`ControlMode::VelocityControl` is implemented in `FocDriver` (cruise instance,
-host-tunable via `DriverCommand::SetVelocityConfig`, bumpless on mode entry,
-covered by the deadman + host affirm, failsafe seeds from `last_iq()`).
-CLI: `oxifoc-host-cli velocity <erad/s>`. Closed-loop virtual test passes.
+- [ ] Лаг hall-скорости ограничивает полосу контура — рассмотреть менее
+  лаггirovannый источник (скорость обсервера, когда доступна) до погони за
+  жёсткими гейнами.
+- [ ] Bench: тюнинг kp/ki/accel под Flipsky + массу борда; поведение через
+  hall→observer кроссовер.
+- [ ] PositionControl: position P → `omega_target` в тот же контур
+  (каскад); сперва нужен unwrapped-источник позиции.
 
-Key tuning constraint (learned in sim, will bite on hardware too): a hall
-source updates the velocity estimate only at edges (6/electrical rev), so the
-loop must not change speed significantly within one edge interval —
-aggressive kp/ki produce a ±100 rad/s limit cycle around the target. Defaults
-are deliberately soft (kp 0.01, ki 0.2, accel 500 erad/s²).
+## Алгоритмы (лестница, дёшево → дорого)
 
-- [x] Persist `VelocityLoopConfig` (2026-06-11): `ConfigKey::Velocity` (10),
-  full read/write/live-apply plumbing, applied at boot on all boards; GUI
-  config panel got both a Velocity Loop and a Failsafe group.
-- [x] Sensorless degradation (2026-06-11): an untrustworthy angle source in
-  VelocityControl now degrades to zero torque *in the mode* (loop reset for
-  bumpless re-entry) instead of hard-stopping — a sensorless cruise below
-  the observer floor coasts and resumes by itself when lock returns.
-- [ ] Hall-velocity lag dominates the loop bandwidth — consider feeding the
-  loop a less laggy estimate (observer velocity when available, or
-  hall-with-extrapolation) before chasing tighter gains.
-- [ ] Bench: tune kp/ki/accel for the Flipsky + board mass; verify behavior
-  across the hall→observer crossover.
-- [ ] PositionControl: position P → `omega_target` into the same loop
-  (cascade); needs an unwrapped position source first.
+- [ ] Position loop (см. выше).
+- [ ] **Graduated derating** (VESC override matrix): линейный спад
+  эффективных лимитов по T_fet/T_motor/V_bat/ERPM поверх bus-limits.
+- [ ] **Field weakening V2** (MESC: экспоненциальный d-ток от упирания
+  вектора напряжения в круг — без параметров мотора).
+- [ ] MTPA.
+- [ ] Настоящая overmodulation-стратегия (сейчас `modulation_limit` до 1.2
+  просто клампит duty выше линейной зоны SVPWM).
+- [ ] Автоопределение pole pairs; offset-калибровка энкодера.
+- [ ] `apply_dq` (DirectVoltage) пропускает dead-time compensation — а это
+  режим HFI-детекции; смещает измерение L (поймается sim-апгрейдом
+  dead-time, см. ниже).
+- [ ] HallPll: PLL-вариант hall-эстиматора на базе `BackEmfObserver`-
+  структуры (граничный якорь уже сделан) — прототип на VirtualMotor.
+  [notes/hall-improvements.md §4]
 
-## Deferred until needed
+## Sensorless startup (см. notes/startup-and-sampling.md)
 
-- [ ] **`protocol_version` in `HardwareInfo`** + `env!("CARGO_PKG_VERSION")`
-  instead of the hardcoded `"oxifoc-0.1.0"` strings. Not relevant while GUI
-  and firmware are always built from the same checkout (`cargo run`), but
-  required before any release/distribution: the wire schema (postcard) has
-  no self-description, so a version mismatch shows up as silent garbage,
-  not an error. The schema has already changed several times
-  (`SlowTelemetry.phase_source`, `ConfigResponse::Busy`,
-  `PhaseSourceEndpoint`).
+- [ ] **Align → ramp → handoff** state machine для холодного старта без
+  HFI (замена фикс-52-rad/s наджа из `try_observer_fallback`).
+- [ ] **Flying restart** (kick-push кейс): measure-only проход обсервера /
+  HFI-проба перед моментом из Stopped/Coast; seed и сразу в closed loop.
+- [ ] Current-scheduled ramp ceiling (VESC `openloop_rpm_max = map(I)`).
+- [ ] Хост-тесты на VirtualMotor: cold start с произвольного угла без
+  реверс-рывка; freewheel-catch.
+
+## Sensorless tracking / BEMF (bench-blocked)
+
+- [ ] Поднять фазные делители B-G431B-ESC1 (BEMF sense) как ADC-каналы.
+- [ ] MESC-style TRACKING: gates off → измеренные v_αβ в обсервер →
+  flying start с конвергированного обсервера. Hall-based уже работает;
+  это sensorless-кейс. Заодно открывает spin-down flux метод на железе
+  (`supports_coast_telemetry`).
 
 ## Firmware / core
 
-- [ ] Virtual device only simulates `CurrentControl`/`Stopped`; OpenLoop,
-  DirectVoltage, SixStep and Brake are accepted and ignored (limits/gains
-  commands too).
-- [ ] Remaining ISR dedup: ADC snapshot assembly + voltage/temp fault
-  checks are still per-platform copies (small).
-- [ ] g474 motor modules are commented out until the IHM08M1 shield is
-  connected; `control/foc.rs` is kept in sync by hand but not
-  compile-checked.
-- [ ] **g474 + IHM08M1: remaining work before enabling the motor stack**
-  (see [nucleo-g474re-ihm08m1.md](nucleo-g474re-ihm08m1.md)). Done
-  2026-06-11: hall on TIM2/PA15+PB3+PB10 (32-bit captures via generic
-  `CaptureTimebase<u32>`), time driver tim2 → tim5, resources.rs pins +
-  CN comments, `mod sensors` compiled to prevent rot. Still open when
-  the shield arrives (hardware audit 2026-06-11):
-  - **config.rs BOARD has IHM07M1 constants**: shunt 0.33 Ω + internal
-    OPAMP ×16 are wrong. IHM08M1 (from Fig. 5): 0.010 Ω 1W shunts,
-    TSV994 difference amps per phase — Vshunt→680Ω→(+) with 6.8k bias
-    to 3V3 (via JP1) , Kelvin GND→1k→(−), feedback 4.7k ⇒ gain ≈5.18,
-    offset ≈1.71 V (≈2122 counts), ≈51.8 mV/A, FS ≈ ±31 A. JP2 alters
-    the feedback network — verify effective FOC gain at bench via
-    zero-offset (calibrate()) + a known current. VBUS divider
-    169k/9.31k = 19.15 (config's 19.12 accidentally close).
-  - **CURRENT REF (PB4 PWM) is optional, not mandatory** (corrected
-    after reading Fig. 5 in full): the BKIN comparators (U24-26,
-    LMV331) compare raw shunt voltage against a FIXED divider Vref
-    (R179 33k / R180 3.3k → ≈0.3 V ≈ 30 A) — hardware OCP is armed
-    autonomously, the bridge starts without firmware help. PB4's
-    RC-filtered PWM (R21 33k + C16) is the threshold of the SEPARATE
-    U23 comparator on the amplified phase-B signal → CPOUT → PA12 =
-    TIM1_ETR, for optional cycle-by-cycle limiting.
-  - **BKIN PA6 (AF6), active-LOW** ("goes to ground", UM1996 §4.1.2)
-    + BKF filter; optional PA11 = BKIN2. Plus BKIN-flag check in the
-    FOC ISR + MOE re-arm (port from g431 when control/foc.rs wakes).
-  - ADC injected per the mapping doc: ADC1 = PA0/IN1 + PA1/IN2 +
-    PC2/IN8, ADC2 = PC1/IN7 + PC0/IN6, TRGO2 trigger; **delete** the
-    commented-out internal-OPAMP plan in peripherals.rs (the shield
-    conditions signals externally).
-  - Re-enable control/motor/calibration (foc.rs already edited to take
-    now_ticks from sensors::hall); GPIO_BEMF (PC9) off for FOC; arm
-    IWDG; **keep PB15/PB14 Hi-Z**.
-  - Shield jumpers (factory default is 1-shunt/6-step!): J5/J6 → 3-Sh,
-    JP1+JP2 closed, remove C3/C5/C7, JP3 closed, J9 open, Nucleo
-    JP5 → E5V.
+- [ ] Виртуальное устройство симулирует только CurrentControl/Stopped;
+  OpenLoop/DirectVoltage/SixStep/Brake принимаются и игнорируются; нет
+  fault-injection (fault-путь хоста не покрыт e2e); конфиг не доходит до
+  физики VirtualMotor.
+- [ ] Остаток ISR-дедупликации: сборка ADC snapshot + voltage/temp fault
+  checks — пер-платформенные копии. Вынести ISR-glue в core ДО оживления
+  g474 (иначе он воспроизведёт уже починенные F405-баги).
+- [ ] g474 motor-модули закомментированы до подключения IHM08M1;
+  `control/foc.rs` синхронизируется руками без compile-check.
+- [ ] **g474 + IHM08M1: чеклист перед включением мотора**
+  (см. [hw/nucleo-g474re-ihm08m1.md](hw/nucleo-g474re-ihm08m1.md)):
+  - config.rs BOARD содержит константы IHM07M1: для IHM08M1 — шунты
+    0.010 Ω, TSV994, gain ≈5.18, offset ≈1.71 V, ≈51.8 mV/A, FS ≈ ±31 A;
+    JP2 меняет feedback — проверить фактический gain на стенде.
+  - CURRENT REF (PB4 PWM) опционален: BKIN-компараторы автономны
+    (фикс. Vref ≈30 A); PB4 — порог отдельного U23 → CPOUT → TIM1_ETR.
+  - BKIN PA6 (AF6) active-LOW + BKF; опц. PA11 = BKIN2; BKIN-флаг в FOC
+    ISR + MOE re-arm (портировать с g431).
+  - ADC injected по маппингу (ADC1 PA0/PA1/PC2, ADC2 PC1/PC0, TRGO2);
+    удалить закомментированный internal-OPAMP план в peripherals.rs.
+  - Re-enable control/motor/calibration; GPIO_BEMF (PC9) off; IWDG;
+    PB15/PB14 строго Hi-Z.
+  - Джамперы шилда (заводской дефолт 1-shunt/6-step!): J5/J6 → 3-Sh,
+    JP1+JP2 closed, снять C3/C5/C7, JP3 closed, J9 open, Nucleo JP5 → E5V.
 
-## VirtualMotor model fidelity (from moteus sim comparison, 2026-06-10)
+## VirtualMotor fidelity (анализ: notes/virtual-motor-fidelity.md)
 
-Keep every new effect behind an optional param defaulting to ideal (the
-`sat_k` pattern) so existing tests stay pinned. High-priority items
-de-risk the sensorless bench; run `detection_report` before/after each.
+Каждый эффект — за опциональным параметром с идеальным дефолтом
+(decisions.md), каждый апгрейд — с тестом, падающим без компенсации.
 
-- [ ] **Sub-stepping** (~10 internal Euler steps per `step()`). Not for
-  stability — to break the shared-discretization circularity: the sim's
-  per-step `di = (v − R·i)·dt/L` is exactly the model the estimators
-  assume, so detection errors near 0.0% are partly self-confirmation.
-  Sub-stepping approximates the continuous plant and makes the
-  estimators' own discretization error visible. Free accuracy audit
-  before the bench.
-- [ ] **Dead-time voltage distortion**: `v_err = −sign(i_phase)·v_dt`,
-  `v_dt ≈ t_dead·f_pwm·vbus`. Three algorithms claim dead-time
-  robustness and none of it is currently exercised in sim: 2-point R
-  measurement (exists to cancel this bias), HFI inductance via
-  `apply_dq` (skips dead-time comp), flux observer (integrates
-  commanded, not actual volts). Add to a couple of catalog rows and
-  watch the error columns.
-- [ ] **Current quantization + noise**: 12-bit ADC over the shunt range
-  plus deterministic Gaussian noise (seeded xorshift, no_std, no `rand`
-  dep). Makes HFI demod SNR honest (the carrier-amplitude floor in
-  `observer.rs` was tuned on noiseless currents) and shows whether
-  `check_current_faults` needs a persistence filter.
-- [ ] **One-cycle PWM delay in the closed-loop test harness** (not the
-  model): apply the previous step's v_αβ, like moteus's `prior_pwm`.
-  Observer/crossover tests then see the phase lag real hardware always
-  has.
-- [ ] **Q-axis saturation** `Lq_eff = Lq/(1 + sat_kq·|iq|)` — the
-  classic HFI failure mode: saliency ratio collapses under load. Lets a
-  test pin "HFI confidence drops with iq, manager falls back to
-  observer", which the PhaseManager logic supports but the sim cannot
-  currently trigger.
-- [ ] **Vbus sag**: `vbus = vbus0 − i_bus·R_esr`. Realistic UV-dip /
-  regen-OV scenarios for the fault checkers (currently tested with
-  hand-fed constants); groundwork for MESC-style dynamic Vmax if
-  borrowed.
-- [ ] **Coulomb friction + ω² load**: `T_load += T_c·sign(ω) + k_d·ω²`.
-  Coulomb matters for standstill HFI / open-loop starts (stiction is
-  where startup stumbles on real hardware); ω² makes the drone/eskate
-  catalog rows physically meaningful.
-- [ ] Later, with the velocity loop: **coupled dynamometer mode** (two
-  VirtualMotors on a shared shaft, mirroring moteus's
-  `simulation_dynamometer_test.cc`) so speed-control tests run against
-  an active load and can later be mirrored on a physical rig.
-- [ ] Later: **hall glitches** (rare 0/7 states, edge bounce) to cover
-  invalid-state recovery in closed loop; **cogging** only if/when
-  anticogging calibration lands.
-
-Explicitly not planned: temperature model, iron losses, f64/unwrapped
-position (only needed once a position loop exists; keep the no_std
-model f32).
+- [ ] **Sub-stepping** (~10 внутренних шагов Эйлера на `step()`) — ломает
+  цикличность общей дискретизации сим/эстиматоры (0.0% детекции отчасти
+  самоподтверждение).
+- [ ] **Dead-time distortion** (highest ROI): `v_err = −sign(i)·t_dt·f_pwm·vbus`
+  — валидирует 2-point R, HFI через apply_dq, dead-time comp.
+- [ ] **Квантование + шум токов** (12-bit + детерминированный xorshift) —
+  честный SNR HFI-демода и адаптивной амплитуды, persistence-фильтр фолтов.
+- [ ] **One-cycle PWM delay** в closed-loop харнессе — фазовый лаг железа,
+  валидирует phase advance.
+- [ ] **Q-axis saturation** `Lq_eff` — коллапс saliency под нагрузкой
+  (классический HFI-отказ; manager-фолбэк сейчас нечем триггерить).
+- [ ] **Vbus sag** (`vbus0 − i_bus·R_esr`) — UV-dip / regen-OV сценарии,
+  база для динамического Vmax.
+- [ ] **Coulomb friction + ω²-нагрузка** — stiction для standstill
+  HFI/open-loop стартов; физичность eskate/drone строк каталога.
+- [ ] Позже: coupled dynamometer (два мотора на валу), hall-глитчи
+  (0/7, дребезг), cogging — только с anticogging.
+- [ ] Несинусоидальная back-EMF (5/7 гармоники λ) — смещение угла
+  обсервера на реальной машине.
 
 ## Size / performance
 
-g431 flash pressure resolved 2026-06-11 by switching its default to the
-**baked-config profile** (no runtime flash storage, config compiled in via
-`baked_config.rs`, RAM-backed config server, full 128K flash): 107 356 B,
-headroom **23.7 KB**. The `storage` feature restores the old behavior
-(2.3 KB headroom). Full analysis, per-feature costs and the reserve ladder
-(detection-off → symmetric two-image split) live in
-[flash-size.md](flash-size.md).
+Текущие числа и правила — [flash-size.md](flash-size.md); бенчи —
+[perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 
-Hot-path math reworked 2026-06-11 after on-target benchmarks
-([perf-bench-2026-06-11.md](perf-bench-2026-06-11.md)): HFI estimator
-generic over SinCos (CORDIC on G4, FastSinCos on F405), `vsqrt.f32` +
-polynomial atan2 in `fast_math`. HFI went from >150% of the 20 kHz ISR
-budget to 13.9% — it was unusable on hardware before this.
+- [ ] f405/g474 собираются с `opt-level = 3`, g431 с `"z"` — намеренно, но
+  не измерено: что `"z"` стоил бы f405/g474 в ISR-времени.
+- [ ] Живой счётчик загрузки ISR (DWT CYCCNT min/max/avg → SlowTelemetry
+  раз в секунду): подтвердить shipped-"z" билд in situ; заодно закрывает
+  подозрение F405 double-trigger по измеренному ISR-rate.
 
-- [x] **g431 flash recovery done 2026-06-11**: 126 656 → 118 668
-  (headroom 320 B → 8.3 KB), zero accuracy loss. Everything
-  flash-size related — rules for new code, measurement workflow
-  (`just size`), measured reserves (detection gate −14.7 KB, etc.),
-  dead ends — now lives in [flash-size.md](flash-size.md).
-- [x] F405/G474 defmt treatment ported 2026-06-11 (`defmt::unwrap!`
-  everywhere + dep defmt features): f405 −1 044 B, g474 −1 024 B.
-- [ ] f405/g474 build with `opt-level = 3`, g431 with `"z"` (flash
-  pressure). Intentional, but unmeasured: check what `"z"` would cost
-  f405/g474 in ISR time, or whether it matters at all at 20 kHz.
-- [ ] Live ISR utilization counter (DWT CYCCNT min/max/avg →
-  SlowTelemetry or defmt once a second): the bench numbers are from the
-  test profile; the shipped "z" build should be confirmed in situ. Also
-  settles the F405 double-trigger suspicion via the measured ISR rate.
+## Host
 
-## From external review (verified pending)
+- [ ] `protocol_version` в `HardwareInfo` + `env!("CARGO_PKG_VERSION")`
+  вместо хардкода "oxifoc-0.1.0" — обязательно до любого
+  релиза/дистрибуции (postcard-схема без self-description: рассинхрон =
+  молчаливый мусор).
+- [ ] Reconnect state machine не покрыт тестами; slint-wgpu-plot:
+  индексная арифметика кольца (`renderer.rs:262`) при большом zoom-out +
+  scroll-back может считать Y-auto-range по другому окну, чем рисует шейдер.
+- [ ] bridge/remote: пейринг по hardcoded MAC; тесты-заглушки. Дизайн
+  пульта — [notes/remote-design.md](notes/remote-design.md).
 
-### Firmware (2026-06-11 re-review; detail in [review.md](review.md) §1–§2)
+## Стенд (ожидает железа)
 
-- [x] **F405: SPI out of critical section** (2026-06-11): `Drv8301Spi`
-  (bus + CS) is owned by `nfault_monitor_task`; only the EN_GATE GPIO stays
-  under a CS mutex. Dead `get_fault_status`/`reset_faults` helpers removed.
-- [x] **F405: FOC ISR at NVIC priority 0** (2026-06-11), mirrors G431.
-- [x] **F405: `OverTemp` critical + motor NTC fault-checked** (2026-06-11):
-  `BoardConfig.max_motor_temp_c` (0 = no NTC) + `check_temperature_threshold`
-  in core; F405 trips on the PC4 winding NTC at 120 °C.
-- [x] **Detection: spin-down honesty** (2026-06-11): new
-  `DetectionHardware::supports_coast_telemetry` (default false) — boards
-  without phase-voltage sensing go straight to the driven flux method with
-  an honest log instead of spin-up→coast→zeros→"fallback". Implementing the
-  real coast telemetry (BEMF dividers + observer ωe) stays bench-blocked.
-- [x] **Detection: signed saliency** (2026-06-11): bin-2 *real part*
-  (complex, relative to the injection sweep) instead of magnitude — inverse
-  saliency / a 90°-off rotor lock now surfaces as Ld > Lq; the quadrature
-  component is accumulated and a dominating Im logs a "lock far off d"
-  warning (`axes_aligned`).
-- [x] **Detection guards** (2026-06-11): `find_safe_test_current` no longer
-  escalates past the thermal gate on flaky measurements (projects power with
-  the last known R); `measure_resistance` rejects an unconverged current
-  loop (±30% of setpoint → `UnexpectedMotion`) instead of averaging a
-  plausible-but-wrong R. The `wait_telemetry` sample loops got a 2 s
-  deadline (2026-06-11, `sample_vd_id`) — a silent FOC ISR now yields
-  `MotorNotResponding` + `Stopped` instead of an infinite await.
-- [x] **g431: storage `const_assert`** ported (2026-06-11) — build fails if
-  firmware grows into the storage pages. Stale "Temporarily disabled" OCP
-  comment deleted (the function is live, called from main).
-- [ ] **F405 ADC trigger (bench)**: ADC triggers from TIM1_CH4 compare, which
-  fires twice per center-aligned period. Works only by timing accident (the
-  2nd trigger lands inside the still-running injected sequence). Note: G431's
-  `COMPARE_OC4`→TRGO2 is **not** immune either (OC4REF asserts on both
-  passes); the robust fix is one deterministic trigger/period (update event
-  or TIM→DMA→ADC). Verify the JEOC rate under load. [§2]
-- [ ] **Detection: inductance HFI pipeline skew (bench)** — `record()` pairs
-  current with the previous-iteration injection, but the command→apply→sample
-  latency on real hardware may exceed one iteration (tests apply synchronously
-  so it's invisible). Verify against a reference inductance. [§2]
-
-### Host
-
-- [x] **`HostRuntime: Drop`** (2026-06-11): cancels the backend on drop; the
-  GUI connect handler also explicitly shuts down + drops the old runtime
-  (releasing the port) before claiming the device again.
-- [x] **Detect off the command queue** (2026-06-11): `Detect` is spawned to
-  a side task — a queued `Stop` (and the deadman affirmations) no longer
-  wait up to ~70 s behind it. Ordering loss is harmless: the device refuses
-  detection with the motor running.
-- [x] **RTT transport hardening** (2026-06-11): control-block scan uses
-  `ScanRegion::Ram` (chip-described, fixes F405/G474 with >32 KB RAM); the
-  I/O thread no longer `expect()`s — any probe failure is surfaced as an
-  `io::Error` through the reader so the link visibly breaks.
-- [x] **CLI acked motor commands** (2026-06-11): `start`/`stop`/`brake`/
-  `velocity` go through `HostCommand::MotorAck` (new oneshot-reply variant)
-  and exit nonzero when undelivered; `start --duty <pct>` (which was secretly
-  `×0.1 A`) replaced by `start --iq <amps>`. `source` stays fire-and-forget.
-- [x] **GUI fixes** (2026-06-11): measured fast-telemetry arrival rate is
-  compared with the device-acked rate and a "link drops frames" warning is
-  shown when <80%; pole pairs are read from the device's stored MotorParams
-  on connect (preset only as fallback); `motor_running` reset on disconnect.
-
-2026-06-10: fixed the other review host items — CLI `--baud` config
-override, framed-transport (UDP/USB/BLE) handshake check + reconnect
-loop, GUI `unwrap_or(0.0)` field parsing, dead `oxifoc-virtual
---pole-pairs` — and added the GUI phase-source switcher with
-`SlowTelemetry.phase_source` read-back. See git log.
-
-## Sensorless tracking / flying start (bench-blocked)
-
-- [ ] Bring up the B-G431B-ESC1 phase-voltage dividers (BEMF sense) as
-  ADC channels.
-- [ ] MESC-style TRACKING mode: gates off → feed measured v_αβ to the
-  back-EMF observer → flying start = seed commutation from a converged
-  observer instead of blind open-loop. Hall-based flying restart already
-  works (hall estimator + decoupling feedforward run regardless of motor
-  state); this item covers the sensorless case. See safety.md
-  *Boot-time recovery*.
-
-## Hardware bench (waiting for the rig)
-
-- [ ] **Validate timer-capture hall acquisition** (2026-06-10 migration:
-  TIM4/TIM3 XOR + input capture replaced 200 kHz TIM6 polling; hall ticks
-  are now 1 MHz hardware timestamps). Hand-spin the motor and check:
-  hall states cycle 1→3→2→6→4→5, velocity magnitude is sane (a wrong
-  TIM clock assumption would skew it 2×), `OVERCAPTURES` stays 0, and
-  calibration (`read_hall_state_raw`) still reads pins in AF mode.
-- [ ] Re-run motor detection — stored Flipsky params are 1.5× off after
-  the SVPWM normalization fix.
-- [ ] OCP with the BKF break filter under real load (g431).
-- [ ] Dead-time compensation at low speed.
-- [ ] Hall-dropout-at-speed and sensorless crossover behavior.
-- [ ] HFI on the real B-G431B-ESC1: carrier defaults (1 kHz, 12.5% vbus)
-  and polarity-probe pulse amplitude/length (`HFI_POLARITY_*` constants)
-  may need tuning per motor.
-- [ ] Source switching end-to-end via `oxifoc-host-cli source ...`.
+- [ ] **Hall timer-capture валидация** (миграция 2026-06-10): рукой
+  крутить — последовательность 1→3→2→6→4→5, скорость без 2×-скоса,
+  `OVERCAPTURES == 0`, `read_hall_state_raw` читает пины в AF-режиме.
+- [ ] **Hall boundary-anchor фикс (9f936bb)**: d-ток на постоянной
+  скорости должен быть отцентрован (до фикса ~30°-лид давал cos-потерю
+  момента + d-смещение).
+- [ ] Re-run детекции — сохранённые параметры Flipsky смещены в 1.5×
+  после фикса нормализации SVPWM; λ, мерянная GUI-шагом до 2026-06-12,
+  мусор (q-axis метод) — перемерить.
+- [ ] Детекционные PI (0.01/10) — в 10× горячее VESC (0.001/1.0):
+  проверить сходимость на железе.
+- [ ] **F405 ADC double-trigger**: TIM1_CH4 compare стреляет дважды за
+  center-aligned период; g431 `COMPARE_OC4`→TRGO2 принципиально не
+  иммунен. Робастный фикс — один детерминированный триггер/период
+  (update event или TIM→DMA→ADC). Проверить JEOC-rate под нагрузкой.
+- [ ] **Detection pipeline-skew**: `record()` парит ток с инжекцией
+  предыдущей итерации; реальная латентность command→apply→measure может
+  быть >1 итерации (в симе невидимо). Сверить эталонной индуктивностью.
+- [ ] OCP с BKF break-фильтром под реальной нагрузкой (g431).
+- [ ] Dead-time компенсация на низкой скорости.
+- [ ] Hall-dropout на скорости и sensorless кроссовер.
+- [ ] HFI на реальном B-G431B-ESC1: дефолты несущей (1 кГц, 12.5% vbus) и
+  амплитуда/длительность polarity-probe могут требовать тюнинга.
+- [ ] Source switching end-to-end через `oxifoc-host-cli source ...`.
+- [ ] Качество токов на ~90% модуляции + SNR HFI-демода на одном
+  V0-сэмпле (V0_V7 — только если стенд покажет проблему)
+  [notes/startup-and-sampling.md, scope-решение].

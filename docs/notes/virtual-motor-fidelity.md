@@ -1,5 +1,9 @@
 # VirtualMotor Fidelity — What the Sim Proves, and What It Can't
 
+> **STATUS: open (анализ актуален).** Предложенные апгрейды — в TODO.md
+> «VirtualMotor fidelity». Тезис «спаренные конвенции прячут смещения»
+> подтверждён 2026-06-12 hall-конвенцией сима (decisions.md).
+
 Working notes on how far to trust the `VirtualMotor` plant model
 (`oxifoc-core/src/virtual_motor.rs`) and the ~300 host tests built on it,
 from a comparison against VESC's `virtual_motor.c` (the only other simulated

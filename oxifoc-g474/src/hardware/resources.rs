@@ -24,7 +24,7 @@ assign_resources! {
     }
 
     // Hall sensor inputs for X-NUCLEO-IHM08M1 (J3, pull-ups via shield JP3)
-    // All three are TIM2 CH1/CH2/CH3 (AF1) — see docs/nucleo-g474re-ihm08m1.md
+    // All three are TIM2 CH1/CH2/CH3 (AF1) — see docs/hw/nucleo-g474re-ihm08m1.md
     hall: HallResources {
         pa15: PA15, // H1 / Enc A - CN7-17  (TIM2_CH1)
         pb3: PB3,   // H2 / Enc B - CN10-31 (TIM2_CH2)

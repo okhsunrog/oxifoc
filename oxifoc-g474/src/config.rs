@@ -13,7 +13,7 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 ///
 /// Values derived from the shield schematic
 /// (docs/X-NUCLEO-IHM08M1_schematic.pdf, Fig. 5) — see
-/// docs/nucleo-g474re-ihm08m1.md for the full pin/analog mapping.
+/// docs/hw/nucleo-g474re-ihm08m1.md for the full pin/analog mapping.
 ///
 /// - Driver: L6398 gate drivers + STL220N6F7 MOSFETs (60 V)
 /// - Shunts: 0.010 Ω 1 W (R43/R44/R45)

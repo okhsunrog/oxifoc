@@ -1,5 +1,10 @@
 # Sensorless Startup & Current Sampling — Ideas to Borrow from VESC & MESC
 
+> **STATUS: open.** Часть 1 (V0_V7) — осознанное scope-решение, код не
+> меняем без bench-доказательств. Часть 2 (align→ramp→handoff, flying
+> restart, current-scheduled ceiling) — открытая работа, см. TODO.md
+> «Sensorless startup».
+
 Working notes from a line-by-line comparison of the current-sampling path and
 the sensorless-startup path against **VESC** (`bldc`) and **MESC**
 (`MESC_Firmware`). Companion to [hall-improvements.md](hall-improvements.md).

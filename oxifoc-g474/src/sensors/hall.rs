@@ -2,7 +2,7 @@
 //!
 //! Hall acquisition via the TIM2 hall-sensor interface. The shield's J3
 //! hall/encoder connector lands on PA15/PB3/PB10 (see
-//! docs/nucleo-g474re-ihm08m1.md), which are exactly TIM2_CH1/CH2/CH3
+//! docs/hw/nucleo-g474re-ihm08m1.md), which are exactly TIM2_CH1/CH2/CH3
 //! (AF1). `CR2.TI1S` XORs the three inputs into TI1; IC1 captures the
 //! filtered XOR signal on both edges, so every hall transition latches its
 //! timestamp in hardware — the capture ISR (below the FOC ISR in priority)

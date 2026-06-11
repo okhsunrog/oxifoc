@@ -79,7 +79,7 @@ pub fn init_clock() -> Peripherals {
 // VBUS / UL / VL on this shield.
 //
 // Injected sequences, TIM1_TRGO2-triggered (Mms2::COMPARE_OC4, like g431),
-// pins per docs/nucleo-g474re-ihm08m1.md:
+// pins per docs/hw/nucleo-g474re-ihm08m1.md:
 //   ADC1: ia   = PA0 (ADC12_IN1),
 //         vbus = PA1 (ADC12_IN2),
 //         temp = PC2 (ADC12_IN8)
