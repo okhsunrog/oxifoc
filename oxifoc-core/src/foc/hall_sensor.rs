@@ -109,8 +109,19 @@ pub struct HallSensor {
     angle_per_state: f32,
     /// Calibration table: electrical angle (rad) for each logical Hall state (0-5)
     calib: HallCalibration,
-    /// Current electrical angle at last Hall edge (radians, 0 to 2π)
+    /// Interpolation base angle at the last Hall edge (radians, 0 to 2π).
+    ///
+    /// Normally the SECTOR BOUNDARY just crossed (circular midpoint of the
+    /// adjacent calibrated centroids — at the instant of an edge the rotor
+    /// is on the boundary by definition); falls back to the new sector's
+    /// centroid when there is no usable previous sector (first edge after
+    /// boot/glitch, same-state re-read).
     angle: f32,
+    /// Whether `angle` is a sector boundary (midpoint of two centroids).
+    /// Gates the measured-traversal velocity estimate: the distance
+    /// between two boundaries is a real sector width; the distance from a
+    /// centroid fallback to a boundary is not.
+    base_is_boundary: bool,
     /// Raw 3-bit Hall state (0-7)
     raw_state: u8,
     /// Logical Hall state (0-5)
@@ -183,6 +194,7 @@ impl HallSensor {
             angle_per_state,
             calib: HallCalibration::default(),
             angle: 0.0,
+            base_is_boundary: false,
             raw_state: 0,
             logical_state: 0,
             direction: Direction::Stopped,
@@ -356,6 +368,8 @@ impl HallSensor {
     /// * `Some(angle)` - Electrical angle at the edge in radians (0 to 2π)
     /// * `None` - Invalid Hall state (0 or 7)
     pub fn update(&mut self, raw_state: u8, t_ticks: u64) -> Option<f32> {
+        // Previous raw state (for the boundary midpoint) before overwriting
+        let prev_raw = self.raw_state;
         // Store raw state
         self.raw_state = raw_state;
 
@@ -370,6 +384,7 @@ impl HallSensor {
             self.last_edge_ticks = None;
             self.elec_velocity = 0.0;
             self.direction = Direction::Stopped;
+            self.base_is_boundary = false;
             return None;
         }
 
@@ -410,27 +425,52 @@ impl HallSensor {
         self.direction = new_direction;
         self.logical_state = current_state;
 
-        // Base angle from calibration table (includes user-set advance)
-        // Use raw_state for direct lookup in the 8-entry table
-        let angle_raw = self.calib.angle_for_state(raw_state);
+        // Interpolation base: at the instant of an edge the rotor is — by
+        // definition — on the BOUNDARY between the old and new sectors, the
+        // circular midpoint of the two calibrated centroids (VESC
+        // foc_math.c:636; MESC stores the boundary in its hall table and
+        // PLLs against it). Anchoring at the new sector's CENTROID instead
+        // is a systematic half-sector (~30° electrical) lead for the whole
+        // sector: ≈13% torque loss + parasitic d-current. The centroid is
+        // the right fallback only when there is no usable previous sector
+        // (first edge after boot/glitch, same-state re-read) — and remains
+        // the right value for the low-speed snap in sample_at*().
+        let prev_base = self.angle;
+        let prev_base_is_boundary = self.base_is_boundary;
+        let centroid_new = self.calib.angle_for_state(raw_state);
+        let had_prev_edge = self.last_edge_ticks.is_some();
+        let crossed_boundary =
+            had_prev_edge && raw_state != prev_raw && self.calib.is_valid_state(prev_raw);
+        let base = if crossed_boundary {
+            let centroid_prev = self.calib.angle_for_state(prev_raw);
+            wrap_angle(centroid_prev + angle_difference(centroid_new, centroid_prev) / 2.0)
+        } else {
+            centroid_new
+        };
 
         // Velocity estimate from last edge
         if let Some(last_t) = self.last_edge_ticks {
             let dt_ticks = t_ticks.wrapping_sub(last_t).max(1);
             let dt = dt_ticks as f32 / self.ticks_per_sec as f32;
-            let angle_step = self.angle_step_signed(self.direction);
 
             // On direction reversal, negate velocity sign but keep magnitude relationship
             // This matches VESC's handling in foc_correct_hall()
             if self.direction_reversed {
+                let angle_step = self.angle_step_signed(self.direction);
                 self.elec_velocity = -self.elec_velocity.signum() * (angle_step / dt).abs();
+            } else if prev_base_is_boundary && crossed_boundary {
+                // Boundary-to-boundary distance is the MEASURED width of the
+                // sector just traversed (handles asymmetric Hall placement —
+                // MESC carries the same per-state width for its angle step).
+                self.elec_velocity = angle_difference(base, prev_base) / dt;
             } else {
-                self.elec_velocity = angle_step / dt;
+                self.elec_velocity = self.angle_step_signed(self.direction) / dt;
             }
         }
 
         self.last_edge_ticks = Some(t_ticks);
-        self.angle = angle_raw;
+        self.angle = base;
+        self.base_is_boundary = crossed_boundary;
 
         // Deliberately NOT snapping rate_limited_angle here: the edge is
         // where the up-to-60° discontinuity happens, i.e. exactly what the
@@ -886,7 +926,9 @@ impl HallSensorTrait for HallSensor {
     }
 
     fn interpolation_info(&self, now_ticks: u64) -> HallInterpolationInfo {
-        let base_angle = self.calib.angle_for_state(self.raw_state);
+        // The actual interpolation base (sector boundary since the
+        // boundary-anchor fix), so base + offset matches the estimate.
+        let base_angle = self.angle;
         let (interpolation_offset, time_since_edge_us) = if let Some(t0) = self.last_edge_ticks {
             let dt_ticks = now_ticks.wrapping_sub(t0);
             let dt_sec = dt_ticks as f32 / self.ticks_per_sec as f32;
@@ -947,16 +989,19 @@ mod tests {
     fn test_forward_sequence() {
         let mut hall = HallSensor::new(1_000);
 
-        // Valid CW sequence: 1 → 3 → 2 → 6 → 4 → 5 → (wrap to 1)
+        // Valid CW sequence: 1 → 3 → 2 → 6 → 4 → 5 → (wrap to 1).
+        // The first edge has no usable previous sector → centroid (0°);
+        // every following edge returns the SECTOR BOUNDARY just crossed
+        // (midpoint of adjacent centroids) = centroid − 30° for forward.
         let sequence = [1, 3, 2, 6, 4, 5, 1];
         let expected_angles = [
-            0.0,
-            TAU / 6.0,
-            TAU / 3.0,
-            TAU / 2.0,
-            2.0 * TAU / 3.0,
-            5.0 * TAU / 6.0,
-            0.0, // Wraps back
+            0.0,               // centroid fallback (first edge)
+            TAU / 12.0,        // boundary 0°|60° = 30°
+            TAU / 4.0,         // boundary 60°|120° = 90°
+            5.0 * TAU / 12.0,  // 150°
+            7.0 * TAU / 12.0,  // 210°
+            3.0 * TAU / 4.0,   // 270°
+            11.0 * TAU / 12.0, // boundary 300°|360° = 330°
         ];
 
         for (i, &state) in sequence.iter().enumerate() {
@@ -998,14 +1043,17 @@ mod tests {
     fn test_electrical_angle_increment() {
         let mut hall = HallSensor::new(1_000);
 
-        // Electrical angle increment is TAU / 6 (completes 2π every 6 Hall states)
-        let expected_increment = TAU / 6.0;
-
+        // First edge: centroid fallback (0°). Second edge: the boundary
+        // between the 0° and 60° sectors = 30°.
         let angle1 = hall.update(1, 0).unwrap();
         assert!((angle1 - 0.0).abs() < 1e-5);
 
         let angle2 = hall.update(3, 1).unwrap();
-        assert!((angle2 - expected_increment).abs() < 1e-5);
+        assert!((angle2 - TAU / 12.0).abs() < 1e-5);
+
+        // From a boundary base, each further edge advances one full sector.
+        let angle3 = hall.update(2, 2).unwrap();
+        assert!((angle3 - (TAU / 12.0 + TAU / 6.0)).abs() < 1e-5);
     }
 
     #[test]
@@ -1041,9 +1089,10 @@ mod tests {
         let expected_vel = (TAU / 6.0) / 0.001;
         assert!((hall.electrical_velocity() - expected_vel).abs() < expected_vel * 0.01);
 
-        // Sample shortly after the edge (0.1ms) - well within drift threshold
+        // Sample shortly after the edge (0.1ms): interpolation runs from
+        // the boundary just crossed (30°), not the sector centroid.
         let interp = hall.sample_at(11).unwrap();
-        let expected_angle = (TAU / 6.0) + expected_vel * 0.0001;
+        let expected_angle = (TAU / 12.0) + expected_vel * 0.0001;
         let diff = (wrap_angle(interp.angle) - wrap_angle(expected_angle)).abs();
         assert!(diff < 1e-3);
     }
@@ -1069,23 +1118,27 @@ mod tests {
 
     #[test]
     fn test_soft_drift_correction() {
+        // With the boundary anchor + the decayed-velocity advance bound,
+        // the interpolated angle can run at most one sector past the base
+        // boundary — i.e. exactly half a (uniform) sector past the
+        // centroid, which equals the default 30° threshold. Tighten the
+        // threshold to exercise the correction mechanism itself.
         let mut hall = HallSensor::new(1_000_000);
+        hall.set_max_drift(0.3); // ~17°
         hall.update(1, 0).unwrap();
         hall.update(3, 1000).unwrap(); // 1ms = 1047 rad/s (high speed)
 
-        // Sample way in the future - interpolation would drift far
-        let sample = hall.sample_at(2000).unwrap(); // 1ms after edge
+        // 1 ms after the edge: interpolation reaches base(30°) + 60° = 90°,
+        // 30° past the 60° centroid — beyond the tightened threshold.
+        let sample = hall.sample_at(2000).unwrap();
 
-        // Without correction, drift would be ~60° (TAU/6)
-        // With soft correction (1% pull-back), angle should be pulled back slightly
         let sector_angle = TAU / 6.0;
-        let uncorrected_angle = wrap_angle(sector_angle + (TAU / 6.0)); // ~60° drift
+        let uncorrected_angle = wrap_angle(TAU / 12.0 + TAU / 6.0); // 90°
         let diff_from_uncorrected = angle_difference(sample.angle, uncorrected_angle).abs();
 
-        // Should be pulled back by 1% of the drift (approximately)
-        // The drift is ~60° = TAU/6, correction is ~0.6° = TAU/6 * 0.01
+        // Should be pulled back by gain × drift ≈ 0.01 × 0.52 ≈ 0.005 rad
         assert!(
-            diff_from_uncorrected > 0.005, // Should be noticeably different
+            diff_from_uncorrected > 0.004,
             "Soft correction should pull angle back, but diff from uncorrected was only {} rad",
             diff_from_uncorrected
         );
@@ -1313,6 +1366,73 @@ mod tests {
         assert!(hall.update(0, t).is_none());
         assert_eq!(hall.electrical_velocity(), 0.0);
         assert_eq!(hall.direction(), Direction::Stopped);
+    }
+
+    /// The estimate must track an INDEPENDENT continuous rotor angle — not
+    /// the stored sector angle. The older tests defined ground truth as
+    /// `calib.angle_for_state(...)` itself, so an anchor-convention bias
+    /// (seeding interpolation at the sector CENTER instead of the entry
+    /// boundary) was self-consistent and invisible: at the instant of a
+    /// Hall edge the rotor is by definition ON the boundary between the
+    /// old and new sectors (≈ center − width/2 for forward rotation), and
+    /// both quantities then advance at the same velocity, so a center
+    /// anchor is a SYSTEMATIC half-sector (~30° electrical) lead across
+    /// the whole sector — ≈13% torque loss + parasitic d-current. Both
+    /// references anchor at the boundary: VESC uses the midpoint of the
+    /// adjacent centroids (foc_math.c:636), MESC stores the boundary in
+    /// its hall table and PLLs against it (MESCfoc.c:943).
+    #[test]
+    fn interpolation_tracks_continuous_rotor() {
+        let ticks_per_sec = 1_000_000u64; // µs ticks
+        let mut hall = HallSensor::new(ticks_per_sec);
+
+        // Default calibration: centroid of sector k at k·60°, so the
+        // forward entry boundary of sector k is at k·60° − 30°.
+        let omega = 200.0f32; // rad/s elec — well above the interp threshold
+        let width = TAU / 6.0;
+
+        let mut theta = 0.0f32; // true rotor angle, starts mid-sector 0
+        let mut sector = 0usize; // ground-truth sector index
+        let dt_us = 50u64; // 20 kHz sampling
+        let dt = dt_us as f32 / 1e6;
+
+        hall.update(CW_SEQ[0], 0).unwrap();
+
+        let mut max_err = 0.0f32;
+        let mut settled_err = 0.0f32;
+        for k in 1..4000u64 {
+            let t = k * dt_us;
+            theta = wrap_angle(theta + omega * dt);
+
+            // Edge fires exactly when the rotor crosses into the next sector
+            // (true boundary at sector_center + width/2 for forward).
+            let next = (sector + 1) % 6;
+            let next_entry = wrap_angle(next as f32 * width - width / 2.0);
+            if angle_difference(theta, next_entry) >= 0.0
+                && angle_difference(theta, next_entry) < 2.0 * omega * dt
+            {
+                sector = next;
+                hall.update(CW_SEQ[sector], t).unwrap();
+            }
+
+            let est = hall.sample_at(t).unwrap().angle;
+            let err = angle_difference(est, theta).abs();
+            max_err = max_err.max(err);
+            // Give the estimator one electrical revolution to settle
+            // velocity, then record the worst tracking error.
+            if k > 700 {
+                settled_err = settled_err.max(err);
+            }
+        }
+
+        // A boundary-anchored estimator tracks within a few degrees
+        // (velocity quantization + edge timing). The center-anchored
+        // convention fails this at ≈ width/2 ≈ 0.52 rad.
+        assert!(
+            settled_err < 0.15,
+            "hall estimate leads/lags the true rotor by {settled_err} rad \
+             (max {max_err}) — interpolation anchor is biased"
+        );
     }
 
     #[test]

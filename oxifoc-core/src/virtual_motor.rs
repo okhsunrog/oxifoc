@@ -164,6 +164,17 @@ impl VirtualMotor {
     }
 
     /// Compute the Hall sensor raw state from the current rotor angle.
+    ///
+    /// Sector `k` is CENTERED on `k·60° + hall_offset` (spans ±30° around
+    /// it) — the same convention as `HallSensor`'s calibration table, whose
+    /// entries are sector CENTROIDS (that is what `HallCalibrator`'s
+    /// sin/cos averaging measures). With `hall_offset = 0` the default
+    /// estimator table therefore matches this simulated motor exactly, and
+    /// the hall edges fire on the true sector boundaries (`k·60° − 30°`).
+    /// The previous convention (sector spanning `[k·60°, (k+1)·60°)`) put
+    /// the simulated centroids 30° off the default table — invisible while
+    /// the estimator anchored interpolation at the centroid (two errors
+    /// canceled), exposed when it switched to boundary anchoring.
     fn hall_state(&self) -> u8 {
         use core::f32::consts::TAU;
         let phi_pos = if self.phi < 0.0 {
@@ -171,7 +182,7 @@ impl VirtualMotor {
         } else {
             self.phi
         };
-        let phi_hall = libm::fmodf(phi_pos - self.params.hall_offset + TAU, TAU);
+        let phi_hall = libm::fmodf(phi_pos - self.params.hall_offset + TAU + TAU / 12.0, TAU);
         let sector = ((phi_hall * 6.0 / TAU) as usize).min(5);
         HALL_CW_RAW[sector]
     }
@@ -513,12 +524,12 @@ mod tests {
             "calibration result must cover all 6 states"
         );
 
-        // Sanity-check: with offset=π/6 the centre of sector 0 is at π/3.
-        // The calibrated angle for raw state 1 (sector 0) should be close to π/3.
+        // Sanity-check: sector centroids sit at k·60° + offset, so the
+        // calibrated angle for raw state 1 (sector 0) should be ≈ π/6.
         let angle_raw1 = cal_result.angle_for_raw_state(1).unwrap();
         assert!(
-            (angle_raw1 - PI / 3.0).abs() < 0.1,
-            "calibrated angle for state 1 should be ≈π/3 with offset=π/6, got {angle_raw1:.4}"
+            (angle_raw1 - PI / 6.0).abs() < 0.1,
+            "calibrated angle for state 1 should be ≈π/6 with offset=π/6, got {angle_raw1:.4}"
         );
 
         // ── Step 2: closed-loop FOC with calibrated Hall sensor ───────────────

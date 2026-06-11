@@ -7,6 +7,29 @@ two reference FOC firmwares: **VESC** (`bldc`, `motor/foc_math.c` /
 bench · **[improvement]** correctness/quality upgrade · **[idea]** worth
 evaluating.
 
+> **STATUS 2026-06-12 — §1, §2, §5 LANDED.** The §5 regression test
+> (independent continuous rotor model, `interpolation_tracks_continuous_rotor`)
+> **confirmed the §1 bias in software: 0.527 rad ≈ 30.2° systematic lead**.
+> Fix: VESC-style boundary anchoring — `HallSensor::update` seeds the
+> interpolation base at the circular **midpoint of the adjacent calibrated
+> centroids** (= the boundary just crossed), centroid kept as the fallback
+> (first edge, glitch recovery) and for the low-speed snap. §2 came along for
+> free: velocity now uses the measured boundary-to-boundary distance (the real
+> width of the sector traversed) when both bases are boundaries. §3 (calibrator
+> width extraction) turned out **unnecessary** — the midpoint of measured
+> centroids absorbs asymmetric placement without storing widths (this is
+> exactly why VESC doesn't store them either). §4 (HallPll) remains open.
+>
+> Found along the way: `VirtualMotor::hall_state()` placed sector k at
+> `[k·60°, (k+1)·60°)`, i.e. its centroids sat 30° off the estimator's default
+> calibration table — invisible under the old centroid anchor (two errors
+> canceled, which is also why every closed-loop sim test passed). The sim now
+> centers sector k on `k·60° + hall_offset`, matching the table convention
+> measured by `HallCalibrator`.
+>
+> Bench check stays relevant: confirm on hardware that d-current at constant
+> speed is now centered (the lead would have shown as cos-loss + d-bias).
+
 The point of reference for "us" is:
 - `oxifoc-core/src/foc/hall_sensor.rs` — platform-agnostic estimator
 - `oxifoc-core/src/foc/hall_calibration.rs` — `HallCalibrator`
