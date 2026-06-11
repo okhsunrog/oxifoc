@@ -126,15 +126,23 @@ generic over SinCos (CORDIC on G4, FastSinCos on F405), `vsqrt.f32` +
 polynomial atan2 in `fast_math`. HFI went from >150% of the 20 kHz ISR
 budget to 13.9% — it was unusable on hardware before this.
 
-- [ ] **g431 flash headroom is ~320 BYTES** (126 656 / 126 976 after the
-  2026-06-11 observer upgrades) — the next feature WILL overflow. Do the
-  recovery now. Recovery
-  options, in order: switch the cold detection paths (hall_calibration
-  sin/cos accumulators, flux-linkage gamma, HfiInjector's LibmSinCos
-  default) off libm sinf/cosf — that's what still pins the f64
-  softfloat machinery in flash; then trim `.rodata` (~14 KB, mostly
-  postcard schema tables). NOTE: `panic_immediate_abort` is OFF the
-  table — it would bypass the gate-kill panic handler in safety.rs.
+- [x] **g431 flash recovery done 2026-06-11**: 126 656 → 118 668 /
+  126 976 (headroom 320 B → 8.3 KB), zero accuracy loss. What landed:
+  hall_calibration → FastSinCos (<1e-6 err; it was the ONLY firmware
+  sinf/cosf — everything else libm hung off the detect_server task) +
+  detect-path `libm::sqrtf` → `fast_math::sqrtf` (bit-identical vsqrt)
+  = −6.9 KB incl. the whole f64 softfloat; g431 unwrap/expect →
+  `defmt::unwrap!` −0.6 KB; defmt feature on embassy-* / postcard /
+  heapless / embedded-io-async −0.5 KB (also: interned dep panics,
+  Format on dep errors). Remaining libm: atanf + remainderf, 602 B,
+  pure f32, intentionally kept for exactness. Further reserves if flash
+  gets tight again: `detection` feature gate (default-on, kept compiling
+  by `just check`) −14.7 KB on G431; `.rodata` is ~8 KB of dep
+  panic/expect strings — only shrinkable by trimming panicking paths.
+  NOTE: `panic_immediate_abort` is OFF the table — it would bypass the
+  gate-kill panic handler in safety.rs. F405/G474 still use plain
+  unwrap + no dep defmt features — port the g431 treatment when their
+  flash matters (they're 1 MB / 512 KB parts, no pressure).
 - [ ] f405/g474 build with `opt-level = 3`, g431 with `"z"` (flash
   pressure). Intentional, but unmeasured: check what `"z"` would cost
   f405/g474 in ISR time, or whether it matters at all at 20 kHz.
