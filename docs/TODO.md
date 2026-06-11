@@ -1,11 +1,32 @@
 # Project TODO / backlog
 
-Working list of known gaps and planned work. A full external review
-with verified bugs, gap analysis and a borrow-list from reference
-projects (VESC/MESC/moteus/ODrive/MCSDK) lives in
-[review-2026-06-10.md](review-2026-06-10.md); items below reference it. Safety-specific items live in
-[safety.md](safety.md#open-questions--todo); hardware bring-up notes in the
-board docs.
+Single backlog for all known gaps and planned work. The **analysis** behind
+these items — verified bugs, gap analysis, and a borrow-list from reference
+projects (VESC/MESC/moteus/ODrive/MCSDK) — lives in [review.md](review.md);
+the failsafe **design** in [safety.md](safety.md); hardware bring-up facts in
+the board docs. Those docs no longer keep their own TODO lists — everything
+actionable is collected here.
+
+## Safety
+
+Failsafe-layer *design* and rationale live in [safety.md](safety.md); the
+remaining work:
+
+- [ ] **Layer 2: ISR command-staleness deadman** + configurable failsafe mode.
+  The only link-loss gate today is async-executor-dependent and 3–5 s
+  ([review.md](review.md) §1, §3). Stamp `last_cmd_tick` in the ISR
+  `CMD_CHANNEL` drain; force a self-contained failsafe mode past a small
+  threshold.
+- [ ] Shorten control-link liveness timeout (interim, until Layer 2).
+- [ ] Once Layer 2 exists, fold/remove the Layer 1 `link_active` gate.
+- [ ] Integrating current/voltage fault detector (replace the single-sample
+  trip — nuisance-trips on regen/EMI); signed open-loop override
+  (direction = sign of last velocity). [review.md §3]
+- [ ] G474: arm the IWDG when the motor modules (FOC ISR) wake up.
+- [ ] Bench: verify IWDG reset → PWM safe on real hardware (induce a hang).
+- [ ] Boot: reset-reason read + spinning-motor detection + flying-restart sync.
+- [ ] Configurable post-watchdog policy (controlled coast / regen / hold).
+- [ ] `Idempotent` marker trait + `call`/`call_once` helpers in host-lib.
 
 ## Deferred until needed
 
@@ -142,17 +163,62 @@ budget to 13.9% — it was unusable on hardware before this.
   test profile; the shipped "z" build should be confirmed in situ. Also
   settles the F405 double-trigger suspicion via the measured ISR rate.
 
-## From external review (verified pending / host side)
+## From external review (verified pending)
 
-- [ ] **F405 ADC trigger suspicion (bench)**: ADC triggers from TIM1_CH4
-  compare, which fires twice per period in center-aligned mode (G431
-  correctly uses TRGO2/COMPARE_OC4, one edge). May work by accident
-  (second trigger lands in a still-running injected sequence). Verify
-  ISR rate on hardware or move F405 to TRGO.
+### Firmware (2026-06-11 re-review; detail in [review.md](review.md) §1–§2)
+
+- [ ] **F405: SPI to DRV8301 inside a critical section masks the FOC ISR**
+  (PRIMASK gates all interrupts, incl. the control loop, during the blocking
+  SPI read on a gate-driver fault). Move the SPI device out of the CS-mutex.
+  [§1 HIGH]
+- [ ] **F405: FOC ISR left at default priority** — comms ISRs jitter/preempt
+  the control loop. Set NVIC priority 0 like G431. [§1 HIGH]
+- [ ] **F405: `OverTemp` not critical + motor temp measured but never
+  fault-checked.** Add `OverTemp` to `is_critical`; add a motor-temp
+  threshold to `BoardConfig` + a second `check_temperature_fault`. [§1]
+- [ ] **Detection: spin-down flux is dead on hardware** —
+  `read_coast_telemetry` not overridden on `EmbassyDetectionHardware`, so the
+  R-independent path always falls back. Implement it (phase-voltage ADC +
+  observer ωe) or stop advertising it. [§1]
+- [ ] **Detection: inductance gives `Ld ≤ Lq` by construction** (bin-2
+  magnitude only) — use the complex bin-2 to recover saliency sign / catch a
+  90°-off lock. [§1]
+- [ ] **g431: storage region has no `const_assert`** against firmware overlap
+  (f405/g474 have one) — self-brick risk on the 128 KB single-bank part.
+  Port the assert + `FIRMWARE_END_OFFSET`. [§1]
+- [ ] Stale safety comment: g431 `init_overcurrent_protection` says
+  "Temporarily disabled" but OCP (BKIN + BKF filter) is enabled — delete it.
+  [§3]
+- [ ] **F405 ADC trigger (bench)**: ADC triggers from TIM1_CH4 compare, which
+  fires twice per center-aligned period. Works only by timing accident (the
+  2nd trigger lands inside the still-running injected sequence). Note: G431's
+  `COMPARE_OC4`→TRGO2 is **not** immune either (OC4REF asserts on both
+  passes); the robust fix is one deterministic trigger/period (update event
+  or TIM→DMA→ADC). Verify the JEOC rate under load. [§2]
+- [ ] **Detection: inductance HFI pipeline skew (bench)** — `record()` pairs
+  current with the previous-iteration injection, but the command→apply→sample
+  latency on real hardware may exceed one iteration (tests apply synchronously
+  so it's invisible). Verify against a reference inductance. [§2]
+
+### Host
+
+- [ ] **`HostRuntime` has no `Drop`** — leaks a tokio runtime + thread (still
+  holding the port) on every GUI reconnect. Add `Drop`/shutdown of the old
+  slot. [review.md §3]
 - [ ] Host command queue is strictly serial: a `Stop` queued behind a
   running `Detect` waits for it (up to the ~70 s retry budget). The
   device-side link failsafe covers the safety angle, but the UX is
   wrong — route Stop around the queue or cancel in-flight detect.
+- [ ] RTT transport: `expect()` in the detached thread silently kills the
+  link with no reconnect; control-block scan hardcoded to 32 KB
+  (`0x20000000..0x20008000`) breaks on F405/G474 (RAM > 32 KB). [review.md §3]
+- [ ] CLI `start`/`stop`/`source` are fire-and-forget (always exit 0);
+  `--duty` is actually current (`× 0.1 A`). Route through the ack; rename the
+  flag. [review.md §3]
+- [ ] GUI: telemetry rate above link bandwidth drops silently (compare
+  `actual_fast_hz`); RPM uses preset pole-pairs, not the device's
+  (`HardwareInfo` has none); `motor_running` not reset on disconnect.
+  [review.md §3]
 
 2026-06-10: fixed the other review host items — CLI `--baud` config
 override, framed-transport (UDP/USB/BLE) handshake check + reconnect

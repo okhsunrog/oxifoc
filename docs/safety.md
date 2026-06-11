@@ -177,12 +177,9 @@ of stop.
 
 ## Open questions / TODO
 
-- [ ] Layer 2: ISR command-staleness deadman + configurable failsafe mode.
-- [x] Layer 3/4: panic/HardFault gate kill + IWDG petted from FOC ISR.
-- [ ] G474: arm the IWDG when the motor modules (FOC ISR) wake up.
-- [ ] Bench: verify IWDG reset → PWM safe on real hardware (induce a hang).
-- [ ] Boot: reset-reason read + spinning-motor detection + flying-restart sync.
-- [ ] Configurable post-watchdog policy (controlled coast / regen / hold).
-- [ ] Once Layer 2 exists, fold/remove the Layer 1 `link_active` gate.
-- [ ] `Idempotent` marker trait + `call`/`call_once` helpers in host-lib.
-- [ ] Shorten control-link liveness timeout (interim, until Layer 2).
+Done: Layer 3/4 (panic/HardFault gate kill + IWDG petted from the FOC ISR).
+
+The remaining actionable items (Layer 2 deadman, liveness shortening, G474
+IWDG, flying-restart, post-watchdog policy, idempotency helpers) live in the
+single backlog — [TODO.md](TODO.md#safety). This file keeps the failsafe
+*design*; what's still to build is tracked there.

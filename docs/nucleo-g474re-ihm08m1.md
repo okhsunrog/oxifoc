@@ -125,13 +125,9 @@ Applied 2026-06-11: `sensors/hall.rs` is on TIM2/PA15+PB3+PB10 with
 to TIM5, `hardware/resources.rs` carries the corrected pins/CN numbers,
 and `mod sensors` is compiled even while the motor stack is dormant.
 
-Still open for bring-up (tracked in TODO.md):
-
-- re-enable control/motor/calibration modules; their `foc.rs` must take
-  `now_ticks` from `sensors::hall::now_ticks()` like g431 (already
-  edited, not compile-checked until enabled);
-- ADC assignment per this table: PA0/PC1/PC0 (IN1/IN7/IN6 on ADC1/2),
-  VBUS PA1, NTC PC2; BKIN on PA6 (+ PA11 as BKIN2) with the same
-  external-comparator model as F405's DRV nFAULT (the shield has its own
-  OCP comparator → BKIN);
-- **keep PB15 and PB14 Hi-Z** (see warnings above).
+Still open for bring-up: the actionable checklist (re-enable
+control/motor/calibration, ADC assignment, BKIN, IWDG, jumpers) lives in the
+single backlog — [TODO.md](TODO.md) (g474 + IHM08M1 section). The load-bearing
+hardware constraint to carry over from this doc: **keep PB15 and PB14 Hi-Z**
+(see the PWM/Protection warnings above — they are CH3N/CH2N on the G474, not
+the F302-era CH1N/BKIN the shield's silkscreen implies).
