@@ -34,6 +34,7 @@
 /// let clamped = raw.clamp(-24.0, 24.0);
 /// pi.apply_anti_windup(clamped - raw);
 /// ```
+#[derive(Debug)]
 pub struct PIController {
     /// Proportional gain
     kp: f32,
@@ -134,6 +135,7 @@ impl PIController {
 /// let output = pi.update(5.0, 4.8, 0.0001);
 /// assert!(output >= -24.0 && output <= 24.0);
 /// ```
+#[derive(Debug)]
 pub struct ClampedPI {
     pi: PIController,
     min: f32,

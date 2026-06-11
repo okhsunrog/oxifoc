@@ -76,11 +76,35 @@ with no further input, host-configurable via `FailsafeConfigStored` (ConfigKey
 
 - **Coast** — cut PWM (high-Z / free-wheel); reproduces the legacy hard Stop.
 - **RampToZero** — slew the q-current to zero, then coast.
-- **ControlledStop** — ramp to zero, then **regen-brake to a standstill**
-  (unidirectional, capped, OV-derated) so the board stops on link loss. Brakes
-  to a full stop on Hall (tracks to zero); sensorless-only it brakes to the
-  observer floor then coasts (the velocity estimate is unreliable near zero).
-  Aborts to high-Z if regen pushes the bus into the OverVoltage fault.
+- **ControlledStop** — ramp to zero, then **regen-brake to a standstill at a
+  bounded deceleration**: the velocity reference ramps to zero at
+  `decel_rad_s2` through the failsafe's *own* `VelocityLoop` instance (fixed
+  conservative gains — the host-tunable cruise loop is never the safety
+  net), so the stop feels the same on a slope as on the flat, up to the
+  current cap. Unidirectional (only ever opposes the original rotation),
+  capped at `brake_current_a`, OV-derated. On a clean stop the configurable
+  **terminal** applies: high-Z, or `ParkBrake` (default — hand over to
+  `ControlMode::Brake` so the stopped board doesn't roll away). The give-up
+  exits never engage the brake at speed:
+  - **no-progress watchdog** — |ω| hasn't improved for 2 s (broken estimate,
+    or a descent the cap can't beat) → coast; a brake merely *holding* speed
+    on a hill gets the full window first.
+  - hard time cap (`brake_time_s`, default 10 s) → coast.
+  - angle source lost trust mid-brake → coast (never commutate blind).
+  - regen pushing the bus into the OverVoltage fault → high-Z via the fault
+    gate.
+
+The same machinery serves the user-commanded **ramp-into-brake**: a `Brake`
+command above the standstill gate is substituted with ControlledStop ending
+in `ParkBrake` instead of being rejected (`FocDriver::enter_brake_ramp`) —
+but as a *user* action it does not set the re-arm latch.
+
+Physical limit (document once, accept forever): on a long descent with a
+**full battery** regen has nowhere to put the energy — the OV derate sheds
+the brake exactly when it's needed most. Electrically the only answer there
+is dissipative braking (short/heat in the windings); until that exists,
+guaranteed stopping power on a steep descent at full charge does not — the
+rider's foot is the backstop.
 
 **Scope.** The deadman covers only the *drive* modes (`CurrentControl`, plus
 velocity/position once they exist) — what a vehicle rides on. Exempt:

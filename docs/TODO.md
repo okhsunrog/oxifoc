@@ -37,22 +37,22 @@ Failsafe-layer *design* and rationale live in [safety.md](safety.md).
   then coasts). Confirm no OV trip on the bus during regen. Also bench-tune
   `BRAKE_ENTRY_MAX_E_RAD_S` (parking-brake entry gate) and verify the
   windings-short current at that speed is comfortably inside FET ratings.
-- [ ] **Parking brake follow-ups** (`ControlMode::Brake` — windings short —
-  added 2026-06-11; speed-gated entry, exempt from deadman/link-loss):
-  - Ramp-into-brake: a `Brake` command at speed is currently rejected;
-    nicer is auto-substituting the ControlledStop ramp with `Brake` as the
-    terminal state instead of high-Z (also wanted for the failsafe itself —
-    a board that brakes to a stop on a slope then shouldn't roll away).
-  - GUI button + remote mapping.
-- [ ] **ControlledStop v2** (slope-independent, see review discussion
-  2026-06-11): decel-limited velocity ramp via the shared `VelocityLoop`
-  block (now in `foc/velocity.rs` — own instance, fixed conservative gains)
-  instead of constant current; replace the fixed `brake_time_s` give-up with
-  a "|ω| not decreasing" detector (+ long hard cap); configurable terminal
-  state high-Z vs `Brake`. Document in safety.md the physical limit: regen
-  into a full battery on a long descent cannot guarantee a stop (OV derate
-  sheds the brake) — dissipative braking (short/heat) is the only electrical
-  answer there.
+- [x] **ControlledStop v2 + ramp-into-brake** (2026-06-11): the failsafe
+  brake is now a decel-limited velocity ramp (`decel_rad_s2`) through the
+  failsafe's own `VelocityLoop` instance (fixed soft gains) — slope-
+  independent felt deceleration up to the current cap; no-progress watchdog
+  (2 s) + 10 s hard cap replace the blunt 3 s timeout; configurable clean-
+  stop terminal high-Z vs `ParkBrake` (default ParkBrake — the stopped board
+  holds on a slope). A user `Brake` command at speed now substitutes the
+  same ramp ending in `Brake` (no re-arm latch) instead of being rejected.
+  Give-up paths never short windings at speed. Physical limit (regen into a
+  full battery) documented in safety.md.
+- [ ] **Parking brake follow-ups**: GUI button + remote mapping.
+- [ ] **Dissipative braking near OV** (the full-battery descent gap, see
+  safety.md): when the OV derate starts shedding regen brake, dump the
+  energy in the windings instead (active short / d-axis current) with
+  thermal supervision. The only electrical answer to "full battery, long
+  hill"; needs bench work.
 - [ ] **Position hold** (after position control lands): true hold-in-place —
   position loop with the target latched at engage (creep-free on a slope,
   unlike the viscous `Brake`), at the cost of battery drain and heat. Cascade:

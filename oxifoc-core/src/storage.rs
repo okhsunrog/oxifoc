@@ -287,29 +287,37 @@ pub struct FailsafeConfigStored {
     /// Reaction policy, as `FailsafePolicy as u8` (0=Coast, 1=RampToZero,
     /// 2=ControlledStop; unknown → Coast).
     pub policy: u8,
-    /// Regen-brake current intent (A).
+    /// Regen-brake current cap (A).
     pub brake_current_a: f32,
     /// q-current slew time (ms).
     pub ramp_ms: f32,
-    /// Maximum brake duration (ms).
+    /// Hard cap on the brake duration (ms); the smart give-up is the
+    /// no-progress detector in the controller.
     pub brake_time_ms: f32,
     /// |ω_e| (electrical rad/s) treated as stopped.
     pub standstill_rad_s: f32,
+    /// Brake deceleration (electrical rad/s²) for the velocity-ramped stop.
+    pub decel_rad_s2: f32,
+    /// Clean-stop terminal, as `FailsafeTerminal as u8` (0=HighZ,
+    /// 1=ParkBrake; unknown → HighZ).
+    pub terminal: u8,
 }
 
 impl PostcardValue<'_> for FailsafeConfigStored {}
 
 impl Default for FailsafeConfigStored {
-    /// Longboard default: brake to a controlled stop on link loss (mirrors
-    /// `FailsafeConfig::default`).
+    /// Longboard default: brake to a controlled stop on link loss, then hold
+    /// the parking brake (mirrors `FailsafeConfig::default`).
     fn default() -> Self {
         Self {
             staleness_timeout_ms: 150,
             policy: 2, // ControlledStop
             brake_current_a: 15.0,
             ramp_ms: 100.0,
-            brake_time_ms: 3000.0,
+            brake_time_ms: 10_000.0,
             standstill_rad_s: 20.0,
+            decel_rad_s2: 1_000.0,
+            terminal: 1, // ParkBrake
         }
     }
 }

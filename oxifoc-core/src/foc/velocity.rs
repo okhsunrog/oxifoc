@@ -5,9 +5,9 @@
 //!
 //! - [`ControlMode::VelocityControl`](crate::motor::ControlMode) — the
 //!   normal, host-tunable cruise loop owned by `FocDriver`.
-//! - (planned) the failsafe's ControlledStop v2: a decel-limited ramp to
-//!   zero through a *separate* instance with fixed conservative gains, so a
-//!   mis-tuned cruise loop can never become the link-loss safety net.
+//! - the failsafe's ControlledStop (`motor::failsafe`): a decel-limited ramp
+//!   to zero through a *separate* instance with fixed conservative gains, so
+//!   a mis-tuned cruise loop can never become the link-loss safety net.
 //! - (planned) position control: a position P term feeds `omega_target`
 //!   into the same block (cascade).
 //!
@@ -26,6 +26,7 @@ use crate::foc::pi_controller::ClampedPI;
 ///
 /// Used as the velocity-reference ramp (accel/decel limit). `rate <= 0` or
 /// non-finite disables limiting (the value jumps straight to the target).
+#[derive(Debug)]
 pub struct SlewLimiter {
     value: f32,
     /// Max |d(value)/dt| in units per second.
@@ -119,6 +120,7 @@ impl VelocityLoopConfig {
 /// The PI output is clamped to the caller-supplied current limit each cycle
 /// with back-calculation anti-windup ([`ClampedPI`]), so saturating into the
 /// limit (steep hill, step target) doesn't wind the integrator up.
+#[derive(Debug)]
 pub struct VelocityLoop {
     pi: ClampedPI,
     ramp: SlewLimiter,
@@ -177,7 +179,22 @@ impl VelocityLoop {
         } else {
             f32::INFINITY
         };
-        self.pi.set_limits(-limit, limit);
+        self.step_clamped(omega_target, omega_meas, -limit, limit, dt)
+    }
+
+    /// One cycle with explicit asymmetric output bounds — for unidirectional
+    /// users like the failsafe brake, which must only ever oppose the
+    /// original rotation. Anti-windup tracks these exact bounds, so pinning
+    /// one side at zero doesn't wind the integrator.
+    pub fn step_clamped(
+        &mut self,
+        omega_target: f32,
+        omega_meas: f32,
+        iq_min: f32,
+        iq_max: f32,
+        dt: f32,
+    ) -> f32 {
+        self.pi.set_limits(iq_min, iq_max);
         let omega_ref = self.ramp.step(omega_target, dt);
         self.last_iq = self.pi.update(omega_ref, omega_meas, dt);
         self.last_iq

@@ -16,7 +16,9 @@ use crate::foc::pwm::{PhasePwm, PhaseState, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::velocity::{VelocityLoop, VelocityLoopConfig};
-use crate::motor::failsafe::{FailsafeAction, FailsafeConfig, FailsafeController, FailsafePolicy};
+use crate::motor::failsafe::{
+    FailsafeAction, FailsafeConfig, FailsafeController, FailsafePolicy, FailsafeTerminal,
+};
 use crate::motor::six_step;
 
 // Re-export ControlMode from types (single source of truth)
@@ -444,12 +446,35 @@ where
     /// `process_commands`. Defense in depth against a reconnecting host
     /// replaying a stale throttle.
     pub fn enter_failsafe(&mut self) {
+        self.failsafe_latched = true;
+        self.arm_failsafe_with(self.failsafe_cfg.policy, self.failsafe_cfg.terminal);
+    }
+
+    /// User-commanded ramp-into-parking-brake: a `Brake` command above the
+    /// standstill gate is substituted with the ControlledStop sequence ending
+    /// in `ControlMode::Brake`, instead of being rejected. Same machinery as
+    /// the failsafe but **not a failsafe event** — it does not set the re-arm
+    /// latch (the user asked for this; no "back to neutral" owed). Returns
+    /// false when the current sensor is uncalibrated (can't current-brake;
+    /// the caller keeps rejecting).
+    pub fn enter_brake_ramp(&mut self) -> bool {
+        if !self.current_sensor.is_calibrated() {
+            return false;
+        }
+        self.arm_failsafe_with(FailsafePolicy::ControlledStop, FailsafeTerminal::ParkBrake);
+        true
+    }
+
+    /// Common arm body for the failsafe and the user brake ramp. Idempotent
+    /// while a sequence is active. Falls back to Coast when the current
+    /// sensor isn't calibrated — the brake needs the current loop, which
+    /// refuses to run uncalibrated.
+    fn arm_failsafe_with(&mut self, policy: FailsafePolicy, terminal: FailsafeTerminal) {
         if self.failsafe_ctrl.is_active() {
             return;
         }
-        self.failsafe_latched = true;
         let policy = if self.current_sensor.is_calibrated() {
-            self.failsafe_cfg.policy
+            policy
         } else {
             FailsafePolicy::Coast
         };
@@ -471,7 +496,7 @@ where
             ControlMode::VelocityControl { .. } => self.velocity_loop.last_iq(),
             _ => 0.0,
         };
-        self.failsafe_ctrl.arm(current_iq, policy);
+        self.failsafe_ctrl.arm(current_iq, policy, terminal);
     }
 
     /// Clear the failsafe sequence (a fresh command re-armed control, or a
@@ -675,6 +700,18 @@ where
                 self.pwm.disable();
                 self.controller.reset();
                 self.mode = ControlMode::Stopped;
+                self.failsafe_ctrl.reset();
+                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
+                Ok(FocOutput::default())
+            }
+            // Clean stop with the parking-brake terminal: hand over to
+            // ControlMode::Brake (its step arm re-asserts the low-side short
+            // every cycle from here on). Only ever emitted at standstill.
+            FailsafeAction::EngageBrake => {
+                self.pwm
+                    .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
+                self.controller.reset();
+                self.mode = ControlMode::Brake;
                 self.failsafe_ctrl.reset();
                 self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
@@ -1890,6 +1927,8 @@ mod tests {
             ramp_s: 0.02,
             brake_time_s: 2.0,
             standstill_rad_s: 20.0,
+            decel_rad_s2: 800.0,
+            terminal: crate::motor::failsafe::FailsafeTerminal::HighZ,
         });
         driver.set_mode(ControlMode::CurrentControl {
             iq_target: 3.0,
@@ -1940,6 +1979,91 @@ mod tests {
         assert!(
             !driver.failsafe_active(),
             "failsafe cleared at the terminal"
+        );
+    }
+
+    /// Closed-loop ramp-into-brake: a user Brake command at speed substitutes
+    /// the controlled-stop ramp (decel-limited, via the failsafe machinery)
+    /// and ends parked in `ControlMode::Brake` — without setting the
+    /// failsafe re-arm latch (user-commanded, no "back to neutral" owed).
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn brake_at_speed_ramps_to_standstill_then_parks() {
+        use crate::foc::hall_sensor::HallSensor;
+        use crate::foc::phase::PhaseManager;
+        use crate::foc::trig::LibmSinCos;
+        use crate::virtual_motor::{MotorParams, VirtualMotor};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        let params = MotorParams {
+            friction_b: 2e-3,
+            ..MotorParams::default()
+        };
+        let mut motor = VirtualMotor::new(params);
+
+        let mut out = motor.step(0.0, 0.0, 0.0, DT);
+        let mut hall = HallSensor::new(1_000_000);
+        hall.update(out.hall_state, 0);
+        let mut last_hall = out.hall_state;
+
+        let mgr = PhaseManager::with_hall(hall);
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            24.0,
+        );
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            mgr,
+            DT,
+        );
+        driver.set_current_limits(CurrentLimits::from_max_current(40.0));
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 3.0,
+            id_target: 0.0,
+        });
+
+        const BRAKE_AT: u64 = 20_000; // 1 s of drive, then the user brakes
+        let mut peak_omega = 0.0f32;
+        for step in 1..80_000u64 {
+            let now = step * 50;
+            if step == BRAKE_AT {
+                assert!(peak_omega > 50.0, "should be spinning, peak {peak_omega}");
+                // What the process_commands gate does for Brake at speed.
+                assert!(driver.enter_brake_ramp());
+                assert!(
+                    !driver.failsafe_latched(),
+                    "user brake must not set the re-arm latch"
+                );
+            }
+            if out.hall_state != last_hall {
+                driver.phase_mut().hall_mut().update(out.hall_state, now);
+                last_hall = out.hall_state;
+            }
+            driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+            if step < BRAKE_AT {
+                driver.note_command_tick(now);
+                peak_omega = peak_omega.max(out.omega_e.abs());
+            }
+            let telem = driver.step(now).unwrap_or_default();
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        }
+
+        assert_eq!(
+            driver.mode(),
+            ControlMode::Brake,
+            "ends parked in Brake after the ramp"
+        );
+        assert!(!driver.failsafe_active());
+        assert!(!driver.failsafe_latched());
+        assert!(
+            out.omega_e.abs() < 25.0,
+            "must be ~standstill, ωe = {}",
+            out.omega_e
         );
     }
 

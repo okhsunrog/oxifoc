@@ -379,13 +379,22 @@ where
 
             // Brake (windings shorted) is only safe to enter near standstill:
             // at speed the short-circuit current is set by back-EMF against
-            // the motor impedance (→ λ/L), outside any control loop. Reject
-            // and keep the current mode; the host must slow down first.
+            // the motor impedance (→ λ/L), outside any control loop. Above
+            // the gate, substitute the controlled-stop ramp ending in Brake
+            // (decel-limited regen to standstill, then the short) — same
+            // machinery as the failsafe but user-commanded, so it does not
+            // set the re-arm latch. Falls back to rejecting when the current
+            // sensor is uncalibrated (can't current-brake).
             if mode == ControlMode::Brake
                 && foc.phase().get().velocity.abs() > BRAKE_ENTRY_MAX_E_RAD_S
             {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("Brake rejected: rotor not near standstill");
+                if foc.enter_brake_ramp() {
+                    #[cfg(feature = "defmt")]
+                    defmt::info!("Brake at speed: ramping to standstill first");
+                } else {
+                    #[cfg(feature = "defmt")]
+                    defmt::warn!("Brake rejected: at speed and current sensor uncalibrated");
+                }
                 return;
             }
 
@@ -549,13 +558,22 @@ where
         }
     };
 
-    // The failsafe terminal transition (brake finished / aborted → Stopped)
-    // happens inside step(); mirror it into the shared state so telemetry
-    // and the config server's motor-running gate see the truth. While the
-    // brake is still running the state stays Running — a flash stall must
-    // not be admitted mid-brake.
+    // The failsafe terminal transition (brake finished / aborted → Stopped,
+    // or clean-stop → parking Brake) happens inside step(); mirror it into
+    // the shared state so telemetry and the config server's motor-running
+    // gate see the truth. While the brake is still running the state stays
+    // Running — a flash stall must not be admitted mid-brake.
     if was_failsafe && !driver.failsafe_active() {
-        critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
+        let terminal_mode = driver.mode();
+        critical_section::with(|cs| {
+            let mut state = state_mutex.borrow(cs).borrow_mut();
+            match terminal_mode {
+                ControlMode::Stopped => state.set_stopped(),
+                // ParkBrake terminal (mirrors how a direct Brake command is
+                // recorded: running with mode = Brake).
+                other => state.set_running(other),
+            }
+        });
     }
 
     result
