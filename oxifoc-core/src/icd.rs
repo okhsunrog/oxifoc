@@ -12,8 +12,7 @@
 //!
 //! | Topic | Message | Description |
 //! |-------|---------|-------------|
-//! | `FastTelemetryTopic` | `FastTelemetry` | High-frequency motor data (default 1kHz) |
-//! | `SlowTelemetryTopic` | `SlowTelemetry` | System health data (default 10Hz) |
+//! | `FastTelemetryTopic` | `FastTelemetryBatch` | High-frequency motor data (default 1kHz) |
 //!
 //! # Endpoints (request/response)
 //!
@@ -21,9 +20,12 @@
 //! |----------|---------|----------|-------------|
 //! | `HardwareInfoEndpoint` | `()` | `HardwareInfo` | Hardware information query |
 //! | `MotorEndpoint` | `ControlMode` | `MotorStatus` | Motor control commands |
+//! | `SlowTelemetryEndpoint` | `()` | `SlowTelemetry` | System health poll (~10 Hz, doubles as heartbeat) |
 //! | `TelemetryConfigEndpoint` | `TelemetryConfig` | `TelemetryConfigAck` | Configure streaming rates |
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
-//! | `DetectEndpoint` | `DetectRequest` | `DetectResponse` | Motor detection |
+//! | `DetectEndpoint` | `Keyed<DetectRequest>` | `DetectResponse` | Motor detection |
+//! | `PhaseSourceEndpoint` | `PhaseSource` | `PhaseSourceAck` | Angle source selection |
+//! | `ConfigEndpoint` | `ConfigRequest` | `ConfigResponse` | Config read/write (`storage` feature) |
 
 use ergot::endpoint;
 
@@ -135,12 +137,12 @@ endpoint!(ConfigEndpoint, ConfigRequest, ConfigResponse, "cmd/config");
 // Delivery semantics classification (requires `delivery` feature)
 // ============================================================================
 //
-// Every command declares where it sits on the delivery ladder. All endpoints
-// below are idempotent by construction — reads and absolute setpoints — so the
-// host may `at_least_once` them (retry on timeout is safe). The one action,
-// `DetectEndpoint`, is intentionally NOT classified here yet: it becomes
-// `Deduplicated` (with a `Keyed<DetectRequest>` payload) when the server-side
-// dedup lands, so the compiler keeps it off the blind-retry path until then.
+// Every command declares where it sits on the delivery ladder. Almost all
+// endpoints are idempotent by construction — reads and absolute setpoints —
+// so the host may `at_least_once` them (retry on timeout is safe). The one
+// action, `DetectEndpoint`, is `Deduplicated`: its `Keyed<DetectRequest>`
+// payload carries a `ReqId` the server dedups on (see
+// `oxifoc_core::runtime::detect`), making retries effectively-once.
 #[cfg(feature = "delivery")]
 mod delivery_classes {
     use super::*;

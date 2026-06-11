@@ -49,7 +49,9 @@ pub fn sqrtf(x: f32) -> f32 {
 /// nonlinearity already contribute.
 ///
 /// Same pure-Rust code on every target — no sim/hardware divergence.
-/// Returns 0.0 for (0, 0), matching the y = 0, x ≥ 0 branch.
+/// Returns **π/2 for (0, 0)** (the 1e-20 bias on |y| makes x = 0 resolve
+/// as if y were an infinitesimal positive), unlike `libm::atan2f`'s 0.0.
+/// Callers gate the degenerate zero-flux case on confidence, not angle.
 #[inline]
 pub fn atan2f(y: f32, x: f32) -> f32 {
     use core::f32::consts::FRAC_PI_4;

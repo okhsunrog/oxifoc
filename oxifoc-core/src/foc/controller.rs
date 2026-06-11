@@ -438,8 +438,8 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
         // dq decoupling + back-EMF feedforward (rotor-frame speed voltages):
         //   vd_ff = −ω·Lq·iq        vq_ff = +ω·(Ld·id + λ)
-        // Added before the circular limit so anti-windup sees the true
-        // saturation, including the feedforward's share of it.
+        // Added before the circular limit so the limit sees the true total
+        // demand; anti-windup below charges each PI only its own share.
         let (vd_ff, vq_ff) = match self.decoupling {
             Some(d) => (
                 -vel_rad_s * d.lq_h * iq,
@@ -462,9 +462,18 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             let scale = v_limit / crate::foc::fast_math::sqrtf(v_mag_sq);
             let vd = vd_raw * scale;
             let vq = vq_raw * scale;
-            // Coordinated anti-windup: feed saturation back to both PI integrators
-            self.id_pi.apply_anti_windup(vd - vd_raw);
-            self.iq_pi.apply_anti_windup(vq - vq_raw);
+            // Coordinated anti-windup, charged to the PI's own share only.
+            // The circular limit scales the whole vector uniformly, so the
+            // PI's realizable output is pi·scale and the back-calculation
+            // term is pi·(scale−1). Using the full `v − v_raw` (which
+            // includes feedforward + injection) unwound the integrator for
+            // saturation the feedforward caused, costing a recovery
+            // transient once the demand dropped back inside the circle.
+            // With ff = inject = 0 this reduces to the classic v − v_raw.
+            let pi_d = vd_raw - vd_ff - vd_inject;
+            let pi_q = vq_raw - vq_ff - vq_inject;
+            self.id_pi.apply_anti_windup(pi_d * (scale - 1.0));
+            self.iq_pi.apply_anti_windup(pi_q * (scale - 1.0));
             (vd, vq)
         } else {
             (vd_raw, vq_raw)

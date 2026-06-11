@@ -768,6 +768,19 @@ where
         // Layer 1: Clamp current targets (prevents absurd commands)
         let (id_target, iq_target) = self.current_limits.clamp_targets(id_target, iq_target);
 
+        // An untrustworthy angle may be π-flipped (pure HFI before its
+        // polarity probe resolves) or frozen (back-EMF observer below its
+        // speed floor) — iq there is torque in an unknown direction. Zero it;
+        // id is polarity-symmetric, and commutation keeps following the
+        // estimate so the HFI carrier/probe stays frame-aligned and the gate
+        // self-clears once the source locks. Velocity/failsafe paths handle
+        // this themselves; this is the backstop for direct current commands.
+        let iq_target = if self.phase.angle_trustworthy() {
+            iq_target
+        } else {
+            0.0
+        };
+
         // Get phase from provider (uses previous update's estimate). The
         // commutation angle is advanced by the pipeline delay (see
         // phase_advance_cycles): the estimate is sample-time truth, the

@@ -367,14 +367,19 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         })
     }
 
-    /// Check if Hall sensor is available
+    /// Check if Hall sensor is available.
+    ///
+    /// Presence is structural ([`AngleSensor::is_present`]), not "has data":
+    /// a healthy hall on a rotor that has not moved yet has no sample and no
+    /// errors, and gating on data made `set_source(Hall…)` from stored config
+    /// fail spuriously on cold start.
     pub fn has_hall(&self) -> bool {
-        self.hall.sample(0).is_some() || self.hall.error_count() > 0
+        self.hall.is_present()
     }
 
-    /// Check if encoder is available
+    /// Check if encoder is available (structural presence, see [`Self::has_hall`])
     pub fn has_encoder(&self) -> bool {
-        self.encoder.sample(0).is_some() || self.encoder.error_count() > 0
+        self.encoder.is_present()
     }
 
     /// Set manual angle (for Manual source)
@@ -555,8 +560,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
             if !self.open_loop_override.active {
                 // Activate open-loop override for recovery, continuing from
-                // the last known output angle at minimum velocity.
-                self.activate_open_loop_override(self.output.angle, DEFAULT_OPENLOOP_MIN_VEL);
+                // the last known output angle at minimum velocity. Signed by
+                // the last known velocity (VESC-style): a board rolling
+                // backward must not be spun forward by the recovery override.
+                let dir = if self.output.velocity < 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                self.activate_open_loop_override(self.output.angle, dir * DEFAULT_OPENLOOP_MIN_VEL);
             }
             Some(PhaseOutput {
                 angle: self.open_loop_override.angle,

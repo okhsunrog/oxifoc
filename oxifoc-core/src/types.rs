@@ -377,8 +377,11 @@ pub enum FaultRequest {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct FaultResponse {
-    /// List of active faults with details
+    /// List of active faults with details (at most `MAX_FAULT_RESPONSE`)
     pub faults: Vec<FaultInfo, MAX_FAULT_RESPONSE>,
+    /// Total active faults in the registry; `total > faults.len()` means
+    /// the list above is truncated.
+    pub total: u8,
 }
 
 // ============================================================================

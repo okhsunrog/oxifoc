@@ -53,6 +53,32 @@ Actionable-список ведётся в [TODO.md](TODO.md); safety-дизай�
 | Velocity loop не реализован (§3 Алгоритмы) | `foc/velocity.rs` + `VelocityControl` в драйвере; sensorless-деградация в coast; персист + GUI |
 | Stale «Temporarily disabled» OCP-комментарий | удалён (функция живая, зовётся из main) |
 
+Исправлено 2026-06-11 (третья сессия — пакет LOW-мелочей из §5.1):
+
+| Пункт | Где исправлено |
+|---|---|
+| TIM1 SR RMW (rc_w0) | `g431/motor.rs::enable`: complement-mask write вместо `sr().modify` (тот же паттерн, что `clear_flags` в sensors.rs) |
+| Open-loop override всегда `+52 rad/s` | `manager.rs::try_observer_fallback`: знак от последней известной скорости (`output.velocity`) |
+| Pure-Hfi без гейта resolved-polarity | iq-гейт в `foc_driver::step_current_control`: при `!angle_trustworthy()` iq=0, id и коммутация остаются (инжекция/probe держат frame, гейт самоснимается на lock). Гейтить угол в менеджере нельзя — сломал бы frame-alignment probe |
+| `has_hall()` ложно-отрицателен до первого edge | `AngleSensor::is_present()` (default true, `NoSensor`→false, `HallAngleProxy`→estimator создан); `has_hall`/`has_encoder` структурные, не «есть данные» |
+| `LAST_STATE = 0` сентинел | `hall_embassy.rs`: сентинел `0xFF` (`NO_EDGE_YET`) — первый edge в состояние 0 больше не глотается |
+| `wrapping_sub as f32` для dt | `hall_sensor.rs`: `saturating_sub` в `is_stale`/`time_since_edge`/`sample_at`/`sample_at_mut` — гонка тиковых доменов даёт dt=0, а не ~2⁶⁴ |
+| `FaultResponse` молча обрезает 8 из 16 | поле `total: u8`; `total > faults.len()` ⇒ усечение (host-потребителей у FaultEndpoint пока нет) |
+| `CMD_CHANNEL.try_send` игнорирует результат | `motor_command_server`/`config_server` live-apply/`phase_source_server`: `send().await` — ISR дренирует канал каждый цикл, дроп (и полу-применённый MotorParams) невозможен |
+| `wait_for_active` без таймаута на connect | оба пути (framed + COBS) обёрнуты `RECOVERY_TIMEOUT` (10 с) → teardown + reconnect, как recovery-путь |
+| Anti-windup относит ff+inject на PI | `controller.rs`: back-calculation `pi·(scale−1)` — круговой кламп масштабирует вектор равномерно, PI получает только свою долю; при ff=inject=0 эквивалентно прежнему `v−v_raw` |
+| `atan2f(0,0)` док-коммент врёт | коммент исправлен: возвращает π/2 (1e-20 bias на \|y\|), не 0; вырожденный случай гейтится confidence |
+| icd.rs doc-rot | header-таблица: SlowTelemetry — poll-endpoint (не push-топик), добавлены PhaseSource/Config/Detect(Keyed); стейл-абзац про «DetectEndpoint not classified yet» переписан (он classified `Deduplicated`) |
+| `wait_telemetry` без общего таймаута | `sweep.rs::sample_vd_id`: sample-циклы `measure_resistance` под `embassy_futures::select` c дедлайном 2 с (номинал ~100 мс); на таймауте `Stopped` перед `MotorNotResponding` (ramp-down на этом пути не выполняется) |
+
+**Решено НЕ чинить** — hall staleness fixed-timeout backstop (`is_stale_at_speed`
+выходит при vel<1.0): OR с фиксированным 100 мс таймаутом **опасен** — стоячий
+ротор легитимно не даёт edge'ей, backstop объявил бы холлы stale на каждой
+остановке ⇒ `hall_sample=None` ⇒ fallback ⇒ open-loop override 52 rad/s у
+светофора. Мёртвый-на-стоянке сенсор по edge'ам принципиально неотличим от
+стоящего ротора; обрыв кабеля ловится invalid-state путём (pull-up ⇒ 0b111),
+скоростно-адаптивный путь покрывает движение. Текущая реализация корректна by design.
+
 ---
 
 ## 1. Открытые баги и проблемы корректности
@@ -64,32 +90,12 @@ _Пусто — оба пункта (F405 SPI-in-CS, приоритет FOC ISR)
 
 ### MEDIUM
 
-- **Detection: `measure_resistance` — общий таймаут `wait_telemetry`.**
-  Остаток пункта (проверка сходимости id сделана): если FOC ISR молчит,
-  sample-loop ждёт вечно. Низкий риск (ISR прикрыт IWDG), но select с
-  таймаутом был бы чище.
+_Пусто — `wait_telemetry`-таймаут сделан в третьей сессии, см. §0._
 
 ### LOW
 
-- **`fast_math::atan2f(0,0)` возвращает π/2, а не 0.** ✔ [новое]
-  `fast_math.rs:57-67`: при `x=0` всегда `r=−1` ⇒ `π/2`. Док-комментарий
-  «Returns 0.0 for (0, 0)» неверен. Безвредно (confidence гейтит вырожденный
-  случай в observer), но коммент врёт — поправить.
-- **Anti-windup относит насыщение от feedforward+injection целиком на
-  PI-интеграторы.** ✔ [новое] `controller.rs:466`: `apply_anti_windup(vd−vd_raw)`,
-  где `vd_raw` включает `vd_ff`+`vd_inject`; при насыщении в основном из-за ff
-  PI разматывается зря. Мелкая tuning-неоптимальность, самокорректируется.
-- **Sensors: `LAST_STATE = 0` как «edge'а ещё не было».** ✔ [новое]
-  `hall_embassy.rs:78`: 0 — это и реальное all-low-чтение, поэтому *первый*
-  edge в состояние 0 проглатывается (estimator не узнаёт, error_count не
-  растёт). Узкий случай (статический обрыв edge'ей не даёт; pull-up-обрыв
-  читается как 7, не 0). Фикс: сентинел `0xFF`.
-- **Sensors: незащищённый `wrapping_sub as f32` для `dt`.** ✔ [новое]
-  `hall_sensor.rs:542,612`: при `now<t0` (гонка домена тиков) угол замерзает
-  на цикл; рядом `dt_sample` делает `.max(1)`, `dt_from_edge` — нет.
-- **Архитектура doc-rot в `icd.rs` (B9).** [агент] `icd.rs:13-16` зовёт
-  `SlowTelemetry` push-топиком 10 Hz — это poll endpoint; `:135-137`
-  противоречит `:147-149` про классификацию `DetectEndpoint`. Косметика.
+_Пусто — все пункты (atan2f-коммент, anti-windup ff, LAST_STATE сентинел,
+wrapping_sub dt, icd doc-rot) исправлены 2026-06-11 (третья сессия), см. §0._
 
 ---
 
@@ -127,15 +133,11 @@ _Пусто — оба пункта (F405 SPI-in-CS, приоритет FOC ISR)
   `fault.rs:422-436` и `foc_driver.is_overcurrent` латчат по одному ADC-сэмплу;
   nuisance-trip на regen/EMI = опасный обрыв момента на ходу. VESC/MESC —
   интегрирующий детектор (см. §4 VESC-3, MESC-5).
-- **Open-loop override при потере сенсора всегда `+52 rad/s` без знака.** ✔
-  `manager.rs:559,73`: на реверсе крутит вперёд. VESC подписывает направлением
-  (см. §4 VESC-8).
+- ~~Open-loop override всегда `+52 rad/s`~~ — **сделано 2026-06-11 (3-я
+  сессия)**, знак от последней скорости, см. §0.
 - **Нет graduated derating** — только пороговые fault'ы (см. §4 VESC-4).
-- **Pure `Hfi` source коммутирует без гейта resolved-polarity.** ✔ [новое]
-  `manager.rs:630-636` отдаёт `hfi.phase()` без `is_ready`-проверки; до probe
-  угол может быть π-flipped. Дизайн-интенция (HFI с нуля валиден), но при
-  старте в pure-Hfi возможен момент в неверную сторону. HfiToX и crossover'ы
-  гейтят корректно — касается только прямого `Hfi`.
+- ~~Pure `Hfi` без гейта resolved-polarity~~ — **сделано 2026-06-11 (3-я
+  сессия)**, iq-гейт по `angle_trustworthy` в `step_current_control`, см. §0.
 
 ### Алгоритмы (разрыв с VESC/MESC)
 
@@ -149,15 +151,12 @@ _Пусто — оба пункта (F405 SPI-in-CS, приоритет FOC ISR)
 - **`apply_dq` (DirectVoltage) пропускает dead-time compensation**
   (`controller.rs:339-367`) — а это режим HFI-детекции индуктивности; искажение
   dead-time смещает измерение L. ✔
-- **`has_hall()` — эвристика, ложно отказывает до первого edge**
-  (`manager.rs:371`) → `set_source(Hall…)` из stored config может спорадически
-  падать на холодном старте. ✔
-- **Sensors: дыра staleness на низкой скорости.** ✔ [новое]
-  `is_stale_at_speed` выходит при `vel<1.0` (`hall_sensor.rs:311`), а manager
-  консультирует только её — fixed-timeout `is_stale()` (100 мс) без вызовов в
-  control-path. Мёртвый сенсор на ~стоячем роторе не ловится staleness-путём
-  (последствие на <1 rad/s минимально; at-speed покрыт тестом
-  `closed_loop_hall_dropout_at_speed`). Фикс: OR'ить fixed-timeout backstop'ом.
+- ~~`has_hall()` ложно отказывает до первого edge~~ — **сделано 2026-06-11
+  (3-я сессия)**, структурный `is_present()`, см. §0.
+- ~~Дыра staleness на низкой скорости~~ — **решено НЕ чинить** (3-я сессия,
+  см. разбор в §0): fixed-timeout backstop ложно срабатывает на легитимной
+  стоянке и ведёт к open-loop override; мёртвый сенсор на стоянке по edge'ам
+  неотличим от стоящего ротора, обрыв ловится invalid-state путём.
 
 ### Архитектура / прошивки
 
@@ -168,15 +167,12 @@ _Пусто — оба пункта (F405 SPI-in-CS, приоритет FOC ISR)
 - **F405: блокирующий erase 128 КБ-сектора (~0.5 с) морозит executor.**
   TOCTOU закрыт (см. §0), мотор гарантированно остановлен Busy-гейтом во время
   записи, IWDG-маржин — бэкстоп; остаётся как известный residual.
-- **Все `CMD_CHANNEL.try_send` игнорируют результат** — host не отличит
-  «принято» от «дропнуто» (канал ёмкостью 8). `motor_command_server`
-  (`servers.rs:103`) возвращает OK и pre-command статус даже при дропе; конфиг
-  `MotorParams` шлёт 2 команды (`SetPiGains`+`SetDecoupling`) — на полном
-  канале вторая молча теряется ⇒ полу-применённая конфигурация. [агент]
-- **RMW статус-регистра TIM1** (`sr().modify` для bif, `g431/motor.rs:179`) —
-  rc_w0, RMW может сбросить чужие pending-флаги; писать complement-mask. ✔
-- **`FaultResponse` молча обрезает до 8 из 16 фолтов** (`servers.rs:154`,
-  `MAX_FAULT_RESPONSE=8` vs `MAX_FAULTS=16`) без индикатора усечения. [агент]
+- ~~`CMD_CHANNEL.try_send` игнорируют результат~~ — **сделано 2026-06-11
+  (3-я сессия)**, `send().await` во всех серверах, см. §0.
+- ~~RMW статус-регистра TIM1~~ — **сделано 2026-06-11 (3-я сессия)**,
+  complement-mask, см. §0.
+- ~~`FaultResponse` молча обрезает 8 из 16~~ — **сделано 2026-06-11 (3-я
+  сессия)**, поле `total`, см. §0.
 
 ### Host / virtual / протокол
 
@@ -193,10 +189,8 @@ _Пусто — оба пункта (F405 SPI-in-CS, приоритет FOC ISR)
   индексная арифметика кольца (`renderer.rs:262-274`) при большом zoom-out +
   scroll-back может считать Y-auto-range по другому окну, чем рисует шейдер.
   [агент]
-- Один последовательный command queue: `wait_for_active` на connect-пути без
-  таймаута (`host-lib/lib.rs:404`) — полу-открытый framed-линк висит до
-  `cancel` (disconnect-recovery-путь обёрнут в `RECOVERY_TIMEOUT`, connect — нет).
-  [агент]
+- ~~`wait_for_active` на connect-пути без таймаута~~ — **сделано 2026-06-11
+  (3-я сессия)**, `RECOVERY_TIMEOUT` на обоих путях, см. §0.
 
 ---
 
@@ -245,21 +239,15 @@ _Пусто — оба пункта (F405 SPI-in-CS, приоритет FOC ISR)
 3. **MC_DURATION fault:** дешёвый прямой детект перерасхода бюджета FOC-цикла (контур не уложился в период PWM → fault) (`mc_tasks_foc.c:655-658`).
 4. Компенсация задержки Park/inverse-Park скоростью в dpp × фактор (фиксированная точка, `mc_tasks_foc.c:719,740`).
 
-## 5. Приоритеты (сводно, обновлено 2026-06-11 после второй сессии)
+## 5. Приоритеты (сводно, обновлено 2026-06-11 после третьей сессии)
 
-Пункты 1–4 старого списка закрыты (см. §0). Остаток:
+Code-only мелочи (бывший пункт 1) закрыты в третьей сессии (см. §0; один
+пункт — hall staleness backstop — аргументированный won't-fix). Остаток:
 
-1. **Дешёвые code-only мелочи (§1 LOW + §3):** TIM1 SR RMW
-   (complement-mask); знаковый open-loop override; pure-Hfi гейт
-   resolved-polarity; hall staleness fixed-timeout backstop; `has_hall()`
-   на холодном старте; `LAST_STATE` сентинел 0xFF; dt `wrapping_sub` гард;
-   `FaultResponse` индикатор усечения; `CMD_CHANNEL.try_send` ack;
-   `wait_for_active` таймаут на connect; anti-windup ff-вклад;
-   atan2f(0,0)-коммент; icd doc-rot; `wait_telemetry` таймаут.
-2. **Стенд (§2 + хвосты):** ADC double-trigger (обе платы); pipeline-skew
+1. **Стенд (§2 + хвосты):** ADC double-trigger (обе платы); pipeline-skew
    индуктивности; spin-down по фазным делителям; интегрирующий
    current/voltage детектор; bench-тюнинг failsafe/velocity/brake.
-3. **Алгоритмы (дёшево→дорого):** position loop → graduated derating →
+2. **Алгоритмы (дёшево→дорого):** position loop → graduated derating →
    FW V2 (MESC) → MTPA.
-4. **Архитектура:** вынос ISR-glue в core до оживления g474; fault-injection
+3. **Архитектура:** вынос ISR-glue в core до оживления g474; fault-injection
    в oxifoc-virtual; protocol_version в HardwareInfo; bridge/remote.

@@ -439,10 +439,21 @@ where
         }
         connect_attempts = 0;
 
-        // Wait for the interface to become Active
-        tokio::select! {
-            _ = wait_for_active(&state_notify, &stack) => {}
+        // Wait for the interface to become Active — bounded like the
+        // recovery path: a half-open link that registered but never goes
+        // Active would otherwise pin the connect path until cancel.
+        let became_active = tokio::select! {
+            r = tokio::time::timeout(RECOVERY_TIMEOUT, wait_for_active(&state_notify, &stack)) => r.is_ok(),
             _ = cancel.cancelled() => break,
+        };
+        if !became_active {
+            tracing::warn!("Interface not Active within {RECOVERY_TIMEOUT:?}, reconnecting...");
+            stack.stack().manage_profile(|im| im.teardown());
+            tokio::task::yield_now().await;
+            tokio::select! {
+                _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
+                _ = cancel.cancelled() => break,
+            }
         }
 
         // HardwareInfo handshake on each (re)connection
@@ -597,10 +608,20 @@ where
             }
         }
 
-        // Wait for the interface to become Active
-        tokio::select! {
-            _ = wait_for_active(&state_notify, &stack) => {}
+        // Wait for the interface to become Active — bounded, same rationale
+        // as the framed path above.
+        let became_active = tokio::select! {
+            r = tokio::time::timeout(RECOVERY_TIMEOUT, wait_for_active(&state_notify, &stack)) => r.is_ok(),
             _ = cancel.cancelled() => break,
+        };
+        if !became_active {
+            tracing::warn!("Interface not Active within {RECOVERY_TIMEOUT:?}, reconnecting...");
+            stack.manage_profile(|im| im.teardown());
+            tokio::task::yield_now().await;
+            tokio::select! {
+                _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
+                _ = cancel.cancelled() => break,
+            }
         }
 
         // HardwareInfo handshake on each (re)connection

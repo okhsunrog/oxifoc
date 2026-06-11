@@ -64,7 +64,9 @@ default = ["algorithms", "detection"]
 # Default-on; flash-constrained builds can opt out (measured −14.7 KB on
 # G431). `detection::types` and `detection::pi_tuning` stay available
 # unconditionally — wire types and PI math are used outside detection.
-detection = ["algorithms", "dep:microfft"]
+# embassy-futures: runtime-agnostic `select` for the telemetry-sampling
+# timeout in `measure_resistance`.
+detection = ["algorithms", "dep:microfft", "dep:embassy-futures"]
 
 # Interface Control Document - ergot endpoints and wire types
 icd = ["dep:ergot"]

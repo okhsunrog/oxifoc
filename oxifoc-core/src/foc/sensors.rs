@@ -107,6 +107,15 @@ pub trait AngleSensor {
 
     /// Reset error counter
     fn reset_errors(&mut self);
+
+    /// Whether the sensor is structurally present (wired in / configured),
+    /// regardless of whether it has produced data yet. Default: present.
+    /// [`NoSensor`] overrides to `false`; presence checks must NOT be
+    /// inferred from `sample()` — a healthy sensor on a motionless rotor has
+    /// no sample yet.
+    fn is_present(&self) -> bool {
+        true
+    }
 }
 
 /// Optional velocity estimation from an angle sensor
@@ -245,6 +254,10 @@ impl AngleSensor for NoSensor {
     }
 
     fn reset_errors(&mut self) {}
+
+    fn is_present(&self) -> bool {
+        false
+    }
 }
 
 impl NoSensor {

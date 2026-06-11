@@ -836,6 +836,7 @@ dependencies = [
  "bitflags 2.11.0",
  "critical-section",
  "defmt",
+ "embassy-futures",
  "embassy-stm32",
  "embassy-sync",
  "embassy-time",

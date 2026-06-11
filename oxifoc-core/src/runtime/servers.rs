@@ -102,19 +102,29 @@ pub async fn motor_command_server<NS, F, const N: usize>(
     loop {
         let _ = h
             .serve(|mode: &ControlMode| {
-                // Send control mode to the ISR via channel
-                let _ = CMD_CHANNEL.try_send(crate::state::DriverCommand::SetMode(*mode));
+                let mode = *mode;
+                async move {
+                    // Guaranteed enqueue: the ISR drains the channel every
+                    // cycle, so this resolves within one FOC period. The old
+                    // try_send silently dropped commands on a full channel —
+                    // the host then got an OK-shaped status for a command
+                    // that never reached the driver.
+                    CMD_CHANNEL
+                        .send(crate::state::DriverCommand::SetMode(mode))
+                        .await;
 
-                // Return current status
-                let status = critical_section::with(|cs| {
-                    let state = state_mutex.borrow(cs).borrow();
-                    MotorStatus {
-                        state: state.motor_state,
-                        mode: state.control_mode,
-                        fault_count: fault_registry.count() as u8,
-                    }
-                });
-                async move { status }
+                    // Status snapshot is pre-application by design (the ISR
+                    // applies the mode asynchronously); the host confirms
+                    // via a follow-up status poll.
+                    critical_section::with(|cs| {
+                        let state = state_mutex.borrow(cs).borrow();
+                        MotorStatus {
+                            state: state.motor_state,
+                            mode: state.control_mode,
+                            fault_count: fault_registry.count() as u8,
+                        }
+                    })
+                }
             })
             .await;
     }
@@ -150,8 +160,11 @@ pub async fn fault_server<NS, F, const N: usize>(
                     }
                 }
 
-                // Build response with all faults converted to FaultInfo
+                // Build response with all faults converted to FaultInfo.
+                // `total` lets the host see truncation (registry holds up to
+                // MAX_FAULTS=16, the response carries at most 8).
                 let fault_infos = fault_registry.to_fault_info_vec();
+                let total = fault_infos.len() as u8;
                 let mut response_faults = heapless::Vec::new();
                 for info in fault_infos.iter().take(crate::types::MAX_FAULT_RESPONSE) {
                     let _ = response_faults.push(info.clone());
@@ -160,6 +173,7 @@ pub async fn fault_server<NS, F, const N: usize>(
                 async move {
                     FaultResponse {
                         faults: response_faults,
+                        total,
                     }
                 }
             })
@@ -364,11 +378,16 @@ pub async fn config_server<NS, const N: usize>(
                                 }
                             });
                             // Make the write take effect on the live driver,
-                            // not only at the next boot.
+                            // not only at the next boot. `send().await`, not
+                            // `try_send`: the ISR drains the channel every
+                            // cycle, and a silent drop here leaves the saved
+                            // config and the live driver disagreeing (worst
+                            // case: MotorParams applies its gains but loses
+                            // the decoupling command on a full channel).
                             match write {
                                 // Limits: clamped to the board ceiling.
                                 ConfigWrite::CurrentLimits(v) => {
-                                    let _ = CMD_CHANNEL.try_send(
+                                    CMD_CHANNEL.send(
                                         crate::state::DriverCommand::SetCurrentLimits(
                                             crate::motor::foc_driver::CurrentLimits::from_config_clamped(
                                                 v.max_iq_a,
@@ -376,16 +395,16 @@ pub async fn config_server<NS, const N: usize>(
                                                 hw_max_current_a,
                                             ),
                                         ),
-                                    );
+                                    ).await;
                                 }
                                 // Explicit PI gains apply verbatim.
                                 ConfigWrite::PiGains(v) => {
-                                    let _ = CMD_CHANNEL.try_send(
-                                        crate::state::DriverCommand::SetPiGains {
+                                    CMD_CHANNEL
+                                        .send(crate::state::DriverCommand::SetPiGains {
                                             kp: v.kp,
                                             ki: v.ki,
-                                        },
-                                    );
+                                        })
+                                        .await;
                                 }
                                 // New motor params (post-detection write):
                                 // retune the current loop the same way boot
@@ -399,40 +418,40 @@ pub async fn config_server<NS, const N: usize>(
                                             l_avg,
                                             crate::foc::detection::pi_tuning::DEFAULT_BANDWIDTH_RAD_S,
                                         );
-                                    let _ = CMD_CHANNEL.try_send(
-                                        crate::state::DriverCommand::SetPiGains { kp, ki },
-                                    );
+                                    CMD_CHANNEL
+                                        .send(crate::state::DriverCommand::SetPiGains { kp, ki })
+                                        .await;
                                     // New inductances/flux also re-arm the
                                     // dq-decoupling feedforward, same as boot.
-                                    let _ = CMD_CHANNEL.try_send(
-                                        crate::state::DriverCommand::SetDecoupling(
+                                    CMD_CHANNEL
+                                        .send(crate::state::DriverCommand::SetDecoupling(
                                             crate::foc::controller::Decoupling {
                                                 ld_h: v.inductance_d_h,
                                                 lq_h: v.inductance_q_h,
                                                 flux_linkage_wb: v.flux_linkage_wb,
                                             },
-                                        ),
-                                    );
+                                        ))
+                                        .await;
                                 }
                                 // Cruise velocity-loop tuning applies live.
                                 ConfigWrite::Velocity(v) => {
-                                    let _ = CMD_CHANNEL.try_send(
-                                        crate::state::DriverCommand::SetVelocityConfig(
+                                    CMD_CHANNEL
+                                        .send(crate::state::DriverCommand::SetVelocityConfig(
                                             crate::foc::velocity::VelocityLoopConfig::from_stored(
                                                 Some(&v),
                                             ),
-                                        ),
-                                    );
+                                        ))
+                                        .await;
                                 }
                                 // Failsafe tuning applies to the live driver.
                                 ConfigWrite::Failsafe(v) => {
-                                    let _ = CMD_CHANNEL.try_send(
-                                        crate::state::DriverCommand::SetFailsafe(
-                                            crate::motor::failsafe::FailsafeConfig::from_stored(Some(
-                                                &v,
-                                            )),
-                                        ),
-                                    );
+                                    CMD_CHANNEL
+                                        .send(crate::state::DriverCommand::SetFailsafe(
+                                            crate::motor::failsafe::FailsafeConfig::from_stored(
+                                                Some(&v),
+                                            ),
+                                        ))
+                                        .await;
                                 }
                                 _ => {}
                             }
@@ -461,13 +480,13 @@ pub async fn config_server<NS, const N: usize>(
                                 *runtime_config.borrow(cs).borrow_mut() = RuntimeConfig::default();
                             });
                             // Stored limits are gone — restore board defaults.
-                            let _ = CMD_CHANNEL.try_send(
-                                crate::state::DriverCommand::SetCurrentLimits(
+                            CMD_CHANNEL
+                                .send(crate::state::DriverCommand::SetCurrentLimits(
                                     crate::motor::foc_driver::CurrentLimits::from_max_current(
                                         hw_max_current_a,
                                     ),
-                                ),
-                            );
+                                ))
+                                .await;
                             ConfigResponse::Ok
                         }
                     }
@@ -609,10 +628,15 @@ where
     loop {
         let _ = h
             .serve(|source: &PhaseSource| {
-                let enqueued = CMD_CHANNEL
-                    .try_send(crate::state::DriverCommand::SetPhaseSource(*source))
-                    .is_ok();
-                async move { PhaseSourceAck { enqueued } }
+                let source = *source;
+                async move {
+                    // Guaranteed enqueue (ISR drains every cycle); the ack
+                    // still only confirms enqueueing, not application.
+                    CMD_CHANNEL
+                        .send(crate::state::DriverCommand::SetPhaseSource(source))
+                        .await;
+                    PhaseSourceAck { enqueued: true }
+                }
             })
             .await;
     }

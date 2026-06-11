@@ -159,6 +159,34 @@ pub struct DetectionResult {
 // Individual Measurement Functions
 // ============================================================================
 
+/// Average `vd`/`id` over `count` telemetry frames, bounded by a deadline.
+///
+/// If the FOC ISR stops producing telemetry mid-detection, an unbounded
+/// sample loop would await a dead channel forever (the ISR is IWDG-covered,
+/// but on hosts/tests there is no watchdog at all). `MotorNotResponding`
+/// is exactly what a silent control loop means here.
+async fn sample_vd_id<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    count: u32,
+    timeout_ms: u64,
+) -> Result<(f32, f32), DetectionError> {
+    use embassy_futures::select::{Either, select};
+    let sample = async {
+        let mut vd_sum = 0.0f32;
+        let mut id_sum = 0.0f32;
+        for _ in 0..count {
+            let t = hw.wait_telemetry().await;
+            vd_sum += t.vd;
+            id_sum += t.id;
+        }
+        (vd_sum / count as f32, id_sum / count as f32)
+    };
+    match select(sample, T::after_millis(timeout_ms)).await {
+        Either::First(avg) => Ok(avg),
+        Either::Second(()) => Err(DetectionError::MotorNotResponding),
+    }
+}
+
 /// Measure motor phase resistance.
 ///
 /// Applies DC current on d-axis and measures voltage drop.
@@ -207,16 +235,16 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     }
     T::after_millis(settle_cycles).await;
 
-    // Sample at low setpoint
-    let mut vd_low_sum = 0.0f32;
-    let mut id_low_sum = 0.0f32;
-    for _ in 0..sample_count {
-        let t = hw.wait_telemetry().await;
-        vd_low_sum += t.vd;
-        id_low_sum += t.id;
-    }
-    let vd_low = vd_low_sum / sample_count as f32;
-    let id_low = id_low_sum / sample_count as f32;
+    // Sample at low setpoint (~100 ms nominal at 20 kHz; 2 s deadline).
+    // On timeout, command Stopped before bailing — the motor was left at the
+    // setpoint and the normal ramp-down below never runs on this path.
+    let (vd_low, id_low) = match sample_vd_id::<H, T>(hw, sample_count, 2000).await {
+        Ok(avg) => avg,
+        Err(e) => {
+            hw.send_command(ControlMode::Stopped);
+            return Err(e);
+        }
+    };
     debug!("R meas: low point: vd={}, id={}", vd_low, id_low);
 
     // --- Ramp to high setpoint ---
@@ -232,16 +260,14 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     }
     T::after_millis(settle_cycles).await;
 
-    // Sample at high setpoint
-    let mut vd_high_sum = 0.0f32;
-    let mut id_high_sum = 0.0f32;
-    for _ in 0..sample_count {
-        let t = hw.wait_telemetry().await;
-        vd_high_sum += t.vd;
-        id_high_sum += t.id;
-    }
-    let vd_high = vd_high_sum / sample_count as f32;
-    let id_high = id_high_sum / sample_count as f32;
+    // Sample at high setpoint (same deadline and bail-out)
+    let (vd_high, id_high) = match sample_vd_id::<H, T>(hw, sample_count, 2000).await {
+        Ok(avg) => avg,
+        Err(e) => {
+            hw.send_command(ControlMode::Stopped);
+            return Err(e);
+        }
+    };
     debug!("R meas: high point: vd={}, id={}", vd_high, id_high);
 
     // --- Ramp down and stop ---

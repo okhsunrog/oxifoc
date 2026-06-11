@@ -74,8 +74,12 @@ fn hall_now_ticks() -> u64 {
 #[inline]
 pub fn update_hall_edge(state: u8, ticks: u64) {
     // Edge memory via static mutable — safe because this is called only from
-    // a single ISR (the hall capture timer's).
-    static mut LAST_STATE: u8 = 0;
+    // a single ISR (the hall capture timer's). 0xFF = "no edge seen yet":
+    // 0 is also a real (invalid, all-low) reading, and using it as the
+    // sentinel swallowed a first edge into state 0 — the estimator never
+    // learned of it and its error counter stayed flat.
+    const NO_EDGE_YET: u8 = 0xFF;
+    static mut LAST_STATE: u8 = NO_EDGE_YET;
 
     // SAFETY: called only from a single ISR context
     let last = unsafe { LAST_STATE };
@@ -196,5 +200,11 @@ impl AngleSensor for HallAngleProxy {
                 h.reset_errors();
             }
         });
+    }
+
+    /// Present once the platform created the estimator (`init_estimator`),
+    /// i.e. the hall hardware is wired up — even before the first edge.
+    fn is_present(&self) -> bool {
+        HALL_ESTIMATOR.lock(|est| est.borrow().is_some())
     }
 }

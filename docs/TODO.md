@@ -59,8 +59,8 @@ Failsafe-layer *design* and rationale live in [safety.md](safety.md).
   position P → shared `VelocityLoop` → current loop. `Brake` stays the
   zero-power default; hold is the opt-in upgrade.
 - [ ] Integrating current/voltage fault detector (replace the single-sample
-  trip — nuisance-trips on regen/EMI); signed open-loop override
-  (direction = sign of last velocity). [review.md §3]
+  trip — nuisance-trips on regen/EMI). [review.md §3] (Signed open-loop
+  override done 2026-06-11: direction = sign of last velocity.)
 - [ ] G474: arm the IWDG when the motor modules (FOC ISR) wake up.
 - [ ] Bench: verify IWDG reset → PWM safe on real hardware (induce a hang).
 - [ ] Boot: reset-reason read + spinning-motor detection + flying-restart sync.
@@ -264,7 +264,9 @@ budget to 13.9% — it was unusable on hardware before this.
   escalates past the thermal gate on flaky measurements (projects power with
   the last known R); `measure_resistance` rejects an unconverged current
   loop (±30% of setpoint → `UnexpectedMotion`) instead of averaging a
-  plausible-but-wrong R. Still open: an overall `wait_telemetry` timeout.
+  plausible-but-wrong R. The `wait_telemetry` sample loops got a 2 s
+  deadline (2026-06-11, `sample_vd_id`) — a silent FOC ISR now yields
+  `MotorNotResponding` + `Stopped` instead of an infinite await.
 - [x] **g431: storage `const_assert`** ported (2026-06-11) — build fails if
   firmware grows into the storage pages. Stale "Temporarily disabled" OCP
   comment deleted (the function is live, called from main).

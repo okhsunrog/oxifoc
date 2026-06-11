@@ -287,7 +287,10 @@ impl HallSensor {
         match self.last_edge_ticks {
             None => true,
             Some(last) => {
-                let elapsed = now_ticks.wrapping_sub(last);
+                // saturating: an edge timestamped just ahead of the caller's
+                // "now" snapshot (capture ISR vs FOC ISR race) must read as
+                // dt=0, not as a huge wrapped interval.
+                let elapsed = now_ticks.saturating_sub(last);
                 elapsed > self.timeout_ticks
             }
         }
@@ -320,8 +323,9 @@ impl HallSensor {
     ///
     /// Returns `None` if no edge has been received yet.
     pub fn time_since_edge(&self, now_ticks: u64) -> Option<u64> {
+        // saturating, not wrapping: see is_stale().
         self.last_edge_ticks
-            .map(|last| now_ticks.wrapping_sub(last))
+            .map(|last| now_ticks.saturating_sub(last))
     }
 
     /// Get time since last Hall edge in microseconds.
@@ -539,7 +543,9 @@ impl HallSensor {
     /// - Above threshold: linear interpolation with hard drift clamping
     pub fn sample_at(&self, now_ticks: u64) -> Option<AngleSample> {
         let t0 = self.last_edge_ticks?;
-        let dt = now_ticks.wrapping_sub(t0) as f32 / self.ticks_per_sec as f32;
+        // saturating: a wrapped "negative" dt as f32 would be ~2^64 and
+        // collapse the decayed velocity to zero for the cycle.
+        let dt = now_ticks.saturating_sub(t0) as f32 / self.ticks_per_sec as f32;
 
         // Current sector angle from calibration (direct raw state lookup)
         let sector_angle = self.calib.angle_for_state(self.raw_state);
@@ -609,7 +615,8 @@ impl HallSensor {
     /// This version mutates internal state to track rate limiting across calls.
     pub fn sample_at_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
         let t0 = self.last_edge_ticks?;
-        let dt_from_edge = now_ticks.wrapping_sub(t0) as f32 / self.ticks_per_sec as f32;
+        // saturating: see sample_at().
+        let dt_from_edge = now_ticks.saturating_sub(t0) as f32 / self.ticks_per_sec as f32;
 
         // Calculate dt since last sample for rate limiting
         let dt_sample = if let Some(last) = self.last_sample_ticks {
