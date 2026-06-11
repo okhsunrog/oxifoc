@@ -9,7 +9,7 @@
 use ergot::net_stack::NetStackHandle;
 use ergot::net_stack::endpoints::Endpoints;
 use oxifoc_core::foc::detection::sweep::{
-    calibrate_hall, measure_flux_linkage_magnitude, measure_inductance, measure_resistance,
+    calibrate_hall, measure_flux_linkage_auto, measure_inductance_auto, measure_resistance,
 };
 use oxifoc_core::foc::detection::types::{
     DetectionError, FluxLinkageParams, InductanceParams, ResistanceParams,
@@ -61,7 +61,8 @@ impl DetectionBackend for VirtualBackend {
         let params_m = self.params;
         tokio::task::spawn_blocking(move || {
             with_sim(params_m, vbus, |hw| {
-                block_on(measure_inductance::<_, VirtualTimer, LibmSinCos>(
+                // HFI with voltage-pulse fallback — same ladder the boards run.
+                block_on(measure_inductance_auto::<_, VirtualTimer, LibmSinCos>(
                     hw,
                     &params,
                     pwm_freq_hz,
@@ -78,11 +79,9 @@ impl DetectionBackend for VirtualBackend {
         let params_m = self.params;
         tokio::task::spawn_blocking(move || {
             with_sim(params_m, vbus, |hw| {
-                // Back-EMF-vector method, not q-axis: load-angle invariant
-                // (the q-axis method is biased by up to −90% in open loop).
-                block_on(measure_flux_linkage_magnitude::<_, VirtualTimer>(
-                    hw, &params,
-                ))
+                // Same ladder the boards run: spin-down first (the virtual
+                // harness has coast telemetry), driven fallback otherwise.
+                block_on(measure_flux_linkage_auto::<_, VirtualTimer>(hw, &params))
             })
         })
         .await

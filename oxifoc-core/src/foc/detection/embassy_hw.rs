@@ -138,7 +138,9 @@ pub async fn measure_resistance(
     sweep::measure_resistance::<_, EmbassyTimer>(&mut hw, params).await
 }
 
-/// Measure motor inductance using rotating HFI.
+/// Measure motor inductance: rotating HFI with voltage-pulse fallback
+/// (see [`sweep::measure_inductance_auto`]) — high-resistance motors whose
+/// HFI ripple sinks below the ADC floor still get a result.
 pub async fn measure_inductance<S: SinCos>(
     params: &InductanceParams,
     pwm_freq_hz: f32,
@@ -149,16 +151,17 @@ pub async fn measure_inductance<S: SinCos>(
     board: &'static BoardConfig,
 ) -> Result<(f32, f32), DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
-    sweep::measure_inductance::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz).await
+    sweep::measure_inductance_auto::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz).await
 }
 
 /// Measure motor flux linkage via open-loop spinning.
 ///
-/// Uses the back-EMF-vector (magnitude) method: in open-loop drive the
-/// rotor leads the command frame by up to 90°, which biases the q-axis
-/// method by the load-angle cosine (up to −90% on light motors). The
-/// vector method is load-angle invariant; `params.inductance_h` (0.0 if
-/// unknown) trims its `ωL·i` reactance term.
+/// Routes through [`sweep::measure_flux_linkage_auto`]: spin-down when the
+/// hardware reads phase voltages during coast (none of the current boards
+/// do — `EmbassyDetectionHardware` keeps the default `false`), otherwise
+/// the back-EMF-vector driven method (load-angle invariant, unlike the
+/// q-axis method which is biased by up to −90% in open loop);
+/// `params.inductance_h` (0.0 if unknown) trims its `ωL·i` reactance term.
 pub async fn measure_flux_linkage(
     params: &FluxLinkageParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
@@ -168,7 +171,7 @@ pub async fn measure_flux_linkage(
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
-    sweep::measure_flux_linkage_magnitude::<_, EmbassyTimer>(&mut hw, params).await
+    sweep::measure_flux_linkage_auto::<_, EmbassyTimer>(&mut hw, params).await
 }
 
 /// Run full motor parameter detection sequence.

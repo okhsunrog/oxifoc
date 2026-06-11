@@ -658,6 +658,47 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
     Ok((ld, lq))
 }
 
+/// Measure inductance: HFI first, voltage-pulse fallback when HFI fails.
+///
+/// This is the production entry point (both `run_full_detection` and the
+/// per-step detect server route through it): the rotating-HFI method is
+/// the accurate one, but on high-resistance motors the inductive ripple
+/// can sink below what the ADC resolves even at full bus amplitude — the
+/// pulse method (di/dt over one PWM period) still works there. The
+/// fallback fires when HFI returns an implausible result
+/// ([`validate_inductance`]) or errors out — except `MotorNotResponding`
+/// (open circuit / dead control loop), where pulsing would see the same
+/// nothing and only waste a spin of the motor leads.
+pub async fn measure_inductance_auto<H: DetectionHardware, T: Timer, S: SinCos>(
+    hw: &mut H,
+    params: &InductanceParams,
+    pwm_freq_hz: f32,
+) -> Result<(f32, f32), DetectionError> {
+    let hfi = measure_inductance::<H, T, S>(hw, params, pwm_freq_hz).await;
+    match &hfi {
+        Ok((ld, lq)) if validate_inductance(*ld, *lq).is_ok() => return hfi,
+        Err(DetectionError::MotorNotResponding) => return hfi,
+        _ => {}
+    }
+
+    info!("HFI inductance suspicious, falling back to voltage pulse");
+    T::after_millis(500).await;
+    let v_hold = params.resistance_ohm * params.hold_current_a;
+    let pulse_voltage_v = if params.vbus > 0.0 {
+        (params.vbus * 0.577 - v_hold).max(0.5)
+    } else {
+        // Bus voltage unknown — keep the conservative default step.
+        VoltagePulseParams::default().pulse_voltage_v
+    };
+    let pulse_params = VoltagePulseParams {
+        hold_current_a: params.hold_current_a,
+        resistance_ohm: params.resistance_ohm,
+        pulse_voltage_v,
+        ..Default::default()
+    };
+    measure_inductance_pulse::<H, T, S>(hw, &pulse_params, pwm_freq_hz).await
+}
+
 /// Maximum electrical angular velocity for open-loop spin-up ramps,
 /// independent of the (mechanical) `spin_rpm` cap. Mirrors VESC's
 /// 12000 ERPM ceiling in the flux-linkage wizard.
@@ -960,6 +1001,44 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
     Ok(flux)
 }
 
+/// Measure flux linkage: spin-down first (when the hardware can read
+/// phase voltages during coast), back-EMF-vector driven method otherwise.
+///
+/// This is the production entry point (both `run_full_detection` and the
+/// per-step detect server route through it). The ladder mirrors
+/// [`measure_inductance_auto`]:
+///
+/// - **spin-down** is the most direct method (open-circuit back-EMF, no R
+///   or L in the formula) but needs coast telemetry —
+///   [`DetectionHardware::supports_coast_telemetry`] gates it honestly
+///   instead of reading zeros.
+/// - **back-EMF vector** ([`measure_flux_linkage_magnitude`]) is the
+///   driven fallback: load-angle invariant, needs R (and optionally L)
+///   from earlier steps. Also the fallback when the motor decelerates too
+///   fast to collect a coast window (`InsufficientSamples`).
+///
+/// The q-axis method is *not* in the ladder — in open loop it is biased
+/// by the load-angle cosine; it stays available for diagnostics only.
+pub async fn measure_flux_linkage_auto<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    params: &FluxLinkageParams,
+) -> Result<f32, DetectionError> {
+    if hw.supports_coast_telemetry() {
+        info!("Flux: spin-down method (R-independent)");
+        match measure_flux_linkage_spindown::<H, T>(hw, params).await {
+            Err(DetectionError::InsufficientSamples) => {
+                // Motor can't coast (high friction / geared) — drive it.
+                info!("Spin-down failed (motor stopped too fast), falling back to driven method");
+                T::after_millis(500).await;
+            }
+            done => return done,
+        }
+    } else {
+        info!("Flux: driven method (no coast telemetry on this hardware)");
+    }
+    measure_flux_linkage_magnitude::<H, T>(hw, params).await
+}
+
 // ============================================================================
 // Full Detection Sequence
 // ============================================================================
@@ -1042,25 +1121,8 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
         vbus: params.vbus,
         ..Default::default()
     };
-    let (mut ld, mut lq) =
-        measure_inductance::<H, T, S>(hw, &inductance_params, params.pwm_freq_hz).await?;
-
-    // If HFI result looks suspicious, fall back to voltage pulse method
-    if validate_inductance(ld, lq).is_err() {
-        info!("HFI inductance suspicious, falling back to voltage pulse");
-        T::after_millis(500).await;
-        let v_hold = r * hold_current;
-        let v_headroom = params.vbus * 0.577 - v_hold;
-        let pulse_params = VoltagePulseParams {
-            hold_current_a: hold_current,
-            resistance_ohm: r,
-            pulse_voltage_v: v_headroom.max(0.5),
-            num_pulses: 20,
-            settle_time_ms: 200,
-        };
-        (ld, lq) =
-            measure_inductance_pulse::<H, T, S>(hw, &pulse_params, params.pwm_freq_hz).await?;
-    }
+    let (ld, lq) =
+        measure_inductance_auto::<H, T, S>(hw, &inductance_params, params.pwm_freq_hz).await?;
 
     result.params.inductance_d_h = ld;
     result.params.inductance_q_h = lq;
@@ -1089,31 +1151,8 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
         v_target: 0.2 * params.vbus,
         ..Default::default()
     };
-    if hw.supports_coast_telemetry() {
-        info!("Step 3/4: Flux linkage measurement (spin-down)");
-        match measure_flux_linkage_spindown::<H, T>(hw, &flux_params).await {
-            Ok(flux) => result.params.flux_linkage_wb = flux,
-            Err(DetectionError::InsufficientSamples) => {
-                // Motor can't coast (high friction / geared) — fall back to
-                // the driven back-EMF-vector method. The q-axis method is NOT
-                // used here: in open loop the rotor leads the command frame
-                // by up to 90°, which biases it by the load-angle cosine.
-                info!("Spin-down failed (motor stopped too fast), falling back to driven method");
-                T::after_millis(500).await;
-
-                result.params.flux_linkage_wb =
-                    measure_flux_linkage_magnitude::<H, T>(hw, &flux_params).await?;
-            }
-            Err(e) => return Err(e),
-        }
-    } else {
-        // No phase-voltage sensing wired up on this hardware — the
-        // R-independent spin-down method cannot run; go straight to the
-        // driven method instead of wasting a spin-up/coast cycle.
-        info!("Step 3/4: Flux linkage (driven method — no coast telemetry on this hardware)");
-        result.params.flux_linkage_wb =
-            measure_flux_linkage_magnitude::<H, T>(hw, &flux_params).await?;
-    }
+    info!("Step 3/4: Flux linkage measurement");
+    result.params.flux_linkage_wb = measure_flux_linkage_auto::<H, T>(hw, &flux_params).await?;
     result.params.calculate_kv();
 
     // Calculate max current (needed below for the gain voltage limit)
