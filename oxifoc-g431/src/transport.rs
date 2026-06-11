@@ -124,8 +124,10 @@ pub fn init_uart(
     uart_cfg.stop_bits = StopBits::STOP1;
     let tx_buf = UART_TX_BUF.init([0u8; UART_TX_BUF_LEN]);
     let rx_buf = UART_RX_BUF.init([0u8; UART_RX_BUF_LEN]);
-    let uart = BufferedUart::new(usart2, pb4, pb3, tx_buf, rx_buf, UsartIrqs, uart_cfg)
-        .expect("USART2 init failed");
+    let uart = defmt::unwrap!(
+        BufferedUart::new(usart2, pb4, pb3, tx_buf, rx_buf, UsartIrqs, uart_cfg),
+        "USART2 init failed"
+    );
     let (uart_tx, uart_rx) = uart.split();
 
     // Register UART interface on Router
@@ -133,12 +135,11 @@ pub fn init_uart(
         OUTQ.stream_producer(),
         crate::config::MAX_PACKET_SIZE as u16,
     );
-    let ident = stack
-        .manage_profile(|router| router.register_interface(sink))
-        .expect("UART interface registration failed");
-    let net_id = stack
-        .manage_profile(|router| router.net_id_of(ident))
-        .unwrap();
+    let ident = defmt::unwrap!(
+        stack.manage_profile(|router| router.register_interface(sink)),
+        "UART interface registration failed"
+    );
+    let net_id = defmt::unwrap!(stack.manage_profile(|router| router.net_id_of(ident)));
 
     let rx_worker = RxWorker::new(
         stack,
@@ -200,12 +201,11 @@ pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
         OUTQ.stream_producer(),
         crate::config::MAX_PACKET_SIZE as u16,
     );
-    let ident = stack
-        .manage_profile(|router| router.register_interface(sink))
-        .expect("RTT interface registration failed");
-    let net_id = stack
-        .manage_profile(|router| router.net_id_of(ident))
-        .unwrap();
+    let ident = defmt::unwrap!(
+        stack.manage_profile(|router| router.register_interface(sink)),
+        "RTT interface registration failed"
+    );
+    let net_id = defmt::unwrap!(stack.manage_profile(|router| router.net_id_of(ident)));
 
     let rx_worker = RxWorker::new(stack, rtt_rx, RouterFrameProcessor::new(net_id), ident)
         .with_liveness(LivenessConfig {

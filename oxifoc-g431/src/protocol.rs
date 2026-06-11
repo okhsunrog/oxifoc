@@ -194,7 +194,7 @@ pub async fn state_monitor(stack: &'static Stack, ident: u8) {
     use oxifoc_core::runtime::streaming::{FAST_TELEM_PERIOD, FAST_TELEM_Q};
 
     loop {
-        STATE_NOTIFY.wait().await.unwrap();
+        defmt::unwrap!(STATE_NOTIFY.wait().await.ok());
         let state = stack.manage_profile(|im| im.interface_state(ident));
         match state {
             Some(InterfaceState::Active { .. }) => {
@@ -292,8 +292,8 @@ pub async fn detect_server(stack: &'static Stack) {
 // ========== Task Spawning ==========
 
 pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, ident: u8) {
-    spawner.spawn(protocol_servers(stack).unwrap());
-    spawner.spawn(fast_telemetry_task(stack).unwrap());
-    spawner.spawn(state_monitor(stack, ident).unwrap());
-    spawner.spawn(detect_server(stack).unwrap());
+    spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
+    spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
+    spawner.spawn(defmt::unwrap!(state_monitor(stack, ident)));
+    spawner.spawn(defmt::unwrap!(detect_server(stack)));
 }

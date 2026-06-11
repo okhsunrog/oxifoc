@@ -92,7 +92,7 @@ async fn main(spawner: Spawner) {
     // ========== STEP 6: Initialize Persistent Storage ==========
     let flash = embassy_stm32::flash::Flash::new_blocking(r.storage.flash);
     let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
-    spawner.spawn(storage::storage_worker(flash).unwrap());
+    spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
     let runtime_config = storage::CONFIG_LOADED.wait().await;
     // Store in static for config_server protocol access
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
@@ -126,21 +126,26 @@ async fn main(spawner: Spawner) {
     // ========== STEP 10: Spawn I/O and Protocol Tasks ==========
 
     // Spawn RX worker
-    spawner.spawn(
-        protocol::run_rx(
-            transport.rx_worker,
-            RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-            SCRATCH_BUF.init_with(|| [0u8; 64]),
-        )
-        .unwrap(),
-    );
+    spawner.spawn(defmt::unwrap!(protocol::run_rx(
+        transport.rx_worker,
+        RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+        SCRATCH_BUF.init_with(|| [0u8; 64]),
+    )));
 
     // Spawn TX worker (transport-specific)
     #[cfg(feature = "transport-uart")]
-    spawner.spawn(protocol::run_tx_uart(transport.tx, stack, ident).unwrap());
+    spawner.spawn(defmt::unwrap!(protocol::run_tx_uart(
+        transport.tx,
+        stack,
+        ident
+    )));
 
     #[cfg(feature = "transport-rtt")]
-    spawner.spawn(protocol::run_tx_rtt(transport.tx, stack, ident).unwrap());
+    spawner.spawn(defmt::unwrap!(protocol::run_tx_rtt(
+        transport.tx,
+        stack,
+        ident
+    )));
 
     // Spawn protocol servers
     protocol::spawn_servers(&spawner, stack, ident);
