@@ -134,8 +134,12 @@ impl Observer {
 /// MXLEMMING-style flux observer (original algorithm by David Molony, MESC
 /// project; also available in VESC as `FOC_OBSERVER_MXLEMMING`,
 /// foc_math.c). Integrates `(v − R·i)·dt − L·Δi` to track the rotor flux
-/// vector directly, truncates each component to ±λ to bleed off integrator
-/// drift, then uses a PLL to extract phase and velocity.
+/// vector directly, drains integrator drift back onto the λ circle
+/// (one-sided radial centering + component clamp backstop), then uses a
+/// PLL to extract phase and velocity. Optional extensions: online λ
+/// tracking ([`with_lambda_tracking`](Self::with_lambda_tracking)) and the
+/// salient "active flux" form for IPM motors
+/// ([`with_saliency`](Self::with_saliency)).
 ///
 /// Works well at medium to high speeds where back-EMF is measurable.
 /// At low speeds, HFI should be used instead.
@@ -658,8 +662,10 @@ impl<S: SinCos> HfiObserver<S> {
     /// d channel used for normalization (gains become independent of
     /// A, ωc and the absolute inductance) and for the "is any carrier
     /// current flowing at all" confidence floor. The saliency is
-    /// 2θ-periodic, so the lock point carries a π ambiguity — polarity
-    /// detection (saturation pulse) is not implemented yet.
+    /// 2θ-periodic, so the lock point carries a π ambiguity — resolved
+    /// after the first PLL lock by the saturation probe (palindromic ±d
+    /// pulses, `update_polarity_probe`), or by a trusted sensor seed via
+    /// [`set_phase`](Self::set_phase).
     pub fn update(&mut self, input: &ObserverInput) {
         let dt = input.dt;
         if dt <= 0.0 {
