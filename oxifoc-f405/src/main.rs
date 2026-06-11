@@ -123,14 +123,15 @@ async fn main(spawner: Spawner) {
         ExtiIrqs,
     );
 
-    match hardware::drv8301::configure_and_store_drv8301(drv_config) {
+    let (drv_spi, drv_result) = hardware::drv8301::configure_drv8301(drv_config);
+    match drv_result {
         Ok(()) => defmt::info!("DRV8301 ready"),
         Err(_e) => defmt::error!("DRV8301 configuration failed"),
     }
 
     hardware::drv8301::enable_gate_driver();
     spawner.spawn(defmt::unwrap!(hardware::drv8301::nfault_monitor_task(
-        nfault
+        nfault, drv_spi
     )));
 
     // ========== STEP 10: Initialize Hall Sensor ==========

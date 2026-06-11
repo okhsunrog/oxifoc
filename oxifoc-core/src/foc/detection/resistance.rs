@@ -176,15 +176,30 @@ where
     }
 
     let mut last_valid_current = test_current;
+    let mut last_r: Option<f32> = None;
 
     while test_current < params.current_max {
-        if let Some(r) = quick_measure(test_current) {
-            // Check power dissipation: I²R × 1.5
-            let power = test_current * test_current * r * 1.5;
-            if power >= power_limit {
-                break;
+        match quick_measure(test_current) {
+            Some(r) => {
+                last_r = Some(r);
+                // Check power dissipation: I²R × 1.5
+                let power = test_current * test_current * r * 1.5;
+                if power >= power_limit {
+                    break;
+                }
+                last_valid_current = test_current;
             }
-            last_valid_current = test_current;
+            None => {
+                // A flaky measurement must not escalate past the thermal
+                // gate: project the dissipation at this current with the
+                // last known R before trying an even higher one.
+                if let Some(r) = last_r {
+                    let projected = test_current * test_current * r * 1.5;
+                    if projected >= power_limit {
+                        break;
+                    }
+                }
+            }
         }
 
         test_current *= 1.5;

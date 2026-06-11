@@ -231,7 +231,6 @@ pub fn init_adc(
 /// hardware PWM shutdown in nanoseconds — no software in the loop.
 ///
 /// Must be called AFTER init_opamps() (pins already in analog mode).
-#[allow(dead_code)] // Temporarily disabled while debugging COMP false triggers
 pub fn init_overcurrent_protection(threshold_amps: f32) {
     use embassy_stm32::pac;
     use embassy_stm32::pac::comp::vals as comp_vals;

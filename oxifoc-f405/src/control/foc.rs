@@ -88,8 +88,13 @@ pub async fn init(
 
     // Enable ADC interrupt and PWM outputs (CH4 trigger + phase channels).
     // Order: install ADC handles → enable interrupt → enable PWM triggers.
+    // ADC at priority 0 (highest) — the FOC loop is the actuator's most
+    // time-critical ISR; comms ISRs (USB/UART) must never preempt or
+    // jitter it (mirrors the G431 setup).
     unsafe {
         use embassy_stm32::interrupt::typelevel::Interrupt;
+        let irq = embassy_stm32::interrupt::ADC;
+        cortex_m::peripheral::NVIC::set_priority(&mut cortex_m::Peripherals::steal().NVIC, irq, 0);
         <embassy_stm32::interrupt::typelevel::ADC as Interrupt>::unpend();
         <embassy_stm32::interrupt::typelevel::ADC as Interrupt>::enable();
     }
@@ -223,6 +228,14 @@ fn ADC() {
     fault::check_temperature_fault(
         board_temp_c_x10,
         &BOARD,
+        &FAULT_REGISTRY,
+        F405Fault::OverTemp,
+    );
+    // Motor winding NTC (PC4) — measured and telemetered since bring-up but
+    // never fault-checked; an overheating motor must trip like the FETs do.
+    fault::check_temperature_threshold(
+        motor_temp_c_x10,
+        BOARD.max_motor_temp_c,
         &FAULT_REGISTRY,
         F405Fault::OverTemp,
     );

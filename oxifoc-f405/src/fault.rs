@@ -89,9 +89,14 @@ impl PlatformFault for F405Fault {
     }
 
     fn is_critical(&self) -> bool {
+        // OverTemp is critical like on G431/G474: an overheated board must
+        // not be restartable by a plain host command while still hot.
         matches!(
             self,
-            F405Fault::OverCurrent | F405Fault::OverVoltage | F405Fault::DrvFault(_)
+            F405Fault::OverCurrent
+                | F405Fault::OverVoltage
+                | F405Fault::OverTemp
+                | F405Fault::DrvFault(_)
         )
     }
 }

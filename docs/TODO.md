@@ -235,28 +235,31 @@ budget to 13.9% — it was unusable on hardware before this.
 
 ### Firmware (2026-06-11 re-review; detail in [review.md](review.md) §1–§2)
 
-- [ ] **F405: SPI to DRV8301 inside a critical section masks the FOC ISR**
-  (PRIMASK gates all interrupts, incl. the control loop, during the blocking
-  SPI read on a gate-driver fault). Move the SPI device out of the CS-mutex.
-  [§1 HIGH]
-- [ ] **F405: FOC ISR left at default priority** — comms ISRs jitter/preempt
-  the control loop. Set NVIC priority 0 like G431. [§1 HIGH]
-- [ ] **F405: `OverTemp` not critical + motor temp measured but never
-  fault-checked.** Add `OverTemp` to `is_critical`; add a motor-temp
-  threshold to `BoardConfig` + a second `check_temperature_fault`. [§1]
-- [ ] **Detection: spin-down flux is dead on hardware** —
-  `read_coast_telemetry` not overridden on `EmbassyDetectionHardware`, so the
-  R-independent path always falls back. Implement it (phase-voltage ADC +
-  observer ωe) or stop advertising it. [§1]
-- [ ] **Detection: inductance gives `Ld ≤ Lq` by construction** (bin-2
-  magnitude only) — use the complex bin-2 to recover saliency sign / catch a
-  90°-off lock. [§1]
-- [ ] **g431: storage region has no `const_assert`** against firmware overlap
-  (f405/g474 have one) — self-brick risk on the 128 KB single-bank part.
-  Port the assert + `FIRMWARE_END_OFFSET`. [§1]
-- [ ] Stale safety comment: g431 `init_overcurrent_protection` says
-  "Temporarily disabled" but OCP (BKIN + BKF filter) is enabled — delete it.
-  [§3]
+- [x] **F405: SPI out of critical section** (2026-06-11): `Drv8301Spi`
+  (bus + CS) is owned by `nfault_monitor_task`; only the EN_GATE GPIO stays
+  under a CS mutex. Dead `get_fault_status`/`reset_faults` helpers removed.
+- [x] **F405: FOC ISR at NVIC priority 0** (2026-06-11), mirrors G431.
+- [x] **F405: `OverTemp` critical + motor NTC fault-checked** (2026-06-11):
+  `BoardConfig.max_motor_temp_c` (0 = no NTC) + `check_temperature_threshold`
+  in core; F405 trips on the PC4 winding NTC at 120 °C.
+- [x] **Detection: spin-down honesty** (2026-06-11): new
+  `DetectionHardware::supports_coast_telemetry` (default false) — boards
+  without phase-voltage sensing go straight to the driven flux method with
+  an honest log instead of spin-up→coast→zeros→"fallback". Implementing the
+  real coast telemetry (BEMF dividers + observer ωe) stays bench-blocked.
+- [x] **Detection: signed saliency** (2026-06-11): bin-2 *real part*
+  (complex, relative to the injection sweep) instead of magnitude — inverse
+  saliency / a 90°-off rotor lock now surfaces as Ld > Lq; the quadrature
+  component is accumulated and a dominating Im logs a "lock far off d"
+  warning (`axes_aligned`).
+- [x] **Detection guards** (2026-06-11): `find_safe_test_current` no longer
+  escalates past the thermal gate on flaky measurements (projects power with
+  the last known R); `measure_resistance` rejects an unconverged current
+  loop (±30% of setpoint → `UnexpectedMotion`) instead of averaging a
+  plausible-but-wrong R. Still open: an overall `wait_telemetry` timeout.
+- [x] **g431: storage `const_assert`** ported (2026-06-11) — build fails if
+  firmware grows into the storage pages. Stale "Temporarily disabled" OCP
+  comment deleted (the function is live, called from main).
 - [ ] **F405 ADC trigger (bench)**: ADC triggers from TIM1_CH4 compare, which
   fires twice per center-aligned period. Works only by timing accident (the
   2nd trigger lands inside the still-running injected sequence). Note: G431's

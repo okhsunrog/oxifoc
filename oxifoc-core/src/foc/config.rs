@@ -29,6 +29,7 @@
 ///     max_vbus_mv: 60_000,         // Overvoltage at 60V
 ///     min_vbus_mv: 8_000,          // Undervoltage at 8V
 ///     max_fet_temp_c: 100.0,       // FET overtemp at 100°C
+///     max_motor_temp_c: 0.0,       // 0 = no motor NTC wired
 /// };
 /// ```
 #[derive(Clone, Copy, Debug)]
@@ -60,6 +61,9 @@ pub struct BoardConfig {
     pub min_vbus_mv: u32,
     /// Maximum FET temperature in Celsius (overtemperature threshold)
     pub max_fet_temp_c: f32,
+    /// Maximum motor temperature in Celsius (overtemperature threshold).
+    /// 0.0 disables the check (board has no motor NTC wired).
+    pub max_motor_temp_c: f32,
 }
 
 impl BoardConfig {
@@ -223,6 +227,7 @@ mod tests {
         max_vbus_mv: 60_000,
         min_vbus_mv: 8_000,
         max_fet_temp_c: 100.0,
+        max_motor_temp_c: 120.0,
     };
 
     #[test]

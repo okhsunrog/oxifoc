@@ -85,10 +85,18 @@ pub trait DetectionHardware {
     ///
     /// Called during spin-down flux linkage measurement when all FETs are
     /// off.  On real hardware: ADC reads phase voltage dividers, Hall or
-    /// observer provides ωe.  Default returns zeros (triggers fallback to
-    /// driven measurement).
+    /// observer provides ωe.  Default returns zeros.
     fn read_coast_telemetry(&self) -> (f32, f32, f32) {
         (0.0, 0.0, 0.0)
+    }
+
+    /// Whether [`read_coast_telemetry`](Self::read_coast_telemetry) is
+    /// actually wired up. The default is `false` — `run_full_detection`
+    /// then skips the spin-down flux method entirely (honestly, with a log)
+    /// instead of spinning the motor up, coasting, reading zeros and
+    /// "falling back" as if the rotor had stopped too fast.
+    fn supports_coast_telemetry(&self) -> bool {
+        false
     }
 }
 
@@ -258,6 +266,20 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
 
     if delta_i.abs() < 0.1 {
         return Err(DetectionError::MotorNotResponding);
+    }
+
+    // The current loop must actually have converged on the setpoints: a
+    // rotor that isn't locked (cogging past detents, oscillating PI) still
+    // averages to *some* vd/id, yielding a plausible-but-wrong R that then
+    // poisons everything downstream (inductance comp, PI tuning). 30%
+    // tolerance — the settle dwell is generous, so an honest loop sits much
+    // closer than that.
+    if (id_low - i_low).abs() > 0.3 * i_low || (id_high - i_high).abs() > 0.3 * i_high {
+        debug!(
+            "R meas: current didn't settle (id {} vs {} / {} vs {})",
+            id_low, i_low, id_high, i_high
+        );
+        return Err(DetectionError::UnexpectedMotion);
     }
 
     let resistance = (delta_v / delta_i).abs();
@@ -911,22 +933,32 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
         v_target: 0.2 * params.vbus,
         ..Default::default()
     };
-    info!("Step 3/4: Flux linkage measurement (spin-down)");
-    match measure_flux_linkage_spindown::<H, T>(hw, &flux_params).await {
-        Ok(flux) => result.params.flux_linkage_wb = flux,
-        Err(DetectionError::InsufficientSamples) => {
-            // Motor can't coast (high friction / geared) — fall back to the
-            // driven back-EMF-vector method. The q-axis method is NOT used
-            // here: in open loop the rotor leads the command frame by up to
-            // 90°, which biases it by the load-angle cosine.
-            info!("Spin-down failed (motor stopped too fast), falling back to driven method");
-            T::after_millis(500).await;
+    if hw.supports_coast_telemetry() {
+        info!("Step 3/4: Flux linkage measurement (spin-down)");
+        match measure_flux_linkage_spindown::<H, T>(hw, &flux_params).await {
+            Ok(flux) => result.params.flux_linkage_wb = flux,
+            Err(DetectionError::InsufficientSamples) => {
+                // Motor can't coast (high friction / geared) — fall back to
+                // the driven back-EMF-vector method. The q-axis method is NOT
+                // used here: in open loop the rotor leads the command frame
+                // by up to 90°, which biases it by the load-angle cosine.
+                info!("Spin-down failed (motor stopped too fast), falling back to driven method");
+                T::after_millis(500).await;
 
-            let l_avg = result.params.inductance_avg_h;
-            result.params.flux_linkage_wb =
-                measure_flux_linkage_magnitude::<H, T>(hw, &flux_params, l_avg).await?;
+                let l_avg = result.params.inductance_avg_h;
+                result.params.flux_linkage_wb =
+                    measure_flux_linkage_magnitude::<H, T>(hw, &flux_params, l_avg).await?;
+            }
+            Err(e) => return Err(e),
         }
-        Err(e) => return Err(e),
+    } else {
+        // No phase-voltage sensing wired up on this hardware — the
+        // R-independent spin-down method cannot run; go straight to the
+        // driven method instead of wasting a spin-up/coast cycle.
+        info!("Step 3/4: Flux linkage (driven method — no coast telemetry on this hardware)");
+        let l_avg = result.params.inductance_avg_h;
+        result.params.flux_linkage_wb =
+            measure_flux_linkage_magnitude::<H, T>(hw, &flux_params, l_avg).await?;
     }
     result.params.calculate_kv();
 

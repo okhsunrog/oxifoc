@@ -31,6 +31,7 @@ pub const BOARD: BoardConfig = BoardConfig {
     max_vbus_mv: 45_000,       // Overvoltage at 45V (FET Vds margin)
     min_vbus_mv: 8_000,        // Undervoltage at 8V
     max_fet_temp_c: 100.0,     // FET overtemp at 100°C
+    max_motor_temp_c: 0.0,     // no motor NTC wired on B-G431B-ESC1
 };
 
 /// NTC configuration for FET temperature sensing on PB14

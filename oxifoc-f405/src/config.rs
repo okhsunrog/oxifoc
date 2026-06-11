@@ -30,6 +30,7 @@ pub const BOARD: BoardConfig = BoardConfig {
     max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN)
     min_vbus_mv: 6_000,        // Undervoltage at 6V (VESC HW_LIM_VIN)
     max_fet_temp_c: 100.0,     // FET overtemp at 100°C
+    max_motor_temp_c: 120.0,   // motor winding NTC on PC4
 };
 
 /// On-board PCB/FET NTC thermistor configuration (PA3, ADC123_IN3)

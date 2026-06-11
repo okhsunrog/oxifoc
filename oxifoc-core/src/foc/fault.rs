@@ -405,8 +405,25 @@ pub fn check_temperature_fault<F: PlatformFault>(
     registry: &FaultRegistry<F>,
     ot_fault: F,
 ) {
+    check_temperature_threshold(temp_c_x10, board.max_fet_temp_c, registry, ot_fault);
+}
+
+/// Like [`check_temperature_fault`] but against an explicit threshold —
+/// for sensors other than the FET NTC (e.g. the motor winding NTC).
+/// A threshold `<= 0` disables the check (sensor not wired).
+#[cfg(feature = "runtime")]
+#[inline]
+pub fn check_temperature_threshold<F: PlatformFault>(
+    temp_c_x10: i16,
+    threshold_c: f32,
+    registry: &FaultRegistry<F>,
+    ot_fault: F,
+) {
+    if threshold_c <= 0.0 {
+        return;
+    }
     let temp_c = temp_c_x10 as f32 / 10.0;
-    if temp_c > board.max_fet_temp_c && !registry.has_category(FaultCategory::OverTemp) {
+    if temp_c > threshold_c && !registry.has_category(FaultCategory::OverTemp) {
         registry.set(ot_fault);
         #[cfg(feature = "defmt")]
         defmt::error!("OverTemp FAULT: {} x0.1°C", temp_c_x10);

@@ -223,6 +223,10 @@ pub struct InductanceMeasurement<S: SinCos = crate::foc::trig::LibmSinCos> {
     target_cycles: u32,
     /// Accumulated Ld sum (for averaging across cycles)
     ld_sum: f32,
+    /// Accumulated signed saliency (1/Ld − 1/Lq)/2 per FFT window.
+    saliency_sum: f32,
+    /// Accumulated quadrature (45°-off) saliency — alignment diagnostic.
+    quadrature_sum: f32,
     /// Accumulated Lq sum
     lq_sum: f32,
     /// Accumulated current sum (for validation)
@@ -263,6 +267,8 @@ impl<S: SinCos> InductanceMeasurement<S> {
             cycles_completed: 0,
             target_cycles,
             ld_sum: 0.0,
+            saliency_sum: 0.0,
+            quadrature_sum: 0.0,
             lq_sum: 0.0,
             current_sum: 0.0,
             total_samples: 0,
@@ -370,20 +376,29 @@ impl<S: SinCos> InductanceMeasurement<S> {
         // Bin 0: DC component = average of 1/L samples
         let bin0_real = spectrum[0].re;
 
-        // Bin 2: 2nd harmonic = saliency information
-        // (2nd harmonic because inductance varies at 2× electrical frequency)
+        // Bin 2: 2nd harmonic = saliency information (inductance varies at
+        // 2× the injection angle). The injection sweeps exactly one
+        // electrical revolution per FFT window starting at the assumed
+        // d-axis, so for x[n] = m + Δ·cos(2θ_n − 2θ_err):
+        //   Re(bin2)·2/N = Δ·cos(2θ_err)  — the SIGNED saliency along the
+        //                                    assumed axes
+        //   Im(bin2)·2/N ∝ Δ·sin(2θ_err) — the quadrature component, ≈0
+        //                                    when the rotor lock is aligned
+        // Using the magnitude here (as before) would force Δ ≥ 0, hard-
+        // coding Ld ≤ Lq and silently accepting a 90°-off rotor lock
+        // (swapped d/q). The signed real part lets inverse saliency and a
+        // bad lock surface as Ld > Lq downstream.
         let bin2_real = spectrum[2].re;
         let bin2_imag = spectrum[2].im;
-        let bin2_magnitude =
-            crate::foc::fast_math::sqrtf(bin2_real * bin2_real + bin2_imag * bin2_imag);
 
         // Normalize by FFT size
         // offset = average inverse inductance = (1/Ld + 1/Lq) / 2
         let offset = bin0_real / FFT_SIZE as f32;
 
-        // amplitude = saliency in inverse inductance = (1/Ld - 1/Lq) / 2
-        // Factor of 2 for single-sided spectrum
-        let amplitude = bin2_magnitude * 2.0 / FFT_SIZE as f32;
+        // Signed saliency in inverse inductance = (1/Ld - 1/Lq) / 2.
+        // Factor of 2 for single-sided spectrum.
+        let amplitude = bin2_real * 2.0 / FFT_SIZE as f32;
+        let quadrature = bin2_imag * 2.0 / FFT_SIZE as f32;
 
         // Prevent division by zero
         let offset = if offset.abs() < 1e-10 {
@@ -392,11 +407,11 @@ impl<S: SinCos> InductanceMeasurement<S> {
             offset.abs() // 1/L should always be positive
         };
 
-        // Calculate Ld and Lq from offset and amplitude
+        // Calculate Ld and Lq from offset and signed amplitude
         // 1/Ld = offset + amplitude
         // 1/Lq = offset - amplitude
-        let inv_ld = offset + amplitude;
-        let inv_lq = (offset - amplitude).abs().max(1e-10); // Ensure positive
+        let inv_ld = (offset + amplitude).max(1e-10);
+        let inv_lq = (offset - amplitude).max(1e-10);
 
         let ld_est = 1.0 / inv_ld;
         let lq_est = 1.0 / inv_lq;
@@ -405,6 +420,8 @@ impl<S: SinCos> InductanceMeasurement<S> {
         if ld_est.is_finite() && lq_est.is_finite() {
             self.ld_sum += ld_est;
             self.lq_sum += lq_est;
+            self.saliency_sum += amplitude;
+            self.quadrature_sum += quadrature;
             self.cycles_completed += 1;
         }
     }
@@ -430,10 +447,41 @@ impl<S: SinCos> InductanceMeasurement<S> {
         self.cycles_completed
     }
 
+    /// Whether the saliency axes look aligned with the rotor lock.
+    ///
+    /// The quadrature (Im bin-2) component is the 45°-off saliency — near
+    /// zero for a well-locked rotor. When it dominates the in-phase part,
+    /// the lock angle is far off d (≈45°+) and the Ld/Lq split is not
+    /// trustworthy. Only meaningful for motors with measurable saliency:
+    /// for an SPM both components are noise around zero, so a tiny signed
+    /// sum is treated as aligned.
+    pub fn axes_aligned(&self) -> bool {
+        let offset_scale = if self.cycles_completed > 0 {
+            // Typical 1/L magnitude for "is the saliency significant at all"
+            (self.ld_sum / self.cycles_completed as f32).max(1e-9)
+        } else {
+            return true;
+        };
+        let signal = self.saliency_sum.abs();
+        let quad = self.quadrature_sum.abs();
+        // Insignificant saliency (≪ 1% of 1/L_avg): nothing to align.
+        if (signal + quad) * offset_scale < 0.01 * self.cycles_completed as f32 {
+            return true;
+        }
+        quad <= signal
+    }
+
     /// Finish measurement and return results.
     pub fn finish(self) -> Result<InductanceResult, DetectionError> {
         if self.cycles_completed == 0 {
             return Err(DetectionError::InsufficientSamples);
+        }
+
+        #[cfg(feature = "defmt")]
+        if !self.axes_aligned() {
+            defmt::warn!(
+                "Inductance: quadrature saliency dominates (lock angle far off d) — Ld/Lq split untrustworthy"
+            );
         }
 
         let n = self.cycles_completed as f32;

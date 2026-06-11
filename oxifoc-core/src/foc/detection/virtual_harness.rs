@@ -175,6 +175,10 @@ impl DetectionHardware for VirtualHardware {
         })
     }
 
+    fn supports_coast_telemetry(&self) -> bool {
+        true
+    }
+
     fn read_coast_telemetry(&self) -> (f32, f32, f32) {
         SIM.with(|s| {
             let s = s.borrow();
