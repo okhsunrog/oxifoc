@@ -561,7 +561,7 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
     const BASELINE_SAMPLES: u32 = 10;
     for _ in 0..BASELINE_SAMPLES {
         let telem = hw.wait_telemetry().await;
-        v_baseline += libm::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+        v_baseline += crate::foc::fast_math::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
         T::after_micros(500).await;
     }
     v_baseline /= BASELINE_SAMPLES as f32;
@@ -592,7 +592,7 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
         T::after_millis(step_ms).await;
 
         let telem = hw.wait_telemetry().await;
-        let v_mag = libm::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+        let v_mag = crate::foc::fast_math::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
         v_filt = if i == 1 {
             v_mag
         } else {
@@ -771,7 +771,7 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
         T::after_micros(500).await; // ~2 kHz effective sample rate
 
         let (v_alpha, v_beta, omega_e) = hw.read_coast_telemetry();
-        let v_bemf = libm::sqrtf(v_alpha * v_alpha + v_beta * v_beta);
+        let v_bemf = crate::foc::fast_math::sqrtf(v_alpha * v_alpha + v_beta * v_beta);
 
         if !measurement.record(v_bemf, omega_e) {
             // omega below threshold — motor has slowed too much
@@ -836,7 +836,7 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     T::after_millis(200).await;
 
     // Safe current: I = sqrt(max_power_loss / R / 1.5), capped to hardware limit
-    let safe_current = libm::sqrtf(params.max_power_loss_w / r_probe / 1.5)
+    let safe_current = crate::foc::fast_math::sqrtf(params.max_power_loss_w / r_probe / 1.5)
         .min(params.current_max)
         .max(probe_current);
     info!("Safe test current found");

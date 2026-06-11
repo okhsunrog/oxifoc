@@ -125,7 +125,8 @@ impl MotorParams {
     pub fn calculate_max_current(&mut self, motor_size: MotorSize) {
         if self.resistance_ohm > 0.0 {
             let max_power = motor_size.max_power_loss_w();
-            self.max_current_a = libm::sqrtf(max_power / self.resistance_ohm / 1.5);
+            self.max_current_a =
+                crate::foc::fast_math::sqrtf(max_power / self.resistance_ohm / 1.5);
         }
     }
 

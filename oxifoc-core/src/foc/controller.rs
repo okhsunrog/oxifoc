@@ -541,7 +541,8 @@ mod tests {
                     let telem = foc.step((2.0, -1.0, -1.0), 0.7, 0.0, 20.0, 800, DT);
 
                     let v_limit = foc.vbus() * foc.modulation_limit();
-                    let v_mag = ::libm::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+                    let v_mag =
+                        $crate::foc::fast_math::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
                     assert!(
                         v_mag <= v_limit + 1e-6,
                         "voltage magnitude {} exceeds limit {}",
@@ -621,7 +622,7 @@ mod tests {
                     let v_limit =
                         24.0 * FocController::<SvpwmModulator, $sincos>::DEFAULT_MODULATION_LIMIT;
                     let telem_saturated = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 100.0, 1000, 0.001);
-                    let v_mag = ::libm::sqrtf(
+                    let v_mag = $crate::foc::fast_math::sqrtf(
                         telem_saturated.vd * telem_saturated.vd
                             + telem_saturated.vq * telem_saturated.vq,
                     );

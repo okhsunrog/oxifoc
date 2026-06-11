@@ -163,9 +163,10 @@ async fn run_step<B: DetectionBackend>(
             };
             match backend.measure_resistance(&probe).await {
                 Ok(r_probe) => {
-                    let safe_current = libm::sqrtf(max_power_loss_w / r_probe / 1.5)
-                        .min(max_current_a)
-                        .max(probe_current);
+                    let safe_current =
+                        crate::foc::fast_math::sqrtf(max_power_loss_w / r_probe / 1.5)
+                            .min(max_current_a)
+                            .max(probe_current);
                     let params = ResistanceParams {
                         motor_size: MotorSize::Custom(max_power_loss_w),
                         current_max: safe_current,
@@ -184,7 +185,7 @@ async fn run_step<B: DetectionBackend>(
             max_power_loss_w,
             resistance_ohm: r,
         } => {
-            let safe_current = libm::sqrtf(max_power_loss_w / r / 1.5)
+            let safe_current = crate::foc::fast_math::sqrtf(max_power_loss_w / r / 1.5)
                 .min(max_current_a)
                 .max(0.5);
             let max_bus_current = (backend.vbus() * 0.577 * 0.6) / r.max(0.001);
@@ -213,7 +214,7 @@ async fn run_step<B: DetectionBackend>(
             pole_pairs,
             openloop_erpm,
         } => {
-            let safe_current = libm::sqrtf(max_power_loss_w / r / 1.5)
+            let safe_current = crate::foc::fast_math::sqrtf(max_power_loss_w / r / 1.5)
                 .min(max_current_a)
                 .max(0.5);
             let spin_rpm = openloop_erpm / pole_pairs as f32;

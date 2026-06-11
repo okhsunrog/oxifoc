@@ -117,8 +117,12 @@ impl HallCalibrator {
     /// * `raw_hall_state` - Raw 3-bit Hall reading (0-7)
     pub fn record(&mut self, angle_rad: f32, raw_hall_state: u8) {
         let idx = (raw_hall_state & 0x07) as usize;
-        self.sin_acc[idx] += libm::sinf(angle_rad);
-        self.cos_acc[idx] += libm::cosf(angle_rad);
+        let (s, c) = {
+            use crate::foc::trig::SinCos;
+            crate::foc::trig::FastSinCos::sin_cos(angle_rad)
+        };
+        self.sin_acc[idx] += s;
+        self.cos_acc[idx] += c;
         self.counts[idx] += 1;
     }
 

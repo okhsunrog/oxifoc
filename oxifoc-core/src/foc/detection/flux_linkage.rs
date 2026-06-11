@@ -282,7 +282,8 @@ impl MagnitudeFluxMeasurement {
         }
 
         // λ = |e⃗| / ω
-        let flux = libm::sqrtf(avg_e_d * avg_e_d + avg_e_q * avg_e_q) / avg_omega.abs();
+        let flux =
+            crate::foc::fast_math::sqrtf(avg_e_d * avg_e_d + avg_e_q * avg_e_q) / avg_omega.abs();
 
         if !(MIN_VALID_FLUX..=MAX_VALID_FLUX).contains(&flux) {
             return Err(DetectionError::OutOfRange);

@@ -299,7 +299,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
         v_inj_alpha: f32,
         v_inj_beta: f32,
     ) -> bool {
-        let i_magnitude = libm::sqrtf(i_alpha * i_alpha + i_beta * i_beta);
+        let i_magnitude = crate::foc::fast_math::sqrtf(i_alpha * i_alpha + i_beta * i_beta);
         self.current_sum += i_magnitude;
         self.total_samples += 1;
 
@@ -374,7 +374,8 @@ impl<S: SinCos> InductanceMeasurement<S> {
         // (2nd harmonic because inductance varies at 2× electrical frequency)
         let bin2_real = spectrum[2].re;
         let bin2_imag = spectrum[2].im;
-        let bin2_magnitude = libm::sqrtf(bin2_real * bin2_real + bin2_imag * bin2_imag);
+        let bin2_magnitude =
+            crate::foc::fast_math::sqrtf(bin2_real * bin2_real + bin2_imag * bin2_imag);
 
         // Normalize by FFT size
         // offset = average inverse inductance = (1/Ld + 1/Lq) / 2
@@ -567,7 +568,7 @@ mod tests {
             injector.step(dt);
         }
         let (v_alpha, v_beta) = injector.step(dt);
-        let v_mag = libm::sqrtf(v_alpha * v_alpha + v_beta * v_beta);
+        let v_mag = crate::foc::fast_math::sqrtf(v_alpha * v_alpha + v_beta * v_beta);
         assert!(v_mag > 0.5, "Expected non-zero voltage, got {}", v_mag);
     }
 

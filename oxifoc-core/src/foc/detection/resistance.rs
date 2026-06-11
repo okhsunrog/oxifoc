@@ -206,7 +206,7 @@ where
 #[inline]
 pub fn calculate_max_current(resistance: f32, motor_size: MotorSize) -> f32 {
     let max_power = motor_size.max_power_loss_w();
-    libm::sqrtf(max_power / resistance / 1.5)
+    crate::foc::fast_math::sqrtf(max_power / resistance / 1.5)
 }
 
 /// Validate measured resistance is physically reasonable.
