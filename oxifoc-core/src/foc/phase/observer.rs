@@ -1,7 +1,25 @@
 //! Sensorless observers for FOC control
 //!
-//! Provides software-based angle estimation for sensorless motor control.
-//! Includes back-EMF observer for medium/high speed and HFI for low/zero speed.
+//! Two estimators with complementary speed ranges, designed to run
+//! **concurrently** in `PhaseManager`'s two slots (see `manager.rs` for
+//! the crossover/blend policies that pick between them):
+//!
+//! - [`BackEmfObserver`] — flux integrator + PLL, valid once back-EMF is
+//!   measurable (≳ [`READY_MIN_VELOCITY`]). Lineage: MXLEMMING algorithm
+//!   (David Molony, MESC), with MESC/VESC extensions (λ tracking,
+//!   one-sided nonlinear centering) and Boldea's "active flux" form for
+//!   salient motors.
+//! - [`HfiObserver`] — pulsating d-axis injection + synchronous
+//!   demodulation, valid from standstill on salient motors (Ld ≠ Lq).
+//!   Carries a π ambiguity until the saturation probe (or a sensor seed)
+//!   resolves it.
+//!
+//! Conventions: angles are ELECTRICAL radians, inputs are stationary-frame
+//! (αβ) volts/amps, `dt` per call (no fixed-rate assumption). Every design
+//! decision here is pinned by the closed-loop sims in this file and
+//! `manager.rs` (VirtualMotor plant), plus on-target parity tests in
+//! `tests/stm32g431`; numbers quoted in comments come from
+//! docs/perf-bench-2026-06-11.md.
 
 use core::f32::consts::TAU;
 use core::marker::PhantomData;
@@ -159,8 +177,10 @@ pub struct BackEmfObserver {
 
     // Motor parameters
     r: f32, // Phase resistance (Ω)
-    l: f32, // Inductance subtracted from the flux integral (H); Lq in the
-    // salient "active flux" configuration, the plain phase L otherwise
+    /// Inductance subtracted from the flux integral (H): Lq in the salient
+    /// "active flux" configuration (`with_saliency`), the plain phase
+    /// inductance otherwise.
+    l: f32,
     /// Lq − Ld (H), informational (active-flux magnitude shift under
     /// d-current). 0 = round-rotor.
     l_delta: f32,
@@ -247,9 +267,13 @@ impl BackEmfObserver {
             l_delta: 0.0,
             lambda,
             lambda_gain: 0.0,
+            // Bounds are inert until with_lambda_tracking() rebinds them.
             lambda_min: lambda,
             lambda_max: lambda,
             centering_gain: DEFAULT_CENTERING_GAIN,
+            // PLL: ωn = √ki ≈ 140 rad/s, ζ = kp/(2·ωn) ≈ 3.5 — heavily
+            // overdamped tracker, sim-validated to lock through spin-up
+            // without overshooting into the π-flip guard's >90° zone.
             pll_kp: 1000.0,
             pll_ki: 20000.0,
             confidence: 0.0,
@@ -259,10 +283,19 @@ impl BackEmfObserver {
         }
     }
 
-    /// Use the salient (IPM) "active flux" model: the integrator subtracts
-    /// Lq·i (not L_avg·i), which leaves a vector exactly aligned with the
-    /// d axis for any load — a scalar L_avg on an IPM motor gives a
-    /// load-dependent angle bias instead.
+    /// Use the salient (IPM) "active flux" model (Boldea): the integrator
+    /// subtracts Lq·i (not L_avg·i), which leaves
+    /// (λ + (Ld−Lq)·id)·e^{jθ} — a vector exactly aligned with the d axis
+    /// for any load. A scalar L_avg on an IPM motor gives a load-dependent
+    /// angle bias instead (0.56 rad at Lq·I ≈ λ in the sims).
+    ///
+    /// Two rejected alternatives, for the record (both sim-tested worse
+    /// than even the scalar model under pure-q load): MESC's diagonal
+    /// Lα(θ)/Lβ(θ) approximation drops the off-diagonal coupling term,
+    /// and an "exact" invPark(Ld·id, Lq·iq) subtraction at the estimated
+    /// angle feeds the angle error back into itself (loop gain ≈ ΔL·I/λ).
+    /// The active-flux form has no angle-dependent terms, so no feedback
+    /// path exists. Sim result: < 0.05 rad under the same load.
     pub fn with_saliency(mut self, ld: f32, lq: f32) -> Self {
         if ld > 0.0 && lq > 0.0 {
             self.l = lq;
@@ -276,6 +309,11 @@ impl BackEmfObserver {
     /// the configured flux linkage non-critical (it drifts with saturation
     /// and magnet temperature) and un-breaks `confidence = |flux|/λ` when
     /// the stored value is off.
+    ///
+    /// The factor-2 bounds are deliberately loose: physical λ drift is
+    /// tens of percent at most, so hitting a bound means the stored value
+    /// is wrong outright (re-run detection) — and the bound is what keeps
+    /// a fault transient from dragging λ to nonsense meanwhile.
     pub fn with_lambda_tracking(mut self, gain: f32) -> Self {
         if gain > 0.0 {
             self.lambda_gain = gain;
@@ -350,6 +388,8 @@ impl BackEmfObserver {
         // the λ tracker its own output.
         if self.centering_gain > 0.0 && flux_mag > self.lambda {
             let err_norm = 1.0 - (flux_mag * flux_mag) / (self.lambda * self.lambda);
+            // Clamp: never drain more than half the radius in one cycle,
+            // whatever gain·dt·overshoot multiplies out to.
             let pull = crate::foc::clamp_f32(err_norm * self.centering_gain * dt, -0.5, 0.0);
             self.x1 += self.x1 * pull;
             self.x2 += self.x2 * pull;
@@ -596,6 +636,10 @@ impl HfiObserver {
             err_quality: 1.0, // start "unlocked"
             phase_est: 0.0,
             velocity_est: 0.0,
+            // PLL: ωn = √ki ≈ 45 rad/s, ζ ≈ 1.1 — an order slower than the
+            // back-EMF PLL, because the input (demodulated saliency error)
+            // is already low-passed by HFI_DEMOD_TAU_S and only needs to
+            // track low-speed motion by design.
             pll_kp: 100.0,
             pll_ki: 2000.0,
             min_hf_current: HFI_MIN_HF_CURRENT_A,
