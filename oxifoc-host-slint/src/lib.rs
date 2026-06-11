@@ -47,6 +47,7 @@ fn phase_source_label(src: oxifoc_core::foc::phase::PhaseSource) -> &'static str
         P::EncoderToObserver { .. } => "Enc→Obs",
         P::HallWithFallback { .. } => "Hall+FB",
         P::HfiToObserver { .. } => "HFI→Obs",
+        P::HfiToObserverVolts { .. } => "HFI→Obs(V)",
         P::HfiToHall { .. } => "HFI→Hall",
         P::HfiToEncoder { .. } => "HFI→Enc",
         P::Manual => "Manual",
@@ -877,8 +878,9 @@ pub fn main() {
         let weak = app.as_weak();
         app.on_phase_source_changed(move || {
             use oxifoc_core::foc::phase::PhaseSource;
-            // Same crossover defaults the CLI uses (electrical rad/s).
-            const SWITCH_VEL: f32 = 150.0;
+            // Same crossover defaults the CLI uses.
+            const SWITCH_VEL: f32 = 150.0; // electrical rad/s
+            const TOGGLE_V: f32 = 2.0; // volts of back-EMF proxy
 
             let app = weak.unwrap();
             let ps = match app.get_phase_source_index() {
@@ -892,6 +894,10 @@ pub fn main() {
                 3 => PhaseSource::Hfi,
                 4 => PhaseSource::HfiToObserver {
                     min_vel: SWITCH_VEL,
+                    min_confidence: 0.5,
+                },
+                5 => PhaseSource::HfiToObserverVolts {
+                    toggle_v: TOGGLE_V,
                     min_confidence: 0.5,
                 },
                 _ => return,

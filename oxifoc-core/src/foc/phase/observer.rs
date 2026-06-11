@@ -107,6 +107,15 @@ impl Observer {
         !matches!(self, Observer::None)
     }
 
+    /// Phase resistance of the underlying motor model, if any — used by
+    /// voltage-based crossover criteria (|vq − R·iq| back-EMF proxy).
+    pub fn resistance(&self) -> Option<f32> {
+        match self {
+            Observer::None => None,
+            Observer::BackEmf(o) => Some(o.resistance()),
+        }
+    }
+
     /// Reset observer state
     pub fn reset(&mut self) {
         match self {
@@ -145,9 +154,27 @@ pub struct BackEmfObserver {
     velocity_pll: f32, // PLL-filtered velocity
 
     // Motor parameters
-    r: f32,      // Phase resistance (Ω)
-    l: f32,      // Phase inductance (H)
-    lambda: f32, // Flux linkage (Wb)
+    r: f32, // Phase resistance (Ω)
+    l: f32, // Inductance subtracted from the flux integral (H); Lq in the
+    // salient "active flux" configuration, the plain phase L otherwise
+    /// Lq − Ld (H), informational (active-flux magnitude shift under
+    /// d-current). 0 = round-rotor.
+    l_delta: f32,
+    lambda: f32, // Flux linkage (Wb); adapted online when lambda_gain > 0
+
+    // Online λ adaptation (MESC/VESC lambda-comp): first-order tracker of
+    // the raw flux magnitude. 0 = off. Bounds keep a transient from
+    // dragging λ to nonsense.
+    lambda_gain: f32, // 1/s
+    lambda_min: f32,
+    lambda_max: f32,
+
+    /// Nonlinear centering gain (1/s, normalized): radial pull of the flux
+    /// vector toward the λ circle. The component-wise hard clamp alone
+    /// distorts the trajectory near the ±λ square's corners (angle bias);
+    /// the radial pull bleeds integrator drift without bending the angle.
+    /// The clamp stays as a backstop. 0 = clamp only.
+    centering_gain: f32,
 
     // Observer tuning
     pll_kp: f32, // PLL proportional gain
@@ -177,14 +204,33 @@ pub const READY_MIN_VELOCITY: f32 = 30.0;
 /// Slow enough to ride out per-revolution ripple at crossover speeds.
 const PHASE_ERR_FILTER_TAU_S: f32 = 0.01;
 
+/// Default nonlinear centering gain (1/s, normalized error): drains a
+/// radius error with τ ≈ 2 ms — orders of magnitude faster than
+/// measurement-offset drift accumulates, while staying gentle on spin-up
+/// transients (an aggressive pull there measurably perturbs the
+/// hall→observer handoff timing in the closed-loop sims; 5000 broke
+/// their continuity assertions, 500 does not).
+pub const DEFAULT_CENTERING_GAIN: f32 = 500.0;
+
+/// Default λ-tracking gain (1/s): τ = 0.2 s. λ moves with saturation and
+/// magnet temperature on the timescale of seconds; tracking must stay far
+/// slower than the flux/PLL dynamics or it eats the error signal itself.
+pub const DEFAULT_LAMBDA_GAIN: f32 = 5.0;
+
 impl BackEmfObserver {
-    /// Create a new back-EMF observer with motor parameters
+    /// Create a new back-EMF observer with motor parameters.
+    ///
+    /// Round-rotor model with nonlinear centering on; add
+    /// [`with_saliency`](Self::with_saliency) /
+    /// [`with_lambda_tracking`](Self::with_lambda_tracking) for IPM motors
+    /// and online λ adaptation.
     ///
     /// # Arguments
     /// * `r` - Phase resistance (Ω)
     /// * `l` - Phase inductance (H)
     /// * `lambda` - Flux linkage (Wb)
     pub fn new(r: f32, l: f32, lambda: f32) -> Self {
+        let lambda = lambda.max(1e-6);
         Self {
             x1: 0.0,
             x2: 0.0,
@@ -194,7 +240,12 @@ impl BackEmfObserver {
             velocity_pll: 0.0,
             r,
             l,
-            lambda: lambda.max(1e-6),
+            l_delta: 0.0,
+            lambda,
+            lambda_gain: 0.0,
+            lambda_min: lambda,
+            lambda_max: lambda,
+            centering_gain: DEFAULT_CENTERING_GAIN,
             pll_kp: 1000.0,
             pll_ki: 20000.0,
             confidence: 0.0,
@@ -202,6 +253,48 @@ impl BackEmfObserver {
             // the PLL has actually tracked something.
             phase_err_filt: core::f32::consts::PI,
         }
+    }
+
+    /// Use the salient (IPM) "active flux" model: the integrator subtracts
+    /// Lq·i (not L_avg·i), which leaves a vector exactly aligned with the
+    /// d axis for any load — a scalar L_avg on an IPM motor gives a
+    /// load-dependent angle bias instead.
+    pub fn with_saliency(mut self, ld: f32, lq: f32) -> Self {
+        if ld > 0.0 && lq > 0.0 {
+            self.l = lq;
+            self.l_delta = lq - ld;
+        }
+        self
+    }
+
+    /// Enable online λ adaptation: λ tracks the raw flux magnitude with a
+    /// first-order filter (`gain` in 1/s), clamped to [λ₀/2, 2λ₀]. Makes
+    /// the configured flux linkage non-critical (it drifts with saturation
+    /// and magnet temperature) and un-breaks `confidence = |flux|/λ` when
+    /// the stored value is off.
+    pub fn with_lambda_tracking(mut self, gain: f32) -> Self {
+        if gain > 0.0 {
+            self.lambda_gain = gain;
+            self.lambda_min = self.lambda * 0.5;
+            self.lambda_max = self.lambda * 2.0;
+        }
+        self
+    }
+
+    /// Override the nonlinear centering gain (1/s; 0 = hard clamp only).
+    pub fn with_centering_gain(mut self, gain: f32) -> Self {
+        self.centering_gain = gain.max(0.0);
+        self
+    }
+
+    /// Phase resistance (Ω) — used by voltage-based crossover criteria.
+    pub fn resistance(&self) -> f32 {
+        self.r
+    }
+
+    /// Current (possibly adapted) flux-linkage estimate (Wb).
+    pub fn lambda(&self) -> f32 {
+        self.lambda
     }
 
     /// Update observer with new measurements
@@ -217,6 +310,13 @@ impl BackEmfObserver {
         // L·i. Removing L·i incrementally keeps x tracking the rotor flux
         // directly, so the estimated angle stays unbiased under load (without
         // this term a q-axis current of L·I = λ skews the angle by 45°).
+        // For salient (IPM) motors `l` is Lq — the "active flux" form
+        // (Boldea): subtracting Lq·i in the stationary frame leaves
+        // (λ + (Ld−Lq)·id)·e^{jθ}, a vector aligned with the d axis for ANY
+        // load split, with no angle-dependent terms (a scalar subtraction
+        // can't feed the estimate back into itself). At id = 0 its
+        // magnitude is exactly λ; under field weakening (id < 0, Ld < Lq)
+        // it grows, which the λ tracker absorbs.
         self.x1 += (input.v_alpha - self.r * input.i_alpha) * dt
             - self.l * (input.i_alpha - self.i_alpha_last);
         self.x2 += (input.v_beta - self.r * input.i_beta) * dt
@@ -224,10 +324,36 @@ impl BackEmfObserver {
         self.i_alpha_last = input.i_alpha;
         self.i_beta_last = input.i_beta;
 
-        // Component-wise truncation to ±λ is the MXLEMMING correction
-        // mechanism: instead of an explicit gain·error feedback term it bleeds
-        // off integrator drift (DC offsets in v/i measurements) every cycle,
-        // because the true rotor flux components never exceed λ.
+        // Raw (pre-correction) flux magnitude: the honest amplitude signal
+        // for λ tracking and confidence, taken before centering/clamping
+        // pull it onto the configured circle.
+        let flux_mag = crate::foc::fast_math::sqrtf(self.x1 * self.x1 + self.x2 * self.x2);
+
+        // Online λ adaptation (MESC MXLEMMING_LAMBDA / VESC lambda-comp):
+        // slow first-order tracker, bounded. Adapts the clamp/centering
+        // circle and the confidence normalization with it.
+        if self.lambda_gain > 0.0 {
+            self.lambda += self.lambda_gain * (flux_mag - self.lambda) * dt;
+            self.lambda = crate::foc::clamp_f32(self.lambda, self.lambda_min, self.lambda_max);
+        }
+
+        // Nonlinear centering (MESC-inspired, one-sided): radial pull back
+        // onto the λ circle when the integral drifts OUTSIDE it. Normalized
+        // form, λ-independent gain: x += (1 − |x|²/λ²)·x·k·dt, applied only
+        // for |x| > λ. Unlike the component clamp this never bends the flux
+        // angle; unlike a two-sided pull it never inflates a small flux to
+        // the configured circle — that would fabricate confidence and feed
+        // the λ tracker its own output.
+        if self.centering_gain > 0.0 && flux_mag > self.lambda {
+            let err_norm = 1.0 - (flux_mag * flux_mag) / (self.lambda * self.lambda);
+            let pull = crate::foc::clamp_f32(err_norm * self.centering_gain * dt, -0.5, 0.0);
+            self.x1 += self.x1 * pull;
+            self.x2 += self.x2 * pull;
+        }
+
+        // Component-wise truncation to ±λ stays as the hard backstop
+        // (original MXLEMMING mechanism): the true rotor flux components
+        // never exceed λ, whatever the centering gain is doing.
         self.x1 = crate::foc::clamp_f32(self.x1, -self.lambda, self.lambda);
         self.x2 = crate::foc::clamp_f32(self.x2, -self.lambda, self.lambda);
 
@@ -248,10 +374,10 @@ impl BackEmfObserver {
         let alpha = (dt / PHASE_ERR_FILTER_TAU_S).min(1.0);
         self.phase_err_filt += alpha * (phase_error.abs() - self.phase_err_filt);
 
-        // Confidence: how close the estimated flux magnitude is to λ.
-        // A weak heuristic — measurement offsets can also saturate the
-        // integrator — but cheap and monotonic during real spin-up.
-        let flux_mag = crate::foc::fast_math::sqrtf(self.x1 * self.x1 + self.x2 * self.x2);
+        // Confidence: how close the (raw, pre-correction) flux magnitude is
+        // to λ. A weak heuristic — measurement offsets can also saturate the
+        // integrator — but cheap and monotonic during real spin-up. With λ
+        // tracking enabled the normalization adapts along with the clamp.
         self.confidence = crate::foc::clamp_f32(flux_mag / self.lambda, 0.0, 1.0);
     }
 
@@ -285,7 +411,8 @@ impl BackEmfObserver {
             && self.velocity_pll.abs() >= READY_MIN_VELOCITY
     }
 
-    /// Reset observer state
+    /// Reset observer state. The adapted λ is kept — it is a physical
+    /// parameter estimate, more current than the stored configuration.
     pub fn reset(&mut self) {
         self.x1 = 0.0;
         self.x2 = 0.0;
@@ -297,11 +424,17 @@ impl BackEmfObserver {
         self.phase_err_filt = core::f32::consts::PI;
     }
 
-    /// Set motor parameters
+    /// Set motor parameters (re-anchors the λ-tracking bounds; resets the
+    /// round-rotor model — re-apply saliency via the builder if needed)
     pub fn set_motor_params(&mut self, r: f32, l: f32, lambda: f32) {
         self.r = r;
         self.l = l;
+        self.l_delta = 0.0;
         self.lambda = lambda.max(1e-6);
+        if self.lambda_gain > 0.0 {
+            self.lambda_min = self.lambda * 0.5;
+            self.lambda_max = self.lambda * 2.0;
+        }
     }
 
     /// Set PLL gains
@@ -789,6 +922,146 @@ mod tests {
         let err = angle_difference(obs.phase(), theta);
         assert!(err.abs() < 0.1, "phase error {} rad too large", err);
         assert!(obs.confidence() > 0.5, "confidence {}", obs.confidence());
+    }
+
+    /// Drive the observer with EXACT salient-PMSM terminal quantities
+    /// (id = 0, iq = I): ψ_αβ = (−Lq·I·sinθ + λ·cosθ, Lq·I·cosθ + λ·sinθ),
+    /// v = R·i + Δψ/dt. Returns the final true flux angle.
+    #[allow(clippy::too_many_arguments)] // test helper, positional args read fine
+    fn run_observer_salient(
+        obs: &mut BackEmfObserver,
+        r: f32,
+        lq: f32,
+        lambda: f32,
+        omega: f32,
+        i_q: f32,
+        steps: usize,
+        dt: f32,
+    ) -> f32 {
+        let psi = |theta: f32| {
+            (
+                -lq * i_q * libm::sinf(theta) + lambda * libm::cosf(theta),
+                lq * i_q * libm::cosf(theta) + lambda * libm::sinf(theta),
+            )
+        };
+        let mut theta: f32 = 1.0;
+        for _ in 0..steps {
+            let theta_next = wrap_angle(theta + omega * dt);
+            let (i_a, i_b) = (-i_q * libm::sinf(theta), i_q * libm::cosf(theta));
+            let (pa, pb) = psi(theta);
+            let (pa_n, pb_n) = psi(theta_next);
+            obs.update(&ObserverInput {
+                v_alpha: r * i_a + (pa_n - pa) / dt,
+                v_beta: r * i_b + (pb_n - pb) / dt,
+                i_alpha: i_a,
+                i_beta: i_b,
+                dt,
+            });
+            theta = theta_next;
+        }
+        theta
+    }
+
+    #[test]
+    fn lambda_tracking_follows_true_flux() {
+        // Stored λ is one bench point; the real value drifts with magnet
+        // temperature and saturation. With tracking, the observer's λ must
+        // converge to the true flux magnitude and confidence must recover
+        // (without tracking it would sit at λ_true/λ_cfg ≈ 0.55).
+        let (r, l, lambda_true) = (0.1, 50e-6, 0.005);
+        let lambda_cfg = lambda_true * 1.8;
+        let omega = 300.0;
+        let dt = 5e-5;
+        let mut obs =
+            BackEmfObserver::new(r, l, lambda_cfg).with_lambda_tracking(DEFAULT_LAMBDA_GAIN);
+        // 2 s of sim: λ tracker has τ = 0.2 s.
+        run_observer(&mut obs, r, l, lambda_true, omega, 0.0, 40_000, dt);
+
+        assert!(
+            (obs.lambda() - lambda_true).abs() < 0.1 * lambda_true,
+            "λ estimate {} did not converge to true {}",
+            obs.lambda(),
+            lambda_true
+        );
+        assert!(
+            obs.confidence() > 0.9,
+            "confidence {} should recover once λ adapts",
+            obs.confidence()
+        );
+        assert!(obs.is_ready());
+    }
+
+    #[test]
+    fn salient_observer_beats_scalar_on_ipm() {
+        // IPM under load: Lq·I is comparable to λ, so the scalar-L observer
+        // (l_avg) misattributes part of the stator flux to the rotor and
+        // locks with a load-dependent angle bias. The salient model must cut
+        // that error substantially (the diagonal Lα/Lβ approximation is not
+        // exact, so "substantially", not "to zero").
+        let (r, ld, lq, lambda) = (0.1, 100e-6, 300e-6, 0.005);
+        let (omega, i_q, dt) = (300.0, 15.0, 5e-5); // Lq·I = 4.5 mWb ≈ λ
+        let l_avg = (ld + lq) / 2.0;
+
+        let mut scalar = BackEmfObserver::new(r, l_avg, lambda);
+        let theta_s = run_observer_salient(&mut scalar, r, lq, lambda, omega, i_q, 40_000, dt);
+        let err_scalar = angle_difference(scalar.phase(), theta_s).abs();
+
+        let mut salient = BackEmfObserver::new(r, l_avg, lambda).with_saliency(ld, lq);
+        let theta_x = run_observer_salient(&mut salient, r, lq, lambda, omega, i_q, 40_000, dt);
+        let err_salient = angle_difference(salient.phase(), theta_x).abs();
+
+        // Active flux is exact for this plant (id = 0): only numerical and
+        // PLL-lag residue remains.
+        assert!(
+            err_salient < 0.05,
+            "active-flux observer error {} rad (scalar comparison: {})",
+            err_salient,
+            err_scalar
+        );
+        assert!(
+            err_salient < err_scalar * 0.25,
+            "active flux should slash the load bias: scalar {} rad, salient {} rad",
+            err_scalar,
+            err_salient
+        );
+    }
+
+    #[test]
+    fn centering_keeps_lock_under_voltage_offset() {
+        // A DC offset on the measured/commanded voltage (ADC offset, dead
+        // time residue) makes the flux integral drift; the centering (and
+        // clamp backstop) must bleed it off without losing the lock. The
+        // radial pull corrects without the angle distortion the bare
+        // component clamp causes at the ±λ square's corners.
+        let (r, l, lambda) = (0.1, 50e-6, 0.005);
+        let (omega, dt) = (300.0, 5e-5);
+        let mut obs = BackEmfObserver::new(r, l, lambda);
+
+        let mut theta: f32 = 1.0;
+        let mut max_err = 0.0f32;
+        for step in 0..40_000 {
+            let theta_next = wrap_angle(theta + omega * dt);
+            let v_a = -omega * lambda * libm::sinf(theta) + 0.05; // ADC-scale DC offset
+            let v_b = omega * lambda * libm::cosf(theta);
+            obs.update(&ObserverInput {
+                v_alpha: v_a,
+                v_beta: v_b,
+                i_alpha: 0.0,
+                i_beta: 0.0,
+                dt,
+            });
+            theta = theta_next;
+            // Measure over the last electrical revolution.
+            if step > 40_000 - 420 {
+                max_err = max_err.max(angle_difference(obs.phase(), theta).abs());
+            }
+        }
+        assert!(
+            max_err < 0.15,
+            "lock lost under DC voltage offset: max err {} rad",
+            max_err
+        );
+        assert!(obs.is_ready());
     }
 
     #[test]

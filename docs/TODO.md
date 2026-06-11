@@ -35,13 +35,21 @@ board docs.
   CN comments, `mod sensors` compiled to prevent rot. Still open when
   the shield arrives (hardware audit 2026-06-11):
   - **config.rs BOARD has IHM07M1 constants**: shunt 0.33 Ω + internal
-    OPAMP ×16 are wrong — IHM08M1 has 0.010 Ω 1W shunts (R43-45, BOM)
-    and its own conditioning op-amps (JP1/JP2 closed for FOC). Get the
-    gain/offset from the schematic Fig. 5 or ST Workbench board params.
-    VBUS ratio 19.12 ≈ accidentally right (shield: 169k/9.31k = 19.15).
-  - **CURRENT REF is mandatory and missing**: OCP comparator threshold
-    = filtered PWM on PB4 (TIM3_CH1). Undriven → reference at GND →
-    BKIN trips instantly, the bridge will not start at all.
+    OPAMP ×16 are wrong. IHM08M1 (from Fig. 5): 0.010 Ω 1W shunts,
+    TSV994 difference amps per phase — Vshunt→680Ω→(+) with 6.8k bias
+    to 3V3 (via JP1) , Kelvin GND→1k→(−), feedback 4.7k ⇒ gain ≈5.18,
+    offset ≈1.71 V (≈2122 counts), ≈51.8 mV/A, FS ≈ ±31 A. JP2 alters
+    the feedback network — verify effective FOC gain at bench via
+    zero-offset (calibrate()) + a known current. VBUS divider
+    169k/9.31k = 19.15 (config's 19.12 accidentally close).
+  - **CURRENT REF (PB4 PWM) is optional, not mandatory** (corrected
+    after reading Fig. 5 in full): the BKIN comparators (U24-26,
+    LMV331) compare raw shunt voltage against a FIXED divider Vref
+    (R179 33k / R180 3.3k → ≈0.3 V ≈ 30 A) — hardware OCP is armed
+    autonomously, the bridge starts without firmware help. PB4's
+    RC-filtered PWM (R21 33k + C16) is the threshold of the SEPARATE
+    U23 comparator on the amplified phase-B signal → CPOUT → PA12 =
+    TIM1_ETR, for optional cycle-by-cycle limiting.
   - **BKIN PA6 (AF6), active-LOW** ("goes to ground", UM1996 §4.1.2)
     + BKF filter; optional PA11 = BKIN2. Plus BKIN-flag check in the
     FOC ISR + MOE re-arm (port from g431 when control/foc.rs wakes).
@@ -118,7 +126,9 @@ generic over SinCos (CORDIC on G4, FastSinCos on F405), `vsqrt.f32` +
 polynomial atan2 in `fast_math`. HFI went from >150% of the 20 kHz ISR
 budget to 13.9% — it was unusable on hardware before this.
 
-- [ ] **g431 flash headroom is ~1.4 KB** (125 504 / 126 976). Recovery
+- [ ] **g431 flash headroom is ~320 BYTES** (126 656 / 126 976 after the
+  2026-06-11 observer upgrades) — the next feature WILL overflow. Do the
+  recovery now. Recovery
   options, in order: switch the cold detection paths (hall_calibration
   sin/cos accumulators, flux-linkage gamma, HfiInjector's LibmSinCos
   default) off libm sinf/cosf — that's what still pins the f64
@@ -150,6 +160,17 @@ override, framed-transport (UDP/USB/BLE) handshake check + reconnect
 loop, GUI `unwrap_or(0.0)` field parsing, dead `oxifoc-virtual
 --pole-pairs` — and added the GUI phase-source switcher with
 `SlowTelemetry.phase_source` read-back. See git log.
+
+## Sensorless tracking / flying start (bench-blocked)
+
+- [ ] Bring up the B-G431B-ESC1 phase-voltage dividers (BEMF sense) as
+  ADC channels.
+- [ ] MESC-style TRACKING mode: gates off → feed measured v_αβ to the
+  back-EMF observer → flying start = seed commutation from a converged
+  observer instead of blind open-loop. Hall-based flying restart already
+  works (hall estimator + decoupling feedforward run regardless of motor
+  state); this item covers the sensorless case. See safety.md
+  *Boot-time recovery*.
 
 ## Hardware bench (waiting for the rig)
 

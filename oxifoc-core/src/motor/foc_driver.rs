@@ -20,6 +20,13 @@ use crate::motor::six_step;
 // Re-export ControlMode from types (single source of truth)
 pub use crate::types::ControlMode;
 
+/// Default commutation phase advance (PWM cycles): ADC samples at the PWM
+/// center, the resulting duties latch at the next update event and act
+/// (on average) at the middle of that period — one full cycle later. At
+/// 20 kHz and 10k eRPM skipping this costs ~3° of angle (cos-loss torque
+/// plus d-axis current); VESC compensates the same way (foc_observer_offset).
+pub const DEFAULT_PHASE_ADVANCE_CYCLES: f32 = 1.0;
+
 /// Current limiting configuration for the FOC driver.
 ///
 /// Two layers of protection:
@@ -207,6 +214,19 @@ where
     current_limits: CurrentLimits,
     /// Accumulated angle for open-loop velocity mode
     open_loop_angle: f32,
+    /// Commanded αβ voltage of the PREVIOUS cycle — what was physically
+    /// applied while this cycle's currents were flowing. The estimators
+    /// must integrate this one, not the voltage computed this cycle
+    /// (which only acts during the next PWM period).
+    v_alpha_prev: f32,
+    v_beta_prev: f32,
+    /// Commutation phase advance in PWM cycles (VESC's observer-offset
+    /// idea, applied source-independently): the angle estimate is from the
+    /// ADC sample instant, but the voltage acts ~one period later (duty
+    /// registers latch at the next update event; ZOH centroid at that
+    /// period's middle). Advance the Park angle by vel·dt·k so the vector
+    /// lands where the rotor will be. 0 = off.
+    phase_advance_cycles: f32,
 }
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
@@ -242,7 +262,46 @@ where
             dt,
             current_limits: CurrentLimits::default(),
             open_loop_angle: 0.0,
+            v_alpha_prev: 0.0,
+            v_beta_prev: 0.0,
+            phase_advance_cycles: DEFAULT_PHASE_ADVANCE_CYCLES,
         }
+    }
+
+    /// Override the commutation phase advance (in PWM cycles; 0 = off).
+    /// See the field docs — default 1.0 for center-sampled, next-period
+    /// applied pipelines.
+    pub fn set_phase_advance(&mut self, cycles: f32) {
+        if cycles.is_finite() {
+            self.phase_advance_cycles = cycles;
+        }
+    }
+
+    /// Feed the phase provider with this cycle's measurements and the
+    /// causally-matching voltage: the one commanded LAST cycle, which was
+    /// acting while these currents were measured. Stores the new command
+    /// for the next cycle.
+    fn update_phase_with_prev_voltage(
+        &mut self,
+        v_alpha_new: f32,
+        v_beta_new: f32,
+        i_alpha: f32,
+        i_beta: f32,
+        dt: f32,
+        now_ticks: u64,
+    ) {
+        self.phase.update(
+            &PhaseInput {
+                v_alpha: self.v_alpha_prev,
+                v_beta: self.v_beta_prev,
+                i_alpha,
+                i_beta,
+                dt,
+            },
+            now_ticks,
+        );
+        self.v_alpha_prev = v_alpha_new;
+        self.v_beta_prev = v_beta_new;
     }
 
     /// Get the control loop period (dt) in seconds
@@ -329,13 +388,10 @@ where
                 // Safe-off: all low-side ON (brake) or all OFF depending on
                 // platform.  `disable()` is the platform's emergency-stop.
                 self.pwm.disable();
-                self.phase.update(
-                    &PhaseInput {
-                        dt,
-                        ..Default::default()
-                    },
-                    now_ticks,
-                );
+                // The previous cycle's command WAS applied before this stop
+                // took effect — let the estimators integrate it, then decay
+                // to zero volts.
+                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
             ControlMode::CurrentControl {
@@ -368,13 +424,7 @@ where
                     PhaseState::Float,
                 ]);
                 self.controller.reset();
-                self.phase.update(
-                    &PhaseInput {
-                        dt,
-                        ..Default::default()
-                    },
-                    now_ticks,
-                );
+                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
             ControlMode::SixStep { duty } => self.step_six_step(duty, dt, now_ticks),
@@ -397,9 +447,14 @@ where
         // Layer 1: Clamp current targets (prevents absurd commands)
         let (id_target, iq_target) = self.current_limits.clamp_targets(id_target, iq_target);
 
-        // Get phase from provider (uses previous update's estimate)
+        // Get phase from provider (uses previous update's estimate). The
+        // commutation angle is advanced by the pipeline delay (see
+        // phase_advance_cycles): the estimate is sample-time truth, the
+        // voltage acts ~one period later. Estimators keep the raw angle.
         let phase_out = self.phase.get();
-        let angle_rad = phase_out.angle;
+        let angle_rad = crate::foc::wrap_angle(
+            phase_out.angle + phase_out.velocity * dt * self.phase_advance_cycles,
+        );
 
         // HFI carrier for this cycle (zero for non-HFI sources). Must be
         // read between get() and update(): the estimator demodulates the
@@ -435,15 +490,15 @@ where
         self.pwm.set_duties(out.duties);
         self.current_sensor.update_duties(out.duties);
 
-        // Update phase provider for next step (feeds observer if present)
-        self.phase.update(
-            &PhaseInput {
-                v_alpha: out.v_alpha,
-                v_beta: out.v_beta,
-                i_alpha: out.i_alpha,
-                i_beta: out.i_beta,
-                dt,
-            },
+        // Update phase provider for next step (feeds observer if present).
+        // The observer gets the PREVIOUS command — the voltage that was
+        // actually acting while these currents were measured.
+        self.update_phase_with_prev_voltage(
+            out.v_alpha,
+            out.v_beta,
+            out.i_alpha,
+            out.i_beta,
+            dt,
             now_ticks,
         );
 
@@ -522,14 +577,12 @@ where
         self.current_sensor.update_duties(out.duties);
 
         // Update phase provider (for sensor tracking, even in open-loop)
-        self.phase.update(
-            &PhaseInput {
-                v_alpha: out.v_alpha,
-                v_beta: out.v_beta,
-                i_alpha: out.i_alpha,
-                i_beta: out.i_beta,
-                dt,
-            },
+        self.update_phase_with_prev_voltage(
+            out.v_alpha,
+            out.v_beta,
+            out.i_alpha,
+            out.i_beta,
+            dt,
             now_ticks,
         );
 
@@ -580,14 +633,12 @@ where
             }
         }
 
-        self.phase.update(
-            &PhaseInput {
-                v_alpha: out.v_alpha,
-                v_beta: out.v_beta,
-                i_alpha: out.i_alpha,
-                i_beta: out.i_beta,
-                dt,
-            },
+        self.update_phase_with_prev_voltage(
+            out.v_alpha,
+            out.v_beta,
+            out.i_alpha,
+            out.i_beta,
+            dt,
             now_ticks,
         );
 
@@ -627,14 +678,9 @@ where
         });
         self.current_sensor.update_duties(duties);
 
-        // Update phase provider (keep sensor tracking active)
-        self.phase.update(
-            &PhaseInput {
-                dt,
-                ..Default::default()
-            },
-            now_ticks,
-        );
+        // Update phase provider (keep sensor tracking active; six-step has
+        // no αβ voltage command for the observer — zeros, as before)
+        self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
 
         // Read currents opportunistically (if sensor is calibrated)
         let (ia, ib, ic) = if self.current_sensor.is_calibrated() {

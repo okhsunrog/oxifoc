@@ -109,6 +109,12 @@ enum Command {
             help = "Crossover velocity for blended sources (electrical rad/s)"
         )]
         switch_vel: f32,
+        #[arg(
+            long,
+            default_value_t = 2.0,
+            help = "Drive-voltage threshold for hfi-observer-volts (V, ≈5% of vbus)"
+        )]
+        toggle_v: f32,
     },
     /// Monitor telemetry for a duration
     Monitor {
@@ -152,6 +158,9 @@ enum SourceArg {
     Hfi,
     /// HFI at standstill, blend to the back-EMF observer at speed
     HfiObserver,
+    /// Like hfi-observer, but the crossover criterion is drive voltage
+    /// (MESC-style |vq − R·iq| > --toggle-v), self-normalizing per motor
+    HfiObserverVolts,
 }
 
 fn main() -> Result<()> {
@@ -212,7 +221,11 @@ fn main() -> Result<()> {
             println!("Stop command sent");
             std::thread::sleep(Duration::from_millis(800));
         }
-        Command::Source { source, switch_vel } => {
+        Command::Source {
+            source,
+            switch_vel,
+            toggle_v,
+        } => {
             use oxifoc_core::foc::phase::PhaseSource;
             let ps = match source {
                 SourceArg::Hall => PhaseSource::Hall,
@@ -225,6 +238,10 @@ fn main() -> Result<()> {
                 SourceArg::Hfi => PhaseSource::Hfi,
                 SourceArg::HfiObserver => PhaseSource::HfiToObserver {
                     min_vel: switch_vel,
+                    min_confidence: 0.5,
+                },
+                SourceArg::HfiObserverVolts => PhaseSource::HfiToObserverVolts {
+                    toggle_v,
                     min_confidence: 0.5,
                 },
             };

@@ -67,6 +67,11 @@ Re-measured on the same board:
 | `BackEmfObserver::update` | 1092 | **890** | 10.5% |
 | `HfiObserver` per cycle (firmware backend) | 12751–16257 | **1182** | **13.9%** |
 
+Same-day follow-up (MESC/VESC borrowings: nonlinear centering, λ
+tracking, active-flux saliency, phase-lag advance): `BackEmfObserver`
+update measured **935 cycles** with the new default config — the added
+robustness costs ~45 cycles. Worst-case sensorless cycle ≈ 2870 ≈ 34%.
+
 Worst-case sensorless cycle (controller + both estimator slots in a
 crossover regime): ≈ 2810 cycles ≈ **33% of budget** — was impossible
 (>170%).

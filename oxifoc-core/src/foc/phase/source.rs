@@ -99,6 +99,24 @@ pub enum PhaseSource {
     ///
     /// Angle advances automatically based on `set_open_loop_velocity()`.
     OpenLoop,
+
+    // =========================================================================
+    // NOTE: postcard encodes the variant index — append new variants HERE,
+    // never reorder the ones above.
+    // =========================================================================
+    /// HFI at low drive voltage, blend to the back-EMF observer above —
+    /// MESC-style criterion: |vq − R·iq| (the back-EMF share of the drive
+    /// voltage) replaces the velocity threshold. Self-normalizing: no
+    /// per-motor eRPM tuning, the threshold is in volts.
+    ///
+    /// Blend band: [toggle_v − 1 V hysteresis, toggle_v].
+    HfiToObserverVolts {
+        /// Drive-voltage threshold (V) above which the observer carries
+        /// commutation alone. MESC default ≈ 5% of vbus, min 1.5 V.
+        toggle_v: f32,
+        /// Minimum observer confidence (0.0-1.0)
+        min_confidence: f32,
+    },
 }
 
 #[allow(clippy::derivable_impls)] // Other variants have data, can't derive
@@ -149,6 +167,10 @@ impl PhaseSource {
                 min_vel,
                 min_confidence,
             } => min_vel.is_finite() && min_confidence.is_finite(),
+            PhaseSource::HfiToObserverVolts {
+                toggle_v,
+                min_confidence,
+            } => toggle_v.is_finite() && toggle_v > 0.0 && min_confidence.is_finite(),
             PhaseSource::HfiToHall { switch_vel } | PhaseSource::HfiToEncoder { switch_vel } => {
                 switch_vel.is_finite()
             }
@@ -185,6 +207,7 @@ impl PhaseSource {
                 | PhaseSource::HallWithFallback { .. }
                 | PhaseSource::EncoderToObserver { .. }
                 | PhaseSource::HfiToObserver { .. }
+                | PhaseSource::HfiToObserverVolts { .. }
         )
     }
 
@@ -194,6 +217,7 @@ impl PhaseSource {
             self,
             PhaseSource::Hfi
                 | PhaseSource::HfiToObserver { .. }
+                | PhaseSource::HfiToObserverVolts { .. }
                 | PhaseSource::HfiToHall { .. }
                 | PhaseSource::HfiToEncoder { .. }
         )

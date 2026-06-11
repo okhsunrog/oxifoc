@@ -133,6 +133,17 @@ Note on persistence: an IWDG reset is unplanned, so you cannot save intent at
 reset time. Recovery should be driven by **observed physical state on boot**
 (is it spinning?), not by trying to restore a saved command.
 
+Status 2026-06-11: **hall-based flying restart already mostly works** — the
+hall estimator runs every ISR cycle regardless of motor state (angle and
+velocity are fresh when a start command arrives), and the dq-decoupling
+feedforward applies `vq = ω·(Ld·id + λ)` from the very first cycle, so the
+PI loops start near the operating point instead of from zero. What is
+missing is the **sensorless** case (MESC's `MOTOR_STATE_TRACKING`): with
+the gates off there is no current to observe, so it requires the phase
+BEMF voltage dividers (the B-G431B-ESC1 has them) brought up as ADC
+channels + a tracking mode that feeds measured v_αβ to the observer while
+undriven. Bench-blocked; see TODO.
+
 ## Command delivery & idempotency
 
 ergot is **at-most-once** (now-or-never, no built-in ARQ; no QoS/priority —

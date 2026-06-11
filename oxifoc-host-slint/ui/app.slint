@@ -525,7 +525,7 @@ export component App inherits Window {
                     spacing: 6px;
                     Text { text: "Source"; vertical-alignment: center; font-size: 11px; }
                     ComboBox {
-                        model: ["Hall", "Hall+Fallback", "Observer", "HFI", "HFI→Observer"];
+                        model: ["Hall", "Hall+Fallback", "Observer", "HFI", "HFI→Observer", "HFI→Obs (V)"];
                         current-index <=> root.phase-source-index;
                         min-width: 90px;
                         selected => { root.phase-source-changed(); }

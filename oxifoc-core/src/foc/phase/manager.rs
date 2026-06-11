@@ -21,6 +21,10 @@ use crate::foc::{angle_difference, wrap_angle};
 /// threshold chatters between two discontinuous angle sources.
 pub const CROSSOVER_HYSTERESIS: f32 = 0.2;
 
+/// Hysteresis band (V) of the voltage-based HfiToObserverVolts crossover —
+/// MESC hardcodes the same 1 V between "carrier off" and "carrier on".
+pub const HFI_VOLTS_HYSTERESIS: f32 = 1.0;
+
 // ============================================================================
 // Hall Health Tracking (VESC-style)
 // ============================================================================
@@ -152,6 +156,10 @@ where
     // high-speed source (observer/hall/encoder), false = on HFI.
     crossover_latched: bool,
 
+    // |vq − R·iq| of the last update — back-EMF share of the drive voltage,
+    // the regime signal for the voltage-based HFI crossover.
+    bemf_proxy_v: f32,
+
     // Fault tracking
     faults: HeaplessVec<PhaseFault, 4>,
 }
@@ -178,6 +186,7 @@ impl PhaseManager<NoSensor, NoSensor> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             crossover_latched: false,
+            bemf_proxy_v: 0.0,
             faults: HeaplessVec::new(),
         }
     }
@@ -201,6 +210,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             crossover_latched: false,
+            bemf_proxy_v: 0.0,
             faults: HeaplessVec::new(),
         }
     }
@@ -222,6 +232,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             crossover_latched: self.crossover_latched,
+            bemf_proxy_v: self.bemf_proxy_v,
             faults: self.faults,
         }
     }
@@ -246,6 +257,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             crossover_latched: self.crossover_latched,
+            bemf_proxy_v: self.bemf_proxy_v,
             faults: self.faults,
         }
     }
@@ -269,6 +281,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             crossover_latched: false,
+            bemf_proxy_v: 0.0,
             faults: HeaplessVec::new(),
         }
     }
@@ -712,6 +725,44 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 }
             }
 
+            // Voltage-criterion variant of HfiToObserver (MESC): the blend
+            // weight comes from the back-EMF share of the drive voltage
+            // instead of a velocity threshold. Same latch/reseed mechanics.
+            PhaseSource::HfiToObserverVolts {
+                toggle_v,
+                min_confidence,
+            } => {
+                let mut hfi_out = self.hfi_output().unwrap_or(self.output);
+                let obs_ready =
+                    self.observer.is_ready() && self.observer.confidence() >= min_confidence;
+                if !obs_ready {
+                    if self.crossover_latched {
+                        self.crossover_latched = false;
+                        self.seed_hfi_from_output();
+                        hfi_out = self.output;
+                    }
+                    return hfi_out;
+                }
+
+                let blend_low = (toggle_v - HFI_VOLTS_HYSTERESIS).max(0.0);
+                let blend = compute_blend(self.bemf_proxy_v, blend_low, toggle_v);
+
+                let was_latched = self.crossover_latched;
+                self.crossover_latched = blend >= 1.0;
+                if was_latched && !self.crossover_latched {
+                    self.seed_hfi_from_output();
+                    hfi_out = self.output;
+                }
+
+                match (self.observer.phase(), self.observer.velocity()) {
+                    (Some(obs_angle), Some(obs_velocity)) => PhaseOutput {
+                        angle: blend_angles(hfi_out.angle, obs_angle, blend),
+                        velocity: hfi_out.velocity * (1.0 - blend) + obs_velocity * blend,
+                    },
+                    _ => hfi_out,
+                }
+            }
+
             PhaseSource::HfiToHall { switch_vel } => {
                 let hall = sample_to_output(hall_sample, &self.output);
                 if self.crossover_latched {
@@ -775,6 +826,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         match self.source {
             PhaseSource::Hfi => true,
             PhaseSource::HfiToObserver { .. }
+            | PhaseSource::HfiToObserverVolts { .. }
             | PhaseSource::HfiToHall { .. }
             | PhaseSource::HfiToEncoder { .. } => !self.crossover_latched,
             _ => false,
@@ -866,6 +918,20 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             self.update_hall_health(hall_sample.is_some(), hall_stale, now_ticks);
         }
 
+        // Back-EMF proxy for the voltage-based crossover: park the drive
+        // voltage and current onto the current output frame and remove the
+        // resistive drop. Only meaningful (and only computed) when the
+        // active source uses it.
+        if matches!(self.source, PhaseSource::HfiToObserverVolts { .. }) {
+            use crate::foc::trig::FastSinCos;
+            let r = self.observer.resistance().unwrap_or(0.0);
+            let (sin_t, cos_t) = FastSinCos::sin_cos(self.output.angle);
+            let (_, vq) = crate::foc::transforms::park(input.v_alpha, input.v_beta, sin_t, cos_t);
+            let (_, iq) = crate::foc::transforms::park(input.i_alpha, input.i_beta, sin_t, cos_t);
+            let bemf = vq - r * iq;
+            self.bemf_proxy_v = if bemf < 0.0 { -bemf } else { bemf };
+        }
+
         // Update both estimators (always run, for fallback/crossover)
         let obs_input = ObserverInput {
             v_alpha: input.v_alpha,
@@ -933,11 +999,17 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             && mp.flux_linkage_wb > 0.0
         {
             let l_avg = (mp.inductance_d_h + mp.inductance_q_h) / 2.0;
-            self.set_observer(Observer::BackEmf(BackEmfObserver::new(
-                mp.resistance_ohm,
-                l_avg,
-                mp.flux_linkage_wb,
-            )));
+            // Detected params arm the full model: salient Lα/Lβ when the
+            // motor measurably is (scalar L on an IPM gives load-dependent
+            // angle error), and online λ tracking (λ drifts with saturation
+            // and magnet temperature; the stored value is one bench point).
+            let mut obs = BackEmfObserver::new(mp.resistance_ohm, l_avg, mp.flux_linkage_wb)
+                .with_lambda_tracking(super::observer::DEFAULT_LAMBDA_GAIN);
+            let saliency = (mp.inductance_q_h - mp.inductance_d_h).abs();
+            if saliency > 0.05 * l_avg {
+                obs = obs.with_saliency(mp.inductance_d_h, mp.inductance_q_h);
+            }
+            self.set_observer(Observer::BackEmf(obs));
             self.set_hfi_observer(
                 HfiObserver::new(HFI_DEFAULT_FREQ_HZ, vbus * HFI_DEFAULT_AMPLITUDE_RATIO)
                     .with_sincos(),
@@ -1810,6 +1882,144 @@ mod tests {
             max_step_at_speed < nominal_step + 0.15,
             "angle jumped {} rad in one cycle through a crossover",
             max_step_at_speed
+        );
+    }
+
+    /// The voltage-criterion crossover (HfiToObserverVolts) must behave
+    /// like the velocity one: carrier on at standstill, handoff to the
+    /// observer as the drive voltage (back-EMF proxy |vq − R·iq|) rises,
+    /// carrier off once latched, reseeded return to HFI on coast-down —
+    /// with the threshold in volts instead of per-motor eRPM tuning.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn closed_loop_hfi_to_observer_volts_crossover() {
+        use crate::foc::controller::FocController;
+        use crate::foc::phase::{BackEmfObserver, HfiObserver, Observer};
+        use crate::foc::pwm::SvpwmModulator;
+        use crate::foc::transforms;
+        use crate::foc::trig::LibmSinCos;
+        use crate::virtual_motor::{MotorParams, VirtualMotor};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        // ωe settles ≈ 500 rad/s → bemf ≈ ω·λ = 10 V ≫ toggle; at
+        // standstill the proxy is ≈ 0 V. Crossover happens around
+        // ω ≈ toggle_v/λ = 150 rad/s, same regime as the velocity test.
+        const TOGGLE_V: f32 = 3.0;
+        let params = MotorParams {
+            r: 0.1,
+            ld: 100e-6,
+            lq: 300e-6,
+            lambda: 0.02,
+            pole_pairs: 4,
+            j: 1e-3,
+            friction_b: 2e-3,
+            hall_offset: 0.0,
+            sat_k: 0.05,
+        };
+        let mut motor = VirtualMotor::new(params);
+        motor.set_angle(0.5);
+
+        let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            24.0,
+        );
+
+        let mut mgr = PhaseManager::sensorless();
+        mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            params.lambda,
+        )));
+        mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+        mgr.set_source(PhaseSource::HfiToObserverVolts {
+            toggle_v: TOGGLE_V,
+            min_confidence: 0.5,
+        })
+        .unwrap();
+
+        let mut out = crate::virtual_motor::VirtualMotorOutput {
+            angle_rad: 0.5,
+            ..Default::default()
+        };
+
+        const STANDSTILL_STEPS: u64 = 10_000;
+        const SPIN_STEPS: u64 = 40_000;
+        const TOTAL_STEPS: u64 = 70_000;
+        let mut latched_at_speed = false;
+        let mut err_at_speed = 0.0f32;
+        for step in 1..TOTAL_STEPS {
+            let iq_target = if (STANDSTILL_STEPS..SPIN_STEPS).contains(&step) {
+                2.0
+            } else {
+                0.0
+            };
+
+            let angle = mgr.get().angle;
+            let (vd_inj, vq_inj) = mgr.injection();
+            let telem = foc.step_with_injection(
+                (out.ia, out.ib, out.ic),
+                angle,
+                0.0,
+                0.0,
+                iq_target,
+                vd_inj,
+                vq_inj,
+                1000,
+                DT,
+            );
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+
+            let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
+            mgr.update(
+                &PhaseInput {
+                    v_alpha: telem.v_alpha,
+                    v_beta: telem.v_beta,
+                    i_alpha: i_a,
+                    i_beta: i_b,
+                    dt: DT,
+                },
+                step * 50,
+            );
+
+            if step == SPIN_STEPS - 1 {
+                assert!(
+                    out.omega_e > 300.0,
+                    "motor did not spin up: ωe = {}",
+                    out.omega_e
+                );
+                latched_at_speed = mgr.injection() == (0.0, 0.0);
+                err_at_speed =
+                    crate::foc::angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
+            }
+        }
+
+        assert!(
+            latched_at_speed,
+            "carrier must be off once the drive voltage exceeds toggle_v"
+        );
+        assert!(
+            err_at_speed < 0.25,
+            "angle error {} rad at speed on the voltage crossover",
+            err_at_speed
+        );
+
+        // Coasted down: bemf proxy below the band → back on HFI, carrier on.
+        assert!(
+            out.omega_e.abs() * params.lambda < TOGGLE_V - HFI_VOLTS_HYSTERESIS,
+            "motor should have coasted below the voltage band: ωe = {}",
+            out.omega_e
+        );
+        assert_ne!(
+            mgr.injection(),
+            (0.0, 0.0),
+            "carrier must be back on below the voltage band"
+        );
+        let err = crate::foc::angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
+        assert!(
+            err < 0.3,
+            "angle error {} rad after the downward voltage handoff",
+            err
         );
     }
 
