@@ -3,12 +3,8 @@
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::{Peri, Peripherals, peripherals};
 
-// Motor-related imports (commented out until IHM08M1 shield is connected)
-// use embassy_stm32::adc::{
-//     Adc, AdcChannel, AdcConfig, ConversionTrigger, Exten, InjectedAdc, SampleTime,
-// };
-// use embassy_stm32::interrupt::typelevel::{ADC1_2, Interrupt};
-// use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
+// ADC initialization for the IHM08M1 shield is written when the motor
+// stack is enabled — see the plan at the bottom of this file.
 
 /// Initialize STM32G474 clocks and return peripherals
 ///
@@ -73,71 +69,23 @@ pub fn init_clock() -> Peripherals {
 }
 
 // ============================================================================
-// Motor-related peripheral initialization (commented out until IHM08M1 connected)
+// ADC plan for the IHM08M1 shield (write when the motor stack is enabled)
 // ============================================================================
-
-// /// OPAMP channels returned from initialization
-// pub struct OpAmpChannels {
-//     pub ia_chan: embassy_stm32::adc::AnyAdcChannel<peripherals::ADC1>,
-//     pub ib_chan: embassy_stm32::adc::AnyAdcChannel<peripherals::ADC2>,
-//     pub ic_chan: embassy_stm32::adc::AnyAdcChannel<peripherals::ADC2>,
-// }
-
-// /// Initialize OPAMPs as PGAs for phase current shunts
-// ///
-// /// Pin assignments will need to be updated for IHM08M1 shield:
-// /// OPAMP1: phase A current -> ADC1
-// /// OPAMP2: phase B current -> ADC2
-// /// OPAMP3: phase C current -> ADC2
-// ///
-// /// All configured for 16x gain with high-speed mode and calibrated.
-// pub fn init_opamps(
-//     opamp1: Peri<'static, peripherals::OPAMP1>,
-//     opamp2: Peri<'static, peripherals::OPAMP2>,
-//     opamp3: Peri<'static, peripherals::OPAMP3>,
-//     pa1: Peri<'static, peripherals::PA1>,
-//     pa7: Peri<'static, peripherals::PA7>,
-//     pb0: Peri<'static, peripherals::PB0>,
-// ) -> OpAmpChannels {
-//     let mut opamp1 = OpAmp::new(opamp1, OpAmpSpeed::HighSpeed);
-//     opamp1.calibrate();
-//     let ia_chan = opamp1.pga_int(pa1, OpAmpGain::Mul16).degrade_adc();
 //
-//     let mut opamp2 = OpAmp::new(opamp2, OpAmpSpeed::HighSpeed);
-//     opamp2.calibrate();
-//     let ib_chan = opamp2.pga_int(pa7, OpAmpGain::Mul16).degrade_adc();
+// The shield conditions all analog signals with its own TSV994 op-amps —
+// the MCU internal OPAMPs are NOT used on this board (unlike B-G431B-ESC1,
+// where raw shunt voltages reach the MCU). A previous internal-OPAMP/PGA
+// plan lived here and was removed: its pins (PA1/PA7/PB0) actually carry
+// VBUS / UL / VL on this shield.
 //
-//     let mut opamp3 = OpAmp::new(opamp3, OpAmpSpeed::HighSpeed);
-//     opamp3.calibrate();
-//     let ic_chan = opamp3.pga_int(pb0, OpAmpGain::Mul16).degrade_adc();
-//
-//     OpAmpChannels {
-//         ia_chan,
-//         ib_chan,
-//         ic_chan,
-//     }
-// }
-
-// /// ADC handles for injected conversions
-// pub struct AdcHandles {
-//     pub adc1: InjectedAdc<peripherals::ADC1, 3>,
-//     pub adc2: InjectedAdc<peripherals::ADC2, 2>,
-// }
-
-// /// Initialize ADC1 and ADC2 with injected conversions triggered by TIM1
-// ///
-// /// Pin assignments will need to be updated for IHM08M1 shield.
-// /// ADC configuration will be similar to G431 but with different pin mappings.
-// pub fn init_adc(
-//     adc1_periph: Peri<'static, peripherals::ADC1>,
-//     adc2_periph: Peri<'static, peripherals::ADC2>,
-//     opamp_channels: OpAmpChannels,
-//     vbus_pin: Peri<'static, peripherals::PA0>,
-//     temp_pin: Peri<'static, peripherals::PB14>,
-// ) -> AdcHandles {
-//     // ... ADC initialization code will go here when IHM08M1 is connected
-//     todo!("ADC initialization for IHM08M1")
-// }
+// Injected sequences, TIM1_TRGO2-triggered (Mms2::COMPARE_OC4, like g431),
+// pins per docs/nucleo-g474re-ihm08m1.md:
+//   ADC1: ia   = PA0 (ADC12_IN1),
+//         vbus = PA1 (ADC12_IN2),
+//         temp = PC2 (ADC12_IN8)
+//   ADC2: ib   = PC1 (ADC12_IN7),
+//         ic   = PC0 (ADC12_IN6)
+// ADC1 finishes last (3 conversions) → ADC1_2 interrupt runs the FOC loop.
 
 // ============================================================================
 // NUCLEO-G474RE on-board peripherals

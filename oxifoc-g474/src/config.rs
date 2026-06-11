@@ -11,37 +11,49 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 
 /// NUCLEO-G474RE + X-NUCLEO-IHM08M1 board configuration
 ///
-/// X-NUCLEO-IHM08M1 hardware specs:
-/// - Driver: L6398 gate driver + STL220N6F7 MOSFETs
-/// - Shunt resistors: 0.33Ω (R7, R8, R12 on schematic)
-/// - Current sense: direct ADC (no external op-amp, uses MCU internal OPAMPs)
-/// - VBUS divider: 1:19.18 (R5=560k, R6=30.9k) -> ratio ~19.12
-/// - Max voltage: 45V (limited by STL220N6F7)
-/// - Max current: ~15A peak (limited by shunt power dissipation)
+/// Values derived from the shield schematic
+/// (docs/X-NUCLEO-IHM08M1_schematic.pdf, Fig. 5) — see
+/// docs/nucleo-g474re-ihm08m1.md for the full pin/analog mapping.
+///
+/// - Driver: L6398 gate drivers + STL220N6F7 MOSFETs (60 V)
+/// - Shunts: 0.010 Ω 1 W (R43/R44/R45)
+/// - Current sense: TSV994 difference amp PER PHASE on the shield
+///   (NOT the MCU internal OPAMPs — signals arrive conditioned):
+///   Vshunt→680Ω→(+) with 6.8k bias to 3V3 via JP1, Kelvin GND→1k→(−),
+///   4.7k feedback ⇒ gain ≈ 5.18 V/V, offset ≈ 1.71 V (~2122 counts).
+///   ≈ 51.8 mV/A, full scale ≈ ±31 A. Requires JP1+JP2 closed and
+///   C3/C5/C7 removed (FOC configuration, UM1996 §2.2.1).
+///   BENCH-VERIFY: JP2 alters the feedback network — confirm effective
+///   gain via zero-current offset (calibrate()) + one known current.
+/// - Hardware OCP: fixed ≈30 A on raw shunts → BKIN (PA6, active low),
+///   autonomous (R179/R180 divider, no firmware setup needed).
+/// - VBUS divider: 169k / 9.31k ⇒ ratio 19.15
 #[allow(dead_code)]
 pub const BOARD: BoardConfig = BoardConfig {
-    shunt_ohms: 0.33,           // 0.33Ω shunt resistors
-    amp_gain: 16.0,             // Using internal OPAMP with 16x gain (PGA mode)
-    vbus_divider_ratio: 19.12,  // (560k + 30.9k) / 30.9k = 19.12
+    shunt_ohms: 0.01,           // 0.010Ω 1W shunts (R43-45)
+    amp_gain: 5.18,             // TSV994 diff amp on shield (verify vs JP2)
+    vbus_divider_ratio: 19.15,  // (169k + 9.31k) / 9.31k
     adc_vref_mv: 3300,          // 3.3V
     adc_max_counts: 4095,       // 12-bit ADC
     initial_vbus_volts: 12.0,   // Conservative default
     max_iq_target_a: 5.0,       // Conservative default for testing
-    invert_current_sign: false, // TODO: verify for this board
+    invert_current_sign: false, // Amp is non-inverting (+5.18·Vshunt + 1.71 V); verify on bench
     // Fault thresholds
-    max_phase_current_a: 10.0, // Conservative limit
-    max_vbus_mv: 45_000,       // Max 45V for STL220N6F7
+    max_phase_current_a: 10.0, // Conservative limit (hw OCP trips at ~30 A)
+    max_vbus_mv: 45_000,       // Max 45V (board rated 10-48V, leave margin)
     min_vbus_mv: 8_000,        // Undervoltage at 8V
     max_fet_temp_c: 85.0,      // Conservative overtemp threshold
 };
 
 /// NTC configuration for X-NUCLEO-IHM08M1
-/// NTC1 on board: 10kΩ @ 25°C, Beta ~3435K (typical NTC)
+/// NTC 10kΩ @ 25°C near the power FETs (schematic Fig. 4), output on PC2.
+/// BENCH-VERIFY: beta is a typical value, and confirm divider topology /
+/// fixed-resistor value against the board at a known temperature.
 #[allow(dead_code)]
 pub const NTC: NtcConfig = NtcConfig {
-    r_fixed_ohm: 10_000.0,          // R13 = 10kΩ pull-up
+    r_fixed_ohm: 10_000.0,          // pull-up per schematic Fig. 4
     r0_ohm: 10_000.0,               // NTC = 10kΩ @ 25°C
-    beta: 3435.0,                   // Typical NTC beta
+    beta: 3435.0,                   // Typical NTC beta (verify)
     t0_k: 273.15 + 25.0,            // Reference temp 25°C
     topology: NtcTopology::LowSide, // NTC to GND, pull-up to VCC
 };
