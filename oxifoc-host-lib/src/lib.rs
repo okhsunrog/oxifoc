@@ -151,8 +151,24 @@ pub fn detect_channel() -> (DetectResponseSender, DetectResponseReceiver) {
     tokio::sync::oneshot::channel()
 }
 
+/// Acknowledged motor-command channel: carries the device's MotorStatus
+/// (or the delivery error) back to the caller — for CLI-style users that
+/// must exit nonzero when the command did not reach the device.
+pub type MotorResponseSender =
+    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::MotorStatus>>;
+pub type MotorResponseReceiver =
+    tokio::sync::oneshot::Receiver<Result<oxifoc_core::types::MotorStatus>>;
+
+/// Create a oneshot channel pair for an acknowledged motor command
+pub fn motor_channel() -> (MotorResponseSender, MotorResponseReceiver) {
+    tokio::sync::oneshot::channel()
+}
+
 pub enum HostCommand {
     Motor(ControlMode),
+    /// Like [`Motor`](Self::Motor) but replies with the device's status
+    /// (or the delivery error).
+    MotorAck(ControlMode, MotorResponseSender),
     SetPhaseSource(oxifoc_core::foc::phase::PhaseSource),
     SetTelemetryConfig(TelemetryConfig),
     ConfigRead(oxifoc_core::types::ConfigGroupId, ConfigResponseSender),
@@ -187,6 +203,15 @@ impl HostRuntime {
 
     pub fn shutdown(&self) {
         info!("Shutting down host backend...");
+        self.cancel_token.cancel();
+    }
+}
+
+impl Drop for HostRuntime {
+    /// Cancel the backend on drop: replacing the runtime slot on a GUI
+    /// reconnect must not leak the old tokio runtime + thread (which would
+    /// keep holding the serial port / probe). Idempotent with `shutdown()`.
+    fn drop(&mut self) {
         self.cancel_token.cancel();
     }
 }
@@ -950,6 +975,9 @@ async fn handle_command<NS>(
     active_setpoint: &mut Option<ControlMode>,
 ) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
+    NS::Mutex: Send + Sync,
+    NS::Profile: Send,
+    NS::Target: Send,
 {
     let client = ns.clone().reliable::<TokioTimer>();
     match cmd {
@@ -974,6 +1002,29 @@ async fn handle_command<NS>(
                 Ok(status) => tracing::info!("Motor response: {:?}", status),
                 Err(e) => tracing::warn!("Motor command failed: {:?}", e),
             }
+        }
+        HostCommand::MotorAck(ref mc, reply_tx) => {
+            // Same as Motor (incl. the affirmation tracking), but the caller
+            // gets the device status / delivery error back — a CLI must not
+            // print "sent" and exit 0 when nothing was delivered.
+            *active_setpoint = if matches!(
+                mc,
+                ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+            ) {
+                None
+            } else {
+                Some(*mc)
+            };
+            tracing::info!("Sending motor command (acked): {:?}", mc);
+            let res = client
+                .at_least_once::<MotorEndpoint>(DEVICE_ADDR, mc, Some("motor"), &SETPOINT_POLICY)
+                .await
+                .map_err(|e| anyhow::anyhow!("{:?}", e));
+            // A failed drive command must not keep being affirmed.
+            if res.is_err() {
+                *active_setpoint = None;
+            }
+            let _ = reply_tx.send(res);
         }
         HostCommand::SetPhaseSource(source) => {
             tracing::info!("Setting phase source: {:?}", source);
@@ -1038,20 +1089,27 @@ async fn handle_command<NS>(
         }
         HostCommand::Detect(req, reply_tx) => {
             tracing::info!("Starting motor detection: {:?}", req);
-            // Effectively-once: a stable id across retries. If the (slow)
-            // response is lost, a retry returns the device's cached result
-            // instead of re-running characterization.
-            let keyed = Keyed::new(next_detect_id(), req);
-            let res = client
-                .effectively_once::<DetectEndpoint>(
-                    DEVICE_ADDR,
-                    &keyed,
-                    Some("detect"),
-                    &DETECT_POLICY,
-                )
-                .await;
-            let result = res.map_err(|e| anyhow::anyhow!("{:?}", e));
-            let _ = reply_tx.send(result);
+            // Detection runs up to ~60 s — spawn it off the command task so
+            // a queued Stop (and the deadman affirmations) are not stuck
+            // behind it. The device refuses to start detection with the
+            // motor running, so the lost strict ordering is harmless.
+            let client = ns.clone().reliable::<TokioTimer>();
+            tokio::spawn(async move {
+                // Effectively-once: a stable id across retries. If the (slow)
+                // response is lost, a retry returns the device's cached
+                // result instead of re-running characterization.
+                let keyed = Keyed::new(next_detect_id(), req);
+                let res = client
+                    .effectively_once::<DetectEndpoint>(
+                        DEVICE_ADDR,
+                        &keyed,
+                        Some("detect"),
+                        &DETECT_POLICY,
+                    )
+                    .await;
+                let result = res.map_err(|e| anyhow::anyhow!("{:?}", e));
+                let _ = reply_tx.send(result);
+            });
         }
     }
 }

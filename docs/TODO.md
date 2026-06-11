@@ -273,23 +273,25 @@ budget to 13.9% — it was unusable on hardware before this.
 
 ### Host
 
-- [ ] **`HostRuntime` has no `Drop`** — leaks a tokio runtime + thread (still
-  holding the port) on every GUI reconnect. Add `Drop`/shutdown of the old
-  slot. [review.md §3]
-- [ ] Host command queue is strictly serial: a `Stop` queued behind a
-  running `Detect` waits for it (up to the ~70 s retry budget). The
-  device-side link failsafe covers the safety angle, but the UX is
-  wrong — route Stop around the queue or cancel in-flight detect.
-- [ ] RTT transport: `expect()` in the detached thread silently kills the
-  link with no reconnect; control-block scan hardcoded to 32 KB
-  (`0x20000000..0x20008000`) breaks on F405/G474 (RAM > 32 KB). [review.md §3]
-- [ ] CLI `start`/`stop`/`source` are fire-and-forget (always exit 0);
-  `--duty` is actually current (`× 0.1 A`). Route through the ack; rename the
-  flag. [review.md §3]
-- [ ] GUI: telemetry rate above link bandwidth drops silently (compare
-  `actual_fast_hz`); RPM uses preset pole-pairs, not the device's
-  (`HardwareInfo` has none); `motor_running` not reset on disconnect.
-  [review.md §3]
+- [x] **`HostRuntime: Drop`** (2026-06-11): cancels the backend on drop; the
+  GUI connect handler also explicitly shuts down + drops the old runtime
+  (releasing the port) before claiming the device again.
+- [x] **Detect off the command queue** (2026-06-11): `Detect` is spawned to
+  a side task — a queued `Stop` (and the deadman affirmations) no longer
+  wait up to ~70 s behind it. Ordering loss is harmless: the device refuses
+  detection with the motor running.
+- [x] **RTT transport hardening** (2026-06-11): control-block scan uses
+  `ScanRegion::Ram` (chip-described, fixes F405/G474 with >32 KB RAM); the
+  I/O thread no longer `expect()`s — any probe failure is surfaced as an
+  `io::Error` through the reader so the link visibly breaks.
+- [x] **CLI acked motor commands** (2026-06-11): `start`/`stop`/`brake`/
+  `velocity` go through `HostCommand::MotorAck` (new oneshot-reply variant)
+  and exit nonzero when undelivered; `start --duty <pct>` (which was secretly
+  `×0.1 A`) replaced by `start --iq <amps>`. `source` stays fire-and-forget.
+- [x] **GUI fixes** (2026-06-11): measured fast-telemetry arrival rate is
+  compared with the device-acked rate and a "link drops frames" warning is
+  shown when <80%; pole pairs are read from the device's stored MotorParams
+  on connect (preset only as fallback); `motor_running` reset on disconnect.
 
 2026-06-10: fixed the other review host items — CLI `--baud` config
 override, framed-transport (UDP/USB/BLE) handshake check + reconnect

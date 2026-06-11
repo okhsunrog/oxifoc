@@ -280,6 +280,13 @@ pub fn main() {
         let mut tr: Option<PlotRenderer> = None;
         let mut hr: Option<PlotRenderer> = None;
 
+        // Measured fast-telemetry arrival rate: a configured rate above the
+        // link bandwidth used to drop frames silently while the UI displayed
+        // the requested Hz.
+        let mut rate_count: u32 = 0;
+        let mut rate_t0 = std::time::Instant::now();
+        let mut measured_hz: f32 = 0.0;
+
         app.window()
             .set_rendering_notifier(move |state, graphics_api| match state {
                 RenderingState::RenderingSetup => {
@@ -376,8 +383,15 @@ pub fn main() {
                                     sample.erpm as f32 / 1000.0,
                                 ]);
                             }
+                            rate_count += 1;
                             last_fast = Some(sample);
                         }
+                    }
+                    let elapsed = rate_t0.elapsed();
+                    if elapsed >= Duration::from_secs(1) {
+                        measured_hz = rate_count as f32 / elapsed.as_secs_f32();
+                        rate_count = 0;
+                        rate_t0 = std::time::Instant::now();
                     }
                     let mut last_slow = None;
                     if let Ok(guard) = srx.try_lock()
@@ -463,6 +477,17 @@ pub fn main() {
                         };
                         app.set_fast_sample_rate(fast_rate);
                         app.set_streaming(actual_hz > 0);
+
+                        // Surface silent frame drops: warn when the measured
+                        // arrival rate is well below the device-acked rate
+                        // (link bandwidth exceeded — pick a lower stream rate).
+                        if actual_hz > 0 && measured_hz > 0.0 && measured_hz < 0.8 * fast_rate {
+                            app.set_rate_warning(SharedString::from(format!(
+                                "link drops frames: {measured_hz:.0} Hz of {actual_hz} Hz arriving"
+                            )));
+                        } else {
+                            app.set_rate_warning(SharedString::from(""));
+                        }
 
                         // Per-plot time windows and view offsets (each plot can be independently paused/zoomed)
                         let c_tw = app.get_currents_time_window();
@@ -736,6 +761,17 @@ pub fn main() {
 
             app.set_error_text("".into());
 
+            // Shut down any previous backend first (and drop it, releasing
+            // the port/probe) before the new transport claims the device —
+            // previously the old runtime was silently overwritten and leaked
+            // its tokio runtime + thread, still holding the port.
+            if let Some(old) = rt.lock().unwrap().take() {
+                old.shutdown();
+                drop(old);
+                // Give the old transport thread a moment to actually close.
+                thread::sleep(Duration::from_millis(100));
+            }
+
             let host_runtime = start_host(config);
             let fast_rx = host_runtime.fast_rx.clone();
             let slow_rx = host_runtime.slow_rx.clone();
@@ -781,6 +817,51 @@ pub fn main() {
                 }
             });
 
+            // Pole pairs from the device's stored MotorParams (when present):
+            // the RPM display must not depend on the GUI preset matching the
+            // motor that's actually connected.
+            {
+                let rt = rt.clone();
+                let weak = weak.clone();
+                let connected = conn_flag.clone();
+                thread::spawn(move || {
+                    for _ in 0..100 {
+                        if connected.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                    if !connected.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let Some(cmd_tx) = rt.lock().unwrap().as_ref().map(|r| r.cmd_tx.clone()) else {
+                        return;
+                    };
+                    let (tx, rx) = config_channel();
+                    if cmd_tx
+                        .send(HostCommand::ConfigRead(
+                            oxifoc_core::types::ConfigGroupId::MotorParams,
+                            tx,
+                        ))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    if let Ok(Ok(oxifoc_core::types::ConfigResponse::MotorParams(p))) =
+                        rx.blocking_recv()
+                        && p.pole_pairs > 0
+                    {
+                        tracing::info!(
+                            "Using device pole pairs: {} (stored MotorParams)",
+                            p.pole_pairs
+                        );
+                        let _ = weak.upgrade_in_event_loop(move |app| {
+                            app.set_pole_pairs(p.pole_pairs as i32);
+                        });
+                    }
+                });
+            }
+
             app.set_page("main".into());
         });
     }
@@ -804,6 +885,10 @@ pub fn main() {
             let app = weak.unwrap();
             app.set_page("connect".into());
             app.set_is_connected(false);
+            // The device's link-loss failsafe stops (and latches) the motor
+            // on its own — mirror that in the UI instead of leaving a stale
+            // "running" Start/Stop state for the next session.
+            app.set_motor_running(false);
         });
     }
 

@@ -5,9 +5,26 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use oxifoc_core::types::{ControlMode, DetectRequest};
 use oxifoc_host_lib::{
-    HostCommand, HostConfig, TransportType, init_tracing, list_probes, list_serial_ports,
-    start_host,
+    HostCommand, HostConfig, HostRuntime, TransportType, init_tracing, list_probes,
+    list_serial_ports, motor_channel, start_host,
 };
+
+/// Send a motor command and wait for the device's acknowledgement — the
+/// process must exit nonzero when the command never reached the device
+/// (previously these were fire-and-forget with a fixed sleep, always 0).
+fn send_motor_acked(
+    runtime: &HostRuntime,
+    mode: ControlMode,
+) -> Result<oxifoc_core::types::MotorStatus> {
+    let (tx, rx) = motor_channel();
+    runtime
+        .cmd_tx
+        .send(HostCommand::MotorAck(mode, tx))
+        .context("send motor command")?;
+    rx.blocking_recv()
+        .context("backend dropped the motor command")?
+        .context("motor command not acknowledged by the device")
+}
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Transport {
@@ -86,16 +103,16 @@ struct Cli {
 enum Command {
     /// List available devices (serial ports and debug probes)
     List,
-    /// Start the motor at the specified duty cycle
+    /// Start the motor in current (torque) control
     Start {
         #[arg(
             short,
             long,
-            default_value_t = 10,
-            value_parser = clap::value_parser!(u8).range(0..=100),
-            help = "Duty cycle percentage"
+            default_value_t = 1.0,
+            allow_hyphen_values = true,
+            help = "Target q-axis current in Amps (sign = direction)"
         )]
-        duty: u8,
+        iq: f32,
     },
     /// Stop the motor
     Stop,
@@ -202,49 +219,28 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::List => unreachable!(), // Handled above
-        Command::Start { duty } => {
-            // Convert duty percentage to iq_target (0-100% → 0-10A)
-            let iq_target = duty as f32 * 0.1;
-            runtime
-                .cmd_tx
-                .send(HostCommand::Motor(ControlMode::CurrentControl {
-                    iq_target,
+        Command::Start { iq } => {
+            let status = send_motor_acked(
+                &runtime,
+                ControlMode::CurrentControl {
+                    iq_target: iq,
                     id_target: 0.0,
-                }))
-                .context("send start command")?;
-            println!(
-                "Start command sent with duty {}% (iq={:.1}A)",
-                duty, iq_target
-            );
-            // cmd_tx is async; give the backend time to deliver the command
-            // (at_least_once round-trip) before the process exits.
-            std::thread::sleep(Duration::from_millis(800));
+                },
+            )?;
+            println!("Motor started at iq={iq:.1} A — device: {status:?}");
         }
         Command::Stop => {
-            runtime
-                .cmd_tx
-                .send(HostCommand::Motor(ControlMode::Stopped))
-                .context("send stop command")?;
-            println!("Stop command sent");
-            std::thread::sleep(Duration::from_millis(800));
+            let status = send_motor_acked(&runtime, ControlMode::Stopped)?;
+            println!("Motor stopped — device: {status:?}");
         }
         Command::Brake => {
-            runtime
-                .cmd_tx
-                .send(HostCommand::Motor(ControlMode::Brake))
-                .context("send brake command")?;
-            println!("Brake command sent (rejected by the device unless near standstill)");
-            std::thread::sleep(Duration::from_millis(800));
+            let status = send_motor_acked(&runtime, ControlMode::Brake)?;
+            println!("Brake engaged (ramps to standstill first if moving) — device: {status:?}");
         }
         Command::Velocity { rad_s } => {
-            runtime
-                .cmd_tx
-                .send(HostCommand::Motor(ControlMode::VelocityControl {
-                    target_vel: rad_s,
-                }))
-                .context("send velocity command")?;
-            println!("Velocity command sent: {rad_s} electrical rad/s");
-            std::thread::sleep(Duration::from_millis(800));
+            let status =
+                send_motor_acked(&runtime, ControlMode::VelocityControl { target_vel: rad_s })?;
+            println!("Velocity target {rad_s} erad/s — device: {status:?}");
         }
         Command::Source {
             source,

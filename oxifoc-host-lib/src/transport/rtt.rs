@@ -98,9 +98,11 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
 
     {
         let mut core = session.core(0).context("Failed to get core 0")?;
+        // Scan the chip's whole RAM (per probe-rs target description) — the
+        // old hardcoded 0x20000000..0x20008000 (32 KB) missed control blocks
+        // on parts with more RAM (F405: 128K+CCM, G474: 128K).
         let mut rtt =
-            Rtt::attach_region(&mut core, &ScanRegion::Ranges(vec![0x20000000..0x20008000]))
-                .context("Failed to attach to RTT")?;
+            Rtt::attach_region(&mut core, &ScanRegion::Ram).context("Failed to attach to RTT")?;
 
         info!("RTT attached successfully");
 
@@ -154,12 +156,32 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
     let (ergot_tx_tx, mut ergot_tx_rx) = tokio::sync::mpsc::channel::<Bytes>(64);
     let (defmt_rx_tx, defmt_rx_rx) = tokio::sync::mpsc::channel::<io::Result<Bytes>>(64);
 
-    // Blocking RTT I/O thread — owns Session, Core, Rtt; never re-attaches
+    // Blocking RTT I/O thread — owns Session, Core, Rtt; never re-attaches.
+    // Failures must surface as a broken link (io::Error through the reader
+    // channel), not a silent thread death: the old expect()s killed the
+    // link with no signal to the reconnect logic.
     std::thread::spawn(move || {
-        let mut core = session.core(0).expect("Failed to get core 0");
-        let mut rtt =
-            Rtt::attach_region(&mut core, &ScanRegion::Ranges(vec![0x20000000..0x20008000]))
-                .expect("Failed to attach to RTT");
+        let fail = |ergot_rx_tx: &tokio::sync::mpsc::Sender<io::Result<Bytes>>, msg: String| {
+            error!("{msg}");
+            let _ = ergot_rx_tx.blocking_send(Err(io::Error::other(msg)));
+        };
+        let mut core = match session.core(0) {
+            Ok(c) => c,
+            Err(e) => {
+                fail(
+                    &ergot_rx_tx,
+                    format!("RTT thread: failed to get core 0: {e}"),
+                );
+                return;
+            }
+        };
+        let mut rtt = match Rtt::attach_region(&mut core, &ScanRegion::Ram) {
+            Ok(r) => r,
+            Err(e) => {
+                fail(&ergot_rx_tx, format!("RTT thread: failed to attach: {e}"));
+                return;
+            }
+        };
 
         let mut ergot_rx_buf = [0u8; 2048];
         let mut defmt_buf = [0u8; 4096];
@@ -181,7 +203,13 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
                         }
                     }
                     Ok(_) => {}
-                    Err(e) => error!("RTT ergot read error: {}", e),
+                    Err(e) => {
+                        fail(
+                            &ergot_rx_tx,
+                            format!("RTT ergot read error (probe gone?): {e}"),
+                        );
+                        return;
+                    }
                 }
             }
 
@@ -193,8 +221,11 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
                         match channel.write(&mut core, &data[offset..]) {
                             Ok(n) => offset += n,
                             Err(e) => {
-                                error!("RTT ergot write error: {}", e);
-                                break;
+                                fail(
+                                    &ergot_rx_tx,
+                                    format!("RTT ergot write error (probe gone?): {e}"),
+                                );
+                                return;
                             }
                         }
                     }
@@ -216,7 +247,13 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
                         }
                     }
                     Ok(_) => {}
-                    Err(e) => error!("RTT defmt read error: {}", e),
+                    Err(e) => {
+                        fail(
+                            &ergot_rx_tx,
+                            format!("RTT defmt read error (probe gone?): {e}"),
+                        );
+                        return;
+                    }
                 }
             }
 

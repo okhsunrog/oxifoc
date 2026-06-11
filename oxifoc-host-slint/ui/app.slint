@@ -61,6 +61,7 @@ export component App inherits Window {
     // ── Fast telemetry streaming ──
     in-out property <int> stream-rate-index: 0;  // default 100 Hz
     in property <bool> streaming: false;
+    in property <string> rate-warning: "";
     callback stream-start();
     callback stream-stop();
 
@@ -533,6 +534,12 @@ export component App inherits Window {
                         primary: !root.streaming;
                         clicked => { if root.streaming { root.stream-stop(); } else { root.stream-start(); } }
                     }
+                }
+                if root.rate-warning != "" : Text {
+                    text: root.rate-warning;
+                    color: #eab308;
+                    font-size: 10px;
+                    wrap: word-wrap;
                 }
                 HorizontalLayout {
                     spacing: 6px;
