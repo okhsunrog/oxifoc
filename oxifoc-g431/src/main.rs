@@ -26,10 +26,9 @@ mod protocol;
 // Panic/HardFault handlers (gate kill) + IWDG live here.
 mod safety;
 mod sensors;
-#[cfg(feature = "storage")]
-mod storage;
-// Compiled-in configuration for the baked profile (no flash storage).
-#[cfg(not(feature = "storage"))]
+// Compiled-in configuration: this board has NO flash persistence — the full
+// 128K belongs to code, configuration is baked at build time (live tuning
+// is RAM-backed; extract with `oxifoc-host-cli config dump --rust`).
 mod baked_config;
 mod transport;
 
@@ -97,20 +96,10 @@ async fn main(spawner: Spawner) {
     let r = split_resources!(p);
 
     // ========== STEP 6: Load Configuration ==========
-    #[cfg(feature = "storage")]
+    // Configuration is compiled in; the config server is RAM-backed (live
+    // tuning works, nothing persists across reboots — extract with
+    // `oxifoc-host-cli config dump --rust` and rebuild).
     let runtime_config = {
-        let flash = embassy_stm32::flash::Flash::new_blocking(r.storage.flash);
-        let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
-        spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
-        let cfg = storage::CONFIG_LOADED.wait().await;
-        defmt::info!("Config loaded from flash");
-        cfg
-    };
-    #[cfg(not(feature = "storage"))]
-    let runtime_config = {
-        // Baked profile: configuration is compiled in; the config server is
-        // RAM-backed (live tuning works, nothing persists across reboots —
-        // extract with `oxifoc-host-cli config dump --rust` and rebuild).
         let _ = r.storage.flash;
         defmt::info!("Config: baked (no flash storage)");
         baked_config::baked()

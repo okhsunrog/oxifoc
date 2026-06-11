@@ -1,6 +1,7 @@
 /* STM32G431CB: 128KB Flash, 32KB RAM
- * Baked-config profile (`storage` feature off): no flash region is reserved
- * for sequential_storage — the full 128KB belongs to the program.
+ * No flash-backed config storage on this board (removed 2026-06-12,
+ * docs/flash-size.md): the full 128KB belongs to the program; configuration
+ * is baked at build time (src/baked_config.rs).
  */
 MEMORY
 {

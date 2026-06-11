@@ -168,7 +168,9 @@ pub async fn protocol_servers(stack: &'static Stack) {
         &RUNTIME_CONFIG,
         crate::config::PWM_CONFIG.pwm_freq_hz,
         crate::config::BOARD.max_phase_current_a,
-        cfg!(feature = "storage"),
+        // No flash persistence on this board — the config server reports
+        // persist-capable = false and serves the RAM copy only.
+        false,
     )
     .await
 }

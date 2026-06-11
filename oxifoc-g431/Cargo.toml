@@ -16,11 +16,6 @@ default = ["transport-uart", "detection"]
 transport-uart = ["ergot/defmt-sink-network"]
 # RTT via debug probe: ergot over RTT channels, defmt over separate RTT channel
 transport-rtt = ["ergot/rtt"]
-# Flash-backed config persistence: storage worker + 4 KB flash region
-# (124K memory.x). OFF by default — g431 runs the baked-config profile
-# (config compiled in via src/baked_config.rs, RAM-backed config server,
-# full 128K flash for code). See docs/flash-size.md.
-storage = []
 # On-device motor detection (detect server + calibration sweeps). Default-on;
 # turning it off is a measured −15.5 KB reserve (docs/flash-size.md).
 detection = ["oxifoc-core/detection"]
@@ -68,10 +63,6 @@ embedded-io-async = { version = "0.7", features = ["defmt"] }
 heapless = { version = "0.9.2", default-features = false, features = ["defmt"] }
 libm = { version = "0.2.15", default-features = false }
 
-# Persistent configuration storage
-sequential-storage = { version = "7.1", features = ["postcard", "defmt"] }
-embedded-storage-async = "0.4"
-embassy-embedded-hal = { version = "0.6.0", features = ["defmt"] }
 postcard = { version = "1.1", features = ["use-defmt"] }
 rtt-target = "0.6"
 

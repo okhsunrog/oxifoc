@@ -41,11 +41,8 @@ check-device:
         (cd "$crate" && cargo fmt --check) || exit 1
         (cd "$crate" && cargo build --tests --quiet 2>&1 | filter) || exit 1
     done
-    # g431 non-default profiles must not rot (default = baked + detection):
-    # the flash-backed storage profile and the detection-off reserve.
-    echo "oxifoc-g431 (--features storage): clippy + build..."
-    (cd oxifoc-g431 && cargo clippy --quiet --features storage -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
-    (cd oxifoc-g431 && cargo build --release --quiet --features storage 2>&1 | filter) || exit 1
+    # g431 non-default profile must not rot (default = baked + detection):
+    # the detection-off reserve.
     echo "oxifoc-g431 (no detection): build..."
     (cd oxifoc-g431 && cargo build --release --quiet --no-default-features --features transport-uart 2>&1 | filter) || exit 1
 
@@ -103,8 +100,7 @@ size:
         printf "%-24s %7d / %7d bytes (%2d%%), headroom %d\n" \
             "$label" "$used" "$limit" "$((used * 100 / limit))" "$((limit - used))"
     }
-    measure oxifoc-g431 "oxifoc-g431 (baked)" memory-baked.x
-    measure oxifoc-g431 "oxifoc-g431 (storage)" memory-storage.x --features storage
+    measure oxifoc-g431 oxifoc-g431 memory.x
     measure oxifoc-g474 oxifoc-g474 memory.x
     measure oxifoc-f405 oxifoc-f405 memory.x
 
