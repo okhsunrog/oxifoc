@@ -82,6 +82,20 @@ virtual *ARGS:
 e2e:
     cargo test -p oxifoc-virtual --test e2e
 
+# Flash usage of the STM32 firmwares (see docs/flash-size.md)
+size:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for crate in oxifoc-g431 oxifoc-g474 oxifoc-f405; do
+        (cd "$crate" && cargo build --release --quiet 2>/dev/null) || { echo "$crate: build failed"; exit 1; }
+        elf="$crate/target/thumbv7em-none-eabihf/release/$crate"
+        limit_k=$(grep -oP 'FLASH\s*:\s*ORIGIN[^,]*,\s*LENGTH\s*=\s*\K[0-9]+(?=K)' "$crate/memory.x")
+        limit=$((limit_k * 1024))
+        used=$(arm-none-eabi-size "$elf" | tail -1 | awk '{print $1+$2}')
+        printf "%-14s %7d / %7d bytes (%2d%%), headroom %d\n" \
+            "$crate" "$used" "$limit" "$((used * 100 / limit))" "$((limit - used))"
+    done
+
 # Clean all build artifacts
 clean:
     cargo clean

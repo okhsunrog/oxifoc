@@ -126,23 +126,14 @@ generic over SinCos (CORDIC on G4, FastSinCos on F405), `vsqrt.f32` +
 polynomial atan2 in `fast_math`. HFI went from >150% of the 20 kHz ISR
 budget to 13.9% — it was unusable on hardware before this.
 
-- [x] **g431 flash recovery done 2026-06-11**: 126 656 → 118 668 /
-  126 976 (headroom 320 B → 8.3 KB), zero accuracy loss. What landed:
-  hall_calibration → FastSinCos (<1e-6 err; it was the ONLY firmware
-  sinf/cosf — everything else libm hung off the detect_server task) +
-  detect-path `libm::sqrtf` → `fast_math::sqrtf` (bit-identical vsqrt)
-  = −6.9 KB incl. the whole f64 softfloat; g431 unwrap/expect →
-  `defmt::unwrap!` −0.6 KB; defmt feature on embassy-* / postcard /
-  heapless / embedded-io-async −0.5 KB (also: interned dep panics,
-  Format on dep errors). Remaining libm: atanf + remainderf, 602 B,
-  pure f32, intentionally kept for exactness. Further reserves if flash
-  gets tight again: `detection` feature gate (default-on, kept compiling
-  by `just check`) −14.7 KB on G431; `.rodata` is ~8 KB of dep
-  panic/expect strings — only shrinkable by trimming panicking paths.
-  NOTE: `panic_immediate_abort` is OFF the table — it would bypass the
-  gate-kill panic handler in safety.rs. F405/G474 still use plain
-  unwrap + no dep defmt features — port the g431 treatment when their
-  flash matters (they're 1 MB / 512 KB parts, no pressure).
+- [x] **g431 flash recovery done 2026-06-11**: 126 656 → 118 668
+  (headroom 320 B → 8.3 KB), zero accuracy loss. Everything
+  flash-size related — rules for new code, measurement workflow
+  (`just size`), measured reserves (detection gate −14.7 KB, etc.),
+  dead ends — now lives in [flash-size.md](flash-size.md).
+- [ ] F405/G474 still use plain `unwrap` and no dep defmt features —
+  port the g431 treatment from [flash-size.md](flash-size.md) when
+  convenient (no flash pressure there: 30% / 60% used).
 - [ ] f405/g474 build with `opt-level = 3`, g431 with `"z"` (flash
   pressure). Intentional, but unmeasured: check what `"z"` would cost
   f405/g474 in ISR time, or whether it matters at all at 20 kHz.

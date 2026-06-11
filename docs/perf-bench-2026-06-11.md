@@ -85,8 +85,9 @@ Flash cost on g431: **+664 bytes** (FastSinCos polynomial + vsqrt +
 backend-conversion code); libm's sinf/cosf did NOT drop out because the
 cold detection paths (hall_calibration accumulators, flux-linkage gamma,
 HfiInjector) still reference them. Switching those to FastSinCos would
-shed the f64 softfloat machinery — recorded in TODO as the next flash
-recovery when headroom (now ~1.4 KB) runs out.
+shed the f64 softfloat machinery — done later the same day, see
+[flash-size.md](flash-size.md) for the flash story (−6.9 KB and the
+rest of the recovery).
 
 ## Conclusions (action list)
 
