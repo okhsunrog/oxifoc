@@ -173,6 +173,15 @@ pub struct CurrentLimitsConfig {
     pub max_iq_a: f32,
     /// Maximum instantaneous phase current (A)
     pub max_phase_current_a: f32,
+    /// Maximum supply (bus) current draw (A). `< 0` = unlimited.
+    /// VESC's `l_in_current_max`: protects the battery/PSU and wiring —
+    /// at low duty a large phase current is a small bus current.
+    pub bus_in_max_a: f32,
+    /// Maximum regen (charge) current pushed back into the supply (A,
+    /// positive magnitude). `< 0` = unlimited, **0 = no regen at all** —
+    /// the safe setting for a lab PSU, which cannot absorb reverse
+    /// current. VESC's `l_in_current_min` (negated).
+    pub bus_regen_max_a: f32,
 }
 
 impl PostcardValue<'_> for CurrentLimitsConfig {}
@@ -182,6 +191,8 @@ impl Default for CurrentLimitsConfig {
         Self {
             max_iq_a: 10.0,
             max_phase_current_a: 40.0,
+            bus_in_max_a: -1.0,
+            bus_regen_max_a: -1.0,
         }
     }
 }

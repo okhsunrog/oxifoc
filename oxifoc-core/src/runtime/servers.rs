@@ -386,12 +386,11 @@ pub async fn config_server<NS, const N: usize>(
                             // the decoupling command on a full channel).
                             match write {
                                 // Limits: clamped to the board ceiling.
-                                ConfigWrite::CurrentLimits(v) => {
+                                ConfigWrite::CurrentLimits(ref v) => {
                                     CMD_CHANNEL.send(
                                         crate::state::DriverCommand::SetCurrentLimits(
                                             crate::motor::foc_driver::CurrentLimits::from_config_clamped(
-                                                v.max_iq_a,
-                                                v.max_phase_current_a,
+                                                v,
                                                 hw_max_current_a,
                                             ),
                                         ),

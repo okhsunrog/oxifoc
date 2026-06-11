@@ -65,7 +65,10 @@ impl DriverCommand {
         match *self {
             DriverCommand::SetMode(mode) => mode.is_finite(),
             DriverCommand::SetCurrentLimits(limits) => {
-                limits.max_current_a.is_finite() && limits.overcurrent_threshold_a.is_finite()
+                limits.max_current_a.is_finite()
+                    && limits.overcurrent_threshold_a.is_finite()
+                    && limits.bus_in_max_a.is_finite()
+                    && limits.bus_regen_max_a.is_finite()
             }
             DriverCommand::SetPiGains { kp, ki } => {
                 kp.is_finite() && ki.is_finite() && kp > 0.0 && ki >= 0.0

@@ -1104,6 +1104,14 @@ pub fn main() {
                                         "{}",
                                         c.max_phase_current_a
                                     )));
+                                    app.set_cfg_bus_in_max(SharedString::from(format!(
+                                        "{}",
+                                        c.bus_in_max_a
+                                    )));
+                                    app.set_cfg_bus_regen_max(SharedString::from(format!(
+                                        "{}",
+                                        c.bus_regen_max_a
+                                    )));
                                 }
                                 ConfigResponse::VoltageLimits(v) => {
                                     app.set_cfg_min_vbus(SharedString::from(format!(
@@ -1223,9 +1231,14 @@ pub fn main() {
                     let iq: f32 = parse_field("max iq", &app.get_cfg_max_iq(), err);
                     let ph: f32 =
                         parse_field("max phase current", &app.get_cfg_max_phase_current(), err);
+                    let bus_in: f32 = parse_field("bus in max", &app.get_cfg_bus_in_max(), err);
+                    let bus_regen: f32 =
+                        parse_field("bus regen max", &app.get_cfg_bus_regen_max(), err);
                     ConfigWrite::CurrentLimits(CurrentLimitsConfig {
                         max_iq_a: iq,
                         max_phase_current_a: ph,
+                        bus_in_max_a: bus_in,
+                        bus_regen_max_a: bus_regen,
                     })
                 }
                 2 => {

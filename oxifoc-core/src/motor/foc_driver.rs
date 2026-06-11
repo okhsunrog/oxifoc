@@ -49,10 +49,15 @@ pub const DEFAULT_PHASE_ADVANCE_CYCLES: f32 = 1.0;
 
 /// Current limiting configuration for the FOC driver.
 ///
-/// Two layers of protection:
+/// Three layers of protection:
 /// 1. **Target clamp**: limits what the PI controller is asked to do (prevents
 ///    absurd commands). Uses circular clamp with d-axis priority.
-/// 2. **Measured overcurrent**: checks actual dq current magnitude after the
+/// 2. **Bus (supply) current clamp**: VESC-style `i_bus ≈ iq·mod_q` bound on
+///    the iq target — phase and bus current differ by the duty factor, so a
+///    battery/PSU limit cannot be expressed as a phase limit. Regen side is
+///    separate: `bus_regen_max_a = 0` forbids pushing energy into the supply
+///    at all (a lab PSU cannot absorb reverse current).
+/// 3. **Measured overcurrent**: checks actual dq current magnitude after the
 ///    FOC step. If it exceeds `overcurrent_threshold`, PWM is disabled and
 ///    an error is returned. This is the software equivalent of hardware
 ///    overcurrent protection for boards that lack it.
@@ -66,6 +71,16 @@ pub struct CurrentLimits {
     /// sqrt(id² + iq²) exceeds this, PWM is immediately disabled.
     /// Typically set to 1.2-1.5× max_current_a. 0 = no limit.
     pub overcurrent_threshold_a: f32,
+    /// Maximum supply (bus) current draw (A). `< 0` = unlimited.
+    /// Note the different "off" sentinel from the phase limits: here 0 is a
+    /// meaningful value (no draw allowed), so "unlimited" must be negative.
+    pub bus_in_max_a: f32,
+    /// Maximum regen (charge) current into the supply (A, positive
+    /// magnitude). `< 0` = unlimited; **0 = no regen** (lab-PSU safe:
+    /// current braking degrades to what winding losses absorb, the
+    /// windings-short parking brake is unaffected — it never touches the
+    /// bus).
+    pub bus_regen_max_a: f32,
 }
 
 impl Default for CurrentLimits {
@@ -80,11 +95,13 @@ impl Default for CurrentLimits {
 
 impl CurrentLimits {
     /// Create current limits from a maximum current value.
-    /// Sets overcurrent threshold to 1.3× the max current.
+    /// Sets overcurrent threshold to 1.3× the max current; bus limits off.
     pub fn from_max_current(max_a: f32) -> Self {
         Self {
             max_current_a: max_a,
             overcurrent_threshold_a: max_a * 1.3,
+            bus_in_max_a: -1.0,
+            bus_regen_max_a: -1.0,
         }
     }
 
@@ -97,22 +114,28 @@ impl CurrentLimits {
     /// able to switch protection off.
     ///
     /// # Arguments
-    /// * `cfg_max_iq_a` - configured target-current limit (A)
-    /// * `cfg_max_phase_a` - configured instantaneous overcurrent threshold (A)
+    /// * `cfg` - the host-written limits config
     /// * `hw_max_a` - board hardware phase-current ceiling (A)
-    pub fn from_config_clamped(cfg_max_iq_a: f32, cfg_max_phase_a: f32, hw_max_a: f32) -> Self {
+    #[cfg(feature = "storage")]
+    pub fn from_config_clamped(cfg: &crate::storage::CurrentLimitsConfig, hw_max_a: f32) -> Self {
         let board = Self::from_max_current(hw_max_a);
+        // Bus limits have no board ceiling (they protect the supply, not
+        // the board); NaN → unlimited (the boundary sanity check rejects
+        // NaN commands, this is boot-path defense).
+        let bus = |v: f32| if v.is_finite() { v } else { -1.0 };
         Self {
-            max_current_a: if cfg_max_iq_a > 0.0 {
-                cfg_max_iq_a.min(board.max_current_a)
+            max_current_a: if cfg.max_iq_a > 0.0 {
+                cfg.max_iq_a.min(board.max_current_a)
             } else {
                 board.max_current_a
             },
-            overcurrent_threshold_a: if cfg_max_phase_a > 0.0 {
-                cfg_max_phase_a.min(board.overcurrent_threshold_a)
+            overcurrent_threshold_a: if cfg.max_phase_current_a > 0.0 {
+                cfg.max_phase_current_a.min(board.overcurrent_threshold_a)
             } else {
                 board.overcurrent_threshold_a
             },
+            bus_in_max_a: bus(cfg.bus_in_max_a),
+            bus_regen_max_a: bus(cfg.bus_regen_max_a),
         }
     }
 
@@ -121,7 +144,7 @@ impl CurrentLimits {
     #[cfg(feature = "storage")]
     pub fn from_stored(cfg: Option<&crate::storage::CurrentLimitsConfig>, hw_max_a: f32) -> Self {
         match cfg {
-            Some(c) => Self::from_config_clamped(c.max_iq_a, c.max_phase_current_a, hw_max_a),
+            Some(c) => Self::from_config_clamped(c, hw_max_a),
             None => Self::from_max_current(hw_max_a),
         }
     }
@@ -271,6 +294,12 @@ where
     /// loop. Host-tunable (motor/load dependent); reset bumpless on mode
     /// entry. The failsafe does NOT use this instance (own gains, planned).
     velocity_loop: VelocityLoop,
+    /// Low-passed q-axis modulation (vq·1.5/vbus) of the previous cycles —
+    /// the duty factor relating phase current to bus current
+    /// (`i_bus ≈ iq·mod_q`, VESC mcpwm_foc.c:3632). Filtered (τ ≈ 2 ms) so
+    /// the bus-limit clamp derived from it doesn't chatter on per-cycle
+    /// voltage ripple.
+    bus_mod_q_filt: f32,
 }
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
@@ -315,6 +344,7 @@ where
             failsafe_latched: false,
             ov_threshold_v: 0.0,
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
+            bus_mod_q_filt: 0.0,
         }
     }
 
@@ -854,6 +884,11 @@ where
             0.0
         };
 
+        // Bus (supply) current limits: every regen-capable path (host
+        // current commands, the velocity loop, the failsafe brake) funnels
+        // through here, so they all inherit the clamp.
+        let iq_target = self.clamp_iq_for_bus(iq_target);
+
         // Get phase from provider (uses previous update's estimate). The
         // commutation angle is advanced by the pipeline delay (see
         // phase_advance_cycles): the estimate is sample-time truth, the
@@ -893,6 +928,9 @@ where
             return Err(StepError::Overcurrent);
         }
 
+        // Track the q-axis modulation for the bus-limit clamp (next cycle).
+        self.update_bus_mod_q(out.vq, dt);
+
         // Set PWM duties and feed to current sensor for next-cycle reconstruction
         self.pwm.set_duties(out.duties);
         self.current_sensor.update_duties(out.duties);
@@ -910,6 +948,52 @@ where
         );
 
         Ok(out)
+    }
+
+    /// Low-pass the q-axis modulation (`mod_q = 1.5·vq/vbus`, the duty
+    /// factor in `i_bus ≈ iq·mod_q`). τ ≈ 2 ms — slow enough to ignore
+    /// per-cycle voltage ripple, fast enough to track real speed changes.
+    fn update_bus_mod_q(&mut self, vq: f32, dt: f32) {
+        const TAU_S: f32 = 0.002;
+        let mod_q = 1.5 * vq / self.vbus.max(0.5);
+        let alpha = (dt / TAU_S).min(1.0);
+        self.bus_mod_q_filt += alpha * (mod_q - self.bus_mod_q_filt);
+    }
+
+    /// Clamp the iq target so the implied bus current stays inside
+    /// `[-bus_regen_max_a, bus_in_max_a]` (VESC mcpwm_foc.c:3629-3637).
+    ///
+    /// `i_bus ≈ iq·mod_q` (electrical power over vbus, q-axis only — the
+    /// d-axis share is losses/HFI carrier, small and consumption-side).
+    /// With `bus_regen_max_a = 0` no energy is ever pushed into the supply:
+    /// current braking degrades to ~zero torque in the regen zone (a lab
+    /// PSU cannot absorb reverse current), and a ControlledStop failsafe
+    /// then exits via its no-progress watchdog to a coast. The
+    /// windings-short parking brake is unaffected — it never sees the bus.
+    fn clamp_iq_for_bus(&self, iq_target: f32) -> f32 {
+        let in_max = self.current_limits.bus_in_max_a;
+        let regen_max = self.current_limits.bus_regen_max_a;
+        if in_max < 0.0 && regen_max < 0.0 {
+            return iq_target; // both unlimited (the default)
+        }
+        let mod_q = self.bus_mod_q_filt;
+        // Near-zero modulation: bus current is negligible whatever iq is,
+        // and dividing by it would explode. Same dead-band as VESC.
+        if mod_q.abs() < 1e-3 {
+            return iq_target;
+        }
+        let hi_bus = if in_max >= 0.0 { in_max } else { f32::INFINITY };
+        let lo_bus = if regen_max >= 0.0 {
+            -regen_max
+        } else {
+            f32::NEG_INFINITY
+        };
+        let (lo_iq, hi_iq) = if mod_q > 0.0 {
+            (lo_bus / mod_q, hi_bus / mod_q)
+        } else {
+            (hi_bus / mod_q, lo_bus / mod_q)
+        };
+        crate::foc::clamp_f32(iq_target, lo_iq, hi_iq)
     }
 
     /// Execute open-loop control step (for calibration)
@@ -1744,27 +1828,93 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "storage")]
     fn config_limits_clamp_to_hardware_ceiling() {
+        use crate::storage::CurrentLimitsConfig;
         // Stored config must never raise limits above the board's hardware
         // ceiling, and zero/negative config values (= "not set") fall back
         // to the board defaults instead of disabling protection.
         let hw_max = 10.0;
+        let cfg = |iq: f32, ph: f32, bus_in: f32, bus_regen: f32| CurrentLimitsConfig {
+            max_iq_a: iq,
+            max_phase_current_a: ph,
+            bus_in_max_a: bus_in,
+            bus_regen_max_a: bus_regen,
+        };
 
         // Normal config below the ceiling: passes through.
-        let l = CurrentLimits::from_config_clamped(5.0, 8.0, hw_max);
+        let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, -1.0, -1.0), hw_max);
         assert_eq!(l.max_current_a, 5.0);
         assert_eq!(l.overcurrent_threshold_a, 8.0);
+        assert_eq!(l.bus_in_max_a, -1.0);
+        assert_eq!(l.bus_regen_max_a, -1.0);
 
         // Config above the ceiling: clamped to the board limits.
         let board = CurrentLimits::from_max_current(hw_max);
-        let l = CurrentLimits::from_config_clamped(50.0, 100.0, hw_max);
+        let l = CurrentLimits::from_config_clamped(&cfg(50.0, 100.0, -1.0, -1.0), hw_max);
         assert_eq!(l.max_current_a, board.max_current_a);
         assert_eq!(l.overcurrent_threshold_a, board.overcurrent_threshold_a);
 
         // Zeroed config: board defaults, NOT disabled protection.
-        let l = CurrentLimits::from_config_clamped(0.0, 0.0, hw_max);
+        let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0, -1.0, -1.0), hw_max);
         assert_eq!(l.max_current_a, board.max_current_a);
         assert_eq!(l.overcurrent_threshold_a, board.overcurrent_threshold_a);
+
+        // Bus limits pass through (no board ceiling — they protect the
+        // supply); zero is meaningful (no regen), NaN → unlimited.
+        let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, 20.0, 0.0), hw_max);
+        assert_eq!(l.bus_in_max_a, 20.0);
+        assert_eq!(l.bus_regen_max_a, 0.0);
+        let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, f32::NAN, f32::NAN), hw_max);
+        assert_eq!(l.bus_in_max_a, -1.0);
+        assert_eq!(l.bus_regen_max_a, -1.0);
+    }
+
+    /// Bus (supply) current limits: `i_bus ≈ iq·mod_q`, so the allowed iq
+    /// window scales inversely with the modulation. With regen = 0 no
+    /// negative-power iq is allowed at all (lab-PSU safety); with both
+    /// limits negative (the default) nothing is clamped.
+    #[test]
+    fn bus_limit_clamps_iq() {
+        use crate::foc::trig::LibmSinCos;
+
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            crate::foc::phase::PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+
+        // Default: unlimited, pass-through whatever the modulation.
+        driver.bus_mod_q_filt = 0.5;
+        assert_eq!(driver.clamp_iq_for_bus(-30.0), -30.0);
+        assert_eq!(driver.clamp_iq_for_bus(30.0), 30.0);
+
+        // bus_in 10 A, regen 0, mod_q = 0.5 (driving forward at half duty):
+        // draw bound = 10/0.5 = 20 A, regen bound = 0 → no negative iq.
+        driver.current_limits.bus_in_max_a = 10.0;
+        driver.current_limits.bus_regen_max_a = 0.0;
+        assert_eq!(driver.clamp_iq_for_bus(30.0), 20.0);
+        assert_eq!(driver.clamp_iq_for_bus(-5.0), 0.0, "regen must be denied");
+        assert_eq!(driver.clamp_iq_for_bus(15.0), 15.0);
+
+        // Reverse rotation (mod_q < 0): bounds mirror.
+        driver.bus_mod_q_filt = -0.5;
+        assert_eq!(driver.clamp_iq_for_bus(-30.0), -20.0);
+        assert_eq!(driver.clamp_iq_for_bus(5.0), 0.0, "regen must be denied");
+
+        // Near-zero modulation: dead-band, no clamp (bus current ≈ 0).
+        driver.bus_mod_q_filt = 0.0;
+        assert_eq!(driver.clamp_iq_for_bus(-30.0), -30.0);
+
+        // Finite regen allowance: -2 A bus at mod_q 0.4 → iq ≥ -5 A.
+        driver.bus_mod_q_filt = 0.4;
+        driver.current_limits.bus_regen_max_a = 2.0;
+        assert_eq!(driver.clamp_iq_for_bus(-30.0), -5.0);
     }
 
     /// Every mode that energizes the motor and can read currents must trip

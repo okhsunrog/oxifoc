@@ -141,6 +141,8 @@ export component App inherits Window {
     // Current limits
     in-out property <string> cfg-max-iq: "";
     in-out property <string> cfg-max-phase-current: "";
+    in-out property <string> cfg-bus-in-max: "";
+    in-out property <string> cfg-bus-regen-max: "";
     // Voltage limits
     in-out property <string> cfg-min-vbus: "";
     in-out property <string> cfg-max-vbus: "";
@@ -753,6 +755,10 @@ export component App inherits Window {
                     Row {
                         Text { text: "Max Iq (A):"; } LineEdit { text <=> root.cfg-max-iq; min-width: 120px; }
                         Text { text: "Max phase current (A):"; } LineEdit { text <=> root.cfg-max-phase-current; min-width: 120px; }
+                    }
+                    Row {
+                        Text { text: "Bus in max (A, <0 = off):"; } LineEdit { text <=> root.cfg-bus-in-max; min-width: 120px; }
+                        Text { text: "Bus regen max (A, 0 = none):"; } LineEdit { text <=> root.cfg-bus-regen-max; min-width: 120px; }
                     }
                 }
                 if root.config-group == 2 : GridLayout {

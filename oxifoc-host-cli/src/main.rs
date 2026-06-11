@@ -108,8 +108,8 @@ fn dump_config(runtime: &HostRuntime, rust: bool) -> Result<()> {
             Some(R::CurrentLimits(v)) => fields.push((
                 "current_limits",
                 Some(format!(
-                    "CurrentLimitsConfig {{\n            max_iq_a: {:?},\n            max_phase_current_a: {:?},\n        }}",
-                    v.max_iq_a, v.max_phase_current_a
+                    "CurrentLimitsConfig {{\n            max_iq_a: {:?},\n            max_phase_current_a: {:?},\n            bus_in_max_a: {:?},\n            bus_regen_max_a: {:?},\n        }}",
+                    v.max_iq_a, v.max_phase_current_a, v.bus_in_max_a, v.bus_regen_max_a
                 )),
             )),
             Some(R::VoltageLimits(v)) => fields.push((
