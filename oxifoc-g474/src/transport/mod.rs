@@ -141,8 +141,10 @@ pub fn init_uart(
     uart_cfg.baudrate = crate::config::UART_BAUD;
     let tx_buf = UART_TX_BUF.init([0u8; crate::config::UART_BUF_LEN]);
     let rx_buf = UART_RX_BUF.init([0u8; crate::config::UART_BUF_LEN]);
-    let uart = BufferedUart::new(lpuart1, pa3, pa2, tx_buf, rx_buf, LpuartIrqs, uart_cfg)
-        .expect("LPUART1 init failed");
+    let uart = defmt::unwrap!(
+        BufferedUart::new(lpuart1, pa3, pa2, tx_buf, rx_buf, LpuartIrqs, uart_cfg),
+        "LPUART1 init failed"
+    );
     let (uart_tx, uart_rx) = uart.split();
 
     // Register UART interface on Router
@@ -150,12 +152,11 @@ pub fn init_uart(
         UART_OUTQ.stream_producer(),
         crate::config::MAX_PACKET_SIZE as u16,
     ));
-    let ident = stack
-        .manage_profile(|router| router.register_interface(uart_sink))
-        .expect("UART interface registration failed");
-    let net_id = stack
-        .manage_profile(|router| router.net_id_of(ident))
-        .unwrap();
+    let ident = defmt::unwrap!(
+        stack.manage_profile(|router| router.register_interface(uart_sink)),
+        "UART interface registration failed"
+    );
+    let net_id = defmt::unwrap!(stack.manage_profile(|router| router.net_id_of(ident)));
 
     let rx_worker = UartRxWorkerType::new(
         stack,
@@ -215,12 +216,11 @@ pub fn init_usb(
         USB_OUTQ.framed_producer(),
         crate::config::MAX_PACKET_SIZE as u16,
     ));
-    let ident = stack
-        .manage_profile(|router| router.register_interface(usb_sink))
-        .expect("USB interface registration failed");
-    let net_id = stack
-        .manage_profile(|router| router.net_id_of(ident))
-        .unwrap();
+    let ident = defmt::unwrap!(
+        stack.manage_profile(|router| router.register_interface(usb_sink)),
+        "USB interface registration failed"
+    );
+    let net_id = defmt::unwrap!(stack.manage_profile(|router| router.net_id_of(ident)));
 
     let rx_worker = UsbRxWorkerType::new(stack, ep_out, RouterFrameProcessor::new(net_id), ident)
         .with_liveness(LivenessConfig {

@@ -10,8 +10,8 @@ counts) live in [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 | board | flash used | region | headroom | pressure |
 |---|---|---|---|---|
 | g431 (B-G431B-ESC1) | 118 668 | 124K (4K reserved for config) | **8.3 KB** | the constrained one |
-| g474 (Nucleo + IHM08M1) | 156 608 | 256K (bank 1; bank 2 = config) | 105 KB | none |
-| f405 | 233 116 | 768K (sectors 0–9) | 553 KB | none |
+| g474 (Nucleo + IHM08M1) | 155 584 | 256K (bank 1; bank 2 = config) | 104 KB | none |
+| f405 | 232 072 | 768K (sectors 0–9) | 554 KB | none |
 
 `flash used` = `.vector_table + .text + .rodata + .data` (everything
 that occupies flash; `.data` is load-image). Run `just size` for live
@@ -85,10 +85,10 @@ remaining "compiler flag" win; everything below is about code.
 
 4. **New dependency? Check for a `defmt` feature** (`cargo info <crate>`)
    and enable it: switches the crate's internal asserts to interned
-   defmt strings and derives `Format` on its error types. Already on:
-   embassy-stm32/executor/sync/time/futures/embedded-hal, postcard
-   (`use-defmt`), heapless, embedded-io-async, sequential-storage,
-   oxifoc-core. Deliberately off: `rtt-target/defmt` (defmt→RTT already
+   defmt strings and derives `Format` on its error types. Already on (all three boards):
+   embassy-stm32/executor/sync/time/futures/embedded-hal, embassy-usb
+   (f405/g474), postcard (`use-defmt`), heapless, embedded-io-async,
+   sequential-storage, oxifoc-core. Deliberately off: `rtt-target/defmt` (defmt→RTT already
    goes through the ergot sink), `postcard-schema/defmt-v0_3` (would
    pull a second defmt 0.3 next to 1.0).
 
@@ -112,6 +112,7 @@ remaining "compiler flag" win; everything below is about code.
 | 2026-06-11 | `detection` feature gate, default-on (`a13f229`); `just check` compiles the gate-off config so it can't rot | 0 (reserve, see below) |
 | 2026-06-11 | `defmt::unwrap!` conversion (14 sites) + defmt features on deps (`4089675`) | **−1 116 B** |
 | | **total** | **126 656 → 118 668** |
+| 2026-06-11 | same defmt treatment ported to f405/g474 (38 sites; embassy-usb defmt too) | f405 −1 044 B, g474 −1 024 B |
 
 Panic handler kept `defmt::error!("PANIC: {}", Display2Format(info))`:
 full panic text over RTT costs only 240 B once dependency fmt is gone

@@ -149,7 +149,7 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
     let mut any_was_active = false;
 
     loop {
-        STATE_NOTIFY.wait().await.unwrap();
+        defmt::unwrap!(STATE_NOTIFY.wait().await.ok());
 
         let usb_active = stack.manage_profile(|im| {
             matches!(
@@ -292,9 +292,9 @@ pub fn spawn_servers(
     uart_ident: u8,
     defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
 ) {
-    spawner.spawn(protocol_servers(stack).unwrap());
-    spawner.spawn(fast_telemetry_task(stack).unwrap());
-    spawner.spawn(state_monitor(stack, usb_ident, uart_ident).unwrap());
-    spawner.spawn(detect_server(stack).unwrap());
-    spawner.spawn(defmt_forwarder(defmt_consumer, stack).unwrap());
+    spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
+    spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
+    spawner.spawn(defmt::unwrap!(state_monitor(stack, usb_ident, uart_ident)));
+    spawner.spawn(defmt::unwrap!(detect_server(stack)));
+    spawner.spawn(defmt::unwrap!(defmt_forwarder(defmt_consumer, stack)));
 }

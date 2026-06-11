@@ -154,18 +154,17 @@ pub fn init_usb(
         USB_OUTQ.framed_producer(),
         crate::config::MAX_PACKET_SIZE as u16,
     ));
-    let usb_ident = stack
-        .manage_profile(|router| router.register_interface(usb_sink))
-        .expect("USB interface registration failed");
+    let usb_ident = defmt::unwrap!(
+        stack.manage_profile(|router| router.register_interface(usb_sink)),
+        "USB interface registration failed"
+    );
 
     let rx_worker = UsbRxWorker::new(
         stack,
         ep_out,
-        RouterFrameProcessor::new(
-            stack
-                .manage_profile(|router| router.net_id_of(usb_ident))
-                .unwrap(),
-        ),
+        RouterFrameProcessor::new(defmt::unwrap!(
+            stack.manage_profile(|router| router.net_id_of(usb_ident))
+        )),
         usb_ident,
     )
     .with_liveness(LivenessConfig { timeout_ms: 3000 })
@@ -206,10 +205,12 @@ pub fn init_uart(
     let rx_buf = UART_RX_BUF.init([0u8; crate::config::UART_RX_BUF_LEN]);
 
     // BufferedUart::new(usart, rx_pin, tx_pin, ...) — PB11 is RX, PB10 is TX
-    let uart = embassy_stm32::usart::BufferedUart::new(
-        usart3, pb11, pb10, tx_buf, rx_buf, UsartIrqs, uart_cfg,
-    )
-    .expect("USART3 init failed");
+    let uart = defmt::unwrap!(
+        embassy_stm32::usart::BufferedUart::new(
+            usart3, pb11, pb10, tx_buf, rx_buf, UsartIrqs, uart_cfg,
+        ),
+        "USART3 init failed"
+    );
 
     let (uart_tx, uart_rx) = uart.split();
 
@@ -218,18 +219,17 @@ pub fn init_uart(
         UART_OUTQ.stream_producer(),
         crate::config::MAX_PACKET_SIZE as u16,
     ));
-    let uart_ident = stack
-        .manage_profile(|router| router.register_interface(uart_sink))
-        .expect("UART interface registration failed");
+    let uart_ident = defmt::unwrap!(
+        stack.manage_profile(|router| router.register_interface(uart_sink)),
+        "UART interface registration failed"
+    );
 
     let rx_worker = UartRxWorker::new(
         stack,
         UartReader::new(uart_rx),
-        RouterFrameProcessor::new(
-            stack
-                .manage_profile(|router| router.net_id_of(uart_ident))
-                .unwrap(),
-        ),
+        RouterFrameProcessor::new(defmt::unwrap!(
+            stack.manage_profile(|router| router.net_id_of(uart_ident))
+        )),
         uart_ident,
     )
     .with_liveness(LivenessConfig {

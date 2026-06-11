@@ -151,7 +151,7 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
     let mut any_was_active = false;
 
     loop {
-        STATE_NOTIFY.wait().await.unwrap();
+        defmt::unwrap!(STATE_NOTIFY.wait().await.ok());
 
         let usb_active = stack.manage_profile(|im| {
             matches!(
@@ -192,6 +192,6 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
 // ========== Task Spawning ==========
 
 pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, usb_ident: u8, uart_ident: u8) {
-    spawner.spawn(protocol_servers(stack).unwrap());
-    spawner.spawn(state_monitor(stack, usb_ident, uart_ident).unwrap());
+    spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
+    spawner.spawn(defmt::unwrap!(state_monitor(stack, usb_ident, uart_ident)));
 }

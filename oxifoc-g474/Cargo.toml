@@ -12,12 +12,12 @@ bench = false
 
 [dependencies]
 # Embassy dependencies (main branch with async flash support for G4)
-embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
-embassy-futures = { version = "0.1.2" }
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-futures = { version = "0.1.2", features = ["defmt"] }
 embassy-stm32 = { version = "0.6.0", features = ["stm32g474re", "time-driver-tim5", "unstable-pac", "dual-bank", "defmt"] }
-embassy-sync = { version = "0.8.0" }
-embassy-time = { version = "0.5.1", features = ["tick-hz-32_768"] }
-embassy-usb = { version = "0.6.0" }
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
+embassy-time = { version = "0.5.1", features = ["tick-hz-32_768", "defmt"] }
+embassy-usb = { version = "0.6.0", features = ["defmt"] }
 
 # Cortex-M dependencies
 cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
@@ -48,15 +48,15 @@ ergot = { git = "https://github.com/jamesmunns/ergot", rev = "f61a4109683f8798e9
 
 static_cell = "2.1"
 assign-resources = "0.5.0"
-embedded-io-async = "0.7"
-heapless = { version = "0.9.2", default-features = false }
+embedded-io-async = { version = "0.7", features = ["defmt"] }
+heapless = { version = "0.9.2", default-features = false, features = ["defmt"] }
 libm = { version = "0.2.15", default-features = false }
 
 # Persistent configuration storage
 sequential-storage = { version = "7.1", features = ["postcard", "defmt"] }
 embedded-storage-async = "0.4"
-embassy-embedded-hal = { version = "0.6.0" }
-postcard = "1.1"
+embassy-embedded-hal = { version = "0.6.0", features = ["defmt"] }
+postcard = { version = "1.1", features = ["use-defmt"] }
 rtt-target = "0.6"
 
 [profile.dev]

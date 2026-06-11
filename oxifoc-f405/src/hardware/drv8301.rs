@@ -103,7 +103,7 @@ pub fn configure_and_store_drv8301(
     mut drv_config: Drv8301Config<'static>,
 ) -> Result<(), Drv8301Error> {
     let spi_device =
-        ExclusiveDevice::new_no_delay(&mut drv_config.spi, &mut drv_config.cs).unwrap();
+        defmt::unwrap!(ExclusiveDevice::new_no_delay(&mut drv_config.spi, &mut drv_config.cs).ok());
 
     let mut drv = Drv8301::new(spi_device);
 
@@ -243,8 +243,9 @@ pub async fn nfault_monitor_task(mut nfault: NfaultInput) {
         // Read detailed fault status from DRV8301 via SPI
         let fault_status = DRV_CONFIG.lock(|cell| {
             if let Some(config) = cell.borrow_mut().as_mut() {
-                let spi_device =
-                    ExclusiveDevice::new_no_delay(&mut config.spi, &mut config.cs).unwrap();
+                let spi_device = defmt::unwrap!(
+                    ExclusiveDevice::new_no_delay(&mut config.spi, &mut config.cs).ok()
+                );
                 let mut drv = Drv8301::new(spi_device);
                 drv.get_fault_status().ok()
             } else {
@@ -281,7 +282,7 @@ pub fn get_fault_status() -> Option<FaultStatus> {
     DRV_CONFIG.lock(|cell| {
         if let Some(config) = cell.borrow_mut().as_mut() {
             let spi_device =
-                ExclusiveDevice::new_no_delay(&mut config.spi, &mut config.cs).unwrap();
+                defmt::unwrap!(ExclusiveDevice::new_no_delay(&mut config.spi, &mut config.cs).ok());
             let mut drv = Drv8301::new(spi_device);
             drv.get_fault_status().ok()
         } else {
@@ -308,7 +309,7 @@ pub fn reset_faults() -> Result<(), ()> {
     DRV_CONFIG.lock(|cell| {
         if let Some(config) = cell.borrow_mut().as_mut() {
             let spi_device =
-                ExclusiveDevice::new_no_delay(&mut config.spi, &mut config.cs).unwrap();
+                defmt::unwrap!(ExclusiveDevice::new_no_delay(&mut config.spi, &mut config.cs).ok());
             let mut drv = Drv8301::new(spi_device);
             drv.reset_gate_faults().map_err(|_| ())
         } else {

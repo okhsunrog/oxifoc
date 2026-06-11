@@ -152,9 +152,8 @@ budget to 13.9% — it was unusable on hardware before this.
   flash-size related — rules for new code, measurement workflow
   (`just size`), measured reserves (detection gate −14.7 KB, etc.),
   dead ends — now lives in [flash-size.md](flash-size.md).
-- [ ] F405/G474 still use plain `unwrap` and no dep defmt features —
-  port the g431 treatment from [flash-size.md](flash-size.md) when
-  convenient (no flash pressure there: 30% / 60% used).
+- [x] F405/G474 defmt treatment ported 2026-06-11 (`defmt::unwrap!`
+  everywhere + dep defmt features): f405 −1 044 B, g474 −1 024 B.
 - [ ] f405/g474 build with `opt-level = 3`, g431 with `"z"` (flash
   pressure). Intentional, but unmeasured: check what `"z"` would cost
   f405/g474 in ISR time, or whether it matters at all at 20 kHz.

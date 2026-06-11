@@ -59,8 +59,8 @@ async fn main(spawner: Spawner) {
     // ========== STEP 2: Initialize LEDs ==========
     let green_led = hardware::peripherals::init_green_led(p.PB0);
     let red_led = hardware::peripherals::init_red_led(p.PB1);
-    spawner.spawn(heartbeat(green_led).unwrap());
-    spawner.spawn(fault_led(red_led).unwrap());
+    spawner.spawn(defmt::unwrap!(heartbeat(green_led)));
+    spawner.spawn(defmt::unwrap!(fault_led(red_led)));
 
     // ========== STEP 3: Initialize RNG + Ergot Router Stack ==========
     let rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
@@ -77,33 +77,33 @@ async fn main(spawner: Spawner) {
         transport::init_uart(stack, r.uart.usart3, r.uart.pb10, r.uart.pb11);
 
     // ========== STEP 7: Spawn Transport and Protocol Tasks ==========
-    spawner.spawn(protocol::servers::usb_task(usb_transport.usb_dev).unwrap());
-    spawner.spawn(
-        protocol::servers::run_usb_rx(
-            usb_transport.rx_worker,
-            protocol::USB_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-        )
-        .unwrap(),
-    );
-    spawner.spawn(
-        protocol::servers::run_usb_tx(usb_transport.ep_in, transport::USB_OUTQ.framed_consumer())
-            .unwrap(),
-    );
-    spawner.spawn(
-        protocol::servers::run_uart_rx(
-            uart_transport.rx_worker,
-            protocol::UART_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-            protocol::UART_SCRATCH_BUF.init_with(|| [0u8; 64]),
-        )
-        .unwrap(),
-    );
-    spawner.spawn(protocol::servers::run_uart_tx(uart_transport.tx, stack, uart_ident).unwrap());
+    spawner.spawn(defmt::unwrap!(protocol::servers::usb_task(
+        usb_transport.usb_dev
+    )));
+    spawner.spawn(defmt::unwrap!(protocol::servers::run_usb_rx(
+        usb_transport.rx_worker,
+        protocol::USB_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+    )));
+    spawner.spawn(defmt::unwrap!(protocol::servers::run_usb_tx(
+        usb_transport.ep_in,
+        transport::USB_OUTQ.framed_consumer()
+    )));
+    spawner.spawn(defmt::unwrap!(protocol::servers::run_uart_rx(
+        uart_transport.rx_worker,
+        protocol::UART_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+        protocol::UART_SCRATCH_BUF.init_with(|| [0u8; 64]),
+    )));
+    spawner.spawn(defmt::unwrap!(protocol::servers::run_uart_tx(
+        uart_transport.tx,
+        stack,
+        uart_ident
+    )));
     protocol::servers::spawn_servers(&spawner, stack, usb_ident, uart_ident, defmt_consumer);
 
     // ========== STEP 8: Initialize Persistent Storage ==========
     let flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH);
     let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
-    spawner.spawn(storage::storage_worker(flash).unwrap());
+    spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
     let runtime_config = storage::CONFIG_LOADED.wait().await;
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
     defmt::info!("Config loaded from flash");
@@ -127,7 +127,9 @@ async fn main(spawner: Spawner) {
     }
 
     hardware::drv8301::enable_gate_driver();
-    spawner.spawn(hardware::drv8301::nfault_monitor_task(nfault).unwrap());
+    spawner.spawn(defmt::unwrap!(hardware::drv8301::nfault_monitor_task(
+        nfault
+    )));
 
     // ========== STEP 10: Initialize Hall Sensor ==========
     sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8, p.TIM3);

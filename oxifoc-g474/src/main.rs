@@ -83,7 +83,7 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 7: Initialize Persistent Storage ==========
     let flash = embassy_stm32::flash::Flash::new(r.storage.flash, FlashIrqs);
-    spawner.spawn(storage::storage_worker(flash).unwrap());
+    spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
     let runtime_config = storage::CONFIG_LOADED.wait().await;
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
     defmt::info!("Config loaded from flash");
@@ -91,29 +91,29 @@ async fn main(spawner: Spawner) {
     // ========== STEP 8: Spawn Transport and Protocol Tasks ==========
 
     // Spawn USB tasks
-    spawner.spawn(protocol::servers::usb_task(usb_transport.usb_dev).unwrap());
-    spawner.spawn(
-        protocol::servers::run_usb_rx(
-            usb_transport.rx_worker,
-            protocol::USB_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-        )
-        .unwrap(),
-    );
-    spawner.spawn(
-        protocol::servers::run_usb_tx(usb_transport.ep_in, transport::USB_OUTQ.framed_consumer())
-            .unwrap(),
-    );
+    spawner.spawn(defmt::unwrap!(protocol::servers::usb_task(
+        usb_transport.usb_dev
+    )));
+    spawner.spawn(defmt::unwrap!(protocol::servers::run_usb_rx(
+        usb_transport.rx_worker,
+        protocol::USB_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+    )));
+    spawner.spawn(defmt::unwrap!(protocol::servers::run_usb_tx(
+        usb_transport.ep_in,
+        transport::USB_OUTQ.framed_consumer()
+    )));
 
     // Spawn UART tasks
-    spawner.spawn(
-        protocol::servers::run_uart_rx(
-            uart_transport.rx_worker,
-            protocol::UART_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-            protocol::UART_SCRATCH_BUF.init_with(|| [0u8; 64]),
-        )
-        .unwrap(),
-    );
-    spawner.spawn(protocol::servers::run_uart_tx(uart_transport.tx, stack, uart_ident).unwrap());
+    spawner.spawn(defmt::unwrap!(protocol::servers::run_uart_rx(
+        uart_transport.rx_worker,
+        protocol::UART_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+        protocol::UART_SCRATCH_BUF.init_with(|| [0u8; 64]),
+    )));
+    spawner.spawn(defmt::unwrap!(protocol::servers::run_uart_tx(
+        uart_transport.tx,
+        stack,
+        uart_ident
+    )));
 
     // Spawn protocol servers
     protocol::servers::spawn_servers(&spawner, stack, usb_ident, uart_ident);
