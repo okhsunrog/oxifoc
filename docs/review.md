@@ -99,6 +99,101 @@ wrapping_sub dt, icd doc-rot) исправлены 2026-06-11 (третья се
 
 ---
 
+## 1bis. ПОВТОРНОЕ ПОЛНОЕ РЕВЬЮ 2026-06-11 (четвёртая сессия, вручную)
+
+_Прочитано целиком: foc_driver, failsafe, velocity, state, manager, observer,
+controller, pi_controller, hall_sensor, hall_embassy, fault, capture_timebase,
+current_sense, streaming, detect, storage(types), svpwm(ядро); платы: g431
+(main/foc/protocol/motor/sensors/safety/baked), f405 (control/foc, motor,
+safety, link-монитор), g474 (sensors/hall, link-монитор; control спит).
+Не перечитывалось (ревьюилось ранее / низкий риск): transforms, trig,
+six_step, config, hall_calibration, detection/*, transport-glue, f405
+hardware/peripherals._
+
+### HIGH
+
+- **g431+f405: легаси `SetMode(Stopped)` при падении линка отменяет
+  ControlledStop-failsafe.** `g431/protocol.rs:215-219`,
+  `f405/protocol/servers.rs:185-189`: state_monitor при link-down шлёт
+  best-effort Stopped («authoritative failsafe is link_active» — коммент из
+  эпохи жёсткого стопа). Сценарий на доске: пульт умер → deadman (150 мс)
+  армирует ControlledStop → доска тормозит → через 1 с transport-liveness
+  роняет линк → state_monitor кладёт Stopped в CMD_CHANNEL → ISR применяет:
+  `set_mode(Stopped)` **сбрасывает failsafe_ctrl И защёлку** → PWM off,
+  доска переходит в накат на скорости. Защёлка тоже мертва: её снял сам
+  девайс, а не «throttle to neutral» хоста. g474 чист (шлёт только
+  set_link_inactive). Фикс: удалить try_send на обеих платах — ISR-гейт
+  по link_active самодостаточен.
+- **`FailsafeConfig::is_sane` пропускает `brake_current_a = 0` →
+  RampDown зависает навсегда с последним током.** `failsafe.rs:209-221`:
+  `slew = (0 / ramp_s)·dt = 0`, `ramp_toward` не двигает iq, условие выхода
+  `iq.abs() <= max(slew,1e-3)` не наступает ⇒ failsafe вечно выдаёт
+  `Drive{последний iq}` — ровно то, от чего должен защищать. Деактивировать
+  его некому: deadman подавлен (`is_active`), link-гейт идемпотентен.
+  Требует записи кривого конфига хостом (0 проходит `>= 0.0`). Фикс:
+  `brake_current_a > 0.0` в is_sane + (ремень) таймаут на RampDown;
+  заодно гард `current_iq.is_finite()` в `arm()` (NaN зацикливает так же).
+
+### MEDIUM
+
+- **Fault-стоп и Err из `step()` не синхронизируют shared state;
+  `set_error()` мёртв.** `state.rs::run_foc_cycle`: fault-гейт (514-523) и
+  Err-ветка (549-558) переводят драйвер в Stopped, но `state_mutex` остаётся
+  `Running(старый mode)` навсегда: телеметрия врёт хосту, motor-running гейт
+  config-сервера вечно отвечает Busy (storage-профиль). `MotorState::Error`
+  не выставляется нигде в продакшен-коде — ветка clear_error в
+  process_commands полумертва (защиту несёт `any_critical()`). Фикс:
+  fault-гейт → `state.set_error()`, Err-ветка → `state.set_stopped()`.
+- **Внутренний overcurrent-трип драйвера не попадает в fault registry.**
+  `step_current_control` при превышении dq-магнитуды глушит PWM и возвращает
+  Err — но фолт не латчится (check_current_faults бежит только по Ok-телеметрии,
+  а пер-фазный порог ≠ dq-порог). Хост не узнаёт причину, Error-латча нет,
+  рестарт разрешён немедленно. Фикс: типизированный StepError и регистрация
+  OverCurrent в Err-ветке run_foc_cycle.
+- **`ControlMode::Brake` не читает токи.** `foc_driver.rs:660-673`: при
+  закороченных обмотках ток реально течёт (low-side ON ⇒ шунты видят его, ADC
+  продолжает триггериться), но шаг возвращает `FocOutput::default()` —
+  ноль программной overcurrent-защиты (остаются только HW-компараторы),
+  эстиматоры кормятся нулями (наблюдатель теряет ротор), телеметрия слепа.
+  Доска, покатившаяся под уклон в Brake, не мониторится. Фикс: читать токи
+  (как six_step), гнать αβ-магнитуду через is_overcurrent + кормить
+  update_phase реальными i при v=0.
+- **Hall-эстиматор не знает начальный сектор до первого edge.** GPIO IDR
+  видит состояние холлов с boot, но `update_hall_edge` зовётся только из
+  capture-ISR ⇒ до первого фронта `sample()=None` → fallback →
+  **open-loop override ±52 rad/s с моментом** (Hall-источник
+  `angle_trustworthy=true`, iq не гейтится) на каждом холодном старте
+  сенсорной доски, пока ротор не провернётся на edge. Фикс: на init_hall
+  посеять `update_hall_edge(read_hall_idr(), now_ticks())` (бонус: обрыв
+  кабеля (0b111) виден сразу на boot через invalid-state путь).
+
+### LOW
+
+- `staleness_timeout_ms` не ограничен сверху — хост может записать
+  4·10⁹ мс и фактически выключить deadman, формально пройдя is_sane.
+  Кламп (напр. ≤ 5000 мс) в is_sane/from_stored.
+- `enter_brake_ramp` при уже активном failsafe — no-op (arm идемпотентен):
+  пользовательский Brake не обновляет terminal (останется HighZ из
+  конфига). Косметика поведения.
+- `detect_server` брекетинг `try_send(Stopped)` — best-effort на полном
+  канале молча теряется; в async-контексте можно `send().await`
+  (консистентно с config-сервером).
+- g474 `control/` закомментирован — известный пункт §5.3 (вынос ISR-glue
+  в core до оживления; при оживлении не забыть NVIC prio 0 + IWDG feed +
+  break-детект, которых в спящем файле нет).
+
+### Чистые (прочитано, замечаний нет)
+
+failsafe-машина состояний (кроме is_sane выше), velocity loop,
+capture_timebase (гонки выписаны и протестированы), pi_controller,
+current_sense, fault registry, streaming (ISR-путь lock-free, дроп при
+переполнении корректен), detect-dedup (id+payload), safety.rs обеих плат
+(BDTR.modify легален — rw-регистр; HardFault выше всех приоритетов),
+observer/HFI (полярность, probe, seed-пути согласованы),
+hall rate-limiter/drift-коррекция.
+
+---
+
 ## 2. Подозрение (нужен стенд)
 
 - **F405: ADC injected-триггер срабатывает дважды за период PWM.** [агент,
@@ -239,15 +334,16 @@ wrapping_sub dt, icd doc-rot) исправлены 2026-06-11 (третья се
 3. **MC_DURATION fault:** дешёвый прямой детект перерасхода бюджета FOC-цикла (контур не уложился в период PWM → fault) (`mc_tasks_foc.c:655-658`).
 4. Компенсация задержки Park/inverse-Park скоростью в dpp × фактор (фиксированная точка, `mc_tasks_foc.c:719,740`).
 
-## 5. Приоритеты (сводно, обновлено 2026-06-11 после третьей сессии)
+## 5. Приоритеты (сводно, обновлено 2026-06-11 после четвёртой сессии)
 
-Code-only мелочи (бывший пункт 1) закрыты в третьей сессии (см. §0; один
-пункт — hall staleness backstop — аргументированный won't-fix). Остаток:
-
-1. **Стенд (§2 + хвосты):** ADC double-trigger (обе платы); pipeline-skew
+1. **Находки повторного ревью (§1bis):** 2 HIGH (легаси-Stopped убивает
+   failsafe; brake_current_a=0 вешает RampDown) + 4 MEDIUM (state-рассинхрон
+   на fault/Err; внутренний OC-трип без фолта; Brake слеп по токам;
+   hall-сектор не посеян на boot) + 4 LOW.
+2. **Стенд (§2 + хвосты):** ADC double-trigger (обе платы); pipeline-skew
    индуктивности; spin-down по фазным делителям; интегрирующий
    current/voltage детектор; bench-тюнинг failsafe/velocity/brake.
-2. **Алгоритмы (дёшево→дорого):** position loop → graduated derating →
+3. **Алгоритмы (дёшево→дорого):** position loop → graduated derating →
    FW V2 (MESC) → MTPA.
-3. **Архитектура:** вынос ISR-glue в core до оживления g474; fault-injection
+4. **Архитектура:** вынос ISR-glue в core до оживления g474; fault-injection
    в oxifoc-virtual; protocol_version в HardwareInfo; bridge/remote.
