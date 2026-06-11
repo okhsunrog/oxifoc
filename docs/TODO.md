@@ -74,8 +74,9 @@ loop must not change speed significantly within one edge interval —
 aggressive kp/ki produce a ±100 rad/s limit cycle around the target. Defaults
 are deliberately soft (kp 0.01, ki 0.2, accel 500 erad/s²).
 
-- [ ] Persist `VelocityLoopConfig` (new `ConfigKey`/`ConfigWrite` group like
-  Failsafe) + GUI tuning panel; until then it's runtime-only via the command.
+- [x] Persist `VelocityLoopConfig` (2026-06-11): `ConfigKey::Velocity` (10),
+  full read/write/live-apply plumbing, applied at boot on all boards; GUI
+  config panel got both a Velocity Loop and a Failsafe group.
 - [ ] Velocity loop refuses an untrustworthy angle source (`step` errors →
   driver stops). Decide the sensorless story: cruise on observer is fine
   above its floor; near the floor it should degrade (drop to torque-neutral

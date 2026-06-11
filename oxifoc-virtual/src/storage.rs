@@ -42,6 +42,7 @@ pub async fn storage_worker() {
                     ConfigPayload::PiGains(v) => storage.store_item(&mut buf, &key, &v).await,
                     ConfigPayload::HallTuning(v) => storage.store_item(&mut buf, &key, &v).await,
                     ConfigPayload::Failsafe(v) => storage.store_item(&mut buf, &key, &v).await,
+                    ConfigPayload::Velocity(v) => storage.store_item(&mut buf, &key, &v).await,
                 };
                 match result {
                     Ok(_) => true,
@@ -88,6 +89,8 @@ async fn load_all(storage: &mut Storage, buf: &mut [u8]) -> RuntimeConfig {
     load!(pwm_config, PwmConfig, PwmConfigStored);
     load!(pi_gains, PiGains, PiGainsConfig);
     load!(hall_tuning, HallTuning, HallTuningConfig);
+    load!(failsafe, Failsafe, FailsafeConfigStored);
+    load!(velocity, Velocity, VelocityConfigStored);
 
     cfg
 }

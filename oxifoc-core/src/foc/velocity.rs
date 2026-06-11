@@ -104,6 +104,27 @@ impl Default for VelocityLoopConfig {
 }
 
 impl VelocityLoopConfig {
+    /// Build from the stored (host-writable) form. A missing or non-sane
+    /// stored value falls back to [`Default`].
+    #[cfg(feature = "storage")]
+    pub fn from_stored(cfg: Option<&crate::storage::VelocityConfigStored>) -> Self {
+        match cfg {
+            Some(c) => {
+                let candidate = Self {
+                    kp: c.kp,
+                    ki: c.ki,
+                    accel_limit: c.accel_limit,
+                };
+                if candidate.is_sane() {
+                    candidate
+                } else {
+                    Self::default()
+                }
+            }
+            None => Self::default(),
+        }
+    }
+
     /// All fields finite, gains non-negative, at least one gain positive.
     pub fn is_sane(&self) -> bool {
         self.kp.is_finite()
@@ -296,6 +317,30 @@ mod tests {
         // First cycle with ω_meas == ramp seed: zero error, ~zero output.
         let iq = vl.step(250.0, 250.0, 40.0, DT);
         assert!(iq.abs() < 0.1, "bumpless entry, got iq {iq}");
+    }
+
+    #[test]
+    #[cfg(feature = "storage")]
+    fn from_stored_maps_and_falls_back() {
+        use crate::storage::VelocityConfigStored;
+        // Stored default mirrors the runtime default.
+        assert_eq!(
+            VelocityLoopConfig::from_stored(Some(&VelocityConfigStored::default())),
+            VelocityLoopConfig::default()
+        );
+        // Missing or non-sane → default.
+        assert_eq!(
+            VelocityLoopConfig::from_stored(None),
+            VelocityLoopConfig::default()
+        );
+        let bad = VelocityConfigStored {
+            kp: f32::NAN,
+            ..VelocityConfigStored::default()
+        };
+        assert_eq!(
+            VelocityLoopConfig::from_stored(Some(&bad)),
+            VelocityLoopConfig::default()
+        );
     }
 
     #[test]

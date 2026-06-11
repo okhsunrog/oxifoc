@@ -967,6 +967,8 @@ pub fn main() {
                 1 => ConfigGroupId::CurrentLimits,
                 2 => ConfigGroupId::VoltageLimits,
                 3 => ConfigGroupId::PiGains,
+                4 => ConfigGroupId::Velocity,
+                5 => ConfigGroupId::Failsafe,
                 _ => return,
             };
 
@@ -1034,6 +1036,48 @@ pub fn main() {
                                     app.set_cfg_bandwidth(SharedString::from(format!(
                                         "{}",
                                         g.bandwidth_rad_s
+                                    )));
+                                }
+                                ConfigResponse::Velocity(v) => {
+                                    app.set_cfg_vel_kp(SharedString::from(format!("{}", v.kp)));
+                                    app.set_cfg_vel_ki(SharedString::from(format!("{}", v.ki)));
+                                    app.set_cfg_vel_accel(SharedString::from(format!(
+                                        "{}",
+                                        v.accel_limit
+                                    )));
+                                }
+                                ConfigResponse::Failsafe(f) => {
+                                    app.set_cfg_fs_staleness(SharedString::from(format!(
+                                        "{}",
+                                        f.staleness_timeout_ms
+                                    )));
+                                    app.set_cfg_fs_policy(SharedString::from(format!(
+                                        "{}",
+                                        f.policy
+                                    )));
+                                    app.set_cfg_fs_brake_current(SharedString::from(format!(
+                                        "{}",
+                                        f.brake_current_a
+                                    )));
+                                    app.set_cfg_fs_ramp(SharedString::from(format!(
+                                        "{}",
+                                        f.ramp_ms
+                                    )));
+                                    app.set_cfg_fs_brake_time(SharedString::from(format!(
+                                        "{}",
+                                        f.brake_time_ms
+                                    )));
+                                    app.set_cfg_fs_standstill(SharedString::from(format!(
+                                        "{}",
+                                        f.standstill_rad_s
+                                    )));
+                                    app.set_cfg_fs_decel(SharedString::from(format!(
+                                        "{}",
+                                        f.decel_rad_s2
+                                    )));
+                                    app.set_cfg_fs_terminal(SharedString::from(format!(
+                                        "{}",
+                                        f.terminal
                                     )));
                                 }
                                 ConfigResponse::NotFound => {
@@ -1115,6 +1159,39 @@ pub fn main() {
                         kp,
                         ki,
                         bandwidth_rad_s: bw,
+                    })
+                }
+                4 => {
+                    let kp: f32 = parse_field("velocity kp", &app.get_cfg_vel_kp(), err);
+                    let ki: f32 = parse_field("velocity ki", &app.get_cfg_vel_ki(), err);
+                    let accel: f32 = parse_field("accel limit", &app.get_cfg_vel_accel(), err);
+                    ConfigWrite::Velocity(VelocityConfigStored {
+                        kp,
+                        ki,
+                        accel_limit: accel,
+                    })
+                }
+                5 => {
+                    let staleness: u32 = parse_field("staleness", &app.get_cfg_fs_staleness(), err);
+                    let policy: u8 = parse_field("policy", &app.get_cfg_fs_policy(), err);
+                    let brake: f32 =
+                        parse_field("brake current", &app.get_cfg_fs_brake_current(), err);
+                    let ramp: f32 = parse_field("ramp", &app.get_cfg_fs_ramp(), err);
+                    let brake_time: f32 =
+                        parse_field("brake time", &app.get_cfg_fs_brake_time(), err);
+                    let standstill: f32 =
+                        parse_field("standstill", &app.get_cfg_fs_standstill(), err);
+                    let decel: f32 = parse_field("decel", &app.get_cfg_fs_decel(), err);
+                    let terminal: u8 = parse_field("terminal", &app.get_cfg_fs_terminal(), err);
+                    ConfigWrite::Failsafe(FailsafeConfigStored {
+                        staleness_timeout_ms: staleness,
+                        policy,
+                        brake_current_a: brake,
+                        ramp_ms: ramp,
+                        brake_time_ms: brake_time,
+                        standstill_rad_s: standstill,
+                        decel_rad_s2: decel,
+                        terminal,
                     })
                 }
                 _ => return,

@@ -511,6 +511,7 @@ mod config_types {
         PiGains,
         HallTuning,
         Failsafe,
+        Velocity,
     }
 
     /// Config write payload — one variant per group
@@ -529,6 +530,8 @@ mod config_types {
         DcOffsets(crate::storage::DcOffsetsConfig),
         /// Command-staleness deadman + failsafe policy
         Failsafe(crate::storage::FailsafeConfigStored),
+        /// Cruise velocity-loop tuning
+        Velocity(crate::storage::VelocityConfigStored),
     }
 
     /// Configuration response
@@ -555,6 +558,8 @@ mod config_types {
         DcOffsets(crate::storage::DcOffsetsConfig),
         /// Failsafe (deadman + policy)
         Failsafe(crate::storage::FailsafeConfigStored),
+        /// Cruise velocity-loop tuning
+        Velocity(crate::storage::VelocityConfigStored),
         /// Requested group has no stored value
         NotFound,
         /// Flash operation failed

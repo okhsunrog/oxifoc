@@ -42,6 +42,8 @@ pub enum ConfigKey {
     HallTuning = 8,
     /// Command-staleness deadman + failsafe policy
     Failsafe = 9,
+    /// Cruise velocity-loop tuning
+    Velocity = 10,
 }
 
 impl Key for ConfigKey {
@@ -67,6 +69,7 @@ impl Key for ConfigKey {
             7 => Self::PiGains,
             8 => Self::HallTuning,
             9 => Self::Failsafe,
+            10 => Self::Velocity,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -305,6 +308,33 @@ pub struct FailsafeConfigStored {
 
 impl PostcardValue<'_> for FailsafeConfigStored {}
 
+/// Cruise velocity-loop tuning (see [`crate::foc::velocity`]); mirrors
+/// `VelocityLoopConfig` field-for-field. The driver decodes via
+/// `VelocityLoopConfig::from_stored` (sane-checked, falls back to default).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct VelocityConfigStored {
+    /// Proportional gain, A per (electrical rad/s).
+    pub kp: f32,
+    /// Integral gain, A per (electrical rad/s · s).
+    pub ki: f32,
+    /// Reference accel/decel ramp limit (electrical rad/s²).
+    pub accel_limit: f32,
+}
+
+impl PostcardValue<'_> for VelocityConfigStored {}
+
+impl Default for VelocityConfigStored {
+    /// Mirrors `VelocityLoopConfig::default` (soft, hall-edge-rate safe).
+    fn default() -> Self {
+        Self {
+            kp: 0.01,
+            ki: 0.2,
+            accel_limit: 500.0,
+        }
+    }
+}
+
 impl Default for FailsafeConfigStored {
     /// Longboard default: brake to a controlled stop on link loss, then hold
     /// the parking brake (mirrors `FailsafeConfig::default`).
@@ -340,6 +370,7 @@ pub struct RuntimeConfig {
     pub pi_gains: Option<PiGainsConfig>,
     pub hall_tuning: Option<HallTuningConfig>,
     pub failsafe: Option<FailsafeConfigStored>,
+    pub velocity: Option<VelocityConfigStored>,
 }
 
 // ============================================================================
@@ -369,6 +400,7 @@ pub enum ConfigPayload {
     PiGains(PiGainsConfig),
     HallTuning(HallTuningConfig),
     Failsafe(FailsafeConfigStored),
+    Velocity(VelocityConfigStored),
 }
 
 // ============================================================================
@@ -438,6 +470,7 @@ where
                     ConfigPayload::PiGains(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::HallTuning(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::Failsafe(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::Velocity(v) => storage.store_item(buf, &key, &v).await,
                 };
                 if result.is_err() {
                     #[cfg(feature = "defmt")]
@@ -493,6 +526,7 @@ where
     load!(pi_gains, PiGains);
     load!(hall_tuning, HallTuning);
     load!(failsafe, Failsafe);
+    load!(velocity, Velocity);
 
     cfg
 }

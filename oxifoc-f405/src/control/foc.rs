@@ -135,6 +135,11 @@ pub async fn init(
     ));
     foc_driver.set_ov_threshold(BOARD.max_vbus_mv as f32 / 1000.0);
 
+    // Cruise velocity-loop tuning from stored config (or soft defaults).
+    foc_driver.set_velocity_config(oxifoc_core::foc::velocity::VelocityLoopConfig::from_stored(
+        config.velocity.as_ref(),
+    ));
+
     // Allow ADC injected conversions to start firing before zero-current calibration.
     Timer::after(Duration::from_millis(10)).await;
     foc_driver.current_sensor_mut().calibrate().await;

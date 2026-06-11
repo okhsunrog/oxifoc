@@ -246,6 +246,10 @@ pub async fn config_server<NS, const N: usize>(
                                     Some(v) => ConfigResponse::Failsafe(v),
                                     None => ConfigResponse::NotFound,
                                 },
+                                ConfigGroupId::Velocity => match cfg.velocity {
+                                    Some(v) => ConfigResponse::Velocity(v),
+                                    None => ConfigResponse::NotFound,
+                                },
                             }
                         }
                         ConfigRequest::Write(_) | ConfigRequest::ResetAll if motor_running => {
@@ -280,6 +284,9 @@ pub async fn config_server<NS, const N: usize>(
                                 }
                                 ConfigWrite::Failsafe(v) => {
                                     (ConfigKey::Failsafe, ConfigPayload::Failsafe(v))
+                                }
+                                ConfigWrite::Velocity(v) => {
+                                    (ConfigKey::Velocity, ConfigPayload::Velocity(v))
                                 }
                             };
                             // TOCTOU guard: arm the pending flag, then
@@ -339,6 +346,7 @@ pub async fn config_server<NS, const N: usize>(
                                         cfg.dc_offsets = Some(v.clone())
                                     }
                                     ConfigWrite::Failsafe(v) => cfg.failsafe = Some(v.clone()),
+                                    ConfigWrite::Velocity(v) => cfg.velocity = Some(v.clone()),
                                 }
                             });
                             // Make the write take effect on the live driver,
@@ -389,6 +397,16 @@ pub async fn config_server<NS, const N: usize>(
                                                 lq_h: v.inductance_q_h,
                                                 flux_linkage_wb: v.flux_linkage_wb,
                                             },
+                                        ),
+                                    );
+                                }
+                                // Cruise velocity-loop tuning applies live.
+                                ConfigWrite::Velocity(v) => {
+                                    let _ = CMD_CHANNEL.try_send(
+                                        crate::state::DriverCommand::SetVelocityConfig(
+                                            crate::foc::velocity::VelocityLoopConfig::from_stored(
+                                                Some(&v),
+                                            ),
                                         ),
                                     );
                                 }

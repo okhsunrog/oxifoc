@@ -147,6 +147,19 @@ export component App inherits Window {
     in-out property <string> cfg-kp: "";
     in-out property <string> cfg-ki: "";
     in-out property <string> cfg-bandwidth: "";
+    // Velocity loop
+    in-out property <string> cfg-vel-kp: "";
+    in-out property <string> cfg-vel-ki: "";
+    in-out property <string> cfg-vel-accel: "";
+    // Failsafe
+    in-out property <string> cfg-fs-staleness: "";
+    in-out property <string> cfg-fs-policy: "";
+    in-out property <string> cfg-fs-brake-current: "";
+    in-out property <string> cfg-fs-ramp: "";
+    in-out property <string> cfg-fs-brake-time: "";
+    in-out property <string> cfg-fs-standstill: "";
+    in-out property <string> cfg-fs-decel: "";
+    in-out property <string> cfg-fs-terminal: "";
     callback config-read();
     callback config-write();
 
@@ -701,7 +714,7 @@ export component App inherits Window {
 
                     Text { text: "Config group:"; vertical-alignment: center; }
                     ComboBox {
-                        model: ["Motor Params", "Current Limits", "Voltage Limits", "PI Gains"];
+                        model: ["Motor Params", "Current Limits", "Voltage Limits", "PI Gains", "Velocity Loop", "Failsafe"];
                         current-index <=> root.config-group;
                         min-width: 160px;
                     }
@@ -749,6 +762,33 @@ export component App inherits Window {
                         Text { text: "Ki:"; } LineEdit { text <=> root.cfg-ki; min-width: 120px; }
                     }
                     Row { Text { text: "Bandwidth (rad/s):"; } LineEdit { text <=> root.cfg-bandwidth; min-width: 120px; } }
+                }
+                if root.config-group == 4 : GridLayout {
+                    spacing: 6px;
+                    Row {
+                        Text { text: "Kp (A per rad/s):"; } LineEdit { text <=> root.cfg-vel-kp; min-width: 120px; }
+                        Text { text: "Ki (A per rad):"; } LineEdit { text <=> root.cfg-vel-ki; min-width: 120px; }
+                    }
+                    Row { Text { text: "Accel limit (erad/s²):"; } LineEdit { text <=> root.cfg-vel-accel; min-width: 120px; } }
+                }
+                if root.config-group == 5 : GridLayout {
+                    spacing: 6px;
+                    Row {
+                        Text { text: "Staleness (ms):"; } LineEdit { text <=> root.cfg-fs-staleness; min-width: 120px; }
+                        Text { text: "Policy (0=coast 1=ramp 2=stop):"; } LineEdit { text <=> root.cfg-fs-policy; min-width: 120px; }
+                    }
+                    Row {
+                        Text { text: "Brake current (A):"; } LineEdit { text <=> root.cfg-fs-brake-current; min-width: 120px; }
+                        Text { text: "Ramp (ms):"; } LineEdit { text <=> root.cfg-fs-ramp; min-width: 120px; }
+                    }
+                    Row {
+                        Text { text: "Brake time cap (ms):"; } LineEdit { text <=> root.cfg-fs-brake-time; min-width: 120px; }
+                        Text { text: "Standstill (erad/s):"; } LineEdit { text <=> root.cfg-fs-standstill; min-width: 120px; }
+                    }
+                    Row {
+                        Text { text: "Decel (erad/s²):"; } LineEdit { text <=> root.cfg-fs-decel; min-width: 120px; }
+                        Text { text: "Terminal (0=high-Z 1=brake):"; } LineEdit { text <=> root.cfg-fs-terminal; min-width: 120px; }
+                    }
                 }
 
                 Rectangle { vertical-stretch: 1; }

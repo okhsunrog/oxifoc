@@ -102,6 +102,11 @@ pub async fn init(
     ));
     foc_driver.set_ov_threshold(BOARD.max_vbus_mv as f32 / 1000.0);
 
+    // Cruise velocity-loop tuning from stored config (or soft defaults).
+    foc_driver.set_velocity_config(oxifoc_core::foc::velocity::VelocityLoopConfig::from_stored(
+        config.velocity.as_ref(),
+    ));
+
     // Store ADC handles for ISR access
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc1)));
     ADC2_INJECTED.lock(|cell| cell.replace(Some(adc2)));
