@@ -61,6 +61,13 @@ Failsafe-layer *design* and rationale live in [safety.md](safety.md).
 - [ ] Integrating current/voltage fault detector (replace the single-sample
   trip — nuisance-trips on regen/EMI). [review.md §3] (Signed open-loop
   override done 2026-06-11: direction = sign of last velocity.)
+- [x] **Bus (supply) current limits** (2026-06-11): VESC-style
+  `bus_in_max_a` / `bus_regen_max_a` in `CurrentLimits` (`< 0` = off,
+  regen `0` = lab-PSU safe — no energy into the supply, ControlledStop
+  degrades to coast via no-progress, windings-short Brake unaffected).
+  Clamp in `step_current_control` covers all regen-capable paths. This is
+  the first column of the VESC override matrix — graduated derating
+  (temp/voltage/ERPM writing effective limits) builds on it later.
 - [ ] G474: arm the IWDG when the motor modules (FOC ISR) wake up.
 - [ ] Bench: verify IWDG reset → PWM safe on real hardware (induce a hang).
 - [ ] Boot: reset-reason read + spinning-motor detection + flying-restart sync.
