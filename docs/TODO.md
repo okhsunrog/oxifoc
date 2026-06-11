@@ -58,6 +58,14 @@ Failsafe-layer *design* and rationale live in [safety.md](safety.md).
   unlike the viscous `Brake`), at the cost of battery drain and heat. Cascade:
   position P → shared `VelocityLoop` → current loop. `Brake` stays the
   zero-power default; hold is the opt-in upgrade.
+- [ ] Integrating current/voltage fault detector (replace the single-sample
+  trip — nuisance-trips on regen/EMI); signed open-loop override
+  (direction = sign of last velocity). [review.md §3]
+- [ ] G474: arm the IWDG when the motor modules (FOC ISR) wake up.
+- [ ] Bench: verify IWDG reset → PWM safe on real hardware (induce a hang).
+- [ ] Boot: reset-reason read + spinning-motor detection + flying-restart sync.
+- [ ] Configurable post-watchdog policy (controlled coast / regen / hold).
+- [ ] `Idempotent` marker trait + `call`/`call_once` helpers in host-lib.
 
 ## Velocity control (foundation landed 2026-06-11)
 
@@ -77,10 +85,10 @@ are deliberately soft (kp 0.01, ki 0.2, accel 500 erad/s²).
 - [x] Persist `VelocityLoopConfig` (2026-06-11): `ConfigKey::Velocity` (10),
   full read/write/live-apply plumbing, applied at boot on all boards; GUI
   config panel got both a Velocity Loop and a Failsafe group.
-- [ ] Velocity loop refuses an untrustworthy angle source (`step` errors →
-  driver stops). Decide the sensorless story: cruise on observer is fine
-  above its floor; near the floor it should degrade (drop to torque-neutral
-  / coast) rather than hard-stop.
+- [x] Sensorless degradation (2026-06-11): an untrustworthy angle source in
+  VelocityControl now degrades to zero torque *in the mode* (loop reset for
+  bumpless re-entry) instead of hard-stopping — a sensorless cruise below
+  the observer floor coasts and resumes by itself when lock returns.
 - [ ] Hall-velocity lag dominates the loop bandwidth — consider feeding the
   loop a less laggy estimate (observer velocity when available, or
   hall-with-extrapolation) before chasing tighter gains.
@@ -88,14 +96,6 @@ are deliberately soft (kp 0.01, ki 0.2, accel 500 erad/s²).
   across the hall→observer crossover.
 - [ ] PositionControl: position P → `omega_target` into the same loop
   (cascade); needs an unwrapped position source first.
-- [ ] Integrating current/voltage fault detector (replace the single-sample
-  trip — nuisance-trips on regen/EMI); signed open-loop override
-  (direction = sign of last velocity). [review.md §3]
-- [ ] G474: arm the IWDG when the motor modules (FOC ISR) wake up.
-- [ ] Bench: verify IWDG reset → PWM safe on real hardware (induce a hang).
-- [ ] Boot: reset-reason read + spinning-motor detection + flying-restart sync.
-- [ ] Configurable post-watchdog policy (controlled coast / regen / hold).
-- [ ] `Idempotent` marker trait + `call`/`call_once` helpers in host-lib.
 
 ## Deferred until needed
 
@@ -209,6 +209,13 @@ position (only needed once a position loop exists; keep the no_std
 model f32).
 
 ## Size / performance
+
+**⚠ g431 flash headroom is down to 2 000 B (98%)** after the 2026-06-11
+safety/velocity work (deadman+failsafe, Brake, VelocityLoop, two config
+groups ≈ +6.3 KB). The storage `const_assert` makes overflow a build error,
+not a brick — but the next feature on g431 needs a recovery pass first:
+see [flash-size.md](flash-size.md) (measured reserves: detection gate
+−14.7 KB is the big lever).
 
 Hot-path math reworked 2026-06-11 after on-target benchmarks
 ([perf-bench-2026-06-11.md](perf-bench-2026-06-11.md)): HFI estimator

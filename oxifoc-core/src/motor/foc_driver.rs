@@ -730,9 +730,20 @@ where
         now_ticks: u64,
     ) -> Result<FocOutput, &'static str> {
         // Velocity needs a usable estimate; a source that can't track (e.g.
-        // observer below its floor) makes the loop integrate garbage.
+        // a back-EMF observer below its speed floor) makes the loop
+        // integrate garbage. Degrade to zero torque while staying in the
+        // mode instead of hard-stopping: a sensorless cruise that dips
+        // below the floor coasts, and resumes by itself once motion (push,
+        // downhill) brings the observer back into lock — an Err here would
+        // kick the driver to Stopped and require a fresh host command.
+        // Hall/encoder sources are always trustworthy, so a sensored ride
+        // never takes this branch.
         if !self.phase.angle_trustworthy() {
-            return Err("Velocity control: angle source not trustworthy");
+            // Keep the loop bumpless for re-entry: reference parked at the
+            // (unreliable, but best-known) measured velocity, integrator
+            // cleared — no stale torque step when lock returns.
+            self.velocity_loop.reset(self.phase.get().velocity);
+            return self.step_current_control(0.0, 0.0, dt, now_ticks);
         }
         let omega = self.phase.get().velocity;
         let iq_target =
