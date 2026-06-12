@@ -1,0 +1,200 @@
+//! `detect` subcommand: on-device motor detection orchestration.
+
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+use oxifoc_core::types::{ConfigGroupId, DetectRequest};
+use oxifoc_host_lib::{HostCommand, HostRuntime};
+use serde_json::json;
+
+use crate::config_cli::{self, config_snapshot};
+use crate::record;
+use crate::{DetectStep, emit};
+
+/// Stored motor-params as JSON (defaults when not stored).
+fn motor_params_value(runtime: &HostRuntime) -> Result<serde_json::Value> {
+    let (v, _) = config_cli::current_value(runtime, ConfigGroupId::MotorParams)?;
+    Ok(v)
+}
+
+fn f32_field(v: &serde_json::Value, key: &str) -> f32 {
+    v.get(key)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0) as f32
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_detect(
+    runtime: &HostRuntime,
+    step: DetectStep,
+    max_power_w: f32,
+    resistance: Option<f32>,
+    inductance: Option<f32>,
+    pole_pairs: Option<u8>,
+    erpm: f32,
+    apply: bool,
+    record_out: Option<String>,
+    json: bool,
+) -> Result<()> {
+    use oxifoc_core::types::DetectResponse;
+
+    // Prerequisites come from flags first, stored motor-params second.
+    let stored = motor_params_value(runtime)?;
+    let r = resistance.unwrap_or_else(|| f32_field(&stored, "resistance_ohm"));
+    let l = inductance.unwrap_or_else(|| {
+        (f32_field(&stored, "inductance_d_h") + f32_field(&stored, "inductance_q_h")) / 2.0
+    });
+    let pp = pole_pairs.unwrap_or_else(|| {
+        stored
+            .get("pole_pairs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u8
+    });
+
+    let req = match step {
+        DetectStep::Resistance => DetectRequest::MeasureResistance {
+            max_power_loss_w: max_power_w,
+        },
+        DetectStep::Inductance => {
+            if r <= 0.0 {
+                bail!(
+                    "inductance needs resistance: pass --resistance or run detect resistance --apply first"
+                );
+            }
+            DetectRequest::MeasureInductance {
+                max_power_loss_w: max_power_w,
+                resistance_ohm: r,
+            }
+        }
+        DetectStep::Flux => {
+            if r <= 0.0 || pp == 0 {
+                bail!(
+                    "flux needs resistance and pole pairs: pass --resistance/--pole-pairs \
+                     or store them via detect ... --apply / config set motor-params"
+                );
+            }
+            DetectRequest::MeasureFlux {
+                max_power_loss_w: max_power_w,
+                resistance_ohm: r,
+                inductance_h: l,
+                pole_pairs: pp,
+                openloop_erpm: erpm,
+            }
+        }
+        DetectStep::Hall => DetectRequest::CalibrateHall,
+    };
+
+    if !json {
+        println!("Detection started: {req:?}");
+    }
+
+    // Raw-rate capture around the whole step (M=1: the CIC is the identity,
+    // so the HFI carrier / pulse edges survive — any decimated rate would
+    // null exactly the frequencies detection lives at).
+    let mut cap = match &record_out {
+        Some(_) => {
+            let foc = record::latest_hw_info(runtime)
+                .map(|h| h.foc_freq_hz)
+                .unwrap_or(20_000)
+                .min(u32::from(u16::MAX)) as u16;
+            Some(record::Capture::start(runtime, foc)?)
+        }
+        None => None,
+    };
+
+    let (tx, mut rx) = oxifoc_host_lib::detect_channel();
+    runtime
+        .cmd_tx
+        .send(HostCommand::Detect(req, tx))
+        .context("send detect command")?;
+    // The detect oneshot is async; poll it (no tokio runtime on this
+    // thread). Bounded by a generous deadline (detection can be slow).
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let detect_result: Result<DetectResponse> = loop {
+        if let Ok(res) = rx.try_recv() {
+            break res;
+        }
+        if Instant::now() >= deadline {
+            break Err(anyhow::anyhow!("Detection timed out"));
+        }
+        // While waiting, keep draining telemetry (or just sleep).
+        match &mut cap {
+            Some(c) => c.drain_until(runtime, Instant::now() + Duration::from_millis(100))?,
+            None => std::thread::sleep(Duration::from_millis(100)),
+        }
+    };
+
+    // The capture is written BEFORE the detect outcome is propagated —
+    // dissecting failures is the primary use case.
+    let mut capture_summary = serde_json::Value::Null;
+    if let (Some(mut c), Some(path)) = (cap.take(), record_out.as_ref()) {
+        let _ = c.drain_until(runtime, Instant::now() + Duration::from_millis(200));
+        c.stop(runtime);
+        let outcome = match &detect_result {
+            Ok(r) => serde_json::to_string(r).unwrap_or_default(),
+            Err(e) => serde_json::Value::String(format!("error: {e:#}")).to_string(),
+        };
+        let extra = vec![
+            (
+                "oxifoc.detect_request".to_string(),
+                serde_json::to_string(&req).unwrap_or_default(),
+            ),
+            ("oxifoc.detect_outcome".to_string(), outcome),
+        ];
+        let summary = c.finish(path, &config_snapshot(runtime), &extra)?;
+        if !json || detect_result.is_err() {
+            eprintln!(
+                "capture: {} — {} rows at {} Hz, {} gap(s)",
+                summary.path, summary.rows, summary.fast_hz_actual, summary.gaps
+            );
+        }
+        capture_summary = serde_json::to_value(&summary)?;
+    }
+
+    let resp = detect_result?;
+    if let DetectResponse::Error(e) = resp {
+        bail!("detection failed: {e:?}");
+    }
+
+    let mut applied = serde_json::Value::Null;
+    if apply {
+        use oxifoc_core::types::ConfigGroupId;
+        let (mut mp, _) = config_cli::current_value(runtime, ConfigGroupId::MotorParams)?;
+        let obj = mp.as_object_mut().context("motor-params not an object")?;
+        match resp {
+            DetectResponse::Resistance { resistance_ohm } => {
+                obj.insert("resistance_ohm".into(), json!(resistance_ohm));
+            }
+            DetectResponse::Inductance {
+                inductance_d_h,
+                inductance_q_h,
+            } => {
+                obj.insert("inductance_d_h".into(), json!(inductance_d_h));
+                obj.insert("inductance_q_h".into(), json!(inductance_q_h));
+            }
+            DetectResponse::FluxLinkage {
+                flux_linkage_wb, ..
+            } => {
+                obj.insert("flux_linkage_wb".into(), json!(flux_linkage_wb));
+            }
+            DetectResponse::HallCalibrated | DetectResponse::Error(_) => {}
+        }
+        let write = config_cli::write_from_value(ConfigGroupId::MotorParams, mp.clone())?;
+        config_cli::send_write(runtime, write)?;
+        applied = mp;
+    }
+
+    emit(
+        json,
+        json!({"result": serde_json::to_value(resp)?, "applied": applied, "capture": capture_summary}),
+        format!(
+            "Detect result: {resp:?}{}",
+            if apply {
+                " (applied to motor-params)"
+            } else {
+                ""
+            }
+        ),
+    );
+    Ok(())
+}
