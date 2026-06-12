@@ -202,3 +202,30 @@ their section.
   `observer_prev_voltage_pairing_matches_actuation_delay`. DETECTION
   lacks the same discipline at the needed depth — pipeline-skew confirmed
   critical (TODO.md; bench L untrusted until the fix).
+- **2026-06-12 — pipeline-skew fix: measure the latency, don't assume it.**
+  The HFI demod paired currents with the injection at a hard-coded depth
+  of one cycle; a one-cycle actuation pipeline makes the true depth two
+  (90° of carrier phase at 5 kHz/20 kHz) and corrupted L by +1000%+ while
+  looking plausible. Now: (1) `probe_hfi_pipeline_lag` cross-correlates
+  the current response against carrier references at lags 1–4 before
+  every HFI run — the discrete response phase sits at the period CENTER
+  (`−cos(φ + ω_c·dt/2)`), so the score projects onto the half-step-rotated
+  reference (raw −cos splits 45°/45° between adjacent bins and cannot
+  discriminate); (2) `hfi_collect` pairs through an explicit command
+  history ring (`record()`'s pairing contract is now documented);
+  (3) the probe's |Z| magnitude (`L = √((A/|i|)² − R²)/ω_c`, invariant
+  under pairing rotation) cross-checks the phase-sensitive demod — gross
+  mismatch → LowConfidence → pulse fallback; the probe runs even when the
+  lag is overridden, an override must not disable the safety net (a test
+  caught exactly that); (4) the pulse fallback self-aligns by scanning
+  for the application edge instead of assuming a one-period window;
+  (5) the harness mirrors the firmware's actuation advance SCALED TO THE
+  PLANT'S pipeline depth — mirroring the firmware's fixed 1.0 on the
+  ideal (zero-pipeline) plant rotated the frame itself and biased the
+  flux vector method by |v|·ω·dt cross-terms (gimbal λ −5.8%).
+  Regression net: the report's non-ideal table now runs WITH
+  `actuation_delay_steps: 1` (10/10 green), plus
+  `run_full_detection_nonideal_plant_with_delay` and
+  `hfi_mispairing_caught_by_magnitude_cross_check`. Bench L is
+  trustworthy once the hardware lag lands within the probe's 1–4 range —
+  the probed value gets logged for the bench protocol.

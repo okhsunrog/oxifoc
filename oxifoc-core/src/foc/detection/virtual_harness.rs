@@ -46,6 +46,8 @@ struct SimState {
     mode: ControlMode,
     sim_angle: f32,
     ol_omega: f32,
+    /// Plant actuation pipeline depth (cycles) — drives the advance mirror.
+    pipeline_steps: f32,
 }
 
 impl SimState {
@@ -68,6 +70,7 @@ impl SimState {
             mode: ControlMode::Stopped,
             sim_angle: 0.0,
             ol_omega: 0.0,
+            pipeline_steps: motor_params.actuation_delay_steps as f32,
         }
     }
 
@@ -90,6 +93,14 @@ impl SimState {
                 } else {
                     (0.0, current)
                 };
+                // Mirror FocDriver::step_open_loop's actuation-frame
+                // advance, scaled to the PLANT's actual pipeline depth:
+                // firmware uses 1.0 cycle because its pipeline is one
+                // cycle; the ideal plant applies in the same step (depth
+                // 0 — advancing there would itself rotate the frame and
+                // bias the flux vector method by |v|·ω·dt cross-terms).
+                self.foc
+                    .set_actuation_advance(self.ol_omega * DT * self.pipeline_steps);
                 self.foc.step(
                     (self.out.ia, self.out.ib, self.out.ic),
                     self.sim_angle,

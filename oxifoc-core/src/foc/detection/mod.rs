@@ -265,20 +265,18 @@ mod integration_tests {
         );
         let mut measurement = InductanceMeasurement::<LibmSinCos>::new(&ind_params, PWM_FREQ);
 
-        let mut prev_v_a = 0.0f32;
-        let mut prev_v_b = 0.0f32;
-
         while !measurement.is_complete() {
             let injection_angle = injector.injection_angle();
             let (v_inj_a, v_inj_b) = injector.step(DT);
 
-            // Apply holding voltage + HFI injection
+            // Apply holding voltage + HFI injection — the plant integrates
+            // this voltage in the SAME step (zero pipeline), so the di seen
+            // by record() is driven by exactly this command: pass it as-is
+            // (record's pairing contract).
             let out = motor.step(hold_v + v_inj_a, v_inj_b, 0.0, DT);
 
             let (i_alpha, i_beta) = transforms::clarke(out.ia, out.ib);
-            measurement.record(i_alpha, i_beta, injection_angle, prev_v_a, prev_v_b);
-            prev_v_a = v_inj_a;
-            prev_v_b = v_inj_b;
+            measurement.record(i_alpha, i_beta, injection_angle, v_inj_a, v_inj_b);
         }
 
         let result = measurement.finish().unwrap();
@@ -465,5 +463,112 @@ mod integration_tests {
         let lam_err =
             (result.params.flux_linkage_wb - motor_params.lambda).abs() / motor_params.lambda;
         assert!(lam_err < 0.02, "λ error {:.1}%", lam_err * 100.0);
+    }
+
+    /// THE pipeline-skew regression: same adversarial low-R motor, same
+    /// non-idealities, plus a one-cycle actuation pipeline. Before the fix
+    /// the L step failed at +1000% (the demod paired currents with the
+    /// injection one cycle off = 90° of carrier phase); now the lag probe
+    /// measures the depth in place, the history ring pairs explicitly and
+    /// the |Z| cross-check guards the result.
+    #[test]
+    fn run_full_detection_nonideal_plant_with_delay() {
+        use super::sweep::DetectionParams;
+        use super::types::MotorSize;
+        use super::virtual_harness::run_detection;
+
+        const VBUS: f32 = 48.0;
+        const ADC_LSB_A: f32 = 62.0 / 4096.0;
+        let motor_params = MotorParams {
+            r: 0.035,
+            ld: 1.5e-5,
+            lq: 1.5e-5,
+            lambda: 0.0085,
+            pole_pairs: 7,
+            j: 1e-3,
+            friction_b: 1e-3,
+            substeps: 10,
+            dead_time_v: 300e-9 * 20_000.0 * VBUS,
+            adc_lsb_a: ADC_LSB_A,
+            adc_noise_a: ADC_LSB_A,
+            actuation_delay_steps: 1,
+            ..MotorParams::default()
+        };
+
+        let det_params = DetectionParams {
+            motor_size: MotorSize::Medium,
+            pole_pairs: motor_params.pole_pairs,
+            current_max: 10.0,
+            max_power_loss_w: MotorSize::Medium.max_power_loss_w(),
+            pwm_freq_hz: 20_000.0,
+            vbus: VBUS,
+            openloop_erpm: 700.0,
+        };
+
+        let result = run_detection(motor_params, VBUS, det_params)
+            .expect("detection must survive a one-cycle actuation pipeline");
+
+        let r_err = (result.params.resistance_ohm - motor_params.r).abs() / motor_params.r;
+        assert!(r_err < 0.05, "R error {:.1}%", r_err * 100.0);
+
+        let l_err = (result.params.inductance_avg_h - motor_params.ld).abs() / motor_params.ld;
+        assert!(l_err < 0.10, "L error {:.1}%", l_err * 100.0);
+
+        let lam_err =
+            (result.params.flux_linkage_wb - motor_params.lambda).abs() / motor_params.lambda;
+        assert!(lam_err < 0.02, "λ error {:.1}%", lam_err * 100.0);
+    }
+
+    /// The |Z| magnitude cross-check must catch a mispaired demod: force a
+    /// WRONG pipeline lag (1) on a plant whose true depth is 2 — the
+    /// phase-sensitive demod corrupts silently, the latency-immune
+    /// magnitude does not, and the disagreement must surface as an error
+    /// (LowConfidence → the auto ladder would fall back to the pulse
+    /// method). The auto-probed run on the identical plant must succeed.
+    #[test]
+    fn hfi_mispairing_caught_by_magnitude_cross_check() {
+        use super::sweep::measure_inductance;
+        use super::virtual_harness::{VirtualHardware, VirtualTimer, block_on, with_sim};
+        use crate::foc::trig::LibmSinCos;
+
+        const VBUS: f32 = 48.0;
+        let plant = MotorParams {
+            r: 0.035,
+            ld: 1.5e-5,
+            lq: 1.5e-5,
+            lambda: 0.0085,
+            pole_pairs: 7,
+            j: 1e-3,
+            friction_b: 1e-3,
+            substeps: 10,
+            actuation_delay_steps: 1, // harness depth becomes 2 cycles
+            ..MotorParams::default()
+        };
+        let run = |pipeline_lag: i8| {
+            with_sim(plant, VBUS, |hw| {
+                let ip = InductanceParams {
+                    resistance_ohm: plant.r,
+                    hold_current_a: 8.0,
+                    vbus: VBUS,
+                    pipeline_lag,
+                    ..Default::default()
+                };
+                block_on(measure_inductance::<
+                    VirtualHardware,
+                    VirtualTimer,
+                    LibmSinCos,
+                >(hw, &ip, 20_000.0))
+            })
+        };
+
+        let auto = run(-1).expect("auto-probed lag must measure accurately");
+        let l_err = ((auto.0 + auto.1) / 2.0 - plant.ld).abs() / plant.ld;
+        assert!(l_err < 0.10, "auto-lag L error {:.1}%", l_err * 100.0);
+
+        let forced_wrong = run(1);
+        assert!(
+            forced_wrong.is_err(),
+            "a mispaired demod must not return a plausible-looking L: {forced_wrong:?}"
+        );
     }
 }

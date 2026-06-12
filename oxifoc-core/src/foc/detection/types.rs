@@ -259,6 +259,15 @@ pub struct InductanceParams {
     /// headroom left above the holding voltage (`vbus·0.577 − R·I_hold`),
     /// so the commanded vector never saturates against the bus mid-window.
     pub vbus: f32,
+
+    /// Command→apply pipeline depth in FOC cycles. `< 0` (default) =
+    /// measure it in place with a correlation probe before the HFI run
+    /// (see `probe_hfi_pipeline_lag`); `≥ 1` = use this value (tests,
+    /// platforms with a known pipeline). One mispaired cycle rotates the
+    /// demod carrier reference by `ω_c·T_pwm` — 90° at the default
+    /// 5 kHz/20 kHz — which corrupts the inductance estimate entirely,
+    /// so this must match the real latency, not be guessed.
+    pub pipeline_lag: i8,
 }
 
 impl Default for InductanceParams {
@@ -272,6 +281,7 @@ impl Default for InductanceParams {
             settle_time_ms: 200,
             resistance_ohm: 0.0,
             vbus: 0.0,
+            pipeline_lag: -1,
         }
     }
 }

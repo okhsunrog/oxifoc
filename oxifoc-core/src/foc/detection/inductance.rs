@@ -187,6 +187,13 @@ impl<S: SinCos> HfiInjector<S> {
         self.injection_angle
     }
 
+    /// Get the current carrier phase (rad) — the φ in `A·sin(φ)·dir(θ)`.
+    /// Needed by the pipeline-lag probe to build correlation references.
+    #[inline]
+    pub fn carrier_phase(&self) -> f32 {
+        self.hfi_phase
+    }
+
     /// Get voltage amplitude.
     #[inline]
     pub fn voltage_amplitude(&self) -> f32 {
@@ -221,8 +228,6 @@ pub struct InductanceMeasurement<S: SinCos = crate::foc::trig::LibmSinCos> {
     /// Previous current sample for differential calculation
     prev_i_alpha: f32,
     prev_i_beta: f32,
-    /// Previous injection angle (for aligning di with injection direction)
-    prev_injection_angle: f32,
     /// Number of complete FFT cycles collected
     cycles_completed: u32,
     /// Target number of FFT cycles to average
@@ -269,7 +274,6 @@ impl<S: SinCos> InductanceMeasurement<S> {
             sample_idx: 0,
             prev_i_alpha: 0.0,
             prev_i_beta: 0.0,
-            prev_injection_angle: 0.0,
             cycles_completed: 0,
             target_cycles,
             ld_sum: 0.0,
@@ -287,19 +291,28 @@ impl<S: SinCos> InductanceMeasurement<S> {
         }
     }
 
-    /// Record a current sample together with the injection voltage that
+    /// Record a current sample together with the injection command that
     /// caused it.
     ///
     /// The injection voltage is used to cancel the HFI carrier modulation
     /// from the `1/L` samples, and — when phase resistance is known — to
     /// subtract the resistive voltage drop.
     ///
+    /// PAIRING CONTRACT: the `di` evaluated by this call spans the interval
+    /// between the previous `record` call and this one; the caller must
+    /// pass the injection command (angle + voltage) that was ACTUALLY
+    /// APPLIED during that interval. With a command→apply pipeline of `D`
+    /// cycles that is the command issued `D` iterations before this read —
+    /// the caller keeps the history and resolves `D` (see
+    /// `probe_hfi_pipeline_lag` in sweep.rs). A one-cycle mispairing
+    /// rotates the carrier reference by `ω_c·T_pwm` (90° at 5 kHz/20 kHz)
+    /// and corrupts the per-sample `di/v` division catastrophically.
+    ///
     /// # Arguments
     /// * `i_alpha`, `i_beta` - Measured α/β current (A)
-    /// * `injection_angle` - Injection direction angle from [`HfiInjector`]
-    /// * `v_inj_alpha`, `v_inj_beta` - Injection voltage (V) applied at the
-    ///   **previous** time-step (the one that produced the current being
-    ///   measured now).
+    /// * `injection_angle` - direction angle of the injection command that
+    ///   drove this `di`
+    /// * `v_inj_alpha`, `v_inj_beta` - that command's injection voltage (V)
     ///
     /// # Returns
     /// `true` when a complete FFT window has been processed.
@@ -318,7 +331,6 @@ impl<S: SinCos> InductanceMeasurement<S> {
         if self.first_sample {
             self.prev_i_alpha = i_alpha;
             self.prev_i_beta = i_beta;
-            self.prev_injection_angle = injection_angle;
             self.first_sample = false;
             return false;
         }
@@ -327,8 +339,8 @@ impl<S: SinCos> InductanceMeasurement<S> {
         let di_alpha = i_alpha - self.prev_i_alpha;
         let di_beta = i_beta - self.prev_i_beta;
 
-        // Project di and the previous voltage onto the injection direction
-        let (sin_angle, cos_angle) = S::sin_cos(self.prev_injection_angle);
+        // Project di and the driving voltage onto its injection direction
+        let (sin_angle, cos_angle) = S::sin_cos(injection_angle);
         let di_projected = di_alpha * cos_angle + di_beta * sin_angle;
         let v_projected = v_inj_alpha * cos_angle + v_inj_beta * sin_angle;
 
@@ -359,7 +371,6 @@ impl<S: SinCos> InductanceMeasurement<S> {
 
         self.prev_i_alpha = i_alpha;
         self.prev_i_beta = i_beta;
-        self.prev_injection_angle = injection_angle;
 
         if self.sample_idx >= FFT_SIZE {
             self.process_fft_cycle();

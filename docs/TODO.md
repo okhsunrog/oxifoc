@@ -234,28 +234,12 @@ the sim = batch tick).
   center-aligned period; g431 `COMPARE_OC4`→TRGO2 is not fundamentally
   immune. The robust fix is one deterministic trigger per period (update
   event or TIM→DMA→ADC). Check the JEOC rate under load.
-- [ ] **Detection pipeline-skew — CONFIRMED by sim 2026-06-12, critical**:
-  `record()` pairs current with the injection one iteration back, but
-  the actuation pipeline adds a cycle — the effective command→measure
-  latency is 2. With `actuation_delay_steps: 1` in the plant the L step
-  falls apart (+1000…+6500% / FAIL — 90° of carrier phase at 5 kHz),
-  driven-flux −46% (telem.vq is also same-cycle), pulse loses its window
-  (InsufficientSamples). Real hardware HAS this pipeline (+ async command
-  delivery may add more and jitter) → bench L cannot be trusted until
-  the fix. The fix is developed IN SIM (both arms verifiable: delay=0 →
-  lag 1, delay=1 → lag 2): 1) **latency probe** by cross-correlation in
-  the HFI_PROBE_CYCLES window (lag 0–3 by maximum in-phase energy)
-  instead of a constant, with a parameter override for tests;
-  2) **latency-immune |Z| cross-check**:
-  `L = √((V/|i_ripple|)² − R²)/ω_c` — the magnitude does not depend on
-  phase pairing, R is already known; divergence from the demod L → flag
-  a wrong lag. Mispairing rotates the response ellipse: the Ld/Lq values
-  survive but the axis LABELS swap — harmless for SPM, the IPM split
-  needs the right lag; 3) prev-vq in driven-flux, shift the pulse di/dt
-  window by the same lag; 4) after the fix, enable
-  `actuation_delay_steps: 1` in the report's non-ideal table as a
-  regression net. On the bench — cross-check against a reference
-  inductor / the Flipsky LCR numbers.
+- [ ] **Detection lag probe on hardware**: the pipeline-skew fix
+  (2026-06-12, decisions.md) measures the command→apply depth in place —
+  on the bench, log the probed lag (sim predicts 2 cycles; async command
+  delivery may add more), verify the |Z| cross-check stays quiet, and
+  cross-check the detected L against the Flipsky LCR numbers (mind the
+  small-signal-vs-incremental saturation difference).
 - [ ] OCP with the BKF break filter under real load (g431).
 - [ ] Dead-time compensation at low speed.
 - [ ] Hall dropout at speed and the sensorless crossover.

@@ -374,6 +374,119 @@ struct HfiAdapt {
     v_max: f32,
 }
 
+/// Maximum command→apply pipeline depth the probe scans for (FOC cycles).
+const PIPELINE_LAG_MAX: usize = 4;
+
+/// Measure the command→apply pipeline depth by cross-correlation.
+///
+/// Injects the rotating carrier for a few periods and correlates the
+/// measured current against the carrier reference at candidate lags
+/// `1..=PIPELINE_LAG_MAX`. Through an inductor the current response to
+/// `v = A·sin(φ)·dir(θ)` is `≈ −(A/ω_c L)·cos(φ)·dir(θ)` — at the true
+/// lag the `−cos` correlation peaks (at the default 5 kHz/20 kHz the
+/// carrier advances 90° per cycle, so adjacent lags are orthogonal and
+/// the argmax is sharp). The loop structure (read → send) is identical
+/// to `hfi_collect`, so the returned lag plugs straight into its history
+/// pairing: lag 1 = a command sent at iteration k drives the current
+/// change read at iteration k+1 (the classic single-cycle pipeline).
+///
+/// Also returns a latency-immune magnitude estimate of L: the response
+/// NORM is invariant under pairing rotation, so
+/// `|Z| = A / |i_response|`, `L = √(|Z|² − R²)/ω_c` — used downstream as
+/// a cross-check against the phase-sensitive demod result.
+///
+/// Returns `(lag, l_magnitude_estimate)`; `l_magnitude_estimate = 0.0`
+/// when the response was too weak to correlate (open motor — let the
+/// main measurement fail with its own diagnostics).
+async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
+    hw: &mut H,
+    injector: &mut HfiInjector<S>,
+    vd_hold: f32,
+    dt: f32,
+    resistance_ohm: f32,
+) -> (u32, f32) {
+    let omega_c = injector.omega_hfi();
+    let amp = injector.voltage_amplitude();
+    let samples_per_period = ((core::f32::consts::TAU / (omega_c * dt)) + 0.5).max(2.0) as usize;
+    // Settle the transient, then accumulate over an integer number of
+    // carrier periods (the DC hold projection cancels over full periods).
+    let warmup = 3 * samples_per_period + PIPELINE_LAG_MAX;
+    let accum = 16 * samples_per_period;
+
+    let mut hist = [(0.0f32, 0.0f32); 8]; // (direction angle, carrier phase)
+    let mut corr_q = [0.0f32; PIPELINE_LAG_MAX + 1];
+    let mut corr_i = [0.0f32; PIPELINE_LAG_MAX + 1];
+
+    for k in 0..(warmup + accum) {
+        let _telem = hw.wait_telemetry().await;
+        let (ia, ib, _ic) = hw.read_phase_currents();
+        let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+
+        if k >= warmup {
+            for d in 1..=PIPELINE_LAG_MAX {
+                let (theta, phase) = hist[(k + 8 - d) % 8];
+                let (sin_t, cos_t) = S::sin_cos(theta);
+                let (sin_p, cos_p) = S::sin_cos(phase);
+                let i_dir = i_alpha * cos_t + i_beta * sin_t;
+                corr_q[d] += i_dir * (-cos_p);
+                corr_i[d] += i_dir * sin_p;
+            }
+        }
+
+        let theta = injector.injection_angle();
+        let phase = injector.carrier_phase();
+        let (v_a, v_b) = injector.step(dt);
+        hw.send_command(ControlMode::DirectVoltage {
+            vd: vd_hold + v_a,
+            vq: v_b,
+            angle_rad: 0.0,
+        })
+        .await;
+        hist[k % 8] = (theta, phase);
+    }
+
+    // Each command holds for one full period, so the discrete response
+    // phase sits at the period CENTER: i ∝ −cos(φ + ω_c·dt/2). Score each
+    // lag by projecting onto that half-step-rotated reference — with the
+    // default 90°-per-cycle carrier the raw −cos correlation alone splits
+    // 45°/45° between adjacent bins and cannot discriminate them.
+    let (half_sin, half_cos) = S::sin_cos(omega_c * dt * 0.5);
+    let score = |d: usize| corr_q[d] * half_cos + corr_i[d] * half_sin;
+    let mut lag = 1usize;
+    for d in 2..=PIPELINE_LAG_MAX {
+        if score(d) > score(lag) {
+            lag = d;
+        }
+    }
+    debug!(
+        "lag probe bins (q,i): 1=({},{}) 2=({},{}) 3=({},{}) 4=({},{})",
+        corr_q[1], corr_i[1], corr_q[2], corr_i[2], corr_q[3], corr_i[3], corr_q[4], corr_i[4]
+    );
+
+    // Latency-immune |Z| from the winning bin's response norm.
+    let n = accum as f32;
+    let i_amp = 2.0
+        * crate::foc::fast_math::sqrtf(corr_q[lag] * corr_q[lag] + corr_i[lag] * corr_i[lag])
+        / n;
+    let l_mag = if i_amp > 1e-4 && amp > 0.0 {
+        let z = amp / i_amp;
+        let zl_sq = z * z - resistance_ohm * resistance_ohm;
+        if zl_sq > 0.0 {
+            crate::foc::fast_math::sqrtf(zl_sq) / omega_c
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    info!(
+        "HFI pipeline lag probe: lag={} cycles, |Z|-estimate L={} H",
+        lag, l_mag
+    );
+    (lag as u32, l_mag)
+}
+
 /// Run the HFI collection loop: rotating injection riding on `vd_hold`,
 /// recording into `measurement` until it reports complete.
 ///
@@ -391,14 +504,21 @@ async fn hfi_collect<H: DetectionHardware, S: SinCos>(
     vd_hold: f32,
     dt: f32,
     mut adapt: Option<HfiAdapt>,
+    lag: u32,
 ) {
     // DirectVoltage mode — no PI interference during measurement.
     // The captured vd_hold maintains the holding force, HFI injection is
     // added on top.
-    let mut first_iteration = true;
-    let mut prev_injection_angle = 0.0f32;
-    let mut prev_v_alpha_inj = 0.0f32;
-    let mut prev_v_beta_inj = 0.0f32;
+    //
+    // Pairing: the current change read at iteration k was driven by the
+    // command sent at iteration k − lag (lag = the measured command→apply
+    // pipeline depth, see probe_hfi_pipeline_lag). A ring buffer of sent
+    // commands resolves the pairing explicitly; `record_from` gates the
+    // first records until the post-(re)start history is deep enough.
+    let lag = (lag as usize).clamp(1, PIPELINE_LAG_MAX);
+    let mut hist = [(0.0f32, 0.0f32, 0.0f32); 8]; // (angle, v_alpha, v_beta)
+    let mut iter: usize = 0;
+    let mut record_from = lag;
 
     while !measurement.is_complete() {
         if adapt.is_some() && measurement.cycles_completed() >= HFI_PROBE_CYCLES {
@@ -412,7 +532,9 @@ async fn hfi_collect<H: DetectionHardware, S: SinCos>(
                 injector.set_amplitude(v_run);
                 injector.reset();
                 measurement.restart(v_run);
-                first_iteration = true;
+                // Old-amplitude commands are still in flight for `lag`
+                // cycles; let them flush before recording resumes.
+                record_from = iter + lag;
             } else {
                 adapt = None;
             }
@@ -421,19 +543,14 @@ async fn hfi_collect<H: DetectionHardware, S: SinCos>(
         // Wait for current PWM cycle to complete (synced to ADC ISR)
         let _telem = hw.wait_telemetry().await;
 
-        // Read currents from THIS cycle (response to previous voltage)
+        // Read currents from THIS cycle (the response to the command sent
+        // `lag` iterations ago)
         let (ia, ib, _ic) = hw.read_phase_currents();
         let (i_alpha, i_beta) = transforms::clarke(ia, ib);
 
-        // Record sample with the injection voltage that caused this current
-        if !first_iteration {
-            measurement.record(
-                i_alpha,
-                i_beta,
-                prev_injection_angle,
-                prev_v_alpha_inj,
-                prev_v_beta_inj,
-            );
+        if iter >= record_from {
+            let (angle, v_a, v_b) = hist[(iter + 8 - lag) % 8];
+            measurement.record(i_alpha, i_beta, angle, v_a, v_b);
         }
 
         // Calculate and send NEXT injection command
@@ -448,10 +565,8 @@ async fn hfi_collect<H: DetectionHardware, S: SinCos>(
         })
         .await;
 
-        prev_injection_angle = injection_angle;
-        prev_v_alpha_inj = v_alpha_inj;
-        prev_v_beta_inj = v_beta_inj;
-        first_iteration = false;
+        hist[iter % 8] = (injection_angle, v_alpha_inj, v_beta_inj);
+        iter += 1;
     }
 }
 
@@ -545,6 +660,21 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     );
 
     let mut injector = HfiInjector::<S>::new(params.hfi_frequency_hz, probe_v, pwm_freq_hz);
+
+    // Command→apply pipeline depth. The probe ALWAYS runs: besides the
+    // lag it yields the latency-immune |Z| magnitude estimate of L
+    // (pairing rotations preserve the response norm) that guards the
+    // phase-sensitive demod below — an override must not silently disable
+    // that safety net. `pipeline_lag ≥ 1` overrides the lag value only.
+    let (probed_lag, l_probe) =
+        probe_hfi_pipeline_lag::<H, S>(hw, &mut injector, vd_hold, dt, params.resistance_ohm).await;
+    injector.reset();
+    let lag = if params.pipeline_lag >= 1 {
+        params.pipeline_lag as u32
+    } else {
+        probed_lag
+    };
+
     let mut measurement = InductanceMeasurement::<S>::new(params, pwm_freq_hz);
     measurement.restart(probe_v);
     hfi_collect::<H, S>(
@@ -554,6 +684,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
         vd_hold,
         dt,
         Some(adapt),
+        lag,
     )
     .await;
 
@@ -576,6 +707,21 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
 
     // Compute result
     let result = measurement.finish()?;
+
+    // Latency-immune cross-check: the demod L is phase-sensitive (a wrong
+    // pairing corrupts it while looking plausible), the probe's |Z|
+    // magnitude is not. A gross mismatch means the demod cannot be
+    // trusted — LowConfidence sends the auto-ladder to the pulse method.
+    if l_probe > 0.0 {
+        let ratio = result.l_avg / l_probe;
+        if !(0.4..=2.5).contains(&ratio) {
+            info!(
+                "HFI demod L={} disagrees with |Z| magnitude L={} — low confidence",
+                result.l_avg, l_probe
+            );
+            return Err(DetectionError::LowConfidence);
+        }
+    }
 
     Ok((result.ld, result.lq))
 }
@@ -626,7 +772,13 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
         let vd_hold =
             settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
 
-        // Pulse measurement
+        // Pulse measurement — self-aligning: rather than assuming the
+        // command→apply latency, each pulse scans forward for the frame
+        // where the current edge actually lands and takes di over that
+        // first application period. Immune to any pipeline depth up to
+        // PIPELINE_LAG_MAX (the old fixed one-period wait silently
+        // measured di ≈ 0 on a two-cycle pipeline).
+        const PULSE_EDGE_THRESHOLD_A: f32 = 0.02;
         let mut meas = VoltagePulseMeasurement::new(params, pwm_freq_hz);
 
         for _ in 0..params.num_pulses * 2 {
@@ -648,23 +800,44 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
                 angle_rad: angle,
             })
             .await;
-            hw.wait_telemetry().await; // one PWM period
 
-            // Read current after pulse
-            let (ia, ib, _) = hw.read_phase_currents();
-            let (i_alpha, i_beta) = transforms::clarke(ia, ib);
-            let id_after = i_alpha * cos_a + i_beta * sin_a;
+            // Scan for the application edge; the pre-edge frame replaces
+            // id_before (steady by definition), the edge frame is id_after.
+            let mut prev = id_before;
+            let mut edge: Option<(f32, f32)> = None;
+            let mut frames = 0usize;
+            while frames <= PIPELINE_LAG_MAX {
+                hw.wait_telemetry().await;
+                let (ia, ib, _) = hw.read_phase_currents();
+                let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+                let id_now = i_alpha * cos_a + i_beta * sin_a;
+                frames += 1;
+                if (id_now - prev).abs() > PULSE_EDGE_THRESHOLD_A {
+                    edge = Some((prev, id_now));
+                    break;
+                }
+                prev = id_now;
+            }
 
-            meas.record_pulse(id_before, id_after);
+            if let Some((before, after)) = edge {
+                meas.record_pulse(before, after);
+            } else {
+                // No edge seen — count as a skipped pulse (open motor or a
+                // pulse below the noise floor; finish() reports it).
+                meas.record_pulse(id_before, id_before);
+            }
 
-            // Restore holding voltage and wait one cycle
+            // Restore holding voltage and let the tail of the pulse flush
+            // through the pipeline before the next i_before read.
             hw.send_command(ControlMode::DirectVoltage {
                 vd: vd_hold,
                 vq: 0.0,
                 angle_rad: angle,
             })
             .await;
-            hw.wait_telemetry().await;
+            for _ in 0..(frames + 2) {
+                hw.wait_telemetry().await;
+            }
         }
 
         results[axis] = (angle, meas.finish()?);
