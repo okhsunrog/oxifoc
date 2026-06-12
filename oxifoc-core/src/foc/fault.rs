@@ -274,23 +274,29 @@ impl<F: PlatformFault> FaultRegistry<F> {
     /// Set a fault (adds if not already present, or updates if category matches)
     ///
     /// Returns true if the fault was newly added (not already present).
+    /// Signals `changed` on addition AND on a payload change of an existing
+    /// entry (e.g. a sticky HallError refining `InvalidState` →
+    /// `WireDead{H2}`) — the fault topic must push the refined details.
+    /// Re-setting an identical value stays silent, so a detector calling
+    /// `set()` every ISR cycle cannot spam the topic.
     pub fn set(&self, fault: F) -> bool {
-        let newly_added = self.faults.lock(|cell| {
+        let (newly_added, value_changed) = self.faults.lock(|cell| {
             let mut faults = cell.borrow_mut();
             let cat = fault.category();
 
             // Check if this fault category is already present
             if let Some(pos) = faults.iter().position(|f| f.category() == cat) {
                 // Update existing fault with new data
+                let changed = faults[pos] != fault;
                 faults[pos] = fault;
-                false
+                (false, changed)
             } else {
                 // Add new fault
-                faults.push(fault).is_ok()
+                (faults.push(fault).is_ok(), false)
             }
         });
 
-        if newly_added {
+        if newly_added || value_changed {
             self.changed.signal(());
         }
 
@@ -378,6 +384,20 @@ impl<F: PlatformFault> FaultRegistry<F> {
     pub fn to_fault_info_vec(&self) -> Vec<FaultInfo, MAX_FAULTS> {
         self.faults
             .lock(|cell| cell.borrow().iter().map(|f| f.to_fault_info()).collect())
+    }
+
+    /// Protocol snapshot (`FaultResponse`): at most `MAX_FAULT_RESPONSE`
+    /// entries plus the true total so the consumer can see truncation.
+    /// Shared by the fault endpoint server and the fault topic publisher —
+    /// both must serialize the registry identically.
+    pub fn snapshot_response(&self) -> crate::types::FaultResponse {
+        let infos = self.to_fault_info_vec();
+        let total = infos.len() as u8;
+        let mut faults = Vec::new();
+        for info in infos.iter().take(crate::types::MAX_FAULT_RESPONSE) {
+            let _ = faults.push(info.clone());
+        }
+        crate::types::FaultResponse { faults, total }
     }
 
     /// Get count of active faults
@@ -574,5 +594,45 @@ mod tests {
         assert_eq!(info.severity, FaultSeverity::Warning);
         let info = FaultInfo::new(FaultCategory::OverCurrent, "test");
         assert_eq!(info.severity, FaultSeverity::Kill);
+    }
+
+    /// The fault topic wakes on `changed`: it must fire on a NEW fault and
+    /// on a payload refinement of an existing one (sticky HallError
+    /// upgrading `InvalidState` → `WireDead`), but a detector re-setting
+    /// the identical value every ISR cycle must stay silent — otherwise
+    /// the topic spams the link at 20 kHz.
+    #[test]
+    #[cfg(feature = "runtime")]
+    fn set_signals_on_add_and_refinement_only() {
+        #[derive(Clone, Copy, PartialEq)]
+        struct TF(u8);
+        impl PlatformFault for TF {
+            fn category(&self) -> FaultCategory {
+                FaultCategory::HallError
+            }
+            fn details(&self) -> String<128> {
+                String::new()
+            }
+            fn is_recoverable(&self) -> bool {
+                false
+            }
+        }
+
+        let reg: FaultRegistry<TF> = FaultRegistry::new();
+        assert!(!reg.changed.signaled());
+
+        reg.set(TF(1));
+        assert!(reg.changed.signaled(), "new fault must signal");
+        reg.changed.reset();
+
+        reg.set(TF(1));
+        assert!(!reg.changed.signaled(), "identical re-set must stay silent");
+
+        reg.set(TF(2));
+        assert!(reg.changed.signaled(), "payload refinement must signal");
+        reg.changed.reset();
+
+        reg.clear(FaultCategory::HallError);
+        assert!(reg.changed.signaled(), "clearing must signal");
     }
 }

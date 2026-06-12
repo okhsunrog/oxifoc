@@ -289,3 +289,16 @@ their section.
   recovery comes from physical motion (kick-push → observer locks). The
   override also deactivates when the hall itself recovers — previously
   nothing did, so one glitch left it active forever.
+- **2026-06-13 — FaultTopic: push faults to consumers (phase 4 of the
+  overhaul).** Faults now broadcast on `telemetry/faults` as the FULL
+  `FaultResponse` snapshot on every registry change — raise, payload
+  refinement (the registry's `set()` now signals when an existing
+  entry's value changes; identical re-sets from per-cycle detectors stay
+  silent), and clear — plus once at stream start. Snapshot-not-delta
+  because ergot topics are fire-and-forget: a lost packet costs
+  staleness, never a wrong state; the loss backstop is the consumer's
+  SlowTelemetry poll (`fault_count` mismatch → re-query FaultEndpoint).
+  Consumers key UI/vibration off `FaultInfo::severity`, never off
+  hardcoded categories. Host side: `HostRuntime::fault_rx` +
+  `oxifoc-host-cli faults --watch`. E2E-verified against the virtual
+  device.

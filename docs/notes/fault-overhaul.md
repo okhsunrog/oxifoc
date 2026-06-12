@@ -2,7 +2,8 @@
 
 Status: partially landed — phases 1–2 (severity classes, gate, deadman →
 CommTimeout, limit-ladder fixes) landed 2026-06-12, phase 3 (hall
-package) 2026-06-13; phases 4–6 open. Companion to
+package) and phase 4 (FaultTopic, protocol + host side; remote UX
+pending) 2026-06-13; phases 5–6 open. Companion to
 [../safety.md](../safety.md) (failsafe layers) and the Bench section of
 [../TODO.md](../TODO.md).
 
@@ -193,8 +194,15 @@ HFI carrier ripple + noise.
    deactivates when the hall itself recovers — it used to outlive the
    glitch). Closed-loop sim: partial failure at speed rides through on
    the observer and names the dead wire.
-4. **FaultTopic** push + remote severity UX (vibration/display) — needs
-   remote firmware maturity, protocol side can land earlier.
+4. **[landed 2026-06-13, protocol + host side]** FaultTopic: full
+   snapshot broadcast on every registry change (the registry now signals
+   on payload refinement too, e.g. sticky HallError `InvalidState` →
+   `WireDead`; identical re-sets stay silent) plus once at stream start;
+   publisher (`fault_topic_stream`) spawned on all three boards and the
+   virtual device; host-lib subscribes (`HostRuntime::fault_rx`), CLI
+   `faults --watch` prints JSONL/human per event. Remaining: the remote
+   firmware consuming it (vibration by severity, display) — blocked on
+   remote maturity (notes/remote-design.md).
 5. **Derating layer** + integrating detectors (biggest piece; needs
    bench thermals to tune, but the structure and sim tests come first).
 6. (post-bench) auto-promotion to sensorless; dissipative braking near

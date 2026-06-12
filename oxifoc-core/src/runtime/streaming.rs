@@ -251,6 +251,40 @@ pub fn push_fast_telemetry(telem: &FastTelemetry) {
 /// Smaller values reduce stack usage at the cost of more frequent broadcasts.
 /// The wire format is compatible regardless of batch size — postcard only
 /// encodes actual elements, and the host deserializes into `Vec<_, 32>`.
+/// Run the fault topic publisher.
+///
+/// Broadcasts the FULL fault snapshot (`FaultResponse`) on
+/// [`crate::icd::FaultTopic`]: once at start (a reconnecting consumer gets
+/// the current state without waiting for a change) and then on every
+/// registry change — fault raised, payload refined (the registry signals
+/// on value changes, e.g. a sticky HallError upgrading `InvalidState` →
+/// `WireDead`), or cleared, so the consumer can drop its indication too.
+///
+/// Snapshot-not-delta: ergot topics are fire-and-forget, a lost packet
+/// must cost staleness rather than a wrong state. The loss backstop is the
+/// consumer's regular SlowTelemetry poll: `fault_count` disagreeing with
+/// its local view means a push was lost → re-query via `FaultEndpoint`.
+pub async fn fault_topic_stream<NS, F>(
+    stack: NS,
+    fault_registry: &'static crate::foc::fault::FaultRegistry<F>,
+) where
+    NS: NetStackHandle + Clone,
+    F: crate::foc::fault::PlatformFault,
+{
+    loop {
+        let snapshot = fault_registry.snapshot_response();
+        let _result = stack
+            .stack()
+            .topics()
+            .broadcast::<crate::icd::FaultTopic>(&snapshot, None);
+        #[cfg(feature = "log")]
+        if _result.is_err() {
+            log::warn!("fault topic broadcast failed: {:?}", _result);
+        }
+        fault_registry.wait_for_change().await;
+    }
+}
+
 pub async fn fast_telemetry_stream<NS, const BATCH: usize, T: Timer>(stack: NS, foc_freq_hz: u32)
 where
     NS: NetStackHandle + Clone,

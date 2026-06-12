@@ -192,7 +192,16 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
 
 // ========== Task Spawning ==========
 
+/// Fault topic publisher — pushes the full fault snapshot on every
+/// registry change (the remote's vibration/UI path; FaultEndpoint stays
+/// the pull/clear side).
+#[embassy_executor::task]
+pub async fn fault_topic_task(stack: &'static Stack) {
+    oxifoc_core::runtime::streaming::fault_topic_stream(stack, &FAULT_REGISTRY).await
+}
+
 pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, usb_ident: u8, uart_ident: u8) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
+    spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, usb_ident, uart_ident)));
 }

@@ -186,6 +186,14 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
     .await
 }
 
+/// Fault topic publisher — pushes the full fault snapshot on every
+/// registry change (the remote's vibration/UI path; FaultEndpoint stays
+/// the pull/clear side).
+#[embassy_executor::task]
+pub async fn fault_topic_task(stack: &'static Stack) {
+    oxifoc_core::runtime::streaming::fault_topic_stream(stack, &FAULT_REGISTRY).await
+}
+
 /// State monitor — watches interface state transitions and updates DeviceState.
 /// On disconnect, disables fast telemetry streaming and drains the bbqueue
 /// so the device doesn't waste cycles broadcasting to nobody.
@@ -299,6 +307,7 @@ pub async fn detect_server(stack: &'static Stack) {
 pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, ident: u8) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
     spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
+    spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, ident)));
     #[cfg(feature = "detection")]
     spawner.spawn(defmt::unwrap!(detect_server(stack)));

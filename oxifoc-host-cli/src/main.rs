@@ -289,6 +289,18 @@ enum Command {
         clear: bool,
         #[arg(long, value_enum, help = "Clear one fault category")]
         clear_category: Option<FaultCategoryArg>,
+        #[arg(
+            long,
+            help = "Watch the fault topic: print a snapshot on every change \
+                    (device pushes on raise/refine/clear)"
+        )]
+        watch: bool,
+        #[arg(
+            long,
+            default_value_t = 0,
+            help = "Stop watching after this many seconds (0 = until Ctrl-C)"
+        )]
+        seconds: u64,
     },
     /// Start the motor in current (torque) control
     Start {
@@ -619,7 +631,13 @@ fn main() -> Result<()> {
         Command::Faults {
             clear,
             clear_category,
+            watch,
+            seconds,
         } => {
+            if watch {
+                watch_faults(&runtime, seconds, json)?;
+                return Ok(());
+            }
             let req = if clear {
                 FaultRequest::ClearAll
             } else if let Some(cat) = clear_category {
@@ -1224,6 +1242,59 @@ fn list_devices(json: bool) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// `faults --watch`: print every fault snapshot the device pushes on the
+/// fault topic (raise / payload refinement / clear). The device sends the
+/// FULL list each time, so each printed line is a self-contained state.
+fn watch_faults(runtime: &HostRuntime, seconds: u64, json: bool) -> Result<()> {
+    use crossbeam_channel::RecvTimeoutError;
+
+    if !json {
+        if seconds == 0 {
+            println!("Watching fault events (Ctrl-C to stop)...");
+        } else {
+            println!("Watching fault events for {seconds}s...");
+        }
+    }
+    let deadline = (seconds > 0).then(|| Instant::now() + Duration::from_secs(seconds));
+    loop {
+        if let Some(d) = deadline
+            && Instant::now() >= d
+        {
+            break;
+        }
+        match runtime.fault_rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(snapshot) => {
+                if json {
+                    // JSONL: one compact object per event
+                    println!("{}", serde_json::to_string(&snapshot)?);
+                } else if snapshot.faults.is_empty() {
+                    println!("faults cleared (total=0)");
+                } else {
+                    let lines: Vec<String> = snapshot
+                        .faults
+                        .iter()
+                        .map(|f| format!("{:?} [{:?}]: {}", f.category, f.severity, f.details))
+                        .collect();
+                    println!(
+                        "{} active fault(s):\n  {}",
+                        snapshot.total,
+                        lines.join("\n  ")
+                    );
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if !runtime.connected.load(Ordering::Relaxed) {
+                    eprintln!("Waiting for device connection...");
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                bail!("Fault event channel disconnected");
+            }
+        }
+    }
     Ok(())
 }
 

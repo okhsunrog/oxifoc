@@ -13,11 +13,11 @@ use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::delivery::{ReliableExt, RetryPolicy};
 use oxifoc_core::icd::{
-    ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, MotorEndpoint, SlowTelemetryEndpoint,
-    TelemetryConfig, TelemetryConfigEndpoint,
+    ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, FaultTopic, MotorEndpoint,
+    SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigEndpoint,
 };
 use oxifoc_core::timer::Timer;
-use oxifoc_core::types::{ControlMode, FastTelemetry, Keyed, ReqId, SlowTelemetry};
+use oxifoc_core::types::{ControlMode, FastTelemetry, FaultResponse, Keyed, ReqId, SlowTelemetry};
 use std::{
     fs,
     path::Path,
@@ -194,6 +194,9 @@ pub enum HostCommand {
 pub struct HostRuntime {
     pub fast_rx: Receiver<FastTelemetry>,
     pub slow_rx: Receiver<SlowTelemetry>,
+    /// Fault snapshots pushed by the device on every registry change
+    /// (FaultTopic). Full snapshots, not deltas — safe to miss one.
+    pub fault_rx: Receiver<FaultResponse>,
     pub device_info_rx: Receiver<oxifoc_core::types::HardwareInfo>,
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
@@ -237,6 +240,7 @@ impl Drop for HostRuntime {
 struct BackendCtx {
     fast_tx: Sender<FastTelemetry>,
     slow_tx: Sender<SlowTelemetry>,
+    fault_tx: Sender<FaultResponse>,
     info_tx: Sender<oxifoc_core::types::HardwareInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected: Arc<AtomicBool>,
@@ -249,6 +253,7 @@ struct BackendCtx {
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(4096);
     let (slow_tx, slow_rx) = crossbeam_channel::bounded::<SlowTelemetry>(64);
+    let (fault_tx, fault_rx) = crossbeam_channel::bounded::<FaultResponse>(64);
     let (info_tx, device_info_rx) =
         crossbeam_channel::bounded::<oxifoc_core::types::HardwareInfo>(4);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
@@ -259,6 +264,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let ctx = BackendCtx {
         fast_tx,
         slow_tx,
+        fault_tx,
         info_tx,
         cmd_rx,
         connected: connected.clone(),
@@ -276,6 +282,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     HostRuntime {
         fast_rx,
         slow_rx,
+        fault_rx,
         device_info_rx,
         cmd_tx,
         connected,
@@ -846,6 +853,7 @@ where
     NS::Target: Send,
 {
     spawn_fast_telemetry_subscriber(stack, ctx.fast_tx, ctx.cancel.clone());
+    spawn_fault_topic_subscriber(stack, ctx.fault_tx, ctx.cancel.clone());
     spawn_slow_telemetry_poller(
         stack,
         ctx.slow_tx,
@@ -948,6 +956,41 @@ fn spawn_fast_telemetry_subscriber<NS>(
                             // (e.g. minimized window stops the render loop).
                             let _ = fast_tx.try_send(*sample);
                         }
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn spawn_fault_topic_subscriber<NS>(
+    stack: &NS,
+    fault_tx: Sender<FaultResponse>,
+    cancel: CancellationToken,
+) where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+    NS::Mutex: Send + Sync,
+    NS::Profile: Send,
+    NS::Target: Send,
+{
+    tokio::spawn({
+        let stack = stack.clone();
+        async move {
+            let ns = stack.stack();
+            let receiver = ns
+                .topics()
+                .heap_bounded_receiver::<FaultTopic>(16, Some("faults"));
+            let mut pinned = pin!(receiver);
+            let mut hdl = pinned.as_mut().subscribe();
+            info!("Fault topic subscriber started");
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    msg = hdl.recv() => {
+                        // try_send: snapshots are self-contained, dropping
+                        // one on a full queue only delays the view until
+                        // the next event.
+                        let _ = fault_tx.try_send(msg.t.clone());
                     }
                 }
             }
