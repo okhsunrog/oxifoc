@@ -105,6 +105,14 @@ pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> 
     modulation_limit: f32,
     /// Dead time compensation factor = dead_time_s × pwm_freq_hz (0.0 = disabled)
     dead_time_comp: f32,
+    /// Actuation-frame advance (electrical rad, 0.0 = disabled): the output
+    /// voltage vector is rotated by this much AFTER the inverse Park.
+    /// Compensates the one-PWM-period pipeline delay (the rotor moves
+    /// `ωe·T_pwm` between current sampling and voltage application) without
+    /// touching the measurement frame — advancing the angle used for the
+    /// current Park displaces the regulated current vector off the q axis
+    /// by the same amount (`id_true = −iq·sin(δ)`).
+    actuation_advance: f32,
     /// dq decoupling + back-EMF feedforward; None = plain PI (motor
     /// parameters unknown, e.g. before detection)
     decoupling: Option<Decoupling>,
@@ -150,6 +158,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             vbus: vbus.max(Self::MIN_VBUS),
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
             dead_time_comp: 0.0,
+            actuation_advance: 0.0,
             decoupling: None,
             _phantom: core::marker::PhantomData,
         }
@@ -198,6 +207,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             vbus,
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
             dead_time_comp: 0.0,
+            actuation_advance: 0.0,
             decoupling: None,
             _phantom: core::marker::PhantomData,
         }
@@ -320,6 +330,35 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let comp_beta = super::constants::FRAC_1_SQRT_3 * (sign_b - sign_c) * comp_factor;
 
         (mod_alpha + comp_alpha, mod_beta + comp_beta)
+    }
+
+    /// Set the actuation-frame advance for the next step (electrical rad).
+    ///
+    /// The driver recomputes this every cycle as
+    /// `velocity × dt × phase_advance_cycles`. Applied as a cheap
+    /// small-angle rotation of the output voltage vector — accurate to
+    /// `δ⁴/24` (3·10⁻⁴ at the ~0.3 rad of a Flipsky-class motor at full
+    /// speed), with no second SinCos evaluation in the ISR.
+    pub fn set_actuation_advance(&mut self, advance_rad: f32) {
+        self.actuation_advance = if advance_rad.is_finite() {
+            advance_rad
+        } else {
+            0.0
+        };
+    }
+
+    /// Rotate an αβ vector by the configured actuation advance.
+    #[inline]
+    fn apply_actuation_advance(&self, v_alpha: f32, v_beta: f32) -> (f32, f32) {
+        let d = self.actuation_advance;
+        if d == 0.0 {
+            return (v_alpha, v_beta);
+        }
+        // Small-angle sin/cos (3rd/2nd order): exact enough for pipeline
+        // delays and far cheaper than a second CORDIC/LUT evaluation.
+        let sd = d - d * d * d * (1.0 / 6.0);
+        let cd = 1.0 - d * d * 0.5;
+        (v_alpha * cd - v_beta * sd, v_alpha * sd + v_beta * cd)
     }
 
     /// Current DC bus voltage cached in the controller.
@@ -513,8 +552,11 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             (vd_raw, vq_raw)
         };
 
-        // dq -> stationary frame
+        // dq -> stationary frame, then advance the actuation frame: the
+        // voltage acts ~one PWM period after the currents were sampled and
+        // the rotor will have moved (see `set_actuation_advance`).
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
+        let (v_alpha, v_beta) = self.apply_actuation_advance(v_alpha, v_beta);
         let volts_to_mod = Self::VOLTS_TO_MOD / self.vbus;
         let (mod_a, mod_b) = Self::apply_dead_time_comp(
             v_alpha * volts_to_mod,

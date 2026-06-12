@@ -232,6 +232,16 @@ fn det_params(def: &MotorDef) -> DetectionParams {
 /// dead-time distortion (300 ns at 20 kHz; the harness configures the
 /// matching duty-domain compensation, as the firmware does), and a 12-bit
 /// ±31 A current sensor with 1 LSB of uniform noise (B-G431B-ESC1-class).
+///
+/// KNOWN GAP, deliberately NOT enabled here: `actuation_delay_steps: 1`
+/// makes the L step fail catastrophically (+1000…+6500% / FAIL) — the HFI
+/// demod pairs currents with the injection one iteration back, but a
+/// one-period actuation pipeline makes the effective command→measure
+/// latency TWO iterations (90° of carrier phase at 5 kHz). Real hardware
+/// has that pipeline, so this reproduces the "detection pipeline-skew"
+/// bench TODO in sim. Driven-flux (telem.vq pairing) and the pulse window
+/// share the assumption. Enable the field to reproduce; fix tracked in
+/// docs/TODO.md.
 fn nonideal(def: &MotorDef) -> MotorParams {
     const ADC_LSB_A: f32 = 62.0 / 4096.0; // 12-bit over ±31 A ≈ 15 mA
     MotorParams {
@@ -312,9 +322,7 @@ fn main() {
     println!();
 
     // ── Full detection, non-ideal plant ────────────────────────────────
-    println!(
-        "Non-ideal plant (substeps=10, dead-time 300ns@20kHz, 12-bit ADC ±31A + 1 LSB noise):"
-    );
+    println!("Non-ideal plant (substeps=10, dead-time 300ns@20kHz, 12-bit ADC + noise):");
     println!(
         "  {:<22} {:>9} {:>9} {:>9} {:>12}",
         "Motor", "R", "Ld", "Lq", "lambda"
@@ -348,6 +356,8 @@ fn main() {
             def.name, r_s, ld_s, lq_s, lam_s,
         );
     }
+    println!("  (actuation_delay_steps=1 NOT enabled: known pipeline-skew gap breaks the");
+    println!("   L step — see fn nonideal() docs and docs/TODO.md)");
     println!();
 
     // ── HFI frequency benchmark ────────────────────────────────────────

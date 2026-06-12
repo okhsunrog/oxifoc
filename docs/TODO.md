@@ -126,10 +126,10 @@ failsafe — в [safety.md](safety.md). Карта документации — 
 (decisions.md), каждый апгрейд — с тестом, падающим без компенсации.
 Сделано 2026-06-12: sub-stepping (`substeps`), dead-time (`dead_time_v`),
 квантование+шум (`adc_lsb_a`/`adc_noise_a`), Lq-сатурация (`lq_sat_k`),
-duty-драйв харнесса с ARR 4250. Осталось:
+duty-драйв харнесса с ARR 4250, one-cycle delay (`actuation_delay_steps` —
+сразу нашёл measurement-frame баг phase advance и pipeline-skew детекции,
+см. decisions.md и пункт выше). Осталось:
 
-- [ ] **One-cycle PWM delay** в closed-loop харнессе — фазовый лаг железа,
-  валидирует phase advance.
 - [ ] **Vbus sag** (`vbus0 − i_bus·R_esr`) — UV-dip / regen-OV сценарии,
   база для динамического Vmax.
 - [ ] **Coulomb friction + ω²-нагрузка** — stiction для standstill
@@ -190,9 +190,19 @@ duty-драйв харнесса с ARR 4250. Осталось:
   center-aligned период; g431 `COMPARE_OC4`→TRGO2 принципиально не
   иммунен. Робастный фикс — один детерминированный триггер/период
   (update event или TIM→DMA→ADC). Проверить JEOC-rate под нагрузкой.
-- [ ] **Detection pipeline-skew**: `record()` парит ток с инжекцией
-  предыдущей итерации; реальная латентность command→apply→measure может
-  быть >1 итерации (в симе невидимо). Сверить эталонной индуктивностью.
+- [ ] **Detection pipeline-skew — ПОДТВЕРЖДЁН симом 2026-06-12, критичен**:
+  `record()` парит ток с инжекцией глубиной 1 итерацию, но конвейер
+  актуации добавляет цикл — эффективная латентность command→measure = 2.
+  С `actuation_delay_steps: 1` в планте L-ступень разваливается
+  (+1000…+6500% / FAIL — 90° фазы несущей на 5 кГц), driven-flux −46%
+  (telem.vq тоже текущего цикла), pulse теряет окно (InsufficientSamples).
+  Реальное железо ИМЕЕТ этот конвейер (+ async-доставка команд может
+  добавить ещё) → стендовому L доверять нельзя до фикса. Фикс теперь
+  разрабатывается В СИМЕ без железа: параметризовать глубину спаривания
+  (или latency-probe кросс-корреляцией на старте hfi_collect), то же для
+  flux (prev vq) и pulse-окна; включить `actuation_delay_steps: 1` в
+  non-ideal таблицу отчёта. На стенде — только сверка эталонной
+  индуктивностью.
 - [ ] OCP с BKF break-фильтром под реальной нагрузкой (g431).
 - [ ] Dead-time компенсация на низкой скорости.
 - [ ] Hall-dropout на скорости и sensorless кроссовер.

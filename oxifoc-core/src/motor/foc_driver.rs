@@ -933,13 +933,19 @@ where
         let iq_target = self.clamp_iq_for_bus(iq_target);
 
         // Get phase from provider (uses previous update's estimate). The
-        // commutation angle is advanced by the pipeline delay (see
-        // phase_advance_cycles): the estimate is sample-time truth, the
-        // voltage acts ~one period later. Estimators keep the raw angle.
+        // estimate is sample-time truth and is used as-is for the current
+        // Park — the pipeline delay is compensated on the ACTUATION side
+        // only (output-vector rotation, see set_actuation_advance).
+        // Advancing this angle instead, as the code originally did, also
+        // advanced the measurement frame: the PI then regulated the
+        // current vector `ωe·dt·cycles` off the true q axis
+        // (id_true = −iq·sin(δ) — ~29% of iq parasitic d-current for a
+        // Flipsky-class motor at full speed). Found by the sim's
+        // actuation-delay plant upgrade.
         let phase_out = self.phase.get();
-        let angle_rad = crate::foc::wrap_angle(
-            phase_out.angle + phase_out.velocity * dt * self.phase_advance_cycles,
-        );
+        let angle_rad = phase_out.angle;
+        self.controller
+            .set_actuation_advance(phase_out.velocity * dt * self.phase_advance_cycles);
 
         // HFI carrier for this cycle (zero for non-HFI sources). Must be
         // read between get() and update(): the estimator demodulates the
@@ -1094,6 +1100,11 @@ where
         };
         let currents = self.current_sensor.read_currents();
         let max_duty = self.pwm.max_duty();
+        // Same pipeline delay as closed loop; the commanded velocity is the
+        // exact frame rate (also clears any stale advance from a previous
+        // closed-loop cycle when velocity is 0).
+        self.controller
+            .set_actuation_advance(velocity_rad_s * dt * self.phase_advance_cycles);
         let out = self
             .controller
             .step(currents, angle, id_target, iq_target, max_duty, dt);

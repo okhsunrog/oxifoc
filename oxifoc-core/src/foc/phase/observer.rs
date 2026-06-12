@@ -1393,6 +1393,86 @@ mod tests {
         );
     }
 
+    /// The firmware feeds estimators the PREVIOUS cycle's voltage
+    /// (`update_phase_with_prev_voltage`): with a one-period actuation
+    /// pipeline, the currents measured now responded to the voltage
+    /// commanded one cycle ago. This pins that convention against a plant
+    /// that actually has the delay — previous-cycle pairing must match the
+    /// no-delay baseline, same-cycle pairing degrades roughly 2×.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn observer_prev_voltage_pairing_matches_actuation_delay() {
+        use crate::foc::controller::FocController;
+        use crate::foc::pi_controller::PIController;
+        use crate::foc::pwm::SvpwmModulator;
+        use crate::foc::transforms;
+        use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        const VBUS: f32 = 24.0;
+
+        // mean |angle error| of a passive observer after settling
+        let run = |delay: u8, prev_pairing: bool| -> f32 {
+            let params = MotorParams {
+                actuation_delay_steps: delay,
+                substeps: 10,
+                friction_b: 1.2e-3, // settle ≈ 1200 rad/s el
+                ..MotorParams::default()
+            };
+            let kp = params.ld * 1000.0;
+            let ki = params.r * 1000.0;
+            let mut foc = FocController::<SvpwmModulator>::new(VBUS);
+            foc.id_pi = PIController::new(kp, ki);
+            foc.iq_pi = PIController::new(kp, ki);
+            let mut motor = VirtualMotor::new(params);
+            let mut out = VirtualMotorOutput::default();
+            let mut obs =
+                BackEmfObserver::new(params.r, (params.ld + params.lq) / 2.0, params.lambda);
+            let (mut pva, mut pvb) = (0.0f32, 0.0f32);
+            let mut err_sum = 0.0f32;
+            let mut n = 0u32;
+            for step in 0..30_000 {
+                // commutation from the true rotor state (perfect estimator);
+                // the observer under test runs passively
+                foc.set_actuation_advance(out.omega_e * DT);
+                let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 4250, DT);
+                out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+                let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
+                let (va, vb) = if prev_pairing {
+                    (pva, pvb)
+                } else {
+                    (telem.v_alpha, telem.v_beta)
+                };
+                obs.update(&ObserverInput {
+                    v_alpha: va,
+                    v_beta: vb,
+                    i_alpha: i_a,
+                    i_beta: i_b,
+                    dt: DT,
+                });
+                pva = telem.v_alpha;
+                pvb = telem.v_beta;
+                if step >= 20_000 {
+                    err_sum += angle_difference(obs.phase(), wrap_angle(out.angle_rad)).abs();
+                    n += 1;
+                }
+            }
+            err_sum / n as f32
+        };
+
+        let baseline = run(0, false);
+        let faithful = run(1, true);
+        let naive = run(1, false);
+        assert!(
+            faithful < baseline * 1.2 + 0.01,
+            "prev-voltage pairing must match the no-delay baseline: {faithful} vs {baseline}"
+        );
+        assert!(
+            naive > faithful * 1.7,
+            "same-cycle pairing must visibly degrade on a delayed plant: {naive} vs {faithful}"
+        );
+    }
+
     #[test]
     fn test_observer_none() {
         let obs = Observer::None;

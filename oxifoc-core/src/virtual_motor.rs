@@ -111,6 +111,20 @@ pub struct MotorParams {
     /// stream is added to each reported phase current (before
     /// quantization). Deterministic seed → reproducible test runs.
     pub adc_noise_a: f32,
+    /// Actuation pipeline delay in whole `step()` calls (0 = none,
+    /// default; clamped to 3).
+    ///
+    /// Real hardware applies the voltage computed in ISR cycle N during
+    /// PWM period N+1 (timer registers latch on the update event), so the
+    /// rotor has moved `ωe·T_pwm` by the time the command acts — ~17°
+    /// electrical for a Flipsky-class motor at full speed. The firmware
+    /// compensates with `phase_advance_cycles` (foc_driver) and feeds
+    /// estimators the previous cycle's voltage
+    /// (`update_phase_with_prev_voltage`) — with `actuation_delay_steps =
+    /// 1` both of those conventions become exactly right in sim instead
+    /// of injecting the error they exist to cancel. `step_coast` /
+    /// `step_shorted` push zeros through the pipeline (gates off / low).
+    pub actuation_delay_steps: u8,
 }
 
 impl MotorParams {
@@ -151,6 +165,7 @@ impl Default for MotorParams {
             dead_time_v: 0.0,
             adc_lsb_a: 0.0,
             adc_noise_a: 0.0,
+            actuation_delay_steps: 0,
         }
     }
 }
@@ -202,6 +217,10 @@ pub struct VirtualMotor {
     // xorshift32 state for current-sensor noise (deterministic seed so
     // every test run sees the identical noise stream)
     rng: u32,
+    // Actuation pipeline ring buffer (αβ commands awaiting application);
+    // sized for the max supported delay of 3 steps.
+    v_ring: [(f32, f32); 4],
+    v_ring_idx: usize,
 }
 
 impl VirtualMotor {
@@ -216,7 +235,23 @@ impl VirtualMotor {
             sin_phi: 0.0,
             cos_phi: 1.0,
             rng: 0x6F78_6601, // "oxf\x01"
+            v_ring: [(0.0, 0.0); 4],
+            v_ring_idx: 0,
         }
+    }
+
+    /// Pass an αβ command through the actuation pipeline: returns the
+    /// command issued `actuation_delay_steps` calls ago (zeros until the
+    /// pipeline fills). Delay 0 is a transparent pass-through.
+    fn delayed_voltage(&mut self, v_alpha: f32, v_beta: f32) -> (f32, f32) {
+        let delay = (self.params.actuation_delay_steps as usize).min(3);
+        if delay == 0 {
+            return (v_alpha, v_beta);
+        }
+        let out = self.v_ring[(self.v_ring_idx + 4 - delay) % 4];
+        self.v_ring[self.v_ring_idx] = (v_alpha, v_beta);
+        self.v_ring_idx = (self.v_ring_idx + 1) % 4;
+        out
     }
 
     /// Next noise sample, uniform in [−1, 1) (xorshift32).
@@ -279,6 +314,8 @@ impl VirtualMotor {
     /// No current flows.  The only torque is the external load plus
     /// viscous friction.  The motor decelerates purely mechanically.
     pub fn step_coast(&mut self, load_torque: f32, dt: f32) -> VirtualMotorOutput {
+        // Gates off: nothing is commanded this cycle, the pipeline moves on.
+        let _ = self.delayed_voltage(0.0, 0.0);
         let p = self.params;
         let pp = p.pole_pairs as f32;
         let n = p.substeps.max(1);
@@ -351,6 +388,7 @@ impl VirtualMotor {
         dt: f32,
         switching: bool,
     ) -> VirtualMotorOutput {
+        let (v_alpha, v_beta) = self.delayed_voltage(v_alpha, v_beta);
         let p = self.params;
         let pp = p.pole_pairs as f32;
         let n = p.substeps.max(1);
@@ -784,6 +822,78 @@ mod tests {
         assert!(
             compensated < uncompensated * 0.5,
             "compensation must cancel most of the distortion: {compensated} vs {uncompensated}"
+        );
+    }
+
+    /// Pipeline-delay compensation must rotate the ACTUATION frame only.
+    ///
+    /// With `actuation_delay_steps = 1` the plant applies each command one
+    /// FOC period late. The firmware compensates via
+    /// `set_actuation_advance` (output-vector rotation); the original code
+    /// instead advanced the single commutation angle, which also advanced
+    /// the measurement Park — the PI then regulated the current vector
+    /// `δ = ωe·dt` off the true q axis (`id_true = −iq·sin δ`, ~29% of iq
+    /// for a Flipsky-class motor at full speed). The steady-state benefit
+    /// of the actuation-side advance itself is absorbed by the PI and is
+    /// not directly observable here; what this test pins is the frame
+    /// split — compensation must not displace the regulated current.
+    #[test]
+    fn actuation_advance_must_not_displace_current_vector() {
+        use crate::foc::transforms;
+        const DT: f32 = 1.0 / 20_000.0;
+        const VBUS: f32 = 24.0;
+
+        // true-frame mean d-current after settling
+        let run = |advance_measurement_frame: bool| -> f32 {
+            let params = MotorParams {
+                actuation_delay_steps: 1,
+                substeps: 10,
+                friction_b: 1.2e-3, // settle ≈ 1200 rad/s el (δ ≈ 0.06 rad)
+                ..MotorParams::default()
+            };
+            let kp = params.ld * 1000.0;
+            let ki = params.r * 1000.0;
+            let mut foc = FocController::<SvpwmModulator>::new(VBUS);
+            foc.id_pi = PIController::new(kp, ki);
+            foc.iq_pi = PIController::new(kp, ki);
+            let mut motor = VirtualMotor::new(params);
+            let mut out = VirtualMotorOutput::default();
+            let mut id_sum = 0.0f32;
+            let mut n = 0u32;
+            for step in 0..30_000 {
+                // Perfect estimator: true rotor state stands in for the
+                // phase provider.
+                let delta = out.omega_e * DT;
+                let (angle_cmd, advance) = if advance_measurement_frame {
+                    // the old firmware behavior: one advanced angle for both
+                    (crate::foc::wrap_angle(out.angle_rad + delta), 0.0)
+                } else {
+                    // the fixed path: raw Park + actuation-side rotation
+                    (out.angle_rad, delta)
+                };
+                foc.set_actuation_advance(advance);
+                let telem = foc.step((out.ia, out.ib, out.ic), angle_cmd, 0.0, 2.0, 4250, DT);
+                out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+                if step >= 20_000 {
+                    let (i_alpha, i_beta) = transforms::clarke(out.ia, out.ib);
+                    let (s, c) = (libm::sinf(out.angle_rad), libm::cosf(out.angle_rad));
+                    let (id, _) = transforms::park(i_alpha, i_beta, s, c);
+                    id_sum += id;
+                    n += 1;
+                }
+            }
+            id_sum / n as f32
+        };
+
+        let id_split = run(false).abs();
+        let id_both_frames = run(true).abs();
+        assert!(
+            id_both_frames > 0.08,
+            "advancing the measurement frame must displace the current vector: |id| = {id_both_frames}"
+        );
+        assert!(
+            id_split < 0.03,
+            "actuation-only advance must keep the true d-current clean: |id| = {id_split}"
         );
     }
 
