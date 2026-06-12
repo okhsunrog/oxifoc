@@ -7,6 +7,7 @@ docs do not accumulate "done".
 |---|---|---|
 | [architecture.md](architecture.md) | how it works NOW | edited together with the code; no history |
 | [safety.md](safety.md) | failsafe layers design | living design doc |
+| [bench-protocol.md](bench-protocol.md) | hardware bench session: tests, commands, analysis recipes | updated per session; results feed TODO/decisions |
 | [TODO.md](TODO.md) | OPEN work only | done items are deleted (history = git log + archive), never marked `[x]` |
 | [decisions.md](decisions.md) | decisions + why | append-only, 2–5 lines per decision + a pointer |
 | [flash-size.md](flash-size.md) | flash budget: numbers, rules, measured reserves | numbers refreshed via `just size`; the measurement history table stays |
