@@ -7,7 +7,14 @@
 /// Specifies where the electrical angle comes from for FOC control.
 /// Supports hardware sensors, software observers, and hybrid modes.
 #[derive(
-    Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    postcard_schema::Schema,
 )]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PhaseSource {
@@ -15,6 +22,7 @@ pub enum PhaseSource {
     // Direct hardware sensor
     // =========================================================================
     /// Use Hall sensor for angle
+    #[default]
     Hall,
 
     /// Use encoder for angle
@@ -108,13 +116,6 @@ pub enum PhaseSource {
         /// Minimum observer confidence (0.0-1.0)
         min_confidence: f32,
     },
-}
-
-#[allow(clippy::derivable_impls)] // Other variants have data, can't derive
-impl Default for PhaseSource {
-    fn default() -> Self {
-        Self::Hall
-    }
 }
 
 /// Error when setting phase source

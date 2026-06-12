@@ -578,7 +578,7 @@ pub enum TempSensorId {
 ///
 /// Platform-agnostic struct that can report ADC data to the host.
 /// Supports variable number of temperature sensors.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct AdcSnapshot {
     /// Phase A current (raw ADC counts)
     pub ia: u16,

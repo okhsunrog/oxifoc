@@ -331,7 +331,7 @@ pub struct TelemetryConfigAck {
 }
 
 /// Hardware information returned on initial handshake
-#[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 pub struct HardwareInfo {
     /// Hardware identifier (e.g., "B-G431B-ESC1")
     pub hw: String<32>,
@@ -345,19 +345,6 @@ pub struct HardwareInfo {
     pub foc_freq_hz: u32,
     /// Hardware peak current limit in Amps
     pub max_current_a: f32,
-}
-
-impl Default for HardwareInfo {
-    fn default() -> Self {
-        Self {
-            hw: String::new(),
-            sw: String::new(),
-            mcu: String::new(),
-            uuid: String::new(),
-            foc_freq_hz: 0,
-            max_current_a: 0.0,
-        }
-    }
 }
 
 // ============================================================================

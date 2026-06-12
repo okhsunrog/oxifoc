@@ -1254,7 +1254,7 @@ where
                 loop {
                     match stream.decode() {
                         Ok(frame) => {
-                            log_defmt_frame(frame.level(), &frame.display(false).to_string());
+                            log_defmt_frame(frame.level(), &frame.display(false));
                         }
                         Err(DecodeError::UnexpectedEof) => break,
                         Err(DecodeError::Malformed) => {
@@ -1304,7 +1304,7 @@ where
                     let msg = hdl.recv().await;
                     match table.decode(&msg.t.frame) {
                         Ok((frame, _)) => {
-                            log_defmt_frame(frame.level(), &frame.display(false).to_string());
+                            log_defmt_frame(frame.level(), &frame.display(false));
                         }
                         Err(DecodeError::UnexpectedEof) => error!("Unexpected EOF decoding defmt"),
                         Err(DecodeError::Malformed) => error!("Malformed defmt frame"),
@@ -1317,7 +1317,7 @@ where
     Ok(())
 }
 
-fn log_defmt_frame(level: Option<DefmtLevel>, msg: &str) {
+fn log_defmt_frame(level: Option<DefmtLevel>, msg: &impl std::fmt::Display) {
     match level {
         Some(DefmtLevel::Trace) => tracing::trace!(target: "device", "{}", msg),
         Some(DefmtLevel::Debug) => tracing::debug!(target: "device", "{}", msg),

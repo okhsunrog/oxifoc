@@ -559,7 +559,7 @@ where
     // registry here would bypass the host-acknowledged fault latch for
     // unrelated faults. A real latched OverCurrent cannot reach this line —
     // process_commands refuses the Stopped→active transition while any
-    // critical fault is registered.
+    // stopping-class fault is registered (`any_stopping`).
     if matches!(prev_mode, ControlMode::Stopped) && mode != ControlMode::Stopped {
         fault_registry.clear(FaultCategory::OverCurrent);
     }

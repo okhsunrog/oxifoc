@@ -140,7 +140,7 @@ impl CurrentLimits {
     /// `l_abs_current_max = i_max·1.5`), still capped by the board.
     ///
     /// `hw_max_a` is the board's ABS trip line — the same line the
-    /// per-phase ISR check (`check_current_faults`) kills at — NOT an iq
+    /// per-phase OC check in `run_foc_cycle` kills at — NOT an iq
     /// budget: the iq ceiling sits [`OVERCURRENT_HEADROOM`] below it.
     /// (Until 2026-06-12 the iq ceiling WAS the line, so a board-limit
     /// config met the per-phase Kill exactly at full throttle.) The same

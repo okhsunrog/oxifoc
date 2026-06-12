@@ -10,7 +10,7 @@
 /// This prevents overheating during resistance/inductance measurements.
 use crate::foc::fast_math::sqrtf;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MotorSize {
     /// Mini outrunner (~75g), 20W max power loss
@@ -18,6 +18,7 @@ pub enum MotorSize {
     /// Small motor (~200g), 50W max power loss
     Small,
     /// Medium motor (~750g), 120W max power loss
+    #[default]
     Medium,
     /// Large motor (~2kg), 400W max power loss
     Large,
@@ -64,13 +65,6 @@ impl MotorSize {
             Self::Medium | Self::Large => 4000.0,
             Self::Custom(_) => 4000.0,
         }
-    }
-}
-
-#[allow(clippy::derivable_impls)] // Can't derive Default with Custom(f32) variant
-impl Default for MotorSize {
-    fn default() -> Self {
-        Self::Medium
     }
 }
 
