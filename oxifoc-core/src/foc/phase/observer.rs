@@ -597,7 +597,21 @@ pub const HFI_DEFAULT_FREQ_HZ: f32 = 1000.0;
 
 /// Default HFI carrier amplitude as a fraction of vbus (3 V at 24 V — the
 /// operating point validated in the closed-loop sims; bench-tune per motor).
+/// Acts as the CEILING when the amplitude is solved from measured motor
+/// inductance (see [`HFI_CARRIER_RIPPLE_TARGET_A`]) — on low-L motors the
+/// raw ratio is dangerously large (3 V across an eskate outrunner's ~25 µH
+/// at 1 kHz would drive tens of amps of carrier ripple).
 pub const HFI_DEFAULT_AMPLITUDE_RATIO: f32 = 0.125;
+
+/// Target peak carrier ripple current (A) when the HFI amplitude is solved
+/// from measured motor inductance: `V = I_target · ω_c · L`. Large enough
+/// to clear a real ADC noise floor, small enough to stay a perturbation —
+/// the same reasoning as the detection-side adaptive amplitude
+/// (`HFI_RIPPLE_FRACTION` in detection/sweep.rs), but with a fixed target
+/// because there is no holding current to scale from at runtime.
+// Sole consumer (configure_observers_from_config) is storage-gated.
+#[cfg(feature = "storage")]
+pub const HFI_CARRIER_RIPPLE_TARGET_A: f32 = 2.0;
 
 /// Polarity probe: drive cycles per pulse. At 20 kHz this is 0.4 ms — with
 /// the carrier amplitude on Ld in the 100 µH range the current reaches
@@ -902,6 +916,26 @@ impl<S: SinCos> HfiObserver<S> {
     /// Set initial velocity estimate (for handoff from other source)
     pub fn set_velocity(&mut self, velocity: f32) {
         self.velocity_est = velocity;
+    }
+
+    /// Restart the demodulator state after a carrier-off period.
+    ///
+    /// While the carrier is not injected the demod filters hold whatever
+    /// they last saw — if `update()` was paused (the manager skips it when
+    /// the carrier is off), that is the STALE pre-pause state, and resuming
+    /// with it would report a spuriously high confidence for the first
+    /// cycles even though no carrier response has been measured yet. Zero
+    /// the carrier-content filters and mark the lock cold (`err_quality =
+    /// 1`, confidence collapses to 0 on the next update) so readiness has
+    /// to be re-earned from real carrier current. Phase, velocity and the
+    /// resolved polarity are kept — they are handoff state
+    /// ([`set_phase`](Self::set_phase)/[`set_velocity`](Self::set_velocity)),
+    /// not demod state.
+    pub fn restart_demod(&mut self) {
+        self.eps_filt = 0.0;
+        self.amp_d_filt = 0.0;
+        self.err_quality = 1.0;
+        self.confidence = 0.0;
     }
 }
 

@@ -9,7 +9,7 @@ counts) live in [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 
 | board | profile | flash used | region | headroom |
 |---|---|---|---|---|
-| g431 (B-G431B-ESC1) | **baked (the only profile)** | 113 056 | **128K** (no storage region) | **17.6 KB** |
+| g431 (B-G431B-ESC1) | **baked (the only profile)** | 113 456 | **128K** (no storage region) | **17.2 KB** |
 | g474 (Nucleo + IHM08M1) | storage | 161 040 | 256K (bank 1; bank 2 = config) | 99 KB |
 | f405 | storage | 245 860 | 768K (sectors 0–9) | 528 KB |
 
@@ -116,6 +116,7 @@ remaining "compiler flag" win; everything below is about code.
 | 2026-06-12 | detection review fixes: guaranteed-delivery `send_command` (async, ~27 await sites), adaptive HFI amplitude, magnitude flux method replacing q-axis in the per-step server, bus-voltage clamps | **+1 760 B** (108 620 → 110 380 baked) |
 | 2026-06-12 | **g431 storage profile removed** (see below) — that +1 760 B overflowed the 124K storage layout by ~700 B, forcing the standing decision | storage profile gone; baked unaffected |
 | 2026-06-12 | per-step detect server gets the same method ladders as `run_full_detection` (`measure_inductance_auto`: HFI → voltage-pulse fallback; `measure_flux_linkage_auto`: spin-down gate → driven) — the pulse machinery is now reachable from firmware | **+2 676 B** (110 380 → 113 056) |
+| 2026-06-12 | HFI run-gating (update+injection paired, off in non-Hfi sources — ~10% of the ISR budget back in the hall ride config), carrier pre-heat margin + `restart_demod`, amplitude solved from measured L | +400 B (→ 113 456) |
 
 Panic handler kept `defmt::error!("PANIC: {}", Display2Format(info))`:
 full panic text over RTT costs only 240 B once dependency fmt is gone
@@ -202,6 +203,11 @@ Measured 2026-06-11 by temporarily removing the root reference and
 letting fat LTO drop the subtree — re-verify when invoked, the numbers
 age:
 
+- **Runtime-HFI (HfiObserver + polarity probe + injection plumbing) за
+  отдельной фичей: не реализовано, оценить при надобности.** Протокольный
+  enum PhaseSource гейтить нельзя (postcard-индексы); менеджер уже
+  деградирует через `hfi: Option` + `HfiNotConfigured`. Решение НЕ делать
+  сейчас — decisions.md 2026-06-12.
 - **`detection` off: −14.7 KB.** The gate already exists
   (`oxifoc-core/detection`, default-on). Build the board with
   `default-features = false` + the rest of its feature list.

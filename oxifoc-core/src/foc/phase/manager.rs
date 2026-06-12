@@ -156,6 +156,11 @@ where
     // high-speed source (observer/hall/encoder), false = on HFI.
     crossover_latched: bool,
 
+    // Whether HFI (carrier + demod update) ran last cycle — a rising edge
+    // restarts the demod filters so stale pre-pause state can't masquerade
+    // as confidence (see HfiObserver::restart_demod).
+    hfi_was_active: bool,
+
     // |vq − R·iq| of the last update — back-EMF share of the drive voltage,
     // the regime signal for the voltage-based HFI crossover.
     bemf_proxy_v: f32,
@@ -186,6 +191,7 @@ impl PhaseManager<NoSensor, NoSensor> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             crossover_latched: false,
+            hfi_was_active: false,
             bemf_proxy_v: 0.0,
             faults: HeaplessVec::new(),
         }
@@ -210,6 +216,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             crossover_latched: false,
+            hfi_was_active: false,
             bemf_proxy_v: 0.0,
             faults: HeaplessVec::new(),
         }
@@ -232,6 +239,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             crossover_latched: self.crossover_latched,
+            hfi_was_active: self.hfi_was_active,
             bemf_proxy_v: self.bemf_proxy_v,
             faults: self.faults,
         }
@@ -257,6 +265,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             crossover_latched: self.crossover_latched,
+            hfi_was_active: self.hfi_was_active,
             bemf_proxy_v: self.bemf_proxy_v,
             faults: self.faults,
         }
@@ -281,6 +290,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             crossover_latched: false,
+            hfi_was_active: false,
             bemf_proxy_v: 0.0,
             faults: HeaplessVec::new(),
         }
@@ -829,18 +839,42 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         }
     }
 
-    /// Whether the HFI estimate is currently carrying (or may need to
-    /// carry) commutation, so its carrier must be injected. Above the
-    /// crossover latch the fast source commutates and injection stops —
-    /// keeping the carrier on at speed only costs losses and acoustic
-    /// noise while the saliency response degrades anyway.
-    fn hfi_injection_active(&self) -> bool {
+    /// Whether HFI runs this cycle: carrier injection AND the demod update
+    /// — always as a pair (a demod without carrier measures silence, a
+    /// carrier without demod is pure loss).
+    ///
+    /// Above the crossover latch the fast source commutates and HFI is off
+    /// entirely — keeping the carrier on at speed only costs losses and
+    /// acoustic noise while the saliency response degrades anyway, and
+    /// running the demod update without carrier is wasted ISR time (in
+    /// non-Hfi sources it never runs at all for the same reason).
+    ///
+    /// PRE-HEAT: in the latched regime HFI resumes one hysteresis band
+    /// EARLY — while the speed (or back-EMF proxy) is still a margin above
+    /// the latch-release threshold. The demod filters need several carrier
+    /// periods of real current to lock after a carrier-off gap
+    /// ([`HfiObserver::restart_demod`]); the margin buys that time for any
+    /// controller-bounded deceleration, so by the time the latch releases
+    /// and blend weight starts flowing to HFI it is already locked. The
+    /// margin deliberately does NOT try to cover mechanically-unbounded
+    /// deceleration (a wheel jam crosses any finite band instantly) — that
+    /// tail is covered by the trust gate instead: a cold demod reports
+    /// zero confidence, `angle_trustworthy()` stays false and the driver
+    /// keeps iq at zero for the few ms the lock takes.
+    fn hfi_active(&self) -> bool {
         match self.source {
             PhaseSource::Hfi => true,
-            PhaseSource::HfiToObserver { .. }
-            | PhaseSource::HfiToObserverVolts { .. }
-            | PhaseSource::HfiToHall { .. }
-            | PhaseSource::HfiToEncoder { .. } => !self.crossover_latched,
+            PhaseSource::HfiToObserver { min_vel, .. } => {
+                !self.crossover_latched
+                    || self.output.velocity.abs() < min_vel * (1.0 + CROSSOVER_HYSTERESIS)
+            }
+            PhaseSource::HfiToObserverVolts { toggle_v, .. } => {
+                !self.crossover_latched || self.bemf_proxy_v < toggle_v + HFI_VOLTS_HYSTERESIS
+            }
+            PhaseSource::HfiToHall { switch_vel } | PhaseSource::HfiToEncoder { switch_vel } => {
+                !self.crossover_latched
+                    || self.output.velocity.abs() < switch_vel * (1.0 + CROSSOVER_HYSTERESIS)
+            }
             _ => false,
         }
     }
@@ -944,7 +978,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             self.bemf_proxy_v = if bemf < 0.0 { -bemf } else { bemf };
         }
 
-        // Update both estimators (always run, for fallback/crossover)
+        // Update the estimators. The back-EMF observer always runs — it is
+        // the fallback/crossover target for every source and has its own
+        // signal (back-EMF) regardless of mode. HFI runs only while its
+        // carrier is injected (see hfi_active()): without carrier the demod
+        // measures silence — pure wasted ISR time, ~10% of the cycle budget
+        // in the default hall ride configuration. A rising edge restarts
+        // the demod filters so the stale pre-pause state can't masquerade
+        // as confidence.
         let obs_input = ObserverInput {
             v_alpha: input.v_alpha,
             v_beta: input.v_beta,
@@ -953,9 +994,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             dt: input.dt,
         };
         self.observer.update(&obs_input);
-        if let Some(hfi) = &mut self.hfi {
+        let hfi_active = self.hfi_active();
+        if hfi_active && let Some(hfi) = &mut self.hfi {
+            if !self.hfi_was_active {
+                hfi.restart_demod();
+            }
             hfi.update(&obs_input);
         }
+        self.hfi_was_active = hfi_active;
 
         // Advance open-loop angle if in OpenLoop mode
         if matches!(self.source, PhaseSource::OpenLoop) {
@@ -1000,7 +1046,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     }
 
     fn injection(&self) -> (f32, f32) {
-        if self.hfi_injection_active()
+        if self.hfi_active()
             && let Some(hfi) = &self.hfi
         {
             hfi.get_injection()
@@ -1047,10 +1093,17 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 obs = obs.with_saliency(mp.inductance_d_h, mp.inductance_q_h);
             }
             self.set_observer(Observer::BackEmf(obs));
-            self.set_hfi_observer(
-                HfiObserver::new(HFI_DEFAULT_FREQ_HZ, vbus * HFI_DEFAULT_AMPLITUDE_RATIO)
-                    .with_sincos(),
-            );
+            // Carrier amplitude solved from the measured inductance for a
+            // target ripple current, ceilinged by the legacy vbus ratio:
+            // on a low-L outrunner (25 µH eskate motor) the raw ratio
+            // would drive tens of amps of carrier ripple; on high-L motors
+            // the solve exceeds the ceiling and the ratio default applies
+            // unchanged.
+            let omega_c = HFI_DEFAULT_FREQ_HZ * core::f32::consts::TAU;
+            let amplitude = (super::observer::HFI_CARRIER_RIPPLE_TARGET_A * omega_c * l_avg)
+                .min(vbus * HFI_DEFAULT_AMPLITUDE_RATIO)
+                .max(0.05);
+            self.set_hfi_observer(HfiObserver::new(HFI_DEFAULT_FREQ_HZ, amplitude).with_sincos());
         }
     }
 }
@@ -1214,7 +1267,9 @@ mod tests {
         assert!(vd.abs() > 1.0, "expected carrier voltage, got vd = {}", vd);
         assert_eq!(vq, 0.0, "pulsating injection is d-axis only");
 
-        // Crossover source: inject below the latch, stop above it.
+        // Crossover source: inject below the latch; above the latch the
+        // carrier stays on only inside the pre-heat margin
+        // (speed < min_vel·(1+CROSSOVER_HYSTERESIS)) and stops above it.
         phase
             .set_source(PhaseSource::HfiToObserver {
                 min_vel: 100.0,
@@ -1223,6 +1278,15 @@ mod tests {
             .unwrap();
         assert!(phase.injection().0.abs() > 1.0);
         phase.crossover_latched = true;
+        // Latched but near the release threshold: pre-heat — carrier back
+        // on so the demod locks before any blend weight arrives.
+        phase.output.velocity = 110.0;
+        assert!(
+            phase.injection().0.abs() > 1.0,
+            "carrier must pre-heat inside the margin above the latch"
+        );
+        // Latched and clear of the band: carrier off.
+        phase.output.velocity = 100.0 * (1.0 + CROSSOVER_HYSTERESIS) + 10.0;
         assert_eq!(phase.injection(), (0.0, 0.0));
     }
 
@@ -1819,6 +1883,12 @@ mod tests {
         const TOTAL_STEPS: u64 = 80_000;
         let mut spun_up = false;
         let mut was_latched_at_speed = false;
+        // Downward-handoff instrumentation: the carrier must resume in the
+        // pre-heat margin while still latched, and the demod must be locked
+        // by the moment the latch releases (blend weight returns to HFI).
+        let mut preheat_seen = false;
+        let mut released_with_ready: Option<bool> = None;
+        let mut was_latched = false;
         for step in 1..TOTAL_STEPS {
             let iq_target = if (STANDSTILL_STEPS..SPIN_STEPS).contains(&step) {
                 2.0
@@ -1857,6 +1927,20 @@ mod tests {
                 spun_up = out.omega_e > MIN_VEL * 1.5;
                 // Fully blended at speed → the carrier must be off.
                 was_latched_at_speed = mgr.injection() == (0.0, 0.0);
+            }
+
+            // Downward handoff (coast phase): pre-heat + lock-before-weight.
+            if step > SPIN_STEPS {
+                let latched_now = mgr.crossover_latched;
+                if latched_now && mgr.injection() != (0.0, 0.0) {
+                    preheat_seen = true;
+                }
+                if was_latched && !latched_now && released_with_ready.is_none() {
+                    released_with_ready = Some(mgr.hfi_observer().is_some_and(|h| h.is_ready()));
+                }
+                was_latched = latched_now;
+            } else {
+                was_latched = mgr.crossover_latched;
             }
 
             if step == STANDSTILL_STEPS - 1 {
@@ -1919,6 +2003,174 @@ mod tests {
             max_step_at_speed < nominal_step + 0.15,
             "angle jumped {} rad in one cycle through a crossover",
             max_step_at_speed
+        );
+
+        // Pre-heat: the carrier resumed in the margin while still latched —
+        // i.e. before any blend weight could flow back to HFI…
+        assert!(
+            preheat_seen,
+            "carrier must pre-heat inside the margin above the latch release"
+        );
+        // …and by the moment the latch released, the demod had re-locked
+        // (confidence-before-weight). Without the pre-heat margin the demod
+        // enters the band cold and this fails.
+        assert_eq!(
+            released_with_ready,
+            Some(true),
+            "HFI demod must be locked before blend weight returns to it"
+        );
+    }
+
+    /// Mechanically-unbounded deceleration (wheel jam) crosses any finite
+    /// pre-heat margin instantly — that tail is covered by the TRUST GATE,
+    /// not the margin: the restarted demod reports zero confidence, so
+    /// `angle_trustworthy()` must stay false (driver keeps iq at zero)
+    /// until the lock is re-earned from real carrier current, and recover
+    /// at standstill afterwards. This is the explicit scope split: the
+    /// margin handles controller-bounded decel (test above), the gate
+    /// handles the unbounded case (this test).
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn closed_loop_hfi_jam_gates_torque_until_relock() {
+        use crate::foc::controller::FocController;
+        use crate::foc::phase::{BackEmfObserver, HfiObserver, Observer};
+        use crate::foc::pwm::SvpwmModulator;
+        use crate::foc::transforms;
+        use crate::foc::trig::LibmSinCos;
+        use crate::virtual_motor::{MotorParams, VirtualMotor};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        const MIN_VEL: f32 = 150.0;
+        let params = MotorParams {
+            r: 0.1,
+            ld: 100e-6,
+            lq: 300e-6,
+            lambda: 0.02,
+            pole_pairs: 4,
+            j: 1e-3,
+            friction_b: 2e-3,
+            hall_offset: 0.0,
+            sat_k: 0.05,
+        };
+        let mut motor = VirtualMotor::new(params);
+
+        let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            24.0,
+        );
+
+        let mut mgr = PhaseManager::sensorless();
+        mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            params.lambda,
+        )));
+        mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+        mgr.set_source(PhaseSource::HfiToObserver {
+            min_vel: MIN_VEL,
+            min_confidence: 0.5,
+        })
+        .unwrap();
+
+        let mut out = crate::virtual_motor::VirtualMotorOutput::default();
+
+        // Phase 1: standstill HFI lock + polarity. Phase 2: spin up into
+        // the latched regime. Phase 3: JAM — a brake torque far beyond the
+        // motor's own, stopping the rotor within a few ms.
+        const STANDSTILL_STEPS: u64 = 10_000;
+        const SPIN_STEPS: u64 = 40_000;
+        const TOTAL_STEPS: u64 = 60_000;
+
+        let mut latched_at_speed = false;
+        let mut cold_gate_seen = false;
+        let mut trustworthy_during_cold = true;
+        for step in 1..TOTAL_STEPS {
+            let iq_target = if (STANDSTILL_STEPS..SPIN_STEPS).contains(&step) {
+                2.0
+            } else {
+                0.0
+            };
+            // The jam: 50 N·m of external braking while the rotor still
+            // turns forward (pp/J scaled, that is ~200 krad/s² — any
+            // pre-heat margin is crossed in well under a millisecond).
+            let load = if step >= SPIN_STEPS && out.omega_e > 2.0 {
+                50.0
+            } else {
+                0.0
+            };
+
+            let angle = mgr.get().angle;
+            let (vd_inj, vq_inj) = mgr.injection();
+            let telem = foc.step_with_injection(
+                (out.ia, out.ib, out.ic),
+                angle,
+                0.0,
+                0.0,
+                iq_target,
+                vd_inj,
+                vq_inj,
+                1000,
+                DT,
+            );
+            out = motor.step(telem.v_alpha, telem.v_beta, load, DT);
+
+            let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
+            mgr.update(
+                &PhaseInput {
+                    v_alpha: telem.v_alpha,
+                    v_beta: telem.v_beta,
+                    i_alpha: i_a,
+                    i_beta: i_b,
+                    dt: DT,
+                },
+                step * 50,
+            );
+
+            if step == SPIN_STEPS - 1 {
+                latched_at_speed = mgr.crossover_latched && out.omega_e > MIN_VEL * 1.5;
+            }
+
+            // After the jam: the cold window is "latch released, demod not
+            // yet ready". The trust gate must hold iq at zero throughout it.
+            if step > SPIN_STEPS && !mgr.crossover_latched {
+                let hfi_ready = mgr.hfi_observer().is_some_and(|h| h.is_ready());
+                if !hfi_ready {
+                    cold_gate_seen = true;
+                    if mgr.angle_trustworthy() && !mgr.observer().is_ready() {
+                        trustworthy_during_cold = false;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            latched_at_speed,
+            "motor must reach the latched regime before the jam"
+        );
+        assert!(
+            out.omega_e.abs() < 10.0,
+            "jam must have stopped the rotor: ωe = {}",
+            out.omega_e
+        );
+        assert!(
+            cold_gate_seen,
+            "the jam must produce a cold-demod window after latch release"
+        );
+        assert!(
+            trustworthy_during_cold,
+            "angle_trustworthy() must be false while the demod is cold \
+             (the driver's iq gate is the only cover for unbounded decel)"
+        );
+        // Recovery: at standstill the carrier is on, the demod re-locks and
+        // commutation trust returns.
+        assert!(
+            mgr.hfi_observer().is_some_and(|h| h.is_ready()),
+            "HFI must re-lock at standstill after the jam"
+        );
+        assert!(
+            mgr.angle_trustworthy(),
+            "trust must recover once the demod is locked"
         );
     }
 
