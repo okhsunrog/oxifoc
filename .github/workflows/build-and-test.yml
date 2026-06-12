@@ -12,6 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # A stale git rev in one of the ~10 excluded-crate lock files once
+      # survived unnoticed until an on-target build failed; check directly.
+      - name: git-rev sync across lock files
+        run: python3 scripts/check-git-rev-sync.py
+
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:

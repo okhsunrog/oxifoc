@@ -15,6 +15,8 @@ check:
 check-host:
     #!/usr/bin/env bash
     set -euo pipefail
+    echo "git-rev sync across lock files..."
+    python3 scripts/check-git-rev-sync.py
     echo "rustfmt (workspace)..."
     cargo fmt --check --all
     echo "clippy (workspace)..."
