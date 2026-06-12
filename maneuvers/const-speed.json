@@ -1,0 +1,27 @@
+{
+  "name": "const-speed-id-check",
+  "description": "Hold a constant velocity and inspect mean id over the steady window: it must be centered near zero after the hall boundary-anchor and phase-advance-split fixes (a systematic id offset growing with speed = commutation angle bias).",
+  "capture": {
+    "fast_hz": 5000,
+    "tail_s": 0.5
+  },
+  "terminal": "stop",
+  "timeline": [
+    {
+      "t": 0.5,
+      "cmd": {
+        "velocity": {
+          "rad_s": 300.0
+        }
+      }
+    },
+    {
+      "t": 6.0,
+      "cmd": {
+        "velocity": {
+          "rad_s": 0.0
+        }
+      }
+    }
+  ]
+}

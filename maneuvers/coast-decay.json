@@ -1,0 +1,25 @@
+{
+  "name": "coast-decay",
+  "description": "Spin up under torque, then coast: the erpm decay shape gives friction (viscous = exponential, coulomb = linear tail), and on hardware with BEMF sensing the coast window is the lambda ground truth.",
+  "capture": {
+    "fast_hz": 2000,
+    "tail_s": 3.0
+  },
+  "terminal": "stop",
+  "timeline": [
+    {
+      "t": 0.5,
+      "cmd": {
+        "start": {
+          "iq": 2.0
+        }
+      }
+    },
+    {
+      "t": 3.0,
+      "cmd": {
+        "coast": {}
+      }
+    }
+  ]
+}

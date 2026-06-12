@@ -1,0 +1,27 @@
+{
+  "name": "iq-step-2A",
+  "description": "Current-loop step response: 0 -> 2 A -> 0. Diff the iq rise/settle against the same maneuver on oxifoc-virtual to validate PI gains and pipeline latency.",
+  "capture": {
+    "fast_hz": 5000,
+    "tail_s": 1.0
+  },
+  "terminal": "stop",
+  "timeline": [
+    {
+      "t": 0.5,
+      "cmd": {
+        "start": {
+          "iq": 2.0
+        }
+      }
+    },
+    {
+      "t": 2.5,
+      "cmd": {
+        "start": {
+          "iq": 0.0
+        }
+      }
+    }
+  ]
+}

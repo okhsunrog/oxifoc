@@ -64,6 +64,159 @@ pub fn latest_hw_info(runtime: &HostRuntime) -> Option<HardwareInfo> {
     latest
 }
 
+/// A streaming capture in progress: device acked the rate, the warm-up
+/// transient has been discarded, samples accumulate via [`Self::drain_until`].
+pub struct Capture {
+    pub hw: Option<HardwareInfo>,
+    pub fast_hz_requested: u16,
+    pub fast_hz_actual: u16,
+    pub decimation_m: u32,
+    pub samples: Vec<FastTelemetry>,
+    pub started: Instant,
+}
+
+impl Capture {
+    /// Enable streaming, wait for the device ack, eat the enable transient.
+    pub fn start(runtime: &HostRuntime, fast_hz: u16) -> Result<Self> {
+        if fast_hz == 0 {
+            bail!("fast_hz must be nonzero for a capture");
+        }
+        let hw = latest_hw_info(runtime);
+        runtime
+            .cmd_tx
+            .send(HostCommand::SetTelemetryConfig(TelemetryConfig { fast_hz }))
+            .context("send telemetry config")?;
+        let ack_deadline = Instant::now() + Duration::from_secs(3);
+        let fast_hz_actual = loop {
+            let v = runtime.fast_hz.load(Ordering::Relaxed);
+            if v != 0 {
+                break v;
+            }
+            if Instant::now() >= ack_deadline {
+                bail!("device did not acknowledge telemetry config within 3 s");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let foc_freq_hz = hw.as_ref().map(|h| h.foc_freq_hz).unwrap_or(0);
+        let decimation_m = if foc_freq_hz > 0 {
+            foc_freq_hz / fast_hz_actual as u32
+        } else {
+            0
+        };
+
+        // Warm-up: the enable transient (queue wrap before the device stream
+        // task wakes) produces a guaranteed gap at the head of the stream.
+        // Let it pass, then drain everything stale so the capture starts on
+        // steady-state data only.
+        std::thread::sleep(Duration::from_millis(150));
+        while runtime.fast_rx.try_recv().is_ok() {}
+
+        Ok(Self {
+            hw,
+            fast_hz_requested: fast_hz,
+            fast_hz_actual,
+            decimation_m,
+            samples: Vec::new(),
+            started: Instant::now(),
+        })
+    }
+
+    /// Collect samples until `deadline` (host clock).
+    pub fn drain_until(&mut self, runtime: &HostRuntime, deadline: Instant) -> Result<()> {
+        while Instant::now() < deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let timeout = left.min(Duration::from_millis(100));
+            match runtime.fast_rx.recv_timeout(timeout) {
+                Ok(s) => self.samples.push(s),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    bail!("telemetry channel disconnected mid-capture")
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Raw device seq of the latest sample seen (event↔sample anchor).
+    pub fn last_seq(&self) -> Option<u32> {
+        self.samples.last().map(|s| s.seq)
+    }
+
+    /// Disable streaming (best effort).
+    pub fn stop(&self, runtime: &HostRuntime) {
+        let _ = runtime
+            .cmd_tx
+            .send(HostCommand::SetTelemetryConfig(TelemetryConfig {
+                fast_hz: 0,
+            }));
+    }
+
+    /// Expected seq step between consecutive samples.
+    pub fn expected_step(&self) -> u32 {
+        if self.decimation_m > 0 {
+            self.decimation_m
+        } else {
+            // Unknown FOC frequency: infer the step as the smallest observed delta.
+            self.samples
+                .windows(2)
+                .map(|w| w[1].seq.wrapping_sub(w[0].seq))
+                .filter(|&d| d > 0)
+                .min()
+                .unwrap_or(1)
+        }
+    }
+
+    /// (gap count, total samples lost) over raw seq deltas.
+    pub fn analyze_gaps(&self) -> (usize, u64) {
+        let expected_step = self.expected_step();
+        let mut gaps = 0usize;
+        let mut samples_lost = 0u64;
+        for w in self.samples.windows(2) {
+            let d = w[1].seq.wrapping_sub(w[0].seq);
+            if d > expected_step {
+                gaps += 1;
+                samples_lost += ((d - expected_step) / expected_step) as u64;
+            }
+        }
+        (gaps, samples_lost)
+    }
+
+    /// Write the capture and produce the summary. `extra_meta` lands in the
+    /// parquet key-value metadata (e.g. the maneuver event log).
+    pub fn finish(
+        &self,
+        out_path: &str,
+        config_snapshot: &serde_json::Value,
+        extra_meta: &[(String, String)],
+    ) -> Result<RecordSummary> {
+        if self.samples.is_empty() {
+            bail!("no telemetry received — is the device connected and streaming?");
+        }
+        let (gaps, samples_lost) = self.analyze_gaps();
+        write_parquet(
+            out_path,
+            &self.samples,
+            self.hw.as_ref(),
+            self.fast_hz_requested,
+            self.fast_hz_actual,
+            self.expected_step(),
+            config_snapshot,
+            gaps,
+            samples_lost,
+            extra_meta,
+        )?;
+        Ok(RecordSummary {
+            path: out_path.to_string(),
+            rows: self.samples.len(),
+            fast_hz_actual: self.fast_hz_actual,
+            decimation_m: self.expected_step(),
+            duration_s: self.started.elapsed().as_secs_f64(),
+            gaps,
+            samples_lost,
+        })
+    }
+}
+
 pub fn record(
     runtime: &HostRuntime,
     out_path: &str,
@@ -71,111 +224,12 @@ pub fn record(
     fast_hz: u16,
     config_snapshot: serde_json::Value,
 ) -> Result<RecordSummary> {
-    if fast_hz == 0 {
-        bail!("--fast-hz must be nonzero for record");
-    }
-
-    let hw = latest_hw_info(runtime);
-
-    // Enable streaming and wait for the device ack (the backend stores the
-    // actual achievable rate in runtime.fast_hz).
-    runtime
-        .cmd_tx
-        .send(HostCommand::SetTelemetryConfig(TelemetryConfig { fast_hz }))
-        .context("send telemetry config")?;
-    let ack_deadline = Instant::now() + Duration::from_secs(3);
-    let fast_hz_actual = loop {
-        let v = runtime.fast_hz.load(Ordering::Relaxed);
-        if v != 0 {
-            break v;
-        }
-        if Instant::now() >= ack_deadline {
-            bail!("device did not acknowledge telemetry config within 3 s");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-
-    let foc_freq_hz = hw.as_ref().map(|h| h.foc_freq_hz).unwrap_or(0);
-    let decimation_m = if foc_freq_hz > 0 {
-        foc_freq_hz / fast_hz_actual as u32
-    } else {
-        0
-    };
-
-    // Warm-up: the enable transient (queue wrap before the device stream
-    // task wakes) produces a guaranteed gap at the head of the stream.
-    // Let it pass, then drain everything stale so the capture starts on
-    // steady-state data only.
-    std::thread::sleep(Duration::from_millis(150));
-    while runtime.fast_rx.try_recv().is_ok() {}
-    let mut samples: Vec<FastTelemetry> = Vec::new();
-    let started = Instant::now();
-    let deadline = started + Duration::from_secs_f64(seconds);
-    while Instant::now() < deadline {
-        match runtime.fast_rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(s) => samples.push(s),
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                bail!("telemetry channel disconnected mid-capture")
-            }
-        }
-    }
-    let duration_s = started.elapsed().as_secs_f64();
-
-    // Stop streaming (best effort).
-    let _ = runtime
-        .cmd_tx
-        .send(HostCommand::SetTelemetryConfig(TelemetryConfig {
-            fast_hz: 0,
-        }));
-
-    if samples.is_empty() {
-        bail!("no telemetry received — is the device connected and streaming?");
-    }
-
-    // Gap analysis on raw seq deltas.
-    let expected_step = if decimation_m > 0 {
-        decimation_m
-    } else {
-        // Unknown FOC frequency: infer the step as the smallest observed delta.
-        samples
-            .windows(2)
-            .map(|w| w[1].seq.wrapping_sub(w[0].seq))
-            .filter(|&d| d > 0)
-            .min()
-            .unwrap_or(1)
-    };
-    let mut gaps = 0usize;
-    let mut samples_lost = 0u64;
-    for w in samples.windows(2) {
-        let d = w[1].seq.wrapping_sub(w[0].seq);
-        if d > expected_step {
-            gaps += 1;
-            samples_lost += ((d - expected_step) / expected_step) as u64;
-        }
-    }
-
-    write_parquet(
-        out_path,
-        &samples,
-        hw.as_ref(),
-        fast_hz,
-        fast_hz_actual,
-        expected_step,
-        &config_snapshot,
-        gaps,
-        samples_lost,
-    )?;
-
-    Ok(RecordSummary {
-        path: out_path.to_string(),
-        rows: samples.len(),
-        fast_hz_actual,
-        decimation_m: expected_step,
-        duration_s,
-        gaps,
-        samples_lost,
-    })
+    let mut cap = Capture::start(runtime, fast_hz)?;
+    let deadline = cap.started + Duration::from_secs_f64(seconds);
+    let drained = cap.drain_until(runtime, deadline);
+    cap.stop(runtime);
+    drained?;
+    cap.finish(out_path, &config_snapshot, &[])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -189,6 +243,7 @@ fn write_parquet(
     config_snapshot: &serde_json::Value,
     gaps: usize,
     samples_lost: u64,
+    extra_meta: &[(String, String)],
 ) -> Result<()> {
     let kv = |k: &str, v: String| KeyValue {
         key: k.to_string(),
@@ -219,6 +274,9 @@ fn write_parquet(
         kv("oxifoc.seq_gaps", gaps.to_string()),
         kv("oxifoc.samples_lost", samples_lost.to_string()),
     ];
+    for (k, v) in extra_meta {
+        meta.push(kv(k, v.clone()));
+    }
     if let Some(h) = hw {
         meta.push(kv("oxifoc.hw", h.hw.to_string()));
         meta.push(kv("oxifoc.sw", h.sw.to_string()));

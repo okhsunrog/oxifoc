@@ -7,6 +7,7 @@
 //! telemetry into parquet files with full provenance metadata.
 
 mod config_cli;
+mod maneuver;
 mod record;
 
 use std::sync::atomic::Ordering;
@@ -23,7 +24,7 @@ use serde_json::json;
 
 /// Send a motor command and wait for the device's acknowledgement — the
 /// process must exit nonzero when the command never reached the device.
-fn send_motor_acked(
+pub(crate) fn send_motor_acked(
     runtime: &HostRuntime,
     mode: ControlMode,
 ) -> Result<oxifoc_core::types::MotorStatus> {
@@ -411,6 +412,11 @@ enum Command {
         )]
         allow_gaps: bool,
     },
+    /// Run or validate a scripted experiment (timed commands + capture)
+    Maneuver {
+        #[command(subcommand)]
+        action: ManeuverAction,
+    },
     /// Device configuration operations
     Config {
         #[command(subcommand)]
@@ -444,6 +450,29 @@ enum Command {
             help = "Write the measured values into the motor-params config group"
         )]
         apply: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ManeuverAction {
+    /// Execute a maneuver file against the device, recording to parquet
+    Run {
+        #[arg(help = "Maneuver JSON file")]
+        file: String,
+        #[arg(short, long, help = "Output parquet file path")]
+        out: String,
+        #[arg(long, help = "Skip the device current-limits check")]
+        force: bool,
+        #[arg(
+            long,
+            help = "Exit 0 even when frames were dropped (default: gaps fail the capture)"
+        )]
+        allow_gaps: bool,
+    },
+    /// Validate a maneuver file offline (no device needed)
+    Validate {
+        #[arg(help = "Maneuver JSON file")]
+        file: String,
     },
 }
 
@@ -500,6 +529,20 @@ fn main() -> Result<()> {
     // Handle list command separately (doesn't need connection)
     if matches!(cli.command, Command::List) {
         return list_devices(json);
+    }
+
+    // Maneuver validation is offline too.
+    if let Command::Maneuver {
+        action: ManeuverAction::Validate { ref file },
+    } = cli.command
+    {
+        let m = maneuver::load(file)?;
+        emit(
+            json,
+            json!({"valid": true, "name": m.name, "steps": m.timeline.len()}),
+            format!("{file}: ok — '{}', {} step(s)", m.name, m.timeline.len()),
+        );
+        return Ok(());
     }
 
     // Build config from CLI args or load from file
@@ -757,6 +800,39 @@ fn main() -> Result<()> {
                 );
             }
         }
+        Command::Maneuver { action } => match action {
+            ManeuverAction::Validate { .. } => unreachable!(), // handled above
+            ManeuverAction::Run {
+                file,
+                out,
+                force,
+                allow_gaps,
+            } => {
+                let m = maneuver::load(&file)?;
+                let snapshot = config_snapshot(&runtime);
+                let summary = maneuver::run(&runtime, &m, &out, force, snapshot)?;
+                emit(
+                    json,
+                    maneuver::summary_json(&summary),
+                    format!(
+                        "{}: '{}' done — {} event(s), {} rows at {} Hz, {} gap(s), {} sample(s) lost",
+                        summary.record.path,
+                        summary.maneuver,
+                        summary.events.len(),
+                        summary.record.rows,
+                        summary.record.fast_hz_actual,
+                        summary.record.gaps,
+                        summary.record.samples_lost,
+                    ),
+                );
+                if summary.record.samples_lost > 0 && !allow_gaps {
+                    bail!(
+                        "capture has {} dropped sample(s); rerun at a lower fast_hz or pass --allow-gaps",
+                        summary.record.samples_lost
+                    );
+                }
+            }
+        },
         Command::Config { action } => match action {
             ConfigAction::Dump { rust } => dump_config(&runtime, rust, json)?,
             ConfigAction::Get { group } => {
