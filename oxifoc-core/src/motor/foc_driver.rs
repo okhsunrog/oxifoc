@@ -1583,9 +1583,6 @@ mod tests {
             fn details(&self) -> heapless::String<128> {
                 heapless::String::new()
             }
-            fn is_recoverable(&self) -> bool {
-                false
-            }
         }
 
         let state: CriticalSectionMutex<RefCell<MotorControlState>> =
@@ -1649,9 +1646,6 @@ mod tests {
             }
             fn details(&self) -> heapless::String<128> {
                 heapless::String::new()
-            }
-            fn is_recoverable(&self) -> bool {
-                false
             }
         }
 
@@ -1747,9 +1741,6 @@ mod tests {
             fn details(&self) -> heapless::String<128> {
                 heapless::String::new()
             }
-            fn is_recoverable(&self) -> bool {
-                false
-            }
         }
 
         let state: CriticalSectionMutex<RefCell<MotorControlState>> =
@@ -1823,9 +1814,6 @@ mod tests {
             }
             fn details(&self) -> heapless::String<128> {
                 heapless::String::new()
-            }
-            fn is_recoverable(&self) -> bool {
-                false
             }
         }
 
@@ -2020,9 +2008,6 @@ mod tests {
             }
             fn details(&self) -> heapless::String<128> {
                 heapless::String::new()
-            }
-            fn is_recoverable(&self) -> bool {
-                false
             }
         }
 
@@ -2791,9 +2776,6 @@ mod tests {
             }
             fn details(&self) -> heapless::String<128> {
                 heapless::String::new()
-            }
-            fn is_recoverable(&self) -> bool {
-                false
             }
             fn from_hall_kind(_kind: HallFaultKind) -> Option<Self> {
                 Some(Self::Hall)

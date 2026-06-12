@@ -95,15 +95,6 @@ impl PlatformFault for F405Fault {
         s
     }
 
-    fn is_recoverable(&self) -> bool {
-        // UnderVoltage clears via the voltage hysteresis check; CommTimeout
-        // clears in run_foc_cycle when commands flow again.
-        matches!(
-            self,
-            Self::UnderVoltage | Self::CommTimeout | Self::Derating
-        )
-    }
-
     // severity(): central per-category policy (FaultCategory::severity).
     // OverTemp is GracefulStop, not Kill — "must not restart while hot"
     // survives via the any_stopping() start gate (no auto-clear on OT).

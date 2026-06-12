@@ -35,7 +35,7 @@ use oxifoc_core::runtime::streaming::fast_telemetry_stream;
 use oxifoc_core::state::MotorControlState;
 use oxifoc_core::storage::RuntimeConfig;
 
-use crate::fault::VirtualFault;
+use oxifoc_core::foc::fault::StandardFault;
 
 const ERGOT_MTU: u16 = 2048;
 
@@ -56,7 +56,7 @@ pub async fn run(
     vbus: f32,
     motor_params: MotorParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-    fault_registry: &'static FaultRegistry<VirtualFault>,
+    fault_registry: &'static FaultRegistry<StandardFault>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;

@@ -1,5 +1,4 @@
 mod detect;
-mod fault;
 mod sim;
 mod storage;
 mod tcp_server;
@@ -24,7 +23,7 @@ use oxifoc_core::virtual_motor::MotorParams;
 use tracing_subscriber::EnvFilter;
 
 // Platform state globals
-oxifoc_core::define_platform_state!(fault::VirtualFault);
+oxifoc_core::define_platform_state!(oxifoc_core::foc::fault::StandardFault);
 
 // Runtime config shared between config server and simulation
 static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig>> =

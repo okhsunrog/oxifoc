@@ -16,7 +16,7 @@ use oxifoc_core::state::{self, CMD_CHANNEL, MotorControlState};
 use oxifoc_core::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 use tracing::info;
 
-use crate::fault::VirtualFault;
+use oxifoc_core::foc::fault::StandardFault;
 
 /// Run the FOC simulation loop.
 pub async fn foc_loop(
@@ -26,7 +26,7 @@ pub async fn foc_loop(
     load_torque: f32,
     params: MotorParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-    fault_registry: &'static FaultRegistry<VirtualFault>,
+    fault_registry: &'static FaultRegistry<StandardFault>,
 ) {
     let _ = fault_registry; // available for future fault injection
 

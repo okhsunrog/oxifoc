@@ -18,7 +18,6 @@ use embassy_time::{Duration, Timer};
 mod calibration;
 mod config;
 mod cordic;
-pub mod fault;
 mod foc;
 mod hardware;
 mod motor;
@@ -35,7 +34,7 @@ mod transport;
 use hardware::{AssignedResources, HallResources, MotorResources, StorageResources};
 
 // Define platform state with our fault type
-oxifoc_core::define_platform_state!(fault::G431Fault);
+oxifoc_core::define_platform_state!(oxifoc_core::foc::fault::StandardFault);
 use motor::MotorPwm;
 use protocol::{DeviceState, RECV_BUF, SCRATCH_BUF, get_device_state, set_device_state};
 

@@ -27,7 +27,7 @@ use crate::sensors::hall;
 
 use crate::config::{BOARD, NTC, PWM_CONFIG};
 use crate::cordic::CordicSinCos;
-use crate::fault::G431Fault;
+use oxifoc_core::foc::fault::StandardFault;
 use crate::motor::MotorPwm;
 use crate::sensors::{G431CurrentSensor, G431CurrentSensorExt, HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
@@ -205,7 +205,7 @@ fn ADC1_2() {
             if !FAULT_REGISTRY.any() {
                 defmt::error!("HW overcurrent FAULT: COMP triggered TIM1 BKIN");
             }
-            FAULT_REGISTRY.set(G431Fault::OverCurrent);
+            FAULT_REGISTRY.set(StandardFault::OverCurrent);
         }
     }
 

@@ -199,10 +199,6 @@ impl FaultInfo {
 ///             _ => String::new(),
 ///         }
 ///     }
-///
-///     fn is_recoverable(&self) -> bool {
-///         matches!(self, MyPlatformFault::UnderVoltage)
-///     }
 ///     // severity() comes from the category by default.
 /// }
 /// ```
@@ -224,9 +220,6 @@ pub trait PlatformFault: Copy + Clone + PartialEq {
             details: self.details(),
         }
     }
-
-    /// Returns true if this fault can auto-clear when condition resolves
-    fn is_recoverable(&self) -> bool;
 
     /// Response class. Defaults to the central per-category policy
     /// ([`FaultCategory::severity`]); override only with a concrete reason
@@ -251,6 +244,70 @@ pub trait PlatformFault: Copy + Clone + PartialEq {
     /// (DRV status, hall kind) keep their dedicated constructors.
     fn from_category(_category: FaultCategory) -> Option<Self> {
         None
+    }
+}
+
+/// Ready-made [`PlatformFault`] for platforms with no extra hardware
+/// diagnostics beyond the shared categories (no DRV8301-style gate-driver
+/// status to carry). G431, G474 and the virtual device use it directly;
+/// F405 keeps its own enum for the DRV8301 status payload.
+#[derive(Clone, Copy, PartialEq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum StandardFault {
+    /// Over-current detected
+    OverCurrent,
+    /// Over-voltage on DC bus
+    OverVoltage,
+    /// Under-voltage on DC bus
+    UnderVoltage,
+    /// Over-temperature (FET or motor NTC)
+    OverTemp,
+    /// Hall sensor error (warning class: the ride continues on the
+    /// fallback chain; the payload names the degradation, e.g. which wire)
+    HallError(HallFaultKind),
+    /// Command link stale while running (deadman / link-loss)
+    CommTimeout,
+    /// Graduated derating active (power rolloff > 20%) — warning class
+    Derating,
+}
+
+impl PlatformFault for StandardFault {
+    fn category(&self) -> FaultCategory {
+        match self {
+            Self::OverCurrent => FaultCategory::OverCurrent,
+            Self::OverVoltage => FaultCategory::OverVoltage,
+            Self::UnderVoltage => FaultCategory::UnderVoltage,
+            Self::OverTemp => FaultCategory::OverTemp,
+            Self::HallError(_) => FaultCategory::HallError,
+            Self::CommTimeout => FaultCategory::CommTimeout,
+            Self::Derating => FaultCategory::Derating,
+        }
+    }
+
+    fn details(&self) -> String<128> {
+        match self {
+            Self::HallError(kind) => kind.details(),
+            _ => String::new(),
+        }
+    }
+
+    // severity(): central per-category policy (FaultCategory::severity).
+
+    fn from_hall_kind(kind: HallFaultKind) -> Option<Self> {
+        Some(Self::HallError(kind))
+    }
+
+    /// Payload-free categories the shared core protection can raise.
+    fn from_category(category: FaultCategory) -> Option<Self> {
+        match category {
+            FaultCategory::OverCurrent => Some(Self::OverCurrent),
+            FaultCategory::OverVoltage => Some(Self::OverVoltage),
+            FaultCategory::UnderVoltage => Some(Self::UnderVoltage),
+            FaultCategory::OverTemp => Some(Self::OverTemp),
+            FaultCategory::CommTimeout => Some(Self::CommTimeout),
+            FaultCategory::Derating => Some(Self::Derating),
+            _ => None,
+        }
     }
 }
 
@@ -437,23 +494,6 @@ impl<F: PlatformFault> FaultRegistry<F> {
         self.changed.wait().await;
     }
 
-    /// Auto-clear all recoverable faults
-    ///
-    /// Call this when the fault condition is no longer present
-    /// (e.g., voltage back in range).
-    pub fn auto_clear_recoverable(&self) {
-        let changed = self.faults.lock(|cell| {
-            let mut faults = cell.borrow_mut();
-            let before = faults.len();
-            faults.retain(|f| !f.is_recoverable());
-            faults.len() != before
-        });
-
-        if changed {
-            self.changed.signal(());
-        }
-    }
-
     /// Execute a closure with access to the fault list
     ///
     /// Useful for complex operations that need to inspect multiple faults.
@@ -532,9 +572,6 @@ mod tests {
             }
             fn details(&self) -> String<128> {
                 String::new()
-            }
-            fn is_recoverable(&self) -> bool {
-                false
             }
         }
 

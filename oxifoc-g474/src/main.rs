@@ -15,7 +15,6 @@ bind_interrupts!(struct FlashIrqs {
 mod config;
 #[allow(dead_code)]
 mod cordic;
-pub mod fault;
 mod hardware;
 mod protocol;
 // Panic/HardFault handlers (gate kill). IWDG arming goes here too once
@@ -34,7 +33,7 @@ mod sensors;
 use hardware::{AssignedResources, HallResources, MotorResources, StorageResources};
 
 // Define platform state with our fault type
-oxifoc_core::define_platform_state!(fault::G474Fault);
+oxifoc_core::define_platform_state!(oxifoc_core::foc::fault::StandardFault);
 
 /// Global runtime config — loaded from flash at boot, read by config_server for protocol access.
 pub static RUNTIME_CONFIG: critical_section::Mutex<
