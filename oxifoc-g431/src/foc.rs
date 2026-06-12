@@ -27,10 +27,10 @@ use crate::sensors::hall;
 
 use crate::config::{BOARD, NTC, PWM_CONFIG};
 use crate::cordic::CordicSinCos;
-use oxifoc_core::foc::fault::StandardFault;
 use crate::motor::MotorPwm;
 use crate::sensors::{G431CurrentSensor, G431CurrentSensorExt, HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
+use oxifoc_core::foc::fault::StandardFault;
 
 // ========== ADC Sample Storage (Global Atomics) ==========
 

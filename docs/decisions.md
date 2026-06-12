@@ -321,3 +321,27 @@ their section.
   `FocDriver::run_protection`, and core raises faults via
   `PlatformFault::from_category` (no per-category value parameters in
   `run_foc_cycle` any more) — closes part of the ISR-dedup TODO.
+- **2026-06-13 — code-quality pass: strict lints, import hygiene, fault
+  dedup.** Curated `[workspace.lints]` (rust `unused_qualifications`;
+  clippy `use_self`, `uninlined_format_args`, `cast_lossless`,
+  `manual_let_else`, `semicolon_if_nothing_returned`,
+  `redundant_closure_for_method_calls`), verbatim copies in the
+  workspace-excluded device crates. Full `clippy::pedantic` REJECTED:
+  ~1500 warnings, mostly noise (`must_use_candidate`, `doc_markdown`),
+  and `suboptimal_flops` would rewrite FOC math to `mul_add` — different
+  rounding on hardware-validated control paths, not before a bench
+  baseline. ~330 inline `crate::...` qualified paths became `use`
+  imports (doc examples, rustdoc links, `$crate::` macros and genuine
+  disambiguations stay). G431/G474/Virtual fault enums were
+  byte-identical clones — now one `core::foc::fault::StandardFault`
+  (F405 keeps its enum for the DRV8301 payload); the dead
+  `is_recoverable`/`auto_clear_recoverable` pair (no callers since the
+  overhaul) is gone. host-cli main.rs (1355 lines) split into
+  config_cli/detect/watch modules. Considered and DEFERRED: an ISR-glue
+  trait for the per-board FOC interrupt skeleton (hardware-validated ISR
+  code, not before the bench session; the remaining dedup is tracked in
+  TODO). Considered and REJECTED: a macro to collapse the per-config-
+  group plumbing (ConfigKey/GroupId/Write/Response/Payload across 5
+  files) — the postcard append-only wire discipline depends on the
+  variant numbering staying explicit and reviewable; a macro would hide
+  exactly the thing reviews must see.
