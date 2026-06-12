@@ -204,11 +204,11 @@ Measured 2026-06-11 by temporarily removing the root reference and
 letting fat LTO drop the subtree — re-verify when invoked, the numbers
 age:
 
-- **Runtime-HFI (HfiObserver + polarity probe + injection plumbing) за
-  отдельной фичей: не реализовано, оценить при надобности.** Протокольный
-  enum PhaseSource гейтить нельзя (postcard-индексы); менеджер уже
-  деградирует через `hfi: Option` + `HfiNotConfigured`. Решение НЕ делать
-  сейчас — decisions.md 2026-06-12.
+- **Runtime HFI (HfiObserver + polarity probe + injection plumbing)
+  behind a separate feature: not implemented, estimate if ever needed.**
+  The protocol enum PhaseSource cannot be gated (postcard indices); the
+  manager already degrades via `hfi: Option` + `HfiNotConfigured`. The
+  decision NOT to do it now — decisions.md 2026-06-12.
 - **`detection` off: −14.7 KB.** The gate already exists
   (`oxifoc-core/detection`, default-on). Build the board with
   `default-features = false` + the rest of its feature list.

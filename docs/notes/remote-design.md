@@ -1,8 +1,8 @@
 # Handheld Remote — Design Notes
 
-> **STATUS: design (forward-looking), ничего не реализовано.** Это
-> дизайн-док, а не research-нота с implementation-статусом, поэтому
-> статус ведётся пер-секционно маркерами ниже, не общей шапкой.
+> **STATUS: design (forward-looking), nothing implemented.** This is a
+> design doc, not a research note with an implementation status, so the
+> status is tracked per section via the markers below, not in this header.
 
 Design decisions for the ESK8 throttle remote and its link to the motor
 controller, captured from the 2026-06-12 design session. Status markers:

@@ -1,14 +1,17 @@
 # VirtualMotor Fidelity — What the Sim Proves, and What It Can't
 
-> **STATUS: частично закрыт 2026-06-12.** Лэндинг первой волны апгрейдов:
-> sub-stepping, dead-time distortion, квантование+шум АЦП, Lq-сатурация,
-> duty-драйв detection-харнесса (ARR 4250). Уже окупились: sim предсказал
-> коллапс DirectVoltage-hold под dead-time на низкоомных моторах ДО стенда
-> (фикс: comp в apply_dq + settled hold, decisions.md) и закрепил слепоту
-> confidence к saliency-коллапсу. Остаток (one-cycle delay, vbus sag,
-> coulomb, гармоники) — в TODO.md «VirtualMotor fidelity». Тезис
-> «спаренные конвенции прячут смещения» подтверждён дважды: hall-конвенцией
-> сима и нулями идеальной таблицы детекции (lockstep-самоподтверждение).
+> **STATUS: largely landed 2026-06-12.** First wave of upgrades:
+> sub-stepping, dead-time distortion, ADC quantization+noise, Lq
+> saturation, duty-driven detection harness (ARR 4250), one-cycle
+> actuation delay. Already paid off: the sim predicted the
+> DirectVoltage-hold collapse under dead-time on low-R motors BEFORE the
+> bench (fix: comp in apply_dq + settled hold, decisions.md), exposed the
+> phase-advance measurement-frame bug and the detection pipeline-skew,
+> and pinned confidence's blindness to saliency collapse. Remainder
+> (vbus sag, coulomb, harmonics) — TODO.md "VirtualMotor fidelity". The
+> thesis "paired conventions hide biases" is now confirmed twice: by the
+> sim's hall convention and by the all-zero ideal detection table
+> (lockstep self-confirmation).
 
 Working notes on how far to trust the `VirtualMotor` plant model
 (`oxifoc-core/src/virtual_motor.rs`) and the ~300 host tests built on it,
@@ -151,12 +154,12 @@ passes with it** — otherwise the compensation is still effectively untested.
 |---|---|---|
 | FOC math / transforms / sign conventions correct | **high** | ideal plant is sufficient — the math is the math |
 | Observer/HFI converge & track on an ideal machine | **high** | that's exactly what's modeled |
-| Detection (R/Ld/Lq/λ) numerically correct | **high** | validated vs known plant params, теперь и на non-ideal планте (отчёт detection_report, e2e `run_full_detection_nonideal_plant`) |
+| Detection (R/Ld/Lq/λ) numerically correct | **high** | validated vs known plant params, now also on the non-ideal plant (detection_report, e2e `run_full_detection_nonideal_plant`) |
 | HFI polarity probe works | **medium** | needs `sat_k`; modeled, but saturation curve is a simple `1/(1+k·id)` |
-| Dead-time comp correct | **medium (2026-06-12)** | плант генерит дисторсию, тест `dead_time_compensation_cancels_plant_distortion` — cancellation, не idle; остаётся simple-sign модель |
-| Phase advance correct | **low (untested)** | one-cycle latency всё ещё не моделируется |
-| HFI robust under real sensing | **medium (2026-06-12)** | 12-bit квантование + шум закреплены (`hfi_locks_through_quantized_noisy_sensor`); non-sinusoidal bemf всё ещё нет |
-| HFI under saliency collapse | **известный провал (закреплён)** | `lq_sat_k` + тест: confidence слеп к коллапсу, угол уезжает молча — TODO saliency-монитор |
+| Dead-time comp correct | **medium (2026-06-12)** | the plant generates the distortion; `dead_time_compensation_cancels_plant_distortion` tests cancellation, not idling; the simple-sign model remains |
+| Phase advance correct | **medium (2026-06-12)** | `actuation_delay_steps` models the pipeline; the frame split is pinned by `actuation_advance_must_not_displace_current_vector` |
+| HFI robust under real sensing | **medium (2026-06-12)** | 12-bit quantization + noise pinned (`hfi_locks_through_quantized_noisy_sensor`); non-sinusoidal bemf still missing |
+| HFI under saliency collapse | **known failure (pinned)** | `lq_sat_k` + test: confidence is blind to the collapse, the angle walks away silently — saliency monitor in TODO |
 | Failsafe OV soft-landing | **low (untested)** | no bus dynamics |
 | Low-speed smoothness / startup feel | **low** | no cogging, no latency |
 

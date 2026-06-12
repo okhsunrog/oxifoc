@@ -1,27 +1,27 @@
-# Карта документации
+# Documentation map
 
-Правило одного типа на файл: история живёт в git и в `archive/`, рабочие
-доки не накапливают «сделано».
+One-type-per-file rule: history lives in git and in `archive/`; working
+docs do not accumulate "done".
 
-| Файл / папка | Тип | Правило обновления |
+| File / folder | Type | Update rule |
 |---|---|---|
-| [architecture.md](architecture.md) | как устроено СЕЙЧАС | правится вместе с кодом; без истории |
-| [safety.md](safety.md) | дизайн failsafe-слоёв | живой дизайн-док |
-| [TODO.md](TODO.md) | ТОЛЬКО открытая работа | сделанное удаляется (история — git log + archive), не помечается `[x]` |
-| [decisions.md](decisions.md) | принятые решения + почему | append-only, 2–5 строк на решение + ссылка |
-| [flash-size.md](flash-size.md) | бюджет флеша: числа, правила, измеренные резервы | числа обновляются `just size`; история изменений — таблица измерений, остаётся |
-| [register-access.md](register-access.md) | паттерн работы с rc_w0/rc_w1 | справочник |
-| [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md) | измерения производительности | данные; новые бенчи — новый файл |
-| [hw/](hw/) | факты о платах/чипах + PDF | справочники по железу |
-| [notes/](notes/) | исследования / RFC / сравнения с референсами | каждый файл начинается со Status-шапки; реализованное сводится к 1-строчным указателям (детали → decisions.md/architecture.md), открытое остаётся |
-| [archive/](archive/) | замороженные документы | не редактируются |
+| [architecture.md](architecture.md) | how it works NOW | edited together with the code; no history |
+| [safety.md](safety.md) | failsafe layers design | living design doc |
+| [TODO.md](TODO.md) | OPEN work only | done items are deleted (history = git log + archive), never marked `[x]` |
+| [decisions.md](decisions.md) | decisions + why | append-only, 2–5 lines per decision + a pointer |
+| [flash-size.md](flash-size.md) | flash budget: numbers, rules, measured reserves | numbers refreshed via `just size`; the measurement history table stays |
+| [register-access.md](register-access.md) | rc_w0/rc_w1 access patterns | reference |
+| [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md) | performance measurements | data; new benches → a new file |
+| [hw/](hw/) | board/chip facts + PDFs | hardware references |
+| [notes/](notes/) | research / RFCs / reference comparisons | every file starts with a Status header; landed parts shrink to one-line pointers (details → decisions.md/architecture.md), open parts stay |
+| [archive/](archive/) | frozen documents | never edited |
 
-Куда что писать:
+Where things go:
 
-- Починил баг / реализовал фичу → вычеркнуть из TODO.md (удалить), при
-  необходимости поправить architecture.md; если решение неочевидное —
-  строка в decisions.md.
-- Решил что-то НЕ делать → decisions.md (won't-fix с обоснованием).
-- Исследовал чужой код / придумал план → notes/ со Status-шапкой
-  (`open` / `partially landed` / `landed, остатки: ...`).
-- Идея «когда-нибудь позаимствовать» → [notes/borrow-list.md](notes/borrow-list.md).
+- Fixed a bug / landed a feature → strike it from TODO.md (delete), adjust
+  architecture.md if needed; if the decision is non-obvious — a line in
+  decisions.md.
+- Decided NOT to do something → decisions.md (won't-fix with rationale).
+- Studied reference code / drafted a plan → notes/ with a Status header
+  (`open` / `partially landed` / `landed, remainder: ...`).
+- A "borrow someday" idea → [notes/borrow-list.md](notes/borrow-list.md).

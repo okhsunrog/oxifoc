@@ -1,8 +1,8 @@
 # Sensorless Startup & Current Sampling — Ideas to Borrow from VESC & MESC
 
-> **STATUS: open.** Часть 1 (V0_V7) — осознанное scope-решение, код не
-> меняем без bench-доказательств. Часть 2 (align→ramp→handoff, flying
-> restart, current-scheduled ceiling) — открытая работа, см. TODO.md
+> **STATUS: open.** Part 1 (V0_V7) is a deliberate scope decision — no
+> code changes without bench evidence. Part 2 (align→ramp→handoff, flying
+> restart, current-scheduled ceiling) is open work, see TODO.md
 > «Sensorless startup».
 
 Working notes from a line-by-line comparison of the current-sampling path and

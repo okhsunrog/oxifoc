@@ -1,9 +1,9 @@
 # Hall Angle Estimation — Ideas to Borrow from VESC & MESC
 
-> **STATUS: landed 2026-06-12, кроме §HallPll (open).** Подробности
-> реализованного — в [decisions.md](../decisions.md) (конвенция
-> «таблица = центроиды, якорь = граница») и коммите `9f936bb`; полный
-> исходный анализ — в git-истории этого файла.
+> **STATUS: landed 2026-06-12, except §HallPll (open).** Details of what
+> was implemented are in [decisions.md](../decisions.md) (the
+> "table = centroids, anchor = boundary" convention) and commit `9f936bb`;
+> the full original analysis is in this file's git history.
 
 Working notes from a line-by-line comparison of the Hall pipeline against
 **VESC** (`bldc`, `motor/foc_math.c`) and **MESC** (`MESC_Firmware`,
@@ -12,29 +12,29 @@ Working notes from a line-by-line comparison of the Hall pipeline against
 edge timestamps) was already ahead of both references — everything here
 concerned the platform-agnostic estimator/calibrator.
 
-## Landed (детали: decisions.md + 9f936bb)
+## Landed (details: decisions.md + 9f936bb)
 
-- **§1 Полусекторный лид интерполяции — подтверждён и исправлен.**
-  Регрессионный тест с независимой непрерывной моделью ротора
-  (`interpolation_tracks_continuous_rotor`) измерил 0.527 rad ≈ 30.2°
-  систематического лида (≈13% потери момента + паразитный d-ток);
-  `update()` теперь якорит базу на границу = midpoint соседних
-  калиброванных центроидов (VESC-style), центроид остался для low-speed
-  snap и фолбэков.
-- **§2 Асимметричная установка датчиков** — поглощается midpoint'ом
-  измеренных центроидов; скорость использует measured boundary-to-boundary
-  ширину сектора.
-- **§3 Расширение калибратора (width/boundaries)** — НЕ ПОНАДОБИЛОСЬ:
-  midpoint-подход не хранит ширины (как и VESC).
-- **§5 Регрессионный тест** — добавлен; урок «спаренные конвенции
-  сим/эстиматор прячут смещения» зафиксирован в decisions.md (попутно
-  исправлена hall-конвенция `VirtualMotor`).
-- Якорь на пропущенном эдже (несмежный переход) — известная остаточная
-  неточность ±30°, разбор и эскиз точного фикса в TODO.md; растворяется
-  HallPll'ом.
+- **§1 Half-sector interpolation lead — confirmed and fixed.**
+  A regression test with an independent continuous rotor model
+  (`interpolation_tracks_continuous_rotor`) measured 0.527 rad ≈ 30.2°
+  of systematic lead (≈13% torque loss + parasitic d-current);
+  `update()` now anchors the base to the boundary = midpoint of adjacent
+  calibrated centroids (VESC-style); the centroid remains for the
+  low-speed snap and fallbacks.
+- **§2 Asymmetric sensor placement** — absorbed by the midpoint of the
+  measured centroids; velocity uses the measured boundary-to-boundary
+  sector width.
+- **§3 Calibrator extension (width/boundaries)** — NOT NEEDED: the
+  midpoint approach stores no widths (just like VESC).
+- **§5 Regression test** — added; the lesson "paired sim/estimator
+  conventions hide offsets" is recorded in decisions.md (the
+  `VirtualMotor` hall convention was fixed along the way).
+- Anchoring on a skipped edge (non-adjacent transition) — a known
+  residual inaccuracy of ±30°; analysis and a sketch of the exact fix
+  are in TODO.md; dissolved by the HallPll.
 
-Bench-остаток: подтвердить на железе, что d-ток на постоянной скорости
-отцентрован (TODO.md → Стенд).
+Bench leftover: confirm on hardware that the d-current at constant speed
+is centered (TODO.md → Bench).
 
 ## [idea, OPEN] PLL-based Hall observer vs open-loop interpolation
 
@@ -72,9 +72,9 @@ boundary-anchored dynamics, not raw velocity precision. MESC's own code
 carries several `// Does not work... Why??` dead ends here
 (`MESCfoc.c:990,1004`); treat its gains as a starting hint, not gospel.
 
-Triggers to actually do it: (а) стенд покажет, что velocity-круиз на
-холлах не тюнится мягкими гейнами; (б) старт position control (нужен
-чистый непрерывный угол/скорость).
+Triggers to actually do it: (a) the bench shows that velocity cruise on
+halls can't be tuned with soft gains; (b) starting position control
+(needs a clean continuous angle/velocity).
 
 ## Reference map
 
