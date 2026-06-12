@@ -1,17 +1,28 @@
+//! Oxifoc host CLI — scriptable control, diagnostics and telemetry capture.
+//!
+//! Designed to be equally usable by a human and by an AI agent driving the
+//! bench: every command has a `--json` mode with a stable machine-readable
+//! envelope (one JSON document on stdout, nonzero exit on failure), config
+//! is fully readable/writable field-by-field, and `record` captures fast
+//! telemetry into parquet files with full provenance metadata.
+
+mod config_cli;
+mod record;
+
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use oxifoc_core::types::{ControlMode, DetectRequest};
+use oxifoc_core::types::{ControlMode, DetectRequest, FaultCategory, FaultRequest};
 use oxifoc_host_lib::{
-    HostCommand, HostConfig, HostRuntime, TransportType, config_channel, init_tracing, list_probes,
+    HostCommand, HostConfig, HostRuntime, TransportType, fault_channel, init_tracing, list_probes,
     list_serial_ports, motor_channel, start_host,
 };
+use serde_json::json;
 
 /// Send a motor command and wait for the device's acknowledgement — the
-/// process must exit nonzero when the command never reached the device
-/// (previously these were fire-and-forget with a fixed sleep, always 0).
+/// process must exit nonzero when the command never reached the device.
 fn send_motor_acked(
     runtime: &HostRuntime,
     mode: ControlMode,
@@ -26,47 +37,48 @@ fn send_motor_acked(
         .context("motor command not acknowledged by the device")
 }
 
-/// Read one config group (None when the device has nothing stored for it).
-fn read_group(
-    runtime: &HostRuntime,
-    group: oxifoc_core::types::ConfigGroupId,
-) -> Result<Option<oxifoc_core::types::ConfigResponse>> {
-    use oxifoc_core::types::ConfigResponse;
-    let (tx, rx) = config_channel();
-    runtime
-        .cmd_tx
-        .send(HostCommand::ConfigRead(group, tx))
-        .context("send config read")?;
-    let resp = rx
-        .blocking_recv()
-        .context("backend dropped the config read")?
-        .context("config read failed")?;
-    Ok(match resp {
-        ConfigResponse::NotFound => None,
-        other => Some(other),
-    })
+/// Print a command result: one JSON document in `--json` mode, the human
+/// line otherwise.
+fn emit(json_mode: bool, value: serde_json::Value, human: String) {
+    if json_mode {
+        println!("{value:#}");
+    } else {
+        println!("{human}");
+    }
+}
+
+/// Snapshot of every config group as one JSON object (stored groups only).
+fn config_snapshot(runtime: &HostRuntime) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for (name, group) in config_cli::GROUPS {
+        if let Ok(Some(resp)) = config_cli::read_group(runtime, group)
+            && let Some(v) = config_cli::group_value(&resp)
+        {
+            obj.insert(name.to_string(), v);
+        }
+    }
+    serde_json::Value::Object(obj)
 }
 
 /// Dump every config group; `--rust` renders a ready-to-paste
 /// `baked_config.rs` body for the baked firmware profile.
-fn dump_config(runtime: &HostRuntime, rust: bool) -> Result<()> {
-    use oxifoc_core::types::{ConfigGroupId as G, ConfigResponse as R};
+fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result<()> {
+    if json_mode && !rust {
+        let mut obj = serde_json::Map::new();
+        for (name, group) in config_cli::GROUPS {
+            let v = match config_cli::read_group(runtime, group)? {
+                Some(resp) => config_cli::group_value(&resp).unwrap_or(serde_json::Value::Null),
+                None => serde_json::Value::Null,
+            };
+            obj.insert(name.to_string(), v);
+        }
+        println!("{:#}", serde_json::Value::Object(obj));
+        return Ok(());
+    }
 
-    let groups = [
-        G::MotorParams,
-        G::HallCalibration,
-        G::DcOffsets,
-        G::CurrentLimits,
-        G::VoltageLimits,
-        G::PwmConfig,
-        G::PiGains,
-        G::HallTuning,
-        G::Failsafe,
-        G::Velocity,
-    ];
     let mut read = Vec::new();
-    for g in groups {
-        read.push((g, read_group(runtime, g)?));
+    for (_, g) in config_cli::GROUPS {
+        read.push((g, config_cli::read_group(runtime, g)?));
     }
 
     if !rust {
@@ -79,98 +91,8 @@ fn dump_config(runtime: &HostRuntime, rust: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Rust emission: field-by-field so the output is stable, readable code.
-    // f32 via {:?} renders the shortest round-trip literal.
-    let mut fields: Vec<(&str, Option<String>)> = Vec::new();
-    for (_, resp) in read {
-        match resp {
-            Some(R::MotorParams(v)) => fields.push((
-                "motor_params",
-                Some(format!(
-                    "MotorParamsConfig {{\n            resistance_ohm: {:?},\n            inductance_d_h: {:?},\n            inductance_q_h: {:?},\n            flux_linkage_wb: {:?},\n            pole_pairs: {},\n            max_current_a: {:?},\n            max_power_loss_w: {:?},\n        }}",
-                    v.resistance_ohm, v.inductance_d_h, v.inductance_q_h, v.flux_linkage_wb, v.pole_pairs, v.max_current_a, v.max_power_loss_w
-                )),
-            )),
-            Some(R::HallCalibration(v)) => fields.push((
-                "hall_calibration",
-                Some(format!(
-                    "HallCalibrationConfig {{\n            angles: {:?},\n            valid: {:?},\n        }}",
-                    v.angles, v.valid
-                )),
-            )),
-            Some(R::DcOffsets(v)) => fields.push((
-                "dc_offsets",
-                Some(format!(
-                    "DcOffsetsConfig {{\n            phase_a: {:?},\n            phase_b: {:?},\n            phase_c: {:?},\n        }}",
-                    v.phase_a, v.phase_b, v.phase_c
-                )),
-            )),
-            Some(R::CurrentLimits(v)) => fields.push((
-                "current_limits",
-                Some(format!(
-                    "CurrentLimitsConfig {{\n            max_iq_a: {:?},\n            max_phase_current_a: {:?},\n            bus_in_max_a: {:?},\n            bus_regen_max_a: {:?},\n        }}",
-                    v.max_iq_a, v.max_phase_current_a, v.bus_in_max_a, v.bus_regen_max_a
-                )),
-            )),
-            Some(R::VoltageLimits(v)) => fields.push((
-                "voltage_limits",
-                Some(format!(
-                    "VoltageLimitsConfig {{\n            min_vbus_mv: {},\n            max_vbus_mv: {},\n        }}",
-                    v.min_vbus_mv, v.max_vbus_mv
-                )),
-            )),
-            Some(R::PwmConfig(v)) => fields.push((
-                "pwm_config",
-                Some(format!(
-                    "PwmConfigStored {{\n            freq_hz: {},\n            max_duty_percent: {},\n        }}",
-                    v.freq_hz, v.max_duty_percent
-                )),
-            )),
-            Some(R::PiGains(v)) => fields.push((
-                "pi_gains",
-                Some(format!(
-                    "PiGainsConfig {{\n            kp: {:?},\n            ki: {:?},\n            bandwidth_rad_s: {:?},\n        }}",
-                    v.kp, v.ki, v.bandwidth_rad_s
-                )),
-            )),
-            Some(R::HallTuning(v)) => fields.push((
-                "hall_tuning",
-                Some(format!(
-                    "HallTuningConfig {{\n            interp_min_erpm: {:?},\n            drift_correction_gain: {:?},\n            rate_limit_factor: {:?},\n            timeout_us: {},\n        }}",
-                    v.interp_min_erpm, v.drift_correction_gain, v.rate_limit_factor, v.timeout_us
-                )),
-            )),
-            Some(R::Failsafe(v)) => fields.push((
-                "failsafe",
-                Some(format!(
-                    "FailsafeConfigStored {{\n            staleness_timeout_ms: {},\n            policy: {},\n            brake_current_a: {:?},\n            ramp_ms: {:?},\n            brake_time_ms: {:?},\n            standstill_rad_s: {:?},\n            decel_rad_s2: {:?},\n            terminal: {},\n        }}",
-                    v.staleness_timeout_ms, v.policy, v.brake_current_a, v.ramp_ms, v.brake_time_ms, v.standstill_rad_s, v.decel_rad_s2, v.terminal
-                )),
-            )),
-            Some(R::Velocity(v)) => fields.push((
-                "velocity",
-                Some(format!(
-                    "VelocityConfigStored {{\n            kp: {:?},\n            ki: {:?},\n            accel_limit: {:?},\n        }}",
-                    v.kp, v.ki, v.accel_limit
-                )),
-            )),
-            Some(_) => {}
-            None => {}
-        }
-    }
-    let field_names = [
-        "motor_params",
-        "hall_calibration",
-        "dc_offsets",
-        "current_limits",
-        "voltage_limits",
-        "pwm_config",
-        "pi_gains",
-        "hall_tuning",
-        "failsafe",
-        "velocity",
-    ];
-
+    // Rust emission: via the JSON representation so the output stays in
+    // sync with the structs without per-field format strings here.
     println!("//! Compiled-in configuration for the baked profile (`storage` feature off).");
     println!("//!");
     println!("//! Generated by `oxifoc-host-cli config dump --rust`. Regenerate after");
@@ -181,19 +103,66 @@ fn dump_config(runtime: &HostRuntime, rust: bool) -> Result<()> {
     println!("/// The baked configuration.");
     println!("pub fn baked() -> RuntimeConfig {{");
     println!("    RuntimeConfig {{");
-    for name in field_names {
-        match fields
+    for (name, group) in config_cli::GROUPS {
+        let field = name.replace('-', "_");
+        let resp = read
             .iter()
-            .find(|(n, _)| *n == name)
-            .and_then(|(_, v)| v.as_ref())
-        {
-            Some(body) => println!("        {name}: Some({body}),"),
-            None => println!("        {name}: None,"),
+            .find(|(g, _)| format!("{g:?}") == format!("{group:?}"))
+            .and_then(|(_, r)| r.as_ref());
+        match resp.and_then(config_cli::group_value) {
+            Some(v) => {
+                let struct_name = rust_struct_name(name);
+                println!("        {field}: Some({struct_name} {{");
+                if let Some(obj) = v.as_object() {
+                    for (k, val) in obj {
+                        println!("            {k}: {},", rust_literal(val));
+                    }
+                }
+                println!("        }}),");
+            }
+            None => println!("        {field}: None,"),
         }
     }
     println!("    }}");
     println!("}}");
     Ok(())
+}
+
+fn rust_struct_name(group: &str) -> &'static str {
+    match group {
+        "motor-params" => "MotorParamsConfig",
+        "hall-calibration" => "HallCalibrationConfig",
+        "dc-offsets" => "DcOffsetsConfig",
+        "current-limits" => "CurrentLimitsConfig",
+        "voltage-limits" => "VoltageLimitsConfig",
+        "pwm-config" => "PwmConfigStored",
+        "pi-gains" => "PiGainsConfig",
+        "hall-tuning" => "HallTuningConfig",
+        "failsafe" => "FailsafeConfigStored",
+        "velocity" => "VelocityConfigStored",
+        _ => unreachable!(),
+    }
+}
+
+/// Render a JSON value as a Rust literal for baked_config emission.
+fn rust_literal(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Number(n) => {
+            // f32 fields must keep a float literal even for round values.
+            if n.is_f64() {
+                let f = n.as_f64().unwrap() as f32;
+                format!("{f:?}")
+            } else {
+                format!("{n}")
+            }
+        }
+        serde_json::Value::Bool(b) => format!("{b}"),
+        serde_json::Value::Array(items) => {
+            let inner: Vec<String> = items.iter().map(rust_literal).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        other => format!("{other}"),
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -205,19 +174,51 @@ enum Transport {
     Usb,
 }
 
-/// A motor-detection step with no prerequisites (drivable standalone).
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum DetectStep {
     /// Measure phase-to-neutral resistance
     Resistance,
+    /// Measure d/q inductance (HFI with pulse fallback; needs R)
+    Inductance,
+    /// Measure flux linkage (needs R, L, pole pairs)
+    Flux,
     /// Calibrate Hall sensors
     Hall,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum FaultCategoryArg {
+    OverCurrent,
+    OverVoltage,
+    UnderVoltage,
+    OverTemp,
+    DriverFault,
+    HallError,
+    Stall,
+    CalibrationFault,
+    CommTimeout,
+}
+
+impl From<FaultCategoryArg> for FaultCategory {
+    fn from(v: FaultCategoryArg) -> Self {
+        match v {
+            FaultCategoryArg::OverCurrent => FaultCategory::OverCurrent,
+            FaultCategoryArg::OverVoltage => FaultCategory::OverVoltage,
+            FaultCategoryArg::UnderVoltage => FaultCategory::UnderVoltage,
+            FaultCategoryArg::OverTemp => FaultCategory::OverTemp,
+            FaultCategoryArg::DriverFault => FaultCategory::DriverFault,
+            FaultCategoryArg::HallError => FaultCategory::HallError,
+            FaultCategoryArg::Stall => FaultCategory::Stall,
+            FaultCategoryArg::CalibrationFault => FaultCategory::CalibrationFault,
+            FaultCategoryArg::CommTimeout => FaultCategory::CommTimeout,
+        }
+    }
 }
 
 #[derive(Parser)]
 #[command(
     name = "oxifoc-host-cli",
-    about = "CLI wrapper over the Oxifoc host backend (shared with egui app)",
+    about = "CLI over the Oxifoc host backend — control, config, diagnostics, telemetry capture",
     version
 )]
 struct Cli {
@@ -228,6 +229,10 @@ struct Cli {
         help = "Seconds to wait for the device handshake before proceeding"
     )]
     wait_secs: u64,
+
+    /// Machine-readable output: one JSON document on stdout per command
+    #[arg(long, global = true)]
+    json: bool,
 
     /// Transport type (serial or rtt). If not specified, uses config file.
     #[arg(short, long, value_enum)]
@@ -273,6 +278,17 @@ struct Cli {
 enum Command {
     /// List available devices (serial ports and debug probes)
     List,
+    /// Show device hardware info from the handshake
+    Info,
+    /// One system-health snapshot (mode, state, vbus, temps, faults, source)
+    Status,
+    /// Query active faults; --clear / --clear-category to clear
+    Faults {
+        #[arg(long, help = "Clear all faults")]
+        clear: bool,
+        #[arg(long, value_enum, help = "Clear one fault category")]
+        clear_category: Option<FaultCategoryArg>,
+    },
     /// Start the motor in current (torque) control
     Start {
         #[arg(
@@ -283,15 +299,65 @@ enum Command {
             help = "Target q-axis current in Amps (sign = direction)"
         )]
         iq: f32,
+        #[arg(
+            long,
+            default_value_t = 0.0,
+            allow_hyphen_values = true,
+            help = "Target d-axis current in Amps (field weakening)"
+        )]
+        id: f32,
     },
-    /// Stop the motor
+    /// Stop the motor (PWM off)
     Stop,
+    /// Coast — all FETs off, motor spins freely
+    Coast,
     /// Engage the parking brake (short the windings; near-standstill only)
     Brake,
     /// Run velocity control at the given electrical rad/s (sign = direction)
     Velocity {
         #[arg(allow_hyphen_values = true, help = "Target velocity, electrical rad/s")]
         rad_s: f32,
+    },
+    /// Open-loop drive at a commanded angle/velocity (no sensor feedback)
+    Openloop {
+        #[arg(long, default_value_t = 1.0, help = "Current magnitude (A)")]
+        current: f32,
+        #[arg(
+            long,
+            default_value_t = 0.0,
+            allow_hyphen_values = true,
+            help = "Electrical velocity (rad/s); 0 = lock rotor at --angle"
+        )]
+        velocity: f32,
+        #[arg(long, default_value_t = 0.0, help = "Initial electrical angle (rad)")]
+        angle: f32,
+    },
+    /// Direct dq voltage, no PI (measurement/bringup; no current regulation!)
+    Voltage {
+        #[arg(
+            long,
+            default_value_t = 0.0,
+            allow_hyphen_values = true,
+            help = "d-axis voltage (V)"
+        )]
+        vd: f32,
+        #[arg(
+            long,
+            default_value_t = 0.0,
+            allow_hyphen_values = true,
+            help = "q-axis voltage (V)"
+        )]
+        vq: f32,
+        #[arg(long, default_value_t = 0.0, help = "Electrical angle (rad)")]
+        angle: f32,
+    },
+    /// Six-step (trapezoidal) drive — bringup without current calibration
+    Sixstep {
+        #[arg(
+            allow_hyphen_values = true,
+            help = "Duty cycle, -1.0..1.0 (sign = direction)"
+        )]
+        duty: f32,
     },
     /// Select the angle source for commutation
     Source {
@@ -310,7 +376,7 @@ enum Command {
         )]
         toggle_v: f32,
     },
-    /// Monitor telemetry for a duration
+    /// Monitor telemetry for a duration (JSONL per sample with --json)
     Monitor {
         #[arg(
             short,
@@ -325,6 +391,25 @@ enum Command {
             help = "Fast telemetry rate in Hz (0 = disabled)"
         )]
         fast_hz: u16,
+    },
+    /// Record fast telemetry into a parquet file (with provenance metadata)
+    Record {
+        #[arg(short, long, help = "Output parquet file path")]
+        out: String,
+        #[arg(
+            short,
+            long,
+            default_value_t = 10.0,
+            help = "Capture duration (seconds)"
+        )]
+        seconds: f64,
+        #[arg(long, default_value_t = 5000, help = "Fast telemetry rate (Hz)")]
+        fast_hz: u16,
+        #[arg(
+            long,
+            help = "Exit 0 even when frames were dropped (default: gaps fail the capture)"
+        )]
+        allow_gaps: bool,
     },
     /// Device configuration operations
     Config {
@@ -342,17 +427,50 @@ enum Command {
             help = "Max power dissipation during the test (W)"
         )]
         max_power_w: f32,
+        #[arg(long, help = "Resistance (Ω); default: stored motor-params")]
+        resistance: Option<f32>,
+        #[arg(long, help = "Avg inductance (H); default: stored motor-params")]
+        inductance: Option<f32>,
+        #[arg(long, help = "Pole pairs; default: stored motor-params")]
+        pole_pairs: Option<u8>,
+        #[arg(
+            long,
+            default_value_t = 700.0,
+            help = "Open-loop ERPM for flux spin-up"
+        )]
+        erpm: f32,
+        #[arg(
+            long,
+            help = "Write the measured values into the motor-params config group"
+        )]
+        apply: bool,
     },
 }
 
 #[derive(Subcommand)]
 enum ConfigAction {
-    /// Read every config group from the device and print it.
-    /// --rust emits a ready-to-paste `baked_config.rs` body (the baked
-    /// firmware profile compiles the configuration in; see flash-size.md).
+    /// Read every config group and print it.
+    /// --rust emits a ready-to-paste `baked_config.rs` body.
     Dump {
         #[arg(long, help = "Emit Rust code for src/baked_config.rs")]
         rust: bool,
+    },
+    /// Read one config group (prints defaults when nothing is stored)
+    Get {
+        #[arg(help = "Group name, e.g. motor-params, current-limits, failsafe")]
+        group: String,
+    },
+    /// Set fields of one config group: field=value pairs (read-modify-write)
+    Set {
+        #[arg(help = "Group name, e.g. current-limits")]
+        group: String,
+        #[arg(required = true, help = "field=value pairs, e.g. max_iq_a=5.0")]
+        fields: Vec<String>,
+    },
+    /// Erase ALL stored config groups (factory reset; requires --yes)
+    Reset {
+        #[arg(long, help = "Confirm the erase")]
+        yes: bool,
     },
 }
 
@@ -377,10 +495,11 @@ fn main() -> Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
+    let json = cli.json;
 
     // Handle list command separately (doesn't need connection)
     if matches!(cli.command, Command::List) {
-        return list_devices();
+        return list_devices(json);
     }
 
     // Build config from CLI args or load from file
@@ -405,28 +524,167 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::List => unreachable!(), // Handled above
-        Command::Start { iq } => {
+        Command::Info => {
+            let info = record::latest_hw_info(&runtime)
+                .context("no hardware info received — device not connected?")?;
+            emit(
+                json,
+                json!({
+                    "connected": runtime.connected.load(Ordering::Relaxed),
+                    "hw": info.hw.as_str(),
+                    "sw": info.sw.as_str(),
+                    "mcu": info.mcu.as_str(),
+                    "uuid": info.uuid.as_str(),
+                    "foc_freq_hz": info.foc_freq_hz,
+                    "max_current_a": info.max_current_a,
+                }),
+                format!(
+                    "{} ({}) sw={} uuid={} foc={}Hz max_i={}A",
+                    info.hw, info.mcu, info.sw, info.uuid, info.foc_freq_hz, info.max_current_a
+                ),
+            );
+        }
+        Command::Status => {
+            let slow = runtime
+                .slow_rx
+                .recv_timeout(Duration::from_secs(3))
+                .context("no slow telemetry within 3 s — device not connected?")?;
+            emit(
+                json,
+                serde_json::to_value(slow)?,
+                format!(
+                    "state={:?} mode={:?} source={:?} vbus={:.2}V fet={:.1}°C motor={:.1}°C faults={}",
+                    slow.motor_state,
+                    slow.control_mode,
+                    slow.phase_source,
+                    slow.vbus_mv as f32 / 1000.0,
+                    slow.fet_temp_c_x10 as f32 / 10.0,
+                    slow.motor_temp_c_x10 as f32 / 10.0,
+                    slow.fault_count,
+                ),
+            );
+        }
+        Command::Faults {
+            clear,
+            clear_category,
+        } => {
+            let req = if clear {
+                FaultRequest::ClearAll
+            } else if let Some(cat) = clear_category {
+                FaultRequest::Clear(cat.into())
+            } else {
+                FaultRequest::Query
+            };
+            let (tx, rx) = fault_channel();
+            runtime
+                .cmd_tx
+                .send(HostCommand::Fault(req, tx))
+                .context("send fault request")?;
+            let resp = rx
+                .blocking_recv()
+                .context("backend dropped the fault request")?
+                .context("fault request failed")?;
+            let human = if resp.faults.is_empty() {
+                format!("no active faults (total={})", resp.total)
+            } else {
+                let lines: Vec<String> = resp
+                    .faults
+                    .iter()
+                    .map(|f| format!("{:?}: {}", f.category, f.details))
+                    .collect();
+                format!("{} active fault(s):\n  {}", resp.total, lines.join("\n  "))
+            };
+            emit(json, serde_json::to_value(&resp)?, human);
+        }
+        Command::Start { iq, id } => {
             let status = send_motor_acked(
                 &runtime,
                 ControlMode::CurrentControl {
                     iq_target: iq,
-                    id_target: 0.0,
+                    id_target: id,
                 },
             )?;
-            println!("Motor started at iq={iq:.1} A — device: {status:?}");
+            emit(
+                json,
+                json!({"sent": {"iq": iq, "id": id}, "device": format!("{status:?}")}),
+                format!("Motor started at iq={iq:.1} A — device: {status:?}"),
+            );
         }
         Command::Stop => {
             let status = send_motor_acked(&runtime, ControlMode::Stopped)?;
-            println!("Motor stopped — device: {status:?}");
+            emit(
+                json,
+                json!({"sent": "stopped", "device": format!("{status:?}")}),
+                format!("Motor stopped — device: {status:?}"),
+            );
+        }
+        Command::Coast => {
+            let status = send_motor_acked(&runtime, ControlMode::Coast)?;
+            emit(
+                json,
+                json!({"sent": "coast", "device": format!("{status:?}")}),
+                format!("Coasting (gates off) — device: {status:?}"),
+            );
         }
         Command::Brake => {
             let status = send_motor_acked(&runtime, ControlMode::Brake)?;
-            println!("Brake engaged (ramps to standstill first if moving) — device: {status:?}");
+            emit(
+                json,
+                json!({"sent": "brake", "device": format!("{status:?}")}),
+                format!("Brake engaged (ramps to standstill first if moving) — device: {status:?}"),
+            );
         }
         Command::Velocity { rad_s } => {
             let status =
                 send_motor_acked(&runtime, ControlMode::VelocityControl { target_vel: rad_s })?;
-            println!("Velocity target {rad_s} erad/s — device: {status:?}");
+            emit(
+                json,
+                json!({"sent": {"velocity_rad_s": rad_s}, "device": format!("{status:?}")}),
+                format!("Velocity target {rad_s} erad/s — device: {status:?}"),
+            );
+        }
+        Command::Openloop {
+            current,
+            velocity,
+            angle,
+        } => {
+            let status = send_motor_acked(
+                &runtime,
+                ControlMode::OpenLoop {
+                    angle_rad: angle,
+                    current,
+                    velocity_rad_s: velocity,
+                    pi_gains: None,
+                },
+            )?;
+            emit(
+                json,
+                json!({"sent": {"current": current, "velocity_rad_s": velocity, "angle_rad": angle}, "device": format!("{status:?}")}),
+                format!("Open loop: {current} A at {velocity} erad/s — device: {status:?}"),
+            );
+        }
+        Command::Voltage { vd, vq, angle } => {
+            let status = send_motor_acked(
+                &runtime,
+                ControlMode::DirectVoltage {
+                    vd,
+                    vq,
+                    angle_rad: angle,
+                },
+            )?;
+            emit(
+                json,
+                json!({"sent": {"vd": vd, "vq": vq, "angle_rad": angle}, "device": format!("{status:?}")}),
+                format!("Direct voltage vd={vd} vq={vq} V — device: {status:?}"),
+            );
+        }
+        Command::Sixstep { duty } => {
+            let status = send_motor_acked(&runtime, ControlMode::SixStep { duty })?;
+            emit(
+                json,
+                json!({"sent": {"duty": duty}, "device": format!("{status:?}")}),
+                format!("Six-step duty {duty} — device: {status:?}"),
+            );
         }
         Command::Source {
             source,
@@ -456,50 +714,261 @@ fn main() -> Result<()> {
                 .cmd_tx
                 .send(HostCommand::SetPhaseSource(ps))
                 .context("send phase source command")?;
-            println!(
-                "Phase source command sent: {:?} (confirm via monitor — telemetry reports the active source)",
-                ps
+            emit(
+                json,
+                json!({"sent": format!("{ps:?}"), "note": "confirm via status — telemetry reports the active source"}),
+                format!(
+                    "Phase source command sent: {ps:?} (confirm via status — telemetry reports the active source)"
+                ),
             );
             std::thread::sleep(Duration::from_millis(800));
         }
         Command::Monitor { seconds, .. } => {
-            run_monitor(&runtime, Duration::from_secs(seconds))?;
+            run_monitor(&runtime, Duration::from_secs(seconds), json)?;
+        }
+        Command::Record {
+            out,
+            seconds,
+            fast_hz,
+            allow_gaps,
+        } => {
+            let snapshot = config_snapshot(&runtime);
+            let summary = record::record(&runtime, &out, seconds, fast_hz, snapshot)?;
+            emit(
+                json,
+                serde_json::to_value(&summary)?,
+                format!(
+                    "{}: {} rows at {} Hz (M={}), {:.2} s, {} gap(s), {} sample(s) lost",
+                    summary.path,
+                    summary.rows,
+                    summary.fast_hz_actual,
+                    summary.decimation_m,
+                    summary.duration_s,
+                    summary.gaps,
+                    summary.samples_lost,
+                ),
+            );
+            if summary.samples_lost > 0 && !allow_gaps {
+                bail!(
+                    "capture has {} dropped sample(s) across {} gap(s); \
+                     rerun at a lower --fast-hz or pass --allow-gaps",
+                    summary.samples_lost,
+                    summary.gaps
+                );
+            }
         }
         Command::Config { action } => match action {
-            ConfigAction::Dump { rust } => dump_config(&runtime, rust)?,
-        },
-        Command::Detect { step, max_power_w } => {
-            let req = match step {
-                DetectStep::Resistance => DetectRequest::MeasureResistance {
-                    max_power_loss_w: max_power_w,
-                },
-                DetectStep::Hall => DetectRequest::CalibrateHall,
-            };
-            println!("Detection started: {:?}", req);
-            let (tx, mut rx) = oxifoc_host_lib::detect_channel();
-            runtime
-                .cmd_tx
-                .send(HostCommand::Detect(req, tx))
-                .context("send detect command")?;
-            // The detect oneshot is async; poll it (no tokio runtime on this
-            // thread). Bounded by a generous deadline (detection can be slow).
-            let deadline = Instant::now() + Duration::from_secs(70);
-            loop {
-                if let Ok(res) = rx.try_recv() {
-                    match res {
-                        Ok(resp) => println!("Detect result: {:?}", resp),
-                        Err(e) => eprintln!("Detect failed: {:?}", e),
-                    }
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    bail!("Detection timed out");
-                }
-                std::thread::sleep(Duration::from_millis(100));
+            ConfigAction::Dump { rust } => dump_config(&runtime, rust, json)?,
+            ConfigAction::Get { group } => {
+                let g = config_cli::parse_group(&group)?;
+                let (value, stored) = config_cli::current_value(&runtime, g)?;
+                emit(
+                    json,
+                    json!({"group": group, "stored": stored, "value": value}),
+                    format!(
+                        "{group}{}: {value:#}",
+                        if stored {
+                            ""
+                        } else {
+                            " (defaults, not stored)"
+                        }
+                    ),
+                );
             }
+            ConfigAction::Set { group, fields } => {
+                let g = config_cli::parse_group(&group)?;
+                let value = config_cli::set_fields(&runtime, g, &fields)?;
+                emit(
+                    json,
+                    json!({"group": group, "written": true, "value": value}),
+                    format!("{group} written: {value:#}"),
+                );
+            }
+            ConfigAction::Reset { yes } => {
+                if !yes {
+                    bail!("config reset erases every stored group; pass --yes to confirm");
+                }
+                let (tx, rx) = oxifoc_host_lib::config_channel();
+                runtime
+                    .cmd_tx
+                    .send(HostCommand::ConfigResetAll(tx))
+                    .context("send config reset")?;
+                let resp = rx
+                    .blocking_recv()
+                    .context("backend dropped the config reset")?
+                    .context("config reset failed")?;
+                match resp {
+                    oxifoc_core::types::ConfigResponse::Ok => emit(
+                        json,
+                        json!({"reset": true}),
+                        "all stored config groups erased".to_string(),
+                    ),
+                    other => bail!("config reset rejected: {other:?}"),
+                }
+            }
+        },
+        Command::Detect {
+            step,
+            max_power_w,
+            resistance,
+            inductance,
+            pole_pairs,
+            erpm,
+            apply,
+        } => {
+            run_detect(
+                &runtime,
+                step,
+                max_power_w,
+                resistance,
+                inductance,
+                pole_pairs,
+                erpm,
+                apply,
+                json,
+            )?;
         }
     }
 
+    Ok(())
+}
+
+/// Stored motor-params as JSON (defaults when not stored).
+fn motor_params_value(runtime: &HostRuntime) -> Result<serde_json::Value> {
+    let (v, _) =
+        config_cli::current_value(runtime, oxifoc_core::types::ConfigGroupId::MotorParams)?;
+    Ok(v)
+}
+
+fn f32_field(v: &serde_json::Value, key: &str) -> f32 {
+    v.get(key).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_detect(
+    runtime: &HostRuntime,
+    step: DetectStep,
+    max_power_w: f32,
+    resistance: Option<f32>,
+    inductance: Option<f32>,
+    pole_pairs: Option<u8>,
+    erpm: f32,
+    apply: bool,
+    json: bool,
+) -> Result<()> {
+    use oxifoc_core::types::DetectResponse;
+
+    // Prerequisites come from flags first, stored motor-params second.
+    let stored = motor_params_value(runtime)?;
+    let r = resistance.unwrap_or_else(|| f32_field(&stored, "resistance_ohm"));
+    let l = inductance.unwrap_or_else(|| {
+        (f32_field(&stored, "inductance_d_h") + f32_field(&stored, "inductance_q_h")) / 2.0
+    });
+    let pp = pole_pairs.unwrap_or_else(|| {
+        stored
+            .get("pole_pairs")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0) as u8
+    });
+
+    let req = match step {
+        DetectStep::Resistance => DetectRequest::MeasureResistance {
+            max_power_loss_w: max_power_w,
+        },
+        DetectStep::Inductance => {
+            if r <= 0.0 {
+                bail!(
+                    "inductance needs resistance: pass --resistance or run detect resistance --apply first"
+                );
+            }
+            DetectRequest::MeasureInductance {
+                max_power_loss_w: max_power_w,
+                resistance_ohm: r,
+            }
+        }
+        DetectStep::Flux => {
+            if r <= 0.0 || pp == 0 {
+                bail!(
+                    "flux needs resistance and pole pairs: pass --resistance/--pole-pairs \
+                     or store them via detect ... --apply / config set motor-params"
+                );
+            }
+            DetectRequest::MeasureFlux {
+                max_power_loss_w: max_power_w,
+                resistance_ohm: r,
+                inductance_h: l,
+                pole_pairs: pp,
+                openloop_erpm: erpm,
+            }
+        }
+        DetectStep::Hall => DetectRequest::CalibrateHall,
+    };
+
+    if !json {
+        println!("Detection started: {req:?}");
+    }
+    let (tx, mut rx) = oxifoc_host_lib::detect_channel();
+    runtime
+        .cmd_tx
+        .send(HostCommand::Detect(req, tx))
+        .context("send detect command")?;
+    // The detect oneshot is async; poll it (no tokio runtime on this
+    // thread). Bounded by a generous deadline (detection can be slow).
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let resp = loop {
+        if let Ok(res) = rx.try_recv() {
+            break res?;
+        }
+        if Instant::now() >= deadline {
+            bail!("Detection timed out");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+
+    if let DetectResponse::Error(e) = resp {
+        bail!("detection failed: {e:?}");
+    }
+
+    let mut applied = serde_json::Value::Null;
+    if apply {
+        use oxifoc_core::types::ConfigGroupId;
+        let (mut mp, _) = config_cli::current_value(runtime, ConfigGroupId::MotorParams)?;
+        let obj = mp.as_object_mut().context("motor-params not an object")?;
+        match resp {
+            DetectResponse::Resistance { resistance_ohm } => {
+                obj.insert("resistance_ohm".into(), json!(resistance_ohm));
+            }
+            DetectResponse::Inductance {
+                inductance_d_h,
+                inductance_q_h,
+            } => {
+                obj.insert("inductance_d_h".into(), json!(inductance_d_h));
+                obj.insert("inductance_q_h".into(), json!(inductance_q_h));
+            }
+            DetectResponse::FluxLinkage {
+                flux_linkage_wb, ..
+            } => {
+                obj.insert("flux_linkage_wb".into(), json!(flux_linkage_wb));
+            }
+            DetectResponse::HallCalibrated | DetectResponse::Error(_) => {}
+        }
+        let write = config_cli::write_from_value(ConfigGroupId::MotorParams, mp.clone())?;
+        config_cli::send_write(runtime, write)?;
+        applied = mp;
+    }
+
+    emit(
+        json,
+        json!({"result": serde_json::to_value(resp)?, "applied": applied}),
+        format!(
+            "Detect result: {resp:?}{}",
+            if apply {
+                " (applied to motor-params)"
+            } else {
+                ""
+            }
+        ),
+    );
     Ok(())
 }
 
@@ -555,9 +1024,41 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
     Ok(cfg)
 }
 
-fn list_devices() -> Result<()> {
-    println!("=== Serial Ports ===");
+fn list_devices(json: bool) -> Result<()> {
     let ports = list_serial_ports();
+    let probes = list_probes();
+
+    if json {
+        let ports_json: Vec<_> = ports
+            .iter()
+            .map(|p| {
+                json!({
+                    "port": p.to_string(),
+                    "vid": p.vid,
+                    "pid": p.pid,
+                    "serial": p.serial_number,
+                    "manufacturer": p.manufacturer,
+                })
+            })
+            .collect();
+        let probes_json: Vec<_> = probes
+            .iter()
+            .map(|p| {
+                json!({
+                    "probe": p.to_string(),
+                    "identifier": p.identifier.to_string(),
+                    "serial": p.serial_number,
+                })
+            })
+            .collect();
+        println!(
+            "{:#}",
+            json!({"serial_ports": ports_json, "probes": probes_json})
+        );
+        return Ok(());
+    }
+
+    println!("=== Serial Ports ===");
     if ports.is_empty() {
         println!("  (none found)");
     } else {
@@ -577,7 +1078,6 @@ fn list_devices() -> Result<()> {
 
     println!();
     println!("=== Debug Probes (RTT) ===");
-    let probes = list_probes();
     if probes.is_empty() {
         println!("  (none found)");
     } else {
@@ -593,19 +1093,32 @@ fn list_devices() -> Result<()> {
     Ok(())
 }
 
-fn run_monitor(runtime: &oxifoc_host_lib::HostRuntime, duration: Duration) -> Result<()> {
+fn run_monitor(runtime: &HostRuntime, duration: Duration, json: bool) -> Result<()> {
     use crossbeam_channel::RecvTimeoutError;
 
-    println!("Streaming telemetry for {:?}...", duration);
+    if !json {
+        println!("Streaming telemetry for {:?}...", duration);
+    }
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
         // Print fast telemetry
         match runtime.fast_rx.recv_timeout(Duration::from_millis(500)) {
             Ok(sample) => {
-                println!(
-                    "#{:>5} ia:{:>7.2}A ib:{:>7.2}A ic:{:>7.2}A id:{:>7.2}A iq:{:>7.2}A erpm:{:>6}",
-                    sample.seq, sample.ia, sample.ib, sample.ic, sample.id, sample.iq, sample.erpm,
-                );
+                if json {
+                    // JSONL: one compact object per sample
+                    println!("{}", serde_json::to_string(&sample)?);
+                } else {
+                    println!(
+                        "#{:>5} ia:{:>7.2}A ib:{:>7.2}A ic:{:>7.2}A id:{:>7.2}A iq:{:>7.2}A erpm:{:>6}",
+                        sample.seq,
+                        sample.ia,
+                        sample.ib,
+                        sample.ic,
+                        sample.id,
+                        sample.iq,
+                        sample.erpm,
+                    );
+                }
             }
             Err(RecvTimeoutError::Timeout) => {
                 if !runtime.connected.load(Ordering::Relaxed) {
@@ -618,13 +1131,17 @@ fn run_monitor(runtime: &oxifoc_host_lib::HostRuntime, duration: Duration) -> Re
         }
         // Print slow telemetry when available
         if let Ok(slow) = runtime.slow_rx.try_recv() {
-            println!(
-                "  [sys] vbus:{:.1}V fet:{:.1}°C motor:{:.1}°C faults:{}",
-                slow.vbus_mv as f32 / 1000.0,
-                slow.fet_temp_c_x10 as f32 / 10.0,
-                slow.motor_temp_c_x10 as f32 / 10.0,
-                slow.fault_count,
-            );
+            if json {
+                println!("{}", serde_json::to_string(&slow)?);
+            } else {
+                println!(
+                    "  [sys] vbus:{:.1}V fet:{:.1}°C motor:{:.1}°C faults:{}",
+                    slow.vbus_mv as f32 / 1000.0,
+                    slow.fet_temp_c_x10 as f32 / 10.0,
+                    slow.motor_temp_c_x10 as f32 / 10.0,
+                    slow.fault_count,
+                );
+            }
         }
     }
 

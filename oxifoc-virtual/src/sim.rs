@@ -83,10 +83,14 @@ pub async fn foc_loop(
             _ => (0.0, 0.0),
         };
 
-        // Run batch of simulation steps
-        let mut last_foc_out = oxifoc_core::foc::controller::FocOutput::default();
+        // Run batch of simulation steps through the SAME telemetry path the
+        // platform ISRs use (publish_cycle_telemetry: state update + the
+        // anti-alias CIC decimator + bbqueue push) — the virtual device must
+        // exercise what the firmware ships, not a parallel re-implementation.
+        use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
+        let vbus_mv = (vbus * 1000.0) as u32;
         for _ in 0..batch {
-            last_foc_out = foc.step(
+            let last_foc_out = foc.step(
                 (out.ia, out.ib, out.ic),
                 out.angle_rad,
                 id_target,
@@ -97,38 +101,27 @@ pub async fn foc_loop(
             out = motor.step(last_foc_out.v_alpha, last_foc_out.v_beta, load_torque, dt);
             seq = seq.wrapping_add(1);
 
-            // Fast telemetry: decimation at the source, write to bbqueue
-            use core::sync::atomic::Ordering;
-            use oxifoc_core::runtime::streaming::{
-                FAST_TELEM_PERIOD, build_fast_telemetry, push_fast_telemetry,
+            let adc = AdcSnapshot::new(0, 0, 0, vbus_mv, seq).with_temp(TempSensorId::Fet, 250); // 25.0°C
+            let hall = HallSnapshot {
+                angle_rad: out.angle_rad,
+                velocity_rad_s: out.omega_e,
+                direction: if out.omega_e > 0.1 {
+                    Direction::Clockwise
+                } else if out.omega_e < -0.1 {
+                    Direction::CounterClockwise
+                } else {
+                    Direction::Stopped
+                },
+                state: out.hall_state,
+                error_count: 0,
             };
-            let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
-            if period != 0 && seq.is_multiple_of(period) {
-                let telem = build_fast_telemetry(&last_foc_out, out.hall_state, out.omega_e, seq);
-                push_fast_telemetry(&telem);
-            }
+            oxifoc_core::runtime::streaming::publish_cycle_telemetry(
+                state_mutex,
+                adc,
+                Some(hall),
+                last_foc_out,
+                seq,
+            );
         }
-
-        // Build telemetry snapshots from latest state
-        use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
-
-        let vbus_mv = (vbus * 1000.0) as u32;
-        let adc = AdcSnapshot::new(0, 0, 0, vbus_mv, seq).with_temp(TempSensorId::Fet, 250); // 25.0°C
-
-        let hall = HallSnapshot {
-            angle_rad: out.angle_rad,
-            velocity_rad_s: out.omega_e,
-            direction: if out.omega_e > 0.1 {
-                Direction::Clockwise
-            } else if out.omega_e < -0.1 {
-                Direction::CounterClockwise
-            } else {
-                Direction::Stopped
-            },
-            state: out.hall_state,
-            error_count: 0,
-        };
-
-        state::update_telemetry(state_mutex, adc, Some(hall), last_foc_out);
     }
 }

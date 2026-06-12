@@ -170,6 +170,18 @@ duty-драйв харнесса с ARR 4250, one-cycle delay (`actuation_delay_
 
 ## Host
 
+CLI (2026-06-12) покрывает весь ICD: все режимы ControlMode, все 10
+конфиг-групп на чтение/запись (`config get/set/dump/reset`), fault
+query/clear, info/status, вся детекция с `--apply`, `--json` везде,
+`record` → parquet (CIC-метаданные, exit 1 при дырах seq). Дальше:
+
+- [ ] **`maneuver` — скриптуемый протокол эксперимента**: timed-
+  последовательность команд с синхронной записью; один протокол на
+  oxifoc-virtual и железо → A/B parquet-пары сим/стенд для диффа.
+- [ ] **Burst-захват в RAM девайса** (VESC `sample`-паттерн): сырые
+  20 кГц в кольцевой буфер (~100–200 мс на g431) с выгрузкой после,
+  pre-trigger вокруг фолта («чёрный ящик»). Стрим 5 кГц CIC — для
+  длинных логов, burst — для полнополосных снимков.
 - [ ] `protocol_version` в `HardwareInfo` + `env!("CARGO_PKG_VERSION")`
   вместо хардкода "oxifoc-0.1.0" — обязательно до любого
   релиза/дистрибуции (postcard-схема без self-description: рассинхрон =

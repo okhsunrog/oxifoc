@@ -164,6 +164,17 @@ pub fn motor_channel() -> (MotorResponseSender, MotorResponseReceiver) {
     tokio::sync::oneshot::channel()
 }
 
+/// Type alias for fault query/clear response oneshot channels
+pub type FaultResponseSender =
+    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::FaultResponse>>;
+pub type FaultResponseReceiver =
+    tokio::sync::oneshot::Receiver<Result<oxifoc_core::types::FaultResponse>>;
+
+/// Create a oneshot channel pair for a fault request/response
+pub fn fault_channel() -> (FaultResponseSender, FaultResponseReceiver) {
+    tokio::sync::oneshot::channel()
+}
+
 pub enum HostCommand {
     Motor(ControlMode),
     /// Like [`Motor`](Self::Motor) but replies with the device's status
@@ -173,7 +184,11 @@ pub enum HostCommand {
     SetTelemetryConfig(TelemetryConfig),
     ConfigRead(oxifoc_core::types::ConfigGroupId, ConfigResponseSender),
     ConfigWrite(oxifoc_core::types::ConfigWrite, ConfigResponseSender),
+    /// Erase every stored config group (factory reset).
+    ConfigResetAll(ConfigResponseSender),
     Detect(oxifoc_core::types::DetectRequest, DetectResponseSender),
+    /// Query or clear device faults (`FaultEndpoint`).
+    Fault(oxifoc_core::types::FaultRequest, FaultResponseSender),
 }
 
 pub struct HostRuntime {
@@ -1103,6 +1118,31 @@ async fn handle_command<NS>(
                     DEVICE_ADDR,
                     &req,
                     Some("config"),
+                    &SETPOINT_POLICY,
+                )
+                .await;
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
+        }
+        HostCommand::ConfigResetAll(reply_tx) => {
+            use oxifoc_core::types::ConfigRequest;
+            tracing::info!("Resetting all config to defaults");
+            let res = client
+                .at_least_once::<ConfigEndpoint>(
+                    DEVICE_ADDR,
+                    &ConfigRequest::ResetAll,
+                    Some("config"),
+                    &SETPOINT_POLICY,
+                )
+                .await;
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
+        }
+        HostCommand::Fault(req, reply_tx) => {
+            tracing::info!("Fault request: {:?}", req);
+            let res = client
+                .at_least_once::<oxifoc_core::icd::FaultEndpoint>(
+                    DEVICE_ADDR,
+                    &req,
+                    Some("fault"),
                     &SETPOINT_POLICY,
                 )
                 .await;

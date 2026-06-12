@@ -57,9 +57,20 @@ pub async fn run(
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
 
     info!("Listening on 0.0.0.0:{port}");
+    let mut prev_conn_token: Option<CancellationToken> = None;
     loop {
         let (socket, addr) = listener.accept().await?;
         info!("Client connected: {addr}");
+
+        // Single-client server: kill the previous connection's tasks NOW
+        // rather than waiting for its liveness timeout. The fast-telemetry
+        // bbqueue has single-consumer semantics — a lingering stream task
+        // from a dead connection keeps draining it and broadcasting into a
+        // dead interface (NoRoute), starving the live client of most
+        // frames (seen as massive seq gaps in `record`).
+        if let Some(prev) = prev_conn_token.take() {
+            prev.cancel();
+        }
 
         // Fresh ergot Router stack for this connection. Virtual emulates the
         // device-side Router (central, node 1); the host connects as an edge and
@@ -89,6 +100,7 @@ pub async fn run(
 
         // Cancel token for this connection — cancelled when interface goes down
         let conn_token = CancellationToken::new();
+        prev_conn_token = Some(conn_token.clone());
 
         // Monitor interface state — cancel all tasks when host disconnects
         tokio::spawn({
