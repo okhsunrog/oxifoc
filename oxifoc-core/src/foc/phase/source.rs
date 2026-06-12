@@ -32,9 +32,14 @@ pub enum PhaseSource {
     // =========================================================================
     // Hybrid modes (sensor + observer blending)
     // =========================================================================
-    /// Hall at low speed, transition to observer at high speed
+    /// Hall primary, observer assist (the default sensored ride mode)
     ///
-    /// Blends linearly between `blend_low` and `blend_high` velocity.
+    /// Two orthogonal jobs in one source:
+    /// - blends linearly Hall→observer between `blend_low` and `blend_high`
+    ///   velocity (hall quantization dominates at speed, observer is exact);
+    /// - automatic failure fallback: on hall loss (invalid state / stale at
+    ///   speed) commutation falls to the observer if ready, else to the
+    ///   open-loop recovery override.
     HallToObserver {
         /// Start blending (electrical rad/s)
         blend_low: f32,
@@ -48,22 +53,6 @@ pub enum PhaseSource {
         blend_low: f32,
         /// Full observer (electrical rad/s)
         blend_high: f32,
-    },
-
-    /// Hall sensor with automatic observer fallback (VESC-style)
-    ///
-    /// Full-featured Hall mode with:
-    /// - Hall at low speed
-    /// - Blends to observer at high speed
-    /// - Automatic fallback to observer if Hall fails
-    /// - Open-loop override if observer not ready (TODO)
-    HallWithFallback {
-        /// Start blending Hall→Observer (electrical rad/s)
-        blend_low: f32,
-        /// Full observer (electrical rad/s)
-        blend_high: f32,
-        /// Hall timeout before fallback (microseconds)
-        timeout_us: u32,
     },
 
     /// HFI at startup, transition to back-EMF observer
@@ -102,7 +91,9 @@ pub enum PhaseSource {
 
     // =========================================================================
     // NOTE: postcard encodes the variant index — append new variants HERE,
-    // never reorder the ones above.
+    // never reorder the ones above. (One deliberate renumber 2026-06-12:
+    // HallWithFallback merged into HallToObserver. Safe because PhaseSource
+    // is never persisted and host + firmware build from the same tree.)
     // =========================================================================
     /// HFI at low drive voltage, blend to the back-EMF observer above —
     /// MESC-style criterion: |vq − R·iq| (the back-EMF share of the drive
@@ -158,11 +149,6 @@ impl PhaseSource {
                 blend_low,
                 blend_high,
             } => blend_low.is_finite() && blend_high.is_finite(),
-            PhaseSource::HallWithFallback {
-                blend_low,
-                blend_high,
-                timeout_us: _,
-            } => blend_low.is_finite() && blend_high.is_finite(),
             PhaseSource::HfiToObserver {
                 min_vel,
                 min_confidence,
@@ -181,10 +167,7 @@ impl PhaseSource {
     pub fn requires_hall(&self) -> bool {
         matches!(
             self,
-            PhaseSource::Hall
-                | PhaseSource::HallToObserver { .. }
-                | PhaseSource::HallWithFallback { .. }
-                | PhaseSource::HfiToHall { .. }
+            PhaseSource::Hall | PhaseSource::HallToObserver { .. } | PhaseSource::HfiToHall { .. }
         )
     }
 
@@ -204,7 +187,6 @@ impl PhaseSource {
             self,
             PhaseSource::Observer
                 | PhaseSource::HallToObserver { .. }
-                | PhaseSource::HallWithFallback { .. }
                 | PhaseSource::EncoderToObserver { .. }
                 | PhaseSource::HfiToObserver { .. }
                 | PhaseSource::HfiToObserverVolts { .. }

@@ -45,7 +45,6 @@ fn phase_source_label(src: oxifoc_core::foc::phase::PhaseSource) -> &'static str
         P::Hfi => "HFI",
         P::HallToObserver { .. } => "Hall→Obs",
         P::EncoderToObserver { .. } => "Enc→Obs",
-        P::HallWithFallback { .. } => "Hall+FB",
         P::HfiToObserver { .. } => "HFI→Obs",
         P::HfiToObserverVolts { .. } => "HFI→Obs(V)",
         P::HfiToHall { .. } => "HFI→Hall",
@@ -970,10 +969,9 @@ pub fn main() {
             let app = weak.unwrap();
             let ps = match app.get_phase_source_index() {
                 0 => PhaseSource::Hall,
-                1 => PhaseSource::HallWithFallback {
+                1 => PhaseSource::HallToObserver {
                     blend_low: SWITCH_VEL,
                     blend_high: SWITCH_VEL * 2.0,
-                    timeout_us: 100_000,
                 },
                 2 => PhaseSource::Observer,
                 3 => PhaseSource::Hfi,

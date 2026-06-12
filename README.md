@@ -42,8 +42,7 @@ at boot:
 | `Encoder` | Incremental encoder |
 | `Observer` | Back-EMF sensorless (high speed) |
 | `Hfi` | High-frequency injection sensorless (zero/low speed) |
-| `HallToObserver` | Hall at low speed, velocity-blended crossover to observer |
-| `HallWithFallback` | Hall → Observer with automatic fallback on Hall failure |
+| `HallToObserver` | Hall at low speed, velocity-blended crossover to observer, automatic fallback on Hall failure |
 | `HfiToObserver` | HFI at standstill, velocity-blended crossover to observer |
 | `Manual` / `OpenLoop` | Calibration and detection |
 

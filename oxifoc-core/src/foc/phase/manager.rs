@@ -661,7 +661,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 blend_low,
                 blend_high,
             } => {
-                // If Hall failed, go full observer
+                // VESC-style full Hall mode:
+                // 1. Hall failed (invalid state / stale at speed) → observer
+                //    if ready, else the open-loop recovery override.
+                // 2. Hall healthy → blend Hall→observer by velocity.
                 if hall_sample.is_none() {
                     return self.try_observer_fallback().unwrap_or(self.output);
                 }
@@ -674,25 +677,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 blend_high,
             } => {
                 let sensor = sample_to_output(encoder_sample, &self.output);
-                self.blend_with_observer(sensor, blend_low, blend_high)
-            }
-
-            PhaseSource::HallWithFallback {
-                blend_low,
-                blend_high,
-                timeout_us: _, // TODO: Use for timeout detection
-            } => {
-                // VESC-style full Hall mode:
-                // 1. If Hall failed, use observer
-                // 2. Otherwise blend Hall→Observer based on velocity
-                if hall_sample.is_none() {
-                    // Hall failed - try observer fallback
-                    // TODO: If observer also not ready, use open-loop override
-                    return self.try_observer_fallback().unwrap_or(self.output);
-                }
-
-                // Hall is working - blend with observer based on velocity
-                let sensor = sample_to_output(hall_sample, &self.output);
                 self.blend_with_observer(sensor, blend_low, blend_high)
             }
 
@@ -1032,7 +1016,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             | PhaseSource::Manual
             | PhaseSource::OpenLoop
             | PhaseSource::HallToObserver { .. }
-            | PhaseSource::HallWithFallback { .. }
             | PhaseSource::EncoderToObserver { .. }
             | PhaseSource::HfiToHall { .. }
             | PhaseSource::HfiToEncoder { .. } => true,
@@ -1628,7 +1611,7 @@ mod tests {
     }
 
     /// Closed-loop sensorless harness: VirtualMotor + FocController +
-    /// PhaseManager(HallSensor + BackEmfObserver), HallWithFallback source.
+    /// PhaseManager(HallSensor + BackEmfObserver), HallToObserver source.
     ///
     /// Spins from standstill on hall commutation; hall edges stop being fed
     /// after `hall_until_step` (cable-cut simulation). Returns the manager,
@@ -1678,10 +1661,9 @@ mod tests {
             (params.ld + params.lq) / 2.0,
             params.lambda,
         )));
-        mgr.set_source(PhaseSource::HallWithFallback {
+        mgr.set_source(PhaseSource::HallToObserver {
             blend_low: 150.0,
             blend_high: 300.0,
-            timeout_us: 100_000,
         })
         .unwrap();
 

@@ -746,10 +746,9 @@ fn main() -> Result<()> {
             use oxifoc_core::foc::phase::PhaseSource;
             let ps = match source {
                 SourceArg::Hall => PhaseSource::Hall,
-                SourceArg::HallFallback => PhaseSource::HallWithFallback {
+                SourceArg::HallFallback => PhaseSource::HallToObserver {
                     blend_low: switch_vel,
                     blend_high: switch_vel * 2.0,
-                    timeout_us: 100_000,
                 },
                 SourceArg::Observer => PhaseSource::Observer,
                 SourceArg::Hfi => PhaseSource::Hfi,

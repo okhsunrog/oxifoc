@@ -269,7 +269,8 @@ pub enum PhaseSource {
     Hfi,                     // High-frequency injection
 
     // === Hybrid modes ===
-    HallToObserver {         // Hall at low speed, observer at high speed
+    HallToObserver {         // Hall at low speed, observer at high speed,
+                             // automatic fallback on hall failure
         blend_low: f32,      // Start blending (electrical rad/s)
         blend_high: f32,     // Full observer (electrical rad/s)
     },
@@ -277,14 +278,13 @@ pub enum PhaseSource {
         blend_low: f32,
         blend_high: f32,
     },
-    HallWithFallback {       // Hall with automatic observer fallback
-        blend_low: f32,      // Start blending (electrical rad/s)
-        blend_high: f32,     // Full observer (electrical rad/s)
-        timeout_us: u32,     // Hall timeout before fallback
-    },
     HfiToObserver {          // HFI startup, blend to observer
         min_vel: f32,        // Fully on observer at this velocity (rad/s)
         min_confidence: f32, // Minimum observer confidence (0.0-1.0)
+    },
+    HfiToObserverVolts {     // Like HfiToObserver, crossover on |vq − R·iq|
+        toggle_v: f32,       // Drive-voltage threshold (V)
+        min_confidence: f32,
     },
     HfiToHall {              // HFI startup, switch to Hall (with hysteresis)
         switch_vel: f32,
@@ -298,6 +298,11 @@ pub enum PhaseSource {
     OpenLoop,                // Open-loop angle ramp (startup, calibration)
 }
 ```
+
+Every hall-consuming source (plain `Hall` included) shares the same failure
+chain: hall invalid/stale → observer if `is_ready()` → open-loop recovery
+override (52 rad/s from the last angle, signed by the last velocity) until a
+real source returns. The hybrid sources add the velocity blend on top.
 
 ### Validation
 

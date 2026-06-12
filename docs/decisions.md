@@ -229,3 +229,13 @@ their section.
   `hfi_mispairing_caught_by_magnitude_cross_check`. Bench L is
   trustworthy once the hardware lag lands within the probe's 1–4 range —
   the probed value gets logged for the bench protocol.
+- **2026-06-12 — `HallWithFallback` merged into `HallToObserver`.** The two
+  variants had byte-identical behavior (blend + fallback are orthogonal
+  duties of one hybrid mode, and the failure chain — observer if ready,
+  else open-loop override — is shared by ALL hall sources anyway); the
+  only difference was `HallWithFallback.timeout_us`, a dead TODO field
+  (the real staleness control is the velocity-adaptive check plus the
+  `HallTuning.timeout_us` config). One deliberate postcard variant
+  renumber: PhaseSource is never persisted and host + firmware build from
+  one tree, so the break is build-time only. CLI keeps `source
+  hall-fallback` as the name for the merged mode.
