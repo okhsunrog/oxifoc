@@ -9,7 +9,7 @@ counts) live in [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 
 | board | profile | flash used | region | headroom |
 |---|---|---|---|---|
-| g431 (B-G431B-ESC1) | **baked (the only profile)** | 113 456 | **128K** (no storage region) | **17.2 KB** |
+| g431 (B-G431B-ESC1) | **baked (the only profile)** | 114 184 | **128K** (no storage region) | **16.9 KB** |
 | g474 (Nucleo + IHM08M1) | storage | 161 040 | 256K (bank 1; bank 2 = config) | 99 KB |
 | f405 | storage | 245 860 | 768K (sectors 0–9) | 528 KB |
 
@@ -117,6 +117,7 @@ remaining "compiler flag" win; everything below is about code.
 | 2026-06-12 | **g431 storage profile removed** (see below) — that +1 760 B overflowed the 124K storage layout by ~700 B, forcing the standing decision | storage profile gone; baked unaffected |
 | 2026-06-12 | per-step detect server gets the same method ladders as `run_full_detection` (`measure_inductance_auto`: HFI → voltage-pulse fallback; `measure_flux_linkage_auto`: spin-down gate → driven) — the pulse machinery is now reachable from firmware | **+2 676 B** (110 380 → 113 056) |
 | 2026-06-12 | HFI run-gating (update+injection paired, off in non-Hfi sources — ~10% of the ISR budget back in the hall ride config), carrier pre-heat margin + `restart_demod`, amplitude solved from measured L | +400 B (→ 113 456) |
+| 2026-06-12 | motor RATING layer: `MotorParamsConfig` +rating/+power-class, limits clamp `min(operational, rating, board)`, trip ≤ 1.5×rating, HFI ripple target from rating | +728 B (→ 114 184, headroom 16.9 KB) |
 
 Panic handler kept `defmt::error!("PANIC: {}", Display2Format(info))`:
 full panic text over RTT costs only 240 B once dependency fmt is gone

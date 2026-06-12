@@ -138,6 +138,8 @@ export component App inherits Window {
     in-out property <string> cfg-inductance-q: "";
     in-out property <string> cfg-flux-linkage: "";
     in-out property <string> cfg-pole-pairs: "";
+    in-out property <string> cfg-motor-rating: "";
+    in-out property <string> cfg-motor-power-loss: "";
     // Current limits
     in-out property <string> cfg-max-iq: "";
     in-out property <string> cfg-max-phase-current: "";
@@ -749,6 +751,8 @@ export component App inherits Window {
                         Text { text: "Flux linkage (Wb):"; } LineEdit { text <=> root.cfg-flux-linkage; min-width: 120px; }
                     }
                     Row { Text { text: "Pole pairs:"; } LineEdit { text <=> root.cfg-pole-pairs; min-width: 120px; } }
+                    Row { Text { text: "Rating (A, 0=unknown):"; } LineEdit { text <=> root.cfg-motor-rating; min-width: 120px; } }
+                    Row { Text { text: "Power class (W):"; } LineEdit { text <=> root.cfg-motor-power-loss; min-width: 120px; } }
                 }
                 if root.config-group == 1 : GridLayout {
                     spacing: 6px;

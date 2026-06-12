@@ -94,6 +94,18 @@ pub struct MotorParamsConfig {
     pub flux_linkage_wb: f32,
     /// Number of pole pairs
     pub pole_pairs: u8,
+    /// Continuous current RATING (A) — the motor's thermal ceiling from
+    /// the detection solve `√(max_power_loss / R / 1.5)` (VESC's i_max),
+    /// uncapped by session limits. Owned by the motor, not the setup:
+    /// effective operational limits are clamped to it at apply time
+    /// (`CurrentLimits::from_config_clamped`). 0 = unknown (pre-rating
+    /// config blob) — no rating clamp applied.
+    pub max_current_a: f32,
+    /// Power-dissipation class (W) the rating was solved for — the
+    /// "motor size" chosen at detection (VESC wizard equivalent),
+    /// persisted so re-detection and derived defaults reuse it.
+    /// 0 = unknown.
+    pub max_power_loss_w: f32,
 }
 
 impl PostcardValue<'_> for MotorParamsConfig {}
@@ -110,6 +122,19 @@ impl MotorParamsConfig {
             && self.flux_linkage_wb.is_finite()
             && self.flux_linkage_wb >= 0.0
             && self.pole_pairs > 0
+    }
+
+    /// The motor's continuous current rating, when known.
+    ///
+    /// NaN/zero/negative (including blobs written before the rating
+    /// fields existed) read as "no rating" — callers then skip the
+    /// rating clamp rather than clamping to garbage.
+    pub fn rating_current_a(&self) -> Option<f32> {
+        if self.max_current_a.is_finite() && self.max_current_a > 0.0 {
+            Some(self.max_current_a)
+        } else {
+            None
+        }
     }
 }
 
@@ -554,6 +579,8 @@ mod tests {
             inductance_q_h: 3e-4,
             flux_linkage_wb: 0.02,
             pole_pairs: 7,
+            max_current_a: 15.0,
+            max_power_loss_w: 50.0,
         };
         assert!(good.is_valid());
 

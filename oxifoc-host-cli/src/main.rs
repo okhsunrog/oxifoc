@@ -87,8 +87,8 @@ fn dump_config(runtime: &HostRuntime, rust: bool) -> Result<()> {
             Some(R::MotorParams(v)) => fields.push((
                 "motor_params",
                 Some(format!(
-                    "MotorParamsConfig {{\n            resistance_ohm: {:?},\n            inductance_d_h: {:?},\n            inductance_q_h: {:?},\n            flux_linkage_wb: {:?},\n            pole_pairs: {},\n        }}",
-                    v.resistance_ohm, v.inductance_d_h, v.inductance_q_h, v.flux_linkage_wb, v.pole_pairs
+                    "MotorParamsConfig {{\n            resistance_ohm: {:?},\n            inductance_d_h: {:?},\n            inductance_q_h: {:?},\n            flux_linkage_wb: {:?},\n            pole_pairs: {},\n            max_current_a: {:?},\n            max_power_loss_w: {:?},\n        }}",
+                    v.resistance_ohm, v.inductance_d_h, v.inductance_q_h, v.flux_linkage_wb, v.pole_pairs, v.max_current_a, v.max_power_loss_w
                 )),
             )),
             Some(R::HallCalibration(v)) => fields.push((

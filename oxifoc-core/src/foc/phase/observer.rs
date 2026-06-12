@@ -613,6 +613,17 @@ pub const HFI_DEFAULT_AMPLITUDE_RATIO: f32 = 0.125;
 #[cfg(feature = "storage")]
 pub const HFI_CARRIER_RIPPLE_TARGET_A: f32 = 2.0;
 
+/// Fraction of the motor's continuous-current RATING used as the carrier
+/// ripple target when the rating is known (detection's thermal solve,
+/// stored in the MotorParams group). Scales the perturbation to the
+/// motor: ~2 A on a 15 A eskate outrunner, ~0.2 A on a 1.3 A gimbal —
+/// capped by [`HFI_CARRIER_RIPPLE_TARGET_A`]. Deliberately scaled from
+/// the RATING, not the session current limit: a bench config capping iq
+/// at 2 A must not shrink the carrier SNR on a 30 A motor (the carrier
+/// is a perturbation the MOTOR has to tolerate, not the session).
+#[cfg(feature = "storage")]
+pub const HFI_RIPPLE_RATING_FRACTION: f32 = 0.15;
+
 /// Polarity probe: drive cycles per pulse. At 20 kHz this is 0.4 ms — with
 /// the carrier amplitude on Ld in the 100 µH range the current reaches
 /// ~V·t/Ld ≈ 10 A, enough to move the iron along its saturation curve.

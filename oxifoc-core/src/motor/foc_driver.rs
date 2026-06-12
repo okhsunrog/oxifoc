@@ -106,33 +106,56 @@ impl CurrentLimits {
     }
 
     /// Build limits from a host-written config, clamped to the board's
-    /// hardware ceiling.
+    /// hardware ceiling AND the motor's continuous-current rating.
     ///
-    /// The stored config can lower the limits but never raise them above
-    /// what the board hardware tolerates; zero/negative config values mean
-    /// "not set" and fall back to the board defaults — a config must not be
-    /// able to switch protection off.
+    /// Layered semantics (the VESC override-matrix idea): the RATING is a
+    /// ceiling owned by the motor (detection's thermal solve, stored in
+    /// the MotorParams group), the OPERATIONAL config is the session's
+    /// choice below it — it can lower limits but never raise them above
+    /// either the board hardware or what the motor tolerates. Zero or
+    /// negative config values mean "not set" and fall back to the ceiling
+    /// itself (VESC applies `l_current_max = i_max` the same way), so a
+    /// detected motor gets sane defaults with no extra configuration. The
+    /// overcurrent trip ceiling is 1.5× the rating (VESC's
+    /// `l_abs_current_max = i_max·1.5`), still capped by the board.
     ///
     /// # Arguments
     /// * `cfg` - the host-written limits config
     /// * `hw_max_a` - board hardware phase-current ceiling (A)
+    /// * `rating_a` - motor continuous-current rating (A); `<= 0`/NaN =
+    ///   unknown (no rating clamp)
     #[cfg(feature = "storage")]
-    pub fn from_config_clamped(cfg: &crate::storage::CurrentLimitsConfig, hw_max_a: f32) -> Self {
+    pub fn from_config_clamped(
+        cfg: &crate::storage::CurrentLimitsConfig,
+        hw_max_a: f32,
+        rating_a: f32,
+    ) -> Self {
         let board = Self::from_max_current(hw_max_a);
+        let rating_ok = rating_a.is_finite() && rating_a > 0.0;
+        let iq_ceiling = if rating_ok {
+            board.max_current_a.min(rating_a)
+        } else {
+            board.max_current_a
+        };
+        let trip_ceiling = if rating_ok {
+            board.overcurrent_threshold_a.min(1.5 * rating_a)
+        } else {
+            board.overcurrent_threshold_a
+        };
         // Bus limits have no board ceiling (they protect the supply, not
         // the board); NaN → unlimited (the boundary sanity check rejects
         // NaN commands, this is boot-path defense).
         let bus = |v: f32| if v.is_finite() { v } else { -1.0 };
         Self {
             max_current_a: if cfg.max_iq_a > 0.0 {
-                cfg.max_iq_a.min(board.max_current_a)
+                cfg.max_iq_a.min(iq_ceiling)
             } else {
-                board.max_current_a
+                iq_ceiling
             },
             overcurrent_threshold_a: if cfg.max_phase_current_a > 0.0 {
-                cfg.max_phase_current_a.min(board.overcurrent_threshold_a)
+                cfg.max_phase_current_a.min(trip_ceiling)
             } else {
-                board.overcurrent_threshold_a
+                trip_ceiling
             },
             bus_in_max_a: bus(cfg.bus_in_max_a),
             bus_regen_max_a: bus(cfg.bus_regen_max_a),
@@ -140,11 +163,31 @@ impl CurrentLimits {
     }
 
     /// Limits for boot: the stored config (clamped) when present, board
-    /// defaults otherwise.
+    /// defaults otherwise. `rating_a` as in
+    /// [`from_config_clamped`](Self::from_config_clamped) — pass the
+    /// stored motor rating (or `0.0` when absent) so a detected motor's
+    /// thermal ceiling holds even with no limits group written.
     #[cfg(feature = "storage")]
-    pub fn from_stored(cfg: Option<&crate::storage::CurrentLimitsConfig>, hw_max_a: f32) -> Self {
+    pub fn from_stored(
+        cfg: Option<&crate::storage::CurrentLimitsConfig>,
+        hw_max_a: f32,
+        rating_a: f32,
+    ) -> Self {
         match cfg {
-            Some(c) => Self::from_config_clamped(c, hw_max_a),
+            Some(c) => Self::from_config_clamped(c, hw_max_a, rating_a),
+            // No limits group stored: the ceilings ARE the limits (an
+            // all-unset config, NOT CurrentLimitsConfig::default() — that
+            // one carries concrete 10 A/40 A values).
+            None if rating_a.is_finite() && rating_a > 0.0 => Self::from_config_clamped(
+                &crate::storage::CurrentLimitsConfig {
+                    max_iq_a: 0.0,
+                    max_phase_current_a: 0.0,
+                    bus_in_max_a: -1.0,
+                    bus_regen_max_a: -1.0,
+                },
+                hw_max_a,
+                rating_a,
+            ),
             None => Self::from_max_current(hw_max_a),
         }
     }
@@ -1843,7 +1886,7 @@ mod tests {
         };
 
         // Normal config below the ceiling: passes through.
-        let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, -1.0, -1.0), hw_max);
+        let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, -1.0, -1.0), hw_max, 0.0);
         assert_eq!(l.max_current_a, 5.0);
         assert_eq!(l.overcurrent_threshold_a, 8.0);
         assert_eq!(l.bus_in_max_a, -1.0);
@@ -1851,21 +1894,72 @@ mod tests {
 
         // Config above the ceiling: clamped to the board limits.
         let board = CurrentLimits::from_max_current(hw_max);
-        let l = CurrentLimits::from_config_clamped(&cfg(50.0, 100.0, -1.0, -1.0), hw_max);
+        let l = CurrentLimits::from_config_clamped(&cfg(50.0, 100.0, -1.0, -1.0), hw_max, 0.0);
         assert_eq!(l.max_current_a, board.max_current_a);
         assert_eq!(l.overcurrent_threshold_a, board.overcurrent_threshold_a);
 
         // Zeroed config: board defaults, NOT disabled protection.
-        let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0, -1.0, -1.0), hw_max);
+        let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0, -1.0, -1.0), hw_max, 0.0);
         assert_eq!(l.max_current_a, board.max_current_a);
         assert_eq!(l.overcurrent_threshold_a, board.overcurrent_threshold_a);
 
         // Bus limits pass through (no board ceiling — they protect the
         // supply); zero is meaningful (no regen), NaN → unlimited.
-        let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, 20.0, 0.0), hw_max);
+        let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, 20.0, 0.0), hw_max, 0.0);
         assert_eq!(l.bus_in_max_a, 20.0);
         assert_eq!(l.bus_regen_max_a, 0.0);
-        let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, f32::NAN, f32::NAN), hw_max);
+        let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, f32::NAN, f32::NAN), hw_max, 0.0);
+        assert_eq!(l.bus_in_max_a, -1.0);
+        assert_eq!(l.bus_regen_max_a, -1.0);
+    }
+
+    /// Motor RATING is a ceiling above the operational config (layered
+    /// semantics): the session can only lower limits below it, an unset
+    /// config defaults to the rating itself, and the overcurrent trip
+    /// ceiling is 1.5× the rating (VESC `l_abs_current_max`) — all still
+    /// capped by the board hardware.
+    #[test]
+    fn rating_caps_operational_limits() {
+        let hw_max = 30.0;
+        let cfg = |iq: f32, phase: f32| crate::storage::CurrentLimitsConfig {
+            max_iq_a: iq,
+            max_phase_current_a: phase,
+            bus_in_max_a: -1.0,
+            bus_regen_max_a: -1.0,
+        };
+        let rating = 10.0;
+
+        // Operational asks for more than the motor tolerates: rating wins.
+        let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), hw_max, rating);
+        assert_eq!(l.max_current_a, rating);
+        assert_eq!(l.overcurrent_threshold_a, 1.5 * rating);
+
+        // Operational below the rating: passes through untouched.
+        let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0), hw_max, rating);
+        assert_eq!(l.max_current_a, 5.0);
+        assert_eq!(l.overcurrent_threshold_a, 8.0);
+
+        // Unset operational: the rating IS the default (VESC applies
+        // l_current_max = i_max the same way).
+        let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), hw_max, rating);
+        assert_eq!(l.max_current_a, rating);
+        assert_eq!(l.overcurrent_threshold_a, 1.5 * rating);
+
+        // Board hardware still caps a huge rating.
+        let board = CurrentLimits::from_max_current(hw_max);
+        let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), hw_max, 500.0);
+        assert_eq!(l.max_current_a, board.max_current_a);
+        assert_eq!(l.overcurrent_threshold_a, board.overcurrent_threshold_a);
+
+        // NaN / zero rating: no rating clamp (pre-rating config blobs).
+        let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), hw_max, f32::NAN);
+        assert_eq!(l.max_current_a, 25.0_f32.min(board.max_current_a));
+
+        // No limits group stored at all: rating still holds at boot.
+        let l = CurrentLimits::from_stored(None, hw_max, rating);
+        assert_eq!(l.max_current_a, rating);
+        assert_eq!(l.overcurrent_threshold_a, 1.5 * rating);
+        // …and bus limits stay off (boot default).
         assert_eq!(l.bus_in_max_a, -1.0);
         assert_eq!(l.bus_regen_max_a, -1.0);
     }

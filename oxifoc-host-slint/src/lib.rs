@@ -1094,6 +1094,14 @@ pub fn main() {
                                         "{}",
                                         p.pole_pairs
                                     )));
+                                    app.set_cfg_motor_rating(SharedString::from(format!(
+                                        "{}",
+                                        p.max_current_a
+                                    )));
+                                    app.set_cfg_motor_power_loss(SharedString::from(format!(
+                                        "{}",
+                                        p.max_power_loss_w
+                                    )));
                                 }
                                 ConfigResponse::CurrentLimits(c) => {
                                     app.set_cfg_max_iq(SharedString::from(format!(
@@ -1219,12 +1227,17 @@ pub fn main() {
                     let lq: f32 = parse_field("inductance q", &app.get_cfg_inductance_q(), err);
                     let fl: f32 = parse_field("flux linkage", &app.get_cfg_flux_linkage(), err);
                     let pp: u8 = parse_field("pole pairs", &app.get_cfg_pole_pairs(), err);
+                    let rating: f32 = parse_field("motor rating", &app.get_cfg_motor_rating(), err);
+                    let ploss: f32 =
+                        parse_field("motor power loss", &app.get_cfg_motor_power_loss(), err);
                     ConfigWrite::MotorParams(MotorParamsConfig {
                         resistance_ohm: r,
                         inductance_d_h: ld,
                         inductance_q_h: lq,
                         flux_linkage_wb: fl,
                         pole_pairs: pp,
+                        max_current_a: rating,
+                        max_power_loss_w: ploss,
                     })
                 }
                 1 => {
@@ -1537,12 +1550,24 @@ pub fn main() {
             let pp = app.get_pole_pairs().max(1) as u8;
             let kp: f32 = parse_field("kp", &app.get_detect_kp(), err);
             let ki: f32 = parse_field("ki", &app.get_detect_ki(), err);
+            let max_loss: f32 = parse_field("max power loss", &app.get_detect_max_loss(), err);
             if let Some(msg) = parse_err {
                 app.set_detect_status(SharedString::from(msg));
                 return;
             }
 
-            // Write motor params
+            // Write motor params, including the continuous-current RATING —
+            // the same VESC thermal solve the device uses for safe test
+            // currents (√(P/R/1.5)). It becomes the ceiling that operational
+            // limits are clamped to on the device.
+            let rating = if r > 0.0 && max_loss > 0.0 {
+                oxifoc_core::foc::detection::resistance::calculate_max_current(
+                    r,
+                    oxifoc_core::foc::detection::types::MotorSize::Custom(max_loss),
+                )
+            } else {
+                0.0
+            };
             let (tx1, rx1) = config_channel();
             let _ = runtime.cmd_tx.send(HostCommand::ConfigWrite(
                 ConfigWrite::MotorParams(MotorParamsConfig {
@@ -1551,6 +1576,8 @@ pub fn main() {
                     inductance_q_h: lq,
                     flux_linkage_wb: fl,
                     pole_pairs: pp,
+                    max_current_a: rating,
+                    max_power_loss_w: max_loss,
                 }),
                 tx1,
             ));

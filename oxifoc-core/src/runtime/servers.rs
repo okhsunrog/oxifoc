@@ -384,14 +384,28 @@ pub async fn config_server<NS, const N: usize>(
                             // config and the live driver disagreeing (worst
                             // case: MotorParams applies its gains but loses
                             // the decoupling command on a full channel).
+                            // Motor rating ceiling for the limits clamp —
+                            // read back from the just-updated mirror so a
+                            // simultaneous MotorParams write is reflected.
+                            let rating_a = critical_section::with(|cs| {
+                                runtime_config
+                                    .borrow(cs)
+                                    .borrow()
+                                    .motor_params
+                                    .as_ref()
+                                    .and_then(|m| m.rating_current_a())
+                                    .unwrap_or(0.0)
+                            });
                             match write {
-                                // Limits: clamped to the board ceiling.
+                                // Limits: clamped to the board ceiling and
+                                // the motor rating.
                                 ConfigWrite::CurrentLimits(ref v) => {
                                     CMD_CHANNEL.send(
                                         crate::state::DriverCommand::SetCurrentLimits(
                                             crate::motor::foc_driver::CurrentLimits::from_config_clamped(
                                                 v,
                                                 hw_max_current_a,
+                                                rating_a,
                                             ),
                                         ),
                                     ).await;
@@ -429,6 +443,25 @@ pub async fn config_server<NS, const N: usize>(
                                                 lq_h: v.inductance_q_h,
                                                 flux_linkage_wb: v.flux_linkage_wb,
                                             },
+                                        ))
+                                        .await;
+                                    // A new rating re-clamps the live limits
+                                    // (a lower-rated motor must take effect
+                                    // now, not at the next boot).
+                                    let limits = critical_section::with(|cs| {
+                                        runtime_config
+                                            .borrow(cs)
+                                            .borrow()
+                                            .current_limits
+                                            .clone()
+                                    });
+                                    CMD_CHANNEL
+                                        .send(crate::state::DriverCommand::SetCurrentLimits(
+                                            crate::motor::foc_driver::CurrentLimits::from_stored(
+                                                limits.as_ref(),
+                                                hw_max_current_a,
+                                                rating_a,
+                                            ),
                                         ))
                                         .await;
                                 }

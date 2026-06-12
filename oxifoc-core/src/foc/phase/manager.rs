@@ -1098,9 +1098,16 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             // on a low-L outrunner (25 µH eskate motor) the raw ratio
             // would drive tens of amps of carrier ripple; on high-L motors
             // the solve exceeds the ceiling and the ratio default applies
-            // unchanged.
+            // unchanged. The ripple target scales with the motor's RATING
+            // when detection stored one (see HFI_RIPPLE_RATING_FRACTION —
+            // not the session current limit), absolute default otherwise.
+            let i_target = match mp.rating_current_a() {
+                Some(rating) => (super::observer::HFI_RIPPLE_RATING_FRACTION * rating)
+                    .clamp(0.05, super::observer::HFI_CARRIER_RIPPLE_TARGET_A),
+                None => super::observer::HFI_CARRIER_RIPPLE_TARGET_A,
+            };
             let omega_c = HFI_DEFAULT_FREQ_HZ * core::f32::consts::TAU;
-            let amplitude = (super::observer::HFI_CARRIER_RIPPLE_TARGET_A * omega_c * l_avg)
+            let amplitude = (i_target * omega_c * l_avg)
                 .min(vbus * HFI_DEFAULT_AMPLITUDE_RATIO)
                 .max(0.05);
             self.set_hfi_observer(HfiObserver::new(HFI_DEFAULT_FREQ_HZ, amplitude).with_sincos());

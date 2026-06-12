@@ -125,6 +125,12 @@ pub async fn init(
     foc_driver.set_current_limits(oxifoc_core::motor::foc_driver::CurrentLimits::from_stored(
         config.current_limits.as_ref(),
         BOARD.max_phase_current_a,
+        // Motor rating ceiling (detection's thermal solve), 0 = unknown.
+        config
+            .motor_params
+            .as_ref()
+            .and_then(|m| m.rating_current_a())
+            .unwrap_or(0.0),
     ));
 
     // Failsafe: command-staleness deadman + reaction policy from stored config
