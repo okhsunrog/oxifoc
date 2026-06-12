@@ -1,8 +1,14 @@
 # VirtualMotor Fidelity — What the Sim Proves, and What It Can't
 
-> **STATUS: open (анализ актуален).** Предложенные апгрейды — в TODO.md
-> «VirtualMotor fidelity». Тезис «спаренные конвенции прячут смещения»
-> подтверждён 2026-06-12 hall-конвенцией сима (decisions.md).
+> **STATUS: частично закрыт 2026-06-12.** Лэндинг первой волны апгрейдов:
+> sub-stepping, dead-time distortion, квантование+шум АЦП, Lq-сатурация,
+> duty-драйв detection-харнесса (ARR 4250). Уже окупились: sim предсказал
+> коллапс DirectVoltage-hold под dead-time на низкоомных моторах ДО стенда
+> (фикс: comp в apply_dq + settled hold, decisions.md) и закрепил слепоту
+> confidence к saliency-коллапсу. Остаток (one-cycle delay, vbus sag,
+> coulomb, гармоники) — в TODO.md «VirtualMotor fidelity». Тезис
+> «спаренные конвенции прячут смещения» подтверждён дважды: hall-конвенцией
+> сима и нулями идеальной таблицы детекции (lockstep-самоподтверждение).
 
 Working notes on how far to trust the `VirtualMotor` plant model
 (`oxifoc-core/src/virtual_motor.rs`) and the ~300 host tests built on it,
@@ -145,12 +151,14 @@ passes with it** — otherwise the compensation is still effectively untested.
 |---|---|---|
 | FOC math / transforms / sign conventions correct | **high** | ideal plant is sufficient — the math is the math |
 | Observer/HFI converge & track on an ideal machine | **high** | that's exactly what's modeled |
-| Detection (R/Ld/Lq/λ) numerically correct | **high** | validated vs known plant params |
+| Detection (R/Ld/Lq/λ) numerically correct | **high** | validated vs known plant params, теперь и на non-ideal планте (отчёт detection_report, e2e `run_full_detection_nonideal_plant`) |
 | HFI polarity probe works | **medium** | needs `sat_k`; modeled, but saturation curve is a simple `1/(1+k·id)` |
-| Dead-time comp / phase advance correct | **low (untested)** | plant lacks the disturbance |
-| HFI/observer robust under real sensing | **low (untested)** | no noise, no non-sinusoidal bemf |
+| Dead-time comp correct | **medium (2026-06-12)** | плант генерит дисторсию, тест `dead_time_compensation_cancels_plant_distortion` — cancellation, не idle; остаётся simple-sign модель |
+| Phase advance correct | **low (untested)** | one-cycle latency всё ещё не моделируется |
+| HFI robust under real sensing | **medium (2026-06-12)** | 12-bit квантование + шум закреплены (`hfi_locks_through_quantized_noisy_sensor`); non-sinusoidal bemf всё ещё нет |
+| HFI under saliency collapse | **известный провал (закреплён)** | `lq_sat_k` + тест: confidence слеп к коллапсу, угол уезжает молча — TODO saliency-монитор |
 | Failsafe OV soft-landing | **low (untested)** | no bus dynamics |
-| Low-speed smoothness / startup feel | **low** | no cogging, no dead-time, no latency |
+| Low-speed smoothness / startup feel | **low** | no cogging, no latency |
 
 The "low" rows are precisely the bench-validation checklist — they can't be
 closed in sim until the corresponding [add] upgrade lands.

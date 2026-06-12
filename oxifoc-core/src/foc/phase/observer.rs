@@ -1199,12 +1199,7 @@ mod tests {
         sat_k: f32,
         steps: usize,
     ) -> (HfiObserver, crate::virtual_motor::VirtualMotorOutput) {
-        use crate::foc::controller::FocController;
-        use crate::foc::pwm::SvpwmModulator;
-        use crate::foc::transforms;
-        use crate::virtual_motor::{MotorParams, VirtualMotor};
-
-        const DT: f32 = 1.0 / 20_000.0;
+        use crate::virtual_motor::MotorParams;
         // IPM with 3:1 saliency; heavy rotor + friction so the injection
         // itself doesn't move it.
         let params = MotorParams {
@@ -1217,7 +1212,26 @@ mod tests {
             friction_b: 5e-2,
             hall_offset: 0.0,
             sat_k,
+            ..MotorParams::default()
         };
+        run_hfi_sim_params(params, rotor_angle, load_torque, steps)
+    }
+
+    /// Closed-loop HFI harness over an explicit plant parameterization
+    /// (lets tests opt into sensor noise / quantization / saturation).
+    #[cfg(feature = "virtual-motor")]
+    fn run_hfi_sim_params(
+        params: crate::virtual_motor::MotorParams,
+        rotor_angle: f32,
+        load_torque: f32,
+        steps: usize,
+    ) -> (HfiObserver, crate::virtual_motor::VirtualMotorOutput) {
+        use crate::foc::controller::FocController;
+        use crate::foc::pwm::SvpwmModulator;
+        use crate::foc::transforms;
+        use crate::virtual_motor::VirtualMotor;
+
+        const DT: f32 = 1.0 / 20_000.0;
         let mut motor = VirtualMotor::new(params);
         motor.set_angle(rotor_angle);
 
@@ -1227,7 +1241,8 @@ mod tests {
         let mut out = crate::virtual_motor::VirtualMotorOutput::default();
         for _ in 0..steps {
             let (vd_inj, vq_inj) = obs.get_injection();
-            let telem = foc.apply_dq(vd_inj, vq_inj, obs.phase(), 1000);
+            let (i_a_m, i_b_m) = transforms::clarke(out.ia, out.ib);
+            let telem = foc.apply_dq(vd_inj, vq_inj, obs.phase(), i_a_m, i_b_m, 1000);
             out = motor.step(telem.v_alpha, telem.v_beta, load_torque, DT);
             let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
             obs.update(&ObserverInput {
@@ -1326,6 +1341,52 @@ mod tests {
         assert!(
             err < 0.15,
             "correct lock was flipped: est {} vs rotor {} (err {} rad full-circle)",
+            obs.phase(),
+            wrap_angle(out.angle_rad),
+            err
+        );
+    }
+
+    /// The demod must lock through a realistic current sensor: 12-bit ADC
+    /// quantization (±31 A FS → ~15 mA LSB), one LSB of uniform noise and
+    /// sub-stepped plant integration. The confidence/readiness thresholds
+    /// were originally tuned on noiseless currents — this pins that they
+    /// hold under honest sensing (carrier ripple ≈ 4.8 A ≫ noise floor,
+    /// but the demod filters see every sample).
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn hfi_locks_through_quantized_noisy_sensor() {
+        use crate::virtual_motor::MotorParams;
+        const ADC_LSB_A: f32 = 62.0 / 4096.0;
+        let params = MotorParams {
+            r: 0.1,
+            ld: 100e-6,
+            lq: 300e-6,
+            lambda: 0.02,
+            pole_pairs: 4,
+            j: 1e-2,
+            friction_b: 5e-2,
+            sat_k: 0.05,
+            substeps: 10,
+            adc_lsb_a: ADC_LSB_A,
+            adc_noise_a: ADC_LSB_A,
+            ..MotorParams::default()
+        };
+        let (obs, out) = run_hfi_sim_params(params, 1.2, 0.0, 20_000);
+
+        assert!(
+            obs.polarity_resolved(),
+            "polarity probe must resolve through sensor noise"
+        );
+        assert!(
+            obs.is_ready(),
+            "HFI must reach readiness through sensor noise: confidence {}",
+            obs.confidence()
+        );
+        let err = angle_difference(obs.phase(), wrap_angle(out.angle_rad)).abs();
+        assert!(
+            err < 0.15,
+            "HFI did not converge through sensor noise: est {} vs rotor {} (err {})",
             obs.phase(),
             wrap_angle(out.angle_rad),
             err

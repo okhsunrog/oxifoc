@@ -52,9 +52,16 @@ failsafe — в [safety.md](safety.md). Карта документации — 
 - [ ] Настоящая overmodulation-стратегия (сейчас `modulation_limit` до 1.2
   просто клампит duty выше линейной зоны SVPWM).
 - [ ] Автоопределение pole pairs; offset-калибровка энкодера.
-- [ ] `apply_dq` (DirectVoltage) пропускает dead-time compensation — а это
-  режим HFI-детекции; смещает измерение L (поймается sim-апгрейдом
-  dead-time, см. ниже).
+- [ ] **Saliency-монитор для HFI** (sim теперь умеет триггерить отказ:
+  `lq_sat_k` + тест `closed_loop_hfi_saliency_collapse_loses_tracking_silently`).
+  Коллапс/инверсия saliency под нагрузкой НЕВИДИМЫ для confidence
+  (eps≈0 читается как идеальный лок) — угол молча уезжает при здоровой
+  несущей. Индустрийные ответы: dual-axis HFI45 (MESC), мониторинг
+  градиента eps. До монитора — это аргумент держать HFI-моторы с запасом
+  по Lq-сатурации.
+- [ ] HFI-амплитуда детекции: floor от разрешения АЦП — gimbal-класс
+  (риппл ~30 мА против 15 мА LSB) даёт Lq −14%, λ +8% на non-ideal
+  планте; адаптация сейчас целится в долю hold-тока, не глядя на LSB.
 - [ ] HallPll: PLL-вариант hall-эстиматора на базе `BackEmfObserver`-
   структуры (граничный якорь уже сделан) — прототип на VirtualMotor.
   [notes/hall-improvements.md §4]
@@ -117,18 +124,12 @@ failsafe — в [safety.md](safety.md). Карта документации — 
 
 Каждый эффект — за опциональным параметром с идеальным дефолтом
 (decisions.md), каждый апгрейд — с тестом, падающим без компенсации.
+Сделано 2026-06-12: sub-stepping (`substeps`), dead-time (`dead_time_v`),
+квантование+шум (`adc_lsb_a`/`adc_noise_a`), Lq-сатурация (`lq_sat_k`),
+duty-драйв харнесса с ARR 4250. Осталось:
 
-- [ ] **Sub-stepping** (~10 внутренних шагов Эйлера на `step()`) — ломает
-  цикличность общей дискретизации сим/эстиматоры (0.0% детекции отчасти
-  самоподтверждение).
-- [ ] **Dead-time distortion** (highest ROI): `v_err = −sign(i)·t_dt·f_pwm·vbus`
-  — валидирует 2-point R, HFI через apply_dq, dead-time comp.
-- [ ] **Квантование + шум токов** (12-bit + детерминированный xorshift) —
-  честный SNR HFI-демода и адаптивной амплитуды, persistence-фильтр фолтов.
 - [ ] **One-cycle PWM delay** в closed-loop харнессе — фазовый лаг железа,
   валидирует phase advance.
-- [ ] **Q-axis saturation** `Lq_eff` — коллапс saliency под нагрузкой
-  (классический HFI-отказ; manager-фолбэк сейчас нечем триггерить).
 - [ ] **Vbus sag** (`vbus0 − i_bus·R_esr`) — UV-dip / regen-OV сценарии,
   база для динамического Vmax.
 - [ ] **Coulomb friction + ω²-нагрузка** — stiction для standstill
@@ -178,7 +179,11 @@ failsafe — в [safety.md](safety.md). Карта документации — 
   момента + d-смещение).
 - [ ] Re-run детекции — сохранённые параметры Flipsky смещены в 1.5×
   после фикса нормализации SVPWM; λ, мерянная GUI-шагом до 2026-06-12,
-  мусор (q-axis метод) — перемерить.
+  мусор (q-axis метод) — перемерить. Заодно проверить L-ступень с
+  реальным dead-time: до 2026-06-12 vd_hold считался как R·I и на
+  Flipsky (0.3 В hold против 0.38 В дисторсии g431) она бы упала с
+  MotorNotResponding — фикс (settled hold + comp в apply_dq) доказан
+  симом, на железе не проверялся.
 - [ ] Детекционные PI (0.01/10) — в 10× горячее VESC (0.001/1.0):
   проверить сходимость на железе.
 - [ ] **F405 ADC double-trigger**: TIM1_CH4 compare стреляет дважды за

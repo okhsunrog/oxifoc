@@ -408,4 +408,62 @@ mod integration_tests {
             (result.params.flux_linkage_wb - motor_params.lambda).abs() / motor_params.lambda;
         assert!(lam_err < 0.05, "λ error {:.1}%", lam_err * 100.0);
     }
+
+    /// Full detection on the non-ideal plant: sub-stepped integration
+    /// (breaks the sim/estimator discretization lockstep), g431-class
+    /// dead-time distortion (with the matching compensation the firmware
+    /// configures), and a 12-bit ±31 A current sensor with 1 LSB of noise.
+    ///
+    /// The low-R eskate-class motor is the adversarial case: its entire
+    /// R·I holding voltage (~0.3 V) is smaller than the dead-time
+    /// distortion (~0.29 V), so this pins the chain that used to fail —
+    /// probe-R retry, settled hold-voltage capture, and dead-time comp in
+    /// `apply_dq` (an uncompensated DirectVoltage hold collapses and trips
+    /// the open-circuit gate).
+    #[test]
+    fn run_full_detection_nonideal_plant() {
+        use super::sweep::DetectionParams;
+        use super::types::MotorSize;
+        use super::virtual_harness::run_detection;
+
+        const VBUS: f32 = 48.0;
+        const ADC_LSB_A: f32 = 62.0 / 4096.0;
+        let motor_params = MotorParams {
+            r: 0.035,
+            ld: 1.5e-5,
+            lq: 1.5e-5,
+            lambda: 0.0085,
+            pole_pairs: 7,
+            j: 1e-3,
+            friction_b: 1e-3,
+            substeps: 10,
+            dead_time_v: 300e-9 * 20_000.0 * VBUS,
+            adc_lsb_a: ADC_LSB_A,
+            adc_noise_a: ADC_LSB_A,
+            ..MotorParams::default()
+        };
+
+        let det_params = DetectionParams {
+            motor_size: MotorSize::Medium,
+            pole_pairs: motor_params.pole_pairs,
+            current_max: 10.0,
+            max_power_loss_w: MotorSize::Medium.max_power_loss_w(),
+            pwm_freq_hz: 20_000.0,
+            vbus: VBUS,
+            openloop_erpm: 700.0,
+        };
+
+        let result = run_detection(motor_params, VBUS, det_params)
+            .expect("low-R detection must survive dead-time distortion");
+
+        let r_err = (result.params.resistance_ohm - motor_params.r).abs() / motor_params.r;
+        assert!(r_err < 0.05, "R error {:.1}%", r_err * 100.0);
+
+        let l_err = (result.params.inductance_avg_h - motor_params.ld).abs() / motor_params.ld;
+        assert!(l_err < 0.10, "L error {:.1}%", l_err * 100.0);
+
+        let lam_err =
+            (result.params.flux_linkage_wb - motor_params.lambda).abs() / motor_params.lambda;
+        assert!(lam_err < 0.02, "λ error {:.1}%", lam_err * 100.0);
+    }
 }

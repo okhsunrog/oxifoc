@@ -1137,18 +1137,32 @@ where
         now_ticks: u64,
     ) -> Result<FocOutput, StepError> {
         let max_duty = self.pwm.max_duty();
-        let mut out = self.controller.apply_dq(vd, vq, angle_rad, max_duty);
+        // Latest measured currents feed the dead-time compensation signs;
+        // without a PI loop the distortion is otherwise uncompensated and
+        // eats the commanded voltage (see `apply_dq` docs). Uncalibrated
+        // sensor → zeros → compensation self-cancels.
+        let currents = if self.current_sensor.is_calibrated() {
+            Some(self.current_sensor.read_currents())
+        } else {
+            None
+        };
+        let (i_alpha_m, i_beta_m) = match currents {
+            Some(c) => crate::foc::transforms::clarke(c.0, c.1),
+            None => (0.0, 0.0),
+        };
+        let mut out = self
+            .controller
+            .apply_dq(vd, vq, angle_rad, i_alpha_m, i_beta_m, max_duty);
 
         self.pwm.set_duties(out.duties);
         self.current_sensor.update_duties(out.duties);
 
         // Read currents for telemetry and phase observer
-        if self.current_sensor.is_calibrated() {
-            let currents = self.current_sensor.read_currents();
+        if let Some(currents) = currents {
             out.ia = currents.0;
             out.ib = currents.1;
             out.ic = currents.2;
-            let (i_alpha, i_beta) = crate::foc::transforms::clarke(currents.0, currents.1);
+            let (i_alpha, i_beta) = (i_alpha_m, i_beta_m);
             out.i_alpha = i_alpha;
             out.i_beta = i_beta;
             let (sin_a, cos_a) = S::sin_cos(angle_rad);
@@ -2105,6 +2119,7 @@ mod tests {
             friction_b: 5e-2,
             hall_offset: 0.0,
             sat_k: 0.05,
+            ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
         motor.set_angle(ROTOR_ANGLE);

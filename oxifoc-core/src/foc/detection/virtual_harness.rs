@@ -30,7 +30,12 @@ use crate::timer::Timer;
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
 const DT: f32 = 1.0 / 20_000.0;
-const MAX_DUTY: u16 = 1000;
+/// Timer ARR. Matches real hardware (g431: 170 MHz / 2 / 20 kHz = 4250) —
+/// the plant is driven from the quantized duties, so an unrealistically
+/// coarse ARR would inject ~4× the duty quantization the boards actually
+/// have (one count on a 96 V bus is ~23 mV; at 1000 it was ~0.1 V, enough
+/// to corrupt R measurement on a 20 mΩ motor).
+const MAX_DUTY: u16 = 4250;
 
 // ── Simulation state ───────────────────────────────────────────────────────
 
@@ -50,6 +55,12 @@ impl SimState {
         let mut foc = FocController::<SvpwmModulator>::new(vbus);
         foc.id_pi = PIController::new(kp, ki);
         foc.iq_pi = PIController::new(kp, ki);
+        // Mirror the firmware: boards configure dead-time compensation from
+        // their PWM config (g431: 800 ns), so a plant with dead-time
+        // distortion gets the matching compensation here.
+        if motor_params.dead_time_v > 0.0 {
+            foc.set_dead_time_comp_factor(motor_params.dead_time_v / vbus);
+        }
         Self {
             foc,
             motor: VirtualMotor::new(motor_params),
@@ -89,7 +100,9 @@ impl SimState {
                 )
             }
             ControlMode::DirectVoltage { vd, vq, angle_rad } => {
-                self.foc.apply_dq(vd, vq, angle_rad, MAX_DUTY)
+                let (i_alpha, i_beta) = crate::foc::transforms::clarke(self.out.ia, self.out.ib);
+                self.foc
+                    .apply_dq(vd, vq, angle_rad, i_alpha, i_beta, MAX_DUTY)
             }
             ControlMode::Coast | ControlMode::Stopped => FocOutput::empty(),
             _ => FocOutput::empty(),
@@ -98,7 +111,21 @@ impl SimState {
         self.out = match self.mode {
             ControlMode::Coast => self.motor.step_coast(0.0, DT),
             ControlMode::Stopped => self.motor.step_shorted(0.0, DT),
-            _ => self.motor.step(telem.v_alpha, telem.v_beta, 0.0, DT),
+            _ => {
+                // Drive the plant from the *duties*, not the commanded
+                // v_αβ: that is what the inverter applies, and it is the
+                // only place dead-time compensation (and duty
+                // quantization) lives. Amplitude-invariant Clarke of the
+                // terminal voltages; the SVPWM common mode drops out.
+                let vbus = self.foc.vbus();
+                let scale = vbus / MAX_DUTY as f32;
+                let va = telem.duties[0] as f32 * scale;
+                let vb = telem.duties[1] as f32 * scale;
+                let vc = telem.duties[2] as f32 * scale;
+                let v_alpha = (2.0 * va - vb - vc) / 3.0;
+                let v_beta = (vb - vc) * crate::foc::constants::FRAC_1_SQRT_3;
+                self.motor.step(v_alpha, v_beta, 0.0, DT)
+            }
         };
         telem
     }

@@ -227,6 +227,22 @@ fn det_params(def: &MotorDef) -> DetectionParams {
     }
 }
 
+/// Non-ideal plant variant: sub-stepped integration (the rotor moves
+/// *within* the FOC period — the ideal table is partly self-confirmation),
+/// dead-time distortion (300 ns at 20 kHz; the harness configures the
+/// matching duty-domain compensation, as the firmware does), and a 12-bit
+/// ±31 A current sensor with 1 LSB of uniform noise (B-G431B-ESC1-class).
+fn nonideal(def: &MotorDef) -> MotorParams {
+    const ADC_LSB_A: f32 = 62.0 / 4096.0; // 12-bit over ±31 A ≈ 15 mA
+    MotorParams {
+        substeps: 10,
+        dead_time_v: 300e-9 * 20_000.0 * def.vbus,
+        adc_lsb_a: ADC_LSB_A,
+        adc_noise_a: ADC_LSB_A,
+        ..def.params
+    }
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -286,6 +302,45 @@ fn main() {
                 " FAIL".into(),
                 "  FAIL".into(),
             ),
+        };
+
+        println!(
+            "  {:<22} {:>9} {:>9} {:>9} {:>12}",
+            def.name, r_s, ld_s, lq_s, lam_s,
+        );
+    }
+    println!();
+
+    // ── Full detection, non-ideal plant ────────────────────────────────
+    println!(
+        "Non-ideal plant (substeps=10, dead-time 300ns@20kHz, 12-bit ADC ±31A + 1 LSB noise):"
+    );
+    println!(
+        "  {:<22} {:>9} {:>9} {:>9} {:>12}",
+        "Motor", "R", "Ld", "Lq", "lambda"
+    );
+    println!("  {:-<22} {:->9} {:->9} {:->9} {:->12}", "", "", "", "", "");
+
+    for def in &catalog {
+        let p = def.params;
+        let result = run_detection(nonideal(def), def.vbus, det_params(def));
+
+        let (r_s, ld_s, lq_s, lam_s) = match result {
+            Ok(det) => (
+                fmt_err(det.params.resistance_ohm, p.r),
+                fmt_err(det.params.inductance_d_h, p.ld),
+                fmt_err(det.params.inductance_q_h, p.lq),
+                fmt_err(det.params.flux_linkage_wb, p.lambda),
+            ),
+            Err(e) => {
+                eprintln!("  [{}] detection error: {e:?}", def.name);
+                (
+                    " FAIL".into(),
+                    " FAIL".into(),
+                    " FAIL".into(),
+                    "  FAIL".into(),
+                )
+            }
         };
 
         println!(

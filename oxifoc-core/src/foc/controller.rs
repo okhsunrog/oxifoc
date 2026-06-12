@@ -275,6 +275,15 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         self.dead_time_comp = dead_time_ns as f32 * 1e-9 * pwm_freq_hz as f32;
     }
 
+    /// Configure dead time compensation directly as a modulation factor
+    /// (`t_dt × f_pwm`, dimensionless). Prefer [`Self::set_dead_time_comp`]
+    /// on hardware; this entry point serves hosts/tests that know the
+    /// distortion voltage rather than the timer setting
+    /// (`factor = dead_time_v / vbus`).
+    pub fn set_dead_time_comp_factor(&mut self, factor: f32) {
+        self.dead_time_comp = factor.max(0.0);
+    }
+
     /// Apply dead time compensation to normalized modulation values.
     ///
     /// During dead time the body diode of the leg carrying positive current
@@ -331,12 +340,30 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
     /// Convert dq-frame voltages to PWM duties without PI control.
     ///
-    /// Applies circular voltage clamping, inverse Park transform, and SVPWM.
-    /// No current measurement, no PI feedback — pure voltage-to-duty conversion.
+    /// Applies circular voltage clamping, inverse Park transform, dead-time
+    /// compensation (when configured) and SVPWM. No PI feedback — pure
+    /// voltage-to-duty conversion.
     ///
     /// Use this for measurement modes (HFI inductance detection) and direct
     /// voltage control where PI interference is undesirable.
-    pub fn apply_dq(&self, vd: f32, vq: f32, angle_rad: f32, max_duty: u16) -> FocOutput {
+    ///
+    /// `i_alpha`/`i_beta` are the latest measured stator currents, used only
+    /// for the dead-time compensation phase signs. This matters precisely
+    /// here: with no PI to absorb the distortion, an uncompensated
+    /// DirectVoltage hold loses `t_dt·f_pwm·vbus` per phase — on a g431
+    /// (800 ns) driving a 24 V bus that is 0.38 V, more than the entire
+    /// `R·I` holding voltage of a low-resistance outrunner. Passing zeros
+    /// (currents unknown) degrades gracefully: equal signs cancel in the
+    /// Clarke map and no compensation is applied.
+    pub fn apply_dq(
+        &self,
+        vd: f32,
+        vq: f32,
+        angle_rad: f32,
+        i_alpha: f32,
+        i_beta: f32,
+        max_duty: u16,
+    ) -> FocOutput {
         let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
 
         // Circular voltage limiting
@@ -353,7 +380,14 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
         let volts_to_mod = Self::VOLTS_TO_MOD / self.vbus;
-        let duties = M::to_duties(v_alpha * volts_to_mod, v_beta * volts_to_mod, max_duty);
+        let (mod_a, mod_b) = Self::apply_dead_time_comp(
+            v_alpha * volts_to_mod,
+            v_beta * volts_to_mod,
+            i_alpha,
+            i_beta,
+            self.dead_time_comp,
+        );
+        let duties = M::to_duties(mod_a, mod_b, max_duty);
 
         FocOutput {
             angle_rad,
@@ -699,7 +733,7 @@ mod tests {
         for angle_deg in (0..360).step_by(30) {
             let angle = (angle_deg as f32).to_radians();
             // |V| ≈ 5.1 V, far below the 13.8 V modulation limit — no clamping.
-            let out = foc.apply_dq(1.0, 5.0, angle, max_duty);
+            let out = foc.apply_dq(1.0, 5.0, angle, 0.0, 0.0, max_duty);
             let (va, vb) = alpha_beta_from_duties(out.duties, max_duty, vbus);
             assert!(
                 (va - out.v_alpha).abs() < tol,

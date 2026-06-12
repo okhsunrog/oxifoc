@@ -1850,6 +1850,7 @@ mod tests {
             friction_b: 2e-3,
             hall_offset: 0.0,
             sat_k: 0.05,
+            ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
         // Far side: the HFI PLL's nearest saliency lock is the flipped one.
@@ -2058,6 +2059,7 @@ mod tests {
             friction_b: 2e-3,
             hall_offset: 0.0,
             sat_k: 0.05,
+            ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
 
@@ -2181,6 +2183,138 @@ mod tests {
         );
     }
 
+    /// Saliency collapse under load — the classic HFI failure mode the
+    /// plant can now produce (`lq_sat_k`): torque current saturates the
+    /// q-axis iron until `Lq_eff ≈ Ld`, the demod error signal loses its
+    /// gradient and the angle estimate stops being corrected while the
+    /// rotor keeps moving.
+    ///
+    /// The failure is INSIDIOUS: the carrier amplitude — and with it the
+    /// demod confidence — stays healthy (eps ≈ 0 reads as "no error"), so
+    /// no existing gate fires. This test pins both halves: the linear
+    /// control run keeps tracking under the identical load profile, the
+    /// saturating run silently loses the rotor at high confidence. The
+    /// detection gap (saliency monitor / dual-axis HFI45) is a TODO.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn closed_loop_hfi_saliency_collapse_loses_tracking_silently() {
+        use crate::foc::controller::FocController;
+        use crate::foc::phase::HfiObserver;
+        use crate::foc::phase::observer::HFI_READY_CONFIDENCE;
+        use crate::foc::pwm::SvpwmModulator;
+        use crate::foc::transforms;
+        use crate::foc::trig::LibmSinCos;
+        use crate::virtual_motor::{MotorParams, VirtualMotor};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        const LOCK_STEPS: u64 = 10_000;
+        const TOTAL_STEPS: u64 = 16_000;
+        const IQ_LOAD: f32 = 10.0;
+
+        // (max tracking error during the loaded window, min HFI confidence
+        // during that window)
+        let run = |lq_sat_k: f32| -> (f32, f32) {
+            // 3:1 IPM; at iq = 10 A with lq_sat_k = 0.3 the q-axis
+            // saturation factor clamps at 4× → Lq_eff = 75 µH < Ld: the
+            // saliency does not just vanish, it INVERTS, flipping the
+            // PLL equilibrium to unstable (the catastrophic variant of
+            // the failure).
+            let params = MotorParams {
+                r: 0.1,
+                ld: 100e-6,
+                lq: 300e-6,
+                lambda: 0.02,
+                pole_pairs: 4,
+                j: 2e-3,
+                friction_b: 1e-3,
+                sat_k: 0.05,
+                lq_sat_k,
+                ..MotorParams::default()
+            };
+            let mut motor = VirtualMotor::new(params);
+            let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+                params.r,
+                (params.ld + params.lq) / 2.0,
+                24.0,
+            );
+
+            let mut mgr = PhaseManager::sensorless();
+            mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+            mgr.set_source(PhaseSource::Hfi).unwrap();
+
+            let mut out = crate::virtual_motor::VirtualMotorOutput::default();
+            let mut max_err = 0.0f32;
+            let mut min_conf = 1.0f32;
+            for step in 1..TOTAL_STEPS {
+                // Phase 1: standstill lock + polarity. Phase 2: heavy
+                // torque current against a load that nearly balances it —
+                // the rotor creeps slowly (HFI regime) while iq saturates
+                // the q axis.
+                let (iq_target, load) = if step < LOCK_STEPS {
+                    (0.0, 0.0)
+                } else {
+                    (IQ_LOAD, 1.05)
+                };
+
+                let angle = mgr.get().angle;
+                let (vd_inj, vq_inj) = mgr.injection();
+                let telem = foc.step_with_injection(
+                    (out.ia, out.ib, out.ic),
+                    angle,
+                    0.0,
+                    0.0,
+                    iq_target,
+                    vd_inj,
+                    vq_inj,
+                    1000,
+                    DT,
+                );
+                out = motor.step(telem.v_alpha, telem.v_beta, load, DT);
+
+                let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
+                mgr.update(
+                    &PhaseInput {
+                        v_alpha: telem.v_alpha,
+                        v_beta: telem.v_beta,
+                        i_alpha: i_a,
+                        i_beta: i_b,
+                        dt: DT,
+                    },
+                    step * 50,
+                );
+
+                if step >= LOCK_STEPS + 1_000 {
+                    let err = crate::foc::angle_difference(mgr.get().angle, out.angle_rad).abs();
+                    max_err = max_err.max(err);
+                    if let Some(h) = mgr.hfi_observer() {
+                        min_conf = min_conf.min(h.confidence());
+                    }
+                }
+            }
+            (max_err, min_conf)
+        };
+
+        let (err_linear, _) = run(0.0);
+        let (err_collapsed, conf_collapsed) = run(0.3);
+
+        assert!(
+            err_linear < 0.35,
+            "linear plant: HFI must track the creeping rotor under load (max err {err_linear})"
+        );
+        assert!(
+            err_collapsed > 0.7,
+            "saturating plant: saliency collapse must lose the rotor (max err {err_collapsed})"
+        );
+        // The documented blind spot: confidence does NOT see the collapse
+        // (eps ≈ 0 looks like a perfect lock). If this ever starts failing
+        // because confidence drops, a saliency monitor exists — update the
+        // test and close the TODO.
+        assert!(
+            conf_collapsed >= HFI_READY_CONFIDENCE,
+            "expected the collapse to stay invisible to confidence, got {conf_collapsed}"
+        );
+    }
+
     /// The voltage-criterion crossover (HfiToObserverVolts) must behave
     /// like the velocity one: carrier on at standstill, handoff to the
     /// observer as the drive voltage (back-EMF proxy |vq − R·iq|) rises,
@@ -2211,6 +2345,7 @@ mod tests {
             friction_b: 2e-3,
             hall_offset: 0.0,
             sat_k: 0.05,
+            ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
         motor.set_angle(0.5);

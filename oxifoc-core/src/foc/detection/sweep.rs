@@ -194,6 +194,32 @@ async fn sample_vd_id<H: DetectionHardware, T: Timer>(
     }
 }
 
+/// Settled DirectVoltage holding voltage for `hold_current_a` at the
+/// current rotor lock.
+///
+/// Computed `R·I` plus the *measured* make-up voltage `avg_vd − R·avg_id`
+/// over a short telemetry window. With a converged PI this reduces to the
+/// averaged PI output; with a PI still converging (high-R motors on the
+/// soft detection gains) it degrades gracefully to `R·I`. In both cases it
+/// carries whatever voltage the bridge loses to uncompensated dead-time
+/// distortion — which the open-loop DirectVoltage hold must keep supplying
+/// or the hold collapses: a g431 loses `800 ns × f_pwm × vbus ≈ 0.38 V`,
+/// more than the entire `R·I` holding voltage of a low-resistance
+/// outrunner, and the avg-current open-circuit gate then (correctly)
+/// reports `MotorNotResponding`. A naked `R·I` reproduced exactly that on
+/// the simulated non-ideal plant.
+async fn settled_hold_voltage<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    resistance_ohm: f32,
+    hold_current_a: f32,
+) -> f32 {
+    let computed = resistance_ohm * hold_current_a;
+    match sample_vd_id::<H, T>(hw, 200, 1000).await {
+        Ok((avg_vd, avg_id)) => computed + (avg_vd - resistance_ohm * avg_id),
+        Err(_) => computed,
+    }
+}
+
 /// Measure motor phase resistance.
 ///
 /// Applies DC current on d-axis and measures voltage drop.
@@ -478,10 +504,14 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
         T::after_millis(10).await;
     }
 
-    // Wait for rotor to settle, then compute holding voltage from R×I
-    // (Don't use PI output — it includes dead time compensation voltage)
+    // Wait for the rotor to settle, then derive the DirectVoltage holding
+    // voltage (see `settled_hold_voltage` — `R·I` alone collapses under
+    // uncompensated dead-time distortion). Telemetry vd is the
+    // PRE-modulation command, so configured dead-time comp (a duty-domain
+    // adjustment) is not double-counted.
     T::after_millis(params.settle_time_ms as u64).await;
-    let vd_hold = params.resistance_ohm * params.hold_current_a;
+    let vd_hold =
+        settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
 
     // Voltage headroom above the holding voltage (when vbus is known):
     // commanding beyond this saturates against the bus mid-carrier and
@@ -590,9 +620,11 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
         }
         T::after_millis(params.settle_time_ms as u64).await;
 
-        // Capture steady-state holding voltage
-        let telem = hw.wait_telemetry().await;
-        let vd_hold = telem.vd;
+        // Steady-state holding voltage (averaged; robust to a PI that is
+        // still converging and to dead-time make-up — see
+        // `settled_hold_voltage`).
+        let vd_hold =
+            settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
 
         // Pulse measurement
         let mut meas = VoltagePulseMeasurement::new(params, pwm_freq_hz);
@@ -1080,7 +1112,24 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
         settle_time_ms: 100,
         ..Default::default()
     };
-    let r_probe = measure_resistance::<H, T>(hw, &probe_params).await?;
+    let r_probe = match measure_resistance::<H, T>(hw, &probe_params).await {
+        Ok(r) => r,
+        // A very-low-R motor can sit below the duty resolution at the gentle
+        // probe current (ΔV under one timer count averages out as ΔV ≈ 0 →
+        // R ≈ 0 → OutOfRange; ADC noise normally dithers this away, a quiet
+        // system may not). One retry at half the hardware limit resolves it,
+        // and only near-short readings get here: anything ≥ ~0.1 Ω resolves
+        // at the gentle probe already, so the retry power stays at watts.
+        Err(DetectionError::OutOfRange) => {
+            info!("R probe read near-short, retrying at higher current");
+            let retry_params = ResistanceParams {
+                current_max: (params.current_max * 0.5).max(probe_current),
+                ..probe_params
+            };
+            measure_resistance::<H, T>(hw, &retry_params).await?
+        }
+        Err(e) => return Err(e),
+    };
     T::after_millis(200).await;
 
     // Safe current: I = sqrt(max_power_loss / R / 1.5), capped to the
