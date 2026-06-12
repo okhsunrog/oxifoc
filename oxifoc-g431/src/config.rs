@@ -58,7 +58,6 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(8
 // Hardware Overcurrent Protection
 // ============================================================================
 
-#[allow(dead_code)] // Temporarily unused while COMP protection is disabled
 /// Hardware overcurrent trip threshold (amperes, peak per-phase).
 /// This is the COMP+DAC hardware last-resort trip point.
 /// FETs (STL180N6F7): 120A continuous, 480A pulsed. Shunts: 3mΩ.
