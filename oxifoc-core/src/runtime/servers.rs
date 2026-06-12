@@ -272,6 +272,16 @@ pub async fn config_server<NS, const N: usize>(
                                 },
                             }
                         }
+                        // Boundary validation, before any persistence:
+                        // an incoherent limits pair must fail loudly (the
+                        // builder would clamp it silently — the user has
+                        // to learn the headroom rule, not wonder why full
+                        // throttle is weak). See notes/fault-overhaul.md §4.
+                        ConfigRequest::Write(ConfigWrite::CurrentLimits(ref v))
+                            if !v.is_coherent() =>
+                        {
+                            ConfigResponse::Invalid
+                        }
                         ConfigRequest::Write(_) if persist && motor_running => {
                             ConfigResponse::Busy
                         }

@@ -79,7 +79,7 @@ pub fn group_value(resp: &ConfigResponse) -> Option<Value> {
         R::DcOffsets(v) => serde_json::to_value(v).ok(),
         R::Failsafe(v) => serde_json::to_value(v).ok(),
         R::Velocity(v) => serde_json::to_value(v).ok(),
-        R::Ok | R::NotFound | R::Error | R::Busy => None,
+        R::Ok | R::NotFound | R::Error | R::Busy | R::Invalid => None,
     }
 }
 
@@ -145,6 +145,11 @@ pub fn send_write(runtime: &HostRuntime, write: ConfigWrite) -> Result<()> {
         ConfigResponse::Ok => Ok(()),
         ConfigResponse::Busy => bail!(
             "device refused the write: motor is running (flash writes stall the control loop)"
+        ),
+        ConfigResponse::Invalid => bail!(
+            "device refused the write: value fails validation (current_limits: every \
+             field must be finite and max_phase_current_a >= 1.3 x max_iq_a — the \
+             overcurrent trip needs headroom above full throttle)"
         ),
         other => bail!("config write rejected: {other:?}"),
     }

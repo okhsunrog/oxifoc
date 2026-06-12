@@ -573,6 +573,11 @@ mod config_types {
         /// Refused: motor is running. Flash writes stall the chip (sector
         /// erase takes up to seconds on F405) and would glitch the FOC loop.
         Busy,
+        // postcard encodes the variant index — append new variants below,
+        // never reorder the ones above.
+        /// Refused: the written value fails boundary validation (e.g. the
+        /// current-limits headroom rule, `CurrentLimitsConfig::is_coherent`).
+        Invalid,
     }
 }
 

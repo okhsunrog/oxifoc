@@ -254,3 +254,17 @@ their section.
   CommTimeout (GracefulStop) instead of silently arming the failsafe —
   same reaction, but visible to the host/remote; a drained SetMode
   (accepted or not) auto-clears it. Design: notes/fault-overhaul.md.
+- **2026-06-12 — current-limit ladder hardened (phase 2 of the fault
+  overhaul).** The 1.3 headroom factor is now a named invariant
+  (`OVERCURRENT_HEADROOM`) enforced everywhere: the board value is the
+  ABS trip line (same line the per-phase ISR check kills at) and the iq
+  ceiling sits hw/1.3 below it — before, the ceiling WAS the line, so a
+  board-limit config met the per-phase Kill exactly at full throttle;
+  the dq trip ceiling is the board line itself (was 1.3×hw, ABOVE the
+  per-phase Kill — dead code). Incoherent config pairs
+  (`max_phase < 1.3·max_iq`, non-finite fields) are rejected loudly at
+  the config boundary (`is_coherent` → `ConfigResponse::Invalid`, new
+  appended variant) so the user learns the rule; `from_config_clamped`
+  additionally clamps whatever arrives by baked/boot paths — protection
+  wins over torque: iq is lowered, the trip is never raised. E2E-verified
+  against the virtual device.

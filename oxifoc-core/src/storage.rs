@@ -211,6 +211,32 @@ pub struct CurrentLimitsConfig {
 
 impl PostcardValue<'_> for CurrentLimitsConfig {}
 
+impl CurrentLimitsConfig {
+    /// Boundary validation for host writes: every field finite, and when
+    /// both phase-side limits are set the overcurrent trip must clear the
+    /// iq ceiling by [`OVERCURRENT_HEADROOM`] — otherwise a legitimate
+    /// full-throttle command (target + PI overshoot + HFI ripple) lives
+    /// inside the Kill band and trips mid-ride. The config server rejects
+    /// an incoherent write loudly (`ConfigResponse::Invalid`) so the user
+    /// learns the rule; `CurrentLimits::from_config_clamped` additionally
+    /// clamps whatever arrives by other paths (baked/boot configs).
+    ///
+    /// `<= 0` keeps its "not set" / "unlimited" / "no regen" semantics
+    /// and is always coherent — the ceilings fill in with proper headroom.
+    ///
+    /// [`OVERCURRENT_HEADROOM`]: crate::motor::foc_driver::OVERCURRENT_HEADROOM
+    pub fn is_coherent(&self) -> bool {
+        use crate::motor::foc_driver::OVERCURRENT_HEADROOM;
+        let finite = self.max_iq_a.is_finite()
+            && self.max_phase_current_a.is_finite()
+            && self.bus_in_max_a.is_finite()
+            && self.bus_regen_max_a.is_finite();
+        let headroom_ok = !(self.max_iq_a > 0.0 && self.max_phase_current_a > 0.0)
+            || self.max_phase_current_a >= OVERCURRENT_HEADROOM * self.max_iq_a;
+        finite && headroom_ok
+    }
+}
+
 impl Default for CurrentLimitsConfig {
     fn default() -> Self {
         Self {
@@ -596,6 +622,57 @@ mod tests {
             let mut bad = good.clone();
             f(&mut bad);
             assert!(!bad.is_valid(), "must reject {:?}", bad);
+        }
+    }
+
+    /// Boundary rule for current-limits writes: finite fields, and the
+    /// trip must clear the iq ceiling by the overcurrent headroom.
+    #[test]
+    fn current_limits_coherence() {
+        let base = CurrentLimitsConfig::default();
+        assert!(base.is_coherent(), "default 10/40 must pass");
+
+        // Exactly at the headroom boundary: allowed.
+        let at = CurrentLimitsConfig {
+            max_iq_a: 10.0,
+            max_phase_current_a: 13.0,
+            ..base.clone()
+        };
+        assert!(at.is_coherent());
+
+        // Inside the band: rejected (the foot-gun).
+        let inside = CurrentLimitsConfig {
+            max_iq_a: 40.0,
+            max_phase_current_a: 40.0,
+            ..base.clone()
+        };
+        assert!(!inside.is_coherent());
+
+        // "Not set" sides are always coherent — ceilings fill in.
+        let unset_iq = CurrentLimitsConfig {
+            max_iq_a: 0.0,
+            max_phase_current_a: 40.0,
+            ..base.clone()
+        };
+        assert!(unset_iq.is_coherent());
+        let unset_phase = CurrentLimitsConfig {
+            max_iq_a: 40.0,
+            max_phase_current_a: -1.0,
+            ..base.clone()
+        };
+        assert!(unset_phase.is_coherent());
+
+        // Non-finite anywhere: rejected at the boundary (the builder's
+        // NaN tolerance is for the boot path, not for explicit writes).
+        for f in [
+            |c: &mut CurrentLimitsConfig| c.max_iq_a = f32::NAN,
+            |c: &mut CurrentLimitsConfig| c.max_phase_current_a = f32::INFINITY,
+            |c: &mut CurrentLimitsConfig| c.bus_in_max_a = f32::NAN,
+            |c: &mut CurrentLimitsConfig| c.bus_regen_max_a = f32::NAN,
+        ] {
+            let mut bad = base.clone();
+            f(&mut bad);
+            assert!(!bad.is_coherent(), "must reject {:?}", bad);
         }
     }
 }

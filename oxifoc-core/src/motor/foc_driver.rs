@@ -93,13 +93,23 @@ impl Default for CurrentLimits {
     }
 }
 
+/// Required ratio between the overcurrent trip and the soft iq ceiling.
+/// The band between them absorbs what a legitimate full-throttle command
+/// adds on top of its target: PI overshoot on steps, the HFI carrier
+/// ripple (~2 A target), measurement noise. A config that places the Kill
+/// line inside that band turns full throttle into a nuisance trip — the
+/// config server rejects such writes (`CurrentLimitsConfig::is_coherent`)
+/// and `from_config_clamped` clamps whatever arrives by other paths.
+pub const OVERCURRENT_HEADROOM: f32 = 1.3;
+
 impl CurrentLimits {
-    /// Create current limits from a maximum current value.
-    /// Sets overcurrent threshold to 1.3× the max current; bus limits off.
+    /// Create current limits from a maximum current value. Sets the
+    /// overcurrent threshold [`OVERCURRENT_HEADROOM`] above the max;
+    /// bus limits off.
     pub fn from_max_current(max_a: f32) -> Self {
         Self {
             max_current_a: max_a,
-            overcurrent_threshold_a: max_a * 1.3,
+            overcurrent_threshold_a: max_a * OVERCURRENT_HEADROOM,
             bus_in_max_a: -1.0,
             bus_regen_max_a: -1.0,
         }
@@ -119,9 +129,18 @@ impl CurrentLimits {
     /// overcurrent trip ceiling is 1.5× the rating (VESC's
     /// `l_abs_current_max = i_max·1.5`), still capped by the board.
     ///
+    /// `hw_max_a` is the board's ABS trip line — the same line the
+    /// per-phase ISR check (`check_current_faults`) kills at — NOT an iq
+    /// budget: the iq ceiling sits [`OVERCURRENT_HEADROOM`] below it.
+    /// (Until 2026-06-12 the iq ceiling WAS the line, so a board-limit
+    /// config met the per-phase Kill exactly at full throttle.) The same
+    /// headroom is enforced across the config fields: protection wins
+    /// over torque, an incoherent pair lowers iq rather than raising the
+    /// trip.
+    ///
     /// # Arguments
     /// * `cfg` - the host-written limits config
-    /// * `hw_max_a` - board hardware phase-current ceiling (A)
+    /// * `hw_max_a` - board hardware phase-current ABS trip (A)
     /// * `rating_a` - motor continuous-current rating (A); `<= 0`/NaN =
     ///   unknown (no rating clamp)
     #[cfg(feature = "storage")]
@@ -130,33 +149,35 @@ impl CurrentLimits {
         hw_max_a: f32,
         rating_a: f32,
     ) -> Self {
-        let board = Self::from_max_current(hw_max_a);
         let rating_ok = rating_a.is_finite() && rating_a > 0.0;
+        let iq_ceiling_board = hw_max_a / OVERCURRENT_HEADROOM;
         let iq_ceiling = if rating_ok {
-            board.max_current_a.min(rating_a)
+            iq_ceiling_board.min(rating_a)
         } else {
-            board.max_current_a
+            iq_ceiling_board
         };
         let trip_ceiling = if rating_ok {
-            board.overcurrent_threshold_a.min(1.5 * rating_a)
+            hw_max_a.min(1.5 * rating_a)
         } else {
-            board.overcurrent_threshold_a
+            hw_max_a
         };
         // Bus limits have no board ceiling (they protect the supply, not
         // the board); NaN → unlimited (the boundary sanity check rejects
         // NaN commands, this is boot-path defense).
         let bus = |v: f32| if v.is_finite() { v } else { -1.0 };
+        let trip = if cfg.max_phase_current_a > 0.0 {
+            cfg.max_phase_current_a.min(trip_ceiling)
+        } else {
+            trip_ceiling
+        };
+        let iq = if cfg.max_iq_a > 0.0 {
+            cfg.max_iq_a.min(iq_ceiling)
+        } else {
+            iq_ceiling
+        };
         Self {
-            max_current_a: if cfg.max_iq_a > 0.0 {
-                cfg.max_iq_a.min(iq_ceiling)
-            } else {
-                iq_ceiling
-            },
-            overcurrent_threshold_a: if cfg.max_phase_current_a > 0.0 {
-                cfg.max_phase_current_a.min(trip_ceiling)
-            } else {
-                trip_ceiling
-            },
+            max_current_a: iq.min(trip / OVERCURRENT_HEADROOM),
+            overcurrent_threshold_a: trip,
             bus_in_max_a: bus(cfg.bus_in_max_a),
             bus_regen_max_a: bus(cfg.bus_regen_max_a),
         }
@@ -1902,16 +1923,18 @@ mod tests {
         assert_eq!(l.bus_in_max_a, -1.0);
         assert_eq!(l.bus_regen_max_a, -1.0);
 
-        // Config above the ceiling: clamped to the board limits.
-        let board = CurrentLimits::from_max_current(hw_max);
+        // Config above the ceiling: clamped to the board limits. The board
+        // value is the ABS trip line; the iq ceiling keeps the headroom
+        // below it (NOT hw_max itself — that put full throttle exactly on
+        // the per-phase Kill line).
         let l = CurrentLimits::from_config_clamped(&cfg(50.0, 100.0, -1.0, -1.0), hw_max, 0.0);
-        assert_eq!(l.max_current_a, board.max_current_a);
-        assert_eq!(l.overcurrent_threshold_a, board.overcurrent_threshold_a);
+        assert_eq!(l.max_current_a, hw_max / OVERCURRENT_HEADROOM);
+        assert_eq!(l.overcurrent_threshold_a, hw_max);
 
         // Zeroed config: board defaults, NOT disabled protection.
         let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0, -1.0, -1.0), hw_max, 0.0);
-        assert_eq!(l.max_current_a, board.max_current_a);
-        assert_eq!(l.overcurrent_threshold_a, board.overcurrent_threshold_a);
+        assert_eq!(l.max_current_a, hw_max / OVERCURRENT_HEADROOM);
+        assert_eq!(l.overcurrent_threshold_a, hw_max);
 
         // Bus limits pass through (no board ceiling — they protect the
         // supply); zero is meaningful (no regen), NaN → unlimited.
@@ -1921,6 +1944,38 @@ mod tests {
         let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, f32::NAN, f32::NAN), hw_max, 0.0);
         assert_eq!(l.bus_in_max_a, -1.0);
         assert_eq!(l.bus_regen_max_a, -1.0);
+    }
+
+    /// The 2026-06-12 foot-gun (notes/fault-overhaul.md §4): a config that
+    /// places the overcurrent trip at (or inside the headroom band of) the
+    /// soft iq ceiling must not survive into the live limits — full
+    /// throttle plus PI overshoot / HFI ripple would nuisance-Kill
+    /// mid-ride. Protection wins over torque: iq is lowered, the trip is
+    /// never raised.
+    #[test]
+    #[cfg(feature = "storage")]
+    fn cross_field_headroom_enforced() {
+        use crate::storage::CurrentLimitsConfig;
+        // Board ABS line far above so it is not the binding constraint.
+        let hw_max = 80.0;
+        let l = CurrentLimits::from_config_clamped(
+            &CurrentLimitsConfig {
+                max_iq_a: 40.0,
+                max_phase_current_a: 40.0,
+                bus_in_max_a: -1.0,
+                bus_regen_max_a: -1.0,
+            },
+            hw_max,
+            0.0,
+        );
+        assert_eq!(l.overcurrent_threshold_a, 40.0, "trip is never raised");
+        assert_eq!(
+            l.max_current_a,
+            40.0 / OVERCURRENT_HEADROOM,
+            "iq must drop one headroom factor below the trip"
+        );
+        // The invariant holds whatever the inputs.
+        assert!(l.overcurrent_threshold_a >= OVERCURRENT_HEADROOM * l.max_current_a);
     }
 
     /// Motor RATING is a ceiling above the operational config (layered
@@ -1955,15 +2010,21 @@ mod tests {
         assert_eq!(l.max_current_a, rating);
         assert_eq!(l.overcurrent_threshold_a, 1.5 * rating);
 
-        // Board hardware still caps a huge rating.
-        let board = CurrentLimits::from_max_current(hw_max);
+        // Board hardware still caps a huge rating: trip at the board ABS
+        // line, iq one headroom factor below it.
         let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), hw_max, 500.0);
-        assert_eq!(l.max_current_a, board.max_current_a);
-        assert_eq!(l.overcurrent_threshold_a, board.overcurrent_threshold_a);
+        assert_eq!(l.max_current_a, hw_max / OVERCURRENT_HEADROOM);
+        assert_eq!(l.overcurrent_threshold_a, hw_max);
 
         // NaN / zero rating: no rating clamp (pre-rating config blobs).
+        // 25/28 is an incoherent pair (28 < 1.3·25): the cross-field clamp
+        // lowers iq to trip/headroom on top of the board iq ceiling.
         let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), hw_max, f32::NAN);
-        assert_eq!(l.max_current_a, 25.0_f32.min(board.max_current_a));
+        assert_eq!(
+            l.max_current_a,
+            (28.0 / OVERCURRENT_HEADROOM).min(hw_max / OVERCURRENT_HEADROOM)
+        );
+        assert_eq!(l.overcurrent_threshold_a, 28.0);
 
         // No limits group stored at all: rating still holds at boot.
         let l = CurrentLimits::from_stored(None, hw_max, rating);

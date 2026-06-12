@@ -1,9 +1,9 @@
 # Fault system overhaul: response classes, derating, hall health
 
 Status: partially landed — phase 1 (severity classes, class-based gate,
-deadman → CommTimeout) landed 2026-06-12; phases 2–6 open. Companion to
-[../safety.md](../safety.md) (failsafe layers) and the Bench section of
-[../TODO.md](../TODO.md).
+deadman → CommTimeout) and phase 2 (limit-ladder fixes) landed
+2026-06-12; phases 3–6 open. Companion to [../safety.md](../safety.md)
+(failsafe layers) and the Bench section of [../TODO.md](../TODO.md).
 
 ## Motivation
 
@@ -175,8 +175,13 @@ HFI carrier ripple + noise.
    class-based gate in `run_foc_cycle`
    (`severity_gate` tests), deadman/link gate → `CommTimeout` with
    auto-clear on a drained `SetMode`. +260 B on g431.
-2. **Limit-ladder fixes**: cross-field validation + board-level
-   harmonization (small, independent, removes the foot-gun).
+2. **[landed 2026-06-12]** Limit-ladder fixes: `OVERCURRENT_HEADROOM`
+   (1.3) named and enforced — board value = ABS trip line, iq ceiling =
+   hw/1.3 (was hw itself: zero margin to the per-phase Kill);
+   incoherent config pairs rejected at the boundary
+   (`CurrentLimitsConfig::is_coherent` → `ConfigResponse::Invalid`,
+   loud CLI error) and clamped in `from_config_clamped` for
+   baked/boot paths (protection wins: iq lowered, trip never raised).
 3. **Hall package**: PhaseFault bridge (sticky warning), per-bit wire
    detector, error-rate window, `angle_trustworthy()` fix. All
    sim-testable (mask hall bits in VirtualMotor output).
