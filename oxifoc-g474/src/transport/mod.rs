@@ -31,6 +31,7 @@ use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
+use crate::config::{MAX_PACKET_SIZE, UART_BAUD, UART_BUF_LEN, USB_LIVENESS_TIMEOUT_MS};
 use crate::config::{UART_OUT_QUEUE_SIZE, USB_OUT_QUEUE_SIZE};
 
 // ========== Multi-Interface Definition ==========
@@ -47,7 +48,7 @@ ergot::multi_interface! {
 
 // ========== Type Aliases ==========
 
-pub type Rng = embassy_stm32::rng::Rng<'static, peripherals::RNG>;
+pub type Rng = rng::Rng<'static, peripherals::RNG>;
 pub type McRouter = Router<McInterface, Rng, 2, 0>;
 pub type Stack = NetStack<CriticalSectionRawMutex, McRouter>;
 
@@ -75,8 +76,8 @@ pub static STATE_NOTIFY: WaitQueue = WaitQueue::new();
 static RTT_DEFMT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 
 /// UART buffers
-static UART_TX_BUF: StaticCell<[u8; crate::config::UART_BUF_LEN]> = StaticCell::new();
-static UART_RX_BUF: StaticCell<[u8; crate::config::UART_BUF_LEN]> = StaticCell::new();
+static UART_TX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
+static UART_RX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
 
 /// USB descriptor buffers
 static USB_STORAGE: usb_kit::WireStorage<256, 256, 64, 256> = usb_kit::WireStorage::new();
@@ -138,9 +139,9 @@ pub fn init_uart(
 
     // Configure LPUART1 on ST-LINK VCP (PA2 TX, PA3 RX)
     let mut uart_cfg = UartConfig::default();
-    uart_cfg.baudrate = crate::config::UART_BAUD;
-    let tx_buf = UART_TX_BUF.init([0u8; crate::config::UART_BUF_LEN]);
-    let rx_buf = UART_RX_BUF.init([0u8; crate::config::UART_BUF_LEN]);
+    uart_cfg.baudrate = UART_BAUD;
+    let tx_buf = UART_TX_BUF.init([0u8; UART_BUF_LEN]);
+    let rx_buf = UART_RX_BUF.init([0u8; UART_BUF_LEN]);
     let uart = defmt::unwrap!(
         BufferedUart::new(lpuart1, pa3, pa2, tx_buf, rx_buf, LpuartIrqs, uart_cfg),
         "LPUART1 init failed"
@@ -150,7 +151,7 @@ pub fn init_uart(
     // Register UART interface on Router
     let uart_sink = McSink::Uart(cobs_stream::Sink::new(
         UART_OUTQ.stream_producer(),
-        crate::config::MAX_PACKET_SIZE as u16,
+        MAX_PACKET_SIZE as u16,
     ));
     let ident = defmt::unwrap!(
         stack.manage_profile(|router| router.register_interface(uart_sink)),
@@ -214,7 +215,7 @@ pub fn init_usb(
     // Register USB interface on Router
     let usb_sink = McSink::Usb(framed_stream::Sink::new(
         USB_OUTQ.framed_producer(),
-        crate::config::MAX_PACKET_SIZE as u16,
+        MAX_PACKET_SIZE as u16,
     ));
     let ident = defmt::unwrap!(
         stack.manage_profile(|router| router.register_interface(usb_sink)),
@@ -224,7 +225,7 @@ pub fn init_usb(
 
     let rx_worker = UsbRxWorkerType::new(stack, ep_out, RouterFrameProcessor::new(net_id), ident)
         .with_liveness(LivenessConfig {
-            timeout_ms: crate::config::USB_LIVENESS_TIMEOUT_MS,
+            timeout_ms: USB_LIVENESS_TIMEOUT_MS,
         })
         .with_state_notify(&STATE_NOTIFY);
 

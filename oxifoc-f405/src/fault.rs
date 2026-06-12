@@ -35,21 +35,21 @@ pub enum F405Fault {
 impl PlatformFault for F405Fault {
     fn category(&self) -> FaultCategory {
         match self {
-            F405Fault::OverCurrent => FaultCategory::OverCurrent,
-            F405Fault::OverVoltage => FaultCategory::OverVoltage,
-            F405Fault::UnderVoltage => FaultCategory::UnderVoltage,
-            F405Fault::OverTemp => FaultCategory::OverTemp,
-            F405Fault::DrvFault(_) => FaultCategory::DriverFault,
-            F405Fault::HallError(_) => FaultCategory::HallError,
-            F405Fault::CommTimeout => FaultCategory::CommTimeout,
-            F405Fault::Derating => FaultCategory::Derating,
+            Self::OverCurrent => FaultCategory::OverCurrent,
+            Self::OverVoltage => FaultCategory::OverVoltage,
+            Self::UnderVoltage => FaultCategory::UnderVoltage,
+            Self::OverTemp => FaultCategory::OverTemp,
+            Self::DrvFault(_) => FaultCategory::DriverFault,
+            Self::HallError(_) => FaultCategory::HallError,
+            Self::CommTimeout => FaultCategory::CommTimeout,
+            Self::Derating => FaultCategory::Derating,
         }
     }
 
     fn details(&self) -> String<128> {
         let mut s = String::new();
         match self {
-            F405Fault::DrvFault(status) => {
+            Self::DrvFault(status) => {
                 // Build a string with all the DRV8301 fault flags
                 if status.fetha_oc {
                     let _ = s.push_str("PhA_H_OC ");
@@ -85,7 +85,7 @@ impl PlatformFault for F405Fault {
                     let _ = s.push_str("PVDD_UV ");
                 }
             }
-            F405Fault::HallError(kind) => {
+            Self::HallError(kind) => {
                 return kind.details();
             }
             _ => {
@@ -100,7 +100,7 @@ impl PlatformFault for F405Fault {
         // clears in run_foc_cycle when commands flow again.
         matches!(
             self,
-            F405Fault::UnderVoltage | F405Fault::CommTimeout | F405Fault::Derating
+            Self::UnderVoltage | Self::CommTimeout | Self::Derating
         )
     }
 
@@ -109,7 +109,7 @@ impl PlatformFault for F405Fault {
     // survives via the any_stopping() start gate (no auto-clear on OT).
 
     fn from_hall_kind(kind: HallFaultKind) -> Option<Self> {
-        Some(F405Fault::HallError(kind))
+        Some(Self::HallError(kind))
     }
 
     /// Payload-free categories the shared core protection can raise.
@@ -117,12 +117,12 @@ impl PlatformFault for F405Fault {
     // platform DRV handler, not through this constructor.
     fn from_category(category: FaultCategory) -> Option<Self> {
         match category {
-            FaultCategory::OverCurrent => Some(F405Fault::OverCurrent),
-            FaultCategory::OverVoltage => Some(F405Fault::OverVoltage),
-            FaultCategory::UnderVoltage => Some(F405Fault::UnderVoltage),
-            FaultCategory::OverTemp => Some(F405Fault::OverTemp),
-            FaultCategory::CommTimeout => Some(F405Fault::CommTimeout),
-            FaultCategory::Derating => Some(F405Fault::Derating),
+            FaultCategory::OverCurrent => Some(Self::OverCurrent),
+            FaultCategory::OverVoltage => Some(Self::OverVoltage),
+            FaultCategory::UnderVoltage => Some(Self::UnderVoltage),
+            FaultCategory::OverTemp => Some(Self::OverTemp),
+            FaultCategory::CommTimeout => Some(Self::CommTimeout),
+            FaultCategory::Derating => Some(Self::Derating),
             _ => None,
         }
     }

@@ -12,6 +12,8 @@ use super::{
     transforms,
     trig::{LibmSinCos, SinCos},
 };
+use crate::foc::clamp_f32;
+use crate::foc::fast_math::sqrtf;
 
 /// Output of a single FOC current-loop step
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -267,7 +269,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Values above 1.0 request over-modulation; keep within 0.0–1.0 for
     /// predictable behavior.
     pub fn with_modulation_limit(mut self, limit: f32) -> Self {
-        self.modulation_limit = crate::foc::clamp_f32(limit, 0.0, 1.2);
+        self.modulation_limit = clamp_f32(limit, 0.0, 1.2);
         self
     }
 
@@ -411,7 +413,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let v_limit_sq = v_limit * v_limit;
 
         let (vd, vq) = if v_mag_sq > v_limit_sq {
-            let scale = v_limit / crate::foc::fast_math::sqrtf(v_mag_sq);
+            let scale = v_limit / sqrtf(v_mag_sq);
             (vd * scale, vq * scale)
         } else {
             (vd, vq)
@@ -532,7 +534,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let v_limit_sq = v_limit * v_limit;
 
         let (vd, vq) = if v_mag_sq > v_limit_sq {
-            let scale = v_limit / crate::foc::fast_math::sqrtf(v_mag_sq);
+            let scale = v_limit / sqrtf(v_mag_sq);
             let vd = vd_raw * scale;
             let vq = vq_raw * scale;
             // Coordinated anti-windup, charged to the PI's own share only.
@@ -752,7 +754,8 @@ mod tests {
     /// Average phase-to-neutral αβ voltage that a duty triple applies over one
     /// PWM period, assuming ideal half-bridges (leg voltage = duty/max × vbus).
     fn alpha_beta_from_duties(duties: [u16; 3], max_duty: u16, vbus: f32) -> (f32, f32) {
-        let leg: [f32; 3] = core::array::from_fn(|i| duties[i] as f32 / max_duty as f32 * vbus);
+        let leg: [f32; 3] =
+            core::array::from_fn(|i| f32::from(duties[i]) / f32::from(max_duty) * vbus);
         let neutral = (leg[0] + leg[1] + leg[2]) / 3.0;
         transforms::clarke(leg[0] - neutral, leg[1] - neutral)
     }
@@ -771,7 +774,7 @@ mod tests {
         let foc = FocController::<SvpwmModulator, LibmSinCos>::new(vbus);
         let max_duty = 1000u16;
         // One duty LSB is vbus/max_duty of leg voltage; allow a few for truncation.
-        let tol = 3.0 * vbus / max_duty as f32;
+        let tol = 3.0 * vbus / f32::from(max_duty);
         for angle_deg in (0..360).step_by(30) {
             let angle = (angle_deg as f32).to_radians();
             // |V| ≈ 5.1 V, far below the 13.8 V modulation limit — no clamping.
@@ -807,11 +810,11 @@ mod tests {
         let (ma, _) = FocController::<SvpwmModulator, LibmSinCos>::apply_dead_time_comp(
             0.5, 0.0, 10.0, 0.0, comp,
         );
-        assert!(ma > 0.5, "mod_alpha must increase with ia > 0, got {}", ma);
+        assert!(ma > 0.5, "mod_alpha must increase with ia > 0, got {ma}");
         // Current along +β: ib > 0, ic < 0.
         let (_, mb) = FocController::<SvpwmModulator, LibmSinCos>::apply_dead_time_comp(
             0.0, 0.5, 0.0, 10.0, comp,
         );
-        assert!(mb > 0.5, "mod_beta must increase with iβ > 0, got {}", mb);
+        assert!(mb > 0.5, "mod_beta must increase with iβ > 0, got {mb}");
     }
 }

@@ -31,19 +31,19 @@ pub enum G474Fault {
 impl PlatformFault for G474Fault {
     fn category(&self) -> FaultCategory {
         match self {
-            G474Fault::OverCurrent => FaultCategory::OverCurrent,
-            G474Fault::OverVoltage => FaultCategory::OverVoltage,
-            G474Fault::UnderVoltage => FaultCategory::UnderVoltage,
-            G474Fault::OverTemp => FaultCategory::OverTemp,
-            G474Fault::HallError(_) => FaultCategory::HallError,
-            G474Fault::CommTimeout => FaultCategory::CommTimeout,
-            G474Fault::Derating => FaultCategory::Derating,
+            Self::OverCurrent => FaultCategory::OverCurrent,
+            Self::OverVoltage => FaultCategory::OverVoltage,
+            Self::UnderVoltage => FaultCategory::UnderVoltage,
+            Self::OverTemp => FaultCategory::OverTemp,
+            Self::HallError(_) => FaultCategory::HallError,
+            Self::CommTimeout => FaultCategory::CommTimeout,
+            Self::Derating => FaultCategory::Derating,
         }
     }
 
     fn details(&self) -> String<128> {
         match self {
-            G474Fault::HallError(kind) => kind.details(),
+            Self::HallError(kind) => kind.details(),
             _ => String::new(),
         }
     }
@@ -53,25 +53,25 @@ impl PlatformFault for G474Fault {
         // clears in run_foc_cycle when commands flow again.
         matches!(
             self,
-            G474Fault::UnderVoltage | G474Fault::CommTimeout | G474Fault::Derating
+            Self::UnderVoltage | Self::CommTimeout | Self::Derating
         )
     }
 
     // severity(): central per-category policy (FaultCategory::severity).
 
     fn from_hall_kind(kind: HallFaultKind) -> Option<Self> {
-        Some(G474Fault::HallError(kind))
+        Some(Self::HallError(kind))
     }
 
     /// Payload-free categories the shared core protection can raise.
     fn from_category(category: FaultCategory) -> Option<Self> {
         match category {
-            FaultCategory::OverCurrent => Some(G474Fault::OverCurrent),
-            FaultCategory::OverVoltage => Some(G474Fault::OverVoltage),
-            FaultCategory::UnderVoltage => Some(G474Fault::UnderVoltage),
-            FaultCategory::OverTemp => Some(G474Fault::OverTemp),
-            FaultCategory::CommTimeout => Some(G474Fault::CommTimeout),
-            FaultCategory::Derating => Some(G474Fault::Derating),
+            FaultCategory::OverCurrent => Some(Self::OverCurrent),
+            FaultCategory::OverVoltage => Some(Self::OverVoltage),
+            FaultCategory::UnderVoltage => Some(Self::UnderVoltage),
+            FaultCategory::OverTemp => Some(Self::OverTemp),
+            FaultCategory::CommTimeout => Some(Self::CommTimeout),
+            FaultCategory::Derating => Some(Self::Derating),
             _ => None,
         }
     }

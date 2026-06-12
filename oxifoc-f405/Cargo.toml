@@ -77,3 +77,16 @@ lto = "fat"
 codegen-units = 1
 opt-level = 3
 incremental = true
+
+# Verbatim copy of the root [workspace.lints] tables (this crate is excluded
+# from the workspace for its target/toolchain) — keep in sync with ../Cargo.toml.
+[lints.rust]
+unused_qualifications = "warn"
+
+[lints.clippy]
+use_self = "warn"
+uninlined_format_args = "warn"
+cast_lossless = "warn"
+manual_let_else = "warn"
+semicolon_if_nothing_returned = "warn"
+redundant_closure_for_method_calls = "warn"

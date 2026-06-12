@@ -27,10 +27,12 @@ use ergot::net_stack::endpoints::Endpoints;
 use crate::foc::detection::types::{
     DetectionError, FluxLinkageParams, InductanceParams, MotorSize, ResistanceParams,
 };
+use crate::foc::fast_math::sqrtf;
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use crate::icd::DetectEndpoint;
 use crate::motor::ControlMode;
 use crate::state::CMD_CHANNEL;
+use crate::state::DriverCommand;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse, ReqId};
 
@@ -98,9 +100,8 @@ pub async fn detect_server<NS, B>(
 
     loop {
         // Owned request + header — nothing borrowed across the measurement await.
-        let msg = match h.recv_manual().await {
-            Ok(msg) => msg,
-            Err(_) => continue,
+        let Ok(msg) = h.recv_manual().await else {
+            continue;
         };
         let id = msg.t.id;
 
@@ -117,7 +118,7 @@ pub async fn detect_server<NS, B>(
                 // be droppable on a full channel (the ISR drains every
                 // cycle, so this resolves within one FOC period).
                 CMD_CHANNEL
-                    .send(crate::state::DriverCommand::SetMode(ControlMode::Stopped))
+                    .send(DriverCommand::SetMode(ControlMode::Stopped))
                     .await;
                 let resp = run_step(
                     &mut backend,
@@ -128,7 +129,7 @@ pub async fn detect_server<NS, B>(
                 )
                 .await;
                 CMD_CHANNEL
-                    .send(crate::state::DriverCommand::SetMode(ControlMode::Stopped))
+                    .send(DriverCommand::SetMode(ControlMode::Stopped))
                     .await;
                 // Success-only cache: a transient error stays retryable.
                 if !matches!(resp, DetectResponse::Error(_)) {
@@ -173,11 +174,10 @@ async fn run_step<B: DetectionBackend>(
                     // saturates short of the setpoint and the settle check
                     // aborts the measurement (same clamp as run_full_detection).
                     let max_bus_current = (backend.vbus() * 0.577 * 0.85) / r_probe.max(0.001);
-                    let safe_current =
-                        crate::foc::fast_math::sqrtf(max_power_loss_w / r_probe / 1.5)
-                            .min(max_current_a)
-                            .min(max_bus_current)
-                            .max(probe_current);
+                    let safe_current = sqrtf(max_power_loss_w / r_probe / 1.5)
+                        .min(max_current_a)
+                        .min(max_bus_current)
+                        .max(probe_current);
                     let params = ResistanceParams {
                         motor_size: MotorSize::Custom(max_power_loss_w),
                         current_max: safe_current,
@@ -196,7 +196,7 @@ async fn run_step<B: DetectionBackend>(
             max_power_loss_w,
             resistance_ohm: r,
         } => {
-            let safe_current = crate::foc::fast_math::sqrtf(max_power_loss_w / r / 1.5)
+            let safe_current = sqrtf(max_power_loss_w / r / 1.5)
                 .min(max_current_a)
                 .max(0.5);
             let max_bus_current = (backend.vbus() * 0.577 * 0.6) / r.max(0.001);
@@ -227,11 +227,11 @@ async fn run_step<B: DetectionBackend>(
             pole_pairs,
             openloop_erpm,
         } => {
-            let safe_current = crate::foc::fast_math::sqrtf(max_power_loss_w / r / 1.5)
+            let safe_current = sqrtf(max_power_loss_w / r / 1.5)
                 .min(max_current_a)
                 .min((backend.vbus() * 0.577 * 0.85) / r.max(0.001))
                 .max(0.5);
-            let spin_rpm = openloop_erpm / pole_pairs as f32;
+            let spin_rpm = openloop_erpm / f32::from(pole_pairs);
             let params = FluxLinkageParams {
                 motor_size: MotorSize::Custom(max_power_loss_w),
                 resistance_ohm: r,
@@ -247,7 +247,7 @@ async fn run_step<B: DetectionBackend>(
             match backend.measure_flux(&params).await {
                 Ok(flux) => {
                     let kv = if flux > 0.0 {
-                        60.0 / (core::f32::consts::TAU * flux * pole_pairs as f32)
+                        60.0 / (core::f32::consts::TAU * flux * f32::from(pole_pairs))
                     } else {
                         0.0
                     };

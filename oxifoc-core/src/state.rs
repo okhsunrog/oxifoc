@@ -11,12 +11,18 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::waitqueue::AtomicWaker;
 
-use crate::foc::controller::FocOutput;
-use crate::foc::phase::PhaseProvider;
+use crate::foc::config::BoardConfig;
+use crate::foc::controller::{Decoupling, FocOutput};
+use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
+use crate::foc::phase::{PhaseProvider, PhaseSource};
 use crate::foc::pwm::PhasePwm;
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
 use crate::foc::trig::SinCos;
+use crate::foc::velocity::VelocityLoopConfig;
+use crate::motor::derating::{DeratingConfig, DeratingScales};
+use crate::motor::failsafe::FailsafeConfig;
+use crate::motor::foc_driver::{CurrentLimits, StepError};
 use crate::motor::{ControlMode, FocDriver};
 use crate::types::MotorState;
 
@@ -43,19 +49,19 @@ pub enum DriverCommand {
     /// Change control mode (start/stop/targets)
     SetMode(ControlMode),
     /// Apply current limits (already clamped to the board ceiling)
-    SetCurrentLimits(crate::motor::foc_driver::CurrentLimits),
+    SetCurrentLimits(CurrentLimits),
     /// Apply current-loop PI gains (post-detection tune, config write)
     SetPiGains { kp: f32, ki: f32 },
     /// Apply dq-decoupling/back-EMF feedforward params (post-detection)
-    SetDecoupling(crate::foc::controller::Decoupling),
+    SetDecoupling(Decoupling),
     /// Switch the angle source (hall / observer / HFI / crossovers)
-    SetPhaseSource(crate::foc::phase::PhaseSource),
+    SetPhaseSource(PhaseSource),
     /// Apply failsafe tuning (deadman timeout + reaction policy + brake params)
-    SetFailsafe(crate::motor::failsafe::FailsafeConfig),
+    SetFailsafe(FailsafeConfig),
     /// Apply cruise velocity-loop tuning (gains + accel limit)
-    SetVelocityConfig(crate::foc::velocity::VelocityLoopConfig),
+    SetVelocityConfig(VelocityLoopConfig),
     /// Apply graduated derating ramps (thermal/voltage/speed)
-    SetDerating(crate::motor::derating::DeratingConfig),
+    SetDerating(DeratingConfig),
 }
 
 impl DriverCommand {
@@ -65,21 +71,21 @@ impl DriverCommand {
     /// the control loop.
     pub fn is_sane(&self) -> bool {
         match *self {
-            DriverCommand::SetMode(mode) => mode.is_finite(),
-            DriverCommand::SetCurrentLimits(limits) => {
+            Self::SetMode(mode) => mode.is_finite(),
+            Self::SetCurrentLimits(limits) => {
                 limits.max_current_a.is_finite()
                     && limits.overcurrent_threshold_a.is_finite()
                     && limits.bus_in_max_a.is_finite()
                     && limits.bus_regen_max_a.is_finite()
             }
-            DriverCommand::SetPiGains { kp, ki } => {
+            Self::SetPiGains { kp, ki } => {
                 kp.is_finite() && ki.is_finite() && kp > 0.0 && ki >= 0.0
             }
-            DriverCommand::SetDecoupling(d) => d.is_valid(),
-            DriverCommand::SetPhaseSource(source) => source.is_finite(),
-            DriverCommand::SetFailsafe(cfg) => cfg.is_sane(),
-            DriverCommand::SetVelocityConfig(cfg) => cfg.is_sane(),
-            DriverCommand::SetDerating(cfg) => cfg.is_sane(),
+            Self::SetDecoupling(d) => d.is_valid(),
+            Self::SetPhaseSource(source) => source.is_finite(),
+            Self::SetFailsafe(cfg) => cfg.is_sane(),
+            Self::SetVelocityConfig(cfg) => cfg.is_sane(),
+            Self::SetDerating(cfg) => cfg.is_sane(),
         }
     }
 }
@@ -109,7 +115,7 @@ pub struct FlashPendingGuard(());
 impl FlashPendingGuard {
     pub fn arm() -> Self {
         FLASH_OP_PENDING.store(true, Ordering::SeqCst);
-        FlashPendingGuard(())
+        Self(())
     }
 }
 
@@ -143,10 +149,10 @@ pub struct MotorControlState {
     pub link_active: bool,
     /// Active phase source (mirrors the driver's PhaseManager; updated when
     /// a SetPhaseSource command is applied)
-    pub phase_source: crate::foc::phase::PhaseSource,
+    pub phase_source: PhaseSource,
     /// Live derating scales (mirrored from the driver each cycle so the
     /// slow-telemetry server can report them without touching the driver)
-    pub derating: crate::motor::derating::DeratingScales,
+    pub derating: DeratingScales,
 }
 
 impl MotorControlState {
@@ -159,8 +165,8 @@ impl MotorControlState {
             last_adc: AdcSnapshot::empty(),
             last_foc: FocOutput::empty(),
             link_active: false,
-            phase_source: crate::foc::phase::PhaseSource::Hall,
-            derating: crate::motor::derating::DeratingScales::IDENTITY,
+            phase_source: PhaseSource::Hall,
+            derating: DeratingScales::IDENTITY,
         }
     }
 
@@ -272,14 +278,14 @@ macro_rules! define_platform_state {
 pub fn process_commands<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     foc: &mut FocDriver<P, C, Ph, S>,
-    fault_registry: &crate::foc::fault::FaultRegistry<F>,
+    fault_registry: &FaultRegistry<F>,
 ) -> ControlMode
 where
     P: PhasePwm,
     C: CurrentSensor,
     Ph: PhaseProvider,
     S: SinCos,
-    F: crate::foc::fault::PlatformFault,
+    F: PlatformFault,
 {
     let mut saw_set_mode = false;
     process_commands_inner(state_mutex, foc, fault_registry, &mut saw_set_mode)
@@ -293,7 +299,7 @@ where
 pub fn process_commands_inner<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     foc: &mut FocDriver<P, C, Ph, S>,
-    fault_registry: &crate::foc::fault::FaultRegistry<F>,
+    fault_registry: &FaultRegistry<F>,
     saw_set_mode: &mut bool,
 ) -> ControlMode
 where
@@ -301,7 +307,7 @@ where
     C: CurrentSensor,
     Ph: PhaseProvider,
     S: SinCos,
-    F: crate::foc::fault::PlatformFault,
+    F: PlatformFault,
 {
     // Process all pending commands
     while let Ok(cmd) = CMD_CHANNEL.try_receive() {
@@ -486,18 +492,18 @@ where
 // `from_hall_kind` — no per-category value parameters.
 pub fn run_foc_cycle<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
-    fault_registry: &crate::foc::fault::FaultRegistry<F>,
+    fault_registry: &FaultRegistry<F>,
     driver: &mut FocDriver<P, C, Ph, S>,
     vbus_v: f32,
     now_ticks: u64,
-    board: &crate::foc::config::BoardConfig,
+    board: &BoardConfig,
 ) -> Option<FocOutput>
 where
     P: PhasePwm,
     C: CurrentSensor,
     Ph: PhaseProvider,
     S: SinCos,
-    F: crate::foc::fault::PlatformFault,
+    F: PlatformFault,
 {
     driver.set_vbus(vbus_v);
 
@@ -516,7 +522,7 @@ where
     // this auto-clear cannot relaunch the motor by itself).
     if saw_set_mode {
         driver.note_command_tick(now_ticks);
-        fault_registry.clear(crate::foc::fault::FaultCategory::CommTimeout);
+        fault_registry.clear(FaultCategory::CommTimeout);
     }
     // Layer-1 mirror: the link gate inside process_commands already armed
     // the failsafe directly (it predates the fault path and stays as belt
@@ -528,7 +534,7 @@ where
         ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
     );
     if (driver.deadman_expired(now_ticks) || (link_lost && !in_safe_mode))
-        && let Some(f) = F::from_category(crate::foc::fault::FaultCategory::CommTimeout)
+        && let Some(f) = F::from_category(FaultCategory::CommTimeout)
     {
         fault_registry.set(f);
     }
@@ -555,7 +561,7 @@ where
     // process_commands refuses the Stopped→active transition while any
     // critical fault is registered.
     if matches!(prev_mode, ControlMode::Stopped) && mode != ControlMode::Stopped {
-        fault_registry.clear(crate::foc::fault::FaultCategory::OverCurrent);
+        fault_registry.clear(FaultCategory::OverCurrent);
     }
 
     // Severity gate (docs/notes/fault-overhaul.md): Kill cuts PWM now,
@@ -602,8 +608,8 @@ where
             // moves fast, unlike voltage).
             let limit = board.max_phase_current_a;
             if (telem.ia.abs() > limit || telem.ib.abs() > limit || telem.ic.abs() > limit)
-                && !fault_registry.has_category(crate::foc::fault::FaultCategory::OverCurrent)
-                && let Some(f) = F::from_category(crate::foc::fault::FaultCategory::OverCurrent)
+                && !fault_registry.has_category(FaultCategory::OverCurrent)
+                && let Some(f) = F::from_category(FaultCategory::OverCurrent)
             {
                 fault_registry.set(f);
                 #[cfg(feature = "defmt")]
@@ -619,14 +625,14 @@ where
         Err(_e) => {
             #[cfg(feature = "defmt")]
             defmt::error!("FOC step error: {}", _e);
-            if matches!(_e, crate::motor::foc_driver::StepError::Overcurrent) {
+            if matches!(_e, StepError::Overcurrent) {
                 // The driver tripped its dq-magnitude protection (and cut
                 // PWM itself). Surface it: latch the fault so the host sees
                 // the cause and restart stays blocked until an explicit
                 // clear — previously this trip was silent (the per-phase
                 // registry check below only runs on Ok-telemetry, and its
                 // threshold differs from the dq one).
-                if let Some(f) = F::from_category(crate::foc::fault::FaultCategory::OverCurrent) {
+                if let Some(f) = F::from_category(FaultCategory::OverCurrent) {
                     fault_registry.set(f);
                 }
                 critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_error());

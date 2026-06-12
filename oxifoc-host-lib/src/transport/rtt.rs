@@ -71,7 +71,7 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
                     && p.product_id == pid
                     && (serial.is_none() || p.serial_number.as_deref() == serial)
             })
-            .ok_or_else(|| anyhow!("No matching probe found for selector: {}", selector))?;
+            .ok_or_else(|| anyhow!("No matching probe found for selector: {selector}"))?;
 
         probe_info.open().context("Failed to open probe")?
     } else {
@@ -125,21 +125,16 @@ pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStr
 
         if rtt.up_channel(RTT_UP_CHANNEL_DEFMT).is_none() {
             return Err(anyhow!(
-                "RTT up channel {} (defmt) not found",
-                RTT_UP_CHANNEL_DEFMT
+                "RTT up channel {RTT_UP_CHANNEL_DEFMT} (defmt) not found"
             ));
         }
         if rtt.up_channel(RTT_UP_CHANNEL_ERGOT).is_none() {
             return Err(anyhow!(
-                "RTT up channel {} (ergot) not found",
-                RTT_UP_CHANNEL_ERGOT
+                "RTT up channel {RTT_UP_CHANNEL_ERGOT} (ergot) not found"
             ));
         }
         let down_ch = rtt.down_channel(RTT_DOWN_CHANNEL_ERGOT).ok_or_else(|| {
-            anyhow!(
-                "RTT down channel {} (ergot) not found",
-                RTT_DOWN_CHANNEL_ERGOT
-            )
+            anyhow!("RTT down channel {RTT_DOWN_CHANNEL_ERGOT} (ergot) not found")
         })?;
 
         // Send a COBS frame boundary so the device can flush any stale

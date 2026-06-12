@@ -23,8 +23,18 @@ use oxifoc_core::foc::controller::FocController;
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, TempSensorId};
 use oxifoc_core::foc::trig::FastSinCos;
+use oxifoc_core::foc::velocity::VelocityLoopConfig;
 use oxifoc_core::motor::FocDriver;
+use oxifoc_core::motor::derating::DeratingConfig;
+use oxifoc_core::motor::failsafe::FailsafeConfig;
+use oxifoc_core::motor::foc_driver::CurrentLimits;
+use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
+use oxifoc_core::state::run_foc_cycle;
 use oxifoc_core::storage::RuntimeConfig;
+
+use crate::hardware::peripherals::AdcHandles;
+use crate::safety::feed_watchdog;
+use crate::sensors::hall;
 
 use crate::config::{BOARD, NTC_BOARD, NTC_MOTOR, PWM_CONFIG};
 use crate::motor::MotorPwm;
@@ -73,7 +83,7 @@ static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
 /// Initialize FOC driver with motor PWM, sensors, and stored config.
 pub async fn init(
     mut motor_pwm: MotorPwm<'static>,
-    adc_handles: crate::hardware::peripherals::AdcHandles,
+    adc_handles: AdcHandles,
     config: &RuntimeConfig,
 ) {
     // Ensure PWM outputs are off initially
@@ -91,16 +101,16 @@ pub async fn init(
     // jitter it (mirrors the G431 setup).
     unsafe {
         use embassy_stm32::interrupt::typelevel::Interrupt;
-        let irq = embassy_stm32::interrupt::ADC;
+        let irq = interrupt::ADC;
         cortex_m::peripheral::NVIC::set_priority(&mut cortex_m::Peripherals::steal().NVIC, irq, 0);
-        <embassy_stm32::interrupt::typelevel::ADC as Interrupt>::unpend();
-        <embassy_stm32::interrupt::typelevel::ADC as Interrupt>::enable();
+        <interrupt::typelevel::ADC as Interrupt>::unpend();
+        <interrupt::typelevel::ADC as Interrupt>::enable();
     }
     motor_pwm.enable_outputs();
 
     // Build current sensor and phase manager
     let current_sensor = F405CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
-    crate::sensors::hall::apply_stored_config(config);
+    hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
     let initial_vbus_v =
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
@@ -126,34 +136,28 @@ pub async fn init(
     );
 
     // Current limits: stored config (clamped to the board ceiling) or board defaults
-    foc_driver.set_current_limits(oxifoc_core::motor::foc_driver::CurrentLimits::from_stored(
+    foc_driver.set_current_limits(CurrentLimits::from_stored(
         config.current_limits.as_ref(),
         BOARD.max_phase_current_a,
         // Motor rating ceiling (detection's thermal solve), 0 = unknown.
         config
             .motor_params
             .as_ref()
-            .and_then(|m| m.rating_current_a())
+            .and_then(oxifoc_core::storage::MotorParamsConfig::rating_current_a)
             .unwrap_or(0.0),
     ));
 
     // Failsafe: command-staleness deadman + reaction policy from stored config
     // (or board defaults); the OV trip feeds the regen-brake derate.
-    foc_driver.set_failsafe(oxifoc_core::motor::failsafe::FailsafeConfig::from_stored(
-        config.failsafe.as_ref(),
-    ));
+    foc_driver.set_failsafe(FailsafeConfig::from_stored(config.failsafe.as_ref()));
     foc_driver.set_ov_threshold(BOARD.max_vbus_mv as f32 / 1000.0);
 
     // Cruise velocity-loop tuning from stored config (or soft defaults).
-    foc_driver.set_velocity_config(oxifoc_core::foc::velocity::VelocityLoopConfig::from_stored(
-        config.velocity.as_ref(),
-    ));
+    foc_driver.set_velocity_config(VelocityLoopConfig::from_stored(config.velocity.as_ref()));
 
     // Graduated derating ramps from stored config (default = FET thermal
     // rolloff only; see motor::derating).
-    foc_driver.set_derating(oxifoc_core::motor::derating::DeratingConfig::from_stored(
-        config.derating.as_ref(),
-    ));
+    foc_driver.set_derating(DeratingConfig::from_stored(config.derating.as_ref()));
 
     // Allow ADC injected conversions to start firing before zero-current calibration.
     Timer::after(Duration::from_millis(10)).await;
@@ -235,7 +239,7 @@ fn ADC() {
     // Get current timestamp for FOC and phase manager
     // Hall-domain timestamp (capture-timer us ticks) for FOC and phase
     // manager - must match the tick domain of the hall edge timestamps.
-    let now_ticks = crate::sensors::hall::now_ticks();
+    let now_ticks = hall::now_ticks();
 
     // Build ADC snapshot
     *SEQ = SEQ.wrapping_add(1);
@@ -244,12 +248,12 @@ fn ADC() {
         .with_temp(TempSensorId::Motor, motor_temp_c_x10);
 
     // Get Hall snapshot
-    let hall_snapshot = crate::sensors::hall::get_snapshot(now_ticks);
+    let hall_snapshot = hall::get_snapshot(now_ticks);
 
     // Run FOC control loop (shared cycle logic in core)
     let foc_telem = FOC_DRIVER.lock(|cell| {
         cell.borrow_mut().as_mut().and_then(|driver| {
-            oxifoc_core::state::run_foc_cycle(
+            run_foc_cycle(
                 &STATE,
                 &FAULT_REGISTRY,
                 driver,
@@ -261,7 +265,7 @@ fn ADC() {
     });
 
     // Update global state + fast telemetry stream
-    oxifoc_core::runtime::streaming::publish_cycle_telemetry(
+    publish_cycle_telemetry(
         &STATE,
         adc_snapshot,
         hall_snapshot,
@@ -270,5 +274,5 @@ fn ADC() {
     );
 
     // Feed the IWDG: a completed FOC cycle is the board's liveness signal.
-    crate::safety::feed_watchdog();
+    feed_watchdog();
 }

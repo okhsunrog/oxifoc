@@ -6,6 +6,7 @@
 //! (`register` only succeeds while the interface is Down, i.e. after a
 //! teardown — same pattern as the COBS stream path).
 
+use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -45,7 +46,7 @@ pub async fn register(
         socket,
         queue,
         Some(LivenessConfig {
-            timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
+            timeout_ms: LIVENESS_TIMEOUT_MS,
         }),
         state_notify,
     )

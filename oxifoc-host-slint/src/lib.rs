@@ -1,4 +1,13 @@
-slint::include_modules!();
+// Slint-generated code doesn't satisfy our stricter lint set.
+#[allow(
+    unused_qualifications,
+    clippy::use_self,
+    clippy::semicolon_if_nothing_returned
+)]
+mod generated {
+    slint::include_modules!();
+}
+pub use generated::*;
 
 mod presets;
 
@@ -121,7 +130,7 @@ struct MessageVisitor(String);
 impl tracing::field::Visit for MessageVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
-            self.0 = format!("{:?}", value);
+            self.0 = format!("{value:?}");
         }
     }
 
@@ -200,7 +209,7 @@ pub fn main() {
         let model = ModelRc::new(VecModel::from(names));
         app.set_preset_names(model);
         // Default to first preset's pole pairs
-        app.set_pole_pairs(presets::PRESETS[0].pole_pairs as i32);
+        app.set_pole_pairs(i32::from(presets::PRESETS[0].pole_pairs));
     }
     {
         let weak = app.as_weak();
@@ -208,7 +217,7 @@ pub fn main() {
             if let Some(app) = weak.upgrade()
                 && let Some(preset) = presets::PRESETS.iter().find(|p| p.name == name.as_str())
             {
-                app.set_pole_pairs(preset.pole_pairs as i32);
+                app.set_pole_pairs(i32::from(preset.pole_pairs));
                 app.set_detect_max_loss(SharedString::from(format!("{}", preset.max_power_loss_w)));
                 app.set_detect_openloop_erpm(SharedString::from(format!(
                     "{}",
@@ -378,7 +387,7 @@ pub fn main() {
                             }
                             if !hall_paused {
                                 hb.push_frame(&[
-                                    sample.hall_state as f32,
+                                    f32::from(sample.hall_state),
                                     sample.erpm as f32 / 1000.0,
                                 ]);
                             }
@@ -401,7 +410,7 @@ pub fn main() {
                                 vb.push_frame(&[sample.vbus_mv as f32 / 1000.0]);
                             }
                             if !temp_paused {
-                                tb.push_frame(&[sample.fet_temp_c_x10 as f32 / 10.0]);
+                                tb.push_frame(&[f32::from(sample.fet_temp_c_x10) / 10.0]);
                             }
                             last_slow = Some(sample);
                         }
@@ -430,7 +439,7 @@ pub fn main() {
                         }
 
                         // Update connection status + text from latest samples
-                        app.set_is_connected(conn.load(std::sync::atomic::Ordering::Relaxed));
+                        app.set_is_connected(conn.load(Ordering::Relaxed));
                         if let Some(s) = last_fast {
                             app.set_ia_text(SharedString::from(format!("{:.2} A", s.ia)));
                             app.set_ib_text(SharedString::from(format!("{:.2} A", s.ib)));
@@ -440,7 +449,7 @@ pub fn main() {
                             app.set_erpm_text(SharedString::from(format!("{}", s.erpm)));
                             let pole_pairs = app.get_pole_pairs().max(1);
                             let rpm = s.erpm / pole_pairs;
-                            app.set_rpm_text(SharedString::from(format!("{}", rpm)));
+                            app.set_rpm_text(SharedString::from(format!("{rpm}")));
                             app.set_seq_text(SharedString::from(format!("{}", s.seq)));
                         }
                         if let Some(s) = last_slow {
@@ -450,7 +459,7 @@ pub fn main() {
                             )));
                             app.set_temp_text(SharedString::from(format!(
                                 "{:.1} °C",
-                                s.fet_temp_c_x10 as f32 / 10.0
+                                f32::from(s.fet_temp_c_x10) / 10.0
                             )));
                             let state_str = format!("{:?}", s.motor_state);
                             app.set_motor_state_text(SharedString::from(state_str));
@@ -468,9 +477,9 @@ pub fn main() {
                         }
 
                         // Set sample rate for plot interaction
-                        let actual_hz = fhz.load(std::sync::atomic::Ordering::Relaxed);
+                        let actual_hz = fhz.load(Ordering::Relaxed);
                         let fast_rate = if actual_hz > 0 {
-                            actual_hz as f32
+                            f32::from(actual_hz)
                         } else {
                             1000.0
                         };
@@ -855,7 +864,7 @@ pub fn main() {
                             p.pole_pairs
                         );
                         let _ = weak.upgrade_in_event_loop(move |app| {
-                            app.set_pole_pairs(p.pole_pairs as i32);
+                            app.set_pole_pairs(i32::from(p.pole_pairs));
                         });
                     }
                 });

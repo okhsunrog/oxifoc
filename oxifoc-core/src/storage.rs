@@ -681,7 +681,7 @@ mod tests {
         ] {
             let mut bad = good.clone();
             f(&mut bad);
-            assert!(!bad.is_valid(), "must reject {:?}", bad);
+            assert!(!bad.is_valid(), "must reject {bad:?}");
         }
     }
 
@@ -732,7 +732,7 @@ mod tests {
         ] {
             let mut bad = base.clone();
             f(&mut bad);
-            assert!(!bad.is_coherent(), "must reject {:?}", bad);
+            assert!(!bad.is_coherent(), "must reject {bad:?}");
         }
     }
 }

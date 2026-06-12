@@ -114,3 +114,6 @@ embedded-storage-async = ["dep:embedded-storage-async"]
 [[example]]
 name = "detection_report"
 required-features = ["virtual-motor", "std", "detection"]
+
+[lints]
+workspace = true

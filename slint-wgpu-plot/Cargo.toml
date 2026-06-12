@@ -7,3 +7,6 @@ edition = "2024"
 slint = { workspace = true }
 bytemuck = { workspace = true }
 wgpu = { workspace = true }
+
+[lints]
+workspace = true

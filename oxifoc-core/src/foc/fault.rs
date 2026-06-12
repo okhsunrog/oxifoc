@@ -20,6 +20,9 @@
 //! }
 //! ```
 
+use crate::foc::hall_sensor::HallFaultKind;
+#[cfg(feature = "runtime")]
+use crate::types::{FaultResponse, MAX_FAULT_RESPONSE};
 #[cfg(feature = "runtime")]
 use core::cell::RefCell;
 #[cfg(feature = "runtime")]
@@ -107,24 +110,20 @@ impl FaultCategory {
     pub fn severity(&self) -> FaultSeverity {
         match self {
             // Inverter integrity — no choice but high-Z.
-            FaultCategory::OverCurrent
-            | FaultCategory::OverVoltage
-            | FaultCategory::DriverFault => FaultSeverity::Kill,
+            Self::OverCurrent | Self::OverVoltage | Self::DriverFault => FaultSeverity::Kill,
             // Inverter healthy, continuing unsafe: stop gracefully. The
             // "must not restart while still hot/sagging" property survives
             // the downgrade from Kill — the start gate blocks while any
             // stopping-class fault is active, and OverTemp has no
             // auto-clear.
-            FaultCategory::OverTemp
-            | FaultCategory::UnderVoltage
-            | FaultCategory::CommTimeout
-            | FaultCategory::Stall => FaultSeverity::GracefulStop,
+            Self::OverTemp | Self::UnderVoltage | Self::CommTimeout | Self::Stall => {
+                FaultSeverity::GracefulStop
+            }
             // Degradations the vehicle rides through (fallback paths carry
             // commutation); the rider gets informed, nothing else.
-            FaultCategory::HallError
-            | FaultCategory::CalibrationFault
-            | FaultCategory::Derating
-            | FaultCategory::None => FaultSeverity::Warning,
+            Self::HallError | Self::CalibrationFault | Self::Derating | Self::None => {
+                FaultSeverity::Warning
+            }
         }
     }
 }
@@ -240,7 +239,7 @@ pub trait PlatformFault: Copy + Clone + PartialEq {
     /// the sticky `HallError` warning bridge in `run_foc_cycle`. Default
     /// `None` = the platform carries no hall fault (the bridge is a no-op)
     /// — so the bridge needs no extra `run_foc_cycle` parameter.
-    fn from_hall_kind(_kind: crate::foc::hall_sensor::HallFaultKind) -> Option<Self> {
+    fn from_hall_kind(_kind: HallFaultKind) -> Option<Self> {
         None
     }
 
@@ -396,22 +395,26 @@ impl<F: PlatformFault> FaultRegistry<F> {
 
     /// Get all faults as FaultInfo for protocol transmission
     pub fn to_fault_info_vec(&self) -> Vec<FaultInfo, MAX_FAULTS> {
-        self.faults
-            .lock(|cell| cell.borrow().iter().map(|f| f.to_fault_info()).collect())
+        self.faults.lock(|cell| {
+            cell.borrow()
+                .iter()
+                .map(PlatformFault::to_fault_info)
+                .collect()
+        })
     }
 
     /// Protocol snapshot (`FaultResponse`): at most `MAX_FAULT_RESPONSE`
     /// entries plus the true total so the consumer can see truncation.
     /// Shared by the fault endpoint server and the fault topic publisher —
     /// both must serialize the registry identically.
-    pub fn snapshot_response(&self) -> crate::types::FaultResponse {
+    pub fn snapshot_response(&self) -> FaultResponse {
         let infos = self.to_fault_info_vec();
         let total = infos.len() as u8;
         let mut faults = Vec::new();
-        for info in infos.iter().take(crate::types::MAX_FAULT_RESPONSE) {
+        for info in infos.iter().take(MAX_FAULT_RESPONSE) {
             let _ = faults.push(info.clone());
         }
-        crate::types::FaultResponse { faults, total }
+        FaultResponse { faults, total }
     }
 
     /// Get count of active faults

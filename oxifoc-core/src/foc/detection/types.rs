@@ -8,6 +8,8 @@
 /// Based on VESC's motor size presets, each size maps to a maximum
 /// power loss (in Watts) that's safe for detection measurements.
 /// This prevents overheating during resistance/inductance measurements.
+use crate::foc::fast_math::sqrtf;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MotorSize {
@@ -33,11 +35,11 @@ impl MotorSize {
     #[inline]
     pub fn max_power_loss_w(&self) -> f32 {
         match self {
-            MotorSize::Mini => 20.0,
-            MotorSize::Small => 50.0,
-            MotorSize::Medium => 120.0,
-            MotorSize::Large => 400.0,
-            MotorSize::Custom(w) => *w,
+            Self::Mini => 20.0,
+            Self::Small => 50.0,
+            Self::Medium => 120.0,
+            Self::Large => 400.0,
+            Self::Custom(w) => *w,
         }
     }
 
@@ -47,10 +49,10 @@ impl MotorSize {
     #[inline]
     pub fn suggested_open_loop_erpm(&self) -> f32 {
         match self {
-            MotorSize::Mini | MotorSize::Small => 1400.0,
-            MotorSize::Medium => 700.0,
-            MotorSize::Large => 700.0,
-            MotorSize::Custom(_) => 700.0,
+            Self::Mini | Self::Small => 1400.0,
+            Self::Medium => 700.0,
+            Self::Large => 700.0,
+            Self::Custom(_) => 700.0,
         }
     }
 
@@ -58,9 +60,9 @@ impl MotorSize {
     #[inline]
     pub fn suggested_sensorless_erpm(&self) -> f32 {
         match self {
-            MotorSize::Mini | MotorSize::Small => 4000.0,
-            MotorSize::Medium | MotorSize::Large => 4000.0,
-            MotorSize::Custom(_) => 4000.0,
+            Self::Mini | Self::Small => 4000.0,
+            Self::Medium | Self::Large => 4000.0,
+            Self::Custom(_) => 4000.0,
         }
     }
 }
@@ -68,7 +70,7 @@ impl MotorSize {
 #[allow(clippy::derivable_impls)] // Can't derive Default with Custom(f32) variant
 impl Default for MotorSize {
     fn default() -> Self {
-        MotorSize::Medium
+        Self::Medium
     }
 }
 
@@ -115,7 +117,7 @@ impl MotorParams {
     pub fn calculate_kv(&mut self) {
         if self.flux_linkage_wb > 0.0 && self.pole_pairs > 0 {
             self.kv_rpm_per_v =
-                60.0 / (core::f32::consts::TAU * self.flux_linkage_wb * self.pole_pairs as f32);
+                60.0 / (core::f32::consts::TAU * self.flux_linkage_wb * f32::from(self.pole_pairs));
         }
     }
 
@@ -125,8 +127,7 @@ impl MotorParams {
     pub fn calculate_max_current(&mut self, motor_size: MotorSize) {
         if self.resistance_ohm > 0.0 {
             let max_power = motor_size.max_power_loss_w();
-            self.max_current_a =
-                crate::foc::fast_math::sqrtf(max_power / self.resistance_ohm / 1.5);
+            self.max_current_a = sqrtf(max_power / self.resistance_ohm / 1.5);
         }
     }
 

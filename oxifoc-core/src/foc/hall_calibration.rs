@@ -301,10 +301,7 @@ mod tests {
             let diff = (angle - center).abs();
             assert!(
                 diff < 0.1,
-                "State {} angle {} not close to {}",
-                state,
-                angle,
-                center
+                "State {state} angle {angle} not close to {center}"
             );
         }
     }
@@ -339,7 +336,7 @@ mod tests {
         // Only record for 4 states
         for state in [1, 2, 3, 4] {
             for _ in 0..5 {
-                cal.record(state as f32 * 0.5, state);
+                cal.record(f32::from(state) * 0.5, state);
             }
         }
 
@@ -393,7 +390,7 @@ mod tests {
         // Record other states
         for state in [2, 3, 4, 5, 6] {
             for _ in 0..3 {
-                cal.record(state as f32 * 0.5, state);
+                cal.record(f32::from(state) * 0.5, state);
             }
         }
 
@@ -402,6 +399,6 @@ mod tests {
 
         // Should be close to 0 or TAU (they're equivalent)
         let near_zero = !(0.2..=TAU - 0.2).contains(&angle);
-        assert!(near_zero, "Angle {} should be near 0 or 2π", angle);
+        assert!(near_zero, "Angle {angle} should be near 0 or 2π");
     }
 }

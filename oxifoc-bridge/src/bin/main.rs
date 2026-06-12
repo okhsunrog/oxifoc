@@ -184,11 +184,7 @@ async fn main(spawner: Spawner) -> ! {
                         info!("[ble] connection established");
 
                         // Request 2M PHY for higher throughput
-                        if let Err(_e) = conn
-                            .raw()
-                            .set_phy(&ble_stack, trouble_host::prelude::PhyKind::Le2M)
-                            .await
-                        {
+                        if let Err(_e) = conn.raw().set_phy(&ble_stack, PhyKind::Le2M).await {
                             warn!("[ble] failed to set 2M PHY, continuing with 1M");
                         } else {
                             info!("[ble] 2M PHY requested");

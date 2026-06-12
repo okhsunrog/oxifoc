@@ -176,7 +176,7 @@ pub fn set_fields(runtime: &HostRuntime, group: ConfigGroupId, kvs: &[String]) -
             .split_once('=')
             .with_context(|| format!("expected field=value, got '{kv}'"))?;
         if !obj.contains_key(key) {
-            let fields: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
+            let fields: Vec<&str> = obj.keys().map(String::as_str).collect();
             bail!(
                 "group {} has no field '{key}'; fields: {}",
                 group_name(group),

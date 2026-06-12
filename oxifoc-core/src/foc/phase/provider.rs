@@ -3,6 +3,8 @@
 //! Abstracts electrical phase angle provision, allowing FocDriver to work
 //! with any phase source (Hall, Encoder, Observer, or combinations).
 
+use crate::foc::hall_sensor::HallFaultKind;
+
 /// Output from phase provider
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PhaseOutput {
@@ -102,7 +104,7 @@ pub trait PhaseProvider {
     /// Active hall degradation, if any — bridged into the fault registry as
     /// a sticky `HallError` warning by `run_foc_cycle` (set-only: recovery
     /// clears the behavior, not the record). Default: nothing to report.
-    fn hall_fault(&self) -> Option<crate::foc::hall_sensor::HallFaultKind> {
+    fn hall_fault(&self) -> Option<HallFaultKind> {
         None
     }
 }

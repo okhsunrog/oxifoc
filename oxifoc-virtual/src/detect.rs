@@ -128,5 +128,5 @@ pub async fn detect_server<NS: NetStackHandle>(
         foc_freq_hz,
         Some(&crate::RUNTIME_CONFIG),
     )
-    .await
+    .await;
 }

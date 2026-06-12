@@ -308,8 +308,7 @@ mod integration_tests {
         let ratio = result.ld / result.lq;
         assert!(
             (0.5..=2.0).contains(&ratio),
-            "Ld/Lq ratio {:.2} too far from 1.0 for SPM motor",
-            ratio
+            "Ld/Lq ratio {ratio:.2} too far from 1.0 for SPM motor"
         );
     }
 

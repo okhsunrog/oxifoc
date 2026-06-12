@@ -211,7 +211,7 @@ fn fmt_err(measured: f32, expected: f32) -> String {
     if e.abs() < 0.05 {
         " 0.0%".to_string()
     } else {
-        format!("{:+5.1}%", e)
+        format!("{e:+5.1}%")
     }
 }
 
@@ -423,7 +423,7 @@ fn main() {
             resistance_ohm: p.r,
             inductance_h: (p.ld + p.lq) / 2.0,
             pole_pairs: p.pole_pairs,
-            spin_rpm: def.openloop_erpm / p.pole_pairs as f32,
+            spin_rpm: def.openloop_erpm / f32::from(p.pole_pairs),
             v_target: 0.2 * def.vbus,
             ..Default::default()
         };

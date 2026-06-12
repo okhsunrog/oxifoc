@@ -72,9 +72,9 @@ impl ShuntCurrentSense {
             adc_vref_mv,
             adc_max_counts,
             invert_sign: false,
-            offset_a: adc_max_counts as f32 / 2.0, // Default to mid-scale
-            offset_b: adc_max_counts as f32 / 2.0,
-            offset_c: adc_max_counts as f32 / 2.0,
+            offset_a: f32::from(adc_max_counts) / 2.0, // Default to mid-scale
+            offset_b: f32::from(adc_max_counts) / 2.0,
+            offset_c: f32::from(adc_max_counts) / 2.0,
             calibrated_phases: 0,
         }
     }
@@ -110,9 +110,9 @@ impl ShuntCurrentSense {
         let mut sum_c = 0u32;
 
         for &(a, b, c) in samples {
-            sum_a += a as u32;
-            sum_b += b as u32;
-            sum_c += c as u32;
+            sum_a += u32::from(a);
+            sum_b += u32::from(b);
+            sum_c += u32::from(c);
         }
 
         let count = samples.len() as f32;
@@ -139,7 +139,7 @@ impl ShuntCurrentSense {
             return;
         }
 
-        let sum: u32 = samples.iter().map(|&s| s as u32).sum();
+        let sum: u32 = samples.iter().map(|&s| u32::from(s)).sum();
         let avg = sum as f32 / samples.len() as f32;
 
         match phase {
@@ -155,9 +155,9 @@ impl ShuntCurrentSense {
 
     /// Reset calibration state (useful before starting a new per-phase calibration)
     pub fn reset_calibration(&mut self) {
-        self.offset_a = self.adc_max_counts as f32 / 2.0;
-        self.offset_b = self.adc_max_counts as f32 / 2.0;
-        self.offset_c = self.adc_max_counts as f32 / 2.0;
+        self.offset_a = f32::from(self.adc_max_counts) / 2.0;
+        self.offset_b = f32::from(self.adc_max_counts) / 2.0;
+        self.offset_c = f32::from(self.adc_max_counts) / 2.0;
         self.calibrated_phases = 0;
     }
 
@@ -185,13 +185,13 @@ impl ShuntCurrentSense {
         // - Normal: I = (ADC - offset) × scale
         // - Inverted (low-side shunts, MCSDK): I = (offset - ADC) × scale
         let delta_counts = if self.invert_sign {
-            offset - adc_counts as f32
+            offset - f32::from(adc_counts)
         } else {
-            adc_counts as f32 - offset
+            f32::from(adc_counts) - offset
         };
 
         // Convert ADC counts to voltage (in millivolts)
-        let v_mv = delta_counts * (self.adc_vref_mv as f32) / (self.adc_max_counts as f32);
+        let v_mv = delta_counts * (self.adc_vref_mv as f32) / f32::from(self.adc_max_counts);
 
         // Convert voltage to current (V = I × R × G)
         // I = V / (R_shunt × OPAMP_gain)
@@ -283,7 +283,7 @@ mod tests {
 
         // Simulate +10A on phase A, -5A on phase B, 0A on phase C
         // ADC delta = I * R * G * ADC_MAX / Vref
-        let counts_per_volt = ADC_MAX as f32 / ADC_VREF_MV as f32; // counts per mV
+        let counts_per_volt = f32::from(ADC_MAX) / ADC_VREF_MV as f32; // counts per mV
         let delta_a = (10.0 * SHUNT_OHMS * OPAMP_GAIN * 1000.0 * counts_per_volt) as i32;
         let delta_b = (-5.0 * SHUNT_OHMS * OPAMP_GAIN * 1000.0 * counts_per_volt) as i32;
 

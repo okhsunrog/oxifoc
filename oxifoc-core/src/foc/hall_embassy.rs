@@ -11,6 +11,9 @@
 //! tick source via [`set_tick_source`] so the convenience `AngleSensor`
 //! methods that need "now" stay in the same domain as the edge timestamps.
 
+use crate::foc::hall_sensor::HallFaultKind;
+#[cfg(feature = "storage")]
+use crate::storage::RuntimeConfig;
 use core::cell::{Cell, RefCell};
 
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
@@ -121,7 +124,7 @@ pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
 ///
 /// Must be called after [`init_estimator`]. Skips silently if no config is stored.
 #[cfg(feature = "storage")]
-pub fn apply_stored_config(config: &crate::storage::RuntimeConfig) {
+pub fn apply_stored_config(config: &RuntimeConfig) {
     HALL_ESTIMATOR.lock(|est| {
         if let Some(h) = est.borrow_mut().as_mut() {
             if let Some(ref cal) = config.hall_calibration
@@ -210,7 +213,7 @@ impl AngleSensor for HallAngleProxy {
 
     // The trait default (None) would hide the shared estimator's wire
     // verdicts from the fault bridge, same trap as sample_mut/is_stale.
-    fn fault_kind(&self) -> Option<crate::foc::hall_sensor::HallFaultKind> {
+    fn fault_kind(&self) -> Option<HallFaultKind> {
         HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(|h| h.fault_kind()))
     }
 }

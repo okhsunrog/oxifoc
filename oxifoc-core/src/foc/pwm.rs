@@ -97,7 +97,7 @@ impl MotorPwmConfig {
 /// Dead time value in timer ticks, suitable for passing to `set_dead_time()`
 #[inline]
 pub fn dead_time_ticks(dead_time_ns: u32, timer_clock_hz: u32) -> u16 {
-    ((dead_time_ns as u64 * timer_clock_hz as u64) / 1_000_000_000) as u16
+    ((u64::from(dead_time_ns) * u64::from(timer_clock_hz)) / 1_000_000_000) as u16
 }
 
 /// Calculate duty limit from max_duty and percentage
@@ -110,7 +110,7 @@ pub fn dead_time_ticks(dead_time_ns: u32, timer_clock_hz: u32) -> u16 {
 /// Clamped duty value
 #[inline]
 pub fn duty_limit(max_duty: u16, max_duty_percent: u8) -> u16 {
-    (max_duty as u32 * max_duty_percent.min(100) as u32 / 100) as u16
+    (u32::from(max_duty) * u32::from(max_duty_percent.min(100)) / 100) as u16
 }
 
 /// Generic three-phase PWM interface

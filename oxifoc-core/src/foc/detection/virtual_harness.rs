@@ -17,13 +17,17 @@
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::cell::RefCell;
 
+use crate::foc::constants::FRAC_1_SQRT_3;
 use crate::foc::controller::{FocController, FocOutput};
 use crate::foc::detection::sweep::{
     DetectionHardware, DetectionParams, DetectionResult, run_full_detection,
 };
 use crate::foc::detection::types::DetectionError;
+use crate::foc::hall_calibration::HallReader;
 use crate::foc::pi_controller::PIController;
 use crate::foc::pwm::SvpwmModulator;
+use crate::foc::transforms::clarke;
+use crate::foc::trig::LibmSinCos;
 use crate::foc::wrap_angle;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
@@ -70,7 +74,7 @@ impl SimState {
             mode: ControlMode::Stopped,
             sim_angle: 0.0,
             ol_omega: 0.0,
-            pipeline_steps: motor_params.actuation_delay_steps as f32,
+            pipeline_steps: f32::from(motor_params.actuation_delay_steps),
         }
     }
 
@@ -111,7 +115,7 @@ impl SimState {
                 )
             }
             ControlMode::DirectVoltage { vd, vq, angle_rad } => {
-                let (i_alpha, i_beta) = crate::foc::transforms::clarke(self.out.ia, self.out.ib);
+                let (i_alpha, i_beta) = clarke(self.out.ia, self.out.ib);
                 self.foc
                     .apply_dq(vd, vq, angle_rad, i_alpha, i_beta, MAX_DUTY)
             }
@@ -129,12 +133,12 @@ impl SimState {
                 // quantization) lives. Amplitude-invariant Clarke of the
                 // terminal voltages; the SVPWM common mode drops out.
                 let vbus = self.foc.vbus();
-                let scale = vbus / MAX_DUTY as f32;
-                let va = telem.duties[0] as f32 * scale;
-                let vb = telem.duties[1] as f32 * scale;
-                let vc = telem.duties[2] as f32 * scale;
+                let scale = vbus / f32::from(MAX_DUTY);
+                let va = f32::from(telem.duties[0]) * scale;
+                let vb = f32::from(telem.duties[1]) * scale;
+                let vc = f32::from(telem.duties[2]) * scale;
                 let v_alpha = (2.0 * va - vb - vc) / 3.0;
-                let v_beta = (vb - vc) * crate::foc::constants::FRAC_1_SQRT_3;
+                let v_beta = (vb - vc) * FRAC_1_SQRT_3;
                 self.motor.step(v_alpha, v_beta, 0.0, DT)
             }
         };
@@ -201,7 +205,7 @@ impl DetectionHardware for VirtualHardware {
         });
     }
 
-    fn wait_telemetry(&mut self) -> impl core::future::Future<Output = FocOutput> {
+    fn wait_telemetry(&mut self) -> impl Future<Output = FocOutput> {
         core::future::ready(SIM.with(|s| s.borrow_mut().as_mut().unwrap().step_one()))
     }
 
@@ -232,7 +236,7 @@ impl DetectionHardware for VirtualHardware {
 pub struct VirtualTimer;
 
 impl Timer for VirtualTimer {
-    fn after_millis(ms: u64) -> impl core::future::Future<Output = ()> {
+    fn after_millis(ms: u64) -> impl Future<Output = ()> {
         let steps = ((ms as f64 / 1000.0) * 20_000.0) as usize;
         if steps > 0 {
             SIM.with(|s| s.borrow_mut().as_mut().unwrap().step_n(steps));
@@ -240,7 +244,7 @@ impl Timer for VirtualTimer {
         core::future::ready(())
     }
 
-    fn after_micros(us: u64) -> impl core::future::Future<Output = ()> {
+    fn after_micros(us: u64) -> impl Future<Output = ()> {
         let steps = ((us as f64 / 1_000_000.0) * 20_000.0) as usize;
         if steps > 0 {
             SIM.with(|s| s.borrow_mut().as_mut().unwrap().step_n(steps));
@@ -252,7 +256,7 @@ impl Timer for VirtualTimer {
 // ── Executor ───────────────────────────────────────────────────────────────
 
 /// Minimal single-poll executor for running async detection in tests.
-pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
+pub fn block_on<F: Future>(f: F) -> F::Output {
     fn noop(_: *const ()) {}
     fn clone(p: *const ()) -> RawWaker {
         RawWaker::new(p, &VTABLE)
@@ -287,7 +291,7 @@ where
 /// Virtual Hall sensor reader — reads the current Hall state from the simulation.
 pub struct VirtualHallReader;
 
-impl crate::foc::hall_calibration::HallReader for VirtualHallReader {
+impl HallReader for VirtualHallReader {
     fn read_hall_state(&self) -> u8 {
         SIM.with(|s| s.borrow().as_ref().unwrap().out.hall_state)
     }
@@ -303,7 +307,7 @@ pub fn run_detection(
         block_on(run_full_detection::<
             VirtualHardware,
             VirtualTimer,
-            crate::foc::trig::LibmSinCos,
+            LibmSinCos,
         >(hw, det_params))
     })
 }

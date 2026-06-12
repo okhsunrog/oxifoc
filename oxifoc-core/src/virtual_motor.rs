@@ -24,6 +24,8 @@
 //! }
 //! ```
 
+use crate::foc::clamp_f32;
+use crate::foc::constants::FRAC_1_SQRT_3;
 use crate::foc::transforms::inverse_clarke;
 
 /// CW Hall raw-state sequence: sector index 0-5 → 3-bit raw Hall reading.
@@ -131,14 +133,14 @@ impl MotorParams {
     /// Incremental d-axis inductance at the given d current (see
     /// [`sat_k`](Self::sat_k)).
     fn ld_eff(&self, id: f32) -> f32 {
-        let denom = crate::foc::clamp_f32(1.0 + self.sat_k * id, 0.25, 4.0);
+        let denom = clamp_f32(1.0 + self.sat_k * id, 0.25, 4.0);
         self.ld / denom
     }
 
     /// Incremental q-axis inductance at the given q current (see
     /// [`lq_sat_k`](Self::lq_sat_k)).
     fn lq_eff(&self, iq: f32) -> f32 {
-        let denom = crate::foc::clamp_f32(1.0 + self.lq_sat_k * iq.abs(), 0.25, 4.0);
+        let denom = clamp_f32(1.0 + self.lq_sat_k * iq.abs(), 0.25, 4.0);
         self.lq / denom
     }
 }
@@ -317,7 +319,7 @@ impl VirtualMotor {
         // Gates off: nothing is commanded this cycle, the pipeline moves on.
         let _ = self.delayed_voltage(0.0, 0.0);
         let p = self.params;
-        let pp = p.pole_pairs as f32;
+        let pp = f32::from(p.pole_pairs);
         let n = p.substeps.max(1);
         let dt_sub = dt / n as f32;
 
@@ -390,7 +392,7 @@ impl VirtualMotor {
     ) -> VirtualMotorOutput {
         let (v_alpha, v_beta) = self.delayed_voltage(v_alpha, v_beta);
         let p = self.params;
-        let pp = p.pole_pairs as f32;
+        let pp = f32::from(p.pole_pairs);
         let n = p.substeps.max(1);
         let dt_sub = dt / n as f32;
         let mut torque = 0.0;
@@ -410,7 +412,7 @@ impl VirtualMotor {
                 // Per-phase −sign(i)·V_dt mapped through the (amplitude-
                 // invariant) Clarke transform; the common mode drops out.
                 let e_alpha = (2.0 * sa - sb - sc) * (p.dead_time_v / 3.0);
-                let e_beta = (sb - sc) * crate::foc::constants::FRAC_1_SQRT_3 * p.dead_time_v;
+                let e_beta = (sb - sc) * FRAC_1_SQRT_3 * p.dead_time_v;
                 (v_alpha - e_alpha, v_beta - e_beta)
             } else {
                 (v_alpha, v_beta)
@@ -485,6 +487,7 @@ mod tests {
     use crate::foc::hall_sensor::HallSensor;
     use crate::foc::pi_controller::PIController;
     use crate::foc::pwm::SvpwmModulator;
+    use crate::foc::wrap_angle;
 
     #[test]
     fn closed_loop_accelerates() {
@@ -516,8 +519,7 @@ mod tests {
         let i_mag = libm::sqrtf(out.ia * out.ia + out.ib * out.ib + out.ic * out.ic);
         assert!(
             i_mag > 0.3,
-            "motor should carry current at low speed: |i|={}",
-            i_mag
+            "motor should carry current at low speed: |i|={i_mag}"
         );
 
         // Continue for a full second.  Viscous friction limits the terminal
@@ -602,8 +604,7 @@ mod tests {
         let speed_no_load = out.omega_e;
         assert!(
             speed_no_load > 100.0,
-            "should reach steady state before load: ωe={}",
-            speed_no_load
+            "should reach steady state before load: ωe={speed_no_load}"
         );
 
         // Phase 2: apply load torque step, settle for 1 second
@@ -617,14 +618,11 @@ mod tests {
         // Speed should drop but motor must keep spinning forward
         assert!(
             speed_loaded > 0.0,
-            "motor should not stall under load: ωe={}",
-            speed_loaded
+            "motor should not stall under load: ωe={speed_loaded}"
         );
         assert!(
             speed_loaded < speed_no_load,
-            "speed should decrease under load: {} vs {}",
-            speed_loaded,
-            speed_no_load
+            "speed should decrease under load: {speed_loaded} vs {speed_no_load}"
         );
 
         // Phase 3: remove load, verify recovery (1 second)
@@ -637,9 +635,7 @@ mod tests {
         // Should recover close to original no-load speed
         assert!(
             (speed_recovered - speed_no_load).abs() / speed_no_load < 0.05,
-            "speed should recover after load removal: {} vs {}",
-            speed_recovered,
-            speed_no_load
+            "speed should recover after load removal: {speed_recovered} vs {speed_no_load}"
         );
     }
 
@@ -796,12 +792,12 @@ mod tests {
                     MAX_DUTY,
                     DT,
                 );
-                let scale = VBUS / MAX_DUTY as f32;
-                let va = telem.duties[0] as f32 * scale;
-                let vb = telem.duties[1] as f32 * scale;
-                let vc = telem.duties[2] as f32 * scale;
+                let scale = VBUS / f32::from(MAX_DUTY);
+                let va = f32::from(telem.duties[0]) * scale;
+                let vb = f32::from(telem.duties[1]) * scale;
+                let vc = f32::from(telem.duties[2]) * scale;
                 let v_alpha = (2.0 * va - vb - vc) / 3.0;
-                let v_beta = (vb - vc) * crate::foc::constants::FRAC_1_SQRT_3;
+                let v_beta = (vb - vc) * FRAC_1_SQRT_3;
                 out = motor.step(v_alpha, v_beta, 0.0, DT);
                 if step >= 10_000 {
                     let ed = telem.id;
@@ -866,7 +862,7 @@ mod tests {
                 let delta = out.omega_e * DT;
                 let (angle_cmd, advance) = if advance_measurement_frame {
                     // the old firmware behavior: one advanced angle for both
-                    (crate::foc::wrap_angle(out.angle_rad + delta), 0.0)
+                    (wrap_angle(out.angle_rad + delta), 0.0)
                 } else {
                     // the fixed path: raw Park + actuation-side rotation
                     (out.angle_rad, delta)
@@ -929,8 +925,7 @@ mod tests {
         assert_eq!(
             states.len(),
             6,
-            "expected 6 Hall transitions, got {:?}",
-            states
+            "expected 6 Hall transitions, got {states:?}"
         );
 
         // The sequence is the CW Gray-code [1,3,2,6,4,5] (or any cyclic
@@ -939,8 +934,7 @@ mod tests {
         let is_rotation = (0..6).any(|offset| (0..6).all(|i| states[i] == CW[(i + offset) % 6]));
         assert!(
             is_rotation,
-            "sequence {:?} is not a CW rotation of {:?}",
-            states, CW
+            "sequence {states:?} is not a CW rotation of {CW:?}"
         );
     }
 }

@@ -21,6 +21,7 @@ use super::current_reconstruction::ReconstructionState;
 use super::current_sense::ShuntCurrentSense;
 use super::hall_calibration::HallCalibrationResult;
 use super::hall_sensor::Direction;
+use crate::foc::hall_sensor::HallFaultKind;
 
 /// Snapshot from an angle sensor.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -120,7 +121,7 @@ pub trait AngleSensor {
     /// Sensor-level wire-health verdict (named dead wires / error rate) for
     /// the `HallError` warning fault. Default: nothing to report — only the
     /// hall estimator carries the per-bit detector.
-    fn fault_kind(&self) -> Option<crate::foc::hall_sensor::HallFaultKind> {
+    fn fault_kind(&self) -> Option<HallFaultKind> {
         None
     }
 }

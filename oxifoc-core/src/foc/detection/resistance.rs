@@ -21,6 +21,7 @@
 //! 4. Final accurate measurement at that safe current
 
 use super::types::{DetectionError, MotorSize};
+use crate::foc::fast_math::sqrtf;
 
 /// Minimum valid resistance in Ohms (below this suggests short circuit)
 const MIN_VALID_RESISTANCE: f32 = 0.001;
@@ -161,7 +162,7 @@ impl ResistanceMeasurement {
 #[inline]
 pub fn calculate_max_current(resistance: f32, motor_size: MotorSize) -> f32 {
     let max_power = motor_size.max_power_loss_w();
-    crate::foc::fast_math::sqrtf(max_power / resistance / 1.5)
+    sqrtf(max_power / resistance / 1.5)
 }
 
 /// Validate measured resistance is physically reasonable.

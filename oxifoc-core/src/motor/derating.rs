@@ -23,6 +23,9 @@
 //! same philosophy as the Layer-2 deadman. The faults of the severity
 //! ladder remain the backstops at the ramp ends.
 
+#[cfg(feature = "storage")]
+use crate::storage::DeratingConfigStored;
+
 /// Live derating factors (1.0 = no derate). Applied as multipliers on the
 /// iq budget in `step_current_control`, selected by direction.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,7 +118,7 @@ impl DeratingConfig {
     /// disable the FET thermal rolloff. (The config server additionally
     /// rejects insane writes loudly: `From` + [`Self::is_sane`].)
     #[cfg(feature = "storage")]
-    pub fn from_stored(cfg: Option<&crate::storage::DeratingConfigStored>) -> Self {
+    pub fn from_stored(cfg: Option<&DeratingConfigStored>) -> Self {
         match cfg {
             Some(c) => {
                 let candidate = Self::from(c);
@@ -217,8 +220,8 @@ impl DeratingConfig {
 }
 
 #[cfg(feature = "storage")]
-impl From<&crate::storage::DeratingConfigStored> for DeratingConfig {
-    fn from(c: &crate::storage::DeratingConfigStored) -> Self {
+impl From<&DeratingConfigStored> for DeratingConfig {
+    fn from(c: &DeratingConfigStored) -> Self {
         Self {
             temp_fet_start_c: c.temp_fet_start_c,
             temp_fet_end_c: c.temp_fet_end_c,

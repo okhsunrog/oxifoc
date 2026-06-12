@@ -14,7 +14,7 @@ pub async fn connect(path: &str, baud: u32) -> Result<CobsStreamTransport> {
 
     let port = tokio_serial::new(path, baud)
         .open_native_async()
-        .with_context(|| format!("Failed to open serial port {}", path))?;
+        .with_context(|| format!("Failed to open serial port {path}"))?;
 
     if let Err(e) = port.clear(tokio_serial::ClearBuffer::All) {
         warn!("Failed to clear serial buffers: {:?}", e);

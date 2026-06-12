@@ -635,9 +635,7 @@ mod tests {
             let back = q31_to_f32(q31);
             assert!(
                 (val - back).abs() < 1e-6,
-                "Round-trip failed for {}: got {}",
-                val,
-                back
+                "Round-trip failed for {val}: got {back}"
             );
         }
     }

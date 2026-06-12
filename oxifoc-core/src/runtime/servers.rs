@@ -28,6 +28,15 @@ use core::pin::pin;
 
 use critical_section::Mutex as CriticalSectionMutex;
 use embassy_futures::join::{join, join3};
+
+use crate::foc::controller::Decoupling;
+use crate::foc::detection::pi_tuning::{DEFAULT_BANDWIDTH_RAD_S, calculate_current_gains};
+use crate::foc::velocity::VelocityLoopConfig;
+use crate::motor::derating::DeratingConfig;
+use crate::motor::failsafe::FailsafeConfig;
+use crate::motor::foc_driver::CurrentLimits;
+use crate::state::{DriverCommand, FlashPendingGuard};
+use crate::types::MAX_FAULT_RESPONSE;
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
 use crate::foc::fault::{FaultRegistry, PlatformFault};
@@ -109,9 +118,7 @@ pub async fn motor_command_server<NS, F, const N: usize>(
                     // try_send silently dropped commands on a full channel —
                     // the host then got an OK-shaped status for a command
                     // that never reached the driver.
-                    CMD_CHANNEL
-                        .send(crate::state::DriverCommand::SetMode(mode))
-                        .await;
+                    CMD_CHANNEL.send(DriverCommand::SetMode(mode)).await;
 
                     // Status snapshot is pre-application by design (the ISR
                     // applies the mode asynchronously); the host confirms
@@ -166,7 +173,7 @@ pub async fn fault_server<NS, F, const N: usize>(
                 let fault_infos = fault_registry.to_fault_info_vec();
                 let total = fault_infos.len() as u8;
                 let mut response_faults = heapless::Vec::new();
-                for info in fault_infos.iter().take(crate::types::MAX_FAULT_RESPONSE) {
+                for info in fault_infos.iter().take(MAX_FAULT_RESPONSE) {
                     let _ = response_faults.push(info.clone());
                 }
 
@@ -198,7 +205,7 @@ pub async fn fault_server<NS, F, const N: usize>(
 ///
 /// `hw_max_current_a` is the board's hardware phase-current ceiling —
 /// current-limit writes are clamped to it and applied to the live driver
-/// via [`crate::state::LIMITS_SIGNAL`].
+/// via [`DriverCommand::SetCurrentLimits`] on the command channel.
 #[cfg(feature = "storage")]
 pub async fn config_server<NS, const N: usize>(
     endpoints: Endpoints<NS>,
@@ -290,13 +297,11 @@ pub async fn config_server<NS, const N: usize>(
                         // runtime decoder would silently fall back to the
                         // default config otherwise.
                         ConfigRequest::Write(ConfigWrite::Derating(ref v))
-                            if !crate::motor::derating::DeratingConfig::from(v).is_sane() =>
+                            if !DeratingConfig::from(v).is_sane() =>
                         {
                             ConfigResponse::Invalid
                         }
-                        ConfigRequest::Write(_) if persist && motor_running => {
-                            ConfigResponse::Busy
-                        }
+                        ConfigRequest::Write(_) if persist && motor_running => ConfigResponse::Busy,
                         ConfigRequest::ResetAll if motor_running => ConfigResponse::Busy,
                         ConfigRequest::Write(write) => {
                             let (key, payload) = match write.clone() {
@@ -342,7 +347,7 @@ pub async fn config_server<NS, const N: usize>(
                                 // Busy fast path above ran before the flag was
                                 // armed, so it alone is not enough). The guard
                                 // clears the flag on every return path.
-                                let _flash_pending = crate::state::FlashPendingGuard::arm();
+                                let _flash_pending = FlashPendingGuard::arm();
                                 let motor_running = critical_section::with(|cs| {
                                     state_mutex.borrow(cs).borrow().motor_state
                                         == MotorState::Running
@@ -379,24 +384,24 @@ pub async fn config_server<NS, const N: usize>(
                                 let mut cfg = runtime_config.borrow(cs).borrow_mut();
                                 match &write {
                                     ConfigWrite::MotorParams(v) => {
-                                        cfg.motor_params = Some(v.clone())
+                                        cfg.motor_params = Some(v.clone());
                                     }
                                     ConfigWrite::CurrentLimits(v) => {
-                                        cfg.current_limits = Some(v.clone())
+                                        cfg.current_limits = Some(v.clone());
                                     }
                                     ConfigWrite::VoltageLimits(v) => {
-                                        cfg.voltage_limits = Some(v.clone())
+                                        cfg.voltage_limits = Some(v.clone());
                                     }
                                     ConfigWrite::PwmConfig(v) => cfg.pwm_config = Some(v.clone()),
                                     ConfigWrite::PiGains(v) => cfg.pi_gains = Some(v.clone()),
                                     ConfigWrite::HallTuning(v) => {
-                                        cfg.hall_tuning = Some(v.clone())
+                                        cfg.hall_tuning = Some(v.clone());
                                     }
                                     ConfigWrite::HallCalibration(v) => {
-                                        cfg.hall_calibration = Some(v.clone())
+                                        cfg.hall_calibration = Some(v.clone());
                                     }
                                     ConfigWrite::DcOffsets(v) => {
-                                        cfg.dc_offsets = Some(v.clone())
+                                        cfg.dc_offsets = Some(v.clone());
                                     }
                                     ConfigWrite::Failsafe(v) => cfg.failsafe = Some(v.clone()),
                                     ConfigWrite::Velocity(v) => cfg.velocity = Some(v.clone()),
@@ -419,30 +424,29 @@ pub async fn config_server<NS, const N: usize>(
                                     .borrow()
                                     .motor_params
                                     .as_ref()
-                                    .and_then(|m| m.rating_current_a())
+                                    .and_then(
+                                        super::super::storage::MotorParamsConfig::rating_current_a,
+                                    )
                                     .unwrap_or(0.0)
                             });
                             match write {
                                 // Limits: clamped to the board ceiling and
                                 // the motor rating.
                                 ConfigWrite::CurrentLimits(ref v) => {
-                                    CMD_CHANNEL.send(
-                                        crate::state::DriverCommand::SetCurrentLimits(
-                                            crate::motor::foc_driver::CurrentLimits::from_config_clamped(
+                                    CMD_CHANNEL
+                                        .send(DriverCommand::SetCurrentLimits(
+                                            CurrentLimits::from_config_clamped(
                                                 v,
                                                 hw_max_current_a,
                                                 rating_a,
                                             ),
-                                        ),
-                                    ).await;
+                                        ))
+                                        .await;
                                 }
                                 // Explicit PI gains apply verbatim.
                                 ConfigWrite::PiGains(v) => {
                                     CMD_CHANNEL
-                                        .send(crate::state::DriverCommand::SetPiGains {
-                                            kp: v.kp,
-                                            ki: v.ki,
-                                        })
+                                        .send(DriverCommand::SetPiGains { kp: v.kp, ki: v.ki })
                                         .await;
                                 }
                                 // New motor params (post-detection write):
@@ -451,39 +455,30 @@ pub async fn config_server<NS, const N: usize>(
                                 // conservative detection gains until reboot.
                                 ConfigWrite::MotorParams(v) if v.is_valid() => {
                                     let l_avg = (v.inductance_d_h + v.inductance_q_h) / 2.0;
-                                    let (kp, ki) =
-                                        crate::foc::detection::pi_tuning::calculate_current_gains(
-                                            v.resistance_ohm,
-                                            l_avg,
-                                            crate::foc::detection::pi_tuning::DEFAULT_BANDWIDTH_RAD_S,
-                                        );
-                                    CMD_CHANNEL
-                                        .send(crate::state::DriverCommand::SetPiGains { kp, ki })
-                                        .await;
+                                    let (kp, ki) = calculate_current_gains(
+                                        v.resistance_ohm,
+                                        l_avg,
+                                        DEFAULT_BANDWIDTH_RAD_S,
+                                    );
+                                    CMD_CHANNEL.send(DriverCommand::SetPiGains { kp, ki }).await;
                                     // New inductances/flux also re-arm the
                                     // dq-decoupling feedforward, same as boot.
                                     CMD_CHANNEL
-                                        .send(crate::state::DriverCommand::SetDecoupling(
-                                            crate::foc::controller::Decoupling {
-                                                ld_h: v.inductance_d_h,
-                                                lq_h: v.inductance_q_h,
-                                                flux_linkage_wb: v.flux_linkage_wb,
-                                            },
-                                        ))
+                                        .send(DriverCommand::SetDecoupling(Decoupling {
+                                            ld_h: v.inductance_d_h,
+                                            lq_h: v.inductance_q_h,
+                                            flux_linkage_wb: v.flux_linkage_wb,
+                                        }))
                                         .await;
                                     // A new rating re-clamps the live limits
                                     // (a lower-rated motor must take effect
                                     // now, not at the next boot).
                                     let limits = critical_section::with(|cs| {
-                                        runtime_config
-                                            .borrow(cs)
-                                            .borrow()
-                                            .current_limits
-                                            .clone()
+                                        runtime_config.borrow(cs).borrow().current_limits.clone()
                                     });
                                     CMD_CHANNEL
-                                        .send(crate::state::DriverCommand::SetCurrentLimits(
-                                            crate::motor::foc_driver::CurrentLimits::from_stored(
+                                        .send(DriverCommand::SetCurrentLimits(
+                                            CurrentLimits::from_stored(
                                                 limits.as_ref(),
                                                 hw_max_current_a,
                                                 rating_a,
@@ -494,30 +489,24 @@ pub async fn config_server<NS, const N: usize>(
                                 // Cruise velocity-loop tuning applies live.
                                 ConfigWrite::Velocity(v) => {
                                     CMD_CHANNEL
-                                        .send(crate::state::DriverCommand::SetVelocityConfig(
-                                            crate::foc::velocity::VelocityLoopConfig::from_stored(
-                                                Some(&v),
-                                            ),
+                                        .send(DriverCommand::SetVelocityConfig(
+                                            VelocityLoopConfig::from_stored(Some(&v)),
                                         ))
                                         .await;
                                 }
                                 // Derating ramps apply to the live driver.
                                 ConfigWrite::Derating(v) => {
                                     CMD_CHANNEL
-                                        .send(crate::state::DriverCommand::SetDerating(
-                                            crate::motor::derating::DeratingConfig::from_stored(
-                                                Some(&v),
-                                            ),
+                                        .send(DriverCommand::SetDerating(
+                                            DeratingConfig::from_stored(Some(&v)),
                                         ))
                                         .await;
                                 }
                                 // Failsafe tuning applies to the live driver.
                                 ConfigWrite::Failsafe(v) => {
                                     CMD_CHANNEL
-                                        .send(crate::state::DriverCommand::SetFailsafe(
-                                            crate::motor::failsafe::FailsafeConfig::from_stored(
-                                                Some(&v),
-                                            ),
+                                        .send(DriverCommand::SetFailsafe(
+                                            FailsafeConfig::from_stored(Some(&v)),
                                         ))
                                         .await;
                                 }
@@ -528,7 +517,7 @@ pub async fn config_server<NS, const N: usize>(
                         ConfigRequest::ResetAll => {
                             if persist {
                                 // Same TOCTOU guard as the Write arm above.
-                                let _flash_pending = crate::state::FlashPendingGuard::arm();
+                                let _flash_pending = FlashPendingGuard::arm();
                                 let motor_running = critical_section::with(|cs| {
                                     state_mutex.borrow(cs).borrow().motor_state
                                         == MotorState::Running
@@ -549,10 +538,8 @@ pub async fn config_server<NS, const N: usize>(
                             });
                             // Stored limits are gone — restore board defaults.
                             CMD_CHANNEL
-                                .send(crate::state::DriverCommand::SetCurrentLimits(
-                                    crate::motor::foc_driver::CurrentLimits::from_max_current(
-                                        hw_max_current_a,
-                                    ),
+                                .send(DriverCommand::SetCurrentLimits(
+                                    CurrentLimits::from_max_current(hw_max_current_a),
                                 ))
                                 .await;
                             ConfigResponse::Ok
@@ -585,7 +572,7 @@ where
         let _ = h
             .serve(|cfg: &TelemetryConfig| {
                 let (period, actual_fast_hz) = if cfg.fast_hz > 0 {
-                    let period = (foc_freq_hz / cfg.fast_hz.max(1) as u32).max(1);
+                    let period = (foc_freq_hz / u32::from(cfg.fast_hz.max(1))).max(1);
                     let actual = (foc_freq_hz / period) as u16;
                     (period, actual)
                 } else {
@@ -705,7 +692,7 @@ where
                     // Guaranteed enqueue (ISR drains every cycle); the ack
                     // still only confirms enqueueing, not application.
                     CMD_CHANNEL
-                        .send(crate::state::DriverCommand::SetPhaseSource(source))
+                        .send(DriverCommand::SetPhaseSource(source))
                         .await;
                     PhaseSourceAck { enqueued: true }
                 }

@@ -4,6 +4,12 @@
 //! ergot frame transfer over BLE. Each ergot frame maps to one GATT
 //! write (central → peripheral) or notification (peripheral → central).
 
+// The gatt_server/gatt_service macros re-qualify types in their expansions,
+// tripping unused_qualifications on spans we can't reach with item-level
+// allows — suppress for the whole (small) module.
+#![allow(unused_qualifications)]
+
+use heapless::Vec;
 use trouble_host::prelude::*;
 
 /// Maximum payload per GATT characteristic value.
@@ -21,9 +27,9 @@ pub struct NusServer {
 pub struct NusService {
     /// RX characteristic — central writes ergot frames here.
     #[characteristic(uuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e", write_without_response)]
-    pub rx: heapless::Vec<u8, NUS_MAX_PAYLOAD>,
+    pub rx: Vec<u8, NUS_MAX_PAYLOAD>,
 
     /// TX characteristic — peripheral notifies ergot frames to central.
     #[characteristic(uuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e", notify)]
-    pub tx: heapless::Vec<u8, NUS_MAX_PAYLOAD>,
+    pub tx: Vec<u8, NUS_MAX_PAYLOAD>,
 }

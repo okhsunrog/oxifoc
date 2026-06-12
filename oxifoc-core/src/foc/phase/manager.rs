@@ -11,9 +11,13 @@ use super::observer::{HfiObserver, Observer, ObserverInput};
 use super::provider::{PhaseInput, PhaseOutput, PhaseProvider};
 use super::source::{PhaseSource, PhaseSourceError};
 use crate::foc::hall_calibration::HallCalibrationResult;
+use crate::foc::hall_sensor::HallFaultKind;
 use crate::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait, NoSensor};
+use crate::foc::transforms::park;
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::{angle_difference, wrap_angle};
+#[cfg(feature = "storage")]
+use crate::storage::RuntimeConfig;
 
 /// Hysteresis band for the sharp HFI↔sensor crossovers (fraction of the
 /// switch velocity). Switch up at `switch_vel`, back down only below
@@ -965,8 +969,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             use crate::foc::trig::FastSinCos;
             let r = self.observer.resistance().unwrap_or(0.0);
             let (sin_t, cos_t) = FastSinCos::sin_cos(self.output.angle);
-            let (_, vq) = crate::foc::transforms::park(input.v_alpha, input.v_beta, sin_t, cos_t);
-            let (_, iq) = crate::foc::transforms::park(input.i_alpha, input.i_beta, sin_t, cos_t);
+            let (_, vq) = park(input.v_alpha, input.v_beta, sin_t, cos_t);
+            let (_, iq) = park(input.i_alpha, input.i_beta, sin_t, cos_t);
             let bemf = vq - r * iq;
             self.bemf_proxy_v = if bemf < 0.0 { -bemf } else { bemf };
         }
@@ -1045,7 +1049,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             PhaseSource::Hfi
             | PhaseSource::HfiToObserver { .. }
             | PhaseSource::HfiToObserverVolts { .. } => {
-                self.hfi.as_ref().is_some_and(|h| h.is_ready()) || self.observer.is_ready()
+                self.hfi.as_ref().is_some_and(HfiObserver::is_ready) || self.observer.is_ready()
             }
         }
     }
@@ -1066,8 +1070,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     /// state" only says something is wrong. Only sources that consume hall
     /// data report; an idle hall during Manual calibration or pure
     /// sensorless is not a failure.
-    fn hall_fault(&self) -> Option<crate::foc::hall_sensor::HallFaultKind> {
-        use crate::foc::hall_sensor::HallFaultKind;
+    fn hall_fault(&self) -> Option<HallFaultKind> {
         if !self.source.requires_hall() {
             return None;
         }
@@ -1094,11 +1097,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// (R, L_avg, λ) and an HFI estimator with default carrier settings.
     /// The sources stay untouched — the estimators only run; the host
     /// selects a sensorless source explicitly when it wants one.
-    pub fn configure_observers_from_config(
-        &mut self,
-        config: &crate::storage::RuntimeConfig,
-        vbus: f32,
-    ) {
+    pub fn configure_observers_from_config(&mut self, config: &RuntimeConfig, vbus: f32) {
         use super::observer::{
             BackEmfObserver, HFI_DEFAULT_AMPLITUDE_RATIO, HFI_DEFAULT_FREQ_HZ, Observer,
         };
@@ -1132,7 +1131,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                     .clamp(0.05, super::observer::HFI_CARRIER_RIPPLE_TARGET_A),
                 None => super::observer::HFI_CARRIER_RIPPLE_TARGET_A,
             };
-            let omega_c = HFI_DEFAULT_FREQ_HZ * core::f32::consts::TAU;
+            let omega_c = HFI_DEFAULT_FREQ_HZ * TAU;
             let amplitude = (i_target * omega_c * l_avg)
                 .min(vbus * HFI_DEFAULT_AMPLITUDE_RATIO)
                 .max(0.05);
@@ -1224,6 +1223,11 @@ fn blend_angles(a: f32, b: f32, blend: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foc::hall_sensor::Direction;
+    #[cfg(feature = "virtual-motor")]
+    use crate::foc::hall_sensor::HallSensor;
+    #[cfg(feature = "virtual-motor")]
+    use crate::virtual_motor::VirtualMotorOutput;
 
     #[test]
     fn test_sensorless_manager() {
@@ -1297,7 +1301,7 @@ mod tests {
         // Pure HFI: carrier must flow (fresh carrier phase 0 → vd = A).
         phase.set_source(PhaseSource::Hfi).unwrap();
         let (vd, vq) = phase.injection();
-        assert!(vd.abs() > 1.0, "expected carrier voltage, got vd = {}", vd);
+        assert!(vd.abs() > 1.0, "expected carrier voltage, got vd = {vd}");
         assert_eq!(vq, 0.0, "pulsating injection is d-axis only");
 
         // Crossover source: inject below the latch; above the latch the
@@ -1415,7 +1419,7 @@ mod tests {
                 Some(AngleSample {
                     angle: self.angle,
                     omega: self.omega,
-                    direction: crate::foc::hall_sensor::Direction::Clockwise,
+                    direction: Direction::Clockwise,
                 })
             } else {
                 None
@@ -1426,8 +1430,8 @@ mod tests {
             self.angle
         }
 
-        fn read_direction(&self) -> crate::foc::hall_sensor::Direction {
-            crate::foc::hall_sensor::Direction::Clockwise
+        fn read_direction(&self) -> Direction {
+            Direction::Clockwise
         }
 
         fn error_count(&self) -> u32 {
@@ -1699,7 +1703,7 @@ mod tests {
         );
 
         let out = phase.get();
-        let err = crate::foc::angle_difference(out.angle, hall_angle).abs();
+        let err = angle_difference(out.angle, hall_angle).abs();
         assert!(
             err < 0.3,
             "output {} drifted {} rad toward the flipped observer (hall at {})",
@@ -1737,7 +1741,7 @@ mod tests {
         );
 
         let out = phase.get();
-        let err = crate::foc::angle_difference(out.angle, hall_angle).abs();
+        let err = angle_difference(out.angle, hall_angle).abs();
         assert!(
             err < 0.05,
             "output {} must equal the hall angle {} while observer is not ready (err {})",
@@ -1761,11 +1765,7 @@ mod tests {
     fn run_sensorless_sim(
         total_steps: u64,
         hall_feed: impl Fn(u64, u8) -> Option<u8>,
-    ) -> (
-        PhaseManager<crate::foc::hall_sensor::HallSensor>,
-        crate::virtual_motor::VirtualMotorOutput,
-        f32,
-    ) {
+    ) -> (PhaseManager<HallSensor>, VirtualMotorOutput, f32) {
         use crate::foc::controller::FocController;
         use crate::foc::hall_sensor::HallSensor;
         use crate::foc::phase::{BackEmfObserver, Observer};
@@ -1843,7 +1843,7 @@ mod tests {
             let new_angle = mgr.get().angle;
             if out.omega_e > 100.0 {
                 if let Some(prev) = prev_angle {
-                    let jump = crate::foc::angle_difference(new_angle, prev).abs();
+                    let jump = angle_difference(new_angle, prev).abs();
                     max_step_at_speed = max_step_at_speed.max(jump);
                 }
                 prev_angle = Some(new_angle);
@@ -1875,7 +1875,7 @@ mod tests {
 
         // Managed angle tracks the true rotor angle.
         let true_angle = wrap_angle(out.angle_rad);
-        let err = crate::foc::angle_difference(mgr.get().angle, true_angle).abs();
+        let err = angle_difference(mgr.get().angle, true_angle).abs();
         assert!(
             err < 0.25,
             "managed angle {} vs true {} (err {} rad)",
@@ -1898,9 +1898,7 @@ mod tests {
         let nominal_step = out.omega_e * DT;
         assert!(
             max_step_at_speed < nominal_step + 0.15,
-            "angle jumped {} rad in one cycle (nominal step {})",
-            max_step_at_speed,
-            nominal_step
+            "angle jumped {max_step_at_speed} rad in one cycle (nominal step {nominal_step})"
         );
     }
 
@@ -1927,7 +1925,7 @@ mod tests {
 
         // Observer must be carrying the commutation accurately.
         let true_angle = wrap_angle(out.angle_rad);
-        let err = crate::foc::angle_difference(mgr.get().angle, true_angle).abs();
+        let err = angle_difference(mgr.get().angle, true_angle).abs();
         assert!(
             err < 0.25,
             "angle lost after hall dropout: managed {} vs true {} (err {})",
@@ -1940,8 +1938,7 @@ mod tests {
         let nominal_step = out.omega_e * (1.0 / 20_000.0);
         assert!(
             max_step_at_speed < nominal_step + 0.15,
-            "angle jumped {} rad during hall dropout handoff",
-            max_step_at_speed
+            "angle jumped {max_step_at_speed} rad during hall dropout handoff"
         );
     }
 
@@ -1974,13 +1971,12 @@ mod tests {
 
         // Commutation stayed accurate and continuous on the observer.
         let true_angle = wrap_angle(out.angle_rad);
-        let err = crate::foc::angle_difference(mgr.get().angle, true_angle).abs();
-        assert!(err < 0.25, "angle err {} rad with a dead hall wire", err);
+        let err = angle_difference(mgr.get().angle, true_angle).abs();
+        assert!(err < 0.25, "angle err {err} rad with a dead hall wire");
         let nominal_step = out.omega_e * (1.0 / 20_000.0);
         assert!(
             max_step_at_speed < nominal_step + 0.15,
-            "angle jumped {} rad during partial-failure ride-through",
-            max_step_at_speed
+            "angle jumped {max_step_at_speed} rad during partial-failure ride-through"
         );
     }
 
@@ -2039,7 +2035,7 @@ mod tests {
         })
         .unwrap();
 
-        let mut out = crate::virtual_motor::VirtualMotorOutput {
+        let mut out = VirtualMotorOutput {
             angle_rad: 2.5,
             ..Default::default()
         };
@@ -2108,7 +2104,8 @@ mod tests {
                     preheat_seen = true;
                 }
                 if was_latched && !latched_now && released_with_ready.is_none() {
-                    released_with_ready = Some(mgr.hfi_observer().is_some_and(|h| h.is_ready()));
+                    released_with_ready =
+                        Some(mgr.hfi_observer().is_some_and(HfiObserver::is_ready));
                 }
                 was_latched = latched_now;
             } else {
@@ -2117,8 +2114,7 @@ mod tests {
 
             if step == STANDSTILL_STEPS - 1 {
                 // HFI must have found the flipped rotor at standstill.
-                let err =
-                    crate::foc::angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
+                let err = angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
                 assert!(
                     err < 0.2,
                     "HFI standstill lock failed: est {} vs rotor {} (err {} full-circle)",
@@ -2133,7 +2129,7 @@ mod tests {
             let new_angle = mgr.get().angle;
             if out.omega_e > 100.0 {
                 if let Some(prev) = prev_angle {
-                    let jump = crate::foc::angle_difference(new_angle, prev).abs();
+                    let jump = angle_difference(new_angle, prev).abs();
                     max_step_at_speed = max_step_at_speed.max(jump);
                 }
                 prev_angle = Some(new_angle);
@@ -2161,7 +2157,7 @@ mod tests {
             "carrier must be back on below the crossover band"
         );
         let true_angle = wrap_angle(out.angle_rad);
-        let err = crate::foc::angle_difference(mgr.get().angle, true_angle).abs();
+        let err = angle_difference(mgr.get().angle, true_angle).abs();
         assert!(
             err < 0.25,
             "managed angle {} vs true {} (err {} rad) after the down handoff",
@@ -2173,8 +2169,7 @@ mod tests {
         let nominal_step = 700.0 * DT; // generous bound: peak ωe during the run
         assert!(
             max_step_at_speed < nominal_step + 0.15,
-            "angle jumped {} rad in one cycle through a crossover",
-            max_step_at_speed
+            "angle jumped {max_step_at_speed} rad in one cycle through a crossover"
         );
 
         // Pre-heat: the carrier resumed in the margin while still latched —
@@ -2246,7 +2241,7 @@ mod tests {
         })
         .unwrap();
 
-        let mut out = crate::virtual_motor::VirtualMotorOutput::default();
+        let mut out = VirtualMotorOutput::default();
 
         // Phase 1: standstill HFI lock + polarity. Phase 2: spin up into
         // the latched regime. Phase 3: JAM — a brake torque far beyond the
@@ -2307,7 +2302,7 @@ mod tests {
             // After the jam: the cold window is "latch released, demod not
             // yet ready". The trust gate must hold iq at zero throughout it.
             if step > SPIN_STEPS && !mgr.crossover_latched {
-                let hfi_ready = mgr.hfi_observer().is_some_and(|h| h.is_ready());
+                let hfi_ready = mgr.hfi_observer().is_some_and(HfiObserver::is_ready);
                 if !hfi_ready {
                     cold_gate_seen = true;
                     if mgr.angle_trustworthy() && !mgr.observer().is_ready() {
@@ -2338,7 +2333,7 @@ mod tests {
         // Recovery: at standstill the carrier is on, the demod re-locks and
         // commutation trust returns.
         assert!(
-            mgr.hfi_observer().is_some_and(|h| h.is_ready()),
+            mgr.hfi_observer().is_some_and(HfiObserver::is_ready),
             "HFI must re-lock at standstill after the jam"
         );
         assert!(
@@ -2406,7 +2401,7 @@ mod tests {
             mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
             mgr.set_source(PhaseSource::Hfi).unwrap();
 
-            let mut out = crate::virtual_motor::VirtualMotorOutput::default();
+            let mut out = VirtualMotorOutput::default();
             let mut max_err = 0.0f32;
             let mut min_conf = 1.0f32;
             for step in 1..TOTAL_STEPS {
@@ -2448,7 +2443,7 @@ mod tests {
                 );
 
                 if step >= LOCK_STEPS + 1_000 {
-                    let err = crate::foc::angle_difference(mgr.get().angle, out.angle_rad).abs();
+                    let err = angle_difference(mgr.get().angle, out.angle_rad).abs();
                     max_err = max_err.max(err);
                     if let Some(h) = mgr.hfi_observer() {
                         min_conf = min_conf.min(h.confidence());
@@ -2533,7 +2528,7 @@ mod tests {
         })
         .unwrap();
 
-        let mut out = crate::virtual_motor::VirtualMotorOutput {
+        let mut out = VirtualMotorOutput {
             angle_rad: 0.5,
             ..Default::default()
         };
@@ -2584,8 +2579,7 @@ mod tests {
                     out.omega_e
                 );
                 latched_at_speed = mgr.injection() == (0.0, 0.0);
-                err_at_speed =
-                    crate::foc::angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
+                err_at_speed = angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
             }
         }
 
@@ -2595,8 +2589,7 @@ mod tests {
         );
         assert!(
             err_at_speed < 0.25,
-            "angle error {} rad at speed on the voltage crossover",
-            err_at_speed
+            "angle error {err_at_speed} rad at speed on the voltage crossover"
         );
 
         // Coasted down: bemf proxy below the band → back on HFI, carrier on.
@@ -2610,11 +2603,10 @@ mod tests {
             (0.0, 0.0),
             "carrier must be back on below the voltage band"
         );
-        let err = crate::foc::angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
+        let err = angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
         assert!(
             err < 0.3,
-            "angle error {} rad after the downward voltage handoff",
-            err
+            "angle error {err} rad after the downward voltage handoff"
         );
     }
 

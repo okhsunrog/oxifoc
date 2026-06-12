@@ -23,7 +23,9 @@ use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
+use crate::config::{MAX_PACKET_SIZE, UART_BAUD, UART_RX_BUF_LEN, UART_TX_BUF_LEN};
 use crate::config::{UART_OUT_QUEUE_SIZE, USB_OUT_QUEUE_SIZE};
+use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 
 // ========== Multi-Interface Definition ==========
 
@@ -39,7 +41,7 @@ ergot::multi_interface! {
 
 // ========== Type Aliases ==========
 
-pub type Rng = embassy_stm32::rng::Rng<'static, peripherals::RNG>;
+pub type Rng = rng::Rng<'static, peripherals::RNG>;
 pub type McRouter = Router<McInterface, Rng, 2, 0>;
 pub type Stack = NetStack<CriticalSectionRawMutex, McRouter>;
 
@@ -80,8 +82,8 @@ static USB_STORAGE: usb_kit::WireStorage<256, 256, 64, 256> = usb_kit::WireStora
 static EP_OUT_BUF: StaticCell<[u8; 256]> = StaticCell::new();
 
 // UART buffers
-static UART_TX_BUF: StaticCell<[u8; crate::config::UART_TX_BUF_LEN]> = StaticCell::new();
-static UART_RX_BUF: StaticCell<[u8; crate::config::UART_RX_BUF_LEN]> = StaticCell::new();
+static UART_TX_BUF: StaticCell<[u8; UART_TX_BUF_LEN]> = StaticCell::new();
+static UART_RX_BUF: StaticCell<[u8; UART_RX_BUF_LEN]> = StaticCell::new();
 
 // ========== Interrupt Bindings ==========
 
@@ -137,7 +139,7 @@ pub fn init_usb(
 ) -> (UsbTransport, u8) {
     let ep_out_buf = EP_OUT_BUF.init([0u8; 256]);
 
-    let mut usb_cfg = embassy_stm32::usb::Config::default();
+    let mut usb_cfg = usb::Config::default();
     usb_cfg.vbus_detection = false;
 
     let driver = usb::Driver::new_fs(usb_otg_fs, UsbIrqs, pa12, pa11, ep_out_buf, usb_cfg);
@@ -152,7 +154,7 @@ pub fn init_usb(
     // Register USB interface on Router
     let usb_sink = McSink::Usb(framed_stream::Sink::new(
         USB_OUTQ.framed_producer(),
-        crate::config::MAX_PACKET_SIZE as u16,
+        MAX_PACKET_SIZE as u16,
     ));
     let usb_ident = defmt::unwrap!(
         stack.manage_profile(|router| router.register_interface(usb_sink)),
@@ -197,12 +199,12 @@ pub fn init_uart(
     use embassy_stm32::usart::{Config as UartConfig, Parity, StopBits};
 
     let mut uart_cfg = UartConfig::default();
-    uart_cfg.baudrate = crate::config::UART_BAUD;
+    uart_cfg.baudrate = UART_BAUD;
     uart_cfg.parity = Parity::ParityNone;
     uart_cfg.stop_bits = StopBits::STOP1;
 
-    let tx_buf = UART_TX_BUF.init([0u8; crate::config::UART_TX_BUF_LEN]);
-    let rx_buf = UART_RX_BUF.init([0u8; crate::config::UART_RX_BUF_LEN]);
+    let tx_buf = UART_TX_BUF.init([0u8; UART_TX_BUF_LEN]);
+    let rx_buf = UART_RX_BUF.init([0u8; UART_RX_BUF_LEN]);
 
     // BufferedUart::new(usart, rx_pin, tx_pin, ...) — PB11 is RX, PB10 is TX
     let uart = defmt::unwrap!(
@@ -217,7 +219,7 @@ pub fn init_uart(
     // Register UART interface on Router
     let uart_sink = McSink::Uart(cobs_stream::Sink::new(
         UART_OUTQ.stream_producer(),
-        crate::config::MAX_PACKET_SIZE as u16,
+        MAX_PACKET_SIZE as u16,
     ));
     let uart_ident = defmt::unwrap!(
         stack.manage_profile(|router| router.register_interface(uart_sink)),
@@ -233,7 +235,7 @@ pub fn init_uart(
         uart_ident,
     )
     .with_liveness(LivenessConfig {
-        timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
+        timeout_ms: LIVENESS_TIMEOUT_MS,
     })
     .with_state_notify(&STATE_NOTIFY);
 

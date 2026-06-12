@@ -73,7 +73,7 @@ impl HostConfig {
 
     fn from_path(path: PathBuf) -> Option<Self> {
         match fs::read_to_string(&path) {
-            Ok(s) => match toml::from_str::<HostConfig>(&s) {
+            Ok(s) => match toml::from_str::<Self>(&s) {
                 Ok(cfg) => Some(cfg),
                 Err(e) => {
                     eprintln!("Failed to parse config (TOML) {}: {}", path.display(), e);

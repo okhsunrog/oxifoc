@@ -30,3 +30,6 @@ rand = "0.9"
 [dev-dependencies]
 # Drive the virtual device over the network in the e2e test.
 oxifoc-host-lib = { path = "../oxifoc-host-lib" }
+
+[lints]
+workspace = true

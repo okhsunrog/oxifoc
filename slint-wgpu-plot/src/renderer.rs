@@ -76,8 +76,7 @@ impl PlotRenderer {
             ))),
         });
 
-        let samples_size =
-            (config.capacity * config.num_channels * std::mem::size_of::<f32>()) as u64;
+        let samples_size = (config.capacity * config.num_channels * size_of::<f32>()) as u64;
         let samples_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("plot_samples"),
             size: samples_size,
@@ -93,7 +92,7 @@ impl PlotRenderer {
         }
         let colors_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("plot_colors"),
-            size: std::mem::size_of::<ColorsUniform>() as u64,
+            size: size_of::<ColorsUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -143,7 +142,7 @@ impl PlotRenderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("plot_pipeline_layout"),
             bind_group_layouts: &[&bgl],
-            immediate_size: std::mem::size_of::<PlotParams>() as u32,
+            immediate_size: size_of::<PlotParams>() as u32,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

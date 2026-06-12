@@ -21,6 +21,8 @@
 //! measures; hosts convert mechanical targets via pole pairs.
 
 use crate::foc::pi_controller::ClampedPI;
+#[cfg(feature = "storage")]
+use crate::storage::VelocityConfigStored;
 
 /// Slew-rate limiter: a value that moves toward a target at a bounded rate.
 ///
@@ -107,7 +109,7 @@ impl VelocityLoopConfig {
     /// Build from the stored (host-writable) form. A missing or non-sane
     /// stored value falls back to [`Default`].
     #[cfg(feature = "storage")]
-    pub fn from_stored(cfg: Option<&crate::storage::VelocityConfigStored>) -> Self {
+    pub fn from_stored(cfg: Option<&VelocityConfigStored>) -> Self {
         match cfg {
             Some(c) => {
                 let candidate = Self {

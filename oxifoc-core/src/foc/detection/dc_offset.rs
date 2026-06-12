@@ -76,16 +76,16 @@ impl CalibrationState {
     /// Returns (duty_a, duty_b, duty_c) as fractions (0.0 to 1.0).
     pub fn duty_cycles(&self) -> (f32, f32, f32) {
         match self {
-            CalibrationState::Undriven => (0.0, 0.0, 0.0),
-            CalibrationState::ZeroVectorLow => (0.0, 0.0, 0.0),
-            CalibrationState::ZeroVectorHigh => (1.0, 1.0, 1.0),
-            CalibrationState::MidDuty => (0.5, 0.5, 0.5),
+            Self::Undriven => (0.0, 0.0, 0.0),
+            Self::ZeroVectorLow => (0.0, 0.0, 0.0),
+            Self::ZeroVectorHigh => (1.0, 1.0, 1.0),
+            Self::MidDuty => (0.5, 0.5, 0.5),
         }
     }
 
     /// Check if PWM should be active during this state.
     pub fn pwm_enabled(&self) -> bool {
-        !matches!(self, CalibrationState::Undriven)
+        !matches!(self, Self::Undriven)
     }
 }
 
@@ -111,9 +111,9 @@ impl DcOffsetAccumulator {
     /// Record a sample.
     #[inline]
     pub fn record(&mut self, adc_a: u16, adc_b: u16, adc_c: u16) {
-        self.sum_a += adc_a as f32;
-        self.sum_b += adc_b as f32;
-        self.sum_c += adc_c as f32;
+        self.sum_a += f32::from(adc_a);
+        self.sum_b += f32::from(adc_b);
+        self.sum_c += f32::from(adc_c);
         self.count += 1;
     }
 

@@ -20,6 +20,7 @@
 //! with time constant τ = 1/ω_bw.
 
 use super::types::MotorParams;
+use crate::foc::clamp_f32;
 
 /// Default current loop bandwidth in rad/s.
 ///
@@ -112,8 +113,7 @@ pub fn calculate_current_gains_limited(
 
     // Use the more limiting bandwidth
     let actual_bandwidth = target_bandwidth.min(max_bandwidth_from_kp);
-    let actual_bandwidth =
-        crate::foc::clamp_f32(actual_bandwidth, MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
+    let actual_bandwidth = clamp_f32(actual_bandwidth, MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
 
     let (kp, ki) = calculate_current_gains(resistance, inductance, actual_bandwidth);
     (kp, ki, actual_bandwidth)
@@ -151,8 +151,7 @@ pub fn calculate_foc_gains(params: &MotorParams, bandwidth_rad_s: f32) -> Option
         return None;
     };
 
-    let bandwidth =
-        crate::foc::clamp_f32(bandwidth_rad_s, MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
+    let bandwidth = clamp_f32(bandwidth_rad_s, MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
 
     let (kp_d, ki_d) = calculate_current_gains(params.resistance_ohm, ld, bandwidth);
     let (kp_q, ki_q) = calculate_current_gains(params.resistance_ohm, lq, bandwidth);
@@ -199,7 +198,7 @@ pub fn estimate_bandwidth(inductance_h: f32, pwm_freq_hz: f32) -> f32 {
         3000.0
     };
 
-    crate::foc::clamp_f32(
+    clamp_f32(
         suggested.min(max_from_pwm),
         MIN_BANDWIDTH_RAD_S,
         MAX_BANDWIDTH_RAD_S,
@@ -225,7 +224,7 @@ pub fn calculate_observer_gain(flux_linkage_wb: f32) -> Option<f32> {
     }
 
     let gain = super::flux_linkage::calculate_observer_gain(flux_linkage_wb);
-    Some(crate::foc::clamp_f32(gain, 1e3, 1e9))
+    Some(clamp_f32(gain, 1e3, 1e9))
 }
 
 #[cfg(test)]
@@ -315,7 +314,7 @@ mod tests {
         assert!((gain2 - 2e7).abs() < 1e4);
 
         // Both call sites must agree (one source of truth)
-        let from_flux = crate::foc::detection::flux_linkage::calculate_observer_gain(0.005);
+        let from_flux = super::super::flux_linkage::calculate_observer_gain(0.005);
         assert!((gain2 - from_flux).abs() < 1.0);
 
         // Huge flux linkage clamps to the minimum

@@ -9,7 +9,25 @@ use heapless::String;
 
 use crate::transport::{AppDriver, Stack, UartRxWorker, UartWriter, UsbQueue, UsbRxWorker};
 use crate::{FAULT_REGISTRY, STATE};
+use core::sync::atomic::Ordering;
 use oxifoc_core::types::HardwareInfo;
+
+use oxifoc_core::foc::detection::DetectionError;
+use oxifoc_core::foc::detection::types::{FluxLinkageParams, InductanceParams, ResistanceParams};
+use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
+use oxifoc_core::foc::trig::FastSinCos;
+use oxifoc_core::runtime::streaming::{fast_telemetry_stream, fault_topic_stream};
+use oxifoc_core::runtime::{DetectionBackend, run_all_servers_with_config};
+use oxifoc_core::timer::EmbassyTimer;
+
+use crate::RUNTIME_CONFIG;
+use crate::calibration::{
+    calibrate_hall_default_ez, measure_flux_linkage_ez, measure_inductance_ez,
+    measure_resistance_ez,
+};
+use crate::config::{BOARD, MAX_PACKET_SIZE, PWM_CONFIG, UART_BAUD, USB_OUT_QUEUE_SIZE};
+use crate::control::foc::VBUS_MV;
+use crate::transport::UART_OUTQ;
 
 // ========== Worker Tasks ==========
 
@@ -31,7 +49,7 @@ pub async fn run_usb_tx(
     mut ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
     rx: FramedConsumer<&'static UsbQueue>,
 ) {
-    usb_kit::tx_worker::<AppDriver, { crate::config::USB_OUT_QUEUE_SIZE }, _>(
+    usb_kit::tx_worker::<AppDriver, { USB_OUT_QUEUE_SIZE }, _>(
         &mut ep_in,
         rx,
         usb_kit::DEFAULT_TIMEOUT_MS_PER_FRAME,
@@ -56,13 +74,11 @@ pub async fn run_uart_rx(
 }
 
 /// Maximum COBS-encoded frame size
-const MAX_WIRE_BYTES: usize =
-    crate::config::MAX_PACKET_SIZE + crate::config::MAX_PACKET_SIZE / 254 + 1;
+const MAX_WIRE_BYTES: usize = MAX_PACKET_SIZE + MAX_PACKET_SIZE / 254 + 1;
 
 /// Time to transmit one max-sized frame at the configured baud rate.
 /// 10 bits per byte (8N1). 3x safety margin for interrupt latency.
-const TX_TIMEOUT_US: u64 =
-    (MAX_WIRE_BYTES as u64 * 10 * 1_000_000) / (crate::config::UART_BAUD as u64) * 3;
+const TX_TIMEOUT_US: u64 = (MAX_WIRE_BYTES as u64 * 10 * 1_000_000) / (UART_BAUD as u64) * 3;
 
 /// Worker task for outgoing ergot data (UART COBS stream)
 ///
@@ -71,7 +87,7 @@ const TX_TIMEOUT_US: u64 =
 pub async fn run_uart_tx(mut tx: UartWriter, stack: &'static Stack, uart_ident: u8) {
     use ergot::interface_manager::{InterfaceState, Profile};
 
-    let consumer = crate::transport::UART_OUTQ.stream_consumer();
+    let consumer = UART_OUTQ.stream_consumer();
     loop {
         let grant = consumer.wait_read().await;
         let len = grant.len();
@@ -121,21 +137,21 @@ pub async fn protocol_servers(stack: &'static Stack) {
         sw,
         mcu,
         uuid,
-        foc_freq_hz: crate::config::PWM_CONFIG.pwm_freq_hz,
-        max_current_a: crate::config::BOARD.max_phase_current_a,
+        foc_freq_hz: PWM_CONFIG.pwm_freq_hz,
+        max_current_a: BOARD.max_phase_current_a,
     };
 
-    oxifoc_core::runtime::run_all_servers_with_config(
+    run_all_servers_with_config(
         stack.endpoints(),
         device_info,
         &STATE,
         &FAULT_REGISTRY,
-        &crate::RUNTIME_CONFIG,
-        crate::config::PWM_CONFIG.pwm_freq_hz,
-        crate::config::BOARD.max_phase_current_a,
+        &RUNTIME_CONFIG,
+        PWM_CONFIG.pwm_freq_hz,
+        BOARD.max_phase_current_a,
         true,
     )
-    .await
+    .await;
 }
 
 /// State monitor — watches interface state transitions and reacts to disconnect.
@@ -143,7 +159,6 @@ pub async fn protocol_servers(stack: &'static Stack) {
 #[embassy_executor::task]
 pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8) {
     use crate::transport::STATE_NOTIFY;
-    use core::sync::atomic::Ordering;
     use ergot::interface_manager::{InterfaceState, Profile};
     use oxifoc_core::runtime::streaming::{FAST_TELEM_PERIOD, FAST_TELEM_Q};
 
@@ -173,7 +188,7 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
                 uart_active
             );
             any_was_active = true;
-            critical_section::with(|cs| crate::STATE.borrow(cs).borrow_mut().set_link_active());
+            critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_active());
         } else if !any_active && any_was_active {
             defmt::info!("All interfaces down — failsafe via link gate, disabling telemetry");
             any_was_active = false;
@@ -185,7 +200,7 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
             // failsafe brake (and clears the re-arm latch) — turning the
             // ControlledStop into a coast one liveness-timeout after the
             // deadman armed it.
-            critical_section::with(|cs| crate::STATE.borrow(cs).borrow_mut().set_link_inactive());
+            critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_inactive());
 
             // Stop fast telemetry streaming
             FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);
@@ -213,52 +228,42 @@ pub async fn detect_server(stack: &'static Stack) {
     oxifoc_core::runtime::detect_server(
         stack.endpoints(),
         F405Backend,
-        crate::config::BOARD.max_phase_current_a.min(3.0),
-        crate::config::PWM_CONFIG.pwm_freq_hz,
+        BOARD.max_phase_current_a.min(3.0),
+        PWM_CONFIG.pwm_freq_hz,
         None,
     )
-    .await
+    .await;
 }
 
 /// Detection backend for the F405 platform: the raw measurements bound to the
 /// shared calibration `*_ez` wrappers (which use the platform ADC statics).
 struct F405Backend;
 
-impl oxifoc_core::runtime::DetectionBackend for F405Backend {
+impl DetectionBackend for F405Backend {
     fn vbus(&self) -> f32 {
-        crate::control::foc::VBUS_MV.load(core::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+        VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0
     }
     async fn measure_resistance(
         &mut self,
-        params: &oxifoc_core::foc::detection::types::ResistanceParams,
-    ) -> Result<f32, oxifoc_core::foc::detection::DetectionError> {
-        crate::calibration::measure_resistance_ez(params).await
+        params: &ResistanceParams,
+    ) -> Result<f32, DetectionError> {
+        measure_resistance_ez(params).await
     }
     async fn measure_inductance(
         &mut self,
-        params: &oxifoc_core::foc::detection::types::InductanceParams,
+        params: &InductanceParams,
         pwm_freq_hz: f32,
-    ) -> Result<(f32, f32), oxifoc_core::foc::detection::DetectionError> {
-        crate::calibration::measure_inductance_ez::<oxifoc_core::foc::trig::FastSinCos>(
-            params,
-            pwm_freq_hz,
-        )
-        .await
+    ) -> Result<(f32, f32), DetectionError> {
+        measure_inductance_ez::<FastSinCos>(params, pwm_freq_hz).await
     }
-    async fn measure_flux(
-        &mut self,
-        params: &oxifoc_core::foc::detection::types::FluxLinkageParams,
-    ) -> Result<f32, oxifoc_core::foc::detection::DetectionError> {
-        crate::calibration::measure_flux_linkage_ez(params).await
+    async fn measure_flux(&mut self, params: &FluxLinkageParams) -> Result<f32, DetectionError> {
+        measure_flux_linkage_ez(params).await
     }
     async fn calibrate_hall(
         &mut self,
-        _params: oxifoc_core::foc::hall_calibration::HallCalibrationParams,
-    ) -> Result<
-        oxifoc_core::foc::hall_calibration::HallCalibrationResult,
-        oxifoc_core::foc::detection::DetectionError,
-    > {
-        crate::calibration::calibrate_hall_default_ez().await
+        _params: HallCalibrationParams,
+    ) -> Result<HallCalibrationResult, DetectionError> {
+        calibrate_hall_default_ez().await
     }
 }
 
@@ -269,17 +274,13 @@ pub async fn defmt_forwarder(
     consumer: ergot::logging::defmt_sink::DefmtConsumer,
     stack: &'static Stack,
 ) {
-    ergot::logging::defmt_sink::forward_to_ergot_topic(&consumer, stack, None).await
+    ergot::logging::defmt_sink::forward_to_ergot_topic(&consumer, stack, None).await;
 }
 
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    oxifoc_core::runtime::streaming::fast_telemetry_stream::<_, 8, oxifoc_core::timer::EmbassyTimer>(
-        stack,
-        crate::config::PWM_CONFIG.pwm_freq_hz,
-    )
-    .await
+    fast_telemetry_stream::<_, 8, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
 }
 
 /// Fault topic publisher — pushes the full fault snapshot on every
@@ -287,7 +288,7 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
 /// the pull/clear side).
 #[embassy_executor::task]
 pub async fn fault_topic_task(stack: &'static Stack) {
-    oxifoc_core::runtime::streaming::fault_topic_stream(stack, &FAULT_REGISTRY).await
+    fault_topic_stream(stack, &FAULT_REGISTRY).await;
 }
 
 // ========== Task Spawning ==========

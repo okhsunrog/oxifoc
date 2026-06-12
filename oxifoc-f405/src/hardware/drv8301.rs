@@ -23,7 +23,7 @@ use crate::fault::F405Fault;
 
 /// DRV8301 configuration matching VESC Simple FOCer 2 settings
 pub struct Drv8301Config<'d> {
-    pub spi: Spi<'d, embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>,
+    pub spi: Spi<'d, embassy_stm32::mode::Blocking, spi::mode::Master>,
     pub cs: Output<'static>,
     pub en_gate: Output<'static>,
 }
@@ -42,7 +42,7 @@ static EN_GATE: CriticalSectionMutex<RefCell<Option<Output<'static>>>> =
 /// masked every interrupt including the FOC ISR, right at the moment a gate
 /// fault fired. Task ownership needs no lock at all.
 pub struct Drv8301Spi {
-    spi: Spi<'static, embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>,
+    spi: Spi<'static, embassy_stm32::mode::Blocking, spi::mode::Master>,
     cs: Output<'static>,
 }
 
@@ -102,9 +102,8 @@ pub fn init_spi(
 }
 
 /// DRV8301 SPI error type alias for convenience
-pub type Drv8301Error = DrvError<
-    embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, core::convert::Infallible>,
->;
+pub type Drv8301Error =
+    DrvError<embedded_hal_bus::spi::DeviceError<spi::Error, core::convert::Infallible>>;
 
 /// Configure DRV8301 according to VESC Cheap FOCer 2 v1.0 settings
 ///
@@ -129,7 +128,7 @@ pub fn configure_drv8301(
 }
 
 fn configure_registers(
-    spi: &mut Spi<'static, embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>,
+    spi: &mut Spi<'static, embassy_stm32::mode::Blocking, spi::mode::Master>,
     cs: &mut Output<'static>,
 ) -> Result<(), Drv8301Error> {
     let spi_device = defmt::unwrap!(ExclusiveDevice::new_no_delay(spi, cs).ok());

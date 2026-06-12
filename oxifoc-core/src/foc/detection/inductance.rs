@@ -36,6 +36,8 @@ use core::marker::PhantomData;
 use super::types::{DetectionError, InductanceParams};
 use crate::foc::trig::SinCos;
 
+use crate::foc::fast_math::sqrtf;
+use crate::foc::trig::LibmSinCos;
 use microfft::real::rfft_32;
 
 /// Number of samples for FFT (must be power of 2)
@@ -87,7 +89,7 @@ pub struct InductanceResult {
 /// Generates a rotating injection vector in the alpha-beta (stator) frame.
 /// The vector completes `HFI_CYCLES_PER_FFT` rotations over `FFT_SIZE` samples.
 #[derive(Clone, Debug)]
-pub struct HfiInjector<S: SinCos = crate::foc::trig::LibmSinCos> {
+pub struct HfiInjector<S: SinCos = LibmSinCos> {
     /// Base HFI frequency in rad/s (the carrier frequency)
     omega_hfi: f32,
     /// Voltage amplitude in Volts
@@ -220,7 +222,7 @@ impl<S: SinCos> HfiInjector<S> {
 /// to remove the resistive contamination that would otherwise create
 /// false saliency in SPM motors.
 #[derive(Clone)]
-pub struct InductanceMeasurement<S: SinCos = crate::foc::trig::LibmSinCos> {
+pub struct InductanceMeasurement<S: SinCos = LibmSinCos> {
     /// FFT input buffer for inverse inductance samples (1/L)
     samples: [f32; FFT_SIZE],
     /// Current sample index within FFT window
@@ -324,7 +326,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
         v_inj_alpha: f32,
         v_inj_beta: f32,
     ) -> bool {
-        let i_magnitude = crate::foc::fast_math::sqrtf(i_alpha * i_alpha + i_beta * i_beta);
+        let i_magnitude = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
         self.current_sum += i_magnitude;
         self.total_samples += 1;
 
@@ -610,7 +612,7 @@ mod tests {
 
     #[test]
     fn test_hfi_injector_rotation() {
-        let mut injector = HfiInjector::<crate::foc::trig::LibmSinCos>::new(1000.0, 3.0, 20000.0);
+        let mut injector = HfiInjector::<LibmSinCos>::new(1000.0, 3.0, 20000.0);
 
         // Collect injection angles over one FFT window
         let dt = 1.0 / 20000.0;
@@ -636,10 +638,7 @@ mod tests {
 
         assert!(
             (final_angle - expected_final).abs() < 0.2,
-            "Final angle {} vs expected {} (total unwrapped: {})",
-            final_angle,
-            expected_final,
-            total_angle
+            "Final angle {final_angle} vs expected {expected_final} (total unwrapped: {total_angle})"
         );
 
         // Verify we complete approximately HFI_CYCLES_PER_FFT rotations
@@ -649,15 +648,13 @@ mod tests {
         let actual_rotations = total_travel / core::f32::consts::TAU;
         assert!(
             (actual_rotations - expected_rotations).abs() < 0.1,
-            "Expected {} rotations, got {}",
-            expected_rotations,
-            actual_rotations
+            "Expected {expected_rotations} rotations, got {actual_rotations}"
         );
     }
 
     #[test]
     fn test_hfi_injector_output() {
-        let mut injector = HfiInjector::<crate::foc::trig::LibmSinCos>::new(1000.0, 3.0, 20000.0);
+        let mut injector = HfiInjector::<LibmSinCos>::new(1000.0, 3.0, 20000.0);
         let dt = 1.0 / 20000.0;
 
         // At angle = 0, v_alpha should be non-zero, v_beta should be ~0
@@ -671,8 +668,8 @@ mod tests {
             injector.step(dt);
         }
         let (v_alpha, v_beta) = injector.step(dt);
-        let v_mag = crate::foc::fast_math::sqrtf(v_alpha * v_alpha + v_beta * v_beta);
-        assert!(v_mag > 0.5, "Expected non-zero voltage, got {}", v_mag);
+        let v_mag = sqrtf(v_alpha * v_alpha + v_beta * v_beta);
+        assert!(v_mag > 0.5, "Expected non-zero voltage, got {v_mag}");
     }
 
     #[test]
@@ -686,10 +683,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut measurement =
-            InductanceMeasurement::<crate::foc::trig::LibmSinCos>::new(&params, pwm_freq_hz);
-        let mut injector =
-            HfiInjector::<crate::foc::trig::LibmSinCos>::new(1000.0, 3.0, pwm_freq_hz);
+        let mut measurement = InductanceMeasurement::<LibmSinCos>::new(&params, pwm_freq_hz);
+        let mut injector = HfiInjector::<LibmSinCos>::new(1000.0, 3.0, pwm_freq_hz);
         let dt = 1.0 / pwm_freq_hz;
 
         // Simulate SPM motor: L = 100µH (same for all angles)
@@ -743,8 +738,7 @@ mod tests {
         let ratio = result.ld / result.lq;
         assert!(
             (0.5..=2.0).contains(&ratio),
-            "Ld/Lq ratio {} outside expected range for SPM",
-            ratio
+            "Ld/Lq ratio {ratio} outside expected range for SPM"
         );
     }
 

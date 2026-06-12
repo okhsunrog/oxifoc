@@ -6,7 +6,13 @@ use ergot::{
     exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as usb_kit,
 };
 use heapless::String;
+use oxifoc_core::runtime::run_all_servers_with_config;
+use oxifoc_core::runtime::streaming::{FAST_TELEM_PERIOD, fault_topic_stream};
 use oxifoc_core::types::HardwareInfo;
+
+use crate::RUNTIME_CONFIG;
+use crate::config::{BOARD, MAX_PACKET_SIZE, PWM_CONFIG, UART_BAUD, USB_OUT_QUEUE_SIZE};
+use crate::transport::UART_OUTQ;
 
 use crate::transport::{AppDriver, Stack, UartRxWorkerType, UartWriter, UsbQueue, UsbRxWorkerType};
 use crate::{FAULT_REGISTRY, STATE};
@@ -31,7 +37,7 @@ pub async fn run_usb_tx(
     mut ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
     rx: FramedConsumer<&'static UsbQueue>,
 ) {
-    usb_kit::tx_worker::<AppDriver, { crate::config::USB_OUT_QUEUE_SIZE }, _>(
+    usb_kit::tx_worker::<AppDriver, { USB_OUT_QUEUE_SIZE }, _>(
         &mut ep_in,
         rx,
         usb_kit::DEFAULT_TIMEOUT_MS_PER_FRAME,
@@ -66,15 +72,13 @@ pub async fn run_uart_tx(mut tx: UartWriter, stack: &'static Stack, uart_ident: 
 
     /// Maximum COBS-encoded frame size (the largest grant the sink can produce).
     /// Formula: n + n/254 + 1 (same as cobs::max_encoding_length)
-    const MAX_WIRE_BYTES: usize =
-        crate::config::MAX_PACKET_SIZE + crate::config::MAX_PACKET_SIZE / 254 + 1;
+    const MAX_WIRE_BYTES: usize = MAX_PACKET_SIZE + MAX_PACKET_SIZE / 254 + 1;
 
     /// Time to transmit one max-sized frame at the configured baud rate.
     /// 10 bits per byte (8N1). 3x safety margin for interrupt latency.
-    const TX_TIMEOUT_US: u64 =
-        (MAX_WIRE_BYTES as u64 * 10 * 1_000_000) / (crate::config::UART_BAUD as u64) * 3;
+    const TX_TIMEOUT_US: u64 = (MAX_WIRE_BYTES as u64 * 10 * 1_000_000) / (UART_BAUD as u64) * 3;
 
-    let consumer = crate::transport::UART_OUTQ.stream_consumer();
+    let consumer = UART_OUTQ.stream_consumer();
     loop {
         let grant = consumer.wait_read().await;
         let len = grant.len();
@@ -124,21 +128,21 @@ pub async fn protocol_servers(stack: &'static Stack) {
         sw,
         mcu,
         uuid,
-        foc_freq_hz: crate::config::PWM_CONFIG.pwm_freq_hz,
-        max_current_a: crate::config::BOARD.max_phase_current_a,
+        foc_freq_hz: PWM_CONFIG.pwm_freq_hz,
+        max_current_a: BOARD.max_phase_current_a,
     };
 
-    oxifoc_core::runtime::run_all_servers_with_config(
+    run_all_servers_with_config(
         stack.endpoints(),
         device_info,
         &STATE,
         &FAULT_REGISTRY,
-        &crate::RUNTIME_CONFIG,
-        crate::config::PWM_CONFIG.pwm_freq_hz,
-        crate::config::BOARD.max_phase_current_a,
+        &RUNTIME_CONFIG,
+        PWM_CONFIG.pwm_freq_hz,
+        BOARD.max_phase_current_a,
         true,
     )
-    .await
+    .await;
 }
 
 /// State monitor — watches interface state transitions and updates DeviceState.
@@ -182,8 +186,7 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
             // Fail-safe: drop link_active so the FOC loop forces ControlMode::Stopped.
             critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_inactive());
             // Stop streaming telemetry into a dead link (host re-enables on reconnect).
-            oxifoc_core::runtime::streaming::FAST_TELEM_PERIOD
-                .store(0, core::sync::atomic::Ordering::Relaxed);
+            FAST_TELEM_PERIOD.store(0, core::sync::atomic::Ordering::Relaxed);
             set_device_state(DeviceState::WaitingLink);
             any_was_active = false;
         }
@@ -197,7 +200,7 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
 /// the pull/clear side).
 #[embassy_executor::task]
 pub async fn fault_topic_task(stack: &'static Stack) {
-    oxifoc_core::runtime::streaming::fault_topic_stream(stack, &FAULT_REGISTRY).await
+    fault_topic_stream(stack, &FAULT_REGISTRY).await;
 }
 
 pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, usb_ident: u8, uart_ident: u8) {

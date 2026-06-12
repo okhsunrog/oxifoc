@@ -72,8 +72,8 @@ impl BoardConfig {
     /// Uses the board's voltage divider ratio to scale the ADC reading.
     #[inline]
     pub fn vbus_mv_from_adc(&self, raw: u16) -> u32 {
-        let raw = raw as u32;
-        let vsense_mv = raw * self.adc_vref_mv / self.adc_max_counts as u32;
+        let raw = u32::from(raw);
+        let vsense_mv = raw * self.adc_vref_mv / u32::from(self.adc_max_counts);
         (vsense_mv as f32 * self.vbus_divider_ratio) as u32
     }
 
@@ -88,19 +88,19 @@ impl BoardConfig {
     /// calibrated `CurrentSensor` path for control.
     #[inline]
     pub fn convert_raw_currents(&self, raw_a: u16, raw_b: u16, raw_c: u16) -> (f32, f32, f32) {
-        let offset = self.adc_max_counts as f32 / 2.0;
+        let offset = f32::from(self.adc_max_counts) / 2.0;
         let mut scale = self.adc_vref_mv as f32
             / 1000.0
-            / self.adc_max_counts as f32
+            / f32::from(self.adc_max_counts)
             / self.shunt_ohms
             / self.amp_gain;
         if self.invert_current_sign {
             scale = -scale;
         }
         (
-            (raw_a as f32 - offset) * scale,
-            (raw_b as f32 - offset) * scale,
-            (raw_c as f32 - offset) * scale,
+            (f32::from(raw_a) - offset) * scale,
+            (f32::from(raw_b) - offset) * scale,
+            (f32::from(raw_c) - offset) * scale,
         )
     }
 
@@ -110,7 +110,7 @@ impl BoardConfig {
     #[inline]
     pub fn duty_to_iq(&self, duty: u8) -> f32 {
         let duty = duty.min(100);
-        duty as f32 / 100.0 * self.max_iq_target_a
+        f32::from(duty) / 100.0 * self.max_iq_target_a
     }
 }
 
@@ -181,8 +181,8 @@ impl NtcConfig {
     /// Uses the Beta model: T = 1 / (ln(R/R0)/Beta + 1/T0) - 273.15
     #[inline]
     pub fn temp_c_from_adc(&self, raw: u16, adc_max_counts: u16) -> f32 {
-        let adc = raw as f32;
-        let adc_max = adc_max_counts as f32;
+        let adc = f32::from(raw);
+        let adc_max = f32::from(adc_max_counts);
 
         // Avoid divide-by-zero
         let eps = 0.1;
@@ -252,8 +252,7 @@ mod tests {
         let (ia, _, _) = inverted.convert_raw_currents(3000, 2048, 2048);
         assert!(
             ia < 0.0,
-            "inverted board: raw>mid must be negative, got {}",
-            ia
+            "inverted board: raw>mid must be negative, got {ia}"
         );
         let (ia_n, _, _) = TEST_BOARD.convert_raw_currents(3000, 2048, 2048);
         assert!(ia_n > 0.0, "non-inverted board: raw>mid must be positive");
@@ -283,7 +282,7 @@ mod tests {
         // Low-side: Vadc = Vref * R_ntc / (R_pullup + R_ntc) = 3.3 * 10k / 14.7k = 2.245V
         // ADC = 2.245 / 3.3 * 4095 ≈ 2785
         let temp = ntc.temp_c_from_adc(2785, 4095);
-        assert!(temp > 20.0 && temp < 30.0, "temp was {}", temp);
+        assert!(temp > 20.0 && temp < 30.0, "temp was {temp}");
     }
 
     #[test]
@@ -300,6 +299,6 @@ mod tests {
         // High-side: Vadc = Vref * R_pulldown / (R_ntc + R_pulldown) = 3.3 * 10k / 20k = 1.65V
         // ADC = 1.65 / 3.3 * 4095 ≈ 2048
         let temp = ntc.temp_c_from_adc(2048, 4095);
-        assert!(temp > 20.0 && temp < 30.0, "temp was {}", temp);
+        assert!(temp > 20.0 && temp < 30.0, "temp was {temp}");
     }
 }

@@ -18,11 +18,10 @@ pub const MAX_CHANNELS: usize = 8;
 pub fn required_wgpu_settings(max_capacity: usize, max_channels: usize) -> WGPUSettings {
     let mut s = WGPUSettings::default();
     s.device_required_features = wgpu::Features::IMMEDIATES;
-    s.device_required_limits.max_immediate_size =
-        std::mem::size_of::<renderer::PlotParams>() as u32;
+    s.device_required_limits.max_immediate_size = size_of::<renderer::PlotParams>() as u32;
     s.device_required_limits
         .max_storage_buffers_per_shader_stage = 1;
     s.device_required_limits.max_storage_buffer_binding_size =
-        (max_capacity * max_channels * std::mem::size_of::<f32>()) as u32;
+        (max_capacity * max_channels * size_of::<f32>()) as u32;
     s
 }

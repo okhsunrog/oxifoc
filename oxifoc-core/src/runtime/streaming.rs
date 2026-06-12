@@ -15,9 +15,14 @@ use ergot::net_stack::NetStackHandle;
 use heapless::Vec;
 
 use crate::foc::controller::FocOutput;
+use crate::foc::fault::{FaultRegistry, PlatformFault};
+use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
 use crate::icd::FastTelemetryTopic;
+use crate::icd::FaultTopic;
+use crate::state::{MotorControlState, update_telemetry};
 use crate::timer::Timer;
 use crate::types::FastTelemetry;
+use crate::types::FastTelemetryBatch;
 
 /// Lock-free queue for ISR → async telemetry transfer.
 ///
@@ -161,13 +166,13 @@ impl<const N: usize> Default for CicDecimator2<N> {
 /// emitted instantaneously at the dump cycle, whose `seq` the sample
 /// carries.
 pub fn publish_cycle_telemetry(
-    state_mutex: &critical_section::Mutex<core::cell::RefCell<crate::state::MotorControlState>>,
-    adc: crate::foc::sensors::AdcSnapshot,
-    hall: Option<crate::foc::sensors::HallSnapshot>,
-    foc: crate::foc::controller::FocOutput,
+    state_mutex: &critical_section::Mutex<core::cell::RefCell<MotorControlState>>,
+    adc: AdcSnapshot,
+    hall: Option<HallSnapshot>,
+    foc: FocOutput,
     seq: u32,
 ) {
-    crate::state::update_telemetry(state_mutex, adc, hall, foc);
+    update_telemetry(state_mutex, adc, hall, foc);
 
     let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
     if period == 0 {
@@ -264,22 +269,20 @@ pub fn push_fast_telemetry(telem: &FastTelemetry) {
 /// must cost staleness rather than a wrong state. The loss backstop is the
 /// consumer's regular SlowTelemetry poll: `fault_count` disagreeing with
 /// its local view means a push was lost → re-query via `FaultEndpoint`.
-pub async fn fault_topic_stream<NS, F>(
-    stack: NS,
-    fault_registry: &'static crate::foc::fault::FaultRegistry<F>,
-) where
+pub async fn fault_topic_stream<NS, F>(stack: NS, fault_registry: &'static FaultRegistry<F>)
+where
     NS: NetStackHandle + Clone,
-    F: crate::foc::fault::PlatformFault,
+    F: PlatformFault,
 {
     loop {
         let snapshot = fault_registry.snapshot_response();
         let _result = stack
             .stack()
             .topics()
-            .broadcast::<crate::icd::FaultTopic>(&snapshot, None);
+            .broadcast::<FaultTopic>(&snapshot, None);
         #[cfg(feature = "log")]
         if _result.is_err() {
-            log::warn!("fault topic broadcast failed: {:?}", _result);
+            log::warn!("fault topic broadcast failed: {_result:?}");
         }
         fault_registry.wait_for_change().await;
     }
@@ -313,7 +316,7 @@ where
         // for a few hundred extra wakeups per second at worst.
         let sample_hz = foc_freq_hz / period;
         let interval_us = if sample_hz > 0 {
-            ((BATCH as u64 / 2).max(1) * 1_000_000) / sample_hz as u64
+            ((BATCH as u64 / 2).max(1) * 1_000_000) / u64::from(sample_hz)
         } else {
             100_000 // fallback 100ms
         };
@@ -342,7 +345,7 @@ where
             }
 
             let batch_full = samples.len() == BATCH;
-            let batch = crate::types::FastTelemetryBatch { samples };
+            let batch = FastTelemetryBatch { samples };
             let _result = stack
                 .stack()
                 .topics()
@@ -350,7 +353,7 @@ where
 
             #[cfg(feature = "log")]
             if _result.is_err() {
-                log::warn!("fast_telemetry broadcast failed: {:?}", _result);
+                log::warn!("fast_telemetry broadcast failed: {_result:?}");
             }
 
             // If we got fewer than BATCH, the queue is drained
@@ -366,10 +369,10 @@ mod cic_tests {
     use super::CicDecimator2;
 
     /// Collect `n_out` outputs of a 1-channel decimator fed by `f(t)`.
-    fn run(m: u32, n_out: usize, f: impl Fn(usize) -> f32) -> std::vec::Vec<f32> {
+    fn run(m: u32, n_out: usize, f: impl Fn(usize) -> f32) -> Vec<f32> {
         let mut cic = CicDecimator2::<1>::new();
         cic.configure(m);
-        let mut out = std::vec::Vec::new();
+        let mut out = Vec::new();
         let mut n = 0usize;
         while out.len() < n_out {
             if let Some(y) = cic.push(&[f(n)]) {

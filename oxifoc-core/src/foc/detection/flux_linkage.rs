@@ -31,6 +31,7 @@
 //! - λ = flux linkage (Wb)
 
 use super::types::{DetectionError, FluxLinkageParams};
+use crate::foc::fast_math::sqrtf;
 
 /// Minimum valid flux linkage in Weber
 const MIN_VALID_FLUX: f32 = 0.0001; // 0.1 mWb
@@ -282,8 +283,7 @@ impl MagnitudeFluxMeasurement {
         }
 
         // λ = |e⃗| / ω
-        let flux =
-            crate::foc::fast_math::sqrtf(avg_e_d * avg_e_d + avg_e_q * avg_e_q) / avg_omega.abs();
+        let flux = sqrtf(avg_e_d * avg_e_d + avg_e_q * avg_e_q) / avg_omega.abs();
 
         if !(MIN_VALID_FLUX..=MAX_VALID_FLUX).contains(&flux) {
             return Err(DetectionError::OutOfRange);
@@ -326,7 +326,7 @@ impl SpinDownFluxMeasurement {
     /// window here would force the fallback on motors whose coast is
     /// perfectly measurable. 500 samples (~0.25 s) is statistically ample
     /// for the V/ω ratio.
-    pub fn from_params(params: &super::types::FluxLinkageParams) -> Self {
+    pub fn from_params(params: &FluxLinkageParams) -> Self {
         Self::new(params.num_samples.min(500), params.min_coast_omega_e)
     }
 
@@ -422,7 +422,7 @@ impl SpinDownFluxMeasurement {
 #[inline]
 pub fn rpm_to_omega_e(rpm: f32, pole_pairs: u8) -> f32 {
     // ωe = (rpm / 60) × 2π × pole_pairs
-    rpm * core::f32::consts::TAU * pole_pairs as f32 / 60.0
+    rpm * core::f32::consts::TAU * f32::from(pole_pairs) / 60.0
 }
 
 /// Convert electrical angular velocity to mechanical RPM.
@@ -435,7 +435,7 @@ pub fn rpm_to_omega_e(rpm: f32, pole_pairs: u8) -> f32 {
 /// Mechanical RPM
 #[inline]
 pub fn omega_e_to_rpm(omega_e: f32, pole_pairs: u8) -> f32 {
-    omega_e * 60.0 / (core::f32::consts::TAU * pole_pairs as f32)
+    omega_e * 60.0 / (core::f32::consts::TAU * f32::from(pole_pairs))
 }
 
 /// Convert eRPM (electrical RPM) to mechanical RPM.
@@ -448,7 +448,7 @@ pub fn omega_e_to_rpm(omega_e: f32, pole_pairs: u8) -> f32 {
 /// Mechanical RPM
 #[inline]
 pub fn erpm_to_rpm(erpm: f32, pole_pairs: u8) -> f32 {
-    erpm / pole_pairs as f32
+    erpm / f32::from(pole_pairs)
 }
 
 /// Convert mechanical RPM to eRPM (electrical RPM).
@@ -461,7 +461,7 @@ pub fn erpm_to_rpm(erpm: f32, pole_pairs: u8) -> f32 {
 /// Electrical RPM
 #[inline]
 pub fn rpm_to_erpm(rpm: f32, pole_pairs: u8) -> f32 {
-    rpm * pole_pairs as f32
+    rpm * f32::from(pole_pairs)
 }
 
 /// Calculate motor Kv from flux linkage.
@@ -487,7 +487,7 @@ pub fn rpm_to_erpm(rpm: f32, pole_pairs: u8) -> f32 {
 #[inline]
 pub fn calculate_kv(flux_linkage_wb: f32, pole_pairs: u8) -> f32 {
     // Kv = 60 / (2π × λ × pole_pairs)
-    60.0 / (core::f32::consts::TAU * flux_linkage_wb * pole_pairs as f32)
+    60.0 / (core::f32::consts::TAU * flux_linkage_wb * f32::from(pole_pairs))
 }
 
 /// Calculate flux linkage from Kv.
@@ -501,7 +501,7 @@ pub fn calculate_kv(flux_linkage_wb: f32, pole_pairs: u8) -> f32 {
 #[inline]
 pub fn calculate_flux_from_kv(kv_rpm_per_v: f32, pole_pairs: u8) -> f32 {
     // λ = 60 / (2π × Kv × pole_pairs)
-    60.0 / (core::f32::consts::TAU * kv_rpm_per_v * pole_pairs as f32)
+    60.0 / (core::f32::consts::TAU * kv_rpm_per_v * f32::from(pole_pairs))
 }
 
 /// Calculate observer gain from flux linkage (VESC formula).
@@ -609,7 +609,7 @@ mod tests {
 
         // Should be close to expected flux (within 5%)
         let error = (measured_flux - flux).abs() / flux;
-        assert!(error < 0.05, "Flux error too large: {}", error);
+        assert!(error < 0.05, "Flux error too large: {error}");
     }
 
     #[test]

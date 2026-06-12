@@ -45,7 +45,29 @@ pub fn get_device_state() -> DeviceState {
 
 use embassy_executor::Spawner;
 use heapless::String;
+#[cfg(feature = "detection")]
+use oxifoc_core::foc::detection::DetectionError;
+#[cfg(feature = "detection")]
+use oxifoc_core::foc::detection::types::{FluxLinkageParams, InductanceParams, ResistanceParams};
+#[cfg(feature = "detection")]
+use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
+#[cfg(feature = "detection")]
+use oxifoc_core::runtime::DetectionBackend;
+use oxifoc_core::runtime::run_all_servers_with_config;
+use oxifoc_core::runtime::streaming::{fast_telemetry_stream, fault_topic_stream};
+use oxifoc_core::timer::EmbassyTimer;
 use oxifoc_core::types::HardwareInfo;
+
+#[cfg(feature = "detection")]
+use crate::calibration::{
+    calibrate_hall, measure_flux_linkage, measure_inductance, measure_resistance,
+};
+use crate::config::{BOARD, PWM_CONFIG};
+#[cfg(feature = "detection")]
+use crate::cordic::CordicSinCos;
+#[cfg(feature = "detection")]
+use crate::foc::VBUS_MV;
+use crate::transport::OUTQ;
 
 use crate::transport::RxWorker;
 use crate::{FAULT_REGISTRY, RUNTIME_CONFIG, STATE};
@@ -90,7 +112,7 @@ const TX_TIMEOUT_US: u64 = (MAX_WIRE_BYTES as u64 * 10 * 1_000_000) / (UART_BAUD
 #[cfg(feature = "transport-uart")]
 #[embassy_executor::task]
 pub async fn run_tx_uart(mut tx: UartWriter, stack: &'static Stack, ident: u8) {
-    let consumer = crate::transport::OUTQ.stream_consumer();
+    let consumer = OUTQ.stream_consumer();
     loop {
         let grant = consumer.wait_read().await;
         let len = grant.len();
@@ -128,7 +150,7 @@ pub async fn run_tx_rtt(mut tx: RttWriter, stack: &'static Stack, ident: u8) {
     // TODO: add active check like UART if needed
     let _ = (stack, ident);
     loop {
-        let _ = tx_worker(&mut tx, crate::transport::OUTQ.stream_consumer()).await;
+        let _ = tx_worker(&mut tx, OUTQ.stream_consumer()).await;
     }
 }
 
@@ -156,34 +178,30 @@ pub async fn protocol_servers(stack: &'static Stack) {
         sw,
         mcu,
         uuid,
-        foc_freq_hz: crate::config::PWM_CONFIG.pwm_freq_hz,
-        max_current_a: crate::config::BOARD.max_phase_current_a,
+        foc_freq_hz: PWM_CONFIG.pwm_freq_hz,
+        max_current_a: BOARD.max_phase_current_a,
     };
 
-    oxifoc_core::runtime::run_all_servers_with_config(
+    run_all_servers_with_config(
         stack.endpoints(),
         device_info,
         &STATE,
         &FAULT_REGISTRY,
         &RUNTIME_CONFIG,
-        crate::config::PWM_CONFIG.pwm_freq_hz,
-        crate::config::BOARD.max_phase_current_a,
+        PWM_CONFIG.pwm_freq_hz,
+        BOARD.max_phase_current_a,
         // No flash persistence on this board — the config server reports
         // persist-capable = false and serves the RAM copy only.
         false,
     )
-    .await
+    .await;
 }
 
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
 /// Uses batch size of 8 to reduce stack usage (~360B vs ~1.4KB for 32).
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    oxifoc_core::runtime::streaming::fast_telemetry_stream::<_, 8, oxifoc_core::timer::EmbassyTimer>(
-        stack,
-        crate::config::PWM_CONFIG.pwm_freq_hz,
-    )
-    .await
+    fast_telemetry_stream::<_, 8, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
 }
 
 /// Fault topic publisher — pushes the full fault snapshot on every
@@ -191,7 +209,7 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
 /// the pull/clear side).
 #[embassy_executor::task]
 pub async fn fault_topic_task(stack: &'static Stack) {
-    oxifoc_core::runtime::streaming::fault_topic_stream(stack, &FAULT_REGISTRY).await
+    fault_topic_stream(stack, &FAULT_REGISTRY).await;
 }
 
 /// State monitor — watches interface state transitions and updates DeviceState.
@@ -254,38 +272,31 @@ pub async fn state_monitor(stack: &'static Stack, ident: u8) {
 struct G431Backend;
 
 #[cfg(feature = "detection")]
-impl oxifoc_core::runtime::DetectionBackend for G431Backend {
+impl DetectionBackend for G431Backend {
     fn vbus(&self) -> f32 {
-        crate::foc::VBUS_MV.load(core::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+        VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0
     }
     async fn measure_resistance(
         &mut self,
-        params: &oxifoc_core::foc::detection::types::ResistanceParams,
-    ) -> Result<f32, oxifoc_core::foc::detection::DetectionError> {
-        crate::calibration::measure_resistance(params).await
+        params: &ResistanceParams,
+    ) -> Result<f32, DetectionError> {
+        measure_resistance(params).await
     }
     async fn measure_inductance(
         &mut self,
-        params: &oxifoc_core::foc::detection::types::InductanceParams,
+        params: &InductanceParams,
         pwm_freq_hz: f32,
-    ) -> Result<(f32, f32), oxifoc_core::foc::detection::DetectionError> {
-        crate::calibration::measure_inductance::<crate::cordic::CordicSinCos>(params, pwm_freq_hz)
-            .await
+    ) -> Result<(f32, f32), DetectionError> {
+        measure_inductance::<CordicSinCos>(params, pwm_freq_hz).await
     }
-    async fn measure_flux(
-        &mut self,
-        params: &oxifoc_core::foc::detection::types::FluxLinkageParams,
-    ) -> Result<f32, oxifoc_core::foc::detection::DetectionError> {
-        crate::calibration::measure_flux_linkage(params).await
+    async fn measure_flux(&mut self, params: &FluxLinkageParams) -> Result<f32, DetectionError> {
+        measure_flux_linkage(params).await
     }
     async fn calibrate_hall(
         &mut self,
-        params: oxifoc_core::foc::hall_calibration::HallCalibrationParams,
-    ) -> Result<
-        oxifoc_core::foc::hall_calibration::HallCalibrationResult,
-        oxifoc_core::foc::detection::DetectionError,
-    > {
-        crate::calibration::calibrate_hall(params).await
+        params: HallCalibrationParams,
+    ) -> Result<HallCalibrationResult, DetectionError> {
+        calibrate_hall(params).await
     }
 }
 
@@ -295,11 +306,11 @@ pub async fn detect_server(stack: &'static Stack) {
     oxifoc_core::runtime::detect_server(
         stack.endpoints(),
         G431Backend,
-        crate::config::BOARD.max_phase_current_a.min(3.0),
-        crate::config::PWM_CONFIG.pwm_freq_hz,
+        BOARD.max_phase_current_a.min(3.0),
+        PWM_CONFIG.pwm_freq_hz,
         Some(&RUNTIME_CONFIG),
     )
-    .await
+    .await;
 }
 
 // ========== Task Spawning ==========

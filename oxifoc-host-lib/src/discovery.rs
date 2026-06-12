@@ -235,7 +235,7 @@ mod tests {
         let ports = list_serial_ports();
         println!("Found {} serial ports", ports.len());
         for port in &ports {
-            println!("  {}", port);
+            println!("  {port}");
         }
     }
 
@@ -245,7 +245,7 @@ mod tests {
         let probes = list_probes();
         println!("Found {} probes", probes.len());
         for probe in &probes {
-            println!("  {}", probe);
+            println!("  {probe}");
         }
     }
 }

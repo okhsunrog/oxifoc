@@ -12,11 +12,19 @@ use ergot::interface_manager::{InterfaceState, LivenessConfig, Profile};
 use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::delivery::{ReliableExt, RetryPolicy};
+use oxifoc_core::foc::phase::PhaseSource;
 use oxifoc_core::icd::{
     ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, FaultTopic, MotorEndpoint,
     SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigEndpoint,
 };
+use oxifoc_core::icd::{
+    FaultEndpoint, HardwareInfoEndpoint, LIVENESS_TIMEOUT_MS, PhaseSourceEndpoint,
+};
 use oxifoc_core::timer::Timer;
+use oxifoc_core::types::{
+    ConfigGroupId, ConfigResponse, ConfigWrite, DetectRequest, DetectResponse, FaultRequest,
+    HardwareInfo, MotorStatus,
+};
 use oxifoc_core::types::{ControlMode, FastTelemetry, FaultResponse, Keyed, ReqId, SlowTelemetry};
 use std::{
     fs,
@@ -130,10 +138,8 @@ pub fn init_tracing() {
 }
 
 /// Type alias for config response oneshot channels
-pub type ConfigResponseSender =
-    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::ConfigResponse>>;
-pub type ConfigResponseReceiver =
-    tokio::sync::oneshot::Receiver<Result<oxifoc_core::types::ConfigResponse>>;
+pub type ConfigResponseSender = tokio::sync::oneshot::Sender<Result<ConfigResponse>>;
+pub type ConfigResponseReceiver = tokio::sync::oneshot::Receiver<Result<ConfigResponse>>;
 
 /// Create a oneshot channel pair for config request/response
 pub fn config_channel() -> (ConfigResponseSender, ConfigResponseReceiver) {
@@ -141,10 +147,8 @@ pub fn config_channel() -> (ConfigResponseSender, ConfigResponseReceiver) {
 }
 
 /// Type alias for detect response oneshot channels
-pub type DetectResponseSender =
-    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::DetectResponse>>;
-pub type DetectResponseReceiver =
-    tokio::sync::oneshot::Receiver<Result<oxifoc_core::types::DetectResponse>>;
+pub type DetectResponseSender = tokio::sync::oneshot::Sender<Result<DetectResponse>>;
+pub type DetectResponseReceiver = tokio::sync::oneshot::Receiver<Result<DetectResponse>>;
 
 /// Create a oneshot channel pair for detect request/response
 pub fn detect_channel() -> (DetectResponseSender, DetectResponseReceiver) {
@@ -154,10 +158,8 @@ pub fn detect_channel() -> (DetectResponseSender, DetectResponseReceiver) {
 /// Acknowledged motor-command channel: carries the device's MotorStatus
 /// (or the delivery error) back to the caller — for CLI-style users that
 /// must exit nonzero when the command did not reach the device.
-pub type MotorResponseSender =
-    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::MotorStatus>>;
-pub type MotorResponseReceiver =
-    tokio::sync::oneshot::Receiver<Result<oxifoc_core::types::MotorStatus>>;
+pub type MotorResponseSender = tokio::sync::oneshot::Sender<Result<MotorStatus>>;
+pub type MotorResponseReceiver = tokio::sync::oneshot::Receiver<Result<MotorStatus>>;
 
 /// Create a oneshot channel pair for an acknowledged motor command
 pub fn motor_channel() -> (MotorResponseSender, MotorResponseReceiver) {
@@ -165,10 +167,8 @@ pub fn motor_channel() -> (MotorResponseSender, MotorResponseReceiver) {
 }
 
 /// Type alias for fault query/clear response oneshot channels
-pub type FaultResponseSender =
-    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::FaultResponse>>;
-pub type FaultResponseReceiver =
-    tokio::sync::oneshot::Receiver<Result<oxifoc_core::types::FaultResponse>>;
+pub type FaultResponseSender = tokio::sync::oneshot::Sender<Result<FaultResponse>>;
+pub type FaultResponseReceiver = tokio::sync::oneshot::Receiver<Result<FaultResponse>>;
 
 /// Create a oneshot channel pair for a fault request/response
 pub fn fault_channel() -> (FaultResponseSender, FaultResponseReceiver) {
@@ -180,15 +180,15 @@ pub enum HostCommand {
     /// Like [`Motor`](Self::Motor) but replies with the device's status
     /// (or the delivery error).
     MotorAck(ControlMode, MotorResponseSender),
-    SetPhaseSource(oxifoc_core::foc::phase::PhaseSource),
+    SetPhaseSource(PhaseSource),
     SetTelemetryConfig(TelemetryConfig),
-    ConfigRead(oxifoc_core::types::ConfigGroupId, ConfigResponseSender),
-    ConfigWrite(oxifoc_core::types::ConfigWrite, ConfigResponseSender),
+    ConfigRead(ConfigGroupId, ConfigResponseSender),
+    ConfigWrite(ConfigWrite, ConfigResponseSender),
     /// Erase every stored config group (factory reset).
     ConfigResetAll(ConfigResponseSender),
-    Detect(oxifoc_core::types::DetectRequest, DetectResponseSender),
+    Detect(DetectRequest, DetectResponseSender),
     /// Query or clear device faults (`FaultEndpoint`).
-    Fault(oxifoc_core::types::FaultRequest, FaultResponseSender),
+    Fault(FaultRequest, FaultResponseSender),
 }
 
 pub struct HostRuntime {
@@ -197,7 +197,7 @@ pub struct HostRuntime {
     /// Fault snapshots pushed by the device on every registry change
     /// (FaultTopic). Full snapshots, not deltas — safe to miss one.
     pub fault_rx: Receiver<FaultResponse>,
-    pub device_info_rx: Receiver<oxifoc_core::types::HardwareInfo>,
+    pub device_info_rx: Receiver<HardwareInfo>,
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
     pub fast_hz: Arc<AtomicU16>,
@@ -214,7 +214,7 @@ impl HostRuntime {
             if self.connected.load(Ordering::Relaxed) {
                 return true;
             }
-            std::thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(50));
         }
         self.connected.load(Ordering::Relaxed)
     }
@@ -241,7 +241,7 @@ struct BackendCtx {
     fast_tx: Sender<FastTelemetry>,
     slow_tx: Sender<SlowTelemetry>,
     fault_tx: Sender<FaultResponse>,
-    info_tx: Sender<oxifoc_core::types::HardwareInfo>,
+    info_tx: Sender<HardwareInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected: Arc<AtomicBool>,
     fast_hz: Arc<AtomicU16>,
@@ -254,8 +254,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(4096);
     let (slow_tx, slow_rx) = crossbeam_channel::bounded::<SlowTelemetry>(64);
     let (fault_tx, fault_rx) = crossbeam_channel::bounded::<FaultResponse>(64);
-    let (info_tx, device_info_rx) =
-        crossbeam_channel::bounded::<oxifoc_core::types::HardwareInfo>(4);
+    let (info_tx, device_info_rx) = crossbeam_channel::bounded::<HardwareInfo>(4);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
     let fast_hz = Arc::new(AtomicU16::new(0));
@@ -443,11 +442,11 @@ where
             );
 
             match policy {
-                config::ReconnectPolicy::None => {
+                ReconnectPolicy::None => {
                     info!("Reconnect policy: none — giving up");
                     break;
                 }
-                config::ReconnectPolicy::Limited(max) if connect_attempts >= max => {
+                ReconnectPolicy::Limited(max) if connect_attempts >= max => {
                     info!("Reconnect policy: exhausted {} attempts — giving up", max);
                     break;
                 }
@@ -470,7 +469,9 @@ where
         };
         if !became_active {
             tracing::warn!("Interface not Active within {RECOVERY_TIMEOUT:?}, reconnecting...");
-            stack.stack().manage_profile(|im| im.teardown());
+            stack
+                .stack()
+                .manage_profile(ergot::prelude::DirectEdge::teardown);
             tokio::task::yield_now().await;
             tokio::select! {
                 _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
@@ -484,7 +485,9 @@ where
         if !handshake_ok {
             tracing::warn!("Handshake failed, reconnecting...");
             connected.store(false, Ordering::Relaxed);
-            stack.stack().manage_profile(|im| im.teardown());
+            stack
+                .stack()
+                .manage_profile(ergot::prelude::DirectEdge::teardown);
             tokio::task::yield_now().await;
             tokio::select! {
                 _ = tokio::time::sleep(RECONNECT_DELAY) => {}
@@ -518,7 +521,9 @@ where
 
         // Tear down the old interface so workers release the connection
         info!("Calling teardown...");
-        stack.stack().manage_profile(|im| im.teardown());
+        stack
+            .stack()
+            .manage_profile(ergot::prelude::DirectEdge::teardown);
         tokio::task::yield_now().await;
         tokio::select! {
             _ = tokio::time::sleep(RECONNECT_DELAY) => {}
@@ -540,7 +545,7 @@ async fn run_cobs_stream_with_reconnect<F, Fut>(
 ) -> Result<()>
 where
     F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<transport::CobsStreamTransport>>,
+    Fut: Future<Output = Result<transport::CobsStreamTransport>>,
 {
     use ergot::interface_manager::profiles::direct_edge::{EDGE_NODE_ID, EdgeFrameProcessor};
     use ergot::interface_manager::transports::tokio_cobs_stream;
@@ -577,11 +582,11 @@ where
                         tracing::warn!("Transport connect failed (attempt {}): {:?}", connect_attempts, e);
 
                         match policy {
-                            config::ReconnectPolicy::None => {
+                            ReconnectPolicy::None => {
                                 info!("Reconnect policy: none — giving up");
                                 break;
                             }
-                            config::ReconnectPolicy::Limited(max) if connect_attempts >= max => {
+                            ReconnectPolicy::Limited(max) if connect_attempts >= max => {
                                 info!("Reconnect policy: exhausted {} attempts — giving up", max);
                                 break;
                             }
@@ -616,7 +621,7 @@ where
                 node_id: EDGE_NODE_ID,
             },
             Some(LivenessConfig {
-                timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
+                timeout_ms: LIVENESS_TIMEOUT_MS,
             }),
             Some(state_notify.clone()),
         )
@@ -638,7 +643,7 @@ where
         };
         if !became_active {
             tracing::warn!("Interface not Active within {RECOVERY_TIMEOUT:?}, reconnecting...");
-            stack.manage_profile(|im| im.teardown());
+            stack.manage_profile(ergot::prelude::DirectEdge::teardown);
             tokio::task::yield_now().await;
             tokio::select! {
                 _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
@@ -652,7 +657,7 @@ where
         if !handshake_ok {
             tracing::warn!("Handshake failed, reconnecting...");
             connected.store(false, Ordering::Relaxed);
-            stack.manage_profile(|im| im.teardown());
+            stack.manage_profile(ergot::prelude::DirectEdge::teardown);
             tokio::task::yield_now().await;
             tokio::select! {
                 _ = tokio::time::sleep(RECONNECT_DELAY) => {}
@@ -685,7 +690,7 @@ where
 
         // Tear down old interface so workers release the transport
         info!("Calling teardown...");
-        stack.manage_profile(|im| im.teardown());
+        stack.manage_profile(ergot::prelude::DirectEdge::teardown);
         tokio::task::yield_now().await;
         tokio::select! {
             _ = tokio::time::sleep(RECONNECT_DELAY) => {}
@@ -769,7 +774,7 @@ async fn wait_for_active<NS>(
 /// Returns `true` on success.
 async fn hardware_info_handshake<NS>(
     stack: &NS,
-    info_tx: &Sender<oxifoc_core::types::HardwareInfo>,
+    info_tx: &Sender<HardwareInfo>,
     connected: &Arc<AtomicBool>,
 ) -> bool
 where
@@ -778,13 +783,9 @@ where
     let ns = stack.stack();
     let mut backoff = Duration::from_millis(100);
     for attempt in 1..=10u32 {
-        let fut = ns
-            .endpoints()
-            .request::<oxifoc_core::icd::HardwareInfoEndpoint>(
-                DEVICE_ADDR,
-                &(),
-                Some("hardware_info"),
-            );
+        let fut =
+            ns.endpoints()
+                .request::<HardwareInfoEndpoint>(DEVICE_ADDR, &(), Some("hardware_info"));
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, fut).await {
             Ok(Ok(dev_info)) => {
                 info!(
@@ -1098,7 +1099,7 @@ async fn handle_command<NS>(
             let res = client
                 .at_least_once::<MotorEndpoint>(DEVICE_ADDR, mc, Some("motor"), &SETPOINT_POLICY)
                 .await
-                .map_err(|e| anyhow::anyhow!("{:?}", e));
+                .map_err(|e| anyhow::anyhow!("{e:?}"));
             // A failed drive command must not keep being affirmed.
             if res.is_err() {
                 *active_setpoint = None;
@@ -1108,7 +1109,7 @@ async fn handle_command<NS>(
         HostCommand::SetPhaseSource(source) => {
             tracing::info!("Setting phase source: {:?}", source);
             match client
-                .at_least_once::<oxifoc_core::icd::PhaseSourceEndpoint>(
+                .at_least_once::<PhaseSourceEndpoint>(
                     DEVICE_ADDR,
                     &source,
                     Some("phase_source"),
@@ -1150,7 +1151,7 @@ async fn handle_command<NS>(
                     &SETPOINT_POLICY,
                 )
                 .await;
-            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }
         HostCommand::ConfigWrite(write, reply_tx) => {
             use oxifoc_core::types::ConfigRequest;
@@ -1164,7 +1165,7 @@ async fn handle_command<NS>(
                     &SETPOINT_POLICY,
                 )
                 .await;
-            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }
         HostCommand::ConfigResetAll(reply_tx) => {
             use oxifoc_core::types::ConfigRequest;
@@ -1177,19 +1178,14 @@ async fn handle_command<NS>(
                     &SETPOINT_POLICY,
                 )
                 .await;
-            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }
         HostCommand::Fault(req, reply_tx) => {
             tracing::info!("Fault request: {:?}", req);
             let res = client
-                .at_least_once::<oxifoc_core::icd::FaultEndpoint>(
-                    DEVICE_ADDR,
-                    &req,
-                    Some("fault"),
-                    &SETPOINT_POLICY,
-                )
+                .at_least_once::<FaultEndpoint>(DEVICE_ADDR, &req, Some("fault"), &SETPOINT_POLICY)
                 .await;
-            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{:?}", e)));
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }
         HostCommand::Detect(req, reply_tx) => {
             tracing::info!("Starting motor detection: {:?}", req);
@@ -1211,7 +1207,7 @@ async fn handle_command<NS>(
                         &DETECT_POLICY,
                     )
                     .await;
-                let result = res.map_err(|e| anyhow::anyhow!("{:?}", e));
+                let result = res.map_err(|e| anyhow::anyhow!("{e:?}"));
                 let _ = reply_tx.send(result);
             });
         }
@@ -1241,7 +1237,7 @@ where
     };
     let elf_path = cfg.elf.clone().unwrap_or(default_elf);
     let elf_bytes =
-        fs::read(&elf_path).with_context(|| format!("Failed to read ELF at {}", elf_path))?;
+        fs::read(&elf_path).with_context(|| format!("Failed to read ELF at {elf_path}"))?;
     let table = Table::parse(&elf_bytes)
         .context("Parsing defmt table from ELF failed")?
         .ok_or_else(|| anyhow::anyhow!("No .defmt section in ELF; build device with defmt"))?;
@@ -1251,14 +1247,14 @@ where
         info!("Starting defmt decoder (RTT mode - channel 0)");
         let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(64);
 
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             let mut stream = table.new_stream_decoder();
             while let Ok(data) = rx.recv() {
                 stream.received(&data);
                 loop {
                     match stream.decode() {
                         Ok(frame) => {
-                            log_defmt_frame(frame.level(), &frame.display(false).to_string())
+                            log_defmt_frame(frame.level(), &frame.display(false).to_string());
                         }
                         Err(DecodeError::UnexpectedEof) => break,
                         Err(DecodeError::Malformed) => {
@@ -1308,7 +1304,7 @@ where
                     let msg = hdl.recv().await;
                     match table.decode(&msg.t.frame) {
                         Ok((frame, _)) => {
-                            log_defmt_frame(frame.level(), &frame.display(false).to_string())
+                            log_defmt_frame(frame.level(), &frame.display(false).to_string());
                         }
                         Err(DecodeError::UnexpectedEof) => error!("Unexpected EOF decoding defmt"),
                         Err(DecodeError::Malformed) => error!("Malformed defmt frame"),

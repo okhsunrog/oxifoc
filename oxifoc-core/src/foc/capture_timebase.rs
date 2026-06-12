@@ -47,26 +47,26 @@ impl CaptureWord for u16 {
     }
     #[inline]
     fn as_u64(self) -> u64 {
-        self as u64
+        u64::from(self)
     }
 }
 
 impl CaptureWord for u32 {
-    const BITS: u32 = 32;
+    const BITS: Self = 32;
     #[inline]
     fn upper_half(self) -> bool {
         self >= 0x8000_0000
     }
     #[inline]
     fn as_u64(self) -> u64 {
-        self as u64
+        u64::from(self)
     }
 }
 
 /// Splice an overflow count and a counter value into 64-bit ticks.
 #[inline]
 pub fn compose<W: CaptureWord>(overflows: u32, low: W) -> u64 {
-    ((overflows as u64) << W::BITS) | low.as_u64()
+    (u64::from(overflows) << W::BITS) | low.as_u64()
 }
 
 /// Extend a captured value observed in the same SR snapshot as `uif_pending`.

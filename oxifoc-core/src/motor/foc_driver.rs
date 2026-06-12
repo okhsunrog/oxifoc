@@ -10,16 +10,26 @@
 //!
 //! Platform code just needs to provide trait implementations and call `step()`.
 
+use crate::foc::clamp_f32;
+#[cfg(feature = "runtime")]
+use crate::foc::config::BoardConfig;
 use crate::foc::controller::{FocController, FocOutput};
+use crate::foc::fast_math::sqrtf;
+#[cfg(feature = "runtime")]
+use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault, VOLTAGE_HYSTERESIS_MV};
 use crate::foc::phase::{PhaseInput, PhaseProvider};
 use crate::foc::pwm::{PhasePwm, PhaseState, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
+use crate::foc::transforms::{clarke, park};
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::velocity::{VelocityLoop, VelocityLoopConfig};
+use crate::motor::derating::{DeratingConfig, DeratingScales};
 use crate::motor::failsafe::{
     FailsafeAction, FailsafeConfig, FailsafeController, FailsafePolicy, FailsafeTerminal,
 };
 use crate::motor::six_step;
+#[cfg(feature = "storage")]
+use crate::storage::CurrentLimitsConfig;
 
 // Re-export ControlMode from types (single source of truth)
 pub use crate::types::ControlMode;
@@ -144,11 +154,7 @@ impl CurrentLimits {
     /// * `rating_a` - motor continuous-current rating (A); `<= 0`/NaN =
     ///   unknown (no rating clamp)
     #[cfg(feature = "storage")]
-    pub fn from_config_clamped(
-        cfg: &crate::storage::CurrentLimitsConfig,
-        hw_max_a: f32,
-        rating_a: f32,
-    ) -> Self {
+    pub fn from_config_clamped(cfg: &CurrentLimitsConfig, hw_max_a: f32, rating_a: f32) -> Self {
         let rating_ok = rating_a.is_finite() && rating_a > 0.0;
         let iq_ceiling_board = hw_max_a / OVERCURRENT_HEADROOM;
         let iq_ceiling = if rating_ok {
@@ -189,18 +195,14 @@ impl CurrentLimits {
     /// stored motor rating (or `0.0` when absent) so a detected motor's
     /// thermal ceiling holds even with no limits group written.
     #[cfg(feature = "storage")]
-    pub fn from_stored(
-        cfg: Option<&crate::storage::CurrentLimitsConfig>,
-        hw_max_a: f32,
-        rating_a: f32,
-    ) -> Self {
+    pub fn from_stored(cfg: Option<&CurrentLimitsConfig>, hw_max_a: f32, rating_a: f32) -> Self {
         match cfg {
             Some(c) => Self::from_config_clamped(c, hw_max_a, rating_a),
             // No limits group stored: the ceilings ARE the limits (an
             // all-unset config, NOT CurrentLimitsConfig::default() — that
             // one carries concrete 10 A/40 A values).
             None if rating_a.is_finite() && rating_a > 0.0 => Self::from_config_clamped(
-                &crate::storage::CurrentLimitsConfig {
+                &CurrentLimitsConfig {
                     max_iq_a: 0.0,
                     max_phase_current_a: 0.0,
                     bus_in_max_a: -1.0,
@@ -232,18 +234,18 @@ impl CurrentLimits {
         }
         let limit = self.max_current_a;
         // D-axis priority: clamp id first
-        let id = crate::foc::clamp_f32(id_target, -limit, limit);
+        let id = clamp_f32(id_target, -limit, limit);
         // Q-axis gets the remaining circular budget
         let iq_budget_sq = limit * limit - id * id;
         let iq_budget = if iq_budget_sq > 0.0 {
             // .max(0.0) lets the compiler prove -iq_budget <= iq_budget,
             // eliminating clamp's panic branch (sqrtf can't return NaN here,
             // but LLVM can't prove it).
-            crate::foc::fast_math::sqrtf(iq_budget_sq).max(0.0)
+            sqrtf(iq_budget_sq).max(0.0)
         } else {
             0.0
         };
-        let iq = crate::foc::clamp_f32(iq_target, -iq_budget, iq_budget);
+        let iq = clamp_f32(iq_target, -iq_budget, iq_budget);
         (id, iq)
     }
 
@@ -365,11 +367,11 @@ where
     /// voltage ripple.
     bus_mod_q_filt: f32,
     /// Graduated derating ramps (host-tunable; see `motor::derating`).
-    derating_cfg: crate::motor::derating::DeratingConfig,
+    derating_cfg: DeratingConfig,
     /// Live derating scales, recomputed (decimated) by the protection
     /// update in `run_foc_cycle`; applied per-direction on the iq budget
     /// in `step_current_control`.
-    derating: crate::motor::derating::DeratingScales,
+    derating: DeratingScales,
     /// Decimation counter for the protection update (temps/vbus are slow).
     /// (Protection fields are only read by `run_protection`, which needs
     /// the `runtime` feature for the fault registry.)
@@ -428,8 +430,8 @@ where
             ov_threshold_v: 0.0,
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
             bus_mod_q_filt: 0.0,
-            derating_cfg: crate::motor::derating::DeratingConfig::default(),
-            derating: crate::motor::derating::DeratingScales::default(),
+            derating_cfg: DeratingConfig::default(),
+            derating: DeratingScales::default(),
             protection_tick: 0,
             ov_integral_vs: 0.0,
             uv_integral_vs: 0.0,
@@ -437,22 +439,22 @@ where
     }
 
     /// Apply derating configuration (boot / live config write).
-    pub fn set_derating(&mut self, cfg: crate::motor::derating::DeratingConfig) {
+    pub fn set_derating(&mut self, cfg: DeratingConfig) {
         self.derating_cfg = cfg;
     }
 
     /// Current derating configuration.
-    pub fn derating_cfg(&self) -> &crate::motor::derating::DeratingConfig {
+    pub fn derating_cfg(&self) -> &DeratingConfig {
         &self.derating_cfg
     }
 
     /// Live derating scales (1.0/1.0 = no derate).
-    pub fn derating(&self) -> crate::motor::derating::DeratingScales {
+    pub fn derating(&self) -> DeratingScales {
         self.derating
     }
 
     /// Store freshly computed derating scales (protection update).
-    pub fn set_derating_scales(&mut self, scales: crate::motor::derating::DeratingScales) {
+    pub fn set_derating_scales(&mut self, scales: DeratingScales) {
         self.derating = scales;
     }
 
@@ -478,16 +480,14 @@ where
     /// Faults are raised through [`PlatformFault::from_category`]; a
     /// platform returning `None` for a category silently skips it.
     #[cfg(feature = "runtime")]
-    pub fn run_protection<F: crate::foc::fault::PlatformFault>(
+    pub fn run_protection<F: PlatformFault>(
         &mut self,
-        registry: &crate::foc::fault::FaultRegistry<F>,
-        board: &crate::foc::config::BoardConfig,
+        registry: &FaultRegistry<F>,
+        board: &BoardConfig,
         vbus_v: f32,
         fet_temp_c_x10: Option<i16>,
         motor_temp_c_x10: Option<i16>,
     ) {
-        use crate::foc::fault::{FaultCategory, VOLTAGE_HYSTERESIS_MV};
-
         // --- Voltage excursion integrals (every cycle) ---
         let max_v = board.max_vbus_mv as f32 / 1000.0;
         let min_v = board.min_vbus_mv as f32 / 1000.0;
@@ -526,8 +526,8 @@ where
         }
 
         // --- Temperatures (board thresholds; <= 0 = sensor not wired) ---
-        let fet_c = fet_temp_c_x10.map(|t| t as f32 / 10.0);
-        let motor_c = motor_temp_c_x10.map(|t| t as f32 / 10.0);
+        let fet_c = fet_temp_c_x10.map(|t| f32::from(t) / 10.0);
+        let motor_c = motor_temp_c_x10.map(|t| f32::from(t) / 10.0);
         let fet_over =
             fet_c.is_some_and(|t| board.max_fet_temp_c > 0.0 && t > board.max_fet_temp_c);
         let motor_over =
@@ -775,7 +775,7 @@ where
             10.0 * self.failsafe_cfg.brake_current_a
         };
         let current_iq = if current_iq.is_finite() {
-            crate::foc::clamp_f32(current_iq, -seed_bound, seed_bound)
+            clamp_f32(current_iq, -seed_bound, seed_bound)
         } else {
             0.0
         };
@@ -929,7 +929,6 @@ where
             }
             ControlMode::Coast => {
                 // High-Z: all FETs off, motor spins freely.
-                use super::super::foc::pwm::PhaseState;
                 self.pwm.set_phase_states([
                     PhaseState::Float,
                     PhaseState::Float,
@@ -945,7 +944,6 @@ where
                 // ground. Speed-proportional drag, energy dissipates in the
                 // motor; zero draw at standstill. Entry is speed-gated at the
                 // command boundary (see `process_commands`).
-                use super::super::foc::pwm::PhaseState;
                 self.pwm
                     .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
                 self.controller.reset();
@@ -962,7 +960,7 @@ where
                 } else {
                     (0.0, 0.0, 0.0)
                 };
-                let (i_alpha, i_beta) = crate::foc::transforms::clarke(ia, ib);
+                let (i_alpha, i_beta) = clarke(ia, ib);
                 // αβ magnitude equals the dq magnitude (Park preserves it);
                 // no current loop runs here, so this check is the only
                 // software protection the mode has. Trip → high-Z: a coast
@@ -1067,7 +1065,7 @@ where
         // an unreachable target.
         let max_speed = self.derating_cfg.max_speed_erad_s;
         let target_vel = if max_speed > 0.0 {
-            crate::foc::clamp_f32(target_vel, -max_speed, max_speed)
+            clamp_f32(target_vel, -max_speed, max_speed)
         } else {
             target_vel
         };
@@ -1121,7 +1119,7 @@ where
             };
             if scale < 1.0 {
                 let lim = self.current_limits.max_current_a * scale;
-                crate::foc::clamp_f32(iq_target, -lim, lim)
+                clamp_f32(iq_target, -lim, lim)
             } else {
                 iq_target
             }
@@ -1244,7 +1242,7 @@ where
         } else {
             (hi_bus / mod_q, lo_bus / mod_q)
         };
-        crate::foc::clamp_f32(iq_target, lo_iq, hi_iq)
+        clamp_f32(iq_target, lo_iq, hi_iq)
     }
 
     /// Execute open-loop control step (for calibration)
@@ -1283,7 +1281,7 @@ where
 
         // Clamp open-loop current to the target limit
         let current = if self.current_limits.max_current_a > 0.0 {
-            crate::foc::clamp_f32(
+            clamp_f32(
                 current,
                 -self.current_limits.max_current_a,
                 self.current_limits.max_current_a,
@@ -1360,7 +1358,7 @@ where
             None
         };
         let (i_alpha_m, i_beta_m) = match currents {
-            Some(c) => crate::foc::transforms::clarke(c.0, c.1),
+            Some(c) => clarke(c.0, c.1),
             None => (0.0, 0.0),
         };
         let mut out = self
@@ -1379,7 +1377,7 @@ where
             out.i_alpha = i_alpha;
             out.i_beta = i_beta;
             let (sin_a, cos_a) = S::sin_cos(angle_rad);
-            let (id, iq) = crate::foc::transforms::park(i_alpha, i_beta, sin_a, cos_a);
+            let (id, iq) = park(i_alpha, i_beta, sin_a, cos_a);
             out.id = id;
             out.iq = iq;
 
@@ -1426,8 +1424,8 @@ where
 
         // Duty sign determines direction
         let forward = duty >= 0.0;
-        let duty_abs = crate::foc::clamp_f32(duty.abs(), 0.0, 1.0);
-        let raw_duty = (duty_abs * self.pwm.max_duty() as f32) as u16;
+        let duty_abs = clamp_f32(duty.abs(), 0.0, 1.0);
+        let raw_duty = (duty_abs * f32::from(self.pwm.max_duty())) as u16;
 
         // Generate and apply phase states
         let states = six_step::commutate(sector, raw_duty, forward);
@@ -1452,7 +1450,7 @@ where
 
         // Six-step has no current loop at all; check the measured magnitude
         // in αβ (same magnitude as dq — Park preserves it).
-        let (i_alpha, i_beta) = crate::foc::transforms::clarke(ia, ib);
+        let (i_alpha, i_beta) = clarke(ia, ib);
         if self.current_limits.is_overcurrent(i_alpha, i_beta) {
             self.pwm.disable();
             self.controller.reset();
@@ -1509,6 +1507,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foc::phase::PhaseManager;
+    #[cfg(feature = "virtual-motor")]
+    use crate::foc::{angle_difference, wrap_angle};
+    #[cfg(feature = "runtime")]
+    use crate::state::CMD_CHANNEL;
+    #[cfg(feature = "virtual-motor")]
+    use crate::virtual_motor::VirtualMotorOutput;
 
     struct MockPwm {
         duties: [u16; 3],
@@ -1548,8 +1553,10 @@ mod tests {
     #[cfg(feature = "runtime")]
     fn cmd_channel_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        while crate::state::CMD_CHANNEL.try_receive().is_ok() {}
+        let guard = LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while CMD_CHANNEL.try_receive().is_ok() {}
         guard
     }
 
@@ -1896,14 +1903,14 @@ mod tests {
     fn deadman_exempts_bench_modes() {
         use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
 
-        let foc = FocController::<SvpwmModulator, crate::foc::trig::LibmSinCos>::new(24.0);
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
         let mut driver = FocDriver::new(
             foc,
             MockPwm { duties: [0; 3] },
             MockCurrentSensor {
                 currents: (0.0, 0.0, 0.0),
             },
-            crate::foc::phase::PhaseManager::sensorless(),
+            PhaseManager::sensorless(),
             1.0 / 20_000.0,
         );
         driver.set_failsafe(FailsafeConfig {
@@ -1965,14 +1972,14 @@ mod tests {
             }
         }
 
-        let foc = FocController::<SvpwmModulator, crate::foc::trig::LibmSinCos>::new(24.0);
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
         let mut driver = FocDriver::new(
             foc,
             StatePwm { states: None },
             MockCurrentSensor {
                 currents: (0.0, 0.0, 0.0),
             },
-            crate::foc::phase::PhaseManager::sensorless(),
+            PhaseManager::sensorless(),
             1.0 / 20_000.0,
         );
         driver.set_failsafe(FailsafeConfig {
@@ -2085,7 +2092,7 @@ mod tests {
     #[test]
     #[cfg(feature = "storage")]
     fn config_limits_clamp_to_hardware_ceiling() {
-        use crate::storage::CurrentLimitsConfig;
+        use CurrentLimitsConfig;
         // Stored config must never raise limits above the board's hardware
         // ceiling, and zero/negative config values (= "not set") fall back
         // to the board defaults instead of disabling protection.
@@ -2136,7 +2143,7 @@ mod tests {
     #[test]
     #[cfg(feature = "storage")]
     fn cross_field_headroom_enforced() {
-        use crate::storage::CurrentLimitsConfig;
+        use CurrentLimitsConfig;
         // Board ABS line far above so it is not the binding constraint.
         let hw_max = 80.0;
         let l = CurrentLimits::from_config_clamped(
@@ -2164,10 +2171,11 @@ mod tests {
     /// config defaults to the rating itself, and the overcurrent trip
     /// ceiling is 1.5× the rating (VESC `l_abs_current_max`) — all still
     /// capped by the board hardware.
+    #[cfg(feature = "storage")]
     #[test]
     fn rating_caps_operational_limits() {
         let hw_max = 30.0;
-        let cfg = |iq: f32, phase: f32| crate::storage::CurrentLimitsConfig {
+        let cfg = |iq: f32, phase: f32| CurrentLimitsConfig {
             max_iq_a: iq,
             max_phase_current_a: phase,
             bus_in_max_a: -1.0,
@@ -2231,7 +2239,7 @@ mod tests {
             MockCurrentSensor {
                 currents: (0.0, 0.0, 0.0),
             },
-            crate::foc::phase::PhaseManager::sensorless(),
+            PhaseManager::sensorless(),
             1.0 / 20_000.0,
         );
 
@@ -2280,7 +2288,7 @@ mod tests {
                 // ~26 A magnitude — far above the 13 A threshold below.
                 currents: (20.0, -10.0, -10.0),
             },
-            crate::foc::phase::PhaseManager::sensorless(),
+            PhaseManager::sensorless(),
             1.0 / 20_000.0,
         );
         driver.set_current_limits(CurrentLimits::from_max_current(10.0));
@@ -2313,7 +2321,7 @@ mod tests {
             MockCurrentSensor {
                 currents: (20.0, -10.0, -10.0),
             },
-            crate::foc::phase::PhaseManager::sensorless(),
+            PhaseManager::sensorless(),
             1.0 / 20_000.0,
         );
         driver.set_current_limits(CurrentLimits::from_max_current(10.0));
@@ -2390,7 +2398,7 @@ mod tests {
             id_target: 0.0,
         });
 
-        let mut out = crate::virtual_motor::VirtualMotorOutput::default();
+        let mut out = VirtualMotorOutput::default();
         for step in 1..20_000u64 {
             driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
             let telem = driver.step(step * 50).expect("FOC step failed");
@@ -2399,8 +2407,8 @@ mod tests {
 
         // Full-circle match: the polarity probe must have corrected the
         // π-flipped initial lock through the driver path.
-        let true_angle = crate::foc::wrap_angle(out.angle_rad);
-        let err = crate::foc::angle_difference(driver.phase().get().angle, true_angle).abs();
+        let true_angle = wrap_angle(out.angle_rad);
+        let err = angle_difference(driver.phase().get().angle, true_angle).abs();
         assert!(
             err < 0.15,
             "HFI did not converge through FocDriver: est {} vs rotor {} (err {} full-circle)",
@@ -2415,7 +2423,7 @@ mod tests {
             hfi.confidence()
         );
         assert!(
-            crate::foc::angle_difference(out.angle_rad, ROTOR_ANGLE).abs() < 0.15,
+            angle_difference(out.angle_rad, ROTOR_ANGLE).abs() < 0.15,
             "injection moved the rotor: {} rad",
             out.angle_rad
         );
@@ -2428,14 +2436,14 @@ mod tests {
     fn deadman_arms_failsafe_on_stale_command() {
         use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
 
-        let foc = FocController::<SvpwmModulator, crate::foc::trig::LibmSinCos>::new(24.0);
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
         let mut driver = FocDriver::new(
             foc,
             MockPwm { duties: [0; 3] },
             MockCurrentSensor {
                 currents: (0.0, 0.0, 0.0),
             },
-            crate::foc::phase::PhaseManager::sensorless(),
+            PhaseManager::sensorless(),
             1.0 / 20_000.0,
         );
         driver.set_failsafe(FailsafeConfig {
@@ -2522,7 +2530,7 @@ mod tests {
             brake_time_s: 2.0,
             standstill_rad_s: 20.0,
             decel_rad_s2: 800.0,
-            terminal: crate::motor::failsafe::FailsafeTerminal::HighZ,
+            terminal: FailsafeTerminal::HighZ,
         });
         driver.set_mode(ControlMode::CurrentControl {
             iq_target: 3.0,
@@ -2751,9 +2759,12 @@ mod tests {
     mod severity_gate {
         use super::*;
         use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
+        use crate::foc::hall_sensor::HallFaultKind;
         use crate::foc::phase::PhaseManager;
         use crate::foc::trig::LibmSinCos;
-        use crate::state::{CMD_CHANNEL, DriverCommand, MotorControlState};
+        use crate::state::{
+            CMD_CHANNEL, DriverCommand, MotorControlState, process_commands, run_foc_cycle,
+        };
         use crate::types::MotorState;
         use core::cell::RefCell;
         use critical_section::Mutex as CriticalSectionMutex;
@@ -2770,12 +2781,12 @@ mod tests {
         impl PlatformFault for SevFault {
             fn category(&self) -> FaultCategory {
                 match self {
-                    SevFault::OverCurrent => FaultCategory::OverCurrent,
-                    SevFault::OverVoltage => FaultCategory::OverVoltage,
-                    SevFault::OverTemp => FaultCategory::OverTemp,
-                    SevFault::Hall => FaultCategory::HallError,
-                    SevFault::CommTimeout => FaultCategory::CommTimeout,
-                    SevFault::Derating => FaultCategory::Derating,
+                    Self::OverCurrent => FaultCategory::OverCurrent,
+                    Self::OverVoltage => FaultCategory::OverVoltage,
+                    Self::OverTemp => FaultCategory::OverTemp,
+                    Self::Hall => FaultCategory::HallError,
+                    Self::CommTimeout => FaultCategory::CommTimeout,
+                    Self::Derating => FaultCategory::Derating,
                 }
             }
             fn details(&self) -> heapless::String<128> {
@@ -2784,22 +2795,22 @@ mod tests {
             fn is_recoverable(&self) -> bool {
                 false
             }
-            fn from_hall_kind(_kind: crate::foc::hall_sensor::HallFaultKind) -> Option<Self> {
-                Some(SevFault::Hall)
+            fn from_hall_kind(_kind: HallFaultKind) -> Option<Self> {
+                Some(Self::Hall)
             }
             fn from_category(category: FaultCategory) -> Option<Self> {
                 match category {
-                    FaultCategory::OverCurrent => Some(SevFault::OverCurrent),
-                    FaultCategory::OverVoltage => Some(SevFault::OverVoltage),
-                    FaultCategory::OverTemp => Some(SevFault::OverTemp),
-                    FaultCategory::CommTimeout => Some(SevFault::CommTimeout),
-                    FaultCategory::Derating => Some(SevFault::Derating),
+                    FaultCategory::OverCurrent => Some(Self::OverCurrent),
+                    FaultCategory::OverVoltage => Some(Self::OverVoltage),
+                    FaultCategory::OverTemp => Some(Self::OverTemp),
+                    FaultCategory::CommTimeout => Some(Self::CommTimeout),
+                    FaultCategory::Derating => Some(Self::Derating),
                     _ => None,
                 }
             }
         }
 
-        const BOARD: crate::foc::config::BoardConfig = crate::foc::config::BoardConfig {
+        const BOARD: BoardConfig = BoardConfig {
             shunt_ohms: 0.003,
             amp_gain: 16.0,
             vbus_divider_ratio: 10.39,
@@ -2858,7 +2869,7 @@ mod tests {
 
         impl Harness {
             fn cycle(&mut self, now_ticks: u64) -> Option<FocOutput> {
-                crate::state::run_foc_cycle(
+                run_foc_cycle(
                     &self.state,
                     &self.registry,
                     &mut self.driver,
@@ -2913,7 +2924,7 @@ mod tests {
                 iq_target: 1.0,
                 id_target: 0.0,
             }));
-            crate::state::process_commands(&state, &mut driver, &registry);
+            process_commands(&state, &mut driver, &registry);
             assert!(
                 matches!(driver.mode(), ControlMode::CurrentControl { .. }),
                 "a warning-class fault must not block starting"
@@ -2991,7 +3002,7 @@ mod tests {
             critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
 
             let cycle = |driver: &mut FocDriver<_, _, _, _>, now: u64| {
-                crate::state::run_foc_cycle(&state, &registry, driver, 24.0, now, &BOARD)
+                run_foc_cycle(&state, &registry, driver, 24.0, now, &BOARD)
             };
 
             let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
@@ -3088,7 +3099,7 @@ mod tests {
         }
 
         fn run_cycle_at_vbus(h: &mut Harness, vbus: f32, now: u64) {
-            crate::state::run_foc_cycle(&h.state, &h.registry, &mut h.driver, vbus, now, &BOARD);
+            run_foc_cycle(&h.state, &h.registry, &mut h.driver, vbus, now, &BOARD);
         }
 
         /// The derating warning follows the live scales with hysteresis
@@ -3097,12 +3108,11 @@ mod tests {
         fn derating_warning_sets_and_clears_with_hysteresis() {
             let _serial = cmd_channel_lock();
             let mut h = running_harness();
-            h.driver
-                .set_derating(crate::motor::derating::DeratingConfig {
-                    vbus_cut_start_v: 22.0,
-                    vbus_cut_end_v: 18.0,
-                    ..Default::default()
-                });
+            h.driver.set_derating(DeratingConfig {
+                vbus_cut_start_v: 22.0,
+                vbus_cut_end_v: 18.0,
+                ..Default::default()
+            });
 
             // Sagged bus (drive scale 0.25 at 19 V): the decimated update
             // fires within 256 cycles.
@@ -3132,10 +3142,7 @@ mod tests {
                 !h.registry.has_category(FaultCategory::Derating),
                 "derating warning must auto-clear on recovery"
             );
-            assert_eq!(
-                h.driver.derating(),
-                crate::motor::derating::DeratingScales::IDENTITY
-            );
+            assert_eq!(h.driver.derating(), DeratingScales::IDENTITY);
         }
     }
 
@@ -3148,7 +3155,7 @@ mod tests {
         use crate::foc::phase::{PhaseManager, PhaseSource};
         use crate::foc::trig::LibmSinCos;
 
-        let make = |scales: crate::motor::derating::DeratingScales, iq: f32| {
+        let make = |scales: DeratingScales, iq: f32| {
             let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
             let mut mgr = PhaseManager::sensorless();
             mgr.set_source(PhaseSource::OpenLoop).unwrap();
@@ -3178,9 +3185,9 @@ mod tests {
             driver.step(100).unwrap().vq
         };
 
-        let full = make(crate::motor::derating::DeratingScales::IDENTITY, 10.0);
+        let full = make(DeratingScales::IDENTITY, 10.0);
         let derated = make(
-            crate::motor::derating::DeratingScales {
+            DeratingScales {
                 drive: 0.5,
                 brake: 1.0,
             },
@@ -3192,9 +3199,9 @@ mod tests {
         );
 
         // Braking (iq opposes ω): only the brake scale applies — full here.
-        let full_brake = make(crate::motor::derating::DeratingScales::IDENTITY, -10.0);
+        let full_brake = make(DeratingScales::IDENTITY, -10.0);
         let brake_with_drive_derate = make(
-            crate::motor::derating::DeratingScales {
+            DeratingScales {
                 drive: 0.5,
                 brake: 1.0,
             },

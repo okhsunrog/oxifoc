@@ -113,7 +113,7 @@ pub enum PhaseSource {
 #[allow(clippy::derivable_impls)] // Other variants have data, can't derive
 impl Default for PhaseSource {
     fn default() -> Self {
-        PhaseSource::Hall
+        Self::Hall
     }
 }
 
@@ -135,29 +135,29 @@ impl PhaseSource {
     /// All f32 payload fields are finite (see `ControlMode::is_finite`).
     pub fn is_finite(&self) -> bool {
         match *self {
-            PhaseSource::Hall
-            | PhaseSource::Encoder
-            | PhaseSource::Observer
-            | PhaseSource::Hfi
-            | PhaseSource::Manual
-            | PhaseSource::OpenLoop => true,
-            PhaseSource::HallToObserver {
+            Self::Hall
+            | Self::Encoder
+            | Self::Observer
+            | Self::Hfi
+            | Self::Manual
+            | Self::OpenLoop => true,
+            Self::HallToObserver {
                 blend_low,
                 blend_high,
             }
-            | PhaseSource::EncoderToObserver {
+            | Self::EncoderToObserver {
                 blend_low,
                 blend_high,
             } => blend_low.is_finite() && blend_high.is_finite(),
-            PhaseSource::HfiToObserver {
+            Self::HfiToObserver {
                 min_vel,
                 min_confidence,
             } => min_vel.is_finite() && min_confidence.is_finite(),
-            PhaseSource::HfiToObserverVolts {
+            Self::HfiToObserverVolts {
                 toggle_v,
                 min_confidence,
             } => toggle_v.is_finite() && toggle_v > 0.0 && min_confidence.is_finite(),
-            PhaseSource::HfiToHall { switch_vel } | PhaseSource::HfiToEncoder { switch_vel } => {
+            Self::HfiToHall { switch_vel } | Self::HfiToEncoder { switch_vel } => {
                 switch_vel.is_finite()
             }
         }
@@ -167,7 +167,7 @@ impl PhaseSource {
     pub fn requires_hall(&self) -> bool {
         matches!(
             self,
-            PhaseSource::Hall | PhaseSource::HallToObserver { .. } | PhaseSource::HfiToHall { .. }
+            Self::Hall | Self::HallToObserver { .. } | Self::HfiToHall { .. }
         )
     }
 
@@ -175,9 +175,7 @@ impl PhaseSource {
     pub fn requires_encoder(&self) -> bool {
         matches!(
             self,
-            PhaseSource::Encoder
-                | PhaseSource::EncoderToObserver { .. }
-                | PhaseSource::HfiToEncoder { .. }
+            Self::Encoder | Self::EncoderToObserver { .. } | Self::HfiToEncoder { .. }
         )
     }
 
@@ -185,11 +183,11 @@ impl PhaseSource {
     pub fn requires_observer(&self) -> bool {
         matches!(
             self,
-            PhaseSource::Observer
-                | PhaseSource::HallToObserver { .. }
-                | PhaseSource::EncoderToObserver { .. }
-                | PhaseSource::HfiToObserver { .. }
-                | PhaseSource::HfiToObserverVolts { .. }
+            Self::Observer
+                | Self::HallToObserver { .. }
+                | Self::EncoderToObserver { .. }
+                | Self::HfiToObserver { .. }
+                | Self::HfiToObserverVolts { .. }
         )
     }
 
@@ -197,16 +195,16 @@ impl PhaseSource {
     pub fn requires_hfi(&self) -> bool {
         matches!(
             self,
-            PhaseSource::Hfi
-                | PhaseSource::HfiToObserver { .. }
-                | PhaseSource::HfiToObserverVolts { .. }
-                | PhaseSource::HfiToHall { .. }
-                | PhaseSource::HfiToEncoder { .. }
+            Self::Hfi
+                | Self::HfiToObserver { .. }
+                | Self::HfiToObserverVolts { .. }
+                | Self::HfiToHall { .. }
+                | Self::HfiToEncoder { .. }
         )
     }
 
     /// Check if this is a manual/open-loop mode
     pub fn is_manual(&self) -> bool {
-        matches!(self, PhaseSource::Manual | PhaseSource::OpenLoop)
+        matches!(self, Self::Manual | Self::OpenLoop)
     }
 }

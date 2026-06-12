@@ -69,7 +69,7 @@ impl<'d> MotorPwm<'d> {
         pwm.set_dead_time(dead_time);
 
         // Calculate duty limit using shared helper
-        let duty_limit = pwm::duty_limit(max_duty as u16, config.max_duty_percent) as u32;
+        let duty_limit = u32::from(pwm::duty_limit(max_duty as u16, config.max_duty_percent));
 
         defmt::info!(
             "F405 Motor PWM init: freq={}Hz, max_duty={}, limit={}%",
@@ -130,9 +130,9 @@ impl<'d> PhasePwm for MotorPwm<'d> {
 
     fn set_duties(&mut self, duties: [u16; 3]) {
         // Clamp to duty limit for safety
-        let duty_a = (duties[0] as u32).min(self.duty_limit);
-        let duty_b = (duties[1] as u32).min(self.duty_limit);
-        let duty_c = (duties[2] as u32).min(self.duty_limit);
+        let duty_a = u32::from(duties[0]).min(self.duty_limit);
+        let duty_b = u32::from(duties[1]).min(self.duty_limit);
+        let duty_c = u32::from(duties[2]).min(self.duty_limit);
 
         self.pwm.set_duty(Channel::Ch1, duty_a);
         self.pwm.set_duty(Channel::Ch2, duty_b);
@@ -165,7 +165,7 @@ impl<'d> PhasePwm for MotorPwm<'d> {
             match state {
                 PhaseState::Pwm(duty) => {
                     self.pwm.enable(ch);
-                    self.pwm.set_duty(ch, (*duty as u32).min(self.duty_limit));
+                    self.pwm.set_duty(ch, u32::from(*duty).min(self.duty_limit));
                 }
                 PhaseState::Low => {
                     self.pwm.enable(ch);

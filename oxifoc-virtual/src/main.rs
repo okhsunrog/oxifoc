@@ -7,7 +7,7 @@ mod udp_server;
 
 pub struct TokioTimer;
 
-impl oxifoc_core::timer::Timer for TokioTimer {
+impl Timer for TokioTimer {
     async fn after_millis(ms: u64) {
         tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
     }
@@ -18,16 +18,17 @@ impl oxifoc_core::timer::Timer for TokioTimer {
 }
 
 use clap::Parser;
+use oxifoc_core::storage::{CONFIG_LOADED, RuntimeConfig};
+use oxifoc_core::timer::Timer;
+use oxifoc_core::virtual_motor::MotorParams;
 use tracing_subscriber::EnvFilter;
 
 // Platform state globals
 oxifoc_core::define_platform_state!(fault::VirtualFault);
 
 // Runtime config shared between config server and simulation
-static RUNTIME_CONFIG: critical_section::Mutex<
-    core::cell::RefCell<oxifoc_core::storage::RuntimeConfig>,
-> = critical_section::Mutex::new(core::cell::RefCell::new(
-    oxifoc_core::storage::RuntimeConfig {
+static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig>> =
+    critical_section::Mutex::new(core::cell::RefCell::new(RuntimeConfig {
         motor_params: None,
         hall_calibration: None,
         dc_offsets: None,
@@ -39,8 +40,7 @@ static RUNTIME_CONFIG: critical_section::Mutex<
         failsafe: None,
         velocity: None,
         derating: None,
-    },
-));
+    }));
 
 #[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
 enum Transport {
@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
         rt.block_on(storage::storage_worker());
     });
 
-    let loaded_config = oxifoc_core::storage::CONFIG_LOADED.wait().await;
+    let loaded_config = CONFIG_LOADED.wait().await;
     critical_section::with(|cs| {
         *RUNTIME_CONFIG.borrow(cs).borrow_mut() = loaded_config;
     });
@@ -116,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
 
     // One motor parameter set for both the live sim and the detection
     // backend — CLI flags override the defaults here, nowhere else.
-    let motor_params = oxifoc_core::virtual_motor::MotorParams {
+    let motor_params = MotorParams {
         pole_pairs: args.pole_pairs,
         ..Default::default()
     };

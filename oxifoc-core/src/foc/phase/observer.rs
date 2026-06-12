@@ -59,7 +59,7 @@ pub enum Observer {
 #[allow(clippy::derivable_impls)] // Other variants have data, can't derive
 impl Default for Observer {
     fn default() -> Self {
-        Observer::None
+        Self::None
     }
 }
 
@@ -67,24 +67,24 @@ impl Observer {
     /// Update observer with new measurements
     pub fn update(&mut self, input: &ObserverInput) {
         match self {
-            Observer::None => {}
-            Observer::BackEmf(o) => o.update(input),
+            Self::None => {}
+            Self::BackEmf(o) => o.update(input),
         }
     }
 
     /// Get estimated electrical phase (radians)
     pub fn phase(&self) -> Option<f32> {
         match self {
-            Observer::None => None,
-            Observer::BackEmf(o) => Some(o.phase()),
+            Self::None => None,
+            Self::BackEmf(o) => Some(o.phase()),
         }
     }
 
     /// Get estimated electrical velocity (rad/s)
     pub fn velocity(&self) -> Option<f32> {
         match self {
-            Observer::None => None,
-            Observer::BackEmf(o) => Some(o.velocity()),
+            Self::None => None,
+            Self::BackEmf(o) => Some(o.velocity()),
         }
     }
 
@@ -96,16 +96,16 @@ impl Observer {
     /// crossover decisions must gate on this.
     pub fn is_ready(&self) -> bool {
         match self {
-            Observer::None => false,
-            Observer::BackEmf(o) => o.is_ready(),
+            Self::None => false,
+            Self::BackEmf(o) => o.is_ready(),
         }
     }
 
     /// Seed the estimate from a trusted external source (sensor handoff).
     pub fn seed(&mut self, angle: f32, velocity: f32) {
         match self {
-            Observer::None => {}
-            Observer::BackEmf(o) => {
+            Self::None => {}
+            Self::BackEmf(o) => {
                 o.force_phase(angle);
                 o.set_velocity(velocity);
             }
@@ -115,30 +115,30 @@ impl Observer {
     /// Get observer confidence (0.0-1.0)
     pub fn confidence(&self) -> f32 {
         match self {
-            Observer::None => 0.0,
-            Observer::BackEmf(o) => o.confidence(),
+            Self::None => 0.0,
+            Self::BackEmf(o) => o.confidence(),
         }
     }
 
     /// Check if observer is configured
     pub fn is_configured(&self) -> bool {
-        !matches!(self, Observer::None)
+        !matches!(self, Self::None)
     }
 
     /// Phase resistance of the underlying motor model, if any — used by
     /// voltage-based crossover criteria (|vq − R·iq| back-EMF proxy).
     pub fn resistance(&self) -> Option<f32> {
         match self {
-            Observer::None => None,
-            Observer::BackEmf(o) => Some(o.resistance()),
+            Self::None => None,
+            Self::BackEmf(o) => Some(o.resistance()),
         }
     }
 
     /// Reset observer state
     pub fn reset(&mut self) {
         match self {
-            Observer::None => {}
-            Observer::BackEmf(o) => o.reset(),
+            Self::None => {}
+            Self::BackEmf(o) => o.reset(),
         }
     }
 }
@@ -1015,7 +1015,7 @@ mod tests {
             omega
         );
         let err = angle_difference(obs.phase(), theta);
-        assert!(err.abs() < 0.1, "phase error {} rad too large", err);
+        assert!(err.abs() < 0.1, "phase error {err} rad too large");
         assert!(obs.confidence() > 0.5, "confidence {}", obs.confidence());
     }
 
@@ -1109,15 +1109,11 @@ mod tests {
         // PLL-lag residue remains.
         assert!(
             err_salient < 0.05,
-            "active-flux observer error {} rad (scalar comparison: {})",
-            err_salient,
-            err_scalar
+            "active-flux observer error {err_salient} rad (scalar comparison: {err_scalar})"
         );
         assert!(
             err_salient < err_scalar * 0.25,
-            "active flux should slash the load bias: scalar {} rad, salient {} rad",
-            err_scalar,
-            err_salient
+            "active flux should slash the load bias: scalar {err_scalar} rad, salient {err_salient} rad"
         );
     }
 
@@ -1153,8 +1149,7 @@ mod tests {
         }
         assert!(
             max_err < 0.15,
-            "lock lost under DC voltage offset: max err {} rad",
-            max_err
+            "lock lost under DC voltage offset: max err {max_err} rad"
         );
         assert!(obs.is_ready());
     }
@@ -1175,8 +1170,7 @@ mod tests {
         let err = angle_difference(obs.phase(), theta);
         assert!(
             err.abs() < 0.15,
-            "phase error {} rad under load (L·I = λ) — missing −L·Δi term?",
-            err
+            "phase error {err} rad under load (L·I = λ) — missing −L·Δi term?"
         );
     }
 

@@ -10,6 +10,7 @@ mod config_cli;
 mod maneuver;
 mod record;
 
+use oxifoc_core::types::{ConfigGroupId, ConfigResponse, MotorStatus};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -24,10 +25,7 @@ use serde_json::json;
 
 /// Send a motor command and wait for the device's acknowledgement — the
 /// process must exit nonzero when the command never reached the device.
-pub(crate) fn send_motor_acked(
-    runtime: &HostRuntime,
-    mode: ControlMode,
-) -> Result<oxifoc_core::types::MotorStatus> {
+pub(crate) fn send_motor_acked(runtime: &HostRuntime, mode: ControlMode) -> Result<MotorStatus> {
     let (tx, rx) = motor_channel();
     runtime
         .cmd_tx
@@ -204,15 +202,15 @@ enum FaultCategoryArg {
 impl From<FaultCategoryArg> for FaultCategory {
     fn from(v: FaultCategoryArg) -> Self {
         match v {
-            FaultCategoryArg::OverCurrent => FaultCategory::OverCurrent,
-            FaultCategoryArg::OverVoltage => FaultCategory::OverVoltage,
-            FaultCategoryArg::UnderVoltage => FaultCategory::UnderVoltage,
-            FaultCategoryArg::OverTemp => FaultCategory::OverTemp,
-            FaultCategoryArg::DriverFault => FaultCategory::DriverFault,
-            FaultCategoryArg::HallError => FaultCategory::HallError,
-            FaultCategoryArg::Stall => FaultCategory::Stall,
-            FaultCategoryArg::CalibrationFault => FaultCategory::CalibrationFault,
-            FaultCategoryArg::CommTimeout => FaultCategory::CommTimeout,
+            FaultCategoryArg::OverCurrent => Self::OverCurrent,
+            FaultCategoryArg::OverVoltage => Self::OverVoltage,
+            FaultCategoryArg::UnderVoltage => Self::UnderVoltage,
+            FaultCategoryArg::OverTemp => Self::OverTemp,
+            FaultCategoryArg::DriverFault => Self::DriverFault,
+            FaultCategoryArg::HallError => Self::HallError,
+            FaultCategoryArg::Stall => Self::Stall,
+            FaultCategoryArg::CalibrationFault => Self::CalibrationFault,
+            FaultCategoryArg::CommTimeout => Self::CommTimeout,
         }
     }
 }
@@ -623,8 +621,8 @@ fn main() -> Result<()> {
                     slow.control_mode,
                     slow.phase_source,
                     slow.vbus_mv as f32 / 1000.0,
-                    slow.fet_temp_c_x10 as f32 / 10.0,
-                    slow.motor_temp_c_x10 as f32 / 10.0,
+                    f32::from(slow.fet_temp_c_x10) / 10.0,
+                    f32::from(slow.motor_temp_c_x10) / 10.0,
                     slow.fault_count,
                 ),
             );
@@ -901,7 +899,7 @@ fn main() -> Result<()> {
                     .context("backend dropped the config reset")?
                     .context("config reset failed")?;
                 match resp {
-                    oxifoc_core::types::ConfigResponse::Ok => emit(
+                    ConfigResponse::Ok => emit(
                         json,
                         json!({"reset": true}),
                         "all stored config groups erased".to_string(),
@@ -940,13 +938,14 @@ fn main() -> Result<()> {
 
 /// Stored motor-params as JSON (defaults when not stored).
 fn motor_params_value(runtime: &HostRuntime) -> Result<serde_json::Value> {
-    let (v, _) =
-        config_cli::current_value(runtime, oxifoc_core::types::ConfigGroupId::MotorParams)?;
+    let (v, _) = config_cli::current_value(runtime, ConfigGroupId::MotorParams)?;
     Ok(v)
 }
 
 fn f32_field(v: &serde_json::Value, key: &str) -> f32 {
-    v.get(key).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32
+    v.get(key)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0) as f32
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -973,7 +972,7 @@ fn run_detect(
     let pp = pole_pairs.unwrap_or_else(|| {
         stored
             .get("pole_pairs")
-            .and_then(|x| x.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0) as u8
     });
 
@@ -1022,7 +1021,7 @@ fn run_detect(
             let foc = record::latest_hw_info(runtime)
                 .map(|h| h.foc_freq_hz)
                 .unwrap_or(20_000)
-                .min(u16::MAX as u32) as u16;
+                .min(u32::from(u16::MAX)) as u16;
             Some(record::Capture::start(runtime, foc)?)
         }
         None => None,
@@ -1216,15 +1215,15 @@ fn list_devices(json: bool) -> Result<()> {
         println!("  (none found)");
     } else {
         for port in ports {
-            println!("  {}", port);
+            println!("  {port}");
             if let (Some(vid), Some(pid)) = (port.vid, port.pid) {
-                println!("    VID:PID = {:04x}:{:04x}", vid, pid);
+                println!("    VID:PID = {vid:04x}:{pid:04x}");
             }
             if let Some(ref serial) = port.serial_number {
-                println!("    Serial: {}", serial);
+                println!("    Serial: {serial}");
             }
             if let Some(ref mfr) = port.manufacturer {
-                println!("    Manufacturer: {}", mfr);
+                println!("    Manufacturer: {mfr}");
             }
         }
     }
@@ -1235,10 +1234,10 @@ fn list_devices(json: bool) -> Result<()> {
         println!("  (none found)");
     } else {
         for probe in probes {
-            println!("  {}", probe);
+            println!("  {probe}");
             println!("    Identifier: {}", probe.identifier);
             if let Some(ref serial) = probe.serial_number {
-                println!("    Serial: {}", serial);
+                println!("    Serial: {serial}");
             }
         }
     }
@@ -1303,7 +1302,7 @@ fn run_monitor(runtime: &HostRuntime, duration: Duration, json: bool) -> Result<
     use crossbeam_channel::RecvTimeoutError;
 
     if !json {
-        println!("Streaming telemetry for {:?}...", duration);
+        println!("Streaming telemetry for {duration:?}...");
     }
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
@@ -1343,8 +1342,8 @@ fn run_monitor(runtime: &HostRuntime, duration: Duration, json: bool) -> Result<
                 println!(
                     "  [sys] vbus:{:.1}V fet:{:.1}°C motor:{:.1}°C faults:{}",
                     slow.vbus_mv as f32 / 1000.0,
-                    slow.fet_temp_c_x10 as f32 / 10.0,
-                    slow.motor_temp_c_x10 as f32 / 10.0,
+                    f32::from(slow.fet_temp_c_x10) / 10.0,
+                    f32::from(slow.motor_temp_c_x10) / 10.0,
                     slow.fault_count,
                 );
             }

@@ -99,7 +99,7 @@ impl Capture {
         };
         let foc_freq_hz = hw.as_ref().map(|h| h.foc_freq_hz).unwrap_or(0);
         let decimation_m = if foc_freq_hz > 0 {
-            foc_freq_hz / fast_hz_actual as u32
+            foc_freq_hz / u32::from(fast_hz_actual)
         } else {
             0
         };
@@ -175,7 +175,7 @@ impl Capture {
             let d = w[1].seq.wrapping_sub(w[0].seq);
             if d > expected_step {
                 gaps += 1;
-                samples_lost += ((d - expected_step) / expected_step) as u64;
+                samples_lost += u64::from((d - expected_step) / expected_step);
             }
         }
         (gaps, samples_lost)
@@ -304,13 +304,13 @@ fn write_parquet(
         .iter()
         .map(|s| {
             if foc_freq > 0 {
-                s.seq.wrapping_sub(seq0) as f64 / foc_freq as f64
+                f64::from(s.seq.wrapping_sub(seq0)) / f64::from(foc_freq)
             } else {
                 f64::NAN
             }
         })
         .collect();
-    let seq: Vec<i64> = samples.iter().map(|s| s.seq as i64).collect();
+    let seq: Vec<i64> = samples.iter().map(|s| i64::from(s.seq)).collect();
     let f32_col = |f: fn(&FastTelemetry) -> f32| -> Vec<f32> { samples.iter().map(f).collect() };
     let ia = f32_col(|s| s.ia);
     let ib = f32_col(|s| s.ib);
@@ -321,7 +321,7 @@ fn write_parquet(
     let vq = f32_col(|s| s.vq);
     let angle = f32_col(|s| s.angle_rad);
     let erpm: Vec<i32> = samples.iter().map(|s| s.erpm).collect();
-    let hall: Vec<i32> = samples.iter().map(|s| s.hall_state as i32).collect();
+    let hall: Vec<i32> = samples.iter().map(|s| i32::from(s.hall_state)).collect();
 
     let mut rg = writer.next_row_group()?;
     let mut col_idx = 0usize;

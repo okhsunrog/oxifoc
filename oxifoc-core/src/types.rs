@@ -11,6 +11,7 @@
 //! oxifoc-core = { version = "0.1", default-features = false, features = ["types"] }
 //! ```
 
+use crate::foc::phase::PhaseSource;
 use heapless::String;
 use heapless::Vec;
 use postcard_schema::Schema;
@@ -170,14 +171,14 @@ impl ControlMode {
     /// at the boundary.
     pub fn is_finite(&self) -> bool {
         match *self {
-            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake => true,
-            ControlMode::CurrentControl {
+            Self::Stopped | Self::Coast | Self::Brake => true,
+            Self::CurrentControl {
                 iq_target,
                 id_target,
             } => iq_target.is_finite() && id_target.is_finite(),
-            ControlMode::VelocityControl { target_vel } => target_vel.is_finite(),
-            ControlMode::PositionControl { target_pos } => target_pos.is_finite(),
-            ControlMode::OpenLoop {
+            Self::VelocityControl { target_vel } => target_vel.is_finite(),
+            Self::PositionControl { target_pos } => target_pos.is_finite(),
+            Self::OpenLoop {
                 angle_rad,
                 current,
                 velocity_rad_s,
@@ -188,10 +189,10 @@ impl ControlMode {
                     && velocity_rad_s.is_finite()
                     && pi_gains.is_none_or(|(kp, ki)| kp.is_finite() && ki.is_finite())
             }
-            ControlMode::DirectVoltage { vd, vq, angle_rad } => {
+            Self::DirectVoltage { vd, vq, angle_rad } => {
                 vd.is_finite() && vq.is_finite() && angle_rad.is_finite()
             }
-            ControlMode::SixStep { duty } => duty.is_finite(),
+            Self::SixStep { duty } => duty.is_finite(),
         }
     }
 }
@@ -284,7 +285,7 @@ pub struct SlowTelemetry {
     /// Number of active faults
     pub fault_count: u8,
     /// Active phase source (Hall / Observer / HFI / crossovers)
-    pub phase_source: crate::foc::phase::PhaseSource,
+    pub phase_source: PhaseSource,
     /// Monotonic sequence number
     pub seq: u32,
     // postcard struct fields are positional — append only.
@@ -496,6 +497,12 @@ pub use config_types::*;
 
 #[cfg(feature = "storage")]
 mod config_types {
+    use crate::storage::{
+        CurrentLimitsConfig, DcOffsetsConfig, DeratingConfigStored, FailsafeConfigStored,
+        HallCalibrationConfig, HallTuningConfig, MotorParamsConfig, PiGainsConfig, PwmConfigStored,
+        VelocityConfigStored, VoltageLimitsConfig,
+    };
+
     use super::*;
 
     /// Configuration request from host
@@ -532,23 +539,23 @@ mod config_types {
     #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub enum ConfigWrite {
-        MotorParams(crate::storage::MotorParamsConfig),
-        CurrentLimits(crate::storage::CurrentLimitsConfig),
-        VoltageLimits(crate::storage::VoltageLimitsConfig),
-        PwmConfig(crate::storage::PwmConfigStored),
-        PiGains(crate::storage::PiGainsConfig),
-        HallTuning(crate::storage::HallTuningConfig),
+        MotorParams(MotorParamsConfig),
+        CurrentLimits(CurrentLimitsConfig),
+        VoltageLimits(VoltageLimitsConfig),
+        PwmConfig(PwmConfigStored),
+        PiGains(PiGainsConfig),
+        HallTuning(HallTuningConfig),
         /// Hall calibration result (written by the host after CalibrateHall)
-        HallCalibration(crate::storage::HallCalibrationConfig),
+        HallCalibration(HallCalibrationConfig),
         /// Current-sensor DC offsets
-        DcOffsets(crate::storage::DcOffsetsConfig),
+        DcOffsets(DcOffsetsConfig),
         /// Command-staleness deadman + failsafe policy
-        Failsafe(crate::storage::FailsafeConfigStored),
+        Failsafe(FailsafeConfigStored),
         /// Cruise velocity-loop tuning
-        Velocity(crate::storage::VelocityConfigStored),
+        Velocity(VelocityConfigStored),
         // postcard encodes the variant index — append only.
         /// Graduated derating ramps (thermal/voltage/speed)
-        Derating(crate::storage::DeratingConfigStored),
+        Derating(DeratingConfigStored),
     }
 
     /// Configuration response
@@ -558,25 +565,25 @@ mod config_types {
         /// Operation succeeded
         Ok,
         /// Motor parameters
-        MotorParams(crate::storage::MotorParamsConfig),
+        MotorParams(MotorParamsConfig),
         /// Current limits
-        CurrentLimits(crate::storage::CurrentLimitsConfig),
+        CurrentLimits(CurrentLimitsConfig),
         /// Voltage limits
-        VoltageLimits(crate::storage::VoltageLimitsConfig),
+        VoltageLimits(VoltageLimitsConfig),
         /// PWM configuration
-        PwmConfig(crate::storage::PwmConfigStored),
+        PwmConfig(PwmConfigStored),
         /// PI gains
-        PiGains(crate::storage::PiGainsConfig),
+        PiGains(PiGainsConfig),
         /// Hall tuning
-        HallTuning(crate::storage::HallTuningConfig),
+        HallTuning(HallTuningConfig),
         /// Hall calibration data
-        HallCalibration(crate::storage::HallCalibrationConfig),
+        HallCalibration(HallCalibrationConfig),
         /// DC offsets
-        DcOffsets(crate::storage::DcOffsetsConfig),
+        DcOffsets(DcOffsetsConfig),
         /// Failsafe (deadman + policy)
-        Failsafe(crate::storage::FailsafeConfigStored),
+        Failsafe(FailsafeConfigStored),
         /// Cruise velocity-loop tuning
-        Velocity(crate::storage::VelocityConfigStored),
+        Velocity(VelocityConfigStored),
         /// Requested group has no stored value
         NotFound,
         /// Flash operation failed
@@ -590,7 +597,7 @@ mod config_types {
         /// current-limits headroom rule, `CurrentLimitsConfig::is_coherent`).
         Invalid,
         /// Graduated derating ramps
-        Derating(crate::storage::DeratingConfigStored),
+        Derating(DeratingConfigStored),
     }
 }
 
@@ -602,18 +609,18 @@ impl MotorState {
     /// Convert from u8 (for atomic storage)
     pub fn from_u8(val: u8) -> Self {
         match val {
-            0 => MotorState::Stopped,
-            1 => MotorState::Running,
-            _ => MotorState::Error,
+            0 => Self::Stopped,
+            1 => Self::Running,
+            _ => Self::Error,
         }
     }
 
     /// Convert to u8 (for atomic storage)
     pub fn to_u8(self) -> u8 {
         match self {
-            MotorState::Stopped => 0,
-            MotorState::Running => 1,
-            MotorState::Error => 2,
+            Self::Stopped => 0,
+            Self::Running => 1,
+            Self::Error => 2,
         }
     }
 }

@@ -31,6 +31,10 @@
 //! }
 //! ```
 
+use oxifoc_core::types::ConfigGroupId;
+
+use crate::config_cli::current_value;
+use crate::record::RecordSummary;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -118,12 +122,12 @@ pub enum Cmd {
 impl Cmd {
     fn to_mode(&self) -> ControlMode {
         match *self {
-            Cmd::Start { iq, id } => ControlMode::CurrentControl {
+            Self::Start { iq, id } => ControlMode::CurrentControl {
                 iq_target: iq,
                 id_target: id,
             },
-            Cmd::Velocity { rad_s } => ControlMode::VelocityControl { target_vel: rad_s },
-            Cmd::Openloop {
+            Self::Velocity { rad_s } => ControlMode::VelocityControl { target_vel: rad_s },
+            Self::Openloop {
                 current,
                 velocity,
                 angle,
@@ -133,15 +137,15 @@ impl Cmd {
                 velocity_rad_s: velocity,
                 pi_gains: None,
             },
-            Cmd::Voltage { vd, vq, angle } => ControlMode::DirectVoltage {
+            Self::Voltage { vd, vq, angle } => ControlMode::DirectVoltage {
                 vd,
                 vq,
                 angle_rad: angle,
             },
-            Cmd::Sixstep { duty } => ControlMode::SixStep { duty },
-            Cmd::Stop {} => ControlMode::Stopped,
-            Cmd::Coast {} => ControlMode::Coast,
-            Cmd::Brake {} => ControlMode::Brake,
+            Self::Sixstep { duty } => ControlMode::SixStep { duty },
+            Self::Stop {} => ControlMode::Stopped,
+            Self::Coast {} => ControlMode::Coast,
+            Self::Brake {} => ControlMode::Brake,
         }
     }
 
@@ -149,8 +153,8 @@ impl Cmd {
     /// (None = not expressible in amps, e.g. voltage/duty modes).
     fn current_demand(&self) -> Option<f32> {
         match *self {
-            Cmd::Start { iq, id } => Some((iq * iq + id * id).sqrt()),
-            Cmd::Openloop { current, .. } => Some(current.abs()),
+            Self::Start { iq, id } => Some((iq * iq + id * id).sqrt()),
+            Self::Openloop { current, .. } => Some(current.abs()),
             _ => None,
         }
     }
@@ -159,9 +163,9 @@ impl Cmd {
 impl Terminal {
     fn to_mode(self) -> ControlMode {
         match self {
-            Terminal::Stop => ControlMode::Stopped,
-            Terminal::Coast => ControlMode::Coast,
-            Terminal::Brake => ControlMode::Brake,
+            Self::Stop => ControlMode::Stopped,
+            Self::Coast => ControlMode::Coast,
+            Self::Brake => ControlMode::Brake,
         }
     }
 }
@@ -212,13 +216,10 @@ pub fn validate(m: &Maneuver) -> Result<()> {
 
 /// Online check against the device's stored current limits.
 fn check_limits(runtime: &HostRuntime, m: &Maneuver) -> Result<()> {
-    let (limits, _stored) = crate::config_cli::current_value(
-        runtime,
-        oxifoc_core::types::ConfigGroupId::CurrentLimits,
-    )?;
+    let (limits, _stored) = current_value(runtime, ConfigGroupId::CurrentLimits)?;
     let max_iq = limits
         .get("max_iq_a")
-        .and_then(|v| v.as_f64())
+        .and_then(Value::as_f64)
         .unwrap_or(0.0) as f32;
     if max_iq <= 0.0 {
         return Ok(());
@@ -261,7 +262,7 @@ pub struct ManeuverSummary {
     pub maneuver: String,
     pub events: Vec<EventRecord>,
     pub terminal_ok: bool,
-    pub record: crate::record::RecordSummary,
+    pub record: RecordSummary,
 }
 
 pub fn run(
@@ -269,7 +270,7 @@ pub fn run(
     m: &Maneuver,
     out_path: &str,
     force: bool,
-    config_snapshot: serde_json::Value,
+    config_snapshot: Value,
 ) -> Result<ManeuverSummary> {
     if !force {
         check_limits(runtime, m)?;

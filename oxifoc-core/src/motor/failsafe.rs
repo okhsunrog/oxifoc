@@ -29,6 +29,8 @@
 
 use crate::foc::clamp_f32;
 use crate::foc::velocity::{VelocityLoop, VelocityLoopConfig};
+#[cfg(feature = "storage")]
+use crate::storage::FailsafeConfigStored;
 
 /// Standstill must persist this long (s) before [`ControlledStop`] declares
 /// the rotor stopped — rides out velocity noise / a momentary zero crossing.
@@ -98,9 +100,9 @@ impl FailsafePolicy {
     /// Decode a stored `u8`; an unknown value falls back to the safest policy.
     pub fn from_u8(v: u8) -> Self {
         match v {
-            1 => FailsafePolicy::RampToZero,
-            2 => FailsafePolicy::ControlledStop,
-            _ => FailsafePolicy::Coast,
+            1 => Self::RampToZero,
+            2 => Self::ControlledStop,
+            _ => Self::Coast,
         }
     }
 }
@@ -123,8 +125,8 @@ impl FailsafeTerminal {
     /// Decode a stored `u8`; unknown falls back to the conservative high-Z.
     pub fn from_u8(v: u8) -> Self {
         match v {
-            1 => FailsafeTerminal::ParkBrake,
-            _ => FailsafeTerminal::HighZ,
+            1 => Self::ParkBrake,
+            _ => Self::HighZ,
         }
     }
 }
@@ -182,12 +184,12 @@ impl FailsafeConfig {
     /// enum (unknown → Coast). A missing or non-sane stored value falls back
     /// to [`Default`] — a corrupt config can never disable the deadman.
     #[cfg(feature = "storage")]
-    pub fn from_stored(cfg: Option<&crate::storage::FailsafeConfigStored>) -> Self {
+    pub fn from_stored(cfg: Option<&FailsafeConfigStored>) -> Self {
         match cfg {
             Some(c) => {
                 let candidate = Self {
                     policy: FailsafePolicy::from_u8(c.policy),
-                    staleness_timeout_us: (c.staleness_timeout_ms as u64) * 1_000,
+                    staleness_timeout_us: u64::from(c.staleness_timeout_ms) * 1_000,
                     brake_current_a: c.brake_current_a,
                     ramp_s: c.ramp_ms * 1e-3,
                     brake_time_s: c.brake_time_ms * 1e-3,

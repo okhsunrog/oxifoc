@@ -34,6 +34,8 @@
 /// let clamped = raw.clamp(-24.0, 24.0);
 /// pi.apply_anti_windup(clamped - raw);
 /// ```
+use crate::foc::clamp_f32;
+
 #[derive(Debug)]
 pub struct PIController {
     /// Proportional gain
@@ -180,7 +182,7 @@ impl ClampedPI {
             self.max
         };
         let (min, max) = if min <= max { (min, max) } else { (max, min) };
-        let clamped = crate::foc::clamp_f32(raw, min, max);
+        let clamped = clamp_f32(raw, min, max);
 
         // Back-calculation anti-windup
         if raw != clamped {
@@ -279,8 +281,7 @@ mod tests {
         // Should converge close to setpoint with well-tuned gains
         assert!(
             (measurement - setpoint).abs() < 0.2,
-            "PI should converge to setpoint, got {}",
-            measurement
+            "PI should converge to setpoint, got {measurement}"
         );
     }
 
@@ -293,8 +294,7 @@ mod tests {
 
         assert!(
             (-5.0..=5.0).contains(&output),
-            "Output should be clamped, got {}",
-            output
+            "Output should be clamped, got {output}"
         );
     }
 
@@ -320,9 +320,7 @@ mod tests {
         // Anti-windup should keep integral much smaller
         assert!(
             integral_with_antiwindup.abs() < integral_without_antiwindup.abs(),
-            "Anti-windup should prevent integral buildup: {} vs {}",
-            integral_with_antiwindup,
-            integral_without_antiwindup
+            "Anti-windup should prevent integral buildup: {integral_with_antiwindup} vs {integral_without_antiwindup}"
         );
     }
 
@@ -376,9 +374,7 @@ mod tests {
         let expected = 1.0 * 2.0 + 20.0 * 2.0 * 0.5 * DT;
         assert!(
             (output2 - expected).abs() < 0.01,
-            "Expected ~{}, got {}",
-            expected,
-            output2
+            "Expected ~{expected}, got {output2}"
         );
     }
 
@@ -406,9 +402,7 @@ mod tests {
         // Allow ~7% error due to simplified plant model
         assert!(
             (actual_current - target_current).abs() < 0.35,
-            "Current control should converge, got {} vs {}",
-            actual_current,
-            target_current
+            "Current control should converge, got {actual_current} vs {target_current}"
         );
     }
 }

@@ -103,13 +103,13 @@ pub fn init_hall(
     set_tick_source(now_ticks);
 
     let timer = Timer::new(tim2);
-    let clk = timer.get_clock_frequency().0 as u64;
+    let clk = u64::from(timer.get_clock_frequency().0);
     // Derive PSC from the actual RCC config — TIM2 is on APB1, whose timer
     // clock doubles when the APB prescaler is > 1. Hardcoding would
     // silently skew every hall velocity by that factor.
     let psc = clk / HALL_TICKS_PER_SEC - 1;
     defmt::assert!(
-        clk.is_multiple_of(HALL_TICKS_PER_SEC) && psc <= u16::MAX as u64,
+        clk.is_multiple_of(HALL_TICKS_PER_SEC) && psc <= u64::from(u16::MAX),
         "TIM2 clock {} not divisible to 1 MHz",
         clk
     );

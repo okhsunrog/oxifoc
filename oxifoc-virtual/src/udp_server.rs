@@ -11,6 +11,11 @@
 //! `send_to`. After a liveness timeout the interface goes Down; we rebind a
 //! fresh socket (SO_REUSEADDR) and wait for the next host.
 
+use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
+use oxifoc_core::runtime::streaming::{DEFAULT_BATCH_SIZE, fault_topic_stream};
+use oxifoc_core::virtual_motor::MotorParams;
+
+use crate::detect::detect_server;
 use core::cell::RefCell;
 use std::sync::Arc;
 
@@ -56,7 +61,7 @@ pub async fn run(
     foc_freq_hz: u32,
     max_current_a: f32,
     vbus: f32,
-    motor_params: oxifoc_core::virtual_motor::MotorParams,
+    motor_params: MotorParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<VirtualFault>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
@@ -94,7 +99,7 @@ pub async fn run(
             ERGOT_MTU,
             32768,
             Some(LivenessConfig {
-                timeout_ms: oxifoc_core::icd::LIVENESS_TIMEOUT_MS,
+                timeout_ms: LIVENESS_TIMEOUT_MS,
             }),
             Some(state_notify.clone()),
         )
@@ -160,8 +165,8 @@ pub async fn run(
             async move {
                 tokio::select! {
                     _ = token.cancelled() => {}
-                    _ = fast_telemetry_stream::<_, { oxifoc_core::runtime::streaming::DEFAULT_BATCH_SIZE }, crate::TokioTimer>(stack.clone(), foc_freq_hz) => {}
-                    _ = oxifoc_core::runtime::streaming::fault_topic_stream(stack, fault_registry) => {}
+                    _ = fast_telemetry_stream::<_, { DEFAULT_BATCH_SIZE }, crate::TokioTimer>(stack.clone(), foc_freq_hz) => {}
+                    _ = fault_topic_stream(stack, fault_registry) => {}
                 }
             }
         });
@@ -173,7 +178,7 @@ pub async fn run(
             async move {
                 tokio::select! {
                     _ = token.cancelled() => {}
-                    _ = crate::detect::detect_server(endpoints, vbus, max_current_a, foc_freq_hz, motor_params) => {}
+                    _ = detect_server(endpoints, vbus, max_current_a, foc_freq_hz, motor_params) => {}
                 }
             }
         });

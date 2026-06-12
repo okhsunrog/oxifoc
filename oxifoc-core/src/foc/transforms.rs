@@ -165,15 +165,11 @@ mod tests {
 
             assert!(
                 (a - ia).abs() < EPSILON,
-                "Clarke roundtrip failed for ia={}: got a={}",
-                ia,
-                a
+                "Clarke roundtrip failed for ia={ia}: got a={a}"
             );
             assert!(
                 (b - ib).abs() < EPSILON,
-                "Clarke roundtrip failed for ib={}: got b={}",
-                ib,
-                b
+                "Clarke roundtrip failed for ib={ib}: got b={b}"
             );
         }
     }
@@ -185,11 +181,7 @@ mod tests {
         let (a, b, c) = inverse_clarke(alpha, beta);
         let sum = a + b + c;
 
-        assert!(
-            sum.abs() < EPSILON,
-            "3-phase sum should be zero, got {}",
-            sum
-        );
+        assert!(sum.abs() < EPSILON, "3-phase sum should be zero, got {sum}");
     }
 
     #[test]
@@ -224,17 +216,11 @@ mod tests {
 
                 assert!(
                     (alpha_result - alpha).abs() < EPSILON,
-                    "Park roundtrip failed for alpha={} at θ={}: got {}",
-                    alpha,
-                    theta,
-                    alpha_result
+                    "Park roundtrip failed for alpha={alpha} at θ={theta}: got {alpha_result}"
                 );
                 assert!(
                     (beta_result - beta).abs() < EPSILON,
-                    "Park roundtrip failed for beta={} at θ={}: got {}",
-                    beta,
-                    theta,
-                    beta_result
+                    "Park roundtrip failed for beta={beta} at θ={theta}: got {beta_result}"
                 );
             }
         }

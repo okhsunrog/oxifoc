@@ -1,6 +1,7 @@
 //! FOC simulation loop — FocController + VirtualMotor running on tokio.
 
 use core::cell::RefCell;
+use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
 use std::time::Duration;
 
 use critical_section::Mutex as CriticalSectionMutex;
@@ -43,7 +44,7 @@ pub async fn foc_loop(
     let mut control_mode = ControlMode::Stopped;
     let mut seq: u32 = 0;
 
-    let sleep_us = (batch as u64 * 1_000_000) / foc_freq as u64;
+    let sleep_us = (batch as u64 * 1_000_000) / u64::from(foc_freq);
     let mut interval = tokio::time::interval(Duration::from_micros(sleep_us));
 
     info!(
@@ -115,13 +116,7 @@ pub async fn foc_loop(
                 state: out.hall_state,
                 error_count: 0,
             };
-            oxifoc_core::runtime::streaming::publish_cycle_telemetry(
-                state_mutex,
-                adc,
-                Some(hall),
-                last_foc_out,
-                seq,
-            );
+            publish_cycle_telemetry(state_mutex, adc, Some(hall), last_foc_out, seq);
         }
     }
 }

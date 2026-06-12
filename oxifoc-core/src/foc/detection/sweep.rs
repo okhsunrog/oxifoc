@@ -40,7 +40,9 @@ use super::types::{
     VoltagePulseParams,
 };
 use super::voltage_pulse::VoltagePulseMeasurement;
+use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
+use crate::foc::fast_math::sqrtf;
 use crate::foc::transforms;
 use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
@@ -465,14 +467,12 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
 
     // Latency-immune |Z| from the winning bin's response norm.
     let n = accum as f32;
-    let i_amp = 2.0
-        * crate::foc::fast_math::sqrtf(corr_q[lag] * corr_q[lag] + corr_i[lag] * corr_i[lag])
-        / n;
+    let i_amp = 2.0 * sqrtf(corr_q[lag] * corr_q[lag] + corr_i[lag] * corr_i[lag]) / n;
     let l_mag = if i_amp > 1e-4 && amp > 0.0 {
         let z = amp / i_amp;
         let zl_sq = z * z - resistance_ohm * resistance_ohm;
         if zl_sq > 0.0 {
-            crate::foc::fast_math::sqrtf(zl_sq) / omega_c
+            sqrtf(zl_sq) / omega_c
         } else {
             0.0
         }
@@ -526,8 +526,8 @@ async fn hfi_collect<H: DetectionHardware, S: SinCos>(
             // amplitude — finish() reports the real error downstream.
             if let Some(l_avg) = measurement.interim_l_avg() {
                 let a = adapt.take().unwrap();
-                let z = crate::foc::fast_math::sqrtf(a.r * a.r + a.omega * l_avg * a.omega * l_avg);
-                let v_run = crate::foc::clamp_f32(a.i_target * z, a.v_min, a.v_max);
+                let z = sqrtf(a.r * a.r + a.omega * l_avg * a.omega * l_avg);
+                let v_run = clamp_f32(a.i_target * z, a.v_min, a.v_max);
                 info!("HFI amplitude adapted: {}V", v_run);
                 injector.set_amplitude(v_run);
                 injector.reset();
@@ -624,7 +624,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     // uncompensated dead-time distortion). Telemetry vd is the
     // PRE-modulation command, so configured dead-time comp (a duty-domain
     // adjustment) is not double-counted.
-    T::after_millis(params.settle_time_ms as u64).await;
+    T::after_millis(u64::from(params.settle_time_ms)).await;
     let vd_hold =
         settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
 
@@ -764,7 +764,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
             .await;
             T::after_millis(10).await;
         }
-        T::after_millis(params.settle_time_ms as u64).await;
+        T::after_millis(u64::from(params.settle_time_ms)).await;
 
         // Steady-state holding voltage (averaged; robust to a PI that is
         // still converging and to dead-time make-up — see
@@ -935,7 +935,8 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     params: &FluxLinkageParams,
 ) -> Result<f32, DetectionError> {
-    let omega_cap = (params.spin_rpm * core::f32::consts::TAU * params.pole_pairs as f32 / 60.0)
+    let omega_cap = (params.spin_rpm * core::f32::consts::TAU * f32::from(params.pole_pairs)
+        / 60.0)
         .min(SPINUP_MAX_OMEGA_E);
 
     let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
@@ -959,7 +960,7 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
             pi_gains: if i == 1 { det_gains } else { None },
         })
         .await;
-        T::after_millis(CAPTURE_TIME_MS / CAPTURE_STEPS as u64).await;
+        T::after_millis(CAPTURE_TIME_MS / u64::from(CAPTURE_STEPS)).await;
     }
 
     // Resistive |V| baseline at near-zero speed. The v_target criterion
@@ -971,14 +972,14 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
     const BASELINE_SAMPLES: u32 = 10;
     for _ in 0..BASELINE_SAMPLES {
         let telem = hw.wait_telemetry().await;
-        v_baseline += crate::foc::fast_math::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+        v_baseline += sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
         T::after_micros(500).await;
     }
     v_baseline /= BASELINE_SAMPLES as f32;
 
     info!("Ramping up (velocity mode)...");
     let ramp_steps = 100u32;
-    let step_ms = (params.ramp_time_ms / ramp_steps).max(1) as u64;
+    let step_ms = u64::from((params.ramp_time_ms / ramp_steps).max(1));
     // Low-passed |V| for the sync check: rotor swing after disturbances
     // modulates the back-EMF at a few Hz, and small motors run this whole
     // ramp at well under a volt — raw samples would trip the threshold on
@@ -1003,7 +1004,7 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
         T::after_millis(step_ms).await;
 
         let telem = hw.wait_telemetry().await;
-        let v_mag = crate::foc::fast_math::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+        let v_mag = sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
         v_filt = if i == 1 {
             v_mag
         } else {
@@ -1041,7 +1042,7 @@ async fn ramp_down_open_loop<H: DetectionHardware, T: Timer>(
     ramp_time_ms: u32,
 ) {
     let ramp_steps = 50u32;
-    let step_ms = (ramp_time_ms / ramp_steps).max(1) as u64;
+    let step_ms = u64::from((ramp_time_ms / ramp_steps).max(1));
     for i in (0..ramp_steps).rev() {
         let progress = i as f32 / ramp_steps as f32;
         hw.send_command(ControlMode::OpenLoop {
@@ -1082,7 +1083,7 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
     let mut measurement = FluxLinkageMeasurement::from_params(params)?;
 
     let omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
-    T::after_millis(params.settle_time_ms as u64).await;
+    T::after_millis(u64::from(params.settle_time_ms)).await;
 
     // The firmware integrates the angle at the FOC rate, so the actual
     // electrical speed IS the commanded one (synchronous machine; sync
@@ -1131,7 +1132,7 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
     );
 
     let omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
-    T::after_millis(params.settle_time_ms as u64).await;
+    T::after_millis(u64::from(params.settle_time_ms)).await;
 
     info!("Collecting flux linkage samples...");
     for _ in 0..params.num_samples {
@@ -1169,7 +1170,7 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
     let _omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
 
     // Hold at speed briefly to ensure steady state
-    T::after_millis(params.settle_time_ms as u64).await;
+    T::after_millis(u64::from(params.settle_time_ms)).await;
 
     // ── Release: coast with all FETs off ───────────────────────────────
     hw.send_command(ControlMode::Coast).await;
@@ -1186,7 +1187,7 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
         T::after_micros(500).await; // ~2 kHz effective sample rate
 
         let (v_alpha, v_beta, omega_e) = hw.read_coast_telemetry();
-        let v_bemf = crate::foc::fast_math::sqrtf(v_alpha * v_alpha + v_beta * v_beta);
+        let v_bemf = sqrtf(v_alpha * v_alpha + v_beta * v_beta);
 
         if !measurement.record(v_bemf, omega_e) {
             // omega below threshold — motor has slowed too much
@@ -1312,7 +1313,7 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     // available), the PI saturates short of the setpoint and the settle
     // check aborts the measurement.
     let max_bus_current = (params.vbus * 0.577 * 0.85) / r_probe.max(0.001);
-    let safe_current = crate::foc::fast_math::sqrtf(params.max_power_loss_w / r_probe / 1.5)
+    let safe_current = sqrtf(params.max_power_loss_w / r_probe / 1.5)
         .min(params.current_max)
         .min(max_bus_current)
         .max(probe_current);
@@ -1357,9 +1358,9 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     // fall back to driven method if the motor decelerates too quickly.
     // Use openloop_erpm to set spin RPM, fall back to motor_size default
     let spin_rpm = if params.openloop_erpm > 0.0 {
-        params.openloop_erpm / params.pole_pairs as f32
+        params.openloop_erpm / f32::from(params.pole_pairs)
     } else {
-        params.motor_size.suggested_open_loop_erpm() / params.pole_pairs as f32
+        params.motor_size.suggested_open_loop_erpm() / f32::from(params.pole_pairs)
     };
     let flux_params = FluxLinkageParams {
         motor_size: params.motor_size,
@@ -1450,7 +1451,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
             pi_gains: if i == 1 { det_gains } else { None },
         })
         .await;
-        T::after_millis(ramp_delay_ms as u64).await;
+        T::after_millis(u64::from(ramp_delay_ms)).await;
     }
 
     // Hold at full current briefly to let rotor settle
@@ -1480,7 +1481,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
             .await;
 
             // Wait for rotor to settle
-            T::after_micros(params.step_delay_us as u64).await;
+            T::after_micros(u64::from(params.step_delay_us)).await;
 
             // Read and record Hall state
             let hall_state = hall_reader.read_hall_state();
@@ -1498,7 +1499,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
             pi_gains: None,
         })
         .await;
-        T::after_millis(ramp_delay_ms as u64).await;
+        T::after_millis(u64::from(ramp_delay_ms)).await;
     }
 
     // Stop motor

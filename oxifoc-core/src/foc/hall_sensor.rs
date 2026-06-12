@@ -15,6 +15,7 @@ use core::f32::consts::TAU;
 
 use super::sensors::{AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait};
 use super::{angle_difference, wrap_angle};
+use crate::foc::clamp_f32;
 
 /// Hall state lookup table: maps raw sensor reading (0-7) to logical state (0-5)
 ///
@@ -219,13 +220,13 @@ impl HallFaultKind {
     pub fn details(&self) -> heapless::String<128> {
         let mut s = heapless::String::new();
         match self {
-            HallFaultKind::InvalidState => {
+            Self::InvalidState => {
                 let _ = s.push_str("invalid state (0/7) - wiring/pull-up");
             }
-            HallFaultKind::StaleAtSpeed => {
+            Self::StaleAtSpeed => {
                 let _ = s.push_str("edges stopped at speed - dead cable/sensor");
             }
-            HallFaultKind::WireDead { mask } => {
+            Self::WireDead { mask } => {
                 let _ = s.push_str("dead wire:");
                 for bit in 0..3u8 {
                     if mask & (1 << bit) != 0 {
@@ -237,7 +238,7 @@ impl HallFaultKind {
                     }
                 }
             }
-            HallFaultKind::ErrorRate => {
+            Self::ErrorRate => {
                 let _ = s.push_str("high error rate - bounce/EMI");
             }
         }
@@ -285,7 +286,7 @@ impl HallSensor {
         // Electrical angle completes 2π every 6 Hall states (one electrical revolution)
         let angle_per_state = TAU / 6.0;
 
-        HallSensor {
+        Self {
             angle_per_state,
             calib: HallCalibration::default(),
             angle: 0.0,
@@ -319,7 +320,7 @@ impl HallSensor {
     /// Convert microseconds to ticks
     #[inline]
     fn us_to_ticks(us: u32, ticks_per_sec: u64) -> u64 {
-        (us as u64 * ticks_per_sec) / 1_000_000
+        (u64::from(us) * ticks_per_sec) / 1_000_000
     }
 
     /// Set minimum eRPM for interpolation.
@@ -357,7 +358,7 @@ impl HallSensor {
     /// `drift * gain` per sample. VESC uses 0.01 (1% per cycle).
     /// Higher = faster correction but more aggressive.
     pub fn set_drift_correction_gain(&mut self, gain: f32) {
-        self.drift_correction_gain = crate::foc::clamp_f32(gain, 0.0, 1.0);
+        self.drift_correction_gain = clamp_f32(gain, 0.0, 1.0);
     }
 
     /// Get drift correction gain
@@ -846,7 +847,7 @@ impl HallSensor {
     #[inline]
     fn decayed_velocity(&self, dt_from_edge: f32) -> f32 {
         let vel_limit = self.angle_per_state / dt_from_edge.max(1e-9);
-        crate::foc::clamp_f32(self.elec_velocity, -vel_limit, vel_limit)
+        clamp_f32(self.elec_velocity, -vel_limit, vel_limit)
     }
 
     /// Interpolated sample at `now_ticks` with full VESC-style processing.
@@ -1052,7 +1053,7 @@ impl Default for HallCalibration {
         ];
 
         for (raw, seq_pos) in RAW_TO_SEQUENCE {
-            raw_table[raw as usize] = step * seq_pos as f32;
+            raw_table[raw as usize] = step * f32::from(seq_pos);
             valid[raw as usize] = true;
         }
 
@@ -1086,11 +1087,11 @@ impl AngleSensor for HallSensor {
     }
 
     fn reset_errors(&mut self) {
-        HallSensor::reset_errors(self);
+        Self::reset_errors(self);
     }
 
     fn fault_kind(&self) -> Option<HallFaultKind> {
-        HallSensor::fault_kind(self)
+        Self::fault_kind(self)
     }
 }
 
@@ -1112,22 +1113,22 @@ impl HallSensorTrait for HallSensor {
     }
 
     fn set_calibration(&mut self, table: [f32; 6]) {
-        HallSensor::set_calibration(self, table)
+        Self::set_calibration(self, table);
     }
 
     fn set_calibration_raw(&mut self, raw_table: [f32; 8]) {
-        HallSensor::set_calibration_raw(self, raw_table)
+        Self::set_calibration_raw(self, raw_table);
     }
 
     fn apply_calibration(
         &mut self,
         result: &super::hall_calibration::HallCalibrationResult,
     ) -> bool {
-        HallSensor::apply_calibration(self, result)
+        Self::apply_calibration(self, result)
     }
 
     fn set_advance(&mut self, advance_rad: f32) {
-        HallSensor::set_advance(self, advance_rad)
+        Self::set_advance(self, advance_rad);
     }
 
     fn advance(&self) -> f32 {
@@ -1348,16 +1349,14 @@ mod tests {
         // Should be pulled back by gain × drift ≈ 0.01 × 0.52 ≈ 0.005 rad
         assert!(
             diff_from_uncorrected > 0.004,
-            "Soft correction should pull angle back, but diff from uncorrected was only {} rad",
-            diff_from_uncorrected
+            "Soft correction should pull angle back, but diff from uncorrected was only {diff_from_uncorrected} rad"
         );
 
         // Should still be reasonable (not wildly off)
         let diff_from_sector = angle_difference(sample.angle, sector_angle).abs();
         assert!(
             diff_from_sector < TAU / 4.0, // Less than 90°
-            "Drift should be reasonable, got {} rad from sector",
-            diff_from_sector
+            "Drift should be reasonable, got {diff_from_sector} rad from sector"
         );
     }
 
@@ -1381,9 +1380,7 @@ mod tests {
 
         assert!(
             step <= expected_max_step * 1.1, // Allow 10% margin for floating point
-            "Rate limiting should constrain step to {}, got {} rad",
-            expected_max_step,
-            step
+            "Rate limiting should constrain step to {expected_max_step}, got {step} rad"
         );
     }
 
@@ -1528,9 +1525,7 @@ mod tests {
         let max_step = hall.electrical_velocity().abs() * 100e-6 * DEFAULT_RATE_LIMIT_FACTOR + 1e-3;
         assert!(
             step <= max_step,
-            "angle jumped {} rad across an early hall edge (rate limit {})",
-            step,
-            max_step
+            "angle jumped {step} rad across an early hall edge (rate limit {max_step})"
         );
     }
 
@@ -1660,11 +1655,7 @@ mod tests {
             t += 1000; // 1 ms per sector ≈ 10k eRPM
         }
         let running = hall.sample_at(t).unwrap().omega.abs();
-        assert!(
-            running > 500.0,
-            "sanity: motor was spinning, got {}",
-            running
-        );
+        assert!(running > 500.0, "sanity: motor was spinning, got {running}");
 
         // 50 ms after the last edge, with no new edges:
         let stale = hall.sample_at(t + 50_000).unwrap();

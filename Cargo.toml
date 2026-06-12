@@ -19,6 +19,20 @@ exclude = [
     "tests/stm32f405", # On-target integration tests
 ]
 
+# Curated strict lints; members opt in via `[lints] workspace = true`.
+# The excluded device crates (oxifoc-g431/g474/f405, bridge, remote, tests/*)
+# carry a verbatim copy of these tables — keep them in sync when editing.
+[workspace.lints.rust]
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+use_self = "warn"
+uninlined_format_args = "warn"
+cast_lossless = "warn"
+manual_let_else = "warn"
+semicolon_if_nothing_returned = "warn"
+redundant_closure_for_method_calls = "warn"
+
 [profile.dev]
 incremental = true
 

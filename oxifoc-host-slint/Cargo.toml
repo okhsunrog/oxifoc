@@ -58,3 +58,6 @@ max_sdk_version = 30
 [[package.metadata.android.uses_permission]]
 name = "android.permission.BLUETOOTH_ADMIN"
 max_sdk_version = 30
+
+[lints]
+workspace = true

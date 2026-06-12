@@ -31,7 +31,7 @@ use crate::config::{UART_BAUD, UART_RX_BUF_LEN, UART_TX_BUF_LEN};
 
 // ========== Type Aliases ==========
 
-pub type Rng = embassy_stm32::rng::Rng<'static, peripherals::RNG>;
+pub type Rng = rng::Rng<'static, peripherals::RNG>;
 type McRouter = Router<IoInterface<QueueRef>, Rng, 1, 0>;
 pub type Queue = kit::Queue<OUT_QUEUE_SIZE, AtomicCoord>;
 type QueueRef = &'static Queue;

@@ -50,7 +50,7 @@ pub fn space_vector_pwm(alpha: f32, beta: f32, max_duty: u16) -> [u16; 3] {
     let sector = get_sector(alpha, beta);
 
     // Calculate PWM timings per sector
-    let pwm_full = max_duty as i32;
+    let pwm_full = i32::from(max_duty);
     let (ta, tb, tc) = match sector {
         1 => {
             // Vector on-times
@@ -150,10 +150,8 @@ mod tests {
         let expected = MAX_DUTY / 2;
         for duty in duties {
             assert!(
-                (duty as i32 - expected as i32).abs() <= 1,
-                "Zero voltage duty should be ~{}, got {}",
-                expected,
-                duty
+                (i32::from(duty) - i32::from(expected)).abs() <= 1,
+                "Zero voltage duty should be ~{expected}, got {duty}"
             );
         }
     }
@@ -174,11 +172,7 @@ mod tests {
                 for (i, &duty) in duties.iter().enumerate() {
                     assert!(
                         duty <= MAX_DUTY,
-                        "Duty cycle {} out of range at angle={}, mag={}: got {}",
-                        i,
-                        angle_deg,
-                        magnitude,
-                        duty
+                        "Duty cycle {i} out of range at angle={angle_deg}, mag={magnitude}: got {duty}"
                     );
                 }
             }
@@ -202,8 +196,7 @@ mod tests {
             let sector = get_sector(alpha, beta);
             assert_eq!(
                 sector, expected_sector,
-                "Expected sector {} for α={}, β={}, got {}",
-                expected_sector, alpha, beta, sector
+                "Expected sector {expected_sector} for α={alpha}, β={beta}, got {sector}"
             );
 
             // Also verify SVPWM produces valid output
@@ -250,7 +243,7 @@ mod tests {
                 if let Some(prev) = prev_duties {
                     // Check no huge jumps between consecutive angles
                     for i in 0..3 {
-                        let diff = (duties[i] as i32 - prev[i] as i32).abs();
+                        let diff = (i32::from(duties[i]) - i32::from(prev[i])).abs();
                         assert!(
                             diff < 200,
                             "Large duty change at sector boundary: {} -> {} (diff={})",
@@ -284,9 +277,8 @@ mod tests {
         // All phases should be at mid-point (500 ± tolerance for rounding)
         for duty in duties {
             assert!(
-                (duty as i32 - 500).abs() <= 2,
-                "Zero voltage should give ~500 duty, got {}",
-                duty
+                (i32::from(duty) - 500).abs() <= 2,
+                "Zero voltage should give ~500 duty, got {duty}"
             );
         }
     }
@@ -301,15 +293,13 @@ mod tests {
             let beta = 0.5 * libm::sinf(angle_rad);
 
             let duties = space_vector_pwm(alpha, beta, MAX_DUTY);
-            let sum: u32 = duties.iter().map(|&d| d as u32).sum();
+            let sum: u32 = duties.iter().map(|&d| u32::from(d)).sum();
 
             // Sum should be reasonable (between 1.0x and 2.0x max_duty)
             // SVPWM centering means it won't be exactly 1.5x everywhere
             assert!(
-                sum >= MAX_DUTY as u32 && sum <= (MAX_DUTY as u32 * 2),
-                "Duty sum {} outside reasonable range at angle {}",
-                sum,
-                angle_deg
+                sum >= u32::from(MAX_DUTY) && sum <= (u32::from(MAX_DUTY) * 2),
+                "Duty sum {sum} outside reasonable range at angle {angle_deg}"
             );
         }
     }

@@ -73,5 +73,5 @@ pub async fn storage_worker(flash: AsyncFlash) {
         WRITE_SIZE
     );
 
-    run_storage_worker(&mut storage, buf).await
+    run_storage_worker(&mut storage, buf).await;
 }
