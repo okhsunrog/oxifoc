@@ -1,8 +1,9 @@
 # Fault system overhaul: response classes, derating, hall health
 
-Status: open — design agreed 2026-06-12 (session with VESC/MESC reference
-study), nothing implemented yet. Companion to [../safety.md](../safety.md)
-(failsafe layers) and the Bench section of [../TODO.md](../TODO.md).
+Status: partially landed — phase 1 (severity classes, class-based gate,
+deadman → CommTimeout) landed 2026-06-12; phases 2–6 open. Companion to
+[../safety.md](../safety.md) (failsafe layers) and the Bench section of
+[../TODO.md](../TODO.md).
 
 ## Motivation
 
@@ -168,10 +169,12 @@ HFI carrier ripple + noise.
 
 ## Implementation order
 
-1. **Classes + gate + deadman fold-in**: severity in `FaultInfo`,
-   class-based gate in `run_foc_cycle`, deadman → `CommTimeout`,
-   auto-rearm policy. Foundation — nothing hall-related can land before
-   this (a HallError under today's `any()` gate would stop the motor).
+1. **[landed 2026-06-12]** Classes + gate + deadman fold-in:
+   `FaultSeverity` on the wire (central policy in
+   `FaultCategory::severity`, pinned by `severity_policy_pinned`),
+   class-based gate in `run_foc_cycle`
+   (`severity_gate` tests), deadman/link gate → `CommTimeout` with
+   auto-clear on a drained `SetMode`. +260 B on g431.
 2. **Limit-ladder fixes**: cross-field validation + board-level
    harmonization (small, independent, removes the foot-gun).
 3. **Hall package**: PhaseFault bridge (sticky warning), per-bit wire

@@ -271,6 +271,7 @@ fn ADC() {
                 now_ticks,
                 &BOARD,
                 F405Fault::OverCurrent,
+                F405Fault::CommTimeout,
             )
         })
     });

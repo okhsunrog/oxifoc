@@ -69,15 +69,74 @@ pub enum FaultCategory {
     CommTimeout,
 }
 
+/// What the firmware does about a fault — see `docs/notes/fault-overhaul.md`.
+///
+/// Ordered: `Warning < GracefulStop < Kill`, so severity comparisons read
+/// naturally (`severity() >= GracefulStop` = "stops the motor").
+///
+/// The remote/host UI keys off this field, never off hardcoded categories —
+/// new fault categories must not require a remote firmware update.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Schema, Default,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum FaultSeverity {
+    /// Report only — the motor is untouched. The rider keeps riding.
+    Warning,
+    /// The inverter is healthy but continuing is unsafe: stop via the
+    /// failsafe machinery (ramp / controlled stop per config), restart
+    /// blocked while the fault is active. No Error latch — when the
+    /// condition clears (auto or host clear), the normal failsafe re-arm
+    /// applies (explicit safe-mode acknowledgement).
+    GracefulStop,
+    /// Inverter-integrity threat: immediate high-Z + Error latch until an
+    /// explicit host clear. Default — an unclassified fault is treated as
+    /// the worst case.
+    #[default]
+    Kill,
+}
+
+impl FaultCategory {
+    /// Central severity policy (one place, shared by every board) — the
+    /// rationale table lives in `docs/notes/fault-overhaul.md`. Platforms
+    /// can override per-fault via [`PlatformFault::severity`] but should
+    /// have a concrete reason to diverge.
+    pub fn severity(&self) -> FaultSeverity {
+        match self {
+            // Inverter integrity — no choice but high-Z.
+            FaultCategory::OverCurrent
+            | FaultCategory::OverVoltage
+            | FaultCategory::DriverFault => FaultSeverity::Kill,
+            // Inverter healthy, continuing unsafe: stop gracefully. The
+            // "must not restart while still hot/sagging" property survives
+            // the downgrade from Kill — the start gate blocks while any
+            // stopping-class fault is active, and OverTemp has no
+            // auto-clear.
+            FaultCategory::OverTemp
+            | FaultCategory::UnderVoltage
+            | FaultCategory::CommTimeout
+            | FaultCategory::Stall => FaultSeverity::GracefulStop,
+            // Degradations the vehicle rides through (fallback paths carry
+            // commutation); the rider gets informed, nothing else.
+            FaultCategory::HallError | FaultCategory::CalibrationFault | FaultCategory::None => {
+                FaultSeverity::Warning
+            }
+        }
+    }
+}
+
 /// Fault information for protocol transmission
 ///
-/// Contains a category (fixed enum) plus a human-readable detail string
-/// that platforms can populate with specific information.
+/// Contains a category (fixed enum), the response class, plus a
+/// human-readable detail string that platforms can populate with specific
+/// information.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct FaultInfo {
     /// Fault category
     pub category: FaultCategory,
+    /// What the firmware did about it (drives the remote's vibration/UI)
+    pub severity: FaultSeverity,
     /// Human-readable details (platform-specific)
     pub details: String<128>,
 }
@@ -89,6 +148,7 @@ impl FaultInfo {
         let _ = s.push_str(details);
         Self {
             category,
+            severity: category.severity(),
             details: s,
         }
     }
@@ -97,6 +157,7 @@ impl FaultInfo {
     pub fn from_category(category: FaultCategory) -> Self {
         Self {
             category,
+            severity: category.severity(),
             details: String::new(),
         }
     }
@@ -139,10 +200,7 @@ impl FaultInfo {
 ///     fn is_recoverable(&self) -> bool {
 ///         matches!(self, MyPlatformFault::UnderVoltage)
 ///     }
-///
-///     fn is_critical(&self) -> bool {
-///         matches!(self, MyPlatformFault::OverCurrent | MyPlatformFault::DrvFault(_))
-///     }
+///     // severity() comes from the category by default.
 /// }
 /// ```
 pub trait PlatformFault: Copy + Clone + PartialEq {
@@ -159,6 +217,7 @@ pub trait PlatformFault: Copy + Clone + PartialEq {
     fn to_fault_info(&self) -> FaultInfo {
         FaultInfo {
             category: self.category(),
+            severity: self.severity(),
             details: self.details(),
         }
     }
@@ -166,8 +225,12 @@ pub trait PlatformFault: Copy + Clone + PartialEq {
     /// Returns true if this fault can auto-clear when condition resolves
     fn is_recoverable(&self) -> bool;
 
-    /// Returns true if this fault requires immediate motor shutdown
-    fn is_critical(&self) -> bool;
+    /// Response class. Defaults to the central per-category policy
+    /// ([`FaultCategory::severity`]); override only with a concrete reason
+    /// (e.g. a driver fault whose status bits say "warning only").
+    fn severity(&self) -> FaultSeverity {
+        self.category().severity()
+    }
 }
 
 // ============================================================================
@@ -267,10 +330,24 @@ impl<F: PlatformFault> FaultRegistry<F> {
         self.faults.lock(|cell| !cell.borrow().is_empty())
     }
 
-    /// Returns true if any critical fault is active
-    pub fn any_critical(&self) -> bool {
-        self.faults
-            .lock(|cell| cell.borrow().iter().any(|f| f.is_critical()))
+    /// Returns true if any Kill-class fault is active (immediate high-Z)
+    pub fn any_kill(&self) -> bool {
+        self.faults.lock(|cell| {
+            cell.borrow()
+                .iter()
+                .any(|f| f.severity() == FaultSeverity::Kill)
+        })
+    }
+
+    /// Returns true if any fault that stops the motor is active
+    /// (GracefulStop or Kill) — the start gate blocks on this; warnings
+    /// never block.
+    pub fn any_stopping(&self) -> bool {
+        self.faults.lock(|cell| {
+            cell.borrow()
+                .iter()
+                .any(|f| f.severity() >= FaultSeverity::GracefulStop)
+        })
     }
 
     /// Check if a specific fault category is active
@@ -449,5 +526,45 @@ pub fn check_current_faults<F: PlatformFault>(
         && !registry.has_category(FaultCategory::OverCurrent)
     {
         registry.set(oc_fault);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The central severity policy — the table in
+    /// docs/notes/fault-overhaul.md. A new category falling through to a
+    /// wrong class is a safety bug, so pin every one.
+    #[test]
+    fn severity_policy_pinned() {
+        use FaultSeverity::*;
+        let expected = [
+            (FaultCategory::None, Warning),
+            (FaultCategory::OverCurrent, Kill),
+            (FaultCategory::OverVoltage, Kill),
+            (FaultCategory::UnderVoltage, GracefulStop),
+            (FaultCategory::OverTemp, GracefulStop),
+            (FaultCategory::DriverFault, Kill),
+            (FaultCategory::HallError, Warning),
+            (FaultCategory::Stall, GracefulStop),
+            (FaultCategory::CalibrationFault, Warning),
+            (FaultCategory::CommTimeout, GracefulStop),
+        ];
+        for (cat, sev) in expected {
+            assert_eq!(cat.severity(), sev, "{cat:?}");
+        }
+        // Ordering carries meaning: ">= GracefulStop" must read "stops the
+        // motor", and the conservative default is the worst case.
+        assert!(Warning < GracefulStop && GracefulStop < Kill);
+        assert_eq!(FaultSeverity::default(), Kill);
+    }
+
+    #[test]
+    fn fault_info_carries_severity() {
+        let info = FaultInfo::from_category(FaultCategory::HallError);
+        assert_eq!(info.severity, FaultSeverity::Warning);
+        let info = FaultInfo::new(FaultCategory::OverCurrent, "test");
+        assert_eq!(info.severity, FaultSeverity::Kill);
     }
 }

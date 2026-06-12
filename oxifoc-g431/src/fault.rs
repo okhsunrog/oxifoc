@@ -19,6 +19,8 @@ pub enum G431Fault {
     OverTemp,
     /// Hall sensor error
     HallError,
+    /// Command link stale while running (deadman / link-loss)
+    CommTimeout,
 }
 
 impl PlatformFault for G431Fault {
@@ -29,6 +31,7 @@ impl PlatformFault for G431Fault {
             G431Fault::UnderVoltage => FaultCategory::UnderVoltage,
             G431Fault::OverTemp => FaultCategory::OverTemp,
             G431Fault::HallError => FaultCategory::HallError,
+            G431Fault::CommTimeout => FaultCategory::CommTimeout,
         }
     }
 
@@ -38,13 +41,10 @@ impl PlatformFault for G431Fault {
     }
 
     fn is_recoverable(&self) -> bool {
-        matches!(self, G431Fault::UnderVoltage)
+        // UnderVoltage clears via the voltage hysteresis check; CommTimeout
+        // clears in run_foc_cycle when commands flow again.
+        matches!(self, G431Fault::UnderVoltage | G431Fault::CommTimeout)
     }
 
-    fn is_critical(&self) -> bool {
-        matches!(
-            self,
-            G431Fault::OverCurrent | G431Fault::OverVoltage | G431Fault::OverTemp
-        )
-    }
+    // severity(): central per-category policy (FaultCategory::severity).
 }

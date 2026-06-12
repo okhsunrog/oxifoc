@@ -239,3 +239,18 @@ their section.
   renumber: PhaseSource is never persisted and host + firmware build from
   one tree, so the break is build-time only. CLI keeps `source
   hall-fallback` as the name for the merged mode.
+- **2026-06-12 — fault severity classes (phase 1 of the overhaul).**
+  `FaultSeverity` (Warning / GracefulStop / Kill) on the wire in
+  `FaultInfo`; one central policy (`FaultCategory::severity`, pinned by a
+  test) instead of per-board `is_critical`. The `run_foc_cycle` gate is
+  class-based: Kill = high-Z + Error latch (as before); GracefulStop =
+  the failsafe machinery (ramp/controlled stop), no Error latch — restart
+  blocked by the start gate while the fault is active plus the failsafe
+  re-arm latch after; Warning never touches the motor (prerequisite for
+  hall-health warnings). OverTemp/UnderVoltage downgraded Kill →
+  GracefulStop (VESC/MESC reference: stop is the response to "derating
+  failed", not to "hot"; the no-restart-while-hot property survives via
+  the start gate). The deadman and the Layer-1 link gate now RAISE
+  CommTimeout (GracefulStop) instead of silently arming the failsafe —
+  same reaction, but visible to the host/remote; a drained SetMode
+  (accepted or not) auto-clears it. Design: notes/fault-overhaul.md.

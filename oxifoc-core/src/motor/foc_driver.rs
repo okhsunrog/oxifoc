@@ -1377,9 +1377,6 @@ mod tests {
             fn is_recoverable(&self) -> bool {
                 false
             }
-            fn is_critical(&self) -> bool {
-                true
-            }
         }
 
         let state: CriticalSectionMutex<RefCell<MotorControlState>> =
@@ -1446,9 +1443,6 @@ mod tests {
             }
             fn is_recoverable(&self) -> bool {
                 false
-            }
-            fn is_critical(&self) -> bool {
-                true
             }
         }
 
@@ -1547,9 +1541,6 @@ mod tests {
             fn is_recoverable(&self) -> bool {
                 false
             }
-            fn is_critical(&self) -> bool {
-                true
-            }
         }
 
         let state: CriticalSectionMutex<RefCell<MotorControlState>> =
@@ -1626,9 +1617,6 @@ mod tests {
             }
             fn is_recoverable(&self) -> bool {
                 false
-            }
-            fn is_critical(&self) -> bool {
-                true
             }
         }
 
@@ -1826,9 +1814,6 @@ mod tests {
             }
             fn is_recoverable(&self) -> bool {
                 false
-            }
-            fn is_critical(&self) -> bool {
-                true
             }
         }
 
@@ -2514,5 +2499,244 @@ mod tests {
             "should track 150 erad/s after retarget, got {}",
             out.omega_e
         );
+    }
+
+    /// Severity gate in `run_foc_cycle` (docs/notes/fault-overhaul.md):
+    /// Warning never touches the motor, GracefulStop routes through the
+    /// failsafe machinery, Kill cuts PWM and latches Error; the deadman
+    /// raises CommTimeout and a fresh SetMode clears it.
+    #[cfg(feature = "runtime")]
+    mod severity_gate {
+        use super::*;
+        use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
+        use crate::foc::phase::PhaseManager;
+        use crate::foc::trig::LibmSinCos;
+        use crate::state::{CMD_CHANNEL, DriverCommand, MotorControlState};
+        use crate::types::MotorState;
+        use core::cell::RefCell;
+        use critical_section::Mutex as CriticalSectionMutex;
+
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        enum SevFault {
+            OverCurrent,
+            OverTemp,
+            Hall,
+            CommTimeout,
+        }
+        impl PlatformFault for SevFault {
+            fn category(&self) -> FaultCategory {
+                match self {
+                    SevFault::OverCurrent => FaultCategory::OverCurrent,
+                    SevFault::OverTemp => FaultCategory::OverTemp,
+                    SevFault::Hall => FaultCategory::HallError,
+                    SevFault::CommTimeout => FaultCategory::CommTimeout,
+                }
+            }
+            fn details(&self) -> heapless::String<128> {
+                heapless::String::new()
+            }
+            fn is_recoverable(&self) -> bool {
+                false
+            }
+        }
+
+        const BOARD: crate::foc::config::BoardConfig = crate::foc::config::BoardConfig {
+            shunt_ohms: 0.003,
+            amp_gain: 16.0,
+            vbus_divider_ratio: 10.39,
+            adc_vref_mv: 3300,
+            adc_max_counts: 4095,
+            initial_vbus_volts: 24.0,
+            max_iq_target_a: 10.0,
+            invert_current_sign: false,
+            max_phase_current_a: 40.0,
+            max_vbus_mv: 60_000,
+            min_vbus_mv: 8_000,
+            max_fet_temp_c: 100.0,
+            max_motor_temp_c: 120.0,
+        };
+
+        struct Harness {
+            state: CriticalSectionMutex<RefCell<MotorControlState>>,
+            registry: FaultRegistry<SevFault>,
+            driver: FocDriver<MockPwm, MockCurrentSensor, PhaseManager, LibmSinCos>,
+        }
+
+        /// Driver running CurrentControl (entered via the command channel at
+        /// t=0, which also stamps the deadman), link active, Manual angle.
+        fn running_harness() -> Harness {
+            let state: CriticalSectionMutex<RefCell<MotorControlState>> =
+                CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+            let registry: FaultRegistry<SevFault> = FaultRegistry::new();
+            let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+            let driver = FocDriver::new(
+                foc,
+                MockPwm { duties: [0; 3] },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                PhaseManager::sensorless(),
+                1.0 / 20_000.0,
+            );
+            critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+            let mut h = Harness {
+                state,
+                registry,
+                driver,
+            };
+            let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0,
+            }));
+            let out = h.cycle(0);
+            assert!(out.is_some(), "harness must start cleanly");
+            assert!(matches!(
+                h.driver.mode(),
+                ControlMode::CurrentControl { .. }
+            ));
+            h
+        }
+
+        impl Harness {
+            fn cycle(&mut self, now_ticks: u64) -> Option<FocOutput> {
+                crate::state::run_foc_cycle(
+                    &self.state,
+                    &self.registry,
+                    &mut self.driver,
+                    24.0,
+                    now_ticks,
+                    &BOARD,
+                    SevFault::OverCurrent,
+                    SevFault::CommTimeout,
+                )
+            }
+
+            fn motor_state(&self) -> MotorState {
+                critical_section::with(|cs| self.state.borrow(cs).borrow().motor_state)
+            }
+        }
+
+        #[test]
+        fn warning_fault_keeps_motor_running() {
+            let _serial = cmd_channel_lock();
+            let mut h = running_harness();
+
+            h.registry.set(SevFault::Hall);
+            let out = h.cycle(50);
+
+            assert!(out.is_some(), "warning must not skip the FOC step");
+            assert!(matches!(
+                h.driver.mode(),
+                ControlMode::CurrentControl { .. }
+            ));
+            assert!(!h.driver.failsafe_active(), "warning must not arm failsafe");
+            assert_eq!(h.motor_state(), MotorState::Running);
+        }
+
+        #[test]
+        fn warning_fault_does_not_block_start() {
+            let _serial = cmd_channel_lock();
+            let state: CriticalSectionMutex<RefCell<MotorControlState>> =
+                CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+            let registry: FaultRegistry<SevFault> = FaultRegistry::new();
+            registry.set(SevFault::Hall);
+            let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+            let mut driver = FocDriver::new(
+                foc,
+                MockPwm { duties: [0; 3] },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                PhaseManager::sensorless(),
+                1.0 / 20_000.0,
+            );
+            critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+
+            let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0,
+            }));
+            crate::state::process_commands(&state, &mut driver, &registry);
+            assert!(
+                matches!(driver.mode(), ControlMode::CurrentControl { .. }),
+                "a warning-class fault must not block starting"
+            );
+        }
+
+        #[test]
+        fn graceful_stop_fault_arms_failsafe_not_high_z() {
+            let _serial = cmd_channel_lock();
+            let mut h = running_harness();
+
+            h.registry.set(SevFault::OverTemp);
+            let out = h.cycle(50);
+
+            assert!(h.driver.failsafe_active(), "GracefulStop must arm failsafe");
+            assert!(out.is_some(), "failsafe drives through the normal step");
+            assert_ne!(
+                h.motor_state(),
+                MotorState::Error,
+                "GracefulStop must not latch Error"
+            );
+
+            // Restart stays blocked while the fault is active (start gate).
+            let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::Stopped));
+            h.cycle(100);
+            assert!(matches!(h.driver.mode(), ControlMode::Stopped));
+            let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0,
+            }));
+            h.cycle(150);
+            assert!(
+                matches!(h.driver.mode(), ControlMode::Stopped),
+                "stopping-class fault must block restart"
+            );
+        }
+
+        #[test]
+        fn kill_fault_cuts_pwm_and_latches_error() {
+            let _serial = cmd_channel_lock();
+            let mut h = running_harness();
+
+            h.registry.set(SevFault::OverCurrent);
+            let out = h.cycle(50);
+
+            assert!(out.is_none(), "Kill must skip the FOC step");
+            assert!(matches!(h.driver.mode(), ControlMode::Stopped));
+            assert_eq!(h.motor_state(), MotorState::Error);
+        }
+
+        #[test]
+        fn deadman_raises_comm_timeout_and_fresh_command_clears_it() {
+            let _serial = cmd_channel_lock();
+            let mut h = running_harness();
+
+            // Quiet link until past the staleness timeout (default 150 ms;
+            // ticks are µs in this domain).
+            h.cycle(100_000);
+            assert!(!h.registry.has_category(FaultCategory::CommTimeout));
+
+            h.cycle(200_000);
+            assert!(
+                h.registry.has_category(FaultCategory::CommTimeout),
+                "stale command link must raise CommTimeout"
+            );
+            assert!(
+                h.driver.failsafe_active(),
+                "CommTimeout severity must arm the failsafe via the gate"
+            );
+            assert_ne!(h.motor_state(), MotorState::Error);
+
+            // Commands flowing again (even just an ack) clear the fault; the
+            // re-arm latch still demands the explicit safe mode it received.
+            let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::Stopped));
+            h.cycle(200_050);
+            assert!(
+                !h.registry.has_category(FaultCategory::CommTimeout),
+                "a drained SetMode proves liveness and clears CommTimeout"
+            );
+            assert!(matches!(h.driver.mode(), ControlMode::Stopped));
+        }
     }
 }

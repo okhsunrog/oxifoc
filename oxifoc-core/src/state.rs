@@ -363,11 +363,13 @@ where
             }
 
             // Can't change mode if in error state (must clear faults first),
-            // and never start running with an active critical fault even if
-            // the Error latch was missed (belt and braces: the latch is set
-            // by platform glue, the registry by the fault checkers).
+            // and never start running while any stopping-class fault is
+            // active even if the Error latch was missed (belt and braces:
+            // the latch is set by platform glue, the registry by the fault
+            // checkers). Warnings never block a start — the vehicle rides
+            // through them by design.
             if mode != ControlMode::Stopped
-                && (state.motor_state == MotorState::Error || fault_registry.any_critical())
+                && (state.motor_state == MotorState::Error || fault_registry.any_stopping())
             {
                 return;
             }
@@ -468,6 +470,9 @@ where
 /// applies pending [`DriverCommand`]s, gates on faults, runs the FOC step
 /// and checks the measured currents. Returns the cycle telemetry, or None
 /// when the step was skipped (faulted) or failed.
+// One call site per platform ISR; the two trailing F values are the
+// platform's fault palette, not tunables — a struct would only add noise.
+#[allow(clippy::too_many_arguments)]
 pub fn run_foc_cycle<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &crate::foc::fault::FaultRegistry<F>,
@@ -476,6 +481,7 @@ pub fn run_foc_cycle<P, C, Ph, S, F>(
     now_ticks: u64,
     board: &crate::foc::config::BoardConfig,
     overcurrent_fault: F,
+    comm_timeout_fault: F,
 ) -> Option<FocOutput>
 where
     P: PhasePwm,
@@ -491,15 +497,29 @@ where
     let mode = process_commands_inner(state_mutex, driver, fault_registry, &mut saw_set_mode);
 
     // Command-staleness deadman (ISR-resident — survives an async-executor
-    // hang): stamp on a fresh setpoint, otherwise arm the configured failsafe
-    // once the command link goes stale while running. See docs/safety.md
-    // (Layer 2). The Layer-1 link gate inside process_commands also routes
-    // through the same failsafe path.
+    // hang): stamp on a fresh setpoint; a stale link while running raises
+    // the CommTimeout fault, whose GracefulStop severity the gate below
+    // turns into the configured failsafe. See docs/safety.md (Layer 2) and
+    // docs/notes/fault-overhaul.md. The deadman/link gate are DETECTORS;
+    // the severity gate is the executor. A drained SetMode — accepted or
+    // not — proves commands are flowing again and clears the fault (the
+    // post-failsafe re-arm latch still demands an explicit safe mode, so
+    // this auto-clear cannot relaunch the motor by itself).
     if saw_set_mode {
         driver.note_command_tick(now_ticks);
+        fault_registry.clear(crate::foc::fault::FaultCategory::CommTimeout);
     }
-    if driver.deadman_expired(now_ticks) {
-        driver.enter_failsafe();
+    // Layer-1 mirror: the link gate inside process_commands already armed
+    // the failsafe directly (it predates the fault path and stays as belt
+    // and braces); raising the fault here makes the event visible to the
+    // host/remote instead of silent.
+    let link_lost = !critical_section::with(|cs| state_mutex.borrow(cs).borrow().link_active);
+    let in_safe_mode = matches!(
+        mode,
+        ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+    );
+    if driver.deadman_expired(now_ticks) || (link_lost && !in_safe_mode) {
+        fault_registry.set(comm_timeout_fault);
     }
 
     // Spurious break-input trips during PWM channel enable can latch an
@@ -513,14 +533,17 @@ where
         fault_registry.clear(crate::foc::fault::FaultCategory::OverCurrent);
     }
 
-    // If faulted, disable outputs and skip the FOC step
-    if fault_registry.any() {
+    // Severity gate (docs/notes/fault-overhaul.md): Kill cuts PWM now,
+    // GracefulStop routes through the failsafe machinery, warnings are
+    // report-only and never touch the motor.
+    if fault_registry.any_kill() {
         if mode != ControlMode::Stopped {
             driver.set_mode(ControlMode::Stopped);
         }
-        // A fault takes over from any in-progress failsafe brake (e.g. the
-        // OverVoltage that regen braking can itself raise) — drop to high-Z
-        // and don't resume braking into the same fault after it clears.
+        // A Kill fault takes over from any in-progress failsafe brake (e.g.
+        // the OverVoltage that regen braking can itself raise) — drop to
+        // high-Z and don't resume braking into the same fault after it
+        // clears.
         driver.failsafe_reset();
         // Mirror into the shared state: without this the host kept seeing
         // Running after a fault stop (and the config server's motor-running
@@ -528,6 +551,21 @@ where
         // process_commands once the host clears the registry.
         critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_error());
         return None;
+    }
+    // GracefulStop-class: the inverter is healthy — bring the vehicle down
+    // via the configured failsafe (ramp / controlled stop) instead of
+    // dropping torque instantly. Safe standing states are exempt: a parked
+    // Brake must persist through a fault, Stopped/Coast have nothing to
+    // stop. No Error latch — restart stays blocked by the any_stopping()
+    // start gate while the fault is active, plus the failsafe re-arm latch
+    // (explicit safe-mode acknowledgement) after it clears.
+    if fault_registry.any_stopping()
+        && !matches!(
+            driver.mode(),
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+        )
+    {
+        driver.enter_failsafe();
     }
 
     let was_failsafe = driver.failsafe_active();

@@ -20,6 +20,8 @@ pub enum G474Fault {
     OverTemp,
     /// Hall sensor error
     HallError,
+    /// Command link stale while running (deadman / link-loss)
+    CommTimeout,
 }
 
 impl PlatformFault for G474Fault {
@@ -30,6 +32,7 @@ impl PlatformFault for G474Fault {
             G474Fault::UnderVoltage => FaultCategory::UnderVoltage,
             G474Fault::OverTemp => FaultCategory::OverTemp,
             G474Fault::HallError => FaultCategory::HallError,
+            G474Fault::CommTimeout => FaultCategory::CommTimeout,
         }
     }
 
@@ -39,13 +42,10 @@ impl PlatformFault for G474Fault {
     }
 
     fn is_recoverable(&self) -> bool {
-        matches!(self, G474Fault::UnderVoltage)
+        // UnderVoltage clears via the voltage hysteresis check; CommTimeout
+        // clears in run_foc_cycle when commands flow again.
+        matches!(self, G474Fault::UnderVoltage | G474Fault::CommTimeout)
     }
 
-    fn is_critical(&self) -> bool {
-        matches!(
-            self,
-            G474Fault::OverCurrent | G474Fault::OverVoltage | G474Fault::OverTemp
-        )
-    }
+    // severity(): central per-category policy (FaultCategory::severity).
 }

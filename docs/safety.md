@@ -65,9 +65,15 @@ motor-running gate can't admit a flash stall mid-brake.
 drained `SetMode` (the host re-affirms the active setpoint every 50 ms —
 `AFFIRM_POLICY` in host-lib, fire-and-forget so a dying link isn't masked by
 retries). `run_foc_cycle` checks `now_ticks - last_cmd_tick > staleness_timeout`
-(default 150 ms) while running and, if stale, calls `enter_failsafe()`. It is
-ISR-resident (`now_ticks` is the 1 MHz hall capture timer), so it survives an
-async-executor hang where Layer 1 can't fire.
+(default 150 ms) while running and, if stale, raises the **CommTimeout fault**
+(GracefulStop class) — the severity gate then arms the failsafe (see
+[notes/fault-overhaul.md](notes/fault-overhaul.md): the deadman and the
+Layer-1 link gate are *detectors*, the fault gate is the *executor*, and the
+event is visible to the host/remote instead of silent). A drained `SetMode` —
+accepted or not — clears the fault; the re-arm latch still demands the
+explicit safe-mode acknowledgement. The check is ISR-resident (`now_ticks` is
+the 1 MHz hall capture timer), so it survives an async-executor hang where
+Layer 1 can't fire.
 
 The failsafe is a self-contained controller
 ([`motor/failsafe.rs`](../oxifoc-core/src/motor/failsafe.rs)) run every cycle

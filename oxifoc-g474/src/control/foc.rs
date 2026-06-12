@@ -214,6 +214,7 @@ fn ADC1_2() {
                 now_ticks,
                 &BOARD,
                 G474Fault::OverCurrent,
+                G474Fault::CommTimeout,
             )
         })
     });

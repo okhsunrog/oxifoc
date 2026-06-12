@@ -642,7 +642,7 @@ fn main() -> Result<()> {
                 let lines: Vec<String> = resp
                     .faults
                     .iter()
-                    .map(|f| format!("{:?}: {}", f.category, f.details))
+                    .map(|f| format!("{:?} [{:?}]: {}", f.category, f.severity, f.details))
                     .collect();
                 format!("{} active fault(s):\n  {}", resp.total, lines.join("\n  "))
             };

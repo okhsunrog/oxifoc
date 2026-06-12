@@ -24,6 +24,8 @@ pub enum F405Fault {
     DrvFault(DrvFaultStatus),
     /// Hall sensor error
     HallError,
+    /// Command link stale while running (deadman / link-loss)
+    CommTimeout,
 }
 
 impl PlatformFault for F405Fault {
@@ -35,6 +37,7 @@ impl PlatformFault for F405Fault {
             F405Fault::OverTemp => FaultCategory::OverTemp,
             F405Fault::DrvFault(_) => FaultCategory::DriverFault,
             F405Fault::HallError => FaultCategory::HallError,
+            F405Fault::CommTimeout => FaultCategory::CommTimeout,
         }
     }
 
@@ -85,18 +88,12 @@ impl PlatformFault for F405Fault {
     }
 
     fn is_recoverable(&self) -> bool {
-        matches!(self, F405Fault::UnderVoltage)
+        // UnderVoltage clears via the voltage hysteresis check; CommTimeout
+        // clears in run_foc_cycle when commands flow again.
+        matches!(self, F405Fault::UnderVoltage | F405Fault::CommTimeout)
     }
 
-    fn is_critical(&self) -> bool {
-        // OverTemp is critical like on G431/G474: an overheated board must
-        // not be restartable by a plain host command while still hot.
-        matches!(
-            self,
-            F405Fault::OverCurrent
-                | F405Fault::OverVoltage
-                | F405Fault::OverTemp
-                | F405Fault::DrvFault(_)
-        )
-    }
+    // severity(): central per-category policy (FaultCategory::severity).
+    // OverTemp is GracefulStop, not Kill — "must not restart while hot"
+    // survives via the any_stopping() start gate (no auto-clear on OT).
 }
