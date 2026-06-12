@@ -302,3 +302,22 @@ their section.
   hardcoded categories. Host side: `HostRuntime::fault_rx` +
   `oxifoc-host-cli faults --watch`. E2E-verified against the virtual
   device.
+- **2026-06-13 — graduated derating + protection consolidation (phase 5
+  of the fault overhaul).** Continuous power rolloff BEFORE any fault
+  (`motor/derating.rs`): two min-composed scales — drive (thermal with
+  VESC `l_temp_accel_dec` asymmetry, battery cutoff, speed soft ceiling)
+  and brake (thermal, regen-OV) — applied per-direction on the iq budget
+  in `step_current_control`; braking is NEVER speed-limited and survives
+  a sag, a hot board loses acceleration before brakes. New `derating`
+  config group (key 11), boundary-validated, live-applied, defaults =
+  FET 85→100 °C only (per-vehicle ramps need bench numbers). The
+  `Derating` warning (auto set/clear at 0.8/0.95 — a live state, unlike
+  the sticky hall record) plus scale percentages in SlowTelemetry answer
+  "why does the board feel weak". Voltage faults switched from
+  single-sample trips to V·s excursion integrals (VESC's
+  wrong_voltage_integrator; ~3 ms at 1 V over) — regen spikes and sense
+  blips stop costing torque. Consolidation along the way: voltage/temp
+  fault checks moved from per-platform ISR copies into
+  `FocDriver::run_protection`, and core raises faults via
+  `PlatformFault::from_category` (no per-category value parameters in
+  `run_foc_cycle` any more) — closes part of the ISR-dedup TODO.

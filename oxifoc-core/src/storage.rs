@@ -44,6 +44,8 @@ pub enum ConfigKey {
     Failsafe = 9,
     /// Cruise velocity-loop tuning
     Velocity = 10,
+    /// Graduated derating ramps (thermal/voltage/speed)
+    Derating = 11,
 }
 
 impl Key for ConfigKey {
@@ -70,6 +72,7 @@ impl Key for ConfigKey {
             8 => Self::HallTuning,
             9 => Self::Failsafe,
             10 => Self::Velocity,
+            11 => Self::Derating,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -414,6 +417,59 @@ impl Default for FailsafeConfigStored {
     }
 }
 
+/// Graduated derating ramps (see [`crate::motor::derating`]); mirrors
+/// `DeratingConfig` field-for-field (same SI units). The driver decodes
+/// via `DeratingConfig::from_stored` (sane-checked, falls back to the
+/// default = FET thermal rolloff only).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct DeratingConfigStored {
+    /// FET temperature ramp start (°C); 0 disables
+    pub temp_fet_start_c: f32,
+    /// FET temperature ramp end (°C; scale = 0, the OverTemp fault sits here)
+    pub temp_fet_end_c: f32,
+    /// Motor temperature ramp start (°C); 0 disables (no NTC)
+    pub temp_motor_start_c: f32,
+    /// Motor temperature ramp end (°C)
+    pub temp_motor_end_c: f32,
+    /// Acceleration-derate factor 0..=1 (VESC `l_temp_accel_dec`)
+    pub accel_dec: f32,
+    /// Battery cutoff ramp start (V, full drive above); 0 disables
+    pub vbus_cut_start_v: f32,
+    /// Battery cutoff ramp end (V, zero drive at/below; < start)
+    pub vbus_cut_end_v: f32,
+    /// Regen overvoltage ramp start (V, full brake below); 0 disables
+    pub vbus_regen_start_v: f32,
+    /// Regen overvoltage ramp end (V, zero regen at/above; > start)
+    pub vbus_regen_end_v: f32,
+    /// Speed soft ceiling (electrical rad/s; eRPM = erad/s × 60/2π); 0 disables
+    pub max_speed_erad_s: f32,
+    /// Fraction of the ceiling where the drive rolloff starts
+    pub speed_start_frac: f32,
+}
+
+impl PostcardValue<'_> for DeratingConfigStored {}
+
+impl Default for DeratingConfigStored {
+    /// Mirrors `DeratingConfig::default` (FET 85→100 °C, accel_dec 0.15,
+    /// per-vehicle ramps off).
+    fn default() -> Self {
+        Self {
+            temp_fet_start_c: 85.0,
+            temp_fet_end_c: 100.0,
+            temp_motor_start_c: 0.0,
+            temp_motor_end_c: 0.0,
+            accel_dec: 0.15,
+            vbus_cut_start_v: 0.0,
+            vbus_cut_end_v: 0.0,
+            vbus_regen_start_v: 0.0,
+            vbus_regen_end_v: 0.0,
+            max_speed_erad_s: 0.0,
+            speed_start_frac: 0.8,
+        }
+    }
+}
+
 // ============================================================================
 // Runtime Config Aggregate
 // ============================================================================
@@ -433,6 +489,7 @@ pub struct RuntimeConfig {
     pub hall_tuning: Option<HallTuningConfig>,
     pub failsafe: Option<FailsafeConfigStored>,
     pub velocity: Option<VelocityConfigStored>,
+    pub derating: Option<DeratingConfigStored>,
 }
 
 // ============================================================================
@@ -463,6 +520,7 @@ pub enum ConfigPayload {
     HallTuning(HallTuningConfig),
     Failsafe(FailsafeConfigStored),
     Velocity(VelocityConfigStored),
+    Derating(DeratingConfigStored),
 }
 
 // ============================================================================
@@ -533,6 +591,7 @@ where
                     ConfigPayload::HallTuning(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::Failsafe(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::Velocity(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::Derating(v) => storage.store_item(buf, &key, &v).await,
                 };
                 if result.is_err() {
                     #[cfg(feature = "defmt")]
@@ -589,6 +648,7 @@ where
     load!(hall_tuning, HallTuning);
     load!(failsafe, Failsafe);
     load!(velocity, Velocity);
+    load!(derating, Derating);
 
     cfg
 }

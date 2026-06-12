@@ -67,6 +67,9 @@ pub enum FaultCategory {
     CalibrationFault,
     /// Communication timeout
     CommTimeout,
+    // postcard encodes the variant index — append only.
+    /// Graduated derating active (power rolloff > 20%)
+    Derating,
 }
 
 /// What the firmware does about a fault — see `docs/notes/fault-overhaul.md`.
@@ -118,9 +121,10 @@ impl FaultCategory {
             | FaultCategory::Stall => FaultSeverity::GracefulStop,
             // Degradations the vehicle rides through (fallback paths carry
             // commutation); the rider gets informed, nothing else.
-            FaultCategory::HallError | FaultCategory::CalibrationFault | FaultCategory::None => {
-                FaultSeverity::Warning
-            }
+            FaultCategory::HallError
+            | FaultCategory::CalibrationFault
+            | FaultCategory::Derating
+            | FaultCategory::None => FaultSeverity::Warning,
         }
     }
 }
@@ -237,6 +241,16 @@ pub trait PlatformFault: Copy + Clone + PartialEq {
     /// `None` = the platform carries no hall fault (the bridge is a no-op)
     /// — so the bridge needs no extra `run_foc_cycle` parameter.
     fn from_hall_kind(_kind: crate::foc::hall_sensor::HallFaultKind) -> Option<Self> {
+        None
+    }
+
+    /// Construct the platform fault for a payload-free category — how the
+    /// shared protection code in core (`run_foc_cycle` / `run_protection`)
+    /// raises faults without per-category value parameters. Implement for
+    /// every category the board can experience; returning `None` makes
+    /// core silently skip raising that category. Payload-carrying faults
+    /// (DRV status, hall kind) keep their dedicated constructors.
+    fn from_category(_category: FaultCategory) -> Option<Self> {
         None
     }
 }
@@ -459,103 +473,6 @@ impl<F: PlatformFault> Default for FaultRegistry<F> {
 /// Voltage hysteresis in millivolts.
 /// Undervoltage clears when Vbus > min_vbus_mv + VOLTAGE_HYSTERESIS_MV
 pub const VOLTAGE_HYSTERESIS_MV: u32 = 500;
-
-// ============================================================================
-// Generic fault check functions (for ISR use across platforms)
-// ============================================================================
-
-#[cfg(feature = "runtime")]
-use crate::foc::config::BoardConfig;
-
-/// Check voltage faults against board thresholds.
-///
-/// Sets overvoltage/undervoltage faults. Auto-clears undervoltage
-/// when voltage returns above threshold + hysteresis.
-/// Call from ADC ISR with current vbus_mv reading.
-#[cfg(feature = "runtime")]
-#[inline]
-pub fn check_voltage_faults<F: PlatformFault>(
-    vbus_mv: u32,
-    board: &BoardConfig,
-    registry: &FaultRegistry<F>,
-    ov_fault: F,
-    uv_fault: F,
-) {
-    if vbus_mv > board.max_vbus_mv && !registry.has_category(FaultCategory::OverVoltage) {
-        registry.set(ov_fault);
-        #[cfg(feature = "defmt")]
-        defmt::error!("OverVoltage FAULT: vbus = {} mV", vbus_mv);
-    }
-
-    if vbus_mv < board.min_vbus_mv && !registry.has_category(FaultCategory::UnderVoltage) {
-        registry.set(uv_fault);
-        #[cfg(feature = "defmt")]
-        defmt::error!("UnderVoltage FAULT: vbus = {} mV", vbus_mv);
-    } else if vbus_mv > board.min_vbus_mv + VOLTAGE_HYSTERESIS_MV
-        && registry.has_category(FaultCategory::UnderVoltage)
-    {
-        registry.clear(FaultCategory::UnderVoltage);
-    }
-}
-
-/// Check temperature fault against board threshold.
-///
-/// Sets overtemperature fault when temp exceeds `max_fet_temp_c`.
-/// Call from ADC ISR with current temperature in 0.1°C units.
-#[cfg(feature = "runtime")]
-#[inline]
-pub fn check_temperature_fault<F: PlatformFault>(
-    temp_c_x10: i16,
-    board: &BoardConfig,
-    registry: &FaultRegistry<F>,
-    ot_fault: F,
-) {
-    check_temperature_threshold(temp_c_x10, board.max_fet_temp_c, registry, ot_fault);
-}
-
-/// Like [`check_temperature_fault`] but against an explicit threshold —
-/// for sensors other than the FET NTC (e.g. the motor winding NTC).
-/// A threshold `<= 0` disables the check (sensor not wired).
-#[cfg(feature = "runtime")]
-#[inline]
-pub fn check_temperature_threshold<F: PlatformFault>(
-    temp_c_x10: i16,
-    threshold_c: f32,
-    registry: &FaultRegistry<F>,
-    ot_fault: F,
-) {
-    if threshold_c <= 0.0 {
-        return;
-    }
-    let temp_c = temp_c_x10 as f32 / 10.0;
-    if temp_c > threshold_c && !registry.has_category(FaultCategory::OverTemp) {
-        registry.set(ot_fault);
-        #[cfg(feature = "defmt")]
-        defmt::error!("OverTemp FAULT: {} x0.1°C", temp_c_x10);
-    }
-}
-
-/// Check phase current faults (overcurrent).
-///
-/// Instantaneous trip if any phase current exceeds `max_phase_current_a`.
-/// Call from ADC ISR after FOC step with measured currents.
-#[cfg(feature = "runtime")]
-#[inline]
-pub fn check_current_faults<F: PlatformFault>(
-    ia: f32,
-    ib: f32,
-    ic: f32,
-    board: &BoardConfig,
-    registry: &FaultRegistry<F>,
-    oc_fault: F,
-) {
-    let limit = board.max_phase_current_a;
-    if (ia.abs() > limit || ib.abs() > limit || ic.abs() > limit)
-        && !registry.has_category(FaultCategory::OverCurrent)
-    {
-        registry.set(oc_fault);
-    }
-}
 
 #[cfg(test)]
 mod tests {

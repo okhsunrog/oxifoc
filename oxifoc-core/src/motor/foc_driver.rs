@@ -364,6 +364,25 @@ where
     /// the bus-limit clamp derived from it doesn't chatter on per-cycle
     /// voltage ripple.
     bus_mod_q_filt: f32,
+    /// Graduated derating ramps (host-tunable; see `motor::derating`).
+    derating_cfg: crate::motor::derating::DeratingConfig,
+    /// Live derating scales, recomputed (decimated) by the protection
+    /// update in `run_foc_cycle`; applied per-direction on the iq budget
+    /// in `step_current_control`.
+    derating: crate::motor::derating::DeratingScales,
+    /// Decimation counter for the protection update (temps/vbus are slow).
+    /// (Protection fields are only read by `run_protection`, which needs
+    /// the `runtime` feature for the fault registry.)
+    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
+    protection_tick: u16,
+    /// Over/under-voltage excursion integrals (V·s) — the voltage faults
+    /// trip on sustained excursion, not single samples (VESC's
+    /// `wrong_voltage_integrator`): a regen spike or an EMI blip on the
+    /// vbus sense must not cost torque mid-ride.
+    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
+    ov_integral_vs: f32,
+    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
+    uv_integral_vs: f32,
 }
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
@@ -409,6 +428,136 @@ where
             ov_threshold_v: 0.0,
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
             bus_mod_q_filt: 0.0,
+            derating_cfg: crate::motor::derating::DeratingConfig::default(),
+            derating: crate::motor::derating::DeratingScales::default(),
+            protection_tick: 0,
+            ov_integral_vs: 0.0,
+            uv_integral_vs: 0.0,
+        }
+    }
+
+    /// Apply derating configuration (boot / live config write).
+    pub fn set_derating(&mut self, cfg: crate::motor::derating::DeratingConfig) {
+        self.derating_cfg = cfg;
+    }
+
+    /// Current derating configuration.
+    pub fn derating_cfg(&self) -> &crate::motor::derating::DeratingConfig {
+        &self.derating_cfg
+    }
+
+    /// Live derating scales (1.0/1.0 = no derate).
+    pub fn derating(&self) -> crate::motor::derating::DeratingScales {
+        self.derating
+    }
+
+    /// Store freshly computed derating scales (protection update).
+    pub fn set_derating_scales(&mut self, scales: crate::motor::derating::DeratingScales) {
+        self.derating = scales;
+    }
+
+    /// Shared protection update, called by `run_foc_cycle` every cycle
+    /// (moved here from per-platform ISR copies — one implementation for
+    /// every board):
+    ///
+    /// - **Voltage faults via excursion integrals** (V·s) instead of
+    ///   single samples (VESC `wrong_voltage_integrator`): a regen spike
+    ///   or an EMI blip on the vbus sense must not cost torque mid-ride.
+    ///   Trip threshold ≈ VESC-equivalent `5e-5 · max_vbus` V·s (≈3 ms at
+    ///   1 V over on a 57 V board); in-range the integral decays with
+    ///   τ ≈ 5 ms, so oscillation around the limit still accumulates.
+    ///   UnderVoltage keeps its hysteresis auto-clear.
+    /// - **Temperature faults**: single-sample against the board
+    ///   thresholds — the readings are already slow and filtered.
+    /// - **Graduated derating** (decimated /256 ≈ 78 Hz at 20 kHz —
+    ///   temps and vbus are slow): recomputes the live scales and
+    ///   maintains the `Derating` warning with set/clear hysteresis
+    ///   (set < 0.8, clear > 0.95) so the rider learns WHY the board
+    ///   feels weak.
+    ///
+    /// Faults are raised through [`PlatformFault::from_category`]; a
+    /// platform returning `None` for a category silently skips it.
+    #[cfg(feature = "runtime")]
+    pub fn run_protection<F: crate::foc::fault::PlatformFault>(
+        &mut self,
+        registry: &crate::foc::fault::FaultRegistry<F>,
+        board: &crate::foc::config::BoardConfig,
+        vbus_v: f32,
+        fet_temp_c_x10: Option<i16>,
+        motor_temp_c_x10: Option<i16>,
+    ) {
+        use crate::foc::fault::{FaultCategory, VOLTAGE_HYSTERESIS_MV};
+
+        // --- Voltage excursion integrals (every cycle) ---
+        let max_v = board.max_vbus_mv as f32 / 1000.0;
+        let min_v = board.min_vbus_mv as f32 / 1000.0;
+        let trip_vs = 5e-5 * max_v;
+        let decay = 1.0 - (self.dt / 0.005).min(1.0);
+        if vbus_v > max_v {
+            self.ov_integral_vs += (vbus_v - max_v) * self.dt;
+            if self.ov_integral_vs > trip_vs
+                && !registry.has_category(FaultCategory::OverVoltage)
+                && let Some(f) = F::from_category(FaultCategory::OverVoltage)
+            {
+                registry.set(f);
+                #[cfg(feature = "defmt")]
+                defmt::error!("OverVoltage FAULT: vbus = {} V (integrated)", vbus_v);
+            }
+        } else {
+            self.ov_integral_vs *= decay;
+        }
+        if vbus_v < min_v {
+            self.uv_integral_vs += (min_v - vbus_v) * self.dt;
+            if self.uv_integral_vs > trip_vs
+                && !registry.has_category(FaultCategory::UnderVoltage)
+                && let Some(f) = F::from_category(FaultCategory::UnderVoltage)
+            {
+                registry.set(f);
+                #[cfg(feature = "defmt")]
+                defmt::error!("UnderVoltage FAULT: vbus = {} V (integrated)", vbus_v);
+            }
+        } else {
+            self.uv_integral_vs *= decay;
+            if vbus_v * 1000.0 > (board.min_vbus_mv + VOLTAGE_HYSTERESIS_MV) as f32
+                && registry.has_category(FaultCategory::UnderVoltage)
+            {
+                registry.clear(FaultCategory::UnderVoltage);
+            }
+        }
+
+        // --- Temperatures (board thresholds; <= 0 = sensor not wired) ---
+        let fet_c = fet_temp_c_x10.map(|t| t as f32 / 10.0);
+        let motor_c = motor_temp_c_x10.map(|t| t as f32 / 10.0);
+        let fet_over =
+            fet_c.is_some_and(|t| board.max_fet_temp_c > 0.0 && t > board.max_fet_temp_c);
+        let motor_over =
+            motor_c.is_some_and(|t| board.max_motor_temp_c > 0.0 && t > board.max_motor_temp_c);
+        if (fet_over || motor_over)
+            && !registry.has_category(FaultCategory::OverTemp)
+            && let Some(f) = F::from_category(FaultCategory::OverTemp)
+        {
+            registry.set(f);
+            #[cfg(feature = "defmt")]
+            defmt::error!(
+                "OverTemp FAULT (fet_over={}, motor_over={})",
+                fet_over,
+                motor_over
+            );
+        }
+
+        // --- Graduated derating (decimated) ---
+        self.protection_tick = self.protection_tick.wrapping_add(1);
+        if self.protection_tick.is_multiple_of(256) {
+            let omega = self.phase.get().velocity;
+            self.derating = self.derating_cfg.compute(fet_c, motor_c, vbus_v, omega);
+            let worst = self.derating.worst();
+            if worst < 0.8 {
+                if let Some(f) = F::from_category(FaultCategory::Derating) {
+                    registry.set(f);
+                }
+            } else if worst > 0.95 && registry.has_category(FaultCategory::Derating) {
+                registry.clear(FaultCategory::Derating);
+            }
         }
     }
 
@@ -913,6 +1062,15 @@ where
             return self.step_current_control(0.0, 0.0, dt, now_ticks);
         }
         let omega = self.phase.get().velocity;
+        // The derating speed ceiling also caps the cruise reference: the
+        // current-side rolloff alone would leave the PI winding up against
+        // an unreachable target.
+        let max_speed = self.derating_cfg.max_speed_erad_s;
+        let target_vel = if max_speed > 0.0 {
+            crate::foc::clamp_f32(target_vel, -max_speed, max_speed)
+        } else {
+            target_vel
+        };
         let iq_target =
             self.velocity_loop
                 .step(target_vel, omega, self.current_limits.max_current_a, dt);
@@ -946,6 +1104,29 @@ where
             iq_target
         } else {
             0.0
+        };
+
+        // Graduated derating (motor/derating.rs): scale the iq budget by
+        // direction — iq·ω ≥ 0 is motoring (standstill counts as motoring:
+        // pulling away is acceleration), opposing is braking. Drive derates
+        // for heat/sag/speed; brake only for heat/regen-OV — and never for
+        // speed. Every torque path funnels through here, so the failsafe
+        // brake inherits the regen-OV rolloff too.
+        let iq_target = if self.current_limits.max_current_a > 0.0 {
+            let omega = self.phase.get().velocity;
+            let scale = if iq_target * omega >= 0.0 {
+                self.derating.drive
+            } else {
+                self.derating.brake
+            };
+            if scale < 1.0 {
+                let lim = self.current_limits.max_current_a * scale;
+                crate::foc::clamp_f32(iq_target, -lim, lim)
+            } else {
+                iq_target
+            }
+        } else {
+            iq_target
         };
 
         // Bus (supply) current limits: every regen-capable path (host
@@ -2580,17 +2761,21 @@ mod tests {
         #[derive(Clone, Copy, PartialEq, Debug)]
         enum SevFault {
             OverCurrent,
+            OverVoltage,
             OverTemp,
             Hall,
             CommTimeout,
+            Derating,
         }
         impl PlatformFault for SevFault {
             fn category(&self) -> FaultCategory {
                 match self {
                     SevFault::OverCurrent => FaultCategory::OverCurrent,
+                    SevFault::OverVoltage => FaultCategory::OverVoltage,
                     SevFault::OverTemp => FaultCategory::OverTemp,
                     SevFault::Hall => FaultCategory::HallError,
                     SevFault::CommTimeout => FaultCategory::CommTimeout,
+                    SevFault::Derating => FaultCategory::Derating,
                 }
             }
             fn details(&self) -> heapless::String<128> {
@@ -2601,6 +2786,16 @@ mod tests {
             }
             fn from_hall_kind(_kind: crate::foc::hall_sensor::HallFaultKind) -> Option<Self> {
                 Some(SevFault::Hall)
+            }
+            fn from_category(category: FaultCategory) -> Option<Self> {
+                match category {
+                    FaultCategory::OverCurrent => Some(SevFault::OverCurrent),
+                    FaultCategory::OverVoltage => Some(SevFault::OverVoltage),
+                    FaultCategory::OverTemp => Some(SevFault::OverTemp),
+                    FaultCategory::CommTimeout => Some(SevFault::CommTimeout),
+                    FaultCategory::Derating => Some(SevFault::Derating),
+                    _ => None,
+                }
             }
         }
 
@@ -2670,8 +2865,6 @@ mod tests {
                     24.0,
                     now_ticks,
                     &BOARD,
-                    SevFault::OverCurrent,
-                    SevFault::CommTimeout,
                 )
             }
 
@@ -2798,16 +2991,7 @@ mod tests {
             critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
 
             let cycle = |driver: &mut FocDriver<_, _, _, _>, now: u64| {
-                crate::state::run_foc_cycle(
-                    &state,
-                    &registry,
-                    driver,
-                    24.0,
-                    now,
-                    &BOARD,
-                    SevFault::OverCurrent,
-                    SevFault::CommTimeout,
-                )
+                crate::state::run_foc_cycle(&state, &registry, driver, 24.0, now, &BOARD)
             };
 
             let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
@@ -2870,5 +3054,155 @@ mod tests {
             );
             assert!(matches!(h.driver.mode(), ControlMode::Stopped));
         }
+
+        /// Voltage faults trip on INTEGRATED excursion, not single samples
+        /// (run_protection): one over-voltage cycle (a regen spike / sense
+        /// blip) must ride through; a sustained excursion must Kill.
+        #[test]
+        fn voltage_fault_integrates_instead_of_single_sample() {
+            let _serial = cmd_channel_lock();
+            let mut h = running_harness();
+
+            // One 50 µs cycle at +10 V over the 60 V board limit:
+            // 10 V · 50 µs = 0.5 mV·s, under the 3 mV·s trip — no fault.
+            run_cycle_at_vbus(&mut h, 70.0, 50);
+            assert!(
+                !h.registry.has_category(FaultCategory::OverVoltage),
+                "a single-sample excursion must not trip"
+            );
+            // Back in range, the integral decays (τ ≈ 5 ms ≫ one cycle).
+            h.cycle(100);
+
+            // Sustained excursion: trips within ~0.3 ms (VESC-equivalent).
+            let mut now = 150;
+            for _ in 0..20 {
+                run_cycle_at_vbus(&mut h, 70.0, now);
+                now += 50;
+            }
+            assert!(
+                h.registry.has_category(FaultCategory::OverVoltage),
+                "sustained overvoltage must trip"
+            );
+            assert!(matches!(h.driver.mode(), ControlMode::Stopped), "OV = Kill");
+            assert_eq!(h.motor_state(), MotorState::Error);
+        }
+
+        fn run_cycle_at_vbus(h: &mut Harness, vbus: f32, now: u64) {
+            crate::state::run_foc_cycle(&h.state, &h.registry, &mut h.driver, vbus, now, &BOARD);
+        }
+
+        /// The derating warning follows the live scales with hysteresis
+        /// (set < 0.8, clear > 0.95), and the warning never stops the motor.
+        #[test]
+        fn derating_warning_sets_and_clears_with_hysteresis() {
+            let _serial = cmd_channel_lock();
+            let mut h = running_harness();
+            h.driver
+                .set_derating(crate::motor::derating::DeratingConfig {
+                    vbus_cut_start_v: 22.0,
+                    vbus_cut_end_v: 18.0,
+                    ..Default::default()
+                });
+
+            // Sagged bus (drive scale 0.25 at 19 V): the decimated update
+            // fires within 256 cycles.
+            let mut now = 50;
+            for _ in 0..300 {
+                run_cycle_at_vbus(&mut h, 19.0, now);
+                now += 50;
+            }
+            assert!(
+                h.registry.has_category(FaultCategory::Derating),
+                "deep derate must raise the warning (scales {:?})",
+                h.driver.derating()
+            );
+            assert!(
+                matches!(h.driver.mode(), ControlMode::CurrentControl { .. }),
+                "warning class: the motor keeps running"
+            );
+            assert!(h.driver.derating().drive < 0.5);
+
+            // Bus recovered: warning auto-clears (a live state, unlike the
+            // sticky hall record).
+            for _ in 0..300 {
+                run_cycle_at_vbus(&mut h, 24.0, now);
+                now += 50;
+            }
+            assert!(
+                !h.registry.has_category(FaultCategory::Derating),
+                "derating warning must auto-clear on recovery"
+            );
+            assert_eq!(
+                h.driver.derating(),
+                crate::motor::derating::DeratingScales::IDENTITY
+            );
+        }
+    }
+
+    /// Derating scales clamp the iq budget by DIRECTION: drive (iq·ω ≥ 0)
+    /// takes `drive`, opposing torque takes `brake` — a speed/sag derate
+    /// must never weaken the brakes.
+    #[test]
+    #[cfg(feature = "runtime")]
+    fn derating_clamps_drive_and_brake_separately() {
+        use crate::foc::phase::{PhaseManager, PhaseSource};
+        use crate::foc::trig::LibmSinCos;
+
+        let make = |scales: crate::motor::derating::DeratingScales, iq: f32| {
+            let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+            let mut mgr = PhaseManager::sensorless();
+            mgr.set_source(PhaseSource::OpenLoop).unwrap();
+            mgr.set_open_loop_velocity(100.0);
+            let mut driver = FocDriver::new(
+                foc,
+                MockPwm { duties: [0; 3] },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                mgr,
+                1.0 / 20_000.0,
+            );
+            driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+            driver.set_derating_scales(scales);
+            // Warmup at zero target: latches the phase velocity into the
+            // managed output without accumulating PI state.
+            driver.set_mode(ControlMode::CurrentControl {
+                iq_target: 0.0,
+                id_target: 0.0,
+            });
+            driver.step(50).unwrap();
+            driver.set_mode(ControlMode::CurrentControl {
+                iq_target: iq,
+                id_target: 0.0,
+            });
+            driver.step(100).unwrap().vq
+        };
+
+        let full = make(crate::motor::derating::DeratingScales::IDENTITY, 10.0);
+        let derated = make(
+            crate::motor::derating::DeratingScales {
+                drive: 0.5,
+                brake: 1.0,
+            },
+            10.0,
+        );
+        assert!(
+            (derated - 0.5 * full).abs() < 0.05 * full.abs(),
+            "drive iq must be halved: full vq {full}, derated vq {derated}"
+        );
+
+        // Braking (iq opposes ω): only the brake scale applies — full here.
+        let full_brake = make(crate::motor::derating::DeratingScales::IDENTITY, -10.0);
+        let brake_with_drive_derate = make(
+            crate::motor::derating::DeratingScales {
+                drive: 0.5,
+                brake: 1.0,
+            },
+            -10.0,
+        );
+        assert!(
+            (brake_with_drive_derate - full_brake).abs() < 0.05 * full_brake.abs(),
+            "a drive derate must not weaken the brake: {full_brake} vs {brake_with_drive_derate}"
+        );
     }
 }

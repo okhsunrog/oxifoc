@@ -1,11 +1,13 @@
 # Fault system overhaul: response classes, derating, hall health
 
-Status: partially landed — phases 1–2 (severity classes, gate, deadman →
-CommTimeout, limit-ladder fixes) landed 2026-06-12, phase 3 (hall
-package) and phase 4 (FaultTopic, protocol + host side; remote UX
-pending) 2026-06-13; phases 5–6 open. Companion to
-[../safety.md](../safety.md) (failsafe layers) and the Bench section of
-[../TODO.md](../TODO.md).
+Status: phases 1–5 landed (severity classes + gate + deadman→CommTimeout
+2026-06-12; limit-ladder fixes 2026-06-12; hall package, FaultTopic and
+the derating layer 2026-06-13). Phase 6 (sensorless promotion on hall
+death) deferred until after the bench validates HFI; the remote-side
+FaultTopic UX waits on remote firmware maturity. Thermal/voltage ramp
+NUMBERS need bench tuning — the defaults are FET 85→100 °C only.
+Companion to [../safety.md](../safety.md) (failsafe layers) and the
+Bench section of [../TODO.md](../TODO.md).
 
 ## Motivation
 
@@ -203,7 +205,19 @@ HFI carrier ripple + noise.
    `faults --watch` prints JSONL/human per event. Remaining: the remote
    firmware consuming it (vibration by severity, display) — blocked on
    remote maturity (notes/remote-design.md).
-5. **Derating layer** + integrating detectors (biggest piece; needs
-   bench thermals to tune, but the structure and sim tests come first).
+5. **[landed 2026-06-13]** Derating layer + integrating detectors:
+   `motor/derating.rs` (drive/brake scales, min-composed ramps: FET +
+   motor thermal with VESC accel/brake asymmetry, battery cutoff,
+   regen-OV, drive-only speed soft ceiling), new `derating` config
+   group (key 11, validated at the boundary, live-applied), applied
+   per-direction in `step_current_control` + velocity-target clamp;
+   `Derating` warning with 0.8/0.95 hysteresis; scales in SlowTelemetry
+   (percent). Voltage faults now trip on V·s excursion INTEGRALS
+   (VESC-equivalent threshold) instead of single samples. Consolidation:
+   voltage/temp checks moved from per-platform ISR copies into
+   `FocDriver::run_protection` (ISR-resident, decimated derate), faults
+   raised via `PlatformFault::from_category` — `run_foc_cycle` lost its
+   fault-palette parameters. Ramp numbers beyond the FET default need
+   the bench.
 6. (post-bench) auto-promotion to sensorless; dissipative braking near
    OV (already in TODO Safety).

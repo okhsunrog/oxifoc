@@ -141,6 +141,7 @@ fn rust_struct_name(group: &str) -> &'static str {
         "hall-tuning" => "HallTuningConfig",
         "failsafe" => "FailsafeConfigStored",
         "velocity" => "VelocityConfigStored",
+        "derating" => "DeratingConfigStored",
         _ => unreachable!(),
     }
 }

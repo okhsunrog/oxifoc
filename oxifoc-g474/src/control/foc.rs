@@ -9,7 +9,6 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::FocController;
-use oxifoc_core::foc::fault;
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::NoSensor;
@@ -17,7 +16,6 @@ use oxifoc_core::motor::{ControlMode, FocDriver};
 
 use crate::config::{BOARD, NTC, PWM_CONFIG};
 use crate::cordic::CordicSinCos;
-use crate::fault::G474Fault;
 use crate::motor::MotorPwm;
 use crate::sensors::{G474CurrentSensor, G474CurrentSensorExt, HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
@@ -113,6 +111,12 @@ pub async fn init(
         config.velocity.as_ref(),
     ));
 
+    // Graduated derating ramps from stored config (default = FET thermal
+    // rolloff only; see motor::derating).
+    foc_driver.set_derating(oxifoc_core::motor::derating::DeratingConfig::from_stored(
+        config.derating.as_ref(),
+    ));
+
     // Store ADC handles for ISR access
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc1)));
     ADC2_INJECTED.lock(|cell| cell.replace(Some(adc2)));
@@ -181,14 +185,7 @@ fn ADC1_2() {
     });
 
     // === Fault detection (voltage and temperature) ===
-    fault::check_voltage_faults(
-        vbus_mv, &BOARD, &FAULT_REGISTRY,
-        G474Fault::OverVoltage, G474Fault::UnderVoltage,
-    );
-    fault::check_temperature_fault(
-        temp_c_x10, &BOARD, &FAULT_REGISTRY,
-        G474Fault::OverTemp,
-    );
+    // Voltage/temperature protection moved into core (run_protection).
 
     // Get current timestamp for FOC and phase manager
     // Hall-domain timestamp (capture-timer us ticks) for FOC and phase
@@ -213,8 +210,6 @@ fn ADC1_2() {
                 vbus_mv as f32 / 1000.0,
                 now_ticks,
                 &BOARD,
-                G474Fault::OverCurrent,
-                G474Fault::CommTimeout,
             )
         })
     });

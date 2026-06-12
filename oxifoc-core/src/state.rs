@@ -54,6 +54,8 @@ pub enum DriverCommand {
     SetFailsafe(crate::motor::failsafe::FailsafeConfig),
     /// Apply cruise velocity-loop tuning (gains + accel limit)
     SetVelocityConfig(crate::foc::velocity::VelocityLoopConfig),
+    /// Apply graduated derating ramps (thermal/voltage/speed)
+    SetDerating(crate::motor::derating::DeratingConfig),
 }
 
 impl DriverCommand {
@@ -77,6 +79,7 @@ impl DriverCommand {
             DriverCommand::SetPhaseSource(source) => source.is_finite(),
             DriverCommand::SetFailsafe(cfg) => cfg.is_sane(),
             DriverCommand::SetVelocityConfig(cfg) => cfg.is_sane(),
+            DriverCommand::SetDerating(cfg) => cfg.is_sane(),
         }
     }
 }
@@ -141,6 +144,9 @@ pub struct MotorControlState {
     /// Active phase source (mirrors the driver's PhaseManager; updated when
     /// a SetPhaseSource command is applied)
     pub phase_source: crate::foc::phase::PhaseSource,
+    /// Live derating scales (mirrored from the driver each cycle so the
+    /// slow-telemetry server can report them without touching the driver)
+    pub derating: crate::motor::derating::DeratingScales,
 }
 
 impl MotorControlState {
@@ -154,6 +160,7 @@ impl MotorControlState {
             last_foc: FocOutput::empty(),
             link_active: false,
             phase_source: crate::foc::phase::PhaseSource::Hall,
+            derating: crate::motor::derating::DeratingScales::IDENTITY,
         }
     }
 
@@ -349,6 +356,11 @@ where
                 foc.set_velocity_config(cfg);
                 continue;
             }
+            DriverCommand::SetDerating(cfg) => {
+                // Config, not a setpoint — does NOT affirm the deadman.
+                foc.set_derating(cfg);
+                continue;
+            }
         };
         critical_section::with(|cs| {
             let mut state = state_mutex.borrow(cs).borrow_mut();
@@ -470,9 +482,8 @@ where
 /// applies pending [`DriverCommand`]s, gates on faults, runs the FOC step
 /// and checks the measured currents. Returns the cycle telemetry, or None
 /// when the step was skipped (faulted) or failed.
-// One call site per platform ISR; the two trailing F values are the
-// platform's fault palette, not tunables — a struct would only add noise.
-#[allow(clippy::too_many_arguments)]
+// Faults are raised via `PlatformFault::from_category` /
+// `from_hall_kind` — no per-category value parameters.
 pub fn run_foc_cycle<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &crate::foc::fault::FaultRegistry<F>,
@@ -480,8 +491,6 @@ pub fn run_foc_cycle<P, C, Ph, S, F>(
     vbus_v: f32,
     now_ticks: u64,
     board: &crate::foc::config::BoardConfig,
-    overcurrent_fault: F,
-    comm_timeout_fault: F,
 ) -> Option<FocOutput>
 where
     P: PhasePwm,
@@ -518,9 +527,25 @@ where
         mode,
         ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
     );
-    if driver.deadman_expired(now_ticks) || (link_lost && !in_safe_mode) {
-        fault_registry.set(comm_timeout_fault);
+    if (driver.deadman_expired(now_ticks) || (link_lost && !in_safe_mode))
+        && let Some(f) = F::from_category(crate::foc::fault::FaultCategory::CommTimeout)
+    {
+        fault_registry.set(f);
     }
+
+    // Shared protection: voltage-excursion integrators, temperature
+    // thresholds, graduated derating (one core implementation — the
+    // per-platform ISR copies are gone). Temperatures come from the
+    // previous cycle's ADC snapshot in the shared state — one cycle of
+    // staleness is nothing on a thermal time scale.
+    let (fet_t, motor_t) = critical_section::with(|cs| {
+        let st = state_mutex.borrow(cs).borrow();
+        (st.last_adc.fet_temp_c_x10(), st.last_adc.motor_temp_c_x10())
+    });
+    driver.run_protection(fault_registry, board, vbus_v, fet_t, motor_t);
+    critical_section::with(|cs| {
+        state_mutex.borrow(cs).borrow_mut().derating = driver.derating();
+    });
 
     // Spurious break-input trips during PWM channel enable can latch an
     // OverCurrent fault right at start (seen on G431: COMP→BKIN glitch when
@@ -571,17 +596,16 @@ where
     let was_failsafe = driver.failsafe_active();
     let result = match driver.step(now_ticks) {
         Ok(telem) => {
-            // Instantaneous phase-current fault check
-            let before = fault_registry.any();
-            crate::foc::fault::check_current_faults(
-                telem.ia,
-                telem.ib,
-                telem.ic,
-                board,
-                fault_registry,
-                overcurrent_fault,
-            );
-            if !before && fault_registry.any() {
+            // Instantaneous per-phase overcurrent check against the board
+            // ABS line (the dq-magnitude trip inside step() is the other
+            // Kill detector; both deliberately single-sample — current
+            // moves fast, unlike voltage).
+            let limit = board.max_phase_current_a;
+            if (telem.ia.abs() > limit || telem.ib.abs() > limit || telem.ic.abs() > limit)
+                && !fault_registry.has_category(crate::foc::fault::FaultCategory::OverCurrent)
+                && let Some(f) = F::from_category(crate::foc::fault::FaultCategory::OverCurrent)
+            {
+                fault_registry.set(f);
                 #[cfg(feature = "defmt")]
                 defmt::error!(
                     "SW overcurrent FAULT: ia={}, ib={}, ic={}",
@@ -602,7 +626,9 @@ where
                 // clear — previously this trip was silent (the per-phase
                 // registry check below only runs on Ok-telemetry, and its
                 // threshold differs from the dq one).
-                fault_registry.set(overcurrent_fault);
+                if let Some(f) = F::from_category(crate::foc::fault::FaultCategory::OverCurrent) {
+                    fault_registry.set(f);
+                }
                 critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_error());
             } else {
                 // Couldn't run (sensor not calibrated / unimplemented

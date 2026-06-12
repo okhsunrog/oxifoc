@@ -287,6 +287,12 @@ pub struct SlowTelemetry {
     pub phase_source: crate::foc::phase::PhaseSource,
     /// Monotonic sequence number
     pub seq: u32,
+    // postcard struct fields are positional — append only.
+    /// Live drive-side derating (percent of the configured limit, 100 =
+    /// no derate) — "why does the board feel weak" at a glance
+    pub derate_drive_pct: u8,
+    /// Live brake-side derating (percent, 100 = no derate)
+    pub derate_brake_pct: u8,
 }
 
 /// Response to a phase-source change request.
@@ -518,6 +524,8 @@ mod config_types {
         HallTuning,
         Failsafe,
         Velocity,
+        // postcard encodes the variant index — append only.
+        Derating,
     }
 
     /// Config write payload — one variant per group
@@ -538,6 +546,9 @@ mod config_types {
         Failsafe(crate::storage::FailsafeConfigStored),
         /// Cruise velocity-loop tuning
         Velocity(crate::storage::VelocityConfigStored),
+        // postcard encodes the variant index — append only.
+        /// Graduated derating ramps (thermal/voltage/speed)
+        Derating(crate::storage::DeratingConfigStored),
     }
 
     /// Configuration response
@@ -578,6 +589,8 @@ mod config_types {
         /// Refused: the written value fails boundary validation (e.g. the
         /// current-limits headroom rule, `CurrentLimitsConfig::is_coherent`).
         Invalid,
+        /// Graduated derating ramps
+        Derating(crate::storage::DeratingConfigStored),
     }
 }
 

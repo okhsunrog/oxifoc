@@ -51,6 +51,7 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
         hall_tuning: None,
         failsafe: None,
         velocity: None,
+        derating: None,
     },
 ));
 

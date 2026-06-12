@@ -9,6 +9,7 @@ pub enum VirtualFault {
     UnderVoltage,
     OverTemp,
     CommTimeout,
+    Derating,
 }
 
 impl PlatformFault for VirtualFault {
@@ -19,6 +20,7 @@ impl PlatformFault for VirtualFault {
             Self::UnderVoltage => FaultCategory::UnderVoltage,
             Self::OverTemp => FaultCategory::OverTemp,
             Self::CommTimeout => FaultCategory::CommTimeout,
+            Self::Derating => FaultCategory::Derating,
         }
     }
 
@@ -28,5 +30,17 @@ impl PlatformFault for VirtualFault {
 
     fn is_recoverable(&self) -> bool {
         true
+    }
+
+    fn from_category(category: FaultCategory) -> Option<Self> {
+        match category {
+            FaultCategory::OverCurrent => Some(Self::OverCurrent),
+            FaultCategory::OverVoltage => Some(Self::OverVoltage),
+            FaultCategory::UnderVoltage => Some(Self::UnderVoltage),
+            FaultCategory::OverTemp => Some(Self::OverTemp),
+            FaultCategory::CommTimeout => Some(Self::CommTimeout),
+            FaultCategory::Derating => Some(Self::Derating),
+            _ => None,
+        }
     }
 }

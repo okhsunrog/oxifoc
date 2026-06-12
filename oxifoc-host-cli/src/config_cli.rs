@@ -13,7 +13,7 @@ use oxifoc_host_lib::{HostCommand, HostRuntime, config_channel};
 use serde_json::Value;
 
 /// kebab-case CLI name ↔ group id, in protocol order.
-pub const GROUPS: [(&str, ConfigGroupId); 10] = [
+pub const GROUPS: [(&str, ConfigGroupId); 11] = [
     ("motor-params", ConfigGroupId::MotorParams),
     ("hall-calibration", ConfigGroupId::HallCalibration),
     ("dc-offsets", ConfigGroupId::DcOffsets),
@@ -24,6 +24,7 @@ pub const GROUPS: [(&str, ConfigGroupId); 10] = [
     ("hall-tuning", ConfigGroupId::HallTuning),
     ("failsafe", ConfigGroupId::Failsafe),
     ("velocity", ConfigGroupId::Velocity),
+    ("derating", ConfigGroupId::Derating),
 ];
 
 pub fn parse_group(s: &str) -> Result<ConfigGroupId> {
@@ -79,6 +80,7 @@ pub fn group_value(resp: &ConfigResponse) -> Option<Value> {
         R::DcOffsets(v) => serde_json::to_value(v).ok(),
         R::Failsafe(v) => serde_json::to_value(v).ok(),
         R::Velocity(v) => serde_json::to_value(v).ok(),
+        R::Derating(v) => serde_json::to_value(v).ok(),
         R::Ok | R::NotFound | R::Error | R::Busy | R::Invalid => None,
     }
 }
@@ -98,6 +100,7 @@ pub fn group_default_value(group: ConfigGroupId) -> Value {
         G::HallTuning => serde_json::to_value(st::HallTuningConfig::default()),
         G::Failsafe => serde_json::to_value(st::FailsafeConfigStored::default()),
         G::Velocity => serde_json::to_value(st::VelocityConfigStored::default()),
+        G::Derating => serde_json::to_value(st::DeratingConfigStored::default()),
     };
     v.expect("stored-config structs always serialize")
 }
@@ -116,6 +119,7 @@ pub fn write_from_value(group: ConfigGroupId, v: Value) -> Result<ConfigWrite> {
         G::HallTuning => ConfigWrite::HallTuning(serde_json::from_value(v)?),
         G::Failsafe => ConfigWrite::Failsafe(serde_json::from_value(v)?),
         G::Velocity => ConfigWrite::Velocity(serde_json::from_value(v)?),
+        G::Derating => ConfigWrite::Derating(serde_json::from_value(v)?),
     })
 }
 
@@ -147,9 +151,11 @@ pub fn send_write(runtime: &HostRuntime, write: ConfigWrite) -> Result<()> {
             "device refused the write: motor is running (flash writes stall the control loop)"
         ),
         ConfigResponse::Invalid => bail!(
-            "device refused the write: value fails validation (current_limits: every \
-             field must be finite and max_phase_current_a >= 1.3 x max_iq_a — the \
-             overcurrent trip needs headroom above full throttle)"
+            "device refused the write: value fails validation. Rules: all fields \
+             finite; current_limits: max_phase_current_a >= 1.3 x max_iq_a (the \
+             overcurrent trip needs headroom above full throttle); derating: every \
+             enabled ramp well-formed (temp/regen end > start, battery cut start > \
+             end, accel_dec and speed_start_frac in 0..=1)"
         ),
         other => bail!("config write rejected: {other:?}"),
     }

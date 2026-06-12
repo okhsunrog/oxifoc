@@ -9,7 +9,6 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::FocController;
-use oxifoc_core::foc::fault;
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::NoSensor;
@@ -145,6 +144,12 @@ pub async fn init(
         config.velocity.as_ref(),
     ));
 
+    // Graduated derating ramps from stored config (default = FET thermal
+    // rolloff only; see motor::derating).
+    foc_driver.set_derating(oxifoc_core::motor::derating::DeratingConfig::from_stored(
+        config.derating.as_ref(),
+    ));
+
     // Allow ADC injected conversions to settle before zero-current calibration.
     defmt::info!("Waiting 10ms for ADC to settle...");
     Timer::after(Duration::from_millis(10)).await;
@@ -235,16 +240,9 @@ fn ADC1_2() {
         }
     });
 
-    // === Fault detection (voltage and temperature) ===
-    // The core checkers log each fault onset themselves.
-    fault::check_voltage_faults(
-        vbus_mv,
-        &BOARD,
-        &FAULT_REGISTRY,
-        G431Fault::OverVoltage,
-        G431Fault::UnderVoltage,
-    );
-    fault::check_temperature_fault(temp_c_x10, &BOARD, &FAULT_REGISTRY, G431Fault::OverTemp);
+    // Voltage/temperature protection moved into core: run_foc_cycle's
+    // run_protection covers them (with excursion integrators) for every
+    // board.
 
     // Hall-domain timestamp (TIM4 µs ticks) for FOC and phase manager —
     // must match the tick domain of the hall edge timestamps.
@@ -268,8 +266,6 @@ fn ADC1_2() {
                 vbus_mv as f32 / 1000.0,
                 now_ticks,
                 &BOARD,
-                G431Fault::OverCurrent,
-                G431Fault::CommTimeout,
             )
         })
     });

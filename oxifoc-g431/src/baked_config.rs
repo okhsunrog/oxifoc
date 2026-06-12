@@ -47,5 +47,6 @@ pub fn baked() -> RuntimeConfig {
             ..FailsafeConfigStored::default()
         }),
         velocity: None,
+        derating: None,
     }
 }

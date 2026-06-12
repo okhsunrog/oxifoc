@@ -28,6 +28,8 @@ pub enum F405Fault {
     HallError(HallFaultKind),
     /// Command link stale while running (deadman / link-loss)
     CommTimeout,
+    /// Graduated derating active (power rolloff > 20%) — warning class
+    Derating,
 }
 
 impl PlatformFault for F405Fault {
@@ -40,6 +42,7 @@ impl PlatformFault for F405Fault {
             F405Fault::DrvFault(_) => FaultCategory::DriverFault,
             F405Fault::HallError(_) => FaultCategory::HallError,
             F405Fault::CommTimeout => FaultCategory::CommTimeout,
+            F405Fault::Derating => FaultCategory::Derating,
         }
     }
 
@@ -95,7 +98,10 @@ impl PlatformFault for F405Fault {
     fn is_recoverable(&self) -> bool {
         // UnderVoltage clears via the voltage hysteresis check; CommTimeout
         // clears in run_foc_cycle when commands flow again.
-        matches!(self, F405Fault::UnderVoltage | F405Fault::CommTimeout)
+        matches!(
+            self,
+            F405Fault::UnderVoltage | F405Fault::CommTimeout | F405Fault::Derating
+        )
     }
 
     // severity(): central per-category policy (FaultCategory::severity).
@@ -104,5 +110,20 @@ impl PlatformFault for F405Fault {
 
     fn from_hall_kind(kind: HallFaultKind) -> Option<Self> {
         Some(F405Fault::HallError(kind))
+    }
+
+    /// Payload-free categories the shared core protection can raise.
+    // DriverFault carries the DRV status payload — raised by the
+    // platform DRV handler, not through this constructor.
+    fn from_category(category: FaultCategory) -> Option<Self> {
+        match category {
+            FaultCategory::OverCurrent => Some(F405Fault::OverCurrent),
+            FaultCategory::OverVoltage => Some(F405Fault::OverVoltage),
+            FaultCategory::UnderVoltage => Some(F405Fault::UnderVoltage),
+            FaultCategory::OverTemp => Some(F405Fault::OverTemp),
+            FaultCategory::CommTimeout => Some(F405Fault::CommTimeout),
+            FaultCategory::Derating => Some(F405Fault::Derating),
+            _ => None,
+        }
     }
 }

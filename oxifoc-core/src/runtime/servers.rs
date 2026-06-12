@@ -270,6 +270,10 @@ pub async fn config_server<NS, const N: usize>(
                                     Some(v) => ConfigResponse::Velocity(v),
                                     None => ConfigResponse::NotFound,
                                 },
+                                ConfigGroupId::Derating => match cfg.derating {
+                                    Some(v) => ConfigResponse::Derating(v),
+                                    None => ConfigResponse::NotFound,
+                                },
                             }
                         }
                         // Boundary validation, before any persistence:
@@ -279,6 +283,14 @@ pub async fn config_server<NS, const N: usize>(
                         // throttle is weak). See notes/fault-overhaul.md §4.
                         ConfigRequest::Write(ConfigWrite::CurrentLimits(ref v))
                             if !v.is_coherent() =>
+                        {
+                            ConfigResponse::Invalid
+                        }
+                        // Malformed derating ramps fail loudly too — the
+                        // runtime decoder would silently fall back to the
+                        // default config otherwise.
+                        ConfigRequest::Write(ConfigWrite::Derating(ref v))
+                            if !crate::motor::derating::DeratingConfig::from(v).is_sane() =>
                         {
                             ConfigResponse::Invalid
                         }
@@ -318,6 +330,9 @@ pub async fn config_server<NS, const N: usize>(
                                 }
                                 ConfigWrite::Velocity(v) => {
                                     (ConfigKey::Velocity, ConfigPayload::Velocity(v))
+                                }
+                                ConfigWrite::Derating(v) => {
+                                    (ConfigKey::Derating, ConfigPayload::Derating(v))
                                 }
                             };
                             if persist {
@@ -385,6 +400,7 @@ pub async fn config_server<NS, const N: usize>(
                                     }
                                     ConfigWrite::Failsafe(v) => cfg.failsafe = Some(v.clone()),
                                     ConfigWrite::Velocity(v) => cfg.velocity = Some(v.clone()),
+                                    ConfigWrite::Derating(v) => cfg.derating = Some(v.clone()),
                                 }
                             });
                             // Make the write take effect on the live driver,
@@ -480,6 +496,16 @@ pub async fn config_server<NS, const N: usize>(
                                     CMD_CHANNEL
                                         .send(crate::state::DriverCommand::SetVelocityConfig(
                                             crate::foc::velocity::VelocityLoopConfig::from_stored(
+                                                Some(&v),
+                                            ),
+                                        ))
+                                        .await;
+                                }
+                                // Derating ramps apply to the live driver.
+                                ConfigWrite::Derating(v) => {
+                                    CMD_CHANNEL
+                                        .send(crate::state::DriverCommand::SetDerating(
+                                            crate::motor::derating::DeratingConfig::from_stored(
                                                 Some(&v),
                                             ),
                                         ))
@@ -630,6 +656,8 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
                     critical_section::with(|cs| state_mutex.borrow(cs).borrow().phase_source);
 
                 let fault_count = fault_registry.count() as u8;
+                let derating =
+                    critical_section::with(|cs| state_mutex.borrow(cs).borrow().derating);
 
                 async move {
                     SlowTelemetry {
@@ -642,6 +670,8 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
                         fault_count,
                         phase_source,
                         seq: current_seq,
+                        derate_drive_pct: (derating.drive * 100.0) as u8,
+                        derate_brake_pct: (derating.brake * 100.0) as u8,
                     }
                 }
             })

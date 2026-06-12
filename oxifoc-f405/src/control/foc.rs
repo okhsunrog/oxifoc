@@ -20,7 +20,6 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::FocController;
-use oxifoc_core::foc::fault;
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, TempSensorId};
 use oxifoc_core::foc::trig::FastSinCos;
@@ -28,7 +27,6 @@ use oxifoc_core::motor::FocDriver;
 use oxifoc_core::storage::RuntimeConfig;
 
 use crate::config::{BOARD, NTC_BOARD, NTC_MOTOR, PWM_CONFIG};
-use crate::fault::F405Fault;
 use crate::motor::MotorPwm;
 use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
@@ -151,6 +149,12 @@ pub async fn init(
         config.velocity.as_ref(),
     ));
 
+    // Graduated derating ramps from stored config (default = FET thermal
+    // rolloff only; see motor::derating).
+    foc_driver.set_derating(oxifoc_core::motor::derating::DeratingConfig::from_stored(
+        config.derating.as_ref(),
+    ));
+
     // Allow ADC injected conversions to start firing before zero-current calibration.
     Timer::after(Duration::from_millis(10)).await;
     foc_driver.current_sensor_mut().calibrate().await;
@@ -223,28 +227,10 @@ fn ADC() {
     let vbus_mv = BOARD.vbus_mv_from_adc(vbus_raw);
     VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
-    // === Fault detection (voltage and temperature) ===
-    fault::check_voltage_faults(
-        vbus_mv,
-        &BOARD,
-        &FAULT_REGISTRY,
-        F405Fault::OverVoltage,
-        F405Fault::UnderVoltage,
-    );
-    fault::check_temperature_fault(
-        board_temp_c_x10,
-        &BOARD,
-        &FAULT_REGISTRY,
-        F405Fault::OverTemp,
-    );
-    // Motor winding NTC (PC4): trips OverTemp past the board's motor-temp
-    // limit, so an overheating motor faults the same way the FETs do.
-    fault::check_temperature_threshold(
-        motor_temp_c_x10,
-        BOARD.max_motor_temp_c,
-        &FAULT_REGISTRY,
-        F405Fault::OverTemp,
-    );
+    // Voltage/temperature protection moved into core: run_foc_cycle's
+    // run_protection covers them (with excursion integrators) for every
+    // board — incl. the motor winding NTC, which reaches it through the
+    // AdcSnapshot in shared state.
 
     // Get current timestamp for FOC and phase manager
     // Hall-domain timestamp (capture-timer us ticks) for FOC and phase
@@ -270,8 +256,6 @@ fn ADC() {
                 vbus_mv as f32 / 1000.0,
                 now_ticks,
                 &BOARD,
-                F405Fault::OverCurrent,
-                F405Fault::CommTimeout,
             )
         })
     });

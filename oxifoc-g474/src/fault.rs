@@ -24,6 +24,8 @@ pub enum G474Fault {
     HallError(HallFaultKind),
     /// Command link stale while running (deadman / link-loss)
     CommTimeout,
+    /// Graduated derating active (power rolloff > 20%) — warning class
+    Derating,
 }
 
 impl PlatformFault for G474Fault {
@@ -35,6 +37,7 @@ impl PlatformFault for G474Fault {
             G474Fault::OverTemp => FaultCategory::OverTemp,
             G474Fault::HallError(_) => FaultCategory::HallError,
             G474Fault::CommTimeout => FaultCategory::CommTimeout,
+            G474Fault::Derating => FaultCategory::Derating,
         }
     }
 
@@ -48,12 +51,28 @@ impl PlatformFault for G474Fault {
     fn is_recoverable(&self) -> bool {
         // UnderVoltage clears via the voltage hysteresis check; CommTimeout
         // clears in run_foc_cycle when commands flow again.
-        matches!(self, G474Fault::UnderVoltage | G474Fault::CommTimeout)
+        matches!(
+            self,
+            G474Fault::UnderVoltage | G474Fault::CommTimeout | G474Fault::Derating
+        )
     }
 
     // severity(): central per-category policy (FaultCategory::severity).
 
     fn from_hall_kind(kind: HallFaultKind) -> Option<Self> {
         Some(G474Fault::HallError(kind))
+    }
+
+    /// Payload-free categories the shared core protection can raise.
+    fn from_category(category: FaultCategory) -> Option<Self> {
+        match category {
+            FaultCategory::OverCurrent => Some(G474Fault::OverCurrent),
+            FaultCategory::OverVoltage => Some(G474Fault::OverVoltage),
+            FaultCategory::UnderVoltage => Some(G474Fault::UnderVoltage),
+            FaultCategory::OverTemp => Some(G474Fault::OverTemp),
+            FaultCategory::CommTimeout => Some(G474Fault::CommTimeout),
+            FaultCategory::Derating => Some(G474Fault::Derating),
+            _ => None,
+        }
     }
 }
