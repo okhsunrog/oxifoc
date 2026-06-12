@@ -58,7 +58,7 @@ pub struct Maneuver {
 #[serde(deny_unknown_fields)]
 pub struct CaptureCfg {
     pub fast_hz: u16,
-    /// Seconds of capture после последней команды таймлайна.
+    /// Seconds of capture after the last timeline command.
     #[serde(default)]
     pub tail_s: f64,
 }

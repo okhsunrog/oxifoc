@@ -17,7 +17,7 @@ use oxifoc_core::storage::{CurrentLimitsConfig, FailsafeConfigStored, RuntimeCon
 /// The baked configuration. Replace with `config dump --rust` output.
 ///
 /// CURRENT PROFILE: **bench / lab-PSU safe** (2026-06-12, see
-/// docs/TODO.md «Стенд» and decisions.md bus-limits entry). A lab PSU
+/// docs/TODO.md bench section and decisions.md bus-limits entry). A lab PSU
 /// cannot absorb reverse current, so nothing may regen into the bus:
 /// - failsafe policy `RampToZero` (1): link loss just unloads the motor —
 ///   no regen braking. Return to `ControlledStop` (2) + `ParkBrake` for
