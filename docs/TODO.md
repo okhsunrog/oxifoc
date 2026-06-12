@@ -7,6 +7,14 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
 
 ## Safety
 
+- [ ] **Fault system overhaul** — full design in
+  [notes/fault-overhaul.md](notes/fault-overhaul.md) (response classes
+  Warning/GracefulStop/Kill, deadman → CommTimeout fault, severity on the
+  wire + FaultTopic push to the remote, graduated derating with
+  accel/brake asymmetry, current-limit ladder fixes, hall health → sticky
+  warnings + per-bit broken-wire detector, `angle_trustworthy()` during
+  the recovery override). Implementation order is in the note; phases 1–3
+  are sim-testable now.
 - [ ] **Bench-tune regen-brake**: `brake_current_a`, `standstill_rad_s`,
   low-speed coast floor; confirm no OV trip on the bus under regen;
   `BRAKE_ENTRY_MAX_E_RAD_S` (parking-brake entry gate) + windings
@@ -19,9 +27,6 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
 - [ ] **Position hold** (after position control): capture the target on
   engage, cascade position P → `VelocityLoop` → current. `Brake` stays
   the default.
-- [ ] **Integrating current/voltage fault detector** instead of the
-  single-sample trip (a nuisance trip on regen/EMI = torque loss while
-  riding). References: VESC `mc_interface.c:1881`, MESC dynamic thresholds.
 - [ ] G474: arm the IWDG once the motor modules come alive (FOC ISR).
 - [ ] Bench: IWDG reset → PWM safe on hardware (provoke a hang).
 - [ ] Boot: read reset-reason + detect a spinning motor +
@@ -46,8 +51,8 @@ accel 500 erad/s²).
 ## Algorithms (ladder, cheap → expensive)
 
 - [ ] Position loop (see above).
-- [ ] **Graduated derating** (VESC override matrix): linear rolloff of
-  effective limits by T_fet/T_motor/V_bat/ERPM on top of bus limits.
+- [ ] **Graduated derating** (VESC override matrix) — design and ordering
+  moved to [notes/fault-overhaul.md](notes/fault-overhaul.md) §3.
 - [ ] **Field weakening V2** (MESC: exponential d-current from the voltage
   vector hitting the circle — no motor parameters needed).
 - [ ] MTPA.
