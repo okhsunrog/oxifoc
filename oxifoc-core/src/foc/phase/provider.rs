@@ -98,4 +98,11 @@ pub trait PhaseProvider {
     fn angle_trustworthy(&self) -> bool {
         true
     }
+
+    /// Active hall degradation, if any — bridged into the fault registry as
+    /// a sticky `HallError` warning by `run_foc_cycle` (set-only: recovery
+    /// clears the behavior, not the record). Default: nothing to report.
+    fn hall_fault(&self) -> Option<crate::foc::hall_sensor::HallFaultKind> {
+        None
+    }
 }

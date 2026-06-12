@@ -2,6 +2,7 @@
 
 use heapless::String;
 use oxifoc_core::foc::fault::{FaultCategory, PlatformFault};
+use oxifoc_core::foc::hall_sensor::HallFaultKind;
 
 /// G474 platform-specific faults
 ///
@@ -18,8 +19,9 @@ pub enum G474Fault {
     UnderVoltage,
     /// Over-temperature (FET)
     OverTemp,
-    /// Hall sensor error
-    HallError,
+    /// Hall sensor error (warning class: the ride continues on the
+    /// fallback chain; the payload names the degradation, e.g. which wire)
+    HallError(HallFaultKind),
     /// Command link stale while running (deadman / link-loss)
     CommTimeout,
 }
@@ -31,14 +33,16 @@ impl PlatformFault for G474Fault {
             G474Fault::OverVoltage => FaultCategory::OverVoltage,
             G474Fault::UnderVoltage => FaultCategory::UnderVoltage,
             G474Fault::OverTemp => FaultCategory::OverTemp,
-            G474Fault::HallError => FaultCategory::HallError,
+            G474Fault::HallError(_) => FaultCategory::HallError,
             G474Fault::CommTimeout => FaultCategory::CommTimeout,
         }
     }
 
     fn details(&self) -> String<128> {
-        // G474 faults don't have additional details
-        String::new()
+        match self {
+            G474Fault::HallError(kind) => kind.details(),
+            _ => String::new(),
+        }
     }
 
     fn is_recoverable(&self) -> bool {
@@ -48,4 +52,8 @@ impl PlatformFault for G474Fault {
     }
 
     // severity(): central per-category policy (FaultCategory::severity).
+
+    fn from_hall_kind(kind: HallFaultKind) -> Option<Self> {
+        Some(G474Fault::HallError(kind))
+    }
 }

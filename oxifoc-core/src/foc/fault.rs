@@ -231,6 +231,14 @@ pub trait PlatformFault: Copy + Clone + PartialEq {
     fn severity(&self) -> FaultSeverity {
         self.category().severity()
     }
+
+    /// Construct the platform's hall fault from a degradation kind, for
+    /// the sticky `HallError` warning bridge in `run_foc_cycle`. Default
+    /// `None` = the platform carries no hall fault (the bridge is a no-op)
+    /// — so the bridge needs no extra `run_foc_cycle` parameter.
+    fn from_hall_kind(_kind: crate::foc::hall_sensor::HallFaultKind) -> Option<Self> {
+        None
+    }
 }
 
 // ============================================================================

@@ -207,4 +207,10 @@ impl AngleSensor for HallAngleProxy {
     fn is_present(&self) -> bool {
         HALL_ESTIMATOR.lock(|est| est.borrow().is_some())
     }
+
+    // The trait default (None) would hide the shared estimator's wire
+    // verdicts from the fault bridge, same trap as sample_mut/is_stale.
+    fn fault_kind(&self) -> Option<crate::foc::hall_sensor::HallFaultKind> {
+        HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(|h| h.fault_kind()))
+    }
 }

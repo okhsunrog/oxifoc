@@ -2,6 +2,7 @@
 
 use heapless::String;
 use oxifoc_core::foc::fault::{FaultCategory, PlatformFault};
+use oxifoc_core::foc::hall_sensor::HallFaultKind;
 
 /// G431 platform-specific faults
 ///
@@ -17,8 +18,9 @@ pub enum G431Fault {
     UnderVoltage,
     /// Over-temperature (FET)
     OverTemp,
-    /// Hall sensor error
-    HallError,
+    /// Hall sensor error (warning class: the ride continues on the
+    /// fallback chain; the payload names the degradation, e.g. which wire)
+    HallError(HallFaultKind),
     /// Command link stale while running (deadman / link-loss)
     CommTimeout,
 }
@@ -30,14 +32,16 @@ impl PlatformFault for G431Fault {
             G431Fault::OverVoltage => FaultCategory::OverVoltage,
             G431Fault::UnderVoltage => FaultCategory::UnderVoltage,
             G431Fault::OverTemp => FaultCategory::OverTemp,
-            G431Fault::HallError => FaultCategory::HallError,
+            G431Fault::HallError(_) => FaultCategory::HallError,
             G431Fault::CommTimeout => FaultCategory::CommTimeout,
         }
     }
 
     fn details(&self) -> String<128> {
-        // G431 faults don't have additional details
-        String::new()
+        match self {
+            G431Fault::HallError(kind) => kind.details(),
+            _ => String::new(),
+        }
     }
 
     fn is_recoverable(&self) -> bool {
@@ -47,4 +51,8 @@ impl PlatformFault for G431Fault {
     }
 
     // severity(): central per-category policy (FaultCategory::severity).
+
+    fn from_hall_kind(kind: HallFaultKind) -> Option<Self> {
+        Some(G431Fault::HallError(kind))
+    }
 }

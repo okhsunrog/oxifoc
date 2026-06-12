@@ -154,6 +154,23 @@ pub struct HallSensor {
     last_sample_ticks: Option<u64>,
     /// Hall sensor timeout in ticks (converted from microseconds)
     timeout_ticks: u64,
+
+    // === Wire-health observation window (see note_wire_activity) ===
+    /// Per-bit transition counts within the current window (saturating)
+    wire_bit_changes: [u8; 3],
+    /// Observed transitions (update calls) in the current window
+    wire_window_updates: u8,
+    /// Invalid-state (0/7) events in the current window
+    wire_window_invalids: u8,
+    /// `error_count` snapshot at the window start (for the rate delta)
+    errors_at_window_start: u32,
+    /// Latest window verdict: bitmask of dead wires (0 = none)
+    wire_dead_mask: u8,
+    /// Latest window verdict: error rate above threshold
+    error_rate_flag: bool,
+    /// Whether at least one state has been observed (the POR prev state
+    /// must not feed the bit counters — see note_wire_activity)
+    wire_primed: bool,
 }
 
 /// Snapshot of the Hall estimator state after a valid edge.
@@ -171,6 +188,84 @@ pub struct HallReading {
 pub enum HallError {
     InvalidState(u8),
 }
+
+/// What is wrong with the hall sensor — the payload of the `HallError`
+/// warning fault (docs/notes/fault-overhaul.md §5). Produced by the wire
+/// detectors below ([`HallSensor::fault_kind`]) and by the health tracking
+/// in `PhaseManager` (stale / invalid).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum HallFaultKind {
+    /// Invalid state (0b000/0b111) observed — wiring or pull-up trouble.
+    InvalidState,
+    /// Edges stopped while the rotor was spinning (velocity-adaptive
+    /// staleness) — dead cable or dead sensor.
+    StaleAtSpeed,
+    /// Specific hall wires identified as dead (bit i set = wire H{i+1},
+    /// the H1/H2/H3 inputs). See the per-bit detector in
+    /// [`HallSensor::note_wire_activity`].
+    WireDead {
+        /// Bitmask of dead wires (bit 0 = H1, bit 1 = H2, bit 2 = H3)
+        mask: u8,
+    },
+    /// Error rate over the observation window exceeded the threshold —
+    /// stochastic glitches (contact bounce, EMI) rather than a clean break.
+    ErrorRate,
+}
+
+impl HallFaultKind {
+    /// Human-readable details for the protocol `FaultInfo` — shared by the
+    /// platform fault enums so the wording stays identical everywhere.
+    pub fn details(&self) -> heapless::String<128> {
+        let mut s = heapless::String::new();
+        match self {
+            HallFaultKind::InvalidState => {
+                let _ = s.push_str("invalid state (0/7) - wiring/pull-up");
+            }
+            HallFaultKind::StaleAtSpeed => {
+                let _ = s.push_str("edges stopped at speed - dead cable/sensor");
+            }
+            HallFaultKind::WireDead { mask } => {
+                let _ = s.push_str("dead wire:");
+                for bit in 0..3u8 {
+                    if mask & (1 << bit) != 0 {
+                        let _ = s.push_str(match bit {
+                            0 => " H1",
+                            1 => " H2",
+                            _ => " H3",
+                        });
+                    }
+                }
+            }
+            HallFaultKind::ErrorRate => {
+                let _ = s.push_str("high error rate - bounce/EMI");
+            }
+        }
+        s
+    }
+}
+
+/// Wire-health observation window length, in observed hall transitions
+/// (`update()` calls). 24 transitions = 4 electrical revolutions on a
+/// healthy sensor (6 edges/rev), 6 revolutions with one dead wire (4
+/// observed transitions/rev — two real edges are masked, one lands on an
+/// invalid state), 12 with two dead wires. Long enough that every live
+/// bit must show activity, short enough to flag a break within roughly
+/// one wheel revolution at riding speed.
+pub const WIRE_WINDOW_UPDATES: u8 = 24;
+
+/// Minimum invalid-state events inside a window for a `WireDead` verdict
+/// (≈ one per electrical revolution with a dead wire — see
+/// [`HallSensor::note_wire_activity`]); two = debounce against a single
+/// boot/connect glitch.
+pub const WIRE_WINDOW_MIN_INVALIDS: u8 = 2;
+
+/// `error_count` delta over one observation window that flags
+/// [`HallFaultKind::ErrorRate`]. A healthy sensor contributes zero; a
+/// single EMI glitch contributes one or two — the threshold sits above
+/// both, while bounce or a flaky contact (errors every few edges) clears
+/// it within a window.
+pub const ERROR_RATE_WINDOW_THRESHOLD: u32 = 4;
 
 impl Default for HallSensor {
     fn default() -> Self {
@@ -211,6 +306,13 @@ impl HallSensor {
             rate_limited_angle: 0.0,
             last_sample_ticks: None,
             timeout_ticks: Self::us_to_ticks(DEFAULT_HALL_TIMEOUT_US, ticks_per_sec),
+            wire_bit_changes: [0; 3],
+            wire_window_updates: 0,
+            wire_window_invalids: 0,
+            errors_at_window_start: 0,
+            wire_dead_mask: 0,
+            error_rate_flag: false,
+            wire_primed: false,
         }
     }
 
@@ -348,6 +450,96 @@ impl HallSensor {
             .map(|ticks| ((ticks * 1_000_000) / self.ticks_per_sec) as u32)
     }
 
+    /// Per-bit wire-break detector — accounting half (the verdict is taken
+    /// at the end of each observation window).
+    ///
+    /// Physics: over one electrical revolution every live hall input
+    /// toggles exactly twice (the six states form a Gray-code cycle — one
+    /// bit changes per edge, each bit every third edge). A broken wire is
+    /// therefore a bit whose transition counter stays at ZERO while the
+    /// other counters tick — and the zero bit NAMES the dead wire for the
+    /// fault details ("hall wire H2 dead" → that's the pin to buzz out).
+    /// Works for one or two dead wires, at any rotation speed, with no
+    /// platform support: we already receive `raw_state` on every edge, so
+    /// XOR against the previous state is all the accounting needed.
+    ///
+    /// THE INVALID-STATE GATE (why counters alone are not enough): rocking
+    /// the rotor back and forth across ONE sector boundary — vibration at
+    /// standstill, a board nudged on a slope — toggles a single bit
+    /// legitimately, leaving the other two counters at zero: by counters
+    /// alone that reads as "two wires dead". But rocking never produces an
+    /// invalid state, while real rotation with a stuck bit ALWAYS does,
+    /// once per electrical revolution regardless of stuck polarity: the
+    /// sector where the other two bits are both low reads 0b000 (bit stuck
+    /// low) or the one where both are high reads 0b111 (stuck high). So a
+    /// `WireDead` verdict additionally requires invalid-state events in
+    /// the same window — rocking produces none and stays verdict-free.
+    ///
+    /// Limits (accepted): a rotor that never moves gives no edges and no
+    /// verdict (nothing to detect, nothing at risk); a sensor frozen at a
+    /// VALID state since boot is indistinguishable from a parked rotor
+    /// here — that case needs the hall-vs-observer consistency check
+    /// (TODO.md, saliency-monitor ladder).
+    fn note_wire_activity(&mut self, prev_raw: u8, raw_state: u8) {
+        // The power-on `prev_raw` (0) is not an observed hall state:
+        // counting the first transition against it credits phantom bit
+        // activity — a stuck-HIGH wire would show one "toggle" crossing
+        // from POR and dodge the verdict for a whole window.
+        if !self.wire_primed {
+            self.wire_primed = true;
+            return;
+        }
+        let changed = (prev_raw ^ raw_state) & 0x07;
+        for bit in 0..3 {
+            if changed & (1 << bit) != 0 {
+                self.wire_bit_changes[bit] = self.wire_bit_changes[bit].saturating_add(1);
+            }
+        }
+        if raw_state == 0 || raw_state > 6 {
+            self.wire_window_invalids = self.wire_window_invalids.saturating_add(1);
+        }
+        self.wire_window_updates += 1;
+        if self.wire_window_updates >= WIRE_WINDOW_UPDATES {
+            // Verdicts are per-window snapshots, not latches: the sticky
+            // memory lives in the fault registry (set-only bridge in
+            // run_foc_cycle); here a clean window clears the flags so the
+            // live behavior (and the fault details) track the present.
+            self.wire_dead_mask = if self.wire_window_invalids >= WIRE_WINDOW_MIN_INVALIDS {
+                let mut mask = 0u8;
+                for bit in 0..3 {
+                    if self.wire_bit_changes[bit] == 0 {
+                        mask |= 1 << bit;
+                    }
+                }
+                mask
+            } else {
+                0
+            };
+            self.error_rate_flag = self.error_count.wrapping_sub(self.errors_at_window_start)
+                >= ERROR_RATE_WINDOW_THRESHOLD;
+            self.wire_bit_changes = [0; 3];
+            self.wire_window_updates = 0;
+            self.wire_window_invalids = 0;
+            self.errors_at_window_start = self.error_count;
+        }
+    }
+
+    /// Latest wire-health verdict (most specific first): named dead wires,
+    /// else an excessive error rate. `None` = the last window looked
+    /// healthy. Stale/invalid health kinds are layered on top by
+    /// `PhaseManager::hall_fault`.
+    pub fn fault_kind(&self) -> Option<HallFaultKind> {
+        if self.wire_dead_mask != 0 {
+            Some(HallFaultKind::WireDead {
+                mask: self.wire_dead_mask,
+            })
+        } else if self.error_rate_flag {
+            Some(HallFaultKind::ErrorRate)
+        } else {
+            None
+        }
+    }
+
     /// Check if direction reversal was detected on last update
     pub fn direction_reversed(&self) -> bool {
         self.direction_reversed
@@ -372,6 +564,11 @@ impl HallSensor {
         let prev_raw = self.raw_state;
         // Store raw state
         self.raw_state = raw_state;
+
+        // Wire-health accounting runs BEFORE the invalid early-return:
+        // transitions into/out of 0/7 are bit activity too, and the
+        // invalid events themselves are the detector's gating signal.
+        self.note_wire_activity(prev_raw, raw_state);
 
         // Check for invalid states (all low or all high)
         if raw_state == 0 || raw_state > 6 {
@@ -514,6 +711,14 @@ impl HallSensor {
     /// Reset error counter
     pub fn reset_errors(&mut self) {
         self.error_count = 0;
+        // Restart the wire-health window too: the verdicts derive from the
+        // same evidence the host just acknowledged/cleared.
+        self.wire_bit_changes = [0; 3];
+        self.wire_window_updates = 0;
+        self.wire_window_invalids = 0;
+        self.errors_at_window_start = 0;
+        self.wire_dead_mask = 0;
+        self.error_rate_flag = false;
     }
 
     /// Get the logical Hall state (0-5)
@@ -881,7 +1086,11 @@ impl AngleSensor for HallSensor {
     }
 
     fn reset_errors(&mut self) {
-        self.error_count = 0;
+        HallSensor::reset_errors(self);
+    }
+
+    fn fault_kind(&self) -> Option<HallFaultKind> {
+        HallSensor::fault_kind(self)
     }
 }
 
@@ -1465,5 +1674,117 @@ mod tests {
             stale.omega,
             running
         );
+    }
+
+    // ========================================================================
+    // Per-bit wire-break detector (note_wire_activity)
+    // ========================================================================
+
+    /// Feed `revs` electrical revolutions of the CW sequence with hall bits
+    /// forced by `mask_and`/`mask_or` (a stuck wire), deduplicating equal
+    /// consecutive observed states — the capture hardware only fires on a
+    /// pin CHANGE, so masked transitions produce no update() call.
+    fn spin_with_stuck_bits(hall: &mut HallSensor, revs: usize, mask_and: u8, mask_or: u8) {
+        const CW: [u8; 6] = [1, 3, 2, 6, 4, 5];
+        let mut t = 0u64;
+        let mut last_observed = 0xFFu8; // no dedup on the first state
+        for _ in 0..revs {
+            for raw in CW {
+                let observed = (raw & mask_and) | mask_or;
+                if observed != last_observed {
+                    let _ = hall.update(observed, t);
+                    last_observed = observed;
+                    t += 1000;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wire_dead_stuck_low_named() {
+        // H1 (bit 0) stuck low: per revolution the observed sequence is
+        // 0(invalid), 2, 6, 4 — bit 0 never toggles, one invalid per rev.
+        let mut hall = HallSensor::new(1_000_000);
+        spin_with_stuck_bits(&mut hall, 8, 0b110, 0);
+        assert_eq!(
+            hall.fault_kind(),
+            Some(HallFaultKind::WireDead { mask: 0b001 }),
+            "stuck-low H1 must be named"
+        );
+    }
+
+    #[test]
+    fn wire_dead_stuck_high_named() {
+        // H3 (bit 2) stuck high (broken wire + pull-up): the 0b011 sector
+        // reads 0b111 = invalid, bit 2 never toggles.
+        let mut hall = HallSensor::new(1_000_000);
+        spin_with_stuck_bits(&mut hall, 8, 0b111, 0b100);
+        assert_eq!(
+            hall.fault_kind(),
+            Some(HallFaultKind::WireDead { mask: 0b100 }),
+            "stuck-high H3 must be named"
+        );
+    }
+
+    #[test]
+    fn two_dead_wires_named() {
+        // H1+H2 stuck low: only H3 toggles (observed 0/4 alternation),
+        // invalid every revolution.
+        let mut hall = HallSensor::new(1_000_000);
+        spin_with_stuck_bits(&mut hall, 14, 0b100, 0);
+        assert_eq!(
+            hall.fault_kind(),
+            Some(HallFaultKind::WireDead { mask: 0b011 }),
+            "both dead wires must be named"
+        );
+    }
+
+    #[test]
+    fn rocking_across_one_boundary_is_not_a_dead_wire() {
+        // Vibration / a board nudged on a slope: the rotor rocks across a
+        // single sector boundary, toggling ONE bit back and forth. By
+        // counters alone that reads as "the other two wires are dead" —
+        // the invalid-state gate must keep the verdict away (legitimate
+        // rocking never produces 0/7).
+        let mut hall = HallSensor::new(1_000_000);
+        let mut t = 0u64;
+        hall.update(1, t);
+        for _ in 0..30 {
+            t += 1000;
+            hall.update(3, t); // 1↔3: bit 1 toggles, adjacent states
+            t += 1000;
+            hall.update(1, t);
+        }
+        assert_eq!(hall.fault_kind(), None, "rocking must not flag wires");
+        assert_eq!(hall.error_count(), 0, "rocking is legitimate motion");
+    }
+
+    #[test]
+    fn healthy_rotation_stays_verdict_free() {
+        let mut hall = HallSensor::new(1_000_000);
+        spin_with_stuck_bits(&mut hall, 10, 0b111, 0);
+        assert_eq!(hall.fault_kind(), None);
+    }
+
+    #[test]
+    fn bounce_flags_error_rate() {
+        // Stochastic glitches: non-adjacent jumps (1↔2 is two sectors
+        // apart) rack up error_count without invalid states — the rate
+        // window flags it, the wire verdict stays away.
+        let mut hall = HallSensor::new(1_000_000);
+        let mut t = 0u64;
+        for _ in 0..15 {
+            hall.update(1, t);
+            t += 1000;
+            hall.update(2, t);
+            t += 1000;
+        }
+        assert_eq!(hall.fault_kind(), Some(HallFaultKind::ErrorRate));
+    }
+
+    #[test]
+    fn wire_details_name_the_pins() {
+        let d = HallFaultKind::WireDead { mask: 0b101 }.details();
+        assert_eq!(d.as_str(), "dead wire: H1 H3");
     }
 }

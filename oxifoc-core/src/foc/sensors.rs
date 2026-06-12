@@ -116,6 +116,13 @@ pub trait AngleSensor {
     fn is_present(&self) -> bool {
         true
     }
+
+    /// Sensor-level wire-health verdict (named dead wires / error rate) for
+    /// the `HallError` warning fault. Default: nothing to report — only the
+    /// hall estimator carries the per-bit detector.
+    fn fault_kind(&self) -> Option<crate::foc::hall_sensor::HallFaultKind> {
+        None
+    }
 }
 
 /// Optional velocity estimation from an angle sensor

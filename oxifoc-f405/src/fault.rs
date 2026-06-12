@@ -2,6 +2,7 @@
 
 use heapless::String;
 use oxifoc_core::foc::fault::{FaultCategory, PlatformFault};
+use oxifoc_core::foc::hall_sensor::HallFaultKind;
 
 // Import DRV8301 fault status from driver crate
 pub use drv8301_dd::FaultStatus as DrvFaultStatus;
@@ -22,8 +23,9 @@ pub enum F405Fault {
     OverTemp,
     /// DRV8301 gate driver fault with detailed status
     DrvFault(DrvFaultStatus),
-    /// Hall sensor error
-    HallError,
+    /// Hall sensor error (warning class: the ride continues on the
+    /// fallback chain; the payload names the degradation, e.g. which wire)
+    HallError(HallFaultKind),
     /// Command link stale while running (deadman / link-loss)
     CommTimeout,
 }
@@ -36,7 +38,7 @@ impl PlatformFault for F405Fault {
             F405Fault::UnderVoltage => FaultCategory::UnderVoltage,
             F405Fault::OverTemp => FaultCategory::OverTemp,
             F405Fault::DrvFault(_) => FaultCategory::DriverFault,
-            F405Fault::HallError => FaultCategory::HallError,
+            F405Fault::HallError(_) => FaultCategory::HallError,
             F405Fault::CommTimeout => FaultCategory::CommTimeout,
         }
     }
@@ -80,6 +82,9 @@ impl PlatformFault for F405Fault {
                     let _ = s.push_str("PVDD_UV ");
                 }
             }
+            F405Fault::HallError(kind) => {
+                return kind.details();
+            }
             _ => {
                 // No additional details for other faults
             }
@@ -96,4 +101,8 @@ impl PlatformFault for F405Fault {
     // severity(): central per-category policy (FaultCategory::severity).
     // OverTemp is GracefulStop, not Kill — "must not restart while hot"
     // survives via the any_stopping() start gate (no auto-clear on OT).
+
+    fn from_hall_kind(kind: HallFaultKind) -> Option<Self> {
+        Some(F405Fault::HallError(kind))
+    }
 }

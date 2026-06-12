@@ -268,3 +268,24 @@ their section.
   additionally clamps whatever arrives by baked/boot paths — protection
   wins over torque: iq is lowered, the trip is never raised. E2E-verified
   against the virtual device.
+- **2026-06-13 — hall health → faults (phase 3 of the overhaul).** Hall
+  degradation now reaches the registry as a STICKY `HallError(kind)`
+  warning: the bridge in `run_foc_cycle` is set-only (a sensor that lied
+  once stays on record until host clear; live fallback behavior recovers
+  immediately — flapping partial failures must not buzz the remote at
+  rev rate). The payload names the degradation: a per-bit wire detector
+  in `HallSensor` counts transitions per hall input (each live bit
+  toggles 2×/electrical rev) and names dead wires, gated on
+  invalid-state events in the same window — rocking across one sector
+  boundary toggles one bit legitimately and must not read as "two wires
+  dead", while real rotation with a stuck bit produces an invalid state
+  every revolution (full rationale in `note_wire_activity`). Error-rate
+  window (bounce/EMI) reports only, by decision — degrading commutation
+  on a lying-but-half-right hall at low speed is worse than riding it
+  until the sensorless promotion (phase 6) gives a real alternative.
+  `angle_trustworthy()` is now false while the open-loop recovery
+  override fabricates the angle (variant A, agreed 2026-06-13): the
+  existing iq gate coasts instead of pushing random-direction torque;
+  recovery comes from physical motion (kick-push → observer locks). The
+  override also deactivates when the hall itself recovers — previously
+  nothing did, so one glitch left it active forever.

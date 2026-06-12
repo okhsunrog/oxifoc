@@ -618,6 +618,20 @@ where
         }
     };
 
+    // Hall-degradation bridge — after the step, which is where the phase
+    // manager refreshed its health. STICKY by design: set-only, never
+    // cleared here. A sensor that lied once mid-ride stays on record until
+    // the host clears it (`faults clear`), even though the live fallback
+    // behavior recovers the moment the hall does; partial-failure health
+    // flapping (Ok↔Invalid every revolution) must not buzz the remote at
+    // rev rate. Warning class: the vehicle rides through on the fallback
+    // chain (docs/notes/fault-overhaul.md §5).
+    if let Some(kind) = driver.phase().hall_fault()
+        && let Some(fault) = F::from_hall_kind(kind)
+    {
+        fault_registry.set(fault);
+    }
+
     // The failsafe terminal transition (brake finished / aborted → Stopped,
     // or clean-stop → parking Brake) happens inside step(); mirror it into
     // the shared state so telemetry and the config server's motor-running

@@ -615,6 +615,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         hall_sample: Option<AngleSample>,
         encoder_sample: Option<AngleSample>,
     ) -> PhaseOutput {
+        // A live hall sample retakes commutation from the recovery
+        // override. Without this, one glitch-triggered override outlived
+        // the glitch: nothing deactivated it when the SENSOR (rather than
+        // the observer) came back, and `angle_trustworthy()` stayed false
+        // forever on a healthy hall.
+        if hall_sample.is_some() && self.open_loop_override.active && self.source.requires_hall() {
+            self.deactivate_open_loop_override();
+        }
+
         match self.source {
             PhaseSource::Hall => {
                 // VESC-style: try Hall first, fall back to observer if Hall failed
@@ -1009,16 +1018,29 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     /// zero speed by design). A pure back-EMF observer is only trusted while
     /// `is_ready()` — it drops below its speed floor, so the failsafe brake
     /// coasts the last bit instead of commutating blind.
+    ///
+    /// While the open-loop recovery override carries commutation (sensor
+    /// dead AND observer not ready), the angle is FABRICATED — a rotating
+    /// frame with no relation to the rotor. Reporting it trustworthy put
+    /// the full commanded iq into that frame (random-direction torque
+    /// jolts under a rider at low speed) and let the failsafe commutate
+    /// the brake blind. Untrusted, the existing iq gate coasts instead;
+    /// recovery comes from physical motion (kick-push → back-EMF →
+    /// observer locks → override deactivates → trust returns). The
+    /// deliberate cost: no self-start from standstill with a dead hall
+    /// until the sensorless promotion lands (fault-overhaul.md phase 6,
+    /// variant A decision 2026-06-13).
     fn angle_trustworthy(&self) -> bool {
         match self.source {
             PhaseSource::Hall
             | PhaseSource::Encoder
-            | PhaseSource::Manual
-            | PhaseSource::OpenLoop
             | PhaseSource::HallToObserver { .. }
             | PhaseSource::EncoderToObserver { .. }
             | PhaseSource::HfiToHall { .. }
-            | PhaseSource::HfiToEncoder { .. } => true,
+            | PhaseSource::HfiToEncoder { .. } => !self.open_loop_override.active,
+            // Calibration/detection sources: the commanded angle IS the
+            // reference frame, trusted by construction.
+            PhaseSource::Manual | PhaseSource::OpenLoop => true,
             PhaseSource::Observer => self.observer.is_ready(),
             PhaseSource::Hfi
             | PhaseSource::HfiToObserver { .. }
@@ -1035,6 +1057,27 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             hfi.get_injection()
         } else {
             (0.0, 0.0)
+        }
+    }
+
+    /// Most specific active hall degradation: the sensor's wire verdicts
+    /// (named dead wires / error rate) win over the coarse health kinds —
+    /// "wire H2 dead" tells the bench which pin to buzz out, "invalid
+    /// state" only says something is wrong. Only sources that consume hall
+    /// data report; an idle hall during Manual calibration or pure
+    /// sensorless is not a failure.
+    fn hall_fault(&self) -> Option<crate::foc::hall_sensor::HallFaultKind> {
+        use crate::foc::hall_sensor::HallFaultKind;
+        if !self.source.requires_hall() {
+            return None;
+        }
+        if let Some(kind) = self.hall.fault_kind() {
+            return Some(kind);
+        }
+        match self.hall_health {
+            HallHealth::Stale => Some(HallFaultKind::StaleAtSpeed),
+            HallHealth::Invalid => Some(HallFaultKind::InvalidState),
+            HallHealth::Ok | HallHealth::NotPresent => None,
         }
     }
 }
@@ -1527,6 +1570,100 @@ mod tests {
         );
     }
 
+    /// Variant A of the dead-hall decision (2026-06-13, fault-overhaul.md):
+    /// while the open-loop recovery override fabricates the angle, the
+    /// manager must NOT report it trustworthy — the driver's iq gate then
+    /// coasts instead of pushing random-direction torque. Trust returns
+    /// with the sensor (and the override must actually deactivate when the
+    /// hall recovers — it used to outlive the glitch forever).
+    #[test]
+    fn override_makes_angle_untrusted_until_hall_recovers() {
+        let mock_hall = MockHallSensor::new();
+        let mut phase = PhaseManager::with_hall(mock_hall);
+
+        phase.update(&PhaseInput::default(), 0);
+        assert!(phase.angle_trustworthy(), "healthy hall is trusted");
+
+        // Hall dies, no observer: override fabricates the angle.
+        phase.hall_mut().set_valid(false);
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            1_000,
+        );
+        assert!(phase.is_open_loop_override_active());
+        assert!(
+            !phase.angle_trustworthy(),
+            "a fabricated angle must not be trusted"
+        );
+
+        // Hall recovers: the live sample retakes commutation, the override
+        // deactivates, trust returns.
+        phase.hall_mut().set_valid(true);
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            2_000,
+        );
+        assert!(
+            !phase.is_open_loop_override_active(),
+            "live hall must deactivate the recovery override"
+        );
+        assert!(phase.angle_trustworthy());
+    }
+
+    /// With a ready observer the fallback never reaches the override, so
+    /// the angle stays trusted through a hall dropout at speed.
+    #[test]
+    fn observer_fallback_keeps_angle_trusted() {
+        use crate::foc::phase::{BackEmfObserver, Observer};
+
+        let mock_hall = MockHallSensor::new();
+        let mut phase = PhaseManager::with_hall(mock_hall);
+        let mut observer = BackEmfObserver::new(1.0, 0.001, 0.01);
+        observer.force_phase(1.5);
+        observer.set_velocity(200.0);
+        phase.set_observer(Observer::BackEmf(observer));
+
+        phase.hall_mut().set_valid(false);
+        phase.update(&PhaseInput::default(), 1_000);
+
+        assert!(!phase.is_open_loop_override_active());
+        assert!(
+            phase.angle_trustworthy(),
+            "observer-carried fallback is trusted"
+        );
+    }
+
+    /// `hall_fault()` reports the most specific degradation and only for
+    /// sources that consume hall data.
+    #[test]
+    fn hall_fault_reports_health_kinds() {
+        use crate::foc::hall_sensor::HallFaultKind;
+
+        let mock_hall = MockHallSensor::new();
+        let mut phase = PhaseManager::with_hall(mock_hall);
+        assert_eq!(phase.hall_fault(), None, "healthy hall reports nothing");
+
+        phase.hall_mut().set_valid(false);
+        phase.update(&PhaseInput::default(), 1_000);
+        assert_eq!(
+            phase.hall_fault(),
+            Some(HallFaultKind::InvalidState),
+            "invalid health maps to the InvalidState kind"
+        );
+
+        // A non-hall source must not report an idle hall as a failure.
+        phase.set_manual_angle(0.0);
+        phase.set_source(PhaseSource::Manual).unwrap();
+        phase.update(&PhaseInput::default(), 2_000);
+        assert_eq!(phase.hall_fault(), None);
+    }
+
     #[test]
     fn blend_reseeds_pi_flipped_observer_from_sensor() {
         use crate::foc::phase::{BackEmfObserver, Observer};
@@ -1613,14 +1750,17 @@ mod tests {
     /// Closed-loop sensorless harness: VirtualMotor + FocController +
     /// PhaseManager(HallSensor + BackEmfObserver), HallToObserver source.
     ///
-    /// Spins from standstill on hall commutation; hall edges stop being fed
-    /// after `hall_until_step` (cable-cut simulation). Returns the manager,
-    /// final motor output and the largest one-cycle angle jump seen above
-    /// the hall interpolation regime.
+    /// Spins from standstill on hall commutation; `hall_feed` maps the
+    /// plant's true hall state to what the firmware observes per step
+    /// (`None` = no signal at all — cable cut; a masked bit = a dead
+    /// wire). Deduplicates equal consecutive OBSERVED states: capture
+    /// hardware only fires on a pin change. Returns the manager, final
+    /// motor output and the largest one-cycle angle jump seen above the
+    /// hall interpolation regime.
     #[cfg(feature = "virtual-motor")]
     fn run_sensorless_sim(
         total_steps: u64,
-        hall_until_step: u64,
+        hall_feed: impl Fn(u64, u8) -> Option<u8>,
     ) -> (
         PhaseManager<crate::foc::hall_sensor::HallSensor>,
         crate::virtual_motor::VirtualMotorOutput,
@@ -1653,7 +1793,7 @@ mod tests {
         let mut out = motor.step(0.0, 0.0, 0.0, DT);
         let mut hall = HallSensor::new(1_000_000); // µs timebase
         hall.update(out.hall_state, 0);
-        let mut last_hall_state = out.hall_state;
+        let mut last_fed = out.hall_state;
 
         let mut mgr = PhaseManager::with_hall(hall);
         mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
@@ -1674,9 +1814,11 @@ mod tests {
         for step in 1..total_steps {
             let t_us = step * 50;
 
-            if step < hall_until_step && out.hall_state != last_hall_state {
-                mgr.hall_mut().update(out.hall_state, t_us);
-                last_hall_state = out.hall_state;
+            if let Some(observed) = hall_feed(step, out.hall_state)
+                && observed != last_fed
+            {
+                mgr.hall_mut().update(observed, t_us);
+                last_fed = observed;
             }
 
             let angle = mgr.get().angle;
@@ -1718,7 +1860,7 @@ mod tests {
     #[cfg(feature = "virtual-motor")]
     fn closed_loop_hall_to_observer_crossover() {
         const DT: f32 = 1.0 / 20_000.0;
-        let (mgr, out, max_step_at_speed) = run_sensorless_sim(20_000, u64::MAX);
+        let (mgr, out, max_step_at_speed) = run_sensorless_sim(20_000, |_, s| Some(s));
 
         // Motor must have spun up past the blend band → pure observer.
         assert!(
@@ -1769,7 +1911,8 @@ mod tests {
     #[cfg(feature = "virtual-motor")]
     fn closed_loop_hall_dropout_at_speed() {
         // 1 s with halls, then 0.3 s with the cable cut.
-        let (mgr, out, max_step_at_speed) = run_sensorless_sim(26_000, 20_000);
+        let (mgr, out, max_step_at_speed) =
+            run_sensorless_sim(26_000, |step, s| (step < 20_000).then_some(s));
 
         assert!(
             out.omega_e > 400.0,
@@ -1798,6 +1941,45 @@ mod tests {
         assert!(
             max_step_at_speed < nominal_step + 0.15,
             "angle jumped {} rad during hall dropout handoff",
+            max_step_at_speed
+        );
+    }
+
+    /// Partial hall failure at speed: H1 goes stuck-low mid-ride. Above the
+    /// blend band the observer carries commutation, so the ride continues
+    /// smoothly — and the per-bit wire detector must name the dead wire
+    /// from the corrupted edge stream (one invalid state per electrical
+    /// revolution gates the verdict, see HallSensor::note_wire_activity).
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn closed_loop_partial_hall_failure_rides_through_and_names_wire() {
+        use crate::foc::hall_sensor::HallFaultKind;
+
+        const FAIL_AT: u64 = 20_000; // 1 s spin-up, then the wire breaks
+        let (mgr, out, max_step_at_speed) = run_sensorless_sim(40_000, |step, s| {
+            Some(if step < FAIL_AT { s } else { s & 0b110 })
+        });
+
+        assert!(
+            out.omega_e > 400.0,
+            "motor must ride through a partial hall failure: ωe = {}",
+            out.omega_e
+        );
+        assert_eq!(
+            mgr.hall().fault_kind(),
+            Some(HallFaultKind::WireDead { mask: 0b001 }),
+            "the dead wire must be named (health: {:?})",
+            mgr.hall_health()
+        );
+
+        // Commutation stayed accurate and continuous on the observer.
+        let true_angle = wrap_angle(out.angle_rad);
+        let err = crate::foc::angle_difference(mgr.get().angle, true_angle).abs();
+        assert!(err < 0.25, "angle err {} rad with a dead hall wire", err);
+        let nominal_step = out.omega_e * (1.0 / 20_000.0);
+        assert!(
+            max_step_at_speed < nominal_step + 0.15,
+            "angle jumped {} rad during partial-failure ride-through",
             max_step_at_speed
         );
     }

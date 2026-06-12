@@ -74,8 +74,11 @@ Checks (Python below):
 - `erpm` sign matches rotation direction, magnitude plausible for a hand
   spin (a 2× skew = the old prescaler bug class), **no spikes at sector
   boundaries**.
-- Pull one hall wire mid-spin → `faults` must show HallError
-  (invalid-state detection), then clears on `faults --clear`.
+- Pull one hall wire mid-spin → `faults` must show HallError with the
+  dead wire NAMED in the details ("dead wire: H2" — the per-bit detector,
+  needs ~6 electrical revolutions of spinning to conclude; the bare
+  invalid-state warning appears immediately). The record is sticky:
+  it survives re-plugging the wire, clears on `faults --clear`.
 - After a reboot with the rotor parked: `status` → first commutation
   must have a valid angle immediately (boot seed from the static hall
   state).

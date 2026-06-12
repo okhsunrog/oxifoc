@@ -2599,6 +2599,9 @@ mod tests {
             fn is_recoverable(&self) -> bool {
                 false
             }
+            fn from_hall_kind(_kind: crate::foc::hall_sensor::HallFaultKind) -> Option<Self> {
+                Some(SevFault::Hall)
+            }
         }
 
         const BOARD: crate::foc::config::BoardConfig = crate::foc::config::BoardConfig {
@@ -2766,6 +2769,74 @@ mod tests {
             assert!(out.is_none(), "Kill must skip the FOC step");
             assert!(matches!(h.driver.mode(), ControlMode::Stopped));
             assert_eq!(h.motor_state(), MotorState::Error);
+        }
+
+        /// The hall bridge is STICKY: the warning lands in the registry on
+        /// degradation, the motor keeps running (warning class), and the
+        /// record survives the hall's recovery — only a host clear removes
+        /// it, while the live fallback behavior recovers immediately.
+        #[test]
+        fn hall_degradation_bridges_sticky_warning() {
+            let _serial = cmd_channel_lock();
+            use crate::foc::hall_sensor::HallSensor;
+
+            let state: CriticalSectionMutex<RefCell<MotorControlState>> =
+                CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+            let registry: FaultRegistry<SevFault> = FaultRegistry::new();
+            let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+            let mut hall = HallSensor::new(1_000_000);
+            hall.update(1, 0); // boot seed: healthy, valid sample from t=0
+            let mut driver = FocDriver::new(
+                foc,
+                MockPwm { duties: [0; 3] },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                PhaseManager::with_hall(hall), // default source = Hall
+                1.0 / 20_000.0,
+            );
+            critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+
+            let cycle = |driver: &mut FocDriver<_, _, _, _>, now: u64| {
+                crate::state::run_foc_cycle(
+                    &state,
+                    &registry,
+                    driver,
+                    24.0,
+                    now,
+                    &BOARD,
+                    SevFault::OverCurrent,
+                    SevFault::CommTimeout,
+                )
+            };
+
+            let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0,
+            }));
+            cycle(&mut driver, 0);
+            assert!(!registry.has_category(FaultCategory::HallError));
+
+            // Hall dies: invalid state (cable cut, pull-ups → 0b111).
+            driver.phase_mut().hall_mut().update(0b111, 10);
+            cycle(&mut driver, 50);
+            assert!(
+                registry.has_category(FaultCategory::HallError),
+                "degradation must bridge into the registry"
+            );
+            assert!(
+                matches!(driver.mode(), ControlMode::CurrentControl { .. }),
+                "warning class: the motor keeps running"
+            );
+
+            // Hall recovers: behavior follows, the record stays.
+            driver.phase_mut().hall_mut().update(1, 100);
+            cycle(&mut driver, 150);
+            assert!(
+                registry.has_category(FaultCategory::HallError),
+                "the warning is sticky — only a host clear removes it"
+            );
+            assert!(matches!(driver.mode(), ControlMode::CurrentControl { .. }));
         }
 
         #[test]

@@ -1,9 +1,10 @@
 # Fault system overhaul: response classes, derating, hall health
 
-Status: partially landed — phase 1 (severity classes, class-based gate,
-deadman → CommTimeout) and phase 2 (limit-ladder fixes) landed
-2026-06-12; phases 3–6 open. Companion to [../safety.md](../safety.md)
-(failsafe layers) and the Bench section of [../TODO.md](../TODO.md).
+Status: partially landed — phases 1–2 (severity classes, gate, deadman →
+CommTimeout, limit-ladder fixes) landed 2026-06-12, phase 3 (hall
+package) 2026-06-13; phases 4–6 open. Companion to
+[../safety.md](../safety.md) (failsafe layers) and the Bench section of
+[../TODO.md](../TODO.md).
 
 ## Motivation
 
@@ -182,9 +183,16 @@ HFI carrier ripple + noise.
    (`CurrentLimitsConfig::is_coherent` → `ConfigResponse::Invalid`,
    loud CLI error) and clamped in `from_config_clamped` for
    baked/boot paths (protection wins: iq lowered, trip never raised).
-3. **Hall package**: PhaseFault bridge (sticky warning), per-bit wire
-   detector, error-rate window, `angle_trustworthy()` fix. All
-   sim-testable (mask hall bits in VirtualMotor output).
+3. **[landed 2026-06-13]** Hall package: sticky `HallError(kind)`
+   warning bridge (set-only in `run_foc_cycle`, payload names the
+   degradation), per-bit wire detector with the invalid-state gate
+   (`HallSensor::note_wire_activity` — the rationale lives there),
+   error-rate window (report-only by the agreed decision),
+   `angle_trustworthy()` false during the recovery override (variant A:
+   coast, recovery via physical motion; the override now also
+   deactivates when the hall itself recovers — it used to outlive the
+   glitch). Closed-loop sim: partial failure at speed rides through on
+   the observer and names the dead wire.
 4. **FaultTopic** push + remote severity UX (vibration/display) — needs
    remote firmware maturity, protocol side can land earlier.
 5. **Derating layer** + integrating detectors (biggest piece; needs
