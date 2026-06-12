@@ -447,6 +447,15 @@ enum Command {
         erpm: f32,
         #[arg(
             long,
+            help = "Record raw fast telemetry during the step into a parquet \
+                    file (fast_hz = FOC frequency, M=1: decimated rates would \
+                    CIC-null the HFI carrier). Written on failure too. NOTE: \
+                    the virtual device runs detection in a private sim that \
+                    this capture cannot see; meaningful on hardware."
+        )]
+        record: Option<String>,
+        #[arg(
+            long,
             help = "Write the measured values into the motor-params config group"
         )]
         apply: bool,
@@ -891,6 +900,7 @@ fn main() -> Result<()> {
             pole_pairs,
             erpm,
             apply,
+            record,
         } => {
             run_detect(
                 &runtime,
@@ -901,6 +911,7 @@ fn main() -> Result<()> {
                 pole_pairs,
                 erpm,
                 apply,
+                record,
                 json,
             )?;
         }
@@ -930,6 +941,7 @@ fn run_detect(
     pole_pairs: Option<u8>,
     erpm: f32,
     apply: bool,
+    record_out: Option<String>,
     json: bool,
 ) -> Result<()> {
     use oxifoc_core::types::DetectResponse;
@@ -983,6 +995,21 @@ fn run_detect(
     if !json {
         println!("Detection started: {req:?}");
     }
+
+    // Raw-rate capture around the whole step (M=1: the CIC is the identity,
+    // so the HFI carrier / pulse edges survive — any decimated rate would
+    // null exactly the frequencies detection lives at).
+    let mut cap = match &record_out {
+        Some(_) => {
+            let foc = record::latest_hw_info(runtime)
+                .map(|h| h.foc_freq_hz)
+                .unwrap_or(20_000)
+                .min(u16::MAX as u32) as u16;
+            Some(record::Capture::start(runtime, foc)?)
+        }
+        None => None,
+    };
+
     let (tx, mut rx) = oxifoc_host_lib::detect_channel();
     runtime
         .cmd_tx
@@ -991,16 +1018,48 @@ fn run_detect(
     // The detect oneshot is async; poll it (no tokio runtime on this
     // thread). Bounded by a generous deadline (detection can be slow).
     let deadline = Instant::now() + Duration::from_secs(90);
-    let resp = loop {
+    let detect_result: Result<DetectResponse> = loop {
         if let Ok(res) = rx.try_recv() {
-            break res?;
+            break res;
         }
         if Instant::now() >= deadline {
-            bail!("Detection timed out");
+            break Err(anyhow::anyhow!("Detection timed out"));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        // While waiting, keep draining telemetry (or just sleep).
+        match &mut cap {
+            Some(c) => c.drain_until(runtime, Instant::now() + Duration::from_millis(100))?,
+            None => std::thread::sleep(Duration::from_millis(100)),
+        }
     };
 
+    // The capture is written BEFORE the detect outcome is propagated —
+    // dissecting failures is the primary use case.
+    let mut capture_summary = serde_json::Value::Null;
+    if let (Some(mut c), Some(path)) = (cap.take(), record_out.as_ref()) {
+        let _ = c.drain_until(runtime, Instant::now() + Duration::from_millis(200));
+        c.stop(runtime);
+        let outcome = match &detect_result {
+            Ok(r) => serde_json::to_string(r).unwrap_or_default(),
+            Err(e) => serde_json::Value::String(format!("error: {e:#}")).to_string(),
+        };
+        let extra = vec![
+            (
+                "oxifoc.detect_request".to_string(),
+                serde_json::to_string(&req).unwrap_or_default(),
+            ),
+            ("oxifoc.detect_outcome".to_string(), outcome),
+        ];
+        let summary = c.finish(path, &config_snapshot(runtime), &extra)?;
+        if !json || detect_result.is_err() {
+            eprintln!(
+                "capture: {} — {} rows at {} Hz, {} gap(s)",
+                summary.path, summary.rows, summary.fast_hz_actual, summary.gaps
+            );
+        }
+        capture_summary = serde_json::to_value(&summary)?;
+    }
+
+    let resp = detect_result?;
     if let DetectResponse::Error(e) = resp {
         bail!("detection failed: {e:?}");
     }
@@ -1035,7 +1094,7 @@ fn run_detect(
 
     emit(
         json,
-        json!({"result": serde_json::to_value(resp)?, "applied": applied}),
+        json!({"result": serde_json::to_value(resp)?, "applied": applied, "capture": capture_summary}),
         format!(
             "Detect result: {resp:?}{}",
             if apply {

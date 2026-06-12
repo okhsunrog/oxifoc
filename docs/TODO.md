@@ -115,7 +115,13 @@ accel 500 erad/s²).
 - [ ] The virtual device only simulates CurrentControl/Stopped;
   OpenLoop/DirectVoltage/SixStep/Brake are accepted and ignored; no
   fault injection (the host fault path is not covered e2e); config does
-  not reach the VirtualMotor physics.
+  not reach the VirtualMotor physics. Also: detection runs in a PRIVATE
+  sim (`with_sim` on a blocking thread, instant timers) invisible to
+  fast telemetry — `detect --record` captures the idle main sim on
+  virtual (meaningful on hardware only). The principled fix is to route
+  the virtual detection backend through the LIVE sim via the protocol
+  once OpenLoop/DirectVoltage are simulated — then detection traces work
+  in sim exactly like on the bench.
 - [ ] Remaining ISR deduplication: ADC snapshot assembly + voltage/temp
   fault checks are per-platform copies. Move the ISR glue into core
   BEFORE reviving g474 (otherwise it will reproduce already-fixed F405
