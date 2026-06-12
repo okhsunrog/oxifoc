@@ -7,14 +7,13 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
 
 ## Safety
 
-- [ ] **Fault system overhaul** — full design in
-  [notes/fault-overhaul.md](notes/fault-overhaul.md) (response classes
-  Warning/GracefulStop/Kill, deadman → CommTimeout fault, severity on the
-  wire + FaultTopic push to the remote, graduated derating with
-  accel/brake asymmetry, current-limit ladder fixes, hall health → sticky
-  warnings + per-bit broken-wire detector, `angle_trustworthy()` during
-  the recovery override). Implementation order is in the note; phases 1–3
-  are sim-testable now.
+- [ ] **Fault overhaul — remainder** (phases 1–5 landed, see
+  [notes/fault-overhaul.md](notes/fault-overhaul.md)): phase 6 =
+  sensorless promotion on confirmed hall death (after the bench validates
+  HFI); remote-side FaultTopic UX (vibration by severity, display —
+  blocked on remote maturity); bench-tune the derating ramp numbers
+  (battery cutoff / regen-OV / speed ceiling / motor NTC — defaults
+  enable only FET 85→100 °C).
 - [ ] **Bench-tune regen-brake**: `brake_current_a`, `standstill_rad_s`,
   low-speed coast floor; confirm no OV trip on the bus under regen;
   `BRAKE_ENTRY_MAX_E_RAD_S` (parking-brake entry gate) + windings
@@ -51,8 +50,6 @@ accel 500 erad/s²).
 ## Algorithms (ladder, cheap → expensive)
 
 - [ ] Position loop (see above).
-- [ ] **Graduated derating** (VESC override matrix) — design and ordering
-  moved to [notes/fault-overhaul.md](notes/fault-overhaul.md) §3.
 - [ ] **Field weakening V2** (MESC: exponential d-current from the voltage
   vector hitting the circle — no motor parameters needed).
 - [ ] MTPA.
@@ -127,8 +124,9 @@ accel 500 erad/s²).
   the virtual detection backend through the LIVE sim via the protocol
   once OpenLoop/DirectVoltage are simulated — then detection traces work
   in sim exactly like on the bench.
-- [ ] Remaining ISR deduplication: ADC snapshot assembly + voltage/temp
-  fault checks are per-platform copies. Move the ISR glue into core
+- [ ] Remaining ISR deduplication: ADC snapshot assembly is still a
+  per-platform copy (voltage/temp fault checks moved into core
+  `run_protection` 2026-06-13). Move the rest of the ISR glue into core
   BEFORE reviving g474 (otherwise it will reproduce already-fixed F405
   bugs).
 - [ ] g474 motor modules are commented out until the IHM08M1 is
