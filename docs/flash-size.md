@@ -118,6 +118,7 @@ remaining "compiler flag" win; everything below is about code.
 | 2026-06-12 | per-step detect server gets the same method ladders as `run_full_detection` (`measure_inductance_auto`: HFI → voltage-pulse fallback; `measure_flux_linkage_auto`: spin-down gate → driven) — the pulse machinery is now reachable from firmware | **+2 676 B** (110 380 → 113 056) |
 | 2026-06-12 | HFI run-gating (update+injection paired, off in non-Hfi sources — ~10% of the ISR budget back in the hall ride config), carrier pre-heat margin + `restart_demod`, amplitude solved from measured L | +400 B (→ 113 456) |
 | 2026-06-12 | motor RATING layer: `MotorParamsConfig` +rating/+power-class, limits clamp `min(operational, rating, board)`, trip ≤ 1.5×rating, HFI ripple target from rating | +728 B (→ 114 184, headroom 16.9 KB) |
+| 2026-06-13 | fault overhaul phases 1–5: severity classes + class gate, deadman→CommTimeout, limit-ladder fixes, hall wire detector + sticky warning bridge, FaultTopic publisher, derating module + `derating` config group + voltage-fault integrals + `run_protection` consolidation | +5 244 B (→ 122 232, headroom 8.8 KB) |
 
 Panic handler kept `defmt::error!("PANIC: {}", Display2Format(info))`:
 full panic text over RTT costs only 240 B once dependency fmt is gone
