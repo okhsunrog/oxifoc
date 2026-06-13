@@ -47,6 +47,7 @@ mem_forget = "warn"
 undocumented_unsafe_blocks = "warn"
 multiple_unsafe_ops_per_block = "warn"
 lossy_float_literal = "warn"
+unused_async = "warn"
 
 [profile.dev]
 incremental = true

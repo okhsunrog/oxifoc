@@ -9,7 +9,7 @@ use tokio_serial::{SerialPort, SerialPortBuilderExt};
 use tracing::{info, warn};
 
 /// Connect to a serial port.
-pub async fn connect(path: &str, baud: u32) -> Result<CobsStreamTransport> {
+pub fn connect(path: &str, baud: u32) -> Result<CobsStreamTransport> {
     info!("Opening serial port {} at {} baud", path, baud);
 
     let port = tokio_serial::new(path, baud)

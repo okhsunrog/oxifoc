@@ -106,6 +106,7 @@ mem_forget = "warn"
 undocumented_unsafe_blocks = "warn"
 multiple_unsafe_ops_per_block = "warn"
 lossy_float_literal = "warn"
+unused_async = "warn"
 # Firmware panic policy (matches the #![warn] block in oxifoc-core/src/lib.rs;
 # deliberate fail-fast sites carry #[expect(..., reason = "...")]):
 unwrap_used = "warn"

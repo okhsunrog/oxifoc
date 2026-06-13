@@ -30,7 +30,7 @@ const RTT_DOWN_CHANNEL_ERGOT: usize = 0; // Host -> Device (ergot data)
 /// Spawns a dedicated blocking thread that owns the probe-rs Session/Core/Rtt
 /// and communicates with the async world via channels.
 #[allow(clippy::single_range_in_vec_init)]
-pub async fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStreamTransport> {
+pub fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStreamTransport> {
     info!("Connecting via RTT to chip: {}", chip);
 
     let lister = Lister::new();

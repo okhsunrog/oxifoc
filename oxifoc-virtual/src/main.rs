@@ -147,7 +147,9 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Transport::Udp => {
-            udp_server::run(
+            // Box::pin: ~6 KB future; the 2 KB large_futures threshold is
+            // tuned for firmware, on the host we just heap it.
+            Box::pin(udp_server::run(
                 args.port,
                 args.foc_freq,
                 args.max_current,
@@ -156,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
                 &STATE,
                 &FAULT_REGISTRY,
                 &RUNTIME_CONFIG,
-            )
+            ))
             .await
         }
     }

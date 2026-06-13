@@ -182,6 +182,10 @@ pub async fn protocol_servers(stack: &'static Stack) {
         max_current_a: BOARD.max_phase_current_a,
     };
 
+    // This future IS the protocol-servers task (all endpoint servers
+    // joined); embassy arena-allocates it statically, so its size is the
+    // task's intended footprint, not an accident the lint should flag.
+    #[expect(clippy::large_futures, reason = "the joined servers are the task")]
     run_all_servers_with_config(
         stack.endpoints(),
         device_info,
@@ -276,27 +280,34 @@ impl DetectionBackend for G431Backend {
     fn vbus(&self) -> f32 {
         VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0
     }
-    async fn measure_resistance(
+    // Pure pass-throughs return the inner future directly (`fn -> impl
+    // Future` instead of `async fn`) — an `async` body here would wrap the
+    // already-large detection futures in one more generated state machine
+    // for zero benefit.
+    fn measure_resistance(
         &mut self,
         params: &ResistanceParams,
-    ) -> Result<f32, DetectionError> {
-        measure_resistance(params).await
+    ) -> impl Future<Output = Result<f32, DetectionError>> {
+        measure_resistance(params)
     }
-    async fn measure_inductance(
+    fn measure_inductance(
         &mut self,
         params: &InductanceParams,
         pwm_freq_hz: f32,
-    ) -> Result<(f32, f32), DetectionError> {
-        measure_inductance::<CordicSinCos>(params, pwm_freq_hz).await
+    ) -> impl Future<Output = Result<(f32, f32), DetectionError>> {
+        measure_inductance::<CordicSinCos>(params, pwm_freq_hz)
     }
-    async fn measure_flux(&mut self, params: &FluxLinkageParams) -> Result<f32, DetectionError> {
-        measure_flux_linkage(params).await
+    fn measure_flux(
+        &mut self,
+        params: &FluxLinkageParams,
+    ) -> impl Future<Output = Result<f32, DetectionError>> {
+        measure_flux_linkage(params)
     }
-    async fn calibrate_hall(
+    fn calibrate_hall(
         &mut self,
         params: HallCalibrationParams,
-    ) -> Result<HallCalibrationResult, DetectionError> {
-        calibrate_hall(params).await
+    ) -> impl Future<Output = Result<HallCalibrationResult, DetectionError>> {
+        calibrate_hall(params)
     }
 }
 

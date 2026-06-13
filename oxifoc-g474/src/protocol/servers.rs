@@ -132,6 +132,10 @@ pub async fn protocol_servers(stack: &'static Stack) {
         max_current_a: BOARD.max_phase_current_a,
     };
 
+    // This future IS the protocol-servers task (all endpoint servers
+    // joined); embassy arena-allocates it statically, so its size is the
+    // task's intended footprint, not an accident the lint should flag.
+    #[expect(clippy::large_futures, reason = "the joined servers are the task")]
     run_all_servers_with_config(
         stack.endpoints(),
         device_info,

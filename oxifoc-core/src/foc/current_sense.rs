@@ -101,24 +101,27 @@ impl ShuntCurrentSense {
     /// This is the simple calibration method - samples all phases at once.
     /// For VESC-style per-phase calibration, use `calibrate_phase_offset`.
     pub fn calibrate_offsets(&mut self, samples: &[(u16, u16, u16)]) {
-        if samples.is_empty() {
+        let mut sums = (0u32, 0u32, 0u32);
+        for &(a, b, c) in samples {
+            sums.0 += u32::from(a);
+            sums.1 += u32::from(b);
+            sums.2 += u32::from(c);
+        }
+        self.calibrate_offsets_from_sums(sums, samples.len() as u32);
+    }
+
+    /// Streaming variant of [`calibrate_offsets`](Self::calibrate_offsets):
+    /// takes running per-phase sums instead of a sample buffer, so async
+    /// callers don't have to hold thousands of samples across await points
+    /// (a 1024-sample buffer is 6 KB of task-arena RAM for a boot-time mean).
+    pub fn calibrate_offsets_from_sums(&mut self, sums: (u32, u32, u32), count: u32) {
+        if count == 0 {
             return;
         }
-
-        let mut sum_a = 0u32;
-        let mut sum_b = 0u32;
-        let mut sum_c = 0u32;
-
-        for &(a, b, c) in samples {
-            sum_a += u32::from(a);
-            sum_b += u32::from(b);
-            sum_c += u32::from(c);
-        }
-
-        let count = samples.len() as f32;
-        self.offset_a = sum_a as f32 / count;
-        self.offset_b = sum_b as f32 / count;
-        self.offset_c = sum_c as f32 / count;
+        let count = count as f32;
+        self.offset_a = sums.0 as f32 / count;
+        self.offset_b = sums.1 as f32 / count;
+        self.offset_c = sums.2 as f32 / count;
         self.calibrated_phases = 0b111; // All three phases calibrated
     }
 

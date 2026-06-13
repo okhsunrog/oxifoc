@@ -320,7 +320,7 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
             run_cobs_stream_with_reconnect(
                 move || {
                     let path = path.clone();
-                    async move { transport::serial::connect(&path, baud).await }
+                    async move { transport::serial::connect(&path, baud) }
                 },
                 &cfg,
                 ctx,
@@ -333,7 +333,7 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
                 move || {
                     let probe = probe.clone();
                     let chip = chip.clone();
-                    async move { transport::rtt::connect(probe.as_deref(), &chip).await }
+                    async move { transport::rtt::connect(probe.as_deref(), &chip) }
                 },
                 &cfg,
                 ctx,

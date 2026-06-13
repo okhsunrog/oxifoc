@@ -5,3 +5,8 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-dbg-in-tests = true
+
+# large_futures starts mattering on a 32 KB-RAM MCU long before its 16 KB
+# default; futures above this size deserve a look at what they hold across
+# await points.
+future-size-threshold = 2048

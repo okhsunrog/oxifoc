@@ -383,3 +383,25 @@ their section.
   had survived there. The justfile line is now `cargo clippy -- -D
   warnings`; stragglers fixed (Cell::get method ref, TickSourceFn alias,
   HallAngleProxy derives Default).
+- **2026-06-13 — async-debloat experiment (tweedegolf "Debloat your async
+  Rust" applied with measurements).** Wins on g431: DetectionBackend
+  impls were pure pass-throughs (`async fn { inner().await }`) — now
+  `fn -> impl Future` returning the inner future (−380 B flash g431,
+  −616 B f405); the boot current-sense calibration buffered 1024 ADC
+  samples (heapless::Vec, 6 KB) across its sampling awaits just to take
+  a MEAN — now streaming sums (.bss 23 860 → 17 716, embassy_main arena
+  7 736 → 1 608 B; on a 32 KB-RAM part that's +6 KB of stack headroom).
+  Found via `large_futures` with `future-size-threshold = 2048` in
+  clippy.toml — NOTE: device crates have their OWN clippy.tomls (they
+  shadow the root one; that's also where the f32::clamp ban lives), the
+  threshold is set in all of them. `unused_async` enabled everywhere
+  (2 host transports de-asynced). NEGATIVE RESULT, kept for the record:
+  collapsing the config-server's 9 per-arm `send().await`s into one
+  awaited loop over a command Vec made BOTH flash and arena BIGGER
+  (+176 B / +232 B) — the coroutine layout already overlap-allocates
+  per-arm states (storage_conflicts), while the hoisted Vec lives across
+  the await on top of the send future. "Share await points" only pays
+  when arms duplicate the same awaited code path; reverted. The
+  "host-side" exception: virtual's ~6 KB udp server future is Box::pin'd
+  (threshold is firmware-tuned; the host has a heap). FOC ISR is sync —
+  none of this touches control timing.

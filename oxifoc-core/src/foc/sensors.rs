@@ -397,6 +397,11 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
         self.converter.calibrate_offsets(samples);
     }
 
+    /// Streaming variant — see [`ShuntCurrentSense::calibrate_offsets_from_sums`].
+    pub fn calibrate_offsets_from_sums(&mut self, sums: (u32, u32, u32), count: u32) {
+        self.converter.calibrate_offsets_from_sums(sums, count);
+    }
+
     /// Enable sector-based current reconstruction for unipolar shunt sensing.
     ///
     /// Call this on boards where OPAMPs have no Vref/2 bias and negative
@@ -524,13 +529,16 @@ mod embassy_current {
                 num_samples, delay_us
             );
 
-            // Collect samples
-            let mut samples = heapless::Vec::<(u16, u16, u16), 1024>::new();
-
-            for i in 0..num_samples.min(1024) {
+            // Accumulate running sums instead of buffering samples: a
+            // 1024-sample buffer would live across the await below and cost
+            // 6 KB of the spawning task's arena for a boot-time average.
+            let mut sums = (0u32, 0u32, 0u32);
+            let count = num_samples.min(1024) as u32;
+            for i in 0..count {
                 let raw = self.read_raw();
-
-                let _ = samples.push(raw);
+                sums.0 += u32::from(raw.0);
+                sums.1 += u32::from(raw.1);
+                sums.2 += u32::from(raw.2);
 
                 if i % 64 == 0 {
                     debug!(
@@ -543,7 +551,7 @@ mod embassy_current {
             }
 
             // Use shared calibration algorithm
-            self.calibrate_offsets(&samples);
+            self.calibrate_offsets_from_sums(sums, count);
 
             let (oa, ob, oc) = self.converter().get_offsets();
             info!(

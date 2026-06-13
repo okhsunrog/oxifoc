@@ -119,6 +119,8 @@ remaining "compiler flag" win; everything below is about code.
 | 2026-06-12 | HFI run-gating (update+injection paired, off in non-Hfi sources — ~10% of the ISR budget back in the hall ride config), carrier pre-heat margin + `restart_demod`, amplitude solved from measured L | +400 B (→ 113 456) |
 | 2026-06-12 | motor RATING layer: `MotorParamsConfig` +rating/+power-class, limits clamp `min(operational, rating, board)`, trip ≤ 1.5×rating, HFI ripple target from rating | +728 B (→ 114 184, headroom 16.9 KB) |
 | 2026-06-13 | fault overhaul phases 1–5: severity classes + class gate, deadman→CommTimeout, limit-ladder fixes, hall wire detector + sticky warning bridge, FaultTopic publisher, derating module + `derating` config group + voltage-fault integrals + `run_protection` consolidation | +5 244 B (→ 122 232, headroom 8.8 KB) |
+| 2026-06-13 | code-quality pass (lints, imports, StandardFault dedup) | +60 B (→ 122 292) |
+| 2026-06-13 | async debloat: DetectionBackend pass-throughs, streaming-mean calibration (the big win is RAM: .bss 23 860 → 17 716, main task arena 7 736 → 1 608 — the 6 KB sample buffer is gone) | −412 B (→ 121 880, headroom 9.2 KB) |
 
 Panic handler kept `defmt::error!("PANIC: {}", Display2Format(info))`:
 full panic text over RTT costs only 240 B once dependency fmt is gone
