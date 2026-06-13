@@ -148,6 +148,25 @@ their section.
   algorithm). Saliency (IPM Lq) and the high-R gimbal on a low bus remain
   HFI's domain — not g431 targets. `E2E_L_TOL` unified to 0.10 and the two
   HFI-only E2E regressions un-gated to run on the pulse path too.
+- **2026-06-13 — voltage-pulse step is current-limited (VESC-style).** A
+  fixed `vbus·0.577` step drives `di = V·dt/L`, which is unbounded as L
+  shrinks: a real 24 µH drone winding spikes ~14 A in one period off a 12 V
+  bus and ~28 A off 24 V — straight into the ±31 A sensor rail / OCP, and
+  *worse* on a bigger bus. Mirror VESC's `mcpwm_foc_measure_inductance_current`
+  (ramp the amplitude under a current target), but applied to our di/dt pulse,
+  not its HFI injection — VESC has no standalone di/dt L method, and it merely
+  scales the HFI result by 0.9 to hide the same overestimate we removed at the
+  source. `measure_inductance_auto` splits the safe-current budget (lock 0.4·,
+  target di 0.5·) and `calibrate_pulse_voltage` ramps the step from small until
+  one period's di hits the target, trimming exactly (di ∝ pulse_v). Peak
+  (`I_hold + di`) is then bounded for ANY L and **independent of vbus** — the
+  24 µH motor measures Ld +0.7…+2% with a ~9 A peak at 12/20/24 V alike (was
+  17/26/31 A). The smaller step is more dead-time-sensitive (eskate-class non-
+  ideal L drifts to ~+8% from +1%), still inside `E2E_L_TOL`; high-R/high-L
+  motors that can't reach the target just use the full bus headroom (best
+  available SNR). NB: use `clamp_f32`, never `f32::clamp` — the latter's assert
+  pulls in `core::fmt::float` (~13 KB on g431; the device clippy
+  `disallowed-methods` catches it, host clippy does not).
 
 ## Host / tooling
 

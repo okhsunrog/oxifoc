@@ -41,7 +41,6 @@ use super::types::{
     VoltagePulseParams,
 };
 use super::voltage_pulse::VoltagePulseMeasurement;
-#[cfg(feature = "hfi-detect")]
 use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
 use crate::foc::fast_math::sqrtf;
@@ -381,6 +380,15 @@ struct HfiAdapt {
 
 /// Maximum command→apply pipeline depth the probe scans for (FOC cycles).
 const PIPELINE_LAG_MAX: usize = 4;
+
+/// Minimum single-period current rise (A) the voltage-pulse edge detector
+/// treats as a real pulse; below it the winding looks open / unresponsive.
+const PULSE_EDGE_THRESHOLD_A: f32 = 0.02;
+
+/// Frame cap on the inter-pulse discharge wait (~200 ms at 20 kHz; covers an
+/// L/R decay constant up to ~10 ms). The winding settles back to the holding
+/// current at the open-loop `vd_hold` equilibrium before the next pulse.
+const DISCHARGE_MAX_FRAMES: usize = 4000;
 
 /// Measure the command→apply pipeline depth by cross-correlation.
 ///
@@ -736,11 +744,122 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     Ok((result.ld, result.lq))
 }
 
+/// Fixed context for a voltage-pulse session on one locked axis: where the
+/// rotor is held (`angle` + its sin/cos), the steady d-axis voltage that holds
+/// it there, and the current it settles back to between pulses.
+struct LockedAxis {
+    angle: f32,
+    sin_a: f32,
+    cos_a: f32,
+    vd_hold: f32,
+    hold_current_a: f32,
+    /// Settle band around `hold_current_a` (kept above the ADC noise floor).
+    settle_tol: f32,
+}
+
+impl LockedAxis {
+    /// d-axis current at this lock angle, from the live phase currents.
+    fn read_id<H: DetectionHardware>(&self, hw: &H) -> f32 {
+        let (ia, ib, _) = hw.read_phase_currents();
+        let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+        i_alpha * self.cos_a + i_beta * self.sin_a
+    }
+}
+
+/// One discharge-anchored pulse on a locked axis.
+///
+/// Settles the winding back to the holding current at `vd_hold` (the open-loop
+/// equilibrium — polled, not a fixed wait, because the L/R decay outlasts the
+/// inter-pulse gap), then applies `vd_hold + pulse_v` and returns the
+/// `(i_before, i_after)` of the *largest* single-period current rise across the
+/// next `PIPELINE_LAG_MAX + 1` frames. That argmax is the application edge:
+/// immune to the command→apply latency and to ADC noise (the real step dwarfs
+/// it). The accumulator works from the absolute current, so a loose settle does
+/// not bias the result.
+async fn pulse_once<H: DetectionHardware>(hw: &mut H, ax: &LockedAxis, pulse_v: f32) -> (f32, f32) {
+    // Discharge to the holding current.
+    hw.send_command(ControlMode::DirectVoltage {
+        vd: ax.vd_hold,
+        vq: 0.0,
+        angle_rad: ax.angle,
+    })
+    .await;
+    for _ in 0..DISCHARGE_MAX_FRAMES {
+        hw.wait_telemetry().await;
+        if (ax.read_id(hw) - ax.hold_current_a).abs() < ax.settle_tol {
+            break;
+        }
+    }
+
+    // Apply the step, capture the application window, take the max rise.
+    let id_before = ax.read_id(hw);
+    hw.send_command(ControlMode::DirectVoltage {
+        vd: ax.vd_hold + pulse_v,
+        vq: 0.0,
+        angle_rad: ax.angle,
+    })
+    .await;
+    let mut prev = id_before;
+    let mut best_before = id_before;
+    let mut best_after = id_before;
+    let mut best_di = f32::NEG_INFINITY;
+    for _ in 0..=PIPELINE_LAG_MAX {
+        hw.wait_telemetry().await;
+        let id_now = ax.read_id(hw);
+        let di = id_now - prev;
+        if di > best_di {
+            best_di = di;
+            best_before = prev;
+            best_after = id_now;
+        }
+        prev = id_now;
+    }
+    (best_before, best_after)
+}
+
+/// Size the pulse step to a target current excursion — VESC's
+/// `mcpwm_foc_measure_inductance_current` idea, applied to the di/dt pulse.
+///
+/// Ramps the step up from small until one period's di reaches `target_di`, so
+/// the peak current (`I_hold + di`) is bounded *regardless of L*. A fixed step
+/// drives `di = V·dt/L`, which explodes on a low-inductance motor — a 24 µH
+/// drone winding spikes ~14 A in one period off a 12 V bus, and the bigger the
+/// bus the worse it gets. Once bracketed, trims to the target exactly
+/// (`di ∝ pulse_v` for a linear winding); caps at the bus-headroom `ceiling`
+/// for high-L motors that can't reach the target at all (there it just uses all
+/// the headroom it has — still the best available SNR).
+async fn calibrate_pulse_voltage<H: DetectionHardware>(
+    hw: &mut H,
+    ax: &LockedAxis,
+    ceiling: f32,
+    target_di: f32,
+) -> f32 {
+    // Start small (≈ VESC's 0.02 duty) and grow geometrically; the early
+    // probes barely move the current, so they are inherently safe.
+    let mut v = (ceiling * 0.02).max(0.02);
+    loop {
+        let (before, after) = pulse_once(hw, ax, v).await;
+        let di = after - before;
+        if di >= target_di && di > 0.0 {
+            // Bracketed — trim down to hit the target exactly.
+            return clamp_f32(v * target_di / di, 0.02, ceiling);
+        }
+        if v >= ceiling {
+            return ceiling; // high-L: target unreachable, use all headroom
+        }
+        v = (v * 1.5).min(ceiling);
+    }
+}
+
 /// Measure inductance via voltage pulse (di/dt).
 ///
 /// Locks the rotor at angle 0 (d-axis), applies a voltage step, measures
 /// the current change over one PWM period, then repeats at angle π/2
 /// (q-axis).  Works reliably on high-resistance motors where HFI fails.
+///
+/// With `params.current_target_a > 0` the step amplitude is current-limited
+/// (see [`calibrate_pulse_voltage`]) so the peak current stays bounded on a
+/// low-inductance motor; otherwise `params.pulse_voltage_v` is used as-is.
 ///
 /// Requires previously measured resistance for compensation.
 pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>(
@@ -755,6 +874,11 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
     let angles = [0.0f32, core::f32::consts::FRAC_PI_2];
     let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
     let mut first_cmd = true;
+    // Step amplitude. Calibrated once (on the d axis) and reused: for a salient
+    // motor Lq > Ld, so the q-axis di at the same step is smaller — i.e. still
+    // within the current budget. `0` target ⇒ use the ceiling as-is.
+    let mut pulse_voltage = params.pulse_voltage_v;
+    let mut calibrated = false;
 
     for (axis, &angle) in angles.iter().enumerate() {
         // Lock rotor at this angle
@@ -782,38 +906,36 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
         let vd_hold =
             settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
 
-        // Pulse measurement — discharge-anchored, self-aligning, drift-immune.
-        //
-        // Each pulse:
-        //  1. Discharges the winding back to the holding current by holding
-        //     vd_hold until the d-axis current settles. vd_hold *is* the
-        //     i_hold equilibrium, but the decay constant is L/R — far longer
-        //     than the handful of PWM periods between pulses — so a fixed
-        //     few-frame flush leaves the current ratcheting up pulse after
-        //     pulse. Beyond biasing L, on a delayed actuation pipeline the
-        //     still-elevated decaying tail then trips a naive edge detector
-        //     with a spurious negative di (one good pulse, then nothing).
-        //  2. Applies the step and captures the next PIPELINE_LAG_MAX+1 frames.
-        //  3. Takes the application period as the *largest* single-period rise
-        //     across that window (argmax, not a fixed threshold): immune to any
-        //     actuation delay up to PIPELINE_LAG_MAX, and to ADC noise, since
-        //     the real edge (a step toward the bus rail) dwarfs the noise.
-        //
-        // The accumulator converts that one period's (i_before, i_after) to L
-        // using the *absolute* current, so any residual baseline offset left
-        // by a loose settle does not bias the result.
-        const PULSE_EDGE_THRESHOLD_A: f32 = 0.02;
-        // Settle band around i_hold (kept above the ADC noise floor) and a
-        // generous cap (~200 ms at 20 kHz, covering L/R up to ~10 ms).
-        let settle_tol = (0.1 * params.hold_current_a).max(0.05);
-        const DISCHARGE_MAX_FRAMES: usize = 4000;
         let (sin_a, cos_a) = S::sin_cos(angle);
-        let read_id = |hw: &H| {
-            let (ia, ib, _) = hw.read_phase_currents();
-            let (i_alpha, i_beta) = transforms::clarke(ia, ib);
-            i_alpha * cos_a + i_beta * sin_a
+        let ax = LockedAxis {
+            angle,
+            sin_a,
+            cos_a,
+            vd_hold,
+            hold_current_a: params.hold_current_a,
+            // Settle band around i_hold (kept above the ADC noise floor).
+            settle_tol: (0.1 * params.hold_current_a).max(0.05),
         };
-        let mut meas = VoltagePulseMeasurement::new(params, pwm_freq_hz, vd_hold);
+
+        // Size the step to the current budget once (current-limited pulse).
+        if !calibrated && params.current_target_a > 0.0 {
+            pulse_voltage =
+                calibrate_pulse_voltage(hw, &ax, params.pulse_voltage_v, params.current_target_a)
+                    .await;
+            calibrated = true;
+            debug!("Pulse step calibrated to the current target");
+        }
+
+        // Average num_pulses discharge-anchored pulses (see `pulse_once`): each
+        // settles the winding back to i_hold, applies the step, and takes the
+        // largest one-period rise as the application edge. The accumulator
+        // turns that (i_before, i_after) into L from the absolute current, so a
+        // ratcheting baseline cannot bias it.
+        let cal_params = VoltagePulseParams {
+            pulse_voltage_v: pulse_voltage,
+            ..*params
+        };
+        let mut meas = VoltagePulseMeasurement::new(&cal_params, pwm_freq_hz, vd_hold);
 
         for _ in 0..params.num_pulses * 2 {
             // guard against skipped pulses
@@ -821,51 +943,14 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
                 break;
             }
 
-            // ── Discharge to the holding current ──────────────────────────
-            hw.send_command(ControlMode::DirectVoltage {
-                vd: vd_hold,
-                vq: 0.0,
-                angle_rad: angle,
-            })
-            .await;
-            for _ in 0..DISCHARGE_MAX_FRAMES {
-                hw.wait_telemetry().await;
-                if (read_id(hw) - params.hold_current_a).abs() < settle_tol {
-                    break;
-                }
-            }
-
-            // ── Apply the step, capture the application window ────────────
-            let id_before = read_id(hw);
-            hw.send_command(ControlMode::DirectVoltage {
-                vd: vd_hold + params.pulse_voltage_v,
-                vq: 0.0,
-                angle_rad: angle,
-            })
-            .await;
-
-            let mut prev = id_before;
-            let mut best_before = id_before;
-            let mut best_after = id_before;
-            let mut best_di = f32::NEG_INFINITY;
-            for _ in 0..=PIPELINE_LAG_MAX {
-                hw.wait_telemetry().await;
-                let id_now = read_id(hw);
-                let di = id_now - prev;
-                if di > best_di {
-                    best_di = di;
-                    best_before = prev;
-                    best_after = id_now;
-                }
-                prev = id_now;
-            }
+            let (before, after) = pulse_once(hw, &ax, pulse_voltage).await;
 
             // A real pulse dwarfs the noise; below the floor means an open
             // winding (no rise) — record a skip so finish() reports it.
-            if best_di > PULSE_EDGE_THRESHOLD_A {
-                meas.record_pulse(best_before, best_after);
+            if after - before > PULSE_EDGE_THRESHOLD_A {
+                meas.record_pulse(before, after);
             } else {
-                meas.record_pulse(id_before, id_before);
+                meas.record_pulse(before, before);
             }
         }
 
@@ -923,17 +1008,29 @@ pub async fn measure_inductance_auto<H: DetectionHardware, T: Timer, S: SinCos>(
         T::after_millis(500).await;
     }
 
-    let v_hold = params.resistance_ohm * params.hold_current_a;
-    let pulse_voltage_v = if params.vbus > 0.0 {
+    // Current-limited voltage pulse (the only L method with hfi-detect off).
+    // `params.hold_current_a` is the power/bus-safe current run_full_detection
+    // settled on; split that budget between a modest locking hold and the pulse
+    // excursion, and let measure_inductance_pulse size the step to that
+    // excursion. The peak (hold + di) then stays within the safe current for
+    // ANY inductance — a fixed vbus·0.577 step instead drives di = V·dt/L,
+    // which spikes a low-L drone winding tens of amps in a single period and
+    // only gets worse on a bigger bus.
+    let safe_current = params.hold_current_a.max(0.2);
+    let lock_current = (safe_current * 0.4).max(0.1);
+    let current_target = (safe_current * 0.5).max(0.1);
+    let v_hold = params.resistance_ohm * lock_current;
+    let pulse_ceiling = if params.vbus > 0.0 {
         (params.vbus * 0.577 - v_hold).max(0.5)
     } else {
         // Bus voltage unknown — keep the conservative default step.
         VoltagePulseParams::default().pulse_voltage_v
     };
     let pulse_params = VoltagePulseParams {
-        hold_current_a: params.hold_current_a,
+        hold_current_a: lock_current,
         resistance_ohm: params.resistance_ohm,
-        pulse_voltage_v,
+        pulse_voltage_v: pulse_ceiling,
+        current_target_a: current_target,
         ..Default::default()
     };
     measure_inductance_pulse::<H, T, S>(hw, &pulse_params, pwm_freq_hz).await

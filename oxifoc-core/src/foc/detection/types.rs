@@ -368,8 +368,18 @@ pub struct VoltagePulseParams {
     pub hold_current_a: f32,
     /// Previously measured phase resistance (Ohms)
     pub resistance_ohm: f32,
-    /// Voltage step amplitude (Volts).  Typically 20-30% of Vbus.
+    /// Voltage step amplitude (Volts) — the *ceiling*. With
+    /// `current_target_a > 0` the step is ramped up from small only as far as
+    /// needed to reach the target di (and never past this), so for a
+    /// low-inductance motor the actual step lands well below it.  Typically
+    /// the bus headroom `vbus·0.577 − R·I_hold`.
     pub pulse_voltage_v: f32,
+    /// Target current excursion (di) per pulse, in Amps. `> 0` enables the
+    /// VESC-style current-limited ramp: the step is sized so one period's di
+    /// reaches this, bounding the peak (`I_hold + di`) regardless of L
+    /// instead of letting `di = V·dt/L` blow up on a low-inductance motor.
+    /// `0.0` (default) = no limit, use `pulse_voltage_v` as-is.
+    pub current_target_a: f32,
     /// Number of pulses to average per axis (default: 20)
     pub num_pulses: u32,
     /// Settling time after locking rotor (milliseconds)
@@ -382,6 +392,7 @@ impl Default for VoltagePulseParams {
             hold_current_a: 2.0,
             resistance_ohm: 0.0,
             pulse_voltage_v: 5.0,
+            current_target_a: 0.0,
             num_pulses: 20,
             settle_time_ms: 200,
         }
