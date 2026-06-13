@@ -265,8 +265,14 @@ mod tests {
     #[test]
     fn voltage_source_truth_table() {
         // No sensing → always commanded.
-        assert_eq!(observer_voltage_source(None, false), ObserverVoltage::Commanded);
-        assert_eq!(observer_voltage_source(None, true), ObserverVoltage::Commanded);
+        assert_eq!(
+            observer_voltage_source(None, false),
+            ObserverVoltage::Commanded
+        );
+        assert_eq!(
+            observer_voltage_source(None, true),
+            ObserverVoltage::Commanded
+        );
 
         // Sensing, no filters (CF2): measured undriven, commanded driven.
         let cf2 = PhaseVoltageSense::from_board(&board(Some(CF2_SENSE))).unwrap();

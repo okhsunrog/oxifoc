@@ -362,54 +362,54 @@ fn main() {
     // ── HFI frequency benchmark (hfi-detect only) ──────────────────────
     #[cfg(feature = "hfi-detect")]
     {
-    use oxifoc_core::foc::detection::sweep::measure_inductance;
-    use oxifoc_core::foc::detection::types::InductanceParams;
-    println!("HFI injection frequency (Ld/Lq error at 1kHz vs 2kHz vs 5kHz):");
-    println!(
-        "  {:<22} {:>14} {:>14} {:>14}",
-        "Motor", "1kHz", "2kHz", "5kHz (cur)"
-    );
-    println!("  {:-<22} {:->14} {:->14} {:->14}", "", "", "", "");
-    for def in &catalog {
-        let p = def.params;
-        let r_val = p.r;
-        let max_hold = (def.vbus * 0.577 * 0.6) / r_val.max(0.001);
-        let hold = 2.0f32.min(max_hold).max(0.1);
-
-        let mut results = Vec::new();
-        for freq in [1000.0f32, 2000.0, 5000.0] {
-            let l = with_sim(p, def.vbus, |hw| {
-                let params = InductanceParams {
-                    motor_size: def.motor_size,
-                    resistance_ohm: r_val,
-                    hold_current_a: hold,
-                    hfi_frequency_hz: freq,
-                    vbus: def.vbus,
-                    ..Default::default()
-                };
-                block_on(measure_inductance::<
-                    VirtualHardware,
-                    VirtualTimer,
-                    oxifoc_core::foc::trig::LibmSinCos,
-                >(hw, &params, 20_000.0))
-            });
-            match l {
-                Ok((ld, lq)) => {
-                    results.push(format!(
-                        "{:+.1}/{:+.1}%",
-                        err_pct(ld, p.ld),
-                        err_pct(lq, p.lq)
-                    ));
-                }
-                Err(_) => results.push("FAIL".to_string()),
-            }
-        }
+        use oxifoc_core::foc::detection::sweep::measure_inductance;
+        use oxifoc_core::foc::detection::types::InductanceParams;
+        println!("HFI injection frequency (Ld/Lq error at 1kHz vs 2kHz vs 5kHz):");
         println!(
             "  {:<22} {:>14} {:>14} {:>14}",
-            def.name, results[0], results[1], results[2]
+            "Motor", "1kHz", "2kHz", "5kHz (cur)"
         );
-    }
-    println!();
+        println!("  {:-<22} {:->14} {:->14} {:->14}", "", "", "", "");
+        for def in &catalog {
+            let p = def.params;
+            let r_val = p.r;
+            let max_hold = (def.vbus * 0.577 * 0.6) / r_val.max(0.001);
+            let hold = 2.0f32.min(max_hold).max(0.1);
+
+            let mut results = Vec::new();
+            for freq in [1000.0f32, 2000.0, 5000.0] {
+                let l = with_sim(p, def.vbus, |hw| {
+                    let params = InductanceParams {
+                        motor_size: def.motor_size,
+                        resistance_ohm: r_val,
+                        hold_current_a: hold,
+                        hfi_frequency_hz: freq,
+                        vbus: def.vbus,
+                        ..Default::default()
+                    };
+                    block_on(measure_inductance::<
+                        VirtualHardware,
+                        VirtualTimer,
+                        oxifoc_core::foc::trig::LibmSinCos,
+                    >(hw, &params, 20_000.0))
+                });
+                match l {
+                    Ok((ld, lq)) => {
+                        results.push(format!(
+                            "{:+.1}/{:+.1}%",
+                            err_pct(ld, p.ld),
+                            err_pct(lq, p.lq)
+                        ));
+                    }
+                    Err(_) => results.push("FAIL".to_string()),
+                }
+            }
+            println!(
+                "  {:<22} {:>14} {:>14} {:>14}",
+                def.name, results[0], results[1], results[2]
+            );
+        }
+        println!();
     } // end #[cfg(feature = "hfi-detect")] HFI frequency benchmark
 
     // ── Driven flux benchmark ──────────────────────────────────────────

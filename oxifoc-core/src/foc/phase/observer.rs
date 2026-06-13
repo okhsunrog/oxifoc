@@ -24,12 +24,12 @@
 // TAU (carrier advance), PhantomData (`HfiObserver<S>` marker) and the SinCos
 // backend are HFI-only; BackEmf's `force_phase` imports SinCos locally.
 #[cfg(feature = "hfi")]
+use crate::foc::trig::{LibmSinCos, SinCos};
+use crate::foc::wrap_angle;
+#[cfg(feature = "hfi")]
 use core::f32::consts::TAU;
 #[cfg(feature = "hfi")]
 use core::marker::PhantomData;
-#[cfg(feature = "hfi")]
-use crate::foc::trig::{LibmSinCos, SinCos};
-use crate::foc::wrap_angle;
 
 /// Input for observer update
 #[derive(Clone, Copy, Debug, Default)]
