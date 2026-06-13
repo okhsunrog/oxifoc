@@ -10,9 +10,9 @@ again. Perf-side numbers (cycle counts) live in
 
 | board | profile | flash used | flash region | headroom | static RAM (.data+.bss) | RAM region |
 |---|---|---|---|---|---|---|
-| g431 (B-G431B-ESC1) | **baked (the only profile)** | 113 824 (86%) | **128K** (no storage region) | **17.2 KB** | **18 712** | **32K** |
+| g431 (B-G431B-ESC1) | **baked (the only profile)** | 114 580 (87%) | **128K** (no storage region) | **16.1 KB** | **18 712** | **32K** |
 | g474 (Nucleo + IHM08M1) | storage | 171 784 | 256K (bank 1; bank 2 = config) | 88 KB | 21 748 | 128K |
-| f405 | storage | 270 816 | 768K (sectors 0–9) | 503 KB | 32 236 | 128K (+64K CCM unused) |
+| f405 | storage | 271 732 | 768K (sectors 0–9) | 503 KB | 32 236 | 128K (+64K CCM unused) |
 
 g431 drops three things the drone board doesn't use, behind feature flags so
 the roomy boards keep them: **six-step** (removed for all boards), **`hfi`**
