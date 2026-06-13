@@ -184,8 +184,17 @@ pub async fn run(
             async move {
                 loop {
                     let _ = state_notify.wait().await;
-                    let state = stack.manage_profile(|im| im.interface_state(ident));
-                    if matches!(state, Some(InterfaceState::Down | InterfaceState::Inactive)) {
+                    // A COBS-stream disconnect deregisters the interface straight
+                    // to `None` (not just Down/Inactive), so cancel on anything no
+                    // longer Active. Matching only Down/Inactive would miss the
+                    // deregister and leave the telemetry task orphaned — draining
+                    // the queue and broadcasting into a dead interface until the
+                    // next client connects (or forever, after the last one).
+                    let active = matches!(
+                        stack.manage_profile(|im| im.interface_state(ident)),
+                        Some(InterfaceState::Active { .. })
+                    );
+                    if !active {
                         warn!("Host disconnected, stopping connection tasks");
                         token.cancel();
                         break;
