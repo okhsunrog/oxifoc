@@ -107,11 +107,16 @@ pub struct MotorParams {
 impl MotorParams {
     /// Calculate Kv (RPM per Volt) from flux linkage and pole pairs.
     ///
-    /// Formula: Kv = 60 / (2π × λ × pole_pairs)
+    /// Formula: Kv = 60 / (√3 × 2π × λ × pole_pairs). The √3 converts the
+    /// per-phase λ (amplitude-invariant Park) to the line-to-line Kv that
+    /// nameplates/VESC use; see [`crate::foc::detection::flux_linkage::calculate_kv`].
     pub fn calculate_kv(&mut self) {
         if self.flux_linkage_wb > 0.0 && self.pole_pairs > 0 {
-            self.kv_rpm_per_v =
-                60.0 / (core::f32::consts::TAU * self.flux_linkage_wb * f32::from(self.pole_pairs));
+            self.kv_rpm_per_v = 60.0
+                / (crate::foc::constants::SQRT_3
+                    * core::f32::consts::TAU
+                    * self.flux_linkage_wb
+                    * f32::from(self.pole_pairs));
         }
     }
 
@@ -454,8 +459,8 @@ mod tests {
         };
         params.calculate_kv();
 
-        // Kv = 60 / (2π × 0.01 × 7) ≈ 136.5 RPM/V
-        assert!((params.kv_rpm_per_v - 136.5).abs() < 1.0);
+        // Kv = 60 / (√3 × 2π × 0.01 × 7) ≈ 78.8 RPM/V (line-to-line)
+        assert!((params.kv_rpm_per_v - 78.8).abs() < 1.0);
     }
 
     #[test]

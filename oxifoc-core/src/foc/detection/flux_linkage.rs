@@ -475,19 +475,29 @@ pub fn rpm_to_erpm(rpm: f32, pole_pairs: u8) -> f32 {
 /// # Returns
 /// Kv in RPM per Volt
 ///
+/// # Convention
+/// Kv is reported against the **line-to-line** voltage (nameplate / VESC /
+/// ODrive convention), so the per-phase λ from the amplitude-invariant Park
+/// frame (where `Vq` is the peak *phase* voltage) carries a √3 phase→line
+/// factor: `Kv = 60 / (√3 · 2π · λ · Pp)`. Omitting it returns the per-phase Kv,
+/// which is √3 (≈1.73×) too high vs the nameplate.
+///
 /// # Example
 /// ```
 /// use oxifoc_core::foc::detection::flux_linkage::calculate_kv;
 ///
 /// // 10 mWb flux, 7 pole pairs
 /// let kv = calculate_kv(0.01, 7);
-/// // Kv ≈ 136.5 RPM/V
-/// assert!((kv - 136.5).abs() < 1.0);
+/// // Kv ≈ 78.8 RPM/V (line-to-line)
+/// assert!((kv - 78.8).abs() < 1.0);
 /// ```
 #[inline]
 pub fn calculate_kv(flux_linkage_wb: f32, pole_pairs: u8) -> f32 {
-    // Kv = 60 / (2π × λ × pole_pairs)
-    60.0 / (core::f32::consts::TAU * flux_linkage_wb * f32::from(pole_pairs))
+    // Kv = 60 / (√3 × 2π × λ × pole_pairs)  — √3 = peak phase → peak line-to-line
+    60.0 / (crate::foc::constants::SQRT_3
+        * core::f32::consts::TAU
+        * flux_linkage_wb
+        * f32::from(pole_pairs))
 }
 
 /// Calculate flux linkage from Kv.
@@ -498,10 +508,16 @@ pub fn calculate_kv(flux_linkage_wb: f32, pole_pairs: u8) -> f32 {
 ///
 /// # Returns
 /// Flux linkage in Weber
+///
+/// Inverse of [`calculate_kv`] — `kv_rpm_per_v` is the line-to-line Kv, so the
+/// same √3 factor applies: `λ = 60 / (√3 · 2π · Kv · Pp)` (matches VESC).
 #[inline]
 pub fn calculate_flux_from_kv(kv_rpm_per_v: f32, pole_pairs: u8) -> f32 {
-    // λ = 60 / (2π × Kv × pole_pairs)
-    60.0 / (core::f32::consts::TAU * kv_rpm_per_v * f32::from(pole_pairs))
+    // λ = 60 / (√3 × 2π × Kv × pole_pairs)
+    60.0 / (crate::foc::constants::SQRT_3
+        * core::f32::consts::TAU
+        * kv_rpm_per_v
+        * f32::from(pole_pairs))
 }
 
 /// Calculate observer gain from flux linkage (VESC formula).
@@ -689,10 +705,10 @@ mod tests {
         let pole_pairs = 7u8;
 
         let kv = calculate_kv(flux, pole_pairs);
-        // Kv = 60 / (2π × 0.01 × 7) ≈ 136.5 RPM/V
-        assert!((kv - 136.5).abs() < 1.0);
+        // Kv = 60 / (√3 × 2π × 0.01 × 7) ≈ 78.8 RPM/V (line-to-line)
+        assert!((kv - 78.8).abs() < 1.0);
 
-        // Reverse calculation
+        // Reverse calculation (inverse carries the same √3, so it round-trips)
         let flux_back = calculate_flux_from_kv(kv, pole_pairs);
         assert!((flux - flux_back).abs() < 0.0001);
     }

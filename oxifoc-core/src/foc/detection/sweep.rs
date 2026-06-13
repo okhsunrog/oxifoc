@@ -595,6 +595,15 @@ const HFI_PROBE_CYCLES: u32 = 8;
 #[cfg(feature = "hfi-detect")]
 const HFI_RIPPLE_FRACTION: f32 = 0.25;
 
+/// Hard cap on the HFI injection current (amps) — both the lag/|Z| probe and
+/// the adaptive collection ripple. At the carrier frequency |Z| ≥ R, so the
+/// worst-case (low-inductance) ripple is `V/R`; capping the probe at `I·R`
+/// keeps even a near-short within budget. The fixed `hfi_voltage_v` (3 V) drew
+/// tens of amps on a low-impedance outrunner and tripped the bench PSU; the
+/// voltage-pulse path is current-limited the same way (`calibrate_pulse_voltage`).
+#[cfg(feature = "hfi-detect")]
+const HFI_PROBE_CURRENT_A: f32 = 2.0;
+
 /// Measure motor inductance using rotating HFI.
 ///
 /// Injects a rotating high-frequency voltage vector in α-β frame and
@@ -655,26 +664,22 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
         f32::INFINITY
     };
 
-    // ── Adaptive injection amplitude ────────────────────────────────────
-    // A fixed amplitude gives a ripple current of V/(ω·L) — a quantity
-    // that spans two orders of magnitude across real motors (amps on a
-    // 15 µH outrunner, tens of mA on a 3 mH gimbal). VESC solves this by
-    // stepping the injection duty until the response current reaches the
-    // measurement target (mcpwm_foc_measure_inductance_current); here the
-    // first few FFT windows scout L at the configured amplitude, then the
-    // amplitude is re-solved for the target ripple and the accumulators
-    // restart (see hfi_collect).
-    let probe_v = params.hfi_voltage_v.min(headroom);
-    let adapt = HfiAdapt {
-        omega: params.hfi_frequency_hz * core::f32::consts::TAU,
-        r: params.resistance_ohm,
-        i_target: (HFI_RIPPLE_FRACTION * params.hold_current_a).max(0.05),
-        v_min: 0.2,
-        v_max: headroom.min(params.hfi_voltage_v * 10.0),
-    };
+    // ── Current-budgeted injection ──────────────────────────────────────
+    // A fixed amplitude gives a ripple V/(ω·L) spanning two orders of magnitude
+    // across motors (amps on a 15 µH outrunner, mA on a 3 mH gimbal), so the
+    // amplitude is solved for a target ripple current — VESC-style, the same way
+    // the voltage-pulse path is current-limited (`calibrate_pulse_voltage`).
+    //
+    // The PROBE that seeds it must be safe too: at the carrier |Z| ≥ R, so `I·R`
+    // caps the worst-case (low-L) probe current. The old fixed `hfi_voltage_v`
+    // (3 V) instead drew tens of amps on a low-impedance outrunner and tripped
+    // the bench PSU before the adaptive collection could re-scale.
+    let omega = params.hfi_frequency_hz * core::f32::consts::TAU;
+    let i_cap = (HFI_PROBE_CURRENT_A * params.resistance_ohm).max(0.2);
+    let probe_v = i_cap.min(headroom).min(params.hfi_voltage_v);
     info!(
-        "HFI injection (probe v={}V, vd_hold={}V)...",
-        probe_v, vd_hold
+        "HFI injection (probe v={}V, vd_hold={}V, I_cap={}A)...",
+        probe_v, vd_hold, HFI_PROBE_CURRENT_A
     );
 
     let mut injector = HfiInjector::<S>::new(params.hfi_frequency_hz, probe_v, pwm_freq_hz);
@@ -691,6 +696,25 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
         params.pipeline_lag as u32
     } else {
         probed_lag
+    };
+
+    // Now |Z| is known from the safe probe, so the adaptive collection can scale
+    // up to the ripple target without overcurrent: the most it can command is
+    // `v_max`, drawing `v_max/|Z| ≈ HFI_PROBE_CURRENT_A` at any inductance.
+    let z_probe = sqrtf(
+        params.resistance_ohm * params.resistance_ohm + (omega * l_probe) * (omega * l_probe),
+    )
+    .max(params.resistance_ohm);
+    let adapt = HfiAdapt {
+        omega,
+        r: params.resistance_ohm,
+        i_target: clamp_f32(
+            HFI_RIPPLE_FRACTION * params.hold_current_a,
+            0.05,
+            HFI_PROBE_CURRENT_A,
+        ),
+        v_min: 0.2,
+        v_max: clamp_f32(HFI_PROBE_CURRENT_A * z_probe, probe_v, headroom),
     };
 
     let mut measurement = InductanceMeasurement::<S>::new(params, pwm_freq_hz);
@@ -936,6 +960,16 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
             ..*params
         };
         let mut meas = VoltagePulseMeasurement::new(&cal_params, pwm_freq_hz, vd_hold);
+        // Residual dead-time the firmware's compensation did not cancel
+        // (vd_hold − R·I_hold). Removed from the pulse so L is dead-time-immune;
+        // also the signal a self-calibrating comp factor would key off.
+        info!(
+            "axis {}: vd_hold={} V, residual dead-time={} V, pulse={} V",
+            axis,
+            vd_hold,
+            meas.dead_time_v(),
+            pulse_voltage
+        );
 
         for _ in 0..params.num_pulses * 2 {
             // guard against skipped pulses
