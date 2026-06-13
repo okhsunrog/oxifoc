@@ -627,24 +627,16 @@ fn main() -> Result<()> {
             switch_vel,
             toggle_v,
         } => {
-            use oxifoc_core::foc::phase::PhaseSource;
-            let ps = match source {
-                SourceArg::Hall => PhaseSource::Hall,
-                SourceArg::HallFallback => PhaseSource::HallToObserver {
-                    blend_low: switch_vel,
-                    blend_high: switch_vel * 2.0,
-                },
-                SourceArg::Observer => PhaseSource::Observer,
-                SourceArg::Hfi => PhaseSource::Hfi,
-                SourceArg::HfiObserver => PhaseSource::HfiToObserver {
-                    min_vel: switch_vel,
-                    min_confidence: 0.5,
-                },
-                SourceArg::HfiObserverVolts => PhaseSource::HfiToObserverVolts {
-                    toggle_v,
-                    min_confidence: 0.5,
-                },
+            use oxifoc_host_lib::ops::phase::{self, PhaseSourceKind};
+            let kind = match source {
+                SourceArg::Hall => PhaseSourceKind::Hall,
+                SourceArg::HallFallback => PhaseSourceKind::HallFallback,
+                SourceArg::Observer => PhaseSourceKind::Observer,
+                SourceArg::Hfi => PhaseSourceKind::Hfi,
+                SourceArg::HfiObserver => PhaseSourceKind::HfiObserver,
+                SourceArg::HfiObserverVolts => PhaseSourceKind::HfiObserverVolts,
             };
+            let ps = phase::preset(kind, switch_vel, toggle_v);
             runtime
                 .cmd_tx
                 .send(HostCommand::SetPhaseSource(ps))
@@ -667,7 +659,7 @@ fn main() -> Result<()> {
             fast_hz,
             allow_gaps,
         } => {
-            let snapshot = config_cli::config_snapshot(&runtime);
+            let snapshot = config_cli::config_snapshot(&runtime.cmd_tx);
             let summary = record::record(&runtime, &out, seconds, fast_hz, snapshot)?;
             emit(
                 json,
@@ -701,7 +693,7 @@ fn main() -> Result<()> {
                 allow_gaps,
             } => {
                 let m = maneuver::load(&file)?;
-                let snapshot = config_cli::config_snapshot(&runtime);
+                let snapshot = config_cli::config_snapshot(&runtime.cmd_tx);
                 let summary = maneuver::run(&runtime, &m, &out, force, snapshot)?;
                 emit(
                     json,
@@ -729,7 +721,7 @@ fn main() -> Result<()> {
             ConfigAction::Dump { rust } => config_cli::dump_config(&runtime, rust, json)?,
             ConfigAction::Get { group } => {
                 let g = config_cli::parse_group(&group)?;
-                let (value, stored) = config_cli::current_value(&runtime, g)?;
+                let (value, stored) = config_cli::current_value(&runtime.cmd_tx, g)?;
                 emit(
                     json,
                     json!({"group": group, "stored": stored, "value": value}),
@@ -745,7 +737,7 @@ fn main() -> Result<()> {
             }
             ConfigAction::Set { group, fields } => {
                 let g = config_cli::parse_group(&group)?;
-                let value = config_cli::set_fields(&runtime, g, &fields)?;
+                let value = config_cli::set_fields(&runtime.cmd_tx, g, &fields)?;
                 emit(
                     json,
                     json!({"group": group, "written": true, "value": value}),

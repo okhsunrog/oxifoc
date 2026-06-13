@@ -7,6 +7,13 @@ export struct LogMessage {
     level: int, // 0=trace, 1=debug, 2=info, 3=warn, 4=error
 }
 
+export struct FaultRow {
+    category: string,
+    severity: string,   // "Warning" / "GracefulStop" / "Kill"
+    details: string,
+    category-id: int,   // FaultCategory discriminant, for per-row clear
+}
+
 export component App inherits Window {
     title: "Oxifoc Host";
     preferred-width: 900px;
@@ -47,10 +54,13 @@ export component App inherits Window {
 
     // ── Motor control ──
     in-out property <float> iq-target: 1.0;
+    in-out property <string> id-target-text: "0";  // d-axis current (field weakening)
     in-out property <int> pole-pairs: 7;
     in-out property <int> active-tab: 0;
     in property <bool> motor-running: false;
     callback motor-update();  // called when slider changes while motor is running
+    callback motor-coast();   // gates off, free spin
+    callback motor-brake();   // short windings (parking brake)
 
     // Phase source (commutation angle source): requested via the combo,
     // active source read back from slow telemetry.
@@ -167,6 +177,17 @@ export component App inherits Window {
     in-out property <string> cfg-fs-terminal: "";
     callback config-read();
     callback config-write();
+    // Factory reset — guarded by an explicit confirm toggle (mirrors the
+    // CLI's `--yes`).
+    in-out property <bool> config-reset-confirm: false;
+    callback config-reset();
+
+    // ── Faults ──
+    in property <[FaultRow]> faults;
+    in property <int> fault-total: 0;
+    callback faults-refresh();          // re-query the device
+    callback clear-faults();            // clear all
+    callback clear-fault-category(int); // clear one category by discriminant
 
     // ── Detection ──
     in property <string> detect-status: "";
@@ -527,6 +548,17 @@ export component App inherits Window {
                 }
                 HorizontalLayout {
                     spacing: 6px;
+                    Text { text: "Id"; vertical-alignment: center; font-size: 11px; }
+                    LineEdit {
+                        text <=> root.id-target-text;
+                        min-width: 50px;
+                        horizontal-alignment: right;
+                    }
+                    Button { text: "Coast"; clicked => { root.motor-coast(); } }
+                    Button { text: "Brake"; clicked => { root.motor-brake(); } }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
                     Text { text: "Stream"; vertical-alignment: center; font-size: 11px; }
                     ComboBox {
                         model: ["100 Hz", "500 Hz", "1000 Hz", "2000 Hz", "5000 Hz", "10000 Hz", "20000 Hz"];
@@ -636,9 +668,14 @@ export component App inherits Window {
                     clicked => { root.active-tab = 2; }
                 }
                 Button {
-                    text: "Log";
+                    text: "Faults";
                     primary: root.active-tab == 3;
-                    clicked => { root.active-tab = 3; }
+                    clicked => { root.active-tab = 3; root.faults-refresh(); }
+                }
+                Button {
+                    text: "Log";
+                    primary: root.active-tab == 4;
+                    clicked => { root.active-tab = 4; }
                 }
                 Rectangle { vertical-stretch: 1; }
             }
@@ -731,6 +768,13 @@ export component App inherits Window {
                     }
                     Button { text: "Read"; clicked => { root.config-read(); } }
                     Button { text: "Write"; primary: true; clicked => { root.config-write(); } }
+                    Rectangle { width: 16px; }
+                    CheckBox { text: "confirm"; checked <=> root.config-reset-confirm; }
+                    Button {
+                        text: "Reset all";
+                        enabled: root.config-reset-confirm;
+                        clicked => { root.config-reset(); }
+                    }
                     Rectangle { horizontal-stretch: 1; }
                     if root.config-status != "" : Text {
                         text: root.config-status;
@@ -888,8 +932,83 @@ export component App inherits Window {
                 Rectangle { vertical-stretch: 1; }
             }
 
-            // ── Log tab ──
+            // ── Faults tab ──
             if root.active-tab == 3 : VerticalLayout {
+                padding: 8px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text {
+                        text: "Active faults: \{root.fault-total}";
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        color: root.fault-total > 0 ? #ef4444 : #22c55e;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: "Refresh"; clicked => { root.faults-refresh(); } }
+                    Button {
+                        text: "Clear All";
+                        enabled: root.fault-total > 0;
+                        clicked => { root.clear-faults(); }
+                    }
+                }
+
+                if root.faults.length == 0 : Text {
+                    text: "No active faults.";
+                    color: #22c55e;
+                    font-size: 12px;
+                }
+
+                ListView {
+                    vertical-stretch: 1;
+                    for f[idx] in root.faults : Rectangle {
+                        height: fault-row.preferred-height + 8px;
+                        background: Palette.alternate-background;
+                        border-radius: 4px;
+
+                        fault-row := HorizontalLayout {
+                            padding: 6px;
+                            spacing: 8px;
+
+                            Text {
+                                text: f.severity;
+                                width: 100px;
+                                font-weight: 600;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                color: f.severity == "Kill" ? #ef4444
+                                     : f.severity == "GracefulStop" ? #eab308
+                                     : #4ade80;
+                            }
+                            Text {
+                                text: f.category;
+                                width: 120px;
+                                font-weight: 600;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: f.details;
+                                horizontal-stretch: 1;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                            Button {
+                                text: "Clear";
+                                clicked => { root.clear-fault-category(f.category-id); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Log tab ──
+            if root.active-tab == 4 : VerticalLayout {
 
                 property <bool> is-dark: Palette.color-scheme == ColorScheme.dark;
 

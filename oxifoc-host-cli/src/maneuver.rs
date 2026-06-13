@@ -207,7 +207,7 @@ pub fn validate(m: &Maneuver) -> Result<()> {
 
 /// Online check against the device's stored current limits.
 fn check_limits(runtime: &HostRuntime, m: &Maneuver) -> Result<()> {
-    let (limits, _stored) = current_value(runtime, ConfigGroupId::CurrentLimits)?;
+    let (limits, _stored) = current_value(&runtime.cmd_tx, ConfigGroupId::CurrentLimits)?;
     let max_iq = limits
         .get("max_iq_a")
         .and_then(Value::as_f64)

@@ -13,7 +13,7 @@ use crate::{DetectStep, emit};
 
 /// Stored motor-params as JSON (defaults when not stored).
 fn motor_params_value(runtime: &HostRuntime) -> Result<serde_json::Value> {
-    let (v, _) = config_cli::current_value(runtime, ConfigGroupId::MotorParams)?;
+    let (v, _) = config_cli::current_value(&runtime.cmd_tx, ConfigGroupId::MotorParams)?;
     Ok(v)
 }
 
@@ -141,7 +141,7 @@ pub fn run_detect(
             ),
             ("oxifoc.detect_outcome".to_string(), outcome),
         ];
-        let summary = c.finish(path, &config_snapshot(runtime), &extra)?;
+        let summary = c.finish(path, &config_snapshot(&runtime.cmd_tx), &extra)?;
         if !json || detect_result.is_err() {
             eprintln!(
                 "capture: {} — {} rows at {} Hz, {} gap(s)",
@@ -158,7 +158,7 @@ pub fn run_detect(
 
     let mut applied = serde_json::Value::Null;
     if apply {
-        let (mut mp, _) = config_cli::current_value(runtime, ConfigGroupId::MotorParams)?;
+        let (mut mp, _) = config_cli::current_value(&runtime.cmd_tx, ConfigGroupId::MotorParams)?;
         let obj = mp.as_object_mut().context("motor-params not an object")?;
         match resp {
             DetectResponse::Resistance { resistance_ohm } => {
@@ -179,7 +179,7 @@ pub fn run_detect(
             DetectResponse::HallCalibrated | DetectResponse::Error(_) => {}
         }
         let write = config_cli::write_from_value(ConfigGroupId::MotorParams, mp.clone())?;
-        config_cli::send_write(runtime, write)?;
+        config_cli::send_write(&runtime.cmd_tx, write)?;
         applied = mp;
     }
 

@@ -23,10 +23,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use oxifoc_core::types::ControlMode;
+use oxifoc_core::types::{ControlMode, FaultCategory, FaultRequest, FaultResponse};
 use oxifoc_host_lib::{
     BleDeviceInfo, HostCommand, HostConfig, HostRuntime, TransportType, config_channel,
-    scan_ble_devices, start_host,
+    fault_channel, ops, scan_ble_devices, start_host,
 };
 #[cfg(feature = "desktop")]
 use oxifoc_host_lib::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
@@ -44,23 +44,88 @@ const CAPACITY: usize = 32768;
 const MAX_LOG_LINES: usize = 2000;
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];
 
-/// Short display label for the active phase source from slow telemetry.
-fn phase_source_label(src: oxifoc_core::foc::phase::PhaseSource) -> &'static str {
-    use oxifoc_core::foc::phase::PhaseSource as P;
-    match src {
-        P::Hall => "Hall",
-        P::Encoder => "Encoder",
-        P::Observer => "Observer",
-        P::Hfi => "HFI",
-        P::HallToObserver { .. } => "Hall→Obs",
-        P::EncoderToObserver { .. } => "Enc→Obs",
-        P::HfiToObserver { .. } => "HFI→Obs",
-        P::HfiToObserverVolts { .. } => "HFI→Obs(V)",
-        P::HfiToHall { .. } => "HFI→Hall",
-        P::HfiToEncoder { .. } => "HFI→Enc",
-        P::Manual => "Manual",
-        P::OpenLoop => "OpenLoop",
+/// FaultCategory ↔ stable discriminant (postcard variant index): used to
+/// round-trip a category through the Slint model's `category-id` int so a
+/// per-row "Clear" can rebuild the request. Append-only, matching the wire
+/// enum order in `oxifoc_core::foc::fault::FaultCategory`.
+fn fault_category_id(cat: FaultCategory) -> i32 {
+    match cat {
+        FaultCategory::None => 0,
+        FaultCategory::OverCurrent => 1,
+        FaultCategory::OverVoltage => 2,
+        FaultCategory::UnderVoltage => 3,
+        FaultCategory::OverTemp => 4,
+        FaultCategory::DriverFault => 5,
+        FaultCategory::HallError => 6,
+        FaultCategory::Stall => 7,
+        FaultCategory::CalibrationFault => 8,
+        FaultCategory::CommTimeout => 9,
+        FaultCategory::Derating => 10,
     }
+}
+
+fn fault_category_from_id(id: i32) -> Option<FaultCategory> {
+    Some(match id {
+        1 => FaultCategory::OverCurrent,
+        2 => FaultCategory::OverVoltage,
+        3 => FaultCategory::UnderVoltage,
+        4 => FaultCategory::OverTemp,
+        5 => FaultCategory::DriverFault,
+        6 => FaultCategory::HallError,
+        7 => FaultCategory::Stall,
+        8 => FaultCategory::CalibrationFault,
+        9 => FaultCategory::CommTimeout,
+        10 => FaultCategory::Derating,
+        _ => return None,
+    })
+}
+
+/// Render a device fault snapshot into Slint rows + the active total.
+fn faults_to_rows(resp: &FaultResponse) -> (Vec<FaultRow>, i32) {
+    let rows = resp
+        .faults
+        .iter()
+        .map(|f| FaultRow {
+            category: SharedString::from(format!("{:?}", f.category)),
+            severity: SharedString::from(format!("{:?}", f.severity)),
+            details: SharedString::from(f.details.as_str()),
+            category_id: fault_category_id(f.category),
+        })
+        .collect();
+    (rows, i32::from(resp.total))
+}
+
+/// Push a fault snapshot into the UI model (call from the event loop).
+fn apply_faults(app: &App, resp: &FaultResponse) {
+    let (rows, total) = faults_to_rows(resp);
+    app.set_faults(ModelRc::new(VecModel::from(rows)));
+    app.set_fault_total(total);
+}
+
+/// Issue a fault query/clear off-thread (no runtime mutex held during the
+/// wait) and apply the device's reply snapshot to the UI model.
+fn send_fault_request(
+    rt: &Arc<std::sync::Mutex<Option<HostRuntime>>>,
+    weak: &slint::Weak<App>,
+    req: FaultRequest,
+) {
+    let cmd_tx = {
+        let guard = rt.lock().unwrap();
+        match guard.as_ref() {
+            Some(r) => r.cmd_tx.clone(),
+            None => return,
+        }
+    };
+    let weak = weak.clone();
+    thread::spawn(move || {
+        let (tx, rx) = fault_channel();
+        if cmd_tx.send(HostCommand::Fault(req, tx)).is_err() {
+            return;
+        }
+        if let Ok(Ok(resp)) = rx.blocking_recv() {
+            let _ = weak.upgrade_in_event_loop(move |app| apply_faults(&app, &resp));
+        }
+    });
 }
 
 /// Parse a numeric text field for a config/detect write. A typo must abort
@@ -164,8 +229,9 @@ pub fn main() {
 
     let app = App::new().unwrap();
 
-    // ── Log model ───────────────────────────────────────────────────────────
+    // ── Log + faults models ──────────────────────────────────────────────────
     app.set_log_messages(ModelRc::new(VecModel::<LogMessage>::default()));
+    app.set_faults(ModelRc::new(VecModel::<FaultRow>::default()));
 
     {
         let weak = app.as_weak();
@@ -426,13 +492,18 @@ pub fn main() {
                         // Throttled motor update: send at most once per frame (~60Hz)
                         if motor_pending.swap(false, Ordering::Relaxed) {
                             let iq_target = app.get_iq_target();
+                            let id_target = app
+                                .get_id_target_text()
+                                .trim()
+                                .parse::<f32>()
+                                .unwrap_or(0.0);
                             if let Ok(guard) = motor_rt.try_lock()
                                 && let Some(ref rt) = *guard
                             {
                                 let _ = rt.cmd_tx.send(HostCommand::Motor(
                                     ControlMode::CurrentControl {
                                         iq_target,
-                                        id_target: 0.0,
+                                        id_target,
                                     },
                                 ));
                             }
@@ -463,7 +534,7 @@ pub fn main() {
                             )));
                             let state_str = format!("{:?}", s.motor_state);
                             app.set_motor_state_text(SharedString::from(state_str));
-                            app.set_phase_source_text(SharedString::from(phase_source_label(
+                            app.set_phase_source_text(SharedString::from(ops::phase::label(
                                 s.phase_source,
                             )));
                             if s.fault_count > 0 {
@@ -759,9 +830,7 @@ pub fn main() {
             };
 
             // Set fast_hz so the backend enables telemetry at connect time
-            let rates = [100u16, 500, 1000, 2000, 5000, 10000, 20000];
-            let idx = app.get_stream_rate_index() as usize;
-            let hz = rates.get(idx).copied().unwrap_or(1000);
+            let hz = ops::stream_rate_hz(app.get_stream_rate_index() as usize);
             let config = HostConfig {
                 fast_hz: Some(hz),
                 ..config
@@ -784,6 +853,7 @@ pub fn main() {
             let fast_rx = host_runtime.fast_rx.clone();
             let slow_rx = host_runtime.slow_rx.clone();
             let info_rx = host_runtime.device_info_rx.clone();
+            let fault_rx = host_runtime.fault_rx.clone();
             let connected = host_runtime.connected.clone();
             let runtime_fast_hz = host_runtime.fast_hz.clone();
             *rt.lock().unwrap() = Some(host_runtime);
@@ -809,6 +879,27 @@ pub fn main() {
                     thread::sleep(Duration::from_millis(100));
                 }
             });
+
+            // Fault listener — the device pushes a full snapshot on every
+            // registry change (raise / refine / clear); mirror it into the UI
+            // model. Initial population also happens when the Faults tab is
+            // opened (it issues a Query).
+            {
+                let weak_f = weak.clone();
+                let stop_f = stop.clone();
+                thread::spawn(move || {
+                    while !stop_f.load(Ordering::Relaxed) {
+                        match fault_rx.recv_timeout(Duration::from_millis(200)) {
+                            Ok(resp) => {
+                                let _ = weak_f
+                                    .upgrade_in_event_loop(move |app| apply_faults(&app, &resp));
+                            }
+                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                        }
+                    }
+                });
+            }
 
             // Device info listener — runs once on connection
             let weak_info = weak.clone();
@@ -907,14 +998,19 @@ pub fn main() {
         app.on_motor_start(move || {
             let app = weak.unwrap();
             let iq_target = app.get_iq_target();
+            let id_target = app
+                .get_id_target_text()
+                .trim()
+                .parse::<f32>()
+                .unwrap_or(0.0);
             let guard = rt.lock().unwrap();
             if let Some(ref runtime) = *guard {
-                tracing::info!("Motor start: iq_target={iq_target:.2}A");
+                tracing::info!("Motor start: iq_target={iq_target:.2}A id_target={id_target:.2}A");
                 match runtime
                     .cmd_tx
                     .send(HostCommand::Motor(ControlMode::CurrentControl {
                         iq_target,
-                        id_target: 0.0,
+                        id_target,
                     })) {
                     Ok(()) => {
                         drop(guard);
@@ -953,6 +1049,48 @@ pub fn main() {
         });
     }
 
+    // ── Motor coast (gates off, free spin) ───────────────────────────────────
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_motor_coast(move || {
+            let app = weak.unwrap();
+            let guard = rt.lock().unwrap();
+            if let Some(ref runtime) = *guard {
+                tracing::info!("Motor coast");
+                if runtime
+                    .cmd_tx
+                    .send(HostCommand::Motor(ControlMode::Coast))
+                    .is_ok()
+                {
+                    drop(guard);
+                    app.set_motor_running(false);
+                }
+            }
+        });
+    }
+
+    // ── Motor brake (short windings, parking brake) ──────────────────────────
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_motor_brake(move || {
+            let app = weak.unwrap();
+            let guard = rt.lock().unwrap();
+            if let Some(ref runtime) = *guard {
+                tracing::info!("Motor brake");
+                if runtime
+                    .cmd_tx
+                    .send(HostCommand::Motor(ControlMode::Brake))
+                    .is_ok()
+                {
+                    drop(guard);
+                    app.set_motor_running(false);
+                }
+            }
+        });
+    }
+
     // ── Motor update (live slider changes while running) ─────────────────────
     // Just sets a flag; the actual send happens in BeforeRendering (~60Hz throttle)
     {
@@ -970,30 +1108,17 @@ pub fn main() {
         let rt = runtime.clone();
         let weak = app.as_weak();
         app.on_phase_source_changed(move || {
-            use oxifoc_core::foc::phase::PhaseSource;
-            // Same crossover defaults the CLI uses.
-            const SWITCH_VEL: f32 = 150.0; // electrical rad/s
-            const TOGGLE_V: f32 = 2.0; // volts of back-EMF proxy
-
             let app = weak.unwrap();
-            let ps = match app.get_phase_source_index() {
-                0 => PhaseSource::Hall,
-                1 => PhaseSource::HallToObserver {
-                    blend_low: SWITCH_VEL,
-                    blend_high: SWITCH_VEL * 2.0,
-                },
-                2 => PhaseSource::Observer,
-                3 => PhaseSource::Hfi,
-                4 => PhaseSource::HfiToObserver {
-                    min_vel: SWITCH_VEL,
-                    min_confidence: 0.5,
-                },
-                5 => PhaseSource::HfiToObserverVolts {
-                    toggle_v: TOGGLE_V,
-                    min_confidence: 0.5,
-                },
-                _ => return,
+            // Shared mapping + defaults (identical to the CLI `source` command).
+            let Some(kind) = ops::phase::PhaseSourceKind::from_index(app.get_phase_source_index())
+            else {
+                return;
             };
+            let ps = ops::phase::preset(
+                kind,
+                ops::phase::DEFAULT_SWITCH_VEL,
+                ops::phase::DEFAULT_TOGGLE_V,
+            );
             let guard = rt.lock().unwrap();
             if let Some(ref runtime) = *guard {
                 tracing::info!("Phase source request: {ps:?}");
@@ -1014,9 +1139,7 @@ pub fn main() {
             let guard = rt.lock().unwrap();
             if let Some(ref runtime) = *guard {
                 let app = weak.unwrap();
-                let rates = [100u16, 500, 1000, 2000, 5000, 10000, 20000];
-                let idx = app.get_stream_rate_index() as usize;
-                let hz = rates.get(idx).copied().unwrap_or(1000);
+                let hz = ops::stream_rate_hz(app.get_stream_rate_index() as usize);
                 tracing::info!("Starting fast telemetry at {} Hz", hz);
                 let _ = runtime.cmd_tx.send(HostCommand::SetTelemetryConfig(
                     oxifoc_core::icd::TelemetryConfig { fast_hz: hz },
@@ -1373,160 +1496,50 @@ pub fn main() {
                 return;
             }
 
-            // Send sequential detection steps: R → L → flux → hall
-            // Each step is a separate request/response via the same endpoint.
+            // Full R → L → flux → hall sequence via the shared op (same code
+            // path the CLI uses). Runs on a cloned command sender, NOT under
+            // the runtime mutex, so Stop/Coast stay responsive during the
+            // ~minute-long detection.
             let cmd_tx = runtime.cmd_tx.clone();
             app.set_detect_status(SharedString::from("Running..."));
 
             thread::spawn(move || {
-                use oxifoc_core::types::{DetectRequest, DetectResponse};
-
-                let mut resistance_ohm = 0.0_f32;
-                let mut inductance_d_h = 0.0_f32;
-                let mut inductance_q_h = 0.0_f32;
-                let mut flux_linkage_wb = 0.0_f32;
-                let mut kv_rpm_per_v = 0.0_f32;
-                let mut hall_ok = false;
-                let mut error: Option<String> = None;
-
-                // Helper: send one detect request and wait for response
-                let send_step = |req: DetectRequest| -> Result<DetectResponse, String> {
-                    let (tx, rx) = oxifoc_host_lib::detect_channel();
-                    cmd_tx
-                        .send(HostCommand::Detect(req, tx))
-                        .map_err(|_| "Send failed".to_string())?;
-                    match rx.blocking_recv() {
-                        Ok(Ok(resp)) => Ok(resp),
-                        Ok(Err(e)) => Err(format!("{e}")),
-                        Err(_) => Err("No response".to_string()),
-                    }
-                };
-
-                // Step 1: Resistance
-                match send_step(DetectRequest::MeasureResistance {
-                    max_power_loss_w: max_loss,
-                }) {
-                    Ok(DetectResponse::Resistance { resistance_ohm: r }) => {
-                        resistance_ohm = r;
-                    }
-                    Ok(DetectResponse::Error(e)) => {
-                        tracing::error!("Detection: R: {e:?}");
-                        error = Some(format!("R: {e:?}"));
-                    }
-                    Ok(_) => {
-                        error = Some("R: unexpected response".to_string());
-                    }
-                    Err(e) => {
-                        tracing::error!("Detection: R: {e}");
-                        error = Some(format!("R: {e}"));
-                    }
-                }
-
-                // Step 2: Inductance
-                if error.is_none() {
-                    match send_step(DetectRequest::MeasureInductance {
-                        max_power_loss_w: max_loss,
-                        resistance_ohm,
-                    }) {
-                        Ok(DetectResponse::Inductance {
-                            inductance_d_h: ld,
-                            inductance_q_h: lq,
-                        }) => {
-                            inductance_d_h = ld;
-                            inductance_q_h = lq;
-                        }
-                        Ok(DetectResponse::Error(e)) => {
-                            tracing::error!("Detection: L: {e:?}");
-                            error = Some(format!("L: {e:?}"));
-                        }
-                        Ok(_) => {
-                            error = Some("L: unexpected response".to_string());
-                        }
-                        Err(e) => {
-                            tracing::error!("Detection: L: {e}");
-                            error = Some(format!("L: {e}"));
-                        }
-                    }
-                }
-
-                // Step 3: Flux linkage
-                if error.is_none() {
-                    match send_step(DetectRequest::MeasureFlux {
-                        max_power_loss_w: max_loss,
-                        resistance_ohm,
-                        inductance_h: (inductance_d_h + inductance_q_h) / 2.0,
-                        pole_pairs,
-                        openloop_erpm,
-                    }) {
-                        Ok(DetectResponse::FluxLinkage {
-                            flux_linkage_wb: f,
-                            kv_rpm_per_v: kv,
-                        }) => {
-                            flux_linkage_wb = f;
-                            kv_rpm_per_v = kv;
-                        }
-                        Ok(DetectResponse::Error(e)) => {
-                            tracing::error!("Detection: Flux: {e:?}");
-                            error = Some(format!("Flux: {e:?}"));
-                        }
-                        Ok(_) => {
-                            error = Some("Flux: unexpected response".to_string());
-                        }
-                        Err(e) => {
-                            tracing::error!("Detection: Flux: {e}");
-                            error = Some(format!("Flux: {e}"));
-                        }
-                    }
-                }
-
-                // Step 4: Hall calibration (best-effort)
-                if error.is_none() {
-                    match send_step(DetectRequest::CalibrateHall) {
-                        Ok(DetectResponse::HallCalibrated) => {
-                            hall_ok = true;
-                        }
-                        Ok(DetectResponse::Error(_)) => {
-                            // Hall failure is non-fatal — motor may not have hall sensors
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Update UI
-                let _ = weak.upgrade_in_event_loop(move |app| {
-                    if let Some(err) = error {
-                        app.set_detect_status(SharedString::from(format!("Error: {err}")));
-                    } else {
+                let result =
+                    ops::detect::run_sequence(&cmd_tx, pole_pairs, max_loss, openloop_erpm);
+                let _ = weak.upgrade_in_event_loop(move |app| match result {
+                    Ok(out) => {
                         app.set_detect_resistance(SharedString::from(format!(
-                            "{resistance_ohm:.4}"
+                            "{:.4}",
+                            out.resistance_ohm
                         )));
                         app.set_detect_inductance_d(SharedString::from(format!(
-                            "{inductance_d_h:.6}"
+                            "{:.6}",
+                            out.inductance_d_h
                         )));
                         app.set_detect_inductance_q(SharedString::from(format!(
-                            "{inductance_q_h:.6}"
+                            "{:.6}",
+                            out.inductance_q_h
                         )));
                         app.set_detect_flux_linkage(SharedString::from(format!(
-                            "{flux_linkage_wb:.6}"
+                            "{:.6}",
+                            out.flux_linkage_wb
                         )));
-                        app.set_detect_kv(SharedString::from(format!("{kv_rpm_per_v:.1}")));
-                        // PI gains computed on host side from R and L
-                        let l_avg = (inductance_d_h + inductance_q_h) / 2.0;
-                        let (kp, ki) = if l_avg > 0.0 && resistance_ohm > 0.0 {
-                            // Simple PI tuning: bandwidth = R/L clamped to reasonable range
-                            let bandwidth = (resistance_ohm / l_avg).clamp(500.0, 5000.0);
-                            (l_avg * bandwidth, resistance_ohm * bandwidth)
-                        } else {
-                            (0.4, 40.0) // defaults
-                        };
+                        app.set_detect_kv(SharedString::from(format!("{:.1}", out.kv_rpm_per_v)));
+                        // The gains the device WILL compute from these params on
+                        // a write (display only — apply does not write them).
+                        let (kp, ki) =
+                            ops::detect::suggested_pi_gains(out.resistance_ohm, out.l_avg());
                         app.set_detect_kp(SharedString::from(format!("{kp:.4}")));
                         app.set_detect_ki(SharedString::from(format!("{ki:.2}")));
-                        let status = if hall_ok {
+                        app.set_detect_status(SharedString::from(if out.hall_ok {
                             "OK (with Hall)"
                         } else {
                             "OK (no Hall)"
-                        };
-                        app.set_detect_status(SharedString::from(status));
+                        }));
+                    }
+                    Err(e) => {
+                        tracing::error!("Detection failed: {e:#}");
+                        app.set_detect_status(SharedString::from(format!("Error: {e}")));
                     }
                 });
             });
@@ -1534,83 +1547,109 @@ pub fn main() {
     }
 
     // ── Detect apply to config ──────────────────────────────────────────────
+    // Writes the measured motor params (+ thermal current rating) via the
+    // shared op. PI gains are NOT written — the device retunes the current
+    // loop from the motor params on write (single source of truth).
     {
         let rt = runtime.clone();
         let weak = app.as_weak();
         app.on_detect_apply(move || {
-            let guard = rt.lock().unwrap();
-            let Some(ref runtime) = *guard else {
-                return;
+            let cmd_tx = {
+                let guard = rt.lock().unwrap();
+                let Some(ref runtime) = *guard else {
+                    return;
+                };
+                runtime.cmd_tx.clone()
             };
             let weak = weak.clone();
             let app = weak.unwrap();
 
-            use oxifoc_core::storage::{MotorParamsConfig, PiGainsConfig};
-            use oxifoc_core::types::ConfigWrite;
-
             let mut parse_err: Option<String> = None;
             let err = &mut parse_err;
-            let r: f32 = parse_field("resistance", &app.get_detect_resistance(), err);
-            let ld: f32 = parse_field("inductance d", &app.get_detect_inductance_d(), err);
-            let lq: f32 = parse_field("inductance q", &app.get_detect_inductance_q(), err);
-            let fl: f32 = parse_field("flux linkage", &app.get_detect_flux_linkage(), err);
-            let pp = app.get_pole_pairs().max(1) as u8;
-            let kp: f32 = parse_field("kp", &app.get_detect_kp(), err);
-            let ki: f32 = parse_field("ki", &app.get_detect_ki(), err);
+            let outcome = ops::detect::DetectionOutcome {
+                resistance_ohm: parse_field("resistance", &app.get_detect_resistance(), err),
+                inductance_d_h: parse_field("inductance d", &app.get_detect_inductance_d(), err),
+                inductance_q_h: parse_field("inductance q", &app.get_detect_inductance_q(), err),
+                flux_linkage_wb: parse_field("flux linkage", &app.get_detect_flux_linkage(), err),
+                kv_rpm_per_v: 0.0,
+                hall_ok: false,
+            };
+            let pole_pairs = app.get_pole_pairs().max(1) as u8;
             let max_loss: f32 = parse_field("max power loss", &app.get_detect_max_loss(), err);
             if let Some(msg) = parse_err {
                 app.set_detect_status(SharedString::from(msg));
                 return;
             }
 
-            // Write motor params, including the continuous-current RATING —
-            // the same VESC thermal solve the device uses for safe test
-            // currents (√(P/R/1.5)). It becomes the ceiling that operational
-            // limits are clamped to on the device.
-            let rating = if r > 0.0 && max_loss > 0.0 {
-                oxifoc_core::foc::detection::resistance::calculate_max_current(
-                    r,
-                    oxifoc_core::foc::detection::types::MotorSize::Custom(max_loss),
-                )
-            } else {
-                0.0
-            };
-            let (tx1, rx1) = config_channel();
-            let _ = runtime.cmd_tx.send(HostCommand::ConfigWrite(
-                ConfigWrite::MotorParams(MotorParamsConfig {
-                    resistance_ohm: r,
-                    inductance_d_h: ld,
-                    inductance_q_h: lq,
-                    flux_linkage_wb: fl,
-                    pole_pairs: pp,
-                    max_current_a: rating,
-                    max_power_loss_w: max_loss,
-                }),
-                tx1,
-            ));
-
-            // Write PI gains
-            let (tx2, rx2) = config_channel();
-            let _ = runtime.cmd_tx.send(HostCommand::ConfigWrite(
-                ConfigWrite::PiGains(PiGainsConfig {
-                    kp,
-                    ki,
-                    bandwidth_rad_s: 0.0,
-                }),
-                tx2,
-            ));
-
             thread::spawn(move || {
-                let r1 = rx1.blocking_recv();
-                let r2 = rx2.blocking_recv();
+                let result =
+                    ops::detect::apply_motor_params(&cmd_tx, &outcome, pole_pairs, max_loss);
                 let _ = weak.upgrade_in_event_loop(move |app| {
-                    if r1.is_ok() && r2.is_ok() {
-                        app.set_detect_status(SharedString::from("Applied to config"));
-                    } else {
-                        app.set_detect_status(SharedString::from("Failed to apply"));
+                    let status = match result {
+                        Ok(()) => "Applied to config".to_string(),
+                        Err(e) => format!("Failed to apply: {e}"),
+                    };
+                    app.set_detect_status(SharedString::from(status));
+                });
+            });
+        });
+    }
+
+    // ── Config reset (factory reset) ─────────────────────────────────────────
+    // Guarded by the UI "confirm" toggle (the button is disabled otherwise).
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_config_reset(move || {
+            let app = weak.unwrap();
+            if !app.get_config_reset_confirm() {
+                return;
+            }
+            let cmd_tx = {
+                let guard = rt.lock().unwrap();
+                let Some(ref runtime) = *guard else {
+                    app.set_config_status(SharedString::from("Not connected"));
+                    return;
+                };
+                runtime.cmd_tx.clone()
+            };
+            app.set_config_status(SharedString::from("Resetting..."));
+            let weak = weak.clone();
+            thread::spawn(move || {
+                let result = ops::config::reset_all(&cmd_tx);
+                let _ = weak.upgrade_in_event_loop(move |app| {
+                    app.set_config_reset_confirm(false);
+                    match result {
+                        Ok(()) => app.set_config_status(SharedString::from("Reset to defaults")),
+                        Err(e) => app.set_config_status(SharedString::from(format!("Error: {e}"))),
                     }
                 });
             });
+        });
+    }
+
+    // ── Faults: refresh / clear-all / clear-one ──────────────────────────────
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_faults_refresh(move || {
+            send_fault_request(&rt, &weak, FaultRequest::Query);
+        });
+    }
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_clear_faults(move || {
+            send_fault_request(&rt, &weak, FaultRequest::ClearAll);
+        });
+    }
+    {
+        let rt = runtime.clone();
+        let weak = app.as_weak();
+        app.on_clear_fault_category(move |id| {
+            if let Some(cat) = fault_category_from_id(id) {
+                send_fault_request(&rt, &weak, FaultRequest::Clear(cat));
+            }
         });
     }
 

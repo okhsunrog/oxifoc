@@ -1,5 +1,6 @@
 pub mod config;
 pub mod discovery;
+pub mod ops;
 pub mod transport;
 
 use anyhow::{Context, Result};
@@ -190,6 +191,12 @@ pub enum HostCommand {
     /// Query or clear device faults (`FaultEndpoint`).
     Fault(FaultRequest, FaultResponseSender),
 }
+
+/// Sender half of the host→backend command channel. The `ops` helpers take
+/// this rather than the whole [`HostRuntime`] so they can run from any thread
+/// with a cheap clone — in particular off the GUI's runtime mutex, so a long
+/// detection sequence never blocks the UI's Stop/Coast handlers.
+pub type CommandSender = tokio::sync::mpsc::UnboundedSender<HostCommand>;
 
 pub struct HostRuntime {
     pub fast_rx: Receiver<FastTelemetry>,

@@ -5250,6 +5250,7 @@ dependencies = [
  "oxifoc-core",
  "probe-rs",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-serial",
  "tokio-stream",

@@ -213,6 +213,15 @@ every exit path, limits gate. Verified on virtual: events within ±0.1 ms
 of plan, 0 gaps, command→response latency is now measurable (~10 ms on
 the sim = batch tick).
 
+- [ ] **GUI config coverage** (after the host-lib `ops` layer, 2026-06-13,
+  which backs both front-ends so config/phase/detect can't diverge; the GUI
+  also gained a faults panel, Coast/Brake, Config Reset and an Id field):
+  the GUI config form still edits only 6 of the 11 groups (motor-params,
+  current/voltage-limits, pi-gains, velocity, failsafe). Add typed forms for
+  **hall-tuning** and **derating** (the remaining hand-tunables). dc-offsets,
+  hall-calibration and pwm-config stay CLI-only by design — calibration
+  outputs / build-time, not hand-edited. The CLI keeps the full 11-group
+  `config get/set/dump`.
 - [ ] **Device-RAM burst capture** (the VESC `sample` pattern): raw
   20 kHz into a ring buffer (~100–200 ms on g431) downloaded afterwards,
   pre-trigger around faults (a "black box"). The 5 kHz CIC stream is for
