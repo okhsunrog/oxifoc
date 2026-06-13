@@ -1,9 +1,16 @@
-//! Ergot UDP server — binds a UDP socket and runs protocol servers.
+//! Ergot UDP server — persistent Router stack, one host session at a time.
 //!
 //! Registers a `Router` profile (central, node 1), matching the real device
 //! firmware and the TCP server: the host reaches us as a link-local edge and
 //! the Router assigns it a net_id, so its frames are routed rather than dropped
 //! as spoofed (which happens if both sides are DirectEdge node-2 targets).
+//!
+//! The stack and its request/response endpoints are created ONCE at startup and
+//! shared across every host session — exactly like real firmware. Each session
+//! only binds a fresh socket and attaches a new interface; on a liveness timeout
+//! the interface goes Down and we rebind. Persistent endpoints mean the host's
+//! first request is always answered immediately (no per-session registration
+//! race — see the TCP server for the full rationale).
 //!
 //! Unlike TCP there is no connection to accept: the socket is bound to a
 //! well-known port and left *unconnected*. ergot's UDP `register_router` learns
@@ -46,9 +53,10 @@ use oxifoc_core::foc::fault::StandardFault;
 
 const ERGOT_MTU: u16 = 2048;
 
-/// Per-session Router sizing: one host → one interface, no downstream seed
-/// routes and no bus node-claim slots (no shared segment here).
-const ROUTER_SLOTS: usize = 2;
+/// Router sizing for the persistent stack: sessions are strictly sequential
+/// (rebind waits for full teardown), so one live interface at a time — a few
+/// slots give headroom and freed net_ids are recycled. No downstream seed routes.
+const ROUTER_SLOTS: usize = 4;
 const ROUTER_SEEDS: usize = 0;
 type RouterStack = ArcNetStack<
     CriticalSectionRawMutex,
@@ -69,6 +77,58 @@ pub async fn run(
     let bind_addr = format!("0.0.0.0:{port}");
     info!("UDP Router on {bind_addr}");
 
+    // Persistent Router stack — created once, shared across all sessions.
+    let stack: RouterStack =
+        ArcNetStack::new_with_profile(Router::new(StdRng::seed_from_u64(0x0F0C_5EED)));
+
+    // Device info — constant for the life of the process.
+    let device_info = {
+        let mut hw: String<32> = String::new();
+        let mut sw: String<32> = String::new();
+        let mut mcu: String<32> = String::new();
+        let mut uuid: String<32> = String::new();
+        let _ = hw.push_str("Virtual-BLDC");
+        let _ = sw.push_str("oxifoc-virtual-0.1.0");
+        let _ = mcu.push_str("x86_64 (virtual)");
+        let _ = uuid.push_str("00000000-virtual");
+        HardwareInfo {
+            hw,
+            sw,
+            mcu,
+            uuid,
+            foc_freq_hz,
+            max_current_a,
+        }
+    };
+
+    // Persistent request/response servers: bound once, always ready — the
+    // host's first request is never racing endpoint registration.
+    tokio::spawn({
+        let endpoints = stack.endpoints();
+        async move {
+            // Box::pin: ~5 KB future; the 2 KB large_futures threshold is tuned
+            // for firmware, on the host we just heap it.
+            Box::pin(run_all_servers_with_config(
+                endpoints,
+                device_info,
+                state_mutex,
+                fault_registry,
+                runtime_config,
+                foc_freq_hz,
+                max_current_a,
+                true,
+            ))
+            .await;
+        }
+    });
+    tokio::spawn({
+        let endpoints = stack.endpoints();
+        async move {
+            detect_server(endpoints, vbus, max_current_a, foc_freq_hz, motor_params).await;
+        }
+    });
+
+    let mut prev_conn_token: Option<CancellationToken> = None;
     loop {
         // Bind a fresh *unconnected* socket each session. SO_REUSEADDR lets us
         // rebind the same port after the previous session's workers exit.
@@ -85,12 +145,13 @@ pub async fn run(
         };
         info!("Waiting for host...");
 
-        // Fresh Router stack for this session. The host reaches us as a
-        // link-local edge; the Router assigns it a net_id and routes its frames.
-        let stack: RouterStack =
-            ArcNetStack::new_with_profile(Router::new(StdRng::seed_from_u64(0x0F0C_5EED)));
-        let state_notify = Arc::new(WaitQueue::new());
+        // Stop the previous session's telemetry tasks before attaching the new
+        // interface (single-consumer fast-telemetry bbqueue — see TCP server).
+        if let Some(prev) = prev_conn_token.take() {
+            prev.cancel();
+        }
 
+        let state_notify = Arc::new(WaitQueue::new());
         // No turbofish: M/SS (and CC on branches that have it) infer from the
         // `RouterStack` type alias, keeping this portable across ergot branches.
         let ident = register_router(
@@ -106,55 +167,9 @@ pub async fn run(
         .await
         .map_err(|_| anyhow::anyhow!("UDP router interface registration failed"))?;
 
-        // Cancel token for this session — cancelled when the interface goes Down
-        // (liveness timeout after the host stops sending).
+        // Cancel token for this session's telemetry.
         let conn_token = CancellationToken::new();
-
-        // Monitor interface state — cancel all tasks when the host disconnects.
-        // The interface is Active from registration (net_id assigned); on a
-        // liveness timeout ergot sets it Down and then *deregisters* it (state
-        // becomes None), so treat anything that is no longer Active as a
-        // disconnect rather than matching Down specifically (which would race
-        // the deregister).
-        tokio::spawn({
-            let stack = stack.clone();
-            let state_notify = state_notify.clone();
-            let token = conn_token.clone();
-            async move {
-                loop {
-                    let active = stack.manage_profile(|im| {
-                        matches!(
-                            im.interface_state(ident),
-                            Some(InterfaceState::Active { .. })
-                        )
-                    });
-                    if !active {
-                        warn!("Host disconnected, stopping connection tasks");
-                        token.cancel();
-                        break;
-                    }
-                    let _ = state_notify.wait().await;
-                }
-            }
-        });
-
-        // Build device info.
-        let mut hw: String<32> = String::new();
-        let mut sw: String<32> = String::new();
-        let mut mcu: String<32> = String::new();
-        let mut uuid: String<32> = String::new();
-        let _ = hw.push_str("Virtual-BLDC");
-        let _ = sw.push_str("oxifoc-virtual-0.1.0");
-        let _ = mcu.push_str("x86_64 (virtual)");
-        let _ = uuid.push_str("00000000-virtual");
-        let device_info = HardwareInfo {
-            hw,
-            sw,
-            mcu,
-            uuid,
-            foc_freq_hz,
-            max_current_a,
-        };
+        prev_conn_token = Some(conn_token.clone());
 
         // Fast telemetry streaming. Broadcasts are gated by the host enabling
         // streaming; until the Router has learned the peer, frames simply queue
@@ -171,34 +186,25 @@ pub async fn run(
             }
         });
 
-        // Detect server for this session.
-        tokio::spawn({
-            let endpoints = stack.endpoints();
-            let token = conn_token.clone();
-            async move {
-                tokio::select! {
-                    _ = token.cancelled() => {}
-                    _ = detect_server(endpoints, vbus, max_current_a, foc_freq_hz, motor_params) => {}
-                }
+        // Block until the host goes quiet: the interface is Active from
+        // registration (net_id assigned), and on a liveness timeout ergot sets
+        // it Down then *deregisters* it (state becomes None), so treat anything
+        // no longer Active as a disconnect (matching Down specifically would
+        // race the deregister).
+        loop {
+            let active = stack.manage_profile(|im| {
+                matches!(
+                    im.interface_state(ident),
+                    Some(InterfaceState::Active { .. })
+                )
+            });
+            if !active {
+                break;
             }
-        });
-
-        // Run protocol servers until the host disconnects.
-        let endpoints = stack.endpoints();
-        let token = conn_token.clone();
-        tokio::select! {
-                _ = token.cancelled() => {}
-                _ = run_all_servers_with_config(
-                    endpoints,
-                    device_info,
-                    state_mutex,
-                    fault_registry,
-                    runtime_config,
-                    foc_freq_hz,
-                    max_current_a,
-            true,
-        ) => {}
-            }
+            let _ = state_notify.wait().await;
+        }
+        warn!("Host disconnected, stopping session tasks");
+        conn_token.cancel();
 
         info!("UDP session ended, waiting for workers to exit...");
 
