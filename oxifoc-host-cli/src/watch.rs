@@ -21,12 +21,18 @@ pub fn watch_faults(runtime: &HostRuntime, seconds: u64, json: bool) -> Result<(
     }
     let deadline = (seconds > 0).then(|| Instant::now() + Duration::from_secs(seconds));
     loop {
-        if let Some(d) = deadline
-            && Instant::now() >= d
-        {
-            break;
-        }
-        match runtime.fault_rx.recv_timeout(Duration::from_millis(500)) {
+        // Poll at 500 ms (deadline re-check + connection heartbeat), but
+        // never block past the deadline: the fault channel is event-driven
+        // and usually idle, so a flat 500 ms wait would overshoot a bounded
+        // watch by nearly that on every run.
+        let wait = match deadline {
+            Some(d) => match d.checked_duration_since(Instant::now()) {
+                Some(rem) => rem.min(Duration::from_millis(500)),
+                None => break,
+            },
+            None => Duration::from_millis(500),
+        };
+        match runtime.fault_rx.recv_timeout(wait) {
             Ok(snapshot) => {
                 if json {
                     // JSONL: one compact object per event
@@ -66,9 +72,12 @@ pub fn run_monitor(runtime: &HostRuntime, duration: Duration, json: bool) -> Res
         println!("Streaming telemetry for {duration:?}...");
     }
     let deadline = Instant::now() + duration;
-    while Instant::now() < deadline {
+    // Clamp each wait to the time left so a stalled stream can't overshoot
+    // the requested window by up to the 500 ms poll interval.
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        let wait = remaining.min(Duration::from_millis(500));
         // Print fast telemetry
-        match runtime.fast_rx.recv_timeout(Duration::from_millis(500)) {
+        match runtime.fast_rx.recv_timeout(wait) {
             Ok(sample) => {
                 if json {
                     // JSONL: one compact object per sample
