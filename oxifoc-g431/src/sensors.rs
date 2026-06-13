@@ -89,6 +89,9 @@ pub mod hall {
         let ch1: CapturePin<'static, peripherals::TIM4, Ch1> = CapturePin::new(pb6, Pull::Up);
         let ch2: CapturePin<'static, peripherals::TIM4, Ch2> = CapturePin::new(pb7, Pull::Up);
         let ch3: CapturePin<'static, peripherals::TIM4, Ch3> = CapturePin::new(pb8, Pull::Up);
+        // Pins must stay configured for the lifetime of the firmware: dropping
+        // a CapturePin reverts the pin from AF mode and kills hall capture.
+        #[expect(clippy::mem_forget, reason = "deliberate leak keeps AF pin config")]
         core::mem::forget((ch1, ch2, ch3));
 
         init_estimator(HALL_TICKS_PER_SEC);
@@ -141,6 +144,13 @@ pub mod hall {
         // state. Safe: the capture interrupt is not unmasked yet.
         update_hall_edge(read_hall_idr(), now_ticks());
 
+        #[expect(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "single logical operation: hall-capture IRQ bring-up"
+        )]
+        // SAFETY: one-time IRQ bring-up during init, before the capture
+        // interrupt can fire; Peripherals::steal() only touches NVIC priority
+        // registers nothing else owns at this point.
         unsafe {
             interrupt::typelevel::TIM4::unpend();
             cortex_m::peripheral::NVIC::unmask(interrupt::TIM4);

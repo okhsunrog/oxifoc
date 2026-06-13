@@ -64,7 +64,8 @@ async fn main(_spawner: Spawner) -> ! {
     info!("Oxifoc Remote initialized!");
 
     // ========== BLE setup ==========
-    let bt_transport = BleConnector::new(peripherals.BT, Default::default()).unwrap();
+    let bt_transport =
+        BleConnector::new(peripherals.BT, Default::default()).expect("BLE connector init");
     let ble_controller = ExternalController::<_, CONNECTIONS_MAX>::new(bt_transport);
     let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
         HostResources::new();

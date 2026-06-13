@@ -99,6 +99,13 @@ pub async fn init(
     // ADC at priority 0 (highest) — the FOC loop is the actuator's most
     // time-critical ISR; comms ISRs (USB/UART) must never preempt or
     // jitter it (mirrors the G431 setup).
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "single logical operation: FOC ADC IRQ bring-up"
+    )]
+    // SAFETY: one-time IRQ bring-up during init, before the PWM trigger is
+    // enabled (so the ISR cannot fire mid-setup); Peripherals::steal() only
+    // touches NVIC priority registers nothing else owns at this point.
     unsafe {
         use embassy_stm32::interrupt::typelevel::Interrupt;
         let irq = interrupt::ADC;

@@ -70,7 +70,8 @@ async fn main(spawner: Spawner) -> ! {
     let (uart_rx, uart_tx) = uart.split();
 
     // ========== BLE setup ==========
-    let bt_transport = BleConnector::new(peripherals.BT, Default::default()).unwrap();
+    let bt_transport =
+        BleConnector::new(peripherals.BT, Default::default()).expect("BLE connector init");
     let ble_controller = ExternalController::<_, CONNECTIONS_MAX>::new(bt_transport);
     let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
         HostResources::new();
@@ -87,7 +88,7 @@ async fn main(spawner: Spawner) -> ! {
         name: "Oxifoc Bridge",
         appearance: &appearance::power_device::GENERIC_POWER_DEVICE,
     }))
-    .unwrap();
+    .expect("NUS GATT server init");
 
     // ========== Ergot stack setup ==========
     let rng = esp_hal::rng::Rng::new();

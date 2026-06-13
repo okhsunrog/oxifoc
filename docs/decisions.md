@@ -345,3 +345,33 @@ their section.
   files) — the postcard append-only wire discipline depends on the
   variant numbering staying explicit and reviewable; a macro would hide
   exactly the thing reviews must see.
+- **2026-06-13 — lint wave 2: failure-class guardrails + firmware panic
+  policy** (inspired by emschwartz.me "your clippy config should be
+  stricter"; measured against this codebase first). Added zero-hit
+  guardrails to every lint table (`dbg_macro`, `string_slice`,
+  `rc_mutex`, `debug_assert_with_mut_call`, `expl_impl_clone_on_copy`,
+  `infallible_try_from`, `invalid_upcast_comparisons`, `large_futures`,
+  `unused_result_ok`, `iter_not_returning_iterator`, `mem_forget`,
+  `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`,
+  `lossy_float_literal`) — they cost nothing today and lock the
+  discipline in. The panic family (`unwrap_used`, `panic`, `todo`,
+  `unimplemented`, `get_unwrap`, `unwrap_in_result`,
+  `panic_in_result_fn`) applies to FIRMWARE only: a crate-level
+  `#![warn]` block in oxifoc-core/src/lib.rs (composes on top of the
+  inherited workspace table — core stays a normal member) and the
+  device-crate tables; host crates are exempt (CLI/GUI panics are an
+  acceptable failure mode, thousands of legit unwraps). clippy.toml
+  `allow-unwrap-in-tests` & co exempt test code; build.rs files carry a
+  file-level allow (panicking IS a build script's failure mode).
+  Measured before enabling: firmware core had 1 unwrap / 0 panics — the
+  policy was already true, now it's enforced. Real catches: 2 f32
+  literals in trig.rs flagged by `lossy_float_literal` (rewritten as
+  `(1i64 << 31) as f32`), a gated `take().unwrap()` in sweep.rs
+  (rewritten as a let-chain). Deliberate sites documented in place:
+  `mem::forget` of CapturePins (Drop would revert AF config) and the
+  NVIC bring-up unsafe blocks got `#[expect(reason)]` + `// SAFETY:`.
+  Reviewed all 24 `let _ =` sites (`let_underscore_must_use`): every one
+  is deliberate heapless-truncation or best-effort ergot reply — lint
+  stays off. Also NOT enabled, with numbers: `indexing_slicing` (67
+  const-bounded phase-array sites = churn), `float_cmp` (80/81 hits in
+  tests), `cast_sign_loss` (14 sites needing invariant docs — revisit).

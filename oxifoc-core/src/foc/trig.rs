@@ -135,7 +135,7 @@ pub fn q31_to_f32(val_q31: i32) -> f32 {
     }
     #[cfg(not(all(target_arch = "arm", target_abi = "eabihf")))]
     {
-        const Q31_TO_F32: f32 = 1.0 / 2147483648.0; // 1 / 2^31
+        const Q31_TO_F32: f32 = 1.0 / (1i64 << 31) as f32; // 1 / 2^31, exact
         (val_q31 as f32) * Q31_TO_F32
     }
 }
@@ -163,7 +163,7 @@ pub fn f32_to_q31(val_f32: f32) -> i32 {
     }
     #[cfg(not(all(target_arch = "arm", target_abi = "eabihf")))]
     {
-        const F32_TO_Q31: f32 = 2147483648.0; // 2^31
+        const F32_TO_Q31: f32 = (1i64 << 31) as f32; // 2^31, exact
         (val_f32 * F32_TO_Q31) as i32
     }
 }

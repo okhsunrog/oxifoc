@@ -1,3 +1,7 @@
+// Build script: runs on the host at compile time — panicking IS the
+// failure mode, so the firmware panic-policy lints don't apply here.
+#![allow(clippy::unwrap_used, clippy::panic, clippy::string_slice)]
+
 fn main() {
     linker_be_nice();
     println!("cargo:rustc-link-arg-tests=-Tembedded-test.x");

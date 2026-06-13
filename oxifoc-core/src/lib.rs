@@ -70,6 +70,19 @@
 //! ```
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
+// Firmware panic policy: this crate runs inside the FOC ISR of a vehicle.
+// Composes ON TOP of the shared [workspace.lints] table; the deliberate
+// fail-fast sites carry #[expect(..., reason = "...")]. Test code is
+// exempted via clippy.toml (allow-unwrap-in-tests & co).
+#![warn(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::get_unwrap,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 /// Logging macros abstraction (defmt/log/none)
 #[macro_use]

@@ -521,11 +521,13 @@ async fn hfi_collect<H: DetectionHardware, S: SinCos>(
     let mut record_from = lag;
 
     while !measurement.is_complete() {
-        if adapt.is_some() && measurement.cycles_completed() >= HFI_PROBE_CYCLES {
+        if measurement.cycles_completed() >= HFI_PROBE_CYCLES {
             // On a failed scout (no interim estimate) keep the configured
             // amplitude — finish() reports the real error downstream.
-            if let Some(l_avg) = measurement.interim_l_avg() {
-                let a = adapt.take().unwrap();
+            // `adapt.take()` only fires once an interim estimate exists.
+            if let Some(l_avg) = measurement.interim_l_avg()
+                && let Some(a) = adapt.take()
+            {
                 let z = sqrtf(a.r * a.r + a.omega * l_avg * a.omega * l_avg);
                 let v_run = clamp_f32(a.i_target * z, a.v_min, a.v_max);
                 info!("HFI amplitude adapted: {}V", v_run);

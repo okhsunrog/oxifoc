@@ -14,6 +14,11 @@
 //! let result = VirtualHarness::run_detection(motor, 24.0, det);
 //! ```
 
+// Sim-only harness (tests, benches, the detection_report example): the
+// thread-local SIM invariants make unwrap/panic the right failure mode here,
+// and none of this is compiled into firmware.
+#![allow(clippy::unwrap_used, clippy::panic, reason = "sim-only harness")]
+
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::cell::RefCell;
 
@@ -262,6 +267,8 @@ pub fn block_on<F: Future>(f: F) -> F::Output {
         RawWaker::new(p, &VTABLE)
     }
     static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+    // SAFETY: the vtable is all no-ops and the data pointer is never
+    // dereferenced — the contract of RawWaker is trivially upheld.
     let waker = unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) };
     let mut cx = Context::from_waker(&waker);
     let mut f = core::pin::pin!(f);

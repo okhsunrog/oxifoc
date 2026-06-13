@@ -1,0 +1,7 @@
+# Test code may unwrap/panic/dbg freely — these gate the firmware
+# panic-policy lints (see oxifoc-core/src/lib.rs and the device-crate
+# [lints] tables) out of #[test] / #[cfg(test)] scopes.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true
