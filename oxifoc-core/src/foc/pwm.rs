@@ -12,7 +12,7 @@
 
 use super::svpwm;
 
-/// Phase output state for six-step commutation
+/// Direct per-phase output state (brake / coast / float control)
 ///
 /// Each phase can be PWM-modulated, forced low, or floating (high-impedance).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -138,7 +138,7 @@ pub trait PhasePwm {
         // Default: no-op for platforms that handle safety elsewhere.
     }
 
-    /// Set individual phase states for six-step commutation.
+    /// Set individual phase states directly (brake / coast / float).
     ///
     /// Each element controls one phase: \[A, B, C\].
     /// Platform crates should override this for proper floating (hi-Z)

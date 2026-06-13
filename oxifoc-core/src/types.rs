@@ -131,16 +131,6 @@ pub enum ControlMode {
     /// Used during spin-down flux linkage measurement.  Phase voltages
     /// float so back-EMF can be read directly by ADC.
     Coast,
-    /// Six-step (trapezoidal) commutation mode
-    ///
-    /// Simple voltage-mode drive for board bringup and testing.
-    /// Does not require current sensor calibration.
-    /// Sign of duty determines direction: positive = forward,
-    /// negative = reverse.
-    SixStep {
-        /// Duty cycle (-1.0 to 1.0)
-        duty: f32,
-    },
     /// Brake mode — all low-side FETs on, windings shorted (parking brake).
     ///
     /// Resists motion with speed-proportional torque and dissipates the
@@ -192,7 +182,6 @@ impl ControlMode {
             Self::DirectVoltage { vd, vq, angle_rad } => {
                 vd.is_finite() && vq.is_finite() && angle_rad.is_finite()
             }
-            Self::SixStep { duty } => duty.is_finite(),
         }
     }
 

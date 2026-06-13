@@ -246,14 +246,6 @@ enum Command {
         #[arg(long, default_value_t = 0.0, help = "Electrical angle (rad)")]
         angle: f32,
     },
-    /// Six-step (trapezoidal) drive — bringup without current calibration
-    Sixstep {
-        #[arg(
-            allow_hyphen_values = true,
-            help = "Duty cycle, -1.0..1.0 (sign = direction)"
-        )]
-        duty: f32,
-    },
     /// Select the angle source for commutation
     Source {
         #[arg(value_enum)]
@@ -628,14 +620,6 @@ fn main() -> Result<()> {
                 json,
                 json!({"sent": {"vd": vd, "vq": vq, "angle_rad": angle}, "device": format!("{status:?}")}),
                 format!("Direct voltage vd={vd} vq={vq} V — device: {status:?}"),
-            );
-        }
-        Command::Sixstep { duty } => {
-            let status = send_motor_acked(&runtime, ControlMode::SixStep { duty })?;
-            emit(
-                json,
-                json!({"sent": {"duty": duty}, "device": format!("{status:?}")}),
-                format!("Six-step duty {duty} — device: {status:?}"),
             );
         }
         Command::Source {

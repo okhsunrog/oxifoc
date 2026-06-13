@@ -28,7 +28,6 @@ use crate::motor::derating::{DeratingConfig, DeratingScales};
 use crate::motor::failsafe::{
     FailsafeAction, FailsafeConfig, FailsafeController, FailsafePolicy, FailsafeTerminal,
 };
-use crate::motor::six_step;
 #[cfg(feature = "storage")]
 use crate::storage::CurrentLimitsConfig;
 
@@ -730,7 +729,7 @@ where
     /// and the host re-affirms them every 50 ms. Exempt:
     /// - Stopped/Coast/Brake — safe standing states: nothing to fail safe
     ///   toward, and a parking brake must persist through link loss.
-    /// - OpenLoop/DirectVoltage/SixStep — bench/calibration modes: on-device
+    /// - OpenLoop/DirectVoltage — bench/calibration modes: on-device
     ///   detection sets one and then dwells up to ~1 s between `SetMode`s
     ///   (e.g. the R-measurement settle), which a 150 ms deadman would cut
     ///   mid-measurement. The Layer-1 link gate (1 s liveness) still covers
@@ -745,7 +744,6 @@ where
                 | ControlMode::Brake
                 | ControlMode::OpenLoop { .. }
                 | ControlMode::DirectVoltage { .. }
-                | ControlMode::SixStep { .. }
         ) {
             return false;
         }
@@ -810,15 +808,6 @@ where
         } else {
             FailsafePolicy::Coast
         };
-        // The failsafe drives through the normal current-control path, which
-        // assumes all three phases are PWM-able — but six-step commutation
-        // floats one phase per sector. Restore them (mirrors the
-        // SixStep-exit housekeeping in `set_mode`, which the failsafe
-        // bypasses).
-        if matches!(self.mode, ControlMode::SixStep { .. }) {
-            self.pwm
-                .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
-        }
         // Bumpless: seed the ramp from the q-current currently commanded
         // (OpenLoop applies its `current` as the q-target; VelocityControl's
         // last PI output is what the current loop was just driven with).
@@ -864,8 +853,7 @@ where
     /// break to float the outputs for it — so on that path the timer would
     /// otherwise hold its last commanded duty and keep the phases
     /// energized. This cuts the gate drive immediately. `disable()` runs
-    /// last so it wins over the SixStep-exit phase re-enable inside
-    /// `set_mode`.
+    /// last so it wins over any phase re-enable inside `set_mode`.
     pub fn safe_off(&mut self) {
         self.set_mode(ControlMode::Stopped);
         self.pwm.disable();
@@ -884,9 +872,6 @@ where
     }
 
     /// Set control mode
-    ///
-    /// When leaving SixStep mode, re-enables all PWM channels that may
-    /// have been disabled (floated) during six-step commutation.
     pub fn set_mode(&mut self, mode: ControlMode) {
         // Any explicit mode set is an authoritative override: a fresh host
         // command (re-arm after link loss) or a fault-stop both cancel an
@@ -905,14 +890,6 @@ where
 
         let was_stopped = matches!(self.mode, ControlMode::Stopped);
         let will_be_active = !matches!(mode, ControlMode::Stopped);
-
-        if matches!(self.mode, ControlMode::SixStep { .. })
-            && !matches!(mode, ControlMode::SixStep { .. })
-        {
-            // Re-enable all phases so set_duties() in FOC modes works
-            self.pwm
-                .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
-        }
 
         // Re-enable PWM outputs when leaving Stopped mode
         if was_stopped && will_be_active {
@@ -1020,7 +997,6 @@ where
                 self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
-            ControlMode::SixStep { duty } => self.step_six_step(duty, dt, now_ticks),
             ControlMode::Brake => {
                 // Parking brake: all low-side FETs on — windings shorted to
                 // ground. Speed-proportional drag, energy dissipates in the
@@ -1484,70 +1460,6 @@ where
         );
 
         Ok(out)
-    }
-
-    /// Execute six-step (trapezoidal) commutation step
-    ///
-    /// Pure voltage-mode drive: no current loop, no Clarke/Park transforms.
-    /// Derives commutation sector from the PhaseProvider angle and applies
-    /// the appropriate phase states via `set_phase_states()`.
-    ///
-    /// Does NOT require current sensor calibration, making it suitable
-    /// for initial board bringup.
-    fn step_six_step(
-        &mut self,
-        duty: f32,
-        dt: f32,
-        now_ticks: u64,
-    ) -> Result<FocOutput, StepError> {
-        // Get current electrical angle from phase provider
-        let phase_out = self.phase.get();
-        let sector = six_step::angle_to_sector(phase_out.angle);
-
-        // Duty sign determines direction
-        let forward = duty >= 0.0;
-        let duty_abs = clamp_f32(duty.abs(), 0.0, 1.0);
-        let raw_duty = (duty_abs * f32::from(self.pwm.max_duty())) as u16;
-
-        // Generate and apply phase states
-        let states = six_step::commutate(sector, raw_duty, forward);
-        self.pwm.set_phase_states(states);
-        // Feed duties to current sensor for reconstruction (Float/Low → 0)
-        let duties = states.map(|s| match s {
-            PhaseState::Pwm(d) => d,
-            PhaseState::Low | PhaseState::Float => 0,
-        });
-        self.current_sensor.update_duties(duties);
-
-        // Update phase provider (keep sensor tracking active; six-step has
-        // no αβ voltage command for the observer — zeros, as before)
-        self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
-
-        // Read currents opportunistically (if sensor is calibrated)
-        let (ia, ib, ic) = if self.current_sensor.is_calibrated() {
-            self.current_sensor.read_currents()
-        } else {
-            (0.0, 0.0, 0.0)
-        };
-
-        // Six-step has no current loop at all; check the measured magnitude
-        // in αβ (same magnitude as dq — Park preserves it).
-        let (i_alpha, i_beta) = clarke(ia, ib);
-        if self.current_limits.is_overcurrent(i_alpha, i_beta) {
-            self.pwm.disable();
-            self.controller.reset();
-            self.mode = ControlMode::Stopped;
-            return Err(StepError::Overcurrent);
-        }
-
-        Ok(FocOutput {
-            ia,
-            ib,
-            ic,
-            angle_rad: phase_out.angle,
-            duties,
-            ..Default::default()
-        })
     }
 
     /// Get mutable reference to current sensor (for calibration)
@@ -2110,7 +2022,6 @@ mod tests {
                 vq: 0.0,
                 angle_rad: 0.0,
             },
-            ControlMode::SixStep { duty: 0.2 },
         ] {
             driver.set_mode(mode);
             assert!(
@@ -2126,53 +2037,6 @@ mod tests {
         assert!(
             driver.deadman_expired(1_000_000),
             "drive mode stays covered"
-        );
-    }
-
-    /// `enter_failsafe` from SixStep must restore the floated phases before
-    /// driving the current loop (mirrors the SixStep-exit housekeeping in
-    /// `set_mode`, which the failsafe bypasses).
-    #[test]
-    fn enter_failsafe_restores_six_step_phases() {
-        use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
-
-        /// MockPwm that records the last forced phase states.
-        struct StatePwm {
-            states: Option<[PhaseState; 3]>,
-        }
-        impl PhasePwm for StatePwm {
-            fn max_duty(&self) -> u16 {
-                1000
-            }
-            fn set_duties(&mut self, _duties: [u16; 3]) {}
-            fn set_phase_states(&mut self, states: [PhaseState; 3]) {
-                self.states = Some(states);
-            }
-        }
-
-        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
-        let mut driver = FocDriver::new(
-            foc,
-            StatePwm { states: None },
-            MockCurrentSensor {
-                currents: (0.0, 0.0, 0.0),
-            },
-            PhaseManager::sensorless(),
-            1.0 / 20_000.0,
-        );
-        driver.set_failsafe(FailsafeConfig {
-            policy: FailsafePolicy::ControlledStop,
-            ..FailsafeConfig::default()
-        });
-        driver.set_mode(ControlMode::SixStep { duty: 0.2 });
-        // Run a six-step cycle so the commutation floats a phase.
-        let _ = driver.step(1_000);
-
-        driver.enter_failsafe();
-        assert_eq!(
-            driver.pwm().states,
-            Some([PhaseState::Low, PhaseState::Low, PhaseState::Low]),
-            "failsafe from SixStep must un-float all phases"
         );
     }
 
@@ -2536,32 +2400,6 @@ mod tests {
             res.is_err(),
             "overcurrent must abort the DirectVoltage step"
         );
-        assert_eq!(
-            driver.mode(),
-            ControlMode::Stopped,
-            "overcurrent must latch Stopped"
-        );
-    }
-
-    #[test]
-    fn six_step_trips_overcurrent() {
-        use crate::foc::trig::LibmSinCos;
-
-        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
-        let mut driver = FocDriver::new(
-            foc,
-            MockPwm { duties: [0; 3] },
-            MockCurrentSensor {
-                currents: (20.0, -10.0, -10.0),
-            },
-            PhaseManager::sensorless(),
-            1.0 / 20_000.0,
-        );
-        driver.set_current_limits(CurrentLimits::from_max_current(10.0));
-        driver.set_mode(ControlMode::SixStep { duty: 0.2 });
-
-        let res = driver.step(0);
-        assert!(res.is_err(), "overcurrent must abort the six-step step");
         assert_eq!(
             driver.mode(),
             ControlMode::Stopped,

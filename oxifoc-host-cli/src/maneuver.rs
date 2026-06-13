@@ -111,9 +111,6 @@ pub enum Cmd {
         #[serde(default)]
         angle: f32,
     },
-    Sixstep {
-        duty: f32,
-    },
     Stop {},
     Coast {},
     Brake {},
@@ -142,7 +139,6 @@ impl Cmd {
                 vq,
                 angle_rad: angle,
             },
-            Self::Sixstep { duty } => ControlMode::SixStep { duty },
             Self::Stop {} => ControlMode::Stopped,
             Self::Coast {} => ControlMode::Coast,
             Self::Brake {} => ControlMode::Brake,
@@ -204,11 +200,6 @@ pub fn validate(m: &Maneuver) -> Result<()> {
         let mode = step.cmd.to_mode();
         if !mode.is_finite() {
             bail!("step {i}: non-finite command payload");
-        }
-        if let Cmd::Sixstep { duty } = step.cmd
-            && !(-1.0..=1.0).contains(&duty)
-        {
-            bail!("step {i}: sixstep duty {duty} outside -1.0..1.0");
         }
     }
     Ok(())
