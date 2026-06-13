@@ -1,21 +1,25 @@
-# Firmware flash: budget, rules, history
+# Firmware flash & RAM: budget, rules, history
 
-Single place for everything flash-size related: current numbers, how to
-measure, what to watch when adding code, what has been done, and what
-reserves exist when a board runs out again. Perf-side numbers (cycle
-counts) live in [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
+Single place for everything firmware-size related — flash AND static
+RAM: current numbers, how to measure, what to watch when adding code,
+what has been done, and what reserves exist when a board runs out
+again. Perf-side numbers (cycle counts) live in
+[perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 
-## Current state (2026-06-12, after the storage-profile removal)
+## Current state (2026-06-13, after the async-debloat pass)
 
-| board | profile | flash used | region | headroom |
-|---|---|---|---|---|
-| g431 (B-G431B-ESC1) | **baked (the only profile)** | 114 184 | **128K** (no storage region) | **16.9 KB** |
-| g474 (Nucleo + IHM08M1) | storage | 161 040 | 256K (bank 1; bank 2 = config) | 99 KB |
-| f405 | storage | 245 860 | 768K (sectors 0–9) | 528 KB |
+| board | profile | flash used | flash region | headroom | static RAM (.data+.bss) | RAM region |
+|---|---|---|---|---|---|---|
+| g431 (B-G431B-ESC1) | **baked (the only profile)** | 121 880 (92%) | **128K** (no storage region) | **9.2 KB** | **19 152** | **32K** |
+| g474 (Nucleo + IHM08M1) | storage | 171 412 | 256K (bank 1; bank 2 = config) | 89 KB | 21 740 | 128K |
+| f405 | storage | 270 176 | 768K (sectors 0–9) | 504 KB | 32 164 | 128K (+64K CCM unused) |
 
 `flash used` = `.vector_table + .text + .rodata + .data` (everything
 that occupies flash; `.data` is load-image). Run `just size` for live
-numbers.
+numbers. Everything RAM not claimed by `.data+.bss` is stack —
+flip-link inverts the layout so the stack is bounded and overflow
+faults instead of corrupting statics; on g431 every static byte saved
+is a stack byte gained.
 
 ## How to measure
 
@@ -45,6 +49,27 @@ numbers.
 - The test crates (`tests/stm32*`) use `opt-level = "s"`; shipped
   firmware uses `"z"` — relative comparisons transfer, absolute sizes
   don't.
+
+### Measuring RAM (the g431-critical axis since 2026-06-13)
+
+- **`arm-none-eabi-size -A <elf>`** — `.data + .bss` = static RAM; the
+  rest of the region is stack.
+- **Embassy task arenas are the biggest single `.bss` consumers.** Each
+  `#[embassy_executor::task]` owns a static `POOL` sized by its future —
+  everything held across any `await` in the task (and in everything it
+  awaits) lives there permanently:
+
+  ```sh
+  arm-none-eabi-nm --size-sort --radix=d <elf> | grep POOL
+  ```
+
+- **`large_futures` is the tripwire** (`future-size-threshold` in each
+  board's `clippy.toml`, 2048 B on the STM32 boards, 4096 B in the ESP
+  crates' *hidden* `.clippy.toml`s — note the device configs SHADOW the
+  repo-root one). When it fires, clippy prints the future's exact size
+  and the await site — this is how the 6 KB calibration buffer was
+  found. Legitimately-large task futures get
+  `#[expect(clippy::large_futures, reason = ...)]`.
 
 ## Standing build configuration (already maximal)
 
@@ -94,10 +119,31 @@ remaining "compiler flag" win; everything below is about code.
 
 5. **Async task bodies are the biggest single symbols** — everything
    awaited gets inlined into the task's `poll()`. A new server/task on
-   g431 is typically 1–10 KB. Budget for it; run `just size` before
-   and after.
+   g431 is typically 1–10 KB of flash AND its full future size in
+   `.bss` (see *Measuring RAM*). Budget for both; run `just size`
+   before and after.
 
-6. **Generics multiply:** each concrete instantiation of a generic
+6. **Async-bloat rules** (from the 2026-06-13 debloat pass; background:
+   tweedegolf "Debloat your async Rust"):
+   - **No buffers across awaits.** Anything alive across an `await` is
+     stored in the future, i.e. permanently in the task arena. Stream
+     or chunk instead (the boot calibration held a 6 KB sample buffer
+     across its sampling delays — to compute a mean).
+   - **Pure trait pass-throughs return the inner future**:
+     `fn f(..) -> impl Future<Output = T> { inner(..) }` instead of
+     `async fn f(..) { inner(..).await }` — the async body wraps the
+     inner future in one more generated state machine for nothing
+     (DetectionBackend impls were this; −1 KB across g431+f405).
+   - **Don't "optimize" awaits out of match arms by buffering.** The
+     coroutine layout already overlap-allocates per-arm states
+     (`storage_conflicts`); hoisting commands into a Vec that lives
+     across one shared await made flash AND arena *bigger* (+176/+232 B,
+     measured, reverted). Collapsing await points only pays when arms
+     duplicate the same awaited code path.
+   - `async fn` with no `await` is still a state machine — return
+     `core::future::ready(..)` or drop the async (lint: `unused_async`).
+
+7. **Generics multiply:** each concrete instantiation of a generic
    server/driver is a separate copy. Reuse existing instantiations
    (e.g. the one `NetStack` type) rather than introducing new type
    parameters in firmware.
