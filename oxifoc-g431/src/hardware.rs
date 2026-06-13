@@ -231,10 +231,9 @@ pub fn init_adc(
 /// hardware PWM shutdown in nanoseconds — no software in the loop.
 ///
 /// Must be called AFTER init_opamps() (pins already in analog mode).
-pub fn init_overcurrent_protection(threshold_amps: f32) {
+pub fn init_overcurrent_protection(dac_counts: u16) {
     use embassy_stm32::pac;
     use embassy_stm32::pac::comp::vals as comp_vals;
-    let dac_counts = crate::config::overcurrent_dac_counts(threshold_amps);
 
     // Enable SYSCFG clock (shared by all COMPs) and DAC3 clock
     pac::RCC.apb2enr().modify(|w| w.set_syscfgen(true));
@@ -287,8 +286,7 @@ pub fn init_overcurrent_protection(threshold_amps: f32) {
     });
 
     defmt::info!(
-        "HW overcurrent: COMP1/2/4 + DAC3 @ {}A ({}counts)",
-        threshold_amps,
+        "HW overcurrent: COMP1/2/4 + DAC3 @ {}counts (near-rail catastrophic backstop)",
         dac_counts,
     );
 }

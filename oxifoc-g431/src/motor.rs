@@ -101,16 +101,23 @@ impl<'d> MotorPwm<'d> {
         // (fSAMPLING=fDTS/2, N=6) with COMP hysteresis/blanking both off —
         // a real overcurrent easily outlasts the 6-sample filter.
         pwm.set_break_filter(FilterValue::FDTS_DIV2_N6);
-        // DISABLED 2026-06-13 pending an OCP threshold fix. On first hardware
-        // power-up all three comparators trip at idle (0 A): the DAC3 threshold
-        // from `config::overcurrent_dac_counts` (≈265 mV for 80 A) sits BELOW
-        // the actual idle comparator-input level, so the break asserts
-        // continuously and latches a Kill OverCurrent (`config.rs`'s ×4/7 +
-        // 127 mV model of the COMP input node is wrong — DAC3/routing verified
-        // correct by register dump). The break stays off until the threshold
-        // model + polarity are corrected and bench-validated; protection in the
-        // meantime is the software measured-overcurrent trip + the bench PSU's
-        // current limit. See docs/TODO.md (Bench / g431 OCP).
+        // DISABLED — the COMP→BKIN break is unusable on this board (proven on
+        // hardware 2026-06-13). A DAC sweep showed the comparators tap the raw
+        // shunt pad (idle ~128 mV, only ~1.71 mV/A — the ×16 PGA gain is
+        // downstream, invisible to them), so no real current threshold clears
+        // the PWM switching noise. We tried ST's near-rail threshold
+        // (config::HW_OCP_DAC_COUNTS ≈ 3.29 V) with the break ENABLED: the
+        // device tripped to Error on the FIRST PWM-output enable, every time,
+        // BEFORE any current flows — capacitive coupling from the gate-driver
+        // turn-on transient spikes the high-impedance pad node to the rail. With
+        // the break armed the motor cannot start at all. ST gets away with the
+        // near-rail value because MCSDK sequences the enable through a controlled
+        // boot-cap-charge phase and does not latch an enable-window break as a
+        // fatal fault; we don't replicate that. Protection here is the software
+        // measured-overcurrent trip (BOARD.max_phase_current_a, 40 A, read from
+        // the ×9.14-amplified ADC signal) + the bench PSU current limit. The
+        // COMP+DAC are still configured (near-rail) so re-arming is a one-liner
+        // if enable-sequencing is added later. See docs/hw/b-g431b-esc1.md.
         pwm.set_break_enable(false);
 
         // Calculate duty limit using shared helper (convert to u16 for helper, then back to u32)

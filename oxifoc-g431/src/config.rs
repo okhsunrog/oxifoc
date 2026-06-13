@@ -61,28 +61,41 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(8
 // Hardware Overcurrent Protection
 // ============================================================================
 
-/// Hardware overcurrent trip threshold (amperes, peak per-phase).
-/// This is the COMP+DAC hardware last-resort trip point.
-/// FETs (STL180N6F7): 120A continuous, 480A pulsed. Shunts: 3mΩ.
-/// Set well above software limit (40A) to avoid nuisance trips,
-/// but below absolute hardware limits.
-pub const HW_OVERCURRENT_A: f32 = 80.0;
+/// Hardware overcurrent comparator (COMP1/2/4 + DAC3 → TIM1 BKIN) threshold,
+/// in DAC3 12-bit counts. Set near the 3.3 V rail (4083 ≈ 3.29 V), matching ST
+/// MCSDK's `M1_DAC_CURRENT_THRESHOLD = 4083` for this exact board.
+///
+/// WHY NEAR-RAIL (proven on hardware 2026-06-13, see docs/hw/b-g431b-esc1.md):
+/// the comparators tap the **raw shunt pad** (PA1/PA7/PB0 = the OPAMP *input*,
+/// NOT its output — silicon-confirmed: COMP1 INP0=PA1/INP1=PB1, no OPAMP-output
+/// path). A DAC sweep at idle put that node at **128–132 mV** and its current
+/// slope is only `R_shunt × 4/7` ≈ **1.71 mV/A** (the ×16 PGA gain is downstream,
+/// invisible to the comparator). So a meaningful current threshold (e.g. 60 A →
+/// ~231 mV, ~100 mV over idle) sits *inside* the PWM switching-noise envelope on
+/// the raw shunt and nuisance-trips — which is exactly what latched a false Kill
+/// OverCurrent on earlier runs. There is no usable hardware current threshold on
+/// this board; ST parks the DAC at the rail so the comparator only ever fires on
+/// a catastrophic pad excursion (dead short), and relies on the **software** OCP
+/// — `BOARD.max_phase_current_a` (40 A), read from the ×9.14-amplified ADC signal
+/// with good SNR — as the real protection. We do the same.
+///
+/// `pad_node_dac_counts` documents the (unusable) current→counts mapping.
+pub const HW_OCP_DAC_COUNTS: u16 = 4083;
 
-/// Convert overcurrent threshold to DAC3 12-bit counts.
-///
-/// The comparator INP pin shares the OPAMP VINP node, which sees the shunt
-/// voltage attenuated by the 1.5kΩ / (22kΩ ∥ 2.2kΩ) resistor network (×4/7)
-/// plus a DC bias of ~127mV from the 22kΩ-to-3.3V / 2.2kΩ-to-GND divider.
-///
-/// V_comp = V_shunt × 4/7 + V_bias
-/// V_shunt = I × R_shunt
-/// V_bias = 3.3V × (1/22k) / (1/1.5k + 1/22k + 1/2.2k) ≈ 0.127V
-pub fn overcurrent_dac_counts(amps: f32) -> u16 {
-    let shunt_mv = amps * BOARD.shunt_ohms * 1000.0;
-    let bias_mv = 3300.0 * (1.0 / 22.0) / (1.0 / 1.5 + 1.0 / 22.0 + 1.0 / 2.2); // ≈127mV
-    let comp_mv = shunt_mv * (4.0 / 7.0) + bias_mv;
-    let counts = comp_mv / (3300.0 / 4096.0);
-    counts as u16
+/// Reference only: DAC counts for a pad-node trip at `amps`, showing why no sane
+/// current threshold is viable here. V_pad(I) = 128.6 mV (22kΩ→3.3 V / 1.5kΩ /
+/// 2.2kΩ→GND bias) + I × R_shunt × 4/7 (≈1.71 mV/A). NOT used for the live
+/// threshold — `HW_OCP_DAC_COUNTS` (near rail) is. Kept for documentation.
+#[allow(dead_code)]
+pub fn pad_node_dac_counts(amps: f32) -> u16 {
+    let bias_mv = 3300.0 * (1.0 / 22.0) / (1.0 / 1.5 + 1.0 / 22.0 + 1.0 / 2.2); // ≈128.6mV
+    let pad_mv = bias_mv + amps * BOARD.shunt_ohms * 1000.0 * (4.0 / 7.0);
+    let counts = pad_mv / (3300.0 / 4096.0);
+    if counts >= 4095.0 {
+        4095
+    } else {
+        counts as u16
+    }
 }
 
 // ============================================================================

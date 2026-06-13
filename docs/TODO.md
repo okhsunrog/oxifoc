@@ -259,18 +259,19 @@ the sim = batch tick).
 First real-hardware run of the g431 firmware on a sensorless drone motor
 (ZD2808, 700 KV, 7 pp; 12 V / 4 A lab PSU). Detection ran end-to-end:
 
-- [ ] **HW OCP false-trips at idle — disabled, needs a real fix.** The
-  COMP1/2/4 + DAC3 overcurrent (enabled in code 2026-06-11, never
-  hardware-validated) trips all three phases at 0 A on first power-up:
-  `config::overcurrent_dac_counts` computes ≈265 mV for 80 A, which sits
-  *below* the actual idle comparator-input level — its ×4/7 + 127 mV model of
-  the COMP input node is wrong. DAC3/routing verified correct by register dump
-  (DOR1=DOR2=329, both channels ready); the comparators simply read a higher
-  idle voltage than the formula assumes. **Disabled `set_break_enable` in
-  `motor.rs` for now** (protection = software measured-OC + PSU CC). Fix needs
-  the board schematic to model the COMP input node + polarity correctly
-  (note `invert_current_sign`), then bench-validate the trip at a known
-  current. Until then HW OCP stays off.
+- [x] **HW comparator OCP — RESOLVED 2026-06-13: unusable on this board, break
+  disabled.** Proven by on-device DAC sweep + stm32-data + host PWM test (full
+  account in docs/hw/b-g431b-esc1.md). COMP1/2/4 tap the *raw shunt pad* (idle
+  128 mV, slope only R_shunt×4/7 ≈ 1.71 mV/A — the ×16 PGA is downstream, so the
+  comparator never sees the amplified signal), not the op-amp output. No current
+  threshold clears the PWM switching-noise band; even ST's near-rail DAC=4083
+  (≈3.29 V), with the break enabled, trips to Error on the *first* PWM-output
+  enable every time (capacitive gate-drive transient spikes the hi-Z pad to the
+  rail) → the motor can't start. ST parks the DAC at the rail (≈1850 A-equiv =
+  effectively off) and relies on software OCP; so do we. `set_break_enable(false)`
+  in `motor.rs`; COMP+DAC still configured near-rail for one-line re-arm *if*
+  ST-style enable-sequencing (boot-cap-charge + non-fatal enable-window break) is
+  added. Real protection = software measured-OC (40 A, ×9.14 ADC) + PSU CC.
 - [ ] **Detection biases confirmed (all high) — the √3 + dead-time concerns
   below, now measured.** ZD2808 results vs LCR/nameplate: R 0.127 Ω
   (LCR ≈0.105 Ω/phase, +20 % residual dead-time — fine); **Ld 86 µH / Lq

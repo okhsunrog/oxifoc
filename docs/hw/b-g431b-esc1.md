@@ -185,41 +185,57 @@ physical backstop). Baked config = lab-PSU-safe profile (`RampToZero` failsafe,
 `bus_regen_max_a = 0`). No hall sensors → a Warning-level HallError is expected
 and does not block (detection does not use the hall).
 
-#### HW overcurrent (COMP1/2/4 + DAC3) false-trips at idle — DISABLED
+#### HW overcurrent (COMP1/2/4 + DAC3) — unusable on this board, DISABLED
 
-Symptom: on power-up the firmware latches a **Kill OverCurrent at 0 A** (PWM
-disabled). It re-asserts immediately after a host clear, so the device sits in
-the Error latch and refuses motor commands.
+> **2026-06-13 (later): the first diagnosis below was WRONG. Resolved with an
+> on-device DAC sweep + silicon data + a host PWM test. Corrected account:**
 
-Root cause (register dump via a temporary diagnostic in
-`init_overcurrent_protection`):
-- **DAC3 is correct**: `CR=0x0001_0001` (both channels EN), `MCR=0x0003_0003`
-  (both MODE=0b011, on-chip no-buffer), `SR=0x0800_0800` (both DACRDY),
-  `DOR1=DOR2=0x149`=329 → both channels output ≈265 mV.
-- **COMP1/2/4 CSR = `0x4000_0041`**: bit30 VALUE=1 on all three (output high =
-  break asserted), INMSEL=0b100 (DAC3), INPSEL=0 (INP0). So all three
-  comparators see their **+ input above the 265 mV threshold at idle**.
-- A DAC sweep confirms the comparators DO track DAC3 (VALUE=0 at DAC=4095,
-  VALUE=1 at DAC=0) — routing is fine; the **threshold is simply too low**.
+**The comparators tap the RAW shunt pad, not the op-amp output.** COMP1/2/4 INP0
+= PA1/PA7/PB0, which is the OPAMP *input* (`OPAMPx_VINP`), not its output.
+Silicon-confirmed (stm32-data): COMP1 INP0=PA1 / INP1=PB1(=TP3), COMP2 INP0=PA7
+/ INP1=PA3 — the op-amp outputs (PA2/PA6/internal) are not on any COMP input, so
+there is **no path** to feed the amplified signal to the comparator. ST MCSDK
+uses the same `LL_COMP_INPUT_PLUS_IO1` = PA1.
 
-So `config.rs::overcurrent_dac_counts` mis-models the comparator input. It
-assumes the COMP sees the shunt node attenuated ×4/7 + 127 mV bias (≈127 mV
-idle, 264 mV at 80 A). The register evidence says the real idle level at the
-COMP + input (PA1/PA7/PB0, shared with OPAMPx_VINP) is **above 265 mV**. The
-current-sense network documented above (22k→3.3 V / 1.5k series / 2.2k→GND)
-gives ~128 mV on its own, so the model is missing a term (OPAMP PGA
-interaction at the shared pad?) or points at the wrong node.
+**On-device DAC sweep at true idle** (1-bit ADC: vary DAC3, read COMP `VALUE`):
+the flip is at **C1=160 / C2=164 / C4=164 counts = 128–132 mV** — exactly the
+`×4/7 + 127 mV` pad bias. The op-amp-output hypothesis (≈2.057 V) is ruled out
+16×. So the comparator's current slope is only `R_shunt × 4/7` ≈ **1.71 mV/A**
+(the ×16 PGA gain that gives the ADC its 27.4 mV/A is *downstream*, invisible to
+the comparator). A useful current threshold (e.g. 60 A → ~231 mV, ~100 mV over
+idle) therefore sits *inside* the PWM switching-noise band on the raw shunt.
 
-**TODO next session — RESOLVE WITH THE SCHEMATIC**
-([B-G431B-ESC1_schematic.pdf](B-G431B-ESC1_schematic.pdf)): trace the actual
-COMP INP0 node and its true idle bias, recompute the DAC3 threshold, and check
-polarity vs `invert_current_sign` (positive motor current drives the sense node
-*down*, so the trip may need INVERTED polarity / a low-side threshold). Then
-re-enable and bench-validate the trip at a known current.
+**The earlier "trip at idle" was PWM switching noise, not the threshold.** At
+*true* idle the old DAC=329 (265 mV) is comfortably **above** the 128 mV pad, so
+the sweep reads VALUE=0 (no trip). The prior register dump that showed VALUE=1 at
+DAC=329 was taken with the FOC loop running (PWM switching), not at rest — the
+raw shunt pad picks up switching transients well past 265 mV. (This matches the
+very first 2026-03 finding: "comparators trigger on PWM switching noise".)
 
-Fix applied: `motor.rs` `set_break_enable(false)` — HW OCP off until corrected.
-Protection meanwhile: the software measured-overcurrent trip
-(`max_phase_current_a`) + the bench PSU current limit.
+**MCSDK effectively disables it.** `M1_DAC_CURRENT_THRESHOLD = 4083` (≈3.29 V) on
+the 128 mV / 1.71 mV-per-A pad node ≈ a **1850 A** trip → the comparator never
+fires on current. ST parks it at the rail and relies on the **software** OCP
+(read from the ×9.14-amplified ADC, good SNR). The "45 A" in MC Workbench is the
+op-amp-output-domain number; on this board's raw-pad comparator it lands at the
+rail.
+
+**We tried near-rail (4083) + break enabled — it's worse than disabled.** Host
+test: `voltage --vd 0 --vq 0` (PWM on, zero current) latched **Error /
+OverCurrent on the FIRST output-enable, every time, before any current flows** —
+capacitive coupling from the gate-driver turn-on transient spikes the
+high-impedance pad node to the rail. With the break armed the motor cannot even
+start. ST avoids this because MCSDK sequences the enable through a controlled
+boot-cap-charge phase and does not latch an enable-window break as fatal; we
+don't replicate that.
+
+**Resolution:** `motor.rs` `set_break_enable(false)` — the COMP→BKIN break stays
+OFF. The COMP+DAC are still configured at the near-rail value
+(`config::HW_OCP_DAC_COUNTS = 4083`) so re-arming is a one-liner *if* ST-style
+enable-sequencing is ever added. Real protection: the **software**
+measured-overcurrent trip (`BOARD.max_phase_current_a` = 40 A, from the
+×9.14-amplified ADC signal) + the bench PSU current limit. Verified: with the
+break off the device boots clean (no OverCurrent) and `voltage 0 0` enters
+Running without tripping.
 
 #### Detection results vs LCR / nameplate
 
@@ -275,6 +291,7 @@ host link-loss; (3) keep the probe attached as the abort button.
 
 #### Next session
 
-1. Fix the HW OCP threshold + polarity from the schematic, re-enable, validate.
+1. ~~Fix the HW OCP threshold~~ **DONE** — proven unusable (raw-pad comparator),
+   break disabled, software OCP is the protection. See the corrected account above.
 2. Fix the voltage-pulse L (dead-time) and the √3 in λ/Kv → trustworthy params.
 3. Sensorless cold-start spin attempt with corrected params + gentle limits.

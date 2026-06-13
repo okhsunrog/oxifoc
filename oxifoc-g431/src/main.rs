@@ -84,10 +84,10 @@ async fn main(spawner: Spawner) {
     let adc_handles = hardware::init_adc(p.ADC1, p.ADC2, opamp_channels, p.PA0, p.PB14);
 
     // Initialize hardware overcurrent protection (COMP1/2/4 + DAC3 → TIM1 BKIN).
-    // The earlier false trips from switching noise are handled by the BKF
-    // digital filter on the break input (set in motor.rs, same config as
-    // ST's MCSDK for this board). Needs a bench re-check under load.
-    hardware::init_overcurrent_protection(config::HW_OVERCURRENT_A);
+    // The comparators tap the raw shunt pad (low SNR), so the DAC sits near the
+    // rail as a catastrophic-only backstop — the software OCP is the real limit.
+    // See config::HW_OCP_DAC_COUNTS for the full hardware rationale.
+    hardware::init_overcurrent_protection(config::HW_OCP_DAC_COUNTS);
 
     // Initialize LED
     let mut led = hardware::init_led(p.PC6);
