@@ -21,9 +21,13 @@
 //! `tests/stm32g431`; numbers quoted in comments come from
 //! docs/perf-bench-2026-06-11.md.
 
+// TAU (carrier advance), PhantomData (`HfiObserver<S>` marker) and the SinCos
+// backend are HFI-only; BackEmf's `force_phase` imports SinCos locally.
+#[cfg(feature = "hfi")]
 use core::f32::consts::TAU;
+#[cfg(feature = "hfi")]
 use core::marker::PhantomData;
-
+#[cfg(feature = "hfi")]
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::wrap_angle;
 
@@ -527,6 +531,7 @@ impl BackEmfObserver {
 /// `FastSinCos` (F405); the `LibmSinCos` default keeps host sims maximally
 /// accurate.
 #[derive(Clone, Debug)]
+#[cfg(feature = "hfi")]
 pub struct HfiObserver<S: SinCos = LibmSinCos> {
     // Injection parameters
     frequency: f32,     // Injection frequency (Hz)
@@ -565,6 +570,7 @@ pub struct HfiObserver<S: SinCos = LibmSinCos> {
 /// PLL lock carries a π ambiguity that only magnetic saturation (or a
 /// trusted sensor seed) can resolve.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "hfi")]
 enum HfiPolarity {
     /// PLL not locked yet; the probe starts when confidence crosses ready.
     Pending,
@@ -576,23 +582,29 @@ enum HfiPolarity {
 
 /// Fundamental-tracker low-pass time constant (s). Its cutoff must sit well
 /// below the carrier so the high-pass residual keeps the carrier content.
+#[cfg(feature = "hfi")]
 const HFI_FUND_TAU_S: f32 = 0.005;
 
 /// Demodulation low-pass time constant (s) — a few carrier periods.
+#[cfg(feature = "hfi")]
 const HFI_DEMOD_TAU_S: f32 = 0.002;
 
 /// Error-quality low-pass time constant (s), for confidence/readiness.
+#[cfg(feature = "hfi")]
 const HFI_QUALITY_TAU_S: f32 = 0.01;
 
 /// Default d-channel carrier-amplitude floor (A): below this no injection
 /// response is measurably flowing and the estimate is meaningless.
+#[cfg(feature = "hfi")]
 pub const HFI_MIN_HF_CURRENT_A: f32 = 0.05;
 
 /// Confidence threshold for [`HfiObserver::is_ready`] and for starting
 /// the polarity probe.
+#[cfg(feature = "hfi")]
 pub const HFI_READY_CONFIDENCE: f32 = 0.5;
 
 /// Default HFI carrier frequency (Hz) when configuring from stored params.
+#[cfg(feature = "hfi")]
 pub const HFI_DEFAULT_FREQ_HZ: f32 = 1000.0;
 
 /// Default HFI carrier amplitude as a fraction of vbus (3 V at 24 V — the
@@ -601,6 +613,7 @@ pub const HFI_DEFAULT_FREQ_HZ: f32 = 1000.0;
 /// inductance (see [`HFI_CARRIER_RIPPLE_TARGET_A`]) — on low-L motors the
 /// raw ratio is dangerously large (3 V across an eskate outrunner's ~25 µH
 /// at 1 kHz would drive tens of amps of carrier ripple).
+#[cfg(feature = "hfi")]
 pub const HFI_DEFAULT_AMPLITUDE_RATIO: f32 = 0.125;
 
 /// Target peak carrier ripple current (A) when the HFI amplitude is solved
@@ -611,6 +624,7 @@ pub const HFI_DEFAULT_AMPLITUDE_RATIO: f32 = 0.125;
 /// because there is no holding current to scale from at runtime.
 // Sole consumer (configure_observers_from_config) is storage-gated.
 #[cfg(feature = "storage")]
+#[cfg(feature = "hfi")]
 pub const HFI_CARRIER_RIPPLE_TARGET_A: f32 = 2.0;
 
 /// Fraction of the motor's continuous-current RATING used as the carrier
@@ -622,26 +636,32 @@ pub const HFI_CARRIER_RIPPLE_TARGET_A: f32 = 2.0;
 /// at 2 A must not shrink the carrier SNR on a 30 A motor (the carrier
 /// is a perturbation the MOTOR has to tolerate, not the session).
 #[cfg(feature = "storage")]
+#[cfg(feature = "hfi")]
 pub const HFI_RIPPLE_RATING_FRACTION: f32 = 0.15;
 
 /// Polarity probe: drive cycles per pulse. At 20 kHz this is 0.4 ms — with
 /// the carrier amplitude on Ld in the 100 µH range the current reaches
 /// ~V·t/Ld ≈ 10 A, enough to move the iron along its saturation curve.
+#[cfg(feature = "hfi")]
 const HFI_POLARITY_PULSE_CYCLES: u32 = 8;
 
 /// Polarity probe: zero-voltage cycles after each pulse so the current
 /// (τ = L/R, typically ~1 ms) decays before the opposite-sign pulse.
+#[cfg(feature = "hfi")]
 const HFI_POLARITY_GAP_CYCLES: u32 = 24;
 
 /// Polarity probe pulse signs. The palindromic (+,−,−,+) order cancels the
 /// first-order bias from residual current decaying across the schedule.
+#[cfg(feature = "hfi")]
 const HFI_POLARITY_PATTERN: [f32; 4] = [1.0, -1.0, -1.0, 1.0];
 
 /// Significance floor for the flip decision: |Σ sign·|id|| must exceed this
 /// fraction of Σ|id|. Below it there is no measurable saturation asymmetry
 /// (SPM motor, probe too weak) and the current lock is kept as-is.
+#[cfg(feature = "hfi")]
 const HFI_POLARITY_MIN_RATIO: f32 = 0.05;
 
+#[cfg(feature = "hfi")]
 impl HfiObserver {
     /// Create a new HFI observer (with the default `LibmSinCos` backend —
     /// rebind via [`with_sincos`](Self::with_sincos) for firmware).
@@ -678,6 +698,7 @@ impl HfiObserver {
     }
 }
 
+#[cfg(feature = "hfi")]
 impl<S: SinCos> HfiObserver<S> {
     /// Rebind the sin/cos backend (state-preserving, fields move as-is).
     pub fn with_sincos<S2: SinCos>(self) -> HfiObserver<S2> {
@@ -1176,7 +1197,7 @@ mod tests {
 
     /// |angle error| folded to the saliency period: HFI is 2θ-periodic, so
     /// without polarity detection θ and θ+π are equally valid lock points.
-    #[cfg(feature = "virtual-motor")]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     fn angle_err_mod_pi(a: f32, b: f32) -> f32 {
         let err = angle_difference(a, b).abs();
         err.min(core::f32::consts::PI - err)
@@ -1186,7 +1207,7 @@ mod tests {
     /// through the real FocController voltage path into a salient
     /// VirtualMotor. `sat_k` enables d-axis saturation (needed for the
     /// polarity tests). Returns (observer, final motor output).
-    #[cfg(feature = "virtual-motor")]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     fn run_hfi_sim(
         rotor_angle: f32,
         load_torque: f32,
@@ -1213,7 +1234,7 @@ mod tests {
 
     /// Closed-loop HFI harness over an explicit plant parameterization
     /// (lets tests opt into sensor noise / quantization / saturation).
-    #[cfg(feature = "virtual-motor")]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     fn run_hfi_sim_params(
         params: crate::virtual_motor::MotorParams,
         rotor_angle: f32,
@@ -1251,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "virtual-motor")]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     fn hfi_finds_rotor_angle_at_standstill() {
         // Rotor parked 1.2 rad away from the initial estimate; the observer
         // must find it from saliency alone, without moving the rotor.
@@ -1278,7 +1299,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "virtual-motor")]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     fn hfi_tracks_slow_rotation() {
         // External load torque turns the rotor slowly (well below any
         // back-EMF-observable speed); HFI must keep tracking.
@@ -1300,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "virtual-motor")]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     fn hfi_polarity_probe_corrects_pi_flipped_lock() {
         // Rotor at 2.5 rad, estimate starting at 0: the PLL's nearest
         // saliency equilibrium is the flipped one (e = −π), so it locks
@@ -1324,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "virtual-motor")]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     fn hfi_polarity_probe_keeps_correct_lock() {
         // Rotor at 1.2 rad: the PLL locks on the true d axis. The probe
         // must confirm (not flip) it.
@@ -1348,7 +1369,7 @@ mod tests {
     /// hold under honest sensing (carrier ripple ≈ 4.8 A ≫ noise floor,
     /// but the demod filters see every sample).
     #[test]
-    #[cfg(feature = "virtual-motor")]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     fn hfi_locks_through_quantized_noisy_sensor() {
         use crate::virtual_motor::MotorParams;
         const ADC_LSB_A: f32 = 62.0 / 4096.0;
@@ -1485,6 +1506,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hfi")]
     fn test_hfi_observer_creation() {
         let obs = HfiObserver::new(1000.0, 3.0);
         assert_eq!(obs.phase(), 0.0);

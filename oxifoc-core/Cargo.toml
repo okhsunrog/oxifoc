@@ -68,6 +68,14 @@ default = ["algorithms", "detection"]
 # timeout in `measure_resistance`.
 detection = ["algorithms", "dep:embassy-futures"]
 
+# Runtime HFI sensorless observer (carrier injection + synchronous demod for
+# low/zero-speed commutation on salient motors). Independent of `hfi-detect`
+# (that's the one-time inductance measurement). Off on non-salient boards
+# (drone ESCs like B-G431B-ESC1) — the `PhaseSource` enum keeps its Hfi*
+# variants for wire compatibility, but commanding one is rejected at runtime
+# (`PhaseSourceError::HfiNotConfigured`).
+hfi = []
+
 # HFI-based inductance/saliency detection: rotating HF injection + FFT
 # (microfft). Builds on `detection`. When off, `measure_inductance_auto`
 # uses the voltage-pulse method only — wanted on non-salient boards (drone

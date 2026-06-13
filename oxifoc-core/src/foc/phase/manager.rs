@@ -7,7 +7,9 @@ use core::f32::consts::TAU;
 
 use heapless::Vec as HeaplessVec;
 
-use super::observer::{HfiObserver, Observer, ObserverInput};
+#[cfg(feature = "hfi")]
+use super::observer::HfiObserver;
+use super::observer::{Observer, ObserverInput};
 use super::provider::{PhaseInput, PhaseOutput, PhaseProvider};
 use super::source::{PhaseSource, PhaseSourceError};
 use crate::foc::hall_calibration::HallCalibrationResult;
@@ -134,7 +136,12 @@ where
     // constructors pin the `LibmSinCos` default — firmware rebinds via
     // `with_sincos`.
     observer: Observer,
+    #[cfg(feature = "hfi")]
     hfi: Option<HfiObserver<S>>,
+    // `S` (the HFI sin/cos backend) is only consumed by the `hfi` field; keep
+    // the type parameter live when HFI is compiled out.
+    #[cfg(not(feature = "hfi"))]
+    _sincos: core::marker::PhantomData<S>,
 
     // Configuration
     source: PhaseSource,
@@ -163,6 +170,7 @@ where
     // Whether HFI (carrier + demod update) ran last cycle — a rising edge
     // restarts the demod filters so stale pre-pause state can't masquerade
     // as confidence (see HfiObserver::restart_demod).
+    #[cfg(feature = "hfi")]
     hfi_was_active: bool,
 
     // |vq − R·iq| of the last update — back-EMF share of the drive voltage,
@@ -184,7 +192,10 @@ impl PhaseManager<NoSensor, NoSensor> {
             hall: NoSensor,
             encoder: NoSensor,
             observer: Observer::None,
+            #[cfg(feature = "hfi")]
             hfi: None,
+            #[cfg(not(feature = "hfi"))]
+            _sincos: core::marker::PhantomData,
             source: PhaseSource::Manual,
             output: PhaseOutput::default(),
             manual_angle: 0.0,
@@ -195,6 +206,7 @@ impl PhaseManager<NoSensor, NoSensor> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             crossover_latched: false,
+            #[cfg(feature = "hfi")]
             hfi_was_active: false,
             bemf_proxy_v: 0.0,
             faults: HeaplessVec::new(),
@@ -209,7 +221,10 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall,
             encoder: NoSensor,
             observer: Observer::None,
+            #[cfg(feature = "hfi")]
             hfi: None,
+            #[cfg(not(feature = "hfi"))]
+            _sincos: core::marker::PhantomData,
             source: PhaseSource::Hall,
             output: PhaseOutput::default(),
             manual_angle: 0.0,
@@ -220,6 +235,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             crossover_latched: false,
+            #[cfg(feature = "hfi")]
             hfi_was_active: false,
             bemf_proxy_v: 0.0,
             faults: HeaplessVec::new(),
@@ -232,7 +248,10 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall: self.hall,
             encoder,
             observer: self.observer,
+            #[cfg(feature = "hfi")]
             hfi: self.hfi,
+            #[cfg(not(feature = "hfi"))]
+            _sincos: core::marker::PhantomData,
             source: self.source,
             output: self.output,
             manual_angle: self.manual_angle,
@@ -243,6 +262,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             crossover_latched: self.crossover_latched,
+            #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
             bemf_proxy_v: self.bemf_proxy_v,
             faults: self.faults,
@@ -258,7 +278,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             hall: self.hall,
             encoder: self.encoder,
             observer: self.observer,
+            #[cfg(feature = "hfi")]
             hfi: self.hfi.map(HfiObserver::with_sincos),
+            #[cfg(not(feature = "hfi"))]
+            _sincos: core::marker::PhantomData,
             source: self.source,
             output: self.output,
             manual_angle: self.manual_angle,
@@ -269,6 +292,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             crossover_latched: self.crossover_latched,
+            #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
             bemf_proxy_v: self.bemf_proxy_v,
             faults: self.faults,
@@ -283,7 +307,10 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             hall: NoSensor,
             encoder,
             observer: Observer::None,
+            #[cfg(feature = "hfi")]
             hfi: None,
+            #[cfg(not(feature = "hfi"))]
+            _sincos: core::marker::PhantomData,
             source: PhaseSource::Encoder,
             output: PhaseOutput::default(),
             manual_angle: 0.0,
@@ -294,6 +321,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             crossover_latched: false,
+            #[cfg(feature = "hfi")]
             hfi_was_active: false,
             bemf_proxy_v: 0.0,
             faults: HeaplessVec::new(),
@@ -332,8 +360,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         }
         // HFI sources need the estimator that actually generates a carrier:
         // without one in the dedicated slot, injection() stays zero and
-        // the source would silently never produce an estimate.
-        if source.requires_hfi() && self.hfi.is_none() {
+        // the source would silently never produce an estimate. With HFI
+        // compiled out (`hfi` feature off) the variant stays in the wire enum
+        // but is always rejected here.
+        if source.requires_hfi() {
+            #[cfg(feature = "hfi")]
+            if self.hfi.is_none() {
+                return Err(PhaseSourceError::HfiNotConfigured);
+            }
+            #[cfg(not(feature = "hfi"))]
             return Err(PhaseSourceError::HfiNotConfigured);
         }
 
@@ -368,26 +403,37 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     }
 
     /// Set the HFI estimator (dedicated low-speed slot)
+    #[cfg(feature = "hfi")]
     pub fn set_hfi_observer(&mut self, hfi: HfiObserver<S>) {
         self.hfi = Some(hfi);
     }
 
     /// Get HFI estimator reference
+    #[cfg(feature = "hfi")]
     pub fn hfi_observer(&self) -> Option<&HfiObserver<S>> {
         self.hfi.as_ref()
     }
 
     /// Get mutable HFI estimator reference
+    #[cfg(feature = "hfi")]
     pub fn hfi_observer_mut(&mut self) -> Option<&mut HfiObserver<S>> {
         self.hfi.as_mut()
     }
 
-    /// Current HFI estimate as a phase output (None if no HFI configured)
+    /// Current HFI estimate as a phase output (None if no HFI configured).
+    /// Always `None` when HFI is compiled out — the Hfi* `PhaseSource` arms
+    /// that call this are then unreachable (rejected by `set_source`).
+    #[cfg(feature = "hfi")]
     fn hfi_output(&self) -> Option<PhaseOutput> {
         self.hfi.as_ref().map(|h| PhaseOutput {
             angle: h.phase(),
             velocity: h.velocity(),
         })
+    }
+
+    #[cfg(not(feature = "hfi"))]
+    fn hfi_output(&self) -> Option<PhaseOutput> {
+        None
     }
 
     /// Check if Hall sensor is available.
@@ -867,6 +913,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// tail is covered by the trust gate instead: a cold demod reports
     /// zero confidence, `angle_trustworthy()` stays false and the driver
     /// keeps iq at zero for the few ms the lock takes.
+    #[cfg(feature = "hfi")]
     fn hfi_active(&self) -> bool {
         match self.source {
             PhaseSource::Hfi => true,
@@ -887,7 +934,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
     /// Reseed the HFI estimator from the last managed output (downward
     /// crossover handoff). The angle comes from a source that was trusted
-    /// for commutation, so this also resolves the HFI π ambiguity.
+    /// for commutation, so this also resolves the HFI π ambiguity. No-op when
+    /// HFI is compiled out (the callers — Hfi* arms — are then unreachable).
+    #[cfg(feature = "hfi")]
     fn seed_hfi_from_output(&mut self) {
         let out = self.output;
         if let Some(hfi) = &mut self.hfi {
@@ -895,6 +944,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             hfi.set_velocity(out.velocity);
         }
     }
+
+    #[cfg(not(feature = "hfi"))]
+    fn seed_hfi_from_output(&mut self) {}
 
     /// Blend sensor output with observer based on velocity
     fn blend_with_observer(
@@ -1000,14 +1052,17 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             dt: input.dt,
         };
         self.observer.update(&obs_input);
-        let hfi_active = self.hfi_active();
-        if hfi_active && let Some(hfi) = &mut self.hfi {
-            if !self.hfi_was_active {
-                hfi.restart_demod();
+        #[cfg(feature = "hfi")]
+        {
+            let hfi_active = self.hfi_active();
+            if hfi_active && let Some(hfi) = &mut self.hfi {
+                if !self.hfi_was_active {
+                    hfi.restart_demod();
+                }
+                hfi.update(&obs_input);
             }
-            hfi.update(&obs_input);
+            self.hfi_was_active = hfi_active;
         }
-        self.hfi_was_active = hfi_active;
 
         // Advance open-loop angle if in OpenLoop mode
         if matches!(self.source, PhaseSource::OpenLoop) {
@@ -1055,14 +1110,22 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             // reference frame, trusted by construction.
             PhaseSource::Manual | PhaseSource::OpenLoop => true,
             PhaseSource::Observer => self.observer.is_ready(),
+            #[cfg(feature = "hfi")]
             PhaseSource::Hfi
             | PhaseSource::HfiToObserver { .. }
             | PhaseSource::HfiToObserverVolts { .. } => {
                 self.hfi.as_ref().is_some_and(HfiObserver::is_ready) || self.observer.is_ready()
             }
+            // HFI compiled out: these sources are unreachable (set_source
+            // rejects them), but the match must stay exhaustive.
+            #[cfg(not(feature = "hfi"))]
+            PhaseSource::Hfi
+            | PhaseSource::HfiToObserver { .. }
+            | PhaseSource::HfiToObserverVolts { .. } => self.observer.is_ready(),
         }
     }
 
+    #[cfg(feature = "hfi")]
     fn injection(&self) -> (f32, f32) {
         if self.hfi_active()
             && let Some(hfi) = &self.hfi
@@ -1071,6 +1134,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         } else {
             (0.0, 0.0)
         }
+    }
+
+    #[cfg(not(feature = "hfi"))]
+    fn injection(&self) -> (f32, f32) {
+        (0.0, 0.0)
     }
 
     /// Most specific active hall degradation: the sensor's wire verdicts
@@ -1106,10 +1174,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// (R, L_avg, λ) and an HFI estimator with default carrier settings.
     /// The sources stay untouched — the estimators only run; the host
     /// selects a sensorless source explicitly when it wants one.
+    #[cfg_attr(not(feature = "hfi"), allow(unused_variables))]
     pub fn configure_observers_from_config(&mut self, config: &RuntimeConfig, vbus: f32) {
-        use super::observer::{
-            BackEmfObserver, HFI_DEFAULT_AMPLITUDE_RATIO, HFI_DEFAULT_FREQ_HZ, Observer,
-        };
+        use super::observer::{BackEmfObserver, Observer};
+        #[cfg(feature = "hfi")]
+        use super::observer::{HFI_DEFAULT_AMPLITUDE_RATIO, HFI_DEFAULT_FREQ_HZ};
 
         if let Some(ref mp) = config.motor_params
             && mp.is_valid()
@@ -1135,16 +1204,21 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             // unchanged. The ripple target scales with the motor's RATING
             // when detection stored one (see HFI_RIPPLE_RATING_FRACTION —
             // not the session current limit), absolute default otherwise.
-            let i_target = match mp.rating_current_a() {
-                Some(rating) => (super::observer::HFI_RIPPLE_RATING_FRACTION * rating)
-                    .clamp(0.05, super::observer::HFI_CARRIER_RIPPLE_TARGET_A),
-                None => super::observer::HFI_CARRIER_RIPPLE_TARGET_A,
-            };
-            let omega_c = HFI_DEFAULT_FREQ_HZ * TAU;
-            let amplitude = (i_target * omega_c * l_avg)
-                .min(vbus * HFI_DEFAULT_AMPLITUDE_RATIO)
-                .max(0.05);
-            self.set_hfi_observer(HfiObserver::new(HFI_DEFAULT_FREQ_HZ, amplitude).with_sincos());
+            #[cfg(feature = "hfi")]
+            {
+                let i_target = match mp.rating_current_a() {
+                    Some(rating) => (super::observer::HFI_RIPPLE_RATING_FRACTION * rating)
+                        .clamp(0.05, super::observer::HFI_CARRIER_RIPPLE_TARGET_A),
+                    None => super::observer::HFI_CARRIER_RIPPLE_TARGET_A,
+                };
+                let omega_c = HFI_DEFAULT_FREQ_HZ * TAU;
+                let amplitude = (i_target * omega_c * l_avg)
+                    .min(vbus * HFI_DEFAULT_AMPLITUDE_RATIO)
+                    .max(0.05);
+                self.set_hfi_observer(
+                    HfiObserver::new(HFI_DEFAULT_FREQ_HZ, amplitude).with_sincos(),
+                );
+            }
         }
     }
 }
@@ -1295,6 +1369,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hfi")]
     fn injection_forwarded_only_in_hfi_regimes() {
         use crate::foc::phase::{BackEmfObserver, HfiObserver, Observer};
 
@@ -1996,6 +2071,7 @@ mod tests {
     /// injection shut off once latched.
     #[test]
     #[cfg(feature = "virtual-motor")]
+    #[cfg(feature = "hfi")]
     fn closed_loop_hfi_to_observer_crossover() {
         use crate::foc::controller::FocController;
         use crate::foc::phase::{BackEmfObserver, HfiObserver, Observer};
@@ -2207,6 +2283,7 @@ mod tests {
     /// handles the unbounded case (this test).
     #[test]
     #[cfg(feature = "virtual-motor")]
+    #[cfg(feature = "hfi")]
     fn closed_loop_hfi_jam_gates_torque_until_relock() {
         use crate::foc::controller::FocController;
         use crate::foc::phase::{BackEmfObserver, HfiObserver, Observer};
@@ -2365,6 +2442,7 @@ mod tests {
     /// detection gap (saliency monitor / dual-axis HFI45) is a TODO.
     #[test]
     #[cfg(feature = "virtual-motor")]
+    #[cfg(feature = "hfi")]
     fn closed_loop_hfi_saliency_collapse_loses_tracking_silently() {
         use crate::foc::controller::FocController;
         use crate::foc::phase::HfiObserver;
@@ -2490,6 +2568,7 @@ mod tests {
     /// with the threshold in volts instead of per-motor eRPM tuning.
     #[test]
     #[cfg(feature = "virtual-motor")]
+    #[cfg(feature = "hfi")]
     fn closed_loop_hfi_to_observer_volts_crossover() {
         use crate::foc::controller::FocController;
         use crate::foc::phase::{BackEmfObserver, HfiObserver, Observer};

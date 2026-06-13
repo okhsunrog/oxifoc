@@ -1502,11 +1502,11 @@ where
 mod tests {
     use super::*;
     use crate::foc::phase::PhaseManager;
-    #[cfg(feature = "virtual-motor")]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     use crate::foc::{angle_difference, wrap_angle};
     #[cfg(feature = "runtime")]
     use crate::state::CMD_CHANNEL;
-    #[cfg(feature = "virtual-motor")]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     use crate::virtual_motor::VirtualMotorOutput;
 
     struct MockPwm {
@@ -1667,6 +1667,7 @@ mod tests {
     /// rejected and leaves everything unchanged.
     #[test]
     #[cfg(feature = "runtime")]
+    #[cfg(feature = "hfi")]
     fn process_commands_switches_phase_source() {
         let _serial = cmd_channel_lock();
         use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
@@ -2416,6 +2417,7 @@ mod tests {
     /// loop that partially fights the probe pulses.
     #[test]
     #[cfg(feature = "virtual-motor")]
+    #[cfg(feature = "hfi")]
     fn current_control_drives_hfi_estimator() {
         use crate::foc::phase::{HfiObserver, PhaseManager, PhaseSource};
         use crate::foc::trig::LibmSinCos;
