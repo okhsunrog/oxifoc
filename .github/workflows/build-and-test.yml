@@ -84,6 +84,16 @@ jobs:
       - name: tests
         run: cargo test --workspace --locked
 
+      - name: oxifoc-core with HFI features (hfi + hfi-detect)
+        # The Hfi* runtime observer and the FFT inductance path are behind
+        # features off by default (g431 drops both); the workspace pass above
+        # is g431's config. Without this, the gated tests (HFI estimator /
+        # crossovers, the inductance module, run_full_detection_high_r_low_vbus
+        # and _nonideal_plant_with_delay) would never run.
+        run: >
+          cargo test -p oxifoc-core --locked
+          --features runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect
+
       - name: oxifoc-core without detection (feature gate must not rot)
         # Mirrors the check in `just check-host`. No build disables the
         # default-on `detection` feature yet, so without this the gated-off

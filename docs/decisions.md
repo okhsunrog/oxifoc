@@ -112,6 +112,22 @@ their section.
   iq cap must not strangle the carrier SNR. The MotorParams blob grew —
   an old record on f405/g474 falls back to defaults; rewrite the group
   once.
+- **2026-06-13 — HFI is per-board, behind two feature flags; six-step is
+  gone.** B-G431B-ESC1 is a drone-motor board: non-salient SPM, so HFI
+  (which exploits Ld≠Lq) does nothing there, and it's flash-tight (128K).
+  Split HFI into `hfi` (runtime sensorless observer) and `hfi-detect`
+  (rotating-injection + FFT inductance measurement, pulls `microfft`) —
+  two flags, off on g431, on for g474/f405. Six-step removed entirely
+  (unused). **−8.9 KB on g431** (headroom 8.3 → 17.2 KB) for the room to
+  add features. **Wire is preserved across boards**: `PhaseSource` keeps
+  all `Hfi*` variants (command + status) — g431 rejects an HFI source at
+  runtime (`HfiNotConfigured`), it is not a compile-time enum difference;
+  removing `ControlMode::SixStep` shifts `Brake`'s discriminant uniformly
+  on every board (host rebuilt in lockstep). Caveat: with `hfi-detect`
+  off, inductance falls to the **voltage-pulse** method, which is
+  currently biased (+18% on the sim) and fragile on the non-ideal plant —
+  a known bug tracked in [TODO.md](TODO.md → Algorithms) to fix before
+  relying on g431's on-device L detection. [flash-size.md history]
 
 ## Host / tooling
 

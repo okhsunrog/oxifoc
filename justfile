@@ -64,6 +64,10 @@ fmt:
 # Run workspace tests
 test:
     cargo test --workspace
+    # HFI is behind features that are off by default (g431 drops both via
+    # exp/g431-flash-slim); the workspace pass above is g431's config. This
+    # pass runs the `hfi`/`hfi-detect`-gated tests (g474/f405 config).
+    cargo test -p oxifoc-core --features runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect
 
 # Build device firmware (release)
 build target="oxifoc-g431":

@@ -6,13 +6,19 @@ what has been done, and what reserves exist when a board runs out
 again. Perf-side numbers (cycle counts) live in
 [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 
-## Current state (2026-06-13, after the async-debloat pass)
+## Current state (2026-06-13, after the g431 HFI/six-step slim)
 
 | board | profile | flash used | flash region | headroom | static RAM (.data+.bss) | RAM region |
 |---|---|---|---|---|---|---|
-| g431 (B-G431B-ESC1) | **baked (the only profile)** | 121 880 (92%) | **128K** (no storage region) | **9.2 KB** | **19 152** | **32K** |
-| g474 (Nucleo + IHM08M1) | storage | 171 412 | 256K (bank 1; bank 2 = config) | 89 KB | 21 740 | 128K |
-| f405 | storage | 270 176 | 768K (sectors 0–9) | 504 KB | 32 164 | 128K (+64K CCM unused) |
+| g431 (B-G431B-ESC1) | **baked (the only profile)** | 113 824 (86%) | **128K** (no storage region) | **17.2 KB** | **18 712** | **32K** |
+| g474 (Nucleo + IHM08M1) | storage | 171 784 | 256K (bank 1; bank 2 = config) | 88 KB | 21 748 | 128K |
+| f405 | storage | 270 816 | 768K (sectors 0–9) | 503 KB | 32 236 | 128K (+64K CCM unused) |
+
+g431 drops three things the drone board doesn't use, behind feature flags so
+the roomy boards keep them: **six-step** (removed for all boards), **`hfi`**
+(runtime HFI sensorless observer) and **`hfi-detect`** (rotating-injection +
+FFT inductance measurement, pulls `microfft`). g474/f405 enable both HFI flags.
+See the history table and [decisions.md](decisions.md → Firmware / platform).
 
 `flash used` = `.vector_table + .text + .rodata + .data` (everything
 that occupies flash; `.data` is load-image). Run `just size` for live
@@ -167,6 +173,10 @@ remaining "compiler flag" win; everything below is about code.
 | 2026-06-13 | fault overhaul phases 1–5: severity classes + class gate, deadman→CommTimeout, limit-ladder fixes, hall wire detector + sticky warning bridge, FaultTopic publisher, derating module + `derating` config group + voltage-fault integrals + `run_protection` consolidation | +5 244 B (→ 122 232, headroom 8.8 KB) |
 | 2026-06-13 | code-quality pass (lints, imports, StandardFault dedup) | +60 B (→ 122 292) |
 | 2026-06-13 | async debloat: DetectionBackend pass-throughs, streaming-mean calibration (the big win is RAM: .bss 23 860 → 17 716, main task arena 7 736 → 1 608 — the 6 KB sample buffer is gone) | −412 B (→ 121 880, headroom 9.2 KB) |
+| 2026-06-13 | phase-voltage sensing core (capability + converter + observer wiring; `AdcSnapshot.vphase`) — additive, no g431 sensing yet | +856 B (→ 122 736) |
+| 2026-06-13 | **six-step removed** entirely (`ControlMode::SixStep`, `motor::six_step`, host-cli) — unused | −812 B (→ 121 924, all boards: g474 −148, f405 −508) |
+| 2026-06-13 | **`hfi-detect` feature gate** (HFI inductance: rotating injection + FFT, `microfft`); g431 off → voltage-pulse only. The visible `microfft` symbols are ~588 B; the rest is the sweep monomorphized over SinCos/Hardware generics | **−6 076 B** (→ 115 848, headroom 15.2 KB) |
+| 2026-06-13 | **`hfi` feature gate** (runtime HFI sensorless observer + PhaseManager slot); g431 off (no saliency on a drone motor). `PhaseSource` Hfi* variants kept for wire compat, rejected at runtime | **−2 024 B** (→ 113 824, headroom 17.2 KB; RAM −440 B) |
 
 Panic handler kept `defmt::error!("PANIC: {}", Display2Format(info))`:
 full panic text over RTT costs only 240 B once dependency fmt is gone
