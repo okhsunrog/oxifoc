@@ -167,6 +167,26 @@ their section.
   available SNR). NB: use `clamp_f32`, never `f32::clamp` — the latter's assert
   pulls in `core::fmt::float` (~13 KB on g431; the device clippy
   `disallowed-methods` catches it, host clippy does not).
+- **2026-06-13 — sensorless startup is a dedicated state machine
+  (`phase/startup.rs`), current-only on every board.** A pure back-EMF
+  observer can't commutate from standstill, so a pure-`Observer` source needs
+  a bootstrap. Phase A = cold-start align→ramp→handoff (VESC I/f, with a
+  current-scheduled ramp ceiling); Phase B = deadshort flying restart
+  (MESC-style: zero-vector probe, `e = −L·dI/dt` → angle/speed, seed the
+  observer and go straight to closed loop). Both run on commanded-v +
+  measured-i — **no phase-voltage sense, so g431-capable** (A+B = +1272 B).
+  Triggered by `FocDriver::set_mode` (idle→drive) via
+  `PhaseProvider::begin_cold_start`; the deadshort holds the bridge at the
+  zero vector via `PhaseProvider::wants_short` → `step_direct_voltage(0,0)`.
+  Two deliberate boundaries: (1) **kept separate from the hall-dropout
+  recovery `OpenLoopOverride`**, which stays UNtrusted (no torque into a
+  fabricated frame under a moving rider) — a cold start IS trusted because
+  it's a deliberate I/f bring-up; (2) **phase sensing (future VESC board)
+  plugs in at the observer's voltage input** (`observer_voltage_source`
+  Commanded/Measured), NOT the startup SM — measured back-EMF would just be a
+  cleaner flying-restart than the deadshort, the SM is unchanged. Bench-pending;
+  v1 limits (deadshort sign assumes commanded direction; handoff angle step)
+  tracked in TODO.md. [notes/startup-and-sampling.md]
 
 ## Host / tooling
 

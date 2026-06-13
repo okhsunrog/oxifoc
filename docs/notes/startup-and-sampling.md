@@ -1,9 +1,14 @@
 # Sensorless Startup & Current Sampling — Ideas to Borrow from VESC & MESC
 
-> **STATUS: open.** Part 1 (V0_V7) is a deliberate scope decision — no
-> code changes without bench evidence. Part 2 (align→ramp→handoff, flying
-> restart, current-scheduled ceiling) is open work, see TODO.md
-> «Sensorless startup».
+> **STATUS.** Part 1 (V0_V7) is a deliberate scope decision — no code changes
+> without bench evidence. **Part 2 is IMPLEMENTED (2026-06-13)** as the
+> `phase/startup.rs` state machine: align→ramp→handoff cold start with a
+> current-scheduled ceiling (Phase A) + deadshort flying restart (Phase B),
+> both current-only / g431-capable, host-test covered. See
+> [decisions.md](../decisions.md → Firmware/platform). Remaining: bench
+> validation + the v1 refinements in TODO.md «Sensorless startup». The Part 2
+> analysis below is kept as the design rationale; the "Proposed work" maps to
+> what shipped.
 
 Working notes from a line-by-line comparison of the current-sampling path and
 the sensorless-startup path against **VESC** (`bldc`) and **MESC**
