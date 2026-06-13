@@ -79,6 +79,26 @@ accel 500 erad/s²).
   gimbal-class (ripple ~30 mA against a 15 mA LSB) gives Lq −14%, λ +8%
   on the non-ideal plant; the adaptation currently targets a fraction of
   the hold current without looking at the LSB.
+- [ ] **Fix the voltage-pulse inductance method** (now g431's *only* L
+  detector — `exp/g431-flash-slim` gated HFI inductance behind `hfi-detect`,
+  off on the drone board). Two defects, found via `cargo run -p oxifoc-core
+  --example detection_report --features virtual-motor,std` (voltage-pulse
+  column):
+  1) **Systematic +15-19% L overestimate** on *every* non-salient motor
+  (even the 5010 drone: +15.9%), near-identical from 15 µH→3 mH and
+  R 0.02→8 Ω. The accumulator (`detection::voltage_pulse::VoltagePulseMeasurement`)
+  passes <1% on *analytic* `di`, so the math is fine — the `di` measured
+  through `sweep::measure_inductance_pulse` comes out ~16% short. Look at
+  the pulse-application vs `i_before`/`i_after` sampling window (and the
+  actuation-delay self-alignment) in `measure_inductance_pulse`
+  (sweep.rs:~738) against the VirtualMotor harness response.
+  2) **Fails on the non-ideal plant** (dead-time + 12-bit ADC noise +
+  1-cycle delay) for nearly every motor — SNR/window robustness.
+  When fixed: untie the cfg gate — `run_full_detection_high_r_low_vbus` +
+  `run_full_detection_nonideal_plant_with_delay` are `#[cfg(feature =
+  "hfi-detect")]` and `E2E_L_TOL` is 0.30 for the voltage-pulse path
+  (detection/mod.rs); tighten both. HFI by contrast: ~0-1% ideal, 1-6%
+  non-ideal (all pass).
 - [ ] HallPll: a PLL variant of the hall estimator built on the
   `BackEmfObserver` structure (the boundary anchor is already done) —
   prototype on VirtualMotor. [notes/hall-improvements.md §4]
