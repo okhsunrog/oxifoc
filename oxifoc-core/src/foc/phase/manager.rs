@@ -340,6 +340,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         self.source = source;
         // Crossover memory belongs to the previous source's thresholds.
         self.crossover_latched = false;
+        // The open-loop override likewise belongs to the source that armed
+        // it (only Hall arms it). Without this, switching to a non-hall
+        // source while the override is live strands it: the deactivation
+        // paths are all `requires_hall()`-gated, so `angle_trustworthy()`
+        // for Encoder/EncoderToObserver — which reads `!override.active` —
+        // would stay false forever on a healthy encoder. If the new source
+        // still can't produce an angle, `compute_phase_with_fallback`
+        // re-arms the override next cycle.
+        self.deactivate_open_loop_override();
         Ok(())
     }
 
@@ -2677,5 +2686,44 @@ mod tests {
         // Note: angle may have drifted slightly due to update() but velocity should match
         let output = phase.get();
         assert!((output.velocity - 300.0).abs() < 10.0); // Velocity should be from observer
+    }
+
+    /// Switching to a non-hall source must clear a live open-loop override:
+    /// the override only belongs to the hall source that armed it, and its
+    /// deactivation paths are all `requires_hall()`-gated. Left stranded, it
+    /// pins `angle_trustworthy()` false forever on a healthy encoder (whose
+    /// trust reads `!override.active`), and the driver coasts indefinitely.
+    #[test]
+    fn set_source_clears_stranded_open_loop_override() {
+        let mut phase =
+            PhaseManager::with_hall(MockHallSensor::new()).with_encoder(MockHallSensor::new());
+
+        // Arm the override: hall dies with no observer ready.
+        phase.hall_mut().set_valid(false);
+        phase.update(
+            &PhaseInput {
+                dt: 0.001,
+                ..Default::default()
+            },
+            0,
+        );
+        assert!(
+            phase.is_open_loop_override_active(),
+            "hall failure with no observer must arm the open-loop override"
+        );
+
+        // Host switches to the encoder — a non-hall source.
+        phase
+            .set_source(PhaseSource::Encoder)
+            .expect("encoder is present");
+
+        assert!(
+            !phase.is_open_loop_override_active(),
+            "switching to a non-hall source must clear the stranded override"
+        );
+        assert!(
+            phase.angle_trustworthy(),
+            "a healthy encoder must be trustworthy once the override is cleared"
+        );
     }
 }

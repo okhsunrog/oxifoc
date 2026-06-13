@@ -158,7 +158,6 @@ pub fn run_detect(
 
     let mut applied = serde_json::Value::Null;
     if apply {
-        use oxifoc_core::types::ConfigGroupId;
         let (mut mp, _) = config_cli::current_value(runtime, ConfigGroupId::MotorParams)?;
         let obj = mp.as_object_mut().context("motor-params not an object")?;
         match resp {

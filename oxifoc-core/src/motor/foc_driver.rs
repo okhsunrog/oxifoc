@@ -489,12 +489,25 @@ where
         motor_temp_c_x10: Option<i16>,
     ) {
         // --- Voltage excursion integrals (every cycle) ---
+        // Leaky-bucket trip: integrate the excursion, fire past `trip_vs`,
+        // bleed it off in-range with τ≈5 ms. The integral is capped at a few
+        // × `trip_vs` so a long excursion can't bank unbounded "credit" and
+        // make a later marginal spike trip instantly; the cap sits above the
+        // trip point, so first-trip latency is unchanged.
+        //
+        // A non-finite `vbus_v` leaves both comparisons false → neither fault
+        // trips and the integrals just decay. Acceptable here: vbus is a
+        // linear ADC divider with no division, so NaN is not physically
+        // reachable — mirrors the host-boundary "reject NaN" philosophy (the
+        // ISR trusts its own sense path).
         let max_v = board.max_vbus_mv as f32 / 1000.0;
         let min_v = board.min_vbus_mv as f32 / 1000.0;
         let trip_vs = 5e-5 * max_v;
+        let integral_ceiling = trip_vs * 4.0;
         let decay = 1.0 - (self.dt / 0.005).min(1.0);
         if vbus_v > max_v {
-            self.ov_integral_vs += (vbus_v - max_v) * self.dt;
+            self.ov_integral_vs =
+                (self.ov_integral_vs + (vbus_v - max_v) * self.dt).min(integral_ceiling);
             if self.ov_integral_vs > trip_vs
                 && !registry.has_category(FaultCategory::OverVoltage)
                 && let Some(f) = F::from_category(FaultCategory::OverVoltage)
@@ -507,7 +520,8 @@ where
             self.ov_integral_vs *= decay;
         }
         if vbus_v < min_v {
-            self.uv_integral_vs += (min_v - vbus_v) * self.dt;
+            self.uv_integral_vs =
+                (self.uv_integral_vs + (min_v - vbus_v) * self.dt).min(integral_ceiling);
             if self.uv_integral_vs > trip_vs
                 && !registry.has_category(FaultCategory::UnderVoltage)
                 && let Some(f) = F::from_category(FaultCategory::UnderVoltage)
@@ -787,6 +801,22 @@ where
     /// safe-mode command does (see `set_mode`).
     pub fn failsafe_reset(&mut self) {
         self.failsafe_ctrl.reset();
+    }
+
+    /// Emergency de-energize: latch Stopped AND float the bridge *now*.
+    ///
+    /// `set_mode(Stopped)` only disables PWM on the *next* `step()` that
+    /// runs in Stopped mode (the safe-off lives in step()'s Stopped arm).
+    /// The Kill path returns without ever calling `step()`, and a
+    /// software-only Kill (the integrated OverVoltage trip) has no hardware
+    /// break to float the outputs for it — so on that path the timer would
+    /// otherwise hold its last commanded duty and keep the phases
+    /// energized. This cuts the gate drive immediately. `disable()` runs
+    /// last so it wins over the SixStep-exit phase re-enable inside
+    /// `set_mode`.
+    pub fn safe_off(&mut self) {
+        self.set_mode(ControlMode::Stopped);
+        self.pwm.disable();
     }
 
     /// Whether the failsafe is currently carrying the motor.
@@ -1984,6 +2014,64 @@ mod tests {
             Some([PhaseState::Low, PhaseState::Low, PhaseState::Low]),
             "failsafe from SixStep must un-float all phases"
         );
+    }
+
+    /// `safe_off()` must float the bridge *immediately*, not defer it to the
+    /// next `step()`. The Kill path returns without ever stepping, and a
+    /// software-only Kill (integrated OverVoltage) has no hardware break, so
+    /// `set_mode(Stopped)` alone would leave the phases energized at the last
+    /// commanded duty.
+    #[test]
+    fn safe_off_floats_bridge_immediately() {
+        /// MockPwm that tracks whether the bridge is energized.
+        struct OffPwm {
+            enabled: bool,
+        }
+        impl PhasePwm for OffPwm {
+            fn max_duty(&self) -> u16 {
+                1000
+            }
+            fn set_duties(&mut self, _duties: [u16; 3]) {}
+            fn disable(&mut self) {
+                self.enabled = false;
+            }
+            fn enable(&mut self) {
+                self.enabled = true;
+            }
+        }
+
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            OffPwm { enabled: true },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 1.0,
+            id_target: 0.0,
+        });
+        assert!(driver.pwm().enabled, "a running mode arms the bridge");
+
+        // The regression: set_mode(Stopped) alone does NOT cut the gate
+        // drive (the safe-off lives in step()'s Stopped arm, which the Kill
+        // path skips).
+        driver.set_mode(ControlMode::Stopped);
+        assert!(
+            driver.pwm().enabled,
+            "set_mode(Stopped) alone must not be relied on to float the bridge"
+        );
+
+        driver.safe_off();
+        assert!(
+            !driver.pwm().enabled,
+            "safe_off must float the bridge immediately"
+        );
+        assert_eq!(driver.mode(), ControlMode::Stopped);
     }
 
     /// Brake (windings short) is speed-gated at the command boundary, and

@@ -568,9 +568,13 @@ where
     // GracefulStop routes through the failsafe machinery, warnings are
     // report-only and never touch the motor.
     if fault_registry.any_kill() {
-        if mode != ControlMode::Stopped {
-            driver.set_mode(ControlMode::Stopped);
-        }
+        // Cut the gate drive NOW, re-asserted every cycle the Kill stays
+        // latched. `set_mode(Stopped)` alone only floats the bridge on the
+        // next step() in Stopped mode, which the early return below skips —
+        // and a software-only Kill (integrated OverVoltage) has no hardware
+        // break to do it for us, so without this the timer holds its last
+        // commanded duty and the phases stay energized.
+        driver.safe_off();
         // A Kill fault takes over from any in-progress failsafe brake (e.g.
         // the OverVoltage that regen braking can itself raise) — drop to
         // high-Z and don't resume braking into the same fault after it
