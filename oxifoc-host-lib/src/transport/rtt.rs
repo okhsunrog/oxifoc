@@ -25,13 +25,50 @@ const RTT_UP_CHANNEL_DEFMT: usize = 0; // Device -> Host (defmt logs)
 const RTT_UP_CHANNEL_ERGOT: usize = 1; // Device -> Host (ergot data)
 const RTT_DOWN_CHANNEL_ERGOT: usize = 0; // Host -> Device (ergot data)
 
+/// Address of the live RTT control block, read from the firmware ELF's
+/// `_SEGGER_RTT` symbol. Pinning the scan to this avoids the "multiple control
+/// blocks" failure: a `ScanRegion::Ram` sweep also finds STALE control blocks
+/// that previous firmware images left in uninitialized RAM (CCMRAM/SRAM2 — a
+/// reset does not clear them), and probe-rs cannot pick among them. This is
+/// how `probe-rs run` resolves it too.
+fn segger_rtt_addr(elf_path: &str) -> Option<u64> {
+    use object::{Object, ObjectSymbol};
+    let bytes = std::fs::read(elf_path).ok()?;
+    let file = object::File::parse(&*bytes).ok()?;
+    file.symbols()
+        .chain(file.dynamic_symbols())
+        .find(|s| s.name() == Ok("_SEGGER_RTT"))
+        .map(|s| s.address())
+}
+
 /// Connect to a target via RTT through a debug probe.
 ///
 /// Spawns a dedicated blocking thread that owns the probe-rs Session/Core/Rtt
-/// and communicates with the async world via channels.
+/// and communicates with the async world via channels. `elf` is the running
+/// firmware image; when given, the RTT control block is located from its
+/// `_SEGGER_RTT` symbol instead of a full-RAM scan (see [`segger_rtt_addr`]).
 #[allow(clippy::single_range_in_vec_init)]
-pub fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStreamTransport> {
+pub fn connect(
+    probe_selector: Option<&str>,
+    chip: &str,
+    elf: Option<&str>,
+) -> Result<CobsStreamTransport> {
     info!("Connecting via RTT to chip: {}", chip);
+
+    // Pin the RTT control block to the live `_SEGGER_RTT` address (avoids the
+    // stale-block scan ambiguity). Computed once, used by BOTH the verification
+    // attach below and the worker thread's attach.
+    let rtt_addr = elf.and_then(segger_rtt_addr);
+    let scan_region = match rtt_addr {
+        Some(addr) => {
+            info!("RTT control block pinned to _SEGGER_RTT @ {addr:#x} (from ELF)");
+            ScanRegion::Exact(addr)
+        }
+        None => {
+            info!("RTT: no ELF symbol available, scanning all RAM");
+            ScanRegion::Ram
+        }
+    };
 
     let lister = Lister::new();
 
@@ -98,11 +135,8 @@ pub fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStreamTra
 
     {
         let mut core = session.core(0).context("Failed to get core 0")?;
-        // Scan the chip's whole RAM (per probe-rs target description) — the
-        // old hardcoded 0x20000000..0x20008000 (32 KB) missed control blocks
-        // on parts with more RAM (F405: 128K+CCM, G474: 128K).
-        let mut rtt =
-            Rtt::attach_region(&mut core, &ScanRegion::Ram).context("Failed to attach to RTT")?;
+        let mut rtt = Rtt::attach_region(&mut core, &scan_region)
+            .context("Failed to attach to RTT")?;
 
         info!("RTT attached successfully");
 
@@ -170,7 +204,12 @@ pub fn connect(probe_selector: Option<&str>, chip: &str) -> Result<CobsStreamTra
                 return;
             }
         };
-        let mut rtt = match Rtt::attach_region(&mut core, &ScanRegion::Ram) {
+        // Same pinned region as the verification attach (rtt_addr is Copy).
+        let thread_region = match rtt_addr {
+            Some(addr) => ScanRegion::Exact(addr),
+            None => ScanRegion::Ram,
+        };
+        let mut rtt = match Rtt::attach_region(&mut core, &thread_region) {
             Ok(r) => r,
             Err(e) => {
                 fail(&ergot_rx_tx, format!("RTT thread: failed to attach: {e}"));

@@ -101,7 +101,17 @@ impl<'d> MotorPwm<'d> {
         // (fSAMPLING=fDTS/2, N=6) with COMP hysteresis/blanking both off —
         // a real overcurrent easily outlasts the 6-sample filter.
         pwm.set_break_filter(FilterValue::FDTS_DIV2_N6);
-        pwm.set_break_enable(true);
+        // DISABLED 2026-06-13 pending an OCP threshold fix. On first hardware
+        // power-up all three comparators trip at idle (0 A): the DAC3 threshold
+        // from `config::overcurrent_dac_counts` (≈265 mV for 80 A) sits BELOW
+        // the actual idle comparator-input level, so the break asserts
+        // continuously and latches a Kill OverCurrent (`config.rs`'s ×4/7 +
+        // 127 mV model of the COMP input node is wrong — DAC3/routing verified
+        // correct by register dump). The break stays off until the threshold
+        // model + polarity are corrected and bench-validated; protection in the
+        // meantime is the software measured-overcurrent trip + the bench PSU's
+        // current limit. See docs/TODO.md (Bench / g431 OCP).
+        pwm.set_break_enable(false);
 
         // Calculate duty limit using shared helper (convert to u16 for helper, then back to u32)
         let duty_limit = u32::from(pwm::duty_limit(max_duty as u16, config.max_duty_percent));

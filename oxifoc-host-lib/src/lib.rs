@@ -127,6 +127,22 @@ fn next_detect_id() -> ReqId {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+/// Resolve the running firmware ELF path: explicit `cfg.elf`, else the default
+/// g431 release artifact. Used for defmt decoding and for pinning the RTT
+/// control block to its `_SEGGER_RTT` symbol.
+fn resolve_elf_path(cfg: &HostConfig) -> String {
+    cfg.elf.clone().unwrap_or_else(|| {
+        let target_dir = std::env::var("CARGO_TARGET_DIR")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxifoc-g431/target"));
+        target_dir
+            .join("thumbv7em-none-eabihf/release/oxifoc-g431")
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
 pub fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -336,11 +352,13 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
         }
         #[cfg(feature = "desktop")]
         TransportConfig::Rtt { probe, chip } => {
+            let elf = resolve_elf_path(&cfg);
             run_cobs_stream_with_reconnect(
                 move || {
                     let probe = probe.clone();
                     let chip = chip.clone();
-                    async move { transport::rtt::connect(probe.as_deref(), &chip) }
+                    let elf = elf.clone();
+                    async move { transport::rtt::connect(probe.as_deref(), &chip, Some(&elf)) }
                 },
                 &cfg,
                 ctx,
@@ -1234,15 +1252,7 @@ where
     NS::Profile: Send,
     NS::Target: Send,
 {
-    let default_elf = {
-        let target_dir = std::env::var("CARGO_TARGET_DIR")
-            .ok()
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxifoc-g431/target"));
-        let p = target_dir.join("thumbv7em-none-eabihf/release/oxifoc-g431");
-        p.to_string_lossy().into_owned()
-    };
-    let elf_path = cfg.elf.clone().unwrap_or(default_elf);
+    let elf_path = resolve_elf_path(cfg);
     let elf_bytes =
         fs::read(&elf_path).with_context(|| format!("Failed to read ELF at {elf_path}"))?;
     let table = Table::parse(&elf_bytes)

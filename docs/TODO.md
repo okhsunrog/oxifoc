@@ -225,7 +225,22 @@ the sim = batch tick).
 - [ ] **Device-RAM burst capture** (the VESC `sample` pattern): raw
   20 kHz into a ring buffer (~100–200 ms on g431) downloaded afterwards,
   pre-trigger around faults (a "black box"). The 5 kHz CIC stream is for
-  long logs, burst for full-bandwidth snapshots.
+  long logs, burst for full-bandwidth snapshots. **Motivated by the
+  2026-06-13 bench finding:** live telemetry over the g431 ST-Link tops out
+  at ~1.8 kHz effective on BOTH transports — UART (921600 ≈ 2 kHz) and RTT
+  (this ST-Link's RTT sustains ~82 KB/s; at 5 kHz only ~37 % of frames
+  arrived and `NoBlockSkip` overflow corrupted COBS frames → ergot decode
+  errors). RTT ergot itself works (control-block now pinned to `_SEGGER_RTT`
+  in host-lib + flashprobe-mcp), but it's not a bandwidth win on this probe.
+  Levers before burst-capture: enlarge the RTT ergot buffer (RAM is free) and
+  try `BlockIfFull` to stop frame corruption — but neither beats the probe's
+  sustained throughput; burst-capture is the real fix for full-rate snapshots.
+- [ ] **`detect --record` rate**: it's hardwired to the FOC rate (M=1,
+  20 kHz) which floods every available link and starved the detect response
+  over UART (host hung, device kept driving the motor — see runaway note).
+  Make the record rate configurable (≤2 kHz is link-feasible; the HFI carrier
+  case still wants burst-capture), and/or have the device-side detection
+  abort the drive on host link-loss instead of running to completion blind.
 - [ ] `protocol_version` in `HardwareInfo` + `env!("CARGO_PKG_VERSION")`
   instead of the hardcoded "oxifoc-0.1.0" — mandatory before any
   release/distribution (postcard schema has no self-description: a
@@ -238,6 +253,38 @@ the sim = batch tick).
   design — [notes/remote-design.md](notes/remote-design.md).
 
 ## Bench (waiting for hardware)
+
+### Bench session 2026-06-13 (g431 + ZD2808 700 KV sensorless) — findings
+
+First real-hardware run of the g431 firmware on a sensorless drone motor
+(ZD2808, 700 KV, 7 pp; 12 V / 4 A lab PSU). Detection ran end-to-end:
+
+- [ ] **HW OCP false-trips at idle — disabled, needs a real fix.** The
+  COMP1/2/4 + DAC3 overcurrent (enabled in code 2026-06-11, never
+  hardware-validated) trips all three phases at 0 A on first power-up:
+  `config::overcurrent_dac_counts` computes ≈265 mV for 80 A, which sits
+  *below* the actual idle comparator-input level — its ×4/7 + 127 mV model of
+  the COMP input node is wrong. DAC3/routing verified correct by register dump
+  (DOR1=DOR2=329, both channels ready); the comparators simply read a higher
+  idle voltage than the formula assumes. **Disabled `set_break_enable` in
+  `motor.rs` for now** (protection = software measured-OC + PSU CC). Fix needs
+  the board schematic to model the COMP input node + polarity correctly
+  (note `invert_current_sign`), then bench-validate the trip at a known
+  current. Until then HW OCP stays off.
+- [ ] **Detection biases confirmed (all high) — the √3 + dead-time concerns
+  below, now measured.** ZD2808 results vs LCR/nameplate: R 0.127 Ω
+  (LCR ≈0.105 Ω/phase, +20 % residual dead-time — fine); **Ld 86 µH / Lq
+  122 µH (LCR ≈24 µH/phase → 3.6–5× HIGH)**; λ 1.30 mWb (≈1.13 expected,
+  +15 %); **Kv 1051 RPM/V (nameplate 700 → 1.50× ≈ √3)**. Two systematic
+  errors: (1) the g431 voltage-pulse L step inflates L badly on a low-L motor
+  because the small pulse voltage is dominated by the ~0.38 V 800 ns dead-time
+  distortion; (2) a √3 (≈1.5×) normalization in the λ/Kv path (`Kv =
+  60/(2π·λ·Pp)` omits the √3). A sensorless spin on the as-measured L would
+  give 3.6× hot PI gains + a biased observer `−L·Δi` term → fix L (or feed the
+  LCR value) before trusting closed-loop. Decompose the √3 vs the SVPWM
+  amplitude-invariance convention.
+
+
 
 - [ ] **Hall timer-capture validation** (2026-06-10 migration): turn by
   hand — sequence 1→3→2→6→4→5, velocity without the 2× skew,

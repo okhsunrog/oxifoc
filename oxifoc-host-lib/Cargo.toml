@@ -37,6 +37,7 @@ bytes = "1.11.1"
 futures = "0.3.32"
 bluest = { git = "https://github.com/okhsunrog/bluest", rev = "9cb9dbcad63d7d2ffe18a20f87b7ffe1cb670537", features = ["unstable"] }
 serde_json = "1.0.150"
+object = { version = "0.39.1", default-features = false, features = ["read"] }
 
 [lints]
 workspace = true
