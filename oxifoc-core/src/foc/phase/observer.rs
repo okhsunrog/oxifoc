@@ -138,6 +138,24 @@ impl Observer {
         }
     }
 
+    /// d/q-average inductance of the model, if any (deadshort flying restart:
+    /// `e = −L·dI/dt`).
+    pub fn inductance(&self) -> Option<f32> {
+        match self {
+            Self::None => None,
+            Self::BackEmf(o) => Some(o.inductance()),
+        }
+    }
+
+    /// Flux linkage λ of the model, if any (deadshort speed estimate `|ω| =
+    /// |e|/λ`).
+    pub fn lambda(&self) -> Option<f32> {
+        match self {
+            Self::None => None,
+            Self::BackEmf(o) => Some(o.lambda()),
+        }
+    }
+
     /// Reset observer state
     pub fn reset(&mut self) {
         match self {
@@ -336,6 +354,11 @@ impl BackEmfObserver {
     /// Phase resistance (Ω) — used by voltage-based crossover criteria.
     pub fn resistance(&self) -> f32 {
         self.r
+    }
+
+    /// d/q-average inductance (H) of the model — deadshort flying restart.
+    pub fn inductance(&self) -> f32 {
+        self.l
     }
 
     /// Current (possibly adapted) flux-linkage estimate (Wb).

@@ -12,7 +12,7 @@ use super::observer::HfiObserver;
 use super::observer::{Observer, ObserverInput};
 use super::provider::{PhaseInput, PhaseOutput, PhaseProvider};
 use super::source::{PhaseSource, PhaseSourceError};
-use super::startup::SensorlessStartup;
+use super::startup::{DeadshortResult, SensorlessStartup, StartupPhase};
 use crate::foc::fast_math::sqrtf;
 use crate::foc::hall_calibration::HallCalibrationResult;
 use crate::foc::hall_sensor::HallFaultKind;
@@ -1109,15 +1109,30 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // handoff speed (it keeps running on commanded-v + measured-i the
         // whole time, so by handoff its angle is the true rotor angle).
         if self.startup.is_active() {
-            let i_mag = sqrtf(input.i_alpha * input.i_alpha + input.i_beta * input.i_beta);
-            let out = self.startup.tick(
-                input.dt,
-                i_mag,
-                self.observer.is_ready(),
-                self.observer.velocity().unwrap_or(0.0),
-            );
-            if out.handoff {
-                self.startup.deactivate();
+            if self.startup.phase() == StartupPhase::Deadshort {
+                // Flying-restart probe: the driver holds the bridge at zero
+                // voltage; feed the back-EMF-driven current to the probe. A
+                // spinning rotor → seed the observer and go straight to closed
+                // loop; standstill → the probe falls through to the align ramp.
+                let l = self.observer.inductance().unwrap_or(0.0);
+                let lambda = self.observer.lambda().unwrap_or(0.0);
+                if let DeadshortResult::Caught { angle, velocity } =
+                    self.startup
+                        .feed_deadshort(input.i_alpha, input.i_beta, input.dt, l, lambda)
+                {
+                    self.observer.seed(angle, velocity);
+                }
+            } else {
+                let i_mag = sqrtf(input.i_alpha * input.i_alpha + input.i_beta * input.i_beta);
+                let out = self.startup.tick(
+                    input.dt,
+                    i_mag,
+                    self.observer.is_ready(),
+                    self.observer.velocity().unwrap_or(0.0),
+                );
+                if out.handoff {
+                    self.startup.deactivate();
+                }
             }
         }
 
@@ -1141,6 +1156,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             return;
         }
         self.startup.begin_cold_start(self.output.angle, dir);
+    }
+
+    fn wants_short(&self) -> bool {
+        self.startup.wants_short()
     }
 
     /// Trustworthy down to standstill when a hardware sensor backs the active

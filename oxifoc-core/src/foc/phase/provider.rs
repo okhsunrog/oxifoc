@@ -112,8 +112,18 @@ pub trait PhaseProvider {
     /// torque/velocity) on the Stopped/Coast → drive transition.
     ///
     /// A pure back-EMF observer cannot commutate from standstill (no
-    /// back-EMF), so `PhaseManager` overrides this to run an open-loop
-    /// align→ramp→handoff sequence until the observer locks. The default is a
-    /// no-op: sensored providers already have an angle at zero speed.
+    /// back-EMF), so `PhaseManager` overrides this to run a flying-restart
+    /// probe then an open-loop align→ramp→handoff sequence until the observer
+    /// locks. The default is a no-op: sensored providers already have an angle
+    /// at zero speed.
     fn begin_cold_start(&mut self, _dir: f32) {}
+
+    /// Whether the driver should hold the bridge at zero voltage this cycle so
+    /// the provider can read the back-EMF-driven current slope (the deadshort
+    /// flying-restart probe). Default: never. While true, the driver must NOT
+    /// run the current loop — it applies the zero vector and feeds the measured
+    /// current back through `update`.
+    fn wants_short(&self) -> bool {
+        false
+    }
 }

@@ -974,6 +974,15 @@ where
         if self.failsafe_ctrl.is_active() {
             return self.step_failsafe(dt, now_ticks);
         }
+        // Sensorless flying-restart probe (deadshort): hold the bridge at zero
+        // voltage so the phase manager can read the back-EMF-driven current
+        // slope and catch an already-spinning rotor. Overrides the commanded
+        // torque mode for the few cycles the probe runs; the zero vector +
+        // measured current go through the same apply_dq/observer path as a
+        // DirectVoltage(0,0), and the manager seeds the observer on a catch.
+        if self.phase.wants_short() {
+            return self.step_direct_voltage(0.0, 0.0, self.phase.get().angle, dt, now_ticks);
+        }
         match self.mode {
             ControlMode::Stopped => {
                 // Safe-off: `disable()` is the platform's emergency-stop
@@ -2612,6 +2621,104 @@ mod tests {
             driver.phase().get().angle,
             wrap_angle(out.angle_rad),
             err
+        );
+    }
+
+    /// Deadshort flying restart: a sensorless motor already spinning when
+    /// torque is commanded must be CAUGHT by the deadshort probe and handed
+    /// straight to the observer within a handful of cycles — NOT dragged
+    /// through the full align→ramp cold start (which would brake/fight the
+    /// moving rotor). Distinguishes flying restart from cold start by the
+    /// handoff happening fast and the rotor never being braked to a stop.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn deadshort_catches_a_spinning_rotor_on_start() {
+        use crate::foc::phase::{BackEmfObserver, Observer, PhaseManager, PhaseSource};
+        use crate::foc::trig::LibmSinCos;
+        use crate::foc::{angle_difference, wrap_angle};
+        use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        let params = MotorParams {
+            r: 0.1,
+            ld: 200e-6,
+            lq: 200e-6,
+            lambda: 0.01,
+            pole_pairs: 7,
+            j: 1e-3, // heavier rotor: the brief probe barely slows it
+            friction_b: 1e-4,
+            ..MotorParams::default()
+        };
+        let mut motor = VirtualMotor::new(params);
+        // Freewheeling forward at ~200 rad/s elec, parked at a known angle,
+        // zero current (gates were off) — the kick-push case.
+        motor.set_angle(1.0);
+        motor.set_velocity(200.0);
+
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            24.0,
+        );
+        let mut mgr = PhaseManager::sensorless();
+        mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            params.lambda,
+        )));
+        mgr.set_source(PhaseSource::Observer).unwrap();
+
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            mgr,
+            DT,
+        );
+        driver.set_current_limits(CurrentLimits::from_max_current(30.0));
+
+        // Torque from rest (driver is Stopped) while the rotor spins → probe.
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 4.0,
+            id_target: 0.0,
+        });
+
+        let mut out = VirtualMotorOutput::default();
+        let mut caught_cycle = None;
+        for step in 1..200u64 {
+            driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+            let telem = driver.step(step * 50).expect("FOC step failed");
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            if caught_cycle.is_none() && !driver.phase().is_starting() {
+                caught_cycle = Some(step);
+            }
+        }
+
+        // Caught FAST — within the probe window + a few cycles, not the ~0.7 s
+        // align→ramp (which would be >14000 cycles).
+        let caught = caught_cycle.expect("flying restart must hand off");
+        assert!(
+            caught < 30,
+            "deadshort should catch quickly, took {caught} cycles"
+        );
+        assert!(
+            driver.phase().observer().is_ready(),
+            "observer must be tracking"
+        );
+        // Rotor never braked to a stop and still spinning forward near ω0.
+        assert!(
+            out.omega_e > 120.0,
+            "rotor must keep spinning, got {}",
+            out.omega_e
+        );
+        let err = angle_difference(driver.phase().get().angle, wrap_angle(out.angle_rad)).abs();
+        assert!(
+            err < 0.3,
+            "observer angle {} vs rotor {} (err {err} rad)",
+            driver.phase().get().angle,
+            wrap_angle(out.angle_rad)
         );
     }
 

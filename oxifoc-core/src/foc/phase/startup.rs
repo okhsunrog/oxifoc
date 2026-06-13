@@ -20,6 +20,7 @@
 //! [`READY_MIN_VELOCITY`]: super::observer::READY_MIN_VELOCITY
 
 use crate::foc::clamp_f32;
+use crate::foc::fast_math::{atan2f, sqrtf};
 use crate::foc::wrap_angle;
 
 /// Align dwell (s): hold the field at a fixed angle so the rotor latches to a
@@ -54,11 +55,32 @@ const CURRENT_REF_A: f32 = 5.0;
 /// Max ramp ceiling as a multiple of the handoff velocity at full current.
 const CEILING_MAX_FACTOR: f32 = 2.0;
 
+/// Deadshort flying-restart probe length (PWM periods). MESC shorts ~9; long
+/// enough for a measurable dI/dt, short enough that the current stays bounded.
+pub const DEADSHORT_CYCLES: u16 = 8;
+
+/// Minimum |ω| (rad/s elec) the deadshort must resolve to declare the rotor
+/// "spinning" and seed the observer for a flying restart. Below it (standstill
+/// or barely turning), fall through to the align→ramp cold start. Margin above
+/// the observer's [`READY_MIN_VELOCITY`](super::observer::READY_MIN_VELOCITY)
+/// (30) so the seed lands the observer in its trustworthy band.
+pub const DEADSHORT_MIN_CATCH_VEL: f32 = 45.0;
+
+/// Abort the probe early if |i_αβ| exceeds this (A): the back-EMF drives the
+/// shorted winding toward `e/R`, which on a low-R motor is large — stop and
+/// estimate from the dI/dt accumulated so far rather than build current
+/// without bound. Mirrors MESC's `DEADSHORT_CURRENT`.
+const DEADSHORT_MAX_CURRENT_A: f32 = 15.0;
+
 /// Where the open-loop sequencer is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupPhase {
     /// Not sequencing — the real source (sensor / ready observer) drives.
     Inactive,
+    /// Flying-restart probe (Phase B): the bridge is shorted (zero voltage)
+    /// and the back-EMF-driven current slope is measured to catch an
+    /// already-spinning rotor before the cold-start ramp.
+    Deadshort,
     /// Holding the field at a fixed angle (velocity 0) so the rotor latches.
     Align,
     /// Linearly ramping the open-loop velocity 0 → ceiling.
@@ -81,6 +103,17 @@ pub struct StartupOutput {
     pub handoff: bool,
 }
 
+/// Outcome of feeding one cycle of shorted-winding current to the deadshort
+/// probe (Phase B).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DeadshortResult {
+    /// Still probing — keep the bridge shorted.
+    Probing,
+    /// Caught a spinning rotor: seed the observer from `(angle, velocity)` and
+    /// go straight to closed loop (the sequencer has deactivated itself).
+    Caught { angle: f32, velocity: f32 },
+}
+
 /// Cold-start / recovery open-loop sequencer. See the module docs.
 #[derive(Clone, Copy, Debug)]
 pub struct SensorlessStartup {
@@ -92,6 +125,11 @@ pub struct SensorlessStartup {
     /// Target handoff speed magnitude (rad/s).
     handoff_vel: f32,
     timer: f32,
+    // ── Deadshort probe state (Phase B) ──
+    ds_cycles: u16,
+    ds_i0_alpha: f32,
+    ds_i0_beta: f32,
+    ds_elapsed: f32,
 }
 
 impl Default for SensorlessStartup {
@@ -103,20 +141,35 @@ impl Default for SensorlessStartup {
             dir: 1.0,
             handoff_vel: DEFAULT_HANDOFF_VEL,
             timer: 0.0,
+            ds_cycles: 0,
+            ds_i0_alpha: 0.0,
+            ds_i0_beta: 0.0,
+            ds_elapsed: 0.0,
         }
     }
 }
 
 impl SensorlessStartup {
-    /// Begin a cold start from `angle0` in `direction` (sign of the commanded
-    /// torque/velocity): align → ramp → hold → handoff.
+    /// Begin a sensorless start from `angle0` in `direction` (sign of the
+    /// commanded torque/velocity). Opens with the deadshort flying-restart
+    /// probe (Phase B): if the rotor is already spinning it is caught and
+    /// handed straight to the observer; otherwise the machine falls through to
+    /// the align→ramp→handoff cold start (Phase A).
     pub fn begin_cold_start(&mut self, angle0: f32, direction: f32) {
-        self.phase = StartupPhase::Align;
+        self.phase = StartupPhase::Deadshort;
         self.angle = wrap_angle(angle0);
         self.velocity = 0.0;
         self.dir = if direction < 0.0 { -1.0 } else { 1.0 };
         self.handoff_vel = DEFAULT_HANDOFF_VEL;
         self.timer = DEFAULT_OPENLOOP_TIME_S + DEFAULT_ALIGN_TIME_S + DEFAULT_RAMP_TIME_S;
+        self.ds_cycles = 0;
+        self.ds_elapsed = 0.0;
+    }
+
+    /// True while the deadshort probe needs the bridge held shorted (zero
+    /// voltage). The driver honors this instead of normal commutation.
+    pub fn wants_short(&self) -> bool {
+        self.phase == StartupPhase::Deadshort
     }
 
     /// Begin a hall-dropout recovery: a fast fixed-velocity nudge from the last
@@ -189,7 +242,9 @@ impl SensorlessStartup {
         self.timer = (self.timer - dt).max(0.0);
 
         match self.phase {
-            StartupPhase::Inactive => {
+            // Deadshort is driven by `feed_deadshort`, not `tick`; if ticked,
+            // hold the angle (the driver applies zero voltage anyway).
+            StartupPhase::Inactive | StartupPhase::Deadshort => {
                 return StartupOutput {
                     angle: self.angle,
                     velocity: 0.0,
@@ -242,6 +297,92 @@ impl SensorlessStartup {
             handoff,
         }
     }
+
+    /// Feed one shorted-winding current sample to the deadshort probe (Phase B).
+    ///
+    /// `l`/`lambda` are the observer's motor model. The first call captures the
+    /// baseline current (the back-EMF response is the *change* from there); over
+    /// the next [`DEADSHORT_CYCLES`] (or until |i| hits the abort cap) it
+    /// accumulates dI/dt and estimates the back-EMF `e = −L·dI/dt`, hence the
+    /// rotor angle and speed (see [`deadshort_estimate`]). A spinning rotor →
+    /// `Caught` and the machine deactivates (the manager seeds the observer);
+    /// standstill / too slow → it falls through to the align ramp, returning
+    /// `Probing`.
+    pub fn feed_deadshort(
+        &mut self,
+        i_alpha: f32,
+        i_beta: f32,
+        dt: f32,
+        l: f32,
+        lambda: f32,
+    ) -> DeadshortResult {
+        if self.phase != StartupPhase::Deadshort {
+            return DeadshortResult::Probing;
+        }
+        if self.ds_cycles == 0 {
+            self.ds_i0_alpha = i_alpha;
+            self.ds_i0_beta = i_beta;
+            self.ds_elapsed = 0.0;
+            self.ds_cycles = 1;
+            return DeadshortResult::Probing;
+        }
+
+        self.ds_cycles += 1;
+        self.ds_elapsed += dt;
+        let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
+        if self.ds_cycles < DEADSHORT_CYCLES && i_mag < DEADSHORT_MAX_CURRENT_A {
+            return DeadshortResult::Probing;
+        }
+
+        // Probe window complete — estimate the back-EMF from the net dI/dt.
+        let di_alpha = i_alpha - self.ds_i0_alpha;
+        let di_beta = i_beta - self.ds_i0_beta;
+        match deadshort_estimate(di_alpha, di_beta, self.ds_elapsed, l, lambda, self.dir) {
+            Some((angle, velocity)) => {
+                self.deactivate();
+                DeadshortResult::Caught { angle, velocity }
+            }
+            None => {
+                // Standstill / too slow → align→ramp cold start from here.
+                self.phase = StartupPhase::Align;
+                self.velocity = 0.0;
+                DeadshortResult::Probing
+            }
+        }
+    }
+}
+
+/// Back-EMF / rotor estimate from the shorted-winding dI/dt over `window_dt`.
+///
+/// While the current is small the shorted (zero-voltage) winding obeys
+/// `0 = R·i + L·di/dt + e`, so `e ≈ −L·dI/dt`. The back-EMF leads the rotor
+/// flux by 90° (the sign of that lead is the rotation direction), giving
+/// `θ = atan2(e_β, e_α) − dir·π/2` and `|ω| = |e|/λ`. `dir` is the commanded
+/// direction, taken as the rotation sign (true for the kick-push restart;
+/// a rotor freewheeling *against* the command is the known v1 limitation —
+/// the PLL would have to pull a ±180° seed, which it can't). Returns `None`
+/// when |ω| is below the catch threshold (standstill / barely turning → use
+/// the cold-start ramp instead).
+fn deadshort_estimate(
+    di_alpha: f32,
+    di_beta: f32,
+    window_dt: f32,
+    l: f32,
+    lambda: f32,
+    dir: f32,
+) -> Option<(f32, f32)> {
+    if window_dt <= 0.0 || lambda <= 1e-9 || l <= 0.0 {
+        return None;
+    }
+    let e_alpha = -l * di_alpha / window_dt;
+    let e_beta = -l * di_beta / window_dt;
+    let e_mag = sqrtf(e_alpha * e_alpha + e_beta * e_beta);
+    let omega = e_mag / lambda;
+    if omega < DEADSHORT_MIN_CATCH_VEL {
+        return None;
+    }
+    let angle = wrap_angle(atan2f(e_beta, e_alpha) - dir * core::f32::consts::FRAC_PI_2);
+    Some((angle, dir * omega))
 }
 
 #[cfg(test)]
@@ -249,6 +390,27 @@ mod tests {
     use super::*;
 
     const DT: f32 = 1.0 / 20_000.0;
+
+    /// Feed the deadshort probe a standstill (zero-current) stream until it
+    /// gives up and falls through to the cold-start ramp (Align). Phase A tests
+    /// use this to get past the Phase B probe that now opens every cold start.
+    fn skip_deadshort(sm: &mut SensorlessStartup) {
+        for _ in 0..=DEADSHORT_CYCLES {
+            sm.feed_deadshort(0.0, 0.0, DT, 200e-6, 0.01);
+            if sm.phase() != StartupPhase::Deadshort {
+                break;
+            }
+        }
+        assert_eq!(sm.phase(), StartupPhase::Align);
+    }
+
+    /// Begin a cold start and skip straight to the Align phase.
+    fn cold_start_to_align(angle: f32, dir: f32) -> SensorlessStartup {
+        let mut sm = SensorlessStartup::default();
+        sm.begin_cold_start(angle, dir);
+        skip_deadshort(&mut sm);
+        sm
+    }
 
     /// Drive the SM forward, never reporting the observer ready, for a number
     /// of seconds; return the phase history boundaries.
@@ -269,9 +431,7 @@ mod tests {
 
     #[test]
     fn cold_start_sequences_align_ramp_hold() {
-        let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(1.0, 1.0);
-        assert_eq!(sm.phase(), StartupPhase::Align);
+        let mut sm = cold_start_to_align(1.0, 1.0);
         assert!(sm.is_active());
 
         let hist = run(&mut sm, 1.0, 3.0);
@@ -286,8 +446,7 @@ mod tests {
 
     #[test]
     fn align_holds_field_still() {
-        let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(0.5, 1.0);
+        let mut sm = cold_start_to_align(0.5, 1.0);
         // Through the whole align window, velocity stays 0 and angle is fixed.
         let steps = (DEFAULT_ALIGN_TIME_S / DT) as usize / 2;
         for _ in 0..steps {
@@ -300,10 +459,8 @@ mod tests {
 
     #[test]
     fn ramp_is_monotonic_and_signed_by_direction() {
-        let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(0.0, -1.0); // reverse
-        // skip align
-        run(&mut sm, DEFAULT_ALIGN_TIME_S + 0.001, 5.0);
+        let mut sm = cold_start_to_align(0.0, -1.0); // reverse
+        run(&mut sm, DEFAULT_ALIGN_TIME_S + 0.001, 5.0); // skip align
         assert_eq!(sm.phase(), StartupPhase::Ramp);
         let mut prev = sm.velocity();
         for _ in 0..100 {
@@ -319,10 +476,8 @@ mod tests {
 
     #[test]
     fn higher_current_raises_the_ceiling() {
-        let mut lo = SensorlessStartup::default();
-        let mut hi = SensorlessStartup::default();
-        lo.begin_cold_start(0.0, 1.0);
-        hi.begin_cold_start(0.0, 1.0);
+        let mut lo = cold_start_to_align(0.0, 1.0);
+        let mut hi = cold_start_to_align(0.0, 1.0);
         run(&mut lo, 1.0, 0.0); // no current → floor ceiling
         run(&mut hi, 1.0, CURRENT_REF_A); // full current → max ceiling
         assert!(hi.velocity() > lo.velocity() + 1.0);
@@ -331,8 +486,7 @@ mod tests {
 
     #[test]
     fn no_handoff_until_observer_ready_and_fast() {
-        let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(0.0, 1.0);
+        let mut sm = cold_start_to_align(0.0, 1.0);
         // Run past align+ramp (0.8 s) with the observer NOT ready — never hands
         // off, and ends solidly in Hold above the handoff speed.
         for _ in 0..(20_000 * 8 / 10) {
@@ -347,6 +501,79 @@ mod tests {
         // Observer ready AND tracking at speed → handoff.
         let o = sm.tick(DT, 5.0, true, DEFAULT_HANDOFF_VEL);
         assert!(o.handoff);
+    }
+
+    // ── Phase B: deadshort flying restart ──
+
+    /// Synthesize the shorted-winding dI over the probe window for a rotor
+    /// spinning at `omega` (elec rad/s) parked at `theta`: `e = ωλ[−sinθ, cosθ]`
+    /// drives `dI ≈ −e·window/L` while the current is small.
+    fn synth_deadshort_di(omega: f32, theta: f32, l: f32, lambda: f32) -> (f32, f32) {
+        let e_a = omega * lambda * -theta.sin();
+        let e_b = omega * lambda * theta.cos();
+        let window = f32::from(DEADSHORT_CYCLES - 1) * DT;
+        (-e_a * window / l, -e_b * window / l)
+    }
+
+    #[test]
+    fn deadshort_estimate_recovers_rotor() {
+        use crate::foc::angle_difference;
+        let (l, lambda, omega, theta) = (150e-6, 0.008, 300.0, -0.8);
+        let window = f32::from(DEADSHORT_CYCLES - 1) * DT;
+        let (di_a, di_b) = synth_deadshort_di(omega, theta, l, lambda);
+        let (angle, vel) = deadshort_estimate(di_a, di_b, window, l, lambda, 1.0).unwrap();
+        assert!(angle_difference(angle, theta).abs() < 0.05, "angle {angle}");
+        assert!((vel - omega).abs() < 5.0, "vel {vel}");
+        // A barely-moving rotor (1% of the dI) is below the catch floor → None.
+        assert!(deadshort_estimate(di_a * 0.01, di_b * 0.01, window, l, lambda, 1.0).is_none());
+    }
+
+    #[test]
+    fn deadshort_catches_spinning_rotor() {
+        use crate::foc::angle_difference;
+        let (l, lambda, omega, theta) = (200e-6, 0.01, 250.0, 1.2);
+        let (di_a, di_b) = synth_deadshort_di(omega, theta, l, lambda);
+
+        let mut sm = SensorlessStartup::default();
+        sm.begin_cold_start(0.0, 1.0); // dir matches the (forward) rotation
+        assert_eq!(sm.phase(), StartupPhase::Deadshort);
+        assert!(sm.wants_short());
+
+        // Cycle 1 captures the baseline; middle cycles only count; the last
+        // carries the accumulated dI.
+        assert_eq!(
+            sm.feed_deadshort(0.0, 0.0, DT, l, lambda),
+            DeadshortResult::Probing
+        );
+        for _ in 0..(DEADSHORT_CYCLES - 2) {
+            assert_eq!(
+                sm.feed_deadshort(0.0, 0.0, DT, l, lambda),
+                DeadshortResult::Probing
+            );
+        }
+        match sm.feed_deadshort(di_a, di_b, DT, l, lambda) {
+            DeadshortResult::Caught { angle, velocity } => {
+                assert!(angle_difference(angle, theta).abs() < 0.1, "angle {angle}");
+                assert!((velocity - omega).abs() < 25.0, "vel {velocity}");
+            }
+            other => panic!("expected Caught, got {other:?}"),
+        }
+        // Handed straight to the observer — sequencer is done, bridge released.
+        assert!(!sm.is_active());
+        assert!(!sm.wants_short());
+    }
+
+    #[test]
+    fn deadshort_standstill_falls_through_to_align() {
+        let mut sm = SensorlessStartup::default();
+        sm.begin_cold_start(0.7, 1.0);
+        // No back-EMF (zero dI) over the whole probe → no catch → cold start.
+        for _ in 0..=DEADSHORT_CYCLES {
+            sm.feed_deadshort(0.0, 0.0, DT, 200e-6, 0.01);
+        }
+        assert_eq!(sm.phase(), StartupPhase::Align);
+        assert!(sm.is_active());
+        assert!(!sm.wants_short());
     }
 
     #[test]

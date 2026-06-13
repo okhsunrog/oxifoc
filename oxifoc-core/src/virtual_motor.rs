@@ -287,6 +287,12 @@ impl VirtualMotor {
         self.cos_phi = libm::cosf(phi_rad);
     }
 
+    /// Override the rotor electrical velocity (rad/s) — sim helper to set up a
+    /// freewheeling rotor (e.g. flying-restart tests).
+    pub fn set_velocity(&mut self, omega_e: f32) {
+        self.omega_e = omega_e;
+    }
+
     /// Compute the Hall sensor raw state from the current rotor angle.
     ///
     /// Sector `k` is CENTERED on `k·60° + hall_offset` (spans ±30° around
