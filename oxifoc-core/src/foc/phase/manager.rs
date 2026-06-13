@@ -12,6 +12,8 @@ use super::observer::HfiObserver;
 use super::observer::{Observer, ObserverInput};
 use super::provider::{PhaseInput, PhaseOutput, PhaseProvider};
 use super::source::{PhaseSource, PhaseSourceError};
+use super::startup::SensorlessStartup;
+use crate::foc::fast_math::sqrtf;
 use crate::foc::hall_calibration::HallCalibrationResult;
 use crate::foc::hall_sensor::HallFaultKind;
 use crate::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait, NoSensor};
@@ -163,6 +165,12 @@ where
     // Open-loop override state (for Hall failure recovery)
     open_loop_override: OpenLoopOverride,
 
+    // Sensorless cold-start sequencer (align → ramp → handoff). Distinct from
+    // `open_loop_override` above: that is the reactive hall-dropout nudge from
+    // a known angle; this is the proactive from-standstill start that a pure
+    // back-EMF observer needs (it can't commutate below ~READY_MIN_VELOCITY).
+    startup: SensorlessStartup,
+
     // Hysteresis memory for the HfiToX crossovers: true = running on the
     // high-speed source (observer/hall/encoder), false = on HFI.
     crossover_latched: bool,
@@ -205,6 +213,7 @@ impl PhaseManager<NoSensor, NoSensor> {
             hall_health: HallHealth::NotPresent,
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
+            startup: SensorlessStartup::default(),
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
@@ -234,6 +243,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_health: HallHealth::Ok,
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
+            startup: SensorlessStartup::default(),
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
@@ -261,6 +271,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_health: self.hall_health,
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
+            startup: self.startup,
             crossover_latched: self.crossover_latched,
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
@@ -291,6 +302,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             hall_health: self.hall_health,
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
+            startup: self.startup,
             crossover_latched: self.crossover_latched,
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
@@ -320,6 +332,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             hall_health: HallHealth::NotPresent,
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
+            startup: SensorlessStartup::default(),
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
@@ -384,6 +397,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // still can't produce an angle, `compute_phase_with_fallback`
         // re-arms the override next cycle.
         self.deactivate_open_loop_override();
+        // A live cold-start sequence belongs to the source that began it.
+        self.startup.deactivate();
         Ok(())
     }
 
@@ -540,6 +555,16 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Get open-loop override state
     pub fn open_loop_override(&self) -> &OpenLoopOverride {
         &self.open_loop_override
+    }
+
+    /// True while the cold-start sequencer owns commutation.
+    pub fn is_starting(&self) -> bool {
+        self.startup.is_active()
+    }
+
+    /// The cold-start sequencer (diagnostics).
+    pub fn startup(&self) -> &SensorlessStartup {
+        &self.startup
     }
 
     /// Check if open-loop override is active
@@ -700,8 +725,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             PhaseSource::Encoder => sample_to_output(encoder_sample, &self.output),
 
             PhaseSource::Observer => {
-                // Pure sensorless: only commutate from a converged observer;
-                // hold the last output (and raise the fault) otherwise.
+                // Pure sensorless: commutate from a converged observer; else
+                // run the cold-start sequencer open-loop (align→ramp→handoff)
+                // if it is active; else hold the last output (and raise the
+                // fault). The sequencer is advanced in `update`, which hands
+                // off (deactivates) the moment the observer converges.
                 if self.observer.is_ready() {
                     self.clear_fault(PhaseFault::ObserverNotReady);
                     match (self.observer.phase(), self.observer.velocity()) {
@@ -710,6 +738,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                             velocity: vel,
                         },
                         _ => self.output,
+                    }
+                } else if self.startup.is_active() {
+                    PhaseOutput {
+                        angle: self.startup.angle(),
+                        velocity: self.startup.velocity(),
                     }
                 } else {
                     self.set_fault(PhaseFault::ObserverNotReady);
@@ -1070,6 +1103,24 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             self.open_loop_angle = wrap_angle(self.open_loop_angle);
         }
 
+        // Advance the sensorless cold-start sequencer (if running): it drives
+        // the open-loop angle the Observer arm commutates from, and hands off
+        // — deactivates — the moment the observer has actually converged at
+        // handoff speed (it keeps running on commanded-v + measured-i the
+        // whole time, so by handoff its angle is the true rotor angle).
+        if self.startup.is_active() {
+            let i_mag = sqrtf(input.i_alpha * input.i_alpha + input.i_beta * input.i_beta);
+            let out = self.startup.tick(
+                input.dt,
+                i_mag,
+                self.observer.is_ready(),
+                self.observer.velocity().unwrap_or(0.0),
+            );
+            if out.handoff {
+                self.startup.deactivate();
+            }
+        }
+
         // Update open-loop override state (for Hall failure recovery)
         self.update_open_loop_override(input.dt);
 
@@ -1079,6 +1130,17 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
 
     fn request_source(&mut self, source: PhaseSource) -> bool {
         self.set_source(source).is_ok()
+    }
+
+    fn begin_cold_start(&mut self, dir: f32) {
+        // Only a pure back-EMF source needs the open-loop bootstrap: a sensored
+        // source (Hall/Encoder, or a *ToObserver blend) already has an angle at
+        // standstill. No-op once the observer is tracking. Starts from the last
+        // output angle so the field doesn't jump on engage.
+        if !matches!(self.source, PhaseSource::Observer) || self.observer.is_ready() {
+            return;
+        }
+        self.startup.begin_cold_start(self.output.angle, dir);
     }
 
     /// Trustworthy down to standstill when a hardware sensor backs the active
@@ -1109,7 +1171,13 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             // Calibration/detection sources: the commanded angle IS the
             // reference frame, trusted by construction.
             PhaseSource::Manual | PhaseSource::OpenLoop => true,
-            PhaseSource::Observer => self.observer.is_ready(),
+            // Pure sensorless: trusted once the observer locks, OR while the
+            // cold-start sequencer drives — there the open-loop angle IS the
+            // intended I/f reference and torque MUST flow into it to spin the
+            // rotor up (unlike the hall-dropout recovery override above, which
+            // is a fabricated frame under a moving rider and stays untrusted).
+            // Only `begin_cold_start` (a deliberate sensorless start) arms it.
+            PhaseSource::Observer => self.observer.is_ready() || self.startup.is_active(),
             #[cfg(feature = "hfi")]
             PhaseSource::Hfi
             | PhaseSource::HfiToObserver { .. }

@@ -107,4 +107,13 @@ pub trait PhaseProvider {
     fn hall_fault(&self) -> Option<HallFaultKind> {
         None
     }
+
+    /// Begin a sensorless cold start in `dir` (sign of the commanded
+    /// torque/velocity) on the Stopped/Coast → drive transition.
+    ///
+    /// A pure back-EMF observer cannot commutate from standstill (no
+    /// back-EMF), so `PhaseManager` overrides this to run an open-loop
+    /// align→ramp→handoff sequence until the observer locks. The default is a
+    /// no-op: sensored providers already have an angle at zero speed.
+    fn begin_cold_start(&mut self, _dir: f32) {}
 }

@@ -49,6 +49,7 @@ mod manager;
 mod observer;
 mod provider;
 mod source;
+mod startup;
 
 pub use manager::{HallHealth, OpenLoopOverride, PhaseFault, PhaseManager};
 pub use observer::{
@@ -58,3 +59,4 @@ pub use observer::{
 pub use observer::{HFI_DEFAULT_AMPLITUDE_RATIO, HFI_DEFAULT_FREQ_HZ, HfiObserver};
 pub use provider::{PhaseInput, PhaseOutput, PhaseProvider};
 pub use source::{PhaseSource, PhaseSourceError};
+pub use startup::{SensorlessStartup, StartupOutput, StartupPhase};

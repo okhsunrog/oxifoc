@@ -918,6 +918,25 @@ where
             self.controller.reset();
         }
 
+        // Cold-start the sensorless commutation when leaving a non-driving mode
+        // for a torque/velocity command: a pure back-EMF observer can't
+        // commutate from standstill, so begin the align→ramp→handoff sequence.
+        // No-op for sensored sources or an already-tracking observer (see
+        // PhaseProvider::begin_cold_start). Direction = sign of the command.
+        let was_idle = matches!(
+            self.mode,
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+        );
+        let start_dir = match mode {
+            ControlMode::CurrentControl { iq_target, .. } => iq_target,
+            ControlMode::VelocityControl { target_vel } => target_vel,
+            _ => 0.0,
+        };
+        if was_idle && start_dir != 0.0 {
+            self.phase
+                .begin_cold_start(if start_dir < 0.0 { -1.0 } else { 1.0 });
+        }
+
         self.mode = mode;
     }
 
@@ -2499,6 +2518,100 @@ mod tests {
             angle_difference(out.angle_rad, ROTOR_ANGLE).abs() < 0.15,
             "injection moved the rotor: {} rad",
             out.angle_rad
+        );
+    }
+
+    /// Sensorless cold start: a pure-`Observer` motor commanded torque from
+    /// standstill must spin up via the align→ramp→handoff sequencer and hand
+    /// off to the back-EMF observer. The observer alone cannot commutate at
+    /// zero speed (no back-EMF), so without the sequencer this deadlocks; the
+    /// test asserts it does NOT — the rotor reaches speed forward and the
+    /// observer locks.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn sensorless_cold_start_ramps_then_hands_off() {
+        use crate::foc::phase::{BackEmfObserver, Observer, PhaseManager, PhaseSource};
+        use crate::foc::trig::LibmSinCos;
+        use crate::foc::{angle_difference, wrap_angle};
+        use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        // Non-salient drone-class motor, light rotor so it spins up in-test.
+        let params = MotorParams {
+            r: 0.1,
+            ld: 200e-6,
+            lq: 200e-6,
+            lambda: 0.01,
+            pole_pairs: 7,
+            j: 1e-4,
+            friction_b: 1e-4,
+            ..MotorParams::default()
+        };
+        let mut motor = VirtualMotor::new(params);
+        motor.set_angle(0.5);
+
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            24.0,
+        );
+        let mut mgr = PhaseManager::sensorless();
+        mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
+            params.r,
+            (params.ld + params.lq) / 2.0,
+            params.lambda,
+        )));
+        mgr.set_source(PhaseSource::Observer).unwrap();
+
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            mgr,
+            DT,
+        );
+        driver.set_current_limits(CurrentLimits::from_max_current(20.0));
+
+        // Torque from standstill → the cold-start sequence engages.
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 6.0,
+            id_target: 0.0,
+        });
+        assert!(
+            driver.phase().is_starting(),
+            "cold start must engage on torque-from-rest"
+        );
+
+        let mut out = VirtualMotorOutput::default();
+        for step in 1..30_000u64 {
+            driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+            let telem = driver.step(step * 50).expect("FOC step failed");
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        }
+
+        // Handed off (not stuck open-loop), spinning forward, observer locked.
+        assert!(
+            !driver.phase().is_starting(),
+            "must hand off the open-loop sequencer, not run it forever"
+        );
+        assert!(
+            driver.phase().observer().is_ready(),
+            "back-EMF observer must be tracking after handoff"
+        );
+        assert!(
+            out.omega_e > 50.0,
+            "motor must spin up forward, got omega_e {}",
+            out.omega_e
+        );
+        let err = angle_difference(driver.phase().get().angle, wrap_angle(out.angle_rad)).abs();
+        assert!(
+            err < 0.25,
+            "observer angle {} vs rotor {} (err {} rad)",
+            driver.phase().get().angle,
+            wrap_angle(out.angle_rad),
+            err
         );
     }
 
