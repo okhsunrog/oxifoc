@@ -1,1 +1,6 @@
 stack-size-threshold = 1024
+
+# large_futures threshold: ESP32-C6 has 512 KB SRAM — looser than the STM32
+# boards, but the default 16 KB still means "never fires". Futures above
+# this deserve a look at what they hold across await points.
+future-size-threshold = 4096
