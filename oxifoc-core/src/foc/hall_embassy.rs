@@ -29,9 +29,11 @@ static HALL_ESTIMATOR: CriticalSectionMutex<RefCell<Option<HallSensor>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
 /// Platform tick source for "now" in the hall tick domain, registered at init.
+type TickSourceFn = fn() -> u64;
+
 /// Used by the convenience `AngleSensor` methods (`read_angle`/`read_direction`);
 /// the control path always receives explicit ticks from the FOC ISR.
-static TICK_SOURCE: CriticalSectionMutex<Cell<Option<fn() -> u64>>> =
+static TICK_SOURCE: CriticalSectionMutex<Cell<Option<TickSourceFn>>> =
     CriticalSectionMutex::new(Cell::new(None));
 
 // ========== Initialization ==========
@@ -56,7 +58,7 @@ pub fn set_tick_source(f: fn() -> u64) {
 }
 
 fn hall_now_ticks() -> u64 {
-    TICK_SOURCE.lock(|c| c.get()).map(|f| f()).unwrap_or(0)
+    TICK_SOURCE.lock(Cell::get).map(|f| f()).unwrap_or(0)
 }
 
 // ========== ISR Entry Point ==========
@@ -147,6 +149,7 @@ pub fn apply_stored_config(config: &RuntimeConfig) {
 // ========== Hall Angle Proxy for FOC ==========
 
 /// Angle sensor proxy for the FOC driver; pulls snapshots from `HALL_ESTIMATOR`.
+#[derive(Default)]
 pub struct HallAngleProxy;
 
 impl HallAngleProxy {
@@ -194,7 +197,12 @@ impl AngleSensor for HallAngleProxy {
     }
 
     fn error_count(&self) -> u32 {
-        HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().map(|h| h.error_count()).unwrap_or(0))
+        HALL_ESTIMATOR.lock(|est| {
+            est.borrow()
+                .as_ref()
+                .map(HallSensor::error_count)
+                .unwrap_or(0)
+        })
     }
 
     fn reset_errors(&mut self) {
@@ -214,6 +222,6 @@ impl AngleSensor for HallAngleProxy {
     // The trait default (None) would hide the shared estimator's wire
     // verdicts from the fault bridge, same trap as sample_mut/is_stale.
     fn fault_kind(&self) -> Option<HallFaultKind> {
-        HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(|h| h.fault_kind()))
+        HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(HallSensor::fault_kind))
     }
 }

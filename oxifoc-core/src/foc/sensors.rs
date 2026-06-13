@@ -510,7 +510,7 @@ mod embassy_current {
             ib: &'static AtomicU16,
             ic: &'static AtomicU16,
         ) -> Self {
-            GenericCurrentSensor::from_config(config, AtomicAdcReader::new(ia, ib, ic))
+            Self::from_config(config, AtomicAdcReader::new(ia, ib, ic))
         }
 
         async fn calibrate(&mut self) {

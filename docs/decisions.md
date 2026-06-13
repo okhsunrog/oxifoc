@@ -375,3 +375,11 @@ their section.
   stays off. Also NOT enabled, with numbers: `indexing_slicing` (67
   const-bounded phase-array sites = churn), `float_cmp` (80/81 hits in
   tests), `cast_sign_loss` (14 sites needing invariant docs — revisit).
+- **2026-06-13 — embassy slice is now clippy-gated.** The embassy-only
+  modules of oxifoc-core (hall_embassy & co) are compiled by no workspace
+  member, so workspace clippy never saw them — the no-default-features CI
+  line ran `cargo check`, which skips lints. Found via a cast_sign_loss
+  audit: a `redundant_closure_for_method_calls` from our own wave-1 set
+  had survived there. The justfile line is now `cargo clippy -- -D
+  warnings`; stragglers fixed (Cell::get method ref, TickSourceFn alias,
+  HallAngleProxy derives Default).

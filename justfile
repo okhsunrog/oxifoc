@@ -24,8 +24,11 @@ check-host:
     echo "tests (workspace)..."
     output=$(cargo test --workspace --quiet 2>&1) || { echo "$output"; exit 1; }
     echo "oxifoc-core without detection (gate must not rot)..."
-    cargo check -p oxifoc-core --quiet --no-default-features \
-        --features algorithms,runtime,storage,delivery,defmt,embassy,virtual-motor,std
+    # clippy, not check: the embassy-gated modules are compiled ONLY in this
+    # slice (no workspace member enables the feature), so this is their one
+    # lint gate.
+    cargo clippy -p oxifoc-core --quiet --no-default-features \
+        --features algorithms,runtime,storage,delivery,defmt,embassy,virtual-motor,std -- -D warnings
 
 # Device firmware: fmt + clippy + build (all targets)
 check-device:
