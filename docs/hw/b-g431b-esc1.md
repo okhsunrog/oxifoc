@@ -262,6 +262,49 @@ Implication: a sensorless spin on the **as-measured L** gives 3.6× hot
 current-PI gains (`kp = L·bw`) and a biased observer `−L·Δi` term → **fix L (or
 feed the LCR value ~24 µH) before trusting closed-loop sensorless.**
 
+#### 2026-06-13 (item 2): L is frequency-dependent — the "dead-time" theory was WRONG
+
+> The "L inflated 3.6× by dead-time" diagnosis above is **superseded**. Fixing
+> the voltage-pulse to be dead-time-immune (measure the step above the settled
+> hold) **barely moved L** (89→89 µH): the residual dead-time, measured on
+> hardware, is only **0.028 V** — the firmware's `set_dead_time_comp` already
+> cancels most of it. So dead-time is not the cause.
+
+**The L gap is genuine frequency-dependence of the inductance.** Three methods at
+three frequencies, on the same motor:
+
+| Method | Effective freq | Ld |
+|---|---|---|
+| voltage-pulse (di/dt, slow ramp) | ~DC | **89 µH** |
+| LCR (bench) | 1 kHz | **24 µH** |
+| HFI \|Z\| probe (FFT-free) | 5 kHz | **10.8 µH** |
+
+L drops monotonically with frequency — eddy currents in the stator iron + the
+conductive NdFeB rotor shield the AC flux (≈8× DC→5 kHz). The voltage-pulse is
+not buggy; it reads the **near-DC** inductance (the current ramps slowly because
+L is high, self-selecting a low effective frequency). For the **current loop**
+(bandwidth ~1–2 kHz) the relevant value is the AC inductance ≈ **20–24 µH**, NOT
+the DC 89 µH. VESC measures L via HFI at ~f_sw/2 (high freq, current-limited)
+for exactly this reason; MESC uses the di/dt pulse (DC) like our voltage-pulse.
+
+**√3 Kv confirmed.** λ measured 1.29 mWb; Kv = 60/(√3·2π·λ·Pp) ≈ 611 (line-to-line)
+vs 700 nameplate (residual from λ +15 %). The pre-fix 1051 was the per-phase Kv.
+
+**Detection is now reliable** after two fixes (commits on `bench-detection-2026-06-13`):
+- The link-loss failsafe was fighting the device-side measurement (host blocks on
+  the result → ergot liveness times out in 1 s → failsafe cut the drive, latched,
+  and the rotor oscillated ±20°). A `DETECTION_ACTIVE` flag now suspends the
+  link-loss path during a bounded measurement (the command-staleness deadman and
+  over-current checks are not gated). R→L→flux now run end-to-end.
+- `config::SENSORLESS` keeps the boot angle source off Hall (Observer/Manual),
+  killing the continuous HallError on the sensorless ZD2808.
+
+**HFI on this motor:** the fixed 3 V injection drew ~tens of A and tripped the
+bench PSU OCP (the garbage 8.5 mH it "measured" was the sagged-bus artifact, not
+the algorithm). Current-budgeting the injection (probe at I·R, v_max from the
+probed \|Z|) makes it safe; the full FFT/saliency result still falls back
+(low-saliency SPM), but the FFT-free \|Z| probe gives a clean 10.8 µH.
+
 #### Runaway incident + lesson
 
 `detect <step> --record` streams telemetry at the FOC rate (20 kHz × 44 B ≈
@@ -293,5 +336,18 @@ host link-loss; (3) keep the probe attached as the abort button.
 
 1. ~~Fix the HW OCP threshold~~ **DONE** — proven unusable (raw-pad comparator),
    break disabled, software OCP is the protection. See the corrected account above.
-2. Fix the voltage-pulse L (dead-time) and the √3 in λ/Kv → trustworthy params.
-3. Sensorless cold-start spin attempt with corrected params + gentle limits.
+2. ~~Fix the voltage-pulse L and the √3 in Kv~~ **DONE** — √3 Kv fixed; the L gap
+   is real frequency-dependence (not dead-time). Detection now reliable. See the
+   "item 2" section above.
+3. **HFI inductance-vs-frequency sweep** on this motor — vary the carrier
+   (e.g. 0.5/1/2/5/10 kHz) via the FFT-free \|Z| probe and map the L(f) curve to
+   confirm the eddy-current roll-off and pick the loop-relevant value directly.
+4. **Refactor to one inductance method** (separate task, fresh context): promote
+   the FFT-free \|Z| probe to the primary L measurement (current-limited, gives
+   the AC/loop-frequency value); gate the rotating-HFI + FFT saliency path behind
+   a `saliency-detect` (or `hfi-fft-detect`) feature for IPM motors; drop the
+   voltage-pulse (it reads the DC L, wrong for the current loop). Add a
+   frequency-dependent-L term to `VirtualMotor` so the sim reproduces the
+   method-divergence instead of agreeing with a constant L.
+5. Sensorless cold-start spin attempt — feed the **AC L (~20–24 µH)**, not the
+   pulse DC 89 µH, into the current-PI gains; gentle limits.
