@@ -108,6 +108,20 @@ pub static TELEM_WAKER: AtomicWaker = AtomicWaker::new();
 /// whichever side wins the race, the unsafe overlap is impossible.
 pub static FLASH_OP_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// Set while a device-side detection step is actively driving the motor.
+///
+/// Detection is host-initiated but device-driven: the host then blocks on the
+/// result and sends no frames, so the ergot interface liveness times out within
+/// `LIVENESS_TIMEOUT_MS` and the **link-loss** failsafe would otherwise cut the
+/// drive mid-measurement (current collapses, the failsafe latches) and fight the
+/// (bounded, current-limited, rotor-locked/slow) detection. The detect server
+/// raises this around each measurement so the link-loss path is suspended.
+///
+/// Deliberately scoped to link-loss only: the command-staleness deadman is NOT
+/// exempted, so a *hung* detection (no fresh commands) still trips the failsafe,
+/// and the instantaneous over-current check is never gated by it.
+pub static DETECTION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// RAII guard for [`FLASH_OP_PENDING`]: clears the flag on every exit
 /// path, including the early returns on flash errors.
 pub struct FlashPendingGuard(());
@@ -471,6 +485,7 @@ where
     // admit a flash stall mid-brake.
     let link_active = critical_section::with(|cs| state_mutex.borrow(cs).borrow().link_active);
     if !link_active
+        && !DETECTION_ACTIVE.load(Ordering::Relaxed)
         && !matches!(
             foc.mode(),
             ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
@@ -533,7 +548,11 @@ where
         mode,
         ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
     );
-    if (driver.deadman_expired(now_ticks) || (link_lost && !in_safe_mode))
+    // Link-loss is suspended during a device-side detection (see
+    // `DETECTION_ACTIVE`); the command-staleness deadman is not, so a hung
+    // detection still raises CommTimeout.
+    let link_lost_unacked = link_lost && !in_safe_mode && !DETECTION_ACTIVE.load(Ordering::Relaxed);
+    if (driver.deadman_expired(now_ticks) || link_lost_unacked)
         && let Some(f) = F::from_category(FaultCategory::CommTimeout)
     {
         fault_registry.set(f);

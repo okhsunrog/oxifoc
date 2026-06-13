@@ -32,9 +32,11 @@ use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult}
 use crate::icd::DetectEndpoint;
 use crate::motor::ControlMode;
 use crate::state::CMD_CHANNEL;
+use crate::state::DETECTION_ACTIVE;
 use crate::state::DriverCommand;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse, ReqId};
+use core::sync::atomic::Ordering;
 
 /// The platform-specific half of detection: the raw measurements, bound to the
 /// hardware (or to the virtual-motor sim). Everything else — parameter
@@ -120,6 +122,10 @@ pub async fn detect_server<NS, B>(
                 CMD_CHANNEL
                     .send(DriverCommand::SetMode(ControlMode::Stopped))
                     .await;
+                // Suspend the link-loss failsafe while we drive: the host is
+                // blocked on our response and sends no liveness frames (see
+                // DETECTION_ACTIVE). Cleared unconditionally below.
+                DETECTION_ACTIVE.store(true, Ordering::Relaxed);
                 let resp = run_step(
                     &mut backend,
                     msg.t.inner,
@@ -128,6 +134,7 @@ pub async fn detect_server<NS, B>(
                     runtime_config,
                 )
                 .await;
+                DETECTION_ACTIVE.store(false, Ordering::Relaxed);
                 CMD_CHANNEL
                     .send(DriverCommand::SetMode(ControlMode::Stopped))
                     .await;
@@ -246,8 +253,11 @@ async fn run_step<B: DetectionBackend>(
             };
             match backend.measure_flux(&params).await {
                 Ok(flux) => {
+                    // Line-to-line Kv (carries the √3 phase→line factor — see
+                    // flux_linkage::calculate_kv); inlining it here is what kept
+                    // the detection result √3-high.
                     let kv = if flux > 0.0 {
-                        60.0 / (core::f32::consts::TAU * flux * f32::from(pole_pairs))
+                        crate::foc::detection::flux_linkage::calculate_kv(flux, pole_pairs)
                     } else {
                         0.0
                     };
