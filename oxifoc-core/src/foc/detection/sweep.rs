@@ -782,14 +782,38 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
         let vd_hold =
             settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
 
-        // Pulse measurement — self-aligning: rather than assuming the
-        // command→apply latency, each pulse scans forward for the frame
-        // where the current edge actually lands and takes di over that
-        // first application period. Immune to any pipeline depth up to
-        // PIPELINE_LAG_MAX (the old fixed one-period wait silently
-        // measured di ≈ 0 on a two-cycle pipeline).
+        // Pulse measurement — discharge-anchored, self-aligning, drift-immune.
+        //
+        // Each pulse:
+        //  1. Discharges the winding back to the holding current by holding
+        //     vd_hold until the d-axis current settles. vd_hold *is* the
+        //     i_hold equilibrium, but the decay constant is L/R — far longer
+        //     than the handful of PWM periods between pulses — so a fixed
+        //     few-frame flush leaves the current ratcheting up pulse after
+        //     pulse. Beyond biasing L, on a delayed actuation pipeline the
+        //     still-elevated decaying tail then trips a naive edge detector
+        //     with a spurious negative di (one good pulse, then nothing).
+        //  2. Applies the step and captures the next PIPELINE_LAG_MAX+1 frames.
+        //  3. Takes the application period as the *largest* single-period rise
+        //     across that window (argmax, not a fixed threshold): immune to any
+        //     actuation delay up to PIPELINE_LAG_MAX, and to ADC noise, since
+        //     the real edge (a step toward the bus rail) dwarfs the noise.
+        //
+        // The accumulator converts that one period's (i_before, i_after) to L
+        // using the *absolute* current, so any residual baseline offset left
+        // by a loose settle does not bias the result.
         const PULSE_EDGE_THRESHOLD_A: f32 = 0.02;
-        let mut meas = VoltagePulseMeasurement::new(params, pwm_freq_hz);
+        // Settle band around i_hold (kept above the ADC noise floor) and a
+        // generous cap (~200 ms at 20 kHz, covering L/R up to ~10 ms).
+        let settle_tol = (0.1 * params.hold_current_a).max(0.05);
+        const DISCHARGE_MAX_FRAMES: usize = 4000;
+        let (sin_a, cos_a) = S::sin_cos(angle);
+        let read_id = |hw: &H| {
+            let (ia, ib, _) = hw.read_phase_currents();
+            let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+            i_alpha * cos_a + i_beta * sin_a
+        };
+        let mut meas = VoltagePulseMeasurement::new(params, pwm_freq_hz, vd_hold);
 
         for _ in 0..params.num_pulses * 2 {
             // guard against skipped pulses
@@ -797,13 +821,22 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
                 break;
             }
 
-            // Read current before pulse
-            let (ia, ib, _) = hw.read_phase_currents();
-            let (i_alpha, i_beta) = transforms::clarke(ia, ib);
-            let (sin_a, cos_a) = S::sin_cos(angle);
-            let id_before = i_alpha * cos_a + i_beta * sin_a;
+            // ── Discharge to the holding current ──────────────────────────
+            hw.send_command(ControlMode::DirectVoltage {
+                vd: vd_hold,
+                vq: 0.0,
+                angle_rad: angle,
+            })
+            .await;
+            for _ in 0..DISCHARGE_MAX_FRAMES {
+                hw.wait_telemetry().await;
+                if (read_id(hw) - params.hold_current_a).abs() < settle_tol {
+                    break;
+                }
+            }
 
-            // Apply voltage step
+            // ── Apply the step, capture the application window ────────────
+            let id_before = read_id(hw);
             hw.send_command(ControlMode::DirectVoltage {
                 vd: vd_hold + params.pulse_voltage_v,
                 vq: 0.0,
@@ -811,42 +844,28 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
             })
             .await;
 
-            // Scan for the application edge; the pre-edge frame replaces
-            // id_before (steady by definition), the edge frame is id_after.
             let mut prev = id_before;
-            let mut edge: Option<(f32, f32)> = None;
-            let mut frames = 0usize;
-            while frames <= PIPELINE_LAG_MAX {
+            let mut best_before = id_before;
+            let mut best_after = id_before;
+            let mut best_di = f32::NEG_INFINITY;
+            for _ in 0..=PIPELINE_LAG_MAX {
                 hw.wait_telemetry().await;
-                let (ia, ib, _) = hw.read_phase_currents();
-                let (i_alpha, i_beta) = transforms::clarke(ia, ib);
-                let id_now = i_alpha * cos_a + i_beta * sin_a;
-                frames += 1;
-                if (id_now - prev).abs() > PULSE_EDGE_THRESHOLD_A {
-                    edge = Some((prev, id_now));
-                    break;
+                let id_now = read_id(hw);
+                let di = id_now - prev;
+                if di > best_di {
+                    best_di = di;
+                    best_before = prev;
+                    best_after = id_now;
                 }
                 prev = id_now;
             }
 
-            if let Some((before, after)) = edge {
-                meas.record_pulse(before, after);
+            // A real pulse dwarfs the noise; below the floor means an open
+            // winding (no rise) — record a skip so finish() reports it.
+            if best_di > PULSE_EDGE_THRESHOLD_A {
+                meas.record_pulse(best_before, best_after);
             } else {
-                // No edge seen — count as a skipped pulse (open motor or a
-                // pulse below the noise floor; finish() reports it).
                 meas.record_pulse(id_before, id_before);
-            }
-
-            // Restore holding voltage and let the tail of the pulse flush
-            // through the pipeline before the next i_before read.
-            hw.send_command(ControlMode::DirectVoltage {
-                vd: vd_hold,
-                vq: 0.0,
-                angle_rad: angle,
-            })
-            .await;
-            for _ in 0..(frames + 2) {
-                hw.wait_telemetry().await;
             }
         }
 

@@ -127,15 +127,14 @@ mod integration_tests {
     #[cfg(feature = "hfi-detect")]
     use super::types::InductanceParams;
 
-    /// Full-pipeline L tolerance. HFI saliency measurement is tight; the
-    /// voltage-pulse fallback (hfi-detect off, e.g. g431) is looser and
-    /// plant-dependent. HFI precision is asserted separately by
-    /// `detect_inductance_matches_virtual_motor`; here the E2E tests only need
-    /// the pipeline to yield a usable L in whichever config is built.
-    #[cfg(feature = "hfi-detect")]
-    const E2E_L_TOL: f32 = 0.15;
-    #[cfg(not(feature = "hfi-detect"))]
-    const E2E_L_TOL: f32 = 0.30;
+    /// Full-pipeline L tolerance, shared by the HFI and voltage-pulse configs
+    /// (both now resolve L to a few percent on these motors). The worst case
+    /// is the gimbal on a 12 V bus (`run_full_detection_high_r_low_vbus`,
+    /// ~6.5%): there the bus barely covers the holding voltage, leaving the
+    /// pulse little headroom, and the ideal sub-step-1 plant adds its
+    /// forward-Euler R·dt/2L discretization bias on top. HFI precision is
+    /// asserted separately by `detect_inductance_matches_virtual_motor`.
+    const E2E_L_TOL: f32 = 0.10;
 
     /// Verify resistance detection against the virtual motor's known R.
     ///
@@ -377,11 +376,11 @@ mod integration_tests {
     /// 20 W) demands 10.3 V of the ~6.9 V a 12 V bus can drive — without the
     /// bus-voltage clamp the resistance step saturates short of its setpoint
     /// and aborts with `UnexpectedMotion`, failing the whole sequence.
-    // HFI-only: high-R + low-vbus leaves the voltage-pulse method almost no
-    // pulse-voltage headroom (v_hold = R·I eats the bus), so it can't measure
-    // L here. This asserts HFI's robustness in that regime.
+    // Runs on both configs (HFI when built, else the voltage-pulse fallback).
+    // High-R + low-vbus is the pulse method's hardest case — v_hold = R·I eats
+    // most of the bus, leaving a floored pulse step — yet the discharge-anchored
+    // absolute-current accumulator still lands within E2E_L_TOL (~6.5%).
     #[test]
-    #[cfg(feature = "hfi-detect")]
     fn run_full_detection_high_r_low_vbus() {
         use super::sweep::DetectionParams;
         use super::types::MotorSize;
@@ -487,12 +486,11 @@ mod integration_tests {
     /// injection one cycle off = 90° of carrier phase); now the lag probe
     /// measures the depth in place, the history ring pairs explicitly and
     /// the |Z| cross-check guards the result.
-    // HFI-only: under dead-time + ADC noise + 1-cycle actuation delay the
-    // voltage-pulse di-window loses too much SNR; this is HFI's robustness
-    // regression (the pipeline-skew fix). Voltage-pulse fix is tracked
-    // separately.
+    // Runs on both configs. For HFI this is the pipeline-skew regression (the
+    // demod once paired currents one cycle off = +1000%). For the voltage-pulse
+    // fallback the 1-cycle delay is exactly what the per-pulse discharge +
+    // argmax edge-find absorbs — it lands within ~1% here.
     #[test]
-    #[cfg(feature = "hfi-detect")]
     fn run_full_detection_nonideal_plant_with_delay() {
         use super::sweep::DetectionParams;
         use super::types::MotorSize;

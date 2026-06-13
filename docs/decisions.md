@@ -123,11 +123,31 @@ their section.
   all `Hfi*` variants (command + status) — g431 rejects an HFI source at
   runtime (`HfiNotConfigured`), it is not a compile-time enum difference;
   removing `ControlMode::SixStep` shifts `Brake`'s discriminant uniformly
-  on every board (host rebuilt in lockstep). Caveat: with `hfi-detect`
-  off, inductance falls to the **voltage-pulse** method, which is
-  currently biased (+18% on the sim) and fragile on the non-ideal plant —
-  a known bug tracked in [TODO.md](TODO.md → Algorithms) to fix before
-  relying on g431's on-device L detection. [flash-size.md history]
+  on every board (host rebuilt in lockstep). With `hfi-detect` off,
+  inductance falls to the **voltage-pulse** method, now fixed (see the
+  next entry) — g431 measures L to a few percent without HFI.
+  [flash-size.md history]
+- **2026-06-13 — voltage-pulse inductance: discharge-anchored, absolute-
+  current accumulator.** It was the g431-only L detector and was biased
+  +15-19% on every motor and failed outright on the non-ideal plant. Root
+  cause (one bug, two faces): the winding never discharged between pulses
+  (the open-loop `vd_hold` restore lasted a few PWM periods, but L/R is
+  far longer), so the current *ratcheted up* — (a) the accumulator's
+  `pulse − R·di/2` term assumed each pulse started from the steady I_hold,
+  over-crediting the inductor as the baseline climbed → the +16%; (b) on a
+  delayed pipeline the still-elevated decaying tail tripped the edge
+  detector with a spurious negative di → `InsufficientSamples`. Fix:
+  (1) the accumulator computes `L = (V_applied − R·i_avg)·dt/di` from the
+  *absolute* current, immune to baseline drift; (2) each pulse first
+  discharges back to I_hold (polls until settled, L/R-agnostic); (3) the
+  application edge is the *argmax* single-period rise, not a fixed
+  threshold — immune to the actuation delay and to ADC noise (the real
+  step dwarfs it). Result on `detection_report`: non-salient motors within
+  ±2% on the realistic plant (5010 drone +0.8%; the ideal column's −2…−6%
+  is the sim's sub-step-1 forward-Euler `R·dt/2L` bias, not the
+  algorithm). Saliency (IPM Lq) and the high-R gimbal on a low bus remain
+  HFI's domain — not g431 targets. `E2E_L_TOL` unified to 0.10 and the two
+  HFI-only E2E regressions un-gated to run on the pulse path too.
 
 ## Host / tooling
 
