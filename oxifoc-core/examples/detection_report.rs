@@ -8,9 +8,9 @@
 //! ```
 
 use oxifoc_core::foc::detection::sweep::{
-    DetectionParams, measure_flux_linkage, measure_flux_linkage_magnitude, measure_inductance,
+    DetectionParams, measure_flux_linkage, measure_flux_linkage_magnitude,
 };
-use oxifoc_core::foc::detection::types::{FluxLinkageParams, InductanceParams, MotorSize};
+use oxifoc_core::foc::detection::types::{FluxLinkageParams, MotorSize};
 use oxifoc_core::foc::detection::virtual_harness::{
     VirtualHardware, VirtualTimer, block_on, run_detection, with_sim,
 };
@@ -359,7 +359,11 @@ fn main() {
     }
     println!();
 
-    // ── HFI frequency benchmark ────────────────────────────────────────
+    // ── HFI frequency benchmark (hfi-detect only) ──────────────────────
+    #[cfg(feature = "hfi-detect")]
+    {
+    use oxifoc_core::foc::detection::sweep::measure_inductance;
+    use oxifoc_core::foc::detection::types::InductanceParams;
     println!("HFI injection frequency (Ld/Lq error at 1kHz vs 2kHz vs 5kHz):");
     println!(
         "  {:<22} {:>14} {:>14} {:>14}",
@@ -406,6 +410,7 @@ fn main() {
         );
     }
     println!();
+    } // end #[cfg(feature = "hfi-detect")] HFI frequency benchmark
 
     // ── Driven flux benchmark ──────────────────────────────────────────
     println!("Driven flux fallback: q-axis vs magnitude (prod: magnitude-first):");

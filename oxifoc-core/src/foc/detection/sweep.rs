@@ -33,6 +33,7 @@ use core::future::Future;
 use super::flux_linkage::{
     FluxLinkageMeasurement, MagnitudeFluxMeasurement, SpinDownFluxMeasurement,
 };
+#[cfg(feature = "hfi-detect")]
 use super::inductance::{HfiInjector, InductanceMeasurement, validate_inductance};
 use super::pi_tuning::{calculate_foc_gains, estimate_bandwidth};
 use super::types::{
@@ -40,6 +41,7 @@ use super::types::{
     VoltagePulseParams,
 };
 use super::voltage_pulse::VoltagePulseMeasurement;
+#[cfg(feature = "hfi-detect")]
 use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
 use crate::foc::fast_math::sqrtf;
@@ -364,6 +366,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
 }
 
 /// Amplitude adaptation context for the HFI loop.
+#[cfg(feature = "hfi-detect")]
 struct HfiAdapt {
     /// Carrier angular frequency (rad/s) for the |Z| solve.
     omega: f32,
@@ -400,6 +403,7 @@ const PIPELINE_LAG_MAX: usize = 4;
 /// Returns `(lag, l_magnitude_estimate)`; `l_magnitude_estimate = 0.0`
 /// when the response was too weak to correlate (open motor — let the
 /// main measurement fail with its own diagnostics).
+#[cfg(feature = "hfi-detect")]
 async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
     hw: &mut H,
     injector: &mut HfiInjector<S>,
@@ -497,6 +501,7 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
 ///
 /// Leaves the motor in `DirectVoltage { vd: vd_hold }` — the caller ramps
 /// down.
+#[cfg(feature = "hfi-detect")]
 async fn hfi_collect<H: DetectionHardware, S: SinCos>(
     hw: &mut H,
     injector: &mut HfiInjector<S>,
@@ -573,11 +578,13 @@ async fn hfi_collect<H: DetectionHardware, S: SinCos>(
 }
 
 /// Number of FFT windows for the amplitude-scouting probe phase.
+#[cfg(feature = "hfi-detect")]
 const HFI_PROBE_CYCLES: u32 = 8;
 
 /// Target HFI ripple current as a fraction of the holding current — large
 /// enough to clear the ADC noise floor, small enough that the rotor stays
 /// firmly locked and the total current stays inside the thermal budget.
+#[cfg(feature = "hfi-detect")]
 const HFI_RIPPLE_FRACTION: f32 = 0.25;
 
 /// Measure motor inductance using rotating HFI.
@@ -596,6 +603,7 @@ const HFI_RIPPLE_FRACTION: f32 = 0.25;
 /// # Returns
 /// * `Ok((ld, lq))` - Measured d-axis and q-axis inductance in Henries
 /// * `Err(DetectionError)` - If measurement failed
+#[cfg(feature = "hfi-detect")]
 pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     hw: &mut H,
     params: &InductanceParams,
@@ -881,15 +889,21 @@ pub async fn measure_inductance_auto<H: DetectionHardware, T: Timer, S: SinCos>(
     params: &InductanceParams,
     pwm_freq_hz: f32,
 ) -> Result<(f32, f32), DetectionError> {
-    let hfi = measure_inductance::<H, T, S>(hw, params, pwm_freq_hz).await;
-    match &hfi {
-        Ok((ld, lq)) if validate_inductance(*ld, *lq).is_ok() => return hfi,
-        Err(DetectionError::MotorNotResponding) => return hfi,
-        _ => {}
+    // HFI saliency measurement (rotating injection + FFT), when built in.
+    // Off → straight to the voltage-pulse method below (the only path on
+    // non-salient / flash-tight boards).
+    #[cfg(feature = "hfi-detect")]
+    {
+        let hfi = measure_inductance::<H, T, S>(hw, params, pwm_freq_hz).await;
+        match &hfi {
+            Ok((ld, lq)) if validate_inductance(*ld, *lq).is_ok() => return hfi,
+            Err(DetectionError::MotorNotResponding) => return hfi,
+            _ => {}
+        }
+        info!("HFI inductance suspicious, falling back to voltage pulse");
+        T::after_millis(500).await;
     }
 
-    info!("HFI inductance suspicious, falling back to voltage pulse");
-    T::after_millis(500).await;
     let v_hold = params.resistance_ohm * params.hold_current_a;
     let pulse_voltage_v = if params.vbus > 0.0 {
         (params.vbus * 0.577 - v_hold).max(0.5)

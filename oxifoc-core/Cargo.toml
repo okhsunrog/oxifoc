@@ -66,7 +66,13 @@ default = ["algorithms", "detection"]
 # unconditionally — wire types and PI math are used outside detection.
 # embassy-futures: runtime-agnostic `select` for the telemetry-sampling
 # timeout in `measure_resistance`.
-detection = ["algorithms", "dep:microfft", "dep:embassy-futures"]
+detection = ["algorithms", "dep:embassy-futures"]
+
+# HFI-based inductance/saliency detection: rotating HF injection + FFT
+# (microfft). Builds on `detection`. When off, `measure_inductance_auto`
+# uses the voltage-pulse method only — wanted on non-salient boards (drone
+# outrunners) and to drop the FFT on flash-tight boards (g431).
+hfi-detect = ["detection", "dep:microfft"]
 
 # Interface Control Document - ergot endpoints and wire types
 icd = ["dep:ergot"]
