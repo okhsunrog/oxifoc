@@ -171,3 +171,110 @@ Powered from 5V_ESC. Filter caps: C67, C68, C69 = 10 uF each.
 | PB7           | H2 / B+              |
 | PB8           | H3 / Z+              |
 | PB9           | CAN_TX               |
+
+---
+
+## Firmware bringup log
+
+### 2026-06-13 — first sensorless bench (ZD2808 700 KV), commit `e7d45a4`
+
+First real-hardware run of the oxifoc-g431 firmware on a **sensorless** motor.
+Motor: ZD2808 700 KV multirotor outrunner, 7 pole pairs (12N14P), rotor free.
+Supply: **12 V / 4 A** lab PSU (CV 12 V, CC 4 A — the CC limit is the real
+physical backstop). Baked config = lab-PSU-safe profile (`RampToZero` failsafe,
+`bus_regen_max_a = 0`). No hall sensors → a Warning-level HallError is expected
+and does not block (detection does not use the hall).
+
+#### HW overcurrent (COMP1/2/4 + DAC3) false-trips at idle — DISABLED
+
+Symptom: on power-up the firmware latches a **Kill OverCurrent at 0 A** (PWM
+disabled). It re-asserts immediately after a host clear, so the device sits in
+the Error latch and refuses motor commands.
+
+Root cause (register dump via a temporary diagnostic in
+`init_overcurrent_protection`):
+- **DAC3 is correct**: `CR=0x0001_0001` (both channels EN), `MCR=0x0003_0003`
+  (both MODE=0b011, on-chip no-buffer), `SR=0x0800_0800` (both DACRDY),
+  `DOR1=DOR2=0x149`=329 → both channels output ≈265 mV.
+- **COMP1/2/4 CSR = `0x4000_0041`**: bit30 VALUE=1 on all three (output high =
+  break asserted), INMSEL=0b100 (DAC3), INPSEL=0 (INP0). So all three
+  comparators see their **+ input above the 265 mV threshold at idle**.
+- A DAC sweep confirms the comparators DO track DAC3 (VALUE=0 at DAC=4095,
+  VALUE=1 at DAC=0) — routing is fine; the **threshold is simply too low**.
+
+So `config.rs::overcurrent_dac_counts` mis-models the comparator input. It
+assumes the COMP sees the shunt node attenuated ×4/7 + 127 mV bias (≈127 mV
+idle, 264 mV at 80 A). The register evidence says the real idle level at the
+COMP + input (PA1/PA7/PB0, shared with OPAMPx_VINP) is **above 265 mV**. The
+current-sense network documented above (22k→3.3 V / 1.5k series / 2.2k→GND)
+gives ~128 mV on its own, so the model is missing a term (OPAMP PGA
+interaction at the shared pad?) or points at the wrong node.
+
+**TODO next session — RESOLVE WITH THE SCHEMATIC**
+([B-G431B-ESC1_schematic.pdf](B-G431B-ESC1_schematic.pdf)): trace the actual
+COMP INP0 node and its true idle bias, recompute the DAC3 threshold, and check
+polarity vs `invert_current_sign` (positive motor current drives the sense node
+*down*, so the trip may need INVERTED polarity / a low-side threshold). Then
+re-enable and bench-validate the trip at a known current.
+
+Fix applied: `motor.rs` `set_break_enable(false)` — HW OCP off until corrected.
+Protection meanwhile: the software measured-overcurrent trip
+(`max_phase_current_a`) + the bench PSU current limit.
+
+#### Detection results vs LCR / nameplate
+
+LCR (Kelvin 4-wire, line-to-line): R_LL ≈ 0.21 Ω @1 kHz, L_LL ≈ 44–54 µH
+(position spread). Per-phase (wye) ≈ R 0.105 Ω, L 24 µH.
+
+| Param | Measured | Expected | Ratio | Note |
+|---|---|---|---|---|
+| R / phase | 0.127 Ω | ~0.105 Ω | 1.2× | residual 800 ns dead-time — OK |
+| Ld | 86 µH | ~24 µH | **3.6×** | inflated |
+| Lq | 122 µH | ~24 µH | **5.1×** | inflated |
+| λ | 1.30 mWb | ~1.13 mWb (from 700 KV) | 1.15× | mild |
+| Kv | 1051 RPM/V | 700 (nameplate) | **1.50× ≈ √3** | normalization |
+
+Two systematic errors, both biasing HIGH:
+1. **L badly inflated** — the g431 voltage-pulse L step: for a low-L motor the
+   pulse voltage needed is small, so the ~0.38 V (800 ns) dead-time distortion
+   dominates `V` in `L = (V − R·i)·dt/di` → L overestimated 3.6–5×.
+2. **Kv off by √3** (≈1.5×) — `Kv = 60/(2π·λ·Pp)` omits the √3 phase/line
+   factor (and λ itself reads +15 %). Decompose vs the SVPWM
+   amplitude-invariance convention.
+
+Implication: a sensorless spin on the **as-measured L** gives 3.6× hot
+current-PI gains (`kp = L·bw`) and a biased observer `−L·Δi` term → **fix L (or
+feed the LCR value ~24 µH) before trusting closed-loop sensorless.**
+
+#### Runaway incident + lesson
+
+`detect <step> --record` streams telemetry at the FOC rate (20 kHz × 44 B ≈
+880 KB/s), flooding the 921600-baud VCP (~92 KB/s); the detect response gets
+stuck behind the backlog, the host appears to hang, and — critically — the
+**device-side detection task keeps driving the motor after the link drops** (it
+runs to completion regardless). Killing the host left the motor oscillating; a
+**probe reset** (boots to `emergency_stop`) was the reliable stop. Lessons:
+(1) never FOC-rate `--record` over UART; (2) detection should abort the drive on
+host link-loss; (3) keep the probe attached as the abort button.
+
+#### Transport / telemetry capture
+
+- **ergot over UART VCP** (`transport-uart`, default) — reliable for commands;
+  telemetry tops out ~2 kHz (link bandwidth).
+- **ergot over RTT** (`transport-rtt` feature) needed a host fix: the attach did
+  a `ScanRegion::Ram` sweep that finds STALE `_SEGGER_RTT` control blocks left
+  by previous firmware images in uninitialized CCMRAM/SRAM2 (reset doesn't clear
+  them) → "multiple control blocks". Fixed by pinning to the live `_SEGGER_RTT`
+  ELF symbol (`ScanRegion::Exact`) in host-lib (both attaches) AND flashprobe-mcp
+  (the `monitor` path) — commit `e7d45a4` / flashprobe-mcp `41e14a2`.
+- **RTT bandwidth on THIS ST-Link ≈ 1.8 kHz effective** (5 kHz request → 37 %
+  arrived; `NoBlockSkip` overflow corrupts COBS frames → ergot decode errors).
+  Not faster than UART here. Full-rate capture needs device-RAM burst-capture
+  (see docs/TODO.md). The parquet pipeline itself is validated (clean schema,
+  5 kHz timebase, M=4 decimation, python-analyzable).
+
+#### Next session
+
+1. Fix the HW OCP threshold + polarity from the schematic, re-enable, validate.
+2. Fix the voltage-pulse L (dead-time) and the √3 in λ/Kv → trustworthy params.
+3. Sensorless cold-start spin attempt with corrected params + gentle limits.
