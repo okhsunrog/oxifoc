@@ -10,7 +10,7 @@ use embassy_time::{Duration, Timer};
 
 use oxifoc_core::clear_rc_w0;
 use oxifoc_core::foc::controller::FocController;
-use oxifoc_core::foc::phase::PhaseManager;
+use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
 use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::foc::velocity::VelocityLoopConfig;
@@ -91,6 +91,22 @@ pub async fn init(
     // Arm the sensorless estimators (back-EMF + HFI) from detected motor
     // params; the angle source stays Hall until the host switches it.
     phase_manager.configure_observers_from_config(config, initial_vbus_v);
+
+    // Sensorless board (config::SENSORLESS): keep the boot angle source off
+    // Hall so the unwired hall inputs don't spam a HallError every cycle. Ride
+    // on the back-EMF observer once it has params; before detection bakes them
+    // hold a Manual angle (also non-hall) — commutation stays inert until the
+    // host drives it, and detection bypasses the source anyway.
+    if crate::config::SENSORLESS {
+        let boot_source = if config.motor_params.is_some() {
+            PhaseSource::Observer
+        } else {
+            PhaseSource::Manual
+        };
+        if phase_manager.set_source(boot_source).is_err() {
+            defmt::warn!("sensorless boot source rejected; staying on Hall");
+        }
+    }
 
     // Initialize CORDIC hardware for fast sin/cos in FOC loop
     CordicSinCos::init(cordic_peri);

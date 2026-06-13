@@ -47,6 +47,16 @@ pub const NTC: NtcConfig = NtcConfig {
     topology: NtcTopology::HighSide,
 };
 
+/// Sensorless operation: no Hall sensors are wired to this board's H1/H2/H3
+/// inputs (the ZD2808 and most drone motors have none). When `true`, the boot
+/// angle source is kept OFF Hall — otherwise the floating hall inputs read an
+/// invalid state (0 or 7) and the firmware raises a `HallError` warning every
+/// FOC cycle. Set `false` for a Hall-sensored motor on this board.
+///
+/// Detection is unaffected either way (it commands the electrical angle
+/// directly via OpenLoop/DirectVoltage, bypassing the angle source).
+pub const SENSORLESS: bool = true;
+
 // ============================================================================
 // PWM Configuration
 // ============================================================================
