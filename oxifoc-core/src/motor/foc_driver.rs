@@ -18,6 +18,7 @@ use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "runtime")]
 use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault, VOLTAGE_HYSTERESIS_MV};
 use crate::foc::phase::{PhaseInput, PhaseProvider};
+use crate::foc::phase_voltage::{ObserverVoltage, PhaseVoltageSense, observer_voltage_source};
 use crate::foc::pwm::{PhasePwm, PhaseState, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::transforms::{clarke, park};
@@ -385,6 +386,15 @@ where
     ov_integral_vs: f32,
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
     uv_integral_vs: f32,
+    /// Phase-voltage converter, `Some` only on boards with phase sensing
+    /// (`BoardConfig::phase_sense`). Drives the measured-voltage observer
+    /// feed; `None` → the observer always integrates the commanded voltage,
+    /// exactly as before this existed.
+    phase_voltage: Option<PhaseVoltageSense>,
+    /// This cycle's raw phase-terminal ADC counts, pushed in by the ISR
+    /// (`set_phase_voltage_raw`) from the ADC snapshot. `None` until a sensing
+    /// board provides them.
+    vphase_raw: Option<[u16; 3]>,
 }
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
@@ -435,7 +445,28 @@ where
             protection_tick: 0,
             ov_integral_vs: 0.0,
             uv_integral_vs: 0.0,
+            phase_voltage: None,
+            vphase_raw: None,
         }
+    }
+
+    /// Install the phase-voltage converter (boot config). Pass
+    /// `PhaseVoltageSense::from_board(&BOARD)` — `None` on boards without phase
+    /// sensing, which leaves the observer on the commanded-voltage path.
+    pub fn set_phase_voltage_sense(&mut self, pv: Option<PhaseVoltageSense>) {
+        self.phase_voltage = pv;
+    }
+
+    /// Mutable access to the phase-voltage converter (e.g. to apply calibrated
+    /// undriven offsets). `None` on boards without phase sensing.
+    pub fn phase_voltage_sense_mut(&mut self) -> Option<&mut PhaseVoltageSense> {
+        self.phase_voltage.as_mut()
+    }
+
+    /// Push this cycle's raw phase-terminal ADC counts (from the ADC snapshot).
+    /// Call from the ISR before `run_foc_cycle`/`step`; `None` clears them.
+    pub fn set_phase_voltage_raw(&mut self, raw: Option<[u16; 3]>) {
+        self.vphase_raw = raw;
     }
 
     /// Apply derating configuration (boot / live config write).
@@ -585,9 +616,19 @@ where
     }
 
     /// Feed the phase provider with this cycle's measurements and the
-    /// causally-matching voltage: the one commanded LAST cycle, which was
-    /// acting while these currents were measured. Stores the new command
-    /// for the next cycle.
+    /// causally-matching voltage. Stores the new command for the next cycle.
+    ///
+    /// Two voltage sources, chosen by [`observer_voltage_source`]:
+    /// - **Commanded** (default; every board without phase filters while
+    ///   driving, and every board with no sensing): the voltage commanded LAST
+    ///   cycle — what was physically applied while these currents were
+    ///   measured (the command computed *this* cycle only acts next period).
+    /// - **Measured**: the phase terminals sampled *this* cycle (concurrent
+    ///   with the currents, so no one-cycle delay). Used when the bridge is
+    ///   high-Z on a sensing board (coasting back-EMF) — or while driving on a
+    ///   board with RC phase filters. Lets the observer track a free-spinning
+    ///   rotor for flying start (mirrors MESC `MOTOR_STATE_TRACKING` and VESC's
+    ///   released-motor observer).
     fn update_phase_with_prev_voltage(
         &mut self,
         v_alpha_new: f32,
@@ -597,10 +638,21 @@ where
         dt: f32,
         now_ticks: u64,
     ) {
+        let bridge_driven = !self.mode.is_high_z();
+        let (v_alpha, v_beta) =
+            match observer_voltage_source(self.phase_voltage.as_ref(), bridge_driven) {
+                ObserverVoltage::Measured => match (self.phase_voltage.as_ref(), self.vphase_raw) {
+                    (Some(pv), Some(raw)) => pv.alpha_beta(raw),
+                    // Policy said Measured but no sample yet (e.g. ADC not wired
+                    // this cycle) — fall back to the commanded path.
+                    _ => (self.v_alpha_prev, self.v_beta_prev),
+                },
+                ObserverVoltage::Commanded => (self.v_alpha_prev, self.v_beta_prev),
+            };
         self.phase.update(
             &PhaseInput {
-                v_alpha: self.v_alpha_prev,
-                v_beta: self.v_beta_prev,
+                v_alpha,
+                v_beta,
                 i_alpha,
                 i_beta,
                 dt,
@@ -1575,6 +1627,114 @@ mod tests {
         fn get_offsets(&self) -> (f32, f32, f32) {
             (0.0, 0.0, 0.0)
         }
+    }
+
+    /// Phase-1 wiring: on a sensing board, a high-Z (`Coast`) bridge must feed
+    /// the *measured* terminal voltage to the back-EMF observer, so it locks
+    /// onto a free-spinning rotor (flying-start readiness). Mirrors MESC
+    /// `MOTOR_STATE_TRACKING` / VESC released-motor tracking. Synthetic coasting
+    /// BEMF is injected as raw ADC counts via `set_phase_voltage_raw`. A
+    /// no-sensing control board gets the same samples and must ignore them.
+    #[test]
+    fn coast_observer_tracks_measured_bemf() {
+        use crate::foc::config::{BoardConfig, PhaseSense};
+        use crate::foc::phase::{BackEmfObserver, Observer};
+        use crate::foc::phase_voltage::PhaseVoltageSense;
+        use crate::foc::wrap_angle;
+
+        const BASE_BOARD: BoardConfig = BoardConfig {
+            shunt_ohms: 0.0005,
+            amp_gain: 10.0,
+            vbus_divider_ratio: (39.0 + 2.2) / 2.2,
+            adc_vref_mv: 3300,
+            adc_max_counts: 4095,
+            initial_vbus_volts: 12.0,
+            max_iq_target_a: 10.0,
+            invert_current_sign: false,
+            max_phase_current_a: 60.0,
+            max_vbus_mv: 57_000,
+            min_vbus_mv: 6_000,
+            max_fet_temp_c: 100.0,
+            max_motor_temp_c: 120.0,
+            phase_sense: None,
+        };
+        const SENSE_BOARD: BoardConfig = BoardConfig {
+            phase_sense: Some(PhaseSense {
+                divider_ratio: (39.0 + 2.2) / 2.2,
+                has_filters: false,
+            }),
+            ..BASE_BOARD
+        };
+        const RATIO: f32 = (39.0 + 2.2) / 2.2;
+        // ADC counts per volt at the *terminal* (inverse of counts_to_volts).
+        const COUNTS_PER_V: f32 = 4095.0 * 1000.0 / (3300.0 * RATIO);
+        const SQRT3_2: f32 = 0.866_025_4;
+
+        // Synthetic PMSM, same operating point as the observer's own no-load
+        // convergence test.
+        let (r, l, lambda) = (0.1f32, 50e-6f32, 0.005f32);
+        let omega = 300.0f32; // electrical rad/s
+        let dt = 1.0 / 20_000.0f32;
+
+        let build = |board: &BoardConfig| {
+            let mut pm = PhaseManager::sensorless();
+            pm.set_observer(Observer::BackEmf(BackEmfObserver::new(r, l, lambda)));
+            let mut d = FocDriver::new(
+                FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+                MockPwm { duties: [0; 3] },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                pm,
+                dt,
+            );
+            d.set_phase_voltage_sense(PhaseVoltageSense::from_board(board));
+            d.set_mode(ControlMode::Coast);
+            d
+        };
+        let mut sensing = build(&SENSE_BOARD);
+        let mut blind = build(&BASE_BOARD); // phase_sense: None
+
+        let mut theta = 1.0f32;
+        for step in 0..40_000u64 {
+            theta = wrap_angle(theta + omega * dt);
+            // Undriven terminals = back-EMF: e = ωλ·(−sinθ, cosθ) in αβ.
+            let v_alpha = -omega * lambda * libm::sinf(theta);
+            let v_beta = omega * lambda * libm::cosf(theta);
+            // Inverse Clarke → per-phase terminal volts, plus a mid-scale common
+            // mode (the 3-input Clarke in alpha_beta cancels it, and it keeps the
+            // raw counts non-negative like real hardware).
+            let va = v_alpha;
+            let vb = -0.5 * v_alpha + SQRT3_2 * v_beta;
+            let vc = -0.5 * v_alpha - SQRT3_2 * v_beta;
+            let to_raw = |v: f32| (2048.0 + v * COUNTS_PER_V) as u16;
+            let raw = [to_raw(va), to_raw(vb), to_raw(vc)];
+
+            sensing.set_phase_voltage_raw(Some(raw));
+            blind.set_phase_voltage_raw(Some(raw)); // ignored: phase_voltage is None
+            let _ = sensing.step(step);
+            let _ = blind.step(step);
+        }
+
+        let obs = sensing.phase().observer();
+        assert!(
+            (obs.velocity().unwrap_or(0.0) - omega).abs() < 0.05 * omega,
+            "coast observer velocity {:?} did not lock to {omega}",
+            obs.velocity()
+        );
+        assert!(obs.is_ready(), "coast observer should be ready (locked)");
+
+        // The no-sensing board got the same samples but must ignore them
+        // (commanded path = 0 V in Coast): no flux, no lock.
+        let blind_obs = blind.phase().observer();
+        // Fed 0 V in Coast (commanded path), it integrates no flux — velocity
+        // stays at standstill, well below the observer's readiness floor.
+        assert!(
+            blind_obs.velocity().unwrap_or(0.0).abs() < 30.0,
+            "no-sensing board must not track from phase samples, got {:?}",
+            blind_obs.velocity()
+        );
+        assert!(!blind_obs.is_ready());
     }
 
     /// CMD_CHANNEL and FLASH_OP_PENDING are process-wide globals — tests
@@ -2894,6 +3054,7 @@ mod tests {
             min_vbus_mv: 8_000,
             max_fet_temp_c: 100.0,
             max_motor_temp_c: 120.0,
+            phase_sense: None,
         };
 
         struct Harness {

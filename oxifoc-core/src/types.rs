@@ -195,6 +195,18 @@ impl ControlMode {
             Self::SixStep { duty } => duty.is_finite(),
         }
     }
+
+    /// Whether the bridge is high-impedance (all FETs off, phases floating) in
+    /// this mode. In a high-Z state the phase terminals show the motor's
+    /// back-EMF, so a board with phase sensing can feed the *measured* terminal
+    /// voltage to the observer (coasting-rotation tracking / flying start).
+    ///
+    /// `Brake` is deliberately excluded: it shorts the low sides (terminals ≈
+    /// 0 V, not floating), so it keeps its own `(0 V, measured-i)` observer
+    /// feed rather than the measured-BEMF path.
+    pub fn is_high_z(&self) -> bool {
+        matches!(self, Self::Stopped | Self::Coast)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]

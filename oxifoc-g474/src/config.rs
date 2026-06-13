@@ -44,6 +44,7 @@ pub const BOARD: BoardConfig = BoardConfig {
     min_vbus_mv: 8_000,        // Undervoltage at 8V
     max_fet_temp_c: 85.0,      // Conservative overtemp threshold
     max_motor_temp_c: 0.0,     // no motor NTC wired
+    phase_sense: None,         // X-NUCLEO-IHM08M1: no phase-voltage sensing wired
 };
 
 /// NTC configuration for X-NUCLEO-IHM08M1

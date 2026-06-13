@@ -30,8 +30,39 @@
 ///     min_vbus_mv: 8_000,          // Undervoltage at 8V
 ///     max_fet_temp_c: 100.0,       // FET overtemp at 100°C
 ///     max_motor_temp_c: 0.0,       // 0 = no motor NTC wired
+///     phase_sense: None,           // no phase-voltage sensing
 /// };
 /// ```
+/// Phase-voltage sensing capability of a board.
+///
+/// "Sensing" means each phase terminal is routed through a resistor divider to
+/// an ADC channel. "Filters" means those same lines additionally carry an RC
+/// low-pass, so the measurement is valid *while the bridge is actively PWMing*
+/// (the switching node is averaged out). Filters imply sensing — the filter
+/// sits on the sense line — which is why `has_filters` lives *inside*
+/// `PhaseSense` rather than as a parallel board flag. Without filters
+/// (`has_filters == false`) the measurement is only meaningful when the bridge
+/// is undriven (all FETs off → terminal voltage = motor back-EMF).
+///
+/// Three board classes fall out of `Option<PhaseSense>`:
+/// - `None` → no sensing (e.g. B-G431B-ESC1, whose phase nets only show the
+///   zero-crossing — useless for a full αβ projection);
+/// - `Some { has_filters: false }` → sensing, no filters (e.g. Cheap FOCer 2):
+///   measured voltage usable only undriven;
+/// - `Some { has_filters: true }` → sensing + filters: measured voltage usable
+///   while driving too.
+///
+/// See `foc::phase_voltage` for the converter and the per-cycle source decision.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhaseSense {
+    /// Divider ratio Vphase / Vadc, e.g. `(39_000.0 + 2_200.0) / 2_200.0` for
+    /// the Cheap FOCer 2 (its phase divider matches the Vbus divider).
+    pub divider_ratio: f32,
+    /// RC phase filters present → measured phase voltage valid while driving.
+    /// `false` → only valid undriven (back-EMF).
+    pub has_filters: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BoardConfig {
     /// Shunt resistance in Ohms (e.g., 0.003 for 3mΩ)
@@ -64,6 +95,11 @@ pub struct BoardConfig {
     /// Maximum motor temperature in Celsius (overtemperature threshold).
     /// 0.0 disables the check (board has no motor NTC wired).
     pub max_motor_temp_c: f32,
+
+    /// Phase-voltage sensing capability. `None` on boards that don't route
+    /// phase terminals to the ADC (the observer then always uses commanded
+    /// voltage). See [`PhaseSense`].
+    pub phase_sense: Option<PhaseSense>,
 }
 
 impl BoardConfig {
@@ -228,6 +264,7 @@ mod tests {
         min_vbus_mv: 8_000,
         max_fet_temp_c: 100.0,
         max_motor_temp_c: 120.0,
+        phase_sense: None,
     };
 
     #[test]

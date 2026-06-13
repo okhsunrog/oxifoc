@@ -237,6 +237,9 @@ pub mod foc {
     /// Shunt resistor current sensing
     pub mod current_sense;
 
+    /// Phase-terminal voltage sensing (back-EMF / undriven rotation detection)
+    pub mod phase_voltage;
+
     /// Sector-based phase current reconstruction for unipolar shunt sensing
     pub mod current_reconstruction;
 

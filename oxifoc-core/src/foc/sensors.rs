@@ -596,6 +596,12 @@ pub struct AdcSnapshot {
     pub ic: u16,
     /// DC bus voltage in millivolts
     pub vbus_mv: u32,
+    /// Phase terminal voltages (raw ADC counts), if the board has phase
+    /// sensing (`BoardConfig::phase_sense`). `None` on boards without it —
+    /// the field is internal (never serialized into wire telemetry), so a
+    /// no-sensing board only carries one `None` discriminant in the cached
+    /// `last_adc`. Converted to volts/αβ by `foc::phase_voltage`.
+    pub vphase: Option<[u16; 3]>,
     /// Temperature readings: (sensor_id, value in 0.1°C)
     /// Using a fixed array to avoid heap allocation
     pub temps: [(TempSensorId, i16); 4],
@@ -612,6 +618,7 @@ impl Default for AdcSnapshot {
             ib: 0,
             ic: 0,
             vbus_mv: 0,
+            vphase: None,
             temps: [(TempSensorId::Fet, 0); 4],
             temp_count: 0,
             seq: 0,
@@ -627,6 +634,7 @@ impl AdcSnapshot {
             ib: 0,
             ic: 0,
             vbus_mv: 0,
+            vphase: None,
             temps: [(TempSensorId::Fet, 0); 4],
             temp_count: 0,
             seq: 0,
@@ -640,10 +648,18 @@ impl AdcSnapshot {
             ib,
             ic,
             vbus_mv,
+            vphase: None,
             temps: [(TempSensorId::Fet, 0); 4],
             temp_count: 0,
             seq,
         }
+    }
+
+    /// Attach raw phase-terminal voltages (ADC counts), for boards with phase
+    /// sensing. Leave unset (`None`) on boards without it.
+    pub fn with_phase_voltages(mut self, vphase: [u16; 3]) -> Self {
+        self.vphase = Some(vphase);
+        self
     }
 
     /// Add a temperature reading

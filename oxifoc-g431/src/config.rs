@@ -32,6 +32,9 @@ pub const BOARD: BoardConfig = BoardConfig {
     min_vbus_mv: 8_000,        // Undervoltage at 8V
     max_fet_temp_c: 100.0,     // FET overtemp at 100°C
     max_motor_temp_c: 0.0,     // no motor NTC wired on B-G431B-ESC1
+    // No phase-voltage sensing: the B-G431B-ESC1 BEMF nets are clamped (only
+    // the zero-crossing is visible), unusable for a full αβ projection.
+    phase_sense: None,
 };
 
 /// NTC configuration for FET temperature sensing on PB14

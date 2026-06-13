@@ -1,6 +1,6 @@
 //! Configuration constants for oxifoc-f405 (Simple FOCer 2 / Cheap FOCer 2)
 
-use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology};
+use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 
 // ============================================================================
@@ -31,6 +31,13 @@ pub const BOARD: BoardConfig = BoardConfig {
     min_vbus_mv: 6_000,        // Undervoltage at 6V (VESC HW_LIM_VIN)
     max_fet_temp_c: 100.0,     // FET overtemp at 100°C
     max_motor_temp_c: 120.0,   // motor winding NTC on PC4
+    // Phase-voltage sensing on PA0/PA1/PA2 (SENS1/2/3), divider = Vbus divider
+    // (39k/2.2k). No RC phase filters on this board → usable only undriven
+    // (back-EMF / coasting-rotation detection), not while PWMing.
+    phase_sense: Some(PhaseSense {
+        divider_ratio: (39.0 + 2.2) / 2.2,
+        has_filters: false,
+    }),
 };
 
 /// On-board PCB/FET NTC thermistor configuration (PA3, ADC123_IN3)
