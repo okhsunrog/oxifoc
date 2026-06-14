@@ -37,17 +37,16 @@ use crate::types::FastTelemetryBatch;
 #[cfg(feature = "std")]
 pub static FAST_TELEM_Q: Churrasco<65536> = Churrasco::new();
 #[cfg(not(feature = "std"))]
-pub static FAST_TELEM_Q: Churrasco<1024> = Churrasco::new();
+pub static FAST_TELEM_Q: Churrasco<2048> = Churrasco::new();
 
 /// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
 /// 0 = streaming disabled. Set by `telemetry_config_server` when host
 /// sends `TelemetryConfig { fast_hz }`.
 pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
 
-/// Decimation counter for the raw diagnostic stream: emit one raw-ADC sample
-/// every `period` FOC cycles. The old CIC anti-alias filter is bypassed — the
-/// frame now carries uncalibrated raw ADC counts (the host post-processes), so
-/// there is nothing to filter.
+/// Decimation counter for the raw diagnostic stream: emit one sample every
+/// `period`-th FOC cycle. The raw-ADC frame is unfiltered (the host does any
+/// anti-alias/decimation), so a plain modulo counter replaces the old CIC.
 static FAST_DECIM_CTR: AtomicU32 = AtomicU32::new(0);
 
 /// Two-stage decimating anti-alias filter (CIC order 2 equivalent).
@@ -178,18 +177,11 @@ pub fn publish_cycle_telemetry(
     if period == 0 {
         return;
     }
-    // Raw diagnostic frame: emit the uncalibrated ADC counts every `period`-th
-    // FOC cycle (no CIC anti-alias — that was for the engineering-unit frame).
-    // `seq` is the FOC-cycle counter, so consecutive emitted samples differ by
-    // `period` (= the host's decimation factor M) and gap detection is unchanged.
-    let _ = (hall, foc); // engineering-unit channels are no longer streamed
+    // Raw diagnostic frame: emit one sample every `period`-th FOC cycle. No CIC
+    // anti-alias — the currents ship as raw ADC counts and the host applies
+    // calibration/decimation downstream, so there is nothing to filter here.
     if FAST_DECIM_CTR.fetch_add(1, Ordering::Relaxed) % period == 0 {
-        let telem = FastTelemetry {
-            ia: adc.ia,
-            ib: adc.ib,
-            ic: adc.ic,
-            seq: seq as u16,
-        };
+        let telem = build_fast_telemetry(&adc, &foc, hall, seq);
         push_fast_telemetry(&telem);
     }
 }
@@ -197,6 +189,44 @@ pub fn publish_cycle_telemetry(
 /// Default maximum samples per batch (fits within 2048-byte MTU for TCP/serial).
 /// Devices can use a smaller batch size via the const generic on `fast_telemetry_stream`.
 pub const DEFAULT_BATCH_SIZE: usize = 32;
+
+/// Build the compact raw diagnostic [`FastTelemetry`] from the cycle's snapshots.
+///
+/// Currents/vbus ship as raw ADC counts / fixed-point so the host reconstructs
+/// engineering units (and `id/iq/iα/iβ`, duty) with the same core math. Only the
+/// non-reconstructable quantities are encoded directly: `angle` (estimator
+/// output), `vd/vq` (PI outputs), `rpm` (filtered observer). Callable from ISR
+/// (no allocation, pure computation).
+pub fn build_fast_telemetry(
+    adc: &AdcSnapshot,
+    foc: &FocOutput,
+    hall: Option<HallSnapshot>,
+    seq: u32,
+) -> FastTelemetry {
+    use core::f32::consts::TAU;
+    // Electrical angle 0..2π → full-scale u16 (wrap-safe). `rem_euclid` is a std
+    // method (absent in no_std), so wrap via truncating cast of the turn count.
+    let turns = foc.angle_rad / TAU;
+    let frac = turns - (turns as i32 as f32);
+    let frac = if frac < 0.0 { frac + 1.0 } else { frac };
+    let angle = (frac * 65536.0) as u16;
+    // Mechanical speed → 2-RPM units (i16). NOTE: `velocity_rad_s` is electrical;
+    // a real deployment divides by pole pairs — irrelevant on the bench path,
+    // where the synthetic generator fills `rpm` directly.
+    let vel = hall.map_or(0.0, |h| h.velocity_rad_s);
+    let rpm = (vel * (60.0 / TAU) * 0.5) as i16;
+    FastTelemetry {
+        ia: adc.ia,
+        ib: adc.ib,
+        ic: adc.ic,
+        vbus: (adc.vbus_mv / 2) as u16, // mV → 2-mV units
+        angle,
+        vd: (foc.vd * 500.0) as i16, // V → 2-mV units (×1000/2)
+        vq: (foc.vq * 500.0) as i16,
+        rpm,
+        seq: seq as u16,
+    }
+}
 
 /// Push a `FastTelemetry` sample into the bbqueue.
 ///

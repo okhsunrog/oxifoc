@@ -232,15 +232,29 @@ pub struct MotorStatus {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg_attr(feature = "runtime", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct FastTelemetry {
-    /// Phase A current — raw ADC counts (uncalibrated)
+    /// Phase A current — raw ADC counts (uncalibrated). Host reconstructs amps
+    /// via `BoardConfig` (vref/counts/amp_gain/shunt) and the per-phase
+    /// zero-current `dc_offsets`; `iα/iβ/id/iq` then follow from Clarke/Park.
     pub ia: u16,
     /// Phase B current — raw ADC counts
     pub ib: u16,
     /// Phase C current — raw ADC counts
     pub ic: u16,
-    /// Sequence number — `u16` (FOC-cycle counter mod 65536). At 20 kHz this
-    /// wraps every ~3.3 s; gap detection uses `wrapping_sub`, so captures shorter
-    /// than that are unambiguous (and a spectrum needs only ~0.2 s).
+    /// Bus voltage in **2 mV** units (u16 → 0..131 V, covers VESC classes).
+    pub vbus: u16,
+    /// Electrical angle, full-scale `u16` (0..2π). Needed host-side for Park.
+    pub angle: u16,
+    /// D-axis applied voltage (PI output) in **2 mV** units (i16 → ±65 V).
+    /// Not reconstructable from currents (depends on PI integrator state).
+    pub vd: i16,
+    /// Q-axis applied voltage (PI output) in **2 mV** units.
+    pub vq: i16,
+    /// Mechanical speed in **2 RPM** units (i16 → ±65534 RPM). Filtered observer
+    /// output — cleaner than host-side Δangle differentiation.
+    pub rpm: i16,
+    /// Sequence number — `u16` (FOC-cycle counter mod 65536). At 20 kHz wraps
+    /// every ~3.3 s; loss detection uses `wrapping_sub` (unambiguous for gaps
+    /// < 1.6 s); host accumulates deltas for the time axis on longer captures.
     pub seq: u16,
 }
 
