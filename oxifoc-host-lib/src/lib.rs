@@ -3,7 +3,7 @@ pub mod discovery;
 pub mod ops;
 pub mod transport;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use core::pin::pin;
 use crossbeam_channel::{Receiver, Sender};
 use defmt_decoder::{DecodeError, Table};
@@ -29,7 +29,6 @@ use oxifoc_core::types::{
 use oxifoc_core::types::{ControlMode, FastTelemetry, FaultResponse, Keyed, ReqId, SlowTelemetry};
 use std::{
     fs,
-    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
@@ -127,19 +126,18 @@ fn next_detect_id() -> ReqId {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Resolve the running firmware ELF path: explicit `cfg.elf`, else the default
-/// g431 release artifact. Used for defmt decoding and for pinning the RTT
-/// control block to its `_SEGGER_RTT` symbol.
-fn resolve_elf_path(cfg: &HostConfig) -> String {
-    cfg.elf.clone().unwrap_or_else(|| {
-        let target_dir = std::env::var("CARGO_TARGET_DIR")
-            .ok()
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxifoc-g431/target"));
-        target_dir
-            .join("thumbv7em-none-eabihf/release/oxifoc-g431")
-            .to_string_lossy()
-            .into_owned()
+/// Resolve the running firmware ELF path from `cfg.elf` (CLI `--elf`). Used both
+/// for defmt decoding and for pinning the RTT control block to the firmware's
+/// `_SEGGER_RTT` symbol. There is deliberately NO default: guessing the wrong
+/// board's ELF silently pins RTT to the wrong address (the link never routes)
+/// and decodes defmt against the wrong table, so a missing path is a hard error.
+fn resolve_elf_path(cfg: &HostConfig) -> Result<String> {
+    cfg.elf.clone().ok_or_else(|| {
+        anyhow!(
+            "no firmware ELF configured — pass --elf <path-to-elf> (or set `elf` in \
+             the config file). It is required for RTT control-block pinning and \
+             defmt decoding; there is no default board."
+        )
     })
 }
 
@@ -352,7 +350,7 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
         }
         #[cfg(feature = "desktop")]
         TransportConfig::Rtt { probe, chip } => {
-            let elf = resolve_elf_path(&cfg);
+            let elf = resolve_elf_path(&cfg)?;
             run_cobs_stream_with_reconnect(
                 move || {
                     let probe = probe.clone();
@@ -1257,7 +1255,7 @@ where
     NS::Profile: Send,
     NS::Target: Send,
 {
-    let elf_path = resolve_elf_path(cfg);
+    let elf_path = resolve_elf_path(cfg)?;
     let elf_bytes =
         fs::read(&elf_path).with_context(|| format!("Failed to read ELF at {elf_path}"))?;
     let table = Table::parse(&elf_bytes)

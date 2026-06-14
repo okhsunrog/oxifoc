@@ -137,6 +137,13 @@ struct Cli {
     #[arg(long)]
     chip: Option<String>,
 
+    /// Path to the running firmware ELF (with `.defmt`). Used for defmt decoding
+    /// AND for pinning the RTT control block to its `_SEGGER_RTT` symbol. Defaults
+    /// to the g431 release artifact — pass this for any other board (e.g. g474),
+    /// otherwise RTT pins the wrong address and the link never routes.
+    #[arg(long)]
+    elf: Option<String>,
+
     /// TCP host (for TCP transport, default: 127.0.0.1)
     #[arg(long)]
     tcp_host: Option<String>,
@@ -826,6 +833,10 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
 
     if let Some(ref chip) = cli.chip {
         cfg.chip = Some(chip.clone());
+    }
+
+    if let Some(ref elf) = cli.elf {
+        cfg.elf = Some(elf.clone());
     }
 
     if let Some(ref host) = cli.tcp_host {
