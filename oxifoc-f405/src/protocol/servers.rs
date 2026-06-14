@@ -161,7 +161,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
 /// State monitor — watches interface state transitions and reacts to disconnect.
 /// Stops motor and disables telemetry when ALL interfaces go down.
 #[embassy_executor::task]
-pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8) {
+pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) {
     use crate::transport::STATE_NOTIFY;
     use ergot::interface_manager::{InterfaceState, Profile};
     use oxifoc_core::runtime::streaming::{FAST_TELEM_PERIOD, FAST_TELEM_Q};
@@ -171,26 +171,14 @@ pub async fn state_monitor(stack: &'static Stack, usb_ident: u8, uart_ident: u8)
     loop {
         defmt::unwrap!(STATE_NOTIFY.wait().await.ok());
 
-        let usb_active = stack.manage_profile(|im| {
-            matches!(
-                im.interface_state(usb_ident),
-                Some(InterfaceState::Active { .. })
-            )
+        let any_active = idents.iter().any(|&id| {
+            stack.manage_profile(|im| {
+                matches!(im.interface_state(id), Some(InterfaceState::Active { .. }))
+            })
         });
-        let uart_active = stack.manage_profile(|im| {
-            matches!(
-                im.interface_state(uart_ident),
-                Some(InterfaceState::Active { .. })
-            )
-        });
-        let any_active = usb_active || uart_active;
 
         if any_active && !any_was_active {
-            defmt::info!(
-                "Interface active — USB={}, UART={}",
-                usb_active,
-                uart_active
-            );
+            defmt::info!("Interface active — link up");
             any_was_active = true;
             critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_active());
         } else if !any_active && any_was_active {
@@ -308,14 +296,41 @@ pub async fn fault_topic_task(stack: &'static Stack) {
 pub fn spawn_servers(
     spawner: &Spawner,
     stack: &'static Stack,
-    usb_ident: u8,
-    uart_ident: u8,
+    idents: &heapless::Vec<u8, 3>,
     defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
 ) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
     spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
     spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
-    spawner.spawn(defmt::unwrap!(state_monitor(stack, usb_ident, uart_ident)));
+    spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
     spawner.spawn(defmt::unwrap!(detect_server(stack)));
     spawner.spawn(defmt::unwrap!(defmt_forwarder(defmt_consumer, stack)));
+}
+
+// ========== RTT Transport workers (feature = "transport-rtt") ==========
+
+/// Worker task for incoming ergot data (RTT down channel)
+#[cfg(feature = "transport-rtt")]
+#[embassy_executor::task]
+pub async fn run_rtt_rx(
+    mut rcvr: crate::transport::RttRxWorker,
+    recv_buf: &'static mut [u8],
+    scratch_buf: &'static mut [u8],
+) {
+    use ergot::interface_manager::InterfaceState;
+    loop {
+        let _ = rcvr
+            .run(InterfaceState::Inactive, recv_buf, scratch_buf)
+            .await;
+    }
+}
+
+/// Worker task for outgoing ergot data (RTT up channel)
+#[cfg(feature = "transport-rtt")]
+#[embassy_executor::task]
+pub async fn run_rtt_tx(mut tx: ergot::transport::rtt::RttWriter) {
+    use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
+    loop {
+        let _ = tx_worker(&mut tx, crate::transport::RTT_OUTQ.stream_consumer()).await;
+    }
 }

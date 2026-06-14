@@ -19,34 +19,43 @@ use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
 use ergot::interface_manager::utils::{cobs_stream, framed_stream};
 use ergot::toolkits::embassy_usb_v0_6 as usb_kit;
 use ergot::toolkits::embedded_io_async_v0_7 as io_kit;
+#[cfg(feature = "transport-rtt")]
+use ergot::transport::rtt::{RttReader, RttWriter};
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 use crate::config::{MAX_PACKET_SIZE, UART_BAUD, UART_RX_BUF_LEN, UART_TX_BUF_LEN};
-use crate::config::{UART_OUT_QUEUE_SIZE, USB_OUT_QUEUE_SIZE};
+use crate::config::{RTT_OUT_QUEUE_SIZE, UART_OUT_QUEUE_SIZE, USB_OUT_QUEUE_SIZE};
 use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 
 // ========== Multi-Interface Definition ==========
+//
+// All three sink variants are always compiled (the RTT sink is the same
+// `IoInterface` family as UART); only init / registration / workers are gated
+// per `transport-*` feature. The Router has capacity for all three.
 
 type UsbQ = &'static UsbQueue;
 type UartQ = &'static UartQueue;
+type RttQ = &'static RttQueue;
 
 ergot::multi_interface! {
     pub enum McSink for McInterface {
         Usb(EmbassyInterface<UsbQ>),
         Uart(IoInterface<UartQ>),
+        Rtt(IoInterface<RttQ>),
     }
 }
 
 // ========== Type Aliases ==========
 
 pub type Rng = rng::Rng<'static, peripherals::RNG>;
-pub type McRouter = Router<McInterface, Rng, 2, 0>;
+pub type McRouter = Router<McInterface, Rng, 3, 0>;
 pub type Stack = NetStack<CriticalSectionRawMutex, McRouter>;
 
 pub type UsbQueue = usb_kit::Queue<USB_OUT_QUEUE_SIZE, AtomicCoord>;
 pub type UartQueue = io_kit::Queue<UART_OUT_QUEUE_SIZE, AtomicCoord>;
+pub type RttQueue = io_kit::Queue<RTT_OUT_QUEUE_SIZE, AtomicCoord>;
 
 pub type AppDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
@@ -61,6 +70,12 @@ pub type UartRxWorker = ergot::interface_manager::transports::eio::RxWorker<
     UartReader,
     RouterFrameProcessor,
 >;
+#[cfg(feature = "transport-rtt")]
+pub type RttRxWorker = ergot::interface_manager::transports::eio::RxWorker<
+    &'static Stack,
+    RttReader,
+    RouterFrameProcessor,
+>;
 
 // ========== Static Storage ==========
 
@@ -70,12 +85,18 @@ static STACK_CELL: StaticCell<Stack> = StaticCell::new();
 /// Output queues (one per interface)
 pub static USB_OUTQ: UsbQueue = usb_kit::Queue::new();
 pub static UART_OUTQ: UartQueue = io_kit::Queue::new();
+#[cfg(feature = "transport-rtt")]
+pub static RTT_OUTQ: RttQueue = io_kit::Queue::new();
 
 /// State notification queue — woken on interface state transitions
 pub static STATE_NOTIFY: WaitQueue = WaitQueue::new();
 
 /// RTT defmt channel storage
 static RTT_DEFMT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
+#[cfg(feature = "transport-rtt")]
+static RTT_ERGOT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
+#[cfg(feature = "transport-rtt")]
+static RTT_ERGOT_DOWN: StaticCell<rtt_target::DownChannel> = StaticCell::new();
 
 // USB wire storage and EP buffer
 static USB_STORAGE: usb_kit::WireStorage<256, 256, 64, 256> = usb_kit::WireStorage::new();
@@ -101,8 +122,10 @@ bind_interrupts!(pub struct RngIrqs {
 
 // ========== Initialization ==========
 
-/// Initialize RTT + network for defmt logging. Must be called before any defmt macros.
+/// Initialize RTT + network for defmt logging (no ergot-over-RTT interface).
 /// Returns a DefmtConsumer for forwarding frames over the ergot network.
+/// Used when `transport-rtt` is disabled.
+#[cfg(not(feature = "transport-rtt"))]
 pub fn init_defmt() -> ergot::logging::defmt_sink::DefmtConsumer {
     use ergot::logging::defmt_sink;
     let channels = rtt_init! {
@@ -112,6 +135,64 @@ pub fn init_defmt() -> ergot::logging::defmt_sink::DefmtConsumer {
     };
     let defmt_up = RTT_DEFMT_UP.init(channels.up.0);
     defmt_sink::init_network_and_rtt(defmt_up)
+}
+
+/// RTT transport handles (ergot over RTT channels; defmt stays on channel 0).
+#[cfg(feature = "transport-rtt")]
+pub struct RttTransport {
+    pub rx_worker: RttRxWorker,
+    pub tx: RttWriter,
+}
+
+/// Initialize RTT: defmt sink (RTT ch0 + network forwarding) **and** an ergot
+/// interface on the ergot up/down channels, registered on the Router. Replaces
+/// `init_defmt` when `transport-rtt` is enabled (one `rtt_init!` owns the
+/// control block, so defmt and ergot channels are declared together). Needs the
+/// stack, so call right after `init_stack`.
+#[cfg(feature = "transport-rtt")]
+pub fn init_rtt(
+    stack: &'static Stack,
+) -> (ergot::logging::defmt_sink::DefmtConsumer, RttTransport, u8) {
+    use ergot::logging::defmt_sink;
+
+    let channels = rtt_init! {
+        up: {
+            0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
+            1: { size: 8192, mode: NoBlockSkip, name: "ergot" }
+        }
+        down: {
+            0: { size: 1024, name: "ergot-down" }
+        }
+    };
+    let defmt_consumer = defmt_sink::init_network_and_rtt(RTT_DEFMT_UP.init(channels.up.0));
+
+    let rtt_rx = RttReader::new(RTT_ERGOT_DOWN.init(channels.down.0));
+    let rtt_tx = RttWriter::new(RTT_ERGOT_UP.init(channels.up.1));
+
+    let sink = McSink::Rtt(cobs_stream::Sink::new(
+        RTT_OUTQ.stream_producer(),
+        MAX_PACKET_SIZE as u16,
+    ));
+    let ident = defmt::unwrap!(
+        stack.manage_profile(|router| router.register_interface(sink)),
+        "RTT interface registration failed"
+    );
+    let net_id = defmt::unwrap!(stack.manage_profile(|router| router.net_id_of(ident)));
+
+    let rx_worker = RttRxWorker::new(stack, rtt_rx, RouterFrameProcessor::new(net_id), ident)
+        .with_liveness(LivenessConfig {
+            timeout_ms: LIVENESS_TIMEOUT_MS,
+        })
+        .with_state_notify(&STATE_NOTIFY);
+
+    (
+        defmt_consumer,
+        RttTransport {
+            rx_worker,
+            tx: rtt_tx,
+        },
+        ident,
+    )
 }
 
 /// Initialize the ergot Router stack with hardware RNG.

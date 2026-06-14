@@ -10,3 +10,7 @@ use crate::config::MAX_PACKET_SIZE;
 pub static USB_RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
 pub static UART_RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
 pub static UART_SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+#[cfg(feature = "transport-rtt")]
+pub static RTT_RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
+#[cfg(feature = "transport-rtt")]
+pub static RTT_SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();

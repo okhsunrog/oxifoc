@@ -16,6 +16,9 @@ default = ["transport-usb", "transport-uart"]
 transport-usb = []
 # UART on USART3 (PB10 TX / PB11 RX) for Cheap FOCer 2
 transport-uart = []
+# ergot over RTT channel 1 (defmt shares ch0). Diagnostic transport — high-rate
+# telemetry over the debug probe; adds a third interface alongside USB/UART.
+transport-rtt = ["ergot/rtt"]
 
 [dependencies]
 # Embassy + Cortex-M

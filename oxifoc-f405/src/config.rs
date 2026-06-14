@@ -87,6 +87,9 @@ pub const USB_OUT_QUEUE_SIZE: usize = 4096;
 /// Size of outgoing packet queue for ergot over UART (COBS stream)
 pub const UART_OUT_QUEUE_SIZE: usize = 4096;
 
+/// Size of outgoing packet queue for ergot over RTT (COBS stream)
+pub const RTT_OUT_QUEUE_SIZE: usize = 4096;
+
 /// Maximum packet size for ergot framing
 pub const MAX_PACKET_SIZE: usize = 512;
 
