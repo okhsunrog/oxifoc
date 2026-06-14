@@ -82,6 +82,13 @@ hfi = []
 # outrunners) and to drop the FFT on flash-tight boards (g431).
 hfi-detect = ["detection", "dep:microfft"]
 
+# Bench experiment: replace the inductance step with a one-lock R(f)/L(f)
+# frequency sweep (`measure_impedance_sweep`), logging the complex impedance at
+# each carrier frequency over RTT. Reuses the HFI lock/probe/current-budget, so
+# it builds on `hfi-detect`. Off in all shipping builds — debug/characterization
+# only (overlay against a bench LCR sweep).
+impedance-sweep = ["hfi-detect"]
+
 # Interface Control Document - ergot endpoints and wire types
 icd = ["dep:ergot"]
 

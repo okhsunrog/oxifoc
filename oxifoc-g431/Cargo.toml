@@ -19,6 +19,12 @@ transport-rtt = ["ergot/rtt"]
 # On-device motor detection (detect server + calibration sweeps). Default-on;
 # turning it off is a measured −15.5 KB reserve (docs/flash-size.md).
 detection = ["oxifoc-core/detection"]
+# HFI inductance/saliency detection (rotating injection + FFT). Off by default
+# on this non-salient drone ESC; enable for HFI bench work.
+hfi-detect = ["oxifoc-core/hfi-detect"]
+# Bench experiment: inductance step becomes a one-lock R(f)/L(f) frequency sweep
+# logged over RTT (see oxifoc-core `impedance-sweep`). Debug/characterization only.
+impedance-sweep = ["oxifoc-core/impedance-sweep"]
 
 [dependencies]
 # Embassy dependencies

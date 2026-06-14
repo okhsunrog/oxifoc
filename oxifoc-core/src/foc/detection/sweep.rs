@@ -336,10 +336,19 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     // The current loop must actually have converged on the setpoints: a
     // rotor that isn't locked (cogging past detents, oscillating PI) still
     // averages to *some* vd/id, yielding a plausible-but-wrong R that then
-    // poisons everything downstream (inductance comp, PI tuning). 30%
-    // tolerance — the settle dwell is generous, so an honest loop sits much
-    // closer than that.
-    if (id_low - i_low).abs() > 0.3 * i_low || (id_high - i_high).abs() > 0.3 * i_high {
+    // poisons everything downstream (inductance comp, PI tuning).
+    //
+    // Tolerance is 30% of the setpoint but never tighter than SETTLE_TOL_FLOOR_A:
+    // at a low probe setpoint (e.g. 0.1 A) the inverter dead-time biases the
+    // settled current by a fixed ~0.04 A on the g431, which alone exceeds a bare
+    // 30% (0.03 A) and rejects a perfectly good measurement. The 2-point ΔV/ΔI is
+    // offset-robust — a constant current bias cancels in ΔI — so a loose landing
+    // at the low point does NOT bias R; only gross motion (≫ the floor) should
+    // fail here, and the floor still catches that.
+    const SETTLE_TOL_FLOOR_A: f32 = 0.15;
+    let tol_low = (0.3 * i_low).max(SETTLE_TOL_FLOOR_A);
+    let tol_high = (0.3 * i_high).max(SETTLE_TOL_FLOOR_A);
+    if (id_low - i_low).abs() > tol_low || (id_high - i_high).abs() > tol_high {
         debug!(
             "R meas: current didn't settle (id {} vs {} / {} vs {})",
             id_low, i_low, id_high, i_high
@@ -1009,6 +1018,243 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
     let lq = results[1].1; // angle π/2 = q-axis
     info!("Voltage-pulse inductance measurement complete");
     Ok((ld, lq))
+}
+
+/// Carrier frequencies swept by [`measure_impedance_sweep`], as **fractions of
+/// the PWM frequency** so the list self-scales to the loop and stays inside the
+/// synchronous-demod limit. The carrier is sampled once per PWM period, so
+/// `1/frac` is the samples-per-carrier-period: clean sine demod needs `≥4`, hence
+/// the top fraction is `~f_sw/4.3` (not `f_sw/3` — 3 samples/period is below a
+/// usable sine, and `f_sw/2` degenerates the carrier to a sign flip, killing the
+/// quadrature → L entirely). The fractions are also deliberately **off integer
+/// reciprocals** (no `1/4`, `1/8`, …): at an exact `1/N` ratio the carrier phase
+/// locks to `N` fixed points and the in-phase (`corr_i`→R) and quadrature
+/// (`corr_q`→ωL) projections fall on disjoint sample sets, so any even/odd
+/// measurement asymmetry biases R against L — detuning precesses the phase grid
+/// and interleaves them. On the 20 kHz g431 loop this is
+/// `[500, 900, 1680, 2700, 3700, 4640] Hz`: it brackets the bench LCR 1 kHz point
+/// and the ~5 kHz HFI band, but **cannot reach the bench 10 kHz point** (that is
+/// `f_sw/2` here) — compare the R(f)/L(f) trend, not that single point.
+#[cfg(feature = "impedance-sweep")]
+const SWEEP_FREQ_FRACTIONS: [f32; 6] = [
+    0.025, // f_sw/40 ≈ 500 Hz  (40 samples/carrier period)
+    0.045, //         ≈ 900 Hz  (22.2)
+    0.084, //         ≈ 1680 Hz (11.9)
+    0.135, //         ≈ 2700 Hz (7.4)
+    0.185, //         ≈ 3700 Hz (5.4)
+    0.232, //         ≈ 4640 Hz (4.3) — top: off f_sw/4 so the phase grid precesses
+];
+
+/// Accumulate the in-phase and quadrature current response to the rotating
+/// carrier at a **known** pipeline lag, and solve the *complex* impedance.
+///
+/// Identical inner loop to [`probe_hfi_pipeline_lag`] (read → correlate → send),
+/// but at one fixed `lag` instead of scanning, and it keeps both projections:
+/// `corr_i` (onto `sin φ`) carries the in-phase / resistive response, `corr_q`
+/// (onto `−cos φ`) the quadrature / inductive one. Each held command drives the
+/// current at the period *centre*, so the carrier has advanced `ω_c·dt/2` by then;
+/// de-rotating the complex sum `corr_i + j·corr_q` by that half step makes its
+/// argument the true impedance angle `ψ = atan2(ωL, R)`. With `|Z| = A/|i|` this
+/// yields `R = |Z|·cos ψ` and `L = |Z|·sin ψ / ω_c` directly — no assumed R,
+/// unlike the magnitude-only `|Z|` solve the production HFI path uses.
+///
+/// Returns `(r_ac, l, |Z|)`; `r_ac` falls back to the supplied `resistance_ohm`
+/// and `l` to `0.0` when the response is too weak to resolve.
+#[cfg(feature = "impedance-sweep")]
+async fn measure_impedance_at<H: DetectionHardware, S: SinCos>(
+    hw: &mut H,
+    injector: &mut HfiInjector<S>,
+    vd_hold: f32,
+    dt: f32,
+    lag: u32,
+    resistance_ohm: f32,
+) -> (f32, f32, f32) {
+    let omega_c = injector.omega_hfi();
+    let amp = injector.voltage_amplitude();
+    let lag = (lag as usize).clamp(1, PIPELINE_LAG_MAX);
+    // Accumulate over a whole number of carrier periods. Use the EXACT
+    // samples-per-period (not rounded): `round(N·spp_exact)` spans ≈ N whole
+    // periods even at a non-integer ratio, so the DC-hold projection and the
+    // fundamental both close cleanly. `N·round(spp)` instead leaves a partial
+    // period whose leakage corrupts the *phase* (the R/L split) while |Z| — the
+    // norm — survives; the detuned sweep frequencies are non-integer ratios, so
+    // this is exactly where it bites.
+    let spp_exact = (core::f32::consts::TAU / (omega_c * dt)).max(2.0);
+    let warmup = (3.0 * spp_exact + 0.5) as usize + lag;
+    let accum = (16.0 * spp_exact + 0.5) as usize;
+
+    let mut hist = [(0.0f32, 0.0f32); 8]; // (direction angle, carrier phase)
+    let mut corr_q = 0.0f32;
+    let mut corr_i = 0.0f32;
+
+    for k in 0..(warmup + accum) {
+        let _telem = hw.wait_telemetry().await;
+        let (ia, ib, _ic) = hw.read_phase_currents();
+        let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+
+        if k >= warmup {
+            let (theta, phase) = hist[(k + 8 - lag) % 8];
+            let (sin_t, cos_t) = S::sin_cos(theta);
+            let (sin_p, cos_p) = S::sin_cos(phase);
+            let i_dir = i_alpha * cos_t + i_beta * sin_t;
+            corr_q += i_dir * (-cos_p);
+            corr_i += i_dir * sin_p;
+        }
+
+        let theta = injector.injection_angle();
+        let phase = injector.carrier_phase();
+        let (v_a, v_b) = injector.step(dt);
+        hw.send_command(ControlMode::DirectVoltage {
+            vd: vd_hold + v_a,
+            vq: v_b,
+            angle_rad: 0.0,
+        })
+        .await;
+        hist[k % 8] = (theta, phase);
+    }
+
+    let n = accum as f32;
+    let mag = sqrtf(corr_q * corr_q + corr_i * corr_i);
+    let i_amp = 2.0 * mag / n;
+    if i_amp < 1e-5 || amp <= 0.0 || mag < 1e-9 {
+        return (resistance_ohm, 0.0, resistance_ohm);
+    }
+    let z = amp / i_amp;
+    // De-rotate (corr_i + j·corr_q) by the half-step dwell ω_c·dt/2 so the
+    // argument becomes the impedance angle: real part ∝ R, imag part ∝ ωL.
+    let (sin_d, cos_d) = S::sin_cos(omega_c * dt * 0.5);
+    let re = corr_i * cos_d - corr_q * sin_d; // ∝ R
+    let im = corr_i * sin_d + corr_q * cos_d; // ∝ ωL
+    let r_ac = (z * re / mag).max(0.0);
+    let l = (z * im / mag / omega_c).max(0.0);
+    (r_ac, l, z)
+}
+
+/// **Experiment (feature `impedance-sweep`):** map R(f) and L(f) on the d axis.
+///
+/// Locks the rotor on the d axis **once**, then sweeps the HFI carrier across
+/// [`SWEEP_FREQ_FRACTIONS`] of `f_sw`, extracting the complex impedance with
+/// [`measure_impedance_at`] — so both the AC resistance and the inductance fall
+/// out of a single locked measurement. Logs `(f, V, |Z|, R, L)` per row so the
+/// on-device curve can be overlaid on a bench LCR sweep (read it from RTT).
+///
+/// Reuses the production safety path verbatim: the same rotor lock, the same
+/// [`settled_hold_voltage`], the same command→apply [`probe_hfi_pipeline_lag`],
+/// and the same current budget — the amplitude is `I_target·|Z(f)|` predicted
+/// from one seed L estimate, so the ripple stays ≈ the target at every frequency
+/// (`|Z| ≥ R` keeps it within budget) and never trips the bench PSU.
+///
+/// Returns the d-axis L at the highest swept frequency (the AC inductance the
+/// current loop actually sees) so the caller still yields a normal inductance
+/// result; the full R(f)/L(f) table lives in the log.
+#[cfg(feature = "impedance-sweep")]
+pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
+    hw: &mut H,
+    params: &InductanceParams,
+    pwm_freq_hz: f32,
+) -> Result<(f32, f32), DetectionError> {
+    info!("Starting impedance sweep R(f)/L(f) (experiment)...");
+    let dt = 1.0 / pwm_freq_hz;
+    let ramp_steps = 50u32;
+    let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
+
+    // Lock the rotor on the d axis (angle 0) at the holding current.
+    for i in 1..=ramp_steps {
+        let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: 0.0,
+            current,
+            velocity_rad_s: 0.0,
+            pi_gains: if i == 1 { det_gains } else { None },
+        })
+        .await;
+        T::after_millis(10).await;
+    }
+    T::after_millis(u64::from(params.settle_time_ms)).await;
+    let vd_hold =
+        settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
+
+    // Voltage headroom above the hold (so the injection never saturates the bus).
+    let headroom = if params.vbus > 0.0 {
+        ((params.vbus * 0.577 - vd_hold) * 0.9).max(0.1)
+    } else {
+        f32::INFINITY
+    };
+
+    // Probe the command→apply pipeline lag (and a seed |Z|→L) once at the
+    // default carrier. The lag is the FOC-cycle pipeline depth — frequency
+    // independent — so it is reused for every swept frequency; the seed L sizes
+    // the per-frequency amplitude. The probe current is capped at I·R (|Z| ≥ R).
+    let probe_v = (HFI_PROBE_CURRENT_A * params.resistance_ohm)
+        .max(0.2)
+        .min(headroom);
+    let mut injector = HfiInjector::<S>::new(params.hfi_frequency_hz, probe_v, pwm_freq_hz);
+    let (lag, l_seed) =
+        probe_hfi_pipeline_lag::<H, S>(hw, &mut injector, vd_hold, dt, params.resistance_ohm).await;
+
+    let i_target = clamp_f32(
+        HFI_RIPPLE_FRACTION * params.hold_current_a,
+        0.05,
+        HFI_PROBE_CURRENT_A,
+    );
+    info!(
+        "=== impedance sweep (single rotor lock, vd_hold={}V, lag={}) ===",
+        vd_hold, lag
+    );
+    // The returned L is the highest-frequency (best ωL-SNR) point, from the
+    // phase-invariant |Z| magnitude — the AC inductance the current loop sees.
+    // The full curve is in the log.
+    let mut l_return = 0.0f32;
+    for &frac in SWEEP_FREQ_FRACTIONS.iter() {
+        let f = frac * pwm_freq_hz;
+        let omega = core::f32::consts::TAU * f;
+        // Predict |Z(f)| from the seed L so the amplitude draws ≈ i_target at
+        // every frequency without a per-frequency adaptation loop.
+        let z_pred = sqrtf(
+            params.resistance_ohm * params.resistance_ohm + (omega * l_seed) * (omega * l_seed),
+        )
+        .max(params.resistance_ohm);
+        let v = clamp_f32(i_target * z_pred, 0.2, headroom);
+        let mut inj = HfiInjector::<S>::new(f, v, pwm_freq_hz);
+        let (r_f, l_f, z) =
+            measure_impedance_at::<H, S>(hw, &mut inj, vd_hold, dt, lag, params.resistance_ohm)
+                .await;
+        // Robust L from the |Z| magnitude and the known DC R: phase-invariant,
+        // trustworthy where the phase-sensitive R/L split is not. At low f, |Z|≈R
+        // so this is noisy (small √ of a difference); at mid/high f, ωL dominates
+        // and it is the reliable inductance. The phase split is logged alongside
+        // as a diagnostic — a clean curve there means the carrier phase is well
+        // calibrated; ragged R/L means it is not (then |Z|·L is what to trust).
+        let l_from_z = if z > params.resistance_ohm {
+            sqrtf(z * z - params.resistance_ohm * params.resistance_ohm) / omega
+        } else {
+            0.0
+        };
+        info!(
+            "Zsweep f={} Hz V={} |Z|={} L|Z|={} H  (phase-split R={} L={})",
+            f, v, z, l_from_z, r_f, l_f
+        );
+        l_return = l_from_z;
+    }
+
+    // Ramp the hold back down and stop.
+    for i in (0..ramp_steps).rev() {
+        let vd = vd_hold * (i as f32 / ramp_steps as f32);
+        hw.send_command(ControlMode::DirectVoltage {
+            vd,
+            vq: 0.0,
+            angle_rad: 0.0,
+        })
+        .await;
+        T::after_millis(10).await;
+    }
+    hw.send_command(ControlMode::Stopped).await;
+    T::after_millis(100).await;
+
+    if l_return <= 0.0 {
+        return Err(DetectionError::LowConfidence);
+    }
+    Ok((l_return, l_return))
 }
 
 /// Measure inductance: HFI first, voltage-pulse fallback when HFI fails.
