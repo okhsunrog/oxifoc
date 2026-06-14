@@ -63,17 +63,12 @@ async fn main(spawner: Spawner) {
 
     defmt::info!("NUCLEO-G474RE clock initialized: 170MHz SYSCLK from 24MHz HSE");
 
-    // ========== STEP 2: Initialize defmt RTT + RNG + Ergot Router Stack ==========
-    transport::init_defmt_rtt();
-
+    // ========== STEP 2: Initialize RNG + Ergot Router Stack ==========
     let rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
     let stack = transport::init_stack(rng);
 
-    // ========== STEP 3: Initialize UART Transport (LPUART1 VCP) ==========
-    let (uart_transport, uart_ident) = transport::init_uart(stack, p.LPUART1, p.PA2, p.PA3);
-
-    // ========== STEP 4: Initialize USB Transport ==========
-    let (usb_transport, usb_ident) = transport::init_usb(stack, p.USB, p.PA12, p.PA11);
+    // ========== STEP 3: Initialize RTT Transport (ergot + defmt) ==========
+    let (rtt_transport, ident) = transport::init_rtt(stack);
 
     // ========== STEP 5: Initialize Hardware Peripherals ==========
 
@@ -92,33 +87,18 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 8: Spawn Transport and Protocol Tasks ==========
 
-    // Spawn USB tasks
-    spawner.spawn(defmt::unwrap!(protocol::servers::usb_task(
-        usb_transport.usb_dev
+    // Spawn RTT I/O workers
+    spawner.spawn(defmt::unwrap!(protocol::servers::run_rx(
+        rtt_transport.rx_worker,
+        protocol::RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+        protocol::SCRATCH_BUF.init_with(|| [0u8; 64]),
     )));
-    spawner.spawn(defmt::unwrap!(protocol::servers::run_usb_rx(
-        usb_transport.rx_worker,
-        protocol::USB_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-    )));
-    spawner.spawn(defmt::unwrap!(protocol::servers::run_usb_tx(
-        usb_transport.ep_in,
-        transport::USB_OUTQ.framed_consumer()
+    spawner.spawn(defmt::unwrap!(protocol::servers::run_tx_rtt(
+        rtt_transport.tx
     )));
 
-    // Spawn UART tasks
-    spawner.spawn(defmt::unwrap!(protocol::servers::run_uart_rx(
-        uart_transport.rx_worker,
-        protocol::UART_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-        protocol::UART_SCRATCH_BUF.init_with(|| [0u8; 64]),
-    )));
-    spawner.spawn(defmt::unwrap!(protocol::servers::run_uart_tx(
-        uart_transport.tx,
-        stack,
-        uart_ident
-    )));
-
-    // Spawn protocol servers
-    protocol::servers::spawn_servers(&spawner, stack, usb_ident, uart_ident);
+    // Spawn protocol servers (incl. fast telemetry + synthetic generator)
+    protocol::servers::spawn_servers(&spawner, stack, ident);
 
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);

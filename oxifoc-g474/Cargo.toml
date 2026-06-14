@@ -44,6 +44,7 @@ ergot = { git = "https://github.com/okhsunrog/ergot", rev = "9fd9d5a4a513bb323d6
     "embassy-time",
     "disable-cache-padding",
     "defmt-sink-rtt",
+    "rtt",
 ] }
 
 static_cell = "2.1"
