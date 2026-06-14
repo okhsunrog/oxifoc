@@ -10,6 +10,16 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[features]
+# ergot transports. USB + UART are the production interfaces (both default-on,
+# run simultaneously). transport-rtt adds an ergot-over-RTT interface (defmt
+# shares RTT channel 0) for throughput diagnostics — it pulls in the ergot `rtt`
+# feature and the synthetic telemetry generator (this board has no FOC ISR).
+default = ["transport-usb", "transport-uart"]
+transport-usb = []
+transport-uart = []
+transport-rtt = ["ergot/rtt"]
+
 [dependencies]
 # Embassy dependencies (main branch with async flash support for G4)
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
@@ -44,7 +54,6 @@ ergot = { git = "https://github.com/okhsunrog/ergot", rev = "9fd9d5a4a513bb323d6
     "embassy-time",
     "disable-cache-padding",
     "defmt-sink-rtt",
-    "rtt",
 ] }
 
 static_cell = "2.1"

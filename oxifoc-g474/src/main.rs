@@ -64,11 +64,32 @@ async fn main(spawner: Spawner) {
     defmt::info!("NUCLEO-G474RE clock initialized: 170MHz SYSCLK from 24MHz HSE");
 
     // ========== STEP 2: Initialize RNG + Ergot Router Stack ==========
+    // Stack first (no defmt), then the RTT/defmt sink, then the other transports
+    // (which log via defmt). Idents of every registered interface are collected
+    // for the state monitor.
     let rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
     let stack = transport::init_stack(rng);
 
-    // ========== STEP 3: Initialize RTT Transport (ergot + defmt) ==========
-    let (rtt_transport, ident) = transport::init_rtt(stack);
+    // ========== STEP 3: RTT (defmt sink; ergot interface when transport-rtt) ==
+    #[cfg(not(feature = "transport-rtt"))]
+    transport::init_defmt_rtt();
+    #[cfg(feature = "transport-rtt")]
+    let (rtt_transport, rtt_ident) = transport::init_rtt(stack);
+
+    // ========== STEP 4: UART (LPUART1 VCP) + USB transports ==========
+    #[cfg(feature = "transport-uart")]
+    let (uart_transport, uart_ident) = transport::init_uart(stack, p.LPUART1, p.PA2, p.PA3);
+    #[cfg(feature = "transport-usb")]
+    let (usb_transport, usb_ident) = transport::init_usb(stack, p.USB, p.PA12, p.PA11);
+
+    // Collect the idents of every registered interface for the state monitor.
+    let mut idents: heapless::Vec<u8, 3> = heapless::Vec::new();
+    #[cfg(feature = "transport-rtt")]
+    let _ = idents.push(rtt_ident);
+    #[cfg(feature = "transport-uart")]
+    let _ = idents.push(uart_ident);
+    #[cfg(feature = "transport-usb")]
+    let _ = idents.push(usb_ident);
 
     // ========== STEP 5: Initialize Hardware Peripherals ==========
 
@@ -87,18 +108,52 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 8: Spawn Transport and Protocol Tasks ==========
 
-    // Spawn RTT I/O workers
-    spawner.spawn(defmt::unwrap!(protocol::servers::run_rx(
-        rtt_transport.rx_worker,
-        protocol::RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-        protocol::SCRATCH_BUF.init_with(|| [0u8; 64]),
-    )));
-    spawner.spawn(defmt::unwrap!(protocol::servers::run_tx_rtt(
-        rtt_transport.tx
-    )));
+    // Spawn RTT I/O workers (ergot over RTT)
+    #[cfg(feature = "transport-rtt")]
+    {
+        spawner.spawn(defmt::unwrap!(protocol::servers::run_rtt_rx(
+            rtt_transport.rx_worker,
+            protocol::RTT_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+            protocol::RTT_SCRATCH_BUF.init_with(|| [0u8; 64]),
+        )));
+        spawner.spawn(defmt::unwrap!(protocol::servers::run_rtt_tx(
+            rtt_transport.tx
+        )));
+    }
 
-    // Spawn protocol servers (incl. fast telemetry + synthetic generator)
-    protocol::servers::spawn_servers(&spawner, stack, ident);
+    // Spawn USB tasks
+    #[cfg(feature = "transport-usb")]
+    {
+        spawner.spawn(defmt::unwrap!(protocol::servers::usb_task(
+            usb_transport.usb_dev
+        )));
+        spawner.spawn(defmt::unwrap!(protocol::servers::run_usb_rx(
+            usb_transport.rx_worker,
+            protocol::USB_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+        )));
+        spawner.spawn(defmt::unwrap!(protocol::servers::run_usb_tx(
+            usb_transport.ep_in,
+            transport::USB_OUTQ.framed_consumer()
+        )));
+    }
+
+    // Spawn UART tasks
+    #[cfg(feature = "transport-uart")]
+    {
+        spawner.spawn(defmt::unwrap!(protocol::servers::run_uart_rx(
+            uart_transport.rx_worker,
+            protocol::UART_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+            protocol::UART_SCRATCH_BUF.init_with(|| [0u8; 64]),
+        )));
+        spawner.spawn(defmt::unwrap!(protocol::servers::run_uart_tx(
+            uart_transport.tx,
+            stack,
+            uart_ident
+        )));
+    }
+
+    // Spawn protocol servers (state monitor watches every registered interface)
+    protocol::servers::spawn_servers(&spawner, stack, &idents);
 
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);

@@ -81,7 +81,7 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
 // ============================================================================
 
 /// Maximum size of a single packet
-pub const MAX_PACKET_SIZE: usize = 4096;
+pub const MAX_PACKET_SIZE: usize = 1024;
 
 /// USB liveness timeout (ms): mark the USB interface Down if no frame arrives
 /// within this window. Shorter than the UART/ICD timeout for faster reaction.
@@ -91,14 +91,14 @@ pub const USB_LIVENESS_TIMEOUT_MS: u64 = 3000;
 // Transport Configuration
 // ============================================================================
 
-/// Size of the outgoing packet queue for the RTT ergot interface (COBS stream).
-pub const OUT_QUEUE_SIZE: usize = 16384;
-
 /// Size of outgoing packet queue for USB (framed)
 pub const USB_OUT_QUEUE_SIZE: usize = 2048;
 
 /// Size of outgoing packet queue for UART (COBS stream)
 pub const UART_OUT_QUEUE_SIZE: usize = 2048;
+
+/// Size of outgoing packet queue for the ergot-over-RTT interface (COBS stream).
+pub const RTT_OUT_QUEUE_SIZE: usize = 4096;
 
 /// LPUART1 baud rate (ST-LINK VCP)
 pub const UART_BAUD: u32 = 115_200;

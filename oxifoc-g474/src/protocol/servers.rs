@@ -1,31 +1,133 @@
-//! Ergot protocol servers and I/O worker tasks (RTT transport).
+//! Ergot protocol servers and I/O worker tasks
 
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use ergot::interface_manager::InterfaceState;
-use ergot::transport::rtt::RttWriter;
+use embedded_io_async::Write;
+use ergot::{
+    exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as usb_kit,
+};
 use heapless::String;
 use oxifoc_core::runtime::run_all_servers_with_config;
-use oxifoc_core::runtime::streaming::{
-    FAST_TELEM_PERIOD, fast_telemetry_stream, fault_topic_stream, push_fast_telemetry,
-};
-use oxifoc_core::timer::EmbassyTimer;
-use oxifoc_core::types::{FastTelemetry, HardwareInfo};
+use oxifoc_core::runtime::streaming::{FAST_TELEM_PERIOD, fault_topic_stream};
+use oxifoc_core::types::HardwareInfo;
 
 use crate::RUNTIME_CONFIG;
-use crate::config::{BOARD, MAX_PACKET_SIZE, PWM_CONFIG};
-use crate::transport::{OUTQ, RxWorker, Stack};
+use crate::config::{BOARD, MAX_PACKET_SIZE, PWM_CONFIG, UART_BAUD, USB_OUT_QUEUE_SIZE};
+use crate::transport::UART_OUTQ;
+
+use crate::transport::{AppDriver, Stack, UartRxWorkerType, UartWriter, UsbQueue, UsbRxWorkerType};
 use crate::{FAULT_REGISTRY, STATE};
+
+#[cfg(feature = "transport-rtt")]
+use {
+    ergot::transport::rtt::RttWriter,
+    oxifoc_core::runtime::streaming::{fast_telemetry_stream, push_fast_telemetry},
+    oxifoc_core::timer::EmbassyTimer,
+    oxifoc_core::types::FastTelemetry,
+    crate::transport::{RttRxWorkerType, RTT_OUTQ},
+};
 
 // ========== Worker Tasks ==========
 
-/// Worker task for incoming ergot data (RTT down channel)
+/// USB device task — runs the USB state machine
 #[embassy_executor::task]
-pub async fn run_rx(
-    mut rcvr: RxWorker,
+pub async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
+    usb.run().await;
+}
+
+/// Worker task for incoming ergot data (USB)
+#[embassy_executor::task]
+pub async fn run_usb_rx(rcvr: UsbRxWorkerType, recv_buf: &'static mut [u8]) {
+    rcvr.run(recv_buf, usb_kit::USB_FS_MAX_PACKET_SIZE).await;
+}
+
+/// Worker task for outgoing ergot data via USB bulk endpoint
+#[embassy_executor::task]
+pub async fn run_usb_tx(
+    mut ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
+    rx: FramedConsumer<&'static UsbQueue>,
+) {
+    usb_kit::tx_worker::<AppDriver, { USB_OUT_QUEUE_SIZE }, _>(
+        &mut ep_in,
+        rx,
+        usb_kit::DEFAULT_TIMEOUT_MS_PER_FRAME,
+        usb_kit::USB_FS_MAX_PACKET_SIZE,
+    )
+    .await;
+}
+
+/// Worker task for incoming ergot data (UART / LPUART)
+#[embassy_executor::task]
+pub async fn run_uart_rx(
+    mut rcvr: UartRxWorkerType,
     recv_buf: &'static mut [u8],
     scratch_buf: &'static mut [u8],
 ) {
+    use ergot::interface_manager::InterfaceState;
+    loop {
+        let _ = rcvr
+            .run(InterfaceState::Inactive, recv_buf, scratch_buf)
+            .await;
+    }
+}
+
+/// Worker task for outgoing ergot data via UART/LPUART
+///
+/// When the interface is not Active, frames are discarded from the queue
+/// without writing to UART — this prevents stale telemetry frames from
+/// blocking new protocol responses after a disconnect.
+#[embassy_executor::task]
+pub async fn run_uart_tx(mut tx: UartWriter, stack: &'static Stack, uart_ident: u8) {
+    use ergot::interface_manager::{InterfaceState, Profile};
+
+    /// Maximum COBS-encoded frame size (the largest grant the sink can produce).
+    /// Formula: n + n/254 + 1 (same as cobs::max_encoding_length)
+    const MAX_WIRE_BYTES: usize = MAX_PACKET_SIZE + MAX_PACKET_SIZE / 254 + 1;
+
+    /// Time to transmit one max-sized frame at the configured baud rate.
+    /// 10 bits per byte (8N1). 3x safety margin for interrupt latency.
+    const TX_TIMEOUT_US: u64 = (MAX_WIRE_BYTES as u64 * 10 * 1_000_000) / (UART_BAUD as u64) * 3;
+
+    let consumer = UART_OUTQ.stream_consumer();
+    loop {
+        let grant = consumer.wait_read().await;
+        let len = grant.len();
+
+        let is_active = stack.manage_profile(|im| {
+            matches!(
+                im.interface_state(uart_ident),
+                Some(InterfaceState::Active { .. })
+            )
+        });
+
+        if is_active {
+            let mut remaining = &grant[..];
+            while !remaining.is_empty() {
+                match embassy_time::with_timeout(
+                    embassy_time::Duration::from_micros(TX_TIMEOUT_US),
+                    tx.write(remaining),
+                )
+                .await
+                {
+                    Ok(Ok(n)) => remaining = &remaining[n..],
+                    _ => break, // Timeout or error — drop this frame
+                }
+            }
+        }
+        grant.release(len);
+    }
+}
+
+// ========== RTT Transport workers (feature = "transport-rtt") ==========
+
+/// Worker task for incoming ergot data (RTT down channel)
+#[cfg(feature = "transport-rtt")]
+#[embassy_executor::task]
+pub async fn run_rtt_rx(
+    mut rcvr: RttRxWorkerType,
+    recv_buf: &'static mut [u8],
+    scratch_buf: &'static mut [u8],
+) {
+    use ergot::interface_manager::InterfaceState;
     loop {
         let _ = rcvr
             .run(InterfaceState::Inactive, recv_buf, scratch_buf)
@@ -34,53 +136,47 @@ pub async fn run_rx(
 }
 
 /// Worker task for outgoing ergot data (RTT up channel)
+#[cfg(feature = "transport-rtt")]
 #[embassy_executor::task]
-pub async fn run_tx_rtt(mut tx: RttWriter) {
+pub async fn run_rtt_tx(mut tx: RttWriter) {
     use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
     loop {
-        let _ = tx_worker(&mut tx, OUTQ.stream_consumer()).await;
+        let _ = tx_worker(&mut tx, RTT_OUTQ.stream_consumer()).await;
     }
 }
 
-/// Fast telemetry streaming task — drains the bbqueue and broadcasts batches.
-/// Batch 64 of the 8 B raw frame (512 B/batch) amortises ergot/COBS overhead.
+/// Fast-telemetry broadcaster — drains the bbqueue and broadcasts batches of the
+/// 18-byte raw frame. Batch 48 (864 B) stays under the 1 KB MTU.
+#[cfg(feature = "transport-rtt")]
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    fast_telemetry_stream::<_, 64, EmbassyTimer>(stack, 400000).await;
+    fast_telemetry_stream::<_, 48, EmbassyTimer>(stack, 400_000).await;
 }
 
 /// Synthetic telemetry generator (this board has no FOC ISR producing samples).
-///
-/// Saturates the telemetry bbqueue so the RTT path is the only bottleneck:
-/// the host-measured samples/s then equals the achievable RTT throughput.
-/// Each loop pushes a burst of frames (overflow is silently dropped by the
-/// queue) then yields, keeping the queue fed faster than RTT can drain it.
-/// Disabled until the host sends `TelemetryConfig` (sets `FAST_TELEM_PERIOD`).
+/// Saturates the telemetry bbqueue so the RTT path is the only bottleneck — the
+/// host-measured samples/s is then the achievable throughput. Idle until the
+/// host enables streaming via `TelemetryConfig`. Bench/diagnostic only.
+#[cfg(feature = "transport-rtt")]
 #[embassy_executor::task]
 pub async fn fake_telemetry_gen() {
     use core::sync::atomic::Ordering;
     let mut seq: u32 = 0;
     loop {
         if FAST_TELEM_PERIOD.load(Ordering::Relaxed) == 0 {
-            // Streaming off — poll for the host to enable it.
-            Timer::after(Duration::from_millis(10)).await;
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
             continue;
         }
-        // Push a burst, then yield so the stream/tx tasks run. The burst size
-        // exceeds the bbqueue depth, so this reliably keeps it full.
         for _ in 0..32 {
             seq = seq.wrapping_add(1);
             let s = seq as u16;
-            // Realistic value ranges so postcard varint sizing matches a real
-            // device (12-bit ADC currents, small dq volts, ~24 V bus); angle and
-            // seq genuinely span the full u16 (worst-case 3-byte varints).
             let t = FastTelemetry {
-                ia: 2048u16.wrapping_add(s & 0x3FF), // ~12-bit ADC counts
+                ia: 2048u16.wrapping_add(s & 0x3FF),
                 ib: 2048u16.wrapping_sub(s & 0x3FF),
                 ic: 2048u16.wrapping_add(s & 0x1FF),
-                vbus: 6_000, // 12 V in 2-mV units
-                angle: s,    // full electrical sweep
-                vd: (s & 0x3FF) as i16, // small dq volts
+                vbus: 6_000,
+                angle: s,
+                vd: (s & 0x3FF) as i16,
                 vq: (s & 0x1FF) as i16,
                 rpm: (s & 0x7FF) as i16,
                 seq: s,
@@ -89,13 +185,6 @@ pub async fn fake_telemetry_gen() {
         }
         embassy_futures::yield_now().await;
     }
-}
-
-/// Fault topic publisher — pushes the full fault snapshot on every
-/// registry change.
-#[embassy_executor::task]
-pub async fn fault_topic_task(stack: &'static Stack) {
-    fault_topic_stream(stack, &FAULT_REGISTRY).await;
 }
 
 // ========== Protocol Servers ==========
@@ -140,46 +229,61 @@ pub async fn protocol_servers(stack: &'static Stack) {
 }
 
 /// State monitor — watches interface state transitions and updates DeviceState.
-/// Disables telemetry when the link goes down.
+/// Linked when ANY registered interface is active; stops motor and disables
+/// telemetry when ALL of them go down. Watches every transport that was
+/// registered (USB / UART / RTT), passed as their idents.
 #[embassy_executor::task]
-pub async fn state_monitor(stack: &'static Stack, ident: u8) {
+pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) {
     use crate::protocol::{DeviceState, set_device_state};
     use crate::transport::STATE_NOTIFY;
-    use ergot::interface_manager::Profile;
+    use ergot::interface_manager::{InterfaceState, Profile};
 
-    let mut was_active = false;
+    let mut any_was_active = false;
 
     loop {
         defmt::unwrap!(STATE_NOTIFY.wait().await.ok());
 
-        let active = stack.manage_profile(|im| {
-            matches!(
-                im.interface_state(ident),
-                Some(InterfaceState::Active { .. })
-            )
+        let any_active = idents.iter().any(|&id| {
+            stack.manage_profile(|im| {
+                matches!(im.interface_state(id), Some(InterfaceState::Active { .. }))
+            })
         });
 
-        if active && !was_active {
-            defmt::info!("RTT interface active — link up");
+        if any_active && !any_was_active {
+            defmt::info!("Interface active — link up");
             critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_active());
             set_device_state(DeviceState::Linked);
-            was_active = true;
-        } else if !active && was_active {
-            defmt::info!("RTT interface down — stopping telemetry, waiting for link");
+            any_was_active = true;
+        } else if !any_active && any_was_active {
+            defmt::info!("All interfaces down — stopping motor + telemetry, waiting for link");
+            // Fail-safe: drop link_active so the FOC loop forces ControlMode::Stopped.
             critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_inactive());
+            // Stop streaming telemetry into a dead link (host re-enables on reconnect).
             FAST_TELEM_PERIOD.store(0, core::sync::atomic::Ordering::Relaxed);
             set_device_state(DeviceState::WaitingLink);
-            was_active = false;
+            any_was_active = false;
         }
     }
 }
 
 // ========== Task Spawning ==========
 
-pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, ident: u8) {
+/// Fault topic publisher — pushes the full fault snapshot on every
+/// registry change (the remote's vibration/UI path; FaultEndpoint stays
+/// the pull/clear side).
+#[embassy_executor::task]
+pub async fn fault_topic_task(stack: &'static Stack) {
+    fault_topic_stream(stack, &FAULT_REGISTRY).await;
+}
+
+pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, idents: &heapless::Vec<u8, 3>) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
-    spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
-    spawner.spawn(defmt::unwrap!(fake_telemetry_gen()));
     spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
-    spawner.spawn(defmt::unwrap!(state_monitor(stack, ident)));
+    spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
+    // RTT bench: broadcaster + synthetic generator (no FOC ISR on this board).
+    #[cfg(feature = "transport-rtt")]
+    {
+        spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
+        spawner.spawn(defmt::unwrap!(fake_telemetry_gen()));
+    }
 }
