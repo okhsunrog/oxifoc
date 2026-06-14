@@ -21,25 +21,18 @@ use anyhow::{Context, Result, bail};
 use oxifoc_core::types::{FastTelemetry, HardwareInfo, TelemetryConfig};
 use oxifoc_host_lib::{HostCommand, HostRuntime};
 use parquet::basic::{Compression, ZstdLevel};
-use parquet::data_type::{DoubleType, FloatType, Int32Type, Int64Type};
+use parquet::data_type::{DoubleType, Int32Type, Int64Type};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 
-const SCHEMA: &str = "message oxifoc_fast_telemetry {
+const SCHEMA: &str = "message oxifoc_raw_adc {
     required double t_s;
     required int64 seq;
-    required float ia;
-    required float ib;
-    required float ic;
-    required float id;
-    required float iq;
-    required float vd;
-    required float vq;
-    required float angle_rad;
-    required int32 erpm;
-    required int32 hall_state;
+    required int32 ia_adc;
+    required int32 ib_adc;
+    required int32 ic_adc;
 }";
 
 #[derive(serde::Serialize)]
@@ -139,7 +132,7 @@ impl Capture {
 
     /// Raw device seq of the latest sample seen (event↔sample anchor).
     pub fn last_seq(&self) -> Option<u32> {
-        self.samples.last().map(|s| s.seq)
+        self.samples.last().map(|s| u32::from(s.seq))
     }
 
     /// Disable streaming (best effort).
@@ -159,7 +152,7 @@ impl Capture {
             // Unknown FOC frequency: infer the step as the smallest observed delta.
             self.samples
                 .windows(2)
-                .map(|w| w[1].seq.wrapping_sub(w[0].seq))
+                .map(|w| u32::from(w[1].seq.wrapping_sub(w[0].seq)))
                 .filter(|&d| d > 0)
                 .min()
                 .unwrap_or(1)
@@ -172,7 +165,7 @@ impl Capture {
         let mut gaps = 0usize;
         let mut samples_lost = 0u64;
         for w in self.samples.windows(2) {
-            let d = w[1].seq.wrapping_sub(w[0].seq);
+            let d = u32::from(w[1].seq.wrapping_sub(w[0].seq));
             if d > expected_step {
                 gaps += 1;
                 samples_lost += u64::from((d - expected_step) / expected_step);
@@ -262,13 +255,12 @@ fn write_parquet(
         kv("oxifoc.fast_hz_actual", fast_hz_actual.to_string()),
         kv("oxifoc.decimation_m", decimation_m.to_string()),
         kv(
-            "oxifoc.aa_filter",
-            format!(
-                "cic2 triangular window 2M-1 (sinc^2, nulls at k*f_out); \
-                 group delay (M-1)={} input samples; angle/erpm/hall are \
-                 instantaneous at the dump cycle",
-                decimation_m.saturating_sub(1)
-            ),
+            "oxifoc.raw_adc_note",
+            "uncalibrated 12-bit ADC counts (3 shunts, NO anti-alias filter — \
+             decimation is plain sample-dropping at M); convert host-side: \
+             I = (offset - count) * scale per BoardConfig (invert_current_sign, \
+             shunt+gain)"
+                .to_string(),
         ),
         kv("oxifoc.config", config_snapshot.to_string()),
         kv("oxifoc.seq_gaps", gaps.to_string()),
@@ -311,17 +303,10 @@ fn write_parquet(
         })
         .collect();
     let seq: Vec<i64> = samples.iter().map(|s| i64::from(s.seq)).collect();
-    let f32_col = |f: fn(&FastTelemetry) -> f32| -> Vec<f32> { samples.iter().map(f).collect() };
-    let ia = f32_col(|s| s.ia);
-    let ib = f32_col(|s| s.ib);
-    let ic = f32_col(|s| s.ic);
-    let id = f32_col(|s| s.id);
-    let iq = f32_col(|s| s.iq);
-    let vd = f32_col(|s| s.vd);
-    let vq = f32_col(|s| s.vq);
-    let angle = f32_col(|s| s.angle_rad);
-    let erpm: Vec<i32> = samples.iter().map(|s| s.erpm).collect();
-    let hall: Vec<i32> = samples.iter().map(|s| i32::from(s.hall_state)).collect();
+    // Raw uncalibrated ADC counts (12-bit) for the three shunts.
+    let ia: Vec<i32> = samples.iter().map(|s| i32::from(s.ia)).collect();
+    let ib: Vec<i32> = samples.iter().map(|s| i32::from(s.ib)).collect();
+    let ic: Vec<i32> = samples.iter().map(|s| i32::from(s.ic)).collect();
 
     let mut rg = writer.next_row_group()?;
     let mut col_idx = 0usize;
@@ -333,24 +318,14 @@ fn write_parquet(
             1 => {
                 col.typed::<Int64Type>().write_batch(&seq, None, None)?;
             }
-            2..=9 => {
-                let data = match col_idx {
-                    2 => &ia,
-                    3 => &ib,
-                    4 => &ic,
-                    5 => &id,
-                    6 => &iq,
-                    7 => &vd,
-                    8 => &vq,
-                    _ => &angle,
-                };
-                col.typed::<FloatType>().write_batch(data, None, None)?;
+            2 => {
+                col.typed::<Int32Type>().write_batch(&ia, None, None)?;
             }
-            10 => {
-                col.typed::<Int32Type>().write_batch(&erpm, None, None)?;
+            3 => {
+                col.typed::<Int32Type>().write_batch(&ib, None, None)?;
             }
-            11 => {
-                col.typed::<Int32Type>().write_batch(&hall, None, None)?;
+            4 => {
+                col.typed::<Int32Type>().write_batch(&ic, None, None)?;
             }
             _ => bail!("schema/column mismatch"),
         }

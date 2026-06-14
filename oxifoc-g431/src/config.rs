@@ -112,14 +112,15 @@ pub fn pad_node_dac_counts(amps: f32) -> u16 {
 // Protocol Configuration
 // ============================================================================
 
-/// Size of outgoing packet queue
+/// Size of outgoing packet queue. Trimmed to free RAM for a bigger device-side
+/// RTT up-channel buffer (the throughput experiment).
 pub const OUT_QUEUE_SIZE: usize = 2048;
 
-/// Maximum size of a single ergot packet (COBS-encoded).
-/// Sized for the largest actual payload: FastTelemetryBatch<8> = 8×44 + header ≈ 380 bytes.
-/// Smaller MTU reduces the OUTQ grant size (grant_exact requests max_encoding_length(MTU)),
-/// leaving more room for concurrent protocol responses while streaming.
-pub const MAX_PACKET_SIZE: usize = 400;
+/// Maximum size of a single ergot packet (COBS-encoded). Holds a
+/// `FastTelemetryBatch<64>` of the 12 B raw frame (64×12 = 768 B + header) —
+/// bigger batches amortise per-packet ergot/COBS overhead and cut the number of
+/// RTT transactions probe-rs must do per second (the throughput lever).
+pub const MAX_PACKET_SIZE: usize = 1024;
 
 // ============================================================================
 // UART Transport Configuration

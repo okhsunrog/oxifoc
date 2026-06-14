@@ -213,44 +213,35 @@ pub struct MotorStatus {
 // Streaming Telemetry Types (push-based via Topics)
 // ============================================================================
 
-/// High-frequency motor control telemetry (streamed at configurable rate).
+/// High-frequency motor diagnostic telemetry (streamed at configurable rate).
 ///
-/// Contains FOC loop outputs in engineering units. ISR decimates and pushes
-/// to a lock-free bbqueue; async task drains and broadcasts batches.
+/// **Raw-ADC diagnostic frame.** Carries the three phase-current shunt readings
+/// as uncalibrated 12-bit ADC counts — no calibration, sign correction, or
+/// anti-alias decimation — straight from the converter. At 12 B (10 on the wire)
+/// vs the old 44 B engineering-units frame, this fits the full 20 kHz FOC rate
+/// over the STLink-V2-1 debug link. The host applies offset/sign/scale (per
+/// `BoardConfig`) and reconstructs iα/iβ/id/iq in post-processing. The third
+/// shunt is kept (not reconstructed from `−(ia+ib)`) so a per-phase
+/// current-sense fault stays visible in the raw data.
 ///
-/// `#[repr(C)]` with explicit padding for `bytemuck::Pod` (zero-copy ISR→task transfer).
+/// `#[repr(C)]`, 4×u16 = 8 bytes, no padding → `Pod` clean. 8 B/sample (×20 kHz =
+/// 160 KB/s) is what fits clean 20 kHz under this board's ~169 KB/s STLink-V2-1
+/// RTT ceiling.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg_attr(feature = "runtime", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct FastTelemetry {
-    /// Phase A current in Amps
-    pub ia: f32,
-    /// Phase B current in Amps
-    pub ib: f32,
-    /// Phase C current in Amps
-    pub ic: f32,
-    /// D-axis current in Amps
-    pub id: f32,
-    /// Q-axis current in Amps
-    pub iq: f32,
-    /// D-axis voltage in Volts
-    pub vd: f32,
-    /// Q-axis voltage in Volts
-    pub vq: f32,
-    /// Electrical angle in radians
-    pub angle_rad: f32,
-    /// Electrical RPM
-    pub erpm: i32,
-    /// Duty cycle in 0.1% units (0-1000)
-    pub duty_x10: i16,
-    /// Raw Hall sensor state (0-7)
-    pub hall_state: u8,
-    /// Explicit padding for bytemuck::Pod
-    #[serde(skip)]
-    pub _pad: u8,
-    /// Monotonic sequence number
-    pub seq: u32,
+    /// Phase A current — raw ADC counts (uncalibrated)
+    pub ia: u16,
+    /// Phase B current — raw ADC counts
+    pub ib: u16,
+    /// Phase C current — raw ADC counts
+    pub ic: u16,
+    /// Sequence number — `u16` (FOC-cycle counter mod 65536). At 20 kHz this
+    /// wraps every ~3.3 s; gap detection uses `wrapping_sub`, so captures shorter
+    /// than that are unambiguous (and a spectrum needs only ~0.2 s).
+    pub seq: u16,
 }
 
 /// Batch of fast telemetry samples for efficient network transmission.

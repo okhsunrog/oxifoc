@@ -179,7 +179,7 @@ pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
     let channels = rtt_init! {
         up: {
             0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
-            1: { size: 2048, mode: NoBlockSkip, name: "ergot" }
+            1: { size: 4096, mode: NoBlockSkip, name: "ergot" }
         }
         down: {
             0: { size: 1024, name: "ergot-down" }

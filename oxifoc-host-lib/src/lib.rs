@@ -967,7 +967,12 @@ fn spawn_fast_telemetry_subscriber<NS>(
             let ns = stack.stack();
             let receiver = ns
                 .topics()
-                .heap_bounded_receiver::<FastTelemetryTopic>(128, Some("fast_telem"));
+                // N=256 capacity: the device batch size must be ≤ this or the
+                // batch fails to deserialize (DeserFailed). Generous headroom so
+                // growing the device batch (for bigger MTUs) needs no host change.
+                // The topic KEY is N-independent (for_path uses the default N),
+                // so routing still matches a device sending any batch size.
+                .heap_bounded_receiver::<FastTelemetryTopic<256>>(128, Some("fast_telem"));
             let mut pinned = pin!(receiver);
             let mut hdl = pinned.as_mut().subscribe();
             info!("Fast telemetry subscriber started");

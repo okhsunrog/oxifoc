@@ -205,7 +205,9 @@ pub async fn protocol_servers(stack: &'static Stack) {
 /// Uses batch size of 8 to reduce stack usage (~360B vs ~1.4KB for 32).
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    fast_telemetry_stream::<_, 8, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
+    // Batch 64 of the compact 12 B raw frame (768 B/batch) — amortises the
+    // per-batch ergot/COBS overhead for the high-rate diagnostic stream.
+    fast_telemetry_stream::<_, 64, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
 }
 
 /// Fault topic publisher — pushes the full fault snapshot on every

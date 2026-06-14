@@ -84,14 +84,8 @@ pub fn run_monitor(runtime: &HostRuntime, duration: Duration, json: bool) -> Res
                     println!("{}", serde_json::to_string(&sample)?);
                 } else {
                     println!(
-                        "#{:>5} ia:{:>7.2}A ib:{:>7.2}A ic:{:>7.2}A id:{:>7.2}A iq:{:>7.2}A erpm:{:>6}",
-                        sample.seq,
-                        sample.ia,
-                        sample.ib,
-                        sample.ic,
-                        sample.id,
-                        sample.iq,
-                        sample.erpm,
+                        "#{:>5} ia:{:>5} ib:{:>5} ic:{:>5}  (raw ADC counts)",
+                        sample.seq, sample.ia, sample.ib, sample.ic,
                     );
                 }
             }

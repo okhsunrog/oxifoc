@@ -37,18 +37,18 @@ use crate::types::FastTelemetryBatch;
 #[cfg(feature = "std")]
 pub static FAST_TELEM_Q: Churrasco<65536> = Churrasco::new();
 #[cfg(not(feature = "std"))]
-pub static FAST_TELEM_Q: Churrasco<2048> = Churrasco::new();
+pub static FAST_TELEM_Q: Churrasco<1024> = Churrasco::new();
 
 /// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
 /// 0 = streaming disabled. Set by `telemetry_config_server` when host
 /// sends `TelemetryConfig { fast_hz }`.
 pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
 
-/// Anti-alias decimator state for the spectral channels (ia, ib, ic, id,
-/// iq, vd, vq). ISR-context only; the critical section is the same
-/// pattern `update_telemetry` already uses each cycle.
-static FAST_TELEM_CIC: critical_section::Mutex<core::cell::RefCell<CicDecimator2<7>>> =
-    critical_section::Mutex::new(core::cell::RefCell::new(CicDecimator2::new()));
+/// Decimation counter for the raw diagnostic stream: emit one raw-ADC sample
+/// every `period` FOC cycles. The old CIC anti-alias filter is bypassed — the
+/// frame now carries uncalibrated raw ADC counts (the host post-processes), so
+/// there is nothing to filter.
+static FAST_DECIM_CTR: AtomicU32 = AtomicU32::new(0);
 
 /// Two-stage decimating anti-alias filter (CIC order 2 equivalent).
 ///
@@ -178,28 +178,18 @@ pub fn publish_cycle_telemetry(
     if period == 0 {
         return;
     }
-    let filtered = critical_section::with(|cs| {
-        let mut cic = FAST_TELEM_CIC.borrow_ref_mut(cs);
-        if cic.m() != period {
-            cic.configure(period);
-        }
-        cic.push(&[foc.ia, foc.ib, foc.ic, foc.id, foc.iq, foc.vd, foc.vq])
-    });
-    if let Some(y) = filtered {
-        let (hall_state, velocity_rad_s) = hall
-            .map(|h| (h.state, h.velocity_rad_s))
-            .unwrap_or((0, 0.0));
-        let foc_avg = FocOutput {
-            ia: y[0],
-            ib: y[1],
-            ic: y[2],
-            id: y[3],
-            iq: y[4],
-            vd: y[5],
-            vq: y[6],
-            ..foc
+    // Raw diagnostic frame: emit the uncalibrated ADC counts every `period`-th
+    // FOC cycle (no CIC anti-alias — that was for the engineering-unit frame).
+    // `seq` is the FOC-cycle counter, so consecutive emitted samples differ by
+    // `period` (= the host's decimation factor M) and gap detection is unchanged.
+    let _ = (hall, foc); // engineering-unit channels are no longer streamed
+    if FAST_DECIM_CTR.fetch_add(1, Ordering::Relaxed) % period == 0 {
+        let telem = FastTelemetry {
+            ia: adc.ia,
+            ib: adc.ib,
+            ic: adc.ic,
+            seq: seq as u16,
         };
-        let telem = build_fast_telemetry(&foc_avg, hall_state, velocity_rad_s, seq);
         push_fast_telemetry(&telem);
     }
 }
@@ -207,32 +197,6 @@ pub fn publish_cycle_telemetry(
 /// Default maximum samples per batch (fits within 2048-byte MTU for TCP/serial).
 /// Devices can use a smaller batch size via the const generic on `fast_telemetry_stream`.
 pub const DEFAULT_BATCH_SIZE: usize = 32;
-
-/// Build a `FastTelemetry` from FOC output and sensor state.
-///
-/// Callable from ISR (no allocation, pure computation).
-pub fn build_fast_telemetry(
-    foc: &FocOutput,
-    hall_state: u8,
-    velocity_rad_s: f32,
-    seq: u32,
-) -> FastTelemetry {
-    FastTelemetry {
-        ia: foc.ia,
-        ib: foc.ib,
-        ic: foc.ic,
-        id: foc.id,
-        iq: foc.iq,
-        vd: foc.vd,
-        vq: foc.vq,
-        angle_rad: foc.angle_rad,
-        erpm: (velocity_rad_s * 60.0 / core::f32::consts::TAU) as i32,
-        duty_x10: 0, // TODO: compute from duties when available
-        hall_state,
-        _pad: 0,
-        seq,
-    }
-}
 
 /// Push a `FastTelemetry` sample into the bbqueue.
 ///
