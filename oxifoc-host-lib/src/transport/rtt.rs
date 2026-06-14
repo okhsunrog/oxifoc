@@ -122,10 +122,19 @@ pub fn connect(
 
     // Push the SWD clock as high as the probe allows before attaching: RTT is
     // polled by the host reading the target's RAM buffers over SWD, so on a
-    // slow default clock (STLink V2-1 defaults to ~1.8 MHz) the debug-port
-    // throughput — not the link — caps the telemetry rate. The STLink SWD table
-    // tops out at 4.6 MHz; request that (the probe clamps to its real max).
-    match probe.set_speed(4_600) {
+    // slow default clock the debug-port throughput — not the link — caps the
+    // telemetry rate. Request the STLink-V3 SWD ceiling (24 MHz, per spec); the
+    // probe clamps to its real max, so a STLink V2-1 still lands on its own
+    // 4.6 MHz cap. Measured on a NUCLEO-G474RE onboard STLINK-V3E: raising the
+    // request from 4.6→24 MHz lifts the raw SWD read ceiling from ~125 KB/s to
+    // ~620 KB/s (3.7× the V2-1). Read is round-trip-latency bound, so it
+    // plateaus well below the write rate (~940 KB/s) — telemetry is the read
+    // direction.
+    let req_khz: u32 = std::env::var("OXIFOC_SWD_KHZ")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(24_000);
+    match probe.set_speed(req_khz) {
         Ok(khz) => info!("SWD clock set to {} kHz", khz),
         Err(e) => info!("Could not raise SWD clock (using default): {e}"),
     }
@@ -258,11 +267,37 @@ pub fn connect(
         // reading the whole available RTT buffer per transaction (instead of
         // capping at 2 KiB) cuts the transaction count — the dominant cost if
         // RTT throughput is transaction-latency-bound rather than SWD-clock-bound.
-        let mut ergot_rx_buf = [0u8; 16384];
+        let mut ergot_rx_buf = [0u8; 49152];
         let mut defmt_buf = [0u8; 4096];
+
+        // Idle backoff between polls when no bytes moved. RTT is polled (each
+        // `channel.read` is one SWD round-trip), so any sleep here caps how fast
+        // we re-poll after a momentary drain. This thread is dedicated and
+        // blocking and a capture lasts only seconds, so the default is a pure
+        // busy-spin (idle_us = 0): burn one core for minimum latency = maximum
+        // throughput on this latency-bound link. Set `OXIFOC_RTT_IDLE_US` > 0 to
+        // trade throughput for CPU on a long-running attach.
+        let idle_us: u64 = std::env::var("OXIFOC_RTT_IDLE_US")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Poll the defmt channel only every Nth iteration. Each `channel.read`
+        // is a SWD round-trip, and on a latency-bound link the defmt read
+        // competes with the ergot read for that bandwidth — reading defmt every
+        // iteration roughly halves the ergot poll rate under a high-rate stream.
+        // defmt is low-rate diagnostic, so polling it 1/N as often costs nothing
+        // but frees the SWD bus for telemetry (env `OXIFOC_RTT_DEFMT_EVERY`).
+        let defmt_every: u32 = std::env::var("OXIFOC_RTT_DEFMT_EVERY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(64);
+        let mut tick: u32 = 0;
 
         loop {
             let mut did_work = false;
+            tick = tick.wrapping_add(1);
 
             // 1. Read ergot data from device
             if let Some(channel) = rtt.up_channel(RTT_UP_CHANNEL_ERGOT) {
@@ -308,8 +343,10 @@ pub fn connect(
                 }
             }
 
-            // 3. Read defmt data from device
-            if let Some(channel) = rtt.up_channel(RTT_UP_CHANNEL_DEFMT) {
+            // 3. Read defmt data from device (rate-limited; see defmt_every)
+            if tick % defmt_every == 0
+                && let Some(channel) = rtt.up_channel(RTT_UP_CHANNEL_DEFMT)
+            {
                 match channel.read(&mut core, &mut defmt_buf) {
                     Ok(n) if n > 0 => {
                         did_work = true;
@@ -341,7 +378,11 @@ pub fn connect(
             }
 
             if !did_work {
-                std::thread::sleep(Duration::from_millis(1));
+                if idle_us == 0 {
+                    std::hint::spin_loop();
+                } else {
+                    std::thread::sleep(Duration::from_micros(idle_us));
+                }
             }
         }
     });

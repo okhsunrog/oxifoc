@@ -58,7 +58,7 @@ const DEVICE_ADDR: Address = Address {
     node_id: 1,
     port_id: 0,
 };
-const ERGOT_MTU: u16 = 2048;
+const ERGOT_MTU: u16 = 4096;
 const ERGOT_QUEUE_SIZE: usize = 32768;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(800);
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
