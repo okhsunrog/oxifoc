@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use futures::SinkExt;
 use probe_rs::{
-    Permissions,
+    MemoryInterface, Permissions,
     probe::list::Lister,
     rtt::{Rtt, ScanRegion},
 };
@@ -73,7 +73,7 @@ pub fn connect(
     let lister = Lister::new();
 
     // Find and open the probe
-    let probe = if let Some(selector) = probe_selector {
+    let mut probe = if let Some(selector) = probe_selector {
         info!("Using probe selector: {}", selector);
         let probes = lister.list_all();
         debug!("Available probes: {:?}", probes);
@@ -120,24 +120,61 @@ pub fn connect(
         probes[0].open().context("Failed to open probe")?
     };
 
+    // Push the SWD clock as high as the probe allows before attaching: RTT is
+    // polled by the host reading the target's RAM buffers over SWD, so on a
+    // slow default clock (STLink V2-1 defaults to ~1.8 MHz) the debug-port
+    // throughput — not the link — caps the telemetry rate. The STLink SWD table
+    // tops out at 4.6 MHz; request that (the probe clamps to its real max).
+    match probe.set_speed(4_600) {
+        Ok(khz) => info!("SWD clock set to {} kHz", khz),
+        Err(e) => info!("Could not raise SWD clock (using default): {e}"),
+    }
+
     // Attach to the target and verify RTT channels
     let mut session = probe
         .attach(chip, Permissions::default())
         .context("Failed to attach to target")?;
 
-    info!("Attached to target, resetting device...");
+    info!("Reset-and-halt, clearing stale RTT control block...");
     {
         let mut core = session.core(0).context("Failed to get core 0")?;
-        core.reset().context("Failed to reset target")?;
+        // Reset-and-HALT so the firmware has NOT re-run `rtt_init!` yet, then wipe
+        // the pre-reset `_SEGGER_RTT` magic while the core is halted. This is the
+        // race-free ordering: the stale control block (magic + dead channel
+        // pointers that survive a reset in un-cleared RAM) is invalidated BEFORE
+        // the firmware boots, so the poll below can only ever attach to the FRESH
+        // block the booting firmware writes — never the stale one. Latching the
+        // stale block desyncs the channel pointers, the device never sees our
+        // down-channel frames, and the link never activates (the intermittent
+        // NoRouteToDest). Mirrors probe-rs's own clear-block-then-poll-retry RTT
+        // client; a fixed boot-wait alone was still racy (broke at larger RTT
+        // buffer sizes whose init timing shifted).
+        core.reset_and_halt(Duration::from_millis(500))
+            .context("Failed to reset/halt target")?;
+        if let Some(addr) = rtt_addr {
+            let _ = core.write_8(addr, &[0u8; 16]); // zero the 16-byte RTT magic
+        }
+        core.run().context("Failed to resume target")?;
     }
 
-    info!("Scanning for RTT...");
+    info!("Polling for RTT until the firmware re-inits the control block...");
+    let mut rtt = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        loop {
+            let mut core = session.core(0).context("Failed to get core 0")?;
+            match Rtt::attach_region(&mut core, &scan_region) {
+                Ok(rtt) => break rtt,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    drop(core);
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => return Err(e).context("Failed to attach to RTT after reset"),
+            }
+        }
+    };
 
     {
         let mut core = session.core(0).context("Failed to get core 0")?;
-        let mut rtt = Rtt::attach_region(&mut core, &scan_region)
-            .context("Failed to attach to RTT")?;
-
         info!("RTT attached successfully");
 
         for (idx, channel) in rtt.up_channels().iter().enumerate() {
@@ -217,7 +254,11 @@ pub fn connect(
             }
         };
 
-        let mut ergot_rx_buf = [0u8; 2048];
+        // Large read buffer: each `channel.read` is one SWD round-trip, so
+        // reading the whole available RTT buffer per transaction (instead of
+        // capping at 2 KiB) cuts the transaction count — the dominant cost if
+        // RTT throughput is transaction-latency-bound rather than SWD-clock-bound.
+        let mut ergot_rx_buf = [0u8; 16384];
         let mut defmt_buf = [0u8; 4096];
 
         loop {
@@ -272,12 +313,20 @@ pub fn connect(
                 match channel.read(&mut core, &mut defmt_buf) {
                     Ok(n) if n > 0 => {
                         did_work = true;
-                        if defmt_rx_tx
-                            .blocking_send(Ok(Bytes::copy_from_slice(&defmt_buf[..n])))
-                            .is_err()
-                        {
-                            info!("Defmt rx channel closed, stopping RTT thread");
-                            return;
+                        // try_send, NOT blocking_send: defmt is diagnostic and
+                        // droppable. A blocking send here lets the defmt decoder
+                        // task (starved under a high-rate ergot stream) back up
+                        // until its 64-slot mpsc fills, then BLOCK this RTT worker
+                        // thread — which stops it reading the ergot channel too,
+                        // stalling the whole telemetry stream mid-capture. Drop
+                        // defmt on a full queue instead so ergot never starves.
+                        use tokio::sync::mpsc::error::TrySendError;
+                        match defmt_rx_tx.try_send(Ok(Bytes::copy_from_slice(&defmt_buf[..n]))) {
+                            Ok(()) | Err(TrySendError::Full(_)) => {}
+                            Err(TrySendError::Closed(_)) => {
+                                info!("Defmt rx channel closed, stopping RTT thread");
+                                return;
+                            }
                         }
                     }
                     Ok(_) => {}
