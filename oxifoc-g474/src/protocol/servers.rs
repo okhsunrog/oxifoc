@@ -210,7 +210,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
         uuid,
         foc_freq_hz: PWM_CONFIG.pwm_freq_hz,
         max_current_a: BOARD.max_phase_current_a,
-        calib: BOARD.calib(),
+        calib: BOARD.calib,
     };
 
     // This future IS the protocol-servers task (all endpoint servers

@@ -1583,14 +1583,16 @@ mod tests {
         use crate::foc::wrap_angle;
 
         const BASE_BOARD: BoardConfig = BoardConfig {
-            shunt_ohms: 0.0005,
-            amp_gain: 10.0,
-            vbus_divider_ratio: (39.0 + 2.2) / 2.2,
-            adc_vref_mv: 3300,
-            adc_max_counts: 4095,
+            calib: crate::types::BoardCalib {
+                shunt_ohms: 0.0005,
+                amp_gain: 10.0,
+                adc_vref_mv: 3300,
+                adc_max_counts: 4095,
+                invert_current_sign: false,
+                vbus_divider_ratio: (39.0 + 2.2) / 2.2,
+            },
             initial_vbus_volts: 12.0,
             max_iq_target_a: 10.0,
-            invert_current_sign: false,
             max_phase_current_a: 60.0,
             max_vbus_mv: 57_000,
             min_vbus_mv: 6_000,
@@ -3101,14 +3103,16 @@ mod tests {
         }
 
         const BOARD: BoardConfig = BoardConfig {
-            shunt_ohms: 0.003,
-            amp_gain: 16.0,
-            vbus_divider_ratio: 10.39,
-            adc_vref_mv: 3300,
-            adc_max_counts: 4095,
+            calib: crate::types::BoardCalib {
+                shunt_ohms: 0.003,
+                amp_gain: 16.0,
+                adc_vref_mv: 3300,
+                adc_max_counts: 4095,
+                invert_current_sign: false,
+                vbus_divider_ratio: 10.39,
+            },
             initial_vbus_volts: 24.0,
             max_iq_target_a: 10.0,
-            invert_current_sign: false,
             max_phase_current_a: 40.0,
             max_vbus_mv: 60_000,
             min_vbus_mv: 8_000,

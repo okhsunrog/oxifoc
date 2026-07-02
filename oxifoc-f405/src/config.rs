@@ -1,6 +1,7 @@
 //! Configuration constants for oxifoc-f405 (Simple FOCer 2 / Cheap FOCer 2)
 
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology, PhaseSense};
+use oxifoc_core::types::BoardCalib;
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 
 // ============================================================================
@@ -17,14 +18,16 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 /// - Max continuous current: ~60A (FET rating, IRFS7530)
 /// - Max VBUS: 57V (VESC HW_LIM_VIN, FET Vds=60V with margin)
 pub const BOARD: BoardConfig = BoardConfig {
-    shunt_ohms: 0.0005,                     // 0.5mΩ (two 1mΩ in parallel)
-    amp_gain: 10.0,                         // DRV8301 10 V/V gain
-    vbus_divider_ratio: (39.0 + 2.2) / 2.2, // ~18.73:1
-    adc_vref_mv: 3300,                      // 3.3V
-    adc_max_counts: 4095,                   // 12-bit
+    calib: BoardCalib {
+        shunt_ohms: 0.0005,                     // 0.5mΩ (two 1mΩ in parallel)
+        amp_gain: 10.0,                         // DRV8301 10 V/V gain
+        adc_vref_mv: 3300,                      // 3.3V
+        adc_max_counts: 4095,                   // 12-bit
+        invert_current_sign: false,             // DRV8301: standard polarity
+        vbus_divider_ratio: (39.0 + 2.2) / 2.2, // ~18.73:1
+    },
     initial_vbus_volts: 12.0,               // Conservative default
     max_iq_target_a: 10.0,                  // Max torque current
-    invert_current_sign: false,             // DRV8301: standard polarity
     // Fault thresholds (matched to VESC hwconf)
     max_phase_current_a: 60.0, // Peak phase current limit (FET rating)
     max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN)

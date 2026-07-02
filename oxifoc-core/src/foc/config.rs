@@ -14,16 +14,19 @@
 ///
 /// ```rust
 /// use oxifoc_core::foc::config::BoardConfig;
+/// use oxifoc_core::types::BoardCalib;
 ///
 /// const BOARD: BoardConfig = BoardConfig {
-///     shunt_ohms: 0.003,           // 3mΩ shunts
-///     amp_gain: 16.0,              // 16x OPAMP gain
-///     vbus_divider_ratio: 10.39,   // VBUS divider
-///     adc_vref_mv: 3300,           // 3.3V reference
-///     adc_max_counts: 4095,        // 12-bit ADC
+///     calib: BoardCalib {
+///         shunt_ohms: 0.003,           // 3mΩ shunts
+///         amp_gain: 16.0,              // 16x OPAMP gain
+///         adc_vref_mv: 3300,           // 3.3V reference
+///         adc_max_counts: 4095,        // 12-bit ADC
+///         invert_current_sign: true,   // Low-side shunts
+///         vbus_divider_ratio: 10.39,   // VBUS divider
+///     },
 ///     initial_vbus_volts: 12.0,    // Default VBUS assumption
 ///     max_iq_target_a: 10.0,       // Max torque current
-///     invert_current_sign: true,   // Low-side shunts
 ///     // Fault thresholds
 ///     max_phase_current_a: 40.0,   // Peak phase current limit
 ///     max_vbus_mv: 60_000,         // Overvoltage at 60V
@@ -65,23 +68,15 @@ pub struct PhaseSense {
 
 #[derive(Clone, Copy, Debug)]
 pub struct BoardConfig {
-    /// Shunt resistance in Ohms (e.g., 0.003 for 3mΩ)
-    pub shunt_ohms: f32,
-    /// Current amplifier gain (OPAMP or DRV8301 gain)
-    pub amp_gain: f32,
-    /// VBUS voltage divider ratio (Vbus = Vsense * ratio)
-    pub vbus_divider_ratio: f32,
-    /// ADC reference voltage in millivolts
-    pub adc_vref_mv: u32,
-    /// Maximum ADC count (e.g., 4095 for 12-bit)
-    pub adc_max_counts: u16,
+    /// Current-sense / vbus electrical constants (shunt, gain, vref, ADC
+    /// resolution, sign, vbus divider). This is also the wire projection sent
+    /// to the host for telemetry enrichment — one field list, no duplication.
+    /// See [`crate::types::BoardCalib`].
+    pub calib: crate::types::BoardCalib,
     /// Initial VBUS voltage assumption before ADC readings
     pub initial_vbus_volts: f32,
     /// Maximum q-axis current target in Amperes
     pub max_iq_target_a: f32,
-    /// Invert current sensing sign (true for low-side shunts where positive
-    /// motor current produces ADC values below the zero-current offset)
-    pub invert_current_sign: bool,
 
     // Fault thresholds
     /// Maximum peak phase current in Amperes (instantaneous trip)
@@ -103,31 +98,14 @@ pub struct BoardConfig {
 }
 
 impl BoardConfig {
-    /// Project the current-sense / vbus constants into the wire [`BoardCalib`]
-    /// carried to the host for telemetry enrichment. Single source of the field
-    /// values — a renamed `BoardConfig` field breaks this at compile time (no
-    /// silent drift). (Phase-1 bridge; a later refactor may make `BoardCalib` a
-    /// genuine sub-struct field of `BoardConfig`.)
-    #[inline]
-    pub fn calib(&self) -> crate::types::BoardCalib {
-        crate::types::BoardCalib {
-            shunt_ohms: self.shunt_ohms,
-            amp_gain: self.amp_gain,
-            adc_vref_mv: self.adc_vref_mv,
-            adc_max_counts: self.adc_max_counts,
-            invert_current_sign: self.invert_current_sign,
-            vbus_divider_ratio: self.vbus_divider_ratio,
-        }
-    }
-
     /// Convert raw ADC value to bus voltage in millivolts
     ///
     /// Uses the board's voltage divider ratio to scale the ADC reading.
     #[inline]
     pub fn vbus_mv_from_adc(&self, raw: u16) -> u32 {
         let raw = u32::from(raw);
-        let vsense_mv = raw * self.adc_vref_mv / u32::from(self.adc_max_counts);
-        (vsense_mv as f32 * self.vbus_divider_ratio) as u32
+        let vsense_mv = raw * self.calib.adc_vref_mv / u32::from(self.calib.adc_max_counts);
+        (vsense_mv as f32 * self.calib.vbus_divider_ratio) as u32
     }
 
     /// Convert 3 raw ADC readings to phase currents in Amps
@@ -141,13 +119,13 @@ impl BoardConfig {
     /// calibrated `CurrentSensor` path for control.
     #[inline]
     pub fn convert_raw_currents(&self, raw_a: u16, raw_b: u16, raw_c: u16) -> (f32, f32, f32) {
-        let offset = f32::from(self.adc_max_counts) / 2.0;
-        let mut scale = self.adc_vref_mv as f32
+        let offset = f32::from(self.calib.adc_max_counts) / 2.0;
+        let mut scale = self.calib.adc_vref_mv as f32
             / 1000.0
-            / f32::from(self.adc_max_counts)
-            / self.shunt_ohms
-            / self.amp_gain;
-        if self.invert_current_sign {
+            / f32::from(self.calib.adc_max_counts)
+            / self.calib.shunt_ohms
+            / self.calib.amp_gain;
+        if self.calib.invert_current_sign {
             scale = -scale;
         }
         (
@@ -267,14 +245,16 @@ mod tests {
     use super::*;
 
     const TEST_BOARD: BoardConfig = BoardConfig {
-        shunt_ohms: 0.003,
-        amp_gain: 16.0,
-        vbus_divider_ratio: 10.39, // 187/18
-        adc_vref_mv: 3300,
-        adc_max_counts: 4095,
+        calib: crate::types::BoardCalib {
+            shunt_ohms: 0.003,
+            amp_gain: 16.0,
+            adc_vref_mv: 3300,
+            adc_max_counts: 4095,
+            invert_current_sign: false,
+            vbus_divider_ratio: 10.39, // 187/18
+        },
         initial_vbus_volts: 12.0,
         max_iq_target_a: 10.0,
-        invert_current_sign: false,
         // Fault thresholds
         max_phase_current_a: 40.0,
         max_vbus_mv: 60_000,
@@ -298,7 +278,10 @@ mod tests {
         // sign-flipped currents to everything sign-sensitive in detection
         // (HFI dq separation, flux-linkage sign, observer input).
         let inverted = BoardConfig {
-            invert_current_sign: true,
+            calib: crate::types::BoardCalib {
+                invert_current_sign: true,
+                ..TEST_BOARD.calib
+            },
             ..TEST_BOARD
         };
         // Raw above mid-scale = positive voltage at the ADC; with inversion

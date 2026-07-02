@@ -319,19 +319,14 @@ mod tests {
     }
 
     #[test]
-    fn calib_bridge_matches_boardconfig() {
+    fn calib_is_boardconfig_substruct() {
         // BoardConfig::calib() projects the same field values (compile-checked,
         // this guards the value mapping too).
         use crate::foc::config::BoardConfig;
         let bc = BoardConfig {
-            shunt_ohms: 0.01,
-            amp_gain: 5.18,
-            vbus_divider_ratio: 19.15,
-            adc_vref_mv: 3300,
-            adc_max_counts: 4095,
+            calib: calib(),
             initial_vbus_volts: 12.0,
             max_iq_target_a: 5.0,
-            invert_current_sign: false,
             max_phase_current_a: 10.0,
             max_vbus_mv: 45_000,
             min_vbus_mv: 8_000,
@@ -339,12 +334,10 @@ mod tests {
             max_motor_temp_c: 0.0,
             phase_sense: None,
         };
-        let cal = bc.calib();
-        assert_eq!(cal.shunt_ohms, 0.01);
-        assert_eq!(cal.amp_gain, 5.18);
-        assert_eq!(cal.adc_vref_mv, 3300);
-        assert_eq!(cal.adc_max_counts, 4095);
-        assert!(!cal.invert_current_sign);
-        assert_eq!(cal.vbus_divider_ratio, 19.15);
+        // `calib` is a genuine sub-struct field now (no bridge method): the same
+        // BoardCalib the firmware sense path and the host enrichment both use.
+        assert_eq!(bc.calib, calib());
+        assert_eq!(bc.calib.shunt_ohms, 0.003);
+        assert_eq!(bc.calib.amp_gain, 16.0);
     }
 }

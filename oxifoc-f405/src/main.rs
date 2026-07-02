@@ -190,9 +190,9 @@ async fn main(spawner: Spawner) {
     );
     defmt::info!(
         "Board config: shunt={=f32}Ω, amp_gain={=f32} V/V, vbus_ratio={=f32}:1, faults={}",
-        config::BOARD.shunt_ohms,
-        config::BOARD.amp_gain,
-        config::BOARD.vbus_divider_ratio,
+        config::BOARD.calib.shunt_ohms,
+        config::BOARD.calib.amp_gain,
+        config::BOARD.calib.vbus_divider_ratio,
         FAULT_REGISTRY.count()
     );
 }

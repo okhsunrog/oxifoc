@@ -251,7 +251,7 @@ fn ADC1_2() {
             VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
             // Convert temperature raw ADC to 0.1°C units
-            temp_c_x10 = NTC.temp_c_x10_from_adc(samples[2], BOARD.adc_max_counts);
+            temp_c_x10 = NTC.temp_c_x10_from_adc(samples[2], BOARD.calib.adc_max_counts);
             FET_TEMP_C_X10.store(temp_c_x10, Ordering::Relaxed);
         }
     });

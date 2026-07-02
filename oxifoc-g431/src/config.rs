@@ -1,6 +1,7 @@
 //! Configuration constants and structures for oxifoc-g431 (B-G431B-ESC1)
 
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology};
+use oxifoc_core::types::BoardCalib;
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 
 // ============================================================================
@@ -18,14 +19,16 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 /// - Max continuous current: ~40A (FET rating)
 /// - Max VBUS: 45V (FET Vds rating with margin)
 pub const BOARD: BoardConfig = BoardConfig {
-    shunt_ohms: 0.003,                // 3mΩ
-    amp_gain: 64.0 / 7.0,             // 16x OPAMP × 4/7 resistor attenuation
-    vbus_divider_ratio: 187.0 / 18.0, // 169k + 18k / 18k
-    adc_vref_mv: 3300,                // 3.3V
-    adc_max_counts: 4095,             // 12-bit
+    calib: BoardCalib {
+        shunt_ohms: 0.003,                // 3mΩ
+        amp_gain: 64.0 / 7.0,             // 16x OPAMP × 4/7 resistor attenuation
+        adc_vref_mv: 3300,                // 3.3V
+        adc_max_counts: 4095,             // 12-bit
+        invert_current_sign: true,        // Low-side shunts: positive current → ADC below offset
+        vbus_divider_ratio: 187.0 / 18.0, // 169k + 18k / 18k
+    },
     initial_vbus_volts: 12.0,         // Conservative default
     max_iq_target_a: 10.0,            // Max torque current
-    invert_current_sign: true,        // Low-side shunts: positive current → ADC below offset
     // Fault thresholds
     max_phase_current_a: 40.0, // Peak phase current limit (FET rating)
     max_vbus_mv: 45_000,       // Overvoltage at 45V (FET Vds margin)
@@ -99,7 +102,7 @@ pub const HW_OCP_DAC_COUNTS: u16 = 4083;
 #[allow(dead_code)]
 pub fn pad_node_dac_counts(amps: f32) -> u16 {
     let bias_mv = 3300.0 * (1.0 / 22.0) / (1.0 / 1.5 + 1.0 / 22.0 + 1.0 / 2.2); // ≈128.6mV
-    let pad_mv = bias_mv + amps * BOARD.shunt_ohms * 1000.0 * (4.0 / 7.0);
+    let pad_mv = bias_mv + amps * BOARD.calib.shunt_ohms * 1000.0 * (4.0 / 7.0);
     let counts = pad_mv / (3300.0 / 4096.0);
     if counts >= 4095.0 {
         4095

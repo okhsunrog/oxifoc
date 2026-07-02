@@ -47,8 +47,8 @@ impl PhaseVoltageSense {
         let ps = board.phase_sense?;
         Some(Self {
             divider_ratio: ps.divider_ratio,
-            adc_vref_mv: board.adc_vref_mv,
-            adc_max_counts: board.adc_max_counts,
+            adc_vref_mv: board.calib.adc_vref_mv,
+            adc_max_counts: board.calib.adc_max_counts,
             has_filters: ps.has_filters,
             // Resting terminal ≈ GND; the real per-channel bias comes from
             // undriven calibration. A uniform offset cancels in alpha_beta
@@ -168,14 +168,16 @@ mod tests {
 
     const fn board(phase_sense: Option<PhaseSense>) -> BoardConfig {
         BoardConfig {
-            shunt_ohms: 0.0005,
-            amp_gain: 10.0,
-            vbus_divider_ratio: (39.0 + 2.2) / 2.2,
-            adc_vref_mv: 3300,
-            adc_max_counts: 4095,
+            calib: crate::types::BoardCalib {
+                shunt_ohms: 0.0005,
+                amp_gain: 10.0,
+                adc_vref_mv: 3300,
+                adc_max_counts: 4095,
+                invert_current_sign: false,
+                vbus_divider_ratio: (39.0 + 2.2) / 2.2,
+            },
             initial_vbus_volts: 12.0,
             max_iq_target_a: 10.0,
-            invert_current_sign: false,
             max_phase_current_a: 60.0,
             max_vbus_mv: 57_000,
             min_vbus_mv: 6_000,
