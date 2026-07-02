@@ -71,6 +71,10 @@ pub fn run_monitor(runtime: &HostRuntime, duration: Duration, json: bool) -> Res
     if !json {
         println!("Streaming telemetry for {duration:?}...");
     }
+    // Enrichment context (device BoardCalib + dc_offsets + pole_pairs). When
+    // absent (no handshake/calib) we fall back to printing raw ADC counts.
+    let hw = crate::record::latest_hw_info(runtime);
+    let ctx = crate::record::build_enrich_ctx(runtime, hw.as_ref());
     let deadline = Instant::now() + duration;
     // Clamp each wait to the time left so a stalled stream can't overshoot
     // the requested window by up to the 500 ms poll interval.
@@ -79,12 +83,23 @@ pub fn run_monitor(runtime: &HostRuntime, duration: Duration, json: bool) -> Res
         // Print fast telemetry
         match runtime.fast_rx.recv_timeout(wait) {
             Ok(sample) => {
+                let rich = ctx.as_ref().map(|c| sample.enrich(c));
                 if json {
-                    // JSONL: one compact object per sample
-                    println!("{}", serde_json::to_string(&sample)?);
+                    // JSONL: enriched when we have calibration, else the raw frame.
+                    match &rich {
+                        Some(r) => println!("{}", serde_json::to_string(r)?),
+                        None => println!("{}", serde_json::to_string(&sample)?),
+                    }
+                } else if let Some(r) = &rich {
+                    println!(
+                        "#{:>5} i[a{:+.2} b{:+.2} c{:+.2}] dq[{:+.2} {:+.2}]A  \
+                         vbus{:.1} vdq[{:+.2} {:+.2}]V  θ{:+.2} {:.0}rpm",
+                        r.seq, r.ia, r.ib, r.ic, r.id, r.iq, r.vbus_v, r.vd, r.vq, r.angle_rad,
+                        r.mech_rpm,
+                    );
                 } else {
                     println!(
-                        "#{:>5} ia:{:>5} ib:{:>5} ic:{:>5}  (raw ADC counts)",
+                        "#{:>5} ia:{:>5} ib:{:>5} ic:{:>5}  (raw ADC counts — no calib)",
                         sample.seq, sample.ia, sample.ib, sample.ic,
                     );
                 }

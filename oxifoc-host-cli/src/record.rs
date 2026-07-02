@@ -18,8 +18,10 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use oxifoc_core::types::{FastTelemetry, HardwareInfo, TelemetryConfig};
-use oxifoc_host_lib::{HostCommand, HostRuntime};
+use oxifoc_core::foc::telemetry::{EnrichCtx, RichSample};
+use oxifoc_core::types::{ConfigGroupId, ConfigResponse, FastTelemetry, HardwareInfo, TelemetryConfig};
+use oxifoc_host_lib::HostRuntime;
+use oxifoc_host_lib::{HostCommand, ops::config::read_group};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::data_type::{DoubleType, Int32Type, Int64Type};
 use parquet::file::metadata::KeyValue;
@@ -27,12 +29,27 @@ use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 
-const SCHEMA: &str = "message oxifoc_raw_adc {
+// Raw ADC currents + seq are kept for provenance / gap-integrity; the
+// engineering columns are reconstructed host-side by `FastTelemetry::enrich`
+// (the same oxifoc-core code the firmware encodes with) and are NaN when no
+// device calibration was available.
+const SCHEMA: &str = "message oxifoc_telemetry {
     required double t_s;
     required int64 seq;
     required int32 ia_adc;
     required int32 ib_adc;
     required int32 ic_adc;
+    required double ia_a;
+    required double ib_a;
+    required double ic_a;
+    required double id_a;
+    required double iq_a;
+    required double vbus_v;
+    required double vd_v;
+    required double vq_v;
+    required double angle_rad;
+    required double mech_rpm;
+    required double erpm;
 }";
 
 #[derive(serde::Serialize)]
@@ -66,6 +83,37 @@ pub struct Capture {
     pub decimation_m: u32,
     pub samples: Vec<FastTelemetry>,
     pub started: Instant,
+    /// Host-side raw→engineering context (device `BoardCalib` + `dc_offsets` +
+    /// `pole_pairs`). `None` only when no handshake info was available.
+    pub enrich: Option<EnrichCtx>,
+}
+
+/// Build the enrichment context from the device: `BoardCalib` (handshake) +
+/// `dc_offsets` and `pole_pairs` (config reads). Offsets fall back to mid-scale
+/// and `pole_pairs` to 0 when the device stores neither (e.g. an uncalibrated
+/// or virtual device) — currents are then approximate and eRPM reads 0.
+pub fn build_enrich_ctx(runtime: &HostRuntime, hw: Option<&HardwareInfo>) -> Option<EnrichCtx> {
+    let calib = hw?.calib;
+    let offsets = read_group(&runtime.cmd_tx, ConfigGroupId::DcOffsets)
+        .ok()
+        .flatten()
+        .and_then(|r| match r {
+            ConfigResponse::DcOffsets(c) => Some((c.phase_a, c.phase_b, c.phase_c)),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            let mid = f32::from(calib.adc_max_counts) / 2.0;
+            (mid, mid, mid)
+        });
+    let pole_pairs = read_group(&runtime.cmd_tx, ConfigGroupId::MotorParams)
+        .ok()
+        .flatten()
+        .and_then(|r| match r {
+            ConfigResponse::MotorParams(c) => Some(c.pole_pairs),
+            _ => None,
+        })
+        .unwrap_or(0);
+    Some(EnrichCtx::new(&calib, offsets, pole_pairs))
 }
 
 impl Capture {
@@ -75,6 +123,9 @@ impl Capture {
             bail!("fast_hz must be nonzero for a capture");
         }
         let hw = latest_hw_info(runtime);
+        // Build the enrichment context up front (config reads) — while the link
+        // is quiet, before the high-rate stream starts competing for it.
+        let enrich = build_enrich_ctx(runtime, hw.as_ref());
         runtime
             .cmd_tx
             .send(HostCommand::SetTelemetryConfig(TelemetryConfig { fast_hz }))
@@ -111,6 +162,7 @@ impl Capture {
             decimation_m,
             samples: Vec::new(),
             started: Instant::now(),
+            enrich,
         })
     }
 
@@ -190,6 +242,7 @@ impl Capture {
             out_path,
             &self.samples,
             self.hw.as_ref(),
+            self.enrich.as_ref(),
             self.fast_hz_requested,
             self.fast_hz_actual,
             self.expected_step(),
@@ -230,6 +283,7 @@ fn write_parquet(
     path: &str,
     samples: &[FastTelemetry],
     hw: Option<&HardwareInfo>,
+    enrich: Option<&EnrichCtx>,
     fast_hz_requested: u16,
     fast_hz_actual: u16,
     decimation_m: u32,
@@ -255,11 +309,13 @@ fn write_parquet(
         kv("oxifoc.fast_hz_actual", fast_hz_actual.to_string()),
         kv("oxifoc.decimation_m", decimation_m.to_string()),
         kv(
-            "oxifoc.raw_adc_note",
-            "uncalibrated 12-bit ADC counts (3 shunts, NO anti-alias filter — \
-             decimation is plain sample-dropping at M); convert host-side: \
-             I = (offset - count) * scale per BoardConfig (invert_current_sign, \
-             shunt+gain)"
+            "oxifoc.telemetry_note",
+            "ia_adc/ib_adc/ic_adc = uncalibrated 12-bit ADC counts (3 shunts, NO \
+             anti-alias filter — decimation is plain sample-dropping at M). The \
+             *_a / *_v / angle_rad / *rpm columns are reconstructed host-side by \
+             oxifoc_core FastTelemetry::enrich (BoardCalib + dc_offsets + \
+             pole_pairs) — the same core code the firmware encodes with; NaN if no \
+             device calibration was available at capture time."
                 .to_string(),
         ),
         kv("oxifoc.config", config_snapshot.to_string()),
@@ -308,6 +364,33 @@ fn write_parquet(
     let ib: Vec<i32> = samples.iter().map(|s| i32::from(s.ib)).collect();
     let ic: Vec<i32> = samples.iter().map(|s| i32::from(s.ic)).collect();
 
+    // Engineering columns: reconstruct each sample once via the shared enrich
+    // path (None → NaN so the schema stays fixed regardless of calibration).
+    let rich: Vec<Option<RichSample>> = samples
+        .iter()
+        .map(|s| enrich.map(|c| s.enrich(c)))
+        .collect();
+    let eng = |sel: fn(&RichSample) -> f32| -> Vec<f64> {
+        rich.iter()
+            .map(|r| r.as_ref().map_or(f64::NAN, |x| f64::from(sel(x))))
+            .collect()
+    };
+    let ia_a = eng(|r| r.ia);
+    let ib_a = eng(|r| r.ib);
+    let ic_a = eng(|r| r.ic);
+    let id_a = eng(|r| r.id);
+    let iq_a = eng(|r| r.iq);
+    let vbus_v = eng(|r| r.vbus_v);
+    let vd_v = eng(|r| r.vd);
+    let vq_v = eng(|r| r.vq);
+    let angle_rad = eng(|r| r.angle_rad);
+    let mech_rpm = eng(|r| r.mech_rpm);
+    let erpm = eng(|r| r.erpm);
+
+    let doubles: [&[f64]; 11] = [
+        &ia_a, &ib_a, &ic_a, &id_a, &iq_a, &vbus_v, &vd_v, &vq_v, &angle_rad, &mech_rpm, &erpm,
+    ];
+
     let mut rg = writer.next_row_group()?;
     let mut col_idx = 0usize;
     while let Some(mut col) = rg.next_column()? {
@@ -326,6 +409,10 @@ fn write_parquet(
             }
             4 => {
                 col.typed::<Int32Type>().write_batch(&ic, None, None)?;
+            }
+            5..=15 => {
+                col.typed::<DoubleType>()
+                    .write_batch(doubles[col_idx - 5], None, None)?;
             }
             _ => bail!("schema/column mismatch"),
         }

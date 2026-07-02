@@ -351,6 +351,9 @@ pub struct HardwareInfo {
     pub foc_freq_hz: u32,
     /// Hardware peak current limit in Amps
     pub max_current_a: f32,
+    /// Static current-sense / vbus constants for host-side telemetry
+    /// enrichment (raw frame → engineering units). See [`BoardCalib`].
+    pub calib: BoardCalib,
 }
 
 /// Static board electrical constants the host needs to reconstruct engineering
@@ -364,7 +367,7 @@ pub struct HardwareInfo {
 /// [`crate::foc::config::BoardConfig`] (bridged by `BoardConfig::calib()` — the
 /// single source of the field values); it is intentionally NOT the whole
 /// `BoardConfig` (fault thresholds, phase-sense, etc. are firmware-internal).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Schema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct BoardCalib {
     /// Shunt resistance in Ohms.

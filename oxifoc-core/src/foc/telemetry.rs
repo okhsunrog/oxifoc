@@ -157,7 +157,7 @@ impl EnrichCtx {
 }
 
 /// Fully decoded engineering-unit telemetry sample (host-facing).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
 pub struct RichSample {
     /// Phase currents (A).
     pub ia: f32,
