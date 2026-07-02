@@ -245,40 +245,44 @@ impl HostRuntime {
         self.cancel_token.cancel();
     }
 
-    /// Build the raw→engineering enrichment context from the device: `BoardCalib`
-    /// (from the handshake `HardwareInfo`) + `dc_offsets` and `pole_pairs`
-    /// (config reads). Offsets fall back to mid-scale and `pole_pairs` to 0 when
-    /// the device stores neither (uncalibrated / virtual). Shared by the CLI
-    /// (record/watch) and the GUI so both enrich through the identical core path.
-    pub fn build_enrich_ctx(
-        &self,
-        hw: Option<&oxifoc_core::types::HardwareInfo>,
-    ) -> Option<oxifoc_core::foc::telemetry::EnrichCtx> {
-        use oxifoc_core::types::{ConfigGroupId, ConfigResponse};
-        let calib = hw?.calib;
-        let offsets = crate::ops::config::read_group(&self.cmd_tx, ConfigGroupId::DcOffsets)
-            .ok()
-            .flatten()
-            .and_then(|r| match r {
-                ConfigResponse::DcOffsets(c) => Some((c.phase_a, c.phase_b, c.phase_c)),
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                let mid = f32::from(calib.adc_max_counts) / 2.0;
-                (mid, mid, mid)
-            });
-        let pole_pairs = crate::ops::config::read_group(&self.cmd_tx, ConfigGroupId::MotorParams)
-            .ok()
-            .flatten()
-            .and_then(|r| match r {
-                ConfigResponse::MotorParams(c) => Some(c.pole_pairs),
-                _ => None,
-            })
-            .unwrap_or(0);
-        Some(oxifoc_core::foc::telemetry::EnrichCtx::new(
-            &calib, offsets, pole_pairs,
-        ))
-    }
+}
+
+/// Build the raw→engineering enrichment context from the device: `BoardCalib`
+/// (from the handshake `HardwareInfo`) + `dc_offsets` and `pole_pairs` (config
+/// reads on `cmd`). Offsets fall back to mid-scale and `pole_pairs` to 0 when the
+/// device stores neither (uncalibrated / virtual). A free function over the
+/// command sender (not `&HostRuntime`) so the GUI can clone `cmd_tx` out of its
+/// runtime mutex first — never holding the lock across the blocking config
+/// reads. Shared by the CLI (record/watch) and the GUI so both enrich through the
+/// identical core path.
+pub fn build_enrich_ctx(
+    cmd: &CommandSender,
+    hw: Option<&oxifoc_core::types::HardwareInfo>,
+) -> Option<oxifoc_core::foc::telemetry::EnrichCtx> {
+    use oxifoc_core::types::{ConfigGroupId, ConfigResponse};
+    let calib = hw?.calib;
+    let offsets = crate::ops::config::read_group(cmd, ConfigGroupId::DcOffsets)
+        .ok()
+        .flatten()
+        .and_then(|r| match r {
+            ConfigResponse::DcOffsets(c) => Some((c.phase_a, c.phase_b, c.phase_c)),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            let mid = f32::from(calib.adc_max_counts) / 2.0;
+            (mid, mid, mid)
+        });
+    let pole_pairs = crate::ops::config::read_group(cmd, ConfigGroupId::MotorParams)
+        .ok()
+        .flatten()
+        .and_then(|r| match r {
+            ConfigResponse::MotorParams(c) => Some(c.pole_pairs),
+            _ => None,
+        })
+        .unwrap_or(0);
+    Some(oxifoc_core::foc::telemetry::EnrichCtx::new(
+        &calib, offsets, pole_pairs,
+    ))
 }
 
 impl Drop for HostRuntime {

@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use oxifoc_core::foc::telemetry::{EnrichCtx, RichSample};
 use oxifoc_core::types::{FastTelemetry, HardwareInfo, TelemetryConfig};
-use oxifoc_host_lib::{HostCommand, HostRuntime};
+use oxifoc_host_lib::{HostCommand, HostRuntime, build_enrich_ctx};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::data_type::{DoubleType, Int32Type, Int64Type};
 use parquet::file::metadata::KeyValue;
@@ -96,7 +96,7 @@ impl Capture {
         let hw = latest_hw_info(runtime);
         // Build the enrichment context up front (config reads) — while the link
         // is quiet, before the high-rate stream starts competing for it.
-        let enrich = runtime.build_enrich_ctx(hw.as_ref());
+        let enrich = build_enrich_ctx(&runtime.cmd_tx, hw.as_ref());
         runtime
             .cmd_tx
             .send(HostCommand::SetTelemetryConfig(TelemetryConfig { fast_hz }))

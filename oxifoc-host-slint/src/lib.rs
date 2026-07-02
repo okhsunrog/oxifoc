@@ -313,7 +313,13 @@ pub fn main() {
     let currents_buf = Arc::new(PlotBuffer::new(3, CAPACITY)); // ia, ib, ic
     let vbus_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // V
     let temp_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // °C
-    let hall_buf = Arc::new(PlotBuffer::new(2, CAPACITY)); // hall_state, erpm/1000
+    let hall_buf = Arc::new(PlotBuffer::new(2, CAPACITY)); // angle_rad, erpm/1000
+
+    // Raw→engineering enrichment context (device BoardCalib + dc_offsets +
+    // pole_pairs). Built by the device-info listener on connect; read by the
+    // telemetry drain to turn raw ADC frames into amps / dq / volts.
+    let enrich_slot: Arc<std::sync::Mutex<Option<oxifoc_core::foc::telemetry::EnrichCtx>>> =
+        Arc::new(std::sync::Mutex::new(None));
 
     // Actual fast telemetry rate — set by HostRuntime after device ack
     let fast_hz: Arc<std::sync::atomic::AtomicU16> = Arc::new(std::sync::atomic::AtomicU16::new(0));
@@ -342,6 +348,7 @@ pub fn main() {
         let vb = vbus_buf.clone();
         let tb = temp_buf.clone();
         let hb = hall_buf.clone();
+        let esl = enrich_slot.clone();
         let fhz = fast_hz.clone();
         let frx = fast_rx_slot.clone();
         let srx = slow_rx_slot.clone();
@@ -444,21 +451,35 @@ pub fn main() {
 
                     // Drain telemetry — always consume from channel, only write to buffer if not paused
                     let mut last_fast = None;
+                    let mut last_rich = None;
                     if let Ok(guard) = frx.try_lock()
                         && let Some(ref rx) = *guard
                     {
+                        // Lock the enrichment ctx once per poll (it's set on
+                        // connect and then stable for the session).
+                        let eguard = esl.lock().ok();
+                        let ectx = eguard.as_ref().and_then(|g| g.as_ref());
                         while let Ok(sample) = rx.try_recv() {
+                            let rich = ectx.map(|c| sample.enrich(c));
                             if !currents_paused {
-                                cb.push_frame(&[sample.ia, sample.ib, sample.ic]);
+                                match &rich {
+                                    // amps once calibrated, else raw ADC counts
+                                    Some(r) => cb.push_frame(&[r.ia, r.ib, r.ic]),
+                                    None => cb.push_frame(&[
+                                        f32::from(sample.ia),
+                                        f32::from(sample.ib),
+                                        f32::from(sample.ic),
+                                    ]),
+                                }
                             }
                             if !hall_paused {
-                                hb.push_frame(&[
-                                    f32::from(sample.hall_state),
-                                    sample.erpm as f32 / 1000.0,
-                                ]);
+                                let (ang, erpm) =
+                                    rich.map_or((0.0, 0.0), |r| (r.angle_rad, r.erpm / 1000.0));
+                                hb.push_frame(&[ang, erpm]);
                             }
                             rate_count += 1;
                             last_fast = Some(sample);
+                            last_rich = rich;
                         }
                     }
                     let elapsed = rate_t0.elapsed();
@@ -512,15 +533,21 @@ pub fn main() {
                         // Update connection status + text from latest samples
                         app.set_is_connected(conn.load(Ordering::Relaxed));
                         if let Some(s) = last_fast {
-                            app.set_ia_text(SharedString::from(format!("{:.2} A", s.ia)));
-                            app.set_ib_text(SharedString::from(format!("{:.2} A", s.ib)));
-                            app.set_ic_text(SharedString::from(format!("{:.2} A", s.ic)));
-                            app.set_id_text(SharedString::from(format!("{:.2} A", s.id)));
-                            app.set_iq_text(SharedString::from(format!("{:.2} A", s.iq)));
-                            app.set_erpm_text(SharedString::from(format!("{}", s.erpm)));
-                            let pole_pairs = app.get_pole_pairs().max(1);
-                            let rpm = s.erpm / pole_pairs;
-                            app.set_rpm_text(SharedString::from(format!("{rpm}")));
+                            if let Some(r) = last_rich {
+                                // Engineering units (device-calibrated).
+                                app.set_ia_text(SharedString::from(format!("{:.2} A", r.ia)));
+                                app.set_ib_text(SharedString::from(format!("{:.2} A", r.ib)));
+                                app.set_ic_text(SharedString::from(format!("{:.2} A", r.ic)));
+                                app.set_id_text(SharedString::from(format!("{:.2} A", r.id)));
+                                app.set_iq_text(SharedString::from(format!("{:.2} A", r.iq)));
+                                app.set_erpm_text(SharedString::from(format!("{:.0}", r.erpm)));
+                                app.set_rpm_text(SharedString::from(format!("{:.0}", r.mech_rpm)));
+                            } else {
+                                // No calibration yet — show raw ADC counts.
+                                app.set_ia_text(SharedString::from(format!("{} cnt", s.ia)));
+                                app.set_ib_text(SharedString::from(format!("{} cnt", s.ib)));
+                                app.set_ic_text(SharedString::from(format!("{} cnt", s.ic)));
+                            }
                             app.set_seq_text(SharedString::from(format!("{}", s.seq)));
                         }
                         if let Some(s) = last_slow {
@@ -708,6 +735,7 @@ pub fn main() {
         let frx_slot = fast_rx_slot.clone();
         let srx_slot = slow_rx_slot.clone();
         let conn_flag = connected_flag.clone();
+        let esl_connect = enrich_slot.clone();
         let fhz = fast_hz.clone();
 
         app.on_connect_device(move || {
@@ -901,10 +929,21 @@ pub fn main() {
                 });
             }
 
-            // Device info listener — runs once on connection
+            // Device info listener — runs once on connection: mirror identity to
+            // the UI AND build the raw→engineering enrichment context. Clone
+            // cmd_tx out of the runtime mutex first, so the blocking config reads
+            // (DcOffsets, MotorParams) don't hold the lock.
             let weak_info = weak.clone();
+            let rt_info = rt.clone();
+            let esl_info = esl_connect.clone();
             thread::spawn(move || {
                 if let Ok(info) = info_rx.recv() {
+                    let cmd_tx = rt_info.lock().unwrap().as_ref().map(|r| r.cmd_tx.clone());
+                    if let Some(cmd_tx) = cmd_tx
+                        && let Some(ctx) = oxifoc_host_lib::build_enrich_ctx(&cmd_tx, Some(&info))
+                    {
+                        *esl_info.lock().unwrap() = Some(ctx);
+                    }
                     let _ = weak_info.upgrade_in_event_loop(move |app| {
                         app.set_device_hw(info.hw.as_str().into());
                         app.set_device_sw(info.sw.as_str().into());
