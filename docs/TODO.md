@@ -241,10 +241,26 @@ the sim = batch tick).
   Make the record rate configurable (≤2 kHz is link-feasible; the HFI carrier
   case still wants burst-capture), and/or have the device-side detection
   abort the drive on host link-loss instead of running to completion blind.
-- [ ] `protocol_version` in `HardwareInfo` + `env!("CARGO_PKG_VERSION")`
-  instead of the hardcoded "oxifoc-0.1.0" — mandatory before any
-  release/distribution (postcard schema has no self-description: a
-  mismatch = silent garbage).
+- [ ] **Protocol versioning & compatibility** — full design in
+  [notes/protocol-versioning.md](notes/protocol-versioning.md). Premise of the
+  old note was wrong: ergot keys = hash(path + recursive schema), so a type
+  change → new wire address → `NoRoute` (fail-closed), **not** silent garbage —
+  except **topics**, which fail as *silent absence* (the real reason to gate at
+  connect). Plan: ergot-side `ergot_proto_version` in well-known `DeviceInfo` +
+  a `DeviceInfo` handshake endpoint (L1); socket-table introspection
+  `served_digest` + `SocketQuery` enumerate-all (L2); later opt-in
+  `#[schema(evolve)]` append-tolerant keys. oxifoc-side: split the custom
+  device-info — identity → ergot `DeviceInfo`, motor descriptor → lean
+  `AppInfoEndpoint` (foc/current/**BoardCalib**/semver via
+  `env!("CARGO_PKG_VERSION")`), drop the HardwareInfo handshake role. Mandatory
+  before any release/distribution.
+- [ ] **Fast-telemetry enrichment** (raw 18-byte frame → engineering units in
+  CLI/GUI via one shared `oxifoc-core` path) —
+  [notes/telemetry-enrichment.md](notes/telemetry-enrichment.md): `Scale`
+  fixed-point codec (paired enc/dec, one LSB per field) + `enrich()` reusing
+  `ShuntCurrentSense::convert_raw` + `clarke`/`park`; `BoardCalib` as a
+  sub-struct of `BoardConfig` carried in `AppInfoEndpoint`; offsets/pole_pairs
+  via existing config reads; round-trip/golden tests in core.
 - [ ] Reconnect state machine has no test coverage; slint-wgpu-plot: the
   ring index arithmetic (`renderer.rs:262`) under a large zoom-out +
   scroll-back may compute the Y auto-range over a different window than
