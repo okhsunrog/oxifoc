@@ -103,6 +103,23 @@ pub struct BoardConfig {
 }
 
 impl BoardConfig {
+    /// Project the current-sense / vbus constants into the wire [`BoardCalib`]
+    /// carried to the host for telemetry enrichment. Single source of the field
+    /// values — a renamed `BoardConfig` field breaks this at compile time (no
+    /// silent drift). (Phase-1 bridge; a later refactor may make `BoardCalib` a
+    /// genuine sub-struct field of `BoardConfig`.)
+    #[inline]
+    pub fn calib(&self) -> crate::types::BoardCalib {
+        crate::types::BoardCalib {
+            shunt_ohms: self.shunt_ohms,
+            amp_gain: self.amp_gain,
+            adc_vref_mv: self.adc_vref_mv,
+            adc_max_counts: self.adc_max_counts,
+            invert_current_sign: self.invert_current_sign,
+            vbus_divider_ratio: self.vbus_divider_ratio,
+        }
+    }
+
     /// Convert raw ADC value to bus voltage in millivolts
     ///
     /// Uses the board's voltage divider ratio to scale the ADC reading.

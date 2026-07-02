@@ -264,6 +264,9 @@ pub mod foc {
     /// Coordinate transformations (Clarke, Park, and their inverses)
     pub mod transforms;
 
+    /// Fast-telemetry fixed-point codec + shared raw→engineering enrichment
+    pub mod telemetry;
+
     /// Fast hot-path scalar math (hardware sqrt, polynomial atan2)
     pub mod fast_math;
 

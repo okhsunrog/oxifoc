@@ -204,26 +204,23 @@ pub fn build_fast_telemetry(
     seq: u32,
 ) -> FastTelemetry {
     use core::f32::consts::TAU;
-    // Electrical angle 0..2π → full-scale u16 (wrap-safe). `rem_euclid` is a std
-    // method (absent in no_std), so wrap via truncating cast of the turn count.
-    let turns = foc.angle_rad / TAU;
-    let frac = turns - (turns as i32 as f32);
-    let frac = if frac < 0.0 { frac + 1.0 } else { frac };
-    let angle = (frac * 65536.0) as u16;
-    // Mechanical speed → 2-RPM units (i16). NOTE: `velocity_rad_s` is electrical;
-    // a real deployment divides by pole pairs — irrelevant on the bench path,
-    // where the synthetic generator fills `rpm` directly.
-    let vel = hall.map_or(0.0, |h| h.velocity_rad_s);
-    let rpm = (vel * (60.0 / TAU) * 0.5) as i16;
+    // Scalars go through the shared fixed-point codec (`FastTelemetry::pack_*`)
+    // so this encode stays the exact inverse of the host `enrich` decode — one
+    // LSB constant per field, round-trip tested in `foc::telemetry`.
+    //
+    // NOTE: `velocity_rad_s` is electrical; a real deployment divides by pole
+    // pairs for mechanical RPM — irrelevant on the g474 bench path, where the
+    // synthetic generator fills `rpm` directly.
+    let mech_rpm = hall.map_or(0.0, |h| h.velocity_rad_s) * (60.0 / TAU);
     FastTelemetry {
         ia: adc.ia,
         ib: adc.ib,
         ic: adc.ic,
-        vbus: (adc.vbus_mv / 2) as u16, // mV → 2-mV units
-        angle,
-        vd: (foc.vd * 500.0) as i16, // V → 2-mV units (×1000/2)
-        vq: (foc.vq * 500.0) as i16,
-        rpm,
+        vbus: FastTelemetry::pack_vbus(adc.vbus_mv as f32 / 1000.0),
+        angle: FastTelemetry::pack_angle(foc.angle_rad),
+        vd: FastTelemetry::pack_volt(foc.vd),
+        vq: FastTelemetry::pack_volt(foc.vq),
+        rpm: FastTelemetry::pack_rpm(mech_rpm),
         seq: seq as u16,
     }
 }

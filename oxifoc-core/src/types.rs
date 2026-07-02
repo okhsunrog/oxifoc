@@ -353,6 +353,35 @@ pub struct HardwareInfo {
     pub max_current_a: f32,
 }
 
+/// Static board electrical constants the host needs to reconstruct engineering
+/// units from the raw [`FastTelemetry`] frame (ADC counts → amps, raw bus →
+/// volts). Compile-time per board; carried once at connect. Combined host-side
+/// with the (dynamic) `dc_offsets` calibration and `pole_pairs` to build the
+/// enrichment context. See [`crate::foc::telemetry`] and the design note
+/// `docs/notes/telemetry-enrichment.md`.
+///
+/// This is the wire projection of the current-sense/vbus fields of
+/// [`crate::foc::config::BoardConfig`] (bridged by `BoardConfig::calib()` — the
+/// single source of the field values); it is intentionally NOT the whole
+/// `BoardConfig` (fault thresholds, phase-sense, etc. are firmware-internal).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct BoardCalib {
+    /// Shunt resistance in Ohms.
+    pub shunt_ohms: f32,
+    /// Current amplifier gain (V/V).
+    pub amp_gain: f32,
+    /// ADC reference voltage in millivolts.
+    pub adc_vref_mv: u32,
+    /// Maximum ADC count (e.g. 4095 for 12-bit).
+    pub adc_max_counts: u16,
+    /// Current-sense sign inversion (low-side shunts, MCSDK convention).
+    pub invert_current_sign: bool,
+    /// VBUS divider ratio (Vbus = Vsense · ratio). Not needed to decode the
+    /// frame's `vbus` (already post-divider mV) — carried for completeness.
+    pub vbus_divider_ratio: f32,
+}
+
 // ============================================================================
 // Fault Protocol Types
 // ============================================================================

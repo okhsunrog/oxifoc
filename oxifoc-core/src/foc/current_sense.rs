@@ -79,6 +79,22 @@ impl ShuntCurrentSense {
         }
     }
 
+    /// Build a converter from the wire [`BoardCalib`](crate::types::BoardCalib)
+    /// (the static electrical constants). Offsets stay at mid-scale until
+    /// [`set_offsets`](Self::set_offsets) is called with the calibrated
+    /// `dc_offsets` — used identically by the firmware sense path and the host
+    /// enrichment path, so they cannot diverge.
+    pub fn from_calib(calib: &crate::types::BoardCalib) -> Self {
+        let mut s = Self::new(
+            calib.shunt_ohms,
+            calib.amp_gain,
+            calib.adc_vref_mv,
+            calib.adc_max_counts,
+        );
+        s.set_invert_sign(calib.invert_current_sign);
+        s
+    }
+
     /// Set current sensing sign inversion.
     ///
     /// When `true`, uses `I = (offset - ADC) × scale` (ST MCSDK convention
