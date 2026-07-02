@@ -19,9 +19,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use oxifoc_core::foc::telemetry::{EnrichCtx, RichSample};
-use oxifoc_core::types::{ConfigGroupId, ConfigResponse, FastTelemetry, HardwareInfo, TelemetryConfig};
-use oxifoc_host_lib::HostRuntime;
-use oxifoc_host_lib::{HostCommand, ops::config::read_group};
+use oxifoc_core::types::{FastTelemetry, HardwareInfo, TelemetryConfig};
+use oxifoc_host_lib::{HostCommand, HostRuntime};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::data_type::{DoubleType, Int32Type, Int64Type};
 use parquet::file::metadata::KeyValue;
@@ -88,34 +87,6 @@ pub struct Capture {
     pub enrich: Option<EnrichCtx>,
 }
 
-/// Build the enrichment context from the device: `BoardCalib` (handshake) +
-/// `dc_offsets` and `pole_pairs` (config reads). Offsets fall back to mid-scale
-/// and `pole_pairs` to 0 when the device stores neither (e.g. an uncalibrated
-/// or virtual device) — currents are then approximate and eRPM reads 0.
-pub fn build_enrich_ctx(runtime: &HostRuntime, hw: Option<&HardwareInfo>) -> Option<EnrichCtx> {
-    let calib = hw?.calib;
-    let offsets = read_group(&runtime.cmd_tx, ConfigGroupId::DcOffsets)
-        .ok()
-        .flatten()
-        .and_then(|r| match r {
-            ConfigResponse::DcOffsets(c) => Some((c.phase_a, c.phase_b, c.phase_c)),
-            _ => None,
-        })
-        .unwrap_or_else(|| {
-            let mid = f32::from(calib.adc_max_counts) / 2.0;
-            (mid, mid, mid)
-        });
-    let pole_pairs = read_group(&runtime.cmd_tx, ConfigGroupId::MotorParams)
-        .ok()
-        .flatten()
-        .and_then(|r| match r {
-            ConfigResponse::MotorParams(c) => Some(c.pole_pairs),
-            _ => None,
-        })
-        .unwrap_or(0);
-    Some(EnrichCtx::new(&calib, offsets, pole_pairs))
-}
-
 impl Capture {
     /// Enable streaming, wait for the device ack, eat the enable transient.
     pub fn start(runtime: &HostRuntime, fast_hz: u16) -> Result<Self> {
@@ -125,7 +96,7 @@ impl Capture {
         let hw = latest_hw_info(runtime);
         // Build the enrichment context up front (config reads) — while the link
         // is quiet, before the high-rate stream starts competing for it.
-        let enrich = build_enrich_ctx(runtime, hw.as_ref());
+        let enrich = runtime.build_enrich_ctx(hw.as_ref());
         runtime
             .cmd_tx
             .send(HostCommand::SetTelemetryConfig(TelemetryConfig { fast_hz }))

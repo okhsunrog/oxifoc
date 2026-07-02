@@ -74,7 +74,7 @@ pub fn run_monitor(runtime: &HostRuntime, duration: Duration, json: bool) -> Res
     // Enrichment context (device BoardCalib + dc_offsets + pole_pairs). When
     // absent (no handshake/calib) we fall back to printing raw ADC counts.
     let hw = crate::record::latest_hw_info(runtime);
-    let ctx = crate::record::build_enrich_ctx(runtime, hw.as_ref());
+    let ctx = runtime.build_enrich_ctx(hw.as_ref());
     let deadline = Instant::now() + duration;
     // Clamp each wait to the time left so a stalled stream can't overshoot
     // the requested window by up to the 500 ms poll interval.
