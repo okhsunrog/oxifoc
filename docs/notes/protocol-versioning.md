@@ -209,20 +209,21 @@ Build enrichment first (the real goal, pure-core, CI-testable, no hardware);
 defer the heavy versioning/ergot work until "host updates separately from
 firmware" actually bites — but slot the tiny L1 in before any release.
 
-- **Phase 0** — commit these design notes (checkpoint).
-- **Phase 1** — core enrichment foundation (oxifoc-core, pure + tests): `Scale`
-  codec + refactor `build_fast_telemetry`; `enrich`/`RichSample`/`EnrichCtx`;
-  `BoardCalib` sub-struct of `BoardConfig`; `ShuntCurrentSense::from_calib`;
-  round-trip/golden/property tests. See
-  [telemetry-enrichment.md](telemetry-enrichment.md). ← start here.
-- **Phase 2** — deliver calib + wire into host: **`BoardCalib` as a field in
-  `HardwareInfo` now** (see fork below); host fetches BoardCalib + DcOffsets +
-  MotorParams at connect → `EnrichCtx` → `enrich` in `record`/`watch` + parquet
-  amps/id/iq columns (CLI + GUI via host-lib). Delivers the feature.
-- **Phase 3** — L1 minimum (small, before release/distribution): ergot
-  `ergot_proto_version` in `DeviceInfo` + app semver via
-  `env!("CARGO_PKG_VERSION")` + host connect-time check → friendly mismatch.
-  Closes the silent-topic-desync gap. Slot-in anytime; not a blocker.
+- **Phase 0** — ✅ DONE (`5d9bb17`) — design notes committed.
+- **Phase 1** — ✅ DONE (`8ee6f84`) — core `Scale` codec + `enrich`/`RichSample`/
+  `EnrichCtx` + `BoardCalib` (bridge, not sub-struct — see 1c) +
+  `ShuntCurrentSense::from_calib` + 6 tests. See
+  [telemetry-enrichment.md](telemetry-enrichment.md).
+- **Phase 2** — ✅ DONE (`3ef160a`) — `BoardCalib` field on `HardwareInfo` (3
+  boards); host builds `EnrichCtx` at connect (calib + DcOffsets + MotorParams,
+  graceful fallback); `enrich` in `record` (parquet amps/id/iq/… columns) +
+  `watch`. GUI still TODO (reuses the same core `enrich`).
+- **Phase 3** — ✅ DONE (`cde3a80`, oxifoc side) — `sw` via
+  `env!("CARGO_PKG_VERSION")`; `ICD_PROTO_VERSION` + `HardwareInfo.proto_version`
+  + host connect-time mismatch warning. **Remaining:** the ergot-wire
+  `ergot_proto_version` in ergot's `DeviceInfo` (ergot repo, L1 §3); **1c** —
+  make `BoardCalib` a genuine sub-struct of `BoardConfig` (the Phase-1 bridge
+  works, this is cleanup); GUI enrichment wiring.
 - **Phase 4** — heavy pass, only under real coexistence pressure: ergot
   `served_digest` + `SocketQuery` enumerate-all (L2); oxifoc device-info split
   (§6: identity → ergot `DeviceInfo`, motor descriptor → lean `AppInfoEndpoint`,
