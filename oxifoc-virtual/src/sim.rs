@@ -90,6 +90,25 @@ pub async fn foc_loop(
         // exercise what the firmware ships, not a parallel re-implementation.
         use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
         let vbus_mv = (vbus * 1000.0) as u32;
+        // Encode phase currents back into raw ADC counts (the inverse of the
+        // host's `ShuntCurrentSense::convert_raw`) with `VIRTUAL_CALIB` + a
+        // mid-scale offset — so the host, which falls back to mid-scale when the
+        // device stores no dc_offsets, reconstructs the sim's real currents.
+        let calib = crate::VIRTUAL_CALIB;
+        let offset = f32::from(calib.adc_max_counts) / 2.0;
+        let scale = calib.adc_vref_mv as f32
+            / 1000.0
+            / f32::from(calib.adc_max_counts)
+            / calib.shunt_ohms
+            / calib.amp_gain;
+        let to_adc = |i: f32| -> u16 {
+            let raw = if calib.invert_current_sign {
+                offset - i / scale
+            } else {
+                offset + i / scale
+            };
+            raw.clamp(0.0, f32::from(calib.adc_max_counts)) as u16
+        };
         for _ in 0..batch {
             let last_foc_out = foc.step(
                 (out.ia, out.ib, out.ic),
@@ -102,7 +121,8 @@ pub async fn foc_loop(
             out = motor.step(last_foc_out.v_alpha, last_foc_out.v_beta, load_torque, dt);
             seq = seq.wrapping_add(1);
 
-            let adc = AdcSnapshot::new(0, 0, 0, vbus_mv, seq).with_temp(TempSensorId::Fet, 250); // 25.0°C
+            let adc = AdcSnapshot::new(to_adc(out.ia), to_adc(out.ib), to_adc(out.ic), vbus_mv, seq)
+                .with_temp(TempSensorId::Fet, 250); // 25.0°C
             let hall = HallSnapshot {
                 angle_rad: out.angle_rad,
                 velocity_rad_s: out.omega_e,

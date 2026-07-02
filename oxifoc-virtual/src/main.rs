@@ -25,6 +25,18 @@ use tracing_subscriber::EnvFilter;
 // Platform state globals
 oxifoc_core::define_platform_state!(oxifoc_core::foc::fault::StandardFault);
 
+/// Synthetic board electrical constants reported to the host (for telemetry
+/// enrichment) and used by the sim to encode currents into raw ADC counts —
+/// generic B-G431B-ESC1-like values so the enrich round-trip is meaningful.
+pub const VIRTUAL_CALIB: oxifoc_core::types::BoardCalib = oxifoc_core::types::BoardCalib {
+    shunt_ohms: 0.003,
+    amp_gain: 64.0 / 7.0,
+    adc_vref_mv: 3300,
+    adc_max_counts: 4095,
+    invert_current_sign: true,
+    vbus_divider_ratio: 10.39,
+};
+
 // Runtime config shared between config server and simulation
 static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig>> =
     critical_section::Mutex::new(core::cell::RefCell::new(RuntimeConfig {

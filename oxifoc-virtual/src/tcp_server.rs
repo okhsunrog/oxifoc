@@ -93,12 +93,14 @@ pub async fn run(
         let _ = mcu.push_str("x86_64 (virtual)");
         let _ = uuid.push_str("00000000-virtual");
         HardwareInfo {
+            proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
             hw,
             sw,
             mcu,
             uuid,
             foc_freq_hz,
             max_current_a,
+            calib: crate::VIRTUAL_CALIB,
         }
     };
 

@@ -738,7 +738,7 @@ export component App inherits Window {
 
                 hall-plot := PlotWidget {
                     vertical-stretch: 1;
-                    title: "Hall State & eRPM";
+                    title: "Angle & eRPM";
                     texture: root.hall-texture;
                     y-min: root.hall-y-min;
                     y-max: root.hall-y-max;
@@ -746,7 +746,7 @@ export component App inherits Window {
                     time-window: 2.0;
                     x-divisions: 5;
                     sample-rate: root.fast-sample-rate;
-                    legend-labels: ["Hall State", "eRPM (÷1000)"];
+                    legend-labels: ["Angle (rad)", "eRPM (÷1000)"];
                     legend-colors: [#4ade80, #60a5fa];
                 }
             }
