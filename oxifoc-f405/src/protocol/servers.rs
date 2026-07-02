@@ -129,10 +129,11 @@ pub async fn protocol_servers(stack: &'static Stack) {
     let mut mcu: String<32> = String::new();
     let mut uuid: String<32> = String::new();
     let _ = hw.push_str("Simple FOCer 2 (F405)");
-    let _ = sw.push_str("oxifoc-0.1.0");
+    let _ = sw.push_str(concat!("oxifoc-", env!("CARGO_PKG_VERSION")));
     let _ = mcu.push_str("STM32F405RG");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
     let device_info = HardwareInfo {
+        proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
         hw,
         sw,
         mcu,

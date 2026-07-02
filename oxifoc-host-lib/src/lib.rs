@@ -812,14 +812,24 @@ where
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, fut).await {
             Ok(Ok(dev_info)) => {
                 info!(
-                    "Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A",
+                    "Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A proto=v{}",
                     dev_info.hw.as_str(),
                     dev_info.sw.as_str(),
                     dev_info.mcu.as_str(),
                     dev_info.uuid.as_str(),
                     dev_info.foc_freq_hz,
-                    dev_info.max_current_a
+                    dev_info.max_current_a,
+                    dev_info.proto_version,
                 );
+                if dev_info.proto_version != oxifoc_core::types::ICD_PROTO_VERSION {
+                    tracing::warn!(
+                        "PROTOCOL VERSION MISMATCH: device proto v{}, host proto v{} — update \
+                         whichever is older; some endpoints/topics may not route or may be \
+                         misinterpreted",
+                        dev_info.proto_version,
+                        oxifoc_core::types::ICD_PROTO_VERSION,
+                    );
+                }
                 // try_send: the consumer may have stopped reading (the GUI's
                 // info listener reads exactly one message). A blocking send
                 // on this bounded channel would wedge the whole backend after

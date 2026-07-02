@@ -336,9 +336,21 @@ pub struct TelemetryConfigAck {
     pub actual_fast_hz: u16,
 }
 
+/// Application protocol version. Bump on ANY breaking ICD change — wire *shape*
+/// (already enforced fail-closed by ergot's schema-hashed keys) OR *semantics*
+/// (units/meaning of a field whose type is unchanged, which the key hash cannot
+/// see). The device reports it in [`HardwareInfo::proto_version`]; the host
+/// compares it to its own value at the connect handshake and warns on mismatch
+/// — the human-readable gate that also covers topics (whose key change would
+/// otherwise fail as *silent absence*). See `docs/notes/protocol-versioning.md`.
+pub const ICD_PROTO_VERSION: u16 = 1;
+
 /// Hardware information returned on initial handshake
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 pub struct HardwareInfo {
+    /// Application protocol version ([`ICD_PROTO_VERSION`]) — host compares to
+    /// its own and warns on mismatch.
+    pub proto_version: u16,
     /// Hardware identifier (e.g., "B-G431B-ESC1")
     pub hw: String<32>,
     /// Software version (e.g., "oxifoc-0.1.0")
