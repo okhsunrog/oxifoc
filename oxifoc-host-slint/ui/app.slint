@@ -58,6 +58,8 @@ export component App inherits Window {
     in-out property <int> pole-pairs: 7;
     in-out property <int> active-tab: 0;
     in property <bool> motor-running: false;
+    in property <bool> motor-command-pending: false;
+    in property <string> motor-status: "";
     callback motor-update();  // called when slider changes while motor is running
     callback motor-coast();   // gates off, free spin
     callback motor-brake();   // short windings (parking brake)
@@ -539,10 +541,16 @@ export component App inherits Window {
                         }
                     }
                     Text { text: "\{round(root.iq-target * 10) / 10} A"; vertical-alignment: center; min-width: 45px; font-size: 11px; }
-                    Button { text: "Start"; primary: !root.motor-running; clicked => { root.motor-start(); } }
+                    Button {
+                        text: root.motor-command-pending && !root.motor-running ? "..." : "Start";
+                        primary: !root.motor-running;
+                        enabled: !root.motor-running && !root.motor-command-pending;
+                        clicked => { root.motor-start(); }
+                    }
                     Button {
                         text: "STOP";
                         primary: root.motor-running;
+                        enabled: root.motor-running && !root.motor-command-pending;
                         clicked => { root.motor-stop(); }
                     }
                 }
@@ -554,8 +562,22 @@ export component App inherits Window {
                         min-width: 50px;
                         horizontal-alignment: right;
                     }
-                    Button { text: "Coast"; clicked => { root.motor-coast(); } }
-                    Button { text: "Brake"; clicked => { root.motor-brake(); } }
+                    Button {
+                        text: "Coast";
+                        enabled: root.motor-running && !root.motor-command-pending;
+                        clicked => { root.motor-coast(); }
+                    }
+                    Button {
+                        text: "Brake";
+                        enabled: root.motor-running && !root.motor-command-pending;
+                        clicked => { root.motor-brake(); }
+                    }
+                }
+                if root.motor-status != "" : Text {
+                    text: root.motor-status;
+                    color: root.motor-status == "OK" ? #22c55e : #eab308;
+                    font-size: 10px;
+                    wrap: word-wrap;
                 }
                 HorizontalLayout {
                     spacing: 6px;
@@ -738,6 +760,7 @@ export component App inherits Window {
 
                 hall-plot := PlotWidget {
                     vertical-stretch: 1;
+                    min-height: 130px;
                     title: "Angle & eRPM";
                     texture: root.hall-texture;
                     y-min: root.hall-y-min;
@@ -966,7 +989,7 @@ export component App inherits Window {
                 ListView {
                     vertical-stretch: 1;
                     for f[idx] in root.faults : Rectangle {
-                        height: fault-row.preferred-height + 8px;
+                        height: max(44px, details-text.preferred-height + 12px);
                         background: Palette.alternate-background;
                         border-radius: 4px;
 
@@ -991,7 +1014,7 @@ export component App inherits Window {
                                 font-size: 11px;
                                 vertical-alignment: center;
                             }
-                            Text {
+                            details-text := Text {
                                 text: f.details;
                                 horizontal-stretch: 1;
                                 font-size: 11px;

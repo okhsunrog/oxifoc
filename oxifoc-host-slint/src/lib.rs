@@ -23,10 +23,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use oxifoc_core::types::{ControlMode, FaultCategory, FaultRequest, FaultResponse};
+use oxifoc_core::types::{ControlMode, FaultCategory, FaultRequest, FaultResponse, MotorState};
 use oxifoc_host_lib::{
     BleDeviceInfo, HostCommand, HostConfig, HostRuntime, TransportType, config_channel,
-    fault_channel, ops, scan_ble_devices, start_host,
+    fault_channel, motor_channel, ops, scan_ble_devices, start_host,
 };
 #[cfg(feature = "desktop")]
 use oxifoc_host_lib::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
@@ -128,6 +128,76 @@ fn send_fault_request(
     });
 }
 
+fn apply_motor_state(app: &App, state: MotorState) {
+    app.set_motor_running(state == MotorState::Running);
+    app.set_motor_state_text(SharedString::from(format!("{state:?}")));
+}
+
+fn send_motor_request(
+    rt: &Arc<std::sync::Mutex<Option<HostRuntime>>>,
+    weak: &slint::Weak<App>,
+    mode: ControlMode,
+    pending: &'static str,
+) {
+    let cmd_tx = {
+        let guard = rt.lock().unwrap();
+        match guard.as_ref() {
+            Some(r) => r.cmd_tx.clone(),
+            None => {
+                if let Some(app) = weak.upgrade() {
+                    app.set_motor_status(SharedString::from("Not connected"));
+                }
+                return;
+            }
+        }
+    };
+
+    if let Some(app) = weak.upgrade() {
+        app.set_motor_command_pending(true);
+        app.set_motor_status(SharedString::from(pending));
+    }
+
+    let weak = weak.clone();
+    thread::spawn(move || {
+        let (tx, rx) = motor_channel();
+        let send_result = cmd_tx.send(HostCommand::MotorAck(mode, tx));
+        let result = match send_result {
+            Ok(()) => rx.blocking_recv(),
+            Err(_) => {
+                let _ = weak.upgrade_in_event_loop(move |app| {
+                    app.set_motor_command_pending(false);
+                    app.set_motor_status(SharedString::from("Failed to queue motor command"));
+                });
+                return;
+            }
+        };
+
+        let _ = weak.upgrade_in_event_loop(move |app| {
+            app.set_motor_command_pending(false);
+            match result {
+                Ok(Ok(status)) => {
+                    apply_motor_state(&app, status.state);
+                    if status.fault_count > 0 {
+                        app.set_motor_status(SharedString::from(format!(
+                            "Device reported {} fault(s)",
+                            status.fault_count
+                        )));
+                        app.set_fault_text(SharedString::from(format!("{}", status.fault_count)));
+                    } else {
+                        app.set_motor_status(SharedString::from("OK"));
+                    }
+                }
+                Ok(Err(e)) => {
+                    app.set_motor_status(SharedString::from(format!("Motor command failed: {e}")));
+                }
+                Err(_) => {
+                    app.set_motor_status(SharedString::from("No motor response"));
+                }
+            }
+        });
+    });
+}
+
 /// Parse a numeric text field for a config/detect write. A typo must abort
 /// the write with a visible error, not silently become 0 (and end up in
 /// flash as e.g. 0 Ω). Records the first failing field in `err`; the
@@ -146,6 +216,14 @@ fn parse_field<T: std::str::FromStr + Default>(
             }
             T::default()
         }
+    }
+}
+
+fn parse_id_target(value: &SharedString) -> Result<f32, String> {
+    let trimmed = value.trim();
+    match trimmed.parse::<f32>() {
+        Ok(v) if v.is_finite() => Ok(v),
+        _ => Err(format!("Invalid Id: '{}'", value.as_str())),
     }
 }
 
@@ -513,20 +591,22 @@ pub fn main() {
                         // Throttled motor update: send at most once per frame (~60Hz)
                         if motor_pending.swap(false, Ordering::Relaxed) {
                             let iq_target = app.get_iq_target();
-                            let id_target = app
-                                .get_id_target_text()
-                                .trim()
-                                .parse::<f32>()
-                                .unwrap_or(0.0);
-                            if let Ok(guard) = motor_rt.try_lock()
-                                && let Some(ref rt) = *guard
-                            {
-                                let _ = rt.cmd_tx.send(HostCommand::Motor(
-                                    ControlMode::CurrentControl {
-                                        iq_target,
-                                        id_target,
-                                    },
-                                ));
+                            match parse_id_target(&app.get_id_target_text()) {
+                                Ok(id_target) => {
+                                    if let Ok(guard) = motor_rt.try_lock()
+                                        && let Some(ref rt) = *guard
+                                    {
+                                        let _ = rt.cmd_tx.send(HostCommand::Motor(
+                                            ControlMode::CurrentControl {
+                                                iq_target,
+                                                id_target,
+                                            },
+                                        ));
+                                    }
+                                }
+                                Err(msg) => {
+                                    app.set_motor_status(SharedString::from(msg));
+                                }
                             }
                         }
 
@@ -540,13 +620,21 @@ pub fn main() {
                                 app.set_ic_text(SharedString::from(format!("{:.2} A", r.ic)));
                                 app.set_id_text(SharedString::from(format!("{:.2} A", r.id)));
                                 app.set_iq_text(SharedString::from(format!("{:.2} A", r.iq)));
-                                app.set_erpm_text(SharedString::from(format!("{:.0}", r.erpm)));
+                                if r.erpm.abs() < 0.5 && r.mech_rpm.abs() > 1.0 {
+                                    app.set_erpm_text(SharedString::from("--"));
+                                } else {
+                                    app.set_erpm_text(SharedString::from(format!("{:.0}", r.erpm)));
+                                }
                                 app.set_rpm_text(SharedString::from(format!("{:.0}", r.mech_rpm)));
                             } else {
                                 // No calibration yet — show raw ADC counts.
                                 app.set_ia_text(SharedString::from(format!("{} cnt", s.ia)));
                                 app.set_ib_text(SharedString::from(format!("{} cnt", s.ib)));
                                 app.set_ic_text(SharedString::from(format!("{} cnt", s.ic)));
+                                app.set_id_text(SharedString::from("--"));
+                                app.set_iq_text(SharedString::from("--"));
+                                app.set_erpm_text(SharedString::from("--"));
+                                app.set_rpm_text(SharedString::from(format!("{:.0}", s.mech_rpm())));
                             }
                             app.set_seq_text(SharedString::from(format!("{}", s.seq)));
                         }
@@ -561,6 +649,7 @@ pub fn main() {
                             )));
                             let state_str = format!("{:?}", s.motor_state);
                             app.set_motor_state_text(SharedString::from(state_str));
+                            app.set_motor_running(s.motor_state == MotorState::Running);
                             app.set_phase_source_text(SharedString::from(ops::phase::label(
                                 s.phase_source,
                             )));
@@ -1027,6 +1116,8 @@ pub fn main() {
             // on its own — mirror that in the UI instead of leaving a stale
             // "running" Start/Stop state for the next session.
             app.set_motor_running(false);
+            app.set_motor_command_pending(false);
+            app.set_motor_status(SharedString::from(""));
         });
     }
 
@@ -1037,29 +1128,23 @@ pub fn main() {
         app.on_motor_start(move || {
             let app = weak.unwrap();
             let iq_target = app.get_iq_target();
-            let id_target = app
-                .get_id_target_text()
-                .trim()
-                .parse::<f32>()
-                .unwrap_or(0.0);
-            let guard = rt.lock().unwrap();
-            if let Some(ref runtime) = *guard {
-                tracing::info!("Motor start: iq_target={iq_target:.2}A id_target={id_target:.2}A");
-                match runtime
-                    .cmd_tx
-                    .send(HostCommand::Motor(ControlMode::CurrentControl {
-                        iq_target,
-                        id_target,
-                    })) {
-                    Ok(()) => {
-                        drop(guard);
-                        app.set_motor_running(true);
-                    }
-                    Err(e) => tracing::error!("Failed to send motor command: {e}"),
+            let id_target = match parse_id_target(&app.get_id_target_text()) {
+                Ok(v) => v,
+                Err(msg) => {
+                    app.set_motor_status(SharedString::from(msg));
+                    return;
                 }
-            } else {
-                tracing::warn!("Motor start clicked but no runtime");
-            }
+            };
+            tracing::info!("Motor start: iq_target={iq_target:.2}A id_target={id_target:.2}A");
+            send_motor_request(
+                &rt,
+                &weak,
+                ControlMode::CurrentControl {
+                    iq_target,
+                    id_target,
+                },
+                "Starting...",
+            );
         });
     }
 
@@ -1068,23 +1153,8 @@ pub fn main() {
         let rt = runtime.clone();
         let weak = app.as_weak();
         app.on_motor_stop(move || {
-            let app = weak.unwrap();
-            let guard = rt.lock().unwrap();
-            if let Some(ref runtime) = *guard {
-                tracing::info!("Motor stop");
-                match runtime
-                    .cmd_tx
-                    .send(HostCommand::Motor(ControlMode::Stopped))
-                {
-                    Ok(()) => {
-                        drop(guard);
-                        app.set_motor_running(false);
-                    }
-                    Err(e) => tracing::error!("Failed to send stop command: {e}"),
-                }
-            } else {
-                tracing::warn!("Motor stop clicked but no runtime");
-            }
+            tracing::info!("Motor stop");
+            send_motor_request(&rt, &weak, ControlMode::Stopped, "Stopping...");
         });
     }
 
@@ -1093,19 +1163,8 @@ pub fn main() {
         let rt = runtime.clone();
         let weak = app.as_weak();
         app.on_motor_coast(move || {
-            let app = weak.unwrap();
-            let guard = rt.lock().unwrap();
-            if let Some(ref runtime) = *guard {
-                tracing::info!("Motor coast");
-                if runtime
-                    .cmd_tx
-                    .send(HostCommand::Motor(ControlMode::Coast))
-                    .is_ok()
-                {
-                    drop(guard);
-                    app.set_motor_running(false);
-                }
-            }
+            tracing::info!("Motor coast");
+            send_motor_request(&rt, &weak, ControlMode::Coast, "Coasting...");
         });
     }
 
@@ -1114,19 +1173,8 @@ pub fn main() {
         let rt = runtime.clone();
         let weak = app.as_weak();
         app.on_motor_brake(move || {
-            let app = weak.unwrap();
-            let guard = rt.lock().unwrap();
-            if let Some(ref runtime) = *guard {
-                tracing::info!("Motor brake");
-                if runtime
-                    .cmd_tx
-                    .send(HostCommand::Motor(ControlMode::Brake))
-                    .is_ok()
-                {
-                    drop(guard);
-                    app.set_motor_running(false);
-                }
-            }
+            tracing::info!("Motor brake");
+            send_motor_request(&rt, &weak, ControlMode::Brake, "Braking...");
         });
     }
 
