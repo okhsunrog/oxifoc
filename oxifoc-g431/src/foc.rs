@@ -1,7 +1,7 @@
 //! FOC (Field-Oriented Control) management and ADC interrupt handling
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicI16, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::{Peri, interrupt, peripherals};
@@ -43,6 +43,7 @@ pub static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
 pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
 /// Latest measured FET temperature in 0.1°C units (updated in ADC interrupt).
 pub static FET_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
+static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
 
 // ========== ADC Handles ==========
 
@@ -84,6 +85,10 @@ pub async fn init(
     // would replace a valid measurement with a noisier computed value.
     // current_sensor.enable_reconstruction();
     hall::apply_stored_config(config);
+    MOTOR_POLE_PAIRS.store(
+        config.motor_params.as_ref().map_or(0, |m| m.pole_pairs),
+        Ordering::Relaxed,
+    );
     let hall_proxy = HallAngleProxy::new();
     let initial_vbus_v =
         (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
@@ -304,6 +309,7 @@ fn ADC1_2() {
         adc_snapshot,
         hall_snapshot,
         foc_telem.unwrap_or_default(),
+        MOTOR_POLE_PAIRS.load(Ordering::Relaxed),
         *SEQ,
     );
 

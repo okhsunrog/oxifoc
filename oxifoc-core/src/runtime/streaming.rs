@@ -169,6 +169,7 @@ pub fn publish_cycle_telemetry(
     adc: AdcSnapshot,
     hall: Option<HallSnapshot>,
     foc: FocOutput,
+    pole_pairs: u8,
     seq: u32,
 ) {
     update_telemetry(state_mutex, adc, hall, foc);
@@ -181,7 +182,7 @@ pub fn publish_cycle_telemetry(
     // anti-alias — the currents ship as raw ADC counts and the host applies
     // calibration/decimation downstream, so there is nothing to filter here.
     if FAST_DECIM_CTR.fetch_add(1, Ordering::Relaxed) % period == 0 {
-        let telem = build_fast_telemetry(&adc, &foc, hall, seq);
+        let telem = build_fast_telemetry(&adc, &foc, hall, pole_pairs, seq);
         push_fast_telemetry(&telem);
     }
 }
@@ -201,6 +202,7 @@ pub fn build_fast_telemetry(
     adc: &AdcSnapshot,
     foc: &FocOutput,
     hall: Option<HallSnapshot>,
+    pole_pairs: u8,
     seq: u32,
 ) -> FastTelemetry {
     use core::f32::consts::TAU;
@@ -208,10 +210,12 @@ pub fn build_fast_telemetry(
     // so this encode stays the exact inverse of the host `enrich` decode — one
     // LSB constant per field, round-trip tested in `foc::telemetry`.
     //
-    // NOTE: `velocity_rad_s` is electrical; a real deployment divides by pole
-    // pairs for mechanical RPM — irrelevant on the g474 bench path, where the
-    // synthetic generator fills `rpm` directly.
-    let mech_rpm = hall.map_or(0.0, |h| h.velocity_rad_s) * (60.0 / TAU);
+    // HallSnapshot velocity is electrical rad/s. The fast frame stores
+    // mechanical RPM; host enrichment multiplies it back by pole pairs for eRPM.
+    let mech_rpm = hall
+        .filter(|_| pole_pairs > 0)
+        .map_or(0.0, |h| h.velocity_rad_s / f32::from(pole_pairs))
+        * (60.0 / TAU);
     FastTelemetry {
         ia: adc.ia,
         ib: adc.ib,

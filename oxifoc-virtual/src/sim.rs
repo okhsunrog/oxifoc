@@ -121,8 +121,9 @@ pub async fn foc_loop(
             out = motor.step(last_foc_out.v_alpha, last_foc_out.v_beta, load_torque, dt);
             seq = seq.wrapping_add(1);
 
-            let adc = AdcSnapshot::new(to_adc(out.ia), to_adc(out.ib), to_adc(out.ic), vbus_mv, seq)
-                .with_temp(TempSensorId::Fet, 250); // 25.0°C
+            let adc =
+                AdcSnapshot::new(to_adc(out.ia), to_adc(out.ib), to_adc(out.ic), vbus_mv, seq)
+                    .with_temp(TempSensorId::Fet, 250); // 25.0°C
             let hall = HallSnapshot {
                 angle_rad: out.angle_rad,
                 velocity_rad_s: out.omega_e,
@@ -136,7 +137,14 @@ pub async fn foc_loop(
                 state: out.hall_state,
                 error_count: 0,
             };
-            publish_cycle_telemetry(state_mutex, adc, Some(hall), last_foc_out, seq);
+            publish_cycle_telemetry(
+                state_mutex,
+                adc,
+                Some(hall),
+                last_foc_out,
+                params.pole_pairs,
+                seq,
+            );
         }
     }
 }

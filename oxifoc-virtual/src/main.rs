@@ -17,7 +17,7 @@ impl Timer for TokioTimer {
 }
 
 use clap::Parser;
-use oxifoc_core::storage::{CONFIG_LOADED, RuntimeConfig};
+use oxifoc_core::storage::{CONFIG_LOADED, MotorParamsConfig, RuntimeConfig};
 use oxifoc_core::timer::Timer;
 use oxifoc_core::virtual_motor::MotorParams;
 use tracing_subscriber::EnvFilter;
@@ -89,6 +89,18 @@ struct Args {
     load: f32,
 }
 
+fn config_from_motor_params(params: MotorParams, max_current_a: f32) -> MotorParamsConfig {
+    MotorParamsConfig {
+        resistance_ohm: params.r,
+        inductance_d_h: params.ld,
+        inductance_q_h: params.lq,
+        flux_linkage_wb: params.lambda,
+        pole_pairs: params.pole_pairs,
+        max_current_a,
+        max_power_loss_w: 0.0,
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -109,6 +121,13 @@ async fn main() -> anyhow::Result<()> {
         args.max_current,
     );
 
+    // One motor parameter set for both the live sim and the detection
+    // backend — CLI flags override the defaults here, nowhere else.
+    let motor_params = MotorParams {
+        pole_pairs: args.pole_pairs,
+        ..Default::default()
+    };
+
     // Storage worker uses !Send futures (sequential-storage internals),
     // so run it on a dedicated thread with a LocalSet.
     std::thread::spawn(|| {
@@ -119,18 +138,14 @@ async fn main() -> anyhow::Result<()> {
         rt.block_on(storage::storage_worker());
     });
 
-    let loaded_config = CONFIG_LOADED.wait().await;
+    let mut loaded_config = CONFIG_LOADED.wait().await;
+    if loaded_config.motor_params.is_none() {
+        loaded_config.motor_params = Some(config_from_motor_params(motor_params, args.max_current));
+    }
     critical_section::with(|cs| {
         *RUNTIME_CONFIG.borrow(cs).borrow_mut() = loaded_config;
     });
     tracing::info!("Config loaded from mock flash");
-
-    // One motor parameter set for both the live sim and the detection
-    // backend — CLI flags override the defaults here, nowhere else.
-    let motor_params = MotorParams {
-        pole_pairs: args.pole_pairs,
-        ..Default::default()
-    };
 
     // Spawn simulation loop
     tokio::spawn(sim::foc_loop(

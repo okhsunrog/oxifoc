@@ -12,7 +12,7 @@
 #![allow(dead_code)] // Public API not yet wired to protocol handlers
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicI16, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::{interrupt, peripherals};
@@ -54,6 +54,7 @@ pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
 pub static BOARD_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 /// Latest motor temperature in 0.1°C units (updated in ADC interrupt).
 pub static MOTOR_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
+static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
 
 // ========== ADC Handles ==========
 
@@ -93,6 +94,10 @@ pub async fn init(
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc1)));
     ADC2_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc2)));
     ADC3_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc3)));
+    MOTOR_POLE_PAIRS.store(
+        config.motor_params.as_ref().map_or(0, |m| m.pole_pairs),
+        Ordering::Relaxed,
+    );
 
     // Enable ADC interrupt and PWM outputs (CH4 trigger + phase channels).
     // Order: install ADC handles → enable interrupt → enable PWM triggers.
@@ -277,6 +282,7 @@ fn ADC() {
         adc_snapshot,
         hall_snapshot,
         foc_telem.unwrap_or_default(),
+        MOTOR_POLE_PAIRS.load(Ordering::Relaxed),
         *SEQ,
     );
 

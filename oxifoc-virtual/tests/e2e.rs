@@ -115,6 +115,24 @@ fn run_e2e(transport: TransportType) {
         rt.wait_for_connection(Duration::from_secs(15)),
         "[{transport_arg}] device should connect (HardwareInfo handshake)"
     );
+    let hw = {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut latest = None;
+        loop {
+            while let Ok(info) = rt.device_info_rx.try_recv() {
+                latest = Some(info);
+            }
+            if let Some(info) = latest {
+                break info;
+            }
+            if Instant::now() >= deadline {
+                panic!("[{transport_arg}] host did not receive HardwareInfo");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    };
+    let enrich = oxifoc_host_lib::build_enrich_ctx(&rt.cmd_tx, Some(&hw))
+        .expect("virtual device should provide enrichment context");
 
     // 2) Motor at_least_once: command a current setpoint; the sim should spin.
     rt.cmd_tx
@@ -124,10 +142,15 @@ fn run_e2e(transport: TransportType) {
         }))
         .expect("send motor command");
     let spun = wait_until(Duration::from_secs(8), || {
-        // Drain whatever fast-telemetry samples are buffered; spinning ⇒ erpm != 0.
+        // Drain whatever fast-telemetry samples are buffered. The raw frame
+        // carries mechanical RPM; host enrichment reconstructs eRPM.
         let mut moving = false;
         while let Ok(sample) = rt.fast_rx.try_recv() {
-            if sample.erpm != 0 {
+            let rich = sample.enrich(&enrich);
+            if sample.rpm != 0
+                && rich.erpm.abs() > 1.0
+                && (rich.erpm - rich.mech_rpm * 7.0).abs() < 20.0
+            {
                 moving = true;
             }
         }
@@ -135,7 +158,7 @@ fn run_e2e(transport: TransportType) {
     });
     assert!(
         spun,
-        "[{transport_arg}] motor should spin (erpm != 0) after the at_least_once Motor command"
+        "[{transport_arg}] motor should spin with coherent mechanical RPM and enriched eRPM"
     );
 
     // 3) Detect effectively_once: routes via Reliable::effectively_once (Keyed
