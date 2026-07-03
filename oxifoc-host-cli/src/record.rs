@@ -316,14 +316,23 @@ fn write_parquet(
     let mut writer = SerializedFileWriter::new(file, schema, props)?;
 
     // Column vectors. Time axis from raw seq against the device FOC clock —
-    // immune to host-side batching jitter.
+    // immune to host-side batching jitter. The device `seq` is a u16 FOC-cycle
+    // counter (wraps every 65536 cycles ≈ 3.3 s at 20 kHz), so a single
+    // `wrapping_sub(seq0)` only stays monotonic within one wrap period — past
+    // it `t_s` would sawtooth back to 0. Accumulate the per-sample wrapping
+    // deltas into a u64 cycle count instead (each delta ≈ M ≪ 65536, so every
+    // wrap is unambiguous), matching the `FastTelemetry::seq` contract. The raw
+    // `seq` column stays untouched — maneuver events anchor to it by raw value.
     let foc_freq = hw.map(|h| h.foc_freq_hz).unwrap_or(0);
-    let seq0 = samples[0].seq;
+    let mut cycles: u64 = 0;
+    let mut prev = samples[0].seq;
     let t_s: Vec<f64> = samples
         .iter()
         .map(|s| {
+            cycles += u64::from(s.seq.wrapping_sub(prev));
+            prev = s.seq;
             if foc_freq > 0 {
-                f64::from(s.seq.wrapping_sub(seq0)) / f64::from(foc_freq)
+                cycles as f64 / f64::from(foc_freq)
             } else {
                 f64::NAN
             }
