@@ -181,7 +181,10 @@ pub fn publish_cycle_telemetry(
     // Raw diagnostic frame: emit one sample every `period`-th FOC cycle. No CIC
     // anti-alias — the currents ship as raw ADC counts and the host applies
     // calibration/decimation downstream, so there is nothing to filter here.
-    if FAST_DECIM_CTR.fetch_add(1, Ordering::Relaxed) % period == 0 {
+    if FAST_DECIM_CTR
+        .fetch_add(1, Ordering::Relaxed)
+        .is_multiple_of(period)
+    {
         let telem = build_fast_telemetry(&adc, &foc, hall, pole_pairs, seq);
         push_fast_telemetry(&telem);
     }

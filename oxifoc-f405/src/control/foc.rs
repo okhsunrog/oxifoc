@@ -210,7 +210,8 @@ fn ADC() {
     IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
     // Convert board temperature raw ADC to 0.1°C units
-    let board_temp_c_x10 = NTC_BOARD.temp_c_x10_from_adc(board_temp_raw, BOARD.calib.adc_max_counts);
+    let board_temp_c_x10 =
+        NTC_BOARD.temp_c_x10_from_adc(board_temp_raw, BOARD.calib.adc_max_counts);
     BOARD_TEMP_C_X10.store(board_temp_c_x10, Ordering::Relaxed);
 
     // Read ADC2 injected data (phase B current + motor temp)
@@ -225,7 +226,8 @@ fn ADC() {
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
 
     // Convert motor temperature raw ADC to 0.1°C units
-    let motor_temp_c_x10 = NTC_MOTOR.temp_c_x10_from_adc(motor_temp_raw, BOARD.calib.adc_max_counts);
+    let motor_temp_c_x10 =
+        NTC_MOTOR.temp_c_x10_from_adc(motor_temp_raw, BOARD.calib.adc_max_counts);
     MOTOR_TEMP_C_X10.store(motor_temp_c_x10, Ordering::Relaxed);
 
     // Read ADC3 injected data (phase C current + VBUS)

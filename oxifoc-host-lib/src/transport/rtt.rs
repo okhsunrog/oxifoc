@@ -344,7 +344,7 @@ pub fn connect(
             }
 
             // 3. Read defmt data from device (rate-limited; see defmt_every)
-            if tick % defmt_every == 0
+            if tick.is_multiple_of(defmt_every)
                 && let Some(channel) = rtt.up_channel(RTT_UP_CHANNEL_DEFMT)
             {
                 match channel.read(&mut core, &mut defmt_buf) {

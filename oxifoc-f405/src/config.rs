@@ -1,8 +1,8 @@
 //! Configuration constants for oxifoc-f405 (Simple FOCer 2 / Cheap FOCer 2)
 
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology, PhaseSense};
-use oxifoc_core::types::BoardCalib;
 use oxifoc_core::foc::pwm::MotorPwmConfig;
+use oxifoc_core::types::BoardCalib;
 
 // ============================================================================
 // Board Hardware Configuration
@@ -26,8 +26,8 @@ pub const BOARD: BoardConfig = BoardConfig {
         invert_current_sign: false,             // DRV8301: standard polarity
         vbus_divider_ratio: (39.0 + 2.2) / 2.2, // ~18.73:1
     },
-    initial_vbus_volts: 12.0,               // Conservative default
-    max_iq_target_a: 10.0,                  // Max torque current
+    initial_vbus_volts: 12.0, // Conservative default
+    max_iq_target_a: 10.0,    // Max torque current
     // Fault thresholds (matched to VESC hwconf)
     max_phase_current_a: 60.0, // Peak phase current limit (FET rating)
     max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN)

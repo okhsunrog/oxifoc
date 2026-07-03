@@ -244,7 +244,6 @@ impl HostRuntime {
         info!("Shutting down host backend...");
         self.cancel_token.cancel();
     }
-
 }
 
 /// Build the raw→engineering enrichment context from the device: `BoardCalib`
@@ -257,11 +256,11 @@ impl HostRuntime {
 /// identical core path.
 pub fn build_enrich_ctx(
     cmd: &CommandSender,
-    hw: Option<&oxifoc_core::types::HardwareInfo>,
+    hw: Option<&HardwareInfo>,
 ) -> Option<oxifoc_core::foc::telemetry::EnrichCtx> {
     use oxifoc_core::types::{ConfigGroupId, ConfigResponse};
     let calib = hw?.calib;
-    let offsets = crate::ops::config::read_group(cmd, ConfigGroupId::DcOffsets)
+    let offsets = ops::config::read_group(cmd, ConfigGroupId::DcOffsets)
         .ok()
         .flatten()
         .and_then(|r| match r {
@@ -272,7 +271,7 @@ pub fn build_enrich_ctx(
             let mid = f32::from(calib.adc_max_counts) / 2.0;
             (mid, mid, mid)
         });
-    let pole_pairs = crate::ops::config::read_group(cmd, ConfigGroupId::MotorParams)
+    let pole_pairs = ops::config::read_group(cmd, ConfigGroupId::MotorParams)
         .ok()
         .flatten()
         .and_then(|r| match r {

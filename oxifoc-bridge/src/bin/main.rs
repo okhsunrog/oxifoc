@@ -363,12 +363,15 @@ async fn info_server(stack: &'static transport::Stack) {
     use core::pin::pin;
 
     let device_info = HardwareInfo {
+        proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
         hw: "ESP32-C6 Bridge".try_into().unwrap_or_default(),
         sw: "oxifoc-bridge-0.1.0".try_into().unwrap_or_default(),
         mcu: "ESP32-C6".try_into().unwrap_or_default(),
         uuid: heapless::String::new(),
         foc_freq_hz: 0,
         max_current_a: 0.0,
+        // No motor/current sensing on the bridge — report default calibration.
+        calib: oxifoc_core::types::BoardCalib::default(),
     };
 
     let server = stack

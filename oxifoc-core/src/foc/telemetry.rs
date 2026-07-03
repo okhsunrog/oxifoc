@@ -114,7 +114,12 @@ impl FastTelemetry {
         let (ia, ib, ic) = ctx.isense.convert_raw(self.ia, self.ib, self.ic);
         let (i_alpha, i_beta) = clarke(ia, ib);
         let angle_rad = self.angle_rad();
-        let (id, iq) = park(i_alpha, i_beta, libm::sinf(angle_rad), libm::cosf(angle_rad));
+        let (id, iq) = park(
+            i_alpha,
+            i_beta,
+            libm::sinf(angle_rad),
+            libm::cosf(angle_rad),
+        );
         let mech_rpm = self.mech_rpm();
         RichSample {
             ia,
@@ -263,7 +268,10 @@ mod tests {
             } else if d < -PI {
                 d += TAU;
             }
-            assert!(d.abs() <= ANGLE_PER_LSB * 2.0, "a={a} got={got} want={want}");
+            assert!(
+                d.abs() <= ANGLE_PER_LSB * 2.0,
+                "a={a} got={got} want={want}"
+            );
         }
     }
 

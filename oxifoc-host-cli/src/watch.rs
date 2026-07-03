@@ -94,7 +94,16 @@ pub fn run_monitor(runtime: &HostRuntime, duration: Duration, json: bool) -> Res
                     println!(
                         "#{:>5} i[a{:+.2} b{:+.2} c{:+.2}] dq[{:+.2} {:+.2}]A  \
                          vbus{:.1} vdq[{:+.2} {:+.2}]V  θ{:+.2} {:.0}rpm",
-                        r.seq, r.ia, r.ib, r.ic, r.id, r.iq, r.vbus_v, r.vd, r.vq, r.angle_rad,
+                        r.seq,
+                        r.ia,
+                        r.ib,
+                        r.ic,
+                        r.id,
+                        r.iq,
+                        r.vbus_v,
+                        r.vd,
+                        r.vq,
+                        r.angle_rad,
                         r.mech_rpm,
                     );
                 } else {

@@ -634,7 +634,10 @@ pub fn main() {
                                 app.set_id_text(SharedString::from("--"));
                                 app.set_iq_text(SharedString::from("--"));
                                 app.set_erpm_text(SharedString::from("--"));
-                                app.set_rpm_text(SharedString::from(format!("{:.0}", s.mech_rpm())));
+                                app.set_rpm_text(SharedString::from(format!(
+                                    "{:.0}",
+                                    s.mech_rpm()
+                                )));
                             }
                             app.set_seq_text(SharedString::from(format!("{}", s.seq)));
                         }

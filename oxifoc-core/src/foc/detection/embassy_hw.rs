@@ -154,7 +154,8 @@ pub async fn measure_inductance<S: SinCos>(
     // Experiment build (`impedance-sweep`): replace the normal L step with a
     // one-lock R(f)/L(f) frequency sweep, logged to RTT. Same safe lock + probe.
     #[cfg(feature = "impedance-sweep")]
-    return sweep::measure_impedance_sweep::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz).await;
+    return sweep::measure_impedance_sweep::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz)
+        .await;
     #[cfg(not(feature = "impedance-sweep"))]
     sweep::measure_inductance_auto::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz).await
 }
