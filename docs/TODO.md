@@ -155,23 +155,20 @@ validation + v1 refinements:
   1-cycle linearization; or have the detect server pause fast telemetry
   around the pulse train. Until then: run `detect inductance` WITHOUT
   `--record`.
-- [ ] **RTT attach intermittently fails on the next host session**
-  (g431 + STLINK-V3E). Symptom: after a CLI session, the next run's
-  reset-and-halt + zero-magic + poll reports "Failed to attach to RTT
-  after reset" (sometimes preceded by "Failed to open probe" on the
-  first connect attempt). Facts established 2026-07-05: the firmware
-  BOOTS fine in that state (a later `probe-rs read` shows the magic
-  re-written at `_SEGGER_RTT`), so it is host/probe-side; a plain
-  `probe-rs read` (attach WITHOUT reset, no RTT) clears the condition
-  and the next CLI run attaches; `flashprobe flash` also clears it;
-  `flashprobe reset_device` did NOT. Not deterministic — later
-  back-to-back CLI runs (including one killed by SIGPIPE mid-run)
-  attached fine. The earlier IWDG/DBGMCU-freeze theory is dead (IWDG
-  does not survive a system reset; boot provably completes). Next probe:
-  when it reproduces, capture the underlying probe-rs error from
-  `Rtt::attach_region` (the anyhow context hides it) and the ST-Link
-  mode state. Workaround meanwhile: retry once; if it persists, run any
-  probe-rs attach (e.g. `probe-rs read b32 0x20000000 1`) or reflash.
+- [x] **RTT attach intermittently fails on the next host session** —
+  RESOLVED 2026-07-05 (commit ca635b4). Root cause: the blocking RTT I/O
+  thread (owns the probe-rs Session, busy-polls USB) was never joined;
+  process exit killed it mid-USB-transfer, leaving the ST-Link with a
+  torn command — the next open timed out on GET_CURRENT_MODE, recovered
+  into Jtag mode by probe-rs's USB reset, then timed out again on
+  JTAG_EXIT (~50% of back-to-back runs, roughly alternating). Fix:
+  teardown-ordered shutdown — interface teardown releases the transport
+  (drops the reader), the thread notices per-iteration via
+  `is_closed()`, the shutdown path joins it (bounded) so Session::drop
+  detaches the probe cleanly; HostRuntime joins the backend thread in
+  shutdown()/Drop. Verified 15/15 back-to-back attaches + 3 stream
+  cycles. The attach poll loop also logs the real attach_region error
+  now (anyhow used to hide it).
 - [ ] The virtual device only simulates CurrentControl/Stopped;
   OpenLoop/DirectVoltage/SixStep/Brake are accepted and ignored; no
   fault injection (the host fault path is not covered e2e); config does
