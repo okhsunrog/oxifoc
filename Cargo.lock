@@ -5246,6 +5246,7 @@ dependencies = [
  "libm",
  "log",
  "microfft",
+ "postcard",
  "postcard-schema",
  "sequential-storage",
  "serde",

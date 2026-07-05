@@ -1013,12 +1013,9 @@ fn spawn_fast_telemetry_subscriber<NS>(
             let ns = stack.stack();
             let receiver = ns
                 .topics()
-                // N=256 capacity: the device batch size must be ≤ this or the
-                // batch fails to deserialize (DeserFailed). Generous headroom so
-                // growing the device batch (for bigger MTUs) needs no host change.
-                // The topic KEY is N-independent (for_path uses the default N),
-                // so routing still matches a device sending any batch size.
-                .heap_bounded_receiver::<FastTelemetryTopic<256>>(128, Some("fast_telem"));
+                // Raw-Pod batches have one fixed capacity (FAST_BATCH_BYTES in
+                // core) shared by both ends — no per-side sizing to mismatch.
+                .heap_bounded_receiver::<FastTelemetryTopic>(128, Some("fast_telem"));
             let mut pinned = pin!(receiver);
             let mut hdl = pinned.as_mut().subscribe();
             info!("Fast telemetry subscriber started");
@@ -1026,33 +1023,34 @@ fn spawn_fast_telemetry_subscriber<NS>(
             // subscriber vs samples dropped on a full fast_tx. Attributes
             // capture loss to "above the socket" (batches missing here) or
             // "below" (channel drops) without a debugger.
+            use std::time::{Duration, Instant};
             let mut batches: u64 = 0;
             let mut samples_ok: u64 = 0;
             let mut dropped: u64 = 0;
-            let mut last_report = std::time::Instant::now();
+            let mut last_report = Instant::now();
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
                     msg = hdl.recv() => {
                         batches += 1;
-                        for sample in &msg.t.samples {
+                        for sample in msg.t.samples() {
                             // try_send: drop-on-full is the right semantics
                             // for telemetry. A blocking send would park this
                             // tokio worker whenever the UI stops draining
                             // (e.g. minimized window stops the render loop).
-                            match fast_tx.try_send(*sample) {
+                            match fast_tx.try_send(sample) {
                                 Ok(()) => samples_ok += 1,
                                 Err(_) => dropped += 1,
                             }
                         }
-                        if last_report.elapsed() >= std::time::Duration::from_secs(1) {
+                        if last_report.elapsed() >= Duration::from_secs(1) {
                             info!(
                                 "fast_telem/s: batches={batches} samples={samples_ok} chan_drops={dropped}"
                             );
                             batches = 0;
                             samples_ok = 0;
                             dropped = 0;
-                            last_report = std::time::Instant::now();
+                            last_report = Instant::now();
                         }
                     }
                 }

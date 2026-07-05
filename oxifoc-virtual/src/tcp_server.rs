@@ -16,7 +16,7 @@
 //! is answered immediately.
 
 use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
-use oxifoc_core::runtime::streaming::{DEFAULT_BATCH_SIZE, fault_topic_stream};
+use oxifoc_core::runtime::streaming::fault_topic_stream;
 use oxifoc_core::virtual_motor::MotorParams;
 
 use crate::detect::detect_server;
@@ -236,7 +236,7 @@ pub async fn run(
                 }
                 tokio::select! {
                     _ = token.cancelled() => {}
-                    _ = fast_telemetry_stream::<_, { DEFAULT_BATCH_SIZE }, crate::TokioTimer>(stack.clone(), foc_freq_hz) => {}
+                    _ = fast_telemetry_stream::<_, crate::TokioTimer>(stack.clone(), foc_freq_hz) => {}
                     _ = fault_topic_stream(stack, fault_registry) => {}
                 }
             }

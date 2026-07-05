@@ -281,7 +281,7 @@ pub async fn defmt_forwarder(
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    fast_telemetry_stream::<_, 8, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
+    fast_telemetry_stream::<_, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
 }
 
 /// Fault topic publisher — pushes the full fault snapshot on every

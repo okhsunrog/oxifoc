@@ -49,6 +49,7 @@ bitflags = { version = "2", default-features = false, features = ["serde"] }
 embedded-storage-async = { version = "0.4", optional = true }
 
 [dev-dependencies]
+postcard = "1.1.3"
 # std is available during tests
 
 [lib]
@@ -102,9 +103,13 @@ delivery = ["icd", "dep:embassy-futures"]
 # This is the core motor control math, no extra dependencies
 algorithms = []
 
+# Pod (bytemuck) views of the wire types — FastTelemetry raw-byte batches.
+# Host crates that only decode telemetry want this without the whole runtime.
+pod = ["dep:bytemuck"]
+
 # Async runtime with state management and protocol servers
 # Requires icd for endpoints and algorithms for control logic
-runtime = ["icd", "algorithms", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section", "dep:bbqueue", "dep:bytemuck"]
+runtime = ["icd", "algorithms", "pod", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section", "dep:bbqueue"]
 
 # Virtual motor simulation for testing without hardware
 # Useful for host-side integration tests and GUI simulation mode

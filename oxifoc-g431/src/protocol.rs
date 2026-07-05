@@ -249,16 +249,11 @@ pub async fn protocol_servers(stack: &'static Stack) {
 }
 
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
+/// Batch capacity is fixed in core (raw-Pod, compile-time wire size); the
+/// static MTU fit is asserted in config.rs.
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    // Batch 32: MUST keep the postcard-encoded batch under MAX_PACKET_SIZE
-    // (1024). 32 × 18 B frames ≈ 660 B encoded — always fits. The previous
-    // 64 was sized for the old 12 B frame; with 18 B frames half the batches
-    // encoded past the MTU and were dropped SILENTLY (a >MTU serialize
-    // failure surfaces as InterfaceSend(NoRouteToDest), which broadcast
-    // treats as the benign "no subscribers" case — wire-verified loss with
-    // bcast_ok still counting).
-    fast_telemetry_stream::<_, 32, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
+    fast_telemetry_stream::<_, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
 }
 
 /// Fault topic publisher — pushes the full fault snapshot on every

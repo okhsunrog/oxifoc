@@ -115,15 +115,24 @@ pub fn pad_node_dac_counts(amps: f32) -> u16 {
 // Protocol Configuration
 // ============================================================================
 
-/// Size of outgoing packet queue. Trimmed to free RAM for a bigger device-side
-/// RTT up-channel buffer (the throughput experiment).
+/// Size of outgoing packet queue. The cobs_stream Sink reserves
+/// `max_encoding_length(MAX_PACKET_SIZE)` ≈ 1030 B per packet regardless of
+/// its actual size, so this must hold several such grants for the tx path to
+/// pipeline — 2048 held only 1-2 packets in flight and stalled the 20 kHz
+/// stream at ~14.6k samples/s (2026-07-05 bench).
 pub const OUT_QUEUE_SIZE: usize = 4096;
 
-/// Maximum size of a single ergot packet (COBS-encoded). Holds a
-/// `FastTelemetryBatch<64>` of the 12 B raw frame (64×12 = 768 B + header) —
-/// bigger batches amortise per-packet ergot/COBS overhead and cut the number of
-/// RTT transactions probe-rs must do per second (the throughput lever).
+/// Maximum size of a single ergot packet (COBS-encoded).
 pub const MAX_PACKET_SIZE: usize = 1024;
+
+// A raw-Pod fast-telemetry batch (fixed wire size) must fit one packet with
+// room for the ergot header + length varint + COBS overhead. A varint-encoded
+// batch could straddle the MTU depending on VALUES and died silently there
+// (commit e1f65b5); raw-Pod makes the fit checkable here, at compile time.
+const _: () = assert!(
+    oxifoc_core::types::FAST_BATCH_BYTES + 64 <= MAX_PACKET_SIZE,
+    "fast-telemetry batch does not fit MAX_PACKET_SIZE"
+);
 
 // ============================================================================
 // UART Transport Configuration

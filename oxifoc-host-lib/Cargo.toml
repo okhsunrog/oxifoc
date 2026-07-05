@@ -12,7 +12,7 @@ desktop = [
 ]
 
 [dependencies]
-oxifoc-core = { workspace = true, features = ["icd", "storage", "delivery"] }
+oxifoc-core = { workspace = true, features = ["icd", "storage", "delivery", "pod"] }
 ergot = { workspace = true, features = ["tokio-std", "nusb-v0_1", "defmtlog"] }
 
 tokio = { workspace = true }

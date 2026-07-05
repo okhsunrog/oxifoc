@@ -150,7 +150,7 @@ pub async fn run_rtt_tx(mut tx: RttWriter) {
 #[cfg(feature = "transport-rtt")]
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    fast_telemetry_stream::<_, 48, EmbassyTimer>(stack, 400_000).await;
+    fast_telemetry_stream::<_, EmbassyTimer>(stack, 400_000).await;
 }
 
 /// Synthetic telemetry generator (this board has no FOC ISR producing samples).

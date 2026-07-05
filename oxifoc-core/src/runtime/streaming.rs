@@ -12,7 +12,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use bbqueue::nicknames::Churrasco;
 use ergot::net_stack::NetStackHandle;
-use heapless::Vec;
 
 use crate::foc::controller::FocOutput;
 use crate::foc::fault::{FaultRegistry, PlatformFault};
@@ -209,9 +208,7 @@ pub fn publish_cycle_telemetry(
     }
 }
 
-/// Default maximum samples per batch (fits within 2048-byte MTU for TCP/serial).
-/// Devices can use a smaller batch size via the const generic on `fast_telemetry_stream`.
-pub const DEFAULT_BATCH_SIZE: usize = 32;
+pub use crate::types::FAST_BATCH_SAMPLES;
 
 /// Build the compact raw diagnostic [`FastTelemetry`] from the cycle's snapshots.
 ///
@@ -266,16 +263,6 @@ pub fn push_fast_telemetry(telem: &FastTelemetry) {
     }
 }
 
-/// Run the fast telemetry streaming task.
-///
-/// Drains `FAST_TELEM_Q` on a timer and broadcasts `FastTelemetryBatch`
-/// via the ergot topic system. When streaming is disabled (`FAST_TELEM_PERIOD == 0`),
-/// polls periodically waiting for the host to enable it.
-///
-/// The const generic `BATCH` controls the maximum samples per broadcast.
-/// Smaller values reduce stack usage at the cost of more frequent broadcasts.
-/// The wire format is compatible regardless of batch size — postcard only
-/// encodes actual elements, and the host deserializes into `Vec<_, 32>`.
 /// Run the fault topic publisher.
 ///
 /// Broadcasts the FULL fault snapshot (`FaultResponse`) on
@@ -308,7 +295,15 @@ where
     }
 }
 
-pub async fn fast_telemetry_stream<NS, const BATCH: usize, T: Timer>(stack: NS, foc_freq_hz: u32)
+/// Run the fast telemetry streaming task.
+///
+/// Drains `FAST_TELEM_Q` on a timer and broadcasts [`FastTelemetryBatch`]
+/// via the ergot topic system. When streaming is disabled
+/// (`FAST_TELEM_PERIOD == 0`), polls periodically waiting for the host to
+/// enable it. Batch capacity is fixed at [`FAST_BATCH_SAMPLES`] — raw-Pod
+/// batches have a compile-time wire size, sized once against the smallest
+/// device MTU instead of per-board const generics.
+pub async fn fast_telemetry_stream<NS, T: Timer>(stack: NS, foc_freq_hz: u32)
 where
     NS: NetStackHandle + Clone,
 {
@@ -336,23 +331,23 @@ where
         // for a few hundred extra wakeups per second at worst.
         let sample_hz = foc_freq_hz / period;
         let interval_us = if sample_hz > 0 {
-            ((BATCH as u64 / 2).max(1) * 1_000_000) / u64::from(sample_hz)
+            ((FAST_BATCH_SAMPLES as u64 / 2).max(1) * 1_000_000) / u64::from(sample_hz)
         } else {
             100_000 // fallback 100ms
         };
 
         T::after_micros(interval_us).await;
 
-        // Drain bbqueue into batches and broadcast
+        // Drain bbqueue into batches and broadcast. The queue already holds
+        // raw Pod frame bytes and the batch ships raw Pod bytes, so the copy
+        // below is the whole per-sample "serialization".
         loop {
-            let mut samples: Vec<FastTelemetry, BATCH> = Vec::new();
+            let mut batch = FastTelemetryBatch::new();
 
-            while samples.len() < BATCH {
+            while !batch.is_full() {
                 match cons.read() {
                     Ok(grant) => {
-                        if grant.len() == size_of::<FastTelemetry>() {
-                            let telem: FastTelemetry = bytemuck::pod_read_unaligned(&grant);
-                            let _ = samples.push(telem);
+                        if batch.push_bytes(&grant) {
                             fast_telem_stats::READ_OK.fetch_add(1, Ordering::Relaxed);
                         } else {
                             fast_telem_stats::READ_BADLEN.fetch_add(1, Ordering::Relaxed);
@@ -363,16 +358,15 @@ where
                 }
             }
 
-            if samples.is_empty() {
+            if batch.is_empty() {
                 break; // nothing left to send
             }
 
-            let batch_full = samples.len() == BATCH;
-            let batch = FastTelemetryBatch { samples };
+            let batch_full = batch.is_full();
             let _result = stack
                 .stack()
                 .topics()
-                .broadcast::<FastTelemetryTopic<BATCH>>(&batch, None);
+                .broadcast::<FastTelemetryTopic>(&batch, None);
 
             if _result.is_ok() {
                 fast_telem_stats::BCAST_OK.fetch_add(1, Ordering::Relaxed);

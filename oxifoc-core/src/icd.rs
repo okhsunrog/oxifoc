@@ -57,13 +57,13 @@ pub const LIVENESS_TIMEOUT_MS: u64 = 1000;
 // Fast telemetry topic (device → host)
 // Firmware pushes batched motor control data at configurable rate.
 // Host must send TelemetryConfig to enable streaming.
-// Generic over batch capacity N — wire format is identical regardless of N.
-pub struct FastTelemetryTopic<const N: usize = 32> {
+// The batch is raw-Pod encoded with a fixed capacity — see FastTelemetryBatch.
+pub struct FastTelemetryTopic {
     _priv: core::marker::PhantomData<()>,
 }
 
-impl<const N: usize> ergot::traits::Topic for FastTelemetryTopic<N> {
-    type Message = FastTelemetryBatch<N>;
+impl ergot::traits::Topic for FastTelemetryTopic {
+    type Message = FastTelemetryBatch;
     const PATH: &'static str = "telemetry/fast";
     const TOPIC_KEY: ergot::traits::Key =
         ergot::traits::Key::for_path::<FastTelemetryBatch>("telemetry/fast");
