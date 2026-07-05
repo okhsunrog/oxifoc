@@ -205,6 +205,39 @@ validation + v1 refinements:
   shutdown()/Drop. Verified 15/15 back-to-back attaches + 3 stream
   cycles. The attach poll loop also logs the real attach_region error
   now (anyhow used to hide it).
+- [ ] **Branch-review leftovers (2026-07-06, low/latent — fix by
+  opportunity).** From the full June-commit review; the real bugs were
+  fixed same-day (a50ff1f/118ce54/bce662a/922a15a):
+  - `MOTOR_POLE_PAIRS` is latched at init on all three boards — a runtime
+    `ConfigWrite(MotorParams)` desyncs the frame's rpm (old pp) from host
+    erpm (new pp) until reboot; boot with no params → rpm hard-0 all
+    power-up. Re-apply on config write, or read the config each cycle.
+  - Fixed-point packers wrap instead of clamping past range ends
+    (`pack_vbus` >131 V, `pack_volt` >±65.5 V, `pack_rpm` >±65534) —
+    unreachable on current 12–57 V hardware; one `.clamp()` per packer.
+  - Host→device RTT down-channel write loop spins forever on `Ok(0)` if
+    the device stops draining (hung firmware) — bound it or check
+    `is_closed()` inside.
+  - u16 seq: losses ≥ one wrap (>3.3 s at 20 kHz) alias modulo 65536 in
+    both t_s and the gap counter; a host-clock plausibility check would
+    catch it.
+  - g474/f405: no `compile_error!` on a zero-transport build (silently
+    unreachable brick); f405 `init_clock`'s boot defmt line is emitted
+    before the sink exists (0da8693 reorder).
+  - bridge/remote report an all-zero `BoardCalib` — if that handshake
+    ever feeds `build_enrich_ctx`, `adc_max_counts = 0` divides by zero
+    (NaN currents). Should be `Option<BoardCalib>`.
+  - GUI enrich ctx is built once per connect click and never rebuilt on
+    auto-reconnect/device reboot (stale offsets); angle/erpm chart pushes
+    (0,0) without a ctx although both decode calibration-free.
+  - virtual sim's raw-ADC encode truncates instead of rounding (+15 mA
+    avg per phase — the measured 0.06 A Kirchhoff residue); `+0.5` fixes.
+  - `impedance-sweep` (debug feature): the "robust" `l_from_z` uses DC R
+    at every frequency (self-inconsistent — AC-R rise is the point) and
+    returns only the last sweep point as (ld, lq).
+  - HFI probe-current budget: the 0.2 V floor can exceed the 2 A cap on
+    very-low-R+low-L machines (`sweep.rs` `calibrate_pulse_voltage`
+    comment overstates the guarantee).
 - [ ] The virtual device only simulates CurrentControl/Stopped;
   OpenLoop/DirectVoltage/SixStep/Brake are accepted and ignored; no
   fault injection (the host fault path is not covered e2e); config does
