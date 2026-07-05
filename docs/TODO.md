@@ -126,6 +126,45 @@ validation + v1 refinements:
 
 ## Firmware / core
 
+- [ ] **embassy-time thread-timer freeze under ISR load (g431, 2026-07-05)** —
+  moving the RTT TX loop to a SAI1 InterruptExecutor (P6) froze ALL
+  thread-executor embassy timers for a deterministic ~44.93 s while
+  detection+streaming ran (1 Hz stats task, 4 ms detect-ramp timers, a
+  dedicated 2 ms keeper task — all dead; revived only by incoming RX
+  traffic, i.e. by some fresh `schedule_wake` re-arming the TIM2 alarm).
+  With the TX loop back on the thread executor its frequent short backoff
+  timers mask the problem. Root cause in embassy-stm32's gp16 time driver
+  (or our use of it) not found — the ~44.93 s constant reproduces ±5 ms
+  across different firmware builds, so it is NOT a random race. Plan:
+  enable `rtos-trace` on embassy-executor (+ SystemView or a postcard
+  trace sink over RTT) and trace executor/timer events around the freeze;
+  also check TIM2 IRQ priority vs ADC1_2(P0)/SAI1(P6) and the
+  `next_period`/CCIE(1) re-enable path. The pluggable schedulers
+  (`scheduler-priority`/`scheduler-deadline`) are NOT the fix — the
+  default scheduler is already fair; the wakes themselves are missing.
+- [ ] **Voltage-pulse L step is incompatible with a concurrent fast
+  stream** — `pulse_once` takes the max *per-wait_telemetry-frame*
+  current rise and assumes one frame = one FOC cycle (`dt = 1/f_pwm`).
+  Under a concurrent stream the executor serves the detect task every
+  ~10–26 cycles, so a "frame" spans several cycles of the L/R
+  exponential: measured on the ZD2808 as Ld/Lq = 169/306 µH with a
+  10 kHz recording vs the true 86/129 µH without (≈2× high). R (2-point
+  steady-state averages) and flux (steady-spin averages) are immune.
+  Fix options: sample the pulse window ISR-side (robust, more plumbing);
+  or use FocOutput.seq deltas + an exponential fit instead of the
+  1-cycle linearization; or have the detect server pause fast telemetry
+  around the pulse train. Until then: run `detect inductance` WITHOUT
+  `--record`.
+- [ ] **RTT attach fails on the second host session without a reflash**
+  (g431 + STLINK-V3E): first CLI run after `flash` attaches fine; the
+  next run's reset-and-halt + zero-magic + poll never sees the control
+  block re-init ("Failed to attach to RTT after reset"), and a plain
+  core reset doesn't recover — only a reflash does. Suspect: IWDG (armed
+  by the first session's firmware run) firing mid-attach while the core
+  is halted because the fresh probe session hasn't set the DBGMCU
+  IWDG-freeze bit that the flash session sets. Fix: set
+  `DBGMCU.APB1FZR1.DBG_IWDG_STOP` in the host attach path before
+  reset-and-halt (or make flashprobe/oxifoc-host do it), then re-test.
 - [ ] The virtual device only simulates CurrentControl/Stopped;
   OpenLoop/DirectVoltage/SixStep/Brake are accepted and ignored; no
   fault injection (the host fault path is not covered e2e); config does
@@ -188,9 +227,20 @@ Current numbers and rules — [flash-size.md](flash-size.md); benchmarks —
 
 - [ ] f405/g474 build with `opt-level = 3`, g431 with `"z"` — deliberate,
   but unmeasured: what `"z"` would cost f405/g474 in ISR time.
-- [ ] Live ISR load counter (DWT CYCCNT min/max/avg → SlowTelemetry once
-  a second): confirm the shipped-"z" build in situ; also settles the F405
-  double-trigger suspicion via the measured ISR rate.
+- [x] Live ISR load counter — DONE on g431 2026-07-05 (DWT CYCCNT
+  avg/max/load 1 Hz over defmt, `isr/s:` line; g474/f405 still pending).
+  First real numbers, and they are damning: **Stopped + 20 kHz stream =
+  5128 cycles avg = 60% of the 8500 budget; OpenLoop detection = ~6600 =
+  78%**. The perf-bench composites (~900–2900) never included the ISR
+  glue — the baseline glue alone is ~5100 cycles (2× ADC-handle CS locks,
+  hall snapshot, run_foc_cycle dispatch+protection, telemetry encode+push,
+  state CS update, waker). This is what caps the telemetry pipeline at
+  ~10–14.6 k samples/s during detection (thread mode gets ≤25% CPU) —
+  detect --record therefore records at 10 kHz (`--record-hz 10000`),
+  loss-free. The deferred "ISR-glue refactor" now has a concrete target:
+  profile the glue by parts (CYCCNT around sections) and get the Stopped
+  baseline well under ~3000 cycles before expecting 20 kHz capture during
+  drive.
 - [ ] **g431 RAM: stack → CCM SRAM split** (idea, robustness — not needed for
   throughput since raw-Pod made 20 kHz loss-free). G431's 32 K = SRAM1 16 K +
   SRAM2 6 K + CCM 10 K; CCM is dual-mapped (native `0x10000000`, alias
@@ -288,6 +338,27 @@ the sim = batch tick).
   design — [notes/remote-design.md](notes/remote-design.md).
 
 ## Bench (waiting for hardware)
+
+### Bench session 2026-07-05 (g431 + ZD2808) — detection re-measured, with recording
+
+First detection run with full telemetry recording (the original goal of the
+RTT pipeline work). Setup: B-G431B-ESC1 + ZD2808 (wye, 7 pp), 12 V / 4 A PSU,
+firmware at 295a800 (transport-rtt + detection), `--record-hz 10000` (M=2,
+loss-free; M=1 loses ~half the samples during detection — see the ISR-load
+item under Size / performance).
+
+| step | 2026-07-05 | 2026-06-13 | notes |
+|------|------------|------------|-------|
+| R    | **0.1271 Ω** (recorded, 71 k rows 0 gaps) / 0.1273 no-record | 0.127 | ΔV/ΔI recomputed from the capture = 0.127 ✓; LCR 0.104/ph + dead-time |
+| Ld/Lq | **85.7 / 129.4 µH** (no-record — MUST run unrecorded, see Firmware/core item) | 86 / 122 | pulse ≈ DC L; AC L stays ~24 µH (eddy currents, known) |
+| λ    | **1.2786 mWb** (recorded, 111 k rows 0 gaps, spin confirmed 700 eRPM) | 1.30 | expected ≈1.13 → the +13–15 % bias REPRODUCES; still unexplained |
+| Kv   | **616 RPM/V** | 611 (after √3 fix) | nameplate 700 |
+
+Everything reproduces June within ~2 % — June's numbers were solid (they were
+taken without recording, so the ISR-trigger-loss bug never touched them).
+Captures: `captures/detect-r-10k.parquet`, `detect-flux-10k.parquet`
+(`detect-l-10k.parquet` exists but its device result is the distorted one).
+Open item carried over: the λ +13 % vs the 1.13 mWb Kv-derived expectation.
 
 ### Bench session 2026-06-13 (g431 + ZD2808 700 KV sensorless) — findings
 
