@@ -34,6 +34,14 @@ use crate::storage::CurrentLimitsConfig;
 // Re-export ControlMode from types (single source of truth)
 pub use crate::types::ControlMode;
 
+/// Command-staleness bound for the bench/calibration modes
+/// (OpenLoop/DirectVoltage) — see [`FocDriver::deadman_expired`]. Sized for
+/// the longest legitimate device-side detection dwell between `SetMode`s
+/// (~5 s flux-spin sample collection) with 2× margin; a hung measurement
+/// (dead telemetry, no commands) is cut this long in even though
+/// `DETECTION_ACTIVE` suspends the link gate.
+pub const BENCH_STALENESS_TIMEOUT_US: u64 = 10_000_000;
+
 /// Why a [`FocDriver::step`] cycle could not run. Typed so `run_foc_cycle`
 /// can route each cause differently: an overcurrent trip must latch a
 /// host-visible fault (it already cut PWM), a calibration gap must not.
@@ -724,29 +732,32 @@ where
     /// Whether the command link has gone stale while the motor is running —
     /// the deadman trigger.
     ///
-    /// Only the *drive* modes are covered (CurrentControl, plus the velocity/
-    /// position loops once they exist) — those are what a vehicle rides on,
-    /// and the host re-affirms them every 50 ms. Exempt:
-    /// - Stopped/Coast/Brake — safe standing states: nothing to fail safe
-    ///   toward, and a parking brake must persist through link loss.
-    /// - OpenLoop/DirectVoltage — bench/calibration modes: on-device
-    ///   detection sets one and then dwells up to ~1 s between `SetMode`s
-    ///   (e.g. the R-measurement settle), which a 150 ms deadman would cut
-    ///   mid-measurement. The Layer-1 link gate (1 s liveness) still covers
-    ///   them against a dead host.
+    /// The *drive* modes (CurrentControl, plus the velocity/position loops
+    /// once they exist) use the configured ~150 ms bound — those are what a
+    /// vehicle rides on, and the host re-affirms them every 50 ms. Exempt
+    /// entirely: Stopped/Coast/Brake — safe standing states: nothing to fail
+    /// safe toward, and a parking brake must persist through link loss.
+    ///
+    /// OpenLoop/DirectVoltage — bench/calibration modes — get the LONG
+    /// [`BENCH_STALENESS_TIMEOUT_US`] bound instead: on-device detection
+    /// dwells up to ~5 s between `SetMode`s (settle waits, sample windows,
+    /// the flux-spin collection), which the 150 ms deadman would cut
+    /// mid-measurement — but a *hung* measurement must still be cut, because
+    /// `DETECTION_ACTIVE` suspends the Layer-1 link gate for exactly these
+    /// windows (until 2026-07-06 these modes were exempt entirely, leaving a
+    /// detection with BOTH comm failsafes off). Host-driven bench modes are
+    /// affirmed every 50 ms like drive modes, so the long bound never fires
+    /// while the host lives.
     ///
     /// Also false while the failsafe already runs.
     pub fn deadman_expired(&self, now_ticks: u64) -> bool {
-        if matches!(
-            self.mode,
-            ControlMode::Stopped
-                | ControlMode::Coast
-                | ControlMode::Brake
-                | ControlMode::OpenLoop { .. }
-                | ControlMode::DirectVoltage { .. }
-        ) {
-            return false;
-        }
+        let bound_us = match self.mode {
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake => return false,
+            ControlMode::OpenLoop { .. } | ControlMode::DirectVoltage { .. } => {
+                BENCH_STALENESS_TIMEOUT_US
+            }
+            _ => self.failsafe_cfg.staleness_timeout_us,
+        };
         if self.failsafe_ctrl.is_active() {
             return false;
         }
@@ -755,7 +766,7 @@ where
             // (which stamps), so this arm is effectively unreachable; treat a
             // missing stamp as not-stale (defensive).
             None => false,
-            Some(t) => now_ticks.wrapping_sub(t) > self.failsafe_cfg.staleness_timeout_us,
+            Some(t) => now_ticks.wrapping_sub(t) > bound_us,
         }
     }
 
@@ -2783,6 +2794,57 @@ mod tests {
         driver.note_command_tick(2_000);
         assert!(!driver.failsafe_active());
         assert!(!driver.deadman_expired(2_500));
+    }
+
+    /// Bench/calibration modes (OpenLoop/DirectVoltage) get the LONG deadman
+    /// bound, not the configured drive one and not an exemption: detection
+    /// legitimately dwells seconds between SetModes (the configured 150 ms
+    /// would cut a settle wait), but a HUNG measurement must still be cut —
+    /// DETECTION_ACTIVE suspends the link gate, so this is the only comm
+    /// failsafe covering it (until 2026-07-06 there was none).
+    #[test]
+    fn deadman_long_bound_covers_bench_modes() {
+        use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
+
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        driver.set_failsafe(FailsafeConfig {
+            policy: FailsafePolicy::Coast,
+            staleness_timeout_us: 1_000, // 1 ms drive bound — must NOT apply here
+            ..FailsafeConfig::default()
+        });
+
+        driver.set_mode(ControlMode::OpenLoop {
+            angle_rad: 0.0,
+            current: 1.0,
+            velocity_rad_s: 0.0,
+            pi_gains: None,
+        });
+        driver.note_command_tick(0);
+
+        // Way past the drive bound but within the bench bound: still alive —
+        // a detection settle/sample dwell must survive.
+        assert!(!driver.deadman_expired(5_000_000));
+        // Past the bench bound: a hung measurement is finally cut.
+        assert!(driver.deadman_expired(BENCH_STALENESS_TIMEOUT_US + 1_000));
+
+        // DirectVoltage behaves identically.
+        driver.set_mode(ControlMode::DirectVoltage {
+            vd: 0.5,
+            vq: 0.0,
+            angle_rad: 0.0,
+        });
+        driver.note_command_tick(0);
+        assert!(!driver.deadman_expired(5_000_000));
+        assert!(driver.deadman_expired(BENCH_STALENESS_TIMEOUT_US + 1_000));
     }
 
     /// Closed-loop: spin a VirtualMotor up on Hall, stop affirming, and the

@@ -117,10 +117,35 @@ pub static FLASH_OP_PENDING: AtomicBool = AtomicBool::new(false);
 /// (bounded, current-limited, rotor-locked/slow) detection. The detect server
 /// raises this around each measurement so the link-loss path is suspended.
 ///
-/// Deliberately scoped to link-loss only: the command-staleness deadman is NOT
-/// exempted, so a *hung* detection (no fresh commands) still trips the failsafe,
-/// and the instantaneous over-current check is never gated by it.
+/// The command-staleness deadman still covers detection, but with the LONG
+/// [`crate::motor::foc_driver::BENCH_STALENESS_TIMEOUT_US`] bound that
+/// OpenLoop/DirectVoltage always get (detection dwells up to ~5 s between
+/// device-side `SetMode`s — settle waits, sample windows, the flux-spin
+/// collection). A truly hung measurement (telemetry dead, no commands
+/// flowing) is cut ~10 s in. Historical note: until 2026-07-06 those modes
+/// were exempt from the deadman entirely, so this flag used to disable BOTH
+/// comm failsafes despite this comment claiming otherwise. The instantaneous
+/// over-current check was never gated by it.
 pub static DETECTION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// RAII guard for [`DETECTION_ACTIVE`]: clears the flag on every exit path.
+/// Without it, any future `select`/timeout wrapper around the measurement
+/// future would strand the flag on cancellation and leave the link-loss
+/// failsafe disabled forever.
+pub struct DetectionActiveGuard(());
+
+impl DetectionActiveGuard {
+    pub fn arm() -> Self {
+        DETECTION_ACTIVE.store(true, Ordering::Relaxed);
+        Self(())
+    }
+}
+
+impl Drop for DetectionActiveGuard {
+    fn drop(&mut self) {
+        DETECTION_ACTIVE.store(false, Ordering::Relaxed);
+    }
+}
 
 /// RAII guard for [`FLASH_OP_PENDING`]: clears the flag on every exit
 /// path, including the early returns on flash errors.

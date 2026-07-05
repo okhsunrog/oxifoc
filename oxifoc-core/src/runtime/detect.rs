@@ -32,11 +32,9 @@ use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult}
 use crate::icd::DetectEndpoint;
 use crate::motor::ControlMode;
 use crate::state::CMD_CHANNEL;
-use crate::state::DETECTION_ACTIVE;
 use crate::state::DriverCommand;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse, ReqId};
-use core::sync::atomic::Ordering;
 
 /// The platform-specific half of detection: the raw measurements, bound to the
 /// hardware (or to the virtual-motor sim). Everything else — parameter
@@ -124,8 +122,12 @@ pub async fn detect_server<NS, B>(
                     .await;
                 // Suspend the link-loss failsafe while we drive: the host is
                 // blocked on our response and sends no liveness frames (see
-                // DETECTION_ACTIVE). Cleared unconditionally below.
-                DETECTION_ACTIVE.store(true, Ordering::Relaxed);
+                // DETECTION_ACTIVE). RAII: the flag clears on EVERY exit path,
+                // including a future cancellation of this future — a stranded
+                // flag would leave the link-loss failsafe disabled forever.
+                // The command-staleness deadman still covers the measurement
+                // (long BENCH_STALENESS_TIMEOUT_US bound).
+                let _detection_guard = crate::state::DetectionActiveGuard::arm();
                 let resp = run_step(
                     &mut backend,
                     msg.t.inner,
@@ -134,7 +136,7 @@ pub async fn detect_server<NS, B>(
                     runtime_config,
                 )
                 .await;
-                DETECTION_ACTIVE.store(false, Ordering::Relaxed);
+                drop(_detection_guard);
                 CMD_CHANNEL
                     .send(DriverCommand::SetMode(ControlMode::Stopped))
                     .await;

@@ -97,7 +97,9 @@ fn segger_rtt_addr(elf_path: &str) -> Option<u64> {
         .find(|s| s.name() == Ok("_SEGGER_RTT"))
         .map(|s| s.address());
     if addr.is_none() {
-        warn!("RTT: no _SEGGER_RTT symbol in '{elf_path}' (wrong image?); falling back to a full-RAM scan");
+        warn!(
+            "RTT: no _SEGGER_RTT symbol in '{elf_path}' (wrong image?); falling back to a full-RAM scan"
+        );
     }
     addr
 }

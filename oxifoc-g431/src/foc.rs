@@ -125,7 +125,9 @@ pub async fn init(
             // Manual, NOT Hall — Hall on this hall-less board spams a
             // HallError every cycle, which is the exact failure SENSORLESS
             // exists to avoid. Manual cannot be rejected (needs nothing).
-            defmt::warn!("sensorless boot source rejected (partial motor params?); falling back to Manual");
+            defmt::warn!(
+                "sensorless boot source rejected (partial motor params?); falling back to Manual"
+            );
             let _ = phase_manager.set_source(PhaseSource::Manual);
         }
     }
