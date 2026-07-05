@@ -267,8 +267,10 @@ Current numbers and rules — [flash-size.md](flash-size.md); benchmarks —
   profile the glue by parts (CYCCNT around sections) and get the Stopped
   baseline well under ~3000 cycles before expecting 20 kHz capture during
   drive.
-- [ ] **g431 RAM: stack → CCM SRAM split** (idea, robustness — not needed for
-  throughput since raw-Pod made 20 kHz loss-free). G431's 32 K = SRAM1 16 K +
+- [ ] **g431 RAM: stack → CCM SRAM split** (idea, robustness — not a
+  throughput lever: raw-Pod made 20 kHz loss-free at Stopped, and the
+  under-drive cap is ISR CPU, not buffers — see the ISR-load item above).
+  G431's 32 K = SRAM1 16 K +
   SRAM2 6 K + CCM 10 K; CCM is dual-mapped (native `0x10000000`, alias
   `0x20005800` glued after SRAM2). `memory.x` today declares one 32 K region
   via the alias; flip-link gives the stack whatever statics leave over —
@@ -418,18 +420,17 @@ First real-hardware run of the g431 firmware on a sensorless drone motor
   in `motor.rs`; COMP+DAC still configured near-rail for one-line re-arm *if*
   ST-style enable-sequencing (boot-cap-charge + non-fatal enable-window break) is
   added. Real protection = software measured-OC (40 A, ×9.14 ADC) + PSU CC.
-- [ ] **Detection biases confirmed (all high) — the √3 + dead-time concerns
-  below, now measured.** ZD2808 results vs LCR/nameplate: R 0.127 Ω
-  (LCR ≈0.105 Ω/phase, +20 % residual dead-time — fine); **Ld 86 µH / Lq
-  122 µH (LCR ≈24 µH/phase → 3.6–5× HIGH)**; λ 1.30 mWb (≈1.13 expected,
-  +15 %); **Kv 1051 RPM/V (nameplate 700 → 1.50× ≈ √3)**. Two systematic
-  errors: (1) the g431 voltage-pulse L step inflates L badly on a low-L motor
-  because the small pulse voltage is dominated by the ~0.38 V 800 ns dead-time
-  distortion; (2) a √3 (≈1.5×) normalization in the λ/Kv path (`Kv =
-  60/(2π·λ·Pp)` omits the √3). A sensorless spin on the as-measured L would
-  give 3.6× hot PI gains + a biased observer `−L·Δi` term → fix L (or feed the
-  LCR value) before trusting closed-loop. Decompose the √3 vs the SVPWM
-  amplitude-invariance convention.
+- [x] **Detection biases — ALL three explained/fixed** (kept as a pointer;
+  the original item's dead-time theory for L was WRONG). (1) L 3.6–5×
+  "high": the pulse method measures ~DC L and L is genuinely
+  frequency-dependent (eddy currents, NOT dead-time — disproven on HW
+  2026-06-13c, see
+  [notes/inductance-freq-detection.md](notes/inductance-freq-detection.md));
+  the remaining gap is control-grade AC-L from detection — open item in
+  «Algorithms». (2) λ +15 %: resolved 2026-07-05 — additive `V_err/ω`
+  bias at the slow default spin, λ_true = 1.145 mWb (see the 2026-07-05
+  bench section above). (3) Kv ×√3: fixed 2026-06-13 (`calculate_kv`
+  carries the phase→line factor; verified 616–688 vs nameplate 700).
 
 
 

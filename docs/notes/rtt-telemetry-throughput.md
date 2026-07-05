@@ -246,6 +246,16 @@ the ~8 B current-only frame fit 20 kHz; the rich 44 B frame managed ~2.5k smp/s.
 Optional future lever: raw-Pod batch encoding (drop postcard varint) → ~31k
 smp/s / 1.55× on the same 18 B frame.
 
+> **Status update 2026-07-05 — wire ≠ end-to-end.** The headroom above is the
+> WIRE's (and raw-Pod landed, 54bcbdf). Verified on the bench: 20 kHz is
+> loss-free end-to-end only while the motor is **Stopped**. With an active FOC
+> mode the ADC ISR costs ~6600 cycles (~78 % CPU; the Stopped-with-stream
+> baseline is already 5128 ≈ 60 % — ISR glue, not FOC math) and the device's
+> thread-mode pipeline (batch encode + COBS + TX) caps at ~10.5–14.6 k smp/s
+> regardless of the wire. Recording during detection/drive therefore uses
+> `--record-hz 10000` (M=2, loss-free). The recovery path is the ISR-glue
+> refactor — measured numbers and the item live in TODO.md «Size / performance».
+
 ---
 
 ## 8. Reproduce

@@ -176,6 +176,29 @@ Powered from 5V_ESC. Filter caps: C67, C68, C69 = 10 uF each.
 
 ## Firmware bringup log
 
+### 2026-07-05 — detection re-measured with recording; two June mysteries closed
+
+Full detection re-run on the ZD2808 with loss-free 10 kHz telemetry capture
+(`detect --record --record-hz 10000`, commits e1f65b5…d15f671). Everything
+below in the 2026-06-13 log reproduces within ~2 %, and two of its open
+questions are now RESOLVED:
+
+- **λ "+15 %" was a measurement-regime bias, not a motor/firmware property**:
+  the back-EMF-vector λ carries an additive `V_err/ω` term (V_err ≈ 9 mV of
+  residual bridge error after dead-time comp). At the default 700 eRPM spin
+  the BEMF is only ~0.09 V → +12 %. Regression over the recorded ramp gives
+  **λ_true = 1.145 mWb**; validated by `detect flux --erpm 2800` → 1.167.
+  True Kv ≈ **688 RPM/V** (noname nameplate: 700). TODO carries the fix
+  (scale spin speed / multi-speed extrapolation).
+- **The RTT attach flakiness was host-side** (unjoined RTT I/O thread killed
+  mid-USB-transaction wedged the ST-Link; the board always booted fine) —
+  fixed in ca635b4, 15/15 back-to-back attaches after.
+
+Params baked into `baked_config.rs` (R 0.127 Ω, AC L 24 µH, λ 1.145 mWb,
+7 pp); the board now boots on the back-EMF observer. First two sensorless
+spin attempts made — startup engages but bringup is unfinished, see
+TODO/memory (`project_sensorless_bringup`).
+
 ### 2026-06-13 — first sensorless bench (ZD2808 700 KV), commit `e7d45a4`
 
 First real-hardware run of the oxifoc-g431 firmware on a **sensorless** motor.

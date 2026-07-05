@@ -9,6 +9,15 @@ Caveats:
   `opt-level = "z"` + `build-std`. Close, not identical — relative
   comparisons hold, absolute ISR utilization should be re-checked with
   live ISR instrumentation eventually.
+  **Re-checked 2026-07-05 (live DWT `isr/s` counter in the shipped "z"
+  firmware): the composites below hugely UNDERSTATE the real ISR** —
+  they exclude the ISR glue (ADC-handle CS locks, hall snapshot, mode
+  dispatch + protection, telemetry encode/push, state update, waker).
+  Measured whole-ISR: **Stopped + 20 kHz stream = 5128 cycles avg
+  (60 % of budget); OpenLoop detection ≈ 6600 (78 %); max 10094 —
+  OVER budget — at sensorless-startup engagement.** The glue alone is
+  ~5100 cycles and is what caps telemetry under drive; see TODO.md
+  «Size / performance» (ISR-glue refactor) for the plan.
 - The test crate's dev profile is configured identically to its release
   profile (`opt-level = "s"`, fat LTO), and a `--release` re-run matched
   within noise (e.g. FOC step 714 vs 745, HFI 13153 vs 12751) — the
