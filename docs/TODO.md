@@ -191,6 +191,25 @@ Current numbers and rules — [flash-size.md](flash-size.md); benchmarks —
 - [ ] Live ISR load counter (DWT CYCCNT min/max/avg → SlowTelemetry once
   a second): confirm the shipped-"z" build in situ; also settles the F405
   double-trigger suspicion via the measured ISR rate.
+- [ ] **g431 RAM: stack → CCM SRAM split** (idea, robustness — not needed for
+  throughput since raw-Pod made 20 kHz loss-free). G431's 32 K = SRAM1 16 K +
+  SRAM2 6 K + CCM 10 K; CCM is dual-mapped (native `0x10000000`, alias
+  `0x20005800` glued after SRAM2). `memory.x` today declares one 32 K region
+  via the alias; flip-link gives the stack whatever statics leave over —
+  measured: boot OK at ≥7.8 K stack, LOCKUP at ≤5.8 K, and every added
+  static silently eats the budget. Split instead: `RAM 22K @0x20000000`
+  (statics) + `CCMRAM 10K @0x10000000` with
+  `_stack_start = ORIGIN(CCMRAM) + LENGTH(CCMRAM)`. Gains: fixed 10 K stack
+  budget decoupled from statics; hard overflow protection for free (nothing
+  is mapped below `0x10000000` → BusFault, flip-link no longer needed);
+  zero-wait-state stack on the dedicated core port (no contention with the
+  host's constant SWD/RTT reads of SRAM). Costs: no new memory (statics are
+  ~25 K > 22 K today → first shave ~3 K: defmt ring 1024→512, the 4.6 K
+  `protocol_servers` task POOL is the fattest target); CCM is CPU-only
+  (fine for stack, no DMA there ever). Step 1 when picked up: paint the
+  stack region at boot and read the high-water mark over SWD after a heavy
+  stream+detect session — the real usage is somewhere in 5.8–7.8 K, split
+  numbers should be measured, not guessed.
 
 ## Documentation
 
