@@ -114,9 +114,12 @@ offset-robust, so a loose low-point landing does not bias R. Now reads
 1. **Spectrum diagnostic** — capture raw fast telemetry at full FOC rate (20 kHz)
    during the sweep and FFT it offline (Python) to *see* the current response:
    carrier cleanliness, noise floor, the 625 Hz rotation beat, harmonics, rotor
-   wiggle. **Blocked on realtime 20 kHz streaming** (separate workstream — current
-   telemetry tops out at ~2 kHz over UART@921600 because the frame is 44 B; needs
-   a compact frame + RTT/higher baud).
+   wiggle. ~~Blocked on realtime 20 kHz streaming~~ **UNBLOCKED 2026-07-05**:
+   the RTT pipeline records detection loss-free at 10 kHz (`detect --record
+   --record-hz 10000`) and lossy-but-usable at the full 20 kHz (`--record`,
+   M=1 — expect ~half the samples dropped under an active drive, fine for a
+   spectrum look; prefer M=1 here because the raw diag frame decimates by
+   plain sample-dropping, no CIC, so M=2 aliases content above 5 kHz).
 2. Switch the sweep to **fixed d-axis injection** (drop the 625 Hz rotation).
 3. Phase calibration for trustworthy R(f).
 4. Re-run, overlay on the bench R(f)/L(f) curve.

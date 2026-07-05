@@ -75,6 +75,28 @@ accel 500 erad/s²).
   the worst case); 3) HFI45 (MESC) — structural, but replaces the whole
   tracking scheme. Pure sensorless needs (2); until a monitor exists,
   keep HFI motors with margin against Lq saturation.
+- [ ] **Control-grade AC inductance from detection — the "unknown motor"
+  gap** (why the 2026-07-05 baked ZD2808 config carries an LCR-meter
+  value). The g431's only L method (voltage-pulse) measures ~DC L; on
+  eddy-current-heavy motors (laminations + conductive magnets — ZD2808:
+  DC 86–129 µH vs the AC ~24 µH plateau from ~1 kHz) that is 4–5× the L
+  the control loops need (`kp = L·bw`, the observer's `L·di/dt`), so a
+  full detect + `--apply` would hand out ~4× hot PI gains. No
+  self-sufficient path exists today. Options, in rough order:
+  1. Finish the `impedance-sweep` experiment (one-lock R(f)/L(f), exists
+     behind the feature flag; noisy as of 2026-06). Its known next steps
+     are written down in
+     [notes/inductance-freq-detection.md](notes/inductance-freq-detection.md)
+     — fixed d-axis injection (drop the 625 Hz rotation beat), phase
+     calibration — and its blocking prerequisite (full-rate capture for
+     an offline spectrum) fell 2026-07-05: detection now records
+     loss-free. Caveat: the raw diag frame decimates by plain
+     sample-dropping (no CIC), so the sweep spectrum wants an M=1
+     capture (lossy under drive is acceptable for a spectrum look).
+  2. A slim fixed-axis HFI-|Z| probe at 1–3 kHz as the production L step
+     (reads the plateau value; no FFT needed — |Z| is phase-robust).
+  3. At minimum: tag pulse-L as DC-L in the result and refuse to derive
+     PI gains from it above some DC/AC divergence heuristic.
 - [ ] Detection HFI amplitude: floor from the ADC resolution —
   gimbal-class (ripple ~30 mA against a 15 mA LSB) gives Lq −14%, λ +8%
   on the non-ideal plant; the adaptation currently targets a fraction of
