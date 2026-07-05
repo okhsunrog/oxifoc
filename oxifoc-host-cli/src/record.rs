@@ -285,8 +285,12 @@ fn write_parquet(
              anti-alias filter — decimation is plain sample-dropping at M). The \
              *_a / *_v / angle_rad / *rpm columns are reconstructed host-side by \
              oxifoc_core FastTelemetry::enrich (BoardCalib + dc_offsets + \
-             pole_pairs) — the same core code the firmware encodes with; NaN if no \
-             device calibration was available at capture time."
+             pole_pairs) — the same core code the firmware encodes with. NaN only \
+             when the device handshake carried no BoardCalib at all; if the \
+             DcOffsets/MotorParams config reads failed, enrichment silently falls \
+             back to MID-SCALE offsets / pole_pairs=0 and the columns are wrong \
+             but non-NaN — cross-check the dc-offsets group in oxifoc.config \
+             below (missing there = the fallback was used)."
                 .to_string(),
         ),
         kv("oxifoc.config", config_snapshot.to_string()),

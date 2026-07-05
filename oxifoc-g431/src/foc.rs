@@ -119,7 +119,14 @@ pub async fn init(
             PhaseSource::Manual
         };
         if phase_manager.set_source(boot_source).is_err() {
-            defmt::warn!("sensorless boot source rejected; staying on Hall");
+            // Observer can be rejected on a PARTIAL bake: `is_some()` above is
+            // weaker than the observer's own gate (`is_valid() && flux > 0`),
+            // e.g. R/L present but the flux step never ran. Fall back to
+            // Manual, NOT Hall — Hall on this hall-less board spams a
+            // HallError every cycle, which is the exact failure SENSORLESS
+            // exists to avoid. Manual cannot be rejected (needs nothing).
+            defmt::warn!("sensorless boot source rejected (partial motor params?); falling back to Manual");
+            let _ = phase_manager.set_source(PhaseSource::Manual);
         }
     }
 

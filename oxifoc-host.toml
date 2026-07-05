@@ -1,4 +1,9 @@
-# oxifoc-host configuration (TOML)
+# oxifoc-host configuration (TOML), loaded from the CURRENT DIRECTORY.
+#
+# NOTE: `chip`/`elf` here silently apply to every CLI run from the repo root —
+# on a non-g431 board that pins the WRONG RTT control-block address and the
+# link never routes (NoRouteToDest). Working on another board: pass
+# --chip/--elf explicitly (they override this file) or edit these two lines.
 
 # Optional: select a specific probe (VID:PID[:SERIAL])
 # probe = "0483:374b:0668FF555567894967074721"
@@ -6,7 +11,8 @@
 # Optional: explicit chip name (otherwise auto-detect)
 chip = "STM32G431CBTx"
 
-# Optional: path to device ELF for defmt decoding
+# Optional: path to device ELF for defmt decoding AND the RTT `_SEGGER_RTT`
+# pin (relative to the cwd the CLI runs from!)
 elf = "oxifoc-g431/target/thumbv7em-none-eabihf/release/oxifoc-g431"
 
 # Serial transport (ST-LINK VCP -> USART2)

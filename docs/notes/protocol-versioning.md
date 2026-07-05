@@ -1,6 +1,8 @@
 # Protocol versioning & compatibility — design notes
 
-Status: **design / not implemented.** Cross-repo (some of this lands in
+Status: **Phases 0–3 IMPLEMENTED** (8ee6f84/3ef160a/cde3a80/4f00909, 2026-06;
+header was stale until 2026-07-06). Remaining work is the ergot-side L1 items
+below. Cross-repo (some of this lands in
 [ergot](https://github.com/okhsunrog/ergot), some in oxifoc). Captured so it is
 not forgotten; supersedes the old one-line "`protocol_version` in HardwareInfo"
 TODO (whose premise was wrong — see §1).
@@ -217,13 +219,17 @@ firmware" actually bites — but slot the tiny L1 in before any release.
 - **Phase 2** — ✅ DONE (`3ef160a`) — `BoardCalib` field on `HardwareInfo` (3
   boards); host builds `EnrichCtx` at connect (calib + DcOffsets + MotorParams,
   graceful fallback); `enrich` in `record` (parquet amps/id/iq/… columns) +
-  `watch`. GUI still TODO (reuses the same core `enrich`).
+  `watch`. GUI enrichment — ✅ DONE (`8436a01`).
 - **Phase 3** — ✅ DONE (`cde3a80`, oxifoc side) — `sw` via
   `env!("CARGO_PKG_VERSION")`; `ICD_PROTO_VERSION` + `HardwareInfo.proto_version`
-  + host connect-time mismatch warning. **Remaining:** the ergot-wire
-  `ergot_proto_version` in ergot's `DeviceInfo` (ergot repo, L1 §3); **1c** —
-  make `BoardCalib` a genuine sub-struct of `BoardConfig` (the Phase-1 bridge
-  works, this is cleanup); GUI enrichment wiring.
+  + host connect-time mismatch warning. **1c** (BoardCalib as a genuine
+  sub-struct) — ✅ DONE (`4f00909`). **Remaining:** the ergot-wire
+  `ergot_proto_version` in ergot's `DeviceInfo` (ergot repo, L1 §3). Known
+  limitation (review 2026-07-06): the mismatch warning only fires for
+  semantics-only changes with identical shapes — a shape change to
+  `HardwareInfo` itself changes the response schema key, ergot refuses
+  delivery, and the user sees a handshake timeout with no version
+  diagnostics instead of the friendly warning.
 - **Phase 4** — heavy pass, only under real coexistence pressure: ergot
   `served_digest` + `SocketQuery` enumerate-all (L2); oxifoc device-info split
   (§6: identity → ergot `DeviceInfo`, motor descriptor → lean `AppInfoEndpoint`,

@@ -1,6 +1,7 @@
 # Fast-telemetry enrichment — shared raw→engineering decode
 
-Status: **design / not implemented.** How the CLI/GUI reconstruct engineering
+Status: **IMPLEMENTED** (8ee6f84 codec+enrich, 3ef160a host wiring, 8436a01
+GUI; header was stale until 2026-07-06). How the CLI/GUI reconstruct engineering
 units (amps, volts, id/iq) from the compact 18-byte raw `FastTelemetry`
 ([rtt-telemetry-throughput.md](rtt-telemetry-throughput.md)) using **one code
 path in `oxifoc-core`** shared by firmware and host, so the two can't desync.

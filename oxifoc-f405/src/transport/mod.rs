@@ -158,7 +158,13 @@ pub fn init_rtt(
     let channels = rtt_init! {
         up: {
             0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
-            1: { size: 8192, mode: NoBlockSkip, name: "ergot" }
+            // NoBlockTrim, NOT NoBlockSkip (back-ported from the g431 fix,
+            // e1f65b5): the ergot TX path hands multi-KB stream grants to
+            // this channel; Skip refuses partial writes, returns 0 and
+            // re-polls — a hot loop that monopolizes the cooperative
+            // executor and starves the other tasks. Trim always makes
+            // forward progress into whatever space the host has freed.
+            1: { size: 8192, mode: NoBlockTrim, name: "ergot" }
         }
         down: {
             0: { size: 1024, name: "ergot-down" }

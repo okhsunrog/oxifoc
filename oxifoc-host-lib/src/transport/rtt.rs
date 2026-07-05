@@ -72,12 +72,34 @@ pub fn join_rtt_io_thread(timeout: Duration) {
 /// how `probe-rs run` resolves it too.
 fn segger_rtt_addr(elf_path: &str) -> Option<u64> {
     use object::{Object, ObjectSymbol};
-    let bytes = std::fs::read(elf_path).ok()?;
-    let file = object::File::parse(&*bytes).ok()?;
-    file.symbols()
+    // Failures here are LOUD: a typo'd --elf silently degrading to a full-RAM
+    // scan both resurrects the stale-control-block race (the magic wipe below
+    // is skipped without an address) and can latch a leftover block in
+    // CCMRAM/SRAM2 — the exact intermittent NoRouteToDest this pin exists to
+    // prevent.
+    let bytes = match std::fs::read(elf_path) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("RTT: cannot read ELF '{elf_path}' ({e}); falling back to a full-RAM scan");
+            return None;
+        }
+    };
+    let file = match object::File::parse(&*bytes) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!("RTT: cannot parse ELF '{elf_path}' ({e}); falling back to a full-RAM scan");
+            return None;
+        }
+    };
+    let addr = file
+        .symbols()
         .chain(file.dynamic_symbols())
         .find(|s| s.name() == Ok("_SEGGER_RTT"))
-        .map(|s| s.address())
+        .map(|s| s.address());
+    if addr.is_none() {
+        warn!("RTT: no _SEGGER_RTT symbol in '{elf_path}' (wrong image?); falling back to a full-RAM scan");
+    }
+    addr
 }
 
 /// Connect to a target via RTT through a debug probe.

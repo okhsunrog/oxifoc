@@ -439,8 +439,8 @@ pub struct HardwareInfo {
 /// `docs/notes/telemetry-enrichment.md`.
 ///
 /// This is the wire projection of the current-sense/vbus fields of
-/// [`crate::foc::config::BoardConfig`] (bridged by `BoardConfig::calib()` — the
-/// single source of the field values); it is intentionally NOT the whole
+/// [`crate::foc::config::BoardConfig`] (its literal `calib` sub-struct field —
+/// one definition, no bridging copy); it is intentionally NOT the whole
 /// `BoardConfig` (fault thresholds, phase-sense, etc. are firmware-internal).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

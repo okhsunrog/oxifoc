@@ -288,6 +288,10 @@ pub fn build_enrich_ctx(
 ) -> Option<oxifoc_core::foc::telemetry::EnrichCtx> {
     use oxifoc_core::types::{ConfigGroupId, ConfigResponse};
     let calib = hw?.calib;
+    // Fallbacks below are LOUD: a transient config-read failure (busy link,
+    // reconnect window) silently degrading to mid-scale offsets skews every
+    // reconstructed phase current — measured ~15 A/phase on the g431 — while
+    // the columns still look plausible. The warn is the only trace.
     let offsets = ops::config::read_group(cmd, ConfigGroupId::DcOffsets)
         .ok()
         .flatten()
@@ -297,6 +301,10 @@ pub fn build_enrich_ctx(
         })
         .unwrap_or_else(|| {
             let mid = f32::from(calib.adc_max_counts) / 2.0;
+            warn!(
+                "enrich: DcOffsets group unavailable — falling back to mid-scale ({mid}); \
+                 reconstructed currents may carry a large DC offset"
+            );
             (mid, mid, mid)
         });
     let pole_pairs = ops::config::read_group(cmd, ConfigGroupId::MotorParams)
@@ -306,7 +314,10 @@ pub fn build_enrich_ctx(
             ConfigResponse::MotorParams(c) => Some(c.pole_pairs),
             _ => None,
         })
-        .unwrap_or(0);
+        .unwrap_or_else(|| {
+            warn!("enrich: MotorParams group unavailable — pole_pairs=0, erpm column will be 0");
+            0
+        });
     Some(oxifoc_core::foc::telemetry::EnrichCtx::new(
         &calib, offsets, pole_pairs,
     ))

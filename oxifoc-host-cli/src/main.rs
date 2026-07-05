@@ -138,9 +138,10 @@ struct Cli {
     chip: Option<String>,
 
     /// Path to the running firmware ELF (with `.defmt`). Used for defmt decoding
-    /// AND for pinning the RTT control block to its `_SEGGER_RTT` symbol. Defaults
-    /// to the g431 release artifact — pass this for any other board (e.g. g474),
-    /// otherwise RTT pins the wrong address and the link never routes.
+    /// AND for pinning the RTT control block to its `_SEGGER_RTT` symbol. No
+    /// built-in default: required for the RTT transport (a wrong/missing ELF
+    /// pins the wrong address and the link never routes). May also come from
+    /// the `elf` key in oxifoc-host.toml (cwd) — mind which board that names.
     #[arg(long)]
     elf: Option<String>,
 
