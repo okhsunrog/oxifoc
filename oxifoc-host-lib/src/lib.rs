@@ -1022,16 +1022,37 @@ fn spawn_fast_telemetry_subscriber<NS>(
             let mut pinned = pin!(receiver);
             let mut hdl = pinned.as_mut().subscribe();
             info!("Fast telemetry subscriber started");
+            // 1 Hz pipeline diagnostics: batches/samples that reached this
+            // subscriber vs samples dropped on a full fast_tx. Attributes
+            // capture loss to "above the socket" (batches missing here) or
+            // "below" (channel drops) without a debugger.
+            let mut batches: u64 = 0;
+            let mut samples_ok: u64 = 0;
+            let mut dropped: u64 = 0;
+            let mut last_report = std::time::Instant::now();
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
                     msg = hdl.recv() => {
+                        batches += 1;
                         for sample in &msg.t.samples {
                             // try_send: drop-on-full is the right semantics
                             // for telemetry. A blocking send would park this
                             // tokio worker whenever the UI stops draining
                             // (e.g. minimized window stops the render loop).
-                            let _ = fast_tx.try_send(*sample);
+                            match fast_tx.try_send(*sample) {
+                                Ok(()) => samples_ok += 1,
+                                Err(_) => dropped += 1,
+                            }
+                        }
+                        if last_report.elapsed() >= std::time::Duration::from_secs(1) {
+                            info!(
+                                "fast_telem/s: batches={batches} samples={samples_ok} chan_drops={dropped}"
+                            );
+                            batches = 0;
+                            samples_ok = 0;
+                            dropped = 0;
+                            last_report = std::time::Instant::now();
                         }
                     }
                 }

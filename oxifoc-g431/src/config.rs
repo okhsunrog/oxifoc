@@ -117,7 +117,7 @@ pub fn pad_node_dac_counts(amps: f32) -> u16 {
 
 /// Size of outgoing packet queue. Trimmed to free RAM for a bigger device-side
 /// RTT up-channel buffer (the throughput experiment).
-pub const OUT_QUEUE_SIZE: usize = 2048;
+pub const OUT_QUEUE_SIZE: usize = 4096;
 
 /// Maximum size of a single ergot packet (COBS-encoded). Holds a
 /// `FastTelemetryBatch<64>` of the 12 B raw frame (64×12 = 768 B + header) —

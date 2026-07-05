@@ -20,7 +20,7 @@ use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
 use ergot::interface_manager::transports::eio::RxWorker as EioRxWorker;
 use ergot::interface_manager::utils::cobs_stream;
 use ergot::toolkits::embedded_io_async_v0_7 as kit;
-use mutex::raw_impls::cs::CriticalSectionRawMutex;
+use mutex::raw_impls::single_core_thread_mode::ThreadModeRawMutex;
 use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
@@ -35,7 +35,15 @@ pub type Rng = rng::Rng<'static, peripherals::RNG>;
 type McRouter = Router<IoInterface<QueueRef>, Rng, 1, 0>;
 pub type Queue = kit::Queue<OUT_QUEUE_SIZE, AtomicCoord>;
 type QueueRef = &'static Queue;
-pub type Stack = NetStack<CriticalSectionRawMutex, McRouter>;
+// ThreadModeRawMutex, NOT CriticalSectionRawMutex: every NetStack access on
+// this device is from thread-mode embassy tasks (the ADC1_2/TIM4 ISRs publish
+// via FAST_TELEM_Q / atomics, never the stack). A critical-section mutex here
+// masked ALL interrupts for the whole postcard+COBS serialization of every
+// outgoing packet (~100+ µs per telemetry batch), starving the 20 kHz FOC ISR
+// of ~20% of its ADC triggers under load (measured 15.97 kHz effective).
+// Thread-mode locking never masks IRQs; a (buggy) ISR-side stack call fails
+// as WouldDeadlock instead of corrupting state.
+pub type Stack = NetStack<ThreadModeRawMutex, McRouter>;
 
 #[cfg(feature = "transport-uart")]
 pub type RxWorker = EioRxWorker<&'static Stack, UartReader, RouterFrameProcessor>;
@@ -179,7 +187,16 @@ pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
     let channels = rtt_init! {
         up: {
             0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
-            1: { size: 4096, mode: NoBlockSkip, name: "ergot" }
+            // NoBlockTrim, NOT NoBlockSkip: ergot's tx_worker hands multi-KB
+            // stream grants to this channel; Skip refuses partial writes,
+            // returns 0 and re-polls — a hot loop that monopolizes the
+            // cooperative executor and starves the telemetry stream task
+            // (FAST_TELEM_Q is only ~5 ms deep at 20 kHz). Trim always makes
+            // forward progress into whatever space the host has freed.
+            // (8192 would be the SWD-read knee per docs/notes/rtt-telemetry-
+            // throughput.md §4.3, but +4 KB of static RAM overflows the ~6 KB
+            // stack budget on this 32 KB part — measured boot lockup.)
+            1: { size: 4096, mode: NoBlockTrim, name: "ergot" }
         }
         down: {
             0: { size: 1024, name: "ergot-down" }

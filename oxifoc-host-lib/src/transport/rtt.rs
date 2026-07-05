@@ -270,6 +270,13 @@ pub fn connect(
         let mut ergot_rx_buf = [0u8; 49152];
         let mut defmt_buf = [0u8; 4096];
 
+        // Diagnostic tee: OXIFOC_RTT_DUMP=<path> writes the raw ergot up-channel
+        // byte stream to a file for offline COBS/frame analysis (wire-level
+        // ground truth when attributing telemetry loss to a pipeline stage).
+        let mut dump = std::env::var("OXIFOC_RTT_DUMP")
+            .ok()
+            .and_then(|p| std::fs::File::create(p).ok());
+
         // Idle backoff between polls when no bytes moved. RTT is polled (each
         // `channel.read` is one SWD round-trip), so any sleep here caps how fast
         // we re-poll after a momentary drain. This thread is dedicated and
@@ -304,6 +311,10 @@ pub fn connect(
                 match channel.read(&mut core, &mut ergot_rx_buf) {
                     Ok(n) if n > 0 => {
                         did_work = true;
+                        if let Some(f) = dump.as_mut() {
+                            use std::io::Write;
+                            let _ = f.write_all(&ergot_rx_buf[..n]);
+                        }
                         if ergot_rx_tx
                             .blocking_send(Ok(Bytes::copy_from_slice(&ergot_rx_buf[..n])))
                             .is_err()

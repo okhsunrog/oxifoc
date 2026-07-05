@@ -47,7 +47,7 @@ serde = { version = "1.0.219", features = ["derive"], default-features = false }
 postcard-schema = "0.2.5"
 
 # Synchronization
-mutex = "1.0.2"
+mutex = { version = "1.0.2", features = ["impl-unsafe-cortex-m-single-core"] }
 
 # Local dependencies
 # runtime feature includes icd (endpoints) and types (shared structs)

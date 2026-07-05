@@ -49,6 +49,25 @@ pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
 /// anti-alias/decimation), so a plain modulo counter replaces the old CIC.
 static FAST_DECIM_CTR: AtomicU32 = AtomicU32::new(0);
 
+/// Diagnostic counters for the fast-telemetry pipeline. Each loss point
+/// increments its counter; a board task can report + reset them (e.g. a 1 Hz
+/// defmt line) to attribute stream loss to a stage without a debugger.
+pub mod fast_telem_stats {
+    use core::sync::atomic::AtomicU32;
+    /// ISR-side `push_fast_telemetry` successful queue commits.
+    pub static PUSH_OK: AtomicU32 = AtomicU32::new(0);
+    /// ISR-side `push_fast_telemetry` grant failures (FAST_TELEM_Q full).
+    pub static PUSH_DROPS: AtomicU32 = AtomicU32::new(0);
+    /// Stream-task frames read from the queue with the expected length.
+    pub static READ_OK: AtomicU32 = AtomicU32::new(0);
+    /// Stream-task frames discarded for a wrong length.
+    pub static READ_BADLEN: AtomicU32 = AtomicU32::new(0);
+    /// Stream-task broadcasts that returned an error (e.g. interface queue full).
+    pub static BCAST_FAILS: AtomicU32 = AtomicU32::new(0);
+    /// Stream-task broadcasts accepted by the stack.
+    pub static BCAST_OK: AtomicU32 = AtomicU32::new(0);
+}
+
 /// Two-stage decimating anti-alias filter (CIC order 2 equivalent).
 ///
 /// Plain decimation-by-dropping folds everything above the new Nyquist
@@ -241,6 +260,9 @@ pub fn push_fast_telemetry(telem: &FastTelemetry) {
     if let Ok(mut grant) = prod.grant(size_of::<FastTelemetry>() as u16) {
         grant.copy_from_slice(bytemuck::bytes_of(telem));
         grant.commit(size_of::<FastTelemetry>() as u16);
+        fast_telem_stats::PUSH_OK.fetch_add(1, Ordering::Relaxed);
+    } else {
+        fast_telem_stats::PUSH_DROPS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -331,6 +353,9 @@ where
                         if grant.len() == size_of::<FastTelemetry>() {
                             let telem: FastTelemetry = bytemuck::pod_read_unaligned(&grant);
                             let _ = samples.push(telem);
+                            fast_telem_stats::READ_OK.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            fast_telem_stats::READ_BADLEN.fetch_add(1, Ordering::Relaxed);
                         }
                         grant.release();
                     }
@@ -348,6 +373,12 @@ where
                 .stack()
                 .topics()
                 .broadcast::<FastTelemetryTopic<BATCH>>(&batch, None);
+
+            if _result.is_ok() {
+                fast_telem_stats::BCAST_OK.fetch_add(1, Ordering::Relaxed);
+            } else {
+                fast_telem_stats::BCAST_FAILS.fetch_add(1, Ordering::Relaxed);
+            }
 
             #[cfg(feature = "log")]
             if _result.is_err() {

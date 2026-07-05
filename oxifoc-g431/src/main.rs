@@ -159,6 +159,9 @@ async fn main(spawner: Spawner) {
     // Spawn protocol servers
     protocol::spawn_servers(&spawner, stack, ident);
 
+    // Fast-telemetry pipeline loss diagnostics (1 Hz defmt while streaming)
+    spawner.spawn(defmt::unwrap!(protocol::telem_stats_task()));
+
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);
 

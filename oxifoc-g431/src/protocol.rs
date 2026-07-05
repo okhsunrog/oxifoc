@@ -146,11 +146,56 @@ pub async fn run_tx_uart(mut tx: UartWriter, stack: &'static Stack, ident: u8) {
 #[cfg(feature = "transport-rtt")]
 #[embassy_executor::task]
 pub async fn run_tx_rtt(mut tx: RttWriter, stack: &'static Stack, ident: u8) {
-    use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
-    // TODO: add active check like UART if needed
+    // NOT ergot's tx_worker: that loop (wait_read → write → release) has no
+    // Pending await while the queue holds data — RTT writes complete
+    // synchronously, so on this single cooperative executor it monopolizes
+    // the CPU until OUTQ fully drains at wire speed (~8 ms for a full 2 KB
+    // queue over SWD). That starves the telemetry stream task and overflows
+    // FAST_TELEM_Q (only ~5 ms deep at 20 kHz) — measured as periodic
+    // ~60-sample gaps every 102 samples. Yield after every chunk instead.
     let _ = (stack, ident);
+    let consumer = OUTQ.stream_consumer();
     loop {
-        let _ = tx_worker(&mut tx, OUTQ.stream_consumer()).await;
+        let data = consumer.wait_read().await;
+        let used = tx.write(&data).await.unwrap_or(0);
+        data.release(used);
+        if used == 0 {
+            // RTT up channel completely full: the host frees space only per
+            // its SWD poll, no device-side wake exists — back off briefly.
+            embassy_time::Timer::after_micros(200).await;
+        } else {
+            // Made progress; let the stream/rx/server tasks run before the
+            // next chunk so a long queue drain can't monopolize the executor.
+            embassy_futures::yield_now().await;
+        }
+    }
+}
+
+/// 1 Hz fast-telemetry pipeline stats over defmt (drops attributed per stage).
+/// Only logs while the stream is active (any counter moved).
+#[embassy_executor::task]
+pub async fn telem_stats_task() {
+    use core::sync::atomic::Ordering;
+    use oxifoc_core::runtime::streaming::fast_telem_stats as s;
+    loop {
+        embassy_time::Timer::after_secs(1).await;
+        let pok = s::PUSH_OK.swap(0, Ordering::Relaxed);
+        let drops = s::PUSH_DROPS.swap(0, Ordering::Relaxed);
+        let rok = s::READ_OK.swap(0, Ordering::Relaxed);
+        let rbad = s::READ_BADLEN.swap(0, Ordering::Relaxed);
+        let bfail = s::BCAST_FAILS.swap(0, Ordering::Relaxed);
+        let bok = s::BCAST_OK.swap(0, Ordering::Relaxed);
+        if pok != 0 || drops != 0 || bfail != 0 || bok != 0 {
+            defmt::info!(
+                "telem/s: push_ok={} push_drops={} read_ok={} read_badlen={} bcast_fail={} bcast_ok={}",
+                pok,
+                drops,
+                rok,
+                rbad,
+                bfail,
+                bok
+            );
+        }
     }
 }
 
@@ -204,12 +249,16 @@ pub async fn protocol_servers(stack: &'static Stack) {
 }
 
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
-/// Uses batch size of 8 to reduce stack usage (~360B vs ~1.4KB for 32).
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    // Batch 64 of the compact 12 B raw frame (768 B/batch) — amortises the
-    // per-batch ergot/COBS overhead for the high-rate diagnostic stream.
-    fast_telemetry_stream::<_, 64, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
+    // Batch 32: MUST keep the postcard-encoded batch under MAX_PACKET_SIZE
+    // (1024). 32 × 18 B frames ≈ 660 B encoded — always fits. The previous
+    // 64 was sized for the old 12 B frame; with 18 B frames half the batches
+    // encoded past the MTU and were dropped SILENTLY (a >MTU serialize
+    // failure surfaces as InterfaceSend(NoRouteToDest), which broadcast
+    // treats as the benign "no subscribers" case — wire-verified loss with
+    // bcast_ok still counting).
+    fast_telemetry_stream::<_, 32, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
 }
 
 /// Fault topic publisher — pushes the full fault snapshot on every
