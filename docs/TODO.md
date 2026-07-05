@@ -155,16 +155,23 @@ validation + v1 refinements:
   1-cycle linearization; or have the detect server pause fast telemetry
   around the pulse train. Until then: run `detect inductance` WITHOUT
   `--record`.
-- [ ] **RTT attach fails on the second host session without a reflash**
-  (g431 + STLINK-V3E): first CLI run after `flash` attaches fine; the
-  next run's reset-and-halt + zero-magic + poll never sees the control
-  block re-init ("Failed to attach to RTT after reset"), and a plain
-  core reset doesn't recover — only a reflash does. Suspect: IWDG (armed
-  by the first session's firmware run) firing mid-attach while the core
-  is halted because the fresh probe session hasn't set the DBGMCU
-  IWDG-freeze bit that the flash session sets. Fix: set
-  `DBGMCU.APB1FZR1.DBG_IWDG_STOP` in the host attach path before
-  reset-and-halt (or make flashprobe/oxifoc-host do it), then re-test.
+- [ ] **RTT attach intermittently fails on the next host session**
+  (g431 + STLINK-V3E). Symptom: after a CLI session, the next run's
+  reset-and-halt + zero-magic + poll reports "Failed to attach to RTT
+  after reset" (sometimes preceded by "Failed to open probe" on the
+  first connect attempt). Facts established 2026-07-05: the firmware
+  BOOTS fine in that state (a later `probe-rs read` shows the magic
+  re-written at `_SEGGER_RTT`), so it is host/probe-side; a plain
+  `probe-rs read` (attach WITHOUT reset, no RTT) clears the condition
+  and the next CLI run attaches; `flashprobe flash` also clears it;
+  `flashprobe reset_device` did NOT. Not deterministic — later
+  back-to-back CLI runs (including one killed by SIGPIPE mid-run)
+  attached fine. The earlier IWDG/DBGMCU-freeze theory is dead (IWDG
+  does not survive a system reset; boot provably completes). Next probe:
+  when it reproduces, capture the underlying probe-rs error from
+  `Rtt::attach_region` (the anyhow context hides it) and the ST-Link
+  mode state. Workaround meanwhile: retry once; if it persists, run any
+  probe-rs attach (e.g. `probe-rs read b32 0x20000000 1`) or reflash.
 - [ ] The virtual device only simulates CurrentControl/Stopped;
   OpenLoop/DirectVoltage/SixStep/Brake are accepted and ignored; no
   fault injection (the host fault path is not covered e2e); config does
@@ -351,14 +358,28 @@ item under Size / performance).
 |------|------------|------------|-------|
 | R    | **0.1271 Ω** (recorded, 71 k rows 0 gaps) / 0.1273 no-record | 0.127 | ΔV/ΔI recomputed from the capture = 0.127 ✓; LCR 0.104/ph + dead-time |
 | Ld/Lq | **85.7 / 129.4 µH** (no-record — MUST run unrecorded, see Firmware/core item) | 86 / 122 | pulse ≈ DC L; AC L stays ~24 µH (eddy currents, known) |
-| λ    | **1.2786 mWb** (recorded, 111 k rows 0 gaps, spin confirmed 700 eRPM) | 1.30 | expected ≈1.13 → the +13–15 % bias REPRODUCES; still unexplained |
+| λ    | **1.2786 mWb** (recorded, 111 k rows 0 gaps, spin confirmed 700 eRPM) | 1.30 | expected ≈1.13 → bias REPRODUCED, then RESOLVED (below) |
 | Kv   | **616 RPM/V** | 611 (after √3 fix) | nameplate 700 |
 
 Everything reproduces June within ~2 % — June's numbers were solid (they were
 taken without recording, so the ISR-trigger-loss bug never touched them).
 Captures: `captures/detect-r-10k.parquet`, `detect-flux-10k.parquet`
 (`detect-l-10k.parquet` exists but its device result is the distorted one).
-Open item carried over: the λ +13 % vs the 1.13 mWb Kv-derived expectation.
+
+**λ +13 % bias RESOLVED (same session, offline analysis of the capture +
+validation run).** The back-EMF-vector λ at one speed carries an additive
+`V_err/ω` bias: regressing the capture's per-window λ against 1/ω over the
+ramp (iq held at 2 A) gives a clean fit (rms ~1 %) with **λ_true =
+1.145 mWb** (intercept) and **V_err ≈ 9 mV** — the residual bridge/dead-time
+error after compensation (0.38 V raw → 9 mV ≈ 97.6 % cancelled). At the
+default `--erpm 700` the BEMF is only ~0.09 V (vs R·i ≈ 0.25 V), so 9 mV =
++12 %; the measurement regime is just too slow for a 12 V low-λ drone motor.
+Validation: `detect flux --erpm 2800` → device reported **1.1673 mWb / Kv
+675**, within 0.8 % of the model's prediction (1.176). True Kv ≈ **688** —
+1.7 % off the nameplate 700. Motor and firmware math are fine.
+- [ ] flux step: raise the default spin speed (scale `openloop_erpm` to the
+  motor: target BEMF ≥ R·I, e.g. ω ≥ 3·R·I/λ_est) and/or measure at 2–3
+  speeds and extrapolate 1/ω → 0 device-side; document the bias otherwise.
 
 ### Bench session 2026-06-13 (g431 + ZD2808 700 KV sensorless) — findings
 
