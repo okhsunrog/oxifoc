@@ -143,30 +143,57 @@ pub async fn run_tx_uart(mut tx: UartWriter, stack: &'static Stack, ident: u8) {
 }
 
 /// Worker task for outgoing ergot data via RTT (transport-rtt only)
+///
+/// Thread executor, NOT ergot's tx_worker: that loop (wait_read → write →
+/// release) has no Pending await while the queue holds data — RTT writes
+/// complete synchronously, so on this single cooperative executor it
+/// monopolizes the CPU until OUTQ fully drains. Yield after every full
+/// chunk; back off 500 µs after a partial one (RTT ring full to the byte,
+/// host frees space only per SWD poll — sleeping costs no throughput).
+///
+/// NOTE (2026-07-05): running this on a medium-priority InterruptExecutor
+/// (SAI1) was tried and REVERTED. It fixed the TX starvation (host rate
+/// 10.5k → 14.6k under detection load), but with tx off the thread executor
+/// ALL embassy-time thread timers froze for a deterministic ~44.93 s during
+/// detection+streaming (1 Hz stats task, the detect ramp's 4 ms timers, a
+/// dedicated 2 ms keeper task — all dead until unrelated RX traffic revived
+/// them). This loop's frequent short backoff timers were evidently what kept
+/// the time-driver alarm re-armed. Root cause in the embassy-stm32 gp16 time
+/// driver (or our use of it) not yet found — needs an rtos-trace session;
+/// see docs/TODO.md.
 #[cfg(feature = "transport-rtt")]
 #[embassy_executor::task]
 pub async fn run_tx_rtt(mut tx: RttWriter, stack: &'static Stack, ident: u8) {
-    // NOT ergot's tx_worker: that loop (wait_read → write → release) has no
-    // Pending await while the queue holds data — RTT writes complete
-    // synchronously, so on this single cooperative executor it monopolizes
-    // the CPU until OUTQ fully drains at wire speed (~8 ms for a full 2 KB
-    // queue over SWD). That starves the telemetry stream task and overflows
-    // FAST_TELEM_Q (only ~5 ms deep at 20 kHz) — measured as periodic
-    // ~60-sample gaps every 102 samples. Yield after every chunk instead.
     let _ = (stack, ident);
     let consumer = OUTQ.stream_consumer();
+    // Self-reported 1 Hz loop stats (the thread-mode stats task can starve —
+    // this task must be able to testify about itself).
+    let mut iters: u32 = 0;
+    let mut sleeps: u32 = 0;
+    let mut bytes: u32 = 0;
+    let mut last_report = embassy_time::Instant::now();
     loop {
         let data = consumer.wait_read().await;
+        let len = data.len();
         let used = tx.write(&data).await.unwrap_or(0);
         data.release(used);
-        if used == 0 {
-            // RTT up channel completely full: the host frees space only per
-            // its SWD poll, no device-side wake exists — back off briefly.
-            embassy_time::Timer::after_micros(200).await;
+        iters = iters.wrapping_add(1);
+        bytes = bytes.wrapping_add(used as u32);
+        if used < len {
+            sleeps = sleeps.wrapping_add(1);
+            embassy_time::Timer::after_micros(500).await;
         } else {
             // Made progress; let the stream/rx/server tasks run before the
             // next chunk so a long queue drain can't monopolize the executor.
             embassy_futures::yield_now().await;
+        }
+        let now = embassy_time::Instant::now();
+        if now.duration_since(last_report).as_millis() >= 1000 {
+            defmt::info!("tx/s: iters={} sleeps={} bytes={}", iters, sleeps, bytes);
+            iters = 0;
+            sleeps = 0;
+            bytes = 0;
+            last_report = now;
         }
     }
 }
@@ -194,6 +221,19 @@ pub async fn telem_stats_task() {
                 rbad,
                 bfail,
                 bok
+            );
+        }
+        // ISR cost (DWT cycles at 170 MHz): avg/max per cycle + CPU share.
+        let cyc_sum = crate::foc::ISR_CYC_SUM.swap(0, Ordering::Relaxed);
+        let cyc_max = crate::foc::ISR_CYC_MAX.swap(0, Ordering::Relaxed);
+        let cyc_n = crate::foc::ISR_CYC_N.swap(0, Ordering::Relaxed);
+        if cyc_n != 0 {
+            defmt::info!(
+                "isr/s: n={} avg={} max={} load_pct={}",
+                cyc_n,
+                cyc_sum / cyc_n,
+                cyc_max,
+                cyc_sum / 1_700_000
             );
         }
     }

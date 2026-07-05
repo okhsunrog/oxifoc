@@ -45,6 +45,16 @@ pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
 pub static FET_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
 
+// ========== ISR cost instrumentation (DWT cycle counter) ==========
+
+/// Sum of ADC1_2 ISR durations in CPU cycles since last stats swap.
+/// u32 headroom: 20 kHz × ~4000 cycles = 80 M/s, swapped at 1 Hz.
+pub static ISR_CYC_SUM: AtomicU32 = AtomicU32::new(0);
+/// Max single ADC1_2 ISR duration in CPU cycles since last stats swap.
+pub static ISR_CYC_MAX: AtomicU32 = AtomicU32::new(0);
+/// Number of ADC1_2 ISR executions since last stats swap.
+pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
+
 // ========== ADC Handles ==========
 
 /// Handle for ADC1 injected conversions (TIM1-triggered): ia, vbus, temp.
@@ -141,6 +151,10 @@ pub async fn init(
     // touches NVIC priority registers nothing else owns at this point.
     unsafe {
         use embassy_stm32::interrupt::typelevel::Interrupt;
+        // DWT cycle counter for ISR-cost stats (ISR_CYC_* atomics).
+        let mut cp = cortex_m::Peripherals::steal();
+        cp.DCB.enable_trace();
+        cp.DWT.enable_cycle_counter();
         let irq = interrupt::ADC1_2;
         cortex_m::peripheral::NVIC::unmask(irq);
         cortex_m::peripheral::NVIC::set_priority(&mut cortex_m::Peripherals::steal().NVIC, irq, 0);
@@ -239,6 +253,8 @@ pub async fn init(
 fn ADC1_2() {
     static mut SEQ: u32 = 0;
 
+    let isr_t0 = cortex_m::peripheral::DWT::cycle_count();
+
     use oxifoc_core::foc::sensors::{AdcSnapshot, TempSensorId};
 
     // Detect hardware overcurrent break event (COMP → TIM1 BKIN cleared MOE)
@@ -332,4 +348,9 @@ fn ADC1_2() {
 
     // Feed the IWDG: a completed FOC cycle is the board's liveness signal.
     feed_watchdog();
+
+    let isr_dt = cortex_m::peripheral::DWT::cycle_count().wrapping_sub(isr_t0);
+    ISR_CYC_SUM.fetch_add(isr_dt, Ordering::Relaxed);
+    ISR_CYC_MAX.fetch_max(isr_dt, Ordering::Relaxed);
+    ISR_CYC_N.fetch_add(1, Ordering::Relaxed);
 }

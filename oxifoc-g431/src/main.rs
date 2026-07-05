@@ -149,6 +149,8 @@ async fn main(spawner: Spawner) {
         ident
     )));
 
+    // Thread executor on purpose — see the NOTE on `run_tx_rtt` about the
+    // reverted InterruptExecutor experiment (thread-timer freeze).
     #[cfg(feature = "transport-rtt")]
     spawner.spawn(defmt::unwrap!(protocol::run_tx_rtt(
         transport.tx,

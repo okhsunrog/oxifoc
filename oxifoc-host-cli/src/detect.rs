@@ -34,6 +34,7 @@ pub fn run_detect(
     erpm: f32,
     apply: bool,
     record_out: Option<String>,
+    record_hz: Option<u16>,
     json: bool,
 ) -> Result<()> {
     use oxifoc_core::types::DetectResponse;
@@ -88,16 +89,19 @@ pub fn run_detect(
         println!("Detection started: {req:?}");
     }
 
-    // Raw-rate capture around the whole step (M=1: the CIC is the identity,
-    // so the HFI carrier / pulse edges survive — any decimated rate would
-    // null exactly the frequencies detection lives at).
+    // Raw-rate capture around the whole step by default (M=1: the CIC is the
+    // identity, so the HFI carrier / pulse edges survive — decimated rates
+    // null exactly the frequencies HFI lives at). `--record-hz` overrides
+    // for steps where a loss-free decimated capture beats a lossy raw one.
     let mut cap = match &record_out {
         Some(_) => {
-            let foc = record::latest_hw_info(runtime)
-                .map(|h| h.foc_freq_hz)
-                .unwrap_or(20_000)
-                .min(u32::from(u16::MAX)) as u16;
-            Some(record::Capture::start(runtime, foc)?)
+            let rate = record_hz.unwrap_or_else(|| {
+                record::latest_hw_info(runtime)
+                    .map(|h| h.foc_freq_hz)
+                    .unwrap_or(20_000)
+                    .min(u32::from(u16::MAX)) as u16
+            });
+            Some(record::Capture::start(runtime, rate)?)
         }
         None => None,
     };

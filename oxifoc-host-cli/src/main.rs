@@ -349,6 +349,15 @@ enum Command {
         record: Option<String>,
         #[arg(
             long,
+            help = "Capture rate for --record (Hz); default: FOC frequency. \
+                    On a loaded link a decimated rate (e.g. 10000) records \
+                    loss-free where M=1 drops samples — fine for R/flux \
+                    steps, but decimation CIC-nulls the HFI carrier, so keep \
+                    M=1 for HFI inductance analysis."
+        )]
+        record_hz: Option<u16>,
+        #[arg(
+            long,
             help = "Write the measured values into the motor-params config group"
         )]
         apply: bool,
@@ -783,6 +792,7 @@ fn main() -> Result<()> {
             erpm,
             apply,
             record,
+            record_hz,
         } => {
             detect::run_detect(
                 &runtime,
@@ -794,6 +804,7 @@ fn main() -> Result<()> {
                 erpm,
                 apply,
                 record,
+                record_hz,
                 json,
             )?;
         }

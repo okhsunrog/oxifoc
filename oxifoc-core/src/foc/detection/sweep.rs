@@ -169,32 +169,63 @@ pub struct DetectionResult {
 // Individual Measurement Functions
 // ============================================================================
 
-/// Average `vd`/`id` over `count` telemetry frames, bounded by a deadline.
+/// Average `vd`/`id` over up to `count` telemetry frames, bounded by a
+/// deadline.
+///
+/// The deadline is a sampling-window cap, not a health check per se: under a
+/// concurrent full-rate telemetry stream the executor schedules this task far
+/// below the FOC rate (measured ~750 frames/s on g431 at 20 kHz streaming),
+/// so the full `count` may not fit in the window. Each frame is an
+/// independent snapshot of a DC steady state, so a *partial* average over
+/// enough frames is just as unbiased — on deadline we return it as long as a
+/// statistical floor was reached.
 ///
 /// If the FOC ISR stops producing telemetry mid-detection, an unbounded
 /// sample loop would await a dead channel forever (the ISR is IWDG-covered,
-/// but on hosts/tests there is no watchdog at all). `MotorNotResponding`
-/// is exactly what a silent control loop means here.
+/// but on hosts/tests there is no watchdog at all). A silent control loop
+/// collects ~nothing by the deadline and still maps to `MotorNotResponding`.
 async fn sample_vd_id<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     count: u32,
     timeout_ms: u64,
 ) -> Result<(f32, f32), DetectionError> {
+    use core::cell::Cell;
     use embassy_futures::select::{Either, select};
+    // Cells, not locals in the async block: on deadline the accumulated sums
+    // must survive the sample future being dropped by `select`.
+    let got = Cell::new(0u32);
+    let vd_sum = Cell::new(0.0f32);
+    let id_sum = Cell::new(0.0f32);
     let sample = async {
-        let mut vd_sum = 0.0f32;
-        let mut id_sum = 0.0f32;
         for _ in 0..count {
             let t = hw.wait_telemetry().await;
-            vd_sum += t.vd;
-            id_sum += t.id;
+            vd_sum.set(vd_sum.get() + t.vd);
+            id_sum.set(id_sum.get() + t.id);
+            got.set(got.get() + 1);
         }
-        (vd_sum / count as f32, id_sum / count as f32)
     };
-    match select(sample, T::after_millis(timeout_ms)).await {
-        Either::First(avg) => Ok(avg),
-        Either::Second(()) => Err(DetectionError::MotorNotResponding),
-    }
+    let n = match select(sample, T::after_millis(timeout_ms)).await {
+        Either::First(()) => count,
+        Either::Second(()) => {
+            // Enough frames for a trustworthy DC average despite the timeout?
+            let floor = (count / 8).max(64).min(count);
+            let n = got.get();
+            if n >= floor {
+                info!(
+                    "telemetry sampling window closed early: averaging {}/{} frames",
+                    n, count
+                );
+                n
+            } else {
+                warn!(
+                    "telemetry sampling starved: {}/{} frames in {} ms (floor {})",
+                    n, count, timeout_ms, floor
+                );
+                return Err(DetectionError::MotorNotResponding);
+            }
+        }
+    };
+    Ok((vd_sum.get() / n as f32, id_sum.get() / n as f32))
 }
 
 /// Settled DirectVoltage holding voltage for `hold_current_a` at the
