@@ -38,6 +38,13 @@ pub struct FocOutput {
     pub v_beta: f32,
     /// Duty cycles to apply (already clamped)
     pub duties: [u16; 3],
+    /// Electrical velocity of the ACTIVE angle source (rad/s) — hall,
+    /// observer, HFI or the startup ramp, whichever commutates right now.
+    /// Stamped by `FocDriver::step` (the controller itself only sees the
+    /// angle); the virtual sim stamps it from the plant. Feeds the fast
+    /// telemetry `rpm` field, which used to read the hall estimator
+    /// unconditionally and showed 0 on sensorless boards while spinning.
+    pub velocity_rad_s: f32,
 }
 
 impl FocOutput {
@@ -57,6 +64,7 @@ impl FocOutput {
             v_alpha: 0.0,
             v_beta: 0.0,
             duties: [0; 3],
+            velocity_rad_s: 0.0,
         }
     }
 }
@@ -583,6 +591,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             v_alpha,
             v_beta,
             duties,
+            // The controller only sees the angle; the driver (or the sim)
+            // stamps the active source's velocity on top.
+            velocity_rad_s: 0.0,
         }
     }
 }

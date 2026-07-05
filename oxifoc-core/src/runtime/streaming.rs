@@ -174,14 +174,13 @@ impl<const N: usize> Default for CicDecimator2<N> {
 
 /// Publish one cycle's telemetry, shared by every platform ISR: update the
 /// global state (waking calibration/detection listeners) and, when fast
-/// streaming is enabled, run the anti-alias decimator and push the
-/// filtered sample into the bbqueue.
+/// streaming is enabled, emit one raw diagnostic frame every `period`-th
+/// FOC cycle into the bbqueue.
 ///
-/// The spectral channels (currents, voltages) go through
-/// [`CicDecimator2`]; `angle_rad` (wraps at 2π — averaging it is garbage),
-/// `velocity`/`erpm` (already filtered upstream) and `hall_state` are
-/// emitted instantaneously at the dump cycle, whose `seq` the sample
-/// carries.
+/// Decimation is plain sample-dropping — NO anti-alias filter (the raw
+/// frame ships unprocessed ADC counts; the host applies calibration and
+/// any filtering downstream). [`CicDecimator2`] below is currently unused
+/// by this path — kept only for a future filtered channel.
 pub fn publish_cycle_telemetry(
     state_mutex: &critical_section::Mutex<core::cell::RefCell<MotorControlState>>,
     adc: AdcSnapshot,
@@ -203,7 +202,7 @@ pub fn publish_cycle_telemetry(
         .fetch_add(1, Ordering::Relaxed)
         .is_multiple_of(period)
     {
-        let telem = build_fast_telemetry(&adc, &foc, hall, pole_pairs, seq);
+        let telem = build_fast_telemetry(&adc, &foc, pole_pairs, seq);
         push_fast_telemetry(&telem);
     }
 }
@@ -215,12 +214,11 @@ pub use crate::types::FAST_BATCH_SAMPLES;
 /// Currents/vbus ship as raw ADC counts / fixed-point so the host reconstructs
 /// engineering units (and `id/iq/iα/iβ`, duty) with the same core math. Only the
 /// non-reconstructable quantities are encoded directly: `angle` (estimator
-/// output), `vd/vq` (PI outputs), `rpm` (filtered observer). Callable from ISR
-/// (no allocation, pure computation).
+/// output), `vd/vq` (PI outputs), `rpm` (the ACTIVE angle source's velocity).
+/// Callable from ISR (no allocation, pure computation).
 pub fn build_fast_telemetry(
     adc: &AdcSnapshot,
     foc: &FocOutput,
-    hall: Option<HallSnapshot>,
     pole_pairs: u8,
     seq: u32,
 ) -> FastTelemetry {
@@ -229,12 +227,17 @@ pub fn build_fast_telemetry(
     // so this encode stays the exact inverse of the host `enrich` decode — one
     // LSB constant per field, round-trip tested in `foc::telemetry`.
     //
-    // HallSnapshot velocity is electrical rad/s. The fast frame stores
-    // mechanical RPM; host enrichment multiplies it back by pole pairs for eRPM.
-    let mech_rpm = hall
-        .filter(|_| pole_pairs > 0)
-        .map_or(0.0, |h| h.velocity_rad_s / f32::from(pole_pairs))
-        * (60.0 / TAU);
+    // `FocOutput::velocity_rad_s` is the ACTIVE angle source's electrical
+    // velocity (hall / observer / HFI / startup ramp), stamped by
+    // `FocDriver::step` — previously this read the hall estimator
+    // unconditionally and showed 0 on sensorless boards while spinning.
+    // The fast frame stores mechanical RPM; host enrichment multiplies it
+    // back by pole pairs for eRPM.
+    let mech_rpm = if pole_pairs > 0 {
+        foc.velocity_rad_s / f32::from(pole_pairs) * (60.0 / TAU)
+    } else {
+        0.0
+    };
     FastTelemetry {
         ia: adc.ia,
         ib: adc.ib,

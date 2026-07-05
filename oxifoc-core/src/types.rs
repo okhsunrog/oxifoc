@@ -249,8 +249,11 @@ pub struct FastTelemetry {
     pub vd: i16,
     /// Q-axis applied voltage (PI output) in **2 mV** units.
     pub vq: i16,
-    /// Mechanical speed in **2 RPM** units (i16 → ±65534 RPM). Filtered observer
-    /// output — cleaner than host-side Δangle differentiation.
+    /// Mechanical speed in **2 RPM** units (i16 → ±65534 RPM). The ACTIVE
+    /// angle source's velocity (hall / observer / HFI / startup ramp — see
+    /// `FocOutput::velocity_rad_s`); before 2026-07-06 this read the hall
+    /// estimator unconditionally and showed 0 on sensorless boards while
+    /// spinning. Still hard-0 whenever `pole_pairs` is unknown (0).
     pub rpm: i16,
     /// Sequence number — `u16` (FOC-cycle counter mod 65536). At 20 kHz wraps
     /// every ~3.3 s; loss detection uses `wrapping_sub` (unambiguous for gaps

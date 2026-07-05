@@ -110,7 +110,7 @@ pub async fn foc_loop(
             raw.clamp(0.0, f32::from(calib.adc_max_counts)) as u16
         };
         for _ in 0..batch {
-            let last_foc_out = foc.step(
+            let mut last_foc_out = foc.step(
                 (out.ia, out.ib, out.ic),
                 out.angle_rad,
                 id_target,
@@ -118,6 +118,10 @@ pub async fn foc_loop(
                 1000,
                 dt,
             );
+            // The sim drives the bare FocController (no FocDriver), so stamp
+            // the plant's electrical velocity where the driver would stamp
+            // the active angle source's — feeds the fast-telemetry rpm field.
+            last_foc_out.velocity_rad_s = out.omega_e;
             out = motor.step(last_foc_out.v_alpha, last_foc_out.v_beta, load_torque, dt);
             seq = seq.wrapping_add(1);
 

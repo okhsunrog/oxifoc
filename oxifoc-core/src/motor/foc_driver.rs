@@ -968,6 +968,16 @@ where
     /// * `Ok(FocOutput)` - Control telemetry on success
     /// * `Err(&str)` - Error message if sensors not ready or overcurrent detected
     pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, StepError> {
+        let mut out = self.step_inner(now_ticks)?;
+        // Stamp the ACTIVE angle source's velocity into the telemetry — one
+        // chokepoint so every mode arm (incl. failsafe / deadshort / stop)
+        // carries it. `phase.get()` returns the cached output of this cycle's
+        // update, so this is a copy, not a recompute.
+        out.velocity_rad_s = self.phase.get().velocity;
+        Ok(out)
+    }
+
+    fn step_inner(&mut self, now_ticks: u64) -> Result<FocOutput, StepError> {
         let dt = self.dt;
         // Failsafe overrides the commanded mode while it runs (ramp-down /
         // regen-brake / coast), then cuts PWM and clears itself.
