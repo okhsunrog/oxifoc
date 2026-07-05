@@ -18,12 +18,51 @@ use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::io::{CopyToBytes, SinkWriter, StreamReader};
 use tokio_util::sync::PollSender;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// RTT channel indices (must match device firmware)
 const RTT_UP_CHANNEL_DEFMT: usize = 0; // Device -> Host (defmt logs)
 const RTT_UP_CHANNEL_ERGOT: usize = 1; // Device -> Host (ergot data)
 const RTT_DOWN_CHANNEL_ERGOT: usize = 0; // Host -> Device (ergot data)
+
+/// JoinHandle of the active blocking RTT I/O thread (one per process — the
+/// probe is exclusive). The thread owns the probe-rs `Session` and busy-polls
+/// USB transactions; if the process exits while it is mid-transfer, the
+/// ST-Link firmware is left with a torn command and the NEXT open times out
+/// on `GET_CURRENT_MODE` (measured: ~alternating open failures, "USB error:
+/// timed out" ~2.6 s into connect). [`join_rtt_io_thread`] lets the shutdown
+/// path wait for the thread to finish its current poll and drop the Session
+/// cleanly (probe detach → ST-Link back to idle mode).
+static RTT_IO_THREAD: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(None);
+
+/// Join the RTT I/O thread if one is (still) running, bounded by `timeout`.
+///
+/// Called from the backend shutdown path (and from `connect` itself to reap
+/// a stale thread before re-opening the probe). No-op when no RTT transport
+/// was ever connected — safe to call unconditionally.
+pub fn join_rtt_io_thread(timeout: Duration) {
+    let handle = RTT_IO_THREAD
+        .lock()
+        .expect("RTT thread registry poisoned")
+        .take();
+    let Some(h) = handle else { return };
+    // std has no join-with-timeout; poll `is_finished` (the thread notices a
+    // closed channel within one ~ms poll iteration, so this converges fast).
+    let deadline = std::time::Instant::now() + timeout;
+    while !h.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if h.is_finished() {
+        let _ = h.join();
+        info!("RTT I/O thread joined — probe session closed cleanly");
+    } else {
+        warn!(
+            "RTT I/O thread still busy after {timeout:?}; \
+             exiting anyway may leave the ST-Link wedged for the next open"
+        );
+    }
+}
 
 /// Address of the live RTT control block, read from the firmware ELF's
 /// `_SEGGER_RTT` symbol. Pinning the scan to this avoids the "multiple control
@@ -169,15 +208,35 @@ pub fn connect(
     info!("Polling for RTT until the firmware re-inits the control block...");
     let mut rtt = {
         let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let mut attempts = 0u32;
+        let mut last_err_str = String::new();
         loop {
             let mut core = session.core(0).context("Failed to get core 0")?;
             match Rtt::attach_region(&mut core, &scan_region) {
                 Ok(rtt) => break rtt,
-                Err(_) if std::time::Instant::now() < deadline => {
+                Err(e) if std::time::Instant::now() < deadline => {
+                    attempts += 1;
+                    // Log each DISTINCT underlying error once — the poll is
+                    // expected to fail with "control block not found" until
+                    // the firmware re-inits it, but any OTHER error (memory
+                    // read failures, probe faults) is the real diagnostic
+                    // when the whole attach eventually times out.
+                    let s = format!("{e:?}");
+                    if s != last_err_str {
+                        info!("RTT attach attempt {attempts}: {s}");
+                        last_err_str = s;
+                    }
                     drop(core);
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                Err(e) => return Err(e).context("Failed to attach to RTT after reset"),
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!(
+                            "Failed to attach to RTT after reset \
+                             ({attempts} poll attempts; last polled error: {last_err_str})"
+                        )
+                    });
+                }
             }
         }
     };
@@ -235,7 +294,7 @@ pub fn connect(
     // Failures must surface as a broken link (io::Error through the reader
     // channel), not a silent thread death: the old expect()s killed the
     // link with no signal to the reconnect logic.
-    std::thread::spawn(move || {
+    let io_thread = std::thread::spawn(move || {
         let fail = |ergot_rx_tx: &tokio::sync::mpsc::Sender<io::Result<Bytes>>, msg: String| {
             error!("{msg}");
             let _ = ergot_rx_tx.blocking_send(Err(io::Error::other(msg)));
@@ -303,6 +362,16 @@ pub fn connect(
         let mut tick: u32 = 0;
 
         loop {
+            // Exit promptly on teardown: the receiver side dropping is the
+            // shutdown signal. Without this check the thread only noticed on
+            // the next blocking_send — i.e. never while the device is quiet —
+            // and got killed by process exit mid-USB-transaction instead,
+            // wedging the ST-Link for the next open (see RTT_IO_THREAD).
+            if ergot_rx_tx.is_closed() {
+                info!("Ergot rx channel closed, stopping RTT thread");
+                return;
+            }
+
             let mut did_work = false;
             tick = tick.wrapping_add(1);
 
@@ -397,6 +466,18 @@ pub fn connect(
             }
         }
     });
+
+    // Register the thread for the shutdown join (see RTT_IO_THREAD). A
+    // previous entry can only be a finished thread (the probe is exclusive:
+    // a live one would have made this connect fail) — reap it.
+    if let Some(old) = RTT_IO_THREAD
+        .lock()
+        .expect("RTT thread registry poisoned")
+        .replace(io_thread)
+        && old.is_finished()
+    {
+        let _ = old.join();
+    }
 
     // Build AsyncRead/AsyncWrite from channels
     let reader = StreamReader::new(ReceiverStream::new(ergot_rx_rx));

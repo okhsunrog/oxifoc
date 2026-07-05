@@ -39,7 +39,7 @@ use std::{
 use tokio::io::AsyncRead;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub use config::{HostConfig, ReconnectPolicy};
 pub use discovery::{BleDeviceInfo, scan_ble_devices};
@@ -223,6 +223,11 @@ pub struct HostRuntime {
     pub connected: Arc<AtomicBool>,
     pub fast_hz: Arc<AtomicU16>,
     cancel_token: CancellationToken,
+    /// Backend thread handle — joined (bounded) on shutdown so the process
+    /// never exits while the RTT I/O thread is mid-USB-transaction (which
+    /// wedges the ST-Link for the next open). Mutex<Option<..>> so both
+    /// `shutdown(&self)` and `Drop` can take it exactly once.
+    backend_thread: std::sync::Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl HostRuntime {
@@ -243,6 +248,29 @@ impl HostRuntime {
     pub fn shutdown(&self) {
         info!("Shutting down host backend...");
         self.cancel_token.cancel();
+        self.join_backend(Duration::from_secs(3));
+    }
+
+    /// Wait (bounded) for the backend thread to finish its shutdown path —
+    /// in particular the RTT I/O thread join that closes the probe-rs
+    /// session cleanly. Skipping this and exiting the process kills that
+    /// thread mid-USB-transaction and wedges the ST-Link for the next open.
+    fn join_backend(&self, timeout: Duration) {
+        let handle = self
+            .backend_thread
+            .lock()
+            .expect("backend thread slot poisoned")
+            .take();
+        let Some(h) = handle else { return };
+        let deadline = Instant::now() + timeout;
+        while !h.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if h.is_finished() {
+            let _ = h.join();
+        } else {
+            warn!("backend thread did not finish within {timeout:?}; exiting anyway");
+        }
     }
 }
 
@@ -288,8 +316,11 @@ impl Drop for HostRuntime {
     /// Cancel the backend on drop: replacing the runtime slot on a GUI
     /// reconnect must not leak the old tokio runtime + thread (which would
     /// keep holding the serial port / probe). Idempotent with `shutdown()`.
+    /// Also joins the backend (bounded) so a plain drop-without-shutdown
+    /// still closes the probe session cleanly before the process moves on.
     fn drop(&mut self) {
         self.cancel_token.cancel();
+        self.join_backend(Duration::from_secs(3));
     }
 }
 
@@ -330,7 +361,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         cancel: cancel_token.clone(),
     };
 
-    thread::spawn(move || {
+    let backend_thread = thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create tokio runtime");
         if let Err(e) = rt.block_on(backend_main(cfg, ctx)) {
             error!("backend_main error: {:?}", e);
@@ -346,6 +377,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         connected,
         fast_hz,
         cancel_token,
+        backend_thread: std::sync::Mutex::new(Some(backend_thread)),
     }
 }
 
@@ -593,6 +625,18 @@ where
         info!("Attempting reconnection...");
     }
 
+    // See the identical sequence in the COBS backend below — the framed
+    // backend never uses RTT today, but this is a no-op then and keeps the
+    // shutdown contract uniform.
+    #[cfg(feature = "desktop")]
+    {
+        stack
+            .stack()
+            .manage_profile(ergot::prelude::DirectEdge::teardown);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        transport::rtt::join_rtt_io_thread(Duration::from_secs(2));
+    }
+
     info!("Host backend shutdown complete");
     Ok(())
 }
@@ -758,6 +802,23 @@ where
             _ = cancel.cancelled() => break,
         }
         info!("Attempting reconnection...");
+    }
+
+    // RTT only (no-op otherwise): wait for the blocking I/O thread to finish
+    // its current USB transaction and drop the probe-rs Session cleanly.
+    // Exiting the process with that thread mid-transfer wedges the ST-Link —
+    // the next `open` then times out on GET_CURRENT_MODE (~alternating
+    // connect failures on back-to-back CLI runs). Order matters: the thread
+    // exits when the transport READER drops, and the reader lives inside the
+    // ergot interface worker — tear the interface down first (releases the
+    // transport), give the worker a beat to run, THEN join. Joining before
+    // the teardown just times out and leaves the session drop racing process
+    // exit (measured: probe-rs `session_drop` cut off mid-way).
+    #[cfg(feature = "desktop")]
+    {
+        stack.manage_profile(ergot::prelude::DirectEdge::teardown);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        transport::rtt::join_rtt_io_thread(Duration::from_secs(2));
     }
 
     info!("Host backend shutdown complete");
