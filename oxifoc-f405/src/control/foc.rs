@@ -175,6 +175,23 @@ pub async fn init(
     Timer::after(Duration::from_millis(10)).await;
     foc_driver.current_sensor_mut().calibrate().await;
 
+    // Publish the measured zero-current offsets into the DcOffsets config
+    // group: the boot measurement is the ground truth for this power-up, and
+    // the host's telemetry enrichment reads this group (falling back to
+    // mid-scale counts when it's absent, which shifts reconstructed phase
+    // currents by amps).
+    {
+        let (oa, ob, oc) = foc_driver.current_sensor().converter().get_offsets();
+        critical_section::with(|cs| {
+            crate::RUNTIME_CONFIG.borrow(cs).borrow_mut().dc_offsets =
+                Some(oxifoc_core::storage::DcOffsetsConfig {
+                    phase_a: oa,
+                    phase_b: ob,
+                    phase_c: oc,
+                });
+        });
+    }
+
     // Install FOC driver for ISR-only access.
     FOC_DRIVER.lock(|cell| {
         cell.replace(Some(foc_driver));

@@ -200,6 +200,23 @@ pub async fn init(
     foc_driver.current_sensor_mut().calibrate().await;
     defmt::info!("Current sensor calibration done");
 
+    // Publish the measured zero-current offsets into the DcOffsets config
+    // group. This board has no flash storage (baked config leaves the group
+    // None), and the host's telemetry enrichment falls back to mid-scale
+    // ADC counts for a missing group — shifting reconstructed phase currents
+    // by ~15 A. The boot measurement is the ground truth for this power-up.
+    {
+        let (oa, ob, oc) = foc_driver.current_sensor().converter().get_offsets();
+        critical_section::with(|cs| {
+            crate::RUNTIME_CONFIG.borrow(cs).borrow_mut().dc_offsets =
+                Some(oxifoc_core::storage::DcOffsetsConfig {
+                    phase_a: oa,
+                    phase_b: ob,
+                    phase_c: oc,
+                });
+        });
+    }
+
     // Install FOC driver for ISR-only access.
     FOC_DRIVER.lock(|cell| {
         cell.replace(Some(foc_driver));
