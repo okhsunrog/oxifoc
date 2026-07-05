@@ -1532,7 +1532,21 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
     // electrical speed IS the commanded one (synchronous machine; sync
     // loss is detected during the ramp).
     info!("Collecting flux linkage samples...");
-    for _ in 0..params.num_samples {
+    for i in 0..params.num_samples {
+        // Re-affirm the hold setpoint periodically: this loop sends no
+        // commands otherwise, and under a concurrent telemetry stream it
+        // stretches past the bench deadman (BENCH_STALENESS_TIMEOUT_US) —
+        // measured: a 2800 eRPM flux run got RampToZero'd mid-collection.
+        // Same-value OpenLoop re-sends are already proven safe by the ramp.
+        if i % 256 == 0 {
+            hw.send_command(ControlMode::OpenLoop {
+                angle_rad: 0.0,
+                current: params.current_a,
+                velocity_rad_s: omega_e,
+                pi_gains: None,
+            })
+            .await;
+        }
         T::after_micros(500).await; // ~2 kHz sampling
         let telem = hw.wait_telemetry().await;
         measurement.record(telem.vq, telem.iq, omega_e);
@@ -1578,7 +1592,18 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
     T::after_millis(u64::from(params.settle_time_ms)).await;
 
     info!("Collecting flux linkage samples...");
-    for _ in 0..params.num_samples {
+    for i in 0..params.num_samples {
+        // Deadman re-affirm — see the identical block in
+        // `measure_flux_linkage` above.
+        if i % 256 == 0 {
+            hw.send_command(ControlMode::OpenLoop {
+                angle_rad: 0.0,
+                current: params.current_a,
+                velocity_rad_s: omega_e,
+                pi_gains: None,
+            })
+            .await;
+        }
         T::after_micros(500).await; // ~2 kHz sampling
         let telem = hw.wait_telemetry().await;
         measurement.record(telem.vd, telem.vq, telem.id, telem.iq, omega_e);

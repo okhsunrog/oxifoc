@@ -75,6 +75,20 @@ accel 500 erad/s²).
   the worst case); 3) HFI45 (MESC) — structural, but replaces the whole
   tracking scheme. Pure sensorless needs (2); until a monitor exists,
   keep HFI motors with margin against Lq saturation.
+- [ ] **Detection runs with the baked-params decoupling feedforward active —
+  circular, and measurably biases flux (2026-07-06 bench).** Same motor,
+  same 2800 eRPM spin, same math: pre-bake firmware measured λ = 1.167 mWb;
+  post-bake (motor_params baked → `from_runtime_config` arms the dq
+  decoupling FF built from λ/L — the very quantities detection measures)
+  the device AND an independent reconstruction from the capture both give
+  1.33 mWb (+16 % vs the 1/ω-extrapolated true 1.145). vd grew to −0.40 V
+  at steady spin. Suspect the FF contribution is not consistently
+  contained in the reported vd/vq that the back-EMF-vector math consumes.
+  Fix direction: detection should disable the decoupling FF (and any other
+  param-derived feedforward) for the duration of a measurement — measuring
+  through a model built from the previous answer is circular even when the
+  reporting is consistent. Verify by re-running flux at 2800 with FF
+  forced off and expecting ~1.17.
 - [ ] **Control-grade AC inductance from detection — the "unknown motor"
   gap** (why the 2026-07-05 baked ZD2808 config carries an LCR-meter
   value). The g431's only L method (voltage-pulse) measures ~DC L; on

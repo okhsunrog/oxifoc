@@ -237,7 +237,33 @@ pub fn connect(
         loop {
             let mut core = session.core(0).context("Failed to get core 0")?;
             match Rtt::attach_region(&mut core, &scan_region) {
-                Ok(rtt) => break rtt,
+                // A found control block can still be MID-INIT: the magic can
+                // land before the full channel table (observed on the bench:
+                // attach 23 ms post-reset saw defmt but no ergot channel).
+                // Treat missing expected channels as retryable, same as a
+                // missing block — only a complete table breaks the loop.
+                Ok(mut rtt) => {
+                    let complete = rtt.up_channel(RTT_UP_CHANNEL_DEFMT).is_some()
+                        && rtt.up_channel(RTT_UP_CHANNEL_ERGOT).is_some()
+                        && rtt.down_channel(RTT_DOWN_CHANNEL_ERGOT).is_some();
+                    if complete {
+                        break rtt;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(anyhow!(
+                            "RTT control block found but the expected channels never appeared \
+                             ({attempts} poll attempts) — wrong firmware image for this ELF?"
+                        ));
+                    }
+                    attempts += 1;
+                    let s = "control block found, channel table incomplete".to_string();
+                    if s != last_err_str {
+                        info!("RTT attach attempt {attempts}: {s}");
+                        last_err_str = s;
+                    }
+                    drop(core);
+                    std::thread::sleep(Duration::from_millis(20));
+                }
                 Err(e) if std::time::Instant::now() < deadline => {
                     attempts += 1;
                     // Log each DISTINCT underlying error once — the poll is
