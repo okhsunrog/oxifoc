@@ -981,7 +981,7 @@ where
                         }
                         if let Some(mode) = active_setpoint {
                             let client = stack.clone().reliable::<TokioTimer>();
-                            let _ = client
+                            let res = client
                                 .at_least_once::<MotorEndpoint>(
                                     DEVICE_ADDR,
                                     &mode,
@@ -989,6 +989,12 @@ where
                                     &AFFIRM_POLICY,
                                 )
                                 .await;
+                            // Fire-and-forget by design, but a FAILED affirm
+                            // is the first suspect whenever the device's
+                            // deadman trips mid-drive — make it visible.
+                            if let Err(e) = res {
+                                tracing::warn!("setpoint affirm failed: {e:?}");
+                            }
                         }
                     }
                 }
