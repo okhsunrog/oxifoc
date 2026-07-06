@@ -1,0 +1,187 @@
+{
+  "name": "prof-openloop-ramp960",
+  "description": "Passive-observer lock-loss discriminator: step the OpenLoop drive to 960 rad/s el (through and past the omega_e 400-800 L(f) band where closed loop loses lock at ~850) at 0.5 A with the observer along for the ride. Observer tracking clean to 960 -> the lock-loss is a closed-loop interaction; observer collapsing at ~850 here too -> intrinsic observer/L(f) model problem.",
+  "capture": {
+    "fast_hz": 1000,
+    "tail_s": 0.5
+  },
+  "terminal": "stop",
+  "timeline": [
+    {
+      "t": 0.5,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 30.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 1.1,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 60.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 1.7,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 120.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.05,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 180.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.4,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 240.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.75,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 300.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 3.1,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 360.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 3.45,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 420.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 3.8,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 480.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 4.15,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 540.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 4.5,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 600.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 4.85,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 660.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 5.2,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 720.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 5.55,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 780.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 5.9,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 840.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 6.25,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 900.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 6.6,
+      "cmd": {
+        "openloop": {
+          "current": 0.5,
+          "velocity": 960.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 9.45,
+      "cmd": {
+        "stop": {}
+      }
+    }
+  ]
+}

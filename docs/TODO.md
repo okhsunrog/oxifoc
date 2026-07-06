@@ -234,6 +234,36 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       loop engages at ~200–300 rad/s and crosses the band itself —
       every closed-loop transit rings. No sustained spin on HEAD until
       the spike mechanism is understood.
+      MECHANISM CHARACTERIZED (2026-07-06 night, offline spike analysis +
+      passive discriminator + FF experiment; captures/punch15-2k-1 =
+      loss-free 2 kHz sawtooth artifact, spin-punch-15-1, olramp960-1):
+      - NOT once-per-rev (spike intervals don't lock to the mech period;
+        ratios 0.15–2.1).
+      - The post-handoff failure is an ESTIMATE SAWTOOTH: ω̂ self-
+        accelerates away from the rotor at 2–3× the physical torque
+        bound (kt·iq/J), collapses at ~850–870 rad/s el, re-locks near
+        the true rotor speed, repeats at ~2 Hz; the iq spikes are beat
+        pulses (~30 Hz ⇒ slip ~190 rad/s) during the mis-lock, and the
+        OC fires when a beat pulse crosses 10 A. The re-lock floors
+        trace the TRUE rotor: it crawls (1400→1700 erpm over 1.7 s at
+        1.5 A commanded — torque is wasted in beats).
+      - The observer is INNOCENT passively: openloop stepped drive to
+        960 rad/s el (olramp960) tracks flawlessly (conf ≥0.95, e_q =
+        λω exactly, λ stable) — through the whole "L(f) band".
+      - The λ·ω̂ decoupling feedforward is NOT the pump (flux FF = 0
+        experiment: identical sawtooth).
+      - punch-15's SECOND engagement proved the loop CAN work: real
+        confirmed 260 rad/s seed → clean physical acceleration to
+        3668 rad/s el (e_q 4.8 V real — a phantom at that vq would
+        draw 37 A, currents stayed ≤8.5) before an OC at 25k erpm.
+      - Corrected J from that climb: ≈3.2e-5 (sim uses 5e-5 — may be
+        why sim doesn't reproduce the sawtooth).
+      NEXT: reproduce the sawtooth in sim with J=3.2e-5 + eddy-branch
+      plant at iq 0.5 A from a 180 rad/s handoff; instrument the sim
+      internals (truth vs estimate visible there); suspects = drive-
+      dominated flux integrator at light load (closed-loop self-
+      excitation, the classic), L(f) mismatch in −L·Δi. Bench data to
+      get: 2 kHz captures are loss-free, 10 kHz is not (366 ms gaps).
     Distortion-floor context for the record: at ramp 60–63 the observer
     read 32–62 with confidence DECAYING 1.0→0.59 and validity never
     corroborating — λω ≈ 72 mV is at/below the post-comp dead-time
