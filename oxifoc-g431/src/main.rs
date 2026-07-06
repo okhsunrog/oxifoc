@@ -59,6 +59,28 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // Stack paint for the high-water-mark meter (protocol.rs stats task):
+    // flip-link puts the stack at the BOTTOM of RAM (grows down toward
+    // 0x2000_0000), so fill everything from the RAM origin up to just below
+    // the live SP with a pattern; the lowest overwritten word marks peak
+    // usage. Statics are above the stack — untouched. 2026-07-06: engage
+    // reboots (RTT control block reinit mid-run) point at stack overflow —
+    // only ~7.5 KB remain after statics, inside the known 5.8-7.8 KB
+    // boot-lockup boundary zone.
+    {
+        let sp: u32;
+        // SAFETY: reading SP clobbers nothing.
+        unsafe { core::arch::asm!("mov {}, sp", out(reg) sp) };
+        let mut a = 0x2000_0000u32;
+        while a + 256 < sp {
+            // SAFETY: [RAM origin, SP-256) is the unused stack reserve —
+            // below every live frame (stack grows down from _stack_start)
+            // and below all statics (flip-link puts them above the stack).
+            unsafe { (a as *mut u32).write_volatile(0xAAAA_AAAA) };
+            a += 4;
+        }
+    }
+
     // ========== STEP 1: Initialize Clock ==========
     let p = hardware::init_clock();
 

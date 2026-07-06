@@ -1036,17 +1036,33 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     }
 
     fn update(&mut self, input: &PhaseInput, now_ticks: u64) {
-        // Sample hardware sensors. The stateful path matters for hall: it
-        // carries the rate limiter that smooths sector-edge discontinuities.
-        // A stale hall (edges stopped while spinning) is treated as having
-        // no sample at all, so every consumer below falls back uniformly.
-        let hall_stale = self.hall.is_stale(now_ticks);
-        let hall_sample = if hall_stale {
-            None
+        // Sample hardware sensors — only for sources that consume them. The
+        // stateful path matters for hall: it carries the rate limiter that
+        // smooths sector-edge discontinuities. A stale hall (edges stopped
+        // while spinning) is treated as having no sample at all, so every
+        // consumer below falls back uniformly. On a sensorless (Observer)
+        // source both samples are dead weight at 20 kHz — the interpolation
+        // math ran every cycle for data nothing read (2026-07-06 ISR
+        // profiling); everything downstream is already `requires_*`-gated
+        // and treats `None` as "no sensor".
+        let (hall_stale, hall_sample) = if self.source.requires_hall() {
+            let stale = self.hall.is_stale(now_ticks);
+            (
+                stale,
+                if stale {
+                    None
+                } else {
+                    self.hall.sample_mut(now_ticks)
+                },
+            )
         } else {
-            self.hall.sample_mut(now_ticks)
+            (false, None)
         };
-        let encoder_sample = self.encoder.sample_mut(now_ticks);
+        let encoder_sample = if self.source.requires_encoder() {
+            self.encoder.sample_mut(now_ticks)
+        } else {
+            None
+        };
 
         // Hall health is only meaningful for sources that consume hall data:
         // an idle hall during Manual-angle calibration or pure-observer
@@ -1084,7 +1100,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             i_beta: input.i_beta,
             dt: input.dt,
         };
+        let prof_t0 = crate::isr_prof::now();
         self.observer.update(&obs_input);
+        crate::isr_prof::add(&crate::isr_prof::EST_OBS, prof_t0, crate::isr_prof::now());
         #[cfg(feature = "hfi")]
         {
             let hfi_active = self.hfi_active();
@@ -1108,6 +1126,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // — deactivates — the moment the observer has actually converged at
         // handoff speed (it keeps running on commanded-v + measured-i the
         // whole time, so by handoff its angle is the true rotor angle).
+        let prof_t0 = crate::isr_prof::now();
         if self.startup.is_active() {
             let phase_before = self.startup.phase();
             if phase_before == StartupPhase::Deadshort {
@@ -1178,11 +1197,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             }
         }
 
+        let prof_t1 = crate::isr_prof::now();
+        crate::isr_prof::add(&crate::isr_prof::EST_STARTUP, prof_t0, prof_t1);
+
         // Update open-loop override state (for Hall failure recovery)
         self.update_open_loop_override(input.dt);
 
         // Compute output based on source (with potential fallback)
         self.output = self.compute_phase_with_fallback(hall_sample, encoder_sample);
+        crate::isr_prof::add(&crate::isr_prof::EST_OUT, prof_t1, crate::isr_prof::now());
     }
 
     fn request_source(&mut self, source: PhaseSource) -> bool {

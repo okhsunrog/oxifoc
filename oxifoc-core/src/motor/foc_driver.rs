@@ -1322,7 +1322,9 @@ where
         // Read currents and run FOC controller. The estimated electrical
         // velocity drives the dq-decoupling feedforward (no-op when no
         // motor params are configured).
+        let prof_tc = crate::isr_prof::now();
         let currents = self.current_sensor.read_currents();
+        crate::isr_prof::add(&crate::isr_prof::GATE_CURR, prof_tc, crate::isr_prof::now());
         let max_duty = self.pwm.max_duty();
         let prof_t1 = crate::isr_prof::now();
         crate::isr_prof::add(&crate::isr_prof::STEP_GATE, prof_t0, prof_t1);

@@ -266,6 +266,25 @@ pub async fn telem_stats_task() {
                     stale_max
                 );
             }
+            // Stack high-water mark: scan the boot-time 0xAAAAAAAA paint from
+            // the RAM origin up; the first overwritten word is the deepest
+            // the stack ever grew. `free` = untouched bytes below the peak.
+            {
+                let mut a = 0x2000_0000u32;
+                let free = loop {
+                    // Paint ends ~256 B below boot SP; a fully-scanned paint
+                    // region means the stack never grew past boot depth.
+                    // SAFETY: reads within the painted stack reserve (see
+                    // the boot painter in main.rs); volatile, no aliasing.
+                    if unsafe { (a as *const u32).read_volatile() } != 0xAAAA_AAAA
+                        || a >= 0x2000_2000
+                    {
+                        break a - 0x2000_0000;
+                    }
+                    a += 4;
+                };
+                defmt::info!("stack: free_min={}B", free);
+            }
             // Down-pump + executor scheduling health (drive-engage trip hunt).
             {
                 let late = TIMER_LATE_MAX_US.swap(0, Ordering::Relaxed);
@@ -348,12 +367,23 @@ pub async fn telem_stats_task() {
                 // check + duty write-out, est = phase manager + observer.
                 // gate+ctrl+post+est ≈ step above (minus mode dispatch).
                 defmt::info!(
-                    "isrd/s: gate={} ctrl={} (trig={}) post={} est={}",
+                    "isrd/s: gate={} (curr={}) ctrl={} (trig={}) post={} est={}",
                     p::STEP_GATE.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::GATE_CURR.swap(0, Ordering::Relaxed) / cyc_n,
                     p::STEP_CTRL.swap(0, Ordering::Relaxed) / cyc_n,
                     p::CTRL_TRIG.swap(0, Ordering::Relaxed) / cyc_n,
                     p::STEP_POST.swap(0, Ordering::Relaxed) / cyc_n,
                     p::STEP_EST.swap(0, Ordering::Relaxed) / cyc_n,
+                );
+                // est internals (manager.update): obs = flux integrator +
+                // atan2 + PLL, startup = cold-start sequencer block, out =
+                // source dispatch + velocity + output cache. Remainder vs
+                // est above = hall/encoder sampling + health checks.
+                defmt::info!(
+                    "isre/s: obs={} startup={} out={}",
+                    p::EST_OBS.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::EST_STARTUP.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::EST_OUT.swap(0, Ordering::Relaxed) / cyc_n,
                 );
             }
         }

@@ -205,22 +205,46 @@ pub mod foc {
     }
 
     /// Wrap angle to [0, 2π)
+    ///
+    /// Hot path is branch+subtract: every per-cycle caller (observer, PLL,
+    /// startup ramp, hall interpolation) feeds an already-wrapped angle plus
+    /// a small increment, so the input is within (-2π, 4π) essentially
+    /// always. The `%` fallback (f32 `%` = `fmodf` → libm's remquo path,
+    /// ~100+ cycles — 2026-07-06 ISR PC-profiling caught it at ~1% of the
+    /// whole CPU) only runs for arbitrary out-of-range inputs.
     #[inline]
     pub fn wrap_angle(angle: f32) -> f32 {
-        let mut a = angle % TAU;
+        let mut a = angle;
+        if !(-TAU..=TAU).contains(&a) {
+            // Cold: arbitrary input far outside the incremental domain.
+            a %= TAU;
+        }
         if a < 0.0 {
             a += TAU;
+        } else if a >= TAU {
+            a -= TAU;
         }
         a
     }
 
     /// Compute signed angle difference (a - b), handling wraparound.
     /// Result is in range (-π, π].
+    ///
+    /// Same hot/cold split as [`wrap_angle`]: wrapped inputs give a raw
+    /// difference in (-2π, 2π), where one conditional ±2π lands in range —
+    /// `libm::remainderf` (which cost ~1% of the ISR CPU) stays as the cold
+    /// fallback for arbitrary inputs.
     #[inline]
     pub fn angle_difference(a: f32, b: f32) -> f32 {
-        let mut diff = libm::remainderf(a - b, TAU);
+        let mut diff = a - b;
+        if !(-TAU..=TAU).contains(&diff) {
+            // Cold: inputs weren't wrapped angles.
+            diff = libm::remainderf(diff, TAU);
+        }
         if diff <= -core::f32::consts::PI {
             diff += TAU;
+        } else if diff > core::f32::consts::PI {
+            diff -= TAU;
         }
         diff
     }

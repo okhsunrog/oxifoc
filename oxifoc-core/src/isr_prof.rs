@@ -37,6 +37,18 @@ pub static STEP_POST: AtomicU32 = AtomicU32::new(0);
 /// `step_current_control`: `update_phase_with_prev_voltage` (phase manager:
 /// observer flux integrator + PLL, startup machine, telemetry cache).
 pub static STEP_EST: AtomicU32 = AtomicU32::new(0);
+/// `PhaseManager::update`: `BackEmfObserver::update` (flux integrator,
+/// atan2, PLL). Subset of [`STEP_EST`].
+pub static EST_OBS: AtomicU32 = AtomicU32::new(0);
+/// `PhaseManager::update`: the startup-sequencer block (deadshort feed or
+/// `SensorlessStartup::tick` + |i| sqrt). Subset of [`STEP_EST`].
+pub static EST_STARTUP: AtomicU32 = AtomicU32::new(0);
+/// `PhaseManager::update`: `compute_phase_with_fallback` (source dispatch,
+/// crossover blends, velocity, output cache). Subset of [`STEP_EST`].
+pub static EST_OUT: AtomicU32 = AtomicU32::new(0);
+/// `step_current_control` gate: `CurrentSensor::read_currents`. Subset of
+/// [`STEP_GATE`].
+pub static GATE_CURR: AtomicU32 = AtomicU32::new(0);
 
 /// Current DWT cycle count (0 when profiling is compiled out).
 #[inline(always)]

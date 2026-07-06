@@ -86,6 +86,15 @@ codegen-units = 1
 opt-level = "z"
 incremental = true
 
+# The 20 kHz FOC hot path lives in oxifoc-core; at the crate-wide `z` the
+# ISR ran with machine-outlined calls and memcpy'd struct returns (caught
+# red-handed by SWD PC sampling 2026-07-06: OUTLINED_FUNCTION_* + memcpy in
+# the ISR profile), pushing an align cycle to ~8.3k of the 8500-cycle budget
+# and starving thread mode. Speed-optimize just that package; the g431 glue
+# (servers, transport, init) stays size-optimized.
+[profile.release.package.oxifoc-core]
+opt-level = "z"
+
 # Verbatim copy of the root [workspace.lints] tables (this crate is excluded
 # from the workspace for its target/toolchain) — keep in sync with ../Cargo.toml.
 [lints.rust]

@@ -85,10 +85,20 @@ fn sin_poly(x: f32) -> f32 {
 ///   Q3 [3π/2, 2π]:    sin(x) = -sin_poly(2π - x)
 #[inline(always)]
 fn fast_sin(angle: f32) -> f32 {
-    // Normalize to [0, 2π)
-    let mut x = angle % TAU;
+    // Normalize to [0, 2π). Branch+subtract on the hot path: callers feed
+    // wrapped angles (± one increment / +π/2 from sin_cos), so the input is
+    // within (-2π, 2π+π/2) in practice. The f32 `%` (= `fmodf` → libm's
+    // remquo path, ~100+ cycles — and it ran TWICE per sin_cos) is only the
+    // cold fallback; without this the "16-20 cycle" polynomial was mostly
+    // libm range reduction (2026-07-06 ISR PC-profiling).
+    let mut x = angle;
+    if !(-TAU..=TAU + TAU).contains(&x) {
+        x %= TAU;
+    }
     if x < 0.0 {
         x += TAU;
+    } else if x >= TAU {
+        x -= TAU;
     }
 
     // Quadrant decomposition
