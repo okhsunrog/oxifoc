@@ -165,14 +165,22 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     combination of kp {0.024, 0.1075} × dec {24, 86/129} ×
     obs {24, 108-salient}. At 0.3 A all configs are stable to the
     no-load ceiling → perturbation scales with L·i.
-  - NEW reproducer (2026-07-06 evening, cold motor): a SLOW crawl
-    through the ω_e ≈ 400–800 L(f) transition band ends in the dq
-    overcurrent ~1.1 s after handoff, 6/6 — maneuvers/prof-hold-1a.json
-    (1.0 A punch 0.5 s → 0.3 A hold; the low-torque crawl lingers in
-    the band). A fast 1.5 A punch through the same band
-    (spin-sustained.json) is clean 3/3. Captures in captures/final3*.
-    So "0.3 A always stable" holds only ABOVE the band — the
-    band-transit dynamics are the trigger, not the steady current. Sim: the current
+  - THREE deterministic reproducers (2026-07-06 evening, cold motor,
+    captures on disk):
+    1. SLOW crawl through the ω_e ≈ 400–800 L(f) band → dq OC ~1.1 s
+       after handoff, 6/6 — maneuvers/prof-hold-1a.json (fast 1.5 A
+       punch through the same band is clean → band-transit dynamics,
+       not steady current; captures/final3*).
+    2. Torque DOWN-step at the voltage ceiling (1.5→0.5 A, t=4.0 of
+       endurance-20s.json) → OC in ~0.4 s, 6/6 across two series
+       (early steps, before the ceiling, are harmless — why spin-gentle
+       always worked; captures/endurance4-*).
+    3. Constant iq*=1.5 A sustained: the limit cycle over 17 s —
+       speed 518–8736 erpm (median 0.5 s swing 7126 erpm!), iq ±9 A
+       around a COLLAPSED 0.83 A mean, vq ≈ 0.57 V (never near the
+       ceiling). Protection-clean but visibly jerky rotation
+       (endurance-hold.json 4/4; captures/endurance-hold-*). The
+       "bounded" short-run view undersold it. Sim: the current
     loop with a perfect angle is unconditionally stable (any advance),
     so the cycle lives in the OBSERVER↔loop interaction; the single-L
     sim plant does not reproduce it (frequency-dependent L missing).
