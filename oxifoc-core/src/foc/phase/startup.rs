@@ -39,12 +39,29 @@ use crate::foc::wrap_angle;
 pub const RAMP_CURRENT_SOFT_START_S: f32 = 0.15;
 
 /// Ramp duration (s): linear `0 → ceiling` open-loop velocity.
-pub const DEFAULT_RAMP_TIME_S: f32 = 0.4;
+///
+/// Scaled with [`DEFAULT_HANDOFF_VEL`] to keep the ramp acceleration at the
+/// hardware-validated ~150 rad/s² el (60 rad/s over 0.4 s): the open-loop
+/// capture is an undamped synchronous machine, and its hunt amplitude
+/// scales with the slip acceleration — at 3× the acceleration a light
+/// 0.3 A ramp fails to capture the rotor at all (sim: cold start never
+/// hands off). The longer open-loop dwell is affordable post-shave.
+pub const DEFAULT_RAMP_TIME_S: f32 = 1.2;
 
-/// Target electrical velocity (rad/s) to hand off to the observer at. Margin
-/// above [`super::observer::READY_MIN_VELOCITY`] (30) so the back-EMF is
-/// comfortably observable; ~570 eRPM.
-pub const DEFAULT_HANDOFF_VEL: f32 = 60.0;
+/// Target electrical velocity (rad/s) to hand off to the observer at.
+///
+/// The binding constraint is the inverter distortion floor, not the
+/// observer's nominal speed floor ([`super::observer::READY_MIN_VELOCITY`],
+/// 30): at the original 60 rad/s the ZD2808's back-EMF is λω ≈ 69 mV —
+/// at/below the post-compensation dead-time residual, and the bench
+/// (2026-07-06, staircase + debug-start) showed the observer reading
+/// 32–62 rad/s with confidence *decaying* and the e_q external-validity
+/// check never corroborating: the signal genuinely wasn't above the noise.
+/// 180 rad/s el puts λω ≈ 0.21 V, an order of magnitude over the residual
+/// (~1720 eRPM ≈ 250 mech RPM on the 7-pp bench motor). The longer dwell
+/// in the open-loop startup path is affordable since the tier-2 ISR shave
+/// (startup path ~87% load, command pump alive throughout).
+pub const DEFAULT_HANDOFF_VEL: f32 = 180.0;
 
 /// Hall-dropout recovery velocity (rad/s, ~500 eRPM). A *fast* nudge from the
 /// last known angle — not a ramp — because there a real angle history exists
@@ -81,11 +98,15 @@ pub const DEADSHORT_SETTLE_CYCLES: u16 = 8;
 
 /// Minimum |ω| (rad/s elec) the deadshort must resolve to declare the rotor
 /// "spinning" and seed the observer for a flying restart. Below it (standstill
-/// or barely turning), fall through to the ramp cold start. Set at the
-/// handoff velocity: a seed below handoff speed lands the observer in a band
-/// the handoff gates would not trust anyway, and the bench false-catch
-/// (enable transient, see [`DEADSHORT_SETTLE_CYCLES`]) resolved to ω≈46 —
-/// comfortably below this bar as a second line of defense.
+/// or barely turning), fall through to the ramp cold start. Deliberately
+/// BELOW [`DEFAULT_HANDOFF_VEL`] (they were equal at 60 before the handoff
+/// moved to the distortion-floor bound): the probe measures e = −L·dI/dt on
+/// a shorted bridge — no PWM switching, so the dead-time floor that pushed
+/// the handoff up does not apply — and a catch seeds the observer straight
+/// into closed loop above its READY floor (30), skipping the handoff gates
+/// entirely. The bench false-catch (enable transient, see
+/// [`DEADSHORT_SETTLE_CYCLES`]) resolved to ω≈46 — comfortably below this
+/// bar as a second line of defense.
 pub const DEADSHORT_MIN_CATCH_VEL: f32 = 60.0;
 
 /// Abort the probe early if |i_αβ| exceeds this (A): the back-EMF drives the
@@ -726,7 +747,7 @@ mod tests {
         let mut sm = cold_start_to_ramp(1.0, 1.0);
         assert!(sm.is_active());
 
-        let hist = run(&mut sm, 1.0, 3.0);
+        let hist = run(&mut sm, DEFAULT_RAMP_TIME_S + 0.3, 3.0);
         let phases: Vec<_> = hist.iter().map(|(p, _)| *p).collect();
         assert_eq!(phases, vec![StartupPhase::Ramp, StartupPhase::Hold]);
         // Settles at or above the handoff velocity.
@@ -788,8 +809,8 @@ mod tests {
     fn higher_current_raises_the_ceiling() {
         let mut lo = cold_start_to_ramp(0.0, 1.0);
         let mut hi = cold_start_to_ramp(0.0, 1.0);
-        run(&mut lo, 1.0, 0.0); // no current → floor ceiling
-        run(&mut hi, 1.0, CURRENT_REF_A); // full current → max ceiling
+        run(&mut lo, DEFAULT_RAMP_TIME_S + 0.2, 0.0); // no current → floor ceiling
+        run(&mut hi, DEFAULT_RAMP_TIME_S + 0.2, CURRENT_REF_A); // full current → max ceiling
         assert!(hi.velocity() > lo.velocity() + 1.0);
         assert!((lo.velocity() - DEFAULT_HANDOFF_VEL).abs() < 1.0);
     }
@@ -799,7 +820,7 @@ mod tests {
         let mut sm = cold_start_to_ramp(0.0, 1.0);
         // Run past the ramp with the observer NOT ready — never hands
         // off, and ends solidly in Hold above the handoff speed.
-        for _ in 0..(20_000 * 8 / 10) {
+        for _ in 0..((DEFAULT_RAMP_TIME_S / DT) as usize + 4_000) {
             let o = sm.tick(DT, 5.0, false, 0.0);
             assert!(!o.handoff);
         }
@@ -831,8 +852,9 @@ mod tests {
             "align-swing false-ready must not hand off at ramp entry"
         );
         // Ramp genuinely dragging → the runaway path fires below the
-        // nominal handoff velocity.
-        run(&mut sm, 0.08, 5.0);
+        // nominal handoff velocity. Duration scaled to the ramp: past the
+        // 35% ramp_moving gate, still below the handoff velocity.
+        run(&mut sm, DEFAULT_RAMP_TIME_S * 0.25, 5.0);
         assert!(sm.velocity() >= DEFAULT_HANDOFF_VEL * 0.2);
         assert!(sm.velocity() < DEFAULT_HANDOFF_VEL);
         let o = sm.tick(DT, 5.0, true, 400.0);
@@ -947,7 +969,7 @@ mod tests {
     /// the handoff gate.
     fn ramp_to_hold() -> SensorlessStartup {
         let mut sm = cold_start_to_ramp(0.0, 1.0);
-        run(&mut sm, 0.6, 3.0);
+        run(&mut sm, DEFAULT_RAMP_TIME_S + 0.2, 3.0);
         assert_eq!(sm.phase(), StartupPhase::Hold);
         sm
     }
@@ -1020,7 +1042,9 @@ mod tests {
     #[test]
     fn confirm_passes_real_rotor_and_hands_off() {
         use crate::foc::angle_difference;
-        let (l, lambda, omega, theta) = (150e-6, 1.145e-3, 70.0, 0.9);
+        // Rotor speed relative to the handoff gate (observer_vel must be
+        // ≥ 0.5 × handoff_vel for the hold to fire a probe at all).
+        let (l, lambda, omega, theta) = (150e-6, 1.145e-3, DEFAULT_HANDOFF_VEL * 1.2, 0.9);
         let claim = PhaseOutput {
             angle: theta,
             velocity: omega,
@@ -1047,7 +1071,7 @@ mod tests {
     fn confirm_rejects_angle_disagreement() {
         // Back-EMF present at the claimed SPEED but ~π away in angle (e.g.
         // a rotor freewheeling against the commanded direction).
-        let (l, lambda, omega) = (150e-6, 1.145e-3, 70.0);
+        let (l, lambda, omega) = (150e-6, 1.145e-3, DEFAULT_HANDOFF_VEL * 1.2);
         let claim = PhaseOutput {
             angle: 0.9 + core::f32::consts::PI,
             velocity: omega,
