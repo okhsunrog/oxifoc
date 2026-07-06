@@ -139,6 +139,22 @@ pub async fn init(
     let mut foc_controller =
         FocController::<SvpwmModulator, CordicSinCos>::from_runtime_config(config, initial_vbus_v);
 
+    // Two-inductance override (ZD2808, 2026-07-06): the ω·L·i dq-decoupling
+    // needs the FUNDAMENTAL (voltage-pulse) Ld/Lq — with the AC value the
+    // cross-coupling was ~4.5× undercompensated and the sustained-1.5 A run
+    // diverged into the dq overcurrent at ~800 rad/s. motor_params carries
+    // the AC value for the estimation chain (observer, deadshort — both
+    // hardware-validated there), so the decoupling gets its own numbers
+    // here until MotorParamsConfig grows an explicit second-inductance
+    // field (TODO "two-inductance model").
+    if config.motor_params.is_some() {
+        foc_controller.set_decoupling(Some(oxifoc_core::foc::controller::Decoupling {
+            ld_h: 85.7e-6,
+            lq_h: 129.4e-6,
+            flux_linkage_wb: 1.145e-3,
+        }));
+    }
+
     // Configure dead time compensation
     foc_controller.set_dead_time_comp(PWM_CONFIG.dead_time_ns, PWM_CONFIG.pwm_freq_hz);
 

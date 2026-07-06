@@ -322,9 +322,18 @@ impl SensorlessStartup {
         // frequency in the capture confirmed the observer was RIGHT). Waiting
         // for the ramp in that case only lets the runaway grow — a ready
         // observer at handoff speed takes over immediately.
+        //
+        // The runaway path additionally requires the ramp to have actually
+        // dragged the rotor a while (velocity ≥ 20% of handoff): the align
+        // phase leaves the rotor swinging on its undamped magnetic spring
+        // (~8 Hz mech on the bench motor), the observer can lock onto that
+        // swing and report "ready" at hundreds of rad/s right at ramp entry
+        // (bench: observer_vel 585–786 at openloop_vel 0–1.2). Every real
+        // runaway observed fired at openloop_vel ≥ 23.
+        let ramp_moving = self.velocity.abs() >= self.handoff_vel * 0.2;
         let fast_enough = (self.velocity.abs() >= self.handoff_vel
             && observer_vel.abs() >= self.handoff_vel * 0.5)
-            || observer_vel.abs() >= self.handoff_vel;
+            || (ramp_moving && observer_vel.abs() >= self.handoff_vel);
         let handoff = observer_ready && fast_enough && self.phase != StartupPhase::Align;
 
         StartupOutput {
@@ -564,14 +573,26 @@ mod tests {
     }
 
     #[test]
-    fn runaway_rotor_hands_off_early() {
+    fn runaway_rotor_hands_off_early_but_not_at_ramp_entry() {
         // I/f runaway: an unloaded rotor slips ahead of the ramp and
         // accelerates freely. A READY observer tracking it at handoff speed
-        // must take over immediately — waiting for the ramp to reach the
-        // handoff velocity only lets the runaway grow (bench 2026-07-06).
+        // must take over — but only once the ramp has actually dragged the
+        // rotor (≥20% of handoff): at ramp entry a "ready" observer at
+        // speed is the align-swing artifact (bench 2026-07-06: observer
+        // 585–786 rad/s at openloop 0–1.2) and must be ignored.
         let mut sm = cold_start_to_align(0.0, 1.0);
-        run(&mut sm, DEFAULT_ALIGN_TIME_S + 0.02, 5.0); // just into Ramp
+        run(&mut sm, DEFAULT_ALIGN_TIME_S + 0.005, 5.0); // ramp just started
         assert_eq!(sm.phase(), StartupPhase::Ramp);
+        assert!(sm.velocity() < DEFAULT_HANDOFF_VEL * 0.2);
+        let o = sm.tick(DT, 5.0, true, 400.0);
+        assert!(
+            !o.handoff,
+            "align-swing false-ready must not hand off at ramp entry"
+        );
+        // Ramp genuinely dragging → the runaway path fires below the
+        // nominal handoff velocity.
+        run(&mut sm, 0.08, 5.0);
+        assert!(sm.velocity() >= DEFAULT_HANDOFF_VEL * 0.2);
         assert!(sm.velocity() < DEFAULT_HANDOFF_VEL);
         let o = sm.tick(DT, 5.0, true, 400.0);
         assert!(
