@@ -455,14 +455,33 @@ pub async fn config_server<NS, const N: usize>(
                                 // retune the current loop the same way boot
                                 // does, otherwise the driver keeps the
                                 // conservative detection gains until reboot.
+                                // Same precedence as boot: explicit stored PI
+                                // gains win over the l_avg-derived tuning
+                                // (pulse Ld/Lq are the decoupling values; the
+                                // loop runs on the HF inductance — see
+                                // FocController::from_runtime_config).
                                 ConfigWrite::MotorParams(v) if v.is_valid() => {
-                                    let l_avg = (v.inductance_d_h + v.inductance_q_h) / 2.0;
-                                    let (kp, ki) = calculate_current_gains(
-                                        v.resistance_ohm,
-                                        l_avg,
-                                        DEFAULT_BANDWIDTH_RAD_S,
-                                    );
-                                    CMD_CHANNEL.send(DriverCommand::SetPiGains { kp, ki }).await;
+                                    let stored_gains = critical_section::with(|cs| {
+                                        runtime_config.borrow(cs).borrow().pi_gains.clone()
+                                    });
+                                    if let Some(pg) = stored_gains {
+                                        CMD_CHANNEL
+                                            .send(DriverCommand::SetPiGains {
+                                                kp: pg.kp,
+                                                ki: pg.ki,
+                                            })
+                                            .await;
+                                    } else {
+                                        let l_avg = (v.inductance_d_h + v.inductance_q_h) / 2.0;
+                                        let (kp, ki) = calculate_current_gains(
+                                            v.resistance_ohm,
+                                            l_avg,
+                                            DEFAULT_BANDWIDTH_RAD_S,
+                                        );
+                                        CMD_CHANNEL
+                                            .send(DriverCommand::SetPiGains { kp, ki })
+                                            .await;
+                                    }
                                     // New inductances/flux also re-arm the
                                     // dq-decoupling feedforward, same as boot.
                                     CMD_CHANNEL

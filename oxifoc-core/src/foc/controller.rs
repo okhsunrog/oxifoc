@@ -237,8 +237,14 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     }
 
     /// Build a controller from the stored runtime config, the way every
-    /// board boots: detected motor params win (pole-placement tuning),
-    /// explicit stored PI gains come second, conservative defaults last.
+    /// board boots. Precedence: motor params arm the decoupling/observer
+    /// model, but EXPLICIT stored PI gains override the params-derived
+    /// (l_avg·bw) tuning when both are present — the fundamental Ld/Lq the
+    /// pulse detection measures are the right inductances for the ω·L·i
+    /// decoupling terms, while the current loop's per-cycle di/dt runs on
+    /// the (smaller) high-frequency inductance on an eddy-current-heavy
+    /// motor, so one L cannot serve both consumers (ZD2808: 86/129 µH
+    /// fundamental vs ~24 µH AC plateau).
     #[cfg(feature = "storage")]
     pub fn from_runtime_config(config: &crate::storage::RuntimeConfig, vbus: f32) -> Self {
         if let Some(ref mp) = config.motor_params
@@ -254,6 +260,16 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
                 mp.pole_pairs
             );
             let mut foc = Self::from_motor_params(mp.resistance_ohm, l_avg, vbus);
+            if let Some(ref pg) = config.pi_gains {
+                foc.id_pi.set_gains(pg.kp, pg.ki);
+                foc.iq_pi.set_gains(pg.kp, pg.ki);
+                #[cfg(feature = "defmt")]
+                defmt::info!(
+                    "PI gains overridden by stored config: kp={=f32}, ki={=f32}",
+                    pg.kp,
+                    pg.ki
+                );
+            }
             foc.set_decoupling(Some(Decoupling {
                 ld_h: mp.inductance_d_h,
                 lq_h: mp.inductance_q_h,
@@ -520,13 +536,21 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let (id, iq) = transforms::park(i_alpha, i_beta, sin_theta, cos_theta);
 
         // dq decoupling + back-EMF feedforward (rotor-frame speed voltages):
-        //   vd_ff = −ω·Lq·iq        vq_ff = +ω·(Ld·id + λ)
+        //   vd_ff = −ω·Lq·iq*        vq_ff = +ω·(Ld·id* + λ)
         // Added before the circular limit so the limit sees the true total
         // demand; anti-windup below charges each PI only its own share.
+        //
+        // REFERENCE currents, not measured: the measured-current form is a
+        // feedback path with gain ω·L through the one-cycle actuation delay,
+        // and once ω·L becomes comparable to kp it turns the loop into a
+        // delayed positive-feedback oscillator (sim 2026-07-06: divergence
+        // at ω_e·Ts ≈ 0.09 regardless of how accurate the decoupling L was).
+        // Reference-based terms are pure feedforward — identical in steady
+        // state (i → i*), outside the loop dynamically.
         let (vd_ff, vq_ff) = match self.decoupling {
             Some(d) => (
-                -vel_rad_s * d.lq_h * iq,
-                vel_rad_s * (d.ld_h * id + d.flux_linkage_wb),
+                -vel_rad_s * d.lq_h * iq_target,
+                vel_rad_s * (d.ld_h * id_target + d.flux_linkage_wb),
             ),
             None => (0.0, 0.0),
         };
@@ -652,8 +676,11 @@ mod tests {
                 #[test]
                 fn decoupling_feedforward_produces_speed_voltages() {
                     // Zero-gain PI isolates the feedforward path: the output
-                    // must be exactly the rotor-frame speed voltages
-                    // vd = −ω·Lq·iq, vq = ω·(Ld·id + λ).
+                    // must be exactly the rotor-frame speed voltages from the
+                    // REFERENCE currents, vd = −ω·Lq·iq*, vq = ω·(Ld·id* + λ)
+                    // — reference-based on purpose (the measured-current form
+                    // is a delayed feedback path with gain ω·L, see the
+                    // step_with_injection decoupling comment).
                     let mut foc = FocController::<SvpwmModulator, $sincos>::new(24.0);
                     foc.id_pi.set_gains(0.0, 0.0);
                     foc.iq_pi.set_gains(0.0, 0.0);
@@ -664,21 +691,21 @@ mod tests {
                     }));
 
                     let omega = 200.0; // electrical rad/s
-                    // angle = 0 → id = iα, iq = iβ (trivial Park)
+                    let (id_target, iq_target) = (0.5, 2.0);
                     let telem = foc.step_with_injection(
                         (1.0, 0.5, -1.5),
                         0.0,
                         omega,
-                        0.0,
-                        0.0,
+                        id_target,
+                        iq_target,
                         0.0,
                         0.0,
                         1000,
                         DT,
                     );
 
-                    let vd_expected = -omega * 300e-6 * telem.iq;
-                    let vq_expected = omega * (100e-6 * telem.id + 0.02);
+                    let vd_expected = -omega * 300e-6 * iq_target;
+                    let vq_expected = omega * (100e-6 * id_target + 0.02);
                     assert!(
                         (telem.vd - vd_expected).abs() < 1e-4,
                         "vd {} != expected {}",

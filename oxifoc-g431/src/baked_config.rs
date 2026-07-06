@@ -13,7 +13,7 @@
 //! like an empty flash store would.
 
 use oxifoc_core::storage::{
-    CurrentLimitsConfig, FailsafeConfigStored, MotorParamsConfig, RuntimeConfig,
+    CurrentLimitsConfig, FailsafeConfigStored, MotorParamsConfig, PiGainsConfig, RuntimeConfig,
 };
 
 /// The baked configuration. Replace with `config dump --rust` output.
@@ -36,17 +36,20 @@ pub fn baked() -> RuntimeConfig {
         // motor_params makes the board boot on the back-EMF observer.
         // - R: 2-point DC detection (includes residual dead-time; that is
         //   the effective R the drive sees).
-        // - L: the AC value (~24 µH/ph, LCR 1–10 kHz plateau), NOT the
-        //   voltage-pulse DC 86–129 µH — PI gains scale kp = L·bw and the
-        //   observer's L·di/dt term lives at control bandwidth; the pulse
-        //   value runs ~4× hot (2026-06-13 lesson). Non-salient: Ld = Lq.
+        // - Ld/Lq: the voltage-pulse (fundamental-frequency) values. These
+        //   feed the ω·L·i dq-decoupling and the observer's L·i flux
+        //   subtraction — both fundamental-frequency phenomena. They must
+        //   NOT feed kp = L·bw: the current loop's per-cycle di/dt runs on
+        //   the eddy-shielded HF inductance (~24 µH, LCR 1–10 kHz plateau),
+        //   which is why `pi_gains` below is explicit (it overrides the
+        //   l_avg-derived tuning, see FocController::from_runtime_config).
         // - flux: 1/ω-extrapolated true value (single-speed measurements
         //   read high by V_err/ω — 1.28 mWb at the default 700 eRPM).
         // - rating: √(10 W / R / 1.5) — the 10 W detection class.
         motor_params: Some(MotorParamsConfig {
             resistance_ohm: 0.127,
-            inductance_d_h: 24.0e-6,
-            inductance_q_h: 24.0e-6,
+            inductance_d_h: 85.7e-6,
+            inductance_q_h: 129.4e-6,
             flux_linkage_wb: 1.145e-3,
             pole_pairs: 7,
             max_current_a: 7.2,
@@ -62,7 +65,18 @@ pub fn baked() -> RuntimeConfig {
         }),
         voltage_limits: None,
         pwm_config: None,
-        pi_gains: None,
+        // Explicit current-loop gains — kp from the HF (AC) inductance:
+        // kp = 24 µH × 1000 rad/s, ki = R × 1000. Overrides the
+        // params-derived tuning (l_avg is the fundamental L now, 4.5× the
+        // HF value; deriving kp from it is the known-hot configuration).
+        // Bench step 2 candidate: kp ≈ 0.107 (bw 1000 against the
+        // fundamental L) to damp the 50–200 Hz mid-speed oscillation band —
+        // see docs/TODO.md current-loop-at-speed item.
+        pi_gains: Some(PiGainsConfig {
+            kp: 0.024,
+            ki: 127.0,
+            bandwidth_rad_s: 1000.0,
+        }),
         hall_tuning: None,
         failsafe: Some(FailsafeConfigStored {
             policy: 1, // RampToZero — PSU-safe: unload, never regen

@@ -2752,6 +2752,240 @@ mod tests {
         );
     }
 
+    /// Run the ZD2808-like bench scenario (cold start → handoff → free
+    /// acceleration at 1.5 A on a 12 V bus) with the given dq-decoupling
+    /// parameters and observer inductance. Plant inductances are the
+    /// fundamental (voltage-pulse) values. PI gains are held FIXED across
+    /// cases at bw = 1000 rad/s against the sim plant's l_avg — the sim has
+    /// no eddy-current frequency-dependent L, so this mirrors the bench's
+    /// "bw 1000 against the (smaller) HF inductance" without conflating the
+    /// loop-bandwidth variable with the parameter-consistency one under
+    /// test. Returns the max |i_dq| seen after handoff and the final
+    /// electrical velocity, or the step at which the driver tripped.
+    #[cfg(feature = "virtual-motor")]
+    fn run_bench_spin_with_decoupling(
+        decoupling: crate::foc::controller::Decoupling,
+        observer_l: f32,
+        observer_salient: bool,
+        phase_advance_cycles: f32,
+    ) -> Result<(f32, f32), (u64, StepError)> {
+        use crate::foc::phase::{BackEmfObserver, Observer, PhaseManager, PhaseSource};
+        use crate::foc::trig::LibmSinCos;
+        use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        // ZD2808 700 KV bench values (2026-07-05 detection): pulse Ld/Lq,
+        // 1/ω-extrapolated λ. Light unloaded rotor → I/f runaway + free
+        // acceleration through the ω_e region where the bench tripped.
+        const LD: f32 = 86e-6;
+        const LQ: f32 = 129e-6;
+        const LAMBDA: f32 = 1.145e-3;
+        let params = MotorParams {
+            r: 0.127,
+            ld: LD,
+            lq: LQ,
+            lambda: LAMBDA,
+            pole_pairs: 7,
+            // Inertia from the bench acceleration (erpm 1116→7958 in 0.3 s
+            // at iq≈1.4 → ω̇_e≈2400 rad/s² → J≈5e-5); friction from the
+            // 0.3 A no-load plateau. A 5× lighter rotor would exaggerate
+            // the observer PLL's acceleration lag (ω̇/pll_ki) well past
+            // anything the bench produces.
+            j: 5e-5,
+            friction_b: 4e-6,
+            // Realistic one-cycle actuation delay: the driver's
+            // phase-advance convention is exact against it — with the
+            // ideal (0-delay) plant the advance itself injects a growing
+            // ω·dt lead error and destabilizes the loop near ω_e ≈ 2000.
+            actuation_delay_steps: 1,
+            ..MotorParams::default()
+        };
+        let mut motor = VirtualMotor::new(params);
+
+        let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            0.127,
+            (LD + LQ) / 2.0,
+            12.0,
+        );
+        foc.set_decoupling(Some(decoupling));
+
+        let mut mgr = PhaseManager::sensorless();
+        let mut obs = BackEmfObserver::new(0.127, observer_l, LAMBDA);
+        if observer_salient {
+            obs = obs.with_saliency(LD, LQ);
+        }
+        mgr.set_observer(Observer::BackEmf(obs));
+        // Cannot fail with an observer installed; mapped instead of unwrapped
+        // to satisfy unwrap_in_result in this Result-returning helper.
+        mgr.set_source(PhaseSource::Observer)
+            .map_err(|_| (0u64, StepError::NotImplemented))?;
+
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            mgr,
+            DT,
+        );
+        driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+        driver.set_phase_advance(phase_advance_cycles);
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 1.5,
+            id_target: 0.0,
+        });
+
+        let mut out = VirtualMotorOutput::default();
+        let mut max_idq = 0.0f32;
+        for step in 1..40_000u64 {
+            driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+            let telem = match driver.step(step * 50) {
+                Ok(t) => t,
+                Err(e) => return Err((step, e)),
+            };
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            if !driver.phase().is_starting() {
+                let idq = (telem.id * telem.id + telem.iq * telem.iq).sqrt();
+                max_idq = max_idq.max(idq);
+            }
+            // Stop well past the bench trip zone (~800 rad/s) but well below
+            // the 12 V modulation ceiling (~5.9 krad/s at 1.5 A): above it
+            // the loop saturates by physics — field weakening is not
+            // implemented, and that regime is not what this probes.
+            if out.omega_e >= 2500.0 {
+                break;
+            }
+        }
+        Ok((max_idq, out.omega_e))
+    }
+
+    /// Perfect-angle control run: the FocController driven directly against
+    /// the plant with the TRUE rotor angle/velocity (no observer, no
+    /// startup) — isolates the current loop + actuation delay from the
+    /// estimation chain.
+    #[cfg(feature = "virtual-motor")]
+    fn run_perfect_angle_spin(
+        decoupling: crate::foc::controller::Decoupling,
+        advance_cycles: f32,
+    ) -> Result<(f32, f32), (u64, &'static str)> {
+        use crate::foc::trig::LibmSinCos;
+        use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        let params = MotorParams {
+            r: 0.127,
+            ld: 86e-6,
+            lq: 129e-6,
+            lambda: 1.145e-3,
+            pole_pairs: 7,
+            j: 5e-5,
+            friction_b: 4e-6,
+            actuation_delay_steps: 1,
+            ..MotorParams::default()
+        };
+        let mut motor = VirtualMotor::new(params);
+        let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            0.127,
+            (86e-6 + 129e-6) / 2.0,
+            12.0,
+        );
+        foc.set_decoupling(Some(decoupling));
+
+        let mut out = VirtualMotorOutput::default();
+        let mut max_idq = 0.0f32;
+        for step in 1..40_000u64 {
+            foc.set_actuation_advance(out.omega_e * DT * advance_cycles);
+            let telem = foc.step_with_injection(
+                (out.ia, out.ib, out.ic),
+                crate::foc::wrap_angle(out.angle_rad),
+                out.omega_e,
+                0.0,
+                1.5,
+                0.0,
+                0.0,
+                4250,
+                DT,
+            );
+            let idq = (telem.id * telem.id + telem.iq * telem.iq).sqrt();
+            if step > 2_000 {
+                max_idq = max_idq.max(idq);
+            }
+            if idq > 10.0 {
+                return Err((step, "overcurrent"));
+            }
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            if out.omega_e >= 2500.0 {
+                break;
+            }
+        }
+        Ok((max_idq, out.omega_e))
+    }
+
+    /// High-speed regression guard for the estimation + current-loop chain
+    /// on the ZD2808-like plant (fundamental Ld/Lq 86/129 µH, bench-derived
+    /// inertia): the full sensorless pipeline with CONSISTENT parameters
+    /// (decoupling and observer on the true Ld/Lq) must accelerate clean
+    /// through the region where the 2026-07-06 bench tripped (~800 rad/s)
+    /// and past 2500 rad/s with bounded currents.
+    ///
+    /// What this deliberately does NOT assert: a repro of the bench trip
+    /// itself. The bench motor's inductance is frequency-dependent (eddy
+    /// currents: ~24 µH HF plateau vs 86/129 µH fundamental) and the sim
+    /// plant carries a single L — with bench-honest inertia even the
+    /// bench's mismatched configuration runs clean here, so the bench
+    /// mechanism is probed on the bench (gain experiments). What the sim
+    /// DID establish en route: the current loop by itself (perfect-angle
+    /// arm below) is unconditionally stable in this regime — a high-speed
+    /// divergence points at the estimation chain (the sim's own dominant
+    /// term was observer-PLL acceleration lag ω̇/pll_ki once the rotor was
+    /// modeled 5× too light).
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn sensorless_chain_stable_through_bench_trip_zone() {
+        use crate::foc::controller::Decoupling;
+
+        let consistent = run_bench_spin_with_decoupling(
+            Decoupling {
+                ld_h: 86e-6,
+                lq_h: 129e-6,
+                flux_linkage_wb: 1.145e-3,
+            },
+            (86e-6 + 129e-6) / 2.0,
+            true,
+            DEFAULT_PHASE_ADVANCE_CYCLES,
+        );
+        let (max_idq, omega_final) =
+            consistent.expect("consistent-params sensorless chain must not trip");
+        assert!(
+            max_idq < 5.0,
+            "post-handoff |i_dq| must stay bounded, got {max_idq}"
+        );
+        assert!(
+            omega_final >= 2500.0,
+            "must accelerate clean through the bench trip zone, got ω_e {omega_final}"
+        );
+
+        // Perfect-angle control arm: current loop + one-cycle actuation
+        // delay, no estimation — must track the 1.5 A target tightly all
+        // the way (pins any future high-speed failure on the estimation
+        // chain, not the loop).
+        let perfect = run_perfect_angle_spin(
+            Decoupling {
+                ld_h: 86e-6,
+                lq_h: 129e-6,
+                flux_linkage_wb: 1.145e-3,
+            },
+            DEFAULT_PHASE_ADVANCE_CYCLES,
+        );
+        let (max_idq, omega_final) = perfect.expect("perfect-angle loop must not trip");
+        assert!(
+            max_idq < 2.0,
+            "perfect-angle |i_dq| must track the 1.5 A target, got {max_idq}"
+        );
+        assert!(omega_final >= 2500.0);
+    }
+
     /// The ISR-resident deadman: a running driver with no fresh setpoint for
     /// longer than the staleness timeout arms the failsafe; a fresh
     /// `note_command_tick` (and `set_mode`) re-arms normal control.
