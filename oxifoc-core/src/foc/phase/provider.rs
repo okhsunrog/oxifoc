@@ -128,13 +128,23 @@ pub trait PhaseProvider {
     }
 
     /// Scale factor (0..=1) the driver applies to the commanded torque
-    /// current while the provider's startup sequencer runs. Lets the align
-    /// phase soft-start the current instead of step-engaging the full
-    /// setpoint onto the rotor's undamped magnetic spring (bench 2026-07-06:
-    /// a bad initial angle swings the rotor violently enough to spike
-    /// |i_dq| past the overcurrent trip on ~1 in 3 cold starts — VESC ramps
-    /// its lock current for the same reason). Default: no scaling.
+    /// current while the provider's startup sequencer runs. Lets the ramp
+    /// soft-start the current instead of step-engaging the full setpoint
+    /// onto the rotor's undamped magnetic spring (bench 2026-07-06: a bad
+    /// initial angle swings the rotor violently enough to spike |i_dq|
+    /// past the overcurrent trip on ~1 in 3 cold starts — VESC ramps its
+    /// lock current for the same reason). Default: no scaling.
     fn startup_current_scale(&self) -> f32 {
         1.0
+    }
+
+    /// Whether a startup sequencer (cold-start ramp / recovery nudge) owns
+    /// commutation this cycle. The driver relaxes the command-staleness
+    /// deadman to [`crate::motor::foc_driver::STARTUP_STALENESS_TIMEOUT_US`]
+    /// while true — the sequence is a bounded device-local automaton whose
+    /// ISR cost can starve the command pump (see that constant's doc).
+    /// Default: never starting.
+    fn is_starting(&self) -> bool {
+        false
     }
 }

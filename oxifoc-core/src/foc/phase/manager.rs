@@ -1145,8 +1145,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                         angle, velocity
                     );
                     self.observer.seed(angle, velocity);
-                } else if self.startup.phase() == StartupPhase::Align {
-                    info!("startup: deadshort saw standstill, align/ramp cold start");
+                } else if self.startup.phase() == StartupPhase::Ramp {
+                    info!("startup: deadshort saw standstill, ramp cold start");
                 }
             } else {
                 let i_mag = sqrtf(input.i_alpha * input.i_alpha + input.i_beta * input.i_beta);
@@ -1240,6 +1240,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
 
     fn startup_current_scale(&self) -> f32 {
         self.startup.current_scale()
+    }
+
+    fn is_starting(&self) -> bool {
+        self.startup.is_active()
     }
 
     /// Trustworthy down to standstill when a hardware sensor backs the active

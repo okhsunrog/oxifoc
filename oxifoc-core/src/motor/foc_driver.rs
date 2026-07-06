@@ -42,6 +42,19 @@ pub use crate::types::ControlMode;
 /// `DETECTION_ACTIVE` suspends the link gate.
 pub const BENCH_STALENESS_TIMEOUT_US: u64 = 10_000_000;
 
+/// Command-staleness bound while the sensorless startup sequencer owns
+/// commutation — see [`FocDriver::deadman_expired`]. The startup is a
+/// bounded (~0.5 s) device-local automaton, and its ramp saturates the
+/// ISR enough on the g431 bench (87-100% of the 20 kHz budget under a
+/// 1 kHz capture) that the thread-mode command pump can starve past the
+/// 150 ms drive bound while affirms sit undrained in the transport —
+/// 2026-07-06: ~4/5 cold starts tripped CommTimeout at engage with the
+/// motor spinning up fine. Bounded relaxation, same spirit as the bench
+/// modes' [`BENCH_STALENESS_TIMEOUT_US`]: a real link loss during a
+/// cold start is still cut well inside the startup itself, and the
+/// tight bound re-arms the moment the observer takes over.
+pub const STARTUP_STALENESS_TIMEOUT_US: u64 = 400_000;
+
 /// Why a [`FocDriver::step`] cycle could not run. Typed so `run_foc_cycle`
 /// can route each cause differently: an overcurrent trip must latch a
 /// host-visible fault (it already cut PWM), a calibration gap must not.
@@ -355,6 +368,9 @@ where
     /// the Stopped arm still re-asserts the disable periodically as a
     /// backstop.
     pwm_off: bool,
+    /// Previous cycle's `phase.is_starting()` — detects the startup→closed-
+    /// loop transition so the deadman stamp can be refreshed (see `step`).
+    was_starting: bool,
     /// Stopped-arm housekeeping counter: paces the periodic PWM-off
     /// re-assert and the estimator-update decimation.
     stopped_housekeeping: u8,
@@ -451,6 +467,7 @@ where
             phase_advance_cycles: DEFAULT_PHASE_ADVANCE_CYCLES,
             last_cmd_tick: None,
             pwm_off: false,
+            was_starting: false,
             stopped_housekeeping: 0,
             failsafe_cfg: FailsafeConfig::default(),
             failsafe_ctrl: FailsafeController::new(),
@@ -747,7 +764,9 @@ where
     pub fn command_staleness_us(&self, now_ticks: u64) -> Option<u64> {
         match self.mode {
             ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake => None,
-            _ => self.last_cmd_tick.map(|t| now_ticks.wrapping_sub(t)),
+            // saturating for the same backward-glitch reason as
+            // [`Self::deadman_expired`].
+            _ => self.last_cmd_tick.map(|t| now_ticks.saturating_sub(t)),
         }
     }
 
@@ -778,6 +797,10 @@ where
             ControlMode::OpenLoop { .. } | ControlMode::DirectVoltage { .. } => {
                 BENCH_STALENESS_TIMEOUT_US
             }
+            // Sensorless cold start: bounded device-local automaton whose
+            // ramp can starve the command pump (see
+            // [`STARTUP_STALENESS_TIMEOUT_US`]).
+            _ if self.phase.is_starting() => STARTUP_STALENESS_TIMEOUT_US,
             _ => self.failsafe_cfg.staleness_timeout_us,
         };
         if self.failsafe_ctrl.is_active() {
@@ -788,7 +811,13 @@ where
             // (which stamps), so this arm is effectively unreachable; treat a
             // missing stamp as not-stale (defensive).
             None => false,
-            Some(t) => now_ticks.wrapping_sub(t) > bound_us,
+            // saturating, NOT wrapping: the tick source (TIM4 CNT + software
+            // overflow count) can glitch BACKWARD when the overflow ISR is
+            // starved past a wrap by a saturated FOC ISR (bench 2026-07-06:
+            // deadman fired at engage+70 ms — one 65.5 ms TIM4 period — with
+            // staleness reading u32::MAX). A clock that ran backward is not
+            // a stale command.
+            Some(t) => now_ticks.saturating_sub(t) > bound_us,
         }
     }
 
@@ -1009,6 +1038,19 @@ where
     /// * `Ok(FocOutput)` - Control telemetry on success
     /// * `Err(&str)` - Error message if sensors not ready or overcurrent detected
     pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, StepError> {
+        // Startup → closed-loop transition: refresh the deadman stamp. The
+        // staleness accumulated under the relaxed startup bound
+        // ([`STARTUP_STALENESS_TIMEOUT_US`]) must not be judged
+        // retroactively by the tight drive bound the moment the sequencer
+        // hands off — bench 2026-07-06: 156 ms of engage-era staleness
+        // tripped CommTimeout 28 ms AFTER a clean handoff. The tight
+        // contract starts counting from the handoff.
+        let starting = self.phase.is_starting();
+        if self.was_starting && !starting {
+            self.last_cmd_tick = Some(now_ticks);
+        }
+        self.was_starting = starting;
+
         let mut out = self.step_inner(now_ticks)?;
         // Stamp the ACTIVE angle source's velocity into the telemetry — one
         // chokepoint so every mode arm (incl. failsafe / deadshort / stop)
@@ -2830,6 +2872,7 @@ mod tests {
         observer_l: f32,
         observer_salient: bool,
         phase_advance_cycles: f32,
+        initial_rotor_angle: f32,
     ) -> Result<(f32, f32), (u64, StepError)> {
         use crate::foc::phase::{BackEmfObserver, Observer, PhaseManager, PhaseSource};
         use crate::foc::trig::LibmSinCos;
@@ -2863,6 +2906,7 @@ mod tests {
             ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
+        motor.set_angle(initial_rotor_angle);
 
         let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
             0.127,
@@ -3016,6 +3060,7 @@ mod tests {
             (86e-6 + 129e-6) / 2.0,
             true,
             DEFAULT_PHASE_ADVANCE_CYCLES,
+            0.0,
         );
         let (max_idq, omega_final) =
             consistent.expect("consistent-params sensorless chain must not trip");
@@ -3046,6 +3091,43 @@ mod tests {
             "perfect-angle |i_dq| must track the 1.5 A target, got {max_idq}"
         );
         assert!(omega_final >= 2500.0);
+    }
+
+    /// No-align cold start (2026-07-06 redesign): the soft-started rotating
+    /// ramp must capture the rotor from ANY initial angle — including the
+    /// worst cases where the rotor sits ±π from the ramp's start angle. The
+    /// align-era failure mode was the fixed-angle dwell pumping the rotor's
+    /// undamped magnetic spring (dq overcurrent on 1/3+ of bench cold
+    /// starts, angle-dependent); this sweep is its regression gate.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn cold_start_captures_rotor_from_any_initial_angle() {
+        use crate::foc::controller::Decoupling;
+        for frac in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            let delta0 = frac * core::f32::consts::PI;
+            let res = run_bench_spin_with_decoupling(
+                Decoupling {
+                    ld_h: 86e-6,
+                    lq_h: 129e-6,
+                    flux_linkage_wb: 1.145e-3,
+                },
+                (86e-6 + 129e-6) / 2.0,
+                true,
+                DEFAULT_PHASE_ADVANCE_CYCLES,
+                delta0,
+            );
+            let (max_idq, omega_final) = res.unwrap_or_else(|(step, e)| {
+                panic!("cold start from rotor angle {delta0} tripped at step {step}: {e:?}")
+            });
+            assert!(
+                max_idq < 5.0,
+                "post-handoff |i_dq| bounded from angle {delta0}, got {max_idq}"
+            );
+            assert!(
+                omega_final >= 2500.0,
+                "must reach speed from angle {delta0}, got {omega_final}"
+            );
+        }
     }
 
     /// The ISR-resident deadman: a running driver with no fresh setpoint for

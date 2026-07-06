@@ -1,4 +1,4 @@
-//! Sensorless startup state machine: **align → ramp → handoff** for a cold
+//! Sensorless startup state machine: **ramp → handoff** for a cold
 //! start, plus the hall-dropout **recovery** nudge.
 //!
 //! This is the in-firmware sequencer the pure back-EMF [`Observer`] needs to
@@ -23,20 +23,20 @@ use crate::foc::clamp_f32;
 use crate::foc::fast_math::{atan2f, sqrtf};
 use crate::foc::wrap_angle;
 
-/// Align dwell (s): hold the field at a fixed angle so the rotor latches to a
-/// known position before the ramp. VESC defaults this to 0 (skips align); on a
-/// cold bench start a brief latch is safer than ramping from an unknown angle.
-pub const DEFAULT_ALIGN_TIME_S: f32 = 0.3;
-
-/// Align current soft-start (s): the torque command scales 0 → 1 over this
-/// window at align entry (see [`SensorlessStartup::current_scale`]).
-/// Step-engaging the full setpoint onto the rotor's undamped magnetic
-/// spring swings it violently when the initial angle is unlucky — bench
-/// 2026-07-06: |i_dq| spiked past the 10 A overcurrent trip on ~1 in 3
-/// cold starts at 1.5 A. VESC ramps its lock current the same way. Half
-/// the align dwell: the rotor still gets a full-current latch for the
-/// remaining half before the ramp begins.
-pub const ALIGN_CURRENT_RAMP_S: f32 = 0.15;
+/// Ramp current soft-start (s): the torque command scales 0 → 1 over this
+/// window at ramp entry (see [`SensorlessStartup::current_scale`]).
+///
+/// There is deliberately NO align phase (VESC's default `align time = 0`):
+/// holding the field at a fixed angle parks the rotor on an undamped
+/// magnetic spring — bench 2026-07-06, ZD2808: the align swing tripped the
+/// dq overcurrent on 1/3–4/5 of cold starts depending on where the rotor
+/// last parked, current soft-start alone could not fix a resonance with no
+/// damping, and the observer kept locking onto the swing (false-ready).
+/// A field that ROTATES from the first cycle never gives the spring a
+/// fixed anchor to oscillate around — the rotor slips into sync during the
+/// slow early ramp instead. The soft-start keeps the initial pull gentle
+/// for unlucky initial rotor angles.
+pub const RAMP_CURRENT_SOFT_START_S: f32 = 0.15;
 
 /// Ramp duration (s): linear `0 → ceiling` open-loop velocity.
 pub const DEFAULT_RAMP_TIME_S: f32 = 0.4;
@@ -81,7 +81,7 @@ pub const DEADSHORT_SETTLE_CYCLES: u16 = 8;
 
 /// Minimum |ω| (rad/s elec) the deadshort must resolve to declare the rotor
 /// "spinning" and seed the observer for a flying restart. Below it (standstill
-/// or barely turning), fall through to the align→ramp cold start. Set at the
+/// or barely turning), fall through to the ramp cold start. Set at the
 /// handoff velocity: a seed below handoff speed lands the observer in a band
 /// the handoff gates would not trust anyway, and the bench false-catch
 /// (enable transient, see [`DEADSHORT_SETTLE_CYCLES`]) resolved to ω≈46 —
@@ -103,9 +103,9 @@ pub enum StartupPhase {
     /// and the back-EMF-driven current slope is measured to catch an
     /// already-spinning rotor before the cold-start ramp.
     Deadshort,
-    /// Holding the field at a fixed angle (velocity 0) so the rotor latches.
-    Align,
-    /// Linearly ramping the open-loop velocity 0 → ceiling.
+    /// Linearly ramping the open-loop velocity 0 → ceiling (from a cold
+    /// start this begins at velocity 0 from the last output angle — there
+    /// is no align phase, see [`RAMP_CURRENT_SOFT_START_S`]).
     Ramp,
     /// Holding at the ceiling, waiting for the observer to converge.
     Hold,
@@ -119,7 +119,6 @@ impl StartupPhase {
         match self {
             Self::Inactive => "inactive",
             Self::Deadshort => "deadshort",
-            Self::Align => "align",
             Self::Ramp => "ramp",
             Self::Hold => "hold",
             Self::Recover => "recover",
@@ -192,14 +191,15 @@ impl SensorlessStartup {
     /// commanded torque/velocity). Opens with the deadshort flying-restart
     /// probe (Phase B): if the rotor is already spinning it is caught and
     /// handed straight to the observer; otherwise the machine falls through to
-    /// the align→ramp→handoff cold start (Phase A).
+    /// the ramp→handoff cold start (Phase A; no align — see
+    /// [`RAMP_CURRENT_SOFT_START_S`]).
     pub fn begin_cold_start(&mut self, angle0: f32, direction: f32) {
         self.phase = StartupPhase::Deadshort;
         self.angle = wrap_angle(angle0);
         self.velocity = 0.0;
         self.dir = if direction < 0.0 { -1.0 } else { 1.0 };
         self.handoff_vel = DEFAULT_HANDOFF_VEL;
-        self.timer = DEFAULT_OPENLOOP_TIME_S + DEFAULT_ALIGN_TIME_S + DEFAULT_RAMP_TIME_S;
+        self.timer = DEFAULT_OPENLOOP_TIME_S + DEFAULT_RAMP_TIME_S;
         self.ds_settle = DEADSHORT_SETTLE_CYCLES;
         self.ds_cycles = 0;
         self.ds_elapsed = 0.0;
@@ -256,15 +256,13 @@ impl SensorlessStartup {
     }
 
     /// Torque-command scale (0..=1) for the current cycle: ramps in over
-    /// [`ALIGN_CURRENT_RAMP_S`] during Align, full command everywhere else
-    /// (Deadshort holds the bridge shorted, so the value is moot there).
+    /// [`RAMP_CURRENT_SOFT_START_S`] at ramp entry, full command everywhere
+    /// else (Deadshort holds the bridge shorted, so the value is moot there).
     pub fn current_scale(&self) -> f32 {
         match self.phase {
-            StartupPhase::Align => {
-                let align_elapsed =
-                    (DEFAULT_OPENLOOP_TIME_S + DEFAULT_ALIGN_TIME_S + DEFAULT_RAMP_TIME_S)
-                        - self.timer;
-                clamp_f32(align_elapsed / ALIGN_CURRENT_RAMP_S, 0.0, 1.0)
+            StartupPhase::Ramp => {
+                let ramp_elapsed = (DEFAULT_OPENLOOP_TIME_S + DEFAULT_RAMP_TIME_S) - self.timer;
+                clamp_f32(ramp_elapsed / RAMP_CURRENT_SOFT_START_S, 0.0, 1.0)
             }
             _ => 1.0,
         }
@@ -305,17 +303,6 @@ impl SensorlessStartup {
                     handoff: false,
                 };
             }
-            StartupPhase::Align => {
-                // Hold the field still so the rotor latches; the align dwell is
-                // tracked against the informational timer's head room.
-                self.velocity = 0.0;
-                let align_elapsed =
-                    (DEFAULT_OPENLOOP_TIME_S + DEFAULT_ALIGN_TIME_S + DEFAULT_RAMP_TIME_S)
-                        - self.timer;
-                if align_elapsed >= DEFAULT_ALIGN_TIME_S {
-                    self.phase = StartupPhase::Ramp;
-                }
-            }
             StartupPhase::Ramp => {
                 let ceiling = self.ramp_ceiling(current_mag);
                 let rate = ceiling / DEFAULT_RAMP_TIME_S;
@@ -349,18 +336,19 @@ impl SensorlessStartup {
         // observer at handoff speed takes over immediately.
         //
         // The runaway path additionally requires the ramp to have actually
-        // dragged the rotor a while (velocity ≥ 35% of handoff): the align
-        // phase leaves the rotor swinging on its undamped magnetic spring
-        // (~8 Hz mech on the bench motor), the observer can lock onto that
-        // swing and stay "ready" into the ramp — with a 20% gate the false
-        // handoff fired the instant the gate opened (openloop_vel 12.0,
-        // observer 755). Every real runaway observed fired at
-        // openloop_vel ≥ 23; the artifact cases sat at 0–12.
+        // dragged the rotor a while (velocity ≥ 35% of handoff): the catch
+        // transient at ramp entry (the rotor being yanked into sync from an
+        // unknown angle) can swing the rotor on its magnetic spring, and the
+        // observer can lock onto that swing and read "ready" at speed — on
+        // the align-era bench a 20% gate let that artifact hand off the
+        // instant the gate opened (openloop_vel 12.0, observer 755). Every
+        // real runaway observed fired at openloop_vel ≥ 23; the artifact
+        // cases sat at 0–12.
         let ramp_moving = self.velocity.abs() >= self.handoff_vel * 0.35;
         let fast_enough = (self.velocity.abs() >= self.handoff_vel
             && observer_vel.abs() >= self.handoff_vel * 0.5)
             || (ramp_moving && observer_vel.abs() >= self.handoff_vel);
-        let handoff = observer_ready && fast_enough && self.phase != StartupPhase::Align;
+        let handoff = observer_ready && fast_enough;
 
         StartupOutput {
             angle: self.angle,
@@ -377,8 +365,8 @@ impl SensorlessStartup {
     /// accumulates dI/dt and estimates the back-EMF `e = −L·dI/dt`, hence the
     /// rotor angle and speed (see [`deadshort_estimate`]). A spinning rotor →
     /// `Caught` and the machine deactivates (the manager seeds the observer);
-    /// standstill / too slow → it falls through to the align ramp, returning
-    /// `Probing`.
+    /// standstill / too slow → it falls through to the cold-start ramp,
+    /// returning `Probing`.
     pub fn feed_deadshort(
         &mut self,
         i_alpha: f32,
@@ -426,8 +414,9 @@ impl SensorlessStartup {
                 DeadshortResult::Caught { angle, velocity }
             }
             None => {
-                // Standstill / too slow → align→ramp cold start from here.
-                self.phase = StartupPhase::Align;
+                // Standstill / too slow → ramp cold start from here (no
+                // align — the soft-started rotating field catches the rotor).
+                self.phase = StartupPhase::Ramp;
                 self.velocity = 0.0;
                 DeadshortResult::Probing
             }
@@ -475,8 +464,8 @@ mod tests {
     const DT: f32 = 1.0 / 20_000.0;
 
     /// Feed the deadshort probe a standstill (zero-current) stream until it
-    /// gives up and falls through to the cold-start ramp (Align). Phase A tests
-    /// use this to get past the Phase B probe that now opens every cold start.
+    /// gives up and falls through to the cold-start ramp. Phase A tests use
+    /// this to get past the Phase B probe that now opens every cold start.
     fn skip_deadshort(sm: &mut SensorlessStartup) {
         for _ in 0..=(DEADSHORT_SETTLE_CYCLES + DEADSHORT_CYCLES) {
             sm.feed_deadshort(0.0, 0.0, DT, 200e-6, 0.01);
@@ -484,7 +473,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(sm.phase(), StartupPhase::Align);
+        assert_eq!(sm.phase(), StartupPhase::Ramp);
     }
 
     /// Feed zero current through the settle window so the next
@@ -499,8 +488,8 @@ mod tests {
         }
     }
 
-    /// Begin a cold start and skip straight to the Align phase.
-    fn cold_start_to_align(angle: f32, dir: f32) -> SensorlessStartup {
+    /// Begin a cold start and skip straight to the Ramp phase.
+    fn cold_start_to_ramp(angle: f32, dir: f32) -> SensorlessStartup {
         let mut sm = SensorlessStartup::default();
         sm.begin_cold_start(angle, dir);
         skip_deadshort(&mut sm);
@@ -525,59 +514,55 @@ mod tests {
     }
 
     #[test]
-    fn cold_start_sequences_align_ramp_hold() {
-        let mut sm = cold_start_to_align(1.0, 1.0);
+    fn cold_start_sequences_ramp_hold() {
+        let mut sm = cold_start_to_ramp(1.0, 1.0);
         assert!(sm.is_active());
 
         let hist = run(&mut sm, 1.0, 3.0);
         let phases: Vec<_> = hist.iter().map(|(p, _)| *p).collect();
-        assert_eq!(
-            phases,
-            vec![StartupPhase::Align, StartupPhase::Ramp, StartupPhase::Hold]
-        );
+        assert_eq!(phases, vec![StartupPhase::Ramp, StartupPhase::Hold]);
         // Settles at or above the handoff velocity.
         assert!(sm.velocity() >= DEFAULT_HANDOFF_VEL);
     }
 
     #[test]
-    fn align_current_soft_starts() {
-        let mut sm = cold_start_to_align(0.0, 1.0);
-        // Align entry: command fully suppressed, ramps in linearly.
+    fn ramp_current_soft_starts() {
+        let mut sm = cold_start_to_ramp(0.0, 1.0);
+        // Ramp entry: command fully suppressed, ramps in linearly.
         assert!(sm.current_scale() < 0.1, "got {}", sm.current_scale());
-        let half = (ALIGN_CURRENT_RAMP_S / 2.0 / DT) as usize;
+        let half = (RAMP_CURRENT_SOFT_START_S / 2.0 / DT) as usize;
         for _ in 0..half {
             sm.tick(DT, 1.0, false, 0.0);
         }
         let s = sm.current_scale();
-        assert!((0.3..0.7).contains(&s), "mid-ramp scale {s}");
-        // Past the ramp window (still inside align): full command.
+        assert!((0.3..0.7).contains(&s), "mid-soft-start scale {s}");
+        // Past the soft-start window (still ramping): full command.
         for _ in 0..half + 400 {
             sm.tick(DT, 1.0, false, 0.0);
         }
-        assert_eq!(sm.phase(), StartupPhase::Align);
+        assert_eq!(sm.phase(), StartupPhase::Ramp);
         assert_eq!(sm.current_scale(), 1.0);
-        // Ramp/Hold: never scaled.
+        // Hold: never scaled.
         run(&mut sm, 1.0, 3.0);
         assert_eq!(sm.current_scale(), 1.0);
     }
 
     #[test]
-    fn align_holds_field_still() {
-        let mut sm = cold_start_to_align(0.5, 1.0);
-        // Through the whole align window, velocity stays 0 and angle is fixed.
-        let steps = (DEFAULT_ALIGN_TIME_S / DT) as usize / 2;
-        for _ in 0..steps {
-            let o = sm.tick(DT, 2.0, false, 0.0);
-            assert_eq!(o.velocity, 0.0);
-            assert!((o.angle - 0.5).abs() < 1e-4);
+    fn ramp_rotates_from_the_first_cycle() {
+        // No align: the field must start moving immediately — a fixed-angle
+        // dwell is exactly the undamped-spring resonance this design removes.
+        let mut sm = cold_start_to_ramp(0.5, 1.0);
+        let mut o = sm.tick(DT, 2.0, false, 0.0);
+        for _ in 0..200 {
+            o = sm.tick(DT, 2.0, false, 0.0);
         }
-        assert_eq!(sm.phase(), StartupPhase::Align);
+        assert!(o.velocity > 0.0, "field velocity must grow from tick one");
+        assert!(o.angle != 0.5, "angle must advance");
     }
 
     #[test]
     fn ramp_is_monotonic_and_signed_by_direction() {
-        let mut sm = cold_start_to_align(0.0, -1.0); // reverse
-        run(&mut sm, DEFAULT_ALIGN_TIME_S + 0.001, 5.0); // skip align
+        let mut sm = cold_start_to_ramp(0.0, -1.0); // reverse
         assert_eq!(sm.phase(), StartupPhase::Ramp);
         let mut prev = sm.velocity();
         for _ in 0..100 {
@@ -593,8 +578,8 @@ mod tests {
 
     #[test]
     fn higher_current_raises_the_ceiling() {
-        let mut lo = cold_start_to_align(0.0, 1.0);
-        let mut hi = cold_start_to_align(0.0, 1.0);
+        let mut lo = cold_start_to_ramp(0.0, 1.0);
+        let mut hi = cold_start_to_ramp(0.0, 1.0);
         run(&mut lo, 1.0, 0.0); // no current → floor ceiling
         run(&mut hi, 1.0, CURRENT_REF_A); // full current → max ceiling
         assert!(hi.velocity() > lo.velocity() + 1.0);
@@ -603,8 +588,8 @@ mod tests {
 
     #[test]
     fn no_handoff_until_observer_ready_and_fast() {
-        let mut sm = cold_start_to_align(0.0, 1.0);
-        // Run past align+ramp (0.8 s) with the observer NOT ready — never hands
+        let mut sm = cold_start_to_ramp(0.0, 1.0);
+        // Run past the ramp with the observer NOT ready — never hands
         // off, and ends solidly in Hold above the handoff speed.
         for _ in 0..(20_000 * 8 / 10) {
             let o = sm.tick(DT, 5.0, false, 0.0);
@@ -625,11 +610,11 @@ mod tests {
         // I/f runaway: an unloaded rotor slips ahead of the ramp and
         // accelerates freely. A READY observer tracking it at handoff speed
         // must take over — but only once the ramp has actually dragged the
-        // rotor (≥20% of handoff): at ramp entry a "ready" observer at
-        // speed is the align-swing artifact (bench 2026-07-06: observer
+        // rotor (≥35% of handoff): at ramp entry a "ready" observer at
+        // speed is the catch-swing artifact (bench 2026-07-06: observer
         // 585–786 rad/s at openloop 0–1.2) and must be ignored.
-        let mut sm = cold_start_to_align(0.0, 1.0);
-        run(&mut sm, DEFAULT_ALIGN_TIME_S + 0.005, 5.0); // ramp just started
+        let mut sm = cold_start_to_ramp(0.0, 1.0);
+        run(&mut sm, 0.005, 5.0); // ramp just started
         assert_eq!(sm.phase(), StartupPhase::Ramp);
         assert!(sm.velocity() < DEFAULT_HANDOFF_VEL * 0.2);
         let o = sm.tick(DT, 5.0, true, 400.0);
@@ -711,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn deadshort_standstill_falls_through_to_align() {
+    fn deadshort_standstill_falls_through_to_ramp() {
         let mut sm = SensorlessStartup::default();
         sm.begin_cold_start(0.7, 1.0);
         // No back-EMF (zero dI) over the whole settle+probe → no catch →
@@ -719,7 +704,7 @@ mod tests {
         for _ in 0..=(DEADSHORT_SETTLE_CYCLES + DEADSHORT_CYCLES) {
             sm.feed_deadshort(0.0, 0.0, DT, 200e-6, 0.01);
         }
-        assert_eq!(sm.phase(), StartupPhase::Align);
+        assert_eq!(sm.phase(), StartupPhase::Ramp);
         assert!(sm.is_active());
         assert!(!sm.wants_short());
     }
