@@ -1053,11 +1053,18 @@ where
                         }
                         if let Some(mode) = active_setpoint {
                             let client = stack.clone().reliable::<TokioTimer>();
+                            // The name selects the DESTINATION SOCKET — the
+                            // device's motor server attaches as "motor". This
+                            // was `Some("affirm")` (meant as a diagnostic
+                            // label): no socket by that name exists, ergot
+                            // silently dropped every affirm, and the deadman
+                            // fired ~150 ms into every drive. Found 2026-07-06
+                            // via the rx/s + rtt down/s counter bracket.
                             let res = client
                                 .at_least_once::<MotorEndpoint>(
                                     DEVICE_ADDR,
                                     &mode,
-                                    Some("affirm"),
+                                    Some("motor"),
                                     &AFFIRM_POLICY,
                                 )
                                 .await;
