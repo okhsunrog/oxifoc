@@ -313,17 +313,44 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
         estimate still oscillates wildly (70–490 rad/s el swings,
         conf 0.7–1.0) — declawed, not cured. Captures:
         sawtooth-ladder-1, sawtooth-plain-1, sawtooth-pll4-1.
-      NEXT (the actual fix design): (a) PLL gain scheduling — the
-      per-slip kick gain is ki·∫err, real tracking needs ki ∝ expected
-      ω̇; schedule by speed / measured-iq accel prior, or detect slips
-      (iq sign dips) and gate the PLL error during them; (b) find and
-      prevent the FIRST slip — the mid-band onset oscillation that
-      seeds the cycle (pre-slip window in the captures is the data);
-      (c) sim: the ratchet needs the loop closed to reproduce — the
-      slip-pulse disturbance rides through cleanly even on the eddy
-      plant; a harder seed (observer phase kick mid-drive) may close
-      the gap. Bench capture rates: 2 kHz loss-free, 10 kHz is not
-      (366 ms gaps).
+      FIX DESIGN, refined (2026-07-07 early, after pre-slip analysis +
+      kick-seeded sim matrix):
+      - Pre-slip onset (captures sawtooth-{obsdbg,plain}-1): after a
+        clean handoff the loop develops a coherent growing angle
+        oscillation (~35–80 Hz; PLL error biased +0.3/−0.05, visible in
+        vd) over ~50–100 ms while iq stays regulated flat — a LINEAR
+        mid-band instability whose nonlinear end state is the ratchet.
+      - Sim CANNOT host the ratchet even seeded: a direct 1 rad
+        observer phase kick on the eddy plant recovers cleanly (final
+        2825, no trip) — the bench's linear instability is missing
+        physics deeper than first-order eddy + ideal-comp dead-time
+        (candidates: higher-order L(f), saturation dynamics, sense
+        transfer function). Sim-first fix validation is OFF the table;
+        bench-first with replay + obs-debug-telem instrumentation.
+      - Global PLL ki reduction is an analgesic, not a fix: ki/4 on
+        the HEALTHY sim loop degrades it (final 672, untrusted 0.19)
+        while on the bench it merely declaws the ratchet (messy spin).
+      - THE candidate: **slip-gated PLL error** — full gains always,
+        but while a slip transient is detected (|iq_ref − iq_meas|
+        above a threshold, or iq sign dip while driving) the PLL
+        velocity integration is held (dead-reckon the angle). Subtle
+        point from the replay: gating the PLL is sufficient even
+        though the passive flux vector x ratchets in the recorded
+        data — in the CLOSED loop the commutation (and hence v) stops
+        accelerating, which is what feeds x. Design questions: freeze
+        scope (ki only vs kp+ki), threshold/hysteresis, interplay with
+        e_q validity accrual while gated, and NOT gating during the
+        deadshort/confirm shorts (observer must keep integrating real
+        short currents there — or should it? the probe windows are
+        also giant current transients feeding the integrator; revisit
+        together).
+      - Also on the table for the onset itself: the linear mid-band
+        mode (grows BEFORE any slip) — slip-gating stops the ratchet
+        but may leave a bounded oscillation; damping the onset likely
+        needs the true L(f)/loop-phase story (impedance-sweep TODO is
+        the measurement).
+      Bench capture rates: 2 kHz loss-free, 10 kHz is not (366 ms
+      gaps).
     Distortion-floor context for the record: at ramp 60–63 the observer
     read 32–62 with confidence DECAYING 1.0→0.59 and validity never
     corroborating — λω ≈ 72 mV is at/below the post-comp dead-time

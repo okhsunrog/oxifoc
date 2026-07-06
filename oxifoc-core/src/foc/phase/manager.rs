@@ -419,6 +419,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         }
     }
 
+    /// Seed the back-EMF observer from an external (angle, velocity) —
+    /// the same trusted-handoff semantics the deadshort catch uses
+    /// internally. Sim/bench forensics: injecting a phase kick mid-drive
+    /// (seed at `phase + Δ`) emulates one accumulated slip-kick.
+    pub fn seed_observer(&mut self, angle: f32, velocity: f32) {
+        self.observer.seed(angle, velocity);
+    }
+
     pub fn set_observer(&mut self, observer: Observer) {
         self.observer = observer;
     }

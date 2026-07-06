@@ -3159,6 +3159,14 @@ mod tests {
         disturb_torque_nm: f32,
         disturb_at_step: u64,
         disturb_steps: u64,
+        /// Observer phase kick (rad) applied once at `kick_at_step`
+        /// (0 = off): re-seed the observer at `phase + kick` — one
+        /// accumulated slip-kick, the harder ratchet seed (a load pulse
+        /// rides through).
+        kick_rad: f32,
+        kick_at_step: u64,
+        /// Observer PLL integral gain (kp scales as ki/20; default 20e3).
+        pll_ki: f32,
     }
 
     #[cfg(feature = "virtual-motor")]
@@ -3221,6 +3229,7 @@ mod tests {
         let mut obs = BackEmfObserver::new(0.127, cfg.observer_l, LAMBDA)
             .with_lambda_tracking(crate::foc::phase::DEFAULT_LAMBDA_GAIN)
             .with_eddy_ladder(cfg.observer_eddy_delta_l, 0.3e-3);
+        obs.set_pll_gains(cfg.pll_ki / 20.0, cfg.pll_ki);
         if cfg.observer_salient {
             obs = obs.with_saliency(86e-6, 129e-6);
         }
@@ -3271,6 +3280,13 @@ mod tests {
                 if !driver.phase().angle_trustworthy() {
                     untrusted_cycles += 1;
                 }
+            }
+            if cfg.kick_at_step > 0 && step == cfg.kick_at_step {
+                let ph = driver.phase().observer().phase().unwrap_or(0.0) + cfg.kick_rad;
+                let vel = driver.phase().observer().velocity().unwrap_or(0.0);
+                driver
+                    .phase_mut()
+                    .seed_observer(crate::foc::wrap_angle(ph), vel);
             }
             if cfg.trace_every > 0 && step % cfg.trace_every == 0 {
                 println!(
@@ -3352,6 +3368,9 @@ mod tests {
             disturb_torque_nm: 0.0,
             disturb_at_step: 0,
             disturb_steps: 0,
+            kick_rad: 0.0,
+            kick_at_step: 0,
+            pll_ki: 20e3,
         });
         assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
         if rep.handoff_step.is_some() {
@@ -3393,6 +3412,9 @@ mod tests {
             disturb_torque_nm: 0.0,
             disturb_at_step: 0,
             disturb_steps: 0,
+            kick_rad: 0.0,
+            kick_at_step: 0,
+            pll_ki: 20e3,
         });
         assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
         let handoff = rep.handoff_step.expect("must eventually hand off");
@@ -3423,7 +3445,7 @@ mod tests {
     fn explore_sawtooth_bench_config() {
         const L_AVG: f32 = (86e-6 + 129e-6) / 2.0;
         const L_AC: f32 = 24e-6;
-        for (label, obs_l, ctrl_l, j, trace, eddy_tau, skew, disturb, obs_eddy) in [
+        for (label, obs_l, ctrl_l, j, trace, eddy_tau, kick, pll_ki) in [
             (
                 "bench cfg, ideal plant",
                 L_AC,
@@ -3432,52 +3454,47 @@ mod tests {
                 0,
                 0.0,
                 0.0,
-                false,
-                0.0,
+                20e3,
             ),
             (
-                "bench cfg, eddy plant",
-                L_AC,
-                L_AC,
-                3.2e-5,
-                0,
-                0.3e-3,
-                0.0,
-                false,
-                0.0,
-            ),
-            (
-                "eddy plant + slip pulse, NO observer ladder",
+                "eddy plant, kick 0.5 rad",
                 L_AC,
                 L_AC,
                 3.2e-5,
                 400,
                 0.3e-3,
-                0.0,
-                true,
-                0.0,
+                0.5,
+                20e3,
             ),
             (
-                "eddy plant + slip pulse, WITH observer ladder (dL=105u)",
+                "eddy plant, kick 1.0 rad",
                 L_AC,
                 L_AC,
                 3.2e-5,
                 400,
                 0.3e-3,
-                0.0,
-                true,
-                105e-6,
+                1.0,
+                20e3,
             ),
             (
-                "ideal plant + slip pulse, no ladder (control)",
+                "ideal plant, kick 1.0 rad",
                 L_AC,
                 L_AC,
                 3.2e-5,
                 0,
                 0.0,
-                0.0,
-                true,
-                0.0,
+                1.0,
+                20e3,
+            ),
+            (
+                "eddy plant, kick 1.0, PLL ki/4",
+                L_AC,
+                L_AC,
+                3.2e-5,
+                400,
+                0.3e-3,
+                1.0,
+                5e3,
             ),
             (
                 "control: obs=avg ctrl=avg j=5e-5, ideal",
@@ -3487,8 +3504,7 @@ mod tests {
                 0,
                 0.0,
                 0.0,
-                false,
-                0.0,
+                20e3,
             ),
         ] {
             println!("== {label} ==");
@@ -3504,11 +3520,14 @@ mod tests {
                 j,
                 trace_every: trace,
                 eddy_tau_s: eddy_tau,
-                plant_skew: skew,
-                observer_eddy_delta_l: obs_eddy,
-                disturb_torque_nm: if disturb { 0.04 } else { 0.0 },
-                disturb_at_step: 30_000,
-                disturb_steps: 800,
+                plant_skew: 0.0,
+                observer_eddy_delta_l: 0.0,
+                disturb_torque_nm: 0.0,
+                disturb_at_step: 0,
+                disturb_steps: 0,
+                kick_rad: kick,
+                kick_at_step: if kick != 0.0 { 16_000 } else { 0 },
+                pll_ki,
             });
             println!(
                 "   handoff@{:?} rotor@handoff={:.0} obs@handoff={:.0} trip={:?} \
@@ -3580,6 +3599,9 @@ mod tests {
                         disturb_torque_nm: 0.0,
                         disturb_at_step: 0,
                         disturb_steps: 0,
+                        kick_rad: 0.0,
+                        kick_at_step: 0,
+                        pll_ki: 20e3,
                     });
                     println!(
                         "iq={iq:>3} a0={a0:4.2} handoff={:?} rotor@h={:7.1} obs@h={:7.1} \
