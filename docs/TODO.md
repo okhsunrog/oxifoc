@@ -152,13 +152,38 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
      unloaded rotor slipped ahead of the I/f drag and ran away (real
      380–800 rad/s, confirmed by phase-current frequency) — now a
      READY observer at handoff speed takes over immediately (05505d3).
-- [ ] **Current loop marginally stable at high ω_e**: dq oscillation
-  grows with speed on on-target means (|i_dq| peaks 2.5→8.7 A over
-  0.3 s at 1.5 A) and trips the dq overcurrent near ~800 rad/s.
-  Suspect undercompensated cross-coupling/decoupling with the baked
-  AC L (24 µH) vs the larger transient L — same cluster as the
-  decoupling-FF-during-detection circularity and the AC-L detection
-  gap. At 0.3 A the loop is stable to the no-load ceiling.
+- [ ] **1.5 A mid-speed limit cycle (estimation chain)** — the remaining
+  hard problem after the 2026-07-06 current-loop session (commit
+  ca35522 carries the full experiment matrix):
+  - FIXED that session: the overcurrent DIVERGENCE at ~800 rad/s —
+    the dq-decoupling undercompensated 4.5× by the AC L; fundamental
+    (pulse) Ld/Lq in the decoupling removed the trip. The decoupling FF
+    is reference-current-based now (measured-current form is a delayed
+    ω·L feedback path).
+  - REMAINS: a bounded ±7–9 A dq limit cycle at 1.5 A, speed wandering
+    3–10k erpm, iq mean collapsing episodically — across EVERY
+    combination of kp {0.024, 0.1075} × dec {24, 86/129} ×
+    obs {24, 108-salient}. At 0.3 A all configs are stable to the
+    no-load ceiling → perturbation scales with L·i. Sim: the current
+    loop with a perfect angle is unconditionally stable (any advance),
+    so the cycle lives in the OBSERVER↔loop interaction; the single-L
+    sim plant does not reproduce it (frequency-dependent L missing).
+  - Investigation plan: sim with dead_time_v + adc noise at bench
+    levels; λ-tracker dynamics under flux-vector wobble; observer
+    readiness needs EXTERNAL validity (N consistent flux revolutions,
+    not confidence+PLL-error — the align swing produces false ready at
+    585–786 rad/s); eddy-branch plant model (parallel R-L) if the
+    above doesn't reproduce; VESC-style observer gain scheduling.
+  - **Two-inductance model**: MotorParamsConfig needs an explicit
+    second inductance (HF/AC vs fundamental Ld/Lq) — the estimation
+    chain (observer L·i, deadshort e=−L·dI/dt) is hardware-validated
+    on the AC value, the decoupling needs the fundamental pair;
+    today's split lives as a set_decoupling override in g431 foc.rs.
+  - **Align OC (stochastic, ~1 in 3 cold starts)**: align step-engages
+    the full commanded current onto the undamped rotor spring; a bad
+    initial angle swings the rotor violently and the soft loop lets
+    |i_dq| spike past the 10 A trip. Fix: VESC-style align current
+    soft-start (ramp over ~t_lock).
 - [ ] 10 kHz capture during drive still trips the deadman: the drive-
   engage window starves thread mode ~150 ms (gap of exactly 1502
   samples reproduces), so even correctly-named affirms don't drain in
