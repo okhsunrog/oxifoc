@@ -403,6 +403,22 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     }
 
     /// Set observer
+    /// Configure the back-EMF observer's eddy L(f) ladder (no-op without
+    /// a configured observer) — see `BackEmfObserver::with_eddy_ladder`.
+    pub fn set_observer_eddy_ladder(&mut self, delta_l: f32, tau_s: f32) {
+        if let Observer::BackEmf(o) = &mut self.observer {
+            o.set_eddy_ladder(delta_l, tau_s);
+        }
+    }
+
+    /// Override the back-EMF observer's PLL gains (no-op without a
+    /// configured observer) — bench tuning of the slip-kick loop gain.
+    pub fn set_observer_pll_gains(&mut self, kp: f32, ki: f32) {
+        if let Observer::BackEmf(o) = &mut self.observer {
+            o.set_pll_gains(kp, ki);
+        }
+    }
+
     pub fn set_observer(&mut self, observer: Observer) {
         self.observer = observer;
     }

@@ -290,18 +290,40 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       forward flux kick per transient. Steady tracking has Δi ≈ 0 —
       which is why the passive olramp960 run is clean and why the sim
       (which never enters a slip) can't self-start the cycle.
-      FIX CANDIDATES, in order: (1) eddy-ladder compensation IN THE
-      OBSERVER — subtract ψ_stator = L_hf·i + ΔL·i_f (one extra LPF
-      state per axis, mirrors the new VirtualMotor plant model; ΔL/τ
-      from detection); this is the principled fix and finally resolves
-      the two-inductance tension (probes keep AC L — their transients
-      are ~2τ, kHz-scale; the observer gets the full L(f) ladder);
-      (2) fallback: ω̂ slew clamp from the physics prior kt·iq/J —
-      separable from real accel at ≤0.5 A but overlapping at 1.5 A, so
-      (1) first. Also seed the sim's first slip (external disturbance /
-      initial angle error) to reproduce the ratchet with the eddy plant
-      before landing the fix. Bench capture rates: 2 kHz loss-free,
-      10 kHz is not (366 ms gaps).
+      FIX-CANDIDATE RESULTS (2026-07-06 night, second pass):
+      - Observer eddy-ladder (ψ_stator = L_hf·i + ΔL·i_f) IMPLEMENTED
+        (`BackEmfObserver::with_eddy_ladder`, manager setter, harness
+        support) and bench-tested: DOES NOT remove the ratchet (A/B:
+        same sawtooth, ceiling slightly lower, kicks slightly bigger).
+        The feature stays (physically truer subtraction, all gates
+        green) but the g431 override was reverted — it has not earned
+        the deviation from the validated bench config.
+      - DECISIVE: offline observer replay (scripts/replay_observer.py,
+        captures/sawtooth-plain-1.parquet — reconstruct v_αβ/i_αβ from
+        a plain-firmware capture and re-run the flux integrator+PLL
+        with arbitrary params): R ±26%, ladder on/off produce
+        IDENTICAL trajectories ⇒ the ratchet is encoded in the
+        recorded v,i themselves — closed-loop self-consistent, NO
+        observer-parameter change can fix it. The lever is in the
+        loop.
+      - PLL gain experiment (kp/ki 1000/20000 → 500/5000, temp
+        override, reverted): **first zero-OC closed-loop run ever** —
+        full 8.7 s maneuver, no trip, mid-run trust-loss restart +
+        second confirmed handoff, system keeps recovering. The
+        estimate still oscillates wildly (70–490 rad/s el swings,
+        conf 0.7–1.0) — declawed, not cured. Captures:
+        sawtooth-ladder-1, sawtooth-plain-1, sawtooth-pll4-1.
+      NEXT (the actual fix design): (a) PLL gain scheduling — the
+      per-slip kick gain is ki·∫err, real tracking needs ki ∝ expected
+      ω̇; schedule by speed / measured-iq accel prior, or detect slips
+      (iq sign dips) and gate the PLL error during them; (b) find and
+      prevent the FIRST slip — the mid-band onset oscillation that
+      seeds the cycle (pre-slip window in the captures is the data);
+      (c) sim: the ratchet needs the loop closed to reproduce — the
+      slip-pulse disturbance rides through cleanly even on the eddy
+      plant; a harder seed (observer phase kick mid-drive) may close
+      the gap. Bench capture rates: 2 kHz loss-free, 10 kHz is not
+      (366 ms gaps).
     Distortion-floor context for the record: at ramp 60–63 the observer
     read 32–62 with confidence DECAYING 1.0→0.59 and validity never
     corroborating — λω ≈ 72 mV is at/below the post-comp dead-time

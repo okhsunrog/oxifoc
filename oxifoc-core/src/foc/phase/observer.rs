@@ -224,6 +224,14 @@ pub struct BackEmfObserver {
     /// Lq − Ld (H), informational (active-flux magnitude shift under
     /// d-current). 0 = round-rotor.
     l_delta: f32,
+    /// Eddy-ladder ΔL (H): the L(f) drop between the HF plateau (`l`) and
+    /// the low-frequency inductance. 0 = single-L model (default).
+    eddy_delta_l: f32,
+    /// Eddy-ladder time constant (s); `L(jω) = l + ΔL/(1 + jωτ)`.
+    eddy_tau_s: f32,
+    /// Eddy-branch filtered currents (αβ).
+    i_f_alpha: f32,
+    i_f_beta: f32,
     lambda: f32, // Flux linkage (Wb); adapted online when lambda_gain > 0
 
     // Online λ adaptation (MESC/VESC lambda-comp): first-order tracker of
@@ -350,6 +358,10 @@ impl BackEmfObserver {
             r,
             l,
             l_delta: 0.0,
+            eddy_delta_l: 0.0,
+            eddy_tau_s: 0.0,
+            i_f_alpha: 0.0,
+            i_f_beta: 0.0,
             lambda,
             lambda_gain: 0.0,
             // Bounds are inert until with_lambda_tracking() rebinds them.
@@ -391,6 +403,33 @@ impl BackEmfObserver {
             self.l_delta = lq - ld;
         }
         self
+    }
+
+    /// Configure the eddy-current L(f) ladder for the stator-flux
+    /// subtraction: `ψ_stator = l·i + ΔL·i_f` with `τ·di_f/dt = i − i_f`,
+    /// i.e. `L(jω) = l + ΔL/(1 + jωτ)` — `l` stays the HF (AC) value the
+    /// estimation chain is validated on, `ΔL` adds the low-frequency rise
+    /// (ZD2808: l = 24 µH AC, DC Lq 129 µH ⇒ ΔL ≈ 105 µH, τ ≈ 0.3 ms).
+    ///
+    /// Why (bench 2026-07-06 night, captures/sawtooth-obsdbg-1): a
+    /// pole-slip transient is a 100–300 Hz event where the true stator
+    /// flux follows L(f) ≈ 40–80 µH; subtracting only the 24 µH plateau
+    /// under-removes stator flux and every slip KICKS the flux vector
+    /// forward ~0.3 rad — the PLL integrates the kicks into a runaway
+    /// (slip-kick ratchet, ~2 Hz estimate sawtooth, dq OC). Steady
+    /// tracking has Δi ≈ 0, which is why the single-L subtraction looked
+    /// fine in every constant-speed test.
+    pub fn with_eddy_ladder(mut self, delta_l: f32, tau_s: f32) -> Self {
+        self.set_eddy_ladder(delta_l, tau_s);
+        self
+    }
+
+    /// Runtime setter for [`with_eddy_ladder`](Self::with_eddy_ladder).
+    pub fn set_eddy_ladder(&mut self, delta_l: f32, tau_s: f32) {
+        if delta_l >= 0.0 && tau_s >= 0.0 && delta_l.is_finite() && tau_s.is_finite() {
+            self.eddy_delta_l = delta_l;
+            self.eddy_tau_s = tau_s;
+        }
     }
 
     /// Enable online λ adaptation: λ tracks the raw flux magnitude with a
@@ -453,10 +492,25 @@ impl BackEmfObserver {
         // can't feed the estimate back into itself). At id = 0 its
         // magnitude is exactly λ; under field weakening (id < 0, Ld < Lq)
         // it grows, which the λ tracker absorbs.
+        // Eddy-ladder share of the stator-flux increment (see
+        // `with_eddy_ladder`): dψ_eddy = ΔL·Δi_f, i_f = LPF(i, τ). Zero
+        // when the ladder is off — the classic single-L subtraction.
+        let (dpsi_e_alpha, dpsi_e_beta) = if self.eddy_delta_l > 0.0 && self.eddy_tau_s > 0.0 {
+            let k = (dt / self.eddy_tau_s).min(1.0);
+            let df_alpha = k * (input.i_alpha - self.i_f_alpha);
+            let df_beta = k * (input.i_beta - self.i_f_beta);
+            self.i_f_alpha += df_alpha;
+            self.i_f_beta += df_beta;
+            (self.eddy_delta_l * df_alpha, self.eddy_delta_l * df_beta)
+        } else {
+            (0.0, 0.0)
+        };
         self.x1 += (input.v_alpha - self.r * input.i_alpha) * dt
-            - self.l * (input.i_alpha - self.i_alpha_last);
+            - self.l * (input.i_alpha - self.i_alpha_last)
+            - dpsi_e_alpha;
         self.x2 += (input.v_beta - self.r * input.i_beta) * dt
-            - self.l * (input.i_beta - self.i_beta_last);
+            - self.l * (input.i_beta - self.i_beta_last)
+            - dpsi_e_beta;
         self.i_alpha_last = input.i_alpha;
         self.i_beta_last = input.i_beta;
 
@@ -671,6 +725,8 @@ impl BackEmfObserver {
         self.confidence = 0.0;
         self.phase_err_filt = core::f32::consts::PI;
         self.phase_raw_last = 0.0;
+        self.i_f_alpha = 0.0;
+        self.i_f_beta = 0.0;
         self.bemf_q_filt = 0.0;
         self.valid_travel = 0.0;
         self.invalid_time = 0.0;
