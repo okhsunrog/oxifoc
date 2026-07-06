@@ -381,6 +381,24 @@ Current numbers and rules — [flash-size.md](flash-size.md); benchmarks —
   profile the glue by parts (CYCCNT around sections) and get the Stopped
   baseline well under ~3000 cycles before expecting 20 kHz capture during
   drive.
+- [x] **Per-section ISR profiling + tier 1 — DONE 2026-07-06 (6e31fa5)**.
+  Permanent 1 Hz `isrp/s` (ISR sections) + `isrc/s` (run_foc_cycle
+  internals, core feature `isr-profiling`) defmt lines. Measured and
+  fixed: per-cycle `pwm.disable()` at Stopped (429→26), estimator
+  update on constant zeros at Stopped (decimated ×4 dt-scaled,
+  1429→387), NTC `libm::logf` every cycle (every 128th now, adc1
+  561→223). **Stopped + 20 kHz: 6184→4530 cycles (73%→53%), capture
+  loss-free again** (was 472 gaps/34k lost).
+- [ ] **ISR tier 2** (next perf session), current numbers at 1 kHz
+  stream: `cmd=742` (empty-channel try_receive + link CS read + gates
+  every cycle — cache link/fault flags in atomics?), `prot=605`
+  (run_protection + two CS blocks — decimate the derating mirror and
+  temp read), `pub=1205` (update_telemetry full-state CS copy every
+  cycle + encode+push — decimate the state copy, keep the fast path),
+  and the big one: **drive-mode `step=4900`** (avg 7686 = 90% under
+  drive at 1 kHz!) — needs its own section split (phase manager
+  update vs current loop vs SVPWM vs CORDIC waits) before touching.
+  Goal: 20 kHz capture under drive ⇒ drive-mode total ≤ ~6500.
 - [ ] **g431 RAM: stack → CCM SRAM split** (idea, robustness — not a
   throughput lever: raw-Pod made 20 kHz loss-free at Stopped, and the
   under-drive cap is ISR CPU, not buffers — see the ISR-load item above).
