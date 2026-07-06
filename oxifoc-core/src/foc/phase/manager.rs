@@ -12,7 +12,7 @@ use super::observer::HfiObserver;
 use super::observer::{Observer, ObserverInput};
 use super::provider::{PhaseInput, PhaseOutput, PhaseProvider};
 use super::source::{PhaseSource, PhaseSourceError};
-use super::startup::{DeadshortResult, SensorlessStartup, StartupPhase};
+use super::startup::{ConfirmResult, DeadshortResult, SensorlessStartup, StartupPhase};
 use crate::foc::fast_math::sqrtf;
 use crate::foc::hall_calibration::HallCalibrationResult;
 use crate::foc::hall_sensor::HallFaultKind;
@@ -1148,6 +1148,41 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 } else if self.startup.phase() == StartupPhase::Ramp {
                     info!("startup: deadshort saw standstill, ramp cold start");
                 }
+            } else if phase_before == StartupPhase::Confirm {
+                // Handoff-confirm probe: bridge shorted, the measured
+                // back-EMF must corroborate the observer before closed loop
+                // engages (a phantom-locked observer passes every internal
+                // gate — see BackEmfObserver::is_ready).
+                let l = self.observer.inductance().unwrap_or(0.0);
+                let lambda = self.observer.lambda().unwrap_or(0.0);
+                let claim = PhaseOutput {
+                    angle: self.observer.phase().unwrap_or(0.0),
+                    velocity: self.observer.velocity().unwrap_or(0.0),
+                };
+                let obs_vel = claim.velocity;
+                match self.startup.feed_confirm(
+                    input.i_alpha,
+                    input.i_beta,
+                    input.dt,
+                    l,
+                    lambda,
+                    claim,
+                ) {
+                    ConfirmResult::Confirmed { velocity } => {
+                        info!(
+                            "startup: handoff confirmed by probe (probe_vel={} observer_vel={})",
+                            velocity, obs_vel
+                        );
+                    }
+                    ConfirmResult::Unconfirmed { velocity } => {
+                        info!(
+                            "startup: handoff unconfirmed (probe_vel={} observer_vel={}), \
+                             holding for retry",
+                            velocity, obs_vel
+                        );
+                    }
+                    ConfirmResult::Probing => {}
+                }
             } else {
                 let i_mag = sqrtf(input.i_alpha * input.i_alpha + input.i_beta * input.i_beta);
                 let out = self.startup.tick(
@@ -1168,13 +1203,21 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                         i_mag
                     );
                 }
+                // Hold give-up recycle: the observer failed to confirm for
+                // the whole hold window — presume a phantom lock and
+                // restart it from scratch while the deadshort→ramp start
+                // re-acquires the rotor.
+                if self.startup.take_recycled() {
+                    warn!("startup: hold gave up (no confirmed handoff), observer reset + recycle");
+                    self.observer.reset();
+                }
                 if out.handoff {
                     info!(
-                        "startup: handoff to observer (openloop_vel={} observer_vel={})",
+                        "startup: handoff gates passed (openloop_vel={} observer_vel={}), \
+                         running confirm probe",
                         out.velocity,
                         self.observer.velocity().unwrap_or(0.0)
                     );
-                    self.startup.deactivate();
                 } else if phase_now == StartupPhase::Hold {
                     // Waiting on the observer: ~2 Hz convergence trace so a
                     // hold that never hands off (observer incoherent, see

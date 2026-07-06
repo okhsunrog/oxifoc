@@ -94,6 +94,48 @@ pub const DEADSHORT_MIN_CATCH_VEL: f32 = 60.0;
 /// without bound. Mirrors MESC's `DEADSHORT_CURRENT`.
 const DEADSHORT_MAX_CURRENT_A: f32 = 15.0;
 
+/// Handoff-confirm probe: settle time (PWM periods) for the DRIVE current to
+/// decay into the short before the baseline is captured. Longer than the
+/// cold-start probe's settle: here amps of commanded current are flowing at
+/// entry (τ = L/R ≈ 0.8 ms on the ZD2808), and residual decay would read as
+/// back-EMF. 32 periods = 1.6 ms ≈ 2τ; the rotor coasts through it with
+/// negligible speed loss (J ≥ 5e-5, friction ~µN·m).
+pub const CONFIRM_SETTLE_CYCLES: u16 = 32;
+
+/// Handoff-confirm probe: the measured |ω| must reach this fraction of the
+/// observer's claim to confirm. Generous — the probe fights residual current
+/// decay and sensor noise — but a phantom measures ≈ 0 (no rotor, no
+/// back-EMF), so the gap is wide.
+const CONFIRM_MIN_VEL_FRACTION: f32 = 0.5;
+
+/// Handoff-confirm probe: max |angle| disagreement (rad) between the probe's
+/// rotor estimate and the observer's. A converged observer is within ~0.3
+/// rad of truth and the probe within ~0.1; a rotor freewheeling AGAINST the
+/// commanded direction (which the probe's ±90° convention cannot sign) shows
+/// up here as a ~π disagreement and is rejected.
+const CONFIRM_MAX_ANGLE_ERR_RAD: f32 = 1.0;
+
+/// Cooldown (s) between confirm probes. A rotor being captured by the ramp
+/// HUNTS around the synchronous speed (undamped ±40 rad/s swings in the
+/// sims); a single 0.35 ms probe samples an instant of that hunt and can
+/// honestly read near-zero on a genuinely captured rotor. An unconfirmed
+/// probe therefore returns to Hold and retries — the hunt period is
+/// ~200–300 ms, so successive probes land on different hunt phases and a
+/// real capture confirms within a few tries. A phantom never does.
+const CONFIRM_RETRY_S: f32 = 0.1;
+
+/// Hold-phase give-up (s): if the observer cannot pass a confirm probe for
+/// this long at the ceiling, recycle the whole start (deadshort → ramp) and
+/// have the caller reset the observer. This is what finally breaks a
+/// phantom lock (the observer restarts from scratch while the ramp
+/// re-captures the rotor) and re-catches a genuinely spinning rotor via
+/// the deadshort's own measurement — the sooner the better when the rotor
+/// has run away from the ramp and only a measured seed can close the loop
+/// on it (sim: a runaway under a never-ready observer builds toward the
+/// dq overcurrent within ~1.5 s). Still several confirm retries above the
+/// ~0.3 s a healthy capture needs to damp its hunt and confirm.
+const HOLD_GIVEUP_S: f32 = 1.0;
+
 /// Where the open-loop sequencer is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupPhase {
@@ -109,6 +151,15 @@ pub enum StartupPhase {
     Ramp,
     /// Holding at the ceiling, waiting for the observer to converge.
     Hold,
+    /// Handoff-confirm probe: the observer passed its readiness gates, but
+    /// before closed loop engages the bridge is shorted for ~2 ms and the
+    /// back-EMF-driven dI/dt must corroborate the claimed rotation. A
+    /// converged observer whose flux is actually the machine's own residual
+    /// inverter distortion (phantom lock — internally indistinguishable
+    /// from a real rotation, see `BackEmfObserver::is_ready`) measures ≈ 0
+    /// here and is sent back to the ramp instead of deadlocking closed
+    /// loop on a standing rotor.
+    Confirm,
     /// Hall-dropout recovery: fixed-velocity nudge from the last known angle.
     Recover,
 }
@@ -121,6 +172,7 @@ impl StartupPhase {
             Self::Deadshort => "deadshort",
             Self::Ramp => "ramp",
             Self::Hold => "hold",
+            Self::Confirm => "confirm",
             Self::Recover => "recover",
         }
     }
@@ -133,8 +185,9 @@ pub struct StartupOutput {
     pub angle: f32,
     /// Open-loop commutation velocity (rad/s, signed by direction).
     pub velocity: f32,
-    /// The observer has converged at handoff speed — seed it from
-    /// `(angle, velocity)` and [`deactivate`](SensorlessStartup::deactivate).
+    /// The observer passed its readiness gates this cycle — the machine has
+    /// entered the [`StartupPhase::Confirm`] probe (informational; the
+    /// actual handoff happens when the probe confirms).
     pub handoff: bool,
 }
 
@@ -149,6 +202,24 @@ pub enum DeadshortResult {
     Caught { angle: f32, velocity: f32 },
 }
 
+/// Outcome of feeding one cycle of shorted-winding current to the
+/// handoff-confirm probe ([`StartupPhase::Confirm`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConfirmResult {
+    /// Still probing — keep the bridge shorted.
+    Probing,
+    /// The measured back-EMF corroborates the observer: hand off (the
+    /// sequencer has deactivated itself). `velocity` is the probe's own
+    /// |ω| estimate, for logging.
+    Confirmed { velocity: f32 },
+    /// The probe could not corroborate the claimed rotation THIS time —
+    /// either a phantom lock, or a genuinely captured rotor sampled at the
+    /// slow phase of its capture hunt. The sequencer returned to Hold and
+    /// will re-probe after [`CONFIRM_RETRY_S`]; a phantom that never
+    /// confirms is broken up by the [`HOLD_GIVEUP_S`] recycle.
+    Unconfirmed { velocity: f32 },
+}
+
 /// Cold-start / recovery open-loop sequencer. See the module docs.
 #[derive(Clone, Copy, Debug)]
 pub struct SensorlessStartup {
@@ -160,6 +231,15 @@ pub struct SensorlessStartup {
     /// Target handoff speed magnitude (rad/s).
     handoff_vel: f32,
     timer: f32,
+    /// Time spent in Hold without a confirmed handoff (s) — drives the
+    /// [`HOLD_GIVEUP_S`] recycle.
+    hold_time: f32,
+    /// Remaining cooldown (s) before the next confirm probe may start.
+    confirm_cooldown: f32,
+    /// The Hold → Deadshort give-up recycle fired this tick: the caller
+    /// must reset the observer (a phantom lock is the usual reason the
+    /// hold never confirmed). Cleared on read via [`take_recycled`].
+    recycled: bool,
     // ── Deadshort probe state (Phase B) ──
     ds_settle: u16,
     ds_cycles: u16,
@@ -177,6 +257,9 @@ impl Default for SensorlessStartup {
             dir: 1.0,
             handoff_vel: DEFAULT_HANDOFF_VEL,
             timer: 0.0,
+            hold_time: 0.0,
+            confirm_cooldown: 0.0,
+            recycled: false,
             ds_settle: 0,
             ds_cycles: 0,
             ds_i0_alpha: 0.0,
@@ -200,15 +283,18 @@ impl SensorlessStartup {
         self.dir = if direction < 0.0 { -1.0 } else { 1.0 };
         self.handoff_vel = DEFAULT_HANDOFF_VEL;
         self.timer = DEFAULT_OPENLOOP_TIME_S + DEFAULT_RAMP_TIME_S;
+        self.hold_time = 0.0;
+        self.confirm_cooldown = 0.0;
         self.ds_settle = DEADSHORT_SETTLE_CYCLES;
         self.ds_cycles = 0;
         self.ds_elapsed = 0.0;
     }
 
-    /// True while the deadshort probe needs the bridge held shorted (zero
-    /// voltage). The driver honors this instead of normal commutation.
+    /// True while a probe needs the bridge held shorted (zero voltage): the
+    /// cold-start deadshort or the handoff-confirm probe. The driver honors
+    /// this instead of normal commutation.
     pub fn wants_short(&self) -> bool {
-        self.phase == StartupPhase::Deadshort
+        matches!(self.phase, StartupPhase::Deadshort | StartupPhase::Confirm)
     }
 
     /// Begin a hall-dropout recovery: a fast fixed-velocity nudge from the last
@@ -221,6 +307,8 @@ impl SensorlessStartup {
         self.velocity = self.dir * DEFAULT_RECOVERY_VEL;
         self.handoff_vel = DEFAULT_RECOVERY_VEL;
         self.timer = DEFAULT_OPENLOOP_TIME_S;
+        self.hold_time = 0.0;
+        self.confirm_cooldown = 0.0;
     }
 
     /// True while the sequencer owns commutation.
@@ -238,6 +326,16 @@ impl SensorlessStartup {
         self.phase = StartupPhase::Inactive;
         self.timer = 0.0;
         self.velocity = 0.0;
+        self.hold_time = 0.0;
+        self.confirm_cooldown = 0.0;
+    }
+
+    /// Whether the give-up recycle fired since the last call (one-shot).
+    /// The caller must reset the observer when it did: the recycle exists
+    /// because the observer spent [`HOLD_GIVEUP_S`] failing to confirm —
+    /// its state is presumed to be a phantom lock.
+    pub fn take_recycled(&mut self) -> bool {
+        core::mem::take(&mut self.recycled)
     }
 
     /// Current open-loop angle (rad).
@@ -292,11 +390,13 @@ impl SensorlessStartup {
         observer_vel: f32,
     ) -> StartupOutput {
         self.timer = (self.timer - dt).max(0.0);
+        self.confirm_cooldown = (self.confirm_cooldown - dt).max(0.0);
 
         match self.phase {
-            // Deadshort is driven by `feed_deadshort`, not `tick`; if ticked,
-            // hold the angle (the driver applies zero voltage anyway).
-            StartupPhase::Inactive | StartupPhase::Deadshort => {
+            // The probes are driven by `feed_deadshort`/`feed_confirm`, not
+            // `tick`; if ticked, hold the angle (the driver applies zero
+            // voltage anyway).
+            StartupPhase::Inactive | StartupPhase::Deadshort | StartupPhase::Confirm => {
                 return StartupOutput {
                     angle: self.angle,
                     velocity: 0.0,
@@ -316,10 +416,36 @@ impl SensorlessStartup {
                 };
                 if self.velocity.abs() >= ceiling {
                     self.phase = StartupPhase::Hold;
+                    self.hold_time = 0.0;
                 }
             }
-            StartupPhase::Hold | StartupPhase::Recover => {
-                // Velocity already at the ceiling / recovery speed; hold it.
+            StartupPhase::Hold => {
+                // Velocity at the ceiling; hold it. A hold that cannot get
+                // a confirmed handoff within HOLD_GIVEUP_S is recycled
+                // through a fresh deadshort→ramp start: a phantom-locked
+                // observer never confirms (the caller resets it, see
+                // take_recycled), and a genuinely spinning rotor is
+                // re-caught by the deadshort.
+                self.hold_time += dt;
+                if self.hold_time >= HOLD_GIVEUP_S {
+                    self.phase = StartupPhase::Deadshort;
+                    self.velocity = 0.0;
+                    self.timer = DEFAULT_OPENLOOP_TIME_S + DEFAULT_RAMP_TIME_S;
+                    self.hold_time = 0.0;
+                    self.confirm_cooldown = 0.0;
+                    self.recycled = true;
+                    self.ds_settle = DEADSHORT_SETTLE_CYCLES;
+                    self.ds_cycles = 0;
+                    self.ds_elapsed = 0.0;
+                    return StartupOutput {
+                        angle: self.angle,
+                        velocity: 0.0,
+                        handoff: false,
+                    };
+                }
+            }
+            StartupPhase::Recover => {
+                // Velocity already at the recovery speed; hold it.
             }
         }
 
@@ -348,11 +474,22 @@ impl SensorlessStartup {
         let fast_enough = (self.velocity.abs() >= self.handoff_vel
             && observer_vel.abs() >= self.handoff_vel * 0.5)
             || (ramp_moving && observer_vel.abs() >= self.handoff_vel);
-        let handoff = observer_ready && fast_enough;
+        let handoff = observer_ready && fast_enough && self.confirm_cooldown <= 0.0;
+        let velocity = self.velocity;
+        if handoff {
+            // Gates passed → confirm before engaging closed loop: short the
+            // bridge and demand the back-EMF actually be there
+            // (`feed_confirm`). A phantom-locked observer passes every
+            // internal gate; this probe is the external check it cannot.
+            self.phase = StartupPhase::Confirm;
+            self.ds_settle = CONFIRM_SETTLE_CYCLES;
+            self.ds_cycles = 0;
+            self.ds_elapsed = 0.0;
+        }
 
         StartupOutput {
             angle: self.angle,
-            velocity: self.velocity,
+            velocity,
             handoff,
         }
     }
@@ -420,6 +557,77 @@ impl SensorlessStartup {
                 self.velocity = 0.0;
                 DeadshortResult::Probing
             }
+        }
+    }
+
+    /// Feed one shorted-winding current sample to the handoff-confirm probe
+    /// ([`StartupPhase::Confirm`]; same measurement as [`feed_deadshort`],
+    /// different question and different judge).
+    ///
+    /// `claim` is the observer's angle/velocity under test. On `Confirmed`
+    /// the sequencer deactivates (handoff complete — the observer keeps its
+    /// own converged state, no reseed). On `Unconfirmed` it returns to Hold
+    /// for a cooldown-paced retry (see [`ConfirmResult`]).
+    pub fn feed_confirm(
+        &mut self,
+        i_alpha: f32,
+        i_beta: f32,
+        dt: f32,
+        l: f32,
+        lambda: f32,
+        claim: super::provider::PhaseOutput,
+    ) -> ConfirmResult {
+        if self.phase != StartupPhase::Confirm {
+            return ConfirmResult::Probing;
+        }
+        // Drive-current decay into the short (τ = L/R); see
+        // CONFIRM_SETTLE_CYCLES. Same cap-skip as the cold-start probe.
+        if self.ds_settle > 0 {
+            let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
+            if i_mag < DEADSHORT_MAX_CURRENT_A {
+                self.ds_settle -= 1;
+                return ConfirmResult::Probing;
+            }
+            self.ds_settle = 0;
+        }
+        if self.ds_cycles == 0 {
+            self.ds_i0_alpha = i_alpha;
+            self.ds_i0_beta = i_beta;
+            self.ds_elapsed = 0.0;
+            self.ds_cycles = 1;
+            return ConfirmResult::Probing;
+        }
+
+        self.ds_cycles += 1;
+        self.ds_elapsed += dt;
+        let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
+        if self.ds_cycles < DEADSHORT_CYCLES && i_mag < DEADSHORT_MAX_CURRENT_A {
+            return ConfirmResult::Probing;
+        }
+
+        // Window complete — raw back-EMF estimate (no catch floor here: the
+        // question is agreement with the observer, not absolute speed).
+        let e_alpha = -l * (i_alpha - self.ds_i0_alpha) / self.ds_elapsed.max(1e-9);
+        let e_beta = -l * (i_beta - self.ds_i0_beta) / self.ds_elapsed.max(1e-9);
+        let e_mag = sqrtf(e_alpha * e_alpha + e_beta * e_beta);
+        let omega = e_mag / lambda.max(1e-9);
+        let angle = wrap_angle(atan2f(e_beta, e_alpha) - self.dir * core::f32::consts::FRAC_PI_2);
+
+        let vel_ok = omega >= CONFIRM_MIN_VEL_FRACTION * claim.velocity.abs();
+        let angle_ok =
+            crate::foc::angle_difference(angle, claim.angle).abs() <= CONFIRM_MAX_ANGLE_ERR_RAD;
+        if vel_ok && angle_ok {
+            self.deactivate();
+            ConfirmResult::Confirmed { velocity: omega }
+        } else {
+            // Unconfirmed: back to Hold, keep dragging, re-probe after the
+            // cooldown — a genuinely captured rotor sampled at the slow
+            // phase of its hunt confirms on a later try; a phantom never
+            // does and the HOLD_GIVEUP_S recycle breaks it up.
+            self.phase = StartupPhase::Hold;
+            self.velocity = self.dir * self.handoff_vel.max(self.velocity.abs());
+            self.confirm_cooldown = CONFIRM_RETRY_S;
+            ConfirmResult::Unconfirmed { velocity: omega }
         }
     }
 }
@@ -729,6 +937,145 @@ mod tests {
         assert_eq!(sm.velocity(), -DEFAULT_RECOVERY_VEL);
         let o = sm.tick(DT, 0.0, false, 0.0);
         assert!(o.velocity < 0.0);
+    }
+
+    // ── Handoff-confirm probe ──
+
+    use crate::foc::phase::PhaseOutput;
+
+    /// Cold start driven into Hold (observer never ready), ready to fire
+    /// the handoff gate.
+    fn ramp_to_hold() -> SensorlessStartup {
+        let mut sm = cold_start_to_ramp(0.0, 1.0);
+        run(&mut sm, 0.6, 3.0);
+        assert_eq!(sm.phase(), StartupPhase::Hold);
+        sm
+    }
+
+    /// Feed the confirm probe `di` (reached linearly at the last sample)
+    /// through its settle + probe window; returns the final result.
+    fn run_confirm(
+        sm: &mut SensorlessStartup,
+        di: (f32, f32),
+        l: f32,
+        lambda: f32,
+        claim: PhaseOutput,
+    ) -> ConfirmResult {
+        for _ in 0..CONFIRM_SETTLE_CYCLES {
+            assert_eq!(
+                sm.feed_confirm(0.0, 0.0, DT, l, lambda, claim),
+                ConfirmResult::Probing
+            );
+        }
+        // Baseline + middle cycles at zero, the last carries the dI.
+        assert_eq!(
+            sm.feed_confirm(0.0, 0.0, DT, l, lambda, claim),
+            ConfirmResult::Probing
+        );
+        for _ in 0..(DEADSHORT_CYCLES - 2) {
+            assert_eq!(
+                sm.feed_confirm(0.0, 0.0, DT, l, lambda, claim),
+                ConfirmResult::Probing
+            );
+        }
+        sm.feed_confirm(di.0, di.1, DT, l, lambda, claim)
+    }
+
+    #[test]
+    fn handoff_gate_runs_confirm_probe_not_instant_handoff() {
+        let mut sm = ramp_to_hold();
+        let o = sm.tick(DT, 3.0, true, DEFAULT_HANDOFF_VEL);
+        assert!(o.handoff, "gates passed must be reported");
+        assert_eq!(sm.phase(), StartupPhase::Confirm);
+        assert!(sm.wants_short(), "confirm probe needs the bridge shorted");
+        assert!(sm.is_active(), "handoff is NOT complete until confirmed");
+    }
+
+    #[test]
+    fn confirm_rejects_still_rotor_and_retries_after_cooldown() {
+        let (l, lambda) = (150e-6, 1.145e-3);
+        let claim = PhaseOutput {
+            angle: 1.0,
+            velocity: DEFAULT_HANDOFF_VEL,
+        };
+        let mut sm = ramp_to_hold();
+        sm.tick(DT, 3.0, true, claim.velocity);
+        // Zero dI over the whole window: no back-EMF where the observer
+        // claims rotation → unconfirmed, back to Hold.
+        let res = run_confirm(&mut sm, (0.0, 0.0), l, lambda, claim);
+        assert!(matches!(res, ConfirmResult::Unconfirmed { .. }));
+        assert_eq!(sm.phase(), StartupPhase::Hold);
+        assert!(sm.is_active());
+        // Cooldown: the gate must not refire immediately...
+        let o = sm.tick(DT, 3.0, true, claim.velocity);
+        assert!(!o.handoff);
+        assert_eq!(sm.phase(), StartupPhase::Hold);
+        // ...but does after it expires.
+        run(&mut sm, CONFIRM_RETRY_S + 0.01, 3.0);
+        let o = sm.tick(DT, 3.0, true, claim.velocity);
+        assert!(o.handoff, "cooldown expiry must allow a retry");
+        assert_eq!(sm.phase(), StartupPhase::Confirm);
+    }
+
+    #[test]
+    fn confirm_passes_real_rotor_and_hands_off() {
+        use crate::foc::angle_difference;
+        let (l, lambda, omega, theta) = (150e-6, 1.145e-3, 70.0, 0.9);
+        let claim = PhaseOutput {
+            angle: theta,
+            velocity: omega,
+        };
+        let mut sm = ramp_to_hold();
+        sm.tick(DT, 3.0, true, omega);
+        let di = synth_deadshort_di(omega, theta, l, lambda);
+        match run_confirm(&mut sm, di, l, lambda, claim) {
+            ConfirmResult::Confirmed { velocity } => {
+                assert!(
+                    (velocity - omega).abs() < 0.3 * omega,
+                    "probe velocity {velocity} vs rotor {omega}"
+                );
+            }
+            other => panic!("expected Confirmed, got {other:?}"),
+        }
+        assert!(!sm.is_active(), "confirmed probe completes the handoff");
+        assert!(!sm.wants_short());
+        // Sanity on the synth: the probe's angle estimate matches the claim.
+        let _ = angle_difference;
+    }
+
+    #[test]
+    fn confirm_rejects_angle_disagreement() {
+        // Back-EMF present at the claimed SPEED but ~π away in angle (e.g.
+        // a rotor freewheeling against the commanded direction).
+        let (l, lambda, omega) = (150e-6, 1.145e-3, 70.0);
+        let claim = PhaseOutput {
+            angle: 0.9 + core::f32::consts::PI,
+            velocity: omega,
+        };
+        let mut sm = ramp_to_hold();
+        sm.tick(DT, 3.0, true, omega);
+        let di = synth_deadshort_di(omega, 0.9, l, lambda);
+        let res = run_confirm(&mut sm, di, l, lambda, claim);
+        assert!(
+            matches!(res, ConfirmResult::Unconfirmed { .. }),
+            "π-off angle must not confirm, got {res:?}"
+        );
+        assert_eq!(sm.phase(), StartupPhase::Hold);
+    }
+
+    #[test]
+    fn hold_gives_up_and_recycles_through_deadshort() {
+        let mut sm = ramp_to_hold();
+        assert!(!sm.take_recycled());
+        // Observer never ready: the hold cannot confirm and must recycle.
+        run(&mut sm, HOLD_GIVEUP_S + 0.05, 3.0);
+        assert_eq!(sm.phase(), StartupPhase::Deadshort);
+        assert!(sm.wants_short());
+        assert!(sm.take_recycled(), "recycle must be reported (once)");
+        assert!(!sm.take_recycled(), "one-shot");
+        // And the recycled start runs the normal deadshort → ramp path.
+        skip_deadshort(&mut sm);
+        assert_eq!(sm.phase(), StartupPhase::Ramp);
     }
 
     #[test]

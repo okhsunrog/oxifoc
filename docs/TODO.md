@@ -165,16 +165,63 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     combination of kp {0.024, 0.1075} × dec {24, 86/129} ×
     obs {24, 108-salient}. At 0.3 A all configs are stable to the
     no-load ceiling → perturbation scales with L·i.
-  - NEXT SESSION ENTRY POINT — fix order matters: (1) observer
-    readiness needs EXTERNAL validity (consistency with physics: phase-
-    current frequency, N consecutive flux revolutions) — this underlies
-    reproducer 4's phantom handoff AND the old align-swing false-ready;
-    (2) THEN sensorless restart on trust loss (drive mode + not-ready +
-    ~zero speed → re-enter deadshort→ramp) — without (1) a restart just
-    loops phantom→collapse→restart. Note the no-align tradeoff: handoff
-    observer_vel went 60 (align era) → 113–231 (catch transient excites
-    the observer harder); resonance-OC data still justifies no-align,
-    (1) closes the gap.
+  - ~~(1) external validity + (2) restart on trust loss~~ LANDED IN SIM
+    2026-07-06 (this commit) — **bench validation pending** (staircase +
+    prof-hold-1a + spin-gentle reruns). What landed, and what the sim
+    taught en route:
+    - Passive checks are STRUCTURALLY insufficient alone: a steady
+      phantom (observer tracking the machine's own residual-distortion
+      flux on a standing rotor) pins its PLL exactly where |e|/λ = ω̂,
+      so `confidence ≈ 1` **implies** back-EMF-proxy ratio ≈ 1 — no
+      terminal-voltage criterion can reject it. The passive layer still
+      catches the TRANSIENT class (catch-swing 231-vs-ramp-23 false
+      ready) and the post-collapse deadlock (vq ≈ 0.01 V vs λω̂ →
+      ratio ≈ 0.02): `BackEmfObserver::is_ready` now also requires the
+      e_q proxy (v − R·i projected on the flux-quadrature axis) to
+      corroborate λ·ω̂ for 2 consecutive electrical revolutions;
+      granted validity is sticky (0.2 s sustained violation to revoke —
+      instant revocation turned the iq trust gate into a torque chopper
+      and destabilized an otherwise-clean spin).
+    - The decisive external check is PHYSICAL: a deadshort **confirm
+      probe** at every ramp/hold handoff (settle 32 + probe 8 PWM
+      periods, e = −L·dI/dt must agree with the observer in |ω| (≥0.5×)
+      and angle (≤1 rad)). One probe instant can honestly read ~0 on a
+      genuinely captured rotor (capture HUNT swings ±40 rad/s), so an
+      unconfirmed probe returns to Hold and retries every 0.1 s; a hold
+      that cannot confirm within 1 s recycles the whole start
+      (deadshort→ramp) with an observer reset — this breaks phantoms
+      AND re-catches runaway rotors by measurement. Driver resets the
+      current-loop PI on every probe→commutation exit (stale-integrator
+      spike otherwise).
+    - Restart on trust loss (fix 2): drive mode + nonzero command +
+      angle untrustworthy for 0.5 s continuous → re-enter cold start
+      (`SENSORLESS_RESTART_AFTER_S`, foc_driver). The deadshort probe
+      makes it safe both ways. Sim gates:
+      `phantom_handoff_blocked_by_confirm_probe`,
+      `cold_start_recovers_through_dead_time_distortion`,
+      `trust_loss_mid_drive_restarts_cold_start`, confirm-probe unit
+      tests in startup.rs.
+    - Sim findings for the REMAINING limit-cycle work: (a) reproducer
+      4's phantom is reproducible on the single-L plant with bench-level
+      dead-time residual (`run_zd2808_cold_start` harness,
+      `explore_phantom_handoff` ignored test = the exploration matrix);
+      the residual is the phantom's energy source — better low-current
+      dead-time comp would shrink the whole class. (b) A limit cycle
+      with reproducer-3's exact signature (speed swinging hundreds of
+      rad/s, iq slamming ±limits, observer≠rotor) appears in an IDEAL
+      plant whenever ω̇_el exceeds what the observer PLL can track
+      (steady lag = ω̇/pll_ki) — the old
+      `sensorless_cold_start_ramps_then_hands_off` plant (j = 1e-4,
+      6 A → lag 2.2 rad) was doing exactly this and passing by
+      coincidence of its end-sample; PLL gain scheduling / acceleration
+      feedforward is a concrete lever for reproducer 3. (c) Sim-harness
+      trap now documented in the harness: drive the plant from DUTIES,
+      not `FocOutput.v_alpha/v_beta` — the dead-time comp lives only in
+      the duty path, feeding the pre-modulation voltage silently
+      disables it.
+    - Note the no-align tradeoff stands: handoff observer_vel went 60
+      (align era) → 113–231 (catch transient excites the observer
+      harder); resonance-OC data still justifies no-align.
   - FOUR deterministic reproducers (2026-07-06 evening, cold motor,
     captures on disk):
     1. SLOW crawl through the ω_e ≈ 400–800 L(f) band → dq OC ~1.1 s
@@ -200,12 +247,12 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     loop with a perfect angle is unconditionally stable (any advance),
     so the cycle lives in the OBSERVER↔loop interaction; the single-L
     sim plant does not reproduce it (frequency-dependent L missing).
-  - Investigation plan: sim with dead_time_v + adc noise at bench
-    levels; λ-tracker dynamics under flux-vector wobble; observer
-    readiness needs EXTERNAL validity (N consistent flux revolutions,
-    not confidence+PLL-error — the align swing produces false ready at
-    585–786 rad/s); eddy-branch plant model (parallel R-L) if the
-    above doesn't reproduce; VESC-style observer gain scheduling.
+  - Investigation plan (remaining after the external-validity work
+    above): λ-tracker dynamics under flux-vector wobble; PLL
+    acceleration-lag lever (gain scheduling / accel feedforward — see
+    sim finding (b) above); eddy-branch plant model (parallel R-L) for
+    the L(f) band; low-current dead-time comp quality (the phantom's
+    energy source, finding (a)).
   - **Two-inductance model**: MotorParamsConfig needs an explicit
     second inductance (HF/AC vs fundamental Ld/Lq) — the estimation
     chain (observer L·i, deadshort e=−L·dI/dt) is hardware-validated

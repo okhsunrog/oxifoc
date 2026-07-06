@@ -124,6 +124,15 @@ impl Observer {
         }
     }
 
+    /// External-validity diagnostics of the underlying estimator, if any —
+    /// see [`BackEmfObserver::validity`].
+    pub fn validity(&self) -> Option<(f32, f32)> {
+        match self {
+            Self::None => None,
+            Self::BackEmf(o) => Some(o.validity()),
+        }
+    }
+
     /// Check if observer is configured
     pub fn is_configured(&self) -> bool {
         !matches!(self, Self::None)
@@ -229,6 +238,15 @@ pub struct BackEmfObserver {
     // State
     confidence: f32,     // Confidence estimate (0-1)
     phase_err_filt: f32, // Low-passed |PLL phase error| (rad), for readiness
+
+    // External-validity state (see `is_ready`): low-passed back-EMF proxy
+    // along the estimated q axis (V, signed by the rotation direction), the
+    // phase travel (rad) accumulated while that proxy corroborated the
+    // claimed velocity, and how long (s) the corroboration has been
+    // continuously violated while validity was granted.
+    bemf_q_filt: f32,
+    valid_travel: f32,
+    invalid_time: f32,
 }
 
 /// Minimum confidence (flux magnitude / λ) for [`BackEmfObserver::is_ready`].
@@ -249,6 +267,39 @@ pub const READY_MIN_VELOCITY: f32 = 30.0;
 /// Time constant (s) of the PLL phase-error low-pass used for readiness.
 /// Slow enough to ride out per-revolution ripple at crossover speeds.
 const PHASE_ERR_FILTER_TAU_S: f32 = 0.01;
+
+/// External validity: how many electrical revolutions the back-EMF proxy
+/// must corroborate the claimed velocity before [`BackEmfObserver::is_ready`]
+/// reports true (see `is_ready` for the physics). 2 revolutions ≈ 210 ms at
+/// the 60 rad/s handoff speed, 31 ms for a 400 rad/s runaway catch.
+pub const READY_MIN_VALID_REVS: f32 = 2.0;
+
+/// External validity: acceptance window for `e_q / (λ·ω̂)`. Real rotation
+/// sits near 1 (the L·di/dt rotation term pushes it above; PLL lag and
+/// flux-angle error pull it below); a phantom lock driven by the machine's
+/// own stator flux sits at ≤ L·i/λ (≈ 0.03–0.14 on the ZD2808 at bench
+/// currents) and a direction mismatch goes negative. The floor is the
+/// discriminating edge; the ceiling only rejects gross nonsense.
+const VALID_BEMF_RATIO_MIN: f32 = 0.4;
+const VALID_BEMF_RATIO_MAX: f32 = 2.5;
+
+/// Time constant (s) of the back-EMF proxy low-pass. A few electrical
+/// ripple periods at handoff speeds: long enough to average the 6th-harmonic
+/// dead-time residue out of the rotating-frame projection, short enough to
+/// track a spin-up.
+const BEMF_PROXY_TAU_S: f32 = 0.01;
+
+/// External validity: once granted, how long (s) the corroboration must be
+/// violated CONTINUOUSLY before validity is revoked. Grant and revoke are
+/// deliberately asymmetric: granting demands [`READY_MIN_VALID_REVS`]
+/// coherent revolutions, but revoking on the first bad sample turned the
+/// readiness gate into a torque chopper — every revocation zeroes iq, the
+/// step transient perturbs the estimate further, and the closed-loop sim
+/// went from a clean spin-up into a gate-flicker limit cycle. A real trust
+/// loss (the bench deadlock: proxy ≈ 0.003·λω̂ for 15 s) violates without
+/// interruption, so a couple hundred ms of debounce distinguishes it from
+/// an acceleration transient at no cost to the failure case.
+const VALID_REVOKE_S: f32 = 0.2;
 
 /// Default nonlinear centering gain (1/s, normalized error): drains a
 /// radius error with τ ≈ 2 ms — orders of magnitude faster than
@@ -302,6 +353,9 @@ impl BackEmfObserver {
             // Start "unlocked": a fresh observer must not look ready until
             // the PLL has actually tracked something.
             phase_err_filt: core::f32::consts::PI,
+            bemf_q_filt: 0.0,
+            valid_travel: 0.0,
+            invalid_time: 0.0,
         }
     }
 
@@ -445,6 +499,57 @@ impl BackEmfObserver {
         let alpha = (dt / PHASE_ERR_FILTER_TAU_S).min(1.0);
         self.phase_err_filt += alpha * (phase_error.abs() - self.phase_err_filt);
 
+        // External validity: does the terminal voltage actually contain the
+        // back-EMF the claimed rotation implies? Project the instantaneous
+        // back-EMF estimate e = v − R·i onto the estimated q axis using the
+        // flux vector itself (e leads the rotor flux by 90°·sign(ω), so for
+        // a REAL rotation e_q ≈ λ·ω, signed). A phantom lock — the observer
+        // tracking the machine's own rotating stator flux with the rotor
+        // standing — has nothing there but the rotation term ω·L·i
+        // (bench + sim: ≤ 0.14·λω at drive currents), and the deadlocked
+        // gate case measures vq ≈ 0.01 V outright. The low-pass averages the
+        // 6th-harmonic dead-time residue out; the DC part of that residue is
+        // already inside the detected R (2-point DC detection).
+        let e_alpha = input.v_alpha - self.r * input.i_alpha;
+        let e_beta = input.v_beta - self.r * input.i_beta;
+        // (x1,x2)/λ is the unit flux direction once converged (the clamp and
+        // centering keep |x| ≈ λ); cross product = q-axis projection.
+        let e_q = (e_beta * self.x1 - e_alpha * self.x2) / self.lambda;
+        let a_e = (dt / BEMF_PROXY_TAU_S).min(1.0);
+        self.bemf_q_filt += a_e * (e_q - self.bemf_q_filt);
+        // Corroborated while the signed ratio e_q/(λ·ω̂) sits in the real-
+        // rotation window at an observable speed. Grant/revoke asymmetry
+        // below: earning validity demands N consecutive coherent
+        // revolutions, losing it demands a sustained violation.
+        let speed_ok = self.velocity_pll.abs() >= READY_MIN_VELOCITY;
+        let bemf_expected = self.lambda * self.velocity_pll;
+        let corroborated = speed_ok
+            && self.bemf_q_filt * bemf_expected > 0.0
+            && (VALID_BEMF_RATIO_MIN * bemf_expected.abs()
+                ..=VALID_BEMF_RATIO_MAX * bemf_expected.abs())
+                .contains(&self.bemf_q_filt.abs());
+        let granted = self.valid_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3;
+        if corroborated {
+            self.invalid_time = 0.0;
+            // Saturate at the threshold: no unbounded growth.
+            self.valid_travel = (self.valid_travel + self.velocity_pll.abs() * dt)
+                .min(READY_MIN_VALID_REVS * core::f32::consts::TAU);
+        } else if granted {
+            // Sticky once granted: revoke only on a SUSTAINED violation
+            // (see VALID_REVOKE_S) so accel/decel transients don't chop
+            // the torque path.
+            self.invalid_time += dt;
+            if self.invalid_time >= VALID_REVOKE_S {
+                self.valid_travel = 0.0;
+                self.invalid_time = 0.0;
+            }
+        } else {
+            // Still earning: any violation restarts the accrual, so grant
+            // means N *consecutive* coherent revolutions.
+            self.valid_travel = 0.0;
+            self.invalid_time = 0.0;
+        }
+
         // Confidence: how close the (raw, pre-correction) flux magnitude is
         // to λ. A weak heuristic — measurement offsets can also saturate the
         // integrator — but cheap and monotonic during real spin-up. With λ
@@ -467,19 +572,41 @@ impl BackEmfObserver {
         self.confidence
     }
 
+    /// External-validity diagnostics: `(bemf_q_filt, valid_travel)` — the
+    /// low-passed q-axis back-EMF proxy (V, signed) and the coherent phase
+    /// travel accumulated toward [`READY_MIN_VALID_REVS`] (rad). For bench
+    /// telemetry and sims; `is_ready` is the consumer that matters.
+    pub fn validity(&self) -> (f32, f32) {
+        (self.bemf_q_filt, self.valid_travel)
+    }
+
     /// Whether the estimate is trustworthy for commutation.
     ///
-    /// Three independent criteria, all required:
+    /// Four independent criteria, all required:
     /// - flux magnitude near λ (the integrator has built up a real flux
     ///   vector, not just noise),
     /// - PLL locked (filtered |phase error| small — a diverging PLL sits
     ///   near π),
     /// - enough speed for back-EMF to be observable at all (at standstill
-    ///   the first two can hold on pure integrator memory).
+    ///   the first two can hold on pure integrator memory),
+    /// - EXTERNAL validity: the terminal voltage carried the back-EMF the
+    ///   claimed rotation implies (e_q ≈ λ·ω̂) for
+    ///   [`READY_MIN_VALID_REVS`] consecutive electrical revolutions.
+    ///
+    /// The first three are *internal* convergence — and all of them hold on
+    /// a phantom lock, where residual inverter distortion feeds the flux
+    /// integrator a rotating vector while the rotor stands still (bench
+    /// 2026-07-06 staircase: handoff at observer 231 rad/s over a ramp at
+    /// 23 → trust-loss deadlock; deterministic in the dead-time sim). The
+    /// fourth is the physics check that a phantom cannot fake: pushing a
+    /// current vector around a standing rotor costs ω·L·i volts on the q
+    /// axis, a real rotation costs λ·ω — an order of magnitude apart at
+    /// drive currents.
     pub fn is_ready(&self) -> bool {
         self.confidence >= READY_MIN_CONFIDENCE
             && self.phase_err_filt < READY_MAX_PHASE_ERR_RAD
             && self.velocity_pll.abs() >= READY_MIN_VELOCITY
+            && self.valid_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3
     }
 
     /// Reset observer state. The adapted λ is kept — it is a physical
@@ -493,6 +620,9 @@ impl BackEmfObserver {
         self.velocity_pll = 0.0;
         self.confidence = 0.0;
         self.phase_err_filt = core::f32::consts::PI;
+        self.bemf_q_filt = 0.0;
+        self.valid_travel = 0.0;
+        self.invalid_time = 0.0;
     }
 
     /// Set motor parameters (re-anchors the λ-tracking bounds; resets the
@@ -525,14 +655,26 @@ impl BackEmfObserver {
         self.x1 = self.lambda * c;
         self.x2 = self.lambda * s;
         // Seeded from a trusted source: flux magnitude is exactly λ and the
-        // PLL is on target by construction.
+        // PLL is on target by construction. The seed also carries the
+        // external validity — the sources that seed (hall/encoder handoff,
+        // the deadshort probe's measured back-EMF) are themselves physical
+        // evidence, and a crossover reseed must not stall for two
+        // revolutions re-proving it.
         self.confidence = 1.0;
         self.phase_err_filt = 0.0;
+        self.valid_travel = READY_MIN_VALID_REVS * core::f32::consts::TAU;
+        self.bemf_q_filt = self.lambda * self.velocity_pll;
+        self.invalid_time = 0.0;
     }
 
     /// Set velocity estimate (for testing or handoff from other source)
     pub fn set_velocity(&mut self, velocity: f32) {
         self.velocity_pll = velocity;
+        // Handoff state, like force_phase: keep the external-validity proxy
+        // consistent with the seeded velocity — seeds arrive as
+        // force_phase + set_velocity in either order, and a stale proxy
+        // would revoke the seed's validity credit on the first update.
+        self.bemf_q_filt = self.lambda * velocity;
     }
 }
 
