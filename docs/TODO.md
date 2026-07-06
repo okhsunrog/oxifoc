@@ -406,25 +406,49 @@ Current numbers and rules — [flash-size.md](flash-size.md); benchmarks —
   1429→387), NTC `libm::logf` every cycle (every 128th now, adc1
   561→223). **Stopped + 20 kHz: 6184→4530 cycles (73%→53%), capture
   loss-free again** (was 472 gaps/34k lost).
-- [ ] **ISR tier 2** — now a CORRECTNESS item, not just a capture-rate
-  wish: the drive/align ISR at ~90-100% of the 8500-cycle budget starves
-  thread mode and trips the deadman at engage (see the root-caused
-  10 kHz item in the sensorless section). The step section split landed
-  2026-07-06 (`isrd/s: gate/ctrl(trig)/post/est`); scaled from mixed
-  engage windows (drive ≈30% of window): **est≈1900** (phase manager:
-  observer+PLL+startup — the mountain), **gate≈1150** (?! clamps/
-  derating/`phase.get`/`read_currents` — suspiciously fat for scalar
-  work), **ctrl≈1070** (of which CORDIC trig≈170), **post≈590**; sum
-  ≈4700 ≈ the earlier step=4900. Per-cycle drive total ≈6800 + 7000 on
-  each 1 kHz push cycle. Older section numbers still valid: `cmd=742`
-  (cache link/fault flags in atomics), `prot=605` (decimate derating
-  mirror + temp CS), `pub=1205` avg under stream. Order of attack:
-  est (why is the estimator 1900?), gate (should be ~200), cmd/prot
-  CS-consolidation. Goal: drive-mode total ≤ ~6500 AND align ≤ drive
-  (align must not be the costliest phase). NOTE: the isr-profiling
-  marks themselves cost ~200 cycles/cycle — measure with them, budget
-  without them.
-- [ ] **g431 RAM: stack → CCM SRAM split** (idea, robustness — not a
+- [ ] **ISR tier 2 — continued** (2026-07-06 evening session landed the
+  first tranche; measured numbers below are from clean full-drive
+  seconds, 0.3A hold + 1 kHz stream, isr-profiling marks ON ≈200 cy):
+  - DONE: remquof/fmodf purged (`wrap_angle` %, `angle_difference`
+    remainderf, `fast_sin` %TAU ×2 per sin_cos → branch+subtract, cold
+    fallback); hall/encoder sampling gated by `requires_*` (est
+    remainder 390→289); `[profile.release.package.oxifoc-core]
+    opt-level=2` (+1.9K flash — killed the align saturation: engage
+    `over=` 409-744 → ~10). Steady drive: **7304/8500 = 86%**.
+  - VERDICT machine-outliner: disabling it (llvm-args) is
+    neutral-to-WORSE for speed here (step 4665→4794, obs 806→954) —
+    flash wait states favor compact code locality. Keep `z`+outliner.
+    Note: generic FOC code monomorphizes in the DEVICE crate at its
+    opt-level — core@O2 only speeds non-generic core fns.
+  - Current split: step=4665 (gate 956 of which read_currents 281,
+    ctrl 1042 of which CORDIC trig 172, post 625, est 1485 = obs 806 +
+    startup 127 + out 263 + rest), cmd 756, prot 595, ctail ~170,
+    adc/snap/pub ≈1100. PC-profile is FLAT (top fn 3.4%) — remaining
+    fat: struct-copy memcpys (~2%, FocOutput by-value chain), CS+RefCell
+    (~3%, ~9 enters/cycle → cmd/prot/pub consolidation), f32 min/max
+    clamp chains (~3%), obs=806 (why? objdump/derive), gate−curr=675
+    (clamps should be ~200).
+  - IDEA (from the flash-WS finding): hot ISR code as ramfunc — CCM
+    leftover is only ~350 B today; would need the RAM ledger revisited.
+  - Engage deadman at the standard 150 ms bound is STILL marginal
+    (fires ~sometimes; fine at 400 ms bench bound) — align at ~87%+
+    leaves thread mode just enough most runs. The est/gate/cmd/prot
+    shave list above is the fix. Goal unchanged: drive total ≤ ~6500
+    AND align ≤ drive.
+- [x] **g431 RAM: stack → CCM SRAM split** — DONE 2026-07-06 (commit
+  after the deadman hunt). Measured first, as this item demanded: stack
+  paint + 1 Hz `stack: free_min=` HWM showed **408 B of idle headroom**
+  (statics 25.3K left 7.48K of stack, idle peak 7.07K) — every deep
+  drive-engage path overflowed it, and ALL of the day's "RTT read pointer
+  changed" reboots were this. Final map: RAM 22K statics, CCMSTACK 9K
+  (idle free 3184 B, drive peak ~7.6K), CCMDATA 1K relocated statics,
+  flip-link retired (unmapped hole below CCM = hard BusFault on
+  overflow). Shaves: defmt ring 512, down-ring 512, RECV_BUF 512
+  (new MAX_RX_PACKET_SIZE), OUT_QUEUE 3328. Up-ring is FLOOR 4096:
+  3072 regressed 20 kHz Stopped capture to 2.7% loss (regression gate:
+  maneuvers/prof-20k-idle.json). Original analysis kept below for
+  reference:
+  (idea, robustness — not a
   throughput lever: raw-Pod made 20 kHz loss-free at Stopped, and the
   under-drive cap is ISR CPU, not buffers — see the ISR-load item above).
   G431's 32 K = SRAM1 16 K +
