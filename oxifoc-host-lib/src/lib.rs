@@ -80,20 +80,12 @@ const DETECT_POLICY: RetryPolicy = RetryPolicy {
     max_backoff_ms: 2_000,
     attempt_timeout_ms: 60_000,
 };
-/// Periodic affirmation of the active drive setpoint that keeps the device's
-/// ISR command-staleness deadman fed (≈150 ms threshold). One short attempt,
-/// **no retry**: a persistently dropped affirmation is exactly what the
-/// deadman must catch — retrying would mask a dying link (cf.
-/// `oxifoc_core::delivery::policy`). The 50 ms resend cadence tolerates the
-/// occasional miss.
-const AFFIRM_POLICY: RetryPolicy = RetryPolicy {
-    deadline_ms: 40,
-    base_backoff_ms: 0,
-    max_backoff_ms: 0,
-    attempt_timeout_ms: 40,
-};
 /// Cadence at which the active drive setpoint is re-affirmed to the device.
 const AFFIRM_INTERVAL: Duration = Duration::from_millis(50);
+/// How long a detached motor-response observer waits before declaring the
+/// response lost (see [`send_motor_now`] — the SEND has already happened by
+/// then; this bounds only the reply bookkeeping).
+const MOTOR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Tokio-backed timer for the reliable-delivery client driver.
 struct TokioTimer;
@@ -1035,6 +1027,13 @@ where
             let mut active_setpoint: Option<ControlMode> = None;
             let mut ticker = tokio::time::interval(AFFIRM_INTERVAL);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // Deadman-margin diagnostics (2026-07-06 trips): the device saw
+            // ≥150 ms of command silence while the RTT writer thread showed a
+            // matching inter-write gap — the frames stopped ARRIVING from
+            // this task. Separate the two remaining suspects: a late tick
+            // (task/runtime stall) vs a slow send (stack stall inside
+            // at_least_once).
+            let mut last_affirm_tick: Option<Instant> = None;
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -1043,6 +1042,13 @@ where
                         handle_command(&stack, cmd, &fast_hz_flag, &mut active_setpoint).await;
                     }
                     _ = ticker.tick() => {
+                        if let Some(prev) = last_affirm_tick {
+                            let gap = prev.elapsed();
+                            if gap > Duration::from_millis(80) {
+                                tracing::warn!("affirm tick late: gap={gap:?}");
+                            }
+                        }
+                        last_affirm_tick = Some(Instant::now());
                         if !connected.load(Ordering::Relaxed) {
                             if active_setpoint.take().is_some() {
                                 tracing::info!(
@@ -1052,27 +1058,37 @@ where
                             continue;
                         }
                         if let Some(mode) = active_setpoint {
-                            let client = stack.clone().reliable::<TokioTimer>();
-                            // The name selects the DESTINATION SOCKET — the
-                            // device's motor server attaches as "motor". This
-                            // was `Some("affirm")` (meant as a diagnostic
-                            // label): no socket by that name exists, ergot
-                            // silently dropped every affirm, and the deadman
-                            // fired ~150 ms into every drive. Found 2026-07-06
-                            // via the rx/s + rtt down/s counter bracket.
-                            let res = client
-                                .at_least_once::<MotorEndpoint>(
-                                    DEVICE_ADDR,
-                                    &mode,
-                                    Some("motor"),
-                                    &AFFIRM_POLICY,
-                                )
-                                .await;
-                            // Fire-and-forget by design, but a FAILED affirm
-                            // is the first suspect whenever the device's
-                            // deadman trips mid-drive — make it visible.
-                            if let Err(e) = res {
-                                tracing::warn!("setpoint affirm failed: {e:?}");
+                            // Truly fire-and-forget: the send is committed on
+                            // the inline first poll (ordered with commands —
+                            // the destination socket name is "motor", the
+                            // device's motor server; `Some("affirm")` once
+                            // pointed at a nonexistent socket and every
+                            // affirm was silently dropped). The response wait
+                            // is detached and swallowed — awaiting it here
+                            // (even with a 40-150 ms budget) let one slow
+                            // round-trip delay the NEXT affirm past the
+                            // device's 150 ms deadman. The device-side
+                            // `stale_max_us` counter is the margin meter.
+                            match send_motor_now(&stack, mode).await {
+                                Ok(Ok(_)) => {}
+                                Ok(Err(e)) => {
+                                    tracing::warn!("setpoint affirm send failed: {e:?}");
+                                }
+                                Err(fut) => {
+                                    tokio::spawn(async move {
+                                        match tokio::time::timeout(Duration::from_secs(1), fut)
+                                            .await
+                                        {
+                                            Ok(Ok(_)) => {}
+                                            Ok(Err(e)) => {
+                                                tracing::debug!("affirm response error: {e:?}");
+                                            }
+                                            Err(_) => {
+                                                tracing::debug!("affirm response timed out");
+                                            }
+                                        }
+                                    });
+                                }
                             }
                         }
                     }
@@ -1228,6 +1244,55 @@ fn spawn_slow_telemetry_poller<NS>(
     });
 }
 
+/// A motor-command response still in flight after the send completed.
+type MotorResponseFut = std::pin::Pin<
+    Box<dyn Future<Output = Result<MotorStatus, ergot::net_stack::ReqRespError>> + Send>,
+>;
+
+/// Send a `MotorEndpoint` request NOW and hand back the pending response.
+///
+/// ergot's `request_full` commits the frame to the interface queue
+/// *synchronously*, before its first await point — so polling the future
+/// exactly once guarantees the frame is on the wire when this returns, and
+/// sends stay strictly ordered by call order within the command task. The
+/// caller then observes the response OUT of the task (detached), so response
+/// latency can never stall the affirm ticker again.
+///
+/// Why this exists (2026-07-06 deadman hunt): the drive-`Start` used to be
+/// awaited inline in the command/affirm `select!` loop. At drive engage the
+/// device-side round-trip inflates to ~100-150 ms (thread-mode latency under
+/// the telemetry stream), the first affirm was delayed by exactly that
+/// round-trip, and the device's 150 ms deadman tripped stochastically
+/// (~2/3 of spins that afternoon). The dropped 70 s inline retry is not
+/// missed: for drive modes the 50 ms affirm cadence IS the retry, and for
+/// stop-class commands a lost frame ends in the deadman failsafe stopping
+/// the motor — the correct direction.
+async fn send_motor_now<NS>(
+    ns: &NS,
+    mode: ControlMode,
+) -> Result<Result<MotorStatus, ergot::net_stack::ReqRespError>, MotorResponseFut>
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+    NS::Mutex: Send + Sync,
+    NS::Profile: Send,
+    NS::Target: Send,
+{
+    let ns = ns.clone();
+    let mut fut: MotorResponseFut = Box::pin(async move {
+        ns.stack()
+            .endpoints()
+            .request::<MotorEndpoint>(DEVICE_ADDR, &mode, Some("motor"))
+            .await
+    });
+    // Poll exactly once: executes the synchronous send, then (normally)
+    // parks on the response receive.
+    let first = std::future::poll_fn(|cx| std::task::Poll::Ready(fut.as_mut().poll(cx))).await;
+    match first {
+        std::task::Poll::Ready(r) => Ok(r),
+        std::task::Poll::Pending => Err(fut),
+    }
+}
+
 async fn handle_command<NS>(
     ns: &NS,
     cmd: HostCommand,
@@ -1255,18 +1320,37 @@ async fn handle_command<NS>(
                 Some(*mc)
             };
             tracing::info!("Sending motor command: {:?}", mc);
-            match client
-                .at_least_once::<MotorEndpoint>(DEVICE_ADDR, mc, Some("motor"), &SETPOINT_POLICY)
-                .await
-            {
-                Ok(status) => tracing::info!("Motor response: {:?}", status),
-                Err(e) => tracing::warn!("Motor command failed: {:?}", e),
+            // Send inline (ordered), observe the response detached — the
+            // await must not hold up this select! loop, or the affirm ticker
+            // starves and the device deadman fires (see send_motor_now).
+            match send_motor_now(ns, *mc).await {
+                Ok(Ok(status)) => tracing::info!("Motor response: {:?}", status),
+                Ok(Err(e)) => tracing::warn!("Motor command failed: {:?}", e),
+                Err(fut) => {
+                    tokio::spawn(async move {
+                        match tokio::time::timeout(MOTOR_RESPONSE_TIMEOUT, fut).await {
+                            Ok(Ok(status)) => tracing::info!("Motor response: {:?}", status),
+                            Ok(Err(e)) => tracing::warn!("Motor command failed: {:?}", e),
+                            Err(_) => tracing::warn!("Motor response lost (sent, no reply)"),
+                        }
+                    });
+                }
             }
         }
         HostCommand::MotorAck(ref mc, reply_tx) => {
             // Same as Motor (incl. the affirmation tracking), but the caller
             // gets the device status / delivery error back — a CLI must not
-            // print "sent" and exit 0 when nothing was delivered.
+            // print "sent" and exit 0 when nothing was delivered. The
+            // response wait is detached like Motor's; a lost response
+            // surfaces to the caller as an error after MOTOR_RESPONSE_TIMEOUT.
+            //
+            // The old clear-active_setpoint-on-failure is gone deliberately:
+            // failure now means "no reply", not "70 s of retries exhausted".
+            // The affirm keeps re-sending the human's commanded value — if
+            // the original frame was lost, the next affirm IS the command
+            // (idempotent); if the LINK is dead, the affirms die with it and
+            // the device deadman stops the motor. Disconnect still drops the
+            // setpoint in the ticker arm.
             *active_setpoint = if matches!(
                 mc,
                 ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
@@ -1276,15 +1360,22 @@ async fn handle_command<NS>(
                 Some(*mc)
             };
             tracing::info!("Sending motor command (acked): {:?}", mc);
-            let res = client
-                .at_least_once::<MotorEndpoint>(DEVICE_ADDR, mc, Some("motor"), &SETPOINT_POLICY)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e:?}"));
-            // A failed drive command must not keep being affirmed.
-            if res.is_err() {
-                *active_setpoint = None;
+            match send_motor_now(ns, *mc).await {
+                Ok(res) => {
+                    let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
+                }
+                Err(fut) => {
+                    tokio::spawn(async move {
+                        let res = match tokio::time::timeout(MOTOR_RESPONSE_TIMEOUT, fut).await {
+                            Ok(r) => r.map_err(|e| anyhow::anyhow!("{e:?}")),
+                            Err(_) => Err(anyhow::anyhow!(
+                                "motor response lost (sent, no reply in {MOTOR_RESPONSE_TIMEOUT:?})"
+                            )),
+                        };
+                        let _ = reply_tx.send(res);
+                    });
+                }
             }
-            let _ = reply_tx.send(res);
         }
         HostCommand::SetPhaseSource(source) => {
             tracing::info!("Setting phase source: {:?}", source);
