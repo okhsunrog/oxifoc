@@ -112,6 +112,8 @@ pub async fn motor_command_server<NS, F, const N: usize>(
         let _ = h
             .serve(|mode: &ControlMode| {
                 let mode = *mode;
+                crate::runtime::streaming::cmd_stats::MOTOR_REQS
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 async move {
                     // Guaranteed enqueue: the ISR drains the channel every
                     // cycle, so this resolves within one FOC period. The old

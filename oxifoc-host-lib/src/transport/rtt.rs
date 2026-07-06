@@ -411,6 +411,16 @@ pub fn connect(
             .unwrap_or(64);
         let mut tick: u32 = 0;
 
+        // 1 Hz down-channel write stats, enabled after the first write of the
+        // session (idle attaches stay quiet). Pairs with the device's `rx/s:`
+        // defmt line to bracket the host→device command path: writes here with
+        // zero `motor_reqs` there = frames lost inside the device; no writes
+        // here while the host is affirming = frames lost in the host stack.
+        let mut down_writes: u32 = 0;
+        let mut down_bytes: u64 = 0;
+        let mut down_seen_any = false;
+        let mut down_report_at = std::time::Instant::now();
+
         loop {
             // Exit promptly on teardown: the receiver side dropping is the
             // shutdown signal. Without this check the thread only noticed on
@@ -469,8 +479,17 @@ pub fn connect(
                             }
                         }
                     }
+                    down_writes += 1;
+                    down_bytes += data.len() as u64;
+                    down_seen_any = true;
                     did_work = true;
                 }
+            }
+            if down_seen_any && down_report_at.elapsed() >= Duration::from_secs(1) {
+                info!("rtt down/s: writes={down_writes} bytes={down_bytes}");
+                down_writes = 0;
+                down_bytes = 0;
+                down_report_at = std::time::Instant::now();
             }
 
             // 3. Read defmt data from device (rate-limited; see defmt_every)

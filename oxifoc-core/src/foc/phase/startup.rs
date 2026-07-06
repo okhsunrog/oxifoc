@@ -59,12 +59,24 @@ const CEILING_MAX_FACTOR: f32 = 2.0;
 /// enough for a measurable dI/dt, short enough that the current stays bounded.
 pub const DEADSHORT_CYCLES: u16 = 8;
 
+/// Shorted-bridge settle time (PWM periods) before the probe captures its
+/// baseline. The first cycles after the bridge (re)enables into the short
+/// carry a genuine decaying current transient — measured ~0.4 A pk over
+/// ~200 µs on B-G431B-ESC1 + ZD2808 (2026-07-06) — which the probe read as
+/// back-EMF and falsely "caught" a spinning rotor at standstill (ω≈46 with
+/// the old 45 threshold). 8 periods = 400 µs ≈ 2× the measured decay; a
+/// rotor with real back-EMF keeps driving current after the settle window,
+/// so a true catch survives the wait.
+pub const DEADSHORT_SETTLE_CYCLES: u16 = 8;
+
 /// Minimum |ω| (rad/s elec) the deadshort must resolve to declare the rotor
 /// "spinning" and seed the observer for a flying restart. Below it (standstill
-/// or barely turning), fall through to the align→ramp cold start. Margin above
-/// the observer's [`READY_MIN_VELOCITY`](super::observer::READY_MIN_VELOCITY)
-/// (30) so the seed lands the observer in its trustworthy band.
-pub const DEADSHORT_MIN_CATCH_VEL: f32 = 45.0;
+/// or barely turning), fall through to the align→ramp cold start. Set at the
+/// handoff velocity: a seed below handoff speed lands the observer in a band
+/// the handoff gates would not trust anyway, and the bench false-catch
+/// (enable transient, see [`DEADSHORT_SETTLE_CYCLES`]) resolved to ω≈46 —
+/// comfortably below this bar as a second line of defense.
+pub const DEADSHORT_MIN_CATCH_VEL: f32 = 60.0;
 
 /// Abort the probe early if |i_αβ| exceeds this (A): the back-EMF drives the
 /// shorted winding toward `e/R`, which on a low-R motor is large — stop and
@@ -140,6 +152,7 @@ pub struct SensorlessStartup {
     handoff_vel: f32,
     timer: f32,
     // ── Deadshort probe state (Phase B) ──
+    ds_settle: u16,
     ds_cycles: u16,
     ds_i0_alpha: f32,
     ds_i0_beta: f32,
@@ -155,6 +168,7 @@ impl Default for SensorlessStartup {
             dir: 1.0,
             handoff_vel: DEFAULT_HANDOFF_VEL,
             timer: 0.0,
+            ds_settle: 0,
             ds_cycles: 0,
             ds_i0_alpha: 0.0,
             ds_i0_beta: 0.0,
@@ -176,6 +190,7 @@ impl SensorlessStartup {
         self.dir = if direction < 0.0 { -1.0 } else { 1.0 };
         self.handoff_vel = DEFAULT_HANDOFF_VEL;
         self.timer = DEFAULT_OPENLOOP_TIME_S + DEFAULT_ALIGN_TIME_S + DEFAULT_RAMP_TIME_S;
+        self.ds_settle = DEADSHORT_SETTLE_CYCLES;
         self.ds_cycles = 0;
         self.ds_elapsed = 0.0;
     }
@@ -333,6 +348,18 @@ impl SensorlessStartup {
         if self.phase != StartupPhase::Deadshort {
             return DeadshortResult::Probing;
         }
+        // Let the bridge-enable current transient decay into the short before
+        // measuring (see DEADSHORT_SETTLE_CYCLES). A current already at the
+        // abort cap means a genuinely energetic rotor — skip straight to the
+        // probe rather than sit shorted on a large current.
+        if self.ds_settle > 0 {
+            let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
+            if i_mag < DEADSHORT_MAX_CURRENT_A {
+                self.ds_settle -= 1;
+                return DeadshortResult::Probing;
+            }
+            self.ds_settle = 0;
+        }
         if self.ds_cycles == 0 {
             self.ds_i0_alpha = i_alpha;
             self.ds_i0_beta = i_beta;
@@ -409,13 +436,25 @@ mod tests {
     /// gives up and falls through to the cold-start ramp (Align). Phase A tests
     /// use this to get past the Phase B probe that now opens every cold start.
     fn skip_deadshort(sm: &mut SensorlessStartup) {
-        for _ in 0..=DEADSHORT_CYCLES {
+        for _ in 0..=(DEADSHORT_SETTLE_CYCLES + DEADSHORT_CYCLES) {
             sm.feed_deadshort(0.0, 0.0, DT, 200e-6, 0.01);
             if sm.phase() != StartupPhase::Deadshort {
                 break;
             }
         }
         assert_eq!(sm.phase(), StartupPhase::Align);
+    }
+
+    /// Feed zero current through the settle window so the next
+    /// `feed_deadshort` call captures the probe baseline.
+    fn skip_settle(sm: &mut SensorlessStartup) {
+        for _ in 0..DEADSHORT_SETTLE_CYCLES {
+            assert_eq!(
+                sm.feed_deadshort(0.0, 0.0, DT, 200e-6, 0.01),
+                DeadshortResult::Probing
+            );
+            assert_eq!(sm.phase(), StartupPhase::Deadshort);
+        }
     }
 
     /// Begin a cold start and skip straight to the Align phase.
@@ -552,6 +591,7 @@ mod tests {
         sm.begin_cold_start(0.0, 1.0); // dir matches the (forward) rotation
         assert_eq!(sm.phase(), StartupPhase::Deadshort);
         assert!(sm.wants_short());
+        skip_settle(&mut sm);
 
         // Cycle 1 captures the baseline; middle cycles only count; the last
         // carries the accumulated dI.
@@ -581,8 +621,9 @@ mod tests {
     fn deadshort_standstill_falls_through_to_align() {
         let mut sm = SensorlessStartup::default();
         sm.begin_cold_start(0.7, 1.0);
-        // No back-EMF (zero dI) over the whole probe → no catch → cold start.
-        for _ in 0..=DEADSHORT_CYCLES {
+        // No back-EMF (zero dI) over the whole settle+probe → no catch →
+        // cold start.
+        for _ in 0..=(DEADSHORT_SETTLE_CYCLES + DEADSHORT_CYCLES) {
             sm.feed_deadshort(0.0, 0.0, DT, 200e-6, 0.01);
         }
         assert_eq!(sm.phase(), StartupPhase::Align);

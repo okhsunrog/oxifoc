@@ -223,6 +223,18 @@ pub async fn telem_stats_task() {
                 bok
             );
         }
+        // Host→device command path: MotorEndpoint requests seen by the
+        // server vs SetModes drained by the ISR. Printed whenever the fast
+        // stream is up (zeros included — a silent RX outage under host
+        // affirms is exactly the case this line exists to catch).
+        {
+            use oxifoc_core::runtime::streaming::cmd_stats as c;
+            let reqs = c::MOTOR_REQS.swap(0, Ordering::Relaxed);
+            let drained = c::SETMODE_DRAINED.swap(0, Ordering::Relaxed);
+            if pok != 0 || reqs != 0 || drained != 0 {
+                defmt::info!("rx/s: motor_reqs={} setmode_drained={}", reqs, drained);
+            }
+        }
         // ISR cost (DWT cycles at 170 MHz): avg/max per cycle + CPU share.
         let cyc_sum = crate::foc::ISR_CYC_SUM.swap(0, Ordering::Relaxed);
         let cyc_max = crate::foc::ISR_CYC_MAX.swap(0, Ordering::Relaxed);

@@ -361,6 +361,8 @@ where
                 // Fresh setpoint from the host — feed the deadman. Set even if
                 // the gates below reject the mode: liveness ≠ acceptance.
                 *saw_set_mode = true;
+                crate::runtime::streaming::cmd_stats::SETMODE_DRAINED
+                    .fetch_add(1, Ordering::Relaxed);
                 mode
             }
             DriverCommand::SetCurrentLimits(limits) => {

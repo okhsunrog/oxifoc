@@ -67,6 +67,19 @@ pub mod fast_telem_stats {
     pub static BCAST_OK: AtomicU32 = AtomicU32::new(0);
 }
 
+/// Command-path counters (host→device direction), 1 Hz-reported by the
+/// device stats task. Bracket the RX pipeline: requests that reached the
+/// MotorEndpoint server vs SetModes actually drained by the ISR — a healthy
+/// link under host affirms shows ~20/s on both; zeros while the host is
+/// affirming localize a silent drop to the transport/routing in between.
+pub mod cmd_stats {
+    use core::sync::atomic::AtomicU32;
+    /// MotorEndpoint requests received by the command server.
+    pub static MOTOR_REQS: AtomicU32 = AtomicU32::new(0);
+    /// `DriverCommand::SetMode` drained by the ISR (deadman stamp events).
+    pub static SETMODE_DRAINED: AtomicU32 = AtomicU32::new(0);
+}
+
 /// Two-stage decimating anti-alias filter (CIC order 2 equivalent).
 ///
 /// Plain decimation-by-dropping folds everything above the new Nyquist
