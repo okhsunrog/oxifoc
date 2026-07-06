@@ -307,51 +307,49 @@ fn ADC1_2() {
         }
     }
 
-    // Local storage for ADC readings
-    let mut ia_raw: u16 = 0;
-    let mut ib_raw: u16 = 0;
-    let mut ic_raw: u16 = 0;
-    let mut vbus_mv: u32 = 0;
-    let mut temp_c_x10: i16 = 0;
-
     // NTC Beta-model conversion runs libm::logf + several float divides
     // (~200 cycles) — decimate to every 128th cycle (156 Hz); the FET
     // thermal time constant is seconds, and consumers read the atomic.
     let convert_temp = *SEQ & 127 == 0;
 
-    // Read ADC1 injected: phase A current, VBUS voltage, FET temperature
-    ADC1_INJECTED.lock(|cell| {
-        if let Some(injected) = cell.borrow_mut().as_mut() {
-            let samples = injected.read_injected_samples();
-            ia_raw = samples[0];
-            IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
+    // Read the injected sequences straight from the JDR registers — the
+    // ISR is the only reader, and going through the CS+RefCell handle
+    // locks cost ~370 cycles/cycle of pure locking (2026-07-06 tier-2
+    // profiling). The `InjectedAdc` handles stay parked in
+    // ADC1_INJECTED/ADC2_INJECTED to keep the peripherals alive (their
+    // Drop stops the ADC); this IRQ is only unmasked after init stores
+    // them and starts the trigger, so the registers are always live here.
+    // Semantics match `read_injected_samples` (JDR reads, then JEOS
+    // clear), with a plain w1c write instead of embassy's read-modify-
+    // write (which could eat other pending flags).
+    let adc1 = embassy_stm32::pac::ADC1;
+    let adc2 = embassy_stm32::pac::ADC2;
+    // ADC1 injected: phase A current, VBUS voltage, FET temperature
+    let ia_raw: u16 = adc1.jdr(0).read().jdata();
+    let vbus_raw: u16 = adc1.jdr(1).read().jdata();
+    let temp_raw: u16 = adc1.jdr(2).read().jdata();
+    adc1.isr().write(|w| w.set_jeos(true));
+    // ADC2 injected: phase B and C currents
+    let ib_raw: u16 = adc2.jdr(0).read().jdata();
+    let ic_raw: u16 = adc2.jdr(1).read().jdata();
+    adc2.isr().write(|w| w.set_jeos(true));
 
-            // Convert VBUS raw ADC to millivolts
-            vbus_mv = BOARD.vbus_mv_from_adc(samples[1]);
-            VBUS_MV.store(vbus_mv, Ordering::Relaxed);
-
-            // Convert temperature raw ADC to 0.1°C units
-            if convert_temp {
-                temp_c_x10 = NTC.temp_c_x10_from_adc(samples[2], BOARD.calib.adc_max_counts);
-                FET_TEMP_C_X10.store(temp_c_x10, Ordering::Relaxed);
-            } else {
-                temp_c_x10 = FET_TEMP_C_X10.load(Ordering::Relaxed);
-            }
-        }
-    });
+    IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
+    // Convert VBUS raw ADC to millivolts
+    let vbus_mv: u32 = BOARD.vbus_mv_from_adc(vbus_raw);
+    VBUS_MV.store(vbus_mv, Ordering::Relaxed);
+    // Convert temperature raw ADC to 0.1°C units
+    let temp_c_x10: i16 = if convert_temp {
+        let t = NTC.temp_c_x10_from_adc(temp_raw, BOARD.calib.adc_max_counts);
+        FET_TEMP_C_X10.store(t, Ordering::Relaxed);
+        t
+    } else {
+        FET_TEMP_C_X10.load(Ordering::Relaxed)
+    };
 
     let prof_t1 = cortex_m::peripheral::DWT::cycle_count();
-
-    // Read ADC2 injected: phase B and C currents
-    ADC2_INJECTED.lock(|cell| {
-        if let Some(injected) = cell.borrow_mut().as_mut() {
-            let samples = injected.read_injected_samples();
-            ib_raw = samples[0];
-            ic_raw = samples[1];
-            IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
-            IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
-        }
-    });
+    IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
+    IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
 
     let prof_t2 = cortex_m::peripheral::DWT::cycle_count();
 
@@ -368,8 +366,15 @@ fn ADC1_2() {
     let adc_snapshot = AdcSnapshot::new(ia_raw, ib_raw, ic_raw, vbus_mv, *SEQ)
         .with_temp(TempSensorId::Fet, temp_c_x10);
 
-    // Get Hall snapshot
-    let hall_snapshot = hall::get_snapshot(now_ticks);
+    // Get Hall snapshot. On the sensorless build the hall inputs are not
+    // wired: the estimator would interpolate garbage every cycle (CS +
+    // RefCell + sample math) for a snapshot nothing consumes — skip it at
+    // compile time.
+    let hall_snapshot = if crate::config::SENSORLESS {
+        None
+    } else {
+        hall::get_snapshot(now_ticks)
+    };
 
     let prof_t3 = cortex_m::peripheral::DWT::cycle_count();
 

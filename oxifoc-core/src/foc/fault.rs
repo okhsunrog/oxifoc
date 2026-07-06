@@ -329,6 +329,32 @@ pub struct FaultRegistry<F: PlatformFault> {
     faults: CriticalSectionMutex<RefCell<Vec<F, MAX_FAULTS>>>,
     /// Signal to wake tasks when faults change
     changed: Signal<CriticalSectionRawMutex, ()>,
+    /// Lock-free mirror of the registry for the per-cycle ISR queries
+    /// (`any`/`any_kill`/`any_stopping`/`has_category` ran 3–5× per FOC
+    /// cycle as CS + RefCell + Vec scans — a measurable slice of the ISR
+    /// budget). Bits 0..=15: category present (`FaultCategory` discriminant
+    /// as bit index); bit 16: any Kill-class; bit 17: any stopping-class
+    /// (GracefulStop or Kill). Rebuilt inside the lock on every mutation.
+    summary: core::sync::atomic::AtomicU32,
+}
+
+#[cfg(feature = "runtime")]
+const SUMMARY_KILL: u32 = 1 << 16;
+#[cfg(feature = "runtime")]
+const SUMMARY_STOPPING: u32 = 1 << 17;
+
+#[cfg(feature = "runtime")]
+fn summary_of<F: PlatformFault>(faults: &Vec<F, MAX_FAULTS>) -> u32 {
+    let mut s = 0u32;
+    for f in faults.iter() {
+        s |= 1 << (f.category() as u32);
+        match f.severity() {
+            FaultSeverity::Kill => s |= SUMMARY_KILL | SUMMARY_STOPPING,
+            FaultSeverity::GracefulStop => s |= SUMMARY_STOPPING,
+            FaultSeverity::Warning => {}
+        }
+    }
+    s
 }
 
 #[cfg(feature = "runtime")]
@@ -338,6 +364,7 @@ impl<F: PlatformFault> FaultRegistry<F> {
         Self {
             faults: CriticalSectionMutex::new(RefCell::new(Vec::new())),
             changed: Signal::new(),
+            summary: core::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -355,7 +382,7 @@ impl<F: PlatformFault> FaultRegistry<F> {
             let cat = fault.category();
 
             // Check if this fault category is already present
-            if let Some(pos) = faults.iter().position(|f| f.category() == cat) {
+            let res = if let Some(pos) = faults.iter().position(|f| f.category() == cat) {
                 // Update existing fault with new data
                 let changed = faults[pos] != fault;
                 faults[pos] = fault;
@@ -363,7 +390,10 @@ impl<F: PlatformFault> FaultRegistry<F> {
             } else {
                 // Add new fault
                 (faults.push(fault).is_ok(), false)
-            }
+            };
+            self.summary
+                .store(summary_of(&faults), core::sync::atomic::Ordering::Relaxed);
+            res
         });
 
         if newly_added || value_changed {
@@ -379,6 +409,8 @@ impl<F: PlatformFault> FaultRegistry<F> {
             let mut faults = cell.borrow_mut();
             if let Some(pos) = faults.iter().position(|f| f.category() == category) {
                 faults.swap_remove(pos);
+                self.summary
+                    .store(summary_of(&faults), core::sync::atomic::Ordering::Relaxed);
                 true
             } else {
                 false
@@ -401,6 +433,7 @@ impl<F: PlatformFault> FaultRegistry<F> {
             let mut faults = cell.borrow_mut();
             let had = !faults.is_empty();
             faults.clear();
+            self.summary.store(0, core::sync::atomic::Ordering::Relaxed);
             had
         });
 
@@ -411,33 +444,24 @@ impl<F: PlatformFault> FaultRegistry<F> {
 
     /// Returns true if any fault is active
     pub fn any(&self) -> bool {
-        self.faults.lock(|cell| !cell.borrow().is_empty())
+        self.summary.load(core::sync::atomic::Ordering::Relaxed) & 0xFFFF != 0
     }
 
     /// Returns true if any Kill-class fault is active (immediate high-Z)
     pub fn any_kill(&self) -> bool {
-        self.faults.lock(|cell| {
-            cell.borrow()
-                .iter()
-                .any(|f| f.severity() == FaultSeverity::Kill)
-        })
+        self.summary.load(core::sync::atomic::Ordering::Relaxed) & SUMMARY_KILL != 0
     }
 
     /// Returns true if any fault that stops the motor is active
     /// (GracefulStop or Kill) — the start gate blocks on this; warnings
     /// never block.
     pub fn any_stopping(&self) -> bool {
-        self.faults.lock(|cell| {
-            cell.borrow()
-                .iter()
-                .any(|f| f.severity() >= FaultSeverity::GracefulStop)
-        })
+        self.summary.load(core::sync::atomic::Ordering::Relaxed) & SUMMARY_STOPPING != 0
     }
 
     /// Check if a specific fault category is active
     pub fn has_category(&self, category: FaultCategory) -> bool {
-        self.faults
-            .lock(|cell| cell.borrow().iter().any(|f| f.category() == category))
+        self.summary.load(core::sync::atomic::Ordering::Relaxed) & (1 << (category as u32)) != 0
     }
 
     /// Get a fault by category

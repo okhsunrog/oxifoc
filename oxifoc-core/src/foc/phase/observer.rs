@@ -467,8 +467,13 @@ impl BackEmfObserver {
         // angle; unlike a two-sided pull it never inflates a small flux to
         // the configured circle — that would fabricate confidence and feed
         // the λ tracker its own output.
+        // One reciprocal for the three λ normalizations below (centering,
+        // e_q projection, confidence) — λ ≥ 1e-6 by construction.
+        let inv_lambda = 1.0 / self.lambda;
+
         if self.centering_gain > 0.0 && flux_mag > self.lambda {
-            let err_norm = 1.0 - (flux_mag * flux_mag) / (self.lambda * self.lambda);
+            let mag_norm = flux_mag * inv_lambda;
+            let err_norm = 1.0 - mag_norm * mag_norm;
             // Clamp: never drain more than half the radius in one cycle,
             // whatever gain·dt·overshoot multiplies out to.
             let pull = crate::foc::clamp_f32(err_norm * self.centering_gain * dt, -0.5, 0.0);
@@ -514,7 +519,7 @@ impl BackEmfObserver {
         let e_beta = input.v_beta - self.r * input.i_beta;
         // (x1,x2)/λ is the unit flux direction once converged (the clamp and
         // centering keep |x| ≈ λ); cross product = q-axis projection.
-        let e_q = (e_beta * self.x1 - e_alpha * self.x2) / self.lambda;
+        let e_q = (e_beta * self.x1 - e_alpha * self.x2) * inv_lambda;
         let a_e = (dt / BEMF_PROXY_TAU_S).min(1.0);
         self.bemf_q_filt += a_e * (e_q - self.bemf_q_filt);
         // Corroborated while the signed ratio e_q/(λ·ω̂) sits in the real-
@@ -554,7 +559,7 @@ impl BackEmfObserver {
         // to λ. A weak heuristic — measurement offsets can also saturate the
         // integrator — but cheap and monotonic during real spin-up. With λ
         // tracking enabled the normalization adapts along with the clamp.
-        self.confidence = crate::foc::clamp_f32(flux_mag / self.lambda, 0.0, 1.0);
+        self.confidence = crate::foc::clamp_f32(flux_mag * inv_lambda, 0.0, 1.0);
     }
 
     /// Get estimated electrical phase (radians)

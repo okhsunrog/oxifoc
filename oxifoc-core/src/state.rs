@@ -327,7 +327,14 @@ where
     F: PlatformFault,
 {
     let mut saw_set_mode = false;
-    process_commands_inner(state_mutex, foc, fault_registry, &mut saw_set_mode)
+    let link_active = critical_section::with(|cs| state_mutex.borrow(cs).borrow().link_active);
+    process_commands_inner(
+        state_mutex,
+        foc,
+        fault_registry,
+        &mut saw_set_mode,
+        link_active,
+    )
 }
 
 /// Like [`process_commands`] but reports whether a `SetMode` was drained on
@@ -340,6 +347,7 @@ pub fn process_commands_inner<P, C, Ph, S, F>(
     foc: &mut FocDriver<P, C, Ph, S>,
     fault_registry: &FaultRegistry<F>,
     saw_set_mode: &mut bool,
+    link_active: bool,
 ) -> ControlMode
 where
     P: PhasePwm,
@@ -510,7 +518,6 @@ where
     // motor (up to brake_time_s) — it syncs at the failsafe terminal in
     // `run_foc_cycle`, so e.g. the config server's motor-running gate can't
     // admit a flash stall mid-brake.
-    let link_active = critical_section::with(|cs| state_mutex.borrow(cs).borrow().link_active);
     if !link_active
         && !DETECTION_ACTIVE.load(Ordering::Relaxed)
         && !matches!(
@@ -556,9 +563,31 @@ where
 
     let prof_t0 = crate::isr_prof::now();
 
+    // One consolidated CS for everything this cycle needs from / mirrors
+    // into the shared state (link flag, previous-cycle temperatures,
+    // derating scales). These used to be four separate CS + RefCell
+    // entries per cycle — pure lock overhead in the ISR. The derating
+    // mirror is the PREVIOUS cycle's value (recomputed every 256 ticks
+    // anyway; the slow-telemetry consumer cannot tell).
+    let (link_active, fet_t, motor_t) = critical_section::with(|cs| {
+        let mut st = state_mutex.borrow(cs).borrow_mut();
+        st.derating = driver.derating();
+        (
+            st.link_active,
+            st.last_adc.fet_temp_c_x10(),
+            st.last_adc.motor_temp_c_x10(),
+        )
+    });
+
     let prev_mode = driver.mode();
     let mut saw_set_mode = false;
-    let mode = process_commands_inner(state_mutex, driver, fault_registry, &mut saw_set_mode);
+    let mode = process_commands_inner(
+        state_mutex,
+        driver,
+        fault_registry,
+        &mut saw_set_mode,
+        link_active,
+    );
 
     // Command-staleness deadman (ISR-resident — survives an async-executor
     // hang): stamp on a fresh setpoint; a stale link while running raises
@@ -577,7 +606,7 @@ where
     // the failsafe directly (it predates the fault path and stays as belt
     // and braces); raising the fault here makes the event visible to the
     // host/remote instead of silent.
-    let link_lost = !critical_section::with(|cs| state_mutex.borrow(cs).borrow().link_active);
+    let link_lost = !link_active;
     let in_safe_mode = matches!(
         mode,
         ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
@@ -587,12 +616,15 @@ where
     // detection still raises CommTimeout.
     let link_lost_unacked = link_lost && !in_safe_mode && !DETECTION_ACTIVE.load(Ordering::Relaxed);
     // Staleness margin meter (see cmd_stats::STALENESS_MAX_US): how close
-    // this window came to the deadman bound.
-    if let Some(st) = driver.command_staleness_us(now_ticks) {
+    // this window came to the deadman bound. Computed once and shared with
+    // the deadman check — the u64 tick math is measurable twice per ISR.
+    let staleness = driver.command_staleness_us(now_ticks);
+    if let Some(st) = staleness {
         crate::runtime::streaming::cmd_stats::STALENESS_MAX_US
             .fetch_max(st.min(u64::from(u32::MAX)) as u32, Ordering::Relaxed);
     }
-    if (driver.deadman_expired(now_ticks) || link_lost_unacked)
+    let deadman_expired = driver.deadman_expired_with(staleness, now_ticks);
+    if (deadman_expired || link_lost_unacked)
         && let Some(f) = F::from_category(FaultCategory::CommTimeout)
     {
         // Log the raise edge only (the condition persists until a SetMode
@@ -601,8 +633,7 @@ where
         if !fault_registry.has_category(FaultCategory::CommTimeout) {
             warn!(
                 "CommTimeout raised: deadman_expired={} link_lost={}",
-                driver.deadman_expired(now_ticks),
-                link_lost_unacked
+                deadman_expired, link_lost_unacked
             );
         }
         fault_registry.set(f);
@@ -616,14 +647,7 @@ where
     let prof_t1 = crate::isr_prof::now();
     crate::isr_prof::add(&crate::isr_prof::CYCLE_CMD, prof_t0, prof_t1);
 
-    let (fet_t, motor_t) = critical_section::with(|cs| {
-        let st = state_mutex.borrow(cs).borrow();
-        (st.last_adc.fet_temp_c_x10(), st.last_adc.motor_temp_c_x10())
-    });
     driver.run_protection(fault_registry, board, vbus_v, fet_t, motor_t);
-    critical_section::with(|cs| {
-        state_mutex.borrow(cs).borrow_mut().derating = driver.derating();
-    });
 
     let prof_t2 = crate::isr_prof::now();
     crate::isr_prof::add(&crate::isr_prof::CYCLE_PROT, prof_t1, prof_t2);

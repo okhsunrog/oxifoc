@@ -173,9 +173,17 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         let duty_b = u32::from(duties[1]).min(self.duty_limit);
         let duty_c = u32::from(duties[2]).min(self.duty_limit);
 
-        self.pwm.set_duty(Channel::Ch1, duty_a);
-        self.pwm.set_duty(Channel::Ch2, duty_b);
-        self.pwm.set_duty(Channel::Ch3, duty_c);
+        // Direct CCR writes instead of embassy's set_duty: this runs every
+        // FOC cycle, and each set_duty re-reads ARR for its assert plus a
+        // fallible narrowing per channel (~200 cycles/cycle total for the
+        // three phases, 2026-07-06 tier-2 PC profiling). The clamp above is
+        // the real safety bound; `self.pwm` still owns TIM1.
+        // Truncations are safe: the values were just clamped to duty_limit
+        // ≤ max_duty = ARR (16-bit).
+        let tim = embassy_stm32::pac::TIM1;
+        tim.ccr(0).write(|w| w.set_ccr(duty_a as u16));
+        tim.ccr(1).write(|w| w.set_ccr(duty_b as u16));
+        tim.ccr(2).write(|w| w.set_ccr(duty_c as u16));
     }
 
     fn disable(&mut self) {

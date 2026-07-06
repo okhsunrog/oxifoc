@@ -829,6 +829,14 @@ where
     ///
     /// Also false while the failsafe already runs.
     pub fn deadman_expired(&self, now_ticks: u64) -> bool {
+        self.deadman_expired_with(self.command_staleness_us(now_ticks), now_ticks)
+    }
+
+    /// [`Self::deadman_expired`] with the staleness precomputed by the
+    /// caller — `run_foc_cycle` already needs [`Self::command_staleness_us`]
+    /// for its margin meter every cycle, and computing the u64 tick math
+    /// twice per ISR is measurable at 20 kHz.
+    pub fn deadman_expired_with(&self, staleness_us: Option<u64>, now_ticks: u64) -> bool {
         let bound_us = match self.mode {
             ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake => return false,
             ControlMode::OpenLoop { .. } | ControlMode::DirectVoltage { .. } => {
@@ -849,19 +857,15 @@ where
         if self.failsafe_ctrl.is_active() {
             return false;
         }
-        match self.last_cmd_tick {
-            // Running implies a SetMode was drained this-or-an-earlier cycle
-            // (which stamps), so this arm is effectively unreachable; treat a
-            // missing stamp as not-stale (defensive).
-            None => false,
-            // saturating, NOT wrapping: the tick source (TIM4 CNT + software
-            // overflow count) can glitch BACKWARD when the overflow ISR is
-            // starved past a wrap by a saturated FOC ISR (bench 2026-07-06:
-            // deadman fired at engage+70 ms — one 65.5 ms TIM4 period — with
-            // staleness reading u32::MAX). A clock that ran backward is not
-            // a stale command.
-            Some(t) => now_ticks.saturating_sub(t) > bound_us,
-        }
+        // `command_staleness_us` is already saturating, NOT wrapping: the
+        // tick source (TIM4 CNT + software overflow count) can glitch
+        // BACKWARD when the overflow ISR is starved past a wrap by a
+        // saturated FOC ISR (bench 2026-07-06: deadman fired at engage+70 ms
+        // — one 65.5 ms TIM4 period — with staleness reading u32::MAX). A
+        // clock that ran backward is not a stale command. A missing stamp
+        // (None) is treated as not-stale (defensive; Running implies a
+        // SetMode was drained, which stamps).
+        staleness_us.is_some_and(|s| s > bound_us)
     }
 
     /// Arm the failsafe sequence (deadman or link-loss). Idempotent. Falls
@@ -1573,13 +1577,14 @@ where
             return Err(StepError::NotCalibrated);
         }
 
-        // Advance angle if velocity is set, otherwise use commanded angle
+        // Advance angle if velocity is set, otherwise use commanded angle.
+        // wrap_angle, not `%`: f32 `%` is a libm fmodf call (~200 cycles,
+        // caught by 2026-07-06 tier-2 PC profiling), while the increment
+        // here is always a small step from an already-wrapped angle —
+        // wrap_angle's branch+subtract hot path.
         let angle = if velocity_rad_s != 0.0 {
-            self.open_loop_angle += velocity_rad_s * dt;
-            self.open_loop_angle %= core::f32::consts::TAU;
-            if self.open_loop_angle < 0.0 {
-                self.open_loop_angle += core::f32::consts::TAU;
-            }
+            self.open_loop_angle =
+                crate::foc::wrap_angle(self.open_loop_angle + velocity_rad_s * dt);
             self.open_loop_angle
         } else {
             self.open_loop_angle = angle_rad;

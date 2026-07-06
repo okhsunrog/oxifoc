@@ -53,6 +53,13 @@ pub struct ShuntCurrentSense {
     /// where positive motor current produces ADC values below the zero-current offset).
     /// If false, current = (ADC - offset) × scale (standard convention).
     invert_sign: bool,
+    /// Cached signed conversion scale (A per ADC count):
+    /// `±(vref_mv / max_counts) / 1000 / (shunt·gain)` — negative when
+    /// `invert_sign`. The naive per-sample formula ran three f32 divides
+    /// per phase (9 `vdiv` per FOC cycle, ~180 cycles of the ISR budget);
+    /// the scale only changes with the electrical constants, so it is
+    /// folded once here.
+    amps_per_count: f32,
     /// Zero-current ADC offset for phase A (in ADC counts)
     offset_a: f32,
     /// Zero-current ADC offset for phase B (in ADC counts)
@@ -66,17 +73,29 @@ pub struct ShuntCurrentSense {
 impl ShuntCurrentSense {
     /// Create a new shunt current sense converter
     pub fn new(shunt_ohms: f32, opamp_gain: f32, adc_vref_mv: u32, adc_max_counts: u16) -> Self {
-        Self {
+        let mut s = Self {
             shunt_ohms,
             opamp_gain,
             adc_vref_mv,
             adc_max_counts,
             invert_sign: false,
+            amps_per_count: 0.0,
             offset_a: f32::from(adc_max_counts) / 2.0, // Default to mid-scale
             offset_b: f32::from(adc_max_counts) / 2.0,
             offset_c: f32::from(adc_max_counts) / 2.0,
             calibrated_phases: 0,
-        }
+        };
+        s.recompute_scale();
+        s
+    }
+
+    /// Refresh the cached [`Self::amps_per_count`] from the electrical
+    /// constants and the sign convention. Call after changing any of them.
+    fn recompute_scale(&mut self) {
+        // counts → mV → V → A, folded into one factor.
+        let scale = (self.adc_vref_mv as f32)
+            / (f32::from(self.adc_max_counts) * 1000.0 * self.shunt_ohms * self.opamp_gain);
+        self.amps_per_count = if self.invert_sign { -scale } else { scale };
     }
 
     /// Build a converter from the wire [`BoardCalib`](crate::types::BoardCalib)
@@ -102,6 +121,7 @@ impl ShuntCurrentSense {
     /// below the zero-current offset). Default is `false`.
     pub fn set_invert_sign(&mut self, invert: bool) {
         self.invert_sign = invert;
+        self.recompute_scale();
     }
 
     /// Convert raw ADC counts to current in Amperes
@@ -198,24 +218,14 @@ impl ShuntCurrentSense {
         self.calibrated_phases = 0b111;
     }
 
-    /// Internal helper: convert a single ADC reading to current (A)
+    /// Internal helper: convert a single ADC reading to current (A).
+    ///
+    /// Sign convention depends on shunt topology and is baked into the
+    /// cached scale (see [`Self::recompute_scale`]):
+    /// - Normal: I = (ADC − offset) × scale
+    /// - Inverted (low-side shunts, MCSDK): scale is negative
     fn adc_to_current(&self, adc_counts: u16, offset: f32) -> f32 {
-        // Sign convention depends on shunt topology:
-        // - Normal: I = (ADC - offset) × scale
-        // - Inverted (low-side shunts, MCSDK): I = (offset - ADC) × scale
-        let delta_counts = if self.invert_sign {
-            offset - f32::from(adc_counts)
-        } else {
-            f32::from(adc_counts) - offset
-        };
-
-        // Convert ADC counts to voltage (in millivolts)
-        let v_mv = delta_counts * (self.adc_vref_mv as f32) / f32::from(self.adc_max_counts);
-
-        // Convert voltage to current (V = I × R × G)
-        // I = V / (R_shunt × OPAMP_gain)
-        // Note: v_mv is in millivolts, so divide by 1000 to get volts
-        (v_mv / 1000.0) / (self.shunt_ohms * self.opamp_gain)
+        (f32::from(adc_counts) - offset) * self.amps_per_count
     }
 }
 
