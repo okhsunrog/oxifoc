@@ -131,7 +131,7 @@ pub async fn init(
     foc_driver.current_sensor_mut().calibrate().await;
 
     // Publish the measured zero-current offsets into the DcOffsets config
-    // group (mirrors g431/f405, added there in cd86f1c): the host's telemetry
+    // group (mirrors g431/f405): the host's telemetry
     // enrichment falls back to mid-scale ADC counts for a missing group, and
     // on this board's +1.71 V-biased amps that fallback shifts reconstructed
     // phase currents by ~1.2 A. The boot measurement is the ground truth for

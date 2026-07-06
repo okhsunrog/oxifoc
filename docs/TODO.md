@@ -252,7 +252,15 @@ validation + v1 refinements:
   per-platform copy (voltage/temp fault checks moved into core
   `run_protection` 2026-06-13). Move the rest of the ISR glue into core
   BEFORE reviving g474 (otherwise it will reproduce already-fixed F405
-  bugs).
+  bugs). Same refactor should absorb the `init_foc` boot-sequence tail,
+  duplicated byte-for-byte across g431/g474/f405: `set_failsafe` /
+  `set_velocity_config` / `set_derating` from stored config, the ADC
+  settle delay, `calibrate().await`, the DcOffsets publish block, and
+  the `FOC_DRIVER` install. No technical blocker — all three crates
+  declare the identical `Mutex<RefCell<oxifoc_core::storage::RuntimeConfig>>`
+  static, so a core helper taking `&'static` refs works as-is; the
+  g474 DcOffsets miss caught in the 2026-07 branch review is exactly
+  the bug class this eliminates.
 - [ ] g474 motor modules are commented out until the IHM08M1 is
   connected; `control/foc.rs` is synced by hand with no compile check.
 - [ ] **g474 + IHM08M1: checklist before powering a motor**
