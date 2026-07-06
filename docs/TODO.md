@@ -211,11 +211,19 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       standing rotor reads ~0 and can never seed).
     - **REMAINING KILLER, cleanly isolated**: post-handoff dq OC while
       closed loop accelerates the unloaded rotor through the ω_e
-      400–800 L(f) band (iq oscillation growing ±6 → ±9.8 A) — this is
-      exactly pre-existing reproducer #1/#3 (band-transit), now
-      reachable in one 10 s spin-gentle-180 run. The mid-band
-      estimator↔loop investigation (λ-tracker dynamics, PLL accel lag,
-      eddy-branch plant, dead-time comp quality) is THE next session.
+      400–800 L(f) band — reachable in one 10 s spin-gentle-180 run.
+      NEW STRUCTURE (capreport --marks zoom of spin-gentle-180-3,
+      confirmed visually): NOT a continuous oscillation — the drive is
+      CALM at ~0.5 A between discrete, growing bipolar id/iq spikes
+      (−4 → ±10 A over 0.4 s) at ~80 ms cadence, each with an erpm dip;
+      the cadence ≈ the MECHANICAL revolution period at that speed
+      (12–19 Hz) → suspect a once-per-rev feature (rotor eccentricity /
+      magnet weak spot / PLL pole-slip re-lock events), which reframes
+      the investigation: find the per-rev trigger and why each ring
+      grows, rather than tune continuous loop gains first. λ-tracker
+      dynamics, PLL accel lag, eddy-branch plant, dead-time comp
+      quality remain the levers; 20 kHz capture of one spike (loss is
+      acceptable, the spike is 5–10 ms) is the first data to get.
     Distortion-floor context for the record: at ramp 60–63 the observer
     read 32–62 with confidence DECAYING 1.0→0.59 and validity never
     corroborating — λω ≈ 72 mV is at/below the post-comp dead-time
