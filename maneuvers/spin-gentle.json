@@ -1,0 +1,14 @@
+{
+  "name": "spin-gentle",
+  "description": "Handoff validation at moderate speed: 1.5 A to spin up through the cold start, drop to 0.3 A quickly so the unloaded rotor settles at a moderate speed (the current loop is only marginally stable at high w_e until the AC-L/decoupling work lands), then unload. 1 kHz capture (10 kHz drive capture blocked on the ISR-glue refactor).",
+  "capture": {
+    "fast_hz": 1000,
+    "tail_s": 0.5
+  },
+  "terminal": "stop",
+  "timeline": [
+    { "t": 0.5, "cmd": { "start": { "iq": 1.5 } } },
+    { "t": 1.6, "cmd": { "start": { "iq": 0.3 } } },
+    { "t": 4.0, "cmd": { "start": { "iq": 0.0 } } }
+  ]
+}

@@ -1156,6 +1156,24 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                         self.observer.velocity().unwrap_or(0.0)
                     );
                     self.startup.deactivate();
+                } else if phase_now == StartupPhase::Hold {
+                    // Waiting on the observer: ~2 Hz convergence trace so a
+                    // hold that never hands off (observer incoherent, see
+                    // HANDOFF_COHERENCE_FRAC) is diagnosable from the log.
+                    use core::sync::atomic::{AtomicU32, Ordering};
+                    static HOLD_TICKS: AtomicU32 = AtomicU32::new(0);
+                    if HOLD_TICKS
+                        .fetch_add(1, Ordering::Relaxed)
+                        .is_multiple_of(8192)
+                    {
+                        info!(
+                            "startup: holding (openloop_vel={} observer_vel={} ready={} conf={})",
+                            out.velocity,
+                            self.observer.velocity().unwrap_or(0.0),
+                            self.observer.is_ready(),
+                            self.observer.confidence()
+                        );
+                    }
                 }
             }
         }

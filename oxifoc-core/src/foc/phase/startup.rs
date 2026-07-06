@@ -313,11 +313,18 @@ impl SensorlessStartup {
 
         self.angle = wrap_angle(self.angle + self.velocity * dt);
 
-        // Hand off only when the observer has actually converged AND there is
-        // enough speed for it to track — both the open-loop command and the
-        // observer's own estimate must clear the handoff floor.
-        let fast_enough =
-            self.velocity.abs() >= self.handoff_vel && observer_vel.abs() >= self.handoff_vel * 0.5;
+        // Hand off when the observer has converged AND is tracking at a
+        // usable speed. Two ways to be "fast enough": the open-loop drag
+        // reached the handoff velocity (nominal synchronous ramp), or the
+        // observer itself reads at/above it — an unloaded rotor slips ahead
+        // of the I/f ramp and runs away (bench + sim 2026-07-06: rotor at
+        // 380–800 rad/s while the ramp was still at 50–65; the phase-current
+        // frequency in the capture confirmed the observer was RIGHT). Waiting
+        // for the ramp in that case only lets the runaway grow — a ready
+        // observer at handoff speed takes over immediately.
+        let fast_enough = (self.velocity.abs() >= self.handoff_vel
+            && observer_vel.abs() >= self.handoff_vel * 0.5)
+            || observer_vel.abs() >= self.handoff_vel;
         let handoff = observer_ready && fast_enough && self.phase != StartupPhase::Align;
 
         StartupOutput {
@@ -554,6 +561,23 @@ mod tests {
         // Observer ready AND tracking at speed → handoff.
         let o = sm.tick(DT, 5.0, true, DEFAULT_HANDOFF_VEL);
         assert!(o.handoff);
+    }
+
+    #[test]
+    fn runaway_rotor_hands_off_early() {
+        // I/f runaway: an unloaded rotor slips ahead of the ramp and
+        // accelerates freely. A READY observer tracking it at handoff speed
+        // must take over immediately — waiting for the ramp to reach the
+        // handoff velocity only lets the runaway grow (bench 2026-07-06).
+        let mut sm = cold_start_to_align(0.0, 1.0);
+        run(&mut sm, DEFAULT_ALIGN_TIME_S + 0.02, 5.0); // just into Ramp
+        assert_eq!(sm.phase(), StartupPhase::Ramp);
+        assert!(sm.velocity() < DEFAULT_HANDOFF_VEL);
+        let o = sm.tick(DT, 5.0, true, 400.0);
+        assert!(
+            o.handoff,
+            "ready+fast observer must take over a runaway rotor"
+        );
     }
 
     // ── Phase B: deadshort flying restart ──
