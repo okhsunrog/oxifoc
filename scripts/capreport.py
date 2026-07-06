@@ -93,11 +93,25 @@ def osc_freq_hz(x, t):
     crossings = int((np.diff(signs) != 0).sum())
     return crossings / 2.0 / dur  # a full cycle == 2 mean-crossings
 
-def seg_features(sl, iq_cmd=None):
+def seg_features(sl, iq_cmd=None, motor=None):
     t = sl["t_s"].to_numpy()
     iq = sl["iq_a"].to_numpy(); erpm = sl["erpm"].to_numpy()
     vmag = np.hypot(sl["vd_v"].to_numpy(), sl["vq_v"].to_numpy())
     iabc = np.maximum.reduce([np.abs(sl[c].to_numpy()) for c in ("ia_a", "ib_a", "ic_a")])
+    # Back-EMF cross-check (the 2026-07-06 probe-session lesson distilled):
+    # erpm is the ACTIVE source's claim; the physics check is whether the
+    # terminal voltage actually carries the implied back-EMF,
+    # |e| ≈ |v| − R·|i_dq| vs λ·ω̂. Ratio ≈ 1 → the claimed spin is real;
+    # ≈ 0 → phantom / standstill behind a spinning claim. Only meaningful
+    # above the dead-time distortion floor (~0.15 V on the bench board).
+    bemf_ratio = None
+    if motor and motor.get("resistance_ohm") and motor.get("flux_linkage_wb"):
+        r, lam = motor["resistance_ohm"], motor["flux_linkage_wb"]
+        idq = np.hypot(sl["id_a"].to_numpy(), iq)
+        bemf_meas = float(np.mean(np.maximum(vmag - r * idq, 0.0)))
+        bemf_claim = lam * abs(float(erpm.mean())) * 2.0 * np.pi / 60.0
+        if bemf_claim > 0.15:
+            bemf_ratio = bemf_meas / bemf_claim
     f = dict(
         t0=float(t[0]), t1=float(t[-1]), dur=float(t[-1] - t[0]), n=len(t),
         iq_cmd=iq_cmd,
@@ -114,6 +128,7 @@ def seg_features(sl, iq_cmd=None):
         # (the 2026-07-06 hold-ratchet forensics needed exactly this).
         vmag_mean=float(vmag.mean()), vmag_max=float(vmag.max()),
         iabc_pk=float(iabc.max()),
+        bemf_ratio=bemf_ratio,
     )
     f["regime"] = classify_regime(f)
     return f
@@ -139,6 +154,13 @@ def classify_regime(f):
     if (f["iq_cmd"] is not None and abs(f["iq_cmd"]) > 0.05
             and abs(f["iq_mean"]) < 0.1 * abs(f["iq_cmd"]) and not spinning):
         tags.append("NO-TORQUE(TRIP?)")
+    # Physics check on a spinning claim: does the terminal voltage carry the
+    # implied back-EMF? (None = below the distortion floor / no params.)
+    if f["bemf_ratio"] is not None:
+        if 0.4 <= f["bemf_ratio"] <= 2.5:
+            tags.append("BEMF-OK")
+        else:
+            tags.append(f"BEMF-MISMATCH({f['bemf_ratio']:.2f})")
     return tags
 
 # ---------- segmentation --------------------------------------------------
@@ -149,6 +171,7 @@ def segments_from_events(df, md, marks=None):
     segment it lands in; the sub-segment keeps the parent's iq_cmd, so a
     "drive commanded, then tripped" story reads as two rows instead of one
     averaged-away blur."""
+    motor = (jget(md, "oxifoc.config", {}) or {}).get("motor-params", {})
     ev = jget(md, "oxifoc.events", []) or []
     if not ev and not marks:
         return None
@@ -175,12 +198,12 @@ def segments_from_events(df, md, marks=None):
         hi = idx[i + 1] if i + 1 < len(idx) else df.height
         if hi <= lo:
             continue
-        f = seg_features(df.slice(lo, hi - lo), iq_cmd)
+        f = seg_features(df.slice(lo, hi - lo), iq_cmd, motor)
         f["i"] = i; f["cmd"] = label
         segs.append(f)
     return segs
 
-def segments_auto(df, win_s=0.25, min_seg_s=0.4):
+def segments_auto(df, motor=None, win_s=0.25, min_seg_s=0.4):
     """Event-free change-point segmentation: bucket into windows, tag each by
     regime, then coalesce adjacent windows with the same tag-set."""
     t = df["t_s"].to_numpy()
@@ -194,7 +217,7 @@ def segments_auto(df, win_s=0.25, min_seg_s=0.4):
     for a, b in zip(bidx, bidx[1:]):
         if b <= a:
             continue
-        f = seg_features(df.slice(a, b - a))
+        f = seg_features(df.slice(a, b - a), motor=motor)
         wins.append((a, b, tuple(f["regime"])))
     # coalesce consecutive equal regimes
     segs = []
@@ -214,7 +237,7 @@ def segments_auto(df, win_s=0.25, min_seg_s=0.4):
             out.append((a, b))
     result = []
     for i, (a, b) in enumerate(out):
-        f = seg_features(df.slice(a, b - a))
+        f = seg_features(df.slice(a, b - a), motor=motor)
         f["i"] = i; f["cmd"] = "auto"
         result.append(f)
     return result
@@ -223,7 +246,8 @@ def get_segments(df, md, marks=None):
     segs = segments_from_events(df, md, marks)
     if segs:
         return segs, "event+marks" if marks else "event"
-    return segments_auto(df), "auto"
+    motor = (jget(md, "oxifoc.config", {}) or {}).get("motor-params", {})
+    return segments_auto(df, motor), "auto"
 
 # ---------- text rendering ------------------------------------------------
 def fmt_manifest(md, integ):

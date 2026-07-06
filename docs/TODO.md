@@ -224,6 +224,16 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       dynamics, PLL accel lag, eddy-branch plant, dead-time comp
       quality remain the levers; 20 kHz capture of one spike (loss is
       acceptable, the spike is 5–10 ms) is the first data to get.
+      Repeatability (spin-gentle-180 ×3 + band-punch + spin-punch-15):
+      startup 5/5 confirmed handoffs (incl. one give-up recycle and one
+      mid-run trust-loss restart → SECOND confirmed handoff — the whole
+      resilience chain works on hardware); closed loop 5/5 dq OC within
+      0.25–2.6 s. The historical "fast 1.5 A punch through the band is
+      clean" no longer applies: that punch crossed the band INSIDE the
+      startup open loop (ramp ceiling era); at handoff-180 the closed
+      loop engages at ~200–300 rad/s and crosses the band itself —
+      every closed-loop transit rings. No sustained spin on HEAD until
+      the spike mechanism is understood.
     Distortion-floor context for the record: at ramp 60–63 the observer
     read 32–62 with confidence DECAYING 1.0→0.59 and validity never
     corroborating — λω ≈ 72 mV is at/below the post-comp dead-time
