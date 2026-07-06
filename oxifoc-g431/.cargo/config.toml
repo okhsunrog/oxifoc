@@ -1,8 +1,11 @@
 [build]
 target = "thumbv7em-none-eabihf"
 
-[target.'cfg(all(target_arch = "arm", target_os = "none"))']
-linker = "flip-link"
+# flip-link removed (2026-07-06): the stack lives in its own CCM region now
+# (memory.x `_stack_start`), which gives the same overflow protection in
+# hardware — nothing is mapped below CCM, so running off the bottom is a
+# BusFault. flip-link would try to relocate the stack back into the 22K RAM
+# statics region (56 bytes free) and brick the boot.
 
 [target.thumbv7em-none-eabihf]
 runner = ["bash", "../scripts/probe_run.sh"]

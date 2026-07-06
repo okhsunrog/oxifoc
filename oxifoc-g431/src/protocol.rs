@@ -3,15 +3,19 @@
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use static_cell::StaticCell;
 
-use crate::config::MAX_PACKET_SIZE;
 #[cfg(feature = "transport-uart")]
 use crate::config::UART_BAUD;
+use crate::config::{MAX_PACKET_SIZE, MAX_RX_PACKET_SIZE};
 use crate::transport::Stack;
 use embedded_io_async::Write;
 use ergot::interface_manager::{InterfaceState, Profile};
 
-/// Buffers for RX worker
-pub static RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
+/// Buffers for RX worker. In `.ccmdata` (CPU-only CCM, zeroed by main's
+/// first block) — relocated out of the 22K SRAM squeeze; only the CPU-side
+/// RxWorker ever touches them.
+#[unsafe(link_section = ".ccmdata")]
+pub static RECV_BUF: StaticCell<[u8; MAX_RX_PACKET_SIZE]> = StaticCell::new();
+#[unsafe(link_section = ".ccmdata")]
 pub static SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 
 // ========== Device State Management ==========
@@ -267,19 +271,19 @@ pub async fn telem_stats_task() {
                 );
             }
             // Stack high-water mark: scan the boot-time 0xAAAAAAAA paint from
-            // the RAM origin up; the first overwritten word is the deepest
+            // the CCM origin up; the first overwritten word is the deepest
             // the stack ever grew. `free` = untouched bytes below the peak.
             {
-                let mut a = 0x2000_0000u32;
+                let mut a = 0x1000_0000u32;
                 let free = loop {
                     // Paint ends ~256 B below boot SP; a fully-scanned paint
                     // region means the stack never grew past boot depth.
                     // SAFETY: reads within the painted stack reserve (see
                     // the boot painter in main.rs); volatile, no aliasing.
                     if unsafe { (a as *const u32).read_volatile() } != 0xAAAA_AAAA
-                        || a >= 0x2000_2000
+                        || a >= 0x1000_2400
                     {
-                        break a - 0x2000_0000;
+                        break a - 0x1000_0000;
                     }
                     a += 4;
                 };

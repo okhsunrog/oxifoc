@@ -60,23 +60,32 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // Stack paint for the high-water-mark meter (protocol.rs stats task):
-    // flip-link puts the stack at the BOTTOM of RAM (grows down toward
-    // 0x2000_0000), so fill everything from the RAM origin up to just below
-    // the live SP with a pattern; the lowest overwritten word marks peak
-    // usage. Statics are above the stack — untouched. 2026-07-06: engage
-    // reboots (RTT control block reinit mid-run) point at stack overflow —
-    // only ~7.5 KB remain after statics, inside the known 5.8-7.8 KB
-    // boot-lockup boundary zone.
+    // the stack is the CCM block [0x1000_0000, 0x1000_2800), growing down
+    // (memory.x). Fill from the CCM origin up to just below the live SP
+    // with a pattern; the lowest overwritten word marks peak usage.
+    // History: the old shared-with-statics stack left 408 B of idle
+    // headroom and every deep drive-engage path rebooted the board.
     {
         let sp: u32;
         // SAFETY: reading SP clobbers nothing.
         unsafe { core::arch::asm!("mov {}, sp", out(reg) sp) };
-        let mut a = 0x2000_0000u32;
+        let mut a = 0x1000_0000u32;
         while a + 256 < sp {
-            // SAFETY: [RAM origin, SP-256) is the unused stack reserve —
-            // below every live frame (stack grows down from _stack_start)
-            // and below all statics (flip-link puts them above the stack).
+            // SAFETY: [CCM origin, SP-256) is the unused stack reserve —
+            // below every live frame; nothing else lives in the stack half
+            // of CCM.
             unsafe { (a as *mut u32).write_volatile(0xAAAA_AAAA) };
+            a += 4;
+        }
+        // Zero the .ccmdata statics region [0x1000_2400, 0x1000_2800):
+        // it is NOLOAD (cortex-m-rt only zeroes .bss in RAM) and the
+        // StaticCells there need their initialized-flags cleared before
+        // first use. Runs before anything touches them.
+        let mut a = 0x1000_2400u32;
+        while a < 0x1000_2800 {
+            // SAFETY: the .ccmdata region; nothing has referenced these
+            // statics yet (this is the first code in main).
+            unsafe { (a as *mut u32).write_volatile(0) };
             a += 4;
         }
     }
@@ -159,7 +168,7 @@ async fn main(spawner: Spawner) {
     // Spawn RX worker
     spawner.spawn(defmt::unwrap!(protocol::run_rx(
         transport.rx_worker,
-        RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
+        RECV_BUF.init_with(|| [0u8; config::MAX_RX_PACKET_SIZE]),
         SCRATCH_BUF.init_with(|| [0u8; 64]),
     )));
 

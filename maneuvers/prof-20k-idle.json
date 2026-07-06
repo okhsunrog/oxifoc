@@ -1,0 +1,19 @@
+{
+  "name": "prof-20k-idle",
+  "description": "20 kHz Stopped-stream loss-free check: ~5 s of full-rate capture before a single iq=0 start at the end (the timeline must be non-empty). Regression gate for the RTT up-ring size (3072 since the stack-to-CCM migration; the tier-1 loss-free result was measured at 4096).",
+  "capture": {
+    "fast_hz": 20000,
+    "tail_s": 0.5
+  },
+  "terminal": "stop",
+  "timeline": [
+    {
+      "t": 5.0,
+      "cmd": {
+        "start": {
+          "iq": 0.0
+        }
+      }
+    }
+  ]
+}

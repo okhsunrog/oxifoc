@@ -101,7 +101,11 @@ pub static STATE_NOTIFY: WaitQueue = WaitQueue::new();
 /// Output queue
 pub static OUTQ: Queue = kit::Queue::new();
 
-/// Stack cell — initialized at runtime (Router needs RNG)
+/// Stack cell — initialized at runtime (Router needs RNG).
+/// In `.ccmdata` (CPU-only CCM, zeroed by main's first block): thread-mode
+/// tasks are the only NetStack users, and every byte counts in the 22K
+/// SRAM region since the stack→CCM migration.
+#[unsafe(link_section = ".ccmdata")]
 static STACK_CELL: StaticCell<Stack> = StaticCell::new();
 
 // ========== Static Storage ==========
@@ -231,7 +235,10 @@ pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
 
     let channels = rtt_init! {
         up: {
-            0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
+            // 512 (was 1024, stack→CCM migration): defmt is low-rate
+            // diagnostics, the host polls every few ms; bursts larger than
+            // the ring drop (NoBlockSkip) — acceptable.
+            0: { size: 512, mode: NoBlockSkip, name: "defmt" }
             // NoBlockTrim, NOT NoBlockSkip: ergot's tx_worker hands multi-KB
             // stream grants to this channel; Skip refuses partial writes,
             // returns 0 and re-polls — a hot loop that monopolizes the
@@ -239,12 +246,17 @@ pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
             // (FAST_TELEM_Q is only ~5 ms deep at 20 kHz). Trim always makes
             // forward progress into whatever space the host has freed.
             // (8192 would be the SWD-read knee per docs/notes/rtt-telemetry-
-            // throughput.md §4.3, but +4 KB of static RAM overflows the ~6 KB
-            // stack budget on this 32 KB part — measured boot lockup.)
+            // throughput.md §4.3, but +4 KB of static RAM is exactly what
+            // the 32 KB part doesn't have. 3072 was tried in the stack→CCM
+            // migration and REGRESSED the 20 kHz Stopped capture to 2.7%
+            // loss — 4096 is the floor; re-verify the capture after any
+            // change here.)
             1: { size: 4096, mode: NoBlockTrim, name: "ergot" }
         }
         down: {
-            0: { size: 1024, name: "ergot-down" }
+            // 512 (was 1024, stack→CCM migration): down traffic is ~30
+            // small command frames/s (~1 KB/s) — half a second of buffer.
+            0: { size: 512, name: "ergot-down" }
         }
     };
 
