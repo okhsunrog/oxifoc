@@ -154,6 +154,12 @@ pub async fn init(
     // detection measures J.
     if config.motor_params.is_some() {
         phase_manager.set_observer_accel_prior(500.0, 3400.0);
+        // Frequency-led commutation (set_freq_led) is implemented and
+        // sim-gated but NOT enabled here yet: the first bench trial
+        // (2026-07-07, rate 5000 / k_theta 30) did not hold the drive —
+        // trust-loss restart churn with ISR defmt storms at 126-138%
+        // sustained load starved the command pump. Needs its own tuning
+        // session (parameters + restart interplay + quieter ISR logging).
     }
 
     // Initialize CORDIC hardware for fast sin/cos in FOC loop

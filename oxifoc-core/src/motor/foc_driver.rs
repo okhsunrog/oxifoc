@@ -53,7 +53,12 @@ pub const BENCH_STALENESS_TIMEOUT_US: u64 = 10_000_000;
 /// modes' [`BENCH_STALENESS_TIMEOUT_US`]: a real link loss during a
 /// cold start is still cut well inside the startup itself, and the
 /// tight bound re-arms the moment the observer takes over.
-pub const STARTUP_STALENESS_TIMEOUT_US: u64 = 400_000;
+/// 2026-07-07: 400 → 700 ms — the host's command/affirm task is single and
+/// strictly ordered, so while a Start's ACK round-trip is in flight (up to
+/// ~400+ ms on a loaded host) no affirms leave the machine; the measured
+/// engage gap sat exactly at the old bound (407 ms passed, 410 tripped —
+/// RampToZero silently zeroed the ramp current and every hold gave up).
+pub const STARTUP_STALENESS_TIMEOUT_US: u64 = 700_000;
 
 /// Sensorless restart on trust loss: how long (s) the angle must be
 /// continuously untrustworthy — torque already gated to zero by the
@@ -1117,6 +1122,14 @@ where
         let starting = self.phase.is_starting();
         if self.was_starting && !starting {
             self.last_cmd_tick = Some(now_ticks);
+            // ...and RE-OPEN the engage grace window: the first ~second of
+            // closed loop is exactly when the ISR runs hottest (drive + full
+            // estimator + handoff currents; over-budget bursts starve the
+            // command pump for hundreds of ms — bench 2026-07-07: a 410 ms
+            // affirm hole right after handoff vs the 400 ms bench drive
+            // bound). The stamp refresh alone switches to the tight bound
+            // at the worst possible moment.
+            self.engaged_tick = Some(now_ticks);
         }
         self.was_starting = starting;
         // Engage edge (any path — cold start OR flying restart): open the
@@ -3219,6 +3232,10 @@ mod tests {
         kick_at_step: u64,
         /// Observer PLL integral gain (kp scales as ki/20; default 20e3).
         pll_ki: f32,
+        /// Frequency-led commutation filter (0.0 = off): max slew of the
+        /// commutation frequency, el rad/s² (`PhaseManager::set_freq_led`
+        /// with k_theta = 30).
+        freq_led_rate: f32,
     }
 
     #[cfg(feature = "virtual-motor")]
@@ -3286,6 +3303,9 @@ mod tests {
             obs = obs.with_saliency(86e-6, 129e-6);
         }
         mgr.set_observer(Observer::BackEmf(obs));
+        if cfg.freq_led_rate > 0.0 {
+            mgr.set_freq_led(cfg.freq_led_rate, 30.0);
+        }
         mgr.set_source(PhaseSource::Observer)
             .expect("observer source");
 
@@ -3423,6 +3443,7 @@ mod tests {
             kick_rad: 0.0,
             kick_at_step: 0,
             pll_ki: 20e3,
+            freq_led_rate: 0.0,
         });
         assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
         if rep.handoff_step.is_some() {
@@ -3467,6 +3488,7 @@ mod tests {
             kick_rad: 0.0,
             kick_at_step: 0,
             pll_ki: 20e3,
+            freq_led_rate: 0.0,
         });
         assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
         let handoff = rep.handoff_step.expect("must eventually hand off");
@@ -3580,6 +3602,7 @@ mod tests {
                 kick_rad: kick,
                 kick_at_step: if kick != 0.0 { 16_000 } else { 0 },
                 pll_ki,
+                freq_led_rate: 0.0,
             });
             println!(
                 "   handoff@{:?} rotor@handoff={:.0} obs@handoff={:.0} trip={:?} \
@@ -3593,6 +3616,50 @@ mod tests {
                 rep.untrusted_frac,
             );
         }
+    }
+
+    /// Frequency-led commutation (PhaseManager::set_freq_led): the full
+    /// cold start must still hand off and reach a sustained spin with the
+    /// filter smoothing the post-handoff commutation — and the handoff
+    /// must be continuous (the filter seeds from the last output).
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn cold_start_with_freq_led_commutation_spins_up() {
+        let rep = run_zd2808_cold_start(ColdStartCfg {
+            iq_target: 0.5,
+            initial_rotor_angle: 0.0,
+            steps: 60_000,
+            observer_l: 24e-6,
+            observer_salient: false,
+            controller_l: 24e-6,
+            dead_time: true,
+            adc_noise: true,
+            j: 3.2e-5,
+            trace_every: 0,
+            eddy_tau_s: 0.3e-3,
+            plant_skew: 0.0,
+            observer_eddy_delta_l: 0.0,
+            disturb_torque_nm: 0.0,
+            disturb_at_step: 0,
+            disturb_steps: 0,
+            kick_rad: 0.0,
+            kick_at_step: 0,
+            pll_ki: 20e3,
+            freq_led_rate: 5000.0,
+        });
+        assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
+        let handoff = rep.handoff_step.expect("must hand off with freq-led on");
+        assert!(
+            rep.rotor_omega_at_handoff > 30.0,
+            "handoff at {handoff} onto rotor at {} rad/s",
+            rep.rotor_omega_at_handoff
+        );
+        assert!(
+            rep.final_omega > 500.0,
+            "must reach a sustained spin through the filter, got {}",
+            rep.final_omega
+        );
+        assert!(rep.untrusted_frac < 0.05);
     }
 
     /// TEMPORARY exploration of the phantom-handoff reproducer — prints one
@@ -3654,6 +3721,7 @@ mod tests {
                         kick_rad: 0.0,
                         kick_at_step: 0,
                         pll_ki: 20e3,
+                        freq_led_rate: 0.0,
                     });
                     println!(
                         "iq={iq:>3} a0={a0:4.2} handoff={:?} rotor@h={:7.1} obs@h={:7.1} \
@@ -4656,17 +4724,18 @@ mod tests {
             let mut h = running_harness();
 
             // Quiet link: within the engage grace window (the relaxed
-            // STARTUP_STALENESS_TIMEOUT_US bound covers the first 400 ms
-            // after ANY engage — the engage ISR transient starves the
-            // command pump) even a >150 ms staleness must NOT trip.
-            h.cycle(300_000);
+            // STARTUP_STALENESS_TIMEOUT_US bound after ANY engage — the
+            // engage ISR transient AND the host's Start-ack round trip both
+            // starve the command pump) even a >150 ms staleness must NOT
+            // trip.
+            h.cycle(STARTUP_STALENESS_TIMEOUT_US - 100_000);
             assert!(
                 !h.registry.has_category(FaultCategory::CommTimeout),
                 "engage grace must hold the deadman through the engage window"
             );
 
             // Past the grace window with the link still quiet → trip.
-            h.cycle(600_000);
+            h.cycle(STARTUP_STALENESS_TIMEOUT_US + 200_000);
             assert!(
                 h.registry.has_category(FaultCategory::CommTimeout),
                 "stale command link must raise CommTimeout"

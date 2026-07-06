@@ -377,6 +377,31 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       adapts on garbage during restart churn (validity stays sticky
       through seeds → tracker legally walks λ to λ₀/2) — tie λ
       adaptation to slip-gate/BEMF sanity as well.
+      **FREQ-LED COMMUTATION: implemented, sim-gated, parked default-off
+      (2026-07-07).** `PhaseManager::set_freq_led(rate, k_theta)`: the
+      drive follows a slew-limited commutation frequency (open-loop
+      stiffness) with a slow phase pull to the observer; seeds
+      continuity at handoff; sim gate
+      cold_start_with_freq_led_commutation_spins_up. First bench trial
+      (rate 5000 / k_theta 30) did NOT hold the drive: trust-loss
+      restart churn with ISR defmt storms at 126–138% sustained load
+      starved the pump. Its tuning session needs: parameter sweep, the
+      restart-machinery interplay, and QUIETER ISR LOGGING during
+      churn (each startup transition logs multiple defmt frames from
+      the ISR — max single-ISR 26k cycles observed; decimate or move
+      off-ISR).
+      **DEADMAN FALSE-POSITIVE CLASS root-caused and fixed
+      (2026-07-07)**: the host's single ordered command/affirm task
+      goes silent for a DETERMINISTIC ~410 ms while an acked command's
+      response round trip stalls (three runs measured stale_max
+      410.15–410.19 ms — a host retry quantum, find and fix it
+      host-side eventually), and the post-handoff second runs the ISR
+      hottest (bursts starve the pump further). Fixes:
+      STARTUP_STALENESS 400→700 ms, the handoff edge now RE-OPENS the
+      engage grace window (not just refreshes the stamp), bench baked
+      staleness 400→800 ms (riding default stays 150 ms). Validation:
+      2/2 canonical runs with zero OC and zero CommTimeout, confirmed
+      handoffs incl. mid-run restart re-confirms.
       **SLIP GATE LANDED (2026-07-07): strict improvement, not yet a
       cure.** Implementation: driver flags cycles with |iq_ref −
       iq_meas| > max(1.5 A, 0.5·|iq_ref|) (hysteresis ×0.5); while

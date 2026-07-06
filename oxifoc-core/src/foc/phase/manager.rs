@@ -58,6 +58,39 @@ pub enum HallHealth {
 // Open-Loop Override (VESC-style startup/recovery)
 // ============================================================================
 
+/// Frequency-led commutation filter (pure-Observer source, post-handoff).
+///
+/// Commutating from the observer's raw angle cycle-by-cycle feeds every
+/// estimate wobble straight into the field: torque modulates at the hunt
+/// frequency, the mid-band oscillation self-excites, and the band transit
+/// that an open-loop drive walks through silky-smooth (bench olramp960)
+/// never happens. This filter gives the drive open-loop STIFFNESS while
+/// keeping sensorless synchrony:
+///
+/// - `omega` slew-follows the observer velocity at ≤ `rate` (el rad/s²):
+///   legitimate torque-bounded acceleration passes lag-free, hunt-frequency
+///   wobble (slope ≫ rate) is crushed to a small triangle;
+/// - the angle advances at `omega` plus a gentle pull `k_theta·Δθ` toward
+///   the observer angle (Δθ clamped ±0.8 rad), which holds the average
+///   load angle without re-importing the wobble.
+///
+/// Enabled via [`PhaseManager::set_freq_led`]; off by default (raw
+/// observer output, previous behavior).
+#[derive(Clone, Copy, Default)]
+struct FreqLed {
+    /// Max |dω/dt| the commutation frequency may follow (el rad/s²);
+    /// 0 = filter disabled.
+    rate: f32,
+    /// Phase-pull gain toward the observer angle (1/s).
+    k_theta: f32,
+    /// Filter engaged (seeded) — cleared whenever the startup sequencer
+    /// owns commutation, so the handoff seeds continuity from the last
+    /// output.
+    active: bool,
+    theta: f32,
+    omega: f32,
+}
+
 /// Open-loop override state for startup or Hall failure recovery
 ///
 /// When Hall fails and observer isn't ready, the motor can be driven
@@ -171,6 +204,11 @@ where
     // back-EMF observer needs (it can't commutate below ~READY_MIN_VELOCITY).
     startup: SensorlessStartup,
 
+    // Frequency-led commutation filter for the pure-Observer source (see
+    // [`Self::set_freq_led`]). Bundled so the many literal constructors
+    // stay one line each.
+    freq_led: FreqLed,
+
     // Hysteresis memory for the HfiToX crossovers: true = running on the
     // high-speed source (observer/hall/encoder), false = on HFI.
     crossover_latched: bool,
@@ -214,6 +252,7 @@ impl PhaseManager<NoSensor, NoSensor> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
+            freq_led: FreqLed::default(),
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
@@ -244,6 +283,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
+            freq_led: FreqLed::default(),
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
@@ -272,6 +312,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             startup: self.startup,
+            freq_led: self.freq_led,
             crossover_latched: self.crossover_latched,
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
@@ -303,6 +344,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             startup: self.startup,
+            freq_led: self.freq_led,
             crossover_latched: self.crossover_latched,
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
@@ -333,6 +375,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
+            freq_led: FreqLed::default(),
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
@@ -408,6 +451,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     pub fn set_observer_eddy_ladder(&mut self, delta_l: f32, tau_s: f32) {
         if let Observer::BackEmf(o) = &mut self.observer {
             o.set_eddy_ladder(delta_l, tau_s);
+        }
+    }
+
+    /// Enable the frequency-led commutation filter for the pure-Observer
+    /// source (see [`FreqLed`]): `rate` = max slew of the commutation
+    /// frequency (el rad/s²), `k_theta` = phase-pull gain toward the
+    /// observer angle (1/s). `rate <= 0` disables (raw observer output).
+    pub fn set_freq_led(&mut self, rate: f32, k_theta: f32) {
+        if rate.is_finite() && k_theta.is_finite() && k_theta >= 0.0 {
+            self.freq_led.rate = rate.max(0.0);
+            self.freq_led.k_theta = k_theta;
+            self.freq_led.active = false;
         }
     }
 
@@ -725,10 +780,32 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     // ========================================================================
 
     /// Compute phase output with automatic fallback on Hall failure
+    /// One step of the frequency-led commutation filter (see [`FreqLed`]):
+    /// seeds from the last output on (re-)engage for continuity — the
+    /// startup→closed-loop handoff produces no field jump.
+    fn freq_led_output(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
+        let fl = &mut self.freq_led;
+        if !fl.active {
+            fl.theta = self.output.angle;
+            fl.omega = self.output.velocity;
+            fl.active = true;
+        }
+        let max_dv = fl.rate * dt;
+        fl.omega += crate::foc::clamp_f32(raw.velocity - fl.omega, -max_dv, max_dv);
+        let pull =
+            crate::foc::clamp_f32(angle_difference(raw.angle, fl.theta), -0.8, 0.8) * fl.k_theta;
+        fl.theta = wrap_angle(fl.theta + (fl.omega + pull) * dt);
+        PhaseOutput {
+            angle: fl.theta,
+            velocity: fl.omega,
+        }
+    }
+
     fn compute_phase_with_fallback(
         &mut self,
         hall_sample: Option<AngleSample>,
         encoder_sample: Option<AngleSample>,
+        dt: f32,
     ) -> PhaseOutput {
         // A live hall sample retakes commutation from the recovery
         // override. Without this, one glitch-triggered override outlived
@@ -764,19 +841,36 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 if self.observer.is_ready() {
                     self.clear_fault(PhaseFault::ObserverNotReady);
                     match (self.observer.phase(), self.observer.velocity()) {
-                        (Some(angle), Some(vel)) => PhaseOutput {
-                            angle,
-                            velocity: vel,
-                        },
+                        (Some(angle), Some(vel)) => {
+                            let raw = PhaseOutput {
+                                angle,
+                                velocity: vel,
+                            };
+                            // Filter only POST-handoff: while the startup
+                            // sequencer is still active a ready observer
+                            // takes commutation raw (pre-existing behavior
+                            // the hold/confirm dynamics are tuned around);
+                            // the filter seeds continuity at the handoff.
+                            if self.freq_led.rate > 0.0 && !self.startup.is_active() {
+                                self.freq_led_output(raw, dt)
+                            } else {
+                                self.freq_led.active = false;
+                                raw
+                            }
+                        }
                         _ => self.output,
                     }
                 } else if self.startup.is_active() {
+                    // The sequencer owns commutation: the freq-led filter
+                    // re-seeds continuity at the next handoff.
+                    self.freq_led.active = false;
                     PhaseOutput {
                         angle: self.startup.angle(),
                         velocity: self.startup.velocity(),
                     }
                 } else {
                     self.set_fault(PhaseFault::ObserverNotReady);
+                    self.freq_led.active = false;
                     self.output
                 }
             }
@@ -1323,7 +1417,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.update_open_loop_override(input.dt);
 
         // Compute output based on source (with potential fallback)
-        self.output = self.compute_phase_with_fallback(hall_sample, encoder_sample);
+        self.output = self.compute_phase_with_fallback(hall_sample, encoder_sample, input.dt);
         crate::isr_prof::add(&crate::isr_prof::EST_OUT, prof_t1, crate::isr_prof::now());
     }
 

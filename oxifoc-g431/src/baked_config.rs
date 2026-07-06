@@ -93,7 +93,16 @@ pub fn baked() -> RuntimeConfig {
             // 100→160 ms). 400 ms still stops a dead-link bench spin fast;
             // the 150 ms vehicle bound returns with the tier-2 ISR shave
             // or on G474-class hardware.
-            staleness_timeout_ms: 400,
+            // 2026-07-07: 400 → 800. The host's single ordered
+            // command/affirm task goes silent for a DETERMINISTIC ~410 ms
+            // whenever an acked command's response round-trip stalls (three
+            // consecutive bench runs measured stale_max 410.15-410.19 ms —
+            // a host-side retry quantum, not link loss), and every such
+            // hole crossed the 400 ms bound with the pump otherwise
+            // perfectly alive at 20 affirms/s. 800 ms still stops a
+            // dead-link bench spin inside a second; the riding default
+            // stays 150 ms.
+            staleness_timeout_ms: 800,
             ..FailsafeConfigStored::default()
         }),
         velocity: None,
