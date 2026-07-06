@@ -165,7 +165,17 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     combination of kp {0.024, 0.1075} × dec {24, 86/129} ×
     obs {24, 108-salient}. At 0.3 A all configs are stable to the
     no-load ceiling → perturbation scales with L·i.
-  - THREE deterministic reproducers (2026-07-06 evening, cold motor,
+  - NEXT SESSION ENTRY POINT — fix order matters: (1) observer
+    readiness needs EXTERNAL validity (consistency with physics: phase-
+    current frequency, N consecutive flux revolutions) — this underlies
+    reproducer 4's phantom handoff AND the old align-swing false-ready;
+    (2) THEN sensorless restart on trust loss (drive mode + not-ready +
+    ~zero speed → re-enter deadshort→ramp) — without (1) a restart just
+    loops phantom→collapse→restart. Note the no-align tradeoff: handoff
+    observer_vel went 60 (align era) → 113–231 (catch transient excites
+    the observer harder); resonance-OC data still justifies no-align,
+    (1) closes the gap.
+  - FOUR deterministic reproducers (2026-07-06 evening, cold motor,
     captures on disk):
     1. SLOW crawl through the ω_e ≈ 400–800 L(f) band → dq OC ~1.1 s
        after handoff, 6/6 — maneuvers/prof-hold-1a.json (fast 1.5 A
@@ -180,7 +190,13 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
        around a COLLAPSED 0.83 A mean, vq ≈ 0.57 V (never near the
        ceiling). Protection-clean but visibly jerky rotation
        (endurance-hold.json 4/4; captures/endurance-hold-*). The
-       "bounded" short-run view undersold it. Sim: the current
+       "bounded" short-run view undersold it.
+    4. current-staircase.json (5 s at 0.3/0.5/0.8/1.2/1.5 A): PHANTOM
+       handoff (observer 231 at ramp 23) → estimator collapse → the
+       untrusted-angle iq gate zeros torque → trust-loss DEADLOCK:
+       15 s of iq_mean 0.00, observer frozen at 644 erpm, vq≈0.01 V
+       (rotor truly stopped), audible whine on the 1.2/1.5 A legs as
+       the gate flickers (captures/staircase-1.parquet). Sim: the current
     loop with a perfect angle is unconditionally stable (any advance),
     so the cycle lives in the OBSERVER↔loop interaction; the single-L
     sim plant does not reproduce it (frequency-dependent L missing).
