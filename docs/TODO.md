@@ -268,16 +268,40 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       2%, sustained spin every time), (c) + plant skew (2–3× dead-time,
       λ+15–30%, R+10–20%) — that breaks the RAMP CAPTURE instead
       (phantom class returns, probe correctly refuses, no handoff).
-      Conclusion: the closed-loop sawtooth lives in a bench detail the
-      plant still lacks — top remaining suspects: dead-time COMP
-      interplay (comp sign errors around zero crossings; sim applies
-      ideal comp), current-measurement offsets/gain error rotating with
-      the frame, true L(f) shape beyond first-order. NEXT (bench-side,
-      measure first): stream observer internals in the fast frame (ω̂,
-      e_q, flux components at 2 kHz — a debug telemetry variant) and
-      capture one sawtooth period with exact phase relationships
-      (what leads: flux angle jump / e_q / iq spike). Bench capture
-      rates: 2 kHz loss-free, 10 kHz is not (366 ms gaps).
+      MECHANISM FOUND (2026-07-06 night, `obs-debug-telem` fast-frame
+      mapping — erpm ← PLL ω̂, angle ← phase_pll, vd ← instantaneous
+      PLL error; captures/sawtooth-obsdbg-1.parquet, 2 kHz):
+      **slip-kick ratchet**. Anatomy of one sawtooth: (a) PLL error
+      stays ±0.35 rad the whole time — the PLL faithfully tracks a flux
+      VECTOR that genuinely spins 60→890 rad/s (the integrator is the
+      problem, not the PLL); (b) iq sits FLAT at the command between
+      discrete pole-slip events every ~30 ms (deep −8 A dips as the
+      drive frame passes ±π vs the rotor); (c) each slip KICKS the flux
+      integrator forward ~+0.3 rad (PLL error = sawtooth of positive
+      jumps), sustained mean ≈ +0.25 rad × pll_ki 20000 ≈ the observed
+      ω̂ climb rate — slip → kick → ω̂ up → drive faster → next slip
+      sooner: positive feedback; (d) at ~870 rad/s the estimate
+      collapses (error goes −0.4), re-locks near the true rotor,
+      repeats at ~2 Hz; (e) vq mini-sawtooth = the PI integrator
+      winding against the phantom back-EMF, reset by every slip.
+      The kick source closes with L(f): a slip transient is a
+      100–300 Hz event where the true L is ~40–80 µH, but the observer
+      subtracts −L·Δi with the AC 24 µH → under-subtraction = net
+      forward flux kick per transient. Steady tracking has Δi ≈ 0 —
+      which is why the passive olramp960 run is clean and why the sim
+      (which never enters a slip) can't self-start the cycle.
+      FIX CANDIDATES, in order: (1) eddy-ladder compensation IN THE
+      OBSERVER — subtract ψ_stator = L_hf·i + ΔL·i_f (one extra LPF
+      state per axis, mirrors the new VirtualMotor plant model; ΔL/τ
+      from detection); this is the principled fix and finally resolves
+      the two-inductance tension (probes keep AC L — their transients
+      are ~2τ, kHz-scale; the observer gets the full L(f) ladder);
+      (2) fallback: ω̂ slew clamp from the physics prior kt·iq/J —
+      separable from real accel at ≤0.5 A but overlapping at 1.5 A, so
+      (1) first. Also seed the sim's first slip (external disturbance /
+      initial angle error) to reproduce the ratchet with the eddy plant
+      before landing the fix. Bench capture rates: 2 kHz loss-free,
+      10 kHz is not (366 ms gaps).
     Distortion-floor context for the record: at ramp 60–63 the observer
     read 32–62 with confidence DECAYING 1.0→0.59 and validity never
     corroborating — λω ≈ 72 mV is at/below the post-comp dead-time

@@ -70,6 +70,12 @@ default = ["algorithms", "detection"]
 # timeout in `measure_resistance`.
 detection = ["algorithms", "dep:embassy-futures"]
 
+# Bench estimator forensics: repurpose three fast-frame columns with
+# observer internals (velocity/erpm <- PLL omega-hat, angle <- phase_pll,
+# vd <- instantaneous PLL error). Wire format unchanged — the capture just
+# has to be read with the mapping in mind. Debug builds only.
+obs-debug-telem = []
+
 # Runtime HFI sensorless observer (carrier injection + synchronous demod for
 # low/zero-speed commutation on salient motors). Independent of `hfi-detect`
 # (that's the one-time inductance measurement). Off on non-salient boards

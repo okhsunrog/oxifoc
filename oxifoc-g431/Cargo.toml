@@ -25,6 +25,9 @@ hfi-detect = ["oxifoc-core/hfi-detect"]
 # Bench experiment: inductance step becomes a one-lock R(f)/L(f) frequency sweep
 # logged over RTT (see oxifoc-core `impedance-sweep`). Debug/characterization only.
 impedance-sweep = ["oxifoc-core/impedance-sweep"]
+# Bench estimator forensics: observer internals in the fast frame (see
+# oxifoc-core `obs-debug-telem`). Debug builds only.
+obs-debug-telem = ["oxifoc-core/obs-debug-telem"]
 
 [dependencies]
 # Embassy dependencies

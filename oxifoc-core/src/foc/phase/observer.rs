@@ -92,6 +92,15 @@ impl Observer {
         }
     }
 
+    /// Raw flux-vector angle from the last update (pre-PLL) — see
+    /// [`BackEmfObserver::phase_raw`].
+    pub fn phase_raw(&self) -> Option<f32> {
+        match self {
+            Self::None => None,
+            Self::BackEmf(o) => Some(o.phase_raw()),
+        }
+    }
+
     /// Whether the observer's estimate can be trusted for commutation.
     ///
     /// Unlike [`phase`](Self::phase), which returns a value for any
@@ -238,6 +247,9 @@ pub struct BackEmfObserver {
     // State
     confidence: f32,     // Confidence estimate (0-1)
     phase_err_filt: f32, // Low-passed |PLL phase error| (rad), for readiness
+    /// Last raw flux-vector angle (atan2 of the integrator, pre-PLL) —
+    /// debug telemetry (`obs-debug-telem`) and divergence forensics.
+    phase_raw_last: f32,
 
     // External-validity state (see `is_ready`): low-passed back-EMF proxy
     // along the estimated q axis (V, signed by the rotation direction), the
@@ -354,6 +366,7 @@ impl BackEmfObserver {
             // the PLL has actually tracked something.
             phase_err_filt: core::f32::consts::PI,
             bemf_q_filt: 0.0,
+            phase_raw_last: 0.0,
             valid_travel: 0.0,
             invalid_time: 0.0,
         }
@@ -506,6 +519,7 @@ impl BackEmfObserver {
         // ≤0.011 rad error feeds a PLL that low-passes it — negligible next
         // to dead-time distortion, and 3.7× cheaper than libm in the ISR.
         let phase_raw = crate::foc::fast_math::atan2f(self.x2, self.x1);
+        self.phase_raw_last = phase_raw;
 
         // PLL tracking. The error must be the SIGNED shortest angular distance
         // (like VESC's foc_pll_run): wrapping to [0, 2π) would make the error
@@ -596,6 +610,13 @@ impl BackEmfObserver {
         self.velocity_pll
     }
 
+    /// Raw flux-vector angle from the last update (pre-PLL) — the signal
+    /// the PLL tracks; `angle_difference(phase_raw, phase_pll)` is the
+    /// instantaneous PLL error (debug telemetry / divergence forensics).
+    pub fn phase_raw(&self) -> f32 {
+        self.phase_raw_last
+    }
+
     /// Get observer confidence (0.0-1.0)
     pub fn confidence(&self) -> f32 {
         self.confidence
@@ -649,6 +670,7 @@ impl BackEmfObserver {
         self.velocity_pll = 0.0;
         self.confidence = 0.0;
         self.phase_err_filt = core::f32::consts::PI;
+        self.phase_raw_last = 0.0;
         self.bemf_q_filt = 0.0;
         self.valid_travel = 0.0;
         self.invalid_time = 0.0;

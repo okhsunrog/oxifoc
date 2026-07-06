@@ -1114,6 +1114,19 @@ where
         // carries it. `phase.get()` returns the cached output of this cycle's
         // update, so this is a copy, not a recompute.
         out.velocity_rad_s = self.phase.get().velocity;
+        // Debug fast-frame mapping (bench estimator forensics): repurpose
+        // three columns with observer internals — velocity/erpm ← PLL ω̂
+        // (ALWAYS the observer, not the active source), angle ← phase_pll,
+        // vd ← instantaneous PLL error (phase_raw is then recoverable
+        // offline as angle+vd). Currents/vq/vbus stay honest. The wire
+        // format is untouched, so host decode/enrichment work unchanged —
+        // just read the capture knowing the mapping.
+        #[cfg(feature = "obs-debug-telem")]
+        if let Some((pll, raw, vel)) = self.phase.debug_observer() {
+            out.velocity_rad_s = vel;
+            out.angle_rad = pll;
+            out.vd = crate::foc::angle_difference(raw, pll);
+        }
         Ok(out)
     }
 

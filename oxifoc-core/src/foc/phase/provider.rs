@@ -108,6 +108,13 @@ pub trait PhaseProvider {
         None
     }
 
+    /// Back-EMF observer internals for the `obs-debug-telem` fast-frame
+    /// mapping: `(phase_pll, phase_raw, velocity_pll)`. Default: none
+    /// (providers without an observer). See `FocDriver::step`.
+    fn debug_observer(&self) -> Option<(f32, f32, f32)> {
+        None
+    }
+
     /// Begin a sensorless cold start in `dir` (sign of the commanded
     /// torque/velocity) on the Stopped/Coast → drive transition.
     ///

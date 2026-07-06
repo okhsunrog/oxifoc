@@ -1406,6 +1406,17 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     /// state" only says something is wrong. Only sources that consume hall
     /// data report; an idle hall during Manual calibration or pure
     /// sensorless is not a failure.
+    fn debug_observer(&self) -> Option<(f32, f32, f32)> {
+        match (
+            self.observer.phase(),
+            self.observer.phase_raw(),
+            self.observer.velocity(),
+        ) {
+            (Some(pll), Some(raw), Some(vel)) => Some((pll, raw, vel)),
+            _ => None,
+        }
+    }
+
     fn hall_fault(&self) -> Option<HallFaultKind> {
         if !self.source.requires_hall() {
             return None;
