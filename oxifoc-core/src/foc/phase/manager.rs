@@ -1215,6 +1215,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.startup.wants_short()
     }
 
+    fn startup_current_scale(&self) -> f32 {
+        self.startup.current_scale()
+    }
+
     /// Trustworthy down to standstill when a hardware sensor backs the active
     /// source (Hall/Encoder track to a stop), or when HFI is locked (valid at
     /// zero speed by design). A pure back-EMF observer is only trusted while

@@ -28,6 +28,16 @@ use crate::foc::wrap_angle;
 /// cold bench start a brief latch is safer than ramping from an unknown angle.
 pub const DEFAULT_ALIGN_TIME_S: f32 = 0.3;
 
+/// Align current soft-start (s): the torque command scales 0 → 1 over this
+/// window at align entry (see [`SensorlessStartup::current_scale`]).
+/// Step-engaging the full setpoint onto the rotor's undamped magnetic
+/// spring swings it violently when the initial angle is unlucky — bench
+/// 2026-07-06: |i_dq| spiked past the 10 A overcurrent trip on ~1 in 3
+/// cold starts at 1.5 A. VESC ramps its lock current the same way. Half
+/// the align dwell: the rotor still gets a full-current latch for the
+/// remaining half before the ramp begins.
+pub const ALIGN_CURRENT_RAMP_S: f32 = 0.15;
+
 /// Ramp duration (s): linear `0 → ceiling` open-loop velocity.
 pub const DEFAULT_RAMP_TIME_S: f32 = 0.4;
 
@@ -245,6 +255,21 @@ impl SensorlessStartup {
         self.timer
     }
 
+    /// Torque-command scale (0..=1) for the current cycle: ramps in over
+    /// [`ALIGN_CURRENT_RAMP_S`] during Align, full command everywhere else
+    /// (Deadshort holds the bridge shorted, so the value is moot there).
+    pub fn current_scale(&self) -> f32 {
+        match self.phase {
+            StartupPhase::Align => {
+                let align_elapsed =
+                    (DEFAULT_OPENLOOP_TIME_S + DEFAULT_ALIGN_TIME_S + DEFAULT_RAMP_TIME_S)
+                        - self.timer;
+                clamp_f32(align_elapsed / ALIGN_CURRENT_RAMP_S, 0.0, 1.0)
+            }
+            _ => 1.0,
+        }
+    }
+
     /// Ramp ceiling for the measured current magnitude — at least the handoff
     /// speed, scaled up toward `CEILING_MAX_FACTOR×` at `CURRENT_REF_A`.
     fn ramp_ceiling(&self, current_mag: f32) -> f32 {
@@ -324,13 +349,14 @@ impl SensorlessStartup {
         // observer at handoff speed takes over immediately.
         //
         // The runaway path additionally requires the ramp to have actually
-        // dragged the rotor a while (velocity ≥ 20% of handoff): the align
+        // dragged the rotor a while (velocity ≥ 35% of handoff): the align
         // phase leaves the rotor swinging on its undamped magnetic spring
         // (~8 Hz mech on the bench motor), the observer can lock onto that
-        // swing and report "ready" at hundreds of rad/s right at ramp entry
-        // (bench: observer_vel 585–786 at openloop_vel 0–1.2). Every real
-        // runaway observed fired at openloop_vel ≥ 23.
-        let ramp_moving = self.velocity.abs() >= self.handoff_vel * 0.2;
+        // swing and stay "ready" into the ramp — with a 20% gate the false
+        // handoff fired the instant the gate opened (openloop_vel 12.0,
+        // observer 755). Every real runaway observed fired at
+        // openloop_vel ≥ 23; the artifact cases sat at 0–12.
+        let ramp_moving = self.velocity.abs() >= self.handoff_vel * 0.35;
         let fast_enough = (self.velocity.abs() >= self.handoff_vel
             && observer_vel.abs() >= self.handoff_vel * 0.5)
             || (ramp_moving && observer_vel.abs() >= self.handoff_vel);
@@ -511,6 +537,28 @@ mod tests {
         );
         // Settles at or above the handoff velocity.
         assert!(sm.velocity() >= DEFAULT_HANDOFF_VEL);
+    }
+
+    #[test]
+    fn align_current_soft_starts() {
+        let mut sm = cold_start_to_align(0.0, 1.0);
+        // Align entry: command fully suppressed, ramps in linearly.
+        assert!(sm.current_scale() < 0.1, "got {}", sm.current_scale());
+        let half = (ALIGN_CURRENT_RAMP_S / 2.0 / DT) as usize;
+        for _ in 0..half {
+            sm.tick(DT, 1.0, false, 0.0);
+        }
+        let s = sm.current_scale();
+        assert!((0.3..0.7).contains(&s), "mid-ramp scale {s}");
+        // Past the ramp window (still inside align): full command.
+        for _ in 0..half + 400 {
+            sm.tick(DT, 1.0, false, 0.0);
+        }
+        assert_eq!(sm.phase(), StartupPhase::Align);
+        assert_eq!(sm.current_scale(), 1.0);
+        // Ramp/Hold: never scaled.
+        run(&mut sm, 1.0, 3.0);
+        assert_eq!(sm.current_scale(), 1.0);
     }
 
     #[test]

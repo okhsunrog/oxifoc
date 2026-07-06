@@ -126,4 +126,15 @@ pub trait PhaseProvider {
     fn wants_short(&self) -> bool {
         false
     }
+
+    /// Scale factor (0..=1) the driver applies to the commanded torque
+    /// current while the provider's startup sequencer runs. Lets the align
+    /// phase soft-start the current instead of step-engaging the full
+    /// setpoint onto the rotor's undamped magnetic spring (bench 2026-07-06:
+    /// a bad initial angle swings the rotor violently enough to spike
+    /// |i_dq| past the overcurrent trip on ~1 in 3 cold starts — VESC ramps
+    /// its lock current for the same reason). Default: no scaling.
+    fn startup_current_scale(&self) -> f32 {
+        1.0
+    }
 }

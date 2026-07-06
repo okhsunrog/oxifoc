@@ -1205,6 +1205,13 @@ where
         // Layer 1: Clamp current targets (prevents absurd commands)
         let (id_target, iq_target) = self.current_limits.clamp_targets(id_target, iq_target);
 
+        // Startup soft-start: the align phase ramps the torque command in
+        // instead of step-engaging it onto the rotor's undamped magnetic
+        // spring (see PhaseProvider::startup_current_scale). 1.0 outside
+        // the startup sequencer.
+        let scale = self.phase.startup_current_scale();
+        let (id_target, iq_target) = (id_target * scale, iq_target * scale);
+
         // An untrustworthy angle may be π-flipped (pure HFI before its
         // polarity probe resolves) or frozen (back-EMF observer below its
         // speed floor) — iq there is torque in an unknown direction. Zero it;
