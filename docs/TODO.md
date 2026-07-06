@@ -164,7 +164,15 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     3–10k erpm, iq mean collapsing episodically — across EVERY
     combination of kp {0.024, 0.1075} × dec {24, 86/129} ×
     obs {24, 108-salient}. At 0.3 A all configs are stable to the
-    no-load ceiling → perturbation scales with L·i. Sim: the current
+    no-load ceiling → perturbation scales with L·i.
+  - NEW reproducer (2026-07-06 evening, cold motor): a SLOW crawl
+    through the ω_e ≈ 400–800 L(f) transition band ends in the dq
+    overcurrent ~1.1 s after handoff, 6/6 — maneuvers/prof-hold-1a.json
+    (1.0 A punch 0.5 s → 0.3 A hold; the low-torque crawl lingers in
+    the band). A fast 1.5 A punch through the same band
+    (spin-sustained.json) is clean 3/3. Captures in captures/final3*.
+    So "0.3 A always stable" holds only ABOVE the band — the
+    band-transit dynamics are the trigger, not the steady current. Sim: the current
     loop with a perfect angle is unconditionally stable (any advance),
     so the cycle lives in the OBSERVER↔loop interaction; the single-L
     sim plant does not reproduce it (frequency-dependent L missing).
@@ -179,16 +187,13 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     chain (observer L·i, deadshort e=−L·dI/dt) is hardware-validated
     on the AC value, the decoupling needs the fundamental pair;
     today's split lives as a set_decoupling override in g431 foc.rs.
-  - **Align swing (partially fixed 4ca41ab, redesign pending)**: the
-    fixed-angle align resonates the rotor on its undamped magnetic
-    spring (~8 Hz mech). Current soft-start (0.15 s ramp) + the 35%
-    runaway gate eliminated the false handoffs (observer locking onto
-    the swing), but ~2/5 cold starts at 1.5 A still trip the dq
-    overcurrent during align/early ramp — no current-shaping fixes a
-    resonance with no damping. Next: VESC-style align = 0 (ramp from
-    the unknown angle — a rotating field doesn't pump the resonance),
-    or active damping during align. Same investigation as the observer
-    readiness work: the swing is also what poisons its flux integrator.
+  - ~~Align swing~~ RESOLVED 2026-07-06 (ccfb233): the align phase is
+    GONE — VESC-style ramp-from-unknown-angle with the current
+    soft-start folded into early ramp. Bench: align-OC eliminated,
+    handoff 9/9. Sim gate: cold_start_captures_rotor_from_any_initial_
+    angle. Observer readiness (external validity) remains open — the
+    catch transient at ramp entry can still briefly swing the rotor,
+    which is what the 35% runaway gate covers.
 - [x] ~~10 kHz capture during drive still trips the deadman~~ ROOT CAUSE
   FOUND 2026-07-06 (afternoon session): **ISR saturation during align**,
   not a comms/freeze mystery. VECTACTIVE sampling over SWD (ICSR @
@@ -212,6 +217,16 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
   `pump/s gap+timer_late` / `exec stall` marker / `isr over=` /
   `hall_edges`, host per-phase stall watch + down-write gap +
   `OXIFOC_PC_SAMPLE` SWD PC/VECTACTIVE sampler.
+- [ ] **TIM4 timebase glitches backward under ISR saturation** (found
+  2026-07-06 via a false deadman at engage+70 ms = one 65.5 ms TIM4
+  period, staleness meter pegged at u32::MAX): `hall::now_ticks()`
+  assembles TIM4 CNT + a software overflow count; when the saturated
+  FOC ISR delays the TIM4 overflow interrupt past a wrap, the assembled
+  time steps BACK ~65 ms. The deadman now uses saturating_sub (ccfb233)
+  so it merely loses that window, but hall-edge timestamps and velocity
+  math on hall builds see the same glitch — audit `CaptureTimebase`
+  (read CNT twice / pending-UIF handling) or move the timebase off the
+  starving interrupt.
 - [ ] deadshort **sign-from-progression**: the ±90° angle offset assumes
   the rotor spins in the *commanded* direction (kick-push). A rotor
   freewheeling AGAINST the command needs a ±180° PLL pull it can't do —
