@@ -91,6 +91,20 @@ pub enum StartupPhase {
     Recover,
 }
 
+impl StartupPhase {
+    /// Short lowercase name for transition logs.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Inactive => "inactive",
+            Self::Deadshort => "deadshort",
+            Self::Align => "align",
+            Self::Ramp => "ramp",
+            Self::Hold => "hold",
+            Self::Recover => "recover",
+        }
+    }
+}
+
 /// What the manager should drive this cycle.
 #[derive(Clone, Copy, Debug)]
 pub struct StartupOutput {

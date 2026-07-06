@@ -845,6 +845,13 @@ where
         } else {
             0.0
         };
+        // One-shot (the is_active guard above): the WHY is logged at the
+        // detector sites in state.rs; this is the WHAT actually armed
+        // (policy may have been downgraded to Coast=0 above).
+        warn!(
+            "stop sequence armed: policy={} terminal={} seed_iq={}",
+            policy as u8, terminal as u8, current_iq
+        );
         self.failsafe_ctrl.arm(current_iq, policy, terminal);
     }
 

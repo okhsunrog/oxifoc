@@ -1109,7 +1109,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // handoff speed (it keeps running on commanded-v + measured-i the
         // whole time, so by handoff its angle is the true rotor angle).
         if self.startup.is_active() {
-            if self.startup.phase() == StartupPhase::Deadshort {
+            let phase_before = self.startup.phase();
+            if phase_before == StartupPhase::Deadshort {
                 // Flying-restart probe: the driver holds the bridge at zero
                 // voltage; feed the back-EMF-driven current to the probe. A
                 // spinning rotor → seed the observer and go straight to closed
@@ -1120,7 +1121,13 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     self.startup
                         .feed_deadshort(input.i_alpha, input.i_beta, input.dt, l, lambda)
                 {
+                    info!(
+                        "startup: deadshort caught spinning rotor (angle={} vel={}), seeding observer",
+                        angle, velocity
+                    );
                     self.observer.seed(angle, velocity);
+                } else if self.startup.phase() == StartupPhase::Align {
+                    info!("startup: deadshort saw standstill, align/ramp cold start");
                 }
             } else {
                 let i_mag = sqrtf(input.i_alpha * input.i_alpha + input.i_beta * input.i_beta);
@@ -1130,7 +1137,24 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     self.observer.is_ready(),
                     self.observer.velocity().unwrap_or(0.0),
                 );
+                // Transitions are one-shot (a few per start), so logging from
+                // the ISR here costs nothing in the steady state.
+                let phase_now = self.startup.phase();
+                if phase_now != phase_before {
+                    info!(
+                        "startup: {} -> {} (vel={} |i|={})",
+                        phase_before.name(),
+                        phase_now.name(),
+                        out.velocity,
+                        i_mag
+                    );
+                }
                 if out.handoff {
+                    info!(
+                        "startup: handoff to observer (openloop_vel={} observer_vel={})",
+                        out.velocity,
+                        self.observer.velocity().unwrap_or(0.0)
+                    );
                     self.startup.deactivate();
                 }
             }
@@ -1152,9 +1176,20 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // source (Hall/Encoder, or a *ToObserver blend) already has an angle at
         // standstill. No-op once the observer is tracking. Starts from the last
         // output angle so the field doesn't jump on engage.
-        if !matches!(self.source, PhaseSource::Observer) || self.observer.is_ready() {
+        if !matches!(self.source, PhaseSource::Observer) {
             return;
         }
+        if self.observer.is_ready() {
+            info!(
+                "startup: cold start skipped, observer already tracking (vel={})",
+                self.observer.velocity().unwrap_or(0.0)
+            );
+            return;
+        }
+        info!(
+            "startup: cold start engaged (angle0={} dir={})",
+            self.output.angle, dir
+        );
         self.startup.begin_cold_start(self.output.angle, dir);
     }
 

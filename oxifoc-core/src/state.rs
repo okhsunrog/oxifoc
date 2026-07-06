@@ -516,6 +516,11 @@ where
             ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
         )
     {
+        // Edge-detect on the failsafe not yet running: this gate re-fires
+        // every cycle while the link stays down and would spam the ISR log.
+        if !foc.failsafe_active() {
+            warn!("failsafe: host link lost while running");
+        }
         foc.enter_failsafe();
     }
 
@@ -580,6 +585,16 @@ where
     if (driver.deadman_expired(now_ticks) || link_lost_unacked)
         && let Some(f) = F::from_category(FaultCategory::CommTimeout)
     {
+        // Log the raise edge only (the condition persists until a SetMode
+        // drains), and say which detector fired — the two have very
+        // different bench remedies (host affirm cadence vs transport drop).
+        if !fault_registry.has_category(FaultCategory::CommTimeout) {
+            warn!(
+                "CommTimeout raised: deadman_expired={} link_lost={}",
+                driver.deadman_expired(now_ticks),
+                link_lost_unacked
+            );
+        }
         fault_registry.set(f);
     }
 
@@ -612,6 +627,10 @@ where
     // GracefulStop routes through the failsafe machinery, warnings are
     // report-only and never touch the motor.
     if fault_registry.any_kill() {
+        // Edge log: safe_off() latches Stopped, so this fires once per trip.
+        if !matches!(driver.mode(), ControlMode::Stopped) {
+            error!("KILL fault active: cutting gate drive");
+        }
         // Cut the gate drive NOW, re-asserted every cycle the Kill stays
         // latched. `set_mode(Stopped)` alone only floats the bridge on the
         // next step() in Stopped mode, which the early return below skips —
@@ -644,6 +663,9 @@ where
             ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
         )
     {
+        if !driver.failsafe_active() {
+            warn!("failsafe: stopping-class fault active");
+        }
         driver.enter_failsafe();
     }
 
