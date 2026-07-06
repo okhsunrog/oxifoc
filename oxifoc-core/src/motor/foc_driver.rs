@@ -3120,6 +3120,23 @@ mod tests {
         dead_time: bool,
         /// Plant ADC quantization + noise (bench: 15 mA LSB).
         adc_noise: bool,
+        /// Rotor inertia (kg·m²). The original tests assumed 5e-5; the
+        /// 2026-07-06 bench climb (clean 1.5 A acceleration, e_q-verified)
+        /// implies ≈3.2e-5 for the ZD2808 bell.
+        j: f32,
+        /// Print `t rotor ω̂ iq` every N steps (0 = off) — truth-vs-estimate
+        /// trace for the sawtooth exploration; the whole point of the sim is
+        /// that both are visible at once.
+        trace_every: u64,
+        /// Eddy-branch time constant for the plant (0 = ideal single-L).
+        /// When nonzero the plant gets the ZD2808 L(f): DC 86/129 µH
+        /// falling to the ~24 µH AC plateau (ΔL 62/105 µH).
+        eddy_tau_s: f32,
+        /// Plant imperfection scale for the sawtooth hunt: multiplies the
+        /// dead-time distortion, and skews the PLANT's λ/R away from the
+        /// configured values (λ ×(1+0.15·s), R ×(1+0.1·s) at s=1) — the
+        /// estimation chain keeps the baked numbers. 0 = exact match.
+        plant_skew: f32,
     }
 
     #[cfg(feature = "virtual-motor")]
@@ -3133,13 +3150,14 @@ mod tests {
         const VBUS: f32 = 12.0;
         const DEAD_TIME_NS: f32 = 800.0;
         const LAMBDA: f32 = 1.145e-3;
+        let sk = cfg.plant_skew;
         let params = MotorParams {
-            r: 0.127,
+            r: 0.127 * (1.0 + 0.1 * sk),
             ld: 86e-6,
             lq: 129e-6,
-            lambda: LAMBDA,
+            lambda: LAMBDA * (1.0 + 0.15 * sk),
             pole_pairs: 7,
-            j: 5e-5,
+            j: cfg.j,
             friction_b: 4e-6,
             actuation_delay_steps: 1,
             substeps: 10,
@@ -3148,12 +3166,15 @@ mod tests {
             // (zero-crossing clamping the comp can't model) reaches the
             // estimators — same as hardware.
             dead_time_v: if cfg.dead_time {
-                DEAD_TIME_NS * 1e-9 * 20_000.0 * VBUS
+                DEAD_TIME_NS * 1e-9 * 20_000.0 * VBUS * (1.0 + sk)
             } else {
                 0.0
             },
             adc_lsb_a: if cfg.adc_noise { 62.0 / 4096.0 } else { 0.0 },
             adc_noise_a: if cfg.adc_noise { 62.0 / 4096.0 } else { 0.0 },
+            eddy_delta_l_d: if cfg.eddy_tau_s > 0.0 { 62e-6 } else { 0.0 },
+            eddy_delta_l_q: if cfg.eddy_tau_s > 0.0 { 105e-6 } else { 0.0 },
+            eddy_tau_s: cfg.eddy_tau_s,
             ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
@@ -3228,6 +3249,17 @@ mod tests {
                     untrusted_cycles += 1;
                 }
             }
+            if cfg.trace_every > 0 && step % cfg.trace_every == 0 {
+                println!(
+                    "t={:6.3} rotor={:7.1} obs={:7.1} iq={:+6.2} conf={:.2} starting={}",
+                    step as f32 * DT,
+                    out.omega_e,
+                    driver.phase().observer().velocity().unwrap_or(0.0),
+                    telem.iq,
+                    driver.phase().observer().confidence(),
+                    u8::from(starting),
+                );
+            }
             // Drive the plant from the DUTIES, not the pre-modulation
             // command: the dead-time comp lives only in the duty path, and
             // feeding v_alpha/v_beta directly would leave the plant's
@@ -3281,6 +3313,10 @@ mod tests {
             controller_l: (86e-6 + 129e-6) / 2.0,
             dead_time: true,
             adc_noise: true,
+            j: 5e-5,
+            trace_every: 0,
+            eddy_tau_s: 0.0,
+            plant_skew: 0.0,
         });
         assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
         if rep.handoff_step.is_some() {
@@ -3314,6 +3350,10 @@ mod tests {
             controller_l: (86e-6 + 129e-6) / 2.0,
             dead_time: true,
             adc_noise: true,
+            j: 5e-5,
+            trace_every: 0,
+            eddy_tau_s: 0.0,
+            plant_skew: 0.0,
         });
         assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
         let handoff = rep.handoff_step.expect("must eventually hand off");
@@ -3328,6 +3368,97 @@ mod tests {
             rep.final_omega
         );
         assert!(rep.untrusted_frac < 0.05);
+    }
+
+    /// Sawtooth exploration (2026-07-06 night): does the sim reproduce the
+    /// bench post-handoff ESTIMATE SAWTOOTH once it runs the ACTUAL bench
+    /// configuration? The regression tests above run observer_l =
+    /// controller_l = l_avg (107.5 µH) and j = 5e-5 — but the bench bakes
+    /// the AC 24 µH into BOTH (motor_params.l → observer; kp = L·bw =
+    /// 0.024), and the e_q-verified 1.5 A climb implies j ≈ 3.2e-5.
+    /// Run with:
+    /// `cargo test -p oxifoc-core --release explore_sawtooth -- --nocapture --ignored`
+    #[test]
+    #[ignore = "exploration harness, not a regression test"]
+    #[cfg(feature = "virtual-motor")]
+    fn explore_sawtooth_bench_config() {
+        const L_AVG: f32 = (86e-6 + 129e-6) / 2.0;
+        const L_AC: f32 = 24e-6;
+        for (label, obs_l, ctrl_l, j, trace, eddy_tau, skew) in [
+            ("bench cfg, ideal plant", L_AC, L_AC, 3.2e-5, 0, 0.0, 0.0),
+            (
+                "bench cfg, eddy tau=0.3ms",
+                L_AC,
+                L_AC,
+                3.2e-5,
+                0,
+                0.3e-3,
+                0.0,
+            ),
+            (
+                "bench cfg, eddy + skew 1 (2x dead-time, lambda+15%, R+10%)",
+                L_AC,
+                L_AC,
+                3.2e-5,
+                400,
+                0.3e-3,
+                1.0,
+            ),
+            (
+                "bench cfg, eddy + skew 2 (3x dead-time, lambda+30%, R+20%)",
+                L_AC,
+                L_AC,
+                3.2e-5,
+                400,
+                0.3e-3,
+                2.0,
+            ),
+            (
+                "bench cfg, skew 2, no eddy",
+                L_AC,
+                L_AC,
+                3.2e-5,
+                0,
+                0.0,
+                2.0,
+            ),
+            (
+                "control: obs=avg ctrl=avg j=5e-5, ideal",
+                L_AVG,
+                L_AVG,
+                5e-5,
+                0,
+                0.0,
+                0.0,
+            ),
+        ] {
+            println!("== {label} ==");
+            let rep = run_zd2808_cold_start(ColdStartCfg {
+                iq_target: 0.5,
+                initial_rotor_angle: 0.0,
+                steps: 60_000,
+                observer_l: obs_l,
+                observer_salient: false,
+                controller_l: ctrl_l,
+                dead_time: true,
+                adc_noise: true,
+                j,
+                trace_every: trace,
+                eddy_tau_s: eddy_tau,
+                plant_skew: skew,
+            });
+            println!(
+                "   handoff@{:?} rotor@handoff={:.0} obs@handoff={:.0} trip={:?} \
+                 final_rotor={:.0} obs_final={:.0} untrusted={:.2}",
+                rep.handoff_step,
+                rep.rotor_omega_at_handoff,
+                rep.observer_vel_at_handoff,
+                rep.trip,
+                rep.final_omega,
+                rep.observer_vel_final,
+                rep.untrusted_frac,
+            );
+        }
     }
 
     /// TEMPORARY exploration of the phantom-handoff reproducer — prints one
@@ -3378,6 +3509,10 @@ mod tests {
                         controller_l: ctrl_l,
                         dead_time,
                         adc_noise,
+                        j: 5e-5,
+                        trace_every: 0,
+                        eddy_tau_s: 0.0,
+                        plant_skew: 0.0,
                     });
                     println!(
                         "iq={iq:>3} a0={a0:4.2} handoff={:?} rotor@h={:7.1} obs@h={:7.1} \

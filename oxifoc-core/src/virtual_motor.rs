@@ -113,6 +113,31 @@ pub struct MotorParams {
     /// stream is added to each reported phase current (before
     /// quantization). Deterministic seed → reproducible test runs.
     pub adc_noise_a: f32,
+    /// Eddy-current inductance drop on the d axis (H). 0 = ideal iron
+    /// (default).
+    ///
+    /// Real laminated/solid-magnet rotors lose apparent inductance with
+    /// frequency: eddy currents in the iron/magnets act as a shorted
+    /// secondary winding. Modeled as the classic first-order ladder —
+    /// per-axis flux `ψ = L_hf·i + ΔL·i_f` with `τ_e·di_f/dt = i − i_f`,
+    /// giving `L(jω) = L_hf + ΔL/(1 + jω·τ_e)`: the DC inductance is the
+    /// configured `ld`/`lq`, the HF plateau is `ld − eddy_delta_l_d`, and
+    /// the imaginary part contributes the frequency-dependent eddy LOSS
+    /// (R(f) rise) for free. ZD2808 bench values: DC Ld/Lq 86/129 µH,
+    /// AC plateau ~24 µH from ~1 kHz ⇒ ΔL_d ≈ 62 µH, ΔL_q ≈ 105 µH
+    /// (docs/notes/inductance-freq-detection.md). This is the plant
+    /// feature the 2026-07-06 sawtooth investigation identified as the
+    /// sim-vs-bench fidelity gap: the single-L plant tracks cleanly in
+    /// exactly the closed-loop conditions where the bench estimate runs
+    /// away.
+    pub eddy_delta_l_d: f32,
+    /// Eddy-current inductance drop on the q axis (H). 0 = ideal (default).
+    /// See [`eddy_delta_l_d`](Self::eddy_delta_l_d).
+    pub eddy_delta_l_q: f32,
+    /// Eddy branch time constant (s); the `L(f)` crossover sits at
+    /// `1/(2π·τ_e)`. Only used when a ΔL is nonzero. ZD2808: plateau
+    /// reached by ~1 kHz ⇒ τ_e ≈ 0.2–0.5 ms.
+    pub eddy_tau_s: f32,
     /// Actuation pipeline delay in whole `step()` calls (0 = none,
     /// default; clamped to 3).
     ///
@@ -167,6 +192,9 @@ impl Default for MotorParams {
             dead_time_v: 0.0,
             adc_lsb_a: 0.0,
             adc_noise_a: 0.0,
+            eddy_delta_l_d: 0.0,
+            eddy_delta_l_q: 0.0,
+            eddy_tau_s: 0.0,
             actuation_delay_steps: 0,
         }
     }
@@ -212,6 +240,9 @@ pub struct VirtualMotor {
     // Integrator state
     id: f32,
     iq: f32,
+    /// Eddy-branch filtered currents (see `MotorParams::eddy_delta_l_d`).
+    i_fd: f32,
+    i_fq: f32,
     omega_e: f32, // electrical angular velocity (rad/s)
     phi: f32,     // electrical rotor angle (rad)
     sin_phi: f32,
@@ -232,6 +263,8 @@ impl VirtualMotor {
             params,
             id: 0.0,
             iq: 0.0,
+            i_fd: 0.0,
+            i_fq: 0.0,
             omega_e: 0.0,
             phi: 0.0,
             sin_phi: 0.0,
@@ -329,9 +362,18 @@ impl VirtualMotor {
         let n = p.substeps.max(1);
         let dt_sub = dt / n as f32;
 
-        // Zero current — no electromagnetic torque
+        // Zero current — no electromagnetic torque; the eddy-branch
+        // currents decay with their own time constant.
         self.id = 0.0;
         self.iq = 0.0;
+        if self.params.eddy_tau_s > 0.0 {
+            let k = (dt / self.params.eddy_tau_s).min(1.0);
+            self.i_fd -= k * self.i_fd;
+            self.i_fq -= k * self.i_fq;
+        } else {
+            self.i_fd = 0.0;
+            self.i_fq = 0.0;
+        }
 
         for _ in 0..n {
             // Mechanical dynamics: only friction + external load
@@ -428,21 +470,48 @@ impl VirtualMotor {
             let vd = self.cos_phi * va + self.sin_phi * vb;
             let vq = self.cos_phi * vb - self.sin_phi * va;
 
+            // ── Flux linkages (eddy ladder; ΔL = 0 reduces to ψ = L·i) ────
+            // ψd = (Ld−ΔLd)·id + ΔLd·i_fd + λ, ψq analog. The nominal L
+            // builds the fluxes (cross-coupling + torque, as before); the
+            // saturation-effective L stays confined to the di/dt slope.
+            let dl_d = p.eddy_delta_l_d;
+            let dl_q = p.eddy_delta_l_q;
+            let psi_d = (p.ld - dl_d) * self.id + dl_d * self.i_fd + p.lambda;
+            let psi_q = (p.lq - dl_q) * self.iq + dl_q * self.i_fq;
+            // Eddy branch EMF ΔL·d(i_f)/dt = ΔL·(i − i_f)/τ_e — the lossy
+            // part of L(jω) (frequency-dependent eddy resistance).
+            let (e_fd, e_fq) = if p.eddy_tau_s > 0.0 {
+                (
+                    dl_d * (self.id - self.i_fd) / p.eddy_tau_s,
+                    dl_q * (self.iq - self.i_fq) / p.eddy_tau_s,
+                )
+            } else {
+                (0.0, 0.0)
+            };
+
             // ── D-axis current ────────────────────────────────────────────
-            // Ld_eff·did/dt = Vd − R·id + ωe·Lq·iq
+            // (Ld_eff−ΔLd)·did/dt = Vd − R·id + ωe·ψq − ΔLd·(id−i_fd)/τe
             // Ld_eff(id) models d-axis saturation when sat_k ≠ 0 (HFI polarity).
-            self.id +=
-                (vd + self.omega_e * p.lq * self.iq - p.r * self.id) * dt_sub / p.ld_eff(self.id);
+            self.id += (vd + self.omega_e * psi_q - p.r * self.id - e_fd) * dt_sub
+                / (p.ld_eff(self.id) - dl_d).max(1e-9);
 
             // ── Q-axis current ────────────────────────────────────────────
-            // Lq_eff·diq/dt = Vq − R·iq − ωe·(Ld·id + λPM)
+            // (Lq_eff−ΔLq)·diq/dt = Vq − R·iq − ωe·ψd − ΔLq·(iq−i_fq)/τe
             // Lq_eff(iq) models saliency collapse when lq_sat_k ≠ 0.
-            self.iq += (vq - self.omega_e * (p.ld * self.id + p.lambda) - p.r * self.iq) * dt_sub
-                / p.lq_eff(self.iq);
+            self.iq += (vq - self.omega_e * psi_d - p.r * self.iq - e_fq) * dt_sub
+                / (p.lq_eff(self.iq) - dl_q).max(1e-9);
 
-            // ── Electromagnetic torque (with reluctance term) ─────────────
-            // Te = (3/2)·p·[λPM + (Ld − Lq)·id]·iq
-            torque = 1.5 * pp * (p.lambda + (p.ld - p.lq) * self.id) * self.iq;
+            // ── Eddy branch state ─────────────────────────────────────────
+            if p.eddy_tau_s > 0.0 {
+                let k = (dt_sub / p.eddy_tau_s).min(1.0);
+                self.i_fd += k * (self.id - self.i_fd);
+                self.i_fq += k * (self.iq - self.i_fq);
+            }
+
+            // ── Electromagnetic torque (flux cross product) ───────────────
+            // Te = (3/2)·p·(ψd·iq − ψq·id) — reduces to the familiar
+            // (3/2)·p·[λPM + (Ld − Lq)·id]·iq at ΔL = 0.
+            torque = 1.5 * pp * (psi_d * self.iq - psi_q * self.id);
 
             // ── Mechanical dynamics ───────────────────────────────────────
             // J·dωm/dt = Te − TL − B·ωm  →  dωe/dt = p·(Te − TL − B·ωm)/J
@@ -941,6 +1010,82 @@ mod tests {
         assert!(
             is_rotation,
             "sequence {states:?} is not a CW rotation of {CW:?}"
+        );
+    }
+
+    /// The eddy ladder must produce a frequency-dependent inductance:
+    /// at low frequency the plant presents the DC `ld`, at high frequency
+    /// the `ld − ΔL` plateau (larger current for the same voltage). This
+    /// test FAILS on the ΔL = 0 plant (the sim-vs-bench fidelity gap of
+    /// the 2026-07-06 sawtooth investigation): without the eddy branch the
+    /// HF amplitude matches the DC-L prediction instead of exceeding it.
+    #[test]
+    fn eddy_branch_drops_inductance_with_frequency() {
+        use core::f32::consts::TAU;
+        let params = MotorParams {
+            r: 0.127,
+            ld: 86e-6,
+            lq: 129e-6,
+            lambda: 1.145e-3,
+            pole_pairs: 7,
+            j: 5e-5,
+            friction_b: 4e-6,
+            substeps: 10,
+            eddy_delta_l_d: 62e-6,
+            eddy_delta_l_q: 105e-6,
+            eddy_tau_s: 0.2e-3,
+            ..MotorParams::default()
+        };
+        let dt = 1.0 / 20_000.0;
+        let amp_at = |p: MotorParams, f_hz: f32| -> f32 {
+            // Rotor parked at φ = 0: v_alpha maps to vd, ia = id, iq stays
+            // zero → zero torque, the rotor never moves.
+            let mut m = VirtualMotor::new(p);
+            let steps = (0.3 / dt) as usize;
+            let mut amp = 0.0f32;
+            for k in 0..steps {
+                let v = 0.5 * libm::sinf(TAU * f_hz * k as f32 * dt);
+                let out = m.step(v, 0.0, 0.0, dt);
+                if k > steps * 8 / 10 {
+                    amp = amp.max(out.ia.abs());
+                }
+            }
+            amp
+        };
+        // DC-L predictions |i| = V/|R + jωL_dc|.
+        let pred_dc = |f_hz: f32| {
+            let w = TAU * f_hz;
+            0.5 / libm::sqrtf(0.127f32 * 0.127 + (w * 86e-6) * (w * 86e-6))
+        };
+        // Low frequency: the eddy branch is invisible, DC L holds.
+        let lo = amp_at(params, 50.0);
+        assert!(
+            (lo - pred_dc(50.0)).abs() < 0.15 * pred_dc(50.0),
+            "50 Hz amplitude {lo} vs DC-L prediction {}",
+            pred_dc(50.0)
+        );
+        // High frequency: the apparent L collapses toward the plateau —
+        // materially MORE current than the DC L would pass.
+        let hi = amp_at(params, 2_000.0);
+        assert!(
+            hi > 1.5 * pred_dc(2_000.0),
+            "2 kHz amplitude {hi} must exceed the DC-L prediction {} — \
+             eddy branch inactive?",
+            pred_dc(2_000.0)
+        );
+        // And the ideal (ΔL = 0) plant matches the DC prediction at HF —
+        // the exact behavior that hid the bench sawtooth from the sim.
+        let ideal = MotorParams {
+            eddy_delta_l_d: 0.0,
+            eddy_delta_l_q: 0.0,
+            eddy_tau_s: 0.0,
+            ..params
+        };
+        let hi_ideal = amp_at(ideal, 2_000.0);
+        assert!(
+            (hi_ideal - pred_dc(2_000.0)).abs() < 0.2 * pred_dc(2_000.0),
+            "ideal plant at 2 kHz {hi_ideal} vs {}",
+            pred_dc(2_000.0)
         );
     }
 }

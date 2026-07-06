@@ -258,12 +258,26 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
         draw 37 A, currents stayed ≤8.5) before an OC at 25k erpm.
       - Corrected J from that climb: ≈3.2e-5 (sim uses 5e-5 — may be
         why sim doesn't reproduce the sawtooth).
-      NEXT: reproduce the sawtooth in sim with J=3.2e-5 + eddy-branch
-      plant at iq 0.5 A from a 180 rad/s handoff; instrument the sim
-      internals (truth vs estimate visible there); suspects = drive-
-      dominated flux integrator at light load (closed-loop self-
-      excitation, the classic), L(f) mismatch in −L·Δi. Bench data to
-      get: 2 kHz captures are loss-free, 10 kHz is not (366 ms gaps).
+      SIM EXCLUSION RESULTS (2026-07-06 night, explore_sawtooth_bench_
+      config matrix; VirtualMotor now HAS the eddy L(f) ladder — ψ =
+      L_hf·i + ΔL·i_f, τ_e·di_f/dt = i−i_f, per-axis ΔL, gated test
+      eddy_branch_drops_inductance_with_frequency): the sawtooth does
+      NOT reproduce in sim under (a) the exact bench parameter set
+      (obs_l=ctrl_l=24 µH, j=3.2e-5) on the ideal plant, (b) the same +
+      eddy plant at τ_e 0.15/0.3/0.6 ms (clean handoff, tracking within
+      2%, sustained spin every time), (c) + plant skew (2–3× dead-time,
+      λ+15–30%, R+10–20%) — that breaks the RAMP CAPTURE instead
+      (phantom class returns, probe correctly refuses, no handoff).
+      Conclusion: the closed-loop sawtooth lives in a bench detail the
+      plant still lacks — top remaining suspects: dead-time COMP
+      interplay (comp sign errors around zero crossings; sim applies
+      ideal comp), current-measurement offsets/gain error rotating with
+      the frame, true L(f) shape beyond first-order. NEXT (bench-side,
+      measure first): stream observer internals in the fast frame (ω̂,
+      e_q, flux components at 2 kHz — a debug telemetry variant) and
+      capture one sawtooth period with exact phase relationships
+      (what leads: flux angle jump / e_q / iq spike). Bench capture
+      rates: 2 kHz loss-free, 10 kHz is not (366 ms gaps).
     Distortion-floor context for the record: at ramp 60–63 the observer
     read 32–62 with confidence DECAYING 1.0→0.59 and validity never
     corroborating — λω ≈ 72 mV is at/below the post-comp dead-time
