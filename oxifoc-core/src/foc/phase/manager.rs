@@ -1430,6 +1430,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     /// state" only says something is wrong. Only sources that consume hall
     /// data report; an idle hall during Manual calibration or pure
     /// sensorless is not a failure.
+    fn set_slip_gate(&mut self, gated: bool) {
+        self.observer.set_slip_gate(gated);
+    }
+
     fn debug_observer(&self) -> Option<(f32, f32, f32)> {
         match (
             self.observer.phase(),

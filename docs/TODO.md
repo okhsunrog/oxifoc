@@ -349,6 +349,29 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
         but may leave a bounded oscillation; damping the onset likely
         needs the true L(f)/loop-phase story (impedance-sweep TODO is
         the measurement).
+      **SLIP GATE LANDED (2026-07-07): strict improvement, not yet a
+      cure.** Implementation: driver flags cycles with |iq_ref −
+      iq_meas| > max(1.5 A, 0.5·|iq_ref|) (hysteresis ×0.5); while
+      flagged, the observer's PLL holds — dead-reckoned angle, no
+      velocity/λ/error-filter/validity learning; flux integrator keeps
+      running; 30 ms duty limit against a latched gate (V-SAT class).
+      Unit gates: slip_gate_holds_pll_and_dead_reckons,
+      slip_gate_duty_limit_force_opens; full suite green (the relative
+      threshold part exists because an absolute 1.5 A froze legitimate
+      6 A-start transients and broke the classic cold-start sim test).
+      Bench (captures/slipgate-1,2): the estimate sawtooth is GONE —
+      constant 1.5 A ran 2.4 s of bounded oscillation (erpm 3109±1232,
+      BEMF-OK) instead of ratcheting to OC in 0.25 s; at 0.5 A the loop
+      did its first genuinely PHYSICAL acceleration through the band
+      (137→546 rad/s el over 2.3 s at the 0.5 A torque rate, e_q
+      corroborating). REMAINING: (a) an estimate ESCAPE still ends the
+      runs at ~550 rad/s el (546→1978 in <0.4 s — 3× the physical
+      bound; anatomy of the escape from the 2 kHz captures is the next
+      analysis: is the gate not engaging — beat dips at light command
+      below the 1.5 A floor? — or is it the linear onset growing
+      un-slipped); (b) the torque DOWN-step (1.5→0.3 A) still
+      destabilizes within 0.2 s (reproducer #2's class, now isolated
+      on top of the gate). Bench firmware note: plain HEAD reflashed.
       Bench capture rates: 2 kHz loss-free, 10 kHz is not (366 ms
       gaps).
     Distortion-floor context for the record: at ramp 60–63 the observer

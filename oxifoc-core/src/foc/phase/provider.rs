@@ -108,6 +108,13 @@ pub trait PhaseProvider {
         None
     }
 
+    /// Assert/clear the slip gate on the estimation chain (see
+    /// `BackEmfObserver::set_slip_gate`): the driver flags cycles where the
+    /// measured current is far from its reference — a slip/large transient
+    /// — so the observer's PLL does not learn from them. Default: no-op
+    /// (providers without a gated estimator).
+    fn set_slip_gate(&mut self, _gated: bool) {}
+
     /// Back-EMF observer internals for the `obs-debug-telem` fast-frame
     /// mapping: `(phase_pll, phase_raw, velocity_pll)`. Default: none
     /// (providers without an observer). See `FocDriver::step`.
