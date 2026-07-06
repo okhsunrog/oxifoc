@@ -28,14 +28,33 @@ use serde_json::json;
 /// Send a motor command and wait for the device's acknowledgement — the
 /// process must exit nonzero when the command never reached the device.
 pub(crate) fn send_motor_acked(runtime: &HostRuntime, mode: ControlMode) -> Result<MotorStatus> {
-    let (tx, rx) = motor_channel();
-    runtime
-        .cmd_tx
-        .send(HostCommand::MotorAck(mode, tx))
-        .context("send motor command")?;
-    rx.blocking_recv()
-        .context("backend dropped the motor command")?
-        .context("motor command not acknowledged by the device")
+    // Bounded retry: the backend sends each attempt once (ordered with other
+    // commands) and reports a lost/late response as an error. Setpoints are
+    // idempotent, and under a saturated device ISR (sustained 1.5 A drive at
+    // ~90% budget on the g431 bench) the RESPONSE frame can be dropped at a
+    // full device TX queue even though the command applied — a fresh request
+    // gets a fresh response. Mirrors the retry the old inline
+    // at_least_once(SETPOINT_POLICY) provided before the affirm-starvation
+    // refactor made command sends fire-and-observe.
+    let mut last: Option<anyhow::Error> = None;
+    for attempt in 1..=3u32 {
+        let (tx, rx) = motor_channel();
+        runtime
+            .cmd_tx
+            .send(HostCommand::MotorAck(mode, tx))
+            .context("send motor command")?;
+        match rx
+            .blocking_recv()
+            .context("backend dropped the motor command")?
+        {
+            Ok(status) => return Ok(status),
+            Err(e) => {
+                eprintln!("motor ack attempt {attempt} failed (retrying): {e:?}");
+                last = Some(e);
+            }
+        }
+    }
+    Err(last.unwrap()).context("motor command not acknowledged by the device (3 attempts)")
 }
 
 /// Print a command result: one JSON document in `--json` mode, the human

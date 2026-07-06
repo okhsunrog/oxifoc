@@ -283,7 +283,12 @@ pub fn connect(
                     return Err(e).with_context(|| {
                         format!(
                             "Failed to attach to RTT after reset \
-                             ({attempts} poll attempts; last polled error: {last_err_str})"
+                             ({attempts} poll attempts; last polled error: {last_err_str}). \
+                             MOST LIKELY CAUSE: the ELF on disk is a different build \
+                             than the flashed firmware, so the _SEGGER_RTT pin points \
+                             at the wrong address — e.g. `just check` rebuilds g431 \
+                             variants and used to leave a non-bench ELF in target/. \
+                             Rebuild with the flashed feature set (or reflash) and retry."
                         )
                     });
                 }
