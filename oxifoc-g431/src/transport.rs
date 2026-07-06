@@ -48,7 +48,52 @@ pub type Stack = NetStack<ThreadModeRawMutex, McRouter>;
 #[cfg(feature = "transport-uart")]
 pub type RxWorker = EioRxWorker<&'static Stack, UartReader, RouterFrameProcessor>;
 #[cfg(feature = "transport-rtt")]
-pub type RxWorker = EioRxWorker<&'static Stack, RttReader, RouterFrameProcessor>;
+pub type RxWorker = EioRxWorker<&'static Stack, MeteredRttReader, RouterFrameProcessor>;
+
+/// Down-pump scheduling stats (RTT transport), 1 Hz-reported by the stats
+/// task. `READ_GAP_MAX_US` is the max time between successive data deliveries
+/// out of the RTT down channel: under host affirms (50 ms cadence) plus slow
+/// telemetry (100 ms) a healthy pump stays under ~110 000; a spike ≥150 000 in a
+/// deadman-trip second proves the frames sat in the down buffer while the
+/// pump (RxWorker on the thread executor) wasn't being scheduled — the
+/// 2026-07-06 drive-engage trips.
+#[cfg(feature = "transport-rtt")]
+pub mod pump_stats {
+    use core::sync::atomic::AtomicU32;
+    /// Reads that returned data (per window).
+    pub static READS: AtomicU32 = AtomicU32::new(0);
+    /// Max µs between successive data deliveries (per window).
+    pub static READ_GAP_MAX_US: AtomicU32 = AtomicU32::new(0);
+    /// Timestamp (µs, wrapping) of the previous delivery — internal.
+    pub static LAST_READ_US: AtomicU32 = AtomicU32::new(0);
+}
+
+/// [`RttReader`] wrapped with the [`pump_stats`] meter: stamps every data
+/// delivery so the stats task can expose the pump's scheduling latency.
+#[cfg(feature = "transport-rtt")]
+pub struct MeteredRttReader {
+    inner: RttReader,
+}
+
+#[cfg(feature = "transport-rtt")]
+impl embedded_io_async::ErrorType for MeteredRttReader {
+    type Error = <RttReader as embedded_io_async::ErrorType>::Error;
+}
+
+#[cfg(feature = "transport-rtt")]
+impl embedded_io_async::Read for MeteredRttReader {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        use core::sync::atomic::Ordering;
+        let n = self.inner.read(buf).await?;
+        let now = embassy_time::Instant::now().as_micros() as u32;
+        let last = pump_stats::LAST_READ_US.swap(now, Ordering::Relaxed);
+        if last != 0 {
+            pump_stats::READ_GAP_MAX_US.fetch_max(now.wrapping_sub(last), Ordering::Relaxed);
+        }
+        pump_stats::READS.fetch_add(1, Ordering::Relaxed);
+        Ok(n)
+    }
+}
 
 /// State notification queue — woken on interface state transitions
 pub static STATE_NOTIFY: WaitQueue = WaitQueue::new();
@@ -210,7 +255,9 @@ pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
 
     let ergot_up = RTT_ERGOT_UP.init(channels.up.1);
     let ergot_down = RTT_ERGOT_DOWN.init(channels.down.0);
-    let rtt_rx = RttReader::new(ergot_down);
+    let rtt_rx = MeteredRttReader {
+        inner: RttReader::new(ergot_down),
+    };
     let rtt_tx = RttWriter::new(ergot_up);
 
     // Register RTT interface on Router

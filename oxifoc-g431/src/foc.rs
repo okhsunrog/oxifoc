@@ -62,6 +62,8 @@ pub static ISR_PROF_FOC: AtomicU32 = AtomicU32::new(0);
 pub static ISR_PROF_PUB: AtomicU32 = AtomicU32::new(0);
 /// Max single ADC1_2 ISR duration in CPU cycles since last stats swap.
 pub static ISR_CYC_MAX: AtomicU32 = AtomicU32::new(0);
+/// ISR cycles that exceeded the 8500-cycle 20 kHz budget (per stats window).
+pub static ISR_CYC_OVER: AtomicU32 = AtomicU32::new(0);
 /// Number of ADC1_2 ISR executions since last stats swap.
 pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
 
@@ -413,4 +415,10 @@ fn ADC1_2() {
     ISR_CYC_SUM.fetch_add(isr_dt, Ordering::Relaxed);
     ISR_CYC_MAX.fetch_max(isr_dt, Ordering::Relaxed);
     ISR_CYC_N.fetch_add(1, Ordering::Relaxed);
+    // Budget-overrun counter: cycles that ate the whole 8500-cycle period
+    // (thread mode got nothing). A burst of these at drive engage = the
+    // executor-stall mechanism behind the 2026-07-06 deadman trips.
+    if isr_dt > 8_500 {
+        ISR_CYC_OVER.fetch_add(1, Ordering::Relaxed);
+    }
 }

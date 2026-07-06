@@ -189,12 +189,29 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     the unknown angle — a rotating field doesn't pump the resonance),
     or active damping during align. Same investigation as the observer
     readiness work: the swing is also what poisons its flux integrator.
-- [ ] 10 kHz capture during drive still trips the deadman: the drive-
-  engage window starves thread mode ~150 ms (gap of exactly 1502
-  samples reproduces), so even correctly-named affirms don't drain in
-  time. 1 kHz capture is clean. Same root as the ISR-glue refactor
-  target; also consider arming the deadman only after the first
-  post-engage affirm lands.
+- [x] ~~10 kHz capture during drive still trips the deadman~~ ROOT CAUSE
+  FOUND 2026-07-06 (afternoon session): **ISR saturation during align**,
+  not a comms/freeze mystery. VECTACTIVE sampling over SWD (ICSR @
+  0xE000ED04 next to DWT_PCSR) showed the ADC1_2 FOC ISR at 96-100% of
+  ALL samples for ~200 ms at drive engage: the align path (drive step +
+  startup tick + observer + 1 kHz telemetry push + profiling marks)
+  costs ~7.9-8.3k of the 8500-cycle budget — *just under* the overrun
+  counter's threshold, which is why `over=` stayed low while thread mode
+  got 0-5% CPU. Consequences: RxWorker→motor-server→CMD_CHANNEL latency
+  inflates 20-50× → affirms don't drain within the 150 ms deadman →
+  stochastic trips (2026-07-06 afternoon: ~2/3 of spins — the freshly
+  added isr-profiling marks (~200 cycles/cycle) were the tipping straw
+  vs the clean morning runs on 8a42bb6). At 10 kHz the same mechanism
+  starved the telemetry reader → the historic 1502-sample gap. Fix =
+  the ISR tier-2 shave below (headroom is a *correctness* requirement
+  now, not just a capture-rate wish). Host-side hardening landed the
+  same day: command sends are committed inline (ordered) but response
+  waits are detached observers, so a slow round-trip can no longer
+  delay the first affirm past the deadman (see send_motor_now in
+  host-lib). Diagnostic toolbox kept: device `stale_max_us` /
+  `pump/s gap+timer_late` / `exec stall` marker / `isr over=` /
+  `hall_edges`, host per-phase stall watch + down-write gap +
+  `OXIFOC_PC_SAMPLE` SWD PC/VECTACTIVE sampler.
 - [ ] deadshort **sign-from-progression**: the ±90° angle offset assumes
   the rotor spins in the *commanded* direction (kick-push). A rotor
   freewheeling AGAINST the command needs a ±180° PLL pull it can't do —
@@ -389,16 +406,24 @@ Current numbers and rules — [flash-size.md](flash-size.md); benchmarks —
   1429→387), NTC `libm::logf` every cycle (every 128th now, adc1
   561→223). **Stopped + 20 kHz: 6184→4530 cycles (73%→53%), capture
   loss-free again** (was 472 gaps/34k lost).
-- [ ] **ISR tier 2** (next perf session), current numbers at 1 kHz
-  stream: `cmd=742` (empty-channel try_receive + link CS read + gates
-  every cycle — cache link/fault flags in atomics?), `prot=605`
-  (run_protection + two CS blocks — decimate the derating mirror and
-  temp read), `pub=1205` (update_telemetry full-state CS copy every
-  cycle + encode+push — decimate the state copy, keep the fast path),
-  and the big one: **drive-mode `step=4900`** (avg 7686 = 90% under
-  drive at 1 kHz!) — needs its own section split (phase manager
-  update vs current loop vs SVPWM vs CORDIC waits) before touching.
-  Goal: 20 kHz capture under drive ⇒ drive-mode total ≤ ~6500.
+- [ ] **ISR tier 2** — now a CORRECTNESS item, not just a capture-rate
+  wish: the drive/align ISR at ~90-100% of the 8500-cycle budget starves
+  thread mode and trips the deadman at engage (see the root-caused
+  10 kHz item in the sensorless section). The step section split landed
+  2026-07-06 (`isrd/s: gate/ctrl(trig)/post/est`); scaled from mixed
+  engage windows (drive ≈30% of window): **est≈1900** (phase manager:
+  observer+PLL+startup — the mountain), **gate≈1150** (?! clamps/
+  derating/`phase.get`/`read_currents` — suspiciously fat for scalar
+  work), **ctrl≈1070** (of which CORDIC trig≈170), **post≈590**; sum
+  ≈4700 ≈ the earlier step=4900. Per-cycle drive total ≈6800 + 7000 on
+  each 1 kHz push cycle. Older section numbers still valid: `cmd=742`
+  (cache link/fault flags in atomics), `prot=605` (decimate derating
+  mirror + temp CS), `pub=1205` avg under stream. Order of attack:
+  est (why is the estimator 1900?), gate (should be ~200), cmd/prot
+  CS-consolidation. Goal: drive-mode total ≤ ~6500 AND align ≤ drive
+  (align must not be the costliest phase). NOTE: the isr-profiling
+  marks themselves cost ~200 cycles/cycle — measure with them, budget
+  without them.
 - [ ] **g431 RAM: stack → CCM SRAM split** (idea, robustness — not a
   throughput lever: raw-Pod made 20 kHz loss-free at Stopped, and the
   under-drive cap is ISR CPU, not buffers — see the ISR-load item above).

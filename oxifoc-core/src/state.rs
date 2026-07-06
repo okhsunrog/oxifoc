@@ -586,6 +586,12 @@ where
     // `DETECTION_ACTIVE`); the command-staleness deadman is not, so a hung
     // detection still raises CommTimeout.
     let link_lost_unacked = link_lost && !in_safe_mode && !DETECTION_ACTIVE.load(Ordering::Relaxed);
+    // Staleness margin meter (see cmd_stats::STALENESS_MAX_US): how close
+    // this window came to the deadman bound.
+    if let Some(st) = driver.command_staleness_us(now_ticks) {
+        crate::runtime::streaming::cmd_stats::STALENESS_MAX_US
+            .fetch_max(st.min(u64::from(u32::MAX)) as u32, Ordering::Relaxed);
+    }
     if (driver.deadman_expired(now_ticks) || link_lost_unacked)
         && let Some(f) = F::from_category(FaultCategory::CommTimeout)
     {

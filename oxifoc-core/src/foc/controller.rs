@@ -528,7 +528,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         dt: f32,
     ) -> FocOutput {
         let (ia, ib, ic) = currents;
+        let prof_t0 = crate::isr_prof::now();
         let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
+        crate::isr_prof::add(&crate::isr_prof::CTRL_TRIG, prof_t0, crate::isr_prof::now());
 
         // Phase currents -> stationary frame
         let (i_alpha, i_beta) = transforms::clarke(ia, ib);

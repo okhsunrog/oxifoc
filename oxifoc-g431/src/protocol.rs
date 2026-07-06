@@ -1,6 +1,6 @@
 //! Protocol layer for ergot communication and device management
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use static_cell::StaticCell;
 
 use crate::config::MAX_PACKET_SIZE;
@@ -198,6 +198,32 @@ pub async fn run_tx_rtt(mut tx: RttWriter, stack: &'static Stack, ident: u8) {
     }
 }
 
+/// Max µs an intended-1 ms timer wake arrived late, per stats window.
+/// (2026-07-06 drive-engage deadman hunt: separates "thread executor /
+/// timer stalled" from "down pump specifically starved" — see
+/// `transport::pump_stats`.)
+pub static TIMER_LATE_MAX_US: AtomicU32 = AtomicU32::new(0);
+
+/// 1 kHz executor/timer heartbeat: sleeps 1 ms in a loop and records how
+/// late each wake was. A cooperative-executor hog or a timer-queue stall
+/// shows up here as a `TIMER_LATE_MAX_US` spike in the same window.
+#[embassy_executor::task]
+pub async fn exec_probe_task() {
+    use core::sync::atomic::Ordering;
+    loop {
+        let before = embassy_time::Instant::now();
+        embassy_time::Timer::after_micros(1000).await;
+        let late = (before.elapsed().as_micros() as u32).saturating_sub(1000);
+        TIMER_LATE_MAX_US.fetch_max(late, Ordering::Relaxed);
+        // Live marker: the defmt ORDER (device-side) places the stall
+        // relative to the startup-transition logs, which sub-second stats
+        // windows can't. >20 ms only — steady-state jitter is ~0.5 ms.
+        if late > 20_000 {
+            defmt::warn!("exec stall: {}us late", late);
+        }
+    }
+}
+
 /// 1 Hz fast-telemetry pipeline stats over defmt (drops attributed per stage).
 /// Only logs while the stream is active (any counter moved).
 #[embassy_executor::task]
@@ -231,8 +257,42 @@ pub async fn telem_stats_task() {
             use oxifoc_core::runtime::streaming::cmd_stats as c;
             let reqs = c::MOTOR_REQS.swap(0, Ordering::Relaxed);
             let drained = c::SETMODE_DRAINED.swap(0, Ordering::Relaxed);
-            if pok != 0 || reqs != 0 || drained != 0 {
-                defmt::info!("rx/s: motor_reqs={} setmode_drained={}", reqs, drained);
+            let stale_max = c::STALENESS_MAX_US.swap(0, Ordering::Relaxed);
+            if pok != 0 || reqs != 0 || drained != 0 || stale_max != 0 {
+                defmt::info!(
+                    "rx/s: motor_reqs={} setmode_drained={} stale_max_us={}",
+                    reqs,
+                    drained,
+                    stale_max
+                );
+            }
+            // Down-pump + executor scheduling health (drive-engage trip hunt).
+            {
+                let late = TIMER_LATE_MAX_US.swap(0, Ordering::Relaxed);
+                let hall_edges = crate::sensors::hall::EDGES.swap(0, Ordering::Relaxed);
+                #[cfg(feature = "transport-rtt")]
+                {
+                    use crate::transport::pump_stats as p;
+                    let reads = p::READS.swap(0, Ordering::Relaxed);
+                    let gap = p::READ_GAP_MAX_US.swap(0, Ordering::Relaxed);
+                    if reads != 0 || late > 2_000 {
+                        defmt::info!(
+                            "pump/s: reads={} gap_max_us={} timer_late_max_us={} hall_edges={}",
+                            reads,
+                            gap,
+                            late,
+                            hall_edges
+                        );
+                    }
+                }
+                #[cfg(not(feature = "transport-rtt"))]
+                if late > 2_000 {
+                    defmt::info!(
+                        "pump/s: timer_late_max_us={} hall_edges={}",
+                        late,
+                        hall_edges
+                    );
+                }
             }
         }
         // ISR cost (DWT cycles at 170 MHz): avg/max per cycle + CPU share.
@@ -241,10 +301,11 @@ pub async fn telem_stats_task() {
         let cyc_n = crate::foc::ISR_CYC_N.swap(0, Ordering::Relaxed);
         if cyc_n != 0 {
             defmt::info!(
-                "isr/s: n={} avg={} max={} load_pct={}",
+                "isr/s: n={} avg={} max={} over={} load_pct={}",
                 cyc_n,
                 cyc_sum / cyc_n,
                 cyc_max,
+                crate::foc::ISR_CYC_OVER.swap(0, Ordering::Relaxed),
                 cyc_sum / 1_700_000
             );
             // Per-section averages (cycles/ISR): where the budget goes.
@@ -280,6 +341,19 @@ pub async fn telem_stats_task() {
                     p::CYCLE_TAIL.swap(0, Ordering::Relaxed) / cyc_n,
                     p::STEP_PWMOFF.swap(0, Ordering::Relaxed) / cyc_n,
                     p::STEP_PHASE.swap(0, Ordering::Relaxed) / cyc_n,
+                );
+                // step_current_control split (zeros while Stopped): gate =
+                // pre-loop clamps/gates + currents read, ctrl = the FOC
+                // current loop (trig = its CORDIC sin_cos share), post = OC
+                // check + duty write-out, est = phase manager + observer.
+                // gate+ctrl+post+est ≈ step above (minus mode dispatch).
+                defmt::info!(
+                    "isrd/s: gate={} ctrl={} (trig={}) post={} est={}",
+                    p::STEP_GATE.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::STEP_CTRL.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::CTRL_TRIG.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::STEP_POST.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::STEP_EST.swap(0, Ordering::Relaxed) / cyc_n,
                 );
             }
         }

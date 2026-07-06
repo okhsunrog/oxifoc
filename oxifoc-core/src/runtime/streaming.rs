@@ -78,6 +78,13 @@ pub mod cmd_stats {
     pub static MOTOR_REQS: AtomicU32 = AtomicU32::new(0);
     /// `DriverCommand::SetMode` drained by the ISR (deadman stamp events).
     pub static SETMODE_DRAINED: AtomicU32 = AtomicU32::new(0);
+    /// Max command staleness (µs since the last drained `SetMode`) observed
+    /// while a deadman-covered mode was active, per stats window. The
+    /// deadman's own margin meter: healthy 50 ms affirms keep this ≲70 000;
+    /// a spike toward 150 000 in the trip second says the silence built up
+    /// device-visible (frames not arriving/being drained) as opposed to the
+    /// host merely missing responses.
+    pub static STALENESS_MAX_US: AtomicU32 = AtomicU32::new(0);
 }
 
 /// Two-stage decimating anti-alias filter (CIC order 2 equivalent).

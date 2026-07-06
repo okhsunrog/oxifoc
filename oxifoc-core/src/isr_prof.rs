@@ -22,6 +22,21 @@ pub static CYCLE_TAIL: AtomicU32 = AtomicU32::new(0);
 pub static STEP_PWMOFF: AtomicU32 = AtomicU32::new(0);
 /// `step`, Stopped arm: `update_phase_with_prev_voltage` (estimators).
 pub static STEP_PHASE: AtomicU32 = AtomicU32::new(0);
+/// `step_current_control`: pre-work before the current loop (target clamps,
+/// trust/derating/bus gates, `phase.get`, injection read, currents read).
+pub static STEP_GATE: AtomicU32 = AtomicU32::new(0);
+/// `step_current_control`: `FocController::step_with_injection` (Clarke/Park,
+/// PI + decoupling, circular limit, inverse Park, dead-time comp, SVPWM).
+pub static STEP_CTRL: AtomicU32 = AtomicU32::new(0);
+/// `step_with_injection`: the `S::sin_cos` call — hardware CORDIC write +
+/// result wait on device builds. Subset of [`STEP_CTRL`].
+pub static CTRL_TRIG: AtomicU32 = AtomicU32::new(0);
+/// `step_current_control`: post-work after the current loop (OC trip check,
+/// bus-mod filter, PWM duty write, sensor duty feed).
+pub static STEP_POST: AtomicU32 = AtomicU32::new(0);
+/// `step_current_control`: `update_phase_with_prev_voltage` (phase manager:
+/// observer flux integrator + PLL, startup machine, telemetry cache).
+pub static STEP_EST: AtomicU32 = AtomicU32::new(0);
 
 /// Current DWT cycle count (0 when profiling is compiled out).
 #[inline(always)]

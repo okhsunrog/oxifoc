@@ -386,6 +386,17 @@ pub fn connect(
             .ok()
             .and_then(|p| std::fs::File::create(p).ok());
 
+        // Statistical PC profiler: OXIFOC_PC_SAMPLE=<path> reads DWT_PCSR
+        // (0xE000101C — the core's current PC, sampled by the DAP without
+        // halting) once per loop iteration and appends `<us_since_start> <pc>`
+        // lines. Offline: filter a time window, addr2line against the ELF —
+        // a poor man's sampling profiler over SWD, used to catch the
+        // 2026-07-06 drive-engage 100 ms executor stalls red-handed.
+        let mut pc_sample = std::env::var("OXIFOC_PC_SAMPLE")
+            .ok()
+            .and_then(|p| std::fs::File::create(p).ok())
+            .map(|f| (io::BufWriter::new(f), std::time::Instant::now()));
+
         // Idle backoff between polls when no bytes moved. RTT is polled (each
         // `channel.read` is one SWD round-trip), so any sleep here caps how fast
         // we re-poll after a momentary drain. This thread is dedicated and
@@ -421,6 +432,24 @@ pub fn connect(
         let mut down_seen_any = false;
         let mut down_report_at = std::time::Instant::now();
 
+        // Per-phase stall watch: max time spent in each loop phase per 1 s
+        // window, reported only when something exceeded 5 ms. Separates the
+        // two full-duplex freeze suspects — `blocking_send` into a backed-up
+        // tokio channel (host-side starvation) vs the down `channel.write`
+        // retry loop against a full device buffer (device-side starvation).
+        let mut stall_up_us: u128 = 0; // up read + blocking_send
+        let mut stall_down_us: u128 = 0; // down drain (write retry loop)
+        let mut stall_defmt_us: u128 = 0; // defmt read + try_send
+        let mut stall_report_at = std::time::Instant::now();
+        // Max gap between consecutive down-channel writes per window: while
+        // the host is affirming at 20 Hz, a gap ≥150 ms here means the frames
+        // stopped ARRIVING from the app layer (stack/task side) — and the
+        // device deadman trip is the host's fault. A steady ≤60 ms gap during
+        // a trip clears the host: the silence is then device-side (RTT down
+        // buffer → RxWorker → motor server → ISR drain).
+        let mut down_gap_max_us: u128 = 0;
+        let mut down_last_write: Option<std::time::Instant> = None;
+
         loop {
             // Exit promptly on teardown: the receiver side dropping is the
             // shutdown signal. Without this check the thread only noticed on
@@ -435,7 +464,20 @@ pub fn connect(
             let mut did_work = false;
             tick = tick.wrapping_add(1);
 
+            if let Some((f, t0)) = pc_sample.as_mut()
+                && let Ok(pc) = core.read_word_32(0xE000_101C)
+            {
+                use std::io::Write;
+                // ICSR.VECTACTIVE alongside the PC: which exception (0 =
+                // thread mode) the core was in — separates "ISR at 95%
+                // duty" from "executor idle" when the PC histogram alone
+                // is ambiguous.
+                let vect = core.read_word_32(0xE000_ED04).map_or(0xFFFF, |v| v & 0x1FF);
+                let _ = writeln!(f, "{} {pc:#010x} {vect}", t0.elapsed().as_micros());
+            }
+
             // 1. Read ergot data from device
+            let phase_t0 = std::time::Instant::now();
             if let Some(channel) = rtt.up_channel(RTT_UP_CHANNEL_ERGOT) {
                 match channel.read(&mut core, &mut ergot_rx_buf) {
                     Ok(n) if n > 0 => {
@@ -462,8 +504,10 @@ pub fn connect(
                     }
                 }
             }
+            stall_up_us = stall_up_us.max(phase_t0.elapsed().as_micros());
 
             // 2. Write ergot data to device
+            let phase_t0 = std::time::Instant::now();
             while let Ok(data) = ergot_tx_rx.try_recv() {
                 if let Some(channel) = rtt.down_channel(RTT_DOWN_CHANNEL_ERGOT) {
                     let mut offset = 0;
@@ -483,16 +527,39 @@ pub fn connect(
                     down_bytes += data.len() as u64;
                     down_seen_any = true;
                     did_work = true;
+                    let now = std::time::Instant::now();
+                    if let Some(prev) = down_last_write {
+                        down_gap_max_us = down_gap_max_us.max((now - prev).as_micros());
+                    }
+                    down_last_write = Some(now);
                 }
             }
+            stall_down_us = stall_down_us.max(phase_t0.elapsed().as_micros());
             if down_seen_any && down_report_at.elapsed() >= Duration::from_secs(1) {
-                info!("rtt down/s: writes={down_writes} bytes={down_bytes}");
+                info!(
+                    "rtt down/s: writes={down_writes} bytes={down_bytes} \
+                     gap_max={down_gap_max_us}us"
+                );
                 down_writes = 0;
                 down_bytes = 0;
+                down_gap_max_us = 0;
                 down_report_at = std::time::Instant::now();
+            }
+            if stall_report_at.elapsed() >= Duration::from_secs(1) {
+                if stall_up_us.max(stall_down_us).max(stall_defmt_us) > 5_000 {
+                    info!(
+                        "rtt stall/s: up_max={stall_up_us}us down_max={stall_down_us}us \
+                         defmt_max={stall_defmt_us}us"
+                    );
+                }
+                stall_up_us = 0;
+                stall_down_us = 0;
+                stall_defmt_us = 0;
+                stall_report_at = std::time::Instant::now();
             }
 
             // 3. Read defmt data from device (rate-limited; see defmt_every)
+            let phase_t0 = std::time::Instant::now();
             if tick.is_multiple_of(defmt_every)
                 && let Some(channel) = rtt.up_channel(RTT_UP_CHANNEL_DEFMT)
             {
@@ -525,6 +592,8 @@ pub fn connect(
                     }
                 }
             }
+
+            stall_defmt_us = stall_defmt_us.max(phase_t0.elapsed().as_micros());
 
             if !did_work {
                 if idle_us == 0 {

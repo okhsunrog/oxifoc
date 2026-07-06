@@ -48,6 +48,12 @@ pub mod hall {
     /// sector). Diagnostics only.
     pub static OVERCAPTURES: AtomicU32 = AtomicU32::new(0);
 
+    /// Hall capture ISR entries with a latched edge (per stats window).
+    /// On a hall-less bench the TI1 XOR input floats next to the phase
+    /// wires — PWM coupling can storm this ISR hard enough to starve the
+    /// whole thread executor (2026-07-06 drive-engage stall suspect).
+    pub static EDGES: AtomicU32 = AtomicU32::new(0);
+
     /// "Now" in hall ticks (µs), assembled from TIM4 CNT + overflow count.
     ///
     /// Valid after [`init_hall`]. Safe from any context: the FOC ISR cannot
@@ -197,6 +203,7 @@ pub mod hall {
         }
 
         if sr.ccif(0) {
+            EDGES.fetch_add(1, Ordering::Relaxed);
             // Reading CCR1 clears CC1IF.
             let captured = regs.ccr(0).read().0 as u16;
             let ticks = TIMEBASE.capture(captured, sr.uif(), || clear_flags(true, false));

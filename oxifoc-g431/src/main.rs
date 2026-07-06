@@ -164,6 +164,9 @@ async fn main(spawner: Spawner) {
     // Fast-telemetry pipeline loss diagnostics (1 Hz defmt while streaming)
     spawner.spawn(defmt::unwrap!(protocol::telem_stats_task()));
 
+    // 1 kHz executor/timer heartbeat (drive-engage stall diagnostics)
+    spawner.spawn(defmt::unwrap!(protocol::exec_probe_task()));
+
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);
 

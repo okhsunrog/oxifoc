@@ -740,6 +740,17 @@ where
         self.last_cmd_tick = Some(now_ticks);
     }
 
+    /// Current command staleness in µs (time since the last drained
+    /// `SetMode`), or `None` in the deadman-exempt standing modes / before
+    /// the first stamp. Diagnostic mirror of [`Self::deadman_expired`]'s
+    /// input — lets the platform stats report how close each window came.
+    pub fn command_staleness_us(&self, now_ticks: u64) -> Option<u64> {
+        match self.mode {
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake => None,
+            _ => self.last_cmd_tick.map(|t| now_ticks.wrapping_sub(t)),
+        }
+    }
+
     /// Whether the command link has gone stale while the motor is running —
     /// the deadman trigger.
     ///
@@ -1231,6 +1242,7 @@ where
         dt: f32,
         now_ticks: u64,
     ) -> Result<FocOutput, StepError> {
+        let prof_t0 = crate::isr_prof::now();
         // Check sensor calibration
         if !self.current_sensor.is_calibrated() {
             return Err(StepError::NotCalibrated);
@@ -1312,6 +1324,8 @@ where
         // motor params are configured).
         let currents = self.current_sensor.read_currents();
         let max_duty = self.pwm.max_duty();
+        let prof_t1 = crate::isr_prof::now();
+        crate::isr_prof::add(&crate::isr_prof::STEP_GATE, prof_t0, prof_t1);
         let out = self.controller.step_with_injection(
             currents,
             angle_rad,
@@ -1323,6 +1337,8 @@ where
             max_duty,
             dt,
         );
+        let prof_t2 = crate::isr_prof::now();
+        crate::isr_prof::add(&crate::isr_prof::STEP_CTRL, prof_t1, prof_t2);
 
         // Layer 2: Check measured current against hard overcurrent limit
         if self.current_limits.is_overcurrent(out.id, out.iq) {
@@ -1338,6 +1354,8 @@ where
         // Set PWM duties and feed to current sensor for next-cycle reconstruction
         self.pwm.set_duties(out.duties);
         self.current_sensor.update_duties(out.duties);
+        let prof_t3 = crate::isr_prof::now();
+        crate::isr_prof::add(&crate::isr_prof::STEP_POST, prof_t2, prof_t3);
 
         // Update phase provider for next step (feeds observer if present).
         // The observer gets the PREVIOUS command — the voltage that was
@@ -1350,6 +1368,7 @@ where
             dt,
             now_ticks,
         );
+        crate::isr_prof::add(&crate::isr_prof::STEP_EST, prof_t3, crate::isr_prof::now());
 
         Ok(out)
     }
