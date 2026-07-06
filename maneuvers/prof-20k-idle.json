@@ -1,6 +1,6 @@
 {
   "name": "prof-20k-idle",
-  "description": "20 kHz Stopped-stream loss-free check: ~5 s of full-rate capture before a single iq=0 start at the end (the timeline must be non-empty). Regression gate for the RTT up-ring size (3072 since the stack-to-CCM migration; the tier-1 loss-free result was measured at 4096).",
+  "description": "20 kHz Stopped-stream loss-free check: ~5 s of full-rate capture with a no-op stop at the end (the timeline must be non-empty; it used to be a start iq=0, but since the no-align startup redesign that engages the full cold-start sequencer whose ISR cost overlaps the capture tail and drops samples - the gate is about ring sizing at idle, not startup-path capture). Regression gate for the RTT up-ring size (4096 floor since the stack-to-CCM migration; 3072 measured 2.7% loss).",
   "capture": {
     "fast_hz": 20000,
     "tail_s": 0.5
@@ -10,9 +10,7 @@
     {
       "t": 5.0,
       "cmd": {
-        "start": {
-          "iq": 0.0
-        }
+        "stop": {}
       }
     }
   ]

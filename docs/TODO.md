@@ -166,31 +166,46 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     obs {24, 108-salient}. At 0.3 A all configs are stable to the
     no-load ceiling → perturbation scales with L·i.
   - ~~(1) external validity + (2) restart on trust loss~~ LANDED IN SIM
-    2026-07-06 (908886f) — **bench validation attempted same evening and
-    BLOCKED; the bench is rolled back to 57698aa firmware** (repo HEAD ≠
-    flashed firmware; the canonical ELF was hand-synced to the flashed
-    57698aa build, and the next `just check` will overwrite it with the
-    HEAD build — re-flash accordingly). Two blockers, both foreseen by
-    existing TODO items and now bench-proven:
-    - **ISR saturation (hard prerequisite = tier-2 shave)**: the new
-      machinery is CORRECT on hardware (0.3 A start: observer held
-      not-ready through Hold, give-up recycle fired) — but blocking the
-      handoff means the ~8k-cycle startup ISR path now runs for SECONDS
-      instead of ~0.5 s. SWD PC/VECTACTIVE sampling: ADC1_2 in 91% of
-      samples overall, 100% from ~0.9 s on — thread mode fully starved,
-      RTT link died (`Interface inactive` 0.6 s after Hold entry, ergot
-      NoRouteToDest), maneuvers abort (captures/debug-start-*,
-      staircase-fix1). The deadman still cut the drive — PSU-safe held.
-    - **Distortion floor at the 60 rad/s handoff point**: at ramp 60–63
-      the observer read 32–62 with confidence DECAYING 1.0→0.59 and the
-      validity proxy never corroborating — λω ≈ 72 mV is at/below the
-      post-comp dead-time residual, so on this hardware the observer
-      cannot legitimately distinguish rotor from distortion at the
-      current handoff speed (this retroactively taints the align-era
-      "handoffs at 60.0–60.2" as likely distortion-locks that happened
-      to be near-synced). Fix directions: raise the handoff velocity so
-      λω clears the residual (~150–250 rad/s ⇒ 0.17–0.29 V), and/or
-      low-current dead-time comp quality. Both after the ISR shave.
+    2026-07-06 (908886f); **both bench blockers cleared 2026-07-06 late
+    (d7137e9 ISR tier-2 shave + 9bc8bc3 handoff 60→180 rad/s el, ramp
+    0.4→1.2 s keeping ~150 rad/s² el). Bench = HEAD firmware again.**
+    Bench validation of the new machinery (prof-hold, 1.5 A punch →
+    0.3 A): the ramp now GENUINELY captures the rotor (deadshort
+    measured it at 158 rad/s el), the confirm probe blocked a runaway
+    observer on every retry, hold give-up recycled, the deadshort
+    caught the real rotor and seeded closed loop — the whole
+    external-validity chain works on hardware, no RTT death, no
+    deadman trip, PSU-safe held. TWO NEW bench findings (log
+    2026-07-06T17:57, capture scratchpad prof-hold-t3.parquet):
+    - **Hold-phase observer RATCHET**: during the 180 rad/s hold at
+      0.3 A the observer ran away 219→756 rad/s el, ~+54 per 0.1 s
+      confirm retry (exponential-ish, τ≈0.8 s), with ready=true and
+      conf=1.0 — the e_q validity CORROBORATED the runaway — while the
+      physical probe consistently measured 32–108. Confirmation can
+      structurally never pass: the probe compares against the claim,
+      and the claim IS the runaway observer. The give-up recycle is
+      what saves the start (deadshort seed from measurement). Sim does
+      NOT reproduce (its confirm probes pass) → plant-fidelity gap
+      (L(f) / higher-order dead-time). Candidate cheap fix: when the
+      probe repeatedly measures a consistent rotor speed that matches
+      the RAMP (not the observer), seed the observer from the probe
+      instead of retrying against a diverged claim — the seed
+      machinery already exists (deadshort catch path).
+    - **Post-seed runaway → dq OC in 0.78 s**: after the deadshort
+      seed at 158 rad/s, closed loop at iq*=0.3 A accelerated and the
+      observer ran away again (vq climbing to ~2.8 V ⇒ ω̂ ≈ 2500 rad/s
+      el; iq spikes to 7.5 A) until the dq overcurrent tripped. This is
+      reproducer 3/the mid-band interaction, now RELIABLY reachable in
+      a 10 s maneuver on HEAD — use prof-hold.json as the reproducer.
+      PLL acceleration lever + λ-tracker dynamics are the levers (see
+      investigation plan below).
+    Distortion-floor context for the record: at ramp 60–63 the observer
+    read 32–62 with confidence DECAYING 1.0→0.59 and validity never
+    corroborating — λω ≈ 72 mV is at/below the post-comp dead-time
+    residual (retroactively taints the align-era "handoffs at
+    60.0–60.2" as likely distortion-locks). At 180 rad/s λω ≈ 0.21 V
+    clears the residual; low-current dead-time comp quality remains an
+    open lever for the phantom class as a whole.
     What landed, and what the sim taught en route:
     - Passive checks are STRUCTURALLY insufficient alone: a steady
       phantom (observer tracking the machine's own residual-distortion
@@ -515,14 +530,26 @@ Current numbers and rules — [flash-size.md](flash-size.md); benchmarks —
   1429→387), NTC `libm::logf` every cycle (every 128th now, adc1
   561→223). **Stopped + 20 kHz: 6184→4530 cycles (73%→53%), capture
   loss-free again** (was 472 gaps/34k lost).
-- [ ] **ISR tier 2 — continued** — now a HARD BLOCKER for the estimator
-  fixes (908886f): the external-validity startup dwells in the
-  ~8k-cycle startup path for seconds, VECTACTIVE sampling shows 100%
-  ISR and the RTT link dies (see the estimator section above). The
-  shave, or a cheaper startup path, must land before that firmware can
-  run on the bench. (2026-07-06 evening session landed the first
-  tranche; measured numbers below are from clean full-drive seconds,
-  0.3A hold + 1 kHz stream, isr-profiling marks ON ≈200 cy):
+- [x] **ISR tier 2 — DONE 2026-07-06 late (d7137e9)** — the 908886f
+  blocker is cleared. Measured on-target (prof-openloop.json = new
+  clean-steady-seconds gate, 0.3 A OpenLoop @ 1 kHz stream, marks ON):
+  **7670 → 6190 cy avg (90% → 72%)**; Stopped + 1 kHz 3960 → ~2500;
+  Stopped + 20 kHz stream 4530 → 3852 (45%, prof-20k-idle loss-free);
+  **startup path 223% (over=31606/s, thread starved, RTT death) →
+  87% (over=30–70/s)** — the command pump stays alive through repeated
+  hold-give-up recycles, no CommTimeout, maneuvers complete. What it
+  was (all measured, PC-sample + marks): FaultRegistry CS+RefCell+Vec
+  scans 3–5×/cycle → atomic summary bitmask; ADC handle locks → direct
+  JDR reads (372→132); 4 CS entries in run_foc_cycle → 1; 9 vdiv/cycle
+  in adc_to_current → cached amps_per_count; embassy set_duty ARR
+  re-reads → direct CCR writes; fmodf in step_open_loop → wrap_angle;
+  hall snapshot skipped on SENSORLESS build; deadman u64 math ×2 → ×1.
+  Remaining fat if a tier 3 is ever needed: obs mark ~1250 (the single
+  biggest block; PC profile says the observer's own math is ~5%, the
+  rest is attributed to inlined helpers + flash-WS stalls — decimating
+  the e_q validity block ×4 is the next candidate), pub=345,
+  state-mirror copies ~2%, ramfunc idea below.
+  Original tranche-1 notes (2026-07-06 evening; numbers superseded):
   - DONE: remquof/fmodf purged (`wrap_angle` %, `angle_difference`
     remainderf, `fast_sin` %TAU ×2 per sin_cos → branch+subtract, cold
     fallback); hall/encoder sampling gated by `requires_*` (est
