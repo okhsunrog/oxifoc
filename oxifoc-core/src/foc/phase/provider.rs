@@ -115,6 +115,11 @@ pub trait PhaseProvider {
     /// (providers without a gated estimator).
     fn set_slip_gate(&mut self, _gated: bool) {}
 
+    /// Feed the measured |iq| to the estimation chain's physics
+    /// acceleration prior (see `BackEmfObserver::set_accel_prior`).
+    /// Default: no-op.
+    fn note_torque_current(&mut self, _iq_abs: f32, _dt: f32) {}
+
     /// Back-EMF observer internals for the `obs-debug-telem` fast-frame
     /// mapping: `(phase_pll, phase_raw, velocity_pll)`. Default: none
     /// (providers without an observer). See `FocDriver::step`.

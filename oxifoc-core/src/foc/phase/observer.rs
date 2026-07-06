@@ -109,6 +109,24 @@ impl Observer {
         }
     }
 
+    /// Configure the physics acceleration prior — see
+    /// [`BackEmfObserver::set_accel_prior`].
+    pub fn set_accel_prior(&mut self, floor_el: f32, per_amp_el: f32) {
+        match self {
+            Self::None => {}
+            Self::BackEmf(o) => o.set_accel_prior(floor_el, per_amp_el),
+        }
+    }
+
+    /// Feed the measured |iq| for the acceleration prior — see
+    /// [`BackEmfObserver::note_torque_current`].
+    pub fn note_torque_current(&mut self, iq_abs: f32, dt: f32) {
+        match self {
+            Self::None => {}
+            Self::BackEmf(o) => o.note_torque_current(iq_abs, dt),
+        }
+    }
+
     /// Whether the observer's estimate can be trusted for commutation.
     ///
     /// Unlike [`phase`](Self::phase), which returns a value for any
@@ -247,6 +265,17 @@ pub struct BackEmfObserver {
     /// Continuous gated time (s) — the duty limiter against a latched
     /// gate (e.g. permanently unreachable iq at voltage saturation).
     slip_gate_time: f32,
+    /// Physics acceleration prior (el rad/s² per A of |iq|) and floor —
+    /// see [`Self::set_accel_prior`]. 0 = clamp off.
+    accel_per_amp: f32,
+    accel_floor: f32,
+    /// Low-passed |iq| feeding the prior (τ ≈ 10 ms).
+    iq_abs_filt: f32,
+    /// Velocity-magnitude envelope for the prior: slews at the allowed
+    /// rate in both directions; |ω̂| is clamped to it. Ringing below the
+    /// envelope is untouched (a per-step Δv clamp asymmetrically clips
+    /// PLL ringing and biases tracking down).
+    vel_cap: f32,
     lambda: f32, // Flux linkage (Wb); adapted online when lambda_gain > 0
 
     // Online λ adaptation (MESC/VESC lambda-comp): first-order tracker of
@@ -379,6 +408,10 @@ impl BackEmfObserver {
             i_f_beta: 0.0,
             slip_gate: false,
             slip_gate_time: 0.0,
+            accel_per_amp: 0.0,
+            accel_floor: 0.0,
+            iq_abs_filt: 0.0,
+            vel_cap: 0.0,
             lambda,
             lambda_gain: 0.0,
             // Bounds are inert until with_lambda_tracking() rebinds them.
@@ -615,6 +648,28 @@ impl BackEmfObserver {
         // always non-negative and the velocity integrator could only grow.
         let phase_error = crate::foc::angle_difference(phase_raw, self.phase_pll);
         self.velocity_pll += self.pll_ki * phase_error * dt;
+        // Physics acceleration prior (see set_accel_prior): |ω̂| is clamped
+        // to an envelope that slews at the physically-allowed rate. The
+        // envelope follows |ω̂| down at the same rate (an upper cap only —
+        // load-driven deceleration is never fought), and PLL ringing below
+        // it stays untouched (a per-step Δv clamp asymmetrically clips the
+        // ringing and biases legitimate tracking down).
+        if self.accel_per_amp > 0.0 || self.accel_floor > 0.0 {
+            let step = (self.accel_floor + self.accel_per_amp * self.iq_abs_filt) * dt;
+            let mag = self.velocity_pll.abs();
+            if mag > self.vel_cap {
+                self.vel_cap += step;
+                if mag > self.vel_cap {
+                    self.velocity_pll = if self.velocity_pll > 0.0 {
+                        self.vel_cap
+                    } else {
+                        -self.vel_cap
+                    };
+                }
+            } else {
+                self.vel_cap = (self.vel_cap - step).max(mag);
+            }
+        }
         self.phase_pll =
             wrap_angle(self.phase_pll + (self.velocity_pll + self.pll_kp * phase_error) * dt);
 
@@ -762,6 +817,7 @@ impl BackEmfObserver {
         self.phase_raw_last = 0.0;
         self.i_f_alpha = 0.0;
         self.i_f_beta = 0.0;
+        self.vel_cap = 0.0;
         self.bemf_q_filt = 0.0;
         self.valid_travel = 0.0;
         self.invalid_time = 0.0;
@@ -815,6 +871,36 @@ impl BackEmfObserver {
         self.slip_gate = gated;
     }
 
+    /// Physics acceleration prior: cap the GROWTH RATE of |ω̂| at
+    /// `floor + per_amp·|iq|` (el rad/s²; |iq| low-passed at τ ≈ 10 ms).
+    ///
+    /// The slip gate stops the kick-driven ratchet, but the bench
+    /// (2026-07-07, captures/slipgate-1,2) showed a second escape mode
+    /// with NOTHING for it to catch: a slow coherent phantom — currents
+    /// perfectly regulated on the estimated frame, PLL error small but
+    /// persistently positive (~+0.1 rad ⇒ ki·err ≈ +2000 el/s²), the PI
+    /// winding vq up as the "back-EMF" of its own acceleration. The one
+    /// physical fact it cannot fake: torque. |ω̂| growing 3× faster than
+    /// `kt·|iq|/J` allows is not a rotor. Only |ω̂| GROWTH is capped —
+    /// deceleration and any magnitude-shrinking correction stay free, so
+    /// load-driven braking (a vehicle hitting a hill) is never fought;
+    /// the floor keeps modest load-driven acceleration (downhill) inside
+    /// the cap. `per_amp = margin·1.5·pp²·λ/J` — needs the rotor inertia,
+    /// which detection does not measure yet, hence configured per bench.
+    pub fn set_accel_prior(&mut self, floor_el: f32, per_amp_el: f32) {
+        if floor_el >= 0.0 && per_amp_el >= 0.0 && floor_el.is_finite() && per_amp_el.is_finite() {
+            self.accel_floor = floor_el;
+            self.accel_per_amp = per_amp_el;
+        }
+    }
+
+    /// Feed the measured |iq| for the acceleration prior (driver, per
+    /// cycle; low-passed internally).
+    pub fn note_torque_current(&mut self, iq_abs: f32, dt: f32) {
+        let a = (dt / 0.01).min(1.0);
+        self.iq_abs_filt += a * (iq_abs - self.iq_abs_filt);
+    }
+
     /// Force phase to specific value (for testing or handoff from other source)
     pub fn force_phase(&mut self, phase: f32) {
         use crate::foc::trig::{FastSinCos, SinCos};
@@ -841,6 +927,9 @@ impl BackEmfObserver {
     /// Set velocity estimate (for testing or handoff from other source)
     pub fn set_velocity(&mut self, velocity: f32) {
         self.velocity_pll = velocity;
+        // A trusted seed carries its own envelope: the accel prior must
+        // not clamp the estimate back toward the pre-seed speed.
+        self.vel_cap = velocity.abs();
         // Handoff state, like force_phase: keep the external-validity proxy
         // consistent with the seeded velocity — seeds arrive as
         // force_phase + set_velocity in either order, and a stale proxy
@@ -1486,6 +1575,108 @@ mod tests {
             (obs.velocity() - omega2).abs() < 25.0,
             "duty-limited gate must not freeze tracking: {}",
             obs.velocity()
+        );
+    }
+
+    #[test]
+    fn accel_prior_caps_phantom_growth_but_tracks_real_torque() {
+        // A rotation accelerating far past what the measured torque
+        // current allows is a phantom: the prior must cap the estimate's
+        // growth. The same profile WITH the current to justify it must
+        // track.
+        let (r, l, lambda_true) = (0.1, 50e-6, 0.005);
+        let dt = 5e-5;
+        let run_accel = |obs: &mut BackEmfObserver, w0: f32, alpha: f32, secs: f32| {
+            let mut theta: f32 = 0.0;
+            let steps = (secs / dt) as usize;
+            for k in 0..steps {
+                let w = w0 + alpha * k as f32 * dt;
+                let e = w * lambda_true;
+                obs.update(&ObserverInput {
+                    v_alpha: -e * libm::sinf(theta),
+                    v_beta: e * libm::cosf(theta),
+                    i_alpha: 0.0,
+                    i_beta: 0.0,
+                    dt,
+                });
+                theta = wrap_angle(theta + w * dt);
+            }
+        };
+        // Lock at 300, then the source accelerates at 5000 el/s² with ZERO
+        // torque current: growth must be capped at the 500 floor.
+        let mut obs = BackEmfObserver::new(r, l, lambda_true);
+        obs.set_accel_prior(500.0, 3400.0);
+        // Seed at speed (the cap would otherwise pace the from-zero lock-in
+        // itself — with zero measured torque that is exactly the intended
+        // behavior, but here we test the locked regime).
+        obs.force_phase(0.0);
+        obs.set_velocity(300.0);
+        run_accel(&mut obs, 300.0, 0.0, 0.5);
+        assert!(
+            (obs.velocity() - 300.0).abs() < 5.0,
+            "lock: {}",
+            obs.velocity()
+        );
+        run_accel(&mut obs, 300.0, 5000.0, 0.1);
+        let capped = obs.velocity();
+        assert!(
+            capped < 300.0 + 500.0 * 0.1 + 10.0,
+            "phantom growth must be capped: {capped}"
+        );
+        // Same acceleration with 2 A of measured iq (cap 500+6800): tracks.
+        let mut obs2 = BackEmfObserver::new(r, l, lambda_true);
+        obs2.set_accel_prior(500.0, 3400.0);
+        obs2.force_phase(0.0);
+        obs2.set_velocity(300.0);
+        run_accel(&mut obs2, 300.0, 0.0, 0.5);
+        for _ in 0..400 {
+            obs2.note_torque_current(2.0, dt);
+        }
+        let mut theta: f32 = 0.0;
+        let steps = (0.1 / dt) as usize;
+        for k in 0..steps {
+            let w = 300.0 + 5000.0 * k as f32 * dt;
+            let e = w * lambda_true;
+            obs2.note_torque_current(2.0, dt);
+            obs2.update(&ObserverInput {
+                v_alpha: -e * libm::sinf(theta),
+                v_beta: e * libm::cosf(theta),
+                i_alpha: 0.0,
+                i_beta: 0.0,
+                dt,
+            });
+            theta = wrap_angle(theta + w * dt);
+        }
+        // Control: same profile with the prior OFF — isolates whether a
+        // shortfall is the clamp or plain PLL dynamics.
+        let mut obs3 = BackEmfObserver::new(r, l, lambda_true);
+        obs3.force_phase(0.0);
+        obs3.set_velocity(300.0);
+        run_accel(&mut obs3, 300.0, 0.0, 0.5);
+        let mut theta: f32 = 0.0;
+        for k in 0..steps {
+            let w = 300.0 + 5000.0 * k as f32 * dt;
+            let e = w * lambda_true;
+            obs3.update(&ObserverInput {
+                v_alpha: -e * libm::sinf(theta),
+                v_beta: e * libm::cosf(theta),
+                i_alpha: 0.0,
+                i_beta: 0.0,
+                dt,
+            });
+            theta = wrap_angle(theta + w * dt);
+        }
+        // The prior must not impede legitimate (torque-justified) tracking:
+        // with 2 A measured the cap (500 + 6800 el/s²) sits above both the
+        // source ramp AND the PLL's own tracking dynamics, so the estimate
+        // must match the no-prior control (which itself lags the ramp by
+        // the PLL's velocity pole ki/kp ≈ 20 rad/s — that lag is PLL
+        // dynamics, not the prior).
+        assert!(
+            (obs2.velocity() - obs3.velocity()).abs() < 5.0,
+            "prior must not impede justified tracking: {} vs control {}",
+            obs2.velocity(),
+            obs3.velocity()
         );
     }
 

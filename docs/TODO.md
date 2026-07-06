@@ -349,6 +349,34 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
         but may leave a bounded oscillation; damping the onset likely
         needs the true L(f)/loop-phase story (impedance-sweep TODO is
         the measurement).
+      **ACCEL PRIOR LANDED (2026-07-07): first zero-OC maneuvers with a
+      genuinely spinning rotor.** The slow-phantom escape (currents
+      perfectly regulated, PLL err small-but-positive, ω̂ growing 3× the
+      torque bound) is caught by the one physical fact it can't fake:
+      |ω̂| growth is clamped to an envelope slewing at
+      `floor + per_amp·|iq|` el/s² (`BackEmfObserver::set_accel_prior`;
+      envelope, not per-step Δv — a per-step clamp asymmetrically clips
+      PLL ringing and biases legitimate tracking; deceleration and
+      magnitude-shrinking corrections stay free so load braking is
+      never fought; seeds carry their own envelope). g431 interim
+      numbers (J not in config yet): floor 500, per_amp 3400 =
+      1.3·1.5·pp²·λ/J with J≈3.2e-5. Driver feeds |iq_meas| (τ=10 ms).
+      Bench: spin-gentle-180 AND spin-punch-15 both ran their FULL
+      maneuvers with ZERO OC and a real spinning rotor — bounded
+      oscillating spin 150–600 rad/s el, e_q corroborating throughout,
+      self-recovering through dips (captures/prior-1,2). RAM note:
+      OUT_QUEUE 3328→3264 (observer state grew; .bss was 20 B over).
+      REMAINING QUALITY WORK (no longer trip-class): (a) the bounded
+      mid-band oscillation itself (~±40% around 450) — the linear onset
+      story (L(f)/loop phase; impedance-sweep); (b) 0.3 A cruise decays
+      to a restart loop — the rotor genuinely spins down (e_q → 0)
+      while estimate oscillation wastes torque; (c) restart-loop
+      quality: DEADSHORT_MIN_CATCH_VEL=60 lets catches at 70–90 rad/s
+      seed a closed loop that can't ride there (below the distortion
+      floor) — raise toward ~120–150 so those go to ramp; (d) λ tracker
+      adapts on garbage during restart churn (validity stays sticky
+      through seeds → tracker legally walks λ to λ₀/2) — tie λ
+      adaptation to slip-gate/BEMF sanity as well.
       **SLIP GATE LANDED (2026-07-07): strict improvement, not yet a
       cure.** Implementation: driver flags cycles with |iq_ref −
       iq_meas| > max(1.5 A, 0.5·|iq_ref|) (hysteresis ×0.5); while

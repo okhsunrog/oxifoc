@@ -1545,6 +1545,9 @@ where
         // BackEmfObserver::set_slip_gate). Hysteresis so the gate doesn't
         // chatter across a single threshold.
         let iq_err = (iq_target - out.iq).abs();
+        // Feed the physics acceleration prior with the measured torque
+        // current (see BackEmfObserver::set_accel_prior).
+        self.phase.note_torque_current(out.iq.abs(), dt);
         let thr_on = SLIP_GATE_ON_A.max(SLIP_GATE_ON_FRAC * iq_target.abs());
         self.slip_gated = if self.slip_gated {
             iq_err > 0.5 * thr_on

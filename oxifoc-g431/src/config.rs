@@ -120,10 +120,11 @@ pub fn pad_node_dac_counts(amps: f32) -> u16 {
 /// its actual size, so this must hold several such grants for the tx path to
 /// pipeline — 2048 held only 1-2 packets in flight and stalled the 20 kHz
 /// stream at ~14.6k samples/s (2026-07-05 bench).
-/// (2026-07-06 stack→CCM migration: 4096→3328 — still three ~1030 B grants
+/// (2026-07-06 stack→CCM migration: 4096→3328, then 3264 when the observer
+/// grew the slip-gate + accel-prior state — still three ~1030 B grants
 /// in flight (2048 = 1-2 grants stalled the 20 kHz stream, 2026-07-05);
 /// frees 768 B toward fitting the statics into the 22 K SRAM region.)
-pub const OUT_QUEUE_SIZE: usize = 3328;
+pub const OUT_QUEUE_SIZE: usize = 3264;
 
 /// Maximum size of a single ergot packet (COBS-encoded). Outbound MTU — the
 /// fast-telemetry batch must fit (compile-time assert below).

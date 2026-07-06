@@ -144,6 +144,18 @@ pub async fn init(
         }
     }
 
+    // Physics acceleration prior for the observer PLL (ZD2808 interim
+    // numbers, like the decoupling override below): |ω̂| growth capped at
+    // floor + per_amp·|iq| el rad/s². per_amp = 1.3 × 1.5·pp²·λ/J with
+    // pp = 7, λ = 1.145 mWb, J ≈ 3.2e-5 (measured from the e_q-verified
+    // 1.5 A climb, 2026-07-06) ⇒ ≈ 3400; floor 500 covers load-driven
+    // acceleration. Catches the slow-phantom escape the slip gate cannot
+    // (see BackEmfObserver::set_accel_prior); belongs in config once
+    // detection measures J.
+    if config.motor_params.is_some() {
+        phase_manager.set_observer_accel_prior(500.0, 3400.0);
+    }
+
     // Initialize CORDIC hardware for fast sin/cos in FOC loop
     CordicSinCos::init(cordic_peri);
 

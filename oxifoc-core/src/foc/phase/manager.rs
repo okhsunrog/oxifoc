@@ -411,6 +411,13 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         }
     }
 
+    /// Configure the back-EMF observer's physics acceleration prior
+    /// (no-op without a configured observer) — see
+    /// `BackEmfObserver::set_accel_prior`.
+    pub fn set_observer_accel_prior(&mut self, floor_el: f32, per_amp_el: f32) {
+        self.observer.set_accel_prior(floor_el, per_amp_el);
+    }
+
     /// Override the back-EMF observer's PLL gains (no-op without a
     /// configured observer) — bench tuning of the slip-kick loop gain.
     pub fn set_observer_pll_gains(&mut self, kp: f32, ki: f32) {
@@ -1432,6 +1439,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     /// sensorless is not a failure.
     fn set_slip_gate(&mut self, gated: bool) {
         self.observer.set_slip_gate(gated);
+    }
+
+    fn note_torque_current(&mut self, iq_abs: f32, dt: f32) {
+        self.observer.note_torque_current(iq_abs, dt);
     }
 
     fn debug_observer(&self) -> Option<(f32, f32, f32)> {
