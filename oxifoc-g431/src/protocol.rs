@@ -247,6 +247,41 @@ pub async fn telem_stats_task() {
                 cyc_max,
                 cyc_sum / 1_700_000
             );
+            // Per-section averages (cycles/ISR): where the budget goes.
+            // adc1 includes the BKIN check + vbus/NTC conversions; snap is
+            // hall snapshot + AdcSnapshot build; foc is run_foc_cycle under
+            // the driver lock; pub is publish_cycle_telemetry (state CS +
+            // encode + queue push + waker); tail = total − listed (watchdog
+            // + instrumentation).
+            let a1 = crate::foc::ISR_PROF_ADC1.swap(0, Ordering::Relaxed) / cyc_n;
+            let a2 = crate::foc::ISR_PROF_ADC2.swap(0, Ordering::Relaxed) / cyc_n;
+            let sn = crate::foc::ISR_PROF_SNAP.swap(0, Ordering::Relaxed) / cyc_n;
+            let fo = crate::foc::ISR_PROF_FOC.swap(0, Ordering::Relaxed) / cyc_n;
+            let pb = crate::foc::ISR_PROF_PUB.swap(0, Ordering::Relaxed) / cyc_n;
+            let avg = cyc_sum / cyc_n;
+            defmt::info!(
+                "isrp/s: adc1={} adc2={} snap={} foc={} pub={} tail={}",
+                a1,
+                a2,
+                sn,
+                fo,
+                pb,
+                avg.saturating_sub(a1 + a2 + sn + fo + pb)
+            );
+            // run_foc_cycle internals (core isr_prof) + the Stopped step arm
+            // split (pwm.disable vs estimator update; zeros in drive modes).
+            {
+                use oxifoc_core::isr_prof as p;
+                defmt::info!(
+                    "isrc/s: cmd={} prot={} step={} ctail={} | stopped: pwmoff={} phase={}",
+                    p::CYCLE_CMD.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::CYCLE_PROT.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::CYCLE_STEP.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::CYCLE_TAIL.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::STEP_PWMOFF.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::STEP_PHASE.swap(0, Ordering::Relaxed) / cyc_n,
+                );
+            }
         }
     }
 }

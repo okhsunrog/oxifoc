@@ -91,6 +91,9 @@ mod fmt;
 /// Timer abstraction for async delays
 pub mod timer;
 
+/// Per-section ISR cycle profiling (feature `isr-profiling`, device-only)
+pub mod isr_prof;
+
 /// High-level motor driver combining FOC with sensors and PWM
 pub mod motor;
 

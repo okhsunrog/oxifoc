@@ -51,7 +51,7 @@ mutex = { version = "1.0.2", features = ["impl-unsafe-cortex-m-single-core"] }
 
 # Local dependencies
 # runtime feature includes icd (endpoints) and types (shared structs)
-oxifoc-core = { path = "../oxifoc-core", default-features = false, features = ["algorithms", "runtime", "defmt", "storage", "embassy", "cordic", "delivery"] }
+oxifoc-core = { path = "../oxifoc-core", default-features = false, features = ["algorithms", "runtime", "defmt", "storage", "embassy", "cordic", "delivery", "isr-profiling"] }
 # Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
 # transport-uart adds: defmt-sink-network (for network forwarding)
 # transport-rtt adds: rtt (for RTT transport wrappers)

@@ -349,6 +349,15 @@ where
     /// command-staleness deadman compares `now_ticks - last_cmd_tick` against
     /// `failsafe_cfg.staleness_timeout_us`.
     last_cmd_tick: Option<u64>,
+    /// PWM already disabled by the Stopped arm — skip the per-cycle
+    /// `pwm.disable()` (measured ~430 cycles/ISR on G431 for a timer that
+    /// is already off). Cleared whenever `set_mode` re-enables the bridge;
+    /// the Stopped arm still re-asserts the disable periodically as a
+    /// backstop.
+    pwm_off: bool,
+    /// Stopped-arm housekeeping counter: paces the periodic PWM-off
+    /// re-assert and the estimator-update decimation.
+    stopped_housekeeping: u8,
     /// Cached failsafe tuning (timeout + reaction policy). Host-tunable.
     failsafe_cfg: FailsafeConfig,
     /// Self-contained failsafe sequence, armed when the deadman/link-loss
@@ -441,6 +450,8 @@ where
             v_beta_prev: 0.0,
             phase_advance_cycles: DEFAULT_PHASE_ADVANCE_CYCLES,
             last_cmd_tick: None,
+            pwm_off: false,
+            stopped_housekeeping: 0,
             failsafe_cfg: FailsafeConfig::default(),
             failsafe_ctrl: FailsafeController::new(),
             failsafe_latched: false,
@@ -912,6 +923,7 @@ where
         // Re-enable PWM outputs when leaving Stopped mode
         if was_stopped && will_be_active {
             self.pwm.enable();
+            self.pwm_off = false;
         }
 
         // Entering velocity mode from another mode: re-arm the loop bumpless
@@ -1013,13 +1025,35 @@ where
         }
         match self.mode {
             ControlMode::Stopped => {
+                let prof_t0 = crate::isr_prof::now();
+                self.stopped_housekeeping = self.stopped_housekeeping.wrapping_add(1);
                 // Safe-off: `disable()` is the platform's emergency-stop
-                // (all channels off / high-Z on the current boards).
-                self.pwm.disable();
+                // (all channels off / high-Z on the current boards). Asserted
+                // on the transition into Stopped, then re-asserted every 256
+                // cycles as a backstop — the per-cycle disable measured ~430
+                // cycles of ISR budget (G431) for a timer that is already off.
+                if !self.pwm_off || self.stopped_housekeeping == 0 {
+                    self.pwm.disable();
+                    self.pwm_off = true;
+                }
+                let prof_t1 = crate::isr_prof::now();
+                crate::isr_prof::add(&crate::isr_prof::STEP_PWMOFF, prof_t0, prof_t1);
                 // The previous cycle's command WAS applied before this stop
                 // took effect — let the estimators integrate it, then decay
-                // to zero volts.
-                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
+                // to zero volts. Decimated ×4: with the bridge floated the
+                // inputs are constant zeros (no phase-voltage sensing yet),
+                // so integrating them at 5 kHz with dt×4 is the same math at
+                // a quarter of the measured ~1430 cycles/ISR; sensored
+                // sources keep their standstill angle (hall edges latch in
+                // their own capture, read on the next update).
+                if self.stopped_housekeeping & 0x3 == 0 {
+                    self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt * 4.0, now_ticks);
+                }
+                crate::isr_prof::add(
+                    &crate::isr_prof::STEP_PHASE,
+                    prof_t1,
+                    crate::isr_prof::now(),
+                );
                 Ok(FocOutput::default())
             }
             ControlMode::CurrentControl {

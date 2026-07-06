@@ -50,6 +50,16 @@ static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
 /// Sum of ADC1_2 ISR durations in CPU cycles since last stats swap.
 /// u32 headroom: 20 kHz × ~4000 cycles = 80 M/s, swapped at 1 Hz.
 pub static ISR_CYC_SUM: AtomicU32 = AtomicU32::new(0);
+
+/// Per-section DWT cycle sums for the ADC1_2 ISR (reset each 1 Hz report;
+/// avg = sum / ISR_CYC_N). Sections in ISR order — the boundaries are the
+/// timestamps in the handler, so each atomic costs one RMW (~6 cycles);
+/// total instrumentation overhead ~40 cycles, charged to `tail`.
+pub static ISR_PROF_ADC1: AtomicU32 = AtomicU32::new(0);
+pub static ISR_PROF_ADC2: AtomicU32 = AtomicU32::new(0);
+pub static ISR_PROF_SNAP: AtomicU32 = AtomicU32::new(0);
+pub static ISR_PROF_FOC: AtomicU32 = AtomicU32::new(0);
+pub static ISR_PROF_PUB: AtomicU32 = AtomicU32::new(0);
 /// Max single ADC1_2 ISR duration in CPU cycles since last stats swap.
 pub static ISR_CYC_MAX: AtomicU32 = AtomicU32::new(0);
 /// Number of ADC1_2 ISR executions since last stats swap.
@@ -302,6 +312,11 @@ fn ADC1_2() {
     let mut vbus_mv: u32 = 0;
     let mut temp_c_x10: i16 = 0;
 
+    // NTC Beta-model conversion runs libm::logf + several float divides
+    // (~200 cycles) — decimate to every 128th cycle (156 Hz); the FET
+    // thermal time constant is seconds, and consumers read the atomic.
+    let convert_temp = *SEQ & 127 == 0;
+
     // Read ADC1 injected: phase A current, VBUS voltage, FET temperature
     ADC1_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
@@ -314,10 +329,16 @@ fn ADC1_2() {
             VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
             // Convert temperature raw ADC to 0.1°C units
-            temp_c_x10 = NTC.temp_c_x10_from_adc(samples[2], BOARD.calib.adc_max_counts);
-            FET_TEMP_C_X10.store(temp_c_x10, Ordering::Relaxed);
+            if convert_temp {
+                temp_c_x10 = NTC.temp_c_x10_from_adc(samples[2], BOARD.calib.adc_max_counts);
+                FET_TEMP_C_X10.store(temp_c_x10, Ordering::Relaxed);
+            } else {
+                temp_c_x10 = FET_TEMP_C_X10.load(Ordering::Relaxed);
+            }
         }
     });
+
+    let prof_t1 = cortex_m::peripheral::DWT::cycle_count();
 
     // Read ADC2 injected: phase B and C currents
     ADC2_INJECTED.lock(|cell| {
@@ -329,6 +350,8 @@ fn ADC1_2() {
             IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
         }
     });
+
+    let prof_t2 = cortex_m::peripheral::DWT::cycle_count();
 
     // Voltage/temperature protection moved into core: run_foc_cycle's
     // run_protection covers them (with excursion integrators) for every
@@ -346,6 +369,8 @@ fn ADC1_2() {
     // Get Hall snapshot
     let hall_snapshot = hall::get_snapshot(now_ticks);
 
+    let prof_t3 = cortex_m::peripheral::DWT::cycle_count();
+
     // Run FOC control loop (shared cycle logic in core)
     let foc_telem = FOC_DRIVER.lock(|cell| {
         cell.borrow_mut().as_mut().and_then(|driver| {
@@ -360,6 +385,8 @@ fn ADC1_2() {
         })
     });
 
+    let prof_t4 = cortex_m::peripheral::DWT::cycle_count();
+
     // Update global state + fast telemetry stream
     // TODO: remove this fallback once motor PSU is connected for testing
     publish_cycle_telemetry(
@@ -371,8 +398,16 @@ fn ADC1_2() {
         *SEQ,
     );
 
+    let prof_t5 = cortex_m::peripheral::DWT::cycle_count();
+
     // Feed the IWDG: a completed FOC cycle is the board's liveness signal.
     feed_watchdog();
+
+    ISR_PROF_ADC1.fetch_add(prof_t1.wrapping_sub(isr_t0), Ordering::Relaxed);
+    ISR_PROF_ADC2.fetch_add(prof_t2.wrapping_sub(prof_t1), Ordering::Relaxed);
+    ISR_PROF_SNAP.fetch_add(prof_t3.wrapping_sub(prof_t2), Ordering::Relaxed);
+    ISR_PROF_FOC.fetch_add(prof_t4.wrapping_sub(prof_t3), Ordering::Relaxed);
+    ISR_PROF_PUB.fetch_add(prof_t5.wrapping_sub(prof_t4), Ordering::Relaxed);
 
     let isr_dt = cortex_m::peripheral::DWT::cycle_count().wrapping_sub(isr_t0);
     ISR_CYC_SUM.fetch_add(isr_dt, Ordering::Relaxed);

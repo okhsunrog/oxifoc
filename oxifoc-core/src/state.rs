@@ -554,6 +554,8 @@ where
 {
     driver.set_vbus(vbus_v);
 
+    let prof_t0 = crate::isr_prof::now();
+
     let prev_mode = driver.mode();
     let mut saw_set_mode = false;
     let mode = process_commands_inner(state_mutex, driver, fault_registry, &mut saw_set_mode);
@@ -605,6 +607,9 @@ where
     // per-platform ISR copies are gone). Temperatures come from the
     // previous cycle's ADC snapshot in the shared state — one cycle of
     // staleness is nothing on a thermal time scale.
+    let prof_t1 = crate::isr_prof::now();
+    crate::isr_prof::add(&crate::isr_prof::CYCLE_CMD, prof_t0, prof_t1);
+
     let (fet_t, motor_t) = critical_section::with(|cs| {
         let st = state_mutex.borrow(cs).borrow();
         (st.last_adc.fet_temp_c_x10(), st.last_adc.motor_temp_c_x10())
@@ -613,6 +618,9 @@ where
     critical_section::with(|cs| {
         state_mutex.borrow(cs).borrow_mut().derating = driver.derating();
     });
+
+    let prof_t2 = crate::isr_prof::now();
+    crate::isr_prof::add(&crate::isr_prof::CYCLE_PROT, prof_t1, prof_t2);
 
     // Spurious break-input trips during PWM channel enable can latch an
     // OverCurrent fault right at start (seen on G431: COMP→BKIN glitch when
@@ -671,8 +679,14 @@ where
         driver.enter_failsafe();
     }
 
+    let prof_t3 = crate::isr_prof::now();
+    crate::isr_prof::add(&crate::isr_prof::CYCLE_CMD, prof_t2, prof_t3);
+
     let was_failsafe = driver.failsafe_active();
-    let result = match driver.step(now_ticks) {
+    let step_result = driver.step(now_ticks);
+    let prof_t4 = crate::isr_prof::now();
+    crate::isr_prof::add(&crate::isr_prof::CYCLE_STEP, prof_t3, prof_t4);
+    let result = match step_result {
         Ok(telem) => {
             // Instantaneous per-phase overcurrent check against the board
             // ABS line (the dq-magnitude trip inside step() is the other
@@ -753,6 +767,12 @@ where
             }
         });
     }
+
+    crate::isr_prof::add(
+        &crate::isr_prof::CYCLE_TAIL,
+        prof_t4,
+        crate::isr_prof::now(),
+    );
 
     result
 }
