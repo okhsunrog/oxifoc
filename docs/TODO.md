@@ -179,11 +179,16 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     chain (observer L·i, deadshort e=−L·dI/dt) is hardware-validated
     on the AC value, the decoupling needs the fundamental pair;
     today's split lives as a set_decoupling override in g431 foc.rs.
-  - **Align OC (stochastic, ~1 in 3 cold starts)**: align step-engages
-    the full commanded current onto the undamped rotor spring; a bad
-    initial angle swings the rotor violently and the soft loop lets
-    |i_dq| spike past the 10 A trip. Fix: VESC-style align current
-    soft-start (ramp over ~t_lock).
+  - **Align swing (partially fixed 4ca41ab, redesign pending)**: the
+    fixed-angle align resonates the rotor on its undamped magnetic
+    spring (~8 Hz mech). Current soft-start (0.15 s ramp) + the 35%
+    runaway gate eliminated the false handoffs (observer locking onto
+    the swing), but ~2/5 cold starts at 1.5 A still trip the dq
+    overcurrent during align/early ramp — no current-shaping fixes a
+    resonance with no damping. Next: VESC-style align = 0 (ramp from
+    the unknown angle — a rotating field doesn't pump the resonance),
+    or active damping during align. Same investigation as the observer
+    readiness work: the swing is also what poisons its flux integrator.
 - [ ] 10 kHz capture during drive still trips the deadman: the drive-
   engage window starves thread mode ~150 ms (gap of exactly 1502
   samples reproduces), so even correctly-named affirms don't drain in
