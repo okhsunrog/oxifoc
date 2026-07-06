@@ -85,6 +85,15 @@ pub fn baked() -> RuntimeConfig {
         hall_tuning: None,
         failsafe: Some(FailsafeConfigStored {
             policy: 1, // RampToZero — PSU-safe: unload, never regen
+            // 400 ms (default 150): bench tuning for THIS board's ISR
+            // budget. Sustained 1.5 A drive under a 1 kHz capture runs the
+            // 20 kHz ISR at ~87-90% — the thread-mode affirm pump falls
+            // behind ~20 ms/s and crosses 150 ms of staleness within a few
+            // seconds (2026-07-06 endurance runs; staleness ratchet
+            // 100→160 ms). 400 ms still stops a dead-link bench spin fast;
+            // the 150 ms vehicle bound returns with the tier-2 ISR shave
+            // or on G474-class hardware.
+            staleness_timeout_ms: 400,
             ..FailsafeConfigStored::default()
         }),
         velocity: None,

@@ -371,6 +371,17 @@ where
     /// Previous cycle's `phase.is_starting()` — detects the startup→closed-
     /// loop transition so the deadman stamp can be refreshed (see `step`).
     was_starting: bool,
+    /// Previous cycle's "in a deadman-covered mode" — detects engage.
+    was_active: bool,
+    /// Tick of the last Stopped/Coast/Brake → drive transition. The deadman
+    /// uses the relaxed startup bound within the first
+    /// [`STARTUP_STALENESS_TIMEOUT_US`] after ANY engage: a deadshort flying
+    /// restart skips the startup sequencer entirely (bench 2026-07-06: a
+    /// caught still-coasting rotor went straight to closed loop and the
+    /// engage-window pump latency tripped the 150 ms bound), and the engage
+    /// ISR transient starves the command pump regardless of which path
+    /// engaged.
+    engaged_tick: Option<u64>,
     /// Stopped-arm housekeeping counter: paces the periodic PWM-off
     /// re-assert and the estimator-update decimation.
     stopped_housekeeping: u8,
@@ -468,6 +479,8 @@ where
             last_cmd_tick: None,
             pwm_off: false,
             was_starting: false,
+            was_active: false,
+            engaged_tick: None,
             stopped_housekeeping: 0,
             failsafe_cfg: FailsafeConfig::default(),
             failsafe_ctrl: FailsafeController::new(),
@@ -797,10 +810,16 @@ where
             ControlMode::OpenLoop { .. } | ControlMode::DirectVoltage { .. } => {
                 BENCH_STALENESS_TIMEOUT_US
             }
-            // Sensorless cold start: bounded device-local automaton whose
-            // ramp can starve the command pump (see
-            // [`STARTUP_STALENESS_TIMEOUT_US`]).
-            _ if self.phase.is_starting() => STARTUP_STALENESS_TIMEOUT_US,
+            // Sensorless startup or the engage-grace window: bounded
+            // device-local transient whose ISR load can starve the command
+            // pump (see [`STARTUP_STALENESS_TIMEOUT_US`] / `engaged_tick`).
+            _ if self.phase.is_starting()
+                || self.engaged_tick.is_some_and(|t| {
+                    now_ticks.saturating_sub(t) < STARTUP_STALENESS_TIMEOUT_US
+                }) =>
+            {
+                STARTUP_STALENESS_TIMEOUT_US
+            }
             _ => self.failsafe_cfg.staleness_timeout_us,
         };
         if self.failsafe_ctrl.is_active() {
@@ -1050,6 +1069,16 @@ where
             self.last_cmd_tick = Some(now_ticks);
         }
         self.was_starting = starting;
+        // Engage edge (any path — cold start OR flying restart): open the
+        // deadman's engage grace window (see `engaged_tick`).
+        let active = !matches!(
+            self.mode,
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+        );
+        if active && !self.was_active {
+            self.engaged_tick = Some(now_ticks);
+        }
+        self.was_active = active;
 
         let mut out = self.step_inner(now_ticks)?;
         // Stamp the ACTIVE angle source's velocity into the telemetry — one
@@ -3791,12 +3820,18 @@ mod tests {
             let _serial = cmd_channel_lock();
             let mut h = running_harness();
 
-            // Quiet link until past the staleness timeout (default 150 ms;
-            // ticks are µs in this domain).
-            h.cycle(100_000);
-            assert!(!h.registry.has_category(FaultCategory::CommTimeout));
+            // Quiet link: within the engage grace window (the relaxed
+            // STARTUP_STALENESS_TIMEOUT_US bound covers the first 400 ms
+            // after ANY engage — the engage ISR transient starves the
+            // command pump) even a >150 ms staleness must NOT trip.
+            h.cycle(300_000);
+            assert!(
+                !h.registry.has_category(FaultCategory::CommTimeout),
+                "engage grace must hold the deadman through the engage window"
+            );
 
-            h.cycle(200_000);
+            // Past the grace window with the link still quiet → trip.
+            h.cycle(600_000);
             assert!(
                 h.registry.has_category(FaultCategory::CommTimeout),
                 "stale command link must raise CommTimeout"

@@ -1,0 +1,17 @@
+{
+  "name": "endurance-20s",
+  "description": "Long sensorless endurance run (~20 s): 1.5 A punch through the L(f) band to the no-load ceiling, then a staircase of torque steps (0.5/1.0/0.5/1.2 A) held seconds each — all above the problematic omega_e 400-800 band. Exercises sustained closed-loop drive, torque step response, the deadman/affirm path over many seconds, and telemetry endurance at 1 kHz.",
+  "capture": {
+    "fast_hz": 1000,
+    "tail_s": 0.5
+  },
+  "terminal": "stop",
+  "timeline": [
+    { "t": 0.5, "cmd": { "start": { "iq": 1.5 } } },
+    { "t": 4.0, "cmd": { "start": { "iq": 0.5 } } },
+    { "t": 8.0, "cmd": { "start": { "iq": 1.0 } } },
+    { "t": 12.0, "cmd": { "start": { "iq": 0.5 } } },
+    { "t": 16.0, "cmd": { "start": { "iq": 1.2 } } },
+    { "t": 19.5, "cmd": { "start": { "iq": 0.0 } } }
+  ]
+}
