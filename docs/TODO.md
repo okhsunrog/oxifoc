@@ -169,43 +169,59 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     2026-07-06 (908886f); **both bench blockers cleared 2026-07-06 late
     (d7137e9 ISR tier-2 shave + 9bc8bc3 handoff 60→180 rad/s el, ramp
     0.4→1.2 s keeping ~150 rad/s² el). Bench = HEAD firmware again.**
-    Bench validation of the new machinery (prof-hold, 1.5 A punch →
-    0.3 A): the ramp now GENUINELY captures the rotor (deadshort
-    measured it at 158 rad/s el), the confirm probe blocked a runaway
-    observer on every retry, hold give-up recycled, the deadshort
-    caught the real rotor and seeded closed loop — the whole
-    external-validity chain works on hardware, no RTT death, no
-    deadman trip, PSU-safe held. TWO NEW bench findings (log
-    2026-07-06T17:57, capture scratchpad prof-hold-t3.parquet):
-    - **Hold-phase observer RATCHET**: during the 180 rad/s hold at
-      0.3 A the observer ran away 219→756 rad/s el, ~+54 per 0.1 s
-      confirm retry (exponential-ish, τ≈0.8 s), with ready=true and
-      conf=1.0 — the e_q validity CORROBORATED the runaway — while the
-      physical probe consistently measured 32–108. Confirmation can
-      structurally never pass: the probe compares against the claim,
-      and the claim IS the runaway observer. The give-up recycle is
-      what saves the start (deadshort seed from measurement). Sim does
-      NOT reproduce (its confirm probes pass) → plant-fidelity gap
-      (L(f) / higher-order dead-time). Candidate cheap fix: when the
-      probe repeatedly measures a consistent rotor speed that matches
-      the RAMP (not the observer), seed the observer from the probe
-      instead of retrying against a diverged claim — the seed
-      machinery already exists (deadshort catch path).
-    - **Post-seed runaway → dq OC in 0.78 s**: after the deadshort
-      seed at 158 rad/s, closed loop at iq*=0.3 A accelerated and the
-      observer ran away again (vq climbing to ~2.8 V ⇒ ω̂ ≈ 2500 rad/s
-      el; iq spikes to 7.5 A) until the dq overcurrent tripped. This is
-      reproducer 3/the mid-band interaction, now RELIABLY reachable in
-      a 10 s maneuver on HEAD — use prof-hold.json as the reproducer.
-      PLL acceleration lever + λ-tracker dynamics are the levers (see
-      investigation plan below).
+    **STARTUP CHAIN COMPLETE on hardware 2026-07-06 late-late
+    (030c356 + ffa55b8): first probe-CONFIRMED handoff ever** —
+    spin-gentle-180: "handoff confirmed by probe (probe_vel=337.6
+    observer_vel=187.1)", closed loop engaged on the observer's own
+    converged state, λ sane. The investigation en route REFRAMED the
+    earlier findings — read this before trusting old attributions:
+    - **The "hold-ratchet" was a REAL I/f runaway rotor, not observer
+      divergence.** The unloaded rotor slips ahead of the 180 rad/s
+      hold field and free-accelerates to 500–1000 rad/s el; the
+      observer tracked it correctly the whole time (ready=true, e_q =
+      genuine runaway back-EMF). Proven three ways: (a) clean OpenLoop
+      discriminators (prof-openloop-ramp180*.json) — the observer
+      tracks a real 180 rad/s spin flawlessly at 0.3/0.5 A, ±6 rad/s,
+      no ratchet, e_q = λω exactly; (b) probe-raw current windows:
+      5.5–7.6 A SETTLED short-circuit current — passive circuit, only
+      real back-EMF can drive it — pinning the rotor at 530–800; (c)
+      λ-tracker traces. The 2 Hz `obs:` trace (vel/conf/e_q/travel/λ)
+      is now permanent — the fast frame only shows the ACTIVE source.
+    - **The confirm/deadshort probe MODEL was the actual bug**:
+      e = −L·dI/dt is invalid on a low-τ motor (τ = L/R ≈ 0.19 ms ≈ 4
+      PWM periods on the ZD2808) — the short current fully settles
+      inside the settle window and the probe under-read |ω| by ~ω·τ
+      (≈10× at speed), structurally vetoing every correct handoff.
+      REWRITTEN to the settled-current model: average i over the probe
+      window, e = −(R+jωL)·i, |ω| = |Z|·|i|/λ, angle from the phasor +
+      impedance lag + half-window advance + the π flip (i OPPOSES e —
+      caught only by the independent-plant sim test; local unit tests
+      shared the synth convention, the hall-improvements lesson again).
+      Deadshort settle 8→16 periods (settled assumption must hold).
+    - Observer fixes that ARE real (030c356): λ tracking now adapts
+      only while validity is granted (startup churn dragged λ to the
+      λ₀/2 clamp → inflated confidence); e_q normalized by measured
+      |x|, not λ (λ error counted twice → validity deadlock with the
+      gate). λ converges to ~1.42 mWb at 180 rad/s el in clean spin
+      (vs 1.145 stored) — the low-current dead-time residual it
+      absorbs; that gap is the remaining distortion-floor lever.
+    - ConfirmResult::SeedAndHandoff backstop: 3 consecutive probes
+      measuring a real spinning rotor (≥ catch floor) that still fails
+      the observer comparison → seed the observer FROM the probe (a
+      standing rotor reads ~0 and can never seed).
+    - **REMAINING KILLER, cleanly isolated**: post-handoff dq OC while
+      closed loop accelerates the unloaded rotor through the ω_e
+      400–800 L(f) band (iq oscillation growing ±6 → ±9.8 A) — this is
+      exactly pre-existing reproducer #1/#3 (band-transit), now
+      reachable in one 10 s spin-gentle-180 run. The mid-band
+      estimator↔loop investigation (λ-tracker dynamics, PLL accel lag,
+      eddy-branch plant, dead-time comp quality) is THE next session.
     Distortion-floor context for the record: at ramp 60–63 the observer
     read 32–62 with confidence DECAYING 1.0→0.59 and validity never
     corroborating — λω ≈ 72 mV is at/below the post-comp dead-time
     residual (retroactively taints the align-era "handoffs at
     60.0–60.2" as likely distortion-locks). At 180 rad/s λω ≈ 0.21 V
-    clears the residual; low-current dead-time comp quality remains an
-    open lever for the phantom class as a whole.
+    clears the residual.
     What landed, and what the sim taught en route:
     - Passive checks are STRUCTURALLY insufficient alone: a steady
       phantom (observer tracking the machine's own residual-distortion
