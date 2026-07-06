@@ -1103,6 +1103,35 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         let prof_t0 = crate::isr_prof::now();
         self.observer.update(&obs_input);
         crate::isr_prof::add(&crate::isr_prof::EST_OBS, prof_t0, crate::isr_prof::now());
+
+        // ~2.4 Hz observer-internals trace while the estimate is in motion
+        // (decimated; one atomic RMW per cycle). The estimator sessions keep
+        // needing exactly this: the fast frame only carries the ACTIVE
+        // source's angle/velocity, so a diverging observer riding behind an
+        // open-loop source (startup hold, OpenLoop bench drives) was
+        // invisible — the 2026-07-06 hold-ratchet (observer 219→756 rad/s
+        // at a constant 180 rad/s hold) could only be inferred from confirm
+        // probe logs.
+        {
+            use core::sync::atomic::{AtomicU32, Ordering};
+            static OBS_TRACE_TICKS: AtomicU32 = AtomicU32::new(0);
+            if OBS_TRACE_TICKS
+                .fetch_add(1, Ordering::Relaxed)
+                .is_multiple_of(8192)
+                && let Some(vel) = self.observer.velocity()
+                && vel.abs() > 20.0
+            {
+                let (bemf_q, travel) = self.observer.validity().unwrap_or((0.0, 0.0));
+                info!(
+                    "obs: vel={} conf={} e_q={} travel={} lambda={}",
+                    vel,
+                    self.observer.confidence(),
+                    bemf_q,
+                    travel,
+                    self.observer.lambda().unwrap_or(0.0)
+                );
+            }
+        }
         #[cfg(feature = "hfi")]
         {
             let hfi_active = self.hfi_active();
@@ -1134,11 +1163,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 // voltage; feed the back-EMF-driven current to the probe. A
                 // spinning rotor → seed the observer and go straight to closed
                 // loop; standstill → the probe falls through to the align ramp.
+                let r = self.observer.resistance().unwrap_or(0.0);
                 let l = self.observer.inductance().unwrap_or(0.0);
                 let lambda = self.observer.lambda().unwrap_or(0.0);
                 if let DeadshortResult::Caught { angle, velocity } =
                     self.startup
-                        .feed_deadshort(input.i_alpha, input.i_beta, input.dt, l, lambda)
+                        .feed_deadshort(input.i_alpha, input.i_beta, input.dt, r, l, lambda)
                 {
                     info!(
                         "startup: deadshort caught spinning rotor (angle={} vel={}), seeding observer",
@@ -1153,6 +1183,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 // back-EMF must corroborate the observer before closed loop
                 // engages (a phantom-locked observer passes every internal
                 // gate — see BackEmfObserver::is_ready).
+                let r = self.observer.resistance().unwrap_or(0.0);
                 let l = self.observer.inductance().unwrap_or(0.0);
                 let lambda = self.observer.lambda().unwrap_or(0.0);
                 let claim = PhaseOutput {
@@ -1164,6 +1195,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     input.i_alpha,
                     input.i_beta,
                     input.dt,
+                    r,
                     l,
                     lambda,
                     claim,
@@ -1180,6 +1212,19 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                              holding for retry",
                             velocity, obs_vel
                         );
+                    }
+                    ConfirmResult::SeedAndHandoff { angle, velocity } => {
+                        // The probe measured a real spinning rotor on
+                        // CONFIRM_SEED_PROBES consecutive tries while the
+                        // observer's claim kept diverging (hold-ratchet):
+                        // trust the measurement, reseed the observer from
+                        // it — same as the deadshort catch.
+                        warn!(
+                            "startup: observer diverged from probed rotor \
+                             (probe_vel={} observer_vel={}), seeding observer from probe",
+                            velocity, obs_vel
+                        );
+                        self.observer.seed(angle, velocity);
                     }
                     ConfirmResult::Probing => {}
                 }

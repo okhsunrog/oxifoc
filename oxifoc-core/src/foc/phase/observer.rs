@@ -455,7 +455,22 @@ impl BackEmfObserver {
         // Online λ adaptation (MESC MXLEMMING_LAMBDA / VESC lambda-comp):
         // slow first-order tracker, bounded. Adapts the clamp/centering
         // circle and the confidence normalization with it.
-        if self.lambda_gain > 0.0 {
+        //
+        // Gated on GRANTED external validity (one cycle stale — the accrual
+        // happens below): the tracker follows the raw flux magnitude, and
+        // during a failed catch / phantom churn that magnitude is inverter
+        // distortion, not rotor flux. Bench 2026-07-06 late: startup
+        // transients dragged λ to its λ₀/2 clamp, which then INFLATED
+        // confidence (flux/λ with λ halved), widened the e_q corroboration
+        // onto a runaway observer (the hold-ratchet's enabler), and left
+        // the ±λ component clamp clipping the REAL flux vector after the
+        // probe seed. Physical λ drift (saturation, magnet temperature) is
+        // slow — only learn it while the rotation is externally
+        // corroborated; the [0.4, 2.5] corroboration window tolerates a
+        // stored λ far more wrong than physical drift can make it.
+        let validity_granted =
+            self.valid_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3;
+        if self.lambda_gain > 0.0 && validity_granted {
             self.lambda += self.lambda_gain * (flux_mag - self.lambda) * dt;
             self.lambda = crate::foc::clamp_f32(self.lambda, self.lambda_min, self.lambda_max);
         }
@@ -517,9 +532,18 @@ impl BackEmfObserver {
         // already inside the detected R (2-point DC detection).
         let e_alpha = input.v_alpha - self.r * input.i_alpha;
         let e_beta = input.v_beta - self.r * input.i_beta;
-        // (x1,x2)/λ is the unit flux direction once converged (the clamp and
-        // centering keep |x| ≈ λ); cross product = q-axis projection.
-        let e_q = (e_beta * self.x1 - e_alpha * self.x2) * inv_lambda;
+        // (x1,x2)/|x| is the unit flux direction; cross product = q-axis
+        // projection. Normalized by the MEASURED flux magnitude, not λ:
+        // with a mis-stored λ the integrator tracks the true flux while the
+        // clamp circle sits elsewhere, and a λ-normalized projection would
+        // carry the λ error TWICE (once here, once in bemf_expected) —
+        // λ_cfg 1.8× true put the ratio at 0.31, below the 0.4 window, and
+        // validity could never be granted (which the λ-adaptation gate
+        // below would deadlock on). The 0.1·λ floor only bounds the
+        // amplification while the integrator is still building up from a
+        // reset — there the direction is noise and the 2-revolution
+        // consecutive-corroboration requirement is what protects the grant.
+        let e_q = (e_beta * self.x1 - e_alpha * self.x2) / flux_mag.max(0.1 * self.lambda);
         let a_e = (dt / BEMF_PROXY_TAU_S).min(1.0);
         self.bemf_q_filt += a_e * (e_q - self.bemf_q_filt);
         // Corroborated while the signed ratio e_q/(λ·ω̂) sits in the real-
@@ -533,7 +557,7 @@ impl BackEmfObserver {
             && (VALID_BEMF_RATIO_MIN * bemf_expected.abs()
                 ..=VALID_BEMF_RATIO_MAX * bemf_expected.abs())
                 .contains(&self.bemf_q_filt.abs());
-        let granted = self.valid_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3;
+        let granted = validity_granted;
         if corroborated {
             self.invalid_time = 0.0;
             // Saturate at the threshold: no unbounded growth.
