@@ -132,14 +132,39 @@ accel 500 erad/s²).
 ## Sensorless startup (see notes/startup-and-sampling.md)
 
 Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
-(deadshort flying restart) implemented 2026-06-13 in `phase/startup.rs` —
-current-only / g431-capable, host-test covered (cold-start spin-up +
-freewheel-catch on VirtualMotor). See decisions.md. Remaining is bench
-validation + v1 refinements:
+(deadshort flying restart) implemented 2026-06-13 in `phase/startup.rs`.
 
-- [ ] **Bench-validate the startup** (the real gate): a cold-start spin-up
-  from standstill and a freewheel catch on hardware — sim can't show
-  cogging / saturation / sensor noise.
+- [x] **Bench-validated 2026-07-06** (ZD2808, 12 V/4 A): cold start →
+  align → ramp → early handoff → acceleration to the 12 V no-load
+  ceiling (~50.4k erpm = 7200 mech rpm, vq saturated ~6.8 V, consistent
+  with Kv 688) → 2.5 s stable 0.3 A hold → clean unload
+  (`maneuvers/spin-gentle.json`, captures/spin-gentle2/3.parquet).
+  Three bugs found and fixed on the way — every earlier "divergent"
+  spin attempt is explained by them:
+  1. Host affirms were sent to a nonexistent socket name (`"affirm"`
+     instead of `"motor"`) — silently dropped, deadman fired +152 ms
+     into EVERY drive (08225f1).
+  2. Deadshort false-caught a standstill rotor: the bridge-enable
+     current transient (~0.4 A, ~200 µs) read as back-EMF → ω≈46 just
+     over the 45 floor → observer seeded with garbage. Fixed with an
+     8-period settle before the baseline + floor 45→60 (8938bed).
+  3. The handoff gate waited for the RAMP to reach 60 rad/s while the
+     unloaded rotor slipped ahead of the I/f drag and ran away (real
+     380–800 rad/s, confirmed by phase-current frequency) — now a
+     READY observer at handoff speed takes over immediately (05505d3).
+- [ ] **Current loop marginally stable at high ω_e**: dq oscillation
+  grows with speed on on-target means (|i_dq| peaks 2.5→8.7 A over
+  0.3 s at 1.5 A) and trips the dq overcurrent near ~800 rad/s.
+  Suspect undercompensated cross-coupling/decoupling with the baked
+  AC L (24 µH) vs the larger transient L — same cluster as the
+  decoupling-FF-during-detection circularity and the AC-L detection
+  gap. At 0.3 A the loop is stable to the no-load ceiling.
+- [ ] 10 kHz capture during drive still trips the deadman: the drive-
+  engage window starves thread mode ~150 ms (gap of exactly 1502
+  samples reproduces), so even correctly-named affirms don't drain in
+  time. 1 kHz capture is clean. Same root as the ISR-glue refactor
+  target; also consider arming the deadman only after the first
+  post-engage affirm lands.
 - [ ] deadshort **sign-from-progression**: the ±90° angle offset assumes
   the rotor spins in the *commanded* direction (kick-push). A rotor
   freewheeling AGAINST the command needs a ±180° PLL pull it can't do —
@@ -151,6 +176,10 @@ validation + v1 refinements:
 - [ ] **handoff smoothing** ramp→observer: the commutation angle steps by
   the load angle at the switch; seed/blend it, and consider preloading the
   current-PI integrators (MESC seeds Vd/Vq) to kill the re-engage transient.
+- [ ] Affirms rejected during a latched failsafe warn at 20/s
+  ("Mode rejected: failsafe latched") — rate-limit the warn; and the
+  stopping-fault refusal of Stopped→active is silent — add a one-shot
+  warn naming the blocking fault.
 
 ## Sensorless tracking / BEMF (bench-blocked)
 

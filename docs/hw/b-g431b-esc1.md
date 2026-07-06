@@ -176,6 +176,38 @@ Powered from 5V_ESC. Filter caps: C67, C68, C69 = 10 uF each.
 
 ## Firmware bringup log
 
+### 2026-07-06 — FIRST SUSTAINED SENSORLESS SPIN (ZD2808)
+
+Cold start → align → ramp → observer handoff → acceleration to the 12 V
+no-load ceiling (~50.4k erpm = 7200 mech rpm, vq saturated ~6.8 V,
+consistent with Kv 688) → 2.5 s stable 0.3 A hold → clean unload
+(`maneuvers/spin-gentle.json`, `captures/spin-gentle2/3.parquet`,
+video-recorded). Three bugs fixed to get here — together they explain
+every "divergent" spin attempt of 07-05:
+
+1. **Host affirms went to a nonexistent socket name** (`"affirm"` vs the
+   server's `"motor"`) — ergot dropped them silently, the ISR deadman was
+   never fed, every drive died into the failsafe at +152 ms. Found by
+   bracketing the path with new 1 Hz counters (`rx/s:` on-device,
+   `rtt down/s:` on-host).
+2. **Deadshort false-caught a standstill rotor**: the bridge-enable
+   current transient (~0.4 A over ~200 µs, vs 40 mA ADC noise) read as
+   back-EMF → ω≈46 vs the 45 floor → observer seeded with garbage. Fixed
+   with an 8-period settle before the probe baseline + catch floor 45→60.
+3. **Handoff waited for the ramp while the rotor ran away**: unloaded at
+   1.5 A the rotor slips ahead of the 60 rad/s I/f drag and free-runs to
+   380–800 rad/s (confirmed by phase-current frequency in the capture —
+   the observer was RIGHT). A ready observer at handoff speed now takes
+   over immediately.
+
+Known limits after this session: the current loop is only marginally
+stable at high ω_e (dq oscillation grows with speed at 1.5 A, trips
+overcurrent near ~800 rad/s; fine at 0.3 A to the ceiling) — the AC-L /
+decoupling cluster in TODO. 10 kHz capture during drive still starves
+thread mode ~150 ms at engage (deadman trips); bench captures at 1 kHz
+until the ISR-glue refactor. New startup/failsafe defmt logs cover every
+phase transition and failsafe reason.
+
 ### 2026-07-05 — detection re-measured with recording; two June mysteries closed
 
 Full detection re-run on the ZD2808 with loss-free 10 kHz telemetry capture
