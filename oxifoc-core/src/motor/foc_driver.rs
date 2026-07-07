@@ -736,6 +736,7 @@ where
     ///   rotor for flying start (mirrors MESC `MOTOR_STATE_TRACKING` and VESC's
     ///   released-motor observer).
     #[allow(clippy::too_many_arguments)] // per-cycle scalars, same as the step fns
+    #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn update_phase_with_prev_voltage(
         &mut self,
         v_alpha_new: f32,
@@ -1123,6 +1124,7 @@ where
     /// # Returns
     /// * `Ok(FocOutput)` - Control telemetry on success
     /// * `Err(&str)` - Error message if sensors not ready or overcurrent detected
+    #[cfg_attr(feature = "isr-speed", optimize(speed))]
     pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, StepError> {
         // Startup → closed-loop transition: refresh the deadman stamp. The
         // staleness accumulated under the relaxed startup bound
@@ -1177,6 +1179,7 @@ where
         Ok(out)
     }
 
+    #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn step_inner(&mut self, now_ticks: u64) -> Result<FocOutput, StepError> {
         let dt = self.dt;
         // Failsafe overrides the commanded mode while it runs (ramp-down /
@@ -1440,6 +1443,7 @@ where
     }
 
     /// Execute current control step
+    #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn step_current_control(
         &mut self,
         iq_target: f32,

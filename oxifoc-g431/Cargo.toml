@@ -54,7 +54,7 @@ mutex = { version = "1.0.2", features = ["impl-unsafe-cortex-m-single-core"] }
 
 # Local dependencies
 # runtime feature includes icd (endpoints) and types (shared structs)
-oxifoc-core = { path = "../oxifoc-core", default-features = false, features = ["algorithms", "runtime", "defmt", "storage", "embassy", "cordic", "delivery", "isr-profiling"] }
+oxifoc-core = { path = "../oxifoc-core", default-features = false, features = ["algorithms", "runtime", "defmt", "storage", "embassy", "cordic", "delivery", "isr-profiling", "isr-speed"] }
 # Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
 # transport-uart adds: defmt-sink-network (for network forwarding)
 # transport-rtt adds: rtt (for RTT transport wrappers)
@@ -96,7 +96,13 @@ incremental = true
 # and starving thread mode. Speed-optimize just that package; the g431 glue
 # (servers, transport, init) stays size-optimized.
 [profile.release.package.oxifoc-core]
-opt-level = "z"
+opt-level = 2
+
+# build-std libcore likewise: at "z" even `f32::max`/`clamp` stayed
+# machine-outlined CALLS inside the 20 kHz ISR (PC sampling 2026-07-07).
+# LTO still prunes the unused bulk, so the flash cost is small.
+[profile.release.package.core]
+opt-level = 2
 
 # Verbatim copy of the root [workspace.lints] tables (this crate is excluded
 # from the workspace for its target/toolchain) — keep in sync with ../Cargo.toml.

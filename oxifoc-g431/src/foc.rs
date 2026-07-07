@@ -154,20 +154,15 @@ pub async fn init(
     // detection measures J.
     if config.motor_params.is_some() {
         phase_manager.set_observer_accel_prior(500.0, 3400.0);
-        // Frequency-led commutation (set_freq_led): VALIDATED but parked.
-        // Trial 2 (2026-07-07 PM, rate 5000 / k_theta 30, after the log
-        // rate limit + capture floor + deadman fixes) produced the first
-        // genuinely smooth sensorless run: one cold start, one confirmed
-        // handoff, monotone climb 0 -> 24.9k erpm el with zero restarts
-        // and a stable lambda — the mid-band limit cycle (the visible
-        // jerk) is gone with the filter in. What killed the run at
-        // t = 6.1 s is the ISR BUDGET, not control: the freq-led branch
-        // costs ~+600 cy in EST_OUT (300 -> 930), on top of a drive
-        // baseline that crept 6190 -> ~7600 since the tier-2 shave, so
-        // the loop sat at 96-103% (over=1200/s, device-executor stalls
-        // 20-144 ms) until a fault (iq spike, likely dq OC under control
-        // jitter) latched Error. Enable only after the tier-3 shave gets
-        // drive + freq-led back under budget (docs/TODO.md).
+        // Frequency-led commutation: enabled on the tier-3-shaved base
+        // (2026-07-07). Trial 2 validated the control (first smooth run,
+        // one handoff, monotone 0 -> 24.9k erpm el, mid-band limit cycle
+        // gone) but saturated the pre-shave ISR (96-103%) into a fault.
+        // Post-shave drive runs at ~75% with the whole hot path
+        // #[optimize(speed)] (isr-speed feature), freq-led included.
+        // Rate 5000 el rad/s^2 covers the accel prior's max legitimate
+        // acceleration (500 + 3400*1.5 A); k_theta 30 = tau ~ 33 ms pull.
+        phase_manager.set_freq_led(5000.0, 30.0);
     }
 
     // Initialize CORDIC hardware for fast sin/cos in FOC loop

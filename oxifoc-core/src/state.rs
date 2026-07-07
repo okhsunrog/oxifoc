@@ -544,6 +544,7 @@ where
 /// when the step was skipped (faulted) or failed.
 // Faults are raised via `PlatformFault::from_category` /
 // `from_hall_kind` — no per-category value parameters.
+#[cfg_attr(feature = "isr-speed", optimize(speed))]
 pub fn run_foc_cycle<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &FaultRegistry<F>,

@@ -70,6 +70,16 @@
 //! ```
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
+// The 20 kHz ISR hot path is GENERIC (FocDriver/PhaseManager/FocController
+// over platform types), so it monomorphizes into the DEVICE crate and
+// inherits its size-optimized profile — the per-package opt-level override
+// for oxifoc-core cannot reach it. At opt-level "z" the machine outliner
+// chops the ISR into cross-calls and struct returns become memcpys (SWD PC
+// sampling, tier-2 2026-07-06 and tier-3 2026-07-07). `#[optimize(speed)]`
+// on the hot entry points strips the minsize hint per-function wherever
+// they are instantiated. Nightly feature; the repo is nightly-pinned
+// (build-std in the device crates).
+#![cfg_attr(feature = "isr-speed", feature(optimize_attribute))]
 // Firmware panic policy: this crate runs inside the FOC ISR of a vehicle.
 // Composes ON TOP of the shared [workspace.lints] table; the deliberate
 // fail-fast sites carry #[expect(..., reason = "...")]. Test code is

@@ -515,6 +515,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Telemetry containing intermediate values and final duty cycles.
     /// The `vd` and `vq` fields include the injected voltages.
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(feature = "isr-speed", optimize(speed))]
     pub fn step_with_injection(
         &mut self,
         currents: (f32, f32, f32),

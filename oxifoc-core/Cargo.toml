@@ -70,6 +70,13 @@ default = ["algorithms", "detection"]
 # timeout in `measure_resistance`.
 detection = ["algorithms", "dep:embassy-futures"]
 
+# Speed-optimize the 20 kHz ISR hot path per-function (nightly
+# `optimize_attribute`): the hot path is generic and monomorphizes into the
+# size-optimized device crates, where opt-level "z" machine-outlines the
+# ISR into cross-calls and memcpy'd struct returns (tier-3 PC sampling,
+# 2026-07-07). Device crates enable this; host builds don't need it.
+isr-speed = []
+
 # Bench estimator forensics: repurpose three fast-frame columns with
 # observer internals (velocity/erpm <- PLL omega-hat, angle <- phase_pll,
 # vd <- instantaneous PLL error). Wire format unchanged — the capture just

@@ -223,6 +223,12 @@ where
     // the regime signal for the voltage-based HFI crossover.
     bemf_proxy_v: f32,
 
+    // Decimation counters for the ~2.4 Hz ISR traces (observer internals /
+    // startup-hold convergence). Plain fields — ISR-only state; statics
+    // were per-cycle LDREX/STREX atomics (tier-3 PC sampling).
+    obs_trace_ticks: u32,
+    hold_trace_ticks: u32,
+
     // Fault tracking
     faults: HeaplessVec<PhaseFault, 4>,
 }
@@ -257,6 +263,8 @@ impl PhaseManager<NoSensor, NoSensor> {
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
             bemf_proxy_v: 0.0,
+            obs_trace_ticks: 0,
+            hold_trace_ticks: 0,
             faults: HeaplessVec::new(),
         }
     }
@@ -288,6 +296,8 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
             bemf_proxy_v: 0.0,
+            obs_trace_ticks: 0,
+            hold_trace_ticks: 0,
             faults: HeaplessVec::new(),
         }
     }
@@ -317,6 +327,8 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
             bemf_proxy_v: self.bemf_proxy_v,
+            obs_trace_ticks: self.obs_trace_ticks,
+            hold_trace_ticks: self.hold_trace_ticks,
             faults: self.faults,
         }
     }
@@ -349,6 +361,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
             bemf_proxy_v: self.bemf_proxy_v,
+            obs_trace_ticks: self.obs_trace_ticks,
+            hold_trace_ticks: self.hold_trace_ticks,
             faults: self.faults,
         }
     }
@@ -380,6 +394,8 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
             bemf_proxy_v: 0.0,
+            obs_trace_ticks: 0,
+            hold_trace_ticks: 0,
             faults: HeaplessVec::new(),
         }
     }
@@ -783,6 +799,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// One step of the frequency-led commutation filter (see [`FreqLed`]):
     /// seeds from the last output on (re-)engage for continuity — the
     /// startup→closed-loop handoff produces no field jump.
+    #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn freq_led_output(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
         let fl = &mut self.freq_led;
         if !fl.active {
@@ -801,6 +818,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         }
     }
 
+    #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn compute_phase_with_fallback(
         &mut self,
         hall_sample: Option<AngleSample>,
@@ -1160,6 +1178,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.output
     }
 
+    #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn update(&mut self, input: &PhaseInput, now_ticks: u64) {
         // Sample hardware sensors — only for sources that consume them. The
         // stateful path matters for hall: it carries the rate limiter that
@@ -1238,11 +1257,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // at a constant 180 rad/s hold) could only be inferred from confirm
         // probe logs.
         {
-            use core::sync::atomic::{AtomicU32, Ordering};
-            static OBS_TRACE_TICKS: AtomicU32 = AtomicU32::new(0);
-            if OBS_TRACE_TICKS
-                .fetch_add(1, Ordering::Relaxed)
-                .is_multiple_of(8192)
+            // Plain field, not an atomic: this runs only in the ISR, and a
+            // static AtomicU32 here was a per-cycle LDREX/STREX pair (PC
+            // sampling, tier-3 shave).
+            self.obs_trace_ticks = self.obs_trace_ticks.wrapping_add(1);
+            if self.obs_trace_ticks.is_multiple_of(8192)
                 && let Some(vel) = self.observer.velocity()
                 && vel.abs() > 20.0
             {
@@ -1417,13 +1436,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     // Waiting on the observer: ~2 Hz convergence trace so a
                     // hold that never hands off (observer incoherent, see
                     // HANDOFF_COHERENCE_FRAC) is diagnosable from the log.
-                    use core::sync::atomic::{AtomicU32, Ordering};
-                    static HOLD_TICKS: AtomicU32 = AtomicU32::new(0);
-                    if HOLD_TICKS
-                        .fetch_add(1, Ordering::Relaxed)
-                        .is_multiple_of(8192)
-                        && self.startup.log_allow()
-                    {
+                    self.hold_trace_ticks = self.hold_trace_ticks.wrapping_add(1);
+                    if self.hold_trace_ticks.is_multiple_of(8192) && self.startup.log_allow() {
                         info!(
                             "startup: holding (openloop_vel={} observer_vel={} ready={} conf={})",
                             out.velocity,
