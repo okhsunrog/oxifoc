@@ -86,6 +86,19 @@ const TRACKER_CATCHUP_TAU_S: f32 = 0.02;
 /// resolved by feeding the trend instead of stiffening the loop.
 const TRACKER_FF_TAU_S: f32 = 0.03;
 
+/// Rotor-hunting damper: fraction of the low-passed RELATIVE velocity
+/// (estimate vs frame) fed into the angle advance, and its filter (s).
+/// Above ωn the frame is quasi-synchronous and the rotor's hunt mode
+/// (8–20 Hz) is undamped by the kp/kd paths — those act on POSITION
+/// (stiffness); damping needs the velocity variable. Bench 2026-07-08
+/// (captures/trk-dbg-2k-1): with the damper omitted the estimate-vs-
+/// frame gap swung ±45–73° sustained and the ride limit-cycled with
+/// trust-loss restarts. Same structure as the freq-led hunting damper
+/// that measurably slowed the swing there; the τ keeps the 35–100 Hz
+/// wobble out of the damper (×0.7 at 14 Hz, ×0.2 at 60 Hz).
+const TRACKER_HUNT_DAMP: f32 = 0.5;
+const TRACKER_HUNT_TAU_S: f32 = 0.012;
+
 /// Second-order phase tracker over the observer estimate — the freq-led
 /// REDESIGN (2026-07-08).
 ///
@@ -122,6 +135,8 @@ struct PhaseTracker {
     /// Slow-filtered estimate velocity (τ = TRACKER_FF_TAU_S) — the
     /// acceleration-feedforward tap.
     v_slow: f32,
+    /// Low-passed relative velocity for the hunting damper (rad/s).
+    hunt_filt: f32,
     /// Filtered estimate acceleration (rad/s², same τ): fed forward into
     /// the frequency integrator, it removes the type-2 lag for slow
     /// acceleration TRENDS while the τ keeps the 35–100 Hz wobble out.
@@ -851,6 +866,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             tr.d_filt = 0.0;
             tr.v_slow = self.output.velocity;
             tr.a_est = 0.0;
+            tr.hunt_filt = 0.0;
             tr.active = true;
         }
         let d = angle_difference(raw.angle, tr.theta);
@@ -872,7 +888,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // un-lagged kp path carries it.
         let a_d = (dt / TRACKER_KD_TAU_S).min(1.0);
         tr.d_filt += a_d * (d - tr.d_filt);
-        tr.theta = wrap_angle(tr.theta + (tr.omega + tr.kd * tr.d_filt) * dt);
+        // Hunting damper (see TRACKER_HUNT_DAMP): yield with the rotor's
+        // swing velocity so the quasi-synchronous frame extracts energy
+        // from the hunt mode instead of storing it.
+        let a_h = (dt / TRACKER_HUNT_TAU_S).min(1.0);
+        tr.hunt_filt += a_h * (TRACKER_HUNT_DAMP * (raw.velocity - tr.omega) - tr.hunt_filt);
+        tr.theta = wrap_angle(tr.theta + (tr.omega + tr.kd * tr.d_filt + tr.hunt_filt) * dt);
         // Hard load-angle bound. A soft tracker that filters the 35–100 Hz
         // mid-band wobble cannot also follow an unloaded max-torque punch
         // (ω̇ up to ~5.6 k rad/s² at 1.5 A): the type-2 lag ω̇/ωn²

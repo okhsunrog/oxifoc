@@ -276,6 +276,9 @@ pub struct BackEmfObserver {
     /// envelope is untouched (a per-step Δv clamp asymmetrically clips
     /// PLL ringing and biases tracking down).
     vel_cap: f32,
+    /// Low-passed |ω̂| (τ = 50 ms) the envelope acts on — see the
+    /// filtered-trend note in the envelope block of `update`.
+    vel_mag_filt: f32,
     lambda: f32, // Flux linkage (Wb); adapted online when lambda_gain > 0
 
     // Online λ adaptation (MESC/VESC lambda-comp): first-order tracker of
@@ -354,14 +357,25 @@ pub const READY_MIN_VALID_REVS: f32 = 2.0;
 /// own stator flux sits at ≤ L·i/λ (≈ 0.03–0.14 on the ZD2808 at bench
 /// currents) and a direction mismatch goes negative. The floor is the
 /// discriminating edge; the ceiling only rejects gross nonsense.
-const VALID_BEMF_RATIO_MIN: f32 = 0.4;
+/// 0.4 → 0.25 (2026-07-08): the 2 kHz spectra of the mid-band ride
+/// (captures/trk-damp-2k-1) exposed the "limit cycle" as a PROTECTION
+/// relaxation oscillator — the 30–90 Hz estimate wobble transiently dips
+/// the ratio below the floor, validity revokes after VALID_REVOKE_S, the
+/// iq gate chops torque, the rotor coasts, corroboration returns,
+/// re-grant, torque transient re-excites the wobble: a 2–6 Hz envelope
+/// (±90 rad/s ω̂ swings, the visible jerk) with iq beats at 5–25 Hz.
+/// The phantom it discriminates against measures ≤ 0.14 — the floor has
+/// margin to sit below the wobble dips and above the phantom.
+const VALID_BEMF_RATIO_MIN: f32 = 0.25;
 const VALID_BEMF_RATIO_MAX: f32 = 2.5;
 
 /// Time constant (s) of the back-EMF proxy low-pass. A few electrical
 /// ripple periods at handoff speeds: long enough to average the 6th-harmonic
 /// dead-time residue out of the rotating-frame projection, short enough to
 /// track a spin-up.
-const BEMF_PROXY_TAU_S: f32 = 0.01;
+/// 10 → 25 ms (2026-07-08): average the mid-band wobble (30–90 Hz) out
+/// of the corroboration ratio itself — see VALID_BEMF_RATIO_MIN.
+const BEMF_PROXY_TAU_S: f32 = 0.025;
 
 /// External validity: once granted, how long (s) the corroboration must be
 /// violated CONTINUOUSLY before validity is revoked. Grant and revoke are
@@ -373,7 +387,13 @@ const BEMF_PROXY_TAU_S: f32 = 0.01;
 /// loss (the bench deadlock: proxy ≈ 0.003·λω̂ for 15 s) violates without
 /// interruption, so a couple hundred ms of debounce distinguishes it from
 /// an acceleration transient at no cost to the failure case.
-const VALID_REVOKE_S: f32 = 0.2;
+/// 0.2 → 0.4 s (2026-07-08): the revoke debounce is half of the
+/// protection-oscillator period (see VALID_BEMF_RATIO_MIN) — the real
+/// trust-loss cases it exists for (deadlocked phantom, proxy ≈ 0.003·λω
+/// for 15 s) violate for seconds, so doubling the debounce costs the
+/// failure case nothing and pushes the relaxation cycle below the
+/// mid-band ride's violation windows.
+const VALID_REVOKE_S: f32 = 0.4;
 
 /// Default nonlinear centering gain (1/s, normalized error): drains a
 /// radius error with τ ≈ 2 ms — orders of magnitude faster than
@@ -382,6 +402,13 @@ const VALID_REVOKE_S: f32 = 0.2;
 /// hall→observer handoff timing in the closed-loop sims; 5000 broke
 /// their continuity assertions, 500 does not).
 pub const DEFAULT_CENTERING_GAIN: f32 = 500.0;
+
+/// Acceleration-envelope governor gain (1/s): how hard the PLL velocity
+/// is pulled back per rad/s of filtered-trend excess over the envelope.
+/// Sized so a phantom's maximum rebuild rate (ki·err ≲ 60 k rad/s² at
+/// err ≈ π) balances at a few hundred rad/s of excess, while normal
+/// tracking (excess ≈ 0) never feels it.
+const ACCEL_GOVERNOR_GAIN: f32 = 300.0;
 
 /// Default λ-tracking gain (1/s): τ = 0.2 s. λ moves with saturation and
 /// magnet temperature on the timescale of seconds; tracking must stay far
@@ -422,6 +449,7 @@ impl BackEmfObserver {
             accel_floor: 0.0,
             iq_abs_filt: 0.0,
             vel_cap: 0.0,
+            vel_mag_filt: 0.0,
             lambda,
             lambda_gain: 0.0,
             // Bounds are inert until with_lambda_tracking() rebinds them.
@@ -670,19 +698,61 @@ impl BackEmfObserver {
         // it stays untouched (a per-step Δv clamp asymmetrically clips the
         // ringing and biases legitimate tracking down).
         if self.accel_per_amp > 0.0 || self.accel_floor > 0.0 {
+            // Envelope clamp with a RECTIFIER FIX (2026-07-08,
+            // captures/trk-damp-2k-1 vs noprior-2k-1): the up-branch stays
+            // hard on the instantaneous |ω̂| (the slow-phantom wind-up must
+            // meet an unfiltered wall), but the down-branch decays the cap
+            // toward the FILTERED magnitude (τ = 50 ms), not the
+            // instantaneous one. The original `.max(mag)` let every
+            // mid-band wobble trough drag the cap down at full slew and
+            // the next recovery was clipped — a rectifier that biased ω̂
+            // low at 2–6 Hz, lagged the drive behind the rotor and pumped
+            // the torque-beat/wobble loop (THE mid-band envelope
+            // oscillation: Δσ ±60° with the old prior, ±15–20° and a
+            // clean climb with the prior off). Zero-mean wobble barely
+            // moves the filtered magnitude, so the cap now rides the
+            // trend and recoveries pass; a real deceleration moves the
+            // filtered magnitude within ~2τ and the cap follows as
+            // before.
+            let a_m = (dt / 0.05).min(1.0);
+            self.vel_mag_filt += a_m * (self.velocity_pll.abs() - self.vel_mag_filt);
             let step = (self.accel_floor + self.accel_per_amp * self.iq_abs_filt) * dt;
-            let mag = self.velocity_pll.abs();
-            if mag > self.vel_cap {
+            if self.vel_mag_filt > self.vel_cap {
                 self.vel_cap += step;
-                if mag > self.vel_cap {
-                    self.velocity_pll = if self.velocity_pll > 0.0 {
-                        self.vel_cap
+                if self.vel_mag_filt > self.vel_cap {
+                    // Proportional governor on the TREND excess: a strong,
+                    // continuous pull of ω̂ toward the envelope. Symmetric
+                    // over a wobble period (the excess is a filtered,
+                    // slow quantity — no half-wave rectification, which
+                    // is what both a hard clip of the instantaneous
+                    // magnitude and a trough-chasing decay did, pumping
+                    // the mid-band envelope oscillation), and strong
+                    // enough that a sustained phantom's PLL rebuild
+                    // (ki·err) balances at a bounded excess instead of
+                    // running between clamp events (a per-event rescale
+                    // leaked ~4× the envelope rate).
+                    let excess = self.vel_mag_filt - self.vel_cap;
+                    let pull = ACCEL_GOVERNOR_GAIN * excess * dt;
+                    if self.velocity_pll > 0.0 {
+                        self.velocity_pll -= pull;
                     } else {
-                        -self.vel_cap
-                    };
+                        self.velocity_pll += pull;
+                    }
                 }
             } else {
-                self.vel_cap = (self.vel_cap - step).max(mag);
+                // Decay floor = max(instantaneous, filtered), but the
+                // floor may never RAISE the cap (only the up-branch's
+                // rate-limited growth may): an unclamped floor followed a
+                // fast rise for free and the envelope never engaged. The
+                // filtered term keeps wobble TROUGHS from dragging the
+                // cap down; the instantaneous term keeps the cap from
+                // sagging below a rising magnitude inside the filter lag.
+                let floor = self
+                    .velocity_pll
+                    .abs()
+                    .max(self.vel_mag_filt)
+                    .min(self.vel_cap);
+                self.vel_cap = (self.vel_cap - step).max(floor);
             }
         }
         self.phase_pll =
@@ -837,6 +907,7 @@ impl BackEmfObserver {
         self.i_f_alpha = 0.0;
         self.i_f_beta = 0.0;
         self.vel_cap = 0.0;
+        self.vel_mag_filt = 0.0;
         self.bemf_q_filt = 0.0;
         self.valid_travel = 0.0;
         self.invalid_time = 0.0;
@@ -954,6 +1025,7 @@ impl BackEmfObserver {
         // A trusted seed carries its own envelope: the accel prior must
         // not clamp the estimate back toward the pre-seed speed.
         self.vel_cap = velocity.abs();
+        self.vel_mag_filt = velocity.abs();
         // Handoff state, like force_phase: keep the external-validity proxy
         // consistent with the seeded velocity — seeds arrive as
         // force_phase + set_velocity in either order, and a stale proxy
@@ -1642,10 +1714,24 @@ mod tests {
             obs.velocity()
         );
         run_accel(&mut obs, 300.0, 5000.0, 0.1);
-        let capped = obs.velocity();
+        let capped1 = obs.velocity();
+        // The 50 ms trend filter grants a one-time ≈ α·τ transient before
+        // the envelope engages (the price of not rectifying the mid-band
+        // wobble — see the envelope block); the protection property is
+        // the SUSTAINED rate below.
         assert!(
-            capped < 300.0 + 500.0 * 0.1 + 10.0,
-            "phantom growth must be capped: {capped}"
+            capped1 < 300.0 + 500.0 * 0.1 + 5000.0 * 0.05 + 20.0,
+            "phantom transient must stay bounded: {capped1}"
+        );
+        run_accel(&mut obs, 300.0 + 500.0, 5000.0, 0.2);
+        let capped2 = obs.velocity();
+        // Governor property: sustained growth ≤ ~2× the envelope rate
+        // (the excess equilibrium where the PLL rebuild balances the
+        // governor pull) — vs the unbounded 2–3× physics of the bench
+        // slow-phantom this exists to stop.
+        assert!(
+            capped2 - capped1 < 500.0 * 0.2 * 2.0,
+            "sustained phantom growth must be rate-capped: {capped1} -> {capped2}"
         );
         // Same acceleration with 2 A of measured iq (cap 500+6800): tracks.
         let mut obs2 = BackEmfObserver::new(r, l, lambda_true);
