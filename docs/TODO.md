@@ -928,34 +928,33 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
 
 ## Firmware / core
 
-- [ ] **CLEANUP SESSION (agreed 2026-07-07; entry point)** — after the
-  estimator arc's many buried hypotheses, audit what still earns its
-  place. Scope agreed with the user:
-  1. Dead-code audit of the estimator campaign's remains: freq-led
-     machinery (replaced by PhaseTracker — is any of it referenced?),
-     the observer eddy ladder (baked OFF, winding is flat — keep as
-     infra or delete?), slip gate (still load-bearing? it fixed the
-     old ratchet, but the ratchet's mechanism was re-explained since),
-     accel-prior envelope + governor (its J basis was corrected; is
-     the anti-phantom duty now redundant with external validity +
-     confirm probe + fast-seed?), impedance-sweep rotating carrier
-     (pulsating is the instrument now; rotating kept as motional A/B),
-     HFI paths on the sensorless build. For each: load-bearing →
-     document in decisions.md's minimal-set table; dead → delete
-     (history lives in git).
-  2. `decisions.md`: a "minimal load-bearing set" table — what the
-     motor actually NEEDS to spin well as of today (trust-gate lag
-     comp + Schmitt, speed ceiling + per-cycle cut, prefetch, tracker
-     100/1.2 + a_est lead, two-sided confirm + fast seed, external
-     validity, deadshort probes, PSU-safe profile), each with its
-     bench evidence.
-  3. **bench-suite**: turn today's canonical runs into regression
-     scenarios with thresholds — spin-punch-15-2k must produce: 1
-     cold start, 1 seed-or-confirm handoff, zero OC/deadman/restarts,
-     zero capture gaps, climb iq median ≥ 1.4, cruise erpm std ≤ 3%,
-     ISR load ≤ 85%; plus the openloop-960 staircase (loss-free,
-     load flat) and a 20 s endurance hold. Runner: host-side script
-     over the existing maneuver + capture + isr/s log parsing.
+- [x] **CLEANUP SESSION — DONE 2026-07-07.** All three agreed items
+  landed the same day; the full record is in decisions.md ("minimal
+  load-bearing set" + "estimator-campaign dead code DELETED"):
+  1. Dead-code audit (five parallel audits + bench A/B): DELETED the
+     observer eddy ladder (+ its never-written MotorParamsConfig ΔL/τ
+     fields — postcard layout change, f405/g474 blobs fall back once),
+     the slip gate (premise refuted twice; A/B gate-off = full suite
+     PASS; it could freeze the PLL 30 ms in load transients), the
+     rotating sweep carrier (its motional-A/B job is done), and the
+     stale freq-led test string. KEPT: accel prior (documented as the
+     closed-loop anti-phantom BACKSTOP — its A/B also passed at
+     no-load, but nothing else bounds the slow-phantom class), HFI
+     (feature-gated off, wire stubs deliberate), the virtual-motor
+     plant ladder (sim disturbance model).
+  2. decisions.md minimal-set table written (10 mechanisms × why ×
+     bench evidence).
+  3. `scripts/benchsuite.py`: spin-punch-15-2k / openloop-960 /
+     endurance-20s with the agreed thresholds; run it before/after any
+     estimator change. Baseline + post-cleanup + both A/B arms all
+     PASS (captures/bench/*). Climb-iq is measured from the 1.5 A
+     command until 95% of cruise speed (the no-load rotor hits the
+     ceiling in ~0.1 s of closed loop; whole-epoch medians only see
+     the 0.1 A friction hold).
+  Follow-up candidates that came OUT of the session: archive the
+  estimator-campaign dossier from this file to docs/archive (it is
+  closed history now); prior-OFF under LOAD once load testing starts
+  (the backstop's only unprovoked class).
 - [ ] **embassy-time thread-timer freeze under ISR load (g431, 2026-07-05)** —
   moving the RTT TX loop to a SAI1 InterruptExecutor (P6) froze ALL
   thread-executor embassy timers for a deterministic ~44.93 s while

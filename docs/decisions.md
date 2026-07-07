@@ -188,6 +188,58 @@ their section.
   v1 limits (deadshort sign assumes commanded direction; handoff angle step)
   tracked in TODO.md. [notes/startup-and-sampling.md]
 
+- **2026-07-07 — the minimal load-bearing set for sensorless spin (ZD2808
+  bench, closes the estimator campaign).** What the motor actually NEEDS
+  to spin well, each with its bench evidence — anything estimator-side
+  not in this table was deleted the same day (next entry) or demoted to
+  documented-backstop. The regression harness for this table is
+  `scripts/benchsuite.py` (spin-punch-15-2k / openloop-960 / endurance-20s
+  with agreed thresholds); run it before and after touching anything here.
+
+  | Mechanism | Why it is load-bearing | Bench evidence |
+  |---|---|---|
+  | Trust-gate **lag compensation + Schmitt latch** (`observer.rs` readiness: err excused by min(α̂/ki, 0.4), acquire 0.2 / hold 0.6) | The type-2 PLL carries a STRUCTURAL err = α/ki under acceleration; counting it as lock loss made the trust gate a 4–7 Hz bang-bang torque governor — THE mid-band "band oscillation" | gate-fix captures: drops all at err=0.200, gate closed 54% of hold → after: ±60° wobble eliminated, torque delivery 96% |
+  | **Speed ceiling** 800 el rad/s + per-cycle `speed_cut` in the iq clamp | The ONLY speed bound in torque mode on an unloaded rotor; the current loop (ωc=1000) loses regulation ~2000 el rad/s → OC | free rotor ran to 19k erpm and OC'd without it; 78 Hz decimated scale bang-banged ±2.3k erpm until the cut went per-cycle |
+  | **Flash prefetch** (PRFTEN, `hardware.rs` — embassy G4 leaves it off) | 4-WS flash + branchy hot path without prefetch ⇒ CPI ≈ 2.5; the "ISR speed wall" never existed | one bit: ISR 91–95% → 82–83% FLAT at any speed, worst pass 20k → 7.5k cy, overruns → 0 |
+  | **Phase tracker** ωn 100 / ζ 1.2 + `a_est·τ` catch-up lead (`manager.rs`) | First-order pull toward a ramping velocity has a standing ω̇·τ deficit → permanent clamp ride; ωn 30 filtered a wobble that no longer exists while lagging max at the governor's 3.5 Hz | trkfix: drive frame 0.56 → 0.10 rad behind the estimate; governor hunt collapsed as a side effect (cruise ±6% → ±2.3%) |
+  | **Two-sided confirm probe + fast-seed** (`startup.rs`: probe ∈ [0.5×, 2×] claim; ≥300 el rad/s failing HIGH seeds immediately; probe current cap 8 A < the 10.8 A trip) | A phantom-locked observer passes every internal gate; only a measurement can refuse the handoff. Retrying a probe against an accelerating rotor walks into the OC (short current ≈ λω/\|Z\|) | confirm2/fastseed captures + every benchsuite start: probe measures 525–578 el rad/s vs observer claim ~195 → seeds → clean closed loop, 0 OC |
+  | **External validity** (e_q corroboration gating readiness/λ-learning) | The observer can track the machine's own residual-distortion flux on a STANDING rotor and pass every internal criterion (phantom-handoff deadlock, reproducer #4) | 908886f bench session: staircase deadlock reproduced → fixed; λ-learning no longer follows a runaway |
+  | **Deadshort probes** (standstill detect + flying-restart seed) | Distinguishes "ramp cold start" from "rotor already spinning" before driving anything | every benchsuite cold start logs the standstill verdict; catch-spinning path seeds within ~1 el-rev |
+  | **Velocity-loop hold during startup** (PI reset while `is_starting`, drive at STARTUP_MIN_DRIVE_A) | The PI integrates against the whole ramp (rotor below target by construction) and hands off with ~6.6 A banked → instant OC | velmode-1 OC reproduced → fix → clean handoff (cruise gains still untuned — open) |
+  | **Accel prior** 500 + 10500/A (BACKSTOP, not proven load-bearing) | The slow coherent phantom (PI winds vq up as the back-EMF of its own acceleration) is bounded by nothing else in closed loop: e_q validity is ratio-based and sticky-granted, the confirm probe is startup-only. per_amp = 1.3× the measured free-rotor 9300 el rad/s²/1.15 A | observed on hardware (pre-fix era); A/B 2026-07-07 (ab-prior-off-1,2) PASSED at no-load — kept because the guarded class is real and un-provokable on this bench |
+  | **PSU-safe baked profile** (bus_in 3.5 A, bus_regen 0, RampToZero) | 12 V/4 A lab PSU: regen into a CC supply or a >4 A draw browns out / trips it; g431 has no flash persistence so it MUST be baked | standing bench rule since 2026-06-12; violated once (pre-cap), never since |
+
+- **2026-07-07 — estimator-campaign dead code DELETED after audit + bench
+  A/B** (the "cleanup session"; five parallel audits over freq-led, eddy
+  ladder, slip gate, accel prior, rotating carrier, HFI paths):
+  - **Observer eddy L(f) ladder** (+ its `MotorParamsConfig` ΔL/τ fields
+    and g431 wiring): the pulsating-carrier sweep proved the apparent
+    ΔL 146 µH / τ 1.39 ms was the ROTOR swinging on the hold-current
+    spring — the true d-axis L is flat ~17 µH to 100 kHz. The storage
+    fields had NO runtime writer anywhere (the ladder could never turn
+    on), so this was dead infra with a wire-format cost. Postcard layout
+    change: old f405/g474 MotorParams blobs fall back to defaults once.
+    The virtual-motor PLANT ladder stays (sim disturbance model).
+  - **Slip gate** (driver iq-err detector + observer PLL hold): premise
+    refuted twice (flat winding kills the L(f)-kick theory; the ratchet
+    was root-caused as the trust-gate bang-bang, fixed at source). Its
+    bench record was only ever "declawed, not cured", and it could
+    freeze the PLL up to 30 ms during exactly the load transients where
+    tracking matters. A/B with the gate forced off: full suite PASS.
+  - **Rotating-carrier impedance probe**: its one job — exposing the
+    motional contamination as the PULS-vs-ROT difference — is done and
+    recorded (this file, baked_config.rs); pulsating-d is the instrument.
+  - **freq-led**: was already deleted code-wise (PhaseTracker superseded
+    it); only a stale test string remained.
+  - **HFI**: nothing deleted — correctly feature-gated off on g431, the
+    wire-enum/CLI stubs are a deliberate compatibility decision (see the
+    2026-06-13 entry).
+  All three deletions validated on hardware: canonical firmware
+  reflashed, full benchsuite PASS (captures/bench/final-noslip-1).
+  Trap for next time: the host CLI must be REBUILT with the firmware
+  after a config-struct layout change — a stale host-side
+  `MotorParamsConfig` turns every config read into 2 s ack-retry stalls.
+
 ## Host / tooling
 
 - **2026-06-11 — esp-config (kconfig TUI) REJECTED** for configuration:
