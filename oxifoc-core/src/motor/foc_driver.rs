@@ -74,6 +74,18 @@ pub const STARTUP_STALENESS_TIMEOUT_US: u64 = 700_000;
 /// brief validity wobble at speed re-locks instead of restarting.
 pub const SENSORLESS_RESTART_AFTER_S: f32 = 0.5;
 
+/// Minimum |iq| (A) driven while the sensorless startup sequencer owns
+/// commutation (ramp/hold). A mid-cruise restart inherits the cruise
+/// command, and the open-loop ramp cannot capture the rotor with it: bench
+/// 2026-07-07 (spin-punch-15, 0.3 A cruise) — restart ramps left the
+/// capture to luck (|i| = 0.10 at ramp exit, the hold watched a standing
+/// rotor at conf 0.95, gave up and recycled; the confirmed handoffs that
+/// day all rode 1.5 A ramps). The floor replaces a weak command's
+/// magnitude, keeps its sign, and still passes through the align
+/// soft-start scale; commands at or above it are untouched. Restores the
+/// commanded torque the moment the sequencer hands off.
+pub const STARTUP_MIN_DRIVE_A: f32 = 1.5;
+
 /// Slip-gate ON threshold floor (A): |iq_ref − iq_meas| above
 /// `max(SLIP_GATE_ON_A, SLIP_GATE_ON_FRAC·|iq_ref|)` marks a
 /// slip/large-transient cycle and the estimator PLL stops learning (see
@@ -1443,6 +1455,24 @@ where
 
         // Layer 1: Clamp current targets (prevents absurd commands)
         let (id_target, iq_target) = self.current_limits.clamp_targets(id_target, iq_target);
+
+        // Startup capture floor (see STARTUP_MIN_DRIVE_A): while the
+        // sequencer owns commutation a weak drive command is raised to a
+        // current that actually captures the rotor. Bounded by the
+        // configured limit so a low max_current_a still wins.
+        let iq_target = if self.phase.is_starting()
+            && iq_target != 0.0
+            && iq_target.abs() < STARTUP_MIN_DRIVE_A
+        {
+            let floor = if self.current_limits.max_current_a > 0.0 {
+                STARTUP_MIN_DRIVE_A.min(self.current_limits.max_current_a)
+            } else {
+                STARTUP_MIN_DRIVE_A
+            };
+            if iq_target < 0.0 { -floor } else { floor }
+        } else {
+            iq_target
+        };
 
         // Startup soft-start: the align phase ramps the torque command in
         // instead of step-engaging it onto the rotor's undamped magnetic
@@ -2958,7 +2988,14 @@ mod tests {
 
         const DT: f32 = 1.0 / 20_000.0;
         let params = MotorParams {
-            r: 0.1,
+            // τ = L/R = 0.4 ms ≈ 2 settle windows: inside the settled-
+            // current estimator's validity domain (its doc: low-τ motors,
+            // ZD2808 τ ≈ 0.19 ms). At the original R = 0.1 (τ = 2 ms) the
+            // probe honestly under-read a 200 rad/s rotor at ~70 — the
+            // current never settles inside the window — which is exactly
+            // what the DEADSHORT_MIN_CATCH_VEL floor must send to the
+            // ramp, and this test is about the CATCH path.
+            r: 0.5,
             ld: 200e-6,
             lq: 200e-6,
             lambda: 0.01,
@@ -3501,6 +3538,47 @@ mod tests {
             rep.final_omega > 500.0,
             "must reach a sustained spin, got {}",
             rep.final_omega
+        );
+        assert!(rep.untrusted_frac < 0.05);
+    }
+
+    /// Startup capture floor (see [`STARTUP_MIN_DRIVE_A`]): a cold start
+    /// under a weak drive command — the mid-cruise restart case, bench
+    /// 2026-07-07 spin-punch-15 at 0.3 A — must ramp with the floor
+    /// current and reach a confirmed handoff onto a genuinely spinning
+    /// rotor from the angle where the un-floored 0.3 A ramp fails
+    /// (`phantom_handoff_blocked_by_confirm_probe`'s pathological angle).
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn weak_command_cold_start_captures_via_floor() {
+        let rep = run_zd2808_cold_start(ColdStartCfg {
+            iq_target: 0.3,
+            initial_rotor_angle: 4.71,
+            steps: 60_000,
+            observer_l: (86e-6 + 129e-6) / 2.0,
+            observer_salient: true,
+            controller_l: (86e-6 + 129e-6) / 2.0,
+            dead_time: true,
+            adc_noise: true,
+            j: 3.2e-5,
+            trace_every: 0,
+            eddy_tau_s: 0.0,
+            plant_skew: 0.0,
+            observer_eddy_delta_l: 0.0,
+            disturb_torque_nm: 0.0,
+            disturb_at_step: 0,
+            disturb_steps: 0,
+            kick_rad: 0.0,
+            kick_at_step: 0,
+            pll_ki: 20e3,
+            freq_led_rate: 0.0,
+        });
+        assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
+        let handoff = rep.handoff_step.expect("floored ramp must hand off");
+        assert!(
+            rep.rotor_omega_at_handoff.abs() > 30.0,
+            "handoff at step {handoff} onto rotor at {} rad/s",
+            rep.rotor_omega_at_handoff
         );
         assert!(rep.untrusted_frac < 0.05);
     }

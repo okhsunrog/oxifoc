@@ -672,6 +672,16 @@ impl SensorlessStartup {
         }
 
         // Probe window complete — rotor estimate from the settled current.
+        // When the CURRENT CAP ended the window early, the rotor is
+        // unambiguously fast (|i_short| ≥ cap ⇒ |e| ≥ cap·R ⇒ |ω| ≥
+        // cap·R/λ) but the averaged phasor is still RISING toward its
+        // steady state (τ = L/R) and the |i|-based ω is only a lower
+        // bound — on a high-τ motor it can sit under the catch floor at
+        // twice the floor's true speed. Skip the floor for a capped
+        // probe: the floor exists to send SLOW coasting rotors to the
+        // ramp, and ramping from near-zero frequency INTO a proven-fast
+        // rotor is the worse failure (full-speed slip at engage).
+        let capped = i_mag >= DEADSHORT_MAX_CURRENT_A;
         let n = f32::from(self.ds_cycles);
         match short_current_estimate(
             self.ds_sum_alpha / n,
@@ -681,7 +691,7 @@ impl SensorlessStartup {
             l,
             lambda,
             self.dir,
-            DEADSHORT_MIN_CATCH_VEL,
+            if capped { 0.0 } else { DEADSHORT_MIN_CATCH_VEL },
         ) {
             Some((angle, velocity)) => {
                 self.deactivate();

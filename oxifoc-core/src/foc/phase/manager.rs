@@ -1312,9 +1312,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                         );
                     }
                     self.observer.seed(angle, velocity);
-                } else if self.startup.phase() == StartupPhase::Ramp
-                    && self.startup.log_allow()
-                {
+                } else if self.startup.phase() == StartupPhase::Ramp && self.startup.log_allow() {
                     info!("startup: deadshort saw standstill, ramp cold start");
                 }
             } else if phase_before == StartupPhase::Confirm {

@@ -736,8 +736,7 @@ impl BackEmfObserver {
             // Saturate at the threshold: no unbounded growth.
             self.valid_travel = (self.valid_travel + self.velocity_pll.abs() * dt)
                 .min(READY_MIN_VALID_REVS * core::f32::consts::TAU);
-            self.lambda_learn_travel = (self.lambda_learn_travel
-                + self.velocity_pll.abs() * dt)
+            self.lambda_learn_travel = (self.lambda_learn_travel + self.velocity_pll.abs() * dt)
                 .min(READY_MIN_VALID_REVS * core::f32::consts::TAU);
         } else if granted {
             // Sticky once granted: revoke only on a SUSTAINED violation
