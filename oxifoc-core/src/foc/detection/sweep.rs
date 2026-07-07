@@ -1167,6 +1167,86 @@ async fn measure_impedance_at<H: DetectionHardware, S: SinCos>(
     (r_ac, l, z)
 }
 
+/// Pulsating-d variant of [`measure_impedance_at`] (2026-07-08): the
+/// carrier is `A·sin(ω_c t)` applied ALONG the locked d axis instead of a
+/// rotating vector. A rotating carrier's current vector crosses the q axis
+/// twice per period and shakes the rotor with a full-amplitude torque
+/// ripple at the carrier frequency even under a perfect d lock — the
+/// bench operator SAW the vibration, and below a few hundred Hz the
+/// rotor's motional EMF contaminates the impedance (the same
+/// electromechanical term that makes a free-rotor LCR reading at 100 Hz
+/// collapse to single-digit µH at torque-coupled rotor angles). A
+/// pulsating d-axis carrier produces zero torque BY CONSTRUCTION
+/// (current ∥ magnet axis), so the rotor stays still without any
+/// mechanical clamp and the low-frequency points measure the winding,
+/// not the winding ⊕ rotor dynamics.
+///
+/// Demod math is identical (project the d-axis current on the lagged
+/// carrier quadratures; whole-period accumulation rejects the DC hold);
+/// the half-step de-rotation and the `(R, L, |Z|)` solve carry over.
+#[cfg(feature = "impedance-sweep")]
+async fn measure_impedance_at_pulsating<H: DetectionHardware, S: SinCos>(
+    hw: &mut H,
+    freq_hz: f32,
+    amp: f32,
+    vd_hold: f32,
+    dt: f32,
+    lag: u32,
+    resistance_ohm: f32,
+) -> (f32, f32, f32) {
+    let omega_c = core::f32::consts::TAU * freq_hz;
+    let lag = (lag as usize).clamp(1, PIPELINE_LAG_MAX);
+    let spp_exact = (core::f32::consts::TAU / (omega_c * dt)).max(2.0);
+    let warmup = (3.0 * spp_exact + 0.5) as usize + lag;
+    let accum = (16.0 * spp_exact + 0.5) as usize;
+
+    let mut hist = [0.0f32; 8]; // carrier phase at send time
+    let mut phase = 0.0f32;
+    let mut corr_q = 0.0f32;
+    let mut corr_i = 0.0f32;
+
+    for k in 0..(warmup + accum) {
+        let _telem = hw.wait_telemetry().await;
+        let (ia, ib, _ic) = hw.read_phase_currents();
+        let (i_alpha, _i_beta) = transforms::clarke(ia, ib);
+
+        if k >= warmup {
+            let ph = hist[(k + 8 - lag) % 8];
+            let (sin_p, cos_p) = S::sin_cos(ph);
+            corr_i += i_alpha * sin_p;
+            corr_q += i_alpha * (-cos_p);
+        }
+
+        let ph_now = phase;
+        let (sin_c, _cos_c) = S::sin_cos(phase);
+        hw.send_command(ControlMode::DirectVoltage {
+            vd: vd_hold + amp * sin_c,
+            vq: 0.0,
+            angle_rad: 0.0,
+        })
+        .await;
+        hist[k % 8] = ph_now;
+        phase += omega_c * dt;
+        if phase > core::f32::consts::TAU {
+            phase -= core::f32::consts::TAU;
+        }
+    }
+
+    let n = accum as f32;
+    let mag = sqrtf(corr_q * corr_q + corr_i * corr_i);
+    let i_amp = 2.0 * mag / n;
+    if i_amp < 1e-5 || amp <= 0.0 || mag < 1e-9 {
+        return (resistance_ohm, 0.0, resistance_ohm);
+    }
+    let z = amp / i_amp;
+    let (sin_d, cos_d) = S::sin_cos(omega_c * dt * 0.5);
+    let re = corr_i * cos_d - corr_q * sin_d; // ∝ R
+    let im = corr_i * sin_d + corr_q * cos_d; // ∝ ωL
+    let r_ac = (z * re / mag).max(0.0);
+    let l = (z * im / mag / omega_c).max(0.0);
+    (r_ac, l, z)
+}
+
 /// **Experiment (feature `impedance-sweep`):** map R(f) and L(f) on the d axis.
 ///
 /// Locks the rotor on the d axis **once**, then sweeps the HFI carrier across
@@ -1260,8 +1340,22 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
         // pk, d-axis, standstill) is reactive; the dissipated power
         // (i²R/2 ≈ 1.6 W) stays inside the detection budget.
         let v = clamp_f32(i_target * z_pred, 0.8, headroom);
+        // Pulsating-d carrier (torque-free, rotor cannot move) is the
+        // primary instrument; the rotating carrier is logged alongside as
+        // the motional-contamination A/B (their difference at low f IS
+        // the rotor-motion term).
+        let (r_f, l_f, z) = measure_impedance_at_pulsating::<H, S>(
+            hw,
+            f,
+            v,
+            vd_hold,
+            dt,
+            lag,
+            params.resistance_ohm,
+        )
+        .await;
         let mut inj = HfiInjector::<S>::new(f, v, pwm_freq_hz);
-        let (r_f, l_f, z) =
+        let (r_rot, l_rot, z_rot) =
             measure_impedance_at::<H, S>(hw, &mut inj, vd_hold, dt, lag, params.resistance_ohm)
                 .await;
         // Robust L from the |Z| magnitude and the known DC R: phase-invariant,
@@ -1275,9 +1369,14 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
         } else {
             0.0
         };
+        let l_rot_from_z = if z_rot > params.resistance_ohm {
+            sqrtf(z_rot * z_rot - params.resistance_ohm * params.resistance_ohm) / omega
+        } else {
+            0.0
+        };
         info!(
-            "Zsweep f={} Hz V={} |Z|={} L|Z|={} H  (phase-split R={} L={})",
-            f, v, z, l_from_z, r_f, l_f
+            "Zsweep f={} Hz V={} PULS |Z|={} L|Z|={} (R={} L={})  ROT |Z|={} L|Z|={} (R={} L={})",
+            f, v, z, l_from_z, r_f, l_f, z_rot, l_rot_from_z, r_rot, l_rot
         );
         l_return = l_from_z;
     }

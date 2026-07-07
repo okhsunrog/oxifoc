@@ -126,7 +126,12 @@ pub fn pad_node_dac_counts(amps: f32) -> u16 {
 /// still three ~1030 B grants in flight (2048 = 1-2 grants stalled the
 /// 20 kHz stream, 2026-07-05); frees 832 B toward fitting the statics
 /// into the 22 K SRAM region.)
+#[cfg(not(feature = "impedance-sweep"))]
 pub const OUT_QUEUE_SIZE: usize = 3072;
+/// The impedance-sweep experiment build carries the hfi-detect machinery
+/// (bigger async state) — trade a little telemetry queue for it.
+#[cfg(feature = "impedance-sweep")]
+pub const OUT_QUEUE_SIZE: usize = 3040;
 
 /// Maximum size of a single ergot packet (COBS-encoded). Outbound MTU — the
 /// fast-telemetry batch must fit (compile-time assert below).
