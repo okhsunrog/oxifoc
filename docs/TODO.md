@@ -675,11 +675,18 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     sim finding (b) above); eddy-branch plant model (parallel R-L) for
     the L(f) band; low-current dead-time comp quality (the phantom's
     energy source, finding (a)).
-  - **Two-inductance model**: MotorParamsConfig needs an explicit
-    second inductance (HF/AC vs fundamental Ld/Lq) — the estimation
-    chain (observer L·i, deadshort e=−L·dI/dt) is hardware-validated
-    on the AC value, the decoupling needs the fundamental pair;
-    today's split lives as a set_decoupling override in g431 foc.rs.
+  - ~~Two-inductance model~~ CLOSED 2026-07-08 (1c4789a): the config
+    now carries the full inductance MODEL — inductance_d/q_h keep the
+    AC/plateau semantics, new ld/lq_fundamental_h feed the decoupling
+    (from_runtime_config picks them when present), new
+    eddy_delta_l_h/eddy_tau_s parameterize the observer ladder; both
+    g431 board-file hardcodes deleted, ZD2808 numbers baked with
+    provenance. REMAINING (future): detection should fill the new
+    fields (sweep is still an experiment feature; natural with G474
+    persistence); deadshort/confirm probes still use the flat AC L —
+    at catch speeds (20–50 Hz) the real L(ω) is ~150 µH, giving a
+    ~10° φ_z bias in the catch-seed angle: evaluate L(ω) from the
+    ladder inside short_current_estimate (needs bench validation).
   - ~~Align swing~~ RESOLVED 2026-07-06 (ccfb233): the align phase is
     GONE — VESC-style ramp-from-unknown-angle with the current
     soft-start folded into early ramp. Bench: align-OC eliminated,
