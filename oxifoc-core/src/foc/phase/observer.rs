@@ -311,6 +311,16 @@ pub struct BackEmfObserver {
     bemf_q_filt: f32,
     valid_travel: f32,
     invalid_time: f32,
+    /// Phase travel (rad) of EARNED corroboration since the last
+    /// reset/seed — unlike `valid_travel` this is never credited by
+    /// `force_phase`. λ adaptation gates on it: a seed grants validity so
+    /// the torque path engages immediately, but the flux integrator was
+    /// just fabricated and during restart churn (seed → trust loss → seed)
+    /// the raw magnitude is inverter distortion — the tracker legally
+    /// walked λ to its λ₀/2 clamp on it (bench 2026-07-06 late). Requiring
+    /// the corroboration to be re-earned after every seed starves the
+    /// tracker in churn while costing a real cruise ~2 revolutions.
+    lambda_learn_travel: f32,
 }
 
 /// Minimum confidence (flux magnitude / λ) for [`BackEmfObserver::is_ready`].
@@ -431,6 +441,7 @@ impl BackEmfObserver {
             phase_raw_last: 0.0,
             valid_travel: 0.0,
             invalid_time: 0.0,
+            lambda_learn_travel: 0.0,
         }
     }
 
@@ -597,7 +608,11 @@ impl BackEmfObserver {
 
         let validity_granted =
             self.valid_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3;
-        if self.lambda_gain > 0.0 && validity_granted && !gated {
+        // λ learning additionally requires EARNED corroboration travel (see
+        // the field doc): seeded validity engages torque, not the tracker.
+        let lambda_learn_ok =
+            self.lambda_learn_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3;
+        if self.lambda_gain > 0.0 && validity_granted && lambda_learn_ok && !gated {
             self.lambda += self.lambda_gain * (flux_mag - self.lambda) * dt;
             self.lambda = crate::foc::clamp_f32(self.lambda, self.lambda_min, self.lambda_max);
         }
@@ -721,6 +736,9 @@ impl BackEmfObserver {
             // Saturate at the threshold: no unbounded growth.
             self.valid_travel = (self.valid_travel + self.velocity_pll.abs() * dt)
                 .min(READY_MIN_VALID_REVS * core::f32::consts::TAU);
+            self.lambda_learn_travel = (self.lambda_learn_travel
+                + self.velocity_pll.abs() * dt)
+                .min(READY_MIN_VALID_REVS * core::f32::consts::TAU);
         } else if granted {
             // Sticky once granted: revoke only on a SUSTAINED violation
             // (see VALID_REVOKE_S) so accel/decel transients don't chop
@@ -728,12 +746,14 @@ impl BackEmfObserver {
             self.invalid_time += dt;
             if self.invalid_time >= VALID_REVOKE_S {
                 self.valid_travel = 0.0;
+                self.lambda_learn_travel = 0.0;
                 self.invalid_time = 0.0;
             }
         } else {
             // Still earning: any violation restarts the accrual, so grant
             // means N *consecutive* coherent revolutions.
             self.valid_travel = 0.0;
+            self.lambda_learn_travel = 0.0;
             self.invalid_time = 0.0;
         }
 
@@ -821,6 +841,7 @@ impl BackEmfObserver {
         self.bemf_q_filt = 0.0;
         self.valid_travel = 0.0;
         self.invalid_time = 0.0;
+        self.lambda_learn_travel = 0.0;
     }
 
     /// Set motor parameters (re-anchors the λ-tracking bounds; resets the
@@ -922,6 +943,10 @@ impl BackEmfObserver {
         self.valid_travel = READY_MIN_VALID_REVS * core::f32::consts::TAU;
         self.bemf_q_filt = self.lambda * self.velocity_pll;
         self.invalid_time = 0.0;
+        // Seeded validity is NOT learning credit: λ adaptation stays frozen
+        // until the corroboration is re-earned on the live flux integrator
+        // (see `lambda_learn_travel`).
+        self.lambda_learn_travel = 0.0;
     }
 
     /// Set velocity estimate (for testing or handoff from other source)

@@ -99,16 +99,32 @@ pub const DEADSHORT_SETTLE_CYCLES: u16 = 16;
 
 /// Minimum |ω| (rad/s elec) the deadshort must resolve to declare the rotor
 /// "spinning" and seed the observer for a flying restart. Below it (standstill
-/// or barely turning), fall through to the ramp cold start. Deliberately
-/// BELOW [`DEFAULT_HANDOFF_VEL`] (they were equal at 60 before the handoff
-/// moved to the distortion-floor bound): the probe measures e = −L·dI/dt on
-/// a shorted bridge — no PWM switching, so the dead-time floor that pushed
-/// the handoff up does not apply — and a catch seeds the observer straight
-/// into closed loop above its READY floor (30), skipping the handoff gates
-/// entirely. The bench false-catch (enable transient, see
-/// [`DEADSHORT_SETTLE_CYCLES`]) resolved to ω≈46 — comfortably below this
-/// bar as a second line of defense.
-pub const DEADSHORT_MIN_CATCH_VEL: f32 = 60.0;
+/// or too slow to RIDE), fall through to the ramp cold start.
+///
+/// The bound is not what the probe can MEASURE (the shorted bridge has no
+/// PWM switching, so the probe resolves well below this) — it is what the
+/// closed loop can subsequently ride. Bench 2026-07-06/07: catches at
+/// 70–90 rad/s seeded a closed loop below the inverter-distortion floor,
+/// which promptly lost trust and recycled — a restart churn loop, each
+/// iteration re-catching the still-coasting rotor a little slower. Sending
+/// those through the ramp instead re-accelerates to the
+/// [`DEFAULT_HANDOFF_VEL`] (180) band where the observer is validated.
+/// Kept below the handoff velocity: a rotor already coasting at ≥140 pulls
+/// into closed loop reliably (the distortion floor is ~120 on the ZD2808).
+/// The bench false-catch (enable transient, see
+/// [`DEADSHORT_SETTLE_CYCLES`]) resolved to ω≈46 — far below this bar.
+pub const DEADSHORT_MIN_CATCH_VEL: f32 = 140.0;
+
+/// Minimum probe-measured |ω| (rad/s elec) for a confirm probe to count as
+/// "strong" toward the [`CONFIRM_SEED_PROBES`] hold-ratchet escape.
+/// Deliberately SEPARATE from (and lower than) [`DEADSHORT_MIN_CATCH_VEL`]:
+/// during the escape the drive is still holding the rotor at the handoff
+/// velocity — the question is "is a real rotor turning at all while the
+/// observer's claim diverges", not "can a coasting rotor be ridden from
+/// here". The 2026-07-06 hold-ratchet escape measured 32–108 rad/s on a
+/// genuinely captured rotor (probes sample random phases of the capture
+/// hunt); a floor at the catch bound would have starved the escape.
+const CONFIRM_STRONG_PROBE_VEL: f32 = 60.0;
 
 /// Abort the probe early if |i_αβ| exceeds this (A): the back-EMF drives the
 /// shorted winding toward `e/R`, which on a low-R motor is large — stop and
@@ -147,7 +163,7 @@ const CONFIRM_MAX_ANGLE_ERR_RAD: f32 = 1.0;
 const CONFIRM_RETRY_S: f32 = 0.1;
 
 /// Consecutive confirm probes that must each measure a genuinely spinning
-/// rotor (probe |ω| ≥ [`DEADSHORT_MIN_CATCH_VEL`]) before the sequencer
+/// rotor (probe |ω| ≥ [`CONFIRM_STRONG_PROBE_VEL`]) before the sequencer
 /// stops retrying against the observer's claim and instead SEEDS the
 /// observer from the probe measurement (same mechanics as the deadshort
 /// catch). This is the hold-ratchet escape (bench 2026-07-06 late,
@@ -301,7 +317,29 @@ pub struct SensorlessStartup {
     ds_sum_alpha: f32,
     ds_sum_beta: f32,
     ds_elapsed: f32,
+    // ── ISR log rate limit (token bucket) ──
+    /// Log frames still allowed in the current window.
+    log_tokens: u8,
+    /// Elapsed time in the current window (s).
+    log_window_t: f32,
+    /// Frames dropped in the current window.
+    log_suppressed: u16,
 }
+
+/// ISR log rate limit: window length (s) and frames allowed per window.
+///
+/// Every startup transition logs multi-arg defmt frames straight from the
+/// current-loop ISR. One clean start emits a handful over seconds — free
+/// (the reason logging from the ISR was acceptable at all). Restart CHURN
+/// (trust loss → recycle → deadshort → ramp → hold → probe, several times
+/// a second) is a different regime: bench 2026-07-07 (freq-led first
+/// trial) measured single ISR runs of 26k cycles and 126–138% sustained
+/// ISR load, starving the host command pump into deadman territory. The
+/// bucket bounds the sustained frame rate; [`SensorlessStartup::log_tick`]
+/// reports what was dropped once per window so the churn itself stays
+/// visible in the log.
+const LOG_WINDOW_S: f32 = 1.0;
+const LOG_TOKENS_PER_WINDOW: u8 = 10;
 
 impl Default for SensorlessStartup {
     fn default() -> Self {
@@ -321,6 +359,9 @@ impl Default for SensorlessStartup {
             ds_sum_alpha: 0.0,
             ds_sum_beta: 0.0,
             ds_elapsed: 0.0,
+            log_tokens: LOG_TOKENS_PER_WINDOW,
+            log_window_t: 0.0,
+            log_suppressed: 0,
         }
     }
 }
@@ -352,6 +393,32 @@ impl SensorlessStartup {
     /// this instead of normal commutation.
     pub fn wants_short(&self) -> bool {
         matches!(self.phase, StartupPhase::Deadshort | StartupPhase::Confirm)
+    }
+
+    /// Advance the ISR log rate-limit window (call once per control cycle,
+    /// active or not — see [`LOG_WINDOW_S`]). Returns the number of frames
+    /// dropped in the window that just closed (0 while a window is still
+    /// open) so the caller can log a one-frame suppression summary.
+    pub fn log_tick(&mut self, dt: f32) -> u16 {
+        self.log_window_t += dt;
+        if self.log_window_t < LOG_WINDOW_S {
+            return 0;
+        }
+        self.log_window_t = 0.0;
+        self.log_tokens = LOG_TOKENS_PER_WINDOW;
+        core::mem::take(&mut self.log_suppressed)
+    }
+
+    /// Consume one log-frame token; `false` means the frame must be dropped
+    /// (it is counted for the next [`log_tick`](Self::log_tick) summary).
+    pub fn log_allow(&mut self) -> bool {
+        if self.log_tokens > 0 {
+            self.log_tokens -= 1;
+            true
+        } else {
+            self.log_suppressed = self.log_suppressed.saturating_add(1);
+            false
+        }
     }
 
     /// Begin a hall-dropout recovery: a fast fixed-velocity nudge from the last
@@ -697,14 +764,16 @@ impl SensorlessStartup {
             // corroborate anything; behave like a failed probe.
             None => (claim.angle, 0.0),
         };
-        info!(
-            "probe: i_avg=({},{}) -> omega={} angle={} (window_us={})",
-            self.ds_sum_alpha / n,
-            self.ds_sum_beta / n,
-            omega,
-            angle,
-            self.ds_elapsed * 1e6
-        );
+        if self.log_allow() {
+            info!(
+                "probe: i_avg=({},{}) -> omega={} angle={} (window_us={})",
+                self.ds_sum_alpha / n,
+                self.ds_sum_beta / n,
+                omega,
+                angle,
+                self.ds_elapsed * 1e6
+            );
+        }
 
         let vel_ok = omega >= CONFIRM_MIN_VEL_FRACTION * claim.velocity.abs();
         let angle_ok =
@@ -717,7 +786,7 @@ impl SensorlessStartup {
         // Streak of probes that measured a genuinely spinning rotor while
         // still failing the claim comparison; a weak read restarts it —
         // seeding demands CONSECUTIVE physical evidence.
-        if omega >= DEADSHORT_MIN_CATCH_VEL {
+        if omega >= CONFIRM_STRONG_PROBE_VEL {
             self.strong_probes += 1;
         } else {
             self.strong_probes = 0;

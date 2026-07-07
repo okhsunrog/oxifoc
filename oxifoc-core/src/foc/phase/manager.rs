@@ -1281,6 +1281,16 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // handoff speed (it keeps running on commanded-v + measured-i the
         // whole time, so by handoff its angle is the true rotor angle).
         let prof_t0 = crate::isr_prof::now();
+        // Startup-log rate limit (see startup.rs LOG_TOKENS_PER_WINDOW):
+        // tick the window every cycle; when frames were dropped, one
+        // summary frame per window keeps the churn visible.
+        let log_suppressed = self.startup.log_tick(input.dt);
+        if log_suppressed > 0 {
+            warn!(
+                "startup: {} log frames suppressed (restart churn)",
+                log_suppressed
+            );
+        }
         if self.startup.is_active() {
             let phase_before = self.startup.phase();
             if phase_before == StartupPhase::Deadshort {
@@ -1295,12 +1305,16 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     self.startup
                         .feed_deadshort(input.i_alpha, input.i_beta, input.dt, r, l, lambda)
                 {
-                    info!(
-                        "startup: deadshort caught spinning rotor (angle={} vel={}), seeding observer",
-                        angle, velocity
-                    );
+                    if self.startup.log_allow() {
+                        info!(
+                            "startup: deadshort caught spinning rotor (angle={} vel={}), seeding observer",
+                            angle, velocity
+                        );
+                    }
                     self.observer.seed(angle, velocity);
-                } else if self.startup.phase() == StartupPhase::Ramp {
+                } else if self.startup.phase() == StartupPhase::Ramp
+                    && self.startup.log_allow()
+                {
                     info!("startup: deadshort saw standstill, ramp cold start");
                 }
             } else if phase_before == StartupPhase::Confirm {
@@ -1326,17 +1340,21 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     claim,
                 ) {
                     ConfirmResult::Confirmed { velocity } => {
-                        info!(
-                            "startup: handoff confirmed by probe (probe_vel={} observer_vel={})",
-                            velocity, obs_vel
-                        );
+                        if self.startup.log_allow() {
+                            info!(
+                                "startup: handoff confirmed by probe (probe_vel={} observer_vel={})",
+                                velocity, obs_vel
+                            );
+                        }
                     }
                     ConfirmResult::Unconfirmed { velocity } => {
-                        info!(
-                            "startup: handoff unconfirmed (probe_vel={} observer_vel={}), \
-                             holding for retry",
-                            velocity, obs_vel
-                        );
+                        if self.startup.log_allow() {
+                            info!(
+                                "startup: handoff unconfirmed (probe_vel={} observer_vel={}), \
+                                 holding for retry",
+                                velocity, obs_vel
+                            );
+                        }
                     }
                     ConfirmResult::SeedAndHandoff { angle, velocity } => {
                         // The probe measured a real spinning rotor on
@@ -1344,11 +1362,13 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                         // observer's claim kept diverging (hold-ratchet):
                         // trust the measurement, reseed the observer from
                         // it — same as the deadshort catch.
-                        warn!(
-                            "startup: observer diverged from probed rotor \
-                             (probe_vel={} observer_vel={}), seeding observer from probe",
-                            velocity, obs_vel
-                        );
+                        if self.startup.log_allow() {
+                            warn!(
+                                "startup: observer diverged from probed rotor \
+                                 (probe_vel={} observer_vel={}), seeding observer from probe",
+                                velocity, obs_vel
+                            );
+                        }
                         self.observer.seed(angle, velocity);
                     }
                     ConfirmResult::Probing => {}
@@ -1361,10 +1381,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     self.observer.is_ready(),
                     self.observer.velocity().unwrap_or(0.0),
                 );
-                // Transitions are one-shot (a few per start), so logging from
-                // the ISR here costs nothing in the steady state.
+                // Transitions are one-shot per start — but starts themselves
+                // repeat several times a second during restart churn, hence
+                // the token bucket on every frame here.
                 let phase_now = self.startup.phase();
-                if phase_now != phase_before {
+                if phase_now != phase_before && self.startup.log_allow() {
                     info!(
                         "startup: {} -> {} (vel={} |i|={})",
                         phase_before.name(),
@@ -1378,16 +1399,22 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 // restart it from scratch while the deadshort→ramp start
                 // re-acquires the rotor.
                 if self.startup.take_recycled() {
-                    warn!("startup: hold gave up (no confirmed handoff), observer reset + recycle");
+                    if self.startup.log_allow() {
+                        warn!(
+                            "startup: hold gave up (no confirmed handoff), observer reset + recycle"
+                        );
+                    }
                     self.observer.reset();
                 }
                 if out.handoff {
-                    info!(
-                        "startup: handoff gates passed (openloop_vel={} observer_vel={}), \
-                         running confirm probe",
-                        out.velocity,
-                        self.observer.velocity().unwrap_or(0.0)
-                    );
+                    if self.startup.log_allow() {
+                        info!(
+                            "startup: handoff gates passed (openloop_vel={} observer_vel={}), \
+                             running confirm probe",
+                            out.velocity,
+                            self.observer.velocity().unwrap_or(0.0)
+                        );
+                    }
                 } else if phase_now == StartupPhase::Hold {
                     // Waiting on the observer: ~2 Hz convergence trace so a
                     // hold that never hands off (observer incoherent, see
@@ -1397,6 +1424,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     if HOLD_TICKS
                         .fetch_add(1, Ordering::Relaxed)
                         .is_multiple_of(8192)
+                        && self.startup.log_allow()
                     {
                         info!(
                             "startup: holding (openloop_vel={} observer_vel={} ready={} conf={})",
@@ -1434,16 +1462,20 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             return;
         }
         if self.observer.is_ready() {
-            info!(
-                "startup: cold start skipped, observer already tracking (vel={})",
-                self.observer.velocity().unwrap_or(0.0)
-            );
+            if self.startup.log_allow() {
+                info!(
+                    "startup: cold start skipped, observer already tracking (vel={})",
+                    self.observer.velocity().unwrap_or(0.0)
+                );
+            }
             return;
         }
-        info!(
-            "startup: cold start engaged (angle0={} dir={})",
-            self.output.angle, dir
-        );
+        if self.startup.log_allow() {
+            info!(
+                "startup: cold start engaged (angle0={} dir={})",
+                self.output.angle, dir
+            );
+        }
         self.startup.begin_cold_start(self.output.angle, dir);
     }
 
