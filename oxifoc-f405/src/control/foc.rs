@@ -436,6 +436,15 @@ pub async fn isr_stats_task() {
             pb,
             avg.saturating_sub(adc + sn + fo + pb)
         );
+        // Hall diagnostics: raw pin state + edge/overcapture rates. A
+        // sensored motor at standstill shows a constant valid state (1-6)
+        // and 0 edges; 0b111/0b000 = unpowered/disconnected sensors.
+        defmt::info!(
+            "hall/s: state={=u8:b} edges={} overcap={}",
+            hall::read_hall_state_raw(),
+            hall::EDGES.swap(0, Ordering::Relaxed),
+            hall::OVERCAPTURES.swap(0, Ordering::Relaxed),
+        );
         // run_foc_cycle internals (core isr_prof buckets) — same lines as
         // the g431 protocol stats task.
         {

@@ -24,6 +24,7 @@ use critical_section::Mutex as CriticalSectionMutex;
 use ergot::net_stack::NetStackHandle;
 use ergot::net_stack::endpoints::Endpoints;
 
+use crate::foc::clamp_f32;
 use crate::foc::detection::types::{
     DetectionError, FluxLinkageParams, InductanceParams, MotorSize, ResistanceParams,
 };
@@ -272,11 +273,19 @@ async fn run_step<B: DetectionBackend>(
             }
         }
 
-        DetectRequest::CalibrateHall => {
-            match backend
-                .calibrate_hall(HallCalibrationParams::default())
-                .await
-            {
+        DetectRequest::CalibrateHall {
+            max_power_loss_w,
+            resistance_ohm,
+        } => {
+            // Sweep current from the power class, same formula as the other
+            // steps (√(P/R/1.5)), capped by the platform ceiling. Falls back
+            // to the conservative default when R is unknown.
+            let mut params = HallCalibrationParams::default();
+            if resistance_ohm > 0.0 && max_power_loss_w > 0.0 {
+                let i = sqrtf(max_power_loss_w / resistance_ohm / 1.5);
+                params.current_amps = clamp_f32(i, params.current_amps, max_current_a);
+            }
+            match backend.calibrate_hall(params).await {
                 Ok(result) => {
                     // Persist in memory if the platform has a config store; the
                     // host then writes it to flash via the config endpoint.

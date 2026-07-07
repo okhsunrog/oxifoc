@@ -534,8 +534,16 @@ pub enum DetectRequest {
         openloop_erpm: f32,
     },
     /// Calibrate Hall sensors by sweeping electrical angle.
-    /// No prerequisites — only needs motor connected.
-    CalibrateHall,
+    /// Needs a measured resistance so the sweep current can be derived
+    /// from the power class like every other step (the old parameterless
+    /// variant hardcoded 2 A — too weak to drag a heavy outrunner rotor
+    /// through the sweep, found on the Flipsky 5065, 2026-07-08).
+    CalibrateHall {
+        /// Max power dissipation during the sweep (W).
+        max_power_loss_w: f32,
+        /// Previously measured resistance (Ω). GUI/CLI provides this.
+        resistance_ohm: f32,
+    },
 }
 
 /// Motor detection response — matches the request step.

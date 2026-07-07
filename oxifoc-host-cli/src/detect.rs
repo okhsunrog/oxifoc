@@ -82,7 +82,19 @@ pub fn run_detect(
                 openloop_erpm: erpm,
             }
         }
-        DetectStep::Hall => DetectRequest::CalibrateHall,
+        DetectStep::Hall => {
+            if r <= 0.0 {
+                bail!(
+                    "hall calibration needs resistance (the sweep current is derived \
+                     from the power class): pass --resistance or run detect resistance \
+                     --apply first"
+                );
+            }
+            DetectRequest::CalibrateHall {
+                max_power_loss_w: max_power_w,
+                resistance_ohm: r,
+            }
+        }
     };
 
     if !json {

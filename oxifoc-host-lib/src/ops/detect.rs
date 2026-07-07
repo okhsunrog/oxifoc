@@ -137,8 +137,15 @@ pub fn run_sequence(
         other => bail!("Flux: unexpected response {other:?}"),
     }
 
-    // Step 4: hall calibration (best-effort).
-    if let Ok(DetectResponse::HallCalibrated) = run_step(cmd, DetectRequest::CalibrateHall) {
+    // Step 4: hall calibration (best-effort). Sweep current derives from
+    // the same power class as the other steps (device-side √(P/R/1.5)).
+    if let Ok(DetectResponse::HallCalibrated) = run_step(
+        cmd,
+        DetectRequest::CalibrateHall {
+            max_power_loss_w,
+            resistance_ohm: out.resistance_ohm,
+        },
+    ) {
         out.hall_ok = true;
     }
 

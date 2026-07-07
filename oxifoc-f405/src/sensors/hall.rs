@@ -49,6 +49,10 @@ static TIMEBASE: CaptureTimebase<u16> = CaptureTimebase::new();
 /// Diagnostics only.
 pub static OVERCAPTURES: AtomicU32 = AtomicU32::new(0);
 
+/// Hall edges seen by the capture ISR since the last stats swap
+/// (diagnostics; the g431 prints the same counter in its 1 Hz stats).
+pub static EDGES: AtomicU32 = AtomicU32::new(0);
+
 /// "Now" in hall ticks (µs), assembled from TIM3 CNT + overflow count.
 ///
 /// Valid after [`init_hall`]. Safe from any context: the FOC ISR cannot
@@ -208,6 +212,7 @@ fn TIM3() {
         // Reading CCR1 clears CC1IF.
         let captured = regs.ccr(0).read().0 as u16;
         let ticks = TIMEBASE.capture(captured, sr.uif(), || clear_flags(true, false));
+        EDGES.fetch_add(1, Ordering::Relaxed);
         update_hall_edge(read_hall_idr(), ticks);
     } else if sr.uif() {
         TIMEBASE.overflow(|| clear_flags(true, false));

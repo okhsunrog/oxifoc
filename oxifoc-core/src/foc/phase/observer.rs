@@ -26,7 +26,6 @@
 #[cfg(feature = "hfi")]
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::wrap_angle;
-#[cfg(feature = "hfi")]
 use core::f32::consts::TAU;
 #[cfg(feature = "hfi")]
 use core::marker::PhantomData;
@@ -621,12 +620,10 @@ impl BackEmfObserver {
         // slow — only learn it while the rotation is externally
         // corroborated; the [0.4, 2.5] corroboration window tolerates a
         // stored λ far more wrong than physical drift can make it.
-        let validity_granted =
-            self.valid_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3;
+        let validity_granted = self.valid_travel >= READY_MIN_VALID_REVS * TAU - 1e-3;
         // λ learning additionally requires EARNED corroboration travel (see
         // the field doc): seeded validity engages torque, not the tracker.
-        let lambda_learn_ok =
-            self.lambda_learn_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3;
+        let lambda_learn_ok = self.lambda_learn_travel >= READY_MIN_VALID_REVS * TAU - 1e-3;
         if self.lambda_gain > 0.0 && validity_granted && lambda_learn_ok {
             self.lambda += self.lambda_gain * (flux_mag - self.lambda) * dt;
             self.lambda = crate::foc::clamp_f32(self.lambda, self.lambda_min, self.lambda_max);
@@ -790,10 +787,10 @@ impl BackEmfObserver {
         if corroborated {
             self.invalid_time = 0.0;
             // Saturate at the threshold: no unbounded growth.
-            self.valid_travel = (self.valid_travel + self.velocity_pll.abs() * dt)
-                .min(READY_MIN_VALID_REVS * core::f32::consts::TAU);
+            self.valid_travel =
+                (self.valid_travel + self.velocity_pll.abs() * dt).min(READY_MIN_VALID_REVS * TAU);
             self.lambda_learn_travel = (self.lambda_learn_travel + self.velocity_pll.abs() * dt)
-                .min(READY_MIN_VALID_REVS * core::f32::consts::TAU);
+                .min(READY_MIN_VALID_REVS * TAU);
         } else if granted {
             // Sticky once granted: revoke only on a SUSTAINED violation
             // (see VALID_REVOKE_S) so accel/decel transients don't chop
@@ -920,7 +917,7 @@ impl BackEmfObserver {
         self.confidence >= READY_MIN_CONFIDENCE
             && self.readiness_phase_err() < err_bound
             && self.velocity_pll.abs() >= READY_MIN_VELOCITY
-            && self.valid_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3
+            && self.valid_travel >= READY_MIN_VALID_REVS * TAU - 1e-3
     }
 
     /// Reset observer state. The adapted λ is kept — it is a physical
@@ -1014,7 +1011,7 @@ impl BackEmfObserver {
         self.confidence = 1.0;
         self.phase_err_filt = 0.0;
         self.refresh_readiness_err();
-        self.valid_travel = READY_MIN_VALID_REVS * core::f32::consts::TAU;
+        self.valid_travel = READY_MIN_VALID_REVS * TAU;
         self.bemf_q_filt = self.lambda * self.velocity_pll;
         self.invalid_time = 0.0;
         // Seeded validity is NOT learning credit: λ adaptation stays frozen
@@ -2144,7 +2141,7 @@ mod tests {
         // not under test here).
         obs.confidence = 1.0;
         obs.velocity_pll = 200.0;
-        obs.valid_travel = READY_MIN_VALID_REVS * core::f32::consts::TAU;
+        obs.valid_travel = READY_MIN_VALID_REVS * TAU;
 
         // Wobble-grade error before ever acquiring: NOT ready (strict).
         obs.phase_err_filt = 0.3;
@@ -2192,7 +2189,7 @@ mod tests {
         let mut obs = BackEmfObserver::new(0.1, 0.0001, 0.01);
         obs.confidence = 1.0;
         obs.velocity_pll = 500.0;
-        obs.valid_travel = READY_MIN_VALID_REVS * core::f32::consts::TAU;
+        obs.valid_travel = READY_MIN_VALID_REVS * TAU;
 
         // Spin-up: raw error 0.38 = the structural lag at this α̂ → ready.
         obs.accel_filt = 7700.0; // α̂/ki = 0.385
