@@ -44,6 +44,18 @@ accel 500 erad/s²).
   source (observer velocity when available) before chasing hot gains.
 - [ ] Bench: tune kp/ki/accel for the Flipsky + board mass; behavior
   through the hall→observer crossover.
+- [ ] **Velocity loop is untuned for sensorless** (bench 2026-07-07,
+  velmode-1/2 on the ZD2808): with the default soft gains a 300 el
+  rad/s cruise overshoots 2.6×, oscillates through zero and drops
+  trust (restart mid-run). FIXED en route: the PI used to keep
+  integrating while the cold-start sequencer owned commutation — the
+  rotor sits below the target for the whole ramp, the integrator
+  banked 6.6 A by handoff and tripped OC into the confirm probe; the
+  loop now holds reset during `is_starting` and the startup drives at
+  STARTUP_MIN_DRIVE_A. Cruise-gain tuning (against observer velocity
+  dynamics, not hall lag) is the remaining work — it is also the
+  right long-term answer to smooth speed-holding on an unloaded
+  rotor, where torque mode + speed ceiling necessarily hunts.
 - [ ] PositionControl: position P → `omega_target` into the same loop
   (cascade); needs an unwrapped position source first.
 

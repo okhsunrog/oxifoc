@@ -1445,6 +1445,17 @@ where
             self.velocity_loop.reset(self.phase.get().velocity);
             return self.step_current_control(0.0, 0.0, dt, now_ticks);
         }
+        // While the cold-start sequencer owns commutation, the PI must not
+        // run: the rotor sits below the cruise target for the whole ramp
+        // and the integrator banks amps of torque command against the I/f
+        // frame (bench 2026-07-07, velmode-1: |i| = 6.6 A by handoff → OC
+        // into the confirm probe). Hold the loop reset (bumpless engage at
+        // handoff) and drive the startup at its proven capture current.
+        if self.phase.is_starting() {
+            self.velocity_loop.reset(self.phase.get().velocity);
+            let dir = if target_vel < 0.0 { -1.0 } else { 1.0 };
+            return self.step_current_control(dir * STARTUP_MIN_DRIVE_A, 0.0, dt, now_ticks);
+        }
         let omega = self.phase.get().velocity;
         // The derating speed ceiling also caps the cruise reference: the
         // current-side rolloff alone would leave the PI winding up against
