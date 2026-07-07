@@ -1082,94 +1082,11 @@ const SWEEP_FREQ_FRACTIONS: [f32; 6] = [
     0.084,  // ≈ 1680 Hz
 ];
 
-/// Accumulate the in-phase and quadrature current response to the rotating
-/// carrier at a **known** pipeline lag, and solve the *complex* impedance.
-///
-/// Identical inner loop to [`probe_hfi_pipeline_lag`] (read → correlate → send),
-/// but at one fixed `lag` instead of scanning, and it keeps both projections:
-/// `corr_i` (onto `sin φ`) carries the in-phase / resistive response, `corr_q`
-/// (onto `−cos φ`) the quadrature / inductive one. Each held command drives the
-/// current at the period *centre*, so the carrier has advanced `ω_c·dt/2` by then;
-/// de-rotating the complex sum `corr_i + j·corr_q` by that half step makes its
-/// argument the true impedance angle `ψ = atan2(ωL, R)`. With `|Z| = A/|i|` this
-/// yields `R = |Z|·cos ψ` and `L = |Z|·sin ψ / ω_c` directly — no assumed R,
-/// unlike the magnitude-only `|Z|` solve the production HFI path uses.
-///
-/// Returns `(r_ac, l, |Z|)`; `r_ac` falls back to the supplied `resistance_ohm`
-/// and `l` to `0.0` when the response is too weak to resolve.
-#[cfg(feature = "impedance-sweep")]
-async fn measure_impedance_at<H: DetectionHardware, S: SinCos>(
-    hw: &mut H,
-    injector: &mut HfiInjector<S>,
-    vd_hold: f32,
-    dt: f32,
-    lag: u32,
-    resistance_ohm: f32,
-) -> (f32, f32, f32) {
-    let omega_c = injector.omega_hfi();
-    let amp = injector.voltage_amplitude();
-    let lag = (lag as usize).clamp(1, PIPELINE_LAG_MAX);
-    // Accumulate over a whole number of carrier periods. Use the EXACT
-    // samples-per-period (not rounded): `round(N·spp_exact)` spans ≈ N whole
-    // periods even at a non-integer ratio, so the DC-hold projection and the
-    // fundamental both close cleanly. `N·round(spp)` instead leaves a partial
-    // period whose leakage corrupts the *phase* (the R/L split) while |Z| — the
-    // norm — survives; the detuned sweep frequencies are non-integer ratios, so
-    // this is exactly where it bites.
-    let spp_exact = (core::f32::consts::TAU / (omega_c * dt)).max(2.0);
-    let warmup = (3.0 * spp_exact + 0.5) as usize + lag;
-    let accum = (16.0 * spp_exact + 0.5) as usize;
-
-    let mut hist = [(0.0f32, 0.0f32); 8]; // (direction angle, carrier phase)
-    let mut corr_q = 0.0f32;
-    let mut corr_i = 0.0f32;
-
-    for k in 0..(warmup + accum) {
-        let _telem = hw.wait_telemetry().await;
-        let (ia, ib, _ic) = hw.read_phase_currents();
-        let (i_alpha, i_beta) = transforms::clarke(ia, ib);
-
-        if k >= warmup {
-            let (theta, phase) = hist[(k + 8 - lag) % 8];
-            let (sin_t, cos_t) = S::sin_cos(theta);
-            let (sin_p, cos_p) = S::sin_cos(phase);
-            let i_dir = i_alpha * cos_t + i_beta * sin_t;
-            corr_q += i_dir * (-cos_p);
-            corr_i += i_dir * sin_p;
-        }
-
-        let theta = injector.injection_angle();
-        let phase = injector.carrier_phase();
-        let (v_a, v_b) = injector.step(dt);
-        hw.send_command(ControlMode::DirectVoltage {
-            vd: vd_hold + v_a,
-            vq: v_b,
-            angle_rad: 0.0,
-        })
-        .await;
-        hist[k % 8] = (theta, phase);
-    }
-
-    let n = accum as f32;
-    let mag = sqrtf(corr_q * corr_q + corr_i * corr_i);
-    let i_amp = 2.0 * mag / n;
-    if i_amp < 1e-5 || amp <= 0.0 || mag < 1e-9 {
-        return (resistance_ohm, 0.0, resistance_ohm);
-    }
-    let z = amp / i_amp;
-    // De-rotate (corr_i + j·corr_q) by the half-step dwell ω_c·dt/2 so the
-    // argument becomes the impedance angle: real part ∝ R, imag part ∝ ωL.
-    let (sin_d, cos_d) = S::sin_cos(omega_c * dt * 0.5);
-    let re = corr_i * cos_d - corr_q * sin_d; // ∝ R
-    let im = corr_i * sin_d + corr_q * cos_d; // ∝ ωL
-    let r_ac = (z * re / mag).max(0.0);
-    let l = (z * im / mag / omega_c).max(0.0);
-    (r_ac, l, z)
-}
-
-/// Pulsating-d variant of [`measure_impedance_at`] (2026-07-08): the
-/// carrier is `A·sin(ω_c t)` applied ALONG the locked d axis instead of a
-/// rotating vector. A rotating carrier's current vector crosses the q axis
+/// Pulsating-d impedance probe (2026-07-08): the carrier is `A·sin(ω_c t)`
+/// applied ALONG the locked d axis instead of a rotating vector. (A
+/// rotating-carrier variant existed as the motional-contamination A/B; it
+/// was deleted 2026-07-07 after delivering its one result — see below.)
+/// A rotating carrier's current vector crosses the q axis
 /// twice per period and shakes the rotor with a full-amplitude torque
 /// ripple at the carrier frequency even under a perfect d lock — the
 /// bench operator SAW the vibration, and below a few hundred Hz the
@@ -1249,11 +1166,12 @@ async fn measure_impedance_at_pulsating<H: DetectionHardware, S: SinCos>(
 
 /// **Experiment (feature `impedance-sweep`):** map R(f) and L(f) on the d axis.
 ///
-/// Locks the rotor on the d axis **once**, then sweeps the HFI carrier across
-/// [`SWEEP_FREQ_FRACTIONS`] of `f_sw`, extracting the complex impedance with
-/// [`measure_impedance_at`] — so both the AC resistance and the inductance fall
-/// out of a single locked measurement. Logs `(f, V, |Z|, R, L)` per row so the
-/// on-device curve can be overlaid on a bench LCR sweep (read it from RTT).
+/// Locks the rotor on the d axis **once**, then sweeps a pulsating-d carrier
+/// across [`SWEEP_FREQ_FRACTIONS`] of `f_sw`, extracting the complex impedance
+/// with [`measure_impedance_at_pulsating`] — so both the AC resistance and the
+/// inductance fall out of a single locked measurement. Logs `(f, V, |Z|, R, L)`
+/// per row so the on-device curve can be overlaid on a bench LCR sweep (read
+/// it from RTT).
 ///
 /// Reuses the production safety path verbatim: the same rotor lock, the same
 /// [`settled_hold_voltage`], the same command→apply [`probe_hfi_pipeline_lag`],
@@ -1340,10 +1258,11 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
         // pk, d-axis, standstill) is reactive; the dissipated power
         // (i²R/2 ≈ 1.6 W) stays inside the detection budget.
         let v = clamp_f32(i_target * z_pred, 0.8, headroom);
-        // Pulsating-d carrier (torque-free, rotor cannot move) is the
-        // primary instrument; the rotating carrier is logged alongside as
-        // the motional-contamination A/B (their difference at low f IS
-        // the rotor-motion term).
+        // Pulsating-d carrier: torque-free by construction, so the rotor
+        // cannot move and the low-frequency points measure the WINDING.
+        // (The rotating-carrier A/B that used to run alongside proved the
+        // apparent L(f) rise was rotor motion — ZD2808 d-axis L is flat
+        // ~17 µH — and was deleted 2026-07-07; see docs/decisions.md.)
         let (r_f, l_f, z) = measure_impedance_at_pulsating::<H, S>(
             hw,
             f,
@@ -1354,10 +1273,6 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
             params.resistance_ohm,
         )
         .await;
-        let mut inj = HfiInjector::<S>::new(f, v, pwm_freq_hz);
-        let (r_rot, l_rot, z_rot) =
-            measure_impedance_at::<H, S>(hw, &mut inj, vd_hold, dt, lag, params.resistance_ohm)
-                .await;
         // Robust L from the |Z| magnitude and the known DC R: phase-invariant,
         // trustworthy where the phase-sensitive R/L split is not. At low f, |Z|≈R
         // so this is noisy (small √ of a difference); at mid/high f, ωL dominates
@@ -1369,14 +1284,9 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
         } else {
             0.0
         };
-        let l_rot_from_z = if z_rot > params.resistance_ohm {
-            sqrtf(z_rot * z_rot - params.resistance_ohm * params.resistance_ohm) / omega
-        } else {
-            0.0
-        };
         info!(
-            "Zsweep f={} Hz V={} PULS |Z|={} L|Z|={} (R={} L={})  ROT |Z|={} L|Z|={} (R={} L={})",
-            f, v, z, l_from_z, r_f, l_f, z_rot, l_rot_from_z, r_rot, l_rot
+            "Zsweep f={} Hz V={} PULS |Z|={} L|Z|={} (R={} L={})",
+            f, v, z, l_from_z, r_f, l_f
         );
         l_return = l_from_z;
     }

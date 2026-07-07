@@ -1458,9 +1458,7 @@ mod tests {
                     "seed angle {angle} vs rotor {theta}"
                 );
             }
-            other => panic!(
-                "expected immediate SeedAndHandoff from the fast rotor, got {other:?}"
-            ),
+            other => panic!("expected immediate SeedAndHandoff from the fast rotor, got {other:?}"),
         }
         assert!(!sm.is_active());
     }

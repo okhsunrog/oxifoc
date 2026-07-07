@@ -3289,9 +3289,6 @@ mod tests {
         /// configured values (λ ×(1+0.15·s), R ×(1+0.1·s) at s=1) — the
         /// estimation chain keeps the baked numbers. 0 = exact match.
         plant_skew: f32,
-        /// Observer eddy-ladder ΔL (H, 0 = off; τ fixed at the plant's
-        /// value) — the slip-kick fix under test.
-        observer_eddy_delta_l: f32,
         /// Braking load-torque pulse (N·m) applied at `disturb_at_step`
         /// for `disturb_steps` — seeds a pole slip so the slip-kick
         /// ratchet is reachable in sim (a clean capture never slips).
@@ -3370,8 +3367,7 @@ mod tests {
 
         let mut mgr = PhaseManager::sensorless();
         let mut obs = BackEmfObserver::new(0.127, cfg.observer_l, LAMBDA)
-            .with_lambda_tracking(crate::foc::phase::DEFAULT_LAMBDA_GAIN)
-            .with_eddy_ladder(cfg.observer_eddy_delta_l, 0.3e-3);
+            .with_lambda_tracking(crate::foc::phase::DEFAULT_LAMBDA_GAIN);
         obs.set_pll_gains(cfg.pll_ki / 20.0, cfg.pll_ki);
         if cfg.observer_salient {
             obs = obs.with_saliency(86e-6, 129e-6);
@@ -3510,7 +3506,6 @@ mod tests {
             trace_every: 0,
             eddy_tau_s: 0.0,
             plant_skew: 0.0,
-            observer_eddy_delta_l: 0.0,
             disturb_torque_nm: 0.0,
             disturb_at_step: 0,
             disturb_steps: 0,
@@ -3555,7 +3550,6 @@ mod tests {
             trace_every: 0,
             eddy_tau_s: 0.0,
             plant_skew: 0.0,
-            observer_eddy_delta_l: 0.0,
             disturb_torque_nm: 0.0,
             disturb_at_step: 0,
             disturb_steps: 0,
@@ -3601,7 +3595,6 @@ mod tests {
             trace_every: 0,
             eddy_tau_s: 0.0,
             plant_skew: 0.0,
-            observer_eddy_delta_l: 0.0,
             disturb_torque_nm: 0.0,
             disturb_at_step: 0,
             disturb_steps: 0,
@@ -3710,7 +3703,6 @@ mod tests {
                 trace_every: trace,
                 eddy_tau_s: eddy_tau,
                 plant_skew: 0.0,
-                observer_eddy_delta_l: 0.0,
                 disturb_torque_nm: 0.0,
                 disturb_at_step: 0,
                 disturb_steps: 0,
@@ -3752,7 +3744,6 @@ mod tests {
             trace_every: 0,
             eddy_tau_s: 0.3e-3,
             plant_skew: 0.0,
-            observer_eddy_delta_l: 0.0,
             disturb_torque_nm: 0.0,
             disturb_at_step: 0,
             disturb_steps: 0,
@@ -3828,7 +3819,6 @@ mod tests {
                         trace_every: 0,
                         eddy_tau_s: 0.0,
                         plant_skew: 0.0,
-                        observer_eddy_delta_l: 0.0,
                         disturb_torque_nm: 0.0,
                         disturb_at_step: 0,
                         disturb_steps: 0,

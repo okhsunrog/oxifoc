@@ -119,15 +119,6 @@ pub struct MotorParamsConfig {
     /// Fundamental (voltage-pulse) q-axis inductance (H) — see
     /// [`Self::ld_fundamental_h`]. 0 = unknown.
     pub lq_fundamental_h: f32,
-    /// Eddy-current L(f) ladder ΔL (H): `L(ω) = L_ac + ΔL/(1 + jωτ)`,
-    /// bridging the AC plateau to the DC value. Measured by the
-    /// impedance sweep (ZD2808 2026-07-08: 146 µH). Feeds the observer's
-    /// stator-flux subtraction (`BackEmfObserver::set_eddy_ladder`).
-    /// 0 = unknown → ladder off.
-    pub eddy_delta_l_h: f32,
-    /// Eddy-current L(f) ladder time constant τ (s) — see
-    /// [`Self::eddy_delta_l_h`]. ZD2808 measured: 1.39 ms. 0 = unknown.
-    pub eddy_tau_s: f32,
 }
 
 impl PostcardValue<'_> for MotorParamsConfig {}
@@ -157,20 +148,6 @@ impl MotorParamsConfig {
             && self.lq_fundamental_h > 0.0
         {
             Some((self.ld_fundamental_h, self.lq_fundamental_h))
-        } else {
-            None
-        }
-    }
-
-    /// Eddy-ladder parameters (ΔL, τ), when known — see
-    /// [`Self::eddy_delta_l_h`].
-    pub fn eddy_ladder(&self) -> Option<(f32, f32)> {
-        if self.eddy_delta_l_h.is_finite()
-            && self.eddy_delta_l_h > 0.0
-            && self.eddy_tau_s.is_finite()
-            && self.eddy_tau_s > 0.0
-        {
-            Some((self.eddy_delta_l_h, self.eddy_tau_s))
         } else {
             None
         }
@@ -710,7 +687,6 @@ mod tests {
     fn inductance_model_accessors_gate_on_valid_values() {
         let mut mp = MotorParamsConfig::default();
         assert!(mp.fundamental_ld_lq().is_none());
-        assert!(mp.eddy_ladder().is_none());
         mp.ld_fundamental_h = 85.7e-6;
         assert!(
             mp.fundamental_ld_lq().is_none(),
@@ -718,11 +694,6 @@ mod tests {
         );
         mp.lq_fundamental_h = 129.4e-6;
         assert_eq!(mp.fundamental_ld_lq(), Some((85.7e-6, 129.4e-6)));
-        mp.eddy_delta_l_h = 146e-6;
-        mp.eddy_tau_s = f32::NAN;
-        assert!(mp.eddy_ladder().is_none(), "NaN tau must read as unknown");
-        mp.eddy_tau_s = 1.4e-3;
-        assert_eq!(mp.eddy_ladder(), Some((146e-6, 1.4e-3)));
     }
 
     #[test]

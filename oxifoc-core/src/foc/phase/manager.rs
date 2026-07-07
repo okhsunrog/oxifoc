@@ -528,15 +528,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         Ok(())
     }
 
-    /// Set observer
-    /// Configure the back-EMF observer's eddy L(f) ladder (no-op without
-    /// a configured observer) — see `BackEmfObserver::with_eddy_ladder`.
-    pub fn set_observer_eddy_ladder(&mut self, delta_l: f32, tau_s: f32) {
-        if let Observer::BackEmf(o) = &mut self.observer {
-            o.set_eddy_ladder(delta_l, tau_s);
-        }
-    }
-
     /// Enable the commutation phase tracker for the pure-Observer source
     /// (see [`PhaseTracker`]): `omega_n` = tracker natural frequency
     /// (el rad/s — wobble above it is rejected quadratically, hunting

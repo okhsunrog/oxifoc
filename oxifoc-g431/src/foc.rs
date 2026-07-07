@@ -160,20 +160,6 @@ pub async fn init(
     // belongs in config once detection measures J.
     if config.motor_params.is_some() {
         phase_manager.set_observer_accel_prior(500.0, 10_500.0);
-        // Observer eddy L(f) ladder from MotorParamsConfig (measured by the
-        // on-device impedance sweep — see baked_config.rs for the numbers
-        // and provenance). The mid-band slip transients are 100–300 Hz
-        // events where the true stator flux follows L(f) ≈ 35–103 µH; the
-        // flat AC value under-removes stator flux and every slip kicks the
-        // flux vector (the ratchet dossier). A GUESSED ladder failed its
-        // 2026-07-06 A/B because its corner (0.3 ms) sat 5× too high.
-        if let Some((delta_l, tau_s)) = config
-            .motor_params
-            .as_ref()
-            .and_then(oxifoc_core::storage::MotorParamsConfig::eddy_ladder)
-        {
-            phase_manager.set_observer_eddy_ladder(delta_l, tau_s);
-        }
         // Commutation phase tracker (freq-led REDESIGN, 2026-07-08): a
         // critically-ish damped 2nd-order PLL on the observer angle —
         // torque axis stays with the observer (the frequency-led
