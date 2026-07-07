@@ -83,6 +83,13 @@ MARK_FAULT = (
     # Colon matters: "OverVoltage FAULT:", "HW overcurrent FAULT:" are
     # faults; the f405 boot line "DRV8301 nFAULT monitor started" is not.
     "FAULT:",
+    # Deadman/failsafe engaging mid-run is a hard failure even though the
+    # terminal Stop acknowledges the latch before the post-run fault query
+    # (learned on the CF2: a deadman trip masqueraded as an estimator
+    # deadlock for a whole session — captures/bench/cf2-baseline-1).
+    "CommTimeout raised",
+    "failsafe latched",
+    "stop sequence armed",
 )
 RE_ISR = re.compile(r"isr/s: n=(\d+) avg=(\d+) max=(\d+) over=(\d+) load_pct=(\d+)")
 RE_TRACING = re.compile(r"^\d{4}-\d{2}-\d{2}T\S+\s+(\w+)\s+(\S+?):\s?(.*)$")
@@ -124,22 +131,21 @@ SCENARIOS = {
     ),
 }
 
-# Per-board overrides (--board). The CF2's current sense is 0.5 mΩ × 10 V/V
-# = 161 mA/LSB (ia noise σ ≈ 0.5 A): a 0.3 A cruise command sits BELOW the
-# measurement noise floor — the loop cannot deliver recovery pulses and the
-# rotor decays off the ceiling (bench 2026-07-07, cf2-baseline-1). The CF2
-# scenario cruises at 1.0 A instead, and the same noise directly modulates
-# torque, so the erpm-std gate is wider (measured 4.8%).
+# Per-board overrides (--board). CF2: the standard 0.3 A cruise scenario —
+# the 2026-07-07 "0.3 A collapse" turned out to be a deadman trip + failsafe
+# ramp, not a control failure (5/5 clean 0.3 A cruises at std 1.7% once the
+# bench staleness config was written). Only the climb-iq gate differs:
+# a 1.5 A command measures 1.33-1.46 A here (161 mA/LSB quantization +
+# board gain/dead-time differences vs the g431's 1.44-1.46).
 BOARD_OVERRIDES = {
     "g431": {},
     "cf2": {
         "spin-punch": dict(
-            maneuver="maneuvers/spin-punch-cf2.json",
-            cruise=dict(ev_from=1, ev_to=2, settle_s=1.0,
-                        erpm_std_frac_max=0.06, erpm_min=6500.0),
-            # 1.5 A command measures 1.35-1.46 A here (±161 mA LSB + board
-            # gain/dead-time differences vs the g431's 1.44-1.46).
             climb=dict(ev_from=0, iq_median_min=1.3),
+            # 161 mA torque quantization modulates the ceiling governor:
+            # cruise std measured 1.5-3.6% across runs (g431: 2.2-2.5%).
+            cruise=dict(ev_from=1, ev_to=2, settle_s=1.0,
+                        erpm_std_frac_max=0.05, erpm_min=6500.0),
         ),
     },
 }

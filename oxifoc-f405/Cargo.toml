@@ -19,6 +19,10 @@ transport-uart = []
 # ergot over RTT channel 1 (defmt shares ch0). Diagnostic transport — high-rate
 # telemetry over the debug probe; adds a third interface alongside USB/UART.
 transport-rtt = ["ergot/rtt"]
+# Observer-internals fast-frame mapping (erpm<-PLL, vd<-frame gap,
+# vq<-readiness err signed by trust; see oxifoc-core `obs-debug-telem`).
+# Debug builds only.
+obs-debug-telem = ["oxifoc-core/obs-debug-telem"]
 
 [dependencies]
 # Embassy + Cortex-M

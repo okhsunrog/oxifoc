@@ -973,19 +973,36 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
   7.0 A / 10 W, ceiling 800 + PSU-safe limits via config (persist!).
   **USB transport: 20 kHz fast telemetry loss-free at 29% ISR** (the
   g431/RTT ceiling was 2 kHz) — the CF2 runtime transport of choice.
-- [ ] **CF2: 0.3 A cruise = frozen-observer DEADLOCK reproducer
-  (2026-07-07, captures/bench/cf2-baseline-1/spin-punch.parquet).**
-  The CF2 current sense (0.5 mΩ × 10 V/V = 161 mA/LSB, ia noise
-  σ≈0.5 A) cannot regulate a 0.3 A command: cruise held 0.6 s, decayed
-  off the ceiling, then **erpm froze at exactly −476 with vq=0.00 for
-  4.7 s under a nonzero (0.3 A) drive command — and the trust-loss
-  restart NEVER fired** (g431 restarts after 0.5 s untrusted). Either
-  the angle stayed nominally "trusted" while the estimate was dead, or
-  the restart path has an f405-specific hole. Needs obs-debug-telem
-  forensics on this board. The sub-noise cruise itself is physics
-  (board/motor mismatch, scenario now cruises at 1.0 A — benchsuite
-  `--board cf2`), but the silent deadlock is a real estimator-hardening
-  gap: reproducer-#4 family.
+- [x] **CF2 "frozen-observer deadlock" — ROOT-CAUSED 2026-07-08: it was
+  the DEADMAN, working as designed.** Full log of cf2-baseline-1 shows
+  `CommTimeout raised: deadman_expired=true` mid-cruise → failsafe
+  armed (policy 2, terminal ParkBrake) → the "collapse" was the
+  ControlledStop RAMP, the frozen erpm −476 / vq=0.00 was the winding
+  short + stale phase telemetry in the Brake state, and every later
+  0.3 A affirm was rejected ("failsafe latched") until the terminal
+  Stop acknowledged. Three compounding gaps, all fixed:
+  1. The f405 had NO stored failsafe config → default 150 ms staleness
+     (the g431 bench lesson was 800 ms). Now `config set failsafe
+     staleness_timeout_ms=800` (persistent).
+  2. The run started right after a heavy host build — the documented
+     "loaded host stretches the affirm quantum" class (~410 ms family).
+     Cross-board lesson revalidated: let the host settle.
+  3. benchsuite was BLIND to it: the terminal Stop clears the latch
+     before the post-run faults query, and "CommTimeout" wasn't in the
+     log markers. Markers added (CommTimeout raised / failsafe latched
+     / stop sequence armed) — a mid-run failsafe now fails the run.
+  The "0.3 A is below the CF2 current-sense noise floor" theory was
+  WRONG: with the staleness config in place, 0.3 A cruise runs 5/5
+  clean at std 1.5–3.6% (obs-debug runs measured 1.7%). The CF2 board
+  profile keeps only a climb-iq gate 1.3 (quantization) and a cruise
+  std gate 5% (torque quantization modulates the ceiling governor).
+  Residual cosmetic TODO below.
+- [ ] **Stale phase telemetry in Brake/failsafe states**: while parked
+  (winding short) the fast frame keeps publishing the LAST phase output
+  (erpm frozen at an arbitrary value, e.g. −476) instead of something
+  honest (zero or a live estimate). Cosmetic, but it cost a whole
+  forensic detour — make Brake/Stopped publish a zeroed or clearly
+  flagged velocity.
 - [x] **ergot: defmt over USB — FIXED 2026-07-08** (ergot branch
   `fix/defmt-topic-over-usb`, rev b59fd1d; all lock files bumped). TWO
   stacked bugs, diagnosed with staged device-side counters (sink
