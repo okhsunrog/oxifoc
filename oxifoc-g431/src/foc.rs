@@ -154,19 +154,20 @@ pub async fn init(
     // detection measures J.
     if config.motor_params.is_some() {
         phase_manager.set_observer_accel_prior(500.0, 3400.0);
-        // Observer eddy L(f) ladder with MEASURED parameters (2026-07-08,
-        // on-device impedance sweep, 100–1680 Hz grid at 0.8 V carrier —
-        // scripts session log): single-pole fit L_hf = 15 µH,
-        // ΔL = 155 µH, τ = 1.39 ms (all six points within ~15%). The
-        // mid-band slip transients are 100–300 Hz events where the true
-        // stator flux follows L(f) ≈ 35–103 µH — the flat 24 µH the
-        // integrator subtracts under-removes stator flux and every slip
-        // kicks the flux vector (the ratchet dossier). The earlier GUESSED
-        // ladder (ΔL 105 µH, τ 0.3 ms) failed because its corner sat 5×
-        // too high: at 200–300 Hz it over-compensated ~3×. ΔL here bridges
-        // from the baked AC L (24 µH) to the measured DC value
-        // (~170 µH at the probe bias): 146 µH.
-        phase_manager.set_observer_eddy_ladder(146e-6, 1.4e-3);
+        // Observer eddy L(f) ladder from MotorParamsConfig (measured by the
+        // on-device impedance sweep — see baked_config.rs for the numbers
+        // and provenance). The mid-band slip transients are 100–300 Hz
+        // events where the true stator flux follows L(f) ≈ 35–103 µH; the
+        // flat AC value under-removes stator flux and every slip kicks the
+        // flux vector (the ratchet dossier). A GUESSED ladder failed its
+        // 2026-07-06 A/B because its corner (0.3 ms) sat 5× too high.
+        if let Some((delta_l, tau_s)) = config
+            .motor_params
+            .as_ref()
+            .and_then(oxifoc_core::storage::MotorParamsConfig::eddy_ladder)
+        {
+            phase_manager.set_observer_eddy_ladder(delta_l, tau_s);
+        }
         // Commutation phase tracker (freq-led REDESIGN, 2026-07-08): a
         // critically-ish damped 2nd-order PLL on the observer angle —
         // torque axis stays with the observer (the frequency-led
@@ -184,21 +185,9 @@ pub async fn init(
     let mut foc_controller =
         FocController::<SvpwmModulator, CordicSinCos>::from_runtime_config(config, initial_vbus_v);
 
-    // Two-inductance override (ZD2808, 2026-07-06): the ω·L·i dq-decoupling
-    // needs the FUNDAMENTAL (voltage-pulse) Ld/Lq — with the AC value the
-    // cross-coupling was ~4.5× undercompensated and the sustained-1.5 A run
-    // diverged into the dq overcurrent at ~800 rad/s. motor_params carries
-    // the AC value for the estimation chain (observer, deadshort — both
-    // hardware-validated there), so the decoupling gets its own numbers
-    // here until MotorParamsConfig grows an explicit second-inductance
-    // field (TODO "two-inductance model").
-    if config.motor_params.is_some() {
-        foc_controller.set_decoupling(Some(oxifoc_core::foc::controller::Decoupling {
-            ld_h: 85.7e-6,
-            lq_h: 129.4e-6,
-            flux_linkage_wb: 1.145e-3,
-        }));
-    }
+    // Decoupling (fundamental Ld/Lq) now comes from MotorParamsConfig's
+    // ld/lq_fundamental fields via from_runtime_config — the two-inductance
+    // model lives in the config, not in a board-file override.
 
     // Configure dead time compensation
     foc_controller.set_dead_time_comp(PWM_CONFIG.dead_time_ns, PWM_CONFIG.pwm_freq_hz);

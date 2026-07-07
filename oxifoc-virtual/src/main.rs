@@ -98,6 +98,7 @@ fn config_from_motor_params(params: MotorParams, max_current_a: f32) -> MotorPar
         pole_pairs: params.pole_pairs,
         max_current_a,
         max_power_loss_w: 0.0,
+        ..Default::default()
     }
 }
 

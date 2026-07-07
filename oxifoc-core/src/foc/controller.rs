@@ -270,9 +270,16 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
                     pg.ki
                 );
             }
+            // Decoupling wants the FUNDAMENTAL Ld/Lq when the config has
+            // them (two-inductance rule: the AC plateau under-compensates
+            // the cross-coupling 4–5× on eddy-heavy motors — the bench
+            // 800 rad/s OC class); fall back to the AC values otherwise.
+            let (ld, lq) = mp
+                .fundamental_ld_lq()
+                .unwrap_or((mp.inductance_d_h, mp.inductance_q_h));
             foc.set_decoupling(Some(Decoupling {
-                ld_h: mp.inductance_d_h,
-                lq_h: mp.inductance_q_h,
+                ld_h: ld,
+                lq_h: lq,
                 flux_linkage_wb: mp.flux_linkage_wb,
             }));
             foc

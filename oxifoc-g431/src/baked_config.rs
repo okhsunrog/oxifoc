@@ -57,6 +57,15 @@ pub fn baked() -> RuntimeConfig {
             pole_pairs: 7,
             max_current_a: 7.2,
             max_power_loss_w: 10.0,
+            // Fundamental (voltage-pulse) Ld/Lq — the decoupling values
+            // (previously the hardcoded set_decoupling override in foc.rs).
+            ld_fundamental_h: 85.7e-6,
+            lq_fundamental_h: 129.4e-6,
+            // Eddy L(f) ladder, MEASURED by the on-device impedance sweep
+            // (2026-07-08, 100–1680 Hz grid): single-pole fit ΔL bridging
+            // the 24 µH AC value to the ~170 µH DC point, τ = 1.39 ms.
+            eddy_delta_l_h: 146.0e-6,
+            eddy_tau_s: 1.4e-3,
         }),
         hall_calibration: None,
         dc_offsets: None,

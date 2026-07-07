@@ -1458,6 +1458,7 @@ pub fn main() {
                         pole_pairs: pp,
                         max_current_a: rating,
                         max_power_loss_w: ploss,
+                        ..Default::default()
                     })
                 }
                 1 => {
