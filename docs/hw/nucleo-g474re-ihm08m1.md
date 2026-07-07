@@ -3,11 +3,12 @@
 Derived 2026-06-11 from three sources, cross-checked pin by pin:
 
 - shield signal → morpho position + solder bridge: UM1996 Tables 3/4
-  ([UM1996_IHM08M1_getting_started.pdf](UM1996_IHM08M1_getting_started.pdf))
+  ([UM1996_IHM08M1_getting_started.pdf](x-nucleo-ihm08m1/UM1996_IHM08M1_getting_started.pdf))
   and the schematic MCU-pinout page
-  ([X-NUCLEO-IHM08M1_schematic.pdf](X-NUCLEO-IHM08M1_schematic.pdf), Fig. 6);
+  ([X-NUCLEO-IHM08M1_schematic.pdf](x-nucleo-ihm08m1/X-NUCLEO-IHM08M1_schematic.pdf), Fig. 6);
+  full shield doc set in [x-nucleo-ihm08m1/](x-nucleo-ihm08m1/README.md);
 - morpho position → G474RE pin: UM2505 Table 16
-  ([UM2505_NUCLEO-G474RE_user_manual.pdf](UM2505_NUCLEO-G474RE_user_manual.pdf));
+  ([UM2505_NUCLEO-G474RE_user_manual.pdf](nucleo-g474re/UM2505_NUCLEO-G474RE_user_manual.pdf));
 - G474RE pin → AF/peripheral: stm32-data (TIM1/TIM2 pin maps).
 
 The shield was designed for NUCLEO-F302R8/F401RE; pin names printed in its
