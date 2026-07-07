@@ -125,7 +125,10 @@ pub fn pad_node_dac_counts(amps: f32) -> u16 {
 /// filter; 3072 for the inductance-model config fields + tracker state —
 /// still three ~1030 B grants in flight (2048 = 1-2 grants stalled the
 /// 20 kHz stream, 2026-07-05); frees 832 B toward fitting the statics
-/// into the 22 K SRAM region.)
+/// into the 22 K SRAM region. 3072 is a FLOOR, not a knob: a 3056 probe
+/// (2026-07-07, gate-fix-7) dropped the queue below three COBS grants
+/// (~3 × 1019 B) and telemetry gapped from mid-ramp on — shave RAM
+/// elsewhere, e.g. MAX_RX_PACKET_SIZE.)
 #[cfg(not(feature = "impedance-sweep"))]
 pub const OUT_QUEUE_SIZE: usize = 3072;
 /// The impedance-sweep experiment build carries the hfi-detect machinery

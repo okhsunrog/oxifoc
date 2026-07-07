@@ -1164,7 +1164,7 @@ where
         // update, so this is a copy, not a recompute.
         out.velocity_rad_s = self.phase.get().velocity;
         // Debug fast-frame mapping (bench estimator forensics): repurpose
-        // three columns with observer internals — velocity/erpm ← PLL ω̂
+        // four columns with observer internals — velocity/erpm ← PLL ω̂
         // (ALWAYS the observer, not the active source), angle ← phase_pll,
         // vd ← DRIVE-frame-vs-estimate gap `Δ(active_angle, phase_pll)`
         // (2026-07-07 freq-led high-speed OC forensics: the offline flux
@@ -1172,15 +1172,28 @@ where
         // standing load-angle question — does the commutation frame really
         // ride 75–90° off the estimate/rotor — needs an on-device signal;
         // the earlier vd ← PLL error is recoverable from an eddy-plant sim
-        // but this gap is not). Currents/vq/vbus stay honest. The wire
-        // format is untouched, so host decode/enrichment work unchanged —
-        // just read the capture knowing the mapping.
+        // but this gap is not), vq ← trust-gate state
+        // `phase_err_filt × (angle_trustworthy ? +1 : −1)` (2026-07-07
+        // torque non-delivery forensics: |i| collapses in ms-scale windows
+        // with the commanded voltage collapsing FIRST — the signature of
+        // the iq gate, not of saturation — so the gate bit and the
+        // lock-quality signal it rides on must sit next to the current
+        // columns in one capture; |i_dq| is frame-invariant, so the
+        // magnitude stays honest even in this PLL-frame mapping).
+        // Currents/vbus stay honest. The wire format is untouched, so host
+        // decode/enrichment work unchanged — just read the capture knowing
+        // the mapping.
         #[cfg(feature = "obs-debug-telem")]
-        if let Some((pll, _raw, vel)) = self.phase.debug_observer() {
+        if let Some((pll, _raw, vel, err_filt)) = self.phase.debug_observer() {
             let drive_angle = out.angle_rad;
             out.velocity_rad_s = vel;
             out.angle_rad = pll;
             out.vd = crate::foc::angle_difference(drive_angle, pll);
+            out.vq = if self.phase.angle_trustworthy() {
+                err_filt
+            } else {
+                -err_filt
+            };
         }
         Ok(out)
     }
@@ -1509,11 +1522,14 @@ where
         // pulling away is acceleration), opposing is braking. Drive derates
         // for heat/sag/speed; brake only for heat/regen-OV — and never for
         // speed. Every torque path funnels through here, so the failsafe
-        // brake inherits the regen-OV rolloff too.
+        // brake inherits the regen-OV rolloff too. The speed cut is
+        // re-evaluated FRESH each cycle on top of the decimated scales —
+        // a 78 Hz-stale cut bang-bangs the torque around the ceiling on a
+        // fast free rotor (see DeratingConfig::speed_cut).
         let iq_target = if self.current_limits.max_current_a > 0.0 {
             let omega = self.phase.get().velocity;
             let scale = if iq_target * omega >= 0.0 {
-                self.derating.drive
+                self.derating.drive.min(self.derating_cfg.speed_cut(omega))
             } else {
                 self.derating.brake
             };

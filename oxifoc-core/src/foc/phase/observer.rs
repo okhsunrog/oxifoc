@@ -168,6 +168,15 @@ impl Observer {
         }
     }
 
+    /// Effective readiness lock-quality error — see
+    /// [`BackEmfObserver::readiness_phase_err`].
+    pub fn readiness_phase_err(&self) -> Option<f32> {
+        match self {
+            Self::None => None,
+            Self::BackEmf(o) => Some(o.readiness_phase_err()),
+        }
+    }
+
     /// Check if observer is configured
     pub fn is_configured(&self) -> bool {
         !matches!(self, Self::None)
@@ -324,6 +333,21 @@ pub struct BackEmfObserver {
     /// the corroboration to be re-earned after every seed starves the
     /// tracker in churn while costing a real cruise ~2 revolutions.
     lambda_learn_travel: f32,
+    /// Schmitt latch for [`Self::is_ready`]: true once readiness was
+    /// acquired with the STRICT lock-quality bound, relaxing the held
+    /// bound to [`READY_HOLD_MAX_PHASE_ERR_RAD`]. Updated at the end of
+    /// every `update` (evaluated against the previous latch state).
+    ready_latched: bool,
+    /// PLL velocity of the previous update (rad/s) and its low-passed
+    /// slope (rad/s², τ = [`ACCEL_LAG_FILTER_TAU_S`]) — the acceleration
+    /// estimate behind the readiness lag compensation (see
+    /// [`Self::readiness_phase_err`]).
+    vel_pll_prev: f32,
+    accel_filt: f32,
+    /// Lag-compensated readiness error, computed ONCE per `update` (the
+    /// trust gate consults `is_ready` several times per FOC cycle and
+    /// this board's ISR budget has no room for a division per call).
+    readiness_err: f32,
 }
 
 /// Minimum confidence (flux magnitude / λ) for [`BackEmfObserver::is_ready`].
@@ -333,6 +357,18 @@ pub const READY_MIN_CONFIDENCE: f32 = 0.5;
 /// [`BackEmfObserver::is_ready`]. ~11°: a converged PLL tracks well under
 /// this; a diverging one sits near π.
 pub const READY_MAX_PHASE_ERR_RAD: f32 = 0.2;
+
+/// Hysteresis bound on the lock-quality criterion while readiness is HELD
+/// (see the Schmitt latch in [`BackEmfObserver::is_ready`]). Bench
+/// 2026-07-07 (gate-dbg-1, ZD2808 @1.5 A): under the mid-band wobble the
+/// filtered PLL error rides the 0.2 acquire threshold (median exactly
+/// 0.200, max 0.31) and the binary gate chattered — the iq trust gate cut
+/// torque 54% of the hold in 2–15 ms windows (P(gate closed | current
+/// collapsed) = 0.96), and the chopping itself pumps the wobble. 0.6 rad
+/// (~34°) clears the observed wobble ceiling 2× while a genuinely
+/// diverging PLL (filtered error → ~π/2) still trips it with 2.5× margin.
+/// Acquire stays strict: handoff quality is unchanged.
+pub const READY_HOLD_MAX_PHASE_ERR_RAD: f32 = 0.6;
 
 /// Minimum |electrical velocity| (rad/s) for [`BackEmfObserver::is_ready`].
 ///
@@ -344,6 +380,30 @@ pub const READY_MIN_VELOCITY: f32 = 30.0;
 /// Time constant (s) of the PLL phase-error low-pass used for readiness.
 /// Slow enough to ride out per-revolution ripple at crossover speeds.
 const PHASE_ERR_FILTER_TAU_S: f32 = 0.01;
+
+/// Time constant (s) of the PLL-velocity slope estimate feeding the
+/// readiness lag compensation. Fast enough to track the onset of a real
+/// spin-up within a few filter periods; the Schmitt hold bound covers the
+/// transient before the compensation catches up.
+const ACCEL_LAG_FILTER_TAU_S: f32 = 0.02;
+
+/// Ceiling (rad) on the acceleration-lag compensation in
+/// [`BackEmfObserver::readiness_phase_err`].
+///
+/// A type-2 PLL under constant acceleration α carries a STRUCTURAL
+/// steady-state phase error α/ki — it is tracking fine, just lagging.
+/// Bench 2026-07-07 (gate-dbg-1/gate-fix-2, ZD2808 free rotor @1.5 A):
+/// the real spin-up runs ~7 700 el rad/s², err_ss ≈ 0.38 at ki = 20 000,
+/// so the un-compensated 0.2 readiness bound capped the drivable
+/// acceleration at 0.2·ki ≈ 4 000 el rad/s² (~0.8 A worth) and the trust
+/// gate bang-banged the torque into a 4–7 Hz relaxation limit cycle (THE
+/// mid-band "band oscillation": erpm sawing 2 000↔4 800, torque chopped
+/// 54% of the hold). Subtracting the expected lag |α̂|/ki excuses real
+/// acceleration; the cap keeps the excuse bounded so a genuinely
+/// diverging PLL (raw error → π/2, and a railing velocity estimate can
+/// fake a huge α̂) still trips the readiness bounds with margin:
+/// 0.4 (cap) + 0.6 (hold bound) = 1.0 < π/2.
+pub const ACCEL_LAG_COMP_MAX_RAD: f32 = 0.4;
 
 /// External validity: how many electrical revolutions the back-EMF proxy
 /// must corroborate the claimed velocity before [`BackEmfObserver::is_ready`]
@@ -470,6 +530,10 @@ impl BackEmfObserver {
             valid_travel: 0.0,
             invalid_time: 0.0,
             lambda_learn_travel: 0.0,
+            ready_latched: false,
+            vel_pll_prev: 0.0,
+            accel_filt: 0.0,
+            readiness_err: core::f32::consts::PI,
         }
     }
 
@@ -758,6 +822,13 @@ impl BackEmfObserver {
         self.phase_pll =
             wrap_angle(self.phase_pll + (self.velocity_pll + self.pll_kp * phase_error) * dt);
 
+        // PLL-velocity slope (post-envelope — the lag the readiness check
+        // must excuse is the lag of the velocity the PLL actually carries,
+        // governor pull included). Feeds readiness_phase_err().
+        let a_a = (dt / ACCEL_LAG_FILTER_TAU_S).min(1.0);
+        self.accel_filt += a_a * ((self.velocity_pll - self.vel_pll_prev) / dt - self.accel_filt);
+        self.vel_pll_prev = self.velocity_pll;
+
         // Track lock quality for is_ready(): low-passed |phase error|.
         let alpha = (dt / PHASE_ERR_FILTER_TAU_S).min(1.0);
         self.phase_err_filt += alpha * (phase_error.abs() - self.phase_err_filt);
@@ -831,6 +902,12 @@ impl BackEmfObserver {
         // integrator — but cheap and monotonic during real spin-up. With λ
         // tracking enabled the normalization adapts along with the clamp.
         self.confidence = crate::foc::clamp_f32(flux_mag * inv_lambda, 0.0, 1.0);
+
+        // Advance the readiness Schmitt latch: evaluated against the
+        // PREVIOUS latch state (that is what makes it hysteresis), stored
+        // for the next cycle and for `is_ready` callers in between.
+        self.refresh_readiness_err();
+        self.ready_latched = self.is_ready();
     }
 
     /// Get estimated electrical phase (radians)
@@ -863,6 +940,30 @@ impl BackEmfObserver {
         (self.bemf_q_filt, self.valid_travel)
     }
 
+    /// The EFFECTIVE lock-quality error (rad) gating [`Self::is_ready`]:
+    /// low-passed |PLL phase error| minus the expected acceleration lag
+    /// `min(|α̂|/ki, ACCEL_LAG_COMP_MAX_RAD)`. A type-2 PLL lags a real
+    /// spin-up by α/ki while tracking it perfectly well — counting that
+    /// structural lag as lock loss made the trust gate a bang-bang speed
+    /// governor (see [`ACCEL_LAG_COMP_MAX_RAD`]). Computed once per
+    /// `update` (cached — see the field); for bench telemetry: the trust
+    /// gate zeroes iq on this signal, so chop forensics need it next to
+    /// the current columns.
+    pub fn readiness_phase_err(&self) -> f32 {
+        self.readiness_err
+    }
+
+    /// Recompute the cached readiness error (end of every `update`, and
+    /// eagerly by state-jamming test/seed paths).
+    fn refresh_readiness_err(&mut self) {
+        let lag = if self.pll_ki > 0.0 {
+            (self.accel_filt.abs() / self.pll_ki).min(ACCEL_LAG_COMP_MAX_RAD)
+        } else {
+            0.0
+        };
+        self.readiness_err = (self.phase_err_filt - lag).max(0.0);
+    }
+
     /// Whether the estimate is trustworthy for commutation.
     ///
     /// Four independent criteria, all required:
@@ -885,9 +986,22 @@ impl BackEmfObserver {
     /// current vector around a standing rotor costs ω·L·i volts on the q
     /// axis, a real rotation costs λ·ω — an order of magnitude apart at
     /// drive currents.
+    /// The lock-quality bound rides the acceleration-lag-COMPENSATED error
+    /// (see [`Self::readiness_phase_err`] — a type-2 PLL structurally lags
+    /// a real spin-up by α/ki) and is a Schmitt trigger: ACQUIRE demands
+    /// [`READY_MAX_PHASE_ERR_RAD`] (strict — handoff quality), HOLD relaxes
+    /// to [`READY_HOLD_MAX_PHASE_ERR_RAD`] (residual wobble rides the
+    /// strict threshold and a chattering gate chops torque, which itself
+    /// pumps the oscillation — see the hold constant's dossier). The other
+    /// three criteria have their own slow dynamics and stay un-hysteresed.
     pub fn is_ready(&self) -> bool {
+        let err_bound = if self.ready_latched {
+            READY_HOLD_MAX_PHASE_ERR_RAD
+        } else {
+            READY_MAX_PHASE_ERR_RAD
+        };
         self.confidence >= READY_MIN_CONFIDENCE
-            && self.phase_err_filt < READY_MAX_PHASE_ERR_RAD
+            && self.readiness_phase_err() < err_bound
             && self.velocity_pll.abs() >= READY_MIN_VELOCITY
             && self.valid_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3
     }
@@ -912,6 +1026,10 @@ impl BackEmfObserver {
         self.valid_travel = 0.0;
         self.invalid_time = 0.0;
         self.lambda_learn_travel = 0.0;
+        self.ready_latched = false;
+        self.vel_pll_prev = 0.0;
+        self.accel_filt = 0.0;
+        self.readiness_err = core::f32::consts::PI;
     }
 
     /// Set motor parameters (re-anchors the λ-tracking bounds; resets the
@@ -1010,6 +1128,7 @@ impl BackEmfObserver {
         // revolutions re-proving it.
         self.confidence = 1.0;
         self.phase_err_filt = 0.0;
+        self.refresh_readiness_err();
         self.valid_travel = READY_MIN_VALID_REVS * core::f32::consts::TAU;
         self.bemf_q_filt = self.lambda * self.velocity_pll;
         self.invalid_time = 0.0;
@@ -1022,6 +1141,9 @@ impl BackEmfObserver {
     /// Set velocity estimate (for testing or handoff from other source)
     pub fn set_velocity(&mut self, velocity: f32) {
         self.velocity_pll = velocity;
+        // Seed the slope tracker too, or the seed jump reads as a huge
+        // acceleration and over-excuses the readiness error for ~τ.
+        self.vel_pll_prev = velocity;
         // A trusted seed carries its own envelope: the accel prior must
         // not clamp the estimate back toward the pre-seed speed.
         self.vel_cap = velocity.abs();
@@ -2198,6 +2320,101 @@ mod tests {
             naive > faithful * 1.7,
             "same-cycle pairing must visibly degrade on a delayed plant: {naive} vs {faithful}"
         );
+    }
+
+    #[test]
+    fn ready_lock_quality_is_a_schmitt_trigger() {
+        // Acquire strict (< READY_MAX_PHASE_ERR_RAD), hold relaxed
+        // (< READY_HOLD_MAX_PHASE_ERR_RAD), re-acquire strict after a real
+        // divergence. Bench 2026-07-07 (gate-dbg-1): the mid-band wobble
+        // parks the filtered PLL error exactly on the strict threshold and
+        // a non-hysteresed gate chattered torque off 54% of the hold.
+        let mut obs = BackEmfObserver::new(0.1, 0.0001, 0.01);
+        // Satisfy the other three criteria directly (their dynamics are
+        // not under test here).
+        obs.confidence = 1.0;
+        obs.velocity_pll = 200.0;
+        obs.valid_travel = READY_MIN_VALID_REVS * core::f32::consts::TAU;
+
+        // Wobble-grade error before ever acquiring: NOT ready (strict).
+        obs.phase_err_filt = 0.3;
+        obs.refresh_readiness_err();
+        assert!(!obs.is_ready(), "must not acquire above the strict bound");
+
+        // Clean lock: acquires; latch advances as update()'s tail does.
+        obs.phase_err_filt = 0.1;
+        obs.refresh_readiness_err();
+        assert!(obs.is_ready());
+        obs.ready_latched = obs.is_ready();
+
+        // Wobble pushes the error over the strict bound: readiness HELD.
+        obs.phase_err_filt = 0.3;
+        obs.refresh_readiness_err();
+        assert!(
+            obs.is_ready(),
+            "held readiness must ride out wobble above the acquire bound"
+        );
+        obs.ready_latched = obs.is_ready();
+
+        // Real divergence: past the hold bound, readiness drops...
+        obs.phase_err_filt = READY_HOLD_MAX_PHASE_ERR_RAD + 0.1;
+        obs.refresh_readiness_err();
+        assert!(!obs.is_ready(), "a diverging PLL must still trip the gate");
+        obs.ready_latched = obs.is_ready();
+
+        // ...and wobble-grade error is no longer good enough: re-acquire
+        // demands the strict bound again.
+        obs.phase_err_filt = 0.3;
+        obs.refresh_readiness_err();
+        assert!(
+            !obs.is_ready(),
+            "after losing readiness the acquire bound is strict again"
+        );
+    }
+
+    #[test]
+    fn readiness_excuses_pll_acceleration_lag_but_not_divergence() {
+        // A type-2 PLL under real acceleration lags by α/ki while tracking
+        // fine (bench 2026-07-07: 7 700 el rad/s² at ki=20 000 → 0.38 rad,
+        // chattering the 0.2 gate into a torque limit cycle). The
+        // compensated error must excuse exactly that lag, capped so a
+        // diverging PLL (huge apparent α̂, error → π/2) still trips.
+        let mut obs = BackEmfObserver::new(0.1, 0.0001, 0.01);
+        obs.confidence = 1.0;
+        obs.velocity_pll = 500.0;
+        obs.valid_travel = READY_MIN_VALID_REVS * core::f32::consts::TAU;
+
+        // Spin-up: raw error 0.38 = the structural lag at this α̂ → ready.
+        obs.accel_filt = 7700.0; // α̂/ki = 0.385
+        obs.phase_err_filt = 0.38;
+        obs.refresh_readiness_err();
+        assert!(
+            obs.is_ready(),
+            "structural acceleration lag must not read as lock loss \
+             (residual {})",
+            obs.readiness_phase_err()
+        );
+
+        // Same α̂ but the error is far beyond the lag: divergence on top of
+        // acceleration → the residual counts and the strict bound trips.
+        obs.phase_err_filt = 0.7;
+        obs.refresh_readiness_err();
+        assert!(!obs.is_ready(), "error beyond the structural lag must trip");
+
+        // Runaway divergence faking an enormous α̂: the compensation cap
+        // keeps err_eff = err − 0.4 and a near-π/2 error still trips even
+        // the relaxed hold bound.
+        obs.ready_latched = true;
+        obs.accel_filt = 100_000.0; // uncapped excuse would be 5 rad
+        obs.phase_err_filt = 1.5;
+        obs.refresh_readiness_err();
+        assert!(
+            !obs.is_ready(),
+            "a diverging PLL must trip through the capped compensation \
+             (residual {})",
+            obs.readiness_phase_err()
+        );
+        obs.ready_latched = false;
     }
 
     #[test]

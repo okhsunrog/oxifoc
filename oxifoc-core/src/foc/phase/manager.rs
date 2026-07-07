@@ -1686,13 +1686,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.observer.note_torque_current(iq_abs, dt);
     }
 
-    fn debug_observer(&self) -> Option<(f32, f32, f32)> {
+    fn debug_observer(&self) -> Option<(f32, f32, f32, f32)> {
         match (
             self.observer.phase(),
             self.observer.phase_raw(),
             self.observer.velocity(),
+            self.observer.readiness_phase_err(),
         ) {
-            (Some(pll), Some(raw), Some(vel)) => Some((pll, raw, vel)),
+            (Some(pll), Some(raw), Some(vel), Some(err)) => Some((pll, raw, vel, err)),
             _ => None,
         }
     }

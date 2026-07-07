@@ -564,6 +564,110 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       torque coupling) — on-device controls must be electrical
       (pulsating carrier), mechanical clamps only for meter
       measurements without a lock.
+      **TORQUE NON-DELIVERY ANSWERED + THE MID-BAND "BAND OSCILLATION"
+      ROOT-CAUSED: it was the TRUST GATE all along (2026-07-07,
+      captures/gate-dbg-1 … gate-fix-9, plain-fix-1..3).** Forensics
+      chain, each step bench-verified:
+      (1) *Conviction.* obs-debug now maps vq ← readiness err signed by
+      `angle_trustworthy` (4th debug slot). gate-dbg-1 @1.5 A hold:
+      P(gate closed | current collapsed) = **0.96**, gate closed **54%**
+      of the hold, every trust drop at err ≈ 0.200 exactly — and inside
+      chop windows the commanded |v| collapses to 2.6% of available
+      (loop obeying a zeroed reference — the signature of the gate, not
+      of saturation). The iq trust gate (foc_driver, the
+      `angle_trustworthy` backstop) was the chopper.
+      (2) *Mechanism.* A type-2 PLL under constant acceleration carries
+      the STRUCTURAL steady-state error α/ki. At ki = 20 000 the strict
+      0.2-rad readiness bound caps the drivable acceleration at
+      0.2·ki = 4 000 el rad/s² ≈ 0.8 A worth of torque on this free
+      rotor — the measured free spin-up is **9 300 el rad/s² at
+      ~1.15 A delivered** (~8 100 /A). Any honest 1.5 A acceleration
+      MUST trip the gate: torque cut → decel → err falls → torque on →
+      a 4–7 Hz relaxation limit cycle (gate-dbg-1: erpm sawing
+      2 000↔4 800, exactly the historical "band oscillation" /
+      slip-kick "kicks"). The 2–4.8 k erpm "cruise" of every earlier
+      1.5 A run was never an equilibrium — it was the gate bang-bang
+      governing speed by accident. The mid-band CARRIER hunt is CLOSED:
+      there was no carrier; commutation smoothing / frame damping /
+      validity / prior-rectifier were bystanders (matches every
+      elimination A/B). The rotor-mechanics suspicion for slip-kick is
+      also closed by this (bang-bang torque at few Hz IS the kick).
+      (3) *Fixes (landed, tests
+      ready_lock_quality_is_a_schmitt_trigger,
+      readiness_excuses_pll_acceleration_lag_but_not_divergence).*
+      Readiness lag compensation: err_eff = max(0, phase_err_filt −
+      min(|α̂|/ki, 0.4)), α̂ = 20 ms LPF of the post-envelope PLL
+      velocity slope, cached once per update (the gate consults it ~6×
+      per cycle; per-call divisions cost real ISR budget — see below).
+      Schmitt latch: acquire < 0.2 strict (handoff quality unchanged),
+      hold < 0.6 (diverged PLL ~π/2 still trips through the capped
+      excuse: 0.4 + 0.6 = 1.0 < π/2). Accel prior corrected 3 400 →
+      10 500 /A (the old J came from a 2026-07-06 climb that was
+      gate-throttled — J read ~3× high, and the envelope governor then
+      FOUGHT honest spin-ups; the estimate was dragged below the rotor
+      mid-acceleration and the current loop lost the frame at ~6 k erpm
+      → OC, gate-fix-3).
+      (4) *What the un-gated system exposed (each stepped on in turn).*
+      NOTHING bounds speed in torque mode on an unloaded rotor: the
+      free spin ran past 19 k erpm in 150 ms of handoff — with e_q
+      corroborating and λ adapting: it was REAL rotation, the observer
+      tracked it fine — until the current loop (ωc = 1 000 rad/s)
+      lost regulation ~2 000 el rad/s → OC. The chattering gate had
+      been the accidental speed governor; the intended mechanism
+      (derating speed ceiling, default OFF) is now baked: 400 el rad/s
+      + rolloff from 0.5×, sized for the ISR wall (below), and the
+      speed-cut term is evaluated PER CYCLE in the iq clamp
+      (DeratingConfig::speed_cut) — the 78 Hz decimated scale
+      bang-banged ±2.3 k erpm around the ceiling at 9 300 el rad/s²
+      (plain-fix-2 sawtooth 2.6 Hz). bus_in_max baked 10 → 3.5 A
+      (PSU CC is 4 A; the gate had been hiding the real bus draw too).
+      (5) *Validation (plain-fix-2/3, canonical plain build).* Full
+      maneuver, zero OC, zero deadman, zero restarts, single confirmed
+      handoff. **Below the ceiling the torque question is closed: iq
+      median 1.44 of 1.5 commanded, |i| < 0.5 A only 1% of the climb**
+      (was: mean 0.2–0.4 A of 1.5, 22% chopped). 0.3 A cruise: erpm
+      3 990 ± 570, 2% micro-chops. The "band oscillation" as a
+      phenomenon is gone from the telemetry.
+      OPEN (new, ranked):
+      - [ ] **ISR cost grows with speed — the hard wall at
+        ~650 el rad/s** (the real blocker for anything faster, and the
+        prior "estimator bench attempt blocked (ISR saturation)"): the
+        est-chain `out` bucket runs 176 cy @420 el rad/s → 1 090 cy
+        @~700 (superlinear; `obs` 967 → 1 595), sustained cruise at the
+        ceiling = 91–95% load, past the wall the core saturates
+        (overrun cascade → thread mode starved ~1 s → deadman,
+        gate-fix-6/7/8 at 11.5 k/8 k/7.7 k erpm peaks). hall_edges=0 —
+        the TIM4 float-storm hypothesis is DEAD; wrap_angle/
+        angle_difference are O(1) (checked); tracker theta wraps. Needs
+        the PC-sampling profiler AT SPEED. Also single ≥21 k-cy ISR
+        passes at ~300/s even mid-ramp (max=18–27 k, old max ≈ 12 k) —
+        find what occasionally triples a pass.
+      - [ ] **Ceiling hunt**: even with the per-cycle cut, 1.5 A hunts
+        3.2↔7.2 k erpm at ~3 Hz around the 3.8 k ceiling (governor
+        gain/lag vs free-rotor momentum + drag asymmetry). Consider a
+        proper speed loop or a wider taper; harmless (bounded, no
+        faults) but ugly and it visits the ISR wall.
+      - [ ] **Ramp slip-ratchet + one-sided confirm**: the rotor runs
+        AHEAD of the 90 rad/s I/f ramp (probe reads 520–580 el rad/s at
+        the handoff gates — consistent across every run), the observer
+        under-reads (~195, envelope-capped pre-handoff), and
+        feed_confirm's vel_ok is one-sided (probe ≥ 0.5×claim: a probe
+        3× ABOVE the claim "confirms"). The handoff works because the
+        observer catches up to reality post-handoff, but the ramp is
+        not actually dragging this rotor at 1.5 A — it is kicking it
+        forward pole by pole. Revisit ramp current/rate and make
+        confirm two-sided (|probe − claim| band) once the ceiling work
+        settles.
+      - [ ] **Tracker rides its 0.6 hard clamp through hard
+        acceleration** (gap pinned 0.62–0.67 the whole climb =
+        commutating ~35° behind the estimate; torque factor cos ≈ 0.83
+        and a standing offset the current loop must absorb). Feed the
+        observer accel into the tracker ff, or raise ωn during
+        confirmed acceleration.
+      - [ ] OUT_QUEUE = 3072 is a hard FLOOR (three ~1 019 B COBS
+        grants; a 3 056 probe gapped telemetry from mid-ramp). RAM for
+        new state must come from elsewhere (this round: ergot-down RTT
+        512 → 496).
       **The original frontier note (for context) — deterministic dq OC at ~2950 rad/s el** (~28 k
       erpm, |v| 3.6 of 6.9 V available, iq beat envelope growing with
       speed, clean fault frame in log, PSU-safe held): both canonical

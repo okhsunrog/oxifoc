@@ -254,9 +254,12 @@ pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
             1: { size: 4096, mode: NoBlockTrim, name: "ergot" }
         }
         down: {
-            // 512 (was 1024, stack→CCM migration): down traffic is ~30
-            // small command frames/s (~1 KB/s) — half a second of buffer.
-            0: { size: 512, name: "ergot-down" }
+            // 496 (was 1024, stack→CCM migration; 512 → 496 2026-07-07:
+            // 16 B ceded to the observer's readiness lag-compensation
+            // state — OUT_QUEUE and the ergot up channel are both at
+            // documented floors): down traffic is ~30 small command
+            // frames/s (~1 KB/s) — still half a second of buffer.
+            0: { size: 496, name: "ergot-down" }
         }
     };
 

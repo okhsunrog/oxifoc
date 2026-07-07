@@ -146,14 +146,20 @@ pub async fn init(
 
     // Physics acceleration prior for the observer PLL (ZD2808 interim
     // numbers, like the decoupling override below): |ω̂| growth capped at
-    // floor + per_amp·|iq| el rad/s². per_amp = 1.3 × 1.5·pp²·λ/J with
-    // pp = 7, λ = 1.145 mWb, J ≈ 3.2e-5 (measured from the e_q-verified
-    // 1.5 A climb, 2026-07-06) ⇒ ≈ 3400; floor 500 covers load-driven
-    // acceleration. Catches the slow-phantom escape the slip gate cannot
-    // (see BackEmfObserver::set_accel_prior); belongs in config once
-    // detection measures J.
+    // floor + per_amp·|iq| el rad/s². per_amp = 1.3 × the measured
+    // free-rotor spin-up: 9 300 el rad/s² at ~1.15 A delivered ⇒
+    // ~8 100 /A (gate-fix-3, 2026-07-07 — the first UN-CHOPPED climb;
+    // J ≈ 1.1e-5). The previous 3 400 came from the 2026-07-06 "e_q-
+    // verified 1.5 A climb" — a climb throttled by the chattering trust
+    // gate (readiness lag, see observer.rs ACCEL_LAG_COMP_MAX_RAD), so J
+    // read ~3× high and the envelope governor then FOUGHT every honest
+    // spin-up: the estimate got dragged below the rotor mid-acceleration
+    // and the current loop lost the frame at ~6 k erpm (OC, gate-fix-3).
+    // Floor 500 covers load-driven acceleration. Catches the slow-phantom
+    // escape the slip gate cannot (see BackEmfObserver::set_accel_prior);
+    // belongs in config once detection measures J.
     if config.motor_params.is_some() {
-        phase_manager.set_observer_accel_prior(500.0, 3400.0);
+        phase_manager.set_observer_accel_prior(500.0, 10_500.0);
         // Observer eddy L(f) ladder from MotorParamsConfig (measured by the
         // on-device impedance sweep — see baked_config.rs for the numbers
         // and provenance). The mid-band slip transients are 100–300 Hz

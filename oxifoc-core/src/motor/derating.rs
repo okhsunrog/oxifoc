@@ -210,12 +210,26 @@ impl DeratingConfig {
                 self.vbus_regen_end_v,
             ));
         }
-        if self.max_speed_erad_s > 0.0 {
-            let start = self.max_speed_erad_s * self.speed_start_frac.clamp(0.0, 1.0);
-            drive = drive.min(ramp_down(omega_e_rad_s.abs(), start, self.max_speed_erad_s));
-        }
+        drive = drive.min(self.speed_cut(omega_e_rad_s));
 
         DeratingScales { drive, brake }
+    }
+
+    /// The speed-cut factor alone, cheap enough for per-cycle use (one
+    /// division when inside the taper). The thermal and vbus ramps ride
+    /// slow measurements and stay on the decimated protection tick, but a
+    /// free rotor crosses the whole speed taper in milliseconds — a
+    /// 78 Hz-stale cut bang-bangs the torque around the ceiling (bench
+    /// 2026-07-07 plain-fix-2: 2.6 Hz sawtooth, 3.2k↔7.8k erpm around a
+    /// 3.8k-erpm ceiling at 9 300 el rad/s² of free-rotor acceleration).
+    /// The driver's iq clamp therefore evaluates this fresh every cycle
+    /// and combines it with the decimated scales.
+    pub fn speed_cut(&self, omega_e_rad_s: f32) -> f32 {
+        if self.max_speed_erad_s <= 0.0 {
+            return 1.0;
+        }
+        let start = self.max_speed_erad_s * self.speed_start_frac.clamp(0.0, 1.0);
+        ramp_down(omega_e_rad_s.abs(), start, self.max_speed_erad_s)
     }
 }
 

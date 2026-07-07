@@ -27,8 +27,12 @@ use oxifoc_core::storage::{
 /// - `bus_regen_max_a = 0.0`: hard ban on charge current into the supply
 ///   (ControlledStop would self-degrade to coast via the no-progress
 ///   watchdog, windings-short Brake never touches the bus).
-/// - `bus_in_max_a = 10.0`: conservative draw cap below a typical bench
-///   PSU rating; raise to taste at the bench.
+/// - `bus_in_max_a = 3.5`: just under the bench PSU's 4 A CC limit, so the
+///   firmware derates iq before the supply folds. Load-bearing since the
+///   readiness lag compensation (2026-07-07): the chattering trust gate
+///   had been bang-bang-capping speed (and therefore bus power) by
+///   accident; with sustained torque the unloaded motor runs toward its
+///   real drag equilibrium and bus draw climbs well past the old regime.
 pub fn baked() -> RuntimeConfig {
     RuntimeConfig {
         // ZD2808 700 KV (wye, 12N14P), bench-measured 2026-07-05 (see
@@ -76,7 +80,7 @@ pub fn baked() -> RuntimeConfig {
         current_limits: Some(CurrentLimitsConfig {
             max_iq_a: 10.0,
             max_phase_current_a: 40.0,
-            bus_in_max_a: 10.0,
+            bus_in_max_a: 3.5,
             bus_regen_max_a: 0.0,
         }),
         voltage_limits: None,
@@ -119,6 +123,37 @@ pub fn baked() -> RuntimeConfig {
             ..FailsafeConfigStored::default()
         }),
         velocity: None,
-        derating: None,
+        // Speed soft ceiling: the ONLY thing bounding speed under a torque
+        // command on an unloaded rotor. 2026-07-07 (gate-fix-3/5): with the
+        // readiness lag compensation the trust gate no longer chatters, and
+        // an un-speed-limited 1.5 A free spin runs the rotor past ~19 k
+        // erpm within 150 ms of handoff — the current loop (ωc = 1000
+        // rad/s) loses regulation around ~2 000 el rad/s and trips OC. The
+        // chattering gate had been an accidental bang-bang speed governor
+        // at 4–5 k erpm; this ceiling replaces it with the intended
+        // mechanism. Sized for THIS board's ISR budget, not the current
+        // loop: a 1 200 el rad/s ceiling (~11.5 k erpm) survived the OC but
+        // starved thread mode (794 ms exec stall → deadman failsafe,
+        // gate-fix-6) — sustained 12 k+ erpm under a 2 kHz debug capture
+        // pins the ISR. 600 el rad/s (~5.7 k erpm) sits in the bench-proven
+        // band; free-rotor momentum overshoots a 9 300 el rad/s² spin-up
+        // ~30% past the ceiling before drag settles it. Raise on G474-class
+        // hardware or after the next ISR shave.
+        //
+        // Ceiling 400 / rolloff from 0.5× = 200: sized so the free-rotor
+        // momentum OVERSHOOT (~1.3-1.6× past the ceiling at 9 300 el
+        // rad/s², measured on the 600- and 500-ceiling probes: peaks 973
+        // and 808 el rad/s) stays under the ISR wall — the per-cycle FOC
+        // cost grows with speed (isre `out` 176 cy @420 el rad/s →
+        // 1 090 cy @~700, cause unknown, see docs/TODO.md) and past
+        // ~650 el rad/s the core saturates: overrun cascade, thread mode
+        // starved for ~1 s, deadman failsafe (gate-fix-6/7/8). 400 keeps
+        // the overshoot peak ≤ ~550 and the sustained cruise ~3.8 k erpm —
+        // the bench-proven regime, now STEADY instead of gate-chattered.
+        derating: Some(oxifoc_core::storage::DeratingConfigStored {
+            max_speed_erad_s: 400.0,
+            speed_start_frac: 0.5,
+            ..oxifoc_core::storage::DeratingConfigStored::default()
+        }),
     }
 }
