@@ -515,6 +515,25 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       and OC'd — possibly the genuine slow-phantom class; do not read
       single clean runs as cures. Bench canon: tracker 30/1.2 + all
       protections, 4/4 confirms, zero OC/CommTimeout, self-recovering.
+      **L(f) MEASURED + LADDER PARAMETERIZED (2026-07-08, 24d3dc8).**
+      The impedance sweep (regridded 100–1680 Hz, 0.8 V floor — at
+      0.2 V the carrier sat below the dead-time distortion and returned
+      |Z| < R_DC) measured the real ZD2808 d-axis L(f): 105 µH@100 Hz
+      → 30@350 → 16 plateau; single-pole fit L_hf 15 µH / ΔL 155 µH /
+      τ 1.39 ms — the guessed ladder's corner (0.3 ms) was 5× too high
+      and over-compensated the slip band 3×. g431 observer now runs
+      set_observer_eddy_ladder(146e-6, 1.4e-3). Post-change bench:
+      bounded band oscillation, 2 starts / 20 s (was constant churn),
+      zero OC, e_q corroborated. **SHARPEST OPEN QUESTION: torque
+      non-delivery during the band oscillation** — endurance-hold at
+      1.5 A commanded rides 230–470 rad/s el for 20 s with measured iq
+      averaging only 0.2–0.4 A (beats σ 0.4–0.8): the climb-through
+      energy is being lost somewhere between the command and the
+      rotor. Candidates: PI vs beat dynamics, slip-gate freeze duty,
+      frame-vs-rotor geometry during swings (mind: obs-debug id/iq are
+      PLL-frame — recheck on a PLAIN build), voltage saturation windows.
+      Answer this FIRST next session — it is measurable with existing
+      telemetry and likely IS the band-transit blocker.
       **The original frontier note (for context) — deterministic dq OC at ~2950 rad/s el** (~28 k
       erpm, |v| 3.6 of 6.9 V available, iq beat envelope growing with
       speed, clean fault frame in log, PSU-safe held): both canonical
