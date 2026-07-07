@@ -74,6 +74,21 @@ const TRACKER_MAX_LAG_RAD: f32 = 0.6;
 /// Frequency catch-up time constant (s) while the load-angle clamp
 /// binds: fast enough to release the clamp within tens of ms after the
 /// transient, slow enough not to import the wobble velocity.
+///
+/// The catch-up TARGET carries an `a_est·τ` lead (see the clamp block):
+/// a first-order pull toward a RAMPING velocity has a structural lag of
+/// ω̇·τ — at 20 ms and the measured 9 300 el rad/s² free spin-up that
+/// was ~186 rad/s of standing frequency deficit, θ re-hit the clamp
+/// within milliseconds and the tracker RODE the clamp for the entire
+/// acceleration (bench 2026-07-07: drive-vs-estimate gap pinned at
+/// 0.62–0.67 rad the whole climb = commutating ~35° behind). With the
+/// lead, the pull's fixed point is ramp-consistent once the a_est
+/// feedforward converges (~3× TRACKER_FF_TAU_S ≈ 90 ms) and the clamp
+/// releases into soft tracking — an entry transient instead of a
+/// standing regime. (A shorter τ instead — 2 ms — released the ride
+/// too, but every wobble-peak clamp GRAZE then slammed the frequency
+/// to the instantaneous wobble velocity: the 60 Hz attenuation test
+/// read ratio 1.14, worse than no tracker.)
 const TRACKER_CATCHUP_TAU_S: f32 = 0.02;
 
 /// Acceleration-feedforward filter time constant (s): slow enough to
@@ -921,7 +936,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             let sign = if d2 > 0.0 { 1.0 } else { -1.0 };
             tr.theta = wrap_angle(raw.angle - sign * TRACKER_MAX_LAG_RAD);
             let a_v = (dt / TRACKER_CATCHUP_TAU_S).min(1.0);
-            tr.omega += a_v * (raw.velocity - tr.omega);
+            // Ramp-lag-compensated target: pulling toward a ramping
+            // velocity alone leaves a standing ω̇·τ deficit and the clamp
+            // never releases during a sustained spin-up (see
+            // TRACKER_CATCHUP_TAU_S).
+            let target = raw.velocity + tr.a_est * TRACKER_CATCHUP_TAU_S;
+            tr.omega += a_v * (target - tr.omega);
         }
         PhaseOutput {
             angle: tr.theta,
@@ -1944,6 +1964,41 @@ mod tests {
             }
         }
         assert!(lag < 0.6, "acceleration lag must stay bounded, got {lag}");
+
+        // Max-torque free spin-up (bench 1.5 A: ~9 300 el rad/s²): the
+        // clamp may bind during the a_est convergence transient, but must
+        // RELEASE once the feedforward carries the trend — a 20 ms
+        // catch-up τ rode the clamp for the entire climb (ω̇·τ ≈ 186
+        // rad/s of standing frequency deficit; bench gap pinned
+        // 0.62–0.67 rad all the way).
+        let mut m = PhaseManager::sensorless();
+        m.set_phase_tracker(30.0, 1.2);
+        m.output = PhaseOutput {
+            angle: 0.0,
+            velocity: 300.0,
+        };
+        let mut theta_clean = 0.0f32;
+        let mut vel = 300.0f32;
+        let mut lag_late = 0.0f32;
+        for k in 0..8_000 {
+            vel += 9300.0 * dt;
+            theta_clean = wrap_angle(theta_clean + vel * dt);
+            let raw = PhaseOutput {
+                angle: theta_clean,
+                velocity: vel,
+            };
+            let out = m.tracker_output(raw, dt);
+            // 8000 steps = 400 ms; the last quarter is well past the
+            // a_est convergence (~3×TRACKER_FF_TAU_S = 90 ms).
+            if k >= 6_000 {
+                lag_late = lag_late.max(angle_difference(raw.angle, out.angle).abs());
+            }
+        }
+        assert!(
+            lag_late < 0.4,
+            "the clamp must release once a_est carries the spin-up trend, \
+             steady lag {lag_late}"
+        );
     }
 
     #[test]

@@ -664,11 +664,13 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
         Also noted: at 600+ el rad/s OPENLOOP (0.5 A passive), the
         observer dropped readiness mid-staircase in one run — likely
         a real pole-slip of the lightly-driven rotor, but watch it.
-      - [ ] **Ceiling hunt**: even with the per-cycle cut, 1.5 A hunts
-        3.2↔7.2 k erpm at ~3 Hz around the 3.8 k ceiling (governor
-        gain/lag vs free-rotor momentum + drag asymmetry). Consider a
-        proper speed loop or a wider taper; harmless (bounded, no
-        faults) but ugly and it visits the ISR wall.
+      - [x] **~~Ceiling hunt~~ RESOLVED as a side effect of the
+        tracker tightening (see above)**: the hunt's dominant lag was
+        the ωn=30 tracker; at ωn=100 the 0.3 A cruise reads 7 597 ± 86
+        erpm (obs-debug) / ± 178 (plain), 1.5 A ± 169–308 — a converging
+        entry oscillation then an essentially flat line at the ceiling.
+        A proper velocity loop remains the long-term answer for
+        speed-holding (see Velocity section).
       - [x] **~~Ramp slip-ratchet + one-sided confirm~~ FIXED
         (2026-07-07 evening, fastseed-1/v1-v3)**: confirm's velocity
         check is now two-sided (probe ≤ 2×claim as well), and a single
@@ -686,12 +688,23 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
         someday, low priority now that the handoff measures instead of
         trusting); the ~5 A blip at handoff is the probe's own short
         current (λω/|Z| — physics, brief, by design).
-      - [ ] **Tracker rides its 0.6 hard clamp through hard
-        acceleration** (gap pinned 0.62–0.67 the whole climb =
-        commutating ~35° behind the estimate; torque factor cos ≈ 0.83
-        and a standing offset the current loop must absorb). Feed the
-        observer accel into the tracker ff, or raise ωn during
-        confirmed acceleration.
+      - [x] **~~Tracker rides its 0.6 hard clamp~~ FIXED (2026-07-07
+        evening, trkfix-1/2, final-1)**: two causes, two fixes. (a) The
+        clamp's frequency catch-up pulled toward a RAMPING velocity
+        with τ=20 ms — a standing ω̇·τ ≈ 186 rad/s deficit re-clamped θ
+        within ms forever; the catch-up target now carries an a_est·τ
+        lead (ramp-consistent fixed point; a shorter τ instead passed
+        wobble — the 60 Hz attenuation test caught it at ratio 1.14).
+        (b) ωn 30 → 100: the 30 was tuned against the ±60° mid-band
+        wobble the trust-gate fix ELIMINATED; what remained was cost —
+        the ceiling governor hunts at ~3.5 Hz ≈ ωn where the tracker
+        lags maximally (chronic 0.56 rad gap at cruise). Results: gap
+        med 0.56 → 0.10 rad at cruise (cos 0.85 → 0.995), and the
+        governor hunt COLLAPSED as a side effect (its loop lost its
+        dominant lag element): 0.3 A cruise ±6% → ±1–2%, 1.5 A std
+        1005 → 169–308 erpm. The clamp is now an entry transient
+        (climb med 0.40, bounded, releases as a_est converges); test
+        gate extended (max-torque spin-up release, lag < 0.4).
       - [ ] OUT_QUEUE = 3072 is a hard FLOOR (three ~1 019 B COBS
         grants; a 3 056 probe gapped telemetry from mid-ramp). RAM for
         new state must come from elsewhere (this round: ergot-down RTT

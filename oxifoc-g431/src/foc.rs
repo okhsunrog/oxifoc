@@ -178,10 +178,18 @@ pub async fn init(
         // critically-ish damped 2nd-order PLL on the observer angle —
         // torque axis stays with the observer (the frequency-led
         // predecessor was structurally an I/f drive riding a ~90°
-        // standing load angle; docs/TODO.md dossier). ωn 60 el rad/s:
-        // mid-band wobble (35–100 Hz) attenuated, hunting band followed,
-        // acceleration lag ≈ ω̇/ωn² (~8° at cruise drag-limited accel).
-        phase_manager.set_phase_tracker(30.0, 1.2);
+        // standing load angle; docs/TODO.md dossier).
+        //
+        // ωn 30 → 100 (2026-07-07 evening): 30 was tuned to filter the
+        // ±60° mid-band estimate wobble — which the trust-gate root-cause
+        // fix ELIMINATED (readiness err now rides 0.05–0.1 rad). What
+        // remained at 30 was pure cost: the speed-ceiling governor hunts
+        // at ~3.5 Hz (22 rad/s ≈ ωn!) where a 30-rad/s tracker lags
+        // maximally — bench trkfix-1 measured the drive frame a chronic
+        // ~0.56 rad (32°) behind the estimate at CRUISE, clamp-bounded,
+        // cos ≈ 0.85 torque factor. At 100 the tracking lag drops ~11×
+        // (ω̇/ωn²) while 35–100 Hz noise attenuation still holds.
+        phase_manager.set_phase_tracker(100.0, 1.2);
     }
 
     // Initialize CORDIC hardware for fast sin/cos in FOC loop

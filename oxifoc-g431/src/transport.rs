@@ -235,10 +235,12 @@ pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
 
     let channels = rtt_init! {
         up: {
-            // 512 (was 1024, stack→CCM migration): defmt is low-rate
-            // diagnostics, the host polls every few ms; bursts larger than
-            // the ring drop (NoBlockSkip) — acceptable.
-            0: { size: 512, mode: NoBlockSkip, name: "defmt" }
+            // 504 (was 1024, stack→CCM migration; 512 → 504 2026-07-07:
+            // 8 B ceded to the observer's cached readiness error on the
+            // obs-debug-telem build): defmt is low-rate diagnostics, the
+            // host polls every few ms; bursts larger than the ring drop
+            // (NoBlockSkip) — acceptable.
+            0: { size: 504, mode: NoBlockSkip, name: "defmt" }
             // NoBlockTrim, NOT NoBlockSkip: ergot's tx_worker hands multi-KB
             // stream grants to this channel; Skip refuses partial writes,
             // returns 0 and re-polls — a hot loop that monopolizes the
