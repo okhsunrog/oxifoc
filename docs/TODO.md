@@ -441,7 +441,34 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       drive+freq-led 8140→6840 (79–80%, ZERO executor stalls, pump
       stale_max ~51 ms vs 100–175). Flash 124 272 / 131 072 (headroom
       6.8 K). Freq-led (5000/30) is ON in the g431 default build.
-      **NEXT FRONTIER — deterministic dq OC at ~2950 rad/s el** (~28 k
+      **HIGH-SPEED OC ROOT-CAUSED AS STRUCTURAL (2026-07-07 evening,
+      4026eed).** Instrumented via the new obs-debug vd ← Δ(drive,
+      phase_pll) mapping + a freq-led-off control run: with freq-led the
+      frame-vs-estimate gap locks at −90°±1° within 100 ms of handoff
+      regardless of seed (plain commutation centers at 0). A
+      frequency-led frame is an I/f drive — the rotor flux locks onto
+      the commanded current vector, so the flux estimate ALWAYS sits
+      ~90°−load off the frame BY CONSTRUCTION; no frame-side pull can
+      close it (the plant re-establishes it — verified: P pull, LPF
+      pull (= negative damping, OC moved DOWN to ~1000), integral pull
+      (wobble-entrains the slew limiter), speed-fade blends (slams the
+      standing angle) all failed exactly as this model predicts).
+      Torque-per-amp is therefore set by the load angle, the effective
+      torque ceiling crosses the bench drag curve at ~28 k erpm el
+      (observer-frame commutation reached the ~50 k vbus ceiling), and
+      the hunting mode rides a flat torque slope. WHAT LANDED: hunting
+      damper (LPF'd 0.5×slew-crushed velocity error into the angle
+      advance — passes the 8–20 Hz hunt band, rejects the 35–100 Hz
+      wobble band) + freq-led seeds angle from the OBSERVER / frequency
+      from the last output. THE REDESIGN (next session): commutate
+      torque in the OBSERVER frame (torque axis = estimate + 90°, like
+      the plain path) and use freq-led ONLY as a slew limiter on that
+      frame's rotation RATE — frequency smoothing without surrendering
+      the torque axis to the I/f geometry. obs-debug caveat now
+      documented in code: host enrichment derives id/iq from the
+      recorded angle column, so obs-debug captures carry id/iq in the
+      PLL frame.
+      **The original frontier note (for context) — deterministic dq OC at ~2950 rad/s el** (~28 k
       erpm, |v| 3.6 of 6.9 V available, iq beat envelope growing with
       speed, clean fault frame in log, PSU-safe held): both canonical
       maneuvers now do one start → one confirmed handoff → smooth
