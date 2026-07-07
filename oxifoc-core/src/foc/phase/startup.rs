@@ -130,7 +130,20 @@ const CONFIRM_STRONG_PROBE_VEL: f32 = 60.0;
 /// shorted winding toward `e/R`, which on a low-R motor is large — stop and
 /// estimate from the dI/dt accumulated so far rather than build current
 /// without bound. Mirrors MESC's `DEADSHORT_CURRENT`.
-const DEADSHORT_MAX_CURRENT_A: f32 = 15.0;
+///
+/// MUST stay below the driver's software OC trip
+/// (`CurrentLimits::overcurrent_threshold_a` — 10.8 A on the bench ZD2808
+/// config, 1.5× the 7.2 A rating): the shorted-bridge step checks the trip
+/// too, so a cap above it can never engage — the probe FAULTS instead of
+/// capping (bench 2026-07-07 confirm2-2: a confirm retry against a rotor
+/// that had ratcheted to ~750 el rad/s built λω/|Z| ≈ 7 A of settled short
+/// current plus the entry transient and tripped the 10.8 A dq OC; the old
+/// 15 A cap sat unreachable above it). 8 A keeps a margin for the entry
+/// transient; a cap-ended window still yields a valid estimate from the
+/// accumulated current (and the cold-start catch treats "capped" as
+/// proven-fast). TODO: derive from the live `CurrentLimits` instead of a
+/// const once the probe plumbing carries them.
+const DEADSHORT_MAX_CURRENT_A: f32 = 8.0;
 
 /// Handoff-confirm probe: settle time (PWM periods) for the DRIVE current to
 /// decay into the short before the baseline is captured. Longer than the
@@ -145,6 +158,39 @@ pub const CONFIRM_SETTLE_CYCLES: u16 = 32;
 /// decay and sensor noise — but a phantom measures ≈ 0 (no rotor, no
 /// back-EMF), so the gap is wide.
 const CONFIRM_MIN_VEL_FRACTION: f32 = 0.5;
+
+/// Handoff-confirm probe: the measured |ω| must not EXCEED this multiple of
+/// the observer's claim either. The check was originally one-sided (probe ≥
+/// 0.5×claim — built against phantoms, which read ≈ 0) and a probe measuring
+/// a rotor FASTER than the claim confirmed trivially: bench 2026-07-07
+/// (gate-fix-5 and every spin-punch run of that day) — the unloaded rotor
+/// slip-ratchets ahead of the 90 rad/s I/f ramp, the probe honestly reads
+/// 520–580 el rad/s, the observer claims ~195 (still catching up), and the
+/// "confirmed" handoff engages the tracker 2.8× below the real frequency —
+/// the estimator then chases the rotor for ~100 ms with the current loop
+/// slamming across the frame error (the reproducible ~6 A handoff spike).
+/// A high-side mismatch now falls through to the strong-probe streak, whose
+/// [`CONFIRM_SEED_PROBES`] escape seeds the observer FROM the measurement —
+/// the right owner of "the rotor is real but the claim is wrong".
+const CONFIRM_MAX_VEL_MULTIPLE: f32 = 2.0;
+
+/// A single probe reading at/above this |ω| (el rad/s) that also fails the
+/// velocity check HIGH (probe > [`CONFIRM_MAX_VEL_MULTIPLE`]×claim) seeds
+/// the observer immediately — no [`CONFIRM_SEED_PROBES`] streak. Two
+/// reasons. (1) The streak guards against LOW misreads (a probe sampling
+/// the slow phase of a capture hunt honestly reads ~0); a fast read has no
+/// such failure mode — it needs amps of settled short current that only
+/// real back-EMF can drive (the worst bench artifact, the enable
+/// transient, resolves to ω ≈ 46). (2) Retrying against a runaway rotor is
+/// actively DANGEROUS: the rotor keeps accelerating through every Hold
+/// cooldown and the short-circuit current of the next probe grows with ω
+/// toward the OC trip — bench 2026-07-07 (confirm2-2): first probe 568
+/// vs claim 196 correctly unconfirmed, rotor reached ~750 by the retry,
+/// and the second probe's short current tripped the 10.8 A dq OC.
+/// 300 ≈ 1.7× the handoff velocity: unreachable by any known artifact,
+/// modest enough to catch the ratchet before the probe-current danger
+/// zone (i_short ≈ λω/|Z| ≈ 6.7 A at 750).
+const CONFIRM_FAST_SEED_VEL: f32 = 300.0;
 
 /// Handoff-confirm probe: max |angle| disagreement (rad) between the probe's
 /// rotor estimate and the observer's. A converged observer is within ~0.3
@@ -785,12 +831,31 @@ impl SensorlessStartup {
             );
         }
 
-        let vel_ok = omega >= CONFIRM_MIN_VEL_FRACTION * claim.velocity.abs();
+        // Two-sided: a probe far BELOW the claim is the phantom signature,
+        // far ABOVE it means the claim lags a real runaway rotor (see
+        // CONFIRM_MAX_VEL_MULTIPLE) — both are "do not hand off to this
+        // claim"; the strong-probe streak below decides whether the
+        // measurement itself is trustworthy enough to seed from instead.
+        let claim_vel = claim.velocity.abs();
+        let vel_ok = omega >= CONFIRM_MIN_VEL_FRACTION * claim_vel
+            && omega <= CONFIRM_MAX_VEL_MULTIPLE * claim_vel;
         let angle_ok =
             crate::foc::angle_difference(angle, claim.angle).abs() <= CONFIRM_MAX_ANGLE_ERR_RAD;
         if vel_ok && angle_ok {
             self.deactivate();
             return ConfirmResult::Confirmed { velocity: omega };
+        }
+
+        // Unambiguous fast rotation the claim does not track: seed from
+        // this single measurement NOW — every retry probes a faster rotor
+        // and walks the short current toward the OC trip (see
+        // CONFIRM_FAST_SEED_VEL).
+        if omega >= CONFIRM_FAST_SEED_VEL && omega > CONFIRM_MAX_VEL_MULTIPLE * claim_vel {
+            self.deactivate();
+            return ConfirmResult::SeedAndHandoff {
+                angle,
+                velocity: self.dir * omega,
+            };
         }
 
         // Streak of probes that measured a genuinely spinning rotor while
@@ -1357,6 +1422,47 @@ mod tests {
         }
         assert!(!sm.is_active(), "the seed completes the handoff");
         assert!(!sm.wants_short());
+    }
+
+    #[test]
+    fn confirm_rejects_claim_lagging_a_runaway_rotor_and_seeds_immediately() {
+        // Bench 2026-07-07 (gate-fix-5 and every spin-punch of the day):
+        // the unloaded rotor slip-ratchets ahead of the I/f ramp; at the
+        // gates the probe honestly measures ~550 el rad/s while the
+        // observer still claims ~195 — the same angle neighborhood, just
+        // 2.8× slow. The original ONE-SIDED velocity check confirmed this
+        // (probe ≥ 0.5×claim holds trivially) and handed the tracker a
+        // 2.8×-wrong frequency. Two-sided + fast-seed: the FIRST such
+        // probe must seed the observer from the measurement — retrying
+        // probes an ever-faster rotor whose short current walks into the
+        // OC trip (bench confirm2-2; see CONFIRM_FAST_SEED_VEL).
+        use crate::foc::angle_difference;
+        let (r, l, lambda) = (0.1, 150e-6, 1.145e-3);
+        let (omega_r, theta) = (DEFAULT_HANDOFF_VEL * 2.8, 0.9); // real rotor, fast
+        let claim = PhaseOutput {
+            angle: theta, // angle agrees — velocity alone must reject
+            velocity: DEFAULT_HANDOFF_VEL,
+        };
+        let mut sm = ramp_to_hold();
+        let i = synth_short_current(omega_r, theta, r, l, lambda, 1.0);
+        sm.tick(DT, 3.0, true, claim.velocity);
+        assert_eq!(sm.phase(), StartupPhase::Confirm);
+        match run_confirm(&mut sm, i, r, l, lambda, claim) {
+            ConfirmResult::SeedAndHandoff { angle, velocity } => {
+                assert!(
+                    (velocity - omega_r).abs() < 0.3 * omega_r,
+                    "seed velocity {velocity} vs rotor {omega_r}"
+                );
+                assert!(
+                    angle_difference(angle, theta).abs() < 0.2,
+                    "seed angle {angle} vs rotor {theta}"
+                );
+            }
+            other => panic!(
+                "expected immediate SeedAndHandoff from the fast rotor, got {other:?}"
+            ),
+        }
+        assert!(!sm.is_active());
     }
 
     #[test]

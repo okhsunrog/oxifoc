@@ -669,17 +669,23 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
         gain/lag vs free-rotor momentum + drag asymmetry). Consider a
         proper speed loop or a wider taper; harmless (bounded, no
         faults) but ugly and it visits the ISR wall.
-      - [ ] **Ramp slip-ratchet + one-sided confirm**: the rotor runs
-        AHEAD of the 90 rad/s I/f ramp (probe reads 520–580 el rad/s at
-        the handoff gates — consistent across every run), the observer
-        under-reads (~195, envelope-capped pre-handoff), and
-        feed_confirm's vel_ok is one-sided (probe ≥ 0.5×claim: a probe
-        3× ABOVE the claim "confirms"). The handoff works because the
-        observer catches up to reality post-handoff, but the ramp is
-        not actually dragging this rotor at 1.5 A — it is kicking it
-        forward pole by pole. Revisit ramp current/rate and make
-        confirm two-sided (|probe − claim| band) once the ceiling work
-        settles.
+      - [x] **~~Ramp slip-ratchet + one-sided confirm~~ FIXED
+        (2026-07-07 evening, fastseed-1/v1-v3)**: confirm's velocity
+        check is now two-sided (probe ≤ 2×claim as well), and a single
+        probe reading ≥ 300 el rad/s that fails HIGH seeds the observer
+        immediately (CONFIRM_FAST_SEED_VEL — retrying against a
+        ratcheting rotor probes ever-faster short currents: confirm2-2
+        tripped the 10.8 A OC on the retry at rotor ~750). Also
+        DEADSHORT_MAX_CURRENT_A 15 → 8 A: the old cap sat ABOVE the
+        10.8 A OC trip and could never engage — any deadshort at speed
+        (flying restart!) faulted instead of capping. Bench 3/3: one
+        start, first probe measures the truth (549–569 vs claim ~195),
+        immediate seed, full maneuver, zero gaps/faults. The RAMP
+        itself still cannot drag this unloaded rotor at 1.5 A (it
+        ratchets ahead by design deficit — revisit ramp current/rate
+        someday, low priority now that the handoff measures instead of
+        trusting); the ~5 A blip at handoff is the probe's own short
+        current (λω/|Z| — physics, brief, by design).
       - [ ] **Tracker rides its 0.6 hard clamp through hard
         acceleration** (gap pinned 0.62–0.67 the whole climb =
         commutating ~35° behind the estimate; torque factor cos ≈ 0.83
