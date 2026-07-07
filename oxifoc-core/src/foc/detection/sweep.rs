@@ -1068,12 +1068,18 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
 /// `f_sw/2` here) — compare the R(f)/L(f) trend, not that single point.
 #[cfg(feature = "impedance-sweep")]
 const SWEEP_FREQ_FRACTIONS: [f32; 6] = [
-    0.025, // f_sw/40 ≈ 500 Hz  (40 samples/carrier period)
-    0.045, //         ≈ 900 Hz  (22.2)
-    0.084, //         ≈ 1680 Hz (11.9)
-    0.135, //         ≈ 2700 Hz (7.4)
-    0.185, //         ≈ 3700 Hz (5.4)
-    0.232, //         ≈ 4640 Hz (4.3) — top: off f_sw/4 so the phase grid precesses
+    // Regridded 2026-07-08 for the eddy-ladder fit: the L(f) transition
+    // between the fundamental (86/129 µH, voltage-pulse) and the AC
+    // plateau (24 µH) has its corner at 1/(2πτ_e) ≈ 500 Hz — the old
+    // 500–4640 Hz grid STARTED at the corner and measured only the
+    // plateau. The mid-band slip transients the observer ladder must
+    // compensate are 100–300 Hz events.
+    0.005,  // ≈ 100 Hz (200 samples/carrier period)
+    0.0095, // ≈ 190 Hz
+    0.0175, // ≈ 350 Hz
+    0.025,  // ≈ 500 Hz
+    0.045,  // ≈ 900 Hz
+    0.084,  // ≈ 1680 Hz
 ];
 
 /// Accumulate the in-phase and quadrature current response to the rotating
@@ -1245,7 +1251,15 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
             params.resistance_ohm * params.resistance_ohm + (omega * l_seed) * (omega * l_seed),
         )
         .max(params.resistance_ohm);
-        let v = clamp_f32(i_target * z_pred, 0.2, headroom);
+        // Amplitude floor 0.8 V (2026-07-08): at the old 0.2 V floor the
+        // carrier was SMALLER than the inverter dead-time distortion
+        // (~0.35 V effective) and the low-frequency points came back
+        // non-physical (|Z| below the DC resistance at 350 Hz,
+        // reproducible across runs — systematic distortion, not noise).
+        // The ripple current this draws at the low end (~0.8/0.14 ≈ 5 A
+        // pk, d-axis, standstill) is reactive; the dissipated power
+        // (i²R/2 ≈ 1.6 W) stays inside the detection budget.
+        let v = clamp_f32(i_target * z_pred, 0.8, headroom);
         let mut inj = HfiInjector::<S>::new(f, v, pwm_freq_hz);
         let (r_f, l_f, z) =
             measure_impedance_at::<H, S>(hw, &mut inj, vd_hold, dt, lag, params.resistance_ohm)

@@ -154,6 +154,19 @@ pub async fn init(
     // detection measures J.
     if config.motor_params.is_some() {
         phase_manager.set_observer_accel_prior(500.0, 3400.0);
+        // Observer eddy L(f) ladder with MEASURED parameters (2026-07-08,
+        // on-device impedance sweep, 100–1680 Hz grid at 0.8 V carrier —
+        // scripts session log): single-pole fit L_hf = 15 µH,
+        // ΔL = 155 µH, τ = 1.39 ms (all six points within ~15%). The
+        // mid-band slip transients are 100–300 Hz events where the true
+        // stator flux follows L(f) ≈ 35–103 µH — the flat 24 µH the
+        // integrator subtracts under-removes stator flux and every slip
+        // kicks the flux vector (the ratchet dossier). The earlier GUESSED
+        // ladder (ΔL 105 µH, τ 0.3 ms) failed because its corner sat 5×
+        // too high: at 200–300 Hz it over-compensated ~3×. ΔL here bridges
+        // from the baked AC L (24 µH) to the measured DC value
+        // (~170 µH at the probe bias): 146 µH.
+        phase_manager.set_observer_eddy_ladder(146e-6, 1.4e-3);
         // Commutation phase tracker (freq-led REDESIGN, 2026-07-08): a
         // critically-ish damped 2nd-order PLL on the observer angle —
         // torque axis stays with the observer (the frequency-led
