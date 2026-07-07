@@ -49,6 +49,14 @@ import pyarrow.parquet as pq
 REPO = Path(__file__).resolve().parent.parent
 CLI = REPO / "target" / "release" / "oxifoc-host-cli"
 
+# Set from --transport; the g431 bench is RTT, the CF2/f405 bench is USB.
+TRANSPORT = "rtt"
+# Optional --elf/--chip overrides: oxifoc-host.toml's elf/chip keys name ONE
+# board; on any other board the defmt table is wrong (device log lines
+# vanish) and the RTT control-block pin never routes.
+ELF: str | None = None
+CHIP: str | None = None
+
 # Seconds of coast-down between scenarios: the terminal `stop` gates off,
 # the rotor freewheels from the ~7.6k erpm ceiling and needs a few seconds
 # to reach standstill (see maneuvers/coast-decay.json) so the next
@@ -72,7 +80,9 @@ MARK_RESTART = (
 )
 MARK_FAULT = (
     "FOC step error",     # dq overcurrent trip (state.rs)
-    "FAULT",              # OverVoltage / UnderVoltage / HW overcurrent COMP
+    # Colon matters: "OverVoltage FAULT:", "HW overcurrent FAULT:" are
+    # faults; the f405 boot line "DRV8301 nFAULT monitor started" is not.
+    "FAULT:",
 )
 RE_ISR = re.compile(r"isr/s: n=(\d+) avg=(\d+) max=(\d+) over=(\d+) load_pct=(\d+)")
 RE_TRACING = re.compile(r"^\d{4}-\d{2}-\d{2}T\S+\s+(\w+)\s+(\S+?):\s?(.*)$")
@@ -114,16 +124,38 @@ SCENARIOS = {
     ),
 }
 
+# Per-board overrides (--board). The CF2's current sense is 0.5 mΩ × 10 V/V
+# = 161 mA/LSB (ia noise σ ≈ 0.5 A): a 0.3 A cruise command sits BELOW the
+# measurement noise floor — the loop cannot deliver recovery pulses and the
+# rotor decays off the ceiling (bench 2026-07-07, cf2-baseline-1). The CF2
+# scenario cruises at 1.0 A instead, and the same noise directly modulates
+# torque, so the erpm-std gate is wider (measured 4.8%).
+BOARD_OVERRIDES = {
+    "g431": {},
+    "cf2": {
+        "spin-punch": dict(
+            maneuver="maneuvers/spin-punch-cf2.json",
+            cruise=dict(ev_from=1, ev_to=2, settle_s=1.0,
+                        erpm_std_frac_max=0.06, erpm_min=6500.0),
+            # 1.5 A command measures 1.35-1.46 A here (±161 mA LSB + board
+            # gain/dead-time differences vs the g431's 1.44-1.46).
+            climb=dict(ev_from=0, iq_median_min=1.3),
+        ),
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 def run_cli(args: list[str], timeout: float) -> tuple[int, list[str], str]:
     """Run the host CLI; split stdout into tracing/device log lines and the
     non-tracing remainder (the --json document)."""
+    elf_args = ["--elf", ELF] if ELF else []
+    if CHIP:
+        elf_args += ["--chip", CHIP]
     proc = subprocess.run(
-        # The canonical g431 firmware is transport-rtt: force RTT here so a
-        # serial_path in oxifoc-host.toml can't route the suite to a UART
-        # the firmware doesn't serve.
-        [str(CLI), "--transport", "rtt", *args],
+        # Explicit transport so a serial_path in oxifoc-host.toml can't
+        # route the suite to a UART the firmware doesn't serve.
+        [str(CLI), "--transport", TRANSPORT, *elf_args, *args],
         cwd=REPO,  # oxifoc-host.toml (chip/elf/probe) is loaded from cwd
         capture_output=True,
         text=True,
@@ -322,7 +354,23 @@ def main() -> int:
     ap.add_argument("--out-dir", default=None,
                     help="capture/report directory (default: captures/bench/<UTC>)")
     ap.add_argument("--json", action="store_true", help="JSON report on stdout")
+    ap.add_argument("--transport", default="rtt", choices=["rtt", "usb", "serial"],
+                    help="host transport (g431 bench: rtt; CF2/f405 bench: usb)")
+    ap.add_argument("--elf", default=None,
+                    help="firmware ELF for defmt decoding (required when the "
+                         "bench board differs from oxifoc-host.toml's elf)")
+    ap.add_argument("--chip", default=None,
+                    help="probe-rs chip name for the rtt transport (required "
+                         "when the bench board differs from oxifoc-host.toml)")
+    ap.add_argument("--board", default="g431", choices=BOARD_OVERRIDES,
+                    help="bench board profile (scenario/threshold overrides)")
     args = ap.parse_args()
+    global TRANSPORT, ELF, CHIP
+    TRANSPORT = args.transport
+    ELF = args.elf
+    CHIP = args.chip
+    for name, override in BOARD_OVERRIDES[args.board].items():
+        SCENARIOS[name] = {**SCENARIOS[name], **override}
 
     if not CLI.exists():
         print(f"{CLI} missing — build it: cargo build --release -p oxifoc-host-cli",

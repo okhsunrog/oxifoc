@@ -955,6 +955,48 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
   estimator-campaign dossier from this file to docs/archive (it is
   closed history now); prior-OFF under LOAD once load testing starts
   (the backstop's only unprovoked class).
+- [x] **CF2 (f405) BENCH BROUGHT UP — 2026-07-07 same evening**, same
+  ZD2808 motor, sensorless. Full benchsuite PASS (`--board cf2`,
+  captures/bench/cf2-baseline-3): 1 cold start / 1 confirm handoff,
+  zero faults/gaps, ISR ≤ 70%, cruise 7782±363 (4.7%). Port landed:
+  ART accelerator enable (embassy F4 writes ACR with latency only —
+  A/B measured 34%→26% ISR at idle), DWT ISR profiling + isr/s stats
+  task (same line format as g431), config-driven boot source (stored
+  hall calibration → Hall, none → Observer/Manual — no compile-time
+  SENSORLESS switch, this board persists config), tracker 100/1.2
+  (accel prior deliberately NOT set until measured on this board),
+  boot-time `STATE.phase_source` mirror (status used to report the
+  struct default Hall forever). Detection over USB: R=0.134 Ω,
+  AC L=16.3/11.6 µH (HFI method — plausible vs the pulsating-sweep
+  ~17 µH flat), λ=1.32 mWb (Kv 597); fundamental Ld/Lq set manually
+  (85.7/129.4 — detection still does not fill those fields), rating
+  7.0 A / 10 W, ceiling 800 + PSU-safe limits via config (persist!).
+  **USB transport: 20 kHz fast telemetry loss-free at 29% ISR** (the
+  g431/RTT ceiling was 2 kHz) — the CF2 runtime transport of choice.
+- [ ] **CF2: 0.3 A cruise = frozen-observer DEADLOCK reproducer
+  (2026-07-07, captures/bench/cf2-baseline-1/spin-punch.parquet).**
+  The CF2 current sense (0.5 mΩ × 10 V/V = 161 mA/LSB, ia noise
+  σ≈0.5 A) cannot regulate a 0.3 A command: cruise held 0.6 s, decayed
+  off the ceiling, then **erpm froze at exactly −476 with vq=0.00 for
+  4.7 s under a nonzero (0.3 A) drive command — and the trust-loss
+  restart NEVER fired** (g431 restarts after 0.5 s untrusted). Either
+  the angle stayed nominally "trusted" while the estimate was dead, or
+  the restart path has an f405-specific hole. Needs obs-debug-telem
+  forensics on this board. The sub-noise cruise itself is physics
+  (board/motor mismatch, scenario now cruises at 1.0 A — benchsuite
+  `--board cf2`), but the silent deadlock is a real estimator-hardening
+  gap: reproducer-#4 family.
+- [ ] **ergot: defmt topic frames never reach the host over the USB
+  transport (2026-07-07).** Device-side `forward_to_ergot_topic`
+  broadcasts succeed (inline counter: sent>0, errs=0) and
+  fast-telemetry topic broadcasts DO cross the same link, but no defmt
+  TOPIC_MSG ever appears on the wire (host `ergot=trace` shows only
+  the 24-byte slow-telemetry traffic). Suspect the borrowed-broadcast
+  external-send path (`broadcast()` folds a benign remote no-route
+  into Ok, so the device can't even tell). Fix belongs in the ergot
+  fork. Bench interim: build CF2 firmware with `transport-rtt` IN
+  ADDITION to usb (features are additive; defmt rides RTT ch0, the
+  suite runs `--transport rtt --chip STM32F405RGTx --elf <f405 elf>`).
 - [ ] **embassy-time thread-timer freeze under ISR load (g431, 2026-07-05)** —
   moving the RTT TX loop to a SAI1 InterruptExecutor (P6) froze ALL
   thread-executor embassy timers for a deterministic ~44.93 s while

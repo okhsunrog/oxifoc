@@ -1,0 +1,11 @@
+{
+  "name": "spin-punch-cf2",
+  "description": "CF2/ZD2808 variant of spin-punch-15-2k: cruise at 1.0 A instead of 0.3 - the CF2 current sense (0.5 mOhm x10 = 161 mA/LSB, ia noise sigma ~0.5 A) cannot regulate a 0.3 A command; 2026-07-07 bench: 0.3 A cruise collapsed at t+0.6 s into a frozen-observer coast (see TODO).",
+  "capture": { "fast_hz": 2000, "tail_s": 0.5 },
+  "terminal": "stop",
+  "timeline": [
+    { "t": 0.5, "cmd": { "start": { "iq": 1.5 } } },
+    { "t": 3.0, "cmd": { "start": { "iq": 1.0 } } },
+    { "t": 8.0, "cmd": { "start": { "iq": 0.0 } } }
+  ]
+}
