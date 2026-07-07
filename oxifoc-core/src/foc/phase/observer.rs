@@ -906,8 +906,10 @@ impl BackEmfObserver {
         // Advance the readiness Schmitt latch: evaluated against the
         // PREVIOUS latch state (that is what makes it hysteresis), stored
         // for the next cycle and for `is_ready` callers in between.
+        let prof_t2 = crate::isr_prof::now();
         self.refresh_readiness_err();
         self.ready_latched = self.is_ready();
+        crate::isr_prof::add(&crate::isr_prof::OBS_TAIL, prof_t2, crate::isr_prof::now());
     }
 
     /// Get estimated electrical phase (radians)

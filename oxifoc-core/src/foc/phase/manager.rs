@@ -852,6 +852,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// One step of the commutation phase tracker (see [`PhaseTracker`]).
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn tracker_output(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
+        let prof_t0 = crate::isr_prof::now();
+        let out = self.tracker_output_inner(raw, dt);
+        crate::isr_prof::add(&crate::isr_prof::OUT_TRK, prof_t0, crate::isr_prof::now());
+        out
+    }
+
+    #[cfg_attr(feature = "isr-speed", optimize(speed))]
+    fn tracker_output_inner(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
         let tr = &mut self.tracker;
         if !tr.active {
             // ANGLE from the estimate (zero initial gap — the same angle

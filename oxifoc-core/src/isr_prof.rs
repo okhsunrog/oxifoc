@@ -49,6 +49,17 @@ pub static EST_OUT: AtomicU32 = AtomicU32::new(0);
 /// `step_current_control` gate: `CurrentSensor::read_currents`. Subset of
 /// [`STEP_GATE`].
 pub static GATE_CURR: AtomicU32 = AtomicU32::new(0);
+/// `compute_phase_with_fallback`: `tracker_output` alone. Subset of
+/// [`EST_OUT`] — splits the phase-tracker math from the source-dispatch
+/// glue around it (2026-07-07 drive-state cost forensics: EST_OUT runs
+/// ~1 000 cy in ANY drive state while the tracker body is ~200
+/// instructions — find where the other ~700 live).
+pub static OUT_TRK: AtomicU32 = AtomicU32::new(0);
+/// `BackEmfObserver::update`: the readiness tail (velocity-slope filter,
+/// cached lag-compensated error, Schmitt latch). Subset of [`EST_OBS`] —
+/// isolates the 2026-07-07 readiness additions (+280 cy A/B against
+/// 87afa17, ~3× their arithmetic).
+pub static OBS_TAIL: AtomicU32 = AtomicU32::new(0);
 
 /// Current DWT cycle count (0 when profiling is compiled out).
 #[inline(always)]

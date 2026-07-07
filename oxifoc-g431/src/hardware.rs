@@ -60,7 +60,18 @@ pub fn init_clock() -> Peripherals {
         // ADC clock source: use SYSCLK (170MHz)
         config.rcc.mux.adc12sel = mux::Adcsel::SYS;
     }
-    embassy_stm32::init(config)
+    let p = embassy_stm32::init(config);
+    // Flash PREFETCH: embassy's G4 RCC init sets latency (4 WS at 170 MHz)
+    // and the I/D caches but leaves PRFTEN off (read back 0x00040604,
+    // 2026-07-07). Without prefetch every cache-line boundary in the
+    // 20 kHz FOC hot path stalls the full 4 WS — DWT profiling measured
+    // CPI ≈ 2.5 on branchy estimator code (tracker: ~200 instructions,
+    // 542 cycles). One bit, measured on the openloop-960 staircase:
+    // see docs/TODO.md ISR-budget entry.
+    embassy_stm32::pac::FLASH
+        .acr()
+        .modify(|w| w.set_prften(true));
+    p
 }
 
 /// OPAMP channels returned from initialization

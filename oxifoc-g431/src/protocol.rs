@@ -380,14 +380,19 @@ pub async fn telem_stats_task() {
                     p::STEP_EST.swap(0, Ordering::Relaxed) / cyc_n,
                 );
                 // est internals (manager.update): obs = flux integrator +
-                // atan2 + PLL, startup = cold-start sequencer block, out =
-                // source dispatch + velocity + output cache. Remainder vs
-                // est above = hall/encoder sampling + health checks.
+                // atan2 + PLL (otail = its readiness tail: slope filter +
+                // lag-compensated error + Schmitt latch), startup =
+                // cold-start sequencer block, out = source dispatch +
+                // velocity + output cache (trk = the phase tracker alone).
+                // Remainder vs est above = hall/encoder sampling + health
+                // checks.
                 defmt::info!(
-                    "isre/s: obs={} startup={} out={}",
+                    "isre/s: obs={} (otail={}) startup={} out={} (trk={})",
                     p::EST_OBS.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::OBS_TAIL.swap(0, Ordering::Relaxed) / cyc_n,
                     p::EST_STARTUP.swap(0, Ordering::Relaxed) / cyc_n,
                     p::EST_OUT.swap(0, Ordering::Relaxed) / cyc_n,
+                    p::OUT_TRK.swap(0, Ordering::Relaxed) / cyc_n,
                 );
             }
         }
