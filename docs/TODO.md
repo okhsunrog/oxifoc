@@ -641,19 +641,29 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       3 990 ± 570, 2% micro-chops. The "band oscillation" as a
       phenomenon is gone from the telemetry.
       OPEN (new, ranked):
-      - [ ] **ISR cost grows with speed — the hard wall at
-        ~650 el rad/s** (the real blocker for anything faster, and the
-        prior "estimator bench attempt blocked (ISR saturation)"): the
-        est-chain `out` bucket runs 176 cy @420 el rad/s → 1 090 cy
-        @~700 (superlinear; `obs` 967 → 1 595), sustained cruise at the
-        ceiling = 91–95% load, past the wall the core saturates
-        (overrun cascade → thread mode starved ~1 s → deadman,
-        gate-fix-6/7/8 at 11.5 k/8 k/7.7 k erpm peaks). hall_edges=0 —
-        the TIM4 float-storm hypothesis is DEAD; wrap_angle/
-        angle_difference are O(1) (checked); tracker theta wraps. Needs
-        the PC-sampling profiler AT SPEED. Also single ≥21 k-cy ISR
-        passes at ~300/s even mid-ramp (max=18–27 k, old max ≈ 12 k) —
-        find what occasionally triples a pass.
+      - [x] **~~ISR speed wall~~ SOLVED (2026-07-07 profiler session):
+        it was flash prefetch, not speed.** The openloop 30→960 el
+        rad/s staircase showed the est-chain cost FLAT with speed
+        (saturates by ~120 el rad/s: drive-state cost, tracker +
+        full estimator active). The deadman cascades were stall
+        pileups: FLASH_ACR read back 0x00040604 — 4 WS, I/D caches
+        on, **PRFTEN OFF** (embassy G4 RCC never enables it) — CPI
+        ≈ 2.5 on the branchy hot path (tracker: ~200 instructions,
+        542 cy, measured via the new OUT_TRK/OBS_TAIL buckets). One
+        bit in init_clock: drive avg 7 075 → 6 400 cy openloop,
+        closed loop 91–95% → 82–83%, worst single pass 20 k → 7.5 k,
+        overruns → 0, first loss-free 2 kHz closed-loop captures.
+        Speed ceiling re-raised 400 → 800 el rad/s and validated
+        (ceil800-1: full punch maneuver at 7–10 k erpm, zero
+        gaps/faults, 82% flat; 0.3 A cruise ±6%). REMAINING shave
+        candidates (not blockers): observer update ≈ 1 400 cy (divs
+        in e_q normalization etc.), tracker per-cycle `dt/τ`
+        divisions (alphas are constants for fixed dt — precompute),
+        EST_OUT dispatch glue ≈ 450 cy, occasional 20–26 k passes
+        during command processing (~5–15/s, thread-visible only).
+        Also noted: at 600+ el rad/s OPENLOOP (0.5 A passive), the
+        observer dropped readiness mid-staircase in one run — likely
+        a real pole-slip of the lightly-driven rotor, but watch it.
       - [ ] **Ceiling hunt**: even with the per-cycle cut, 1.5 A hunts
         3.2↔7.2 k erpm at ~3 Hz around the 3.8 k ceiling (governor
         gain/lag vs free-rotor momentum + drag asymmetry). Consider a

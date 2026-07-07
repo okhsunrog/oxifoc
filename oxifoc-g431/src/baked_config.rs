@@ -140,18 +140,20 @@ pub fn baked() -> RuntimeConfig {
         // ~30% past the ceiling before drag settles it. Raise on G474-class
         // hardware or after the next ISR shave.
         //
-        // Ceiling 400 / rolloff from 0.5× = 200: sized so the free-rotor
-        // momentum OVERSHOOT (~1.3-1.6× past the ceiling at 9 300 el
-        // rad/s², measured on the 600- and 500-ceiling probes: peaks 973
-        // and 808 el rad/s) stays under the ISR wall — the per-cycle FOC
-        // cost grows with speed (isre `out` 176 cy @420 el rad/s →
-        // 1 090 cy @~700, cause unknown, see docs/TODO.md) and past
-        // ~650 el rad/s the core saturates: overrun cascade, thread mode
-        // starved for ~1 s, deadman failsafe (gate-fix-6/7/8). 400 keeps
-        // the overshoot peak ≤ ~550 and the sustained cruise ~3.8 k erpm —
-        // the bench-proven regime, now STEADY instead of gate-chattered.
+        // Ceiling 800 / rolloff from 0.5× = 400. History: first sized at
+        // 400 for what looked like an ISR speed wall at ~650 el rad/s
+        // (deadman cascades, gate-fix-6/7/8) — the profiler session then
+        // showed the est-chain cost is FLAT with speed and the cascades
+        // were flash-prefetch stalls (PRFTEN off, see hardware.rs
+        // init_clock); with prefetch on, closed-loop drive runs 82–83%
+        // load at any speed and the openloop staircase held 960 el rad/s
+        // loss-free. 800 (~7.6 k erpm) + the ~1.3× free-rotor momentum
+        // overshoot keeps the peak near ~1 000 el rad/s — comfortable ISR
+        // margin, and still 2× under the current-loop quality limit
+        // (~2 000 el rad/s, where the un-ceilinged 1.5 A free spin lost
+        // regulation and tripped OC).
         derating: Some(oxifoc_core::storage::DeratingConfigStored {
-            max_speed_erad_s: 400.0,
+            max_speed_erad_s: 800.0,
             speed_start_frac: 0.5,
             ..oxifoc_core::storage::DeratingConfigStored::default()
         }),
