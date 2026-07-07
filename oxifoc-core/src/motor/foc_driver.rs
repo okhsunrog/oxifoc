@@ -1166,15 +1166,21 @@ where
         // Debug fast-frame mapping (bench estimator forensics): repurpose
         // three columns with observer internals — velocity/erpm ← PLL ω̂
         // (ALWAYS the observer, not the active source), angle ← phase_pll,
-        // vd ← instantaneous PLL error (phase_raw is then recoverable
-        // offline as angle+vd). Currents/vq/vbus stay honest. The wire
+        // vd ← DRIVE-frame-vs-estimate gap `Δ(active_angle, phase_pll)`
+        // (2026-07-07 freq-led high-speed OC forensics: the offline flux
+        // replay aliases above ~2 k erpm at bench capture rates, so the
+        // standing load-angle question — does the commutation frame really
+        // ride 75–90° off the estimate/rotor — needs an on-device signal;
+        // the earlier vd ← PLL error is recoverable from an eddy-plant sim
+        // but this gap is not). Currents/vq/vbus stay honest. The wire
         // format is untouched, so host decode/enrichment work unchanged —
         // just read the capture knowing the mapping.
         #[cfg(feature = "obs-debug-telem")]
-        if let Some((pll, raw, vel)) = self.phase.debug_observer() {
+        if let Some((pll, _raw, vel)) = self.phase.debug_observer() {
+            let drive_angle = out.angle_rad;
             out.velocity_rad_s = vel;
             out.angle_rad = pll;
-            out.vd = crate::foc::angle_difference(raw, pll);
+            out.vd = crate::foc::angle_difference(drive_angle, pll);
         }
         Ok(out)
     }

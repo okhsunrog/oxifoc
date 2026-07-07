@@ -76,6 +76,16 @@ pub enum HallHealth {
 ///
 /// Enabled via [`PhaseManager::set_freq_led`]; off by default (raw
 /// observer output, previous behavior).
+/// Hunting-damper gain: fraction of the slew-crushed velocity error fed
+/// back into the frame's angle advance (see the damper block in
+/// [`PhaseManager::freq_led_output`]). 0 = original undamped filter.
+const FREQ_LED_DAMP: f32 = 0.5;
+
+/// Hunting-damper low-pass (s): passes the 8–20 Hz rotor-hunting band,
+/// rejects the 35–100 Hz mid-band estimate wobble the filter exists to
+/// crush.
+const FREQ_LED_DAMP_TAU_S: f32 = 0.012;
+
 #[derive(Clone, Copy, Default)]
 struct FreqLed {
     /// Max |dω/dt| the commutation frequency may follow (el rad/s²);
@@ -89,6 +99,8 @@ struct FreqLed {
     active: bool,
     theta: f32,
     omega: f32,
+    /// Low-passed hunting-damper feed (rad/s) — see FREQ_LED_DAMP.
+    damp_filt: f32,
 }
 
 /// Open-loop override state for startup or Hall failure recovery
@@ -803,15 +815,72 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     fn freq_led_output(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
         let fl = &mut self.freq_led;
         if !fl.active {
-            fl.theta = self.output.angle;
+            // Seed from the OBSERVER, not from the last (open-loop ramp)
+            // output. The obs-debug capture dbg-delta-1 (2026-07-07)
+            // settled this: the frame rode at a rock-steady −87°±1° from
+            // phase_pll through the whole climb, and NO frame-side pull
+            // can close that gap — the rotor is synchronously locked to
+            // the frame's current vector and the PLL tracks the rotor, so
+            // a pull just accelerates the whole ensemble while the
+            // RELATIVE geometry stays frozen at whatever the seed baked
+            // in. The old `self.output` continuity seed froze the startup
+            // ramp's load angle (≈90° at the capture-hold currents) into
+            // the cruise: torque-per-amp near zero, the ride balanced on
+            // the flat top of the torque curve, and every high-speed run
+            // ended in dq OC (2533–2950 rad/s el). Seeding from raw is
+            // exactly the angle step a plain (no freq-led) confirmed
+            // handoff performs — 3/3 clean all day on the bench.
+            // ANGLE from raw, FREQUENCY from the last output: the
+            // instantaneous raw.velocity carries the full estimate wobble
+            // (hundreds of rad/s mid-band) and a velocity seed that far
+            // off entrains the bang-bang slew limiter into a persistent
+            // wobble-locked orbit (sim: 60 Hz crush ratio 0.22 → 0.76).
+            // The outgoing ramp's frequency is already ≈ the rotor's.
+            fl.theta = raw.angle;
             fl.omega = self.output.velocity;
+            fl.damp_filt = 0.0;
             fl.active = true;
         }
         let max_dv = fl.rate * dt;
-        fl.omega += crate::foc::clamp_f32(raw.velocity - fl.omega, -max_dv, max_dv);
+        let vel_err = raw.velocity - fl.omega;
+        fl.omega += crate::foc::clamp_f32(vel_err, -max_dv, max_dv);
+        // Hunting damper. A slew-limited synchronous frame is stiff but
+        // undamped, and a PM rotor on it has the classic hunting mode
+        // ω_h = √(1.5·pp²·λ·|i|/J) ≈ 8–14 Hz — bench 2026-07-07
+        // (captures/t3-fl-punch-1): the load angle swung at ~14 Hz with
+        // growing amplitude until dq OC at ~2950 rad/s el, on both
+        // canonical maneuvers, deterministically. `vel_err` is a direct
+        // measurement of the swing: while fl.omega can follow raw within
+        // the slew rate the residual is ~0 (frame follows the rotor, no
+        // relative swing, nothing to damp); once the slew limiter binds —
+        // exactly when the frame becomes stiff — the crushed remainder
+        // shows up here, and feeding a fraction of it into the angle
+        // advance lets the frame yield WITH the swing (energy out). The
+        // low-pass keeps the 35–100 Hz mid-band wobble (the reason this
+        // filter exists) out of the damper: τ = 12 ms passes ~0.7 of
+        // 14 Hz and ~0.2 of 60 Hz.
+        //
+        // Two rejected alternatives, both bench-fatal (fade-punch-1,
+        // fade2-punch-1, OC ~1000 rad/s el): a low-passed phase PULL
+        // (lagged restoring force = NEGATIVE damping at the hunting
+        // frequency — it pumped the mode it was meant to hold), and a
+        // speed-faded state blend to raw (slams the frame across the
+        // standing load angle — the ride carries δ up to ~77°, the
+        // torque-balance angle of the slewed frame, vd ≈ −λω in the
+        // captures).
+        let a_d = (dt / FREQ_LED_DAMP_TAU_S).min(1.0);
+        fl.damp_filt += a_d * (FREQ_LED_DAMP * vel_err - fl.damp_filt);
+        // NOTE on what the pull can and cannot do (dbg-delta-1 lesson):
+        // in cruise the rotor is synchronously locked to the frame's
+        // current vector and the PLL tracks the rotor, so the RELATIVE
+        // frame-vs-estimate geometry is set by the SEED and by torque
+        // balance — a stronger/integral pull mostly accelerates the whole
+        // ensemble (an integral term was tried and only leaked wobble
+        // into the frequency once the slew limiter saturated). The pull's
+        // real job is rejecting estimate wobble around that geometry.
         let pull =
             crate::foc::clamp_f32(angle_difference(raw.angle, fl.theta), -0.8, 0.8) * fl.k_theta;
-        fl.theta = wrap_angle(fl.theta + (fl.omega + pull) * dt);
+        fl.theta = wrap_angle(fl.theta + (fl.omega + fl.damp_filt + pull) * dt);
         PhaseOutput {
             angle: fl.theta,
             velocity: fl.omega,
@@ -1758,6 +1827,57 @@ mod tests {
     use crate::foc::hall_sensor::HallSensor;
     #[cfg(feature = "virtual-motor")]
     use crate::virtual_motor::VirtualMotorOutput;
+
+    /// Freq-led filter shape (see FREQ_LED_DAMP/_TAU_S): the 35-100 Hz
+    /// mid-band estimate wobble is crushed, while hunt-band content
+    /// (8-20 Hz, large enough that the frequency slew limiter binds) is
+    /// substantially FOLLOWED - that yielding is the hunting damper; an
+    /// undamped stiff frame ended every high-speed run in dq OC at
+    /// ~2950 rad/s el (captures/t3-fl-punch-1).
+    #[test]
+    fn freq_led_crushes_wobble_but_yields_to_hunt_band() {
+        let dt = 1.0 / 20_000.0;
+        // Feed raw = clean ramp + A*sin(2pi f t); return the ratio of the
+        // output's residual wobble (vs the clean ramp) to A.
+        let follow_ratio = |omega0: f32, amp: f32, f_hz: f32| -> f32 {
+            let mut m = PhaseManager::sensorless();
+            m.set_freq_led(5000.0, 30.0);
+            m.output = PhaseOutput {
+                angle: 0.0,
+                velocity: omega0,
+            };
+            let mut theta_clean = 0.0f32;
+            let mut max_dev = 0.0f32;
+            for k in 0..10_000 {
+                theta_clean = wrap_angle(theta_clean + omega0 * dt);
+                #[allow(clippy::cast_precision_loss)]
+                let ph = TAU * f_hz * (k as f32) * dt;
+                let raw = PhaseOutput {
+                    angle: wrap_angle(theta_clean + amp * libm::sinf(ph)),
+                    velocity: omega0 + amp * TAU * f_hz * libm::cosf(ph),
+                };
+                let out = m.freq_led_output(raw, dt);
+                if k >= 9_000 {
+                    max_dev = max_dev.max(angle_difference(out.angle, theta_clean).abs());
+                }
+            }
+            max_dev / amp
+        };
+        // Mid-band wobble (60 Hz, 1.2 rad): crushed.
+        let r_wobble = follow_ratio(500.0, 1.2, 60.0);
+        assert!(
+            r_wobble < 0.3,
+            "60 Hz wobble must be crushed, ratio {r_wobble}"
+        );
+        // Hunt band (14 Hz, 1.0 rad - accel 7.7k rad/s^2, the 5000 slew
+        // binds): the frame must yield with the swing.
+        let r_hunt = follow_ratio(1500.0, 1.0, 14.0);
+        assert!(r_hunt > 0.55, "hunt band must be followed, ratio {r_hunt}");
+        assert!(
+            r_hunt > 2.0 * r_wobble,
+            "hunt band must pass much more than the wobble band ({r_hunt} vs {r_wobble})"
+        );
+    }
 
     #[test]
     fn test_sensorless_manager() {
