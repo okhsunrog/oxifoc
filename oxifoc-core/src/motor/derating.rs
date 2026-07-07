@@ -23,6 +23,7 @@
 //! same philosophy as the Layer-2 deadman. The faults of the severity
 //! ladder remain the backstops at the ramp ends.
 
+use crate::foc::clamp_f32;
 #[cfg(feature = "storage")]
 use crate::storage::DeratingConfigStored;
 
@@ -228,7 +229,7 @@ impl DeratingConfig {
         if self.max_speed_erad_s <= 0.0 {
             return 1.0;
         }
-        let start = self.max_speed_erad_s * self.speed_start_frac.clamp(0.0, 1.0);
+        let start = self.max_speed_erad_s * clamp_f32(self.speed_start_frac, 0.0, 1.0);
         ramp_down(omega_e_rad_s.abs(), start, self.max_speed_erad_s)
     }
 }
@@ -257,11 +258,11 @@ fn ramp_down(x: f32, start: f32, end: f32) -> f32 {
     if end <= start {
         return 1.0; // malformed ramp never derates (is_sane rejects writes)
     }
-    ((end - x) / (end - start)).clamp(0.0, 1.0)
+    clamp_f32((end - x) / (end - start), 0.0, 1.0)
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t.clamp(0.0, 1.0)
+    a + (b - a) * clamp_f32(t, 0.0, 1.0)
 }
 
 #[cfg(test)]

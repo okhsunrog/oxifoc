@@ -1773,8 +1773,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             #[cfg(feature = "hfi")]
             {
                 let i_target = match mp.rating_current_a() {
-                    Some(rating) => (super::observer::HFI_RIPPLE_RATING_FRACTION * rating)
-                        .clamp(0.05, super::observer::HFI_CARRIER_RIPPLE_TARGET_A),
+                    Some(rating) => crate::foc::clamp_f32(
+                        super::observer::HFI_RIPPLE_RATING_FRACTION * rating,
+                        0.05,
+                        super::observer::HFI_CARRIER_RIPPLE_TARGET_A,
+                    ),
                     None => super::observer::HFI_CARRIER_RIPPLE_TARGET_A,
                 };
                 let omega_c = HFI_DEFAULT_FREQ_HZ * TAU;

@@ -10,3 +10,15 @@ allow-dbg-in-tests = true
 # default; futures above this size deserve a look at what they hold across
 # await points.
 future-size-threshold = 2048
+
+# f32/f64::clamp's `assert!(min <= max)` pulls panic + core::fmt::float
+# (~13-20 KB) into embedded binaries WHEN THE BOUNDS ARE NOT CONSTANTS
+# (constant bounds const-fold the assert away — which is why a few old call
+# sites never hurt). oxifoc-core is compiled into every firmware image but
+# is linted by THIS workspace, not by the device crates' clippy.toml — so
+# the rule must live here too (2026-07-08: a runtime-bound clamp in core
+# sailed past both clippys and overflowed the g431 flash at link time).
+disallowed-methods = [
+    { path = "f32::clamp", reason = "pulls in panic + core::fmt::float (~20KB on embedded). Use oxifoc_core::foc::clamp_f32" },
+    { path = "f64::clamp", reason = "pulls in panic + core::fmt::float (~20KB on embedded). Use oxifoc_core::foc::clamp_f32" },
+]

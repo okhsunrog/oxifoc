@@ -107,7 +107,7 @@ pub async fn foc_loop(
             } else {
                 offset + i / scale
             };
-            raw.clamp(0.0, f32::from(calib.adc_max_counts)) as u16
+            oxifoc_core::foc::clamp_f32(raw, 0.0, f32::from(calib.adc_max_counts)) as u16
         };
         for _ in 0..batch {
             let mut last_foc_out = foc.step(
