@@ -368,28 +368,61 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       OUT_QUEUE 3328→3264 (observer state grew; .bss was 20 B over).
       REMAINING QUALITY WORK (no longer trip-class): (a) the bounded
       mid-band oscillation itself (~±40% around 450) — the linear onset
-      story (L(f)/loop phase; impedance-sweep); (b) 0.3 A cruise decays
-      to a restart loop — the rotor genuinely spins down (e_q → 0)
-      while estimate oscillation wastes torque; (c) restart-loop
-      quality: DEADSHORT_MIN_CATCH_VEL=60 lets catches at 70–90 rad/s
-      seed a closed loop that can't ride there (below the distortion
-      floor) — raise toward ~120–150 so those go to ramp; (d) λ tracker
-      adapts on garbage during restart churn (validity stays sticky
-      through seeds → tracker legally walks λ to λ₀/2) — tie λ
-      adaptation to slip-gate/BEMF sanity as well.
-      **FREQ-LED COMMUTATION: implemented, sim-gated, parked default-off
-      (2026-07-07).** `PhaseManager::set_freq_led(rate, k_theta)`: the
-      drive follows a slew-limited commutation frequency (open-loop
-      stiffness) with a slow phase pull to the observer; seeds
-      continuity at handoff; sim gate
-      cold_start_with_freq_led_commutation_spins_up. First bench trial
-      (rate 5000 / k_theta 30) did NOT hold the drive: trust-loss
-      restart churn with ISR defmt storms at 126–138% sustained load
-      starved the pump. Its tuning session needs: parameter sweep, the
-      restart-machinery interplay, and QUIETER ISR LOGGING during
-      churn (each startup transition logs multiple defmt frames from
-      the ISR — max single-ISR 26k cycles observed; decimate or move
-      off-ISR).
+      story (L(f)/loop phase; impedance-sweep) — CONFIRMED as the
+      drive-chases-estimate mechanism by freq-led trial 2 below (the
+      filter kills it outright); (b–d) CLOSED 2026-07-07 PM
+      (churn-hygiene commits 50e193c + d96cc9f): DEADSHORT_MIN_CATCH_VEL
+      60→140 (rideability bound; the confirm probe's strong-probe floor
+      stays 60 as CONFIRM_STRONG_PROBE_VEL so the hold-ratchet escape
+      keeps working; a probe window ended by the 15 A cap bypasses the
+      floor — capped = proven-fast rotor, and ramping into one is the
+      worse failure); λ learning now needs EARNED corroboration travel
+      (2 revs since last seed/reset, `lambda_learn_travel` — seeds grant
+      torque validity but not tracker credit; bench: λ stays
+      1.15–1.30 mWb through restarts, no more λ₀/2 walks); and the real
+      0.3 A-cruise killer found and fixed — a mid-cruise restart
+      INHERITS the weak command, so the ramp ran at |i|≈0.1–0.3 A and
+      capture was luck (hold watched a standing rotor at conf 0.95,
+      give-up recycle churn). STARTUP_MIN_DRIVE_A=1.5 floors the drive
+      while the sequencer owns commutation (sign kept, soft-start
+      still applies, bounded by max_current_a; sim gate
+      weak_command_cold_start_captures_via_floor). Bench before/after
+      on spin-punch-15: 3 starts / 2 confirms / 1 give-up-recycle →
+      3/3/0 with ramp-exit |i| 1.9–2.4 A; spin-gentle-180 also 3/3/0.
+      Startup ISR logging is now behind a 10-frames/s token bucket
+      (SensorlessStartup::log_tick/log_allow, dropped frames counted
+      and summarized once per window) — the churn defmt storms
+      (26k-cycle single ISRs, 126–138% load) are structurally capped.
+      **FREQ-LED COMMUTATION: VALIDATED ON THE BENCH, parked pending an
+      ISR tier-3 shave (2026-07-07 PM, trial 2).**
+      `PhaseManager::set_freq_led(rate, k_theta)`: the drive follows a
+      slew-limited commutation frequency (open-loop stiffness) with a
+      slow phase pull to the observer; seeds continuity at handoff; sim
+      gate cold_start_with_freq_led_commutation_spins_up. Trial 2
+      (rate 5000 / k_theta 30, on top of the churn-hygiene fixes) was
+      the FIRST GENUINELY SMOOTH sensorless run: ONE cold start, ONE
+      confirmed handoff, monotone climb 0→24.9k erpm el over 5.6 s
+      (~480 rad/s² el at 1.5 A, still climbing at 0.3 A), zero
+      restarts, λ stable, e_q tracking λ·ω̂ the whole way
+      (captures/freqled2-punch-1) — the mid-band limit cycle and the
+      user-visible jerk are GONE with the filter in. What ended it at
+      t=6.1 s is the ISR BUDGET, not control: the freq-led branch costs
+      ~+600 cy in EST_OUT (300→930 — grossly more than its ~50 cy of
+      arithmetic; needs the PC-profiling pass), on top of a drive
+      baseline that CREPT 6190→~7600 avg since the tier-2 shave (the
+      estimator hardening: slip gate, accel prior, validity/e_q,
+      settled normalization). Loop at 96–103%, over=1200/s,
+      device-executor stalls 20–144 ms, then a fault (iq spike ~7.6 A
+      in the 1 kHz capture, likely dq OC under control jitter) latched
+      Error — and its defmt frame was LOST in the storm (the t=8 ack
+      returned `state: Error, fault_count: 1`; RTT under saturation
+      drops frames — don't trust grep-for-fault alone, check the ack
+      states). NEXT SESSION = ISR TIER-3 SHAVE with freq-led budgeted
+      in (PC-profiling: where did the +1400 baseline and the +600
+      freq-led go), then enable freq-led by default and tune.
+      Also noticed: both floor-* runs show an identical deterministic
+      6240-sample (312 ms) telemetry gap — same family as the ~410 ms
+      host quantum; telemetry-only, control unaffected.
       **DEADMAN FALSE-POSITIVE CLASS root-caused and fixed
       (2026-07-07)**: the host's single ordered command/affirm task
       goes silent for a DETERMINISTIC ~410 ms while an acked command's
