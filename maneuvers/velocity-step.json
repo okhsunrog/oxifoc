@@ -1,0 +1,12 @@
+{
+  "name": "velocity-step",
+  "description": "Velocity-mode step response for the sensorless cruise loop: engage at 300 el rad/s (above the observer floor, below the 800 ceiling), step to 600, back to 300, stop. Gates: overshoot, steady-state error, smoothness, zero restarts.",
+  "capture": { "fast_hz": 2000, "tail_s": 0.5 },
+  "terminal": "stop",
+  "timeline": [
+    { "t": 0.5, "cmd": { "velocity": { "rad_s": 300.0 } } },
+    { "t": 3.5, "cmd": { "velocity": { "rad_s": 600.0 } } },
+    { "t": 6.5, "cmd": { "velocity": { "rad_s": 300.0 } } },
+    { "t": 9.5, "cmd": { "stop": {} } }
+  ]
+}

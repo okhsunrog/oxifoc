@@ -85,6 +85,13 @@ pub struct VelocityLoopConfig {
     /// Reference ramp limit, electrical rad/s² (both accel and decel).
     /// `<= 0` disables the ramp (step targets go straight to the PI).
     pub accel_limit: f32,
+    /// Acceleration feedforward, A per (electrical rad/s²) of REFERENCE
+    /// slew — the motor's measured accel-per-amp inverted (`1/8100` for
+    /// the ZD2808). The ramp's torque is then delivered open-loop and the
+    /// PI only trims disturbances, which removes the ramp-lag overshoot
+    /// entirely instead of trading it against integrator stiffness.
+    /// `0` = off (default).
+    pub accel_ff: f32,
 }
 
 impl Default for VelocityLoopConfig {
@@ -101,6 +108,7 @@ impl Default for VelocityLoopConfig {
             kp: 0.01,
             ki: 0.2,
             accel_limit: 500.0,
+            accel_ff: 0.0,
         }
     }
 }
@@ -116,6 +124,7 @@ impl VelocityLoopConfig {
                     kp: c.kp,
                     ki: c.ki,
                     accel_limit: c.accel_limit,
+                    accel_ff: c.accel_ff,
                 };
                 if candidate.is_sane() {
                     candidate
@@ -132,8 +141,10 @@ impl VelocityLoopConfig {
         self.kp.is_finite()
             && self.ki.is_finite()
             && self.accel_limit.is_finite()
+            && self.accel_ff.is_finite()
             && self.kp >= 0.0
             && self.ki >= 0.0
+            && self.accel_ff >= 0.0
             && (self.kp > 0.0 || self.ki > 0.0)
     }
 }
@@ -217,9 +228,23 @@ impl VelocityLoop {
         iq_max: f32,
         dt: f32,
     ) -> f32 {
-        self.pi.set_limits(iq_min, iq_max);
+        let ref_prev = self.ramp.value();
         let omega_ref = self.ramp.step(omega_target, dt);
-        self.last_iq = self.pi.update(omega_ref, omega_meas, dt);
+        // Acceleration feedforward from the REFERENCE slew (known exactly —
+        // it is our own ramp). Charged against the PI's anti-windup bounds
+        // so back-calculation sees only the PI's own share of the budget
+        // (same rule as the current loop's FF split in controller.rs).
+        let ff = if self.cfg.accel_ff > 0.0 && dt > 0.0 {
+            crate::foc::clamp_f32(
+                (omega_ref - ref_prev) / dt * self.cfg.accel_ff,
+                iq_min,
+                iq_max,
+            )
+        } else {
+            0.0
+        };
+        self.pi.set_limits(iq_min - ff, iq_max - ff);
+        self.last_iq = self.pi.update(omega_ref, omega_meas, dt) + ff;
         self.last_iq
     }
 }
@@ -280,6 +305,7 @@ mod tests {
             kp: 0.05,
             ki: 2.0,
             accel_limit: 5_000.0,
+            accel_ff: 0.0,
         });
         vl.reset(0.0);
         let (omega, _) = run_plant(&mut vl, 0.0, 300.0, 40.0, 40_000); // 2 s
@@ -301,6 +327,7 @@ mod tests {
             kp: 0.5,
             ki: 50.0,
             accel_limit: 0.0, // step target straight in → guaranteed saturation
+            accel_ff: 0.0,
         });
         vl.reset(0.0);
         let (_omega, max_iq) = run_plant(&mut vl, 0.0, 2_000.0, 10.0, 10_000);
@@ -310,6 +337,50 @@ mod tests {
         // the limit-relaxed response wildly. (Back-calculation keeps the
         // integral pinned near the limit.)
         assert!(vl.last_iq() <= 10.0 + 1e-3);
+    }
+
+    #[test]
+    fn accel_feedforward_delivers_ramp_torque_and_cuts_lag() {
+        // Plant accel-per-amp = kt/J = 0.02/5e-5 = 400 (el rad/s²)/A, so
+        // the matched feedforward is 1/400. With it, the ramp torque is
+        // delivered open-loop and the tracking error DURING the ramp must
+        // collapse versus the FF-less loop (which drags a standing
+        // ω̇·(J/kt)/kp error through the whole ramp).
+        let (j, kt, b) = (5e-5, 0.02, 1e-5);
+        let mut lag = [0.0f32; 2];
+        for (idx, ff) in [0.0f32, 1.0 / 400.0].iter().enumerate() {
+            let mut vl = VelocityLoop::new(VelocityLoopConfig {
+                kp: 0.05,
+                ki: 2.0,
+                accel_limit: 2_000.0,
+                accel_ff: *ff,
+            });
+            vl.reset(0.0);
+            let mut omega = 0.0f32;
+            let mut worst = 0.0f32;
+            for k in 0..20_000 {
+                let iq = vl.step(600.0, omega, 40.0, DT);
+                omega += (kt * iq - b * omega) / j * DT;
+                // measure lag against the REFERENCE mid-ramp only
+                let t = k as f32 * DT;
+                if t > 0.05 && t < 0.25 {
+                    worst = worst.max((vl.ramp.value() - omega).abs());
+                }
+            }
+            // 1 s in: settled (the FF-less arm's ramp-lag overshoot has
+            // decayed; the FF arm never overshot).
+            assert!(
+                (omega - 600.0).abs() < 10.0,
+                "must converge by 1 s (ff={ff}): {omega}"
+            );
+            lag[idx] = worst;
+        }
+        assert!(
+            lag[1] < lag[0] * 0.25,
+            "matched FF must cut mid-ramp lag ≥4x: without {} vs with {}",
+            lag[0],
+            lag[1]
+        );
     }
 
     #[test]
@@ -352,7 +423,8 @@ mod tests {
             !VelocityLoopConfig {
                 kp: 0.0,
                 ki: 0.0,
-                accel_limit: 100.0
+                accel_limit: 100.0,
+                accel_ff: 0.0,
             }
             .is_sane()
         );

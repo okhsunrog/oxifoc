@@ -411,6 +411,11 @@ pub struct VelocityConfigStored {
     pub ki: f32,
     /// Reference accel/decel ramp limit (electrical rad/s²).
     pub accel_limit: f32,
+    /// Acceleration feedforward, A per (electrical rad/s²) of REFERENCE
+    /// slew — the measured free-rotor accel-per-amp inverted (ZD2808:
+    /// 1/8100 ≈ 1.2e-4). The ramp's torque is delivered open-loop and the
+    /// PI only trims, which kills the ramp-lag overshoot. 0 = off.
+    pub accel_ff: f32,
 }
 
 impl PostcardValue<'_> for VelocityConfigStored {}
@@ -422,6 +427,7 @@ impl Default for VelocityConfigStored {
             kp: 0.01,
             ki: 0.2,
             accel_limit: 500.0,
+            accel_ff: 0.0,
         }
     }
 }

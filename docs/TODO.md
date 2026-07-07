@@ -44,18 +44,42 @@ accel 500 erad/s²).
   source (observer velocity when available) before chasing hot gains.
 - [ ] Bench: tune kp/ki/accel for the Flipsky + board mass; behavior
   through the hall→observer crossover.
-- [ ] **Velocity loop is untuned for sensorless** (bench 2026-07-07,
-  velmode-1/2 on the ZD2808): with the default soft gains a 300 el
-  rad/s cruise overshoots 2.6×, oscillates through zero and drops
-  trust (restart mid-run). FIXED en route: the PI used to keep
-  integrating while the cold-start sequencer owned commutation — the
-  rotor sits below the target for the whole ramp, the integrator
-  banked 6.6 A by handoff and tripped OC into the confirm probe; the
-  loop now holds reset during `is_starting` and the startup drives at
-  STARTUP_MIN_DRIVE_A. Cruise-gain tuning (against observer velocity
-  dynamics, not hall lag) is the remaining work — it is also the
-  right long-term answer to smooth speed-holding on an unloaded
-  rotor, where torque mode + speed ceiling necessarily hunts.
+- [x] **Sensorless velocity loop — TUNED AND GATED 2026-07-08 (CF2 +
+  ZD2808).** Three pieces landed:
+  1. **Spectral baseline first** (captures/bench/cruise-spectral-1,
+     20 kHz over USB): the residual "cruise oscillation" is a REAL
+     mechanical ~8.4 Hz limit cycle of the ceiling governor — the
+     narrowband peak shows both in the estimate PSD and in the
+     independent ia-fundamental instantaneous frequency. The CF2's
+     161 mA torque quantization is the relay in the loop (g431's
+     15 mA steps → smaller cycle). Torque mode parked on the ceiling
+     hunts BY CONSTRUCTION; the fix is not shaping the protection but
+     not living on it.
+  2. **Anti-windup sees real authority** (`velocity_iq_bounds`,
+     foc_driver.rs): the PI's clamp bounds now include the per-cycle
+     speed cut and thermal derate on the motoring side (brake side
+     never speed-derated, bounds oriented by ω sign) — at the ceiling
+     the integral can no longer bank the un-grantable torque.
+     Residual: the bus-current clamp still sits outside the bounds.
+  3. **Acceleration feedforward** (`VelocityLoopConfig::accel_ff`,
+     A per el rad/s² of reference slew; ZD2808 = 1/8100 from the
+     measured free-rotor spin-up): the ramp torque is delivered
+     open-loop, the PI only trims. Gated by the sim test
+     `accel_feedforward_delivers_ramp_torque_and_cuts_lag` (≥4×
+     mid-ramp lag cut on a matched plant).
+  Bench (kp 0.0037 = ω_c 30/8100, ki 0.012, accel 2000, ff 1.23e-4 —
+  config-set, persistent): ss error ≤0.4%, **hold-600 std 0.7–0.8%**
+  (vs 3.25% parked on the ceiling — the 8.4 Hz peak is gone below the
+  ceiling), up-step overshoot 6–9% (was 19% pre-FF). Down-step
+  undershoot ~18% is BENCH PHYSICS: bus_regen_max_a=0 forbids braking
+  current, decel is friction-only — not gated. benchsuite scenario
+  `velocity` (maneuvers/velocity-step.json) gates ss error ≤3%,
+  hold-600 std ≤2%, holds-300 std ≤5%, overshoot ≤15%. Traps hit en
+  route, both documented elsewhere: f32::clamp pulls ~13 KB of
+  core::fmt into the g431 (use clamp_f32 — decisions.md rule), and a
+  stored-config layout change requires the host CLI rebuilt in
+  lockstep. Remaining (riding-era): retune per vehicle mass, gains
+  through the hall→observer crossover on the Flipsky.
 - [ ] PositionControl: position P → `omega_target` into the same loop
   (cascade); needs an unwrapped position source first.
 

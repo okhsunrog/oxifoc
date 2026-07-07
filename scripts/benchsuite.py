@@ -129,6 +129,24 @@ SCENARIOS = {
         handoffs=1,
         isr_load_max_pct=85,
     ),
+    "velocity": dict(
+        maneuver="maneuvers/velocity-step.json",
+        cold_starts=1,
+        handoffs=1,
+        isr_load_max_pct=85,
+        # Sensorless velocity loop (2026-07-08 tuning: kp .0037 / ki .012 /
+        # accel_ff 1/8100). Holds gate steady-state error and smoothness;
+        # the up-step gates ramp-lag overshoot (accel FF owns the ramp).
+        # No down-step gate: with bus_regen_max_a=0 (PSU-safe) braking
+        # authority is friction-only and the undershoot is bench physics.
+        holds=[  # (t_from, t_to, target el rad/s, ss_err_max, std_max)
+            (2.0, 3.5, 300.0, 0.03, 0.05),
+            (5.0, 6.5, 600.0, 0.03, 0.02),
+            (8.0, 9.5, 300.0, 0.03, 0.05),
+        ],
+        step=dict(t_from=3.5, t_to=5.0, target=600.0, step=300.0,
+                  overshoot_max=0.15),
+    ),
 }
 
 # Per-board overrides (--board). CF2: the standard 0.3 A cruise scenario —
@@ -280,6 +298,31 @@ def evaluate(name: str, spec: dict, summary: dict, dev_log: list[str],
         gate("ISR load", bool(loads) and max(loads) <= spec["isr_load_max_pct"],
              f"max={max(loads) if loads else '???'}% over_sum={sum(overs)} "
              f"(limit {spec['isr_load_max_pct']}%)")
+
+    # -- velocity-mode gates ---------------------------------------------------
+    if spec.get("holds") or spec.get("step"):
+        df = pl.read_parquet(parquet_path)
+        t = df["t_s"].to_numpy()
+        w = df["erpm"].to_numpy() * (2.0 * np.pi / 60.0)  # el rad/s
+        for (a, b, tgt, err_max, std_max) in spec.get("holds", []):
+            m = (t >= t[0] + a) & (t < t[0] + b)
+            ww = w[m]
+            mean = float(ww.mean()) if ww.size else 0.0
+            err = abs(mean - tgt) / tgt
+            frac = float(ww.std()) / (abs(mean) + 1e-9)
+            gate(f"hold {tgt:.0f} ss error", err <= err_max,
+                 f"{mean:.1f} el rad/s = {err * 100:+.1f}% (max {err_max * 100:.0f}%)")
+            gate(f"hold {tgt:.0f} std", frac <= std_max,
+                 f"±{ww.std():.1f} = {frac * 100:.1f}% (max {std_max * 100:.0f}%)")
+        if spec.get("step"):
+            c = spec["step"]
+            m = (t >= t[0] + c["t_from"]) & (t < t[0] + c["t_to"])
+            ww = w[m]
+            peak = float(ww.max()) if ww.size else 0.0
+            over = (peak - c["target"]) / c["step"]
+            gate("step overshoot", over <= c["overshoot_max"],
+                 f"peak {peak:.0f} = {over * 100:.1f}% of step "
+                 f"(max {c['overshoot_max'] * 100:.0f}%)")
 
     # -- capture-derived gates ------------------------------------------------
     if spec.get("climb") or spec.get("cruise"):

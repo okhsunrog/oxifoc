@@ -289,6 +289,9 @@ impl FailsafeController {
                 kp: BRAKE_VEL_KP,
                 ki: BRAKE_VEL_KI,
                 accel_limit: 0.0, // set from the config at arm time
+                // No feedforward in the safety instance: fixed conservative
+                // gains, no dependence on measured motor constants.
+                accel_ff: 0.0,
             }),
         }
     }
@@ -379,6 +382,7 @@ impl FailsafeController {
                             kp: BRAKE_VEL_KP,
                             ki: BRAKE_VEL_KI,
                             accel_limit: cfg.decel_rad_s2,
+                            accel_ff: 0.0,
                         });
                         self.vel_loop.reset(omega_e);
                         self.phase = Phase::Brake {

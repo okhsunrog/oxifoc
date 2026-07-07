@@ -86,6 +86,27 @@ pub const SENSORLESS_RESTART_AFTER_S: f32 = 0.5;
 /// commanded torque the moment the sequencer hands off.
 pub const STARTUP_MIN_DRIVE_A: f32 = 1.5;
 
+/// Asymmetric iq bounds for the velocity loop's anti-windup: the PI must
+/// see the same authority the downstream derating clamp will actually
+/// grant, or it winds up the difference. `drive_scale` (thermal/sag AND
+/// the per-cycle speed cut) derates torque in the direction of motion;
+/// `brake_scale` derates opposing torque (never for speed). At standstill
+/// (ω = 0) the motoring side is "positive" by convention — matching the
+/// downstream clamp's `iq·ω ≥ 0` motoring test. `limit <= 0` = unlimited
+/// (mirrors `CurrentLimits` semantics).
+fn velocity_iq_bounds(omega: f32, limit: f32, drive_scale: f32, brake_scale: f32) -> (f32, f32) {
+    if limit <= 0.0 || !limit.is_finite() {
+        return (f32::NEG_INFINITY, f32::INFINITY);
+    }
+    let drive = limit * clamp_f32(drive_scale, 0.0, 1.0);
+    let brake = limit * clamp_f32(brake_scale, 0.0, 1.0);
+    if omega >= 0.0 {
+        (-brake, drive)
+    } else {
+        (-drive, brake)
+    }
+}
+
 /// Why a [`FocDriver::step`] cycle could not run. Typed so `run_foc_cycle`
 /// can route each cause differently: an overcurrent trip must latch a
 /// host-visible fault (it already cut PWM), a calibration gap must not.
@@ -1435,9 +1456,22 @@ where
         } else {
             target_vel
         };
-        let iq_target =
-            self.velocity_loop
-                .step(target_vel, omega, self.current_limits.max_current_a, dt);
+        // Anti-windup must see the actuator's REAL authority, not the raw
+        // current limit: near the ceiling the per-cycle speed cut shrinks
+        // the motoring budget to the friction level, and a PI clamped only
+        // at max_current_a silently banks the difference as integral —
+        // released as a torque step the moment the target (or the cut)
+        // moves. Brake authority is never speed-derated (derating.rs), so
+        // the bounds are asymmetric and oriented by the direction of motion.
+        let (iq_min, iq_max) = velocity_iq_bounds(
+            omega,
+            self.current_limits.max_current_a,
+            self.derating.drive.min(self.derating_cfg.speed_cut(omega)),
+            self.derating.brake,
+        );
+        let iq_target = self
+            .velocity_loop
+            .step_clamped(target_vel, omega, iq_min, iq_max, dt);
         self.step_current_control(iq_target, 0.0, dt, now_ticks)
     }
 
@@ -1860,6 +1894,26 @@ mod tests {
     use crate::state::CMD_CHANNEL;
     #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     use crate::virtual_motor::VirtualMotorOutput;
+
+    #[test]
+    fn velocity_iq_bounds_track_derated_authority() {
+        // Cruising forward at the ceiling: motoring budget cut to 10%,
+        // braking untouched — the PI's positive bound must shrink, the
+        // negative must not (this asymmetry is what kills the ceiling
+        // windup: the integral can no longer bank the un-grantable 90%).
+        let (lo, hi) = velocity_iq_bounds(500.0, 10.0, 0.1, 1.0);
+        assert_eq!((lo, hi), (-10.0, 1.0));
+        // Reverse motion mirrors the orientation.
+        let (lo, hi) = velocity_iq_bounds(-500.0, 10.0, 0.1, 1.0);
+        assert_eq!((lo, hi), (-1.0, 10.0));
+        // Standstill counts as motoring-positive (matches the downstream
+        // clamp's iq·ω >= 0 test).
+        let (lo, hi) = velocity_iq_bounds(0.0, 10.0, 0.5, 0.25);
+        assert_eq!((lo, hi), (-2.5, 5.0));
+        // Unlimited when the limit is unset — mirrors CurrentLimits.
+        let (lo, hi) = velocity_iq_bounds(100.0, 0.0, 0.1, 1.0);
+        assert!(lo.is_infinite() && hi.is_infinite());
+    }
 
     struct MockPwm {
         duties: [u16; 3],
@@ -4458,6 +4512,7 @@ mod tests {
             kp: 0.008,
             ki: 0.2,
             accel_limit: 400.0, // erad/s²
+            accel_ff: 0.0,
         });
 
         // Track 300 electrical rad/s from standstill (1.5 s), then retarget

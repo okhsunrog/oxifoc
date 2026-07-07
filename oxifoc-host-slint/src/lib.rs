@@ -1501,6 +1501,9 @@ pub fn main() {
                         kp,
                         ki,
                         accel_limit: accel,
+                        // Not exposed in the GUI yet — a GUI write resets the
+                        // feedforward; tune accel_ff via the CLI for now.
+                        accel_ff: 0.0,
                     })
                 }
                 5 => {
