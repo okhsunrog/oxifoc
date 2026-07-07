@@ -1565,8 +1565,19 @@ where
                 let mut hdl = sub.subscribe();
                 loop {
                     let msg = hdl.recv().await;
-                    match table.decode(&msg.t.frame) {
-                        Ok((frame, _)) => {
+                    // Each network message is one COMPLETE encoder frame
+                    // (accumulated between defmt acquire/release on the
+                    // device, terminator included). `Table::decode` expects
+                    // an UNENCODED frame and reports rzcobs frames — the
+                    // default firmware encoding — as Malformed; only the
+                    // stream decoder honors the table's encoding. A fresh
+                    // per-message decoder is correct because frames never
+                    // split across messages (and it must not live across
+                    // the await: it borrows `table`).
+                    let mut stream = table.new_stream_decoder();
+                    stream.received(&msg.t.frame);
+                    match stream.decode() {
+                        Ok(frame) => {
                             log_defmt_frame(frame.level(), &frame.display(false));
                         }
                         Err(DecodeError::UnexpectedEof) => error!("Unexpected EOF decoding defmt"),

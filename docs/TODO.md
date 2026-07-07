@@ -986,17 +986,25 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
   (board/motor mismatch, scenario now cruises at 1.0 A — benchsuite
   `--board cf2`), but the silent deadlock is a real estimator-hardening
   gap: reproducer-#4 family.
-- [ ] **ergot: defmt topic frames never reach the host over the USB
-  transport (2026-07-07).** Device-side `forward_to_ergot_topic`
-  broadcasts succeed (inline counter: sent>0, errs=0) and
-  fast-telemetry topic broadcasts DO cross the same link, but no defmt
-  TOPIC_MSG ever appears on the wire (host `ergot=trace` shows only
-  the 24-byte slow-telemetry traffic). Suspect the borrowed-broadcast
-  external-send path (`broadcast()` folds a benign remote no-route
-  into Ok, so the device can't even tell). Fix belongs in the ergot
-  fork. Bench interim: build CF2 firmware with `transport-rtt` IN
-  ADDITION to usb (features are additive; defmt rides RTT ch0, the
-  suite runs `--transport rtt --chip STM32F405RGTx --elf <f405 elf>`).
+- [x] **ergot: defmt over USB — FIXED 2026-07-08** (ergot branch
+  `fix/defmt-topic-over-usb`, rev b59fd1d; all lock files bumped). TWO
+  stacked bugs, diagnosed with staged device-side counters (sink
+  grant/commit → Router broadcast outcomes → USB tx_worker):
+  1. **ergot defmt sink**: `FrameAccumulator` granted MAX_FRAME_SIZE
+     (= ring/2) per log message. A framed bbq grant needs CONTIGUOUS
+     space; a half-ring grant has a geometric dead zone where neither
+     tail nor wrap fits even on an EMPTY ring — and since only
+     successful grants advance the pointer, parking there was
+     PERMANENT (bench: grant_fail at exactly the log rate, commit=0,
+     forever). Fix: accumulate into a scratch buffer (logger CS makes
+     it single-owner), grant EXACTLY the frame size at commit.
+  2. **oxifoc-host-lib**: the ergot-network defmt decoder used
+     `Table::decode` (expects UNENCODED frames) on rzcobs frames →
+     "Malformed defmt frame" for every frame that did arrive. Fix:
+     per-message `new_stream_decoder()` (same as the RTT path).
+  Validated: full benchsuite PASS pure-USB (captures/bench/cf2-usb-1),
+  device markers + isr/s over USB at the full log rate. The
+  transport-rtt bench interim is no longer required.
 - [ ] **embassy-time thread-timer freeze under ISR load (g431, 2026-07-05)** —
   moving the RTT TX loop to a SAI1 InterruptExecutor (P6) froze ALL
   thread-executor embassy timers for a deterministic ~44.93 s while

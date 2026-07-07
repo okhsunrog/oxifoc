@@ -275,14 +275,14 @@ pub async fn defmt_forwarder(
     consumer: ergot::logging::defmt_sink::DefmtConsumer,
     stack: &'static Stack,
 ) {
-    // KNOWN GAP (2026-07-07, CF2 bringup): over the USB transport these
-    // broadcasts are accepted by the device stack (verified: sent>0,
-    // errs=0 with an inline counter) and fast-telemetry topic broadcasts
-    // DO reach the host — but the defmt topic frames never appear on the
-    // wire, so the host's "ergot network mode" defmt decoder sees nothing.
-    // Suspect the borrowed-broadcast external-send path in ergot
-    // (broadcast() folds a benign remote no-route into Ok). Bench interim:
-    // build with transport-rtt for defmt over RTT ch0. Tracked in TODO.md.
+    // (2026-07-08: defmt-over-USB works end-to-end. It was broken by TWO
+    // stacked bugs, fixed the same day: ergot's defmt sink granted half
+    // the ring per frame and could park its pointer in a geometric dead
+    // zone — permanent silent drop of every frame (fixed in ergot
+    // b59fd1d: exact-size grants via a scratch accumulator); and the
+    // host decoded the rzcobs frames with Table::decode, which only
+    // accepts unencoded frames (fixed in oxifoc-host-lib: per-message
+    // stream decoder).)
     ergot::logging::defmt_sink::forward_to_ergot_topic(&consumer, stack, None).await;
 }
 
