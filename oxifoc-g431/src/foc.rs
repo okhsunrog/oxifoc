@@ -154,15 +154,14 @@ pub async fn init(
     // detection measures J.
     if config.motor_params.is_some() {
         phase_manager.set_observer_accel_prior(500.0, 3400.0);
-        // Frequency-led commutation: enabled on the tier-3-shaved base
-        // (2026-07-07). Trial 2 validated the control (first smooth run,
-        // one handoff, monotone 0 -> 24.9k erpm el, mid-band limit cycle
-        // gone) but saturated the pre-shave ISR (96-103%) into a fault.
-        // Post-shave drive runs at ~75% with the whole hot path
-        // #[optimize(speed)] (isr-speed feature), freq-led included.
-        // Rate 5000 el rad/s^2 covers the accel prior's max legitimate
-        // acceleration (500 + 3400*1.5 A); k_theta 30 = tau ~ 33 ms pull.
-        phase_manager.set_freq_led(5000.0, 30.0);
+        // Commutation phase tracker (freq-led REDESIGN, 2026-07-08): a
+        // critically-ish damped 2nd-order PLL on the observer angle —
+        // torque axis stays with the observer (the frequency-led
+        // predecessor was structurally an I/f drive riding a ~90°
+        // standing load angle; docs/TODO.md dossier). ωn 60 el rad/s:
+        // mid-band wobble (35–100 Hz) attenuated, hunting band followed,
+        // acceleration lag ≈ ω̇/ωn² (~8° at cruise drag-limited accel).
+        phase_manager.set_phase_tracker(30.0, 1.2);
     }
 
     // Initialize CORDIC hardware for fast sin/cos in FOC loop

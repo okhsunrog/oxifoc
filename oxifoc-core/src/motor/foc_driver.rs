@@ -3279,10 +3279,10 @@ mod tests {
         kick_at_step: u64,
         /// Observer PLL integral gain (kp scales as ki/20; default 20e3).
         pll_ki: f32,
-        /// Frequency-led commutation filter (0.0 = off): max slew of the
-        /// commutation frequency, el rad/s² (`PhaseManager::set_freq_led`
-        /// with k_theta = 30).
-        freq_led_rate: f32,
+        /// Commutation phase tracker (0.0 = off): tracker natural
+        /// frequency ωn, el rad/s (`PhaseManager::set_phase_tracker`
+        /// with ζ = 1.2).
+        tracker_wn: f32,
     }
 
     #[cfg(feature = "virtual-motor")]
@@ -3350,8 +3350,8 @@ mod tests {
             obs = obs.with_saliency(86e-6, 129e-6);
         }
         mgr.set_observer(Observer::BackEmf(obs));
-        if cfg.freq_led_rate > 0.0 {
-            mgr.set_freq_led(cfg.freq_led_rate, 30.0);
+        if cfg.tracker_wn > 0.0 {
+            mgr.set_phase_tracker(cfg.tracker_wn, 1.2);
         }
         mgr.set_source(PhaseSource::Observer)
             .expect("observer source");
@@ -3490,7 +3490,7 @@ mod tests {
             kick_rad: 0.0,
             kick_at_step: 0,
             pll_ki: 20e3,
-            freq_led_rate: 0.0,
+            tracker_wn: 0.0,
         });
         assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
         if rep.handoff_step.is_some() {
@@ -3535,7 +3535,7 @@ mod tests {
             kick_rad: 0.0,
             kick_at_step: 0,
             pll_ki: 20e3,
-            freq_led_rate: 0.0,
+            tracker_wn: 0.0,
         });
         assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
         let handoff = rep.handoff_step.expect("must eventually hand off");
@@ -3581,7 +3581,7 @@ mod tests {
             kick_rad: 0.0,
             kick_at_step: 0,
             pll_ki: 20e3,
-            freq_led_rate: 0.0,
+            tracker_wn: 0.0,
         });
         assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
         let handoff = rep.handoff_step.expect("floored ramp must hand off");
@@ -3690,7 +3690,7 @@ mod tests {
                 kick_rad: kick,
                 kick_at_step: if kick != 0.0 { 16_000 } else { 0 },
                 pll_ki,
-                freq_led_rate: 0.0,
+                tracker_wn: 0.0,
             });
             println!(
                 "   handoff@{:?} rotor@handoff={:.0} obs@handoff={:.0} trip={:?} \
@@ -3706,13 +3706,12 @@ mod tests {
         }
     }
 
-    /// Frequency-led commutation (PhaseManager::set_freq_led): the full
-    /// cold start must still hand off and reach a sustained spin with the
-    /// filter smoothing the post-handoff commutation — and the handoff
-    /// must be continuous (the filter seeds from the last output).
+    /// Commutation phase tracker (PhaseManager::set_phase_tracker): the
+    /// full cold start must still hand off and reach a sustained spin
+    /// with the tracker smoothing the post-handoff commutation.
     #[test]
     #[cfg(feature = "virtual-motor")]
-    fn cold_start_with_freq_led_commutation_spins_up() {
+    fn cold_start_with_phase_tracker_spins_up() {
         let rep = run_zd2808_cold_start(ColdStartCfg {
             iq_target: 0.5,
             initial_rotor_angle: 0.0,
@@ -3733,7 +3732,7 @@ mod tests {
             kick_rad: 0.0,
             kick_at_step: 0,
             pll_ki: 20e3,
-            freq_led_rate: 5000.0,
+            tracker_wn: 60.0,
         });
         assert!(rep.trip.is_none(), "must not trip: {:?}", rep.trip);
         let handoff = rep.handoff_step.expect("must hand off with freq-led on");
@@ -3809,7 +3808,7 @@ mod tests {
                         kick_rad: 0.0,
                         kick_at_step: 0,
                         pll_ki: 20e3,
-                        freq_led_rate: 0.0,
+                        tracker_wn: 0.0,
                     });
                     println!(
                         "iq={iq:>3} a0={a0:4.2} handoff={:?} rotor@h={:7.1} obs@h={:7.1} \

@@ -58,49 +58,74 @@ pub enum HallHealth {
 // Open-Loop Override (VESC-style startup/recovery)
 // ============================================================================
 
-/// Frequency-led commutation filter (pure-Observer source, post-handoff).
-///
-/// Commutating from the observer's raw angle cycle-by-cycle feeds every
-/// estimate wobble straight into the field: torque modulates at the hunt
-/// frequency, the mid-band oscillation self-excites, and the band transit
-/// that an open-loop drive walks through silky-smooth (bench olramp960)
-/// never happens. This filter gives the drive open-loop STIFFNESS while
-/// keeping sensorless synchrony:
-///
-/// - `omega` slew-follows the observer velocity at ≤ `rate` (el rad/s²):
-///   legitimate torque-bounded acceleration passes lag-free, hunt-frequency
-///   wobble (slope ≫ rate) is crushed to a small triangle;
-/// - the angle advances at `omega` plus a gentle pull `k_theta·Δθ` toward
-///   the observer angle (Δθ clamped ±0.8 rad), which holds the average
-///   load angle without re-importing the wobble.
-///
-/// Enabled via [`PhaseManager::set_freq_led`]; off by default (raw
-/// observer output, previous behavior).
-/// Hunting-damper gain: fraction of the slew-crushed velocity error fed
-/// back into the frame's angle advance (see the damper block in
-/// [`PhaseManager::freq_led_output`]). 0 = original undamped filter.
-const FREQ_LED_DAMP: f32 = 0.5;
+/// Damping-path low-pass (s) of the commutation phase tracker: turns the
+/// PI-tracker's zero into a pole–zero pair so the 35–100 Hz mid-band
+/// estimate wobble keeps second-order rolloff (~×0.2 at 60 Hz with the
+/// defaults) while the 8–20 Hz rotor-hunting band keeps its damping
+/// (~×0.98 follow at 14 Hz).
+const TRACKER_KD_TAU_S: f32 = 0.005;
 
-/// Hunting-damper low-pass (s): passes the 8–20 Hz rotor-hunting band,
-/// rejects the 35–100 Hz mid-band estimate wobble the filter exists to
-/// crush.
-const FREQ_LED_DAMP_TAU_S: f32 = 0.012;
+/// Hard bound (rad) on how far the commutation frame may trail the raw
+/// estimate — the geometric guarantee against the flat-top/pull-out ride
+/// (see the clamp block in [`PhaseManager::tracker_output`]). 0.6 rad =
+/// 34°: torque per amp ≥ 0.83 of aligned, stiffness slope still steep.
+const TRACKER_MAX_LAG_RAD: f32 = 0.6;
 
+/// Frequency catch-up time constant (s) while the load-angle clamp
+/// binds: fast enough to release the clamp within tens of ms after the
+/// transient, slow enough not to import the wobble velocity.
+const TRACKER_CATCHUP_TAU_S: f32 = 0.02;
+
+/// Acceleration-feedforward filter time constant (s): slow enough to
+/// reject the mid-band wobble (33 rad/s corner), fast enough to pick a
+/// punch's acceleration trend up within ~2τ (the load-angle clamp covers
+/// the pickup window). Without this feedforward the tracker is pure
+/// type-2 and its lag ω̇/ωn² under the bench accelerations
+/// (0.5–5.6 k rad/s²) lands on the torque-curve flat top for any ωn soft
+/// enough to filter the wobble — the freq-led dossier's tension, now
+/// resolved by feeding the trend instead of stiffening the loop.
+const TRACKER_FF_TAU_S: f32 = 0.03;
+
+/// Second-order phase tracker over the observer estimate — the freq-led
+/// REDESIGN (2026-07-08).
+///
+/// The frequency-led filter it replaces was structurally an I/f drive:
+/// its slew-limited frame imposed the rotation, the rotor flux locked
+/// onto the commanded current vector, and the estimate therefore sat
+/// ~90° off the frame BY CONSTRUCTION (bench dossier in docs/TODO.md —
+/// no frame-side pull can close a gap the plant re-establishes; torque
+/// ceiling ~28 k erpm el vs the ~50 k vbus ceiling of observer-frame
+/// commutation).
+///
+/// This tracker keeps the TORQUE AXIS with the observer: a classic
+/// critically-damped PLL on the estimate angle —
+///   ω̇ = ωn²·Δ,   θ̇ = ω + 2ζωn·LPF(Δ)
+/// with Δ = the estimate-vs-frame gap. Δ → 0 structurally (type-2: zero
+/// steady-state error at constant speed, lag ω̇/ωn² under acceleration —
+/// self-limiting through the torque curve, ~8° at the bench cruise
+/// accel). No slew limiter, no pull clamp, no speed bands: wobble is
+/// rejected quadratically above ωn, hunting is followed (= damped)
+/// below it.
 #[derive(Clone, Copy, Default)]
-struct FreqLed {
-    /// Max |dω/dt| the commutation frequency may follow (el rad/s²);
-    /// 0 = filter disabled.
-    rate: f32,
-    /// Phase-pull gain toward the observer angle (1/s).
-    k_theta: f32,
-    /// Filter engaged (seeded) — cleared whenever the startup sequencer
-    /// owns commutation, so the handoff seeds continuity from the last
-    /// output.
+struct PhaseTracker {
+    /// ωn² (1/s²); 0 = tracker disabled (raw observer commutation).
+    kp: f32,
+    /// 2ζωn (1/s) — damping-path gain (applied to the low-passed Δ).
+    kd: f32,
+    /// Engaged — cleared whenever the startup sequencer owns commutation
+    /// (re-seeds from the estimate at the next closed-loop cycle).
     active: bool,
     theta: f32,
     omega: f32,
-    /// Low-passed hunting-damper feed (rad/s) — see FREQ_LED_DAMP.
-    damp_filt: f32,
+    /// Low-passed Δ for the damping path (see TRACKER_KD_TAU_S).
+    d_filt: f32,
+    /// Slow-filtered estimate velocity (τ = TRACKER_FF_TAU_S) — the
+    /// acceleration-feedforward tap.
+    v_slow: f32,
+    /// Filtered estimate acceleration (rad/s², same τ): fed forward into
+    /// the frequency integrator, it removes the type-2 lag for slow
+    /// acceleration TRENDS while the τ keeps the 35–100 Hz wobble out.
+    a_est: f32,
 }
 
 /// Open-loop override state for startup or Hall failure recovery
@@ -216,10 +241,10 @@ where
     // back-EMF observer needs (it can't commutate below ~READY_MIN_VELOCITY).
     startup: SensorlessStartup,
 
-    // Frequency-led commutation filter for the pure-Observer source (see
-    // [`Self::set_freq_led`]). Bundled so the many literal constructors
-    // stay one line each.
-    freq_led: FreqLed,
+    // Commutation phase tracker for the pure-Observer source (see
+    // [`Self::set_phase_tracker`]). Bundled so the many literal
+    // constructors stay one line each.
+    tracker: PhaseTracker,
 
     // Hysteresis memory for the HfiToX crossovers: true = running on the
     // high-speed source (observer/hall/encoder), false = on HFI.
@@ -270,7 +295,7 @@ impl PhaseManager<NoSensor, NoSensor> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
-            freq_led: FreqLed::default(),
+            tracker: PhaseTracker::default(),
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
@@ -303,7 +328,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
-            freq_led: FreqLed::default(),
+            tracker: PhaseTracker::default(),
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
@@ -334,7 +359,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             startup: self.startup,
-            freq_led: self.freq_led,
+            tracker: self.tracker,
             crossover_latched: self.crossover_latched,
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
@@ -368,7 +393,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             startup: self.startup,
-            freq_led: self.freq_led,
+            tracker: self.tracker,
             crossover_latched: self.crossover_latched,
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
@@ -401,7 +426,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
-            freq_led: FreqLed::default(),
+            tracker: PhaseTracker::default(),
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
@@ -482,15 +507,17 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         }
     }
 
-    /// Enable the frequency-led commutation filter for the pure-Observer
-    /// source (see [`FreqLed`]): `rate` = max slew of the commutation
-    /// frequency (el rad/s²), `k_theta` = phase-pull gain toward the
-    /// observer angle (1/s). `rate <= 0` disables (raw observer output).
-    pub fn set_freq_led(&mut self, rate: f32, k_theta: f32) {
-        if rate.is_finite() && k_theta.is_finite() && k_theta >= 0.0 {
-            self.freq_led.rate = rate.max(0.0);
-            self.freq_led.k_theta = k_theta;
-            self.freq_led.active = false;
+    /// Enable the commutation phase tracker for the pure-Observer source
+    /// (see [`PhaseTracker`]): `omega_n` = tracker natural frequency
+    /// (el rad/s — wobble above it is rejected quadratically, hunting
+    /// below it is followed/damped), `zeta` = damping ratio (1.0 =
+    /// critical). `omega_n <= 0` disables (raw observer output).
+    pub fn set_phase_tracker(&mut self, omega_n: f32, zeta: f32) {
+        if omega_n.is_finite() && zeta.is_finite() && zeta >= 0.0 {
+            let wn = omega_n.max(0.0);
+            self.tracker.kp = wn * wn;
+            self.tracker.kd = 2.0 * zeta * wn;
+            self.tracker.active = false;
         }
     }
 
@@ -807,83 +834,69 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     // Internal phase computation
     // ========================================================================
 
-    /// Compute phase output with automatic fallback on Hall failure
-    /// One step of the frequency-led commutation filter (see [`FreqLed`]):
-    /// seeds from the last output on (re-)engage for continuity — the
-    /// startup→closed-loop handoff produces no field jump.
+    /// One step of the commutation phase tracker (see [`PhaseTracker`]).
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
-    fn freq_led_output(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
-        let fl = &mut self.freq_led;
-        if !fl.active {
-            // Seed from the OBSERVER, not from the last (open-loop ramp)
-            // output. The obs-debug capture dbg-delta-1 (2026-07-07)
-            // settled this: the frame rode at a rock-steady −87°±1° from
-            // phase_pll through the whole climb, and NO frame-side pull
-            // can close that gap — the rotor is synchronously locked to
-            // the frame's current vector and the PLL tracks the rotor, so
-            // a pull just accelerates the whole ensemble while the
-            // RELATIVE geometry stays frozen at whatever the seed baked
-            // in. The old `self.output` continuity seed froze the startup
-            // ramp's load angle (≈90° at the capture-hold currents) into
-            // the cruise: torque-per-amp near zero, the ride balanced on
-            // the flat top of the torque curve, and every high-speed run
-            // ended in dq OC (2533–2950 rad/s el). Seeding from raw is
-            // exactly the angle step a plain (no freq-led) confirmed
-            // handoff performs — 3/3 clean all day on the bench.
-            // ANGLE from raw, FREQUENCY from the last output: the
-            // instantaneous raw.velocity carries the full estimate wobble
-            // (hundreds of rad/s mid-band) and a velocity seed that far
-            // off entrains the bang-bang slew limiter into a persistent
-            // wobble-locked orbit (sim: 60 Hz crush ratio 0.22 → 0.76).
-            // The outgoing ramp's frequency is already ≈ the rotor's.
-            fl.theta = raw.angle;
-            fl.omega = self.output.velocity;
-            fl.damp_filt = 0.0;
-            fl.active = true;
+    fn tracker_output(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
+        let tr = &mut self.tracker;
+        if !tr.active {
+            // ANGLE from the estimate (zero initial gap — the same angle
+            // step a plain confirmed handoff performs), FREQUENCY from the
+            // last output (the instantaneous raw.velocity carries the full
+            // estimate wobble; the outgoing ramp's frequency is already
+            // ≈ the rotor's). The freq-led predecessor's `self.output`
+            // angle seed froze the startup ramp's ~90° load angle into
+            // cruise — see the PhaseTracker doc and docs/TODO.md dossier.
+            tr.theta = raw.angle;
+            tr.omega = self.output.velocity;
+            tr.d_filt = 0.0;
+            tr.v_slow = self.output.velocity;
+            tr.a_est = 0.0;
+            tr.active = true;
         }
-        let max_dv = fl.rate * dt;
-        let vel_err = raw.velocity - fl.omega;
-        fl.omega += crate::foc::clamp_f32(vel_err, -max_dv, max_dv);
-        // Hunting damper. A slew-limited synchronous frame is stiff but
-        // undamped, and a PM rotor on it has the classic hunting mode
-        // ω_h = √(1.5·pp²·λ·|i|/J) ≈ 8–14 Hz — bench 2026-07-07
-        // (captures/t3-fl-punch-1): the load angle swung at ~14 Hz with
-        // growing amplitude until dq OC at ~2950 rad/s el, on both
-        // canonical maneuvers, deterministically. `vel_err` is a direct
-        // measurement of the swing: while fl.omega can follow raw within
-        // the slew rate the residual is ~0 (frame follows the rotor, no
-        // relative swing, nothing to damp); once the slew limiter binds —
-        // exactly when the frame becomes stiff — the crushed remainder
-        // shows up here, and feeding a fraction of it into the angle
-        // advance lets the frame yield WITH the swing (energy out). The
-        // low-pass keeps the 35–100 Hz mid-band wobble (the reason this
-        // filter exists) out of the damper: τ = 12 ms passes ~0.7 of
-        // 14 Hz and ~0.2 of 60 Hz.
-        //
-        // Two rejected alternatives, both bench-fatal (fade-punch-1,
-        // fade2-punch-1, OC ~1000 rad/s el): a low-passed phase PULL
-        // (lagged restoring force = NEGATIVE damping at the hunting
-        // frequency — it pumped the mode it was meant to hold), and a
-        // speed-faded state blend to raw (slams the frame across the
-        // standing load angle — the ride carries δ up to ~77°, the
-        // torque-balance angle of the slewed frame, vd ≈ −λω in the
-        // captures).
-        let a_d = (dt / FREQ_LED_DAMP_TAU_S).min(1.0);
-        fl.damp_filt += a_d * (FREQ_LED_DAMP * vel_err - fl.damp_filt);
-        // NOTE on what the pull can and cannot do (dbg-delta-1 lesson):
-        // in cruise the rotor is synchronously locked to the frame's
-        // current vector and the PLL tracks the rotor, so the RELATIVE
-        // frame-vs-estimate geometry is set by the SEED and by torque
-        // balance — a stronger/integral pull mostly accelerates the whole
-        // ensemble (an integral term was tried and only leaked wobble
-        // into the frequency once the slew limiter saturated). The pull's
-        // real job is rejecting estimate wobble around that geometry.
-        let pull =
-            crate::foc::clamp_f32(angle_difference(raw.angle, fl.theta), -0.8, 0.8) * fl.k_theta;
-        fl.theta = wrap_angle(fl.theta + (fl.omega + fl.damp_filt + pull) * dt);
+        let d = angle_difference(raw.angle, tr.theta);
+        // Acceleration feedforward (see TRACKER_FF_TAU_S): the filtered
+        // trend of the estimate's own velocity.
+        let a_ff = (dt / TRACKER_FF_TAU_S).min(1.0);
+        let v_slow_prev = tr.v_slow;
+        tr.v_slow += a_ff * (raw.velocity - tr.v_slow);
+        tr.a_est += a_ff * ((tr.v_slow - v_slow_prev) / dt - tr.a_est);
+        // Frequency integrator: type-2 + acceleration feedforward — Δ → 0
+        // at constant speed AND under slow acceleration trends; only the
+        // trend ERROR (unmodeled load steps, the first ~2τ of a punch)
+        // produces lag, and the hard clamp below bounds that.
+        tr.omega += (tr.kp * d + tr.a_est) * dt;
+        // Damping path on the low-passed Δ (see TRACKER_KD_TAU_S): the
+        // LPF removes the PI zero's high-frequency leakage, NOT the
+        // restoring force — the lagged-pull negative-damping trap of the
+        // freq-led era applied lag to the whole stiffness; here the
+        // un-lagged kp path carries it.
+        let a_d = (dt / TRACKER_KD_TAU_S).min(1.0);
+        tr.d_filt += a_d * (d - tr.d_filt);
+        tr.theta = wrap_angle(tr.theta + (tr.omega + tr.kd * tr.d_filt) * dt);
+        // Hard load-angle bound. A soft tracker that filters the 35–100 Hz
+        // mid-band wobble cannot also follow an unloaded max-torque punch
+        // (ω̇ up to ~5.6 k rad/s² at 1.5 A): the type-2 lag ω̇/ωn²
+        // self-consistently settles near the torque-curve flat top —
+        // bench 2026-07-08: ωn=30 climbed at 1.36 k rad/s² with an ~77°
+        // standing lag and died in the same dq OC as the freq-led
+        // geometry. The clamp makes the failure mode impossible instead
+        // of tuning it away: the frame never trails the estimate by more
+        // than TRACKER_MAX_LAG_RAD (cos 34° = 0.83 of full torque, far
+        // from the flat top). While it binds the output slides WITH the
+        // raw estimate (wobble passes — acceptable: hard transients are
+        // loud, the mid-band cycle is a light-load phenomenon) and the
+        // frequency catches up on a fast τ so the clamp releases into
+        // soft tracking.
+        let d2 = angle_difference(raw.angle, tr.theta);
+        if d2.abs() > TRACKER_MAX_LAG_RAD {
+            let sign = if d2 > 0.0 { 1.0 } else { -1.0 };
+            tr.theta = wrap_angle(raw.angle - sign * TRACKER_MAX_LAG_RAD);
+            let a_v = (dt / TRACKER_CATCHUP_TAU_S).min(1.0);
+            tr.omega += a_v * (raw.velocity - tr.omega);
+        }
         PhaseOutput {
-            angle: fl.theta,
-            velocity: fl.omega,
+            angle: tr.theta,
+            velocity: tr.omega,
         }
     }
 
@@ -938,10 +951,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                             // takes commutation raw (pre-existing behavior
                             // the hold/confirm dynamics are tuned around);
                             // the filter seeds continuity at the handoff.
-                            if self.freq_led.rate > 0.0 && !self.startup.is_active() {
-                                self.freq_led_output(raw, dt)
+                            if self.tracker.kp > 0.0 && !self.startup.is_active() {
+                                self.tracker_output(raw, dt)
                             } else {
-                                self.freq_led.active = false;
+                                self.tracker.active = false;
                                 raw
                             }
                         }
@@ -950,14 +963,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 } else if self.startup.is_active() {
                     // The sequencer owns commutation: the freq-led filter
                     // re-seeds continuity at the next handoff.
-                    self.freq_led.active = false;
+                    self.tracker.active = false;
                     PhaseOutput {
                         angle: self.startup.angle(),
                         velocity: self.startup.velocity(),
                     }
                 } else {
                     self.set_fault(PhaseFault::ObserverNotReady);
-                    self.freq_led.active = false;
+                    self.tracker.active = false;
                     self.output
                 }
             }
@@ -1828,27 +1841,30 @@ mod tests {
     #[cfg(feature = "virtual-motor")]
     use crate::virtual_motor::VirtualMotorOutput;
 
-    /// Freq-led filter shape (see FREQ_LED_DAMP/_TAU_S): the 35-100 Hz
-    /// mid-band estimate wobble is crushed, while hunt-band content
-    /// (8-20 Hz, large enough that the frequency slew limiter binds) is
-    /// substantially FOLLOWED - that yielding is the hunting damper; an
-    /// undamped stiff frame ended every high-speed run in dq OC at
-    /// ~2950 rad/s el (captures/t3-fl-punch-1).
+    /// Phase-tracker shape (see PhaseTracker, TRACKER_KD_TAU_S), measured
+    /// as amplitude ratios of an injected estimate wobble: the 35-100 Hz
+    /// mid-band wobble is attenuated, the unavoidable low-frequency
+    /// resonant bump stays mild (a strong peak in the 5-25 Hz band would
+    /// PUMP rotor hunting), and the type-2 acceleration lag stays bounded
+    /// at ~omega_dot/wn^2 — never the ~90° standing angle of the freq-led
+    /// I/f geometry (dossier in docs/TODO.md).
     #[test]
-    fn freq_led_crushes_wobble_but_yields_to_hunt_band() {
+    fn phase_tracker_attenuates_wobble_without_resonance_and_bounds_lag() {
         let dt = 1.0 / 20_000.0;
-        // Feed raw = clean ramp + A*sin(2pi f t); return the ratio of the
-        // output's residual wobble (vs the clean ramp) to A.
-        let follow_ratio = |omega0: f32, amp: f32, f_hz: f32| -> f32 {
+        // Amplitude ratio of the output wobble vs an injected angle wobble
+        // riding a constant-speed ramp (measured over the last quarter).
+        let ratio = |f_hz: f32| -> f32 {
+            let amp = 0.5f32;
+            let omega0 = 1000.0f32;
             let mut m = PhaseManager::sensorless();
-            m.set_freq_led(5000.0, 30.0);
+            m.set_phase_tracker(60.0, 1.2);
             m.output = PhaseOutput {
                 angle: 0.0,
                 velocity: omega0,
             };
             let mut theta_clean = 0.0f32;
-            let mut max_dev = 0.0f32;
-            for k in 0..10_000 {
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for k in 0..16_000 {
                 theta_clean = wrap_angle(theta_clean + omega0 * dt);
                 #[allow(clippy::cast_precision_loss)]
                 let ph = TAU * f_hz * (k as f32) * dt;
@@ -1856,27 +1872,48 @@ mod tests {
                     angle: wrap_angle(theta_clean + amp * libm::sinf(ph)),
                     velocity: omega0 + amp * TAU * f_hz * libm::cosf(ph),
                 };
-                let out = m.freq_led_output(raw, dt);
-                if k >= 9_000 {
-                    max_dev = max_dev.max(angle_difference(out.angle, theta_clean).abs());
+                let out = m.tracker_output(raw, dt);
+                if k >= 12_000 {
+                    let d = angle_difference(out.angle, theta_clean);
+                    lo = lo.min(d);
+                    hi = hi.max(d);
                 }
             }
-            max_dev / amp
+            (hi - lo) / 2.0 / amp
         };
-        // Mid-band wobble (60 Hz, 1.2 rad): crushed.
-        let r_wobble = follow_ratio(500.0, 1.2, 60.0);
+        let r60 = ratio(60.0);
+        assert!(r60 < 0.4, "60 Hz wobble must be attenuated, ratio {r60}");
+        let r90 = ratio(90.0);
+        assert!(r90 < 0.2, "90 Hz wobble must be attenuated, ratio {r90}");
+        let r14 = ratio(14.0);
         assert!(
-            r_wobble < 0.3,
-            "60 Hz wobble must be crushed, ratio {r_wobble}"
+            r14 < 1.5,
+            "hunt-band resonant bump must stay mild, ratio {r14}"
         );
-        // Hunt band (14 Hz, 1.0 rad - accel 7.7k rad/s^2, the 5000 slew
-        // binds): the frame must yield with the swing.
-        let r_hunt = follow_ratio(1500.0, 1.0, 14.0);
-        assert!(r_hunt > 0.55, "hunt band must be followed, ratio {r_hunt}");
-        assert!(
-            r_hunt > 2.0 * r_wobble,
-            "hunt band must pass much more than the wobble band ({r_hunt} vs {r_wobble})"
-        );
+
+        // Constant-acceleration lag (bench 0.3 A unloaded ~1500 rad/s² el).
+        let mut m = PhaseManager::sensorless();
+        m.set_phase_tracker(60.0, 1.2);
+        m.output = PhaseOutput {
+            angle: 0.0,
+            velocity: 300.0,
+        };
+        let mut theta_clean = 0.0f32;
+        let mut vel = 300.0f32;
+        let mut lag = 0.0f32;
+        for k in 0..12_000 {
+            vel += 1500.0 * dt;
+            theta_clean = wrap_angle(theta_clean + vel * dt);
+            let raw = PhaseOutput {
+                angle: theta_clean,
+                velocity: vel,
+            };
+            let out = m.tracker_output(raw, dt);
+            if k >= 11_000 {
+                lag = lag.max(angle_difference(raw.angle, out.angle).abs());
+            }
+        }
+        assert!(lag < 0.6, "acceleration lag must stay bounded, got {lag}");
     }
 
     #[test]
