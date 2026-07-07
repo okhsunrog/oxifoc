@@ -108,13 +108,6 @@ pub trait PhaseProvider {
         None
     }
 
-    /// Assert/clear the slip gate on the estimation chain (see
-    /// `BackEmfObserver::set_slip_gate`): the driver flags cycles where the
-    /// measured current is far from its reference — a slip/large transient
-    /// — so the observer's PLL does not learn from them. Default: no-op
-    /// (providers without a gated estimator).
-    fn set_slip_gate(&mut self, _gated: bool) {}
-
     /// Feed the measured |iq| to the estimation chain's physics
     /// acceleration prior (see `BackEmfObserver::set_accel_prior`).
     /// Default: no-op.

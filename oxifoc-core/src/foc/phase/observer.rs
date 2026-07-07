@@ -101,14 +101,6 @@ impl Observer {
         }
     }
 
-    /// Assert/clear the slip gate — see [`BackEmfObserver::set_slip_gate`].
-    pub fn set_slip_gate(&mut self, gated: bool) {
-        match self {
-            Self::None => {}
-            Self::BackEmf(o) => o.set_slip_gate(gated),
-        }
-    }
-
     /// Configure the physics acceleration prior — see
     /// [`BackEmfObserver::set_accel_prior`].
     pub fn set_accel_prior(&mut self, floor_el: f32, per_amp_el: f32) {
@@ -259,13 +251,6 @@ pub struct BackEmfObserver {
     /// Lq − Ld (H), informational (active-flux magnitude shift under
     /// d-current). 0 = round-rotor.
     l_delta: f32,
-    /// Slip gate (see [`Self::set_slip_gate`]): while set, the PLL holds —
-    /// no velocity integration, no phase correction (dead reckoning), no
-    /// error/validity/λ filter updates. The flux integrator keeps running.
-    slip_gate: bool,
-    /// Continuous gated time (s) — the duty limiter against a latched
-    /// gate (e.g. permanently unreachable iq at voltage saturation).
-    slip_gate_time: f32,
     /// Physics acceleration prior (el rad/s² per A of |iq|) and floor —
     /// see [`Self::set_accel_prior`]. 0 = clamp off.
     accel_per_amp: f32,
@@ -491,8 +476,6 @@ impl BackEmfObserver {
             r,
             l,
             l_delta: 0.0,
-            slip_gate: false,
-            slip_gate_time: 0.0,
             accel_per_amp: 0.0,
             accel_floor: 0.0,
             iq_abs_filt: 0.0,
@@ -638,23 +621,13 @@ impl BackEmfObserver {
         // slow — only learn it while the rotation is externally
         // corroborated; the [0.4, 2.5] corroboration window tolerates a
         // stored λ far more wrong than physical drift can make it.
-        // Slip gate bookkeeping first (see set_slip_gate): during a flagged
-        // slip transient nothing LEARNS — λ, the PLL and the quality/
-        // validity filters all hold; only the flux integrator (real
-        // physics) and the dead-reckoned angle advance. Duty-limited so a
-        // latched gate cannot freeze the estimator forever.
-        if self.slip_gate {
-            self.slip_gate_time += dt;
-        }
-        let gated = self.slip_gate && self.slip_gate_time <= Self::SLIP_GATE_MAX_S;
-
         let validity_granted =
             self.valid_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3;
         // λ learning additionally requires EARNED corroboration travel (see
         // the field doc): seeded validity engages torque, not the tracker.
         let lambda_learn_ok =
             self.lambda_learn_travel >= READY_MIN_VALID_REVS * core::f32::consts::TAU - 1e-3;
-        if self.lambda_gain > 0.0 && validity_granted && lambda_learn_ok && !gated {
+        if self.lambda_gain > 0.0 && validity_granted && lambda_learn_ok {
             self.lambda += self.lambda_gain * (flux_mag - self.lambda) * dt;
             self.lambda = crate::foc::clamp_f32(self.lambda, self.lambda_min, self.lambda_max);
         }
@@ -691,14 +664,6 @@ impl BackEmfObserver {
         // to dead-time distortion, and 3.7× cheaper than libm in the ISR.
         let phase_raw = crate::foc::fast_math::atan2f(self.x2, self.x1);
         self.phase_raw_last = phase_raw;
-
-        if gated {
-            self.phase_pll = wrap_angle(self.phase_pll + self.velocity_pll * dt);
-            // Confidence stays an honest instantaneous ratio of the (still
-            // integrated) flux magnitude.
-            self.confidence = crate::foc::clamp_f32(flux_mag / self.lambda, 0.0, 1.0);
-            return;
-        }
 
         // PLL tracking. The error must be the SIGNED shortest angular distance
         // (like VESC's foc_pll_run): wrapping to [0, 2π) would make the error
@@ -1001,41 +966,11 @@ impl BackEmfObserver {
         self.pll_ki = ki;
     }
 
-    /// Maximum continuous slip-gated time (s): past it the gate force-opens
-    /// even if the driver keeps asserting it — a latched gate (iq
-    /// permanently unreachable, e.g. at voltage saturation) would otherwise
-    /// freeze the PLL forever while the rotor walks away. 30 ms covers the
-    /// bench slip transients (5–15 ms) with margin.
-    pub const SLIP_GATE_MAX_S: f32 = 0.03;
-
-    /// Assert/clear the slip gate for the NEXT update (the driver detects a
-    /// slip transient as a large |iq_ref − iq_meas| and calls this every
-    /// cycle).
-    ///
-    /// The slip-kick ratchet (bench 2026-07-06/07, captures/sawtooth-*):
-    /// every pole slip kicks the flux integrator forward ~0.3 rad, and the
-    /// PLL integrates the kicks into a velocity runaway — slip → kick → ω̂
-    /// up → drive faster → next slip sooner (the estimate sawtooth, dq OC
-    /// when a beat pulse crosses the trip). The kicks live exactly in the
-    /// windows where the current is far from its reference, so the PLL
-    /// simply refuses to LEARN during them: the flux integrator stays
-    /// honest (real physics), the angle dead-reckons at the held ω̂, and
-    /// tracking resumes the moment the transient ends. Full gains
-    /// everywhere else — a global gain reduction measurably degrades the
-    /// healthy loop (sim) and only declaws the ratchet (bench).
-    pub fn set_slip_gate(&mut self, gated: bool) {
-        if !gated {
-            self.slip_gate_time = 0.0;
-        }
-        self.slip_gate = gated;
-    }
-
     /// Physics acceleration prior: cap the GROWTH RATE of |ω̂| at
     /// `floor + per_amp·|iq|` (el rad/s²; |iq| low-passed at τ ≈ 10 ms).
     ///
-    /// The slip gate stops the kick-driven ratchet, but the bench
-    /// (2026-07-07, captures/slipgate-1,2) showed a second escape mode
-    /// with NOTHING for it to catch: a slow coherent phantom — currents
+    /// Guards the slow coherent phantom (bench 2026-07-07,
+    /// captures/slipgate-1,2) — currents
     /// perfectly regulated on the estimated frame, PLL error small but
     /// persistently positive (~+0.1 rad ⇒ ki·err ≈ +2000 el/s²), the PI
     /// winding vq up as the "back-EMF" of its own acceleration. The one
@@ -1669,81 +1604,6 @@ mod tests {
             theta = theta_next;
         }
         theta
-    }
-
-    #[test]
-    fn slip_gate_holds_pll_and_dead_reckons() {
-        // Lock the observer on a clean rotation, then flag a slip window
-        // and feed it a garbage current transient: the PLL velocity must
-        // HOLD (no kick integration), the angle must dead-reckon at the
-        // held velocity, and tracking must resume cleanly after the gate.
-        let (r, l, lambda_true) = (0.1, 50e-6, 0.005);
-        let omega = 300.0;
-        let dt = 5e-5;
-        let mut obs = BackEmfObserver::new(r, l, lambda_true);
-        run_observer(&mut obs, r, l, lambda_true, omega, 0.0, 20_000, dt);
-        let v_locked = obs.velocity();
-        assert!((v_locked - omega).abs() < 5.0, "not locked: {v_locked}");
-
-        // Gated garbage: zero voltage + a big DC current step for 4 ms —
-        // exactly the kind of transient that kicks the flux integrator.
-        obs.set_slip_gate(true);
-        let phase_before = obs.phase();
-        let mut expected_phase = phase_before;
-        for _ in 0..80 {
-            obs.update(&ObserverInput {
-                v_alpha: 0.0,
-                v_beta: 0.0,
-                i_alpha: 5.0,
-                i_beta: -3.0,
-                dt,
-            });
-            expected_phase = wrap_angle(expected_phase + v_locked * dt);
-        }
-        assert!(
-            (obs.velocity() - v_locked).abs() < 1e-3,
-            "gated velocity must hold: {} vs {}",
-            obs.velocity(),
-            v_locked
-        );
-        assert!(
-            angle_difference(obs.phase(), expected_phase).abs() < 1e-3,
-            "gated angle must dead-reckon: {} vs {}",
-            obs.phase(),
-            expected_phase
-        );
-        obs.set_slip_gate(false);
-
-        // Resume clean rotation from wherever the plant is: re-locks.
-        run_observer(&mut obs, r, l, lambda_true, omega, 0.0, 20_000, dt);
-        assert!(
-            (obs.velocity() - omega).abs() < 5.0,
-            "must re-lock after the gate: {}",
-            obs.velocity()
-        );
-    }
-
-    #[test]
-    fn slip_gate_duty_limit_force_opens() {
-        // A latched gate (driver asserting forever, e.g. unreachable iq at
-        // voltage saturation) must force-open after SLIP_GATE_MAX_S so the
-        // PLL cannot stay frozen while the rotor walks away.
-        let (r, l, lambda_true) = (0.1, 50e-6, 0.005);
-        let omega = 300.0;
-        let dt = 5e-5;
-        let mut obs = BackEmfObserver::new(r, l, lambda_true);
-        run_observer(&mut obs, r, l, lambda_true, omega, 0.0, 20_000, dt);
-        obs.set_slip_gate(true);
-        // Rotor genuinely accelerates to a new speed while the gate is
-        // held far past the duty limit: the estimate must follow anyway.
-        let omega2 = 500.0;
-        let steps = (10.0 * BackEmfObserver::SLIP_GATE_MAX_S / dt) as usize;
-        run_observer(&mut obs, r, l, lambda_true, omega2, 0.0, steps, dt);
-        assert!(
-            (obs.velocity() - omega2).abs() < 25.0,
-            "duty-limited gate must not freeze tracking: {}",
-            obs.velocity()
-        );
     }
 
     #[test]

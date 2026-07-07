@@ -86,19 +86,6 @@ pub const SENSORLESS_RESTART_AFTER_S: f32 = 0.5;
 /// commanded torque the moment the sequencer hands off.
 pub const STARTUP_MIN_DRIVE_A: f32 = 1.5;
 
-/// Slip-gate ON threshold floor (A): |iq_ref − iq_meas| above
-/// `max(SLIP_GATE_ON_A, SLIP_GATE_ON_FRAC·|iq_ref|)` marks a
-/// slip/large-transient cycle and the estimator PLL stops learning (see
-/// [`crate::foc::phase::BackEmfObserver::set_slip_gate`]). Bench slip
-/// beats dip 2–8 A below a 0.3–1.5 A reference (floor-dominated there);
-/// the relative part keeps legitimate large-command transients (capture
-/// hunt at a 6 A start swings ±2–3 A) from freezing the PLL exactly when
-/// it must track. OFF thresholds are half the ON pair (hysteresis).
-pub const SLIP_GATE_ON_A: f32 = 1.5;
-
-/// Relative part of the slip-gate ON threshold (fraction of |iq_ref|).
-pub const SLIP_GATE_ON_FRAC: f32 = 0.5;
-
 /// Why a [`FocDriver::step`] cycle could not run. Typed so `run_foc_cycle`
 /// can route each cause differently: an overcurrent trip must latch a
 /// host-visible fault (it already cut PWM), a calibration gap must not.
@@ -423,9 +410,6 @@ where
     /// active nonzero drive command — drives the
     /// [`SENSORLESS_RESTART_AFTER_S`] restart.
     untrusted_time: f32,
-    /// Slip-gate hysteresis state (see [`SLIP_GATE_ON_A`] and
-    /// `BackEmfObserver::set_slip_gate`).
-    slip_gated: bool,
     /// Previous cycle's "in a deadman-covered mode" — detects engage.
     was_active: bool,
     /// Tick of the last Stopped/Coast/Brake → drive transition. The deadman
@@ -536,7 +520,6 @@ where
             was_starting: false,
             was_short: false,
             untrusted_time: 0.0,
-            slip_gated: false,
             was_active: false,
             engaged_tick: None,
             stopped_housekeeping: 0,
@@ -745,11 +728,7 @@ where
         i_beta: f32,
         dt: f32,
         now_ticks: u64,
-        slip_gate: bool,
     ) {
-        // Slip gate (see BackEmfObserver::set_slip_gate): only the
-        // current-control path can assert it; every other mode clears it.
-        self.phase.set_slip_gate(slip_gate);
         let bridge_driven = !self.mode.is_high_z();
         let (v_alpha, v_beta) =
             match observer_voltage_source(self.phase_voltage.as_ref(), bridge_driven) {
@@ -1275,15 +1254,7 @@ where
                 // sources keep their standstill angle (hall edges latch in
                 // their own capture, read on the next update).
                 if self.stopped_housekeeping & 0x3 == 0 {
-                    self.update_phase_with_prev_voltage(
-                        0.0,
-                        0.0,
-                        0.0,
-                        0.0,
-                        dt * 4.0,
-                        now_ticks,
-                        false,
-                    );
+                    self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt * 4.0, now_ticks);
                 }
                 crate::isr_prof::add(
                     &crate::isr_prof::STEP_PHASE,
@@ -1320,7 +1291,7 @@ where
                     PhaseState::Float,
                 ]);
                 self.controller.reset();
-                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks, false);
+                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
             ControlMode::Brake => {
@@ -1358,9 +1329,7 @@ where
 
                 // Terminal voltage is zero while shorted; the estimators
                 // integrate that with the real circulating currents.
-                self.update_phase_with_prev_voltage(
-                    0.0, 0.0, i_alpha, i_beta, dt, now_ticks, false,
-                );
+                self.update_phase_with_prev_voltage(0.0, 0.0, i_alpha, i_beta, dt, now_ticks);
                 Ok(FocOutput {
                     ia,
                     ib,
@@ -1401,7 +1370,7 @@ where
                 self.controller.reset();
                 self.mode = ControlMode::Stopped;
                 self.failsafe_ctrl.reset();
-                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks, false);
+                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
             // Clean stop with the parking-brake terminal: hand over to
@@ -1413,7 +1382,7 @@ where
                 self.controller.reset();
                 self.mode = ControlMode::Brake;
                 self.failsafe_ctrl.reset();
-                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks, false);
+                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
         }
@@ -1619,22 +1588,9 @@ where
         let prof_t3 = crate::isr_prof::now();
         crate::isr_prof::add(&crate::isr_prof::STEP_POST, prof_t2, prof_t3);
 
-        // Slip-transient detection for the estimator gate: a measured iq
-        // far from its reference marks the pole-slip beat windows where
-        // the flux-integrator kicks live (see
-        // BackEmfObserver::set_slip_gate). Hysteresis so the gate doesn't
-        // chatter across a single threshold.
-        let iq_err = (iq_target - out.iq).abs();
         // Feed the physics acceleration prior with the measured torque
         // current (see BackEmfObserver::set_accel_prior).
         self.phase.note_torque_current(out.iq.abs(), dt);
-        let thr_on = SLIP_GATE_ON_A.max(SLIP_GATE_ON_FRAC * iq_target.abs());
-        self.slip_gated = if self.slip_gated {
-            iq_err > 0.5 * thr_on
-        } else {
-            iq_err > thr_on
-        };
-        let slip_gate = self.slip_gated;
 
         // Update phase provider for next step (feeds observer if present).
         // The observer gets the PREVIOUS command — the voltage that was
@@ -1646,7 +1602,6 @@ where
             out.i_beta,
             dt,
             now_ticks,
-            slip_gate,
         );
         crate::isr_prof::add(&crate::isr_prof::STEP_EST, prof_t3, crate::isr_prof::now());
 
@@ -1784,7 +1739,6 @@ where
             out.i_beta,
             dt,
             now_ticks,
-            false,
         );
 
         Ok(out)
@@ -1855,7 +1809,6 @@ where
             out.i_beta,
             dt,
             now_ticks,
-            false,
         );
 
         Ok(out)

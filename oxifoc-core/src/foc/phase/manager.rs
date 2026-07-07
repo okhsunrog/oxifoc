@@ -1691,16 +1691,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         (0.0, 0.0)
     }
 
-    /// Most specific active hall degradation: the sensor's wire verdicts
-    /// (named dead wires / error rate) win over the coarse health kinds —
-    /// "wire H2 dead" tells the bench which pin to buzz out, "invalid
-    /// state" only says something is wrong. Only sources that consume hall
-    /// data report; an idle hall during Manual calibration or pure
-    /// sensorless is not a failure.
-    fn set_slip_gate(&mut self, gated: bool) {
-        self.observer.set_slip_gate(gated);
-    }
-
     fn note_torque_current(&mut self, iq_abs: f32, dt: f32) {
         self.observer.note_torque_current(iq_abs, dt);
     }
@@ -1717,6 +1707,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         }
     }
 
+    /// Most specific active hall degradation: the sensor's wire verdicts
+    /// (named dead wires / error rate) win over the coarse health kinds —
+    /// "wire H2 dead" tells the bench which pin to buzz out, "invalid
+    /// state" only says something is wrong. Only sources that consume hall
+    /// data report; an idle hall during Manual calibration or pure
+    /// sensorless is not a failure.
     fn hall_fault(&self) -> Option<HallFaultKind> {
         if !self.source.requires_hall() {
             return None;
