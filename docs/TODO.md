@@ -534,6 +534,36 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       PLL-frame — recheck on a PLAIN build), voltage saturation windows.
       Answer this FIRST next session — it is measurable with existing
       telemetry and likely IS the band-transit blocker.
+      **THE L(f) THEORY IS DEAD — the winding is flat; the "eddy curve"
+      was ROTOR MOTION (2026-07-08 evening, pulsating-carrier sweep).**
+      The rotating HFI carrier torque-ripples the rotor even under a
+      perfect d lock; below ~500 Hz the rotor's motional EMF masquerades
+      as inductance. A torque-free PULSATING d-axis carrier (same lock,
+      same demod) measures the true winding: **L(d) ≈ 17 µH FLAT from
+      100 Hz to 1.68 kHz**, converging with the rotating variant only at
+      900+ Hz (inertia locks the rotor) — and the bench LCR (clamped
+      rotor) shows the same flat plateau to 100 kHz, while a FREE-rotor
+      LCR at 100 Hz collapses to 7–90 µH depending on the rotor angle
+      (torque-coupled angles → motional cancellation). Consequences:
+      (1) baked eddy ladder → OFF (yesterday's ΔL 146 µH/τ 1.39 ms was
+      rotor swing, not eddy); (2) the slip-kick ratchet's L(f)
+      explanation ("100–300 Hz events where L = 40–80 µH") is
+      unfounded — the ratchet is empirically real (slip gate fixed it)
+      but its mechanism must be re-derived, with ROTOR MECHANICS
+      (swing/hunting dynamics the observer's electrical model does not
+      contain) as the prime suspect — note the free-rotor mechanical
+      resonance is ~10–20 Hz, right in the measured 1–6 Hz…25 Hz beat
+      bands; (3) the voltage-pulse "fundamental" Ld/Lq (86/129 µH) is
+      now provenance-suspect for the same reason (the rotor moves
+      during pulse trains) — yet decoupling with those values
+      empirically removed the 800 rad/s OC; whether it worked for the
+      stated reason needs re-examination; the small-signal winding
+      saliency IS real (hand-displaced-rotor sweep read q-mixtures
+      48–87 µH vs pure-d 17). (4) Clamp lesson: a mechanical clamp
+      fights the electrical lock (displaced angle = q-mix + renewed
+      torque coupling) — on-device controls must be electrical
+      (pulsating carrier), mechanical clamps only for meter
+      measurements without a lock.
       **The original frontier note (for context) — deterministic dq OC at ~2950 rad/s el** (~28 k
       erpm, |v| 3.6 of 6.9 V available, iq beat envelope growing with
       speed, clean fault frame in log, PSU-safe held): both canonical

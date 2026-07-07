@@ -61,11 +61,15 @@ pub fn baked() -> RuntimeConfig {
             // (previously the hardcoded set_decoupling override in foc.rs).
             ld_fundamental_h: 85.7e-6,
             lq_fundamental_h: 129.4e-6,
-            // Eddy L(f) ladder, MEASURED by the on-device impedance sweep
-            // (2026-07-08, 100–1680 Hz grid): single-pole fit ΔL bridging
-            // the 24 µH AC value to the ~170 µH DC point, τ = 1.39 ms.
-            eddy_delta_l_h: 146.0e-6,
-            eddy_tau_s: 1.4e-3,
+            // Eddy L(f) ladder: OFF. The 2026-07-08 rotating-carrier sweep
+            // "measured" ΔL 146 µH / τ 1.39 ms — and the same-day pulsating
+            // (torque-free) carrier proved that curve was the ROTOR
+            // swinging on the hold-current spring, not winding eddy
+            // currents: the true d-axis L is FLAT ~17 µH from 100 Hz to
+            // 1.68 kHz (and per the bench LCR, to 100 kHz). This winding
+            // has no meaningful L(f) transition to compensate.
+            eddy_delta_l_h: 0.0,
+            eddy_tau_s: 0.0,
         }),
         hall_calibration: None,
         dc_offsets: None,
