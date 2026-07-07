@@ -468,6 +468,30 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       documented in code: host enrichment derives id/iq from the
       recorded angle column, so obs-debug captures carry id/iq in the
       PLL frame.
+      **PHASE-TRACKER REDESIGN LANDED (2026-07-08, f803fd5): OC class
+      eliminated, smoothness open.** freq-led replaced by a 2nd-order
+      phase tracker on the observer angle (set_phase_tracker(ωn, ζ)) +
+      hard load-angle clamp (0.6 rad — the flat-top ride is now
+      geometrically impossible) + acceleration feedforward (τ 30 ms
+      trend of the estimate velocity — kills the type-2 lag that
+      otherwise self-settles at ~77° under punch accelerations for any
+      wobble-filtering ωn). Bench: ZERO Overcurrent in every config
+      (wn 60 / 30 / +clamp / +ff) vs the deterministic 2533–2950 OC of
+      freq-led; torque axis restored (climb rate ~3× freq-led's at the
+      same current). NOT recovered: smoothness — the mid-band limit
+      cycle + trust-loss restarts are back (3–5 starts/run, 40–600
+      rad/s swings), same as plain commutation. KEY NEGATIVE RESULT:
+      the tracker's angle-wobble transmission is analytically tiny
+      (×0.03–0.12 at 60 Hz) yet the cycle returns ⇒ the mid-band
+      instability does NOT propagate mainly through the commutation
+      angle — freq-led suppressed it by fully DECOUPLING drive from
+      estimate (I/f), not by filtering. NEXT SESSION: offline tracker
+      replay against the recorded estimate traces (obs-debug captures
+      exist) + identify the real loop carrier (velocity output into
+      decoupling FF / actuation advance? torque ripple? estimate
+      self-excitation?) before any more bench darts. Canonical bench
+      firmware = tracker wn=30 ζ=1.2: oscillating but self-recovering,
+      zero faults, PSU-safe.
       **The original frontier note (for context) — deterministic dq OC at ~2950 rad/s el** (~28 k
       erpm, |v| 3.6 of 6.9 V available, iq beat envelope growing with
       speed, clean fault frame in log, PSU-safe held): both canonical
