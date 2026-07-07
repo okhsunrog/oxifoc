@@ -417,12 +417,43 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       Error — and its defmt frame was LOST in the storm (the t=8 ack
       returned `state: Error, fault_count: 1`; RTT under saturation
       drops frames — don't trust grep-for-fault alone, check the ack
-      states). NEXT SESSION = ISR TIER-3 SHAVE with freq-led budgeted
-      in (PC-profiling: where did the +1400 baseline and the +600
-      freq-led go), then enable freq-led by default and tune.
-      Also noticed: both floor-* runs show an identical deterministic
-      6240-sample (312 ms) telemetry gap — same family as the ~410 ms
-      host quantum; telemetry-only, control unaffected.
+      states). Also noticed: both floor-* runs show an identical
+      deterministic 6240-sample (312 ms) telemetry gap — same family as
+      the ~410 ms host quantum; telemetry-only, control unaffected.
+      **ISR TIER-3 SHAVE DONE + FREQ-LED ENABLED BY DEFAULT
+      (2026-07-07 PM, fbd45b6).** Root cause of the budget creep: the
+      tier-2 profile fix never landed — the oxifoc-core override in
+      g431/Cargo.toml SAID "speed-optimize" but carried opt-level="z"
+      (no-op), so the whole hot path ran machine-outlined (PC sampling:
+      OUTLINED_FUNCTION_*, f32::max/clamp_f32/wrap_angle as CALLS,
+      memcpy struct returns, LDREX/STREX). Fixes (each bench-measured):
+      core override z→2 (+876 B), build-std libcore z→2 (+248 B — even
+      f32::max was an outlined call from libcore-z), and the `isr-speed`
+      core feature = nightly #[optimize(speed)] on the hot GENERIC entry
+      points (+720 B) — generics monomorphize into the size-optimized
+      device crate where package overrides can't reach; whole-crate "s"
+      overflows the 128 K part by 23 KB. Trace decimation counters:
+      static AtomicU32 → plain fields. Repo now pins ONE nightly via
+      root rust-toolchain.toml (host workspace was on stable and
+      couldn't build the feature gate). NUMBERS: openloop 6563→5756
+      (below tier-2's 6190 with the whole estimator arc on top);
+      closed-loop drive 7500→6350 (73–75%, over 300–500/s→2–4/s);
+      drive+freq-led 8140→6840 (79–80%, ZERO executor stalls, pump
+      stale_max ~51 ms vs 100–175). Flash 124 272 / 131 072 (headroom
+      6.8 K). Freq-led (5000/30) is ON in the g431 default build.
+      **NEXT FRONTIER — deterministic dq OC at ~2950 rad/s el** (~28 k
+      erpm, |v| 3.6 of 6.9 V available, iq beat envelope growing with
+      speed, clean fault frame in log, PSU-safe held): both canonical
+      maneuvers now do one start → one confirmed handoff → smooth
+      monotone climb → OC at the same speed. Pre-freq-led runs never
+      reached this band (they oscillated at 2–6 k erpm); the morning
+      align-era build DID reach the ~50 k vbus ceiling — so something
+      in the modern arc (freq-led k_theta lag at speed? actuation
+      advance? slip-gate never engaging at 0.3 A? dead-time at high
+      modulation?) degrades commutation above ~25 k. Also unexplained:
+      freq-led's EST_OUT cost is +450 cy over the plain observer arm
+      and GROWS with speed (582→731 across the climb) — far above its
+      ~50 cy of arithmetic even un-outlined; profile at speed.
       **DEADMAN FALSE-POSITIVE CLASS root-caused and fixed
       (2026-07-07)**: the host's single ordered command/affirm task
       goes silent for a DETERMINISTIC ~410 ms while an acked command's
