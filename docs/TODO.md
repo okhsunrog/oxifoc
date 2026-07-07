@@ -492,6 +492,29 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       self-excitation?) before any more bench darts. Canonical bench
       firmware = tracker wn=30 ζ=1.2: oscillating but self-recovering,
       zero faults, PSU-safe.
+      **MID-BAND CARRIER ELIMINATION CAMPAIGN (2026-07-08, 86fcf7e):
+      the oscillation is the ESTIMATE ITSELF.** 2 kHz instrumented
+      spectra (trk-dbg-2k-1..gov-2k-1): Δ(frame,pll) wobbles broadband
+      30–90 Hz ±45–75°, iq beats 5–25 Hz, visible jerk = 1–6 Hz ω̂
+      envelope ±50–90 rad/s. Interventions bench-tested and ELIMINATED
+      as carriers: commutation smoothing (tracker filters, cycle
+      persists), frame hunt-damping (kept, no change), validity
+      relaxation oscillator (knobs softened 0.25/25 ms/0.4 s — kept,
+      no change), accel-prior rectifier (REAL defect — the envelope
+      chased wobble troughs and clipped recoveries; redesigned to a
+      50 ms trend + proportional governor, contract: sustained phantom
+      ≤ 2× envelope rate; but prior-OFF rode the same oscillation ⇒
+      contributor, not carrier). CONCLUSION: the carrier is estimate
+      quality in the L(f)/dead-time band — the long-standing "linear
+      onset story". NEXT SESSION = attack the SOURCE: impedance-sweep
+      characterization of the 400–1000 rad/s band, dead-time comp
+      quality at low modulation (λ tracker converging to 1.42 vs
+      1.145 mWb is the same lever), properly parameterized observer
+      eddy ladder (infra exists, was tried with guessed params only).
+      Note the prior-OFF run's "clean escape" climbed tight-Δ to 2.5k+
+      and OC'd — possibly the genuine slow-phantom class; do not read
+      single clean runs as cures. Bench canon: tracker 30/1.2 + all
+      protections, 4/4 confirms, zero OC/CommTimeout, self-recovering.
       **The original frontier note (for context) — deterministic dq OC at ~2950 rad/s el** (~28 k
       erpm, |v| 3.6 of 6.9 V available, iq beat envelope growing with
       speed, clean fault frame in log, PSU-safe held): both canonical
