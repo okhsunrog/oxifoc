@@ -275,6 +275,14 @@ pub async fn defmt_forwarder(
     consumer: ergot::logging::defmt_sink::DefmtConsumer,
     stack: &'static Stack,
 ) {
+    // KNOWN GAP (2026-07-07, CF2 bringup): over the USB transport these
+    // broadcasts are accepted by the device stack (verified: sent>0,
+    // errs=0 with an inline counter) and fast-telemetry topic broadcasts
+    // DO reach the host — but the defmt topic frames never appear on the
+    // wire, so the host's "ergot network mode" defmt decoder sees nothing.
+    // Suspect the borrowed-broadcast external-send path in ergot
+    // (broadcast() folds a benign remote no-route into Ok). Bench interim:
+    // build with transport-rtt for defmt over RTT ch0. Tracked in TODO.md.
     ergot::logging::defmt_sink::forward_to_ergot_topic(&consumer, stack, None).await;
 }
 

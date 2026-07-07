@@ -183,6 +183,9 @@ async fn main(spawner: Spawner) {
     // FOC ISR is running now — arm the watchdog it feeds.
     safety::arm_watchdog(p.IWDG);
 
+    // 1 Hz ISR-cost stats (same isr/s line format as the g431).
+    spawner.spawn(defmt::unwrap!(control::foc::isr_stats_task()));
+
     defmt::info!(
         "F405 pin map: PWM PA8/PA9/PA10 + PB13/14/15, DRV8301 EN_GATE=PB5, nFAULT=PB7, \
          SPI3 CS/SCK/MISO/MOSI=PC9/PC10/PC11/PC12, halls=PC6/7/8, ADC currents PC0-2, VBUS PC3, \

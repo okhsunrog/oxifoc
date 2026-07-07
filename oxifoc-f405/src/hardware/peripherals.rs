@@ -35,7 +35,24 @@ pub fn init_clock() -> Peripherals {
         config.rcc.mux.clk48sel = mux::Clk48sel::PLL1_Q;
     }
 
-    embassy_stm32::init(config)
+    let p = embassy_stm32::init(config);
+
+    // ART accelerator: embassy's F4 RCC init WRITES flash ACR with only the
+    // latency field (rcc/f247.rs), and the F405 reset value is all-zero —
+    // so prefetch, I-cache and D-cache are all OFF at 5 wait states /
+    // 168 MHz unless we turn them on here. Same trap class as the G4
+    // PRFTEN find (2026-07-07, docs/decisions.md): without these bits the
+    // branchy FOC hot path pays a multi-x CPI penalty on every fetch.
+    // Bench A/B 2026-07-07 (Stopped state, 20 kHz ISR): ART off = 2868 cy
+    // avg / 34% load; ART on = 2236 cy / 26%. The gap widens on the
+    // branchier drive path — never remove these bits without re-measuring.
+    embassy_stm32::pac::FLASH.acr().modify(|w| {
+        w.set_prften(true);
+        w.set_icen(true);
+        w.set_dcen(true);
+    });
+
+    p
 }
 
 /// Initialize green LED on PB0 (heartbeat)

@@ -20,7 +20,7 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::FocController;
-use oxifoc_core::foc::phase::PhaseManager;
+use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
 use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, TempSensorId};
 use oxifoc_core::foc::trig::FastSinCos;
 use oxifoc_core::foc::velocity::VelocityLoopConfig;
@@ -55,6 +55,26 @@ pub static BOARD_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 /// Latest motor temperature in 0.1°C units (updated in ADC interrupt).
 pub static MOTOR_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
+
+// ========== ISR cost instrumentation (DWT cycle counter) ==========
+// Ported from the g431 (same layout so the isr/s log lines and the
+// bench-suite parser stay identical across boards).
+
+/// Sum of ADC ISR durations in CPU cycles since last stats swap.
+pub static ISR_CYC_SUM: AtomicU32 = AtomicU32::new(0);
+/// Per-section DWT cycle sums (reset each 1 Hz report; avg = sum / N).
+/// adc = all three injected reads + NTC/vbus conversions, snap = snapshot
+/// + hall sampling, foc = run_foc_cycle, pub = telemetry publish.
+pub static ISR_PROF_ADC: AtomicU32 = AtomicU32::new(0);
+pub static ISR_PROF_SNAP: AtomicU32 = AtomicU32::new(0);
+pub static ISR_PROF_FOC: AtomicU32 = AtomicU32::new(0);
+pub static ISR_PROF_PUB: AtomicU32 = AtomicU32::new(0);
+/// Max single ISR duration in CPU cycles since last stats swap.
+pub static ISR_CYC_MAX: AtomicU32 = AtomicU32::new(0);
+/// ISR cycles that exceeded the 8400-cycle 20 kHz budget (168 MHz).
+pub static ISR_CYC_OVER: AtomicU32 = AtomicU32::new(0);
+/// Number of ADC ISR executions since last stats swap.
+pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
 
 // ========== ADC Handles ==========
 
@@ -113,6 +133,10 @@ pub async fn init(
     // touches NVIC priority registers nothing else owns at this point.
     unsafe {
         use embassy_stm32::interrupt::typelevel::Interrupt;
+        // DWT cycle counter for ISR-cost stats (ISR_CYC_* atomics).
+        let mut cp = cortex_m::Peripherals::steal();
+        cp.DCB.enable_trace();
+        cp.DWT.enable_cycle_counter();
         let irq = interrupt::ADC;
         cortex_m::peripheral::NVIC::set_priority(&mut cortex_m::Peripherals::steal().NVIC, irq, 0);
         <interrupt::typelevel::ADC as Interrupt>::unpend();
@@ -130,6 +154,48 @@ pub async fn init(
     // Arm the sensorless estimators (back-EMF + HFI) from detected motor
     // params; the angle source stays Hall until the host switches it.
     phase_manager.configure_observers_from_config(config, initial_vbus_v);
+
+    // Boot angle source is CONFIG-driven (this board persists config, so no
+    // compile-time SENSORLESS switch like the g431): a stored hall
+    // calibration means a sensored motor — keep the Hall boot. No hall
+    // calibration means sensorless — boot on the back-EMF observer once
+    // detection has filled motor params (before that, Manual: commutation
+    // stays inert until the host drives it, and unwired hall inputs never
+    // get consulted, so they can't spam HallError).
+    if config.hall_calibration.is_none() {
+        let boot_source = if config.motor_params.is_some() {
+            PhaseSource::Observer
+        } else {
+            PhaseSource::Manual
+        };
+        let applied = if phase_manager.set_source(boot_source).is_err() {
+            // Observer rejects a PARTIAL param set (R/L present, flux step
+            // never ran). Fall back to Manual, not Hall — same rationale as
+            // the g431 sensorless boot.
+            defmt::warn!(
+                "sensorless boot source rejected (partial motor params?); falling back to Manual"
+            );
+            let _ = phase_manager.set_source(PhaseSource::Manual);
+            PhaseSource::Manual
+        } else {
+            boot_source
+        };
+        // Mirror into shared state: the runtime only syncs phase_source on
+        // host-commanded changes (DriverCommand::SetPhaseSource), so without
+        // this the status endpoint reports the struct default (Hall) forever.
+        critical_section::with(|cs| {
+            STATE.borrow(cs).borrow_mut().phase_source = applied;
+        });
+    }
+    if config.motor_params.is_some() {
+        // Commutation phase tracker: 2nd-order PLL on the observer angle
+        // (ωn/ζ carried over from the g431 ZD2808 bench, 2026-07-07 —
+        // see docs/decisions.md "minimal load-bearing set"). The accel
+        // prior is deliberately NOT set here: its per_amp is a per-motor
+        // measurement (free-rotor spin-up) that has not been taken on
+        // this board yet.
+        phase_manager.set_phase_tracker(100.0, 1.2);
+    }
 
     // Build FOC controller from stored config (motor params → PI gains → defaults)
     let mut foc_controller =
@@ -215,6 +281,8 @@ pub fn duty_to_iq(duty: u8) -> f32 {
 fn ADC() {
     static mut SEQ: u32 = 0;
 
+    let isr_t0 = cortex_m::peripheral::DWT::cycle_count();
+
     // Read ADC1 injected data (phase A current + board temp)
     let (ia_raw, board_temp_raw) = ADC1_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
@@ -262,6 +330,8 @@ fn ADC() {
     let vbus_mv = BOARD.vbus_mv_from_adc(vbus_raw);
     VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
+    let prof_t1 = cortex_m::peripheral::DWT::cycle_count();
+
     // Voltage/temperature protection moved into core: run_foc_cycle's
     // run_protection covers them (with excursion integrators) for every
     // board — incl. the motor winding NTC, which reaches it through the
@@ -281,6 +351,8 @@ fn ADC() {
     // Get Hall snapshot
     let hall_snapshot = hall::get_snapshot(now_ticks);
 
+    let prof_t2 = cortex_m::peripheral::DWT::cycle_count();
+
     // Run FOC control loop (shared cycle logic in core)
     let foc_telem = FOC_DRIVER.lock(|cell| {
         cell.borrow_mut().as_mut().and_then(|driver| {
@@ -295,6 +367,8 @@ fn ADC() {
         })
     });
 
+    let prof_t3 = cortex_m::peripheral::DWT::cycle_count();
+
     // Update global state + fast telemetry stream
     publish_cycle_telemetry(
         &STATE,
@@ -305,6 +379,93 @@ fn ADC() {
         *SEQ,
     );
 
+    let prof_t4 = cortex_m::peripheral::DWT::cycle_count();
+
     // Feed the IWDG: a completed FOC cycle is the board's liveness signal.
     feed_watchdog();
+
+    ISR_PROF_ADC.fetch_add(prof_t1.wrapping_sub(isr_t0), Ordering::Relaxed);
+    ISR_PROF_SNAP.fetch_add(prof_t2.wrapping_sub(prof_t1), Ordering::Relaxed);
+    ISR_PROF_FOC.fetch_add(prof_t3.wrapping_sub(prof_t2), Ordering::Relaxed);
+    ISR_PROF_PUB.fetch_add(prof_t4.wrapping_sub(prof_t3), Ordering::Relaxed);
+
+    let isr_dt = cortex_m::peripheral::DWT::cycle_count().wrapping_sub(isr_t0);
+    ISR_CYC_SUM.fetch_add(isr_dt, Ordering::Relaxed);
+    ISR_CYC_MAX.fetch_max(isr_dt, Ordering::Relaxed);
+    ISR_CYC_N.fetch_add(1, Ordering::Relaxed);
+    // Budget-overrun counter: cycles that ate the whole 8400-cycle period
+    // (168 MHz / 20 kHz) — thread mode got nothing.
+    if isr_dt > 8_400 {
+        ISR_CYC_OVER.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// 1 Hz ISR-cost stats — same line format as the g431 so the bench-suite
+/// parser works unchanged: `isr/s: n= avg= max= over= load_pct=` plus the
+/// per-section and core-bucket breakdowns.
+#[embassy_executor::task]
+pub async fn isr_stats_task() {
+    use embassy_time::Ticker;
+    let mut ticker = Ticker::every(Duration::from_secs(1));
+    loop {
+        ticker.next().await;
+        let cyc_sum = ISR_CYC_SUM.swap(0, Ordering::Relaxed);
+        let cyc_max = ISR_CYC_MAX.swap(0, Ordering::Relaxed);
+        let cyc_n = ISR_CYC_N.swap(0, Ordering::Relaxed);
+        if cyc_n == 0 {
+            continue;
+        }
+        let adc = ISR_PROF_ADC.swap(0, Ordering::Relaxed) / cyc_n;
+        let sn = ISR_PROF_SNAP.swap(0, Ordering::Relaxed) / cyc_n;
+        let fo = ISR_PROF_FOC.swap(0, Ordering::Relaxed) / cyc_n;
+        let pb = ISR_PROF_PUB.swap(0, Ordering::Relaxed) / cyc_n;
+        let avg = cyc_sum / cyc_n;
+        defmt::info!(
+            "isr/s: n={} avg={} max={} over={} load_pct={}",
+            cyc_n,
+            avg,
+            cyc_max,
+            ISR_CYC_OVER.swap(0, Ordering::Relaxed),
+            cyc_sum / 1_680_000, // 168 MHz → percent of one second
+        );
+        defmt::info!(
+            "isrp/s: adc={} snap={} foc={} pub={} tail={}",
+            adc,
+            sn,
+            fo,
+            pb,
+            avg.saturating_sub(adc + sn + fo + pb)
+        );
+        // run_foc_cycle internals (core isr_prof buckets) — same lines as
+        // the g431 protocol stats task.
+        {
+            use oxifoc_core::isr_prof as p;
+            defmt::info!(
+                "isrc/s: cmd={} prot={} step={} ctail={} | stopped: pwmoff={} phase={}",
+                p::CYCLE_CMD.swap(0, Ordering::Relaxed) / cyc_n,
+                p::CYCLE_PROT.swap(0, Ordering::Relaxed) / cyc_n,
+                p::CYCLE_STEP.swap(0, Ordering::Relaxed) / cyc_n,
+                p::CYCLE_TAIL.swap(0, Ordering::Relaxed) / cyc_n,
+                p::STEP_PWMOFF.swap(0, Ordering::Relaxed) / cyc_n,
+                p::STEP_PHASE.swap(0, Ordering::Relaxed) / cyc_n,
+            );
+            defmt::info!(
+                "isrd/s: gate={} (curr={}) ctrl={} (trig={}) post={} est={}",
+                p::STEP_GATE.swap(0, Ordering::Relaxed) / cyc_n,
+                p::GATE_CURR.swap(0, Ordering::Relaxed) / cyc_n,
+                p::STEP_CTRL.swap(0, Ordering::Relaxed) / cyc_n,
+                p::CTRL_TRIG.swap(0, Ordering::Relaxed) / cyc_n,
+                p::STEP_POST.swap(0, Ordering::Relaxed) / cyc_n,
+                p::STEP_EST.swap(0, Ordering::Relaxed) / cyc_n,
+            );
+            defmt::info!(
+                "isre/s: obs={} (otail={}) startup={} out={} (trk={})",
+                p::EST_OBS.swap(0, Ordering::Relaxed) / cyc_n,
+                p::OBS_TAIL.swap(0, Ordering::Relaxed) / cyc_n,
+                p::EST_STARTUP.swap(0, Ordering::Relaxed) / cyc_n,
+                p::EST_OUT.swap(0, Ordering::Relaxed) / cyc_n,
+                p::OUT_TRK.swap(0, Ordering::Relaxed) / cyc_n,
+            );
+        }
+    }
 }

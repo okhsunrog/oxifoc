@@ -1320,6 +1320,7 @@ dependencies = [
  "bbqueue",
  "bitflags 2.11.0",
  "bytemuck",
+ "cortex-m",
  "critical-section",
  "defmt 1.0.1",
  "embassy-futures",
