@@ -65,7 +65,7 @@ oxifoc-core = { path = "oxifoc-core" }
 # To bump: update the rev here AND in the excluded device crates' Cargo.toml
 # (oxifoc-g431/g474/f405/bridge/remote), then refresh all Cargo.lock files.
 # ergot rev = upstream main HEAD (udp-link-local fix merged)
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "b59fd1df7001861819885346c43260f967834907" }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "407805f70553cea63bf889f8f150b09816929c27" }
 tokio = { version = "1.45", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

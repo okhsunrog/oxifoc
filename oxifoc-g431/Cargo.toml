@@ -58,7 +58,7 @@ oxifoc-core = { path = "../oxifoc-core", default-features = false, features = ["
 # Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
 # transport-uart adds: defmt-sink-network (for network forwarding)
 # transport-rtt adds: rtt (for RTT transport wrappers)
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "b59fd1df7001861819885346c43260f967834907", default-features = false, features = [
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "407805f70553cea63bf889f8f150b09816929c27", default-features = false, features = [
     "embedded-io-async-v0_7",
     "nostd-seed-router",
     "embassy-time",

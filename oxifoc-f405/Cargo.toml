@@ -59,7 +59,7 @@ postcard = { version = "1.1", features = ["use-defmt"] }
 
 # Local crates
 oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy", "embassy-hal", "delivery", "hfi", "hfi-detect", "isr-speed", "isr-profiling"] }
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "b59fd1df7001861819885346c43260f967834907", default-features = false, features = [
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "407805f70553cea63bf889f8f150b09816929c27", default-features = false, features = [
     "embassy-usb-v0_6",
     "embedded-io-async-v0_7",
     "nostd-seed-router",
