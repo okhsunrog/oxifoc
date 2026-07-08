@@ -192,11 +192,24 @@ pub fn run_detect(
             } => {
                 obj.insert("flux_linkage_wb".into(), json!(flux_linkage_wb));
             }
-            DetectResponse::HallCalibrated | DetectResponse::Error(_) => {}
+            DetectResponse::HallCalibrated => {}
+            DetectResponse::Error(_) => {}
         }
-        let write = config_cli::write_from_value(ConfigGroupId::MotorParams, mp.clone())?;
-        config_cli::send_write(&runtime.cmd_tx, write)?;
-        applied = mp;
+        if matches!(resp, DetectResponse::HallCalibrated) {
+            // The device parks the calibration in its in-RAM runtime config;
+            // persisting is the host's job (device comment in
+            // runtime/detect.rs). Read the live group back and write it —
+            // the write path is what lands it in flash.
+            let (hall, _) =
+                config_cli::current_value(&runtime.cmd_tx, ConfigGroupId::HallCalibration)?;
+            let write = config_cli::write_from_value(ConfigGroupId::HallCalibration, hall.clone())?;
+            config_cli::send_write(&runtime.cmd_tx, write)?;
+            applied = hall;
+        } else {
+            let write = config_cli::write_from_value(ConfigGroupId::MotorParams, mp.clone())?;
+            config_cli::send_write(&runtime.cmd_tx, write)?;
+            applied = mp;
+        }
     }
 
     emit(

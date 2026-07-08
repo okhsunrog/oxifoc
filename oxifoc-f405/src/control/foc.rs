@@ -56,6 +56,25 @@ pub static BOARD_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 pub static MOTOR_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
 
+/// DIAG TEMP: raw motor-NTC ADC counts (PC4) for the hall-connector hunt.
+pub static MOTOR_TEMP_RAW: AtomicU16 = AtomicU16::new(0);
+
+/// DIAG TEMP: per-port IDR activity masks (bits that changed since the
+/// previous FOC cycle, OR-accumulated per stats window) — pin-hunting for
+/// the hall inputs. Ports A, B, C, D.
+pub static PIN_ACT: [AtomicU32; 4] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+];
+static PIN_PREV: [AtomicU32; 4] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+];
+
 // ========== ISR cost instrumentation (DWT cycle counter) ==========
 // Ported from the g431 (same layout so the isr/s log lines and the
 // bench-suite parser stay identical across boards).
@@ -310,6 +329,7 @@ fn ADC() {
     });
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
 
+    MOTOR_TEMP_RAW.store(motor_temp_raw, Ordering::Relaxed);
     // Convert motor temperature raw ADC to 0.1°C units
     let motor_temp_c_x10 =
         NTC_MOTOR.temp_c_x10_from_adc(motor_temp_raw, BOARD.calib.adc_max_counts);
@@ -439,11 +459,18 @@ pub async fn isr_stats_task() {
         // Hall diagnostics: raw pin state + edge/overcapture rates. A
         // sensored motor at standstill shows a constant valid state (1-6)
         // and 0 edges; 0b111/0b000 = unpowered/disconnected sensors.
+        // Hall + motor-NTC diagnostics (raw GPIO/ADC — the honest bottom
+        // of the stack). A sensored motor at standstill shows a constant
+        // VALID state (1-6) and 0 edges; 0b111 = unpowered/disconnected
+        // sensors; t_raw 4095 = open TEMP line. Flaky hall wiring shows as
+        // state flips + edge bursts synchronized with cable movement
+        // (Flipsky connector hunt, 2026-07-08).
         defmt::info!(
-            "hall/s: state={=u8:b} edges={} overcap={}",
+            "hall/s: state={=u8:b} edges={} overcap={} t_raw={}",
             hall::read_hall_state_raw(),
             hall::EDGES.swap(0, Ordering::Relaxed),
             hall::OVERCAPTURES.swap(0, Ordering::Relaxed),
+            MOTOR_TEMP_RAW.load(Ordering::Relaxed),
         );
         // run_foc_cycle internals (core isr_prof buckets) — same lines as
         // the g431 protocol stats task.

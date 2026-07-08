@@ -215,8 +215,11 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
 
 /// Motor detection server — delegates to the shared, deduplicating server.
 ///
-/// F405 has no `RUNTIME_CONFIG`/config endpoint yet, so the Hall result is not
-/// persisted (`None`) — same as before this was unified.
+/// The Hall calibration result lands in `RUNTIME_CONFIG` (in RAM); the host
+/// persists it to flash through the config endpoint (the CLI's
+/// `detect hall --apply` does exactly that). The stale claim that the F405
+/// "has no RUNTIME_CONFIG yet" silently discarded every calibration
+/// (found on the Flipsky bring-up, 2026-07-08).
 #[embassy_executor::task]
 pub async fn detect_server(stack: &'static Stack) {
     oxifoc_core::runtime::detect_server(
@@ -224,7 +227,7 @@ pub async fn detect_server(stack: &'static Stack) {
         F405Backend,
         BOARD.max_phase_current_a.min(3.0),
         PWM_CONFIG.pwm_freq_hz,
-        None,
+        Some(&RUNTIME_CONFIG),
     )
     .await;
 }
