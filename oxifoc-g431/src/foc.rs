@@ -25,7 +25,7 @@ use oxifoc_core::storage::RuntimeConfig;
 use crate::safety::feed_watchdog;
 use crate::sensors::hall;
 
-use crate::config::{BOARD, NTC, PWM_CONFIG};
+use crate::config::{BOARD, CPU_HZ, NTC, PWM_CONFIG};
 use crate::cordic::CordicSinCos;
 use crate::motor::MotorPwm;
 use crate::sensors::{G431CurrentSensor, G431CurrentSensorExt, HallAngleProxy};
@@ -67,8 +67,11 @@ pub static ISR_PROF_FOC: AtomicU32 = AtomicU32::new(0);
 pub static ISR_PROF_PUB: AtomicU32 = AtomicU32::new(0);
 /// Max single ADC1_2 ISR duration in CPU cycles since last stats swap.
 pub static ISR_CYC_MAX: AtomicU32 = AtomicU32::new(0);
-/// ISR cycles that exceeded the 8500-cycle 20 kHz budget (per stats window).
+/// ISR executions that exceeded [`ISR_BUDGET_CYCLES`] (per stats window).
 pub static ISR_CYC_OVER: AtomicU32 = AtomicU32::new(0);
+/// Per-ISR cycle budget: one full PWM period of core cycles
+/// (170 MHz / 20 kHz = 8500).
+const ISR_BUDGET_CYCLES: u32 = CPU_HZ / PWM_CONFIG.pwm_freq_hz;
 /// Number of ADC1_2 ISR executions since last stats swap.
 pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
 
@@ -468,10 +471,10 @@ fn ADC1_2() {
     ISR_CYC_SUM.fetch_add(isr_dt, Ordering::Relaxed);
     ISR_CYC_MAX.fetch_max(isr_dt, Ordering::Relaxed);
     ISR_CYC_N.fetch_add(1, Ordering::Relaxed);
-    // Budget-overrun counter: cycles that ate the whole 8500-cycle period
+    // Budget-overrun counter: an ISR that ate the whole PWM period
     // (thread mode got nothing). A burst of these at drive engage = the
     // executor-stall mechanism behind the 2026-07-06 deadman trips.
-    if isr_dt > 8_500 {
+    if isr_dt > ISR_BUDGET_CYCLES {
         ISR_CYC_OVER.fetch_add(1, Ordering::Relaxed);
     }
 }

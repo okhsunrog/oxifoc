@@ -116,6 +116,12 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(3
 // Timing Configuration
 // ============================================================================
 
+/// Core clock after PLL init — MUST match the RCC setup in
+/// hardware/peripherals.rs (8 MHz HSE /4 ×168 /2 = 168 MHz).
+/// Single source for all cycle-based timing: the ISR cycle budget,
+/// busy-wait delays (DRV8301 tWAKE, bit-bang SPI), load percentages.
+pub const CPU_HZ: u32 = 168_000_000;
+
 // ============================================================================
 // Protocol Configuration
 // ============================================================================

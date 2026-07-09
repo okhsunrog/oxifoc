@@ -24,7 +24,7 @@ pub fn init_clock() -> Peripherals {
         config.rcc.pll = Some(Pll {
             prediv: PllPreDiv::DIV4,
             mul: PllMul::MUL168,
-            divp: Some(PllPDiv::DIV2), // 8 MHz / 4 * 168 / 2 = 168 MHz system
+            divp: Some(PllPDiv::DIV2), // 8 MHz / 4 * 168 / 2 = 168 MHz system (= config::CPU_HZ)
             divq: Some(PllQDiv::DIV7), // 8 MHz / 4 * 168 / 7 = 48 MHz for USB FS
             divr: None,
         });

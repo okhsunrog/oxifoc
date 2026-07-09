@@ -67,6 +67,11 @@ pub const SENSORLESS: bool = true;
 ///
 /// Central source of truth for PWM frequency and timing.
 /// Used by motor.rs for timer setup and control/foc.rs for dt calculation.
+/// Core clock after PLL init — MUST match the RCC setup in hardware.rs
+/// (170 MHz). Single source for cycle-based timing: the ISR cycle budget
+/// and load percentages.
+pub const CPU_HZ: u32 = 170_000_000;
+
 pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(800);
 
 // ============================================================================

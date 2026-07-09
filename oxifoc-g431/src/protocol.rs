@@ -318,7 +318,7 @@ pub async fn telem_stats_task() {
                 }
             }
         }
-        // ISR cost (DWT cycles at 170 MHz): avg/max per cycle + CPU share.
+        // ISR cost (DWT cycles at config::CPU_HZ): avg/max per cycle + CPU share.
         let cyc_sum = crate::foc::ISR_CYC_SUM.swap(0, Ordering::Relaxed);
         let cyc_max = crate::foc::ISR_CYC_MAX.swap(0, Ordering::Relaxed);
         let cyc_n = crate::foc::ISR_CYC_N.swap(0, Ordering::Relaxed);
@@ -329,7 +329,7 @@ pub async fn telem_stats_task() {
                 cyc_sum / cyc_n,
                 cyc_max,
                 crate::foc::ISR_CYC_OVER.swap(0, Ordering::Relaxed),
-                cyc_sum / 1_700_000
+                cyc_sum / (crate::config::CPU_HZ / 100) // cycles per 1% of a second
             );
             // Per-section averages (cycles/ISR): where the budget goes.
             // adc1 includes the BKIN check + vbus/NTC conversions; snap is

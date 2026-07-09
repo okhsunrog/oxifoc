@@ -36,7 +36,7 @@ use crate::hardware::peripherals::AdcHandles;
 use crate::safety::feed_watchdog;
 use crate::sensors::hall;
 
-use crate::config::{BOARD, NTC_BOARD, NTC_MOTOR, PWM_CONFIG};
+use crate::config::{BOARD, CPU_HZ, NTC_BOARD, NTC_MOTOR, PWM_CONFIG};
 use crate::motor::MotorPwm;
 use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
@@ -95,8 +95,11 @@ pub static ISR_PROF_FOC: AtomicU32 = AtomicU32::new(0);
 pub static ISR_PROF_PUB: AtomicU32 = AtomicU32::new(0);
 /// Max single ISR duration in CPU cycles since last stats swap.
 pub static ISR_CYC_MAX: AtomicU32 = AtomicU32::new(0);
-/// ISR cycles that exceeded the 8400-cycle 20 kHz budget (168 MHz).
+/// ISR executions that exceeded [`ISR_BUDGET_CYCLES`].
 pub static ISR_CYC_OVER: AtomicU32 = AtomicU32::new(0);
+/// Per-ISR cycle budget: one full PWM period of core cycles
+/// (168 MHz / 20 kHz = 8400).
+const ISR_BUDGET_CYCLES: u32 = CPU_HZ / PWM_CONFIG.pwm_freq_hz;
 /// Number of ADC ISR executions since last stats swap.
 pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
 
@@ -435,9 +438,9 @@ fn ADC() {
     ISR_CYC_SUM.fetch_add(isr_dt, Ordering::Relaxed);
     ISR_CYC_MAX.fetch_max(isr_dt, Ordering::Relaxed);
     ISR_CYC_N.fetch_add(1, Ordering::Relaxed);
-    // Budget-overrun counter: cycles that ate the whole 8400-cycle period
-    // (168 MHz / 20 kHz) — thread mode got nothing.
-    if isr_dt > 8_400 {
+    // Budget-overrun counter: an ISR that ate the whole PWM period —
+    // thread mode got nothing.
+    if isr_dt > ISR_BUDGET_CYCLES {
         ISR_CYC_OVER.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -468,7 +471,7 @@ pub async fn isr_stats_task() {
             avg,
             cyc_max,
             ISR_CYC_OVER.swap(0, Ordering::Relaxed),
-            cyc_sum / 1_680_000, // 168 MHz → percent of one second
+            cyc_sum / (CPU_HZ / 100), // cycles per 1% of a second
         );
         defmt::info!(
             "isrp/s: adc={} snap={} foc={} pub={} tail={}",

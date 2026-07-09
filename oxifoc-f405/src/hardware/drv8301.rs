@@ -126,7 +126,7 @@ pub fn init_bus(
     // (30.5 µs) and would drag the bus to ~16 kHz. Infallible pins → the
     // only new() error source (clock-idle drive) cannot fire; fail fast if
     // that ever changes.
-    let delay = bitbang_hal_ng::delay::AsmDelay::new(168_000_000);
+    let delay = bitbang_hal_ng::delay::AsmDelay::new(crate::config::CPU_HZ);
     let spi = defmt::unwrap!(bitbang_hal_ng::spi::SPI::new(miso, mosi, sck, delay, config).ok());
 
     let (cs, en_gate, nfault) = init_ctrl_pins(r.pc9, r.pb5, r.pb7, r.exti7, exti_irq);
@@ -193,7 +193,7 @@ fn configure_registers(spi: &mut DrvSpiBus, cs: &mut Output<'static>) -> Result<
     defmt::info!("Configuring DRV8301...");
 
     // DRV8301 needs time after EN_GATE goes high (tWAKE ≈ 1ms)
-    cortex_m::asm::delay(168_000 * 2); // ~2ms at 168MHz
+    cortex_m::asm::delay(crate::config::CPU_HZ / 1000 * 2); // ~2 ms
 
     // Read device ID to verify communication
     match drv.get_device_id() {
