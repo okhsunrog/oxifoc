@@ -86,6 +86,51 @@ Different from CF2:
 - Dead time: 360 ns (VESC `HW_DEAD_TIME_NSEC` fallback; hw60 doesn't override).
 - VESC defaults for this HW: f_zv 30 kHz, `MCCONF_FOC_SAMPLE_V0_V7 false`.
 
+## Programming & recovery (SWD)
+
+The board exposes no SWD header — just **four pads: VCC / GND / CLK / DIO**.
+Those pads *are* the SWD port:
+
+- **CLK = SWCLK**, **DIO = SWDIO**, **GND = ground**.
+- **VCC** is the 3.3 V rail (target-voltage sense). Wire it to the probe's
+  Vtref *sense* input only — **do not source power into it**. Power the board
+  from its main input, not this pad.
+- **NRST is not broken out.** probe-rs resets via SWD `SYSRESETREQ`
+  (software reset), which is enough for flashing. `connect-under-reset` is
+  unavailable — see the recovery note below for the substitute.
+
+The Flipsky "smart switch" pad is **not** a reset line — it is the
+power-latch / button net on **PC5** (see the shutdown-latch entry in the pin
+map). Pressing the button bridges the regulator enable; firmware must drive
+PC5 high early to keep power after release; sampling the button briefly
+switches PC5 to analog-in (ADC12_IN15). oxifoc latches PC5 high in bootstrap
+(`main.rs`/`hardware/mod.rs`) — effectively `ALWAYS_ON` while powered; it
+does not implement button-off.
+
+Flashing flow:
+
+1. Bench PSU on the **main input ≥14 V**.
+2. **Tap the power button** so the stock firmware boots and latches PC5 → the
+   board stays on.
+3. Connect SWD (GND + CLK + DIO; VCC to Vtref sense if the probe needs it) and
+   flash the `board-vesc6-mk5` build via probe-rs.
+
+### Recovery — don't let a bad flash brick it
+
+There is **no boot-first bootloader**: on reset the MCU jumps straight to the
+app at `0x08000000`. If a flashed image fails to raise PC5 early (crash before
+the latch, bad build), the board **powers itself off** and the probe can't
+catch it — it looks bricked.
+
+The escape hatch: the button forces the regulator enable **in parallel with**
+the PC5 latch, independent of firmware. So to recover:
+
+- **Press and hold the power button** to force power on regardless of what the
+  firmware does, then connect SWD → `halt` → `erase` → reflash a known-good
+  image. Held button = guaranteed power = there is always a way back in.
+
+Keep this in mind on every first flash of a new image.
+
 ## Bring-up checklist (when the board arrives)
 
 1. Bench PSU at **≥14 V** (vendor operating minimum — the usual 12 V profile
