@@ -1375,12 +1375,13 @@ the sim = batch tick).
 
 - [ ] **Mini V6 MK5 bring-up** (board ordered, firmware support landed:
   `board-vesc6-mk5` feature, `just f405 vesc6-mk5`): follow the checklist
-  in [hw/vesc6-mk5.md](hw/vesc6-mk5.md) — identify the clone's FETs
-  (current limit + DRV OC threshold are conservative placeholders), verify
-  the bit-bang DRV8301 SPI (PB3/PB4), shutdown latch PC5 and PD2/PC13
-  filter switches, then detect + hall-cal + benchsuite on the Flipsky 5065.
-  First board with usable-under-PWM phase sensing → unblocks
-  [notes/phase-sense.md](notes/phase-sense.md) Phase 2.
+  in [hw/vesc6-mk5.md](hw/vesc6-mk5.md) — confirm the stock firmware
+  reports HW `60_MK5` in VESC Tool before reflashing (validates the pin
+  map wholesale), take limits from the vendor rating (current limit + DRV
+  OC threshold are conservative CF2 placeholders), then detect + hall-cal
+  + benchsuite on the Flipsky 5065. First board with usable-under-PWM
+  phase sensing → unblocks [notes/phase-sense.md](notes/phase-sense.md)
+  Phase 2.
 
 ### Bench session 2026-07-05 (g431 + ZD2808) — detection re-measured, with recording
 

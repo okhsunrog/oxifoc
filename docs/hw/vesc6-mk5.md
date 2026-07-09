@@ -1,11 +1,18 @@
 # VESC 6 MK5 (STM32F405) bring-up notes
 
-Covers the Trampa VESC 6 MK5 layout and its clones (the bench unit is an
-AliExpress "Mini V6 MK5"). Facts extracted from the VESC firmware hwconf
+Covers the Trampa VESC 6 MK5 layout and its clones (the bench unit is a
+Flipsky "Mini V6 MK5"). Facts extracted from the VESC firmware hwconf
 headers (`hwconf/trampa/vesc6/hw_60_core.h`, `HW60_IS_MK5` branch) — pin
 assignments and component values only, no code (see the clean-room note in
-docs/decisions.md). Clones deviate from the original; everything marked
-**[verify]** must be beeped out on the physical board before first power-up.
+docs/decisions.md).
+
+Verification model: the board ships running VESC firmware for a specific HW
+target and works with VESC Tool out of the box — the stock firmware drives
+exactly these pins, so **the HW name it reports validates the whole pin map
+wholesale**. The one check that matters, before reflashing: connect VESC Tool
+and confirm the reported HW is `60_MK5` (a `60_MK3`/`60_MK4` clone has no
+PC13 phase-filter switch → `phase_sense.has_filters` would be wrong; the
+rest of the MK3+ map is identical).
 
 Firmware target: `oxifoc-f405` with `--no-default-features
 --features transport-usb,transport-uart,board-vesc6-mk5`.
@@ -36,15 +43,14 @@ Different from CF2:
 - **Shutdown latch: PC5** (MK3+). The power button only bridges power until
   firmware drives PC5 high — must be done as early as possible in boot or
   the board turns itself off when the button is released. Button state is
-  sampled on the same net (ADC12_IN15). **[verify — clones may omit the
-  shutdown circuit entirely; driving PC5 high is harmless either way]**
+  sampled on the same net (ADC12_IN15). (If a clone omits the shutdown
+  circuit, driving PC5 high is harmless.)
 - **CURRENT_FILTER enable: PD2** (active high). Switchable RC filter on the
   current-sense path; VESC enables it at early init. Drive high.
 - **PHASE_FILTER enable: PC13** (MK5/MK6 only, active high). Switchable RC
   filters on SENS1-3 — this is what makes phase-voltage sensing usable
   while PWMing (`phase_sense.has_filters = true`). Drive high.
-- IMU: BMI160 on I2C, SDA PB2 / SCL PA15 **[verify — clones often omit;
-  not used by oxifoc]**
+- IMU: BMI160 on I2C, SDA PB2 / SCL PA15 — not used by oxifoc.
 - NRF51 (permanent, MK3+): UART on PC11/PC12, SWD on PB12/PA4 — not used.
 
 ## Analog scaling
@@ -64,23 +70,22 @@ Different from CF2:
 
 - HW_LIM_CURRENT ±120 A, absolute max 160 A, VIN 6–57 V, FET temp cutoff 110 °C.
 - The Mini clone has smaller FETs and worse cooling — `BOARD` keeps the CF2
-  values (60 A peak, 100 °C) until the clone's FETs are identified. **[verify]**
-- DRV8301 OC (VDS) threshold: firmware uses 511 mV as on CF2 — recompute
-  once the clone's FET Rds(on) is known. **[verify]**
+  values (60 A peak, 100 °C). To raise them, use Flipsky's advertised rating
+  (inspect the FETs only if going beyond it) and recompute the DRV8301 OC
+  (VDS) threshold — firmware currently uses CF2's 511 mV.
 - Dead time: 360 ns (VESC `HW_DEAD_TIME_NSEC` fallback; hw60 doesn't override).
 - VESC defaults for this HW: f_zv 30 kHz, `MCCONF_FOC_SAMPLE_V0_V7 false`.
 
 ## Bring-up checklist (when the board arrives)
 
-1. Photograph both sides; identify FETs (→ current limit, OC threshold) and
-   check which **[verify]** items the clone actually has (shutdown circuit,
-   phase-filter switch, current-filter switch, IMU).
-2. Beep out: DRV SPI (PC9/PC10/PB3/PB4), PC5→button circuit, PD2/PC13→analog
-   switches, SENS1-3 dividers.
-3. PSU-safe profile (RampToZero, bus_regen=0), current limit low.
-4. Flash `board-vesc6-mk5` build; confirm boot log prints the MK5 pin map and
-   DRV8301 device ID reads back (bit-bang SPI works).
-5. USB monitor 5 s: all six defmt categories at 1 Hz.
-6. ADC sanity: VBUS matches PSU, temps plausible, phase currents ~0.
-7. Motor detect (R/L) on the Flipsky 5065, then hall calibration,
+1. Before reflashing: connect the stock firmware to VESC Tool and confirm
+   the reported HW is `60_MK5` — that validates the whole pin map (see the
+   verification-model note above). Note the vendor current rating for the
+   `BOARD` limits.
+2. PSU-safe profile (RampToZero, bus_regen=0), current limit low.
+3. Flash `board-vesc6-mk5` build via SWD; confirm boot log prints the MK5
+   pin map and DRV8301 device ID reads back (bit-bang SPI works).
+4. USB monitor 5 s: all six defmt categories at 1 Hz.
+5. ADC sanity: VBUS matches PSU, temps plausible, phase currents ~0.
+6. Motor detect (R/L) on the Flipsky 5065, then hall calibration,
    then `scripts/benchsuite.py`.
