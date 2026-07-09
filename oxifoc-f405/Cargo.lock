@@ -153,6 +153,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
 
 [[package]]
+name = "bitbang-hal-ng"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70d11f3aebca740c27d8c3b340ba402033475da45db7483831b2995c3e08e08b"
+dependencies = [
+ "embedded-hal 1.0.0",
+]
+
+[[package]]
 name = "bitfield"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1343,6 +1352,7 @@ name = "oxifoc-f405"
 version = "0.1.0"
 dependencies = [
  "assign-resources",
+ "bitbang-hal-ng",
  "cortex-m",
  "cortex-m-rt",
  "critical-section",

@@ -6,8 +6,6 @@ use drv8301_dd::{Drv8301, DrvError, GateCurrent, OcAdjSet, OcpMode, ShuntAmplifi
 
 // Re-export FaultStatus for use by other modules
 pub use drv8301_dd::FaultStatus;
-#[cfg(feature = "board-vesc6-mk5")]
-use embassy_stm32::gpio::Input;
 use embassy_stm32::{
     exti::{self, ExtiInput},
     gpio::{Level, Output, Pull, Speed},
@@ -30,7 +28,26 @@ use crate::fault::F405Fault;
 #[cfg(feature = "board-cf2")]
 pub type DrvSpiBus = Spi<'static, embassy_stm32::mode::Blocking, spi::mode::Master>;
 #[cfg(feature = "board-vesc6-mk5")]
-pub type DrvSpiBus = super::soft_spi::SoftSpi;
+pub type DrvSpiBus = bitbang_hal_ng::spi::SPI<
+    embassy_stm32::gpio::Input<'static>,
+    Output<'static>,
+    Output<'static>,
+    CyclesDelay,
+>;
+
+/// [`DelayNs`](embedded_hal::delay::DelayNs) from busy-wait CPU cycles for
+/// the bit-bang SPI half-period — `embassy_time::Delay` can't do sub-tick
+/// (30.5 µs at tick-hz-32768) waits, which would drag the bus to ~16 kHz.
+#[cfg(feature = "board-vesc6-mk5")]
+pub struct CyclesDelay;
+
+#[cfg(feature = "board-vesc6-mk5")]
+impl embedded_hal::delay::DelayNs for CyclesDelay {
+    fn delay_ns(&mut self, ns: u32) {
+        // 168 MHz core: 0.168 cycles/ns, rounded up.
+        cortex_m::asm::delay((u64::from(ns) * 168).div_ceil(1000) as u32);
+    }
+}
 
 type DrvBusError = <DrvSpiBus as embedded_hal::spi::ErrorType>::Error;
 
@@ -114,8 +131,12 @@ pub fn init_bus(
     // Mode 1 idle state: SCK low. MOSI level between frames is don't-care.
     let sck = Output::new(r.pc10, Level::Low, Speed::VeryHigh);
     let mosi = Output::new(r.pb4, Level::Low, Speed::VeryHigh);
-    let miso = Input::new(r.pb3, Pull::None);
-    let spi = super::soft_spi::SoftSpi::new(sck, mosi, miso);
+    let miso = embassy_stm32::gpio::Input::new(r.pb3, Pull::None);
+    // DRV8301 allows up to 10 MHz; 500 kHz matches the VESC bit-bang pace
+    // and the bus only carries boot config + nFAULT status reads.
+    let config =
+        bitbang_hal_ng::spi::SpiConfig::new(embedded_hal::spi::MODE_1).with_frequency_hz(500_000);
+    let spi = bitbang_hal_ng::spi::SPI::new(miso, mosi, sck, CyclesDelay, config);
 
     let (cs, en_gate, nfault) = init_ctrl_pins(r.pc9, r.pb5, r.pb7, r.exti7, exti_irq);
 

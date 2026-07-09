@@ -4,8 +4,6 @@
 pub mod drv8301;
 pub mod peripherals;
 pub mod resources;
-#[cfg(feature = "board-vesc6-mk5")]
-pub mod soft_spi;
 
 #[cfg(feature = "board-vesc6-mk5")]
 use embassy_stm32::gpio::{Level, Output, Speed};

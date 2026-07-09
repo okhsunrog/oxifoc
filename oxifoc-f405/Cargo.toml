@@ -81,6 +81,7 @@ rtt-target = "0.6"
 libm = "0.2.16"
 serde = { version = "1.0.228", default-features = false }
 embedded-hal = "1.0.0"
+bitbang-hal-ng = "0.4.1"
 
 [profile.dev]
 debug = true
