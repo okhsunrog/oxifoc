@@ -27,8 +27,7 @@ pub const BOARD: BoardConfig = BoardConfig {
         invert_current_sign: false,             // DRV8301: standard polarity
         vbus_divider_ratio: (39.0 + 2.2) / 2.2, // ~18.73:1
     },
-    initial_vbus_volts: 12.0, // Conservative default
-    max_iq_target_a: 10.0,    // Max torque current
+    max_iq_target_a: 10.0, // Max torque current
     // Fault thresholds (matched to VESC hwconf)
     max_phase_current_a: 60.0, // Peak phase current limit (FET rating)
     max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN)
@@ -65,8 +64,6 @@ pub const BOARD: BoardConfig = BoardConfig {
         invert_current_sign: false, // hw60 does NOT define INVERTED_SHUNT_POLARITY
         vbus_divider_ratio: (39.0 + 2.2) / 2.2, // ~18.73:1
     },
-    initial_vbus_volts: 12.0,  // Boot seed only (max()'d with the live ADC reading —
-    // keep LOW so a real measurement always wins); VBUS is measured every ISR cycle
     max_iq_target_a: 10.0,     // Max torque current
     max_phase_current_a: 70.0, // Flipsky continuous rating (200A "instantaneous" ignored)
     max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN; vendor abs max 60V)

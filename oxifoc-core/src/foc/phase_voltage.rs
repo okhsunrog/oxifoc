@@ -176,7 +176,6 @@ mod tests {
                 invert_current_sign: false,
                 vbus_divider_ratio: (39.0 + 2.2) / 2.2,
             },
-            initial_vbus_volts: 12.0,
             max_iq_target_a: 10.0,
             max_phase_current_a: 60.0,
             max_vbus_mv: 57_000,

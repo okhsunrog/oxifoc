@@ -25,7 +25,6 @@
 ///         invert_current_sign: true,   // Low-side shunts
 ///         vbus_divider_ratio: 10.39,   // VBUS divider
 ///     },
-///     initial_vbus_volts: 12.0,    // Default VBUS assumption
 ///     max_iq_target_a: 10.0,       // Max torque current
 ///     // Fault thresholds
 ///     max_phase_current_a: 40.0,   // Peak phase current limit
@@ -73,8 +72,6 @@ pub struct BoardConfig {
     /// to the host for telemetry enrichment — one field list, no duplication.
     /// See [`crate::types::BoardCalib`].
     pub calib: crate::types::BoardCalib,
-    /// Initial VBUS voltage assumption before ADC readings
-    pub initial_vbus_volts: f32,
     /// Maximum q-axis current target in Amperes
     pub max_iq_target_a: f32,
 
@@ -253,7 +250,6 @@ mod tests {
             invert_current_sign: false,
             vbus_divider_ratio: 10.39, // 187/18
         },
-        initial_vbus_volts: 12.0,
         max_iq_target_a: 10.0,
         // Fault thresholds
         max_phase_current_a: 40.0,

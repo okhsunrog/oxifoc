@@ -27,8 +27,7 @@ pub const BOARD: BoardConfig = BoardConfig {
         invert_current_sign: true,        // Low-side shunts: positive current → ADC below offset
         vbus_divider_ratio: 187.0 / 18.0, // 169k + 18k / 18k
     },
-    initial_vbus_volts: 12.0, // Conservative default
-    max_iq_target_a: 10.0,    // Max torque current
+    max_iq_target_a: 10.0, // Max torque current
     // Fault thresholds
     max_phase_current_a: 40.0, // Peak phase current limit (FET rating)
     max_vbus_mv: 45_000,       // Overvoltage at 45V (FET Vds margin)

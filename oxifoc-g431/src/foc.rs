@@ -1,7 +1,7 @@
 //! FOC (Field-Oriented Control) management and ADC interrupt handling
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::{Peri, interrupt, peripherals};
@@ -41,6 +41,11 @@ pub static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
 
 /// Latest measured DC bus voltage in millivolts (updated in ADC interrupt).
 pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
+/// Set by the FOC ISR once `VBUS_MV` holds a real conversion — `init` waits
+/// on this so the observers/controller are configured from a MEASURED bus
+/// voltage, never a compile-time assumption (a measured 0 V is still the
+/// truth; `FocController` floors vbus at `MIN_VBUS` internally).
+static VBUS_MEASURED: AtomicBool = AtomicBool::new(false);
 /// Latest measured FET temperature in 0.1°C units (updated in ADC interrupt).
 pub static FET_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
@@ -112,12 +117,7 @@ pub async fn init(
         Ordering::Relaxed,
     );
     let hall_proxy = HallAngleProxy::new();
-    let initial_vbus_v =
-        (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
     let mut phase_manager = PhaseManager::with_hall(hall_proxy).with_sincos::<CordicSinCos>();
-    // Arm the sensorless estimators (back-EMF + HFI) from detected motor
-    // params; the angle source stays Hall until the host switches it.
-    phase_manager.configure_observers_from_config(config, initial_vbus_v);
 
     // Sensorless board (config::SENSORLESS): keep the boot angle source off
     // Hall so the unwired hall inputs don't spam a HallError every cycle. Ride
@@ -181,17 +181,6 @@ pub async fn init(
     // Initialize CORDIC hardware for fast sin/cos in FOC loop
     CordicSinCos::init(cordic_peri);
 
-    // Build FOC controller from stored config (motor params → PI gains → defaults)
-    let mut foc_controller =
-        FocController::<SvpwmModulator, CordicSinCos>::from_runtime_config(config, initial_vbus_v);
-
-    // Decoupling (fundamental Ld/Lq) now comes from MotorParamsConfig's
-    // ld/lq_fundamental fields via from_runtime_config — the two-inductance
-    // model lives in the config, not in a board-file override.
-
-    // Configure dead time compensation
-    foc_controller.set_dead_time_comp(PWM_CONFIG.dead_time_ns, PWM_CONFIG.pwm_freq_hz);
-
     // Store ADC handles for ISR access (before enabling interrupt/PWM)
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc1)));
     ADC2_INJECTED.lock(|cell| cell.replace(Some(adc2)));
@@ -221,6 +210,25 @@ pub async fn init(
         <interrupt::typelevel::ADC1_2 as Interrupt>::enable();
     }
     motor_pwm.enable_outputs();
+
+    // The ISR is live now (it guards on the driver being installed and only
+    // samples until then) — wait for its first VBUS conversion so the
+    // observers and controller are configured from a MEASURED bus voltage.
+    let initial_vbus_v = first_vbus_v().await;
+    // Arm the sensorless estimators (back-EMF + HFI) from detected motor
+    // params; the angle source stays as selected above.
+    phase_manager.configure_observers_from_config(config, initial_vbus_v);
+
+    // Build FOC controller from stored config (motor params → PI gains → defaults)
+    let mut foc_controller =
+        FocController::<SvpwmModulator, CordicSinCos>::from_runtime_config(config, initial_vbus_v);
+
+    // Decoupling (fundamental Ld/Lq) now comes from MotorParamsConfig's
+    // ld/lq_fundamental fields via from_runtime_config — the two-inductance
+    // model lives in the config, not in a board-file override.
+
+    // Configure dead time compensation
+    foc_controller.set_dead_time_comp(PWM_CONFIG.dead_time_ns, PWM_CONFIG.pwm_freq_hz);
 
     // Build FOC driver with dt from PWM config
     let mut foc_driver = FocDriver::new(
@@ -298,6 +306,23 @@ pub async fn init(
     defmt::info!("FOC driver initialized and calibrated");
 }
 
+/// Wait for the FOC ISR to publish its first VBUS conversion and return it
+/// in volts. The ADC trigger + interrupt are already armed when this runs,
+/// so the first sample lands within one PWM period; the 100 ms ceiling only
+/// trips if the ADC/ISR pipeline is dead — motor control is impossible then
+/// anyway, so log loudly and return 0 (the controller floors vbus at
+/// MIN_VBUS and the board stays alive for host debugging).
+async fn first_vbus_v() -> f32 {
+    for _ in 0..1000 {
+        if VBUS_MEASURED.load(Ordering::Acquire) {
+            return VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0;
+        }
+        Timer::after(Duration::from_micros(100)).await;
+    }
+    defmt::error!("no VBUS measurement within 100ms - ADC/ISR pipeline dead?");
+    0.0
+}
+
 // ========== ADC Interrupt Handler ==========
 
 /// ADC1/ADC2 shared interrupt: read all injected ADC samples and run FOC control.
@@ -360,6 +385,7 @@ fn ADC1_2() {
     // Convert VBUS raw ADC to millivolts
     let vbus_mv: u32 = BOARD.vbus_mv_from_adc(vbus_raw);
     VBUS_MV.store(vbus_mv, Ordering::Relaxed);
+    VBUS_MEASURED.store(true, Ordering::Release);
     // Convert temperature raw ADC to 0.1°C units
     let temp_c_x10: i16 = if convert_temp {
         let t = NTC.temp_c_x10_from_adc(temp_raw, BOARD.calib.adc_max_counts);

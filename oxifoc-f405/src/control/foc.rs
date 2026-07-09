@@ -12,7 +12,7 @@
 #![allow(dead_code)] // Public API not yet wired to protocol handlers
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::{interrupt, peripherals};
@@ -50,6 +50,11 @@ pub static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
 
 /// Latest measured DC bus voltage in millivolts (updated in ADC interrupt).
 pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
+/// Set by the FOC ISR once `VBUS_MV` holds a real conversion — `init` waits
+/// on this so the observers/controller are configured from a MEASURED bus
+/// voltage, never a compile-time assumption (a measured 0 V is still the
+/// truth; `FocController` floors vbus at `MIN_VBUS` internally).
+static VBUS_MEASURED: AtomicBool = AtomicBool::new(false);
 /// Latest board temperature in 0.1°C units (updated in ADC interrupt).
 pub static BOARD_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 /// Latest motor temperature in 0.1°C units (updated in ADC interrupt).
@@ -167,8 +172,7 @@ pub async fn init(
     let current_sensor = F405CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
     hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
-    let initial_vbus_v =
-        (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
+    let initial_vbus_v = first_vbus_v().await;
     let mut phase_manager = PhaseManager::with_hall(hall_proxy).with_sincos::<FastSinCos>();
     // Arm the sensorless estimators (back-EMF + HFI) from detected motor
     // params; the angle source stays Hall until the host switches it.
@@ -290,6 +294,23 @@ pub fn duty_to_iq(duty: u8) -> f32 {
     BOARD.duty_to_iq(duty)
 }
 
+/// Wait for the FOC ISR to publish its first VBUS conversion and return it
+/// in volts. The ADC trigger + interrupt are already armed when this runs,
+/// so the first sample lands within one PWM period (~50 µs); the 100 ms
+/// ceiling only trips if the ADC/ISR pipeline is dead — motor control is
+/// impossible then anyway, so log loudly and return 0 (the controller
+/// floors vbus at MIN_VBUS and the board stays alive for host debugging).
+async fn first_vbus_v() -> f32 {
+    for _ in 0..1000 {
+        if VBUS_MEASURED.load(Ordering::Acquire) {
+            return VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0;
+        }
+        Timer::after(Duration::from_micros(100)).await;
+    }
+    defmt::error!("no VBUS measurement within 100ms - ADC/ISR pipeline dead?");
+    0.0
+}
+
 // ========== ADC Interrupt Handler ==========
 
 /// ADC interrupt: read all injected ADC samples and run FOC control.
@@ -349,6 +370,7 @@ fn ADC() {
     // Convert VBUS raw ADC to millivolts
     let vbus_mv = BOARD.vbus_mv_from_adc(vbus_raw);
     VBUS_MV.store(vbus_mv, Ordering::Relaxed);
+    VBUS_MEASURED.store(true, Ordering::Release);
 
     let prof_t1 = cortex_m::peripheral::DWT::cycle_count();
 

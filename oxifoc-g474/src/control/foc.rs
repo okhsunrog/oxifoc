@@ -71,8 +71,11 @@ pub async fn init(
         Ordering::Relaxed,
     );
     let hall_proxy = HallAngleProxy::new();
-    let initial_vbus_v =
-        (VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0).max(BOARD.initial_vbus_volts);
+    // The g474 FOC ISR is not armed yet (ADC1_2 is never unmasked — the
+    // motor path on this board is dormant, see docs/TODO.md), so there is
+    // no measurement to wait for. Placeholder until the ISR comes alive;
+    // then adopt the measured-VBUS wait used by f405/g431 (first_vbus_v).
+    let initial_vbus_v = 12.0;
     let mut phase_manager = PhaseManager::with_hall(hall_proxy).with_sincos::<CordicSinCos>();
     // Arm the sensorless estimators (back-EMF + HFI) from detected motor
     // params; the angle source stays Hall until the host switches it.

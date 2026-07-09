@@ -333,7 +333,6 @@ mod tests {
         use crate::foc::config::BoardConfig;
         let bc = BoardConfig {
             calib: calib(),
-            initial_vbus_volts: 12.0,
             max_iq_target_a: 5.0,
             max_phase_current_a: 10.0,
             max_vbus_mv: 45_000,

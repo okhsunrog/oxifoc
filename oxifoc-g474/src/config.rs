@@ -39,8 +39,7 @@ pub const BOARD: BoardConfig = BoardConfig {
         invert_current_sign: false, // Amp non-inverting (+5.18·Vshunt + 1.71 V); verify on bench
         vbus_divider_ratio: 19.15,  // (169k + 9.31k) / 9.31k
     },
-    initial_vbus_volts: 12.0, // Conservative default
-    max_iq_target_a: 5.0,     // Conservative default for testing
+    max_iq_target_a: 5.0, // Conservative default for testing
     // Fault thresholds
     max_phase_current_a: 10.0, // Conservative limit (hw OCP trips at ~30 A)
     max_vbus_mv: 45_000,       // Max 45V (board rated 10-48V, leave margin)
