@@ -209,6 +209,24 @@ their section.
   | **Accel prior** 500 + 10500/A (BACKSTOP, not proven load-bearing) | The slow coherent phantom (PI winds vq up as the back-EMF of its own acceleration) is bounded by nothing else in closed loop: e_q validity is ratio-based and sticky-granted, the confirm probe is startup-only. per_amp = 1.3× the measured free-rotor 9300 el rad/s²/1.15 A | observed on hardware (pre-fix era); A/B 2026-07-07 (ab-prior-off-1,2) PASSED at no-load — kept because the guarded class is real and un-provokable on this bench |
   | **PSU-safe baked profile** (bus_in 3.5 A, bus_regen 0, RampToZero) | 12 V/4 A lab PSU: regen into a CC supply or a >4 A draw browns out / trips it; g431 has no flash persistence so it MUST be baked | standing bench rule since 2026-06-12; violated once (pre-cap), never since |
 
+- **2026-07-09 — boot vbus comes from a measurement, not a config constant.**
+  `BoardConfig.initial_vbus_volts` deleted. The old
+  `(measured).max(initial_vbus_volts)` seed conflated "not measured yet"
+  with "measured low" and could override a real reading upward; on the
+  g431 it was outright dead code — the read ran before the ADC IRQ was
+  enabled, so the constant always won and the boot-time HFI carrier
+  amplitude ceiling was computed from a guess. Now: the ISR sets a
+  `VBUS_MEASURED` flag after its first conversion and init awaits it
+  (`first_vbus_v()`, one PWM period in practice; 100 ms timeout → dead
+  ADC pipeline → log + continue at 0 V, `FocController` floors at
+  `MIN_VBUS`, board stays alive for host debugging). On the g431 the
+  observer/controller construction moved after IRQ enable to make a
+  measurement possible at all. g474 keeps a placeholder literal until
+  its dormant FOC ISR is armed. Rationale: the only lasting consumer of
+  the boot value is the HFI amplitude ceiling — everything else is
+  overwritten by the live per-cycle measurement, and a wrong constant
+  there is a silent misconfiguration.
+
 - **2026-07-07 — estimator-campaign dead code DELETED after audit + bench
   A/B** (the "cleanup session"; five parallel audits over freq-led, eddy
   ladder, slip gate, accel prior, rotating carrier, HFI paths):
