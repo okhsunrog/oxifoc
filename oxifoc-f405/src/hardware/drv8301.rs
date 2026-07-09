@@ -32,22 +32,8 @@ pub type DrvSpiBus = bitbang_hal_ng::spi::SPI<
     embassy_stm32::gpio::Input<'static>,
     Output<'static>,
     Output<'static>,
-    CyclesDelay,
+    bitbang_hal_ng::delay::AsmDelay,
 >;
-
-/// [`DelayNs`](embedded_hal::delay::DelayNs) from busy-wait CPU cycles for
-/// the bit-bang SPI half-period — `embassy_time::Delay` can't do sub-tick
-/// (30.5 µs at tick-hz-32768) waits, which would drag the bus to ~16 kHz.
-#[cfg(feature = "board-vesc6-mk5")]
-pub struct CyclesDelay;
-
-#[cfg(feature = "board-vesc6-mk5")]
-impl embedded_hal::delay::DelayNs for CyclesDelay {
-    fn delay_ns(&mut self, ns: u32) {
-        // 168 MHz core: 0.168 cycles/ns, rounded up.
-        cortex_m::asm::delay((u64::from(ns) * 168).div_ceil(1000) as u32);
-    }
-}
 
 type DrvBusError = <DrvSpiBus as embedded_hal::spi::ErrorType>::Error;
 
@@ -136,7 +122,12 @@ pub fn init_bus(
     // and the bus only carries boot config + nFAULT status reads.
     let config =
         bitbang_hal_ng::spi::SpiConfig::new(embedded_hal::spi::MODE_1).with_frequency_hz(500_000);
-    let spi = bitbang_hal_ng::spi::SPI::new(miso, mosi, sck, CyclesDelay, config);
+    // AsmDelay: cycle-counting DelayNs — embassy_time::Delay is tick-limited
+    // (30.5 µs) and would drag the bus to ~16 kHz. Infallible pins → the
+    // only new() error source (clock-idle drive) cannot fire; fail fast if
+    // that ever changes.
+    let delay = bitbang_hal_ng::delay::AsmDelay::new(168_000_000);
+    let spi = defmt::unwrap!(bitbang_hal_ng::spi::SPI::new(miso, mosi, sck, delay, config).ok());
 
     let (cs, en_gate, nfault) = init_ctrl_pins(r.pc9, r.pb5, r.pb7, r.exti7, exti_irq);
 
