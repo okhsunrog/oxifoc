@@ -9,10 +9,21 @@ docs/decisions.md).
 Verification model: the board ships running VESC firmware for a specific HW
 target and works with VESC Tool out of the box — the stock firmware drives
 exactly these pins, so **the HW name it reports validates the whole pin map
-wholesale**. The one check that matters, before reflashing: connect VESC Tool
-and confirm the reported HW is `60_MK5` (a `60_MK3`/`60_MK4` clone has no
-PC13 phase-filter switch → `phase_sense.has_filters` would be wrong; the
-rest of the MK3+ map is identical).
+wholesale**. The Flipsky listing already states firmware `60_MK5` / HW
+`VESC_6_MK5`, phase filter present, self-resetting power button (= the
+shutdown-latch circuit); a quick VESC Tool connect before reflashing just
+confirms it (a `60_MK3`/`60_MK4` board would have no PC13 phase-filter
+switch → `phase_sense.has_filters` would be wrong; the rest of the MK3+
+map is identical).
+
+## Vendor specs (Flipsky listing)
+
+- Firmware 6.02, HW `60_MK5`
+- 70 A continuous / 200 A "instantaneous" (marketing abs-max, ignored)
+- **Voltage 14–60 V** (4-13S; spikes must not exceed 60 V) — note the
+  **14 V operating minimum**: power the bench from ≥14 V, not the usual 12 V
+- BEC 5 V @ 1 A; USB/CAN/UART; ABI/HALL/AS5047/AS5048A sensor port
+- Motor/power wires 12 AWG; 67×39×18.7 mm with heatsink
 
 Firmware target: `oxifoc-f405` with `--no-default-features
 --features transport-usb,transport-uart,board-vesc6-mk5`.
@@ -69,23 +80,22 @@ Different from CF2:
 ## Limits (original Trampa hw60)
 
 - HW_LIM_CURRENT ±120 A, absolute max 160 A, VIN 6–57 V, FET temp cutoff 110 °C.
-- The Mini clone has smaller FETs and worse cooling — `BOARD` keeps the CF2
-  values (60 A peak, 100 °C). To raise them, use Flipsky's advertised rating
-  (inspect the FETs only if going beyond it) and recompute the DRV8301 OC
-  (VDS) threshold — firmware currently uses CF2's 511 mV.
+- `BOARD` uses the Flipsky continuous rating: 70 A peak, temp cutoff kept at
+  a conservative 100 °C. DRV8301 OC (VDS) threshold stays at CF2's 511 mV —
+  recompute only if pushing past the vendor rating (needs the FET part).
 - Dead time: 360 ns (VESC `HW_DEAD_TIME_NSEC` fallback; hw60 doesn't override).
 - VESC defaults for this HW: f_zv 30 kHz, `MCCONF_FOC_SAMPLE_V0_V7 false`.
 
 ## Bring-up checklist (when the board arrives)
 
-1. Before reflashing: connect the stock firmware to VESC Tool and confirm
-   the reported HW is `60_MK5` — that validates the whole pin map (see the
-   verification-model note above). Note the vendor current rating for the
-   `BOARD` limits.
-2. PSU-safe profile (RampToZero, bus_regen=0), current limit low.
-3. Flash `board-vesc6-mk5` build via SWD; confirm boot log prints the MK5
+1. Bench PSU at **≥14 V** (vendor operating minimum — the usual 12 V profile
+   is below spec for this board).
+2. Before reflashing: quick VESC Tool connect, confirm reported HW `60_MK5`
+   (formality — the listing states it; see the verification-model note).
+3. PSU-safe profile (RampToZero, bus_regen=0), current limit low.
+4. Flash `board-vesc6-mk5` build via SWD; confirm boot log prints the MK5
    pin map and DRV8301 device ID reads back (bit-bang SPI works).
-4. USB monitor 5 s: all six defmt categories at 1 Hz.
-5. ADC sanity: VBUS matches PSU, temps plausible, phase currents ~0.
-6. Motor detect (R/L) on the Flipsky 5065, then hall calibration,
+5. USB monitor 5 s: all six defmt categories at 1 Hz.
+6. ADC sanity: VBUS matches PSU, temps plausible, phase currents ~0.
+7. Motor detect (R/L) on the Flipsky 5065, then hall calibration,
    then `scripts/benchsuite.py`.

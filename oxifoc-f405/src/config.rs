@@ -44,16 +44,17 @@ pub const BOARD: BoardConfig = BoardConfig {
     }),
 };
 
-/// VESC 6 MK5 (Trampa layout + clones, e.g. Mini V6 MK5) board configuration
-/// — facts from VESC hwconf hw_60_core.h, see docs/hw/vesc6-mk5.md.
+/// VESC 6 MK5 (Trampa layout + clones; the bench unit is a Flipsky
+/// "Mini V6 MK5") board configuration — facts from VESC hwconf
+/// hw_60_core.h + the Flipsky listing, see docs/hw/vesc6-mk5.md.
 ///
 /// Hardware specs:
 /// - In-line phase shunts (HW_HAS_PHASE_SHUNTS): 0.5mΩ, standard polarity
 /// - DRV8301 amp gain: 20 V/V (VESC CURRENT_AMP_GAIN, all hw60 marks)
 /// - VBUS divider: 39k / 2.2k, same on SENS1-3
-/// - Current limits: original hw60 allows ±120A; the Mini clone's FETs are
-///   unidentified, so the CF2-conservative 60A peak stays until the board
-///   is inspected (bring-up checklist in docs/hw/vesc6-mk5.md)
+/// - Flipsky rating: 70A continuous / 200A instantaneous, 14-60V
+///   (original Trampa hw60: ±120A, VIN 6-57V) — NB 14V operating minimum,
+///   power the bench from ≥14V
 #[cfg(feature = "board-vesc6-mk5")]
 pub const BOARD: BoardConfig = BoardConfig {
     calib: BoardCalib {
@@ -64,11 +65,12 @@ pub const BOARD: BoardConfig = BoardConfig {
         invert_current_sign: false, // hw60 does NOT define INVERTED_SHUNT_POLARITY
         vbus_divider_ratio: (39.0 + 2.2) / 2.2, // ~18.73:1
     },
-    initial_vbus_volts: 12.0,  // Conservative default
+    initial_vbus_volts: 12.0,  // Boot seed only (max()'d with the live ADC reading —
+    // keep LOW so a real measurement always wins); VBUS is measured every ISR cycle
     max_iq_target_a: 10.0,     // Max torque current
-    max_phase_current_a: 60.0, // Conservative until the clone's FETs are identified
-    max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN)
-    min_vbus_mv: 6_000,        // Undervoltage at 6V (VESC HW_LIM_VIN)
+    max_phase_current_a: 70.0, // Flipsky continuous rating (200A "instantaneous" ignored)
+    max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN; vendor abs max 60V)
+    min_vbus_mv: 6_000,        // UV fault floor (VESC HW_LIM_VIN; operating min is 14V)
     max_fet_temp_c: 100.0,     // Conservative (original hw60 cutoff: 110°C)
     max_motor_temp_c: 120.0,   // motor winding NTC on PC4
     // Phase-voltage sensing on PA0/PA1/PA2 (SENS1/2/3), divider = Vbus
