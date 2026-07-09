@@ -11,7 +11,16 @@ test = false
 bench = false
 
 [features]
-default = ["transport-usb", "transport-uart"]
+default = ["transport-usb", "transport-uart", "board-cf2"]
+# Exactly one board feature must be enabled (compile_error in main.rs).
+# Cheap FOCer 2 / Simple FOCer 2: DRV8301 on hardware SPI3, low-side shunts,
+# amp gain 10 V/V.
+board-cf2 = []
+# Trampa VESC 6 MK5 layout and clones (Mini V6 MK5): DRV8301 on bit-bang SPI
+# (SCK PC10 / MOSI PB4 / MISO PB3), in-line phase shunts, amp gain 20 V/V,
+# shutdown latch PC5, current/phase filter enables PD2/PC13.
+# See docs/hw/vesc6-mk5.md.
+board-vesc6-mk5 = []
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
 transport-usb = []
 # UART on USART3 (PB10 TX / PB11 RX) for Cheap FOCer 2
@@ -71,6 +80,7 @@ ergot = { git = "https://github.com/okhsunrog/ergot", rev = "407805f70553cea63bf
 rtt-target = "0.6"
 libm = "0.2.16"
 serde = { version = "1.0.228", default-features = false }
+embedded-hal = "1.0.0"
 
 [profile.dev]
 debug = true

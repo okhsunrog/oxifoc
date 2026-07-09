@@ -1,4 +1,4 @@
-//! Configuration constants for oxifoc-f405 (Simple FOCer 2 / Cheap FOCer 2)
+//! Configuration constants for oxifoc-f405 (per-board `BOARD` const below)
 
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
@@ -17,6 +17,7 @@ use oxifoc_core::types::BoardCalib;
 /// - VBUS divider: 39k / 2.2k = (39 + 2.2) / 2.2 ratio
 /// - Max continuous current: ~60A (FET rating, IRFS7530)
 /// - Max VBUS: 57V (VESC HW_LIM_VIN, FET Vds=60V with margin)
+#[cfg(feature = "board-cf2")]
 pub const BOARD: BoardConfig = BoardConfig {
     calib: BoardCalib {
         shunt_ohms: 0.0005,                     // 0.5mΩ (two 1mΩ in parallel)
@@ -40,6 +41,42 @@ pub const BOARD: BoardConfig = BoardConfig {
     phase_sense: Some(PhaseSense {
         divider_ratio: (39.0 + 2.2) / 2.2,
         has_filters: false,
+    }),
+};
+
+/// VESC 6 MK5 (Trampa layout + clones, e.g. Mini V6 MK5) board configuration
+/// — facts from VESC hwconf hw_60_core.h, see docs/hw/vesc6-mk5.md.
+///
+/// Hardware specs:
+/// - In-line phase shunts (HW_HAS_PHASE_SHUNTS): 0.5mΩ, standard polarity
+/// - DRV8301 amp gain: 20 V/V (VESC CURRENT_AMP_GAIN, all hw60 marks)
+/// - VBUS divider: 39k / 2.2k, same on SENS1-3
+/// - Current limits: original hw60 allows ±120A; the Mini clone's FETs are
+///   unidentified, so the CF2-conservative 60A peak stays until the board
+///   is inspected (bring-up checklist in docs/hw/vesc6-mk5.md)
+#[cfg(feature = "board-vesc6-mk5")]
+pub const BOARD: BoardConfig = BoardConfig {
+    calib: BoardCalib {
+        shunt_ohms: 0.0005, // 0.5mΩ in-line phase shunts
+        amp_gain: 20.0,     // DRV8301 20 V/V gain (must match drv8301.rs SHUNT_AMP_GAIN)
+        adc_vref_mv: 3300,
+        adc_max_counts: 4095,
+        invert_current_sign: false, // hw60 does NOT define INVERTED_SHUNT_POLARITY
+        vbus_divider_ratio: (39.0 + 2.2) / 2.2, // ~18.73:1
+    },
+    initial_vbus_volts: 12.0,  // Conservative default
+    max_iq_target_a: 10.0,     // Max torque current
+    max_phase_current_a: 60.0, // Conservative until the clone's FETs are identified
+    max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN)
+    min_vbus_mv: 6_000,        // Undervoltage at 6V (VESC HW_LIM_VIN)
+    max_fet_temp_c: 100.0,     // Conservative (original hw60 cutoff: 110°C)
+    max_motor_temp_c: 120.0,   // motor winding NTC on PC4
+    // Phase-voltage sensing on PA0/PA1/PA2 (SENS1/2/3), divider = Vbus
+    // divider. MK5 has switchable RC phase filters (enabled via PC13 at
+    // boot) → usable while PWMing, unlike CF2.
+    phase_sense: Some(PhaseSense {
+        divider_ratio: (39.0 + 2.2) / 2.2,
+        has_filters: true,
     }),
 };
 
@@ -74,7 +111,7 @@ pub const NTC_MOTOR: NtcConfig = NtcConfig {
 /// Central source of truth for PWM frequency and timing.
 /// Used by motor.rs for timer setup and control/foc.rs for dt calculation.
 pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(360);
-// VESC default dead time for Cheap FOCer 2: 360ns (HW_DEAD_TIME_NSEC fallback)
+// VESC HW_DEAD_TIME_NSEC fallback: 360ns — neither CF2 nor hw60 overrides it
 
 // ============================================================================
 // Timing Configuration

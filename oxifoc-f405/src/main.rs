@@ -1,6 +1,11 @@
 #![no_std]
 #![no_main]
 
+#[cfg(not(any(feature = "board-cf2", feature = "board-vesc6-mk5")))]
+compile_error!("select exactly one board feature: board-cf2 or board-vesc6-mk5");
+#[cfg(all(feature = "board-cf2", feature = "board-vesc6-mk5"))]
+compile_error!("board-cf2 and board-vesc6-mk5 are mutually exclusive");
+
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::Output;
 use embassy_stm32::{bind_interrupts, exti, interrupt};
@@ -25,6 +30,9 @@ mod sensors;
 mod storage;
 mod transport;
 
+#[cfg(feature = "board-vesc6-mk5")]
+#[allow(unused_imports)]
+use hardware::BoardCtrlResources;
 #[allow(unused_imports)]
 use hardware::{AssignedResources, DrvResources, HallResources, MotorResources, UartResources};
 use motor::MotorPwm;
@@ -76,6 +84,12 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 5: Split Hardware Resources ==========
     let r = split_resources!(p);
+
+    // MK5: latch the power button (PC5) and enable the current/phase-sense
+    // filters ASAP — releasing the button before PC5 goes high powers the
+    // board off. The Outputs must live for the whole run.
+    #[cfg(feature = "board-vesc6-mk5")]
+    let _board_ctrl = hardware::board_early_init(r.board_ctrl);
 
     // ========== STEP 6: Initialize USB + UART transports ==========
     #[cfg(feature = "transport-usb")]
@@ -143,17 +157,7 @@ async fn main(spawner: Spawner) {
     defmt::info!("Config loaded from flash");
 
     // ========== STEP 9: Initialize DRV8301 Gate Driver ==========
-    let (drv_config, nfault) = hardware::drv8301::init_spi(
-        r.drv.spi3,
-        r.drv.pc10,
-        r.drv.pc11,
-        r.drv.pc12,
-        r.drv.pc9,
-        r.drv.pb5,
-        r.drv.pb7,
-        r.drv.exti7,
-        ExtiIrqs,
-    );
+    let (drv_config, nfault) = hardware::drv8301::init_bus(r.drv, ExtiIrqs);
 
     let (drv_spi, drv_result) = hardware::drv8301::configure_drv8301(drv_config);
     match drv_result {
@@ -186,10 +190,17 @@ async fn main(spawner: Spawner) {
     // 1 Hz ISR-cost stats (same isr/s line format as the g431).
     spawner.spawn(defmt::unwrap!(control::foc::isr_stats_task()));
 
+    #[cfg(feature = "board-cf2")]
     defmt::info!(
-        "F405 pin map: PWM PA8/PA9/PA10 + PB13/14/15, DRV8301 EN_GATE=PB5, nFAULT=PB7, \
+        "F405 board=CF2: PWM PA8/PA9/PA10 + PB13/14/15, DRV8301 EN_GATE=PB5, nFAULT=PB7, \
          SPI3 CS/SCK/MISO/MOSI=PC9/PC10/PC11/PC12, halls=PC6/7/8, ADC currents PC0-2, VBUS PC3, \
          USART3 TX=PB10 RX=PB11"
+    );
+    #[cfg(feature = "board-vesc6-mk5")]
+    defmt::info!(
+        "F405 board=VESC6_MK5: PWM PA8/PA9/PA10 + PB13/14/15, DRV8301 EN_GATE=PB5, nFAULT=PB7, \
+         bit-bang SPI CS/SCK/MISO/MOSI=PC9/PC10/PB3/PB4, halls=PC6/7/8, ADC currents PC0-2 \
+         (phase shunts), VBUS PC3, USART3 TX=PB10 RX=PB11, latch PC5, filters PD2/PC13"
     );
     defmt::info!(
         "Board config: shunt={=f32}Ω, amp_gain={=f32} V/V, vbus_ratio={=f32}:1, faults={}",

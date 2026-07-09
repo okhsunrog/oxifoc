@@ -1,4 +1,4 @@
-//! DRV8301 gate driver configuration for Simple FOCer 2
+//! DRV8301 gate driver configuration (CF2: hardware SPI3, MK5: bit-bang SPI)
 
 use core::cell::RefCell;
 
@@ -6,24 +6,44 @@ use drv8301_dd::{Drv8301, DrvError, GateCurrent, OcAdjSet, OcpMode, ShuntAmplifi
 
 // Re-export FaultStatus for use by other modules
 pub use drv8301_dd::FaultStatus;
+#[cfg(feature = "board-vesc6-mk5")]
+use embassy_stm32::gpio::Input;
 use embassy_stm32::{
-    Peri,
     exti::{self, ExtiInput},
     gpio::{Level, Output, Pull, Speed},
     interrupt::{self, typelevel::Binding},
-    peripherals,
+};
+#[cfg(feature = "board-cf2")]
+use embassy_stm32::{
     spi::{self, Spi},
     time::Hertz,
 };
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embedded_hal_bus::spi::ExclusiveDevice;
 
+use super::resources::DrvResources;
 use crate::FAULT_REGISTRY;
 use crate::fault::F405Fault;
 
-/// DRV8301 configuration matching VESC Simple FOCer 2 settings
-pub struct Drv8301Config<'d> {
-    pub spi: Spi<'d, embassy_stm32::mode::Blocking, spi::mode::Master>,
+/// The SPI bus the DRV8301 sits on — hardware SPI3 on CF2, bit-bang on MK5
+/// (SCK PC10 / MOSI PB4 / MISO PB3 is not a valid hardware-SPI mapping).
+#[cfg(feature = "board-cf2")]
+pub type DrvSpiBus = Spi<'static, embassy_stm32::mode::Blocking, spi::mode::Master>;
+#[cfg(feature = "board-vesc6-mk5")]
+pub type DrvSpiBus = super::soft_spi::SoftSpi;
+
+type DrvBusError = <DrvSpiBus as embedded_hal::spi::ErrorType>::Error;
+
+/// Shunt amplifier gain — must match `config::BOARD.calib.amp_gain`.
+/// CF2 v1.0: CURRENT_AMP_GAIN 10; VESC 6 (all marks): CURRENT_AMP_GAIN 20.
+#[cfg(feature = "board-cf2")]
+const SHUNT_AMP_GAIN: ShuntAmplifierGain = ShuntAmplifierGain::Gain10;
+#[cfg(feature = "board-vesc6-mk5")]
+const SHUNT_AMP_GAIN: ShuntAmplifierGain = ShuntAmplifierGain::Gain20;
+
+/// DRV8301 bus + control pins, ready for `configure_drv8301`
+pub struct Drv8301Config {
+    pub spi: DrvSpiBus,
     pub cs: Output<'static>,
     pub en_gate: Output<'static>,
 }
@@ -42,35 +62,23 @@ static EN_GATE: CriticalSectionMutex<RefCell<Option<Output<'static>>>> =
 /// masked every interrupt including the FOC ISR, right at the moment a gate
 /// fault fired. Task ownership needs no lock at all.
 pub struct Drv8301Spi {
-    spi: Spi<'static, embassy_stm32::mode::Blocking, spi::mode::Master>,
+    spi: DrvSpiBus,
     cs: Output<'static>,
 }
 
-/// Initialize SPI3 for DRV8301 communication
-///
-/// Simple FOCer 2 pinout:
-/// - SPI3_SCK:  PC10
-/// - SPI3_MISO: PC11
-/// - SPI3_MOSI: PC12
-/// - SPI3_CS:   PC9
+/// Initialize the DRV8301 bus for Cheap FOCer 2: hardware SPI3
+/// (CS PC9, SCK PC10, MISO PC11, MOSI PC12).
 ///
 /// Returns (Drv8301Config, NfaultInput) - the nFAULT input should be passed
 /// to `nfault_monitor_task` for interrupt-driven fault detection.
-#[allow(clippy::too_many_arguments)]
-pub fn init_spi(
-    spi3: Peri<'static, peripherals::SPI3>,
-    pc10: Peri<'static, peripherals::PC10>,
-    pc11: Peri<'static, peripherals::PC11>,
-    pc12: Peri<'static, peripherals::PC12>,
-    pc9: Peri<'static, peripherals::PC9>,
-    pb5: Peri<'static, peripherals::PB5>,
-    pb7: Peri<'static, peripherals::PB7>,
-    exti7: Peri<'static, peripherals::EXTI7>,
+#[cfg(feature = "board-cf2")]
+pub fn init_bus(
+    r: DrvResources,
     exti_irq: impl Binding<
         interrupt::typelevel::EXTI9_5,
         exti::InterruptHandler<interrupt::typelevel::EXTI9_5>,
     >,
-) -> (Drv8301Config<'static>, NfaultInput) {
+) -> (Drv8301Config, NfaultInput) {
     // Configure SPI3 - DRV8301: CPOL=0, CPHA=1 (Mode 1), max 10MHz
     let mut spi_config = spi::Config::default();
     spi_config.mode = spi::Mode {
@@ -80,12 +88,53 @@ pub fn init_spi(
     spi_config.frequency = Hertz(1_000_000); // Start at 1MHz for safety
 
     let spi = Spi::new_blocking(
-        spi3, pc10, // SCK
-        pc12, // MOSI
-        pc11, // MISO
+        r.spi3, r.pc10, // SCK
+        r.pc12, // MOSI
+        r.pc11, // MISO
         spi_config,
     );
 
+    let (cs, en_gate, nfault) = init_ctrl_pins(r.pc9, r.pb5, r.pb7, r.exti7, exti_irq);
+
+    defmt::info!("DRV8301 SPI3 initialized");
+
+    (Drv8301Config { spi, cs, en_gate }, nfault)
+}
+
+/// Initialize the DRV8301 bus for VESC 6 MK5: bit-bang SPI
+/// (CS PC9, SCK PC10, MISO PB3, MOSI PB4).
+#[cfg(feature = "board-vesc6-mk5")]
+pub fn init_bus(
+    r: DrvResources,
+    exti_irq: impl Binding<
+        interrupt::typelevel::EXTI9_5,
+        exti::InterruptHandler<interrupt::typelevel::EXTI9_5>,
+    >,
+) -> (Drv8301Config, NfaultInput) {
+    // Mode 1 idle state: SCK low. MOSI level between frames is don't-care.
+    let sck = Output::new(r.pc10, Level::Low, Speed::VeryHigh);
+    let mosi = Output::new(r.pb4, Level::Low, Speed::VeryHigh);
+    let miso = Input::new(r.pb3, Pull::None);
+    let spi = super::soft_spi::SoftSpi::new(sck, mosi, miso);
+
+    let (cs, en_gate, nfault) = init_ctrl_pins(r.pc9, r.pb5, r.pb7, r.exti7, exti_irq);
+
+    defmt::info!("DRV8301 bit-bang SPI initialized (SCK PC10, MOSI PB4, MISO PB3)");
+
+    (Drv8301Config { spi, cs, en_gate }, nfault)
+}
+
+/// CS + EN_GATE + nFAULT setup shared by both bus flavors
+fn init_ctrl_pins(
+    pc9: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PC9>,
+    pb5: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PB5>,
+    pb7: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PB7>,
+    exti7: embassy_stm32::Peri<'static, embassy_stm32::peripherals::EXTI7>,
+    exti_irq: impl Binding<
+        interrupt::typelevel::EXTI9_5,
+        exti::InterruptHandler<interrupt::typelevel::EXTI9_5>,
+    >,
+) -> (Output<'static>, Output<'static>, NfaultInput) {
     // CS pin (active low)
     let cs = Output::new(pc9, Level::High, Speed::VeryHigh);
 
@@ -96,24 +145,21 @@ pub fn init_spi(
     // nFAULT pin with EXTI for interrupt-driven fault detection (active low, pull-up)
     let nfault = ExtiInput::new(pb7, exti7, Pull::Up, exti_irq);
 
-    defmt::info!("DRV8301 SPI3 initialized");
-
-    (Drv8301Config { spi, cs, en_gate }, nfault)
+    (cs, en_gate, nfault)
 }
 
 /// DRV8301 SPI error type alias for convenience
 pub type Drv8301Error =
-    DrvError<embedded_hal_bus::spi::DeviceError<spi::Error, core::convert::Infallible>>;
+    DrvError<embedded_hal_bus::spi::DeviceError<DrvBusError, core::convert::Infallible>>;
 
-/// Configure DRV8301 according to VESC Cheap FOCer 2 v1.0 settings
+/// Configure DRV8301 according to VESC settings for the selected board
 ///
-/// Matches VESC firmware: drv8301_write_reg(2, 0x0430) + drv8301_set_current_amp_gain(10).
+/// Matches VESC firmware: drv8301_write_reg(2, 0x0430) +
+/// drv8301_set_current_amp_gain(CURRENT_AMP_GAIN).
 /// Stores EN_GATE for `enable/disable_gate_driver` and returns the SPI bus
 /// for `nfault_monitor_task` to own (configuration may have failed — the
 /// result says so — but the monitor task gets the bus either way).
-pub fn configure_drv8301(
-    drv_config: Drv8301Config<'static>,
-) -> (Drv8301Spi, Result<(), Drv8301Error>) {
+pub fn configure_drv8301(drv_config: Drv8301Config) -> (Drv8301Spi, Result<(), Drv8301Error>) {
     let Drv8301Config {
         mut spi,
         mut cs,
@@ -127,10 +173,7 @@ pub fn configure_drv8301(
     (Drv8301Spi { spi, cs }, result)
 }
 
-fn configure_registers(
-    spi: &mut Spi<'static, embassy_stm32::mode::Blocking, spi::mode::Master>,
-    cs: &mut Output<'static>,
-) -> Result<(), Drv8301Error> {
+fn configure_registers(spi: &mut DrvSpiBus, cs: &mut Output<'static>) -> Result<(), Drv8301Error> {
     let spi_device = defmt::unwrap!(ExclusiveDevice::new_no_delay(spi, cs).ok());
 
     let mut drv = Drv8301::new(spi_device);
@@ -158,16 +201,17 @@ fn configure_registers(
     }
 
     // Hardware overcurrent protection: VDS sensing with latched shutdown.
-    // IRFS7530 Rds_on ≈ 1.5mΩ (25°C), ~3mΩ (150°C).
-    // At 60A nominal: VDS ≈ 90–180mV. Threshold 511mV gives margin for
-    // transients while catching dead shorts (~340A cold) before FET failure.
+    // CF2 (IRFS7530): Rds_on ≈ 1.5mΩ (25°C), ~3mΩ (150°C); at 60A nominal
+    // VDS ≈ 90–180mV. Threshold 511mV gives margin for transients while
+    // catching dead shorts (~340A cold) before FET failure.
+    // MK5 clone: FETs unidentified — 511mV kept until the board is inspected
+    // (docs/hw/vesc6-mk5.md bring-up checklist).
     drv.set_oc_threshold(OcAdjSet::Vds511mV)?;
     drv.set_ocp_mode(OcpMode::OcLatchShutdown)?;
     drv.set_pwm_mode(false)?;
     drv.set_gate_current(GateCurrent::Low)?;
 
-    // Cheap FOCer 2 v1.0: CURRENT_AMP_GAIN = 10
-    drv.set_shunt_amplifier_gain(ShuntAmplifierGain::Gain10)?;
+    drv.set_shunt_amplifier_gain(SHUNT_AMP_GAIN)?;
 
     // Reset any latched faults
     drv.reset_gate_faults()?;

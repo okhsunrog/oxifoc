@@ -46,6 +46,14 @@ check-device:
         (cd "$crate" && cargo fmt --check) || exit 1
         (cd "$crate" && cargo build --tests --quiet 2>&1 | filter) || exit 1
     done
+    # f405 second board must not rot (default = board-cf2).
+    echo "oxifoc-f405 (vesc6-mk5): build..."
+    (cd oxifoc-f405 && cargo build --release --quiet --no-default-features --features transport-usb,transport-uart,board-vesc6-mk5 2>&1 | filter) || exit 1
+    # Restore the canonical CF2 ELF — same trap as the g431 below: the mk5
+    # variant overwrites target/…/oxifoc-f405, and flashing/decoding with a
+    # mismatched board ELF fails confusingly.
+    echo "oxifoc-f405 (cf2): restore canonical ELF..."
+    (cd oxifoc-f405 && cargo build --release --quiet 2>&1 | filter) || exit 1
     # g431 non-default profile must not rot (default = baked + detection):
     # the detection-off reserve.
     echo "oxifoc-g431 (no detection): build..."
@@ -100,6 +108,20 @@ virtual *ARGS:
 # effectively_once Detect).
 e2e:
     cargo test -p oxifoc-virtual --test e2e
+
+# Build oxifoc-f405 for a board: `just f405` (cf2) or `just f405 vesc6-mk5`.
+# Both boards share one ELF path (target/…/release/oxifoc-f405) — flash the
+# board that matches the last build.
+f405 board="cf2":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd oxifoc-f405
+    if [ "{{ board }}" = "cf2" ]; then
+        cargo build --release
+    else
+        cargo build --release --no-default-features \
+            --features "transport-usb,transport-uart,board-{{ board }}"
+    fi
 
 # Flash usage of the STM32 firmwares (see docs/flash-size.md)
 size:
