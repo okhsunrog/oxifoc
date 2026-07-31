@@ -33,6 +33,174 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
 - [ ] Configurable post-watchdog policy (coast / regen / hold).
 - [ ] `Idempotent` marker trait + `call`/`call_once` helpers in host-lib.
 
+## Review backlog (2026-07-09 full-codebase review)
+
+Findings from the six-agent review, verified against source at the time.
+The bridge/remote block (the review's only critical) was fixed by the
+transport rework; everything below is still open. Line numbers have
+drifted — anchors are function/area names.
+
+### Fix before the next bench session (safety)
+
+- [ ] **Hall velocity is unbounded** — a single edge-bounce pair
+  (`dt_ticks.max(1)` in `HallSensor::update`) yields ω ≈ 10⁵–10⁶ rad/s
+  passed raw on the Hall path (`manager.rs` passes `sample.omega` with
+  no tracker). Feeds (a) the dq-decoupling feedforward
+  `vq_ff = ω·(Ld·id* + λ)` → full-bus torque pulse, and (b) the
+  actuation advance below. This is the bench-observed OC-from-hall-bounce
+  class (flaky Flipsky connector). Fix at the source: max-plausible-speed
+  clamp or VESC-style minimum inter-edge dt.
+- [ ] **`apply_actuation_advance` diverges for |δ| ≳ 2** — the
+  small-angle rotation (`sd = d − d³/6`) becomes an amplifier (gain ≈160
+  at d=10) applied AFTER the circular voltage limit → several cycles of
+  full-rail PWM in arbitrary directions on a velocity spike. Clamp
+  `advance_rad` to ±0.5 rad in `set_actuation_advance`.
+- [ ] **`measure_inductance_pulse` error path leaves the winding
+  energised**: `meas.finish()?` early-returns before ramp-down/Stop
+  while the last command was `DirectVoltage { vd_hold + pulse_v }` —
+  a pulse-sized voltage applied DC for up to the 10 s deadman when all
+  pulses are skipped (`InsufficientSamples` on a noisy/open winding).
+  `measure_resistance` in the same file does it right (stop before
+  bail-outs); mirror it.
+- [ ] **Deadshort/confirm cap-skip fabricates a rotor measurement at
+  drive current ≥ `DEADSHORT_MAX_CURRENT_A`** (`startup.rs`,
+  `feed_confirm`/`feed_deadshort`): the cap-skip was designed for
+  back-EMF current but also fires on residual *drive* current — a
+  sensorless start with iq ≥ 8 A skips the settle window, one sample of
+  drive current "completes" it, and `short_current_estimate` seeds a
+  phantom handoff ~π off the rotor. Never hit on the ZD2808 (7.2 A);
+  will be hit at Flipsky currents. Fix: never cap-skip in
+  `feed_confirm` — abort/retry instead.
+- [ ] **Internal stop paths clear the failsafe re-arm latch**
+  (`set_mode(Stopped)` clears `failsafe_latched` for every caller,
+  including the Kill path via `safe_off` and StepError): deadman →
+  ControlledStop → brake trips OC/OV → latch wiped → after
+  `faults clear` a stale throttle replay is accepted with no
+  return-to-neutral. Make internal callers preserve the latch (the
+  failsafe terminal already sets `self.mode` directly for this reason).
+
+### Before MK5 power-up
+
+- [ ] **F405 boots drivable after DRV8301 configuration failure**
+  (`main.rs` DRV init): a config `Err` is only logged, EN_GATE is
+  already high, no fault raised → DRV stays at power-on gain 10 while
+  `BOARD.calib.amp_gain = 20`: all currents read 2× low, the 70 A
+  software OC trip is effectively 140 A, VDS-OCP never programmed —
+  and the host can command drive. One flaky bit-bang wire on MK5 is
+  exactly this path. Raise a Kill-class fault / block non-Stopped.
+- [ ] F405 nFAULT monitor is edge-triggered only — a fault already
+  asserted when the task starts (e.g. GVDD_UV at boot) is never
+  registered; check the level before the first `wait_for_falling_edge`.
+- [ ] **F405 IWDG (1 s) does not cover the 128 KB storage-sector erase
+  (up to 2 s)**: sectors 10–11 are 128 KB, the accepted margin in
+  decisions.md was computed for 16 KB sectors — the dog bites mid
+  config-save at spec-typical erase times. Raise the timeout or feed
+  around the erase.
+- [ ] MK5 builds identify as "Simple FOCer 2 (F405)" / usb serial
+  `simple-focer2` — cfg-gate the identity per board.
+- [ ] F405 detection backend ignores host-supplied hall-calibration
+  params (`calibrate_hall(_params)` → `calibrate_hall_default_ez()`);
+  g431 passes them through.
+- [ ] F405 FOC ISR runs two libm-logf NTC conversions every cycle
+  (~5–7 % of budget); port g431's 1/128 decimation.
+
+### Config hygiene (one pass)
+
+- [ ] **PiGains writes are never validated**: NaN/0/negative kp
+  persists with `Ok`, live-apply silently drops it via `is_sane`
+  (masking the bad write), next boot applies it verbatim → NaN vd/vq
+  and `is_overcurrent(NaN, NaN)` never trips. Validate at the config
+  boundary like CurrentLimits.
+- [ ] **`speed_start_frac == 1.0` silently disables the derating speed
+  ceiling** (zero-width ramp hits the "malformed ramp never derates"
+  branch and returns 1.0 for every speed; `is_sane` accepts `<= 1.0`).
+  Require `< 1.0` or fall back to a step cut.
+- [ ] Invalid `MotorParams` write returns `Ok` but is silently ignored
+  (no `else → Invalid` arm); inconsistent with the loud-Invalid policy.
+- [ ] `VoltageLimits` and `PwmConfig` config groups are write-accepted,
+  persisted and consumed by nothing (protection uses compile-time
+  BoardConfig) — silent no-op config in the protection domain: wire
+  them up or reject the writes.
+- [ ] `DetectRequest` payloads lack boundary validation: `pole_pairs=0`
+  → inf spin_rpm; NaN `max_power_loss_w` → `sqrtf(NaN).min(max)`
+  selects the platform's maximum test current.
+- [ ] g431 sensorless boot: `SlowTelemetry::phase_source` mirror stays
+  `Hall` until the first host source switch (boot calls
+  `phase_manager.set_source` without mirroring into STATE; f405 does).
+
+### Host
+
+- [ ] **GUI MotorParams write wipes `ld/lq_fundamental_h`**
+  (struct-literal `..Default::default()` instead of read-modify-write;
+  the CLI JSON RMW path preserves them). Same class: GUI Velocity
+  write resets the bench-tuned `accel_ff` to 0. Route both through the
+  shared JSON RMW.
+- [ ] **CLI logs go to stdout, breaking the documented `--json`
+  contract** (`init_tracing` default writer; benchsuite regex-splits
+  stdout to cope). One line: `.with_writer(std::io::stderr)`.
+- [ ] **capreport.py `V-SAT` regime can never fire**: threshold
+  `|vq|/vbus > 0.85` is unreachable under the firmware's circular clamp
+  (0.577·vbus); saturated segments are never tagged and `--zooms`
+  never triggers. Use `vmag/(0.577·vbus)`.
+- [ ] **No layout-level ICD gate**: `ICD_PROTO_VERSION` is a manual
+  constant and the handshake only warns — the known stale-host trap.
+  Config structs already derive `postcard_schema::Schema`; put a
+  schema hash into `HardwareInfo`.
+- [ ] defmt decoding dies permanently after the first reconnect on RTT
+  transports (`defmt_started` latch; new transport's reader dropped) —
+  benchsuite device-log gates read a truncated log after a mid-run
+  reconnect.
+- [ ] capreport.py cuts segments by host wall-clock (`t_acked`) instead
+  of the `seq_before`/`seq_after_ack` anchors the maneuver metadata
+  provides; benchsuite anchor lookup also treats a legitimate seq of 0
+  as missing (`or`-chain on falsy values).
+- [ ] Enrichment-trust cross-check can report a false "trusted" when
+  the enrich-time DcOffsets read fails but the snapshot read succeeds.
+- [ ] Stale module doc in `record.rs` claims an anti-alias filter +
+  group-delay metadata that no longer exist (decimation is plain
+  sample-dropping) — misleads phase-sensitive analysis.
+
+### Minor / hardening
+
+- [ ] `ClampedPI` integrator latches NaN permanently from one NaN input
+  (benign downstream but dead loop until mode-change reset).
+- [ ] Telemetry pack functions wrap instead of saturating (−0.1 V vbus
+  encodes as ~131 V; 70 kRPM as −30 536).
+- [ ] NaN-transparent gates in the older detection accumulators
+  (`x < MIN` style passes NaN): a NaN `r_probe` escalates
+  `safe_current` to the raw hardware limit. Newer accumulators use the
+  NaN-rejecting `contains` pattern; port it back.
+- [ ] `HfiToHall`/`HfiToEncoder` trust-gate arms report a cold HFI
+  angle as trustworthy (pure `Hfi` arms gate on `is_ready`).
+- [ ] HFI polarity-probe completion doesn't `restart_demod()` — first
+  post-probe readiness rides ~6 ms of corrupted demod state.
+- [ ] `set_source` doesn't reset `PhaseTracker` — an Observer→X→Observer
+  round trip transiently replays the stale tracker ω.
+- [ ] Dead `SensorlessStartup::begin_recovery`/`StartupPhase::Recover`
+  (no production caller; if ever wired, it routes a moving-rider hall
+  dropout into a Confirm bridge-short) — guard or delete.
+- [ ] Test blind spot: plant and estimator share the
+  `clarke`/`inverse_clarke` pair on the *current* path, so a mirrored
+  β-sign error cancels in every sim test (the documented
+  "paired conventions cancel" class). The voltage path was already
+  made independent; inline the dq→phase mapping in `virtual_motor`.
+- [ ] `HallCalibration::from_raw_table` accepts NaN/Inf from a corrupt
+  stored record (`is_finite` gate missing).
+- [ ] Hall sensor tick-subtraction convention inconsistent
+  (`wrapping_sub` in `interpolation_info`/edge-velocity vs documented
+  `saturating_sub` elsewhere).
+- [ ] oxifoc-virtual `load_all` drifted from core: persisted Derating
+  is lost on restart (make core's `load_all` pub, delete the copy).
+- [ ] Virtual TCP server exits on the 5th concurrent client
+  (`register_router(...)?` in the accept loop kills `run()`); UDP/TCP
+  disconnect monitors have a check-then-wait lost-wakeup gap.
+- [ ] f405 frame cap (512) exceeds the bridge BLE ATT cap (505) —
+  max-size frames can't traverse the BLE leg; size telemetry batches
+  or couple the constants.
+- [ ] "ADC at priority 0" comments overstate the config: comms IRQs
+  also sit at reset-default 0 — demote them or fix the comments (entry
+  jitter, not preemption).
+
 ## Velocity / position
 
 Tuning constraint (learned in sim): hall updates the velocity estimate
