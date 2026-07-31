@@ -160,6 +160,23 @@ pub async fn protocol_servers(stack: &'static Stack) {
     .await;
 }
 
+/// Ergot well-known services for downstream bridges.
+///
+/// The seed-router handler answers net-id assignment/refresh/release requests
+/// (the BLE bridge leases a net for its radio segment here — without it a
+/// bridge's pending downstream never gets a routable net). The ping handler
+/// is the bridge's upstream-discovery bootstrap: the bridge pings the root
+/// link-local, and the *reply* is the first frame addressed to the bridge,
+/// which is what its edge processor learns the upstream net_id from.
+#[embassy_executor::task]
+pub async fn seed_router_task(stack: &'static Stack) {
+    embassy_futures::join::join(
+        stack.services().seed_router_request_handler::<2>(),
+        stack.services().ping_handler::<2>(),
+    )
+    .await;
+}
+
 /// State monitor — watches interface state transitions and reacts to disconnect.
 /// Stops motor and disables telemetry when ALL interfaces go down.
 #[embassy_executor::task]
@@ -328,6 +345,7 @@ pub fn spawn_servers(
     spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
     spawner.spawn(defmt::unwrap!(detect_server(stack)));
+    spawner.spawn(defmt::unwrap!(seed_router_task(stack)));
     spawner.spawn(defmt::unwrap!(defmt_forwarder(defmt_consumer, stack)));
 }
 

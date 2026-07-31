@@ -15,7 +15,7 @@ use esp_radio::ble::controller::BleConnector;
 use trouble_host::prelude::*;
 
 use embassy_executor::Spawner;
-use embassy_futures::join::{join, join4};
+use embassy_futures::join::join4;
 use embassy_futures::select::{Either, select};
 use embassy_time::Timer;
 
@@ -148,8 +148,13 @@ async fn main(_spawner: Spawner) -> ! {
                                 }
                             };
 
-                        // Run GATT client task + NUS connection
-                        let _ = join(client.task(), async {
+                        // Run the GATT client task against the NUS session.
+                        // select, not join: on disconnect `client.task()`
+                        // returns but `nus_session` blocks forever (the
+                        // notification listener never signals disconnect and
+                        // this device originates no spontaneous traffic) —
+                        // a join would hang the reconnect loop until reboot.
+                        let _ = select(client.task(), async {
                             nus_session(stack, &client, &conn).await;
                         })
                         .await;
@@ -241,12 +246,15 @@ async fn nus_session<C: Controller>(
         }
     };
 
-    // Activate ergot interface
+    // Activate the ergot interface with link-local addressing (net 0): the
+    // real net_id is whatever the bridge's seed lease assigned to this BLE
+    // segment, and the edge processor discovers it from the first inbound
+    // frame. A guessed constant here would race the lease allocation.
     stack.manage_profile(|im| {
         let _ = im.set_interface_state(
             (),
             InterfaceState::Active {
-                net_id: 1,
+                net_id: 0,
                 node_id: EDGE_NODE_ID,
             },
         );

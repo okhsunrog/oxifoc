@@ -50,7 +50,9 @@ ergot::multi_interface! {
 // ========== Type Aliases ==========
 
 pub type Rng = rng::Rng<'static, peripherals::RNG>;
-pub type McRouter = Router<McInterface, Rng, 3, 0>;
+/// Root router: 3 direct interfaces, 8 seed routes (nets leased to bridge
+/// routers downstream — e.g. the ESP32 BLE bridge's radio segment).
+pub type McRouter = Router<McInterface, Rng, 3, 8>;
 pub type Stack = NetStack<CriticalSectionRawMutex, McRouter>;
 
 pub type UsbQueue = usb_kit::Queue<USB_OUT_QUEUE_SIZE, AtomicCoord>;

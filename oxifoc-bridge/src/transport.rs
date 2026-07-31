@@ -10,7 +10,8 @@ use bbqueue::traits::notifier::maitake::MaiNotSpsc;
 use bbqueue::traits::storage::Inline;
 use ergot::NetStack;
 use ergot::interface_manager::interface_impls::embedded_io::IoInterface;
-use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
+use ergot::interface_manager::profiles::direct_edge::EdgeFrameProcessor;
+use ergot::interface_manager::profiles::router::Router;
 use ergot::interface_manager::transports::eio::RxWorker as EioRxWorker;
 use esp_hal::Async;
 use esp_hal::uart::UartRx;
@@ -64,11 +65,15 @@ ergot::multi_interface! {
 // ========== Router & Stack ==========
 
 pub type Rng = esp_hal::rng::Rng;
-type BridgeRouter = Router<BridgeInterface, Rng, 2, 0>;
+/// 2 direct interfaces (BLE slot + room to grow), 8 seed routes: the BLE
+/// segment's net is leased from the root, and nested bridges would add more.
+type BridgeRouter = Router<BridgeInterface, Rng, 2, 8>;
 pub type Stack = NetStack<CriticalSectionRawMutex, BridgeRouter>;
 
-/// UART RxWorker: eio RxWorker with esp-hal async UartRx
-pub type UartRxWorker = EioRxWorker<&'static Stack, UartRx<'static, Async>, RouterFrameProcessor>;
+/// UART RxWorker: eio RxWorker with esp-hal async UartRx. The upstream is an
+/// edge of the root's segment, so it uses [`EdgeFrameProcessor`] (net_id
+/// discovered from inbound frames), not the router-side processor.
+pub type UartRxWorker = EioRxWorker<&'static Stack, UartRx<'static, Async>, EdgeFrameProcessor>;
 
 // ========== Static resources ==========
 

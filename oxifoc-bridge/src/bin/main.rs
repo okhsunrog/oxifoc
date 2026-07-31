@@ -16,14 +16,21 @@ use esp_radio::ble::controller::BleConnector;
 use trouble_host::prelude::*;
 
 use embassy_executor::Spawner;
-use embassy_futures::join::join5;
-use embassy_futures::select::{Either, select};
-use embassy_time::Timer;
+use embassy_futures::join::{join, join5};
+use embassy_futures::select::{Either3, select3};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 
 use ergot::NetStack;
-use ergot::interface_manager::profiles::router::RouterFrameProcessor;
+use ergot::interface_manager::profiles::direct_edge::{
+    CENTRAL_NODE_ID, EDGE_NODE_ID, EdgeFrameProcessor,
+};
+use ergot::interface_manager::profiles::router::{RouterFrameProcessor, UPSTREAM_IDENT};
 use ergot::interface_manager::utils::{cobs_stream, framed_stream};
 use ergot::interface_manager::{FrameProcessor, InterfaceState, LivenessConfig, Profile};
+use ergot::net_stack::services::{
+    SeedLease, bridge_seed_assign, bridge_seed_refresh, release_seed_lease,
+};
+use ergot::well_known::ErgotPingEndpoint;
 
 use oxifoc_bridge::ble_nus::NusServer;
 use oxifoc_bridge::transport::{self, BridgeSink};
@@ -103,51 +110,37 @@ async fn main(spawner: Spawner) -> ! {
         STACK_CELL.init(NetStack::new_with_profile(router))
     };
 
-    // Get upstream interface ident (upstream is always ident 0 in bridge mode)
-    let upstream_ident: u8 = 0;
-    let upstream_net_id = stack
-        .manage_profile(|router| {
-            router
-                .interface_state(upstream_ident)
-                .and_then(|s| match s {
-                    InterfaceState::Active { net_id, .. } => Some(net_id),
-                    _ => None,
-                })
-        })
-        .unwrap_or(1);
-
-    // Register BLE downstream interface
+    // Register the BLE downstream as PENDING: it gets no self-allocated
+    // net_id (which would collide with the root-owned numbering) and stays
+    // Down until a seed lease from the root assigns it a routable net at
+    // BLE-connect time.
     let ble_ident = stack.manage_profile(|router| {
         router
-            .register_interface(BridgeSink::Ble(framed_stream::Sink::new(
+            .register_interface_pending(BridgeSink::Ble(framed_stream::Sink::new(
                 transport::BLE_OUTQ.framed_producer(),
                 transport::BLE_MTU,
             )))
             .expect("BLE interface registration failed")
     });
-    stack.manage_profile(|router| {
-        let _ = router.set_interface_state(ble_ident, InterfaceState::Inactive);
-    });
 
     info!(
-        "Ergot bridge initialized: upstream ident={} net_id={}, ble ident={}",
-        upstream_ident, upstream_net_id, ble_ident
+        "Ergot bridge initialized: upstream ident={}, ble ident={} (pending)",
+        UPSTREAM_IDENT, ble_ident
     );
 
-    // ========== UART RX worker ==========
-    let mut uart_rx_worker = transport::UartRxWorker::new(
-        stack,
-        uart_rx,
-        RouterFrameProcessor::new(upstream_net_id),
-        upstream_ident,
-    )
-    .with_liveness(LivenessConfig {
-        timeout_ms: transport::LIVENESS_TIMEOUT_MS,
-    })
-    .with_state_notify(&transport::STATE_NOTIFY);
+    // ========== UART RX worker (upstream) ==========
+    // The upstream is an edge of the root's segment: EdgeFrameProcessor
+    // discovers its net_id from inbound frames (guarded against transit),
+    // bound to the reserved UPSTREAM_IDENT.
+    let mut uart_rx_worker =
+        transport::UartRxWorker::new(stack, uart_rx, EdgeFrameProcessor::new(), UPSTREAM_IDENT)
+            .with_liveness(LivenessConfig {
+                timeout_ms: transport::LIVENESS_TIMEOUT_MS,
+            })
+            .with_state_notify(&transport::STATE_NOTIFY);
 
     // Spawn UART TX worker
-    spawner.must_spawn(run_uart_tx(uart_tx, stack, upstream_ident));
+    spawner.must_spawn(run_uart_tx(uart_tx, stack));
 
     // ========== Run all tasks ==========
     // Must hold one max-size incoming UART frame (see transport::UART_MTU).
@@ -155,69 +148,167 @@ async fn main(spawner: Spawner) -> ! {
         static_cell::StaticCell::new();
     static SCRATCH_BUF: static_cell::StaticCell<[u8; 64]> = static_cell::StaticCell::new();
 
-    let _ = join5(
-        // BLE runner (HCI background task)
-        ble_runner(runner),
-        // HardwareInfo endpoint server
-        info_server(stack),
-        // Ergot device discovery handler
-        stack
-            .services()
-            .device_info_handler::<2>(&ergot::well_known::DeviceInfo {
-                name: Some("Oxifoc Bridge".try_into().unwrap_or_default()),
-                description: Some("BLE+UART bridge".try_into().unwrap_or_default()),
-                unique_id: 0,
-            }),
-        // UART RX worker
-        async {
-            let recv_buf = RECV_BUF.init_with(|| [0u8; transport::UART_MTU as usize]);
-            let scratch_buf = SCRATCH_BUF.init_with(|| [0u8; 64]);
-            let _ = uart_rx_worker
-                .run(InterfaceState::Inactive, recv_buf, scratch_buf)
-                .await;
-            error!("[uart] rx worker exited");
-        },
-        // BLE advertising + connection loop
-        async {
-            loop {
-                match advertise(&mut peripheral, &nus_server).await {
-                    Ok(conn) => {
-                        info!("[ble] connection established");
+    let _ = join(
+        join5(
+            // BLE runner (HCI background task)
+            ble_runner(runner),
+            // HardwareInfo endpoint server
+            info_server(stack),
+            // Ergot device discovery handler
+            stack
+                .services()
+                .device_info_handler::<2>(&ergot::well_known::DeviceInfo {
+                    name: Some("Oxifoc Bridge".try_into().unwrap_or_default()),
+                    description: Some("BLE+UART bridge".try_into().unwrap_or_default()),
+                    unique_id: 0,
+                }),
+            // UART RX worker. Read errors (framing/overrun — routine on a
+            // cable near a motor drive) are recoverable: log and re-enter.
+            // The initial Active{net 0} state is link-local addressing, so
+            // the bridge can initiate upstream contact before discovery.
+            async {
+                let recv_buf = RECV_BUF.init_with(|| [0u8; transport::UART_MTU as usize]);
+                let scratch_buf = SCRATCH_BUF.init_with(|| [0u8; 64]);
+                loop {
+                    let res = uart_rx_worker
+                        .run(
+                            InterfaceState::Active {
+                                net_id: 0,
+                                node_id: EDGE_NODE_ID,
+                            },
+                            recv_buf,
+                            scratch_buf,
+                        )
+                        .await;
+                    error!("[uart] rx worker error ({:?}), restarting", res.err());
+                    Timer::after_millis(100).await;
+                }
+            },
+            // BLE advertising + connection loop
+            async {
+                loop {
+                    match advertise(&mut peripheral, &nus_server).await {
+                        Ok(conn) => {
+                            info!("[ble] connection established");
 
-                        // Request 2M PHY for higher throughput
-                        if let Err(_e) = conn.raw().set_phy(&ble_stack, PhyKind::Le2M).await {
-                            warn!("[ble] failed to set 2M PHY, continuing with 1M");
-                        } else {
-                            info!("[ble] 2M PHY requested");
+                            // Request 2M PHY for higher throughput
+                            if let Err(_e) = conn.raw().set_phy(&ble_stack, PhyKind::Le2M).await {
+                                warn!("[ble] failed to set 2M PHY, continuing with 1M");
+                            } else {
+                                info!("[ble] 2M PHY requested");
+                            }
+
+                            // The BLE segment needs a root-leased net before it
+                            // can carry routed traffic.
+                            let Some(mut lease) = acquire_ble_lease(stack, ble_ident).await else {
+                                warn!("[ble] no seed lease (upstream down?), dropping connection");
+                                continue;
+                            };
+                            info!("[ble] seed lease acquired: net_id={}", lease.net_id);
+
+                            nus_connection_task(stack, &nus_server, &conn, ble_ident, &mut lease)
+                                .await;
+
+                            stack.manage_profile(|router| {
+                                let _ =
+                                    router.set_interface_state(ble_ident, InterfaceState::Inactive);
+                            });
+                            // Best-effort: hand the net back instead of letting
+                            // the lease age out on the root.
+                            let _ = with_timeout(
+                                Duration::from_secs(1),
+                                release_seed_lease(&stack, &lease),
+                            )
+                            .await;
+                            info!("[ble] disconnected, returning to advertising");
                         }
-
-                        let net_id = stack
-                            .manage_profile(|router| {
-                                router.interface_state(ble_ident).and_then(|s| match s {
-                                    InterfaceState::Active { net_id, .. } => Some(net_id),
-                                    _ => None,
-                                })
-                            })
-                            .unwrap_or(0);
-
-                        nus_connection_task(stack, &nus_server, &conn, ble_ident, net_id).await;
-
-                        stack.manage_profile(|router| {
-                            let _ = router.set_interface_state(ble_ident, InterfaceState::Inactive);
-                        });
-                        info!("[ble] disconnected, returning to advertising");
-                    }
-                    Err(_e) => {
-                        warn!("[ble] advertise error, retrying");
-                        Timer::after_secs(1).await;
+                        Err(_e) => {
+                            warn!("[ble] advertise error, retrying");
+                            Timer::after_secs(1).await;
+                        }
                     }
                 }
-            }
-        },
+            },
+        ),
+        // Upstream bootstrap/keepalive
+        upstream_link_task(stack),
     )
     .await;
 
     unreachable!()
+}
+
+// ========== Upstream link maintenance ==========
+
+/// Whether the upstream has discovered its real (non-link-local) net_id.
+fn upstream_discovered(stack: &'static transport::Stack) -> bool {
+    stack.manage_profile(|router| {
+        matches!(
+            router.interface_state(UPSTREAM_IDENT),
+            Some(InterfaceState::Active { net_id, .. }) if net_id != 0
+        )
+    })
+}
+
+/// Bootstrap and keep alive the upstream link.
+///
+/// The edge-style upstream learns its net_id from the first frame addressed
+/// to the bridge, so somebody has to provoke that frame: a link-local ping to
+/// the root does it. The steady-state ping doubles as a keepalive that stops
+/// the liveness window from marking a quiet-but-healthy line Inactive. After
+/// a genuine quiet period the interface IS Inactive and TX is gated off —
+/// re-arm link-local addressing first so the ping can leave at all.
+async fn upstream_link_task(stack: &'static transport::Stack) {
+    let mut seq: u32 = 0;
+    loop {
+        if !upstream_discovered(stack) {
+            stack.manage_profile(|router| {
+                if matches!(
+                    router.interface_state(UPSTREAM_IDENT),
+                    Some(InterfaceState::Inactive)
+                ) {
+                    let _ = router.set_interface_state(
+                        UPSTREAM_IDENT,
+                        InterfaceState::Active {
+                            net_id: 0,
+                            node_id: EDGE_NODE_ID,
+                        },
+                    );
+                }
+            });
+        }
+        seq = seq.wrapping_add(1);
+        let _ = with_timeout(
+            Duration::from_millis(750),
+            stack.endpoints().request::<ErgotPingEndpoint>(
+                ergot::Address {
+                    network_id: 0,
+                    node_id: CENTRAL_NODE_ID,
+                    port_id: 0,
+                },
+                &seq,
+                Some("ping"),
+            ),
+        )
+        .await;
+        Timer::after_secs(2).await;
+    }
+}
+
+/// Lease a routable net_id for the BLE segment from the root, waiting for
+/// upstream discovery first. Bounded: a central that connects while the
+/// upstream is dead gets dropped rather than parked forever.
+async fn acquire_ble_lease(stack: &'static transport::Stack, ble_ident: u8) -> Option<SeedLease> {
+    for _ in 0..10 {
+        if upstream_discovered(stack) {
+            match bridge_seed_assign(&stack, UPSTREAM_IDENT, ble_ident).await {
+                Ok(lease) => return Some(lease),
+                Err(_e) => warn!("[ble] seed assignment attempt failed"),
+            }
+        }
+        Timer::after_secs(1).await;
+    }
+    None
 }
 
 // ========== UART TX worker ==========
@@ -226,7 +317,6 @@ async fn main(spawner: Spawner) -> ! {
 async fn run_uart_tx(
     mut tx: esp_hal::uart::UartTx<'static, esp_hal::Async>,
     stack: &'static transport::Stack,
-    ident: u8,
 ) {
     let consumer = transport::UART_OUTQ.stream_consumer();
     loop {
@@ -235,26 +325,39 @@ async fn run_uart_tx(
 
         let is_active = stack.manage_profile(|im| {
             matches!(
-                im.interface_state(ident),
+                im.interface_state(UPSTREAM_IDENT),
                 Some(InterfaceState::Active { .. })
             )
         });
 
-        if is_active {
-            let mut remaining = &grant[..];
-            while !remaining.is_empty() {
-                match embassy_time::with_timeout(
-                    embassy_time::Duration::from_millis(500),
-                    tx.write_async(remaining),
-                )
-                .await
-                {
-                    Ok(Ok(n)) => remaining = &remaining[n..],
-                    _ => break,
-                }
+        if !is_active {
+            // Interface down: drop the whole grant (frame-aligned, so the
+            // stream stays COBS-consistent).
+            grant.release(len);
+            continue;
+        }
+
+        let mut written = 0usize;
+        while written < len {
+            match with_timeout(
+                Duration::from_millis(500),
+                tx.write_async(&grant[written..]),
+            )
+            .await
+            {
+                Ok(Ok(n)) => written += n,
+                _ => break,
             }
         }
-        grant.release(len);
+        if written < len {
+            // Release only what actually left: dropping unwritten bytes
+            // mid-COBS-frame would desync the receiver past the next
+            // delimiter. The remainder is retried on the next grant.
+            warn!("[uart] tx stalled at {}/{} bytes", written, len);
+            grant.release(written);
+        } else {
+            grant.release(len);
+        }
     }
 }
 
@@ -307,19 +410,26 @@ async fn nus_connection_task<P: PacketPool>(
     server: &NusServer<'_>,
     conn: &GattConnection<'_, '_, P>,
     ble_ident: u8,
-    net_id: u16,
+    lease: &mut SeedLease,
 ) {
     let rx_handle = server.nus.rx.handle;
     let tx_char = &server.nus.tx;
     let consumer = transport::BLE_OUTQ.framed_consumer();
-    let mut processor = RouterFrameProcessor::new(net_id);
+    // net_id 0 is the pending placeholder: the processor syncs the
+    // seed-assigned net from the (now Active) slot on the first frame.
+    let mut processor = RouterFrameProcessor::new(0);
+    // Absolute deadline held across loop iterations — recomputing it per
+    // iteration would re-arm the timer on every GATT/TX event and starve
+    // the refresh under active traffic.
+    let mut next_refresh = lease_refresh_deadline(lease);
 
     loop {
         let gatt_event = conn.next();
         let tx_frame = consumer.wait_read();
+        let refresh_at = Timer::at(next_refresh);
 
-        match select(gatt_event, tx_frame).await {
-            Either::First(event) => match event {
+        match select3(gatt_event, tx_frame, refresh_at).await {
+            Either3::First(event) => match event {
                 GattConnectionEvent::Disconnected { .. } => {
                     info!("[ble] disconnected");
                     break;
@@ -342,7 +452,7 @@ async fn nus_connection_task<P: PacketPool>(
                 _ => {}
             },
 
-            Either::Second(grant) => {
+            Either3::Second(grant) => {
                 let payload: heapless::Vec<u8, { oxifoc_bridge::ble_nus::NUS_MAX_PAYLOAD }> =
                     heapless::Vec::from_slice(&grant).unwrap_or_default();
                 if let Err(_e) = tx_char.notify(conn, &payload).await {
@@ -351,6 +461,50 @@ async fn nus_connection_task<P: PacketPool>(
                     break;
                 }
                 grant.release();
+            }
+
+            Either3::Third(()) => {
+                next_refresh = maintain_ble_lease(stack, ble_ident, lease).await;
+            }
+        }
+    }
+}
+
+/// When the current lease should be refreshed: once the remaining time drops
+/// inside the root's refresh window (with a 2 s margin so the request lands
+/// inside it even under link jitter).
+fn lease_refresh_deadline(lease: &SeedLease) -> Instant {
+    let delay = lease
+        .expires_seconds
+        .saturating_sub(lease.min_refresh_seconds)
+        .saturating_add(2);
+    // Anchored to the acquire/refresh moment: the lease carries relative
+    // seconds, and each successful refresh resets the horizon.
+    Instant::now() + Duration::from_secs(u64::from(delay.max(1)))
+}
+
+/// Refresh the BLE segment's seed lease; if the root no longer knows it
+/// (expired while the link was down, root rebooted), fall back to a fresh
+/// assignment, which also re-points the slot's net_id. Returns the next
+/// refresh deadline: a full window on success, a short retry on failure.
+async fn maintain_ble_lease(
+    stack: &'static transport::Stack,
+    ble_ident: u8,
+    lease: &mut SeedLease,
+) -> Instant {
+    match bridge_seed_refresh(&stack, lease).await {
+        Ok(refreshed) => {
+            *lease = refreshed;
+            lease_refresh_deadline(lease)
+        }
+        Err(_e) => {
+            warn!("[ble] lease refresh failed, re-assigning");
+            if let Ok(fresh) = bridge_seed_assign(&stack, UPSTREAM_IDENT, ble_ident).await {
+                info!("[ble] re-assigned net_id={}", fresh.net_id);
+                *lease = fresh;
+                lease_refresh_deadline(lease)
+            } else {
+                Instant::now() + Duration::from_secs(2)
             }
         }
     }
