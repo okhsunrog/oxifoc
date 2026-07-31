@@ -1147,6 +1147,15 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
   the bug class this eliminates.
 - [ ] g474 motor modules are commented out until the IHM08M1 is
   connected; `control/foc.rs` is synced by hand with no compile check.
+- [ ] **Migrate G474 current-offset calibration before enabling its motor
+  path.** `oxifoc-g474/src/control/foc.rs` still uses the legacy async
+  `calibrate().await` routine while its FOC ISR is dormant. Once the ISR is
+  activated, port the G431/F405 sequence: enable only the TIM1 CH4 ADC
+  trigger initially, install the driver with
+  `CurrentOffsetRequest::boot()`, let the shared ISR-owned VESC per-phase
+  state machine collect/apply offsets, publish `DcOffsets`, and release the
+  boot/config gate. Runtime comparison can then use the same optional
+  `offset-diagnostics` path instead of a board-specific calibrator.
 - [ ] **g474 + IHM08M1: checklist before powering a motor**
   (see [hw/nucleo-g474re-ihm08m1.md](hw/nucleo-g474re-ihm08m1.md)):
   - config.rs BOARD holds IHM07M1 constants: for IHM08M1 — 0.010 Ω

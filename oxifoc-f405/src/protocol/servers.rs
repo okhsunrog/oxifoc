@@ -269,6 +269,17 @@ impl DetectionBackend for F405Backend {
     ) -> impl Future<Output = Result<HallCalibrationResult, DetectionError>> {
         calibrate_hall_default_ez()
     }
+    fn measure_current_offsets(
+        &mut self,
+        request: oxifoc_core::foc::current_offset::CurrentOffsetRequest,
+    ) -> impl Future<
+        Output = Result<
+            oxifoc_core::foc::current_offset::CurrentOffsetReport,
+            oxifoc_core::foc::current_offset::CurrentOffsetError,
+        >,
+    > {
+        oxifoc_core::state::measure_current_offsets(request)
+    }
 }
 
 /// Forward defmt frames from the network bbqueue to the ergot defmt topic.

@@ -3,12 +3,14 @@
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use static_cell::StaticCell;
 
+use crate::config::MAX_RX_PACKET_SIZE;
 #[cfg(feature = "transport-uart")]
-use crate::config::UART_BAUD;
-use crate::config::{MAX_PACKET_SIZE, MAX_RX_PACKET_SIZE};
+use crate::config::{MAX_PACKET_SIZE, UART_BAUD};
 use crate::transport::Stack;
 use embedded_io_async::Write;
-use ergot::interface_manager::{InterfaceState, Profile};
+use ergot::interface_manager::InterfaceState;
+#[cfg(feature = "transport-uart")]
+use ergot::interface_manager::Profile;
 
 /// Buffers for RX worker. In `.ccmdata` (CPU-only CCM, zeroed by main's
 /// first block) — relocated out of the 22K SRAM squeeze; only the CPU-side
@@ -556,6 +558,18 @@ impl DetectionBackend for G431Backend {
         params: HallCalibrationParams,
     ) -> impl Future<Output = Result<HallCalibrationResult, DetectionError>> {
         calibrate_hall(params)
+    }
+    #[cfg(feature = "offset-diagnostics")]
+    fn measure_current_offsets(
+        &mut self,
+        request: oxifoc_core::foc::current_offset::CurrentOffsetRequest,
+    ) -> impl Future<
+        Output = Result<
+            oxifoc_core::foc::current_offset::CurrentOffsetReport,
+            oxifoc_core::foc::current_offset::CurrentOffsetError,
+        >,
+    > {
+        oxifoc_core::state::measure_current_offsets(request)
     }
 }
 

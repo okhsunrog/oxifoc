@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::config_cli::{self, config_snapshot};
 use crate::record;
-use crate::{DetectStep, emit};
+use crate::{DetectStep, OffsetMethodArg, emit};
 
 /// Stored motor-params as JSON (defaults when not stored).
 fn motor_params_value(runtime: &HostRuntime) -> Result<serde_json::Value> {
@@ -32,6 +32,9 @@ pub fn run_detect(
     inductance: Option<f32>,
     pole_pairs: Option<u8>,
     erpm: f32,
+    offset_method: OffsetMethodArg,
+    samples: u16,
+    stationary: bool,
     apply: bool,
     record_out: Option<String>,
     record_hz: Option<u16>,
@@ -39,8 +42,51 @@ pub fn run_detect(
 ) -> Result<()> {
     use oxifoc_core::types::DetectResponse;
 
-    // Prerequisites come from flags first, stored motor-params second.
-    let stored = motor_params_value(runtime)?;
+    if matches!(step, DetectStep::OffsetsCompare) {
+        if apply {
+            bail!("offset comparison is measure-only; apply one chosen offsets result separately");
+        }
+        if record_out.is_some() {
+            bail!("--record is not supported for the three-step offset comparison");
+        }
+        let reports = oxifoc_host_lib::ops::detect::compare_current_offsets(
+            &runtime.cmd_tx,
+            samples,
+            stationary,
+        )?;
+        let delta = |a: usize, b: usize| {
+            [
+                reports[b].offsets[0] - reports[a].offsets[0],
+                reports[b].offsets[1] - reports[a].offsets[1],
+                reports[b].offsets[2] - reports[a].offsets[2],
+            ]
+        };
+        emit(
+            json,
+            json!({
+                "reports": reports,
+                "delta_per_phase_minus_undriven": delta(0, 1),
+                "delta_all_phases_minus_per_phase": delta(1, 2),
+            }),
+            format!(
+                "undriven={:?}\nper-phase-50={:?}\nall-phases-50={:?}\nΔ(per-undriven)={:?}\nΔ(all-per)={:?}",
+                reports[0].offsets,
+                reports[1].offsets,
+                reports[2].offsets,
+                delta(0, 1),
+                delta(1, 2),
+            ),
+        );
+        return Ok(());
+    }
+
+    // Offset measurement has no motor-parameter prerequisites; avoid an
+    // unrelated config round-trip on that path.
+    let stored = if matches!(step, DetectStep::Offsets) {
+        serde_json::Value::Null
+    } else {
+        motor_params_value(runtime)?
+    };
     let r = resistance.unwrap_or_else(|| f32_field(&stored, "resistance_ohm"));
     let l = inductance.unwrap_or_else(|| {
         (f32_field(&stored, "inductance_d_h") + f32_field(&stored, "inductance_q_h")) / 2.0
@@ -95,6 +141,18 @@ pub fn run_detect(
                 resistance_ohm: r,
             }
         }
+        DetectStep::Offsets => {
+            let method = offset_method.into();
+            if method == oxifoc_core::types::CurrentOffsetMethod::AllPhases50 && !stationary {
+                bail!("all-phases-50 requires --stationary");
+            }
+            DetectRequest::MeasureCurrentOffsets {
+                method,
+                samples_per_channel: samples,
+                stationary_confirmed: stationary,
+            }
+        }
+        DetectStep::OffsetsCompare => unreachable!(),
     };
 
     if !json {
@@ -174,41 +232,53 @@ pub fn run_detect(
 
     let mut applied = serde_json::Value::Null;
     if apply {
-        let (mut mp, _) = config_cli::current_value(&runtime.cmd_tx, ConfigGroupId::MotorParams)?;
-        let obj = mp.as_object_mut().context("motor-params not an object")?;
-        match resp {
-            DetectResponse::Resistance { resistance_ohm } => {
-                obj.insert("resistance_ohm".into(), json!(resistance_ohm));
-            }
-            DetectResponse::Inductance {
-                inductance_d_h,
-                inductance_q_h,
-            } => {
-                obj.insert("inductance_d_h".into(), json!(inductance_d_h));
-                obj.insert("inductance_q_h".into(), json!(inductance_q_h));
-            }
-            DetectResponse::FluxLinkage {
-                flux_linkage_wb, ..
-            } => {
-                obj.insert("flux_linkage_wb".into(), json!(flux_linkage_wb));
-            }
-            DetectResponse::HallCalibrated => {}
-            DetectResponse::Error(_) => {}
-        }
-        if matches!(resp, DetectResponse::HallCalibrated) {
-            // The device parks the calibration in its in-RAM runtime config;
-            // persisting is the host's job (device comment in
-            // runtime/detect.rs). Read the live group back and write it —
-            // the write path is what lands it in flash.
-            let (hall, _) =
-                config_cli::current_value(&runtime.cmd_tx, ConfigGroupId::HallCalibration)?;
-            let write = config_cli::write_from_value(ConfigGroupId::HallCalibration, hall.clone())?;
-            config_cli::send_write(&runtime.cmd_tx, write)?;
-            applied = hall;
+        if let DetectResponse::CurrentOffsets(report) = resp {
+            oxifoc_host_lib::ops::detect::apply_current_offsets(&runtime.cmd_tx, &report)?;
+            applied = json!({
+                "phase_a": report.offsets[0],
+                "phase_b": report.offsets[1],
+                "phase_c": report.offsets[2],
+            });
         } else {
-            let write = config_cli::write_from_value(ConfigGroupId::MotorParams, mp.clone())?;
-            config_cli::send_write(&runtime.cmd_tx, write)?;
-            applied = mp;
+            let (mut mp, _) =
+                config_cli::current_value(&runtime.cmd_tx, ConfigGroupId::MotorParams)?;
+            let obj = mp.as_object_mut().context("motor-params not an object")?;
+            match resp {
+                DetectResponse::Resistance { resistance_ohm } => {
+                    obj.insert("resistance_ohm".into(), json!(resistance_ohm));
+                }
+                DetectResponse::Inductance {
+                    inductance_d_h,
+                    inductance_q_h,
+                } => {
+                    obj.insert("inductance_d_h".into(), json!(inductance_d_h));
+                    obj.insert("inductance_q_h".into(), json!(inductance_q_h));
+                }
+                DetectResponse::FluxLinkage {
+                    flux_linkage_wb, ..
+                } => {
+                    obj.insert("flux_linkage_wb".into(), json!(flux_linkage_wb));
+                }
+                DetectResponse::HallCalibrated => {}
+                DetectResponse::CurrentOffsets(_) => {}
+                DetectResponse::Error(_) => {}
+            }
+            if matches!(resp, DetectResponse::HallCalibrated) {
+                // The device parks the calibration in its in-RAM runtime config;
+                // persisting is the host's job (device comment in
+                // runtime/detect.rs). Read the live group back and write it —
+                // the write path is what lands it in flash.
+                let (hall, _) =
+                    config_cli::current_value(&runtime.cmd_tx, ConfigGroupId::HallCalibration)?;
+                let write =
+                    config_cli::write_from_value(ConfigGroupId::HallCalibration, hall.clone())?;
+                config_cli::send_write(&runtime.cmd_tx, write)?;
+                applied = hall;
+            } else {
+                let write = config_cli::write_from_value(ConfigGroupId::MotorParams, mp.clone())?;
+                config_cli::send_write(&runtime.cmd_tx, write)?;
+                applied = mp;
+            }
         }
     }
 
@@ -217,11 +287,7 @@ pub fn run_detect(
         json!({"result": serde_json::to_value(resp)?, "applied": applied, "capture": capture_summary}),
         format!(
             "Detect result: {resp:?}{}",
-            if apply {
-                " (applied to motor-params)"
-            } else {
-                ""
-            }
+            if apply { " (applied)" } else { "" }
         ),
     );
     Ok(())

@@ -19,6 +19,9 @@ transport-rtt = ["ergot/rtt"]
 # On-device motor detection (detect server + calibration sweeps). Default-on;
 # turning it off is a measured −15.5 KB reserve (docs/flash-size.md).
 detection = ["oxifoc-core/detection"]
+# Optional bench-only current-offset comparison. Boot always uses the safe
+# VESC-normal per-phase routine; this adds host-triggered alternative methods.
+offset-diagnostics = ["oxifoc-core/offset-diagnostics"]
 # HFI inductance/saliency detection (rotating injection + FFT). Off by default
 # on this non-salient drone ESC; enable for HFI bench work.
 hfi-detect = ["oxifoc-core/hfi-detect"]

@@ -132,6 +132,7 @@ pub async fn init(
     // Allow ADC injected conversions to start firing before zero-current calibration.
     Timer::after(Duration::from_millis(10)).await;
     foc_driver.current_sensor_mut().calibrate().await;
+    oxifoc_core::state::BOOT_CURRENT_OFFSET_PENDING.store(false, Ordering::Release);
 
     // Publish the measured zero-current offsets into the DcOffsets config
     // group (mirrors g431/f405): the host's telemetry

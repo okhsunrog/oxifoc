@@ -104,6 +104,10 @@ fn config_from_motor_params(params: MotorParams, max_current_a: f32) -> MotorPar
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // The virtual backend returns deterministic offset diagnostics directly;
+    // it has no hardware boot-calibration phase to gate config/detection on.
+    oxifoc_core::state::BOOT_CURRENT_OFFSET_PENDING
+        .store(false, core::sync::atomic::Ordering::Release);
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

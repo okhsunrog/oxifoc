@@ -1280,6 +1280,7 @@ oxifoc-core/src/
 │   ├── hall_calibration.rs  # HallCalibrator, HallCalibrationResult
 │   ├── hall_sensor.rs       # HallSensor struct
 │   ├── hall_embassy.rs      # Embassy hall estimator + HallAngleProxy
+│   ├── current_offset.rs    # ISR-owned current-offset calibration state machine
 │   ├── pi_controller.rs     # PI controller with anti-windup
 │   ├── pwm.rs               # PhasePwm trait, SvpwmModulator
 │   ├── sensors.rs           # AngleSensor, CurrentSensor, HallSensorTrait, etc.
@@ -1298,7 +1299,6 @@ oxifoc-core/src/
 │       ├── inductance.rs    # Inductance measurement (rotating HFI)
 │       ├── voltage_pulse.rs # Pulse-based inductance measurement
 │       ├── flux_linkage.rs  # Flux linkage measurement
-│       ├── dc_offset.rs     # DC offset calibration
 │       ├── pi_tuning.rs     # Auto PI tuning
 │       ├── embassy_hw.rs    # Shared embassy DetectionHardware impl
 │       └── virtual_harness.rs

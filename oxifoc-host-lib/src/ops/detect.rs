@@ -13,7 +13,9 @@ use anyhow::{Context, Result, bail};
 use oxifoc_core::foc::detection::pi_tuning::{DEFAULT_BANDWIDTH_RAD_S, calculate_current_gains};
 use oxifoc_core::foc::detection::resistance::calculate_max_current;
 use oxifoc_core::foc::detection::types::MotorSize;
-use oxifoc_core::types::{ConfigGroupId, DetectRequest, DetectResponse};
+use oxifoc_core::types::{
+    ConfigGroupId, CurrentOffsetMethod, CurrentOffsetReport, DetectRequest, DetectResponse,
+};
 use serde_json::json;
 
 use super::config;
@@ -75,6 +77,73 @@ pub fn run_step(cmd: &CommandSender, req: DetectRequest) -> Result<DetectRespons
     rx.blocking_recv()
         .context("backend dropped the detect command")?
         .context("detection failed")
+}
+
+/// Run one non-mutating current-offset diagnostic.
+pub fn measure_current_offsets(
+    cmd: &CommandSender,
+    method: CurrentOffsetMethod,
+    samples_per_channel: u16,
+    stationary_confirmed: bool,
+) -> Result<CurrentOffsetReport> {
+    match run_step(
+        cmd,
+        DetectRequest::MeasureCurrentOffsets {
+            method,
+            samples_per_channel,
+            stationary_confirmed,
+        },
+    )? {
+        DetectResponse::CurrentOffsets(report) => Ok(report),
+        DetectResponse::Error(error) => bail!("offset calibration failed: {error:?}"),
+        other => bail!("unexpected offset response: {other:?}"),
+    }
+}
+
+/// Measure all supported topologies without applying any of them.
+pub fn compare_current_offsets(
+    cmd: &CommandSender,
+    samples_per_channel: u16,
+    stationary_confirmed: bool,
+) -> Result<[CurrentOffsetReport; 3]> {
+    if !stationary_confirmed {
+        bail!("offset comparison includes all-phases-50; confirm the rotor is stationary");
+    }
+    Ok([
+        measure_current_offsets(
+            cmd,
+            CurrentOffsetMethod::Undriven,
+            samples_per_channel,
+            true,
+        )?,
+        measure_current_offsets(
+            cmd,
+            CurrentOffsetMethod::PerPhase50,
+            samples_per_channel,
+            true,
+        )?,
+        measure_current_offsets(
+            cmd,
+            CurrentOffsetMethod::AllPhases50,
+            samples_per_channel,
+            true,
+        )?,
+    ])
+}
+
+/// Persist a measured report through the normal config write-through path;
+/// the device also applies that write to the live sensor immediately.
+pub fn apply_current_offsets(cmd: &CommandSender, report: &CurrentOffsetReport) -> Result<()> {
+    let (mut value, _stored) = config::current_value(cmd, ConfigGroupId::DcOffsets)?;
+    let obj = value
+        .as_object_mut()
+        .context("dc-offsets is not a JSON object")?;
+    obj.insert("phase_a".into(), json!(report.offsets[0]));
+    obj.insert("phase_b".into(), json!(report.offsets[1]));
+    obj.insert("phase_c".into(), json!(report.offsets[2]));
+    let write = config::write_from_value(ConfigGroupId::DcOffsets, value)
+        .context("patched dc-offsets no longer deserializes")?;
+    config::send_write(cmd, write)
 }
 
 /// Run the full R → L → flux → hall sequence and collect the results.

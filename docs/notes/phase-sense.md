@@ -110,9 +110,9 @@ unchanged); phase voltage ~2.6 µs later (fine for undriven BEMF). ISR: store
 `set_phase_voltage_raw(snapshot.vphase)` each cycle.
 
 ### Phase 3 — undriven offset calibration ☐
-Reuse `detection::dc_offset` (`DcOffsetAccumulator`, `CalibrationState::Undriven`)
-→ `PhaseVoltageSense::calibrate_offsets_from_sums`. Run at boot beside the
-current DC-offset (bridge off, motor still). Store as a new
+Use a small streaming sum → `PhaseVoltageSense::calibrate_offsets_from_sums`.
+Run at boot beside the ISR-owned current-offset calibration, during an explicit
+undriven/high-Z window. Store as a new
 `RuntimeConfig.phase_voltage_offsets` group; apply via `set_offsets`. VESC keeps
 two sets (driven zero-vector + undriven, both minus the 3-phase average); we need
 only the undriven set for CF2.

@@ -36,12 +36,20 @@ untested).
 oxifoc-host-cli --json info          # fw identity, foc_freq
 oxifoc-host-cli --json status        # Stopped, 0 faults, plausible vbus
 oxifoc-host-cli --json faults
+# Compare the floating baseline, VESC-normal per-phase method and VESC's
+# stationary-only alternative. This is measure-only: it does not alter the
+# live or stored offsets.
+oxifoc-host-cli --json detect offsets-compare --stationary
 # Link rate ladder — motor OFF, just streaming:
 for hz in 1000 5000 10000 20000; do
   oxifoc-host-cli --json record --out captures/p0-idle-$hz.parquet \
       --seconds 10 --fast-hz $hz --allow-gaps
 done
 ```
+
+The G431's flash-tight UART build leaves runtime offset diagnostics out; use
+the canonical RTT bench build (`transport-rtt,detection,offset-diagnostics`).
+Boot calibration is present in every build.
 
 Pass: `gaps == 0` up to some rate; note the highest clean rate — that is
 the session's raw-capture budget (detection `--record` wants 20 kHz; if

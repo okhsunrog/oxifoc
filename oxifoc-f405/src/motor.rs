@@ -79,7 +79,7 @@ impl<'d> MotorPwm<'d> {
         );
 
         // Configure CH4 compare for ADC trigger at PWM peak.
-        // CH4 NOT enabled here — enable_outputs() does it after ADC handles are installed.
+        // CH4 NOT enabled here — enable_adc_trigger() does it after ADC handles are installed.
         // Note: embassy ComplementaryPwm on F405 only exposes 3 channels (CH1-3),
         // so CH4 must be configured via PAC directly.
         let trigger_point = max_duty - max_duty / 50; // ~2% margin from peak
@@ -89,7 +89,7 @@ impl<'d> MotorPwm<'d> {
         defmt::info!("TIM1 CH4 ADC trigger at {}", trigger_point);
 
         // NOTE: Phase channels and CH4 are NOT enabled here.
-        // Call enable_outputs() after ADC handles are installed so the ISR
+        // Call enable_adc_trigger() after ADC handles are installed so the ISR
         // can process conversions when CH4 starts triggering.
 
         Self {
@@ -99,17 +99,14 @@ impl<'d> MotorPwm<'d> {
         }
     }
 
-    /// Enable PWM outputs (ADC trigger + phase channels).
-    /// Call after ADC handles are installed so the ISR can process conversions.
-    pub fn enable_outputs(&mut self) {
+    /// Enable only the internal ADC trigger. Phase channels remain high-Z
+    /// until the ISR-owned driver explicitly selects a topology.
+    pub fn enable_adc_trigger(&mut self) {
         // CH4 has no complementary output, so enable via PAC directly
         // (ComplementaryPwm::enable would try set_ccne(3) which asserts n<3)
         embassy_stm32::pac::TIM1
             .ccer()
             .modify(|w| w.set_cce(3, true));
-        self.pwm.enable(Channel::Ch1);
-        self.pwm.enable(Channel::Ch2);
-        self.pwm.enable(Channel::Ch3);
     }
 
     /// Emergency stop - disable all outputs

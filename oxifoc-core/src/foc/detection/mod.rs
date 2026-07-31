@@ -4,7 +4,6 @@
 //! - Phase resistance (R)
 //! - Inductance (Ld, Lq) via HFI injection
 //! - Flux linkage (λ)
-//! - DC offset calibration
 //! - Auto PI controller tuning
 //!
 //! # Usage
@@ -15,11 +14,10 @@
 //!
 //! ## Typical Detection Flow
 //!
-//! 1. **DC Offset Calibration** - Measure current sensor offsets
-//! 2. **Resistance Measurement** - Apply DC current, measure V/I
-//! 3. **Inductance Measurement** - HFI injection + FFT analysis
-//! 4. **Flux Linkage Measurement** - Open-loop spin, measure Vq/ω
-//! 5. **PI Tuning** - Calculate Kp/Ki from R and L
+//! 1. **Resistance Measurement** - Apply DC current, measure V/I
+//! 2. **Inductance Measurement** - HFI injection + FFT analysis
+//! 3. **Flux Linkage Measurement** - Open-loop spin, measure Vq/ω
+//! 4. **PI Tuning** - Calculate Kp/Ki from R and L
 //!
 //! ## Motor Size
 //!
@@ -65,10 +63,6 @@
 
 /// Common types for detection (MotorSize, MotorParams, errors, etc.)
 pub mod types;
-
-/// Enhanced DC offset calibration for current sensors
-#[cfg(feature = "detection")]
-pub mod dc_offset;
 
 /// Flux linkage (λ) measurement via open-loop spinning
 #[cfg(feature = "detection")]

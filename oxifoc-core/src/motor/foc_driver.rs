@@ -14,6 +14,10 @@ use crate::foc::clamp_f32;
 #[cfg(feature = "runtime")]
 use crate::foc::config::BoardConfig;
 use crate::foc::controller::{FocController, FocOutput};
+use crate::foc::current_offset::{
+    CurrentOffsetCalibrator, CurrentOffsetError, CurrentOffsetMethod, CurrentOffsetReport,
+    CurrentOffsetRequest, float_all,
+};
 use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "runtime")]
 use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault, VOLTAGE_HYSTERESIS_MV};
@@ -73,6 +77,11 @@ pub const STARTUP_STALENESS_TIMEOUT_US: u64 = 700_000;
 /// Above the observer's revoke debounce (0.2 s) plus transient dips, so a
 /// brief validity wobble at speed re-locks instead of restarting.
 pub const SENSORLESS_RESTART_AFTER_S: f32 = 0.5;
+
+/// Maximum measured electrical speed accepted by the all-phases-at-50%
+/// diagnostic. The operator acknowledgement remains mandatory because a
+/// sensorless estimator cannot prove that an unenergised rotor is stationary.
+pub const CURRENT_OFFSET_STANDSTILL_MAX_E_RAD_S: f32 = 5.0;
 
 /// Minimum |iq| (A) driven while the sensorless startup sequencer owns
 /// commutation (ramp/hold). A mid-cruise restart inherits the cruise
@@ -498,6 +507,12 @@ where
     /// (`set_phase_voltage_raw`) from the ADC snapshot. `None` until a sensing
     /// board provides them.
     vphase_raw: Option<[u16; 3]>,
+    /// Current-offset calibration is an ISR-owned maintenance operation, not
+    /// a public motor mode. It runs before the normal mode arm in `step()`.
+    current_offset: CurrentOffsetCalibrator,
+    /// One-shot completion consumed by `run_foc_cycle`, which wakes the async
+    /// requester without giving it ownership of PWM sequencing.
+    current_offset_outcome: Option<Result<CurrentOffsetReport, CurrentOffsetError>>,
 }
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
@@ -557,6 +572,8 @@ where
             uv_integral_vs: 0.0,
             phase_voltage: None,
             vphase_raw: None,
+            current_offset: CurrentOffsetCalibrator::new(),
+            current_offset_outcome: None,
         }
     }
 
@@ -1011,8 +1028,10 @@ where
     /// energized. This cuts the gate drive immediately. `disable()` runs
     /// last so it wins over any phase re-enable inside `set_mode`.
     pub fn safe_off(&mut self) {
+        self.cancel_current_offset_calibration();
         self.set_mode(ControlMode::Stopped);
         self.pwm.disable();
+        self.pwm_off = true;
     }
 
     /// Whether the failsafe is currently carrying the motor.
@@ -1029,6 +1048,10 @@ where
 
     /// Set control mode
     pub fn set_mode(&mut self, mode: ControlMode) {
+        // A motor-mode command supersedes maintenance. Cancellation floats
+        // the bridge immediately; a non-Stopped mode is additionally rejected
+        // by the command gate while maintenance is active.
+        self.cancel_current_offset_calibration();
         // Any explicit mode set is an authoritative override: a fresh host
         // command (re-arm after link loss) or a fault-stop both cancel an
         // in-progress failsafe brake. (The failsafe's own terminal Stop sets
@@ -1126,6 +1149,9 @@ where
     /// * `Err(&str)` - Error message if sensors not ready or overcurrent detected
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, StepError> {
+        if self.current_offset.is_active() {
+            return Ok(self.step_current_offset());
+        }
         // Startup → closed-loop transition: refresh the deadman stamp. The
         // staleness accumulated under the relaxed startup bound
         // ([`STARTUP_STALENESS_TIMEOUT_US`]) must not be judged
@@ -1858,6 +1884,123 @@ where
         &self.current_sensor
     }
 
+    /// Begin an ISR-driven current-offset measurement.
+    pub fn start_current_offset_calibration(
+        &mut self,
+        request: CurrentOffsetRequest,
+    ) -> Result<(), CurrentOffsetError> {
+        if !matches!(self.mode, ControlMode::Stopped) || self.failsafe_ctrl.is_active() {
+            return Err(CurrentOffsetError::Busy);
+        }
+        if request.method == CurrentOffsetMethod::AllPhases50 {
+            if !request.stationary_confirmed {
+                return Err(CurrentOffsetError::UnsafeWhileMoving);
+            }
+            if !self.current_sensor.is_calibrated() {
+                return Err(CurrentOffsetError::RequiresExistingCalibration);
+            }
+            let velocity = self.phase.get().velocity;
+            if !velocity.is_finite() || velocity.abs() > CURRENT_OFFSET_STANDSTILL_MAX_E_RAD_S {
+                return Err(CurrentOffsetError::UnsafeWhileMoving);
+            }
+        }
+        self.current_offset.start(request)?;
+        self.current_offset_outcome = None;
+        // Establish the safe topology synchronously. The first calibration
+        // step will select its measurement topology and begin the settle wait.
+        self.pwm.set_phase_states(float_all());
+        self.pwm_off = true;
+        Ok(())
+    }
+
+    /// Whether a current-offset maintenance operation owns the bridge.
+    pub fn current_offset_active(&self) -> bool {
+        self.current_offset.is_active()
+    }
+
+    /// Apply offsets supplied by config without exposing the sensor itself to
+    /// async code. Rejected while a measurement owns the sensor/PWM.
+    pub fn set_current_offsets(&mut self, offsets: (f32, f32, f32)) {
+        // Diagnostics accumulate raw ADC counts, so a config write that was
+        // already in flight may safely update conversion offsets without
+        // perturbing the measurement. The all-phase safety check simply uses
+        // the newly supplied (still calibrated) conversion on later cycles.
+        self.current_sensor.set_offsets(offsets);
+    }
+
+    /// Cancel calibration and float the bridge immediately.
+    pub fn cancel_current_offset_calibration(&mut self) {
+        if self.current_offset.cancel() {
+            self.pwm.set_phase_states(float_all());
+            self.pwm_off = true;
+            self.current_offset_outcome = Some(Err(CurrentOffsetError::Cancelled));
+        }
+    }
+
+    /// Consume the one-shot result for delivery to the async requester.
+    pub fn take_current_offset_outcome(
+        &mut self,
+    ) -> Option<Result<CurrentOffsetReport, CurrentOffsetError>> {
+        self.current_offset_outcome.take()
+    }
+
+    fn step_current_offset(&mut self) -> FocOutput {
+        let Some(request) = self.current_offset.request() else {
+            return FocOutput::default();
+        };
+
+        // The alternative topology deliberately retains the previous
+        // calibration so software current protection remains meaningful.
+        if request.method == CurrentOffsetMethod::AllPhases50 {
+            let velocity = self.phase.get().velocity;
+            let currents = self.current_sensor.read_currents();
+            let limit = self.current_limits.overcurrent_threshold_a;
+            let moving =
+                !velocity.is_finite() || velocity.abs() > CURRENT_OFFSET_STANDSTILL_MAX_E_RAD_S;
+            let overcurrent = limit > 0.0
+                && (currents.0.abs() > limit
+                    || currents.1.abs() > limit
+                    || currents.2.abs() > limit);
+            if moving || overcurrent {
+                self.current_offset.cancel();
+                self.pwm.set_phase_states(float_all());
+                self.pwm_off = true;
+                self.current_offset_outcome = Some(Err(if overcurrent {
+                    CurrentOffsetError::OverCurrent
+                } else {
+                    CurrentOffsetError::UnsafeWhileMoving
+                }));
+                return FocOutput::default();
+            }
+        }
+
+        let raw = self.current_sensor.read_raw();
+        let progress = self
+            .current_offset
+            .tick([raw.0, raw.1, raw.2], self.pwm.max_duty());
+        if let Some(states) = progress.phase_states {
+            self.pwm.set_phase_states(states);
+            self.pwm_off = states
+                .iter()
+                .all(|state| matches!(state, PhaseState::Float));
+        }
+        if let Some(report) = progress.report {
+            // Float before mutating/publishing anything: completion is never
+            // observable while a calibration topology remains energised.
+            self.pwm.set_phase_states(float_all());
+            self.pwm_off = true;
+            if request.apply {
+                self.current_sensor.set_offsets((
+                    report.offsets[0],
+                    report.offsets[1],
+                    report.offsets[2],
+                ));
+            }
+            self.current_offset_outcome = Some(Ok(report));
+        }
+        FocOutput::default()
+    }
+
     /// Get mutable reference to phase provider
     pub fn phase_mut(&mut self) -> &mut Phase {
         &mut self.phase
@@ -1926,6 +2069,12 @@ mod tests {
         fn set_duties(&mut self, duties: [u16; 3]) {
             self.duties = duties;
         }
+        fn set_phase_states(&mut self, states: [PhaseState; 3]) {
+            self.duties = states.map(|state| match state {
+                PhaseState::Pwm(duty) => duty,
+                PhaseState::Low | PhaseState::Float => 0,
+            });
+        }
     }
 
     struct MockCurrentSensor {
@@ -1945,6 +2094,7 @@ mod tests {
         fn get_offsets(&self) -> (f32, f32, f32) {
             (0.0, 0.0, 0.0)
         }
+        fn set_offsets(&mut self, _offsets: (f32, f32, f32)) {}
     }
 
     /// Phase-1 wiring: on a sensing board, a high-Z (`Coast`) bridge must feed
@@ -2470,6 +2620,11 @@ mod tests {
             fn enable(&mut self) {
                 self.enabled = true;
             }
+            fn set_phase_states(&mut self, states: [PhaseState; 3]) {
+                self.enabled = states
+                    .iter()
+                    .any(|state| !matches!(state, PhaseState::Float));
+            }
         }
 
         let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
@@ -2504,6 +2659,104 @@ mod tests {
             "safe_off must float the bridge immediately"
         );
         assert_eq!(driver.mode(), ControlMode::Stopped);
+    }
+
+    #[test]
+    fn current_offset_calibration_applies_then_floats() {
+        struct CalibrationPwm {
+            states: [PhaseState; 3],
+        }
+        impl Default for CalibrationPwm {
+            fn default() -> Self {
+                Self {
+                    states: [PhaseState::Float; 3],
+                }
+            }
+        }
+        impl PhasePwm for CalibrationPwm {
+            fn max_duty(&self) -> u16 {
+                1000
+            }
+            fn set_duties(&mut self, duties: [u16; 3]) {
+                self.states = duties.map(PhaseState::Pwm);
+            }
+            fn set_phase_states(&mut self, states: [PhaseState; 3]) {
+                self.states = states;
+            }
+        }
+
+        struct CalibrationSensor {
+            offsets: (f32, f32, f32),
+        }
+        impl CurrentSensor for CalibrationSensor {
+            fn read_currents(&self) -> (f32, f32, f32) {
+                (0.0, 0.0, 0.0)
+            }
+            fn read_raw(&self) -> (u16, u16, u16) {
+                (111, 222, 333)
+            }
+            fn is_calibrated(&self) -> bool {
+                self.offsets != (0.0, 0.0, 0.0)
+            }
+            fn get_offsets(&self) -> (f32, f32, f32) {
+                self.offsets
+            }
+            fn set_offsets(&mut self, offsets: (f32, f32, f32)) {
+                self.offsets = offsets;
+            }
+        }
+
+        let mut driver = FocDriver::new(
+            FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+            CalibrationPwm::default(),
+            CalibrationSensor {
+                offsets: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        driver
+            .start_current_offset_calibration(CurrentOffsetRequest {
+                method: CurrentOffsetMethod::PerPhase50,
+                samples_per_channel: 16,
+                settle_cycles: 0,
+                apply: true,
+                stationary_confirmed: false,
+            })
+            .unwrap();
+
+        for tick in 0..64 {
+            let _ = driver.step(tick);
+        }
+        let report = driver.take_current_offset_outcome().unwrap().unwrap();
+        assert_eq!(report.offsets, [111.0, 222.0, 333.0]);
+        assert_eq!(driver.current_sensor().get_offsets(), (111.0, 222.0, 333.0));
+        assert_eq!(driver.pwm().states, [PhaseState::Float; 3]);
+        assert!(!driver.current_offset_active());
+    }
+
+    #[test]
+    fn all_phase_offset_requires_explicit_stationary_confirmation() {
+        let mut driver = FocDriver::new(
+            FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        let error = driver
+            .start_current_offset_calibration(CurrentOffsetRequest {
+                method: CurrentOffsetMethod::AllPhases50,
+                samples_per_channel: 16,
+                settle_cycles: 0,
+                apply: false,
+                stationary_confirmed: false,
+            })
+            .unwrap_err();
+        assert_eq!(error, CurrentOffsetError::UnsafeWhileMoving);
+        assert!(!driver.current_offset_active());
     }
 
     /// Brake (windings short) is speed-gated at the command boundary, and

@@ -9,10 +9,14 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use critical_section::Mutex as CriticalSectionMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use embassy_sync::signal::Signal;
 use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::foc::config::BoardConfig;
 use crate::foc::controller::{Decoupling, FocOutput};
+#[cfg(feature = "offset-diagnostics")]
+use crate::foc::current_offset::CurrentOffsetRequest;
+use crate::foc::current_offset::{CurrentOffsetError, CurrentOffsetReport};
 use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
 use crate::foc::phase::{PhaseProvider, PhaseSource};
 use crate::foc::pwm::PhasePwm;
@@ -62,6 +66,11 @@ pub enum DriverCommand {
     SetVelocityConfig(VelocityLoopConfig),
     /// Apply graduated derating ramps (thermal/voltage/speed)
     SetDerating(DeratingConfig),
+    /// Begin a single-flight, ISR-owned current-offset measurement.
+    #[cfg(feature = "offset-diagnostics")]
+    StartCurrentOffsetCalibration(CurrentOffsetRequest),
+    /// Apply persisted/host-supplied offsets to the live current sensor.
+    SetCurrentOffsets([f32; 3]),
 }
 
 impl DriverCommand {
@@ -86,12 +95,47 @@ impl DriverCommand {
             Self::SetFailsafe(cfg) => cfg.is_sane(),
             Self::SetVelocityConfig(cfg) => cfg.is_sane(),
             Self::SetDerating(cfg) => cfg.is_sane(),
+            #[cfg(feature = "offset-diagnostics")]
+            Self::StartCurrentOffsetCalibration(request) => request.is_valid(),
+            Self::SetCurrentOffsets(offsets) => offsets.iter().all(|value| value.is_finite()),
         }
     }
 }
 
 /// Command channel - servers send DriverCommands here, ISR receives them
 pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, DriverCommand, 8> = Channel::new();
+
+/// Single-flight completion for current-offset calibration. Boot starts the
+/// driver operation directly; runtime diagnostics enqueue the typed command.
+pub static CURRENT_OFFSET_DONE: Signal<
+    CriticalSectionRawMutex,
+    Result<CurrentOffsetReport, CurrentOffsetError>,
+> = Signal::new();
+
+/// True until platform boot calibration completes. F405 starts protocol
+/// servers before FOC initialisation, so runtime offset requests use this to
+/// fail Busy without resetting/consuming the boot completion signal.
+pub static BOOT_CURRENT_OFFSET_PENDING: AtomicBool = AtomicBool::new(true);
+
+pub fn boot_current_offset_pending() -> bool {
+    BOOT_CURRENT_OFFSET_PENDING.load(Ordering::Acquire)
+}
+
+/// Closes the async-command TOCTOU window before the ISR mirrors a runtime
+/// calibration into [`MotorControlState::driver_operation`].
+#[cfg(feature = "offset-diagnostics")]
+pub static CURRENT_OFFSET_REQUEST_PENDING: AtomicBool = AtomicBool::new(false);
+
+pub fn current_offset_request_pending() -> bool {
+    #[cfg(feature = "offset-diagnostics")]
+    {
+        CURRENT_OFFSET_REQUEST_PENDING.load(Ordering::Acquire)
+    }
+    #[cfg(not(feature = "offset-diagnostics"))]
+    {
+        false
+    }
+}
 
 /// Waker for FOC cycle completion — ISR wakes after `update_telemetry()`.
 /// Used by calibration/detection to synchronize with individual FOC cycles.
@@ -168,6 +212,13 @@ impl Drop for FlashPendingGuard {
 // State Structure
 // ============================================================================
 
+/// Internal actuator ownership outside the public motor control modes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriverOperation {
+    Idle,
+    CurrentOffsetCalibration,
+}
+
 /// Motor control state
 ///
 /// This struct holds all telemetry-related state that servers need to access.
@@ -192,6 +243,9 @@ pub struct MotorControlState {
     /// Live derating scales (mirrored from the driver each cycle so the
     /// slow-telemetry server can report them without touching the driver)
     pub derating: DeratingScales,
+    /// ISR-owned maintenance operation. Configuration/flash and motor starts
+    /// use this to avoid racing an energised calibration topology.
+    pub driver_operation: DriverOperation,
 }
 
 impl MotorControlState {
@@ -206,6 +260,7 @@ impl MotorControlState {
             link_active: false,
             phase_source: PhaseSource::Hall,
             derating: DeratingScales::IDENTITY,
+            driver_operation: DriverOperation::Idle,
         }
     }
 
@@ -263,6 +318,14 @@ impl MotorControlState {
     /// [`process_commands`] forces [`ControlMode::Stopped`] while inactive.
     pub fn set_link_inactive(&mut self) {
         self.link_active = false;
+    }
+
+    /// Whether any operation currently owns or energises the bridge.
+    pub fn actuator_busy(&self) -> bool {
+        self.motor_state == MotorState::Running
+            || self.driver_operation != DriverOperation::Idle
+            || boot_current_offset_pending()
+            || current_offset_request_pending()
     }
 }
 
@@ -416,7 +479,57 @@ where
                 foc.set_derating(cfg);
                 continue;
             }
+            #[cfg(feature = "offset-diagnostics")]
+            DriverCommand::StartCurrentOffsetCalibration(request) => {
+                let allowed = critical_section::with(|cs| {
+                    let state = state_mutex.borrow(cs).borrow();
+                    state.driver_operation == DriverOperation::Idle
+                        && state.motor_state == MotorState::Stopped
+                        && !fault_registry.any_stopping()
+                        && !FLASH_OP_PENDING.load(Ordering::SeqCst)
+                });
+                let result = if allowed {
+                    foc.start_current_offset_calibration(request)
+                } else {
+                    Err(CurrentOffsetError::Busy)
+                };
+                match result {
+                    Ok(()) => critical_section::with(|cs| {
+                        state_mutex.borrow(cs).borrow_mut().driver_operation =
+                            DriverOperation::CurrentOffsetCalibration;
+                    }),
+                    Err(error) => {
+                        CURRENT_OFFSET_REQUEST_PENDING.store(false, Ordering::Release);
+                        CURRENT_OFFSET_DONE.signal(Err(error));
+                    }
+                }
+                continue;
+            }
+            DriverCommand::SetCurrentOffsets(offsets) => {
+                foc.set_current_offsets((offsets[0], offsets[1], offsets[2]));
+                continue;
+            }
         };
+
+        // A mode command cannot take the bridge away from calibration. Stop
+        // is the exception: it is the universal cancellation/safe-off verb.
+        if foc.current_offset_active() {
+            // Boot owns initialisation: even an early Stop from the F405's
+            // already-running protocol server must not turn calibration into
+            // a partially initialised device.
+            if BOOT_CURRENT_OFFSET_PENDING.load(Ordering::Relaxed) {
+                #[cfg(feature = "defmt")]
+                defmt::warn!("Mode rejected: boot current calibration active");
+                continue;
+            }
+            if mode != ControlMode::Stopped {
+                #[cfg(feature = "defmt")]
+                defmt::warn!("Mode rejected: current-offset calibration active");
+                continue;
+            }
+            foc.cancel_current_offset_calibration();
+            publish_current_offset_outcome(state_mutex, foc);
+        }
         critical_section::with(|cs| {
             let mut state = state_mutex.borrow(cs).borrow_mut();
 
@@ -589,6 +702,7 @@ where
         &mut saw_set_mode,
         link_active,
     );
+    publish_current_offset_outcome(state_mutex, driver);
 
     // Command-staleness deadman (ISR-resident — survives an async-executor
     // hang): stamp on a fresh setpoint; a stale link while running raises
@@ -689,6 +803,7 @@ where
         // gate stayed Busy forever). The Error latch is released by
         // process_commands once the host clears the registry.
         critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_error());
+        publish_current_offset_outcome(state_mutex, driver);
         return None;
     }
     // GracefulStop-class: the inverter is healthy — bring the vehicle down
@@ -715,6 +830,7 @@ where
 
     let was_failsafe = driver.failsafe_active();
     let step_result = driver.step(now_ticks);
+    publish_current_offset_outcome(state_mutex, driver);
     let prof_t4 = crate::isr_prof::now();
     crate::isr_prof::add(&crate::isr_prof::CYCLE_STEP, prof_t3, prof_t4);
     let result = match step_result {
@@ -806,6 +922,58 @@ where
     );
 
     result
+}
+
+/// Enqueue a diagnostic current-offset measurement and await its ISR-owned
+/// completion. The operation itself continues safely if this future is
+/// cancelled; its state machine always floats the bridge before publishing.
+#[cfg(feature = "offset-diagnostics")]
+pub async fn measure_current_offsets(
+    request: CurrentOffsetRequest,
+) -> Result<CurrentOffsetReport, CurrentOffsetError> {
+    if BOOT_CURRENT_OFFSET_PENDING.load(Ordering::Acquire) {
+        return Err(CurrentOffsetError::Busy);
+    }
+    if CURRENT_OFFSET_REQUEST_PENDING.swap(true, Ordering::AcqRel) {
+        return Err(CurrentOffsetError::Busy);
+    }
+    struct EnqueueGuard(bool);
+    impl Drop for EnqueueGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                CURRENT_OFFSET_REQUEST_PENDING.store(false, Ordering::Release);
+            }
+        }
+    }
+    let mut guard = EnqueueGuard(true);
+    CURRENT_OFFSET_DONE.reset();
+    CMD_CHANNEL
+        .send(DriverCommand::StartCurrentOffsetCalibration(request))
+        .await;
+    // From here the queued ISR operation owns clearing the pending flag,
+    // even if this waiter is cancelled.
+    guard.0 = false;
+    CURRENT_OFFSET_DONE.wait().await
+}
+
+fn publish_current_offset_outcome<P, C, Ph, S>(
+    state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
+    driver: &mut FocDriver<P, C, Ph, S>,
+) where
+    P: PhasePwm,
+    C: CurrentSensor,
+    Ph: PhaseProvider,
+    S: SinCos,
+{
+    if let Some(outcome) = driver.take_current_offset_outcome() {
+        #[cfg(feature = "offset-diagnostics")]
+        CURRENT_OFFSET_REQUEST_PENDING.store(false, Ordering::Release);
+        critical_section::with(|cs| {
+            let mut state = state_mutex.borrow(cs).borrow_mut();
+            state.driver_operation = DriverOperation::Idle;
+        });
+        CURRENT_OFFSET_DONE.signal(outcome);
+    }
 }
 
 /// Update state with new telemetry from ISR

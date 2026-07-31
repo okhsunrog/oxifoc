@@ -82,7 +82,7 @@ impl<'d> MotorPwm<'d> {
         // Small offset ensures ADC completes before any switching edges.
         let peak_offset = max_duty / 50; // ~2% margin
         pwm.set_duty(Channel::Ch4, max_duty.saturating_sub(peak_offset));
-        // Ch4 NOT enabled here — enable_outputs() does it after ADC handles are installed.
+        // Ch4 NOT enabled here — enable_adc_trigger() does it after ADC handles are installed.
         pwm.set_mms2(Mms2::COMPARE_OC4);
 
         // Route COMP1/2/4 outputs to TIM1 BKIN for hardware overcurrent protection.
@@ -131,7 +131,7 @@ impl<'d> MotorPwm<'d> {
         );
 
         // NOTE: Phase channels are NOT enabled here.
-        // Call enable_outputs() after FOC init is complete.
+        // Call enable_adc_trigger() after ADC handles are installed.
         // Enabling channels triggers ADC ISR at 20kHz which starves the main task.
 
         Self {
@@ -141,13 +141,10 @@ impl<'d> MotorPwm<'d> {
         }
     }
 
-    /// Enable PWM outputs (phase channels + ADC trigger).
-    /// Call after ADC handles are installed so the ISR can process conversions.
-    pub fn enable_outputs(&mut self) {
+    /// Enable only the internal ADC trigger. Phase channels remain high-Z
+    /// until the ISR-owned driver explicitly selects a topology.
+    pub fn enable_adc_trigger(&mut self) {
         self.pwm.enable(Channel::Ch4); // ADC trigger via TIM1_TRGO2
-        self.pwm.enable(Channel::Ch1);
-        self.pwm.enable(Channel::Ch2);
-        self.pwm.enable(Channel::Ch3);
     }
 
     /// Emergency stop - disable all phases immediately.

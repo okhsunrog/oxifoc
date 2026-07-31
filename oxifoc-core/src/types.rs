@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub use crate::foc::hall_sensor::Direction;
 
 // Re-export fault types for protocol use
+pub use crate::foc::current_offset::{CurrentOffsetMethod, CurrentOffsetReport};
 pub use crate::foc::fault::{FaultCategory, FaultInfo};
 
 // ============================================================================
@@ -406,7 +407,7 @@ pub struct TelemetryConfigAck {
 /// compares it to its own value at the connect handshake and warns on mismatch
 /// — the human-readable gate that also covers topics (whose key change would
 /// otherwise fail as *silent absence*). See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 1;
+pub const ICD_PROTO_VERSION: u16 = 2;
 
 /// Hardware information returned on initial handshake
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
@@ -544,6 +545,14 @@ pub enum DetectRequest {
         /// Previously measured resistance (Ω). GUI/CLI provides this.
         resistance_ohm: f32,
     },
+    /// Measure raw current-sensor zero offsets without applying them.
+    MeasureCurrentOffsets {
+        method: CurrentOffsetMethod,
+        /// Fresh ADC samples accumulated per reported phase.
+        samples_per_channel: u16,
+        /// Required acknowledgement for the all-phases-at-50% topology.
+        stationary_confirmed: bool,
+    },
 }
 
 /// Motor detection response — matches the request step.
@@ -572,6 +581,8 @@ pub enum DetectResponse {
     /// Hall calibration succeeded.
     /// Read calibration angles via config endpoint (HallCalibration group).
     HallCalibrated,
+    /// Raw current-sensor offset measurement.
+    CurrentOffsets(CurrentOffsetReport),
     /// Step failed.
     Error(DetectError),
 }
@@ -594,6 +605,10 @@ pub enum DetectError {
     LowConfidence,
     /// Prerequisite measurement not done (e.g., inductance without resistance)
     MissingPrerequisite,
+    /// Another actuator/flash operation owns the device.
+    Busy,
+    /// The requested topology is unsafe under the observed conditions.
+    Unsafe,
 }
 
 // ============================================================================

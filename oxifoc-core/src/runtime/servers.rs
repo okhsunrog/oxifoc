@@ -35,7 +35,7 @@ use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::derating::DeratingConfig;
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::foc_driver::CurrentLimits;
-use crate::state::{DriverCommand, FlashPendingGuard};
+use crate::state::{DriverCommand, DriverOperation, FlashPendingGuard};
 use crate::types::MAX_FAULT_RESPONSE;
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
@@ -230,8 +230,14 @@ pub async fn config_server<NS, const N: usize>(
             .serve(|req: &ConfigRequest| {
                 let req = req.clone();
                 async move {
-                    let motor_running = critical_section::with(|cs| {
-                        state_mutex.borrow(cs).borrow().motor_state == MotorState::Running
+                    let (motor_running, maintenance_busy) = critical_section::with(|cs| {
+                        let state = state_mutex.borrow(cs).borrow();
+                        (
+                            state.motor_state == MotorState::Running,
+                            state.driver_operation != DriverOperation::Idle
+                                || crate::state::boot_current_offset_pending()
+                                || crate::state::current_offset_request_pending(),
+                        )
                     });
                     match req {
                         ConfigRequest::Read(group) => {
@@ -303,8 +309,24 @@ pub async fn config_server<NS, const N: usize>(
                         {
                             ConfigResponse::Invalid
                         }
+                        ConfigRequest::Write(ConfigWrite::DcOffsets(ref v))
+                            if !v.phase_a.is_finite()
+                                || !v.phase_b.is_finite()
+                                || !v.phase_c.is_finite()
+                                || v.phase_a < 0.0
+                                || v.phase_b < 0.0
+                                || v.phase_c < 0.0
+                                || v.phase_a > f32::from(u16::MAX)
+                                || v.phase_b > f32::from(u16::MAX)
+                                || v.phase_c > f32::from(u16::MAX) =>
+                        {
+                            ConfigResponse::Invalid
+                        }
+                        ConfigRequest::Write(_) if maintenance_busy => ConfigResponse::Busy,
                         ConfigRequest::Write(_) if persist && motor_running => ConfigResponse::Busy,
-                        ConfigRequest::ResetAll if motor_running => ConfigResponse::Busy,
+                        ConfigRequest::ResetAll if motor_running || maintenance_busy => {
+                            ConfigResponse::Busy
+                        }
                         ConfigRequest::Write(write) => {
                             let (key, payload) = match write.clone() {
                                 ConfigWrite::MotorParams(v) => {
@@ -350,11 +372,10 @@ pub async fn config_server<NS, const N: usize>(
                                 // armed, so it alone is not enough). The guard
                                 // clears the flag on every return path.
                                 let _flash_pending = FlashPendingGuard::arm();
-                                let motor_running = critical_section::with(|cs| {
-                                    state_mutex.borrow(cs).borrow().motor_state
-                                        == MotorState::Running
+                                let actuator_busy = critical_section::with(|cs| {
+                                    state_mutex.borrow(cs).borrow().actuator_busy()
                                 });
-                                if motor_running {
+                                if actuator_busy {
                                     return ConfigResponse::Busy;
                                 }
                                 // Write-through ack: this server is the only
@@ -531,6 +552,15 @@ pub async fn config_server<NS, const N: usize>(
                                         ))
                                         .await;
                                 }
+                                // Persisted calibration must take effect now,
+                                // not only after the next reboot.
+                                ConfigWrite::DcOffsets(v) => {
+                                    CMD_CHANNEL
+                                        .send(DriverCommand::SetCurrentOffsets([
+                                            v.phase_a, v.phase_b, v.phase_c,
+                                        ]))
+                                        .await;
+                                }
                                 _ => {}
                             }
                             ConfigResponse::Ok
@@ -539,11 +569,10 @@ pub async fn config_server<NS, const N: usize>(
                             if persist {
                                 // Same TOCTOU guard as the Write arm above.
                                 let _flash_pending = FlashPendingGuard::arm();
-                                let motor_running = critical_section::with(|cs| {
-                                    state_mutex.borrow(cs).borrow().motor_state
-                                        == MotorState::Running
+                                let actuator_busy = critical_section::with(|cs| {
+                                    state_mutex.borrow(cs).borrow().actuator_busy()
                                 });
-                                if motor_running {
+                                if actuator_busy {
                                     return ConfigResponse::Busy;
                                 }
                                 FLASH_DONE.reset();

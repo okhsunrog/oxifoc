@@ -20,6 +20,7 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::FocController;
+use oxifoc_core::foc::current_offset::CurrentOffsetRequest;
 use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
 use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, TempSensorId};
 use oxifoc_core::foc::trig::FastSinCos;
@@ -29,7 +30,9 @@ use oxifoc_core::motor::derating::DeratingConfig;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
 use oxifoc_core::motor::foc_driver::CurrentLimits;
 use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
-use oxifoc_core::state::run_foc_cycle;
+use oxifoc_core::state::{
+    BOOT_CURRENT_OFFSET_PENDING, CURRENT_OFFSET_DONE, DriverOperation, run_foc_cycle,
+};
 use oxifoc_core::storage::RuntimeConfig;
 
 use crate::hardware::peripherals::AdcHandles;
@@ -146,7 +149,8 @@ pub async fn init(
         Ordering::Relaxed,
     );
 
-    // Enable ADC interrupt and PWM outputs (CH4 trigger + phase channels).
+    // Enable the ADC interrupt and its internal PWM trigger. Phase channels
+    // stay high-Z until the calibration state machine selects one.
     // Order: install ADC handles → enable interrupt → enable PWM triggers.
     // ADC at priority 0 (highest) — the FOC loop is the actuator's most
     // time-critical ISR; comms ISRs (USB/UART) must never preempt or
@@ -169,7 +173,7 @@ pub async fn init(
         <interrupt::typelevel::ADC as Interrupt>::unpend();
         <interrupt::typelevel::ADC as Interrupt>::enable();
     }
-    motor_pwm.enable_outputs();
+    motor_pwm.enable_adc_trigger();
 
     // Build current sensor and phase manager
     let current_sensor = F405CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
@@ -263,31 +267,40 @@ pub async fn init(
     // rolloff only; see motor::derating).
     foc_driver.set_derating(DeratingConfig::from_stored(config.derating.as_ref()));
 
-    // Allow ADC injected conversions to start firing before zero-current calibration.
-    Timer::after(Duration::from_millis(10)).await;
-    foc_driver.current_sensor_mut().calibrate().await;
-
-    // Publish the measured zero-current offsets into the DcOffsets config
-    // group: the boot measurement is the ground truth for this power-up, and
-    // the host's telemetry enrichment reads this group (falling back to
-    // mid-scale counts when it's absent, which shifts reconstructed phase
-    // currents by amps).
-    {
-        let (oa, ob, oc) = foc_driver.current_sensor().converter().get_offsets();
+    CURRENT_OFFSET_DONE.reset();
+    let calibration_started = foc_driver
+        .start_current_offset_calibration(CurrentOffsetRequest::boot())
+        .is_ok();
+    if calibration_started {
         critical_section::with(|cs| {
-            crate::RUNTIME_CONFIG.borrow(cs).borrow_mut().dc_offsets =
-                Some(oxifoc_core::storage::DcOffsetsConfig {
-                    phase_a: oa,
-                    phase_b: ob,
-                    phase_c: oc,
-                });
+            STATE.borrow(cs).borrow_mut().driver_operation =
+                DriverOperation::CurrentOffsetCalibration;
         });
+    } else {
+        defmt::error!("failed to start boot current-offset calibration");
     }
 
-    // Install FOC driver for ISR-only access.
+    // Install FOC driver for ISR-only access; it now advances calibration.
     FOC_DRIVER.lock(|cell| {
         cell.replace(Some(foc_driver));
     });
+
+    if calibration_started {
+        match CURRENT_OFFSET_DONE.wait().await {
+            Ok(report) => {
+                critical_section::with(|cs| {
+                    crate::RUNTIME_CONFIG.borrow(cs).borrow_mut().dc_offsets =
+                        Some(oxifoc_core::storage::DcOffsetsConfig {
+                            phase_a: report.offsets[0],
+                            phase_b: report.offsets[1],
+                            phase_c: report.offsets[2],
+                        });
+                });
+            }
+            Err(_) => defmt::error!("current-offset calibration failed"),
+        }
+    }
+    BOOT_CURRENT_OFFSET_PENDING.store(false, Ordering::Release);
 
     defmt::info!("F405 FOC driver initialized and calibrated");
 }

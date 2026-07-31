@@ -141,18 +141,10 @@ pub trait PhasePwm {
     /// Set individual phase states directly (brake / coast / float).
     ///
     /// Each element controls one phase: \[A, B, C\].
-    /// Platform crates should override this for proper floating (hi-Z)
-    /// support using `enable(Channel)` / `disable(Channel)`.
-    ///
-    /// The default implementation falls back to `set_duties()` which
-    /// cannot produce true high-impedance.
-    fn set_phase_states(&mut self, states: [PhaseState; 3]) {
-        let duties = states.map(|s| match s {
-            PhaseState::Pwm(duty) => duty,
-            PhaseState::Low | PhaseState::Float => 0,
-        });
-        self.set_duties(duties);
-    }
+    /// Implementations must provide real high-impedance behavior for
+    /// [`PhaseState::Float`]. Duty zero is not equivalent on a complementary
+    /// bridge: it normally holds the low-side FET on.
+    fn set_phase_states(&mut self, states: [PhaseState; 3]);
 }
 
 /// Modulation strategy (SVPWM, sine PWM, etc.)

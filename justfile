@@ -63,7 +63,7 @@ check-device:
     # ELF's _SEGGER_RTT — a stale variant ELF makes every attach fail with
     # ControlBlockNotFound (bit three times on 2026-07-06 alone).
     echo "oxifoc-g431 (bench rtt+detection): restore canonical ELF..."
-    (cd oxifoc-g431 && cargo build --release --quiet --no-default-features --features transport-rtt,detection 2>&1 | filter) || exit 1
+    (cd oxifoc-g431 && cargo build --release --quiet --no-default-features --features transport-rtt,detection,offset-diagnostics 2>&1 | filter) || exit 1
 
 # Format all code (workspace + device crates)
 fmt:

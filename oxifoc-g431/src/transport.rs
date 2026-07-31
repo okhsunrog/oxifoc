@@ -8,6 +8,7 @@
 //! with multi-interface devices.
 
 // I/O wrappers — re-exported from oxifoc-core
+#[cfg(feature = "transport-uart")]
 pub use oxifoc_core::runtime::io::*;
 
 use embassy_stm32::{bind_interrupts, peripherals, rng};

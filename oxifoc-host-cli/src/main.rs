@@ -86,6 +86,27 @@ enum DetectStep {
     Flux,
     /// Calibrate Hall sensors
     Hall,
+    /// Measure current-sensor zero offsets
+    Offsets,
+    /// Compare undriven, per-phase-50 and all-phases-50 measurements
+    OffsetsCompare,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OffsetMethodArg {
+    Undriven,
+    PerPhase,
+    AllPhases,
+}
+
+impl From<OffsetMethodArg> for oxifoc_core::types::CurrentOffsetMethod {
+    fn from(value: OffsetMethodArg) -> Self {
+        match value {
+            OffsetMethodArg::Undriven => Self::Undriven,
+            OffsetMethodArg::PerPhase => Self::PerPhase50,
+            OffsetMethodArg::AllPhases => Self::AllPhases50,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -358,6 +379,20 @@ enum Command {
             help = "Open-loop ERPM for flux spin-up"
         )]
         erpm: f32,
+        #[arg(long, value_enum, default_value_t = OffsetMethodArg::PerPhase)]
+        offset_method: OffsetMethodArg,
+        #[arg(
+            long,
+            default_value_t = 1000,
+            value_parser = clap::value_parser!(u16).range(16..=4096),
+            help = "Fresh ADC samples per current channel"
+        )]
+        samples: u16,
+        #[arg(
+            long,
+            help = "Confirm the rotor is stationary (required for all-phases-50)"
+        )]
+        stationary: bool,
         #[arg(
             long,
             help = "Record raw fast telemetry during the step into a parquet \
@@ -378,7 +413,7 @@ enum Command {
         record_hz: Option<u16>,
         #[arg(
             long,
-            help = "Write the measured values into the motor-params config group"
+            help = "Persist the measured values in their appropriate config group"
         )]
         apply: bool,
     },
@@ -810,6 +845,9 @@ fn main() -> Result<()> {
             inductance,
             pole_pairs,
             erpm,
+            offset_method,
+            samples,
+            stationary,
             apply,
             record,
             record_hz,
@@ -822,6 +860,9 @@ fn main() -> Result<()> {
                 inductance,
                 pole_pairs,
                 erpm,
+                offset_method,
+                samples,
+                stationary,
                 apply,
                 record,
                 record_hz,

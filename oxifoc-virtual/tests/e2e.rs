@@ -19,7 +19,7 @@ use std::net::{TcpListener, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use oxifoc_core::types::{ControlMode, DetectRequest, DetectResponse};
+use oxifoc_core::types::{ControlMode, CurrentOffsetMethod, DetectRequest, DetectResponse};
 use oxifoc_host_lib::{
     HostCommand, HostConfig, ReconnectPolicy, TransportType, detect_channel, start_host,
 };
@@ -187,6 +187,17 @@ fn run_e2e(transport: TransportType) {
         matches!(resp, DetectResponse::Resistance { .. }),
         "[{transport_arg}] expected a Resistance result, got {resp:?}"
     );
+
+    // 4) The optional offset diagnostic shares the same effectively-once
+    // endpoint but returns raw ADC-domain calibration values.
+    let offsets = oxifoc_host_lib::ops::detect::measure_current_offsets(
+        &rt.cmd_tx,
+        CurrentOffsetMethod::PerPhase50,
+        1000,
+        false,
+    )
+    .expect("offset diagnostic should succeed");
+    assert_eq!(offsets.offsets, [2047.5; 3]);
 
     rt.shutdown();
 }

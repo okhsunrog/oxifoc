@@ -274,6 +274,9 @@ pub mod foc {
     /// Shunt resistor current sensing
     pub mod current_sense;
 
+    /// ISR-owned current-sensor offset calibration
+    pub mod current_offset;
+
     /// Phase-terminal voltage sensing (back-EMF / undriven rotation detection)
     pub mod phase_voltage;
 

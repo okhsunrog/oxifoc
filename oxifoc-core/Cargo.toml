@@ -58,10 +58,15 @@ name = "oxifoc_core"
 path = "src/lib.rs"
 
 [features]
-default = ["algorithms", "detection"]
+default = ["algorithms", "detection", "offset-diagnostics"]
+
+# Runtime current-offset comparison (undriven / per-phase / all-phases).
+# Boot calibration remains unconditional; flash-tight devices can omit this
+# host-triggered path and enable it only in a bench build.
+offset-diagnostics = []
 
 # Motor parameter detection: R/L/λ measurement sweeps, HFI inductance (FFT),
-# voltage-pulse fallback, DC-offset calibration and the shared async detect
+# voltage-pulse fallback and the shared async detect
 # server (`runtime::detect`, when `delivery`+`storage` are also on).
 # Default-on; flash-constrained builds can opt out (measured −14.7 KB on
 # G431). `detection::types` and `detection::pi_tuning` stay available

@@ -25,6 +25,10 @@ use ergot::net_stack::NetStackHandle;
 use ergot::net_stack::endpoints::Endpoints;
 
 use crate::foc::clamp_f32;
+#[cfg(feature = "offset-diagnostics")]
+use crate::foc::current_offset::{
+    CurrentOffsetError, CurrentOffsetMethod, CurrentOffsetReport, CurrentOffsetRequest,
+};
 use crate::foc::detection::types::{
     DetectionError, FluxLinkageParams, InductanceParams, MotorSize, ResistanceParams,
 };
@@ -67,6 +71,14 @@ pub trait DetectionBackend {
         &mut self,
         params: HallCalibrationParams,
     ) -> Result<HallCalibrationResult, DetectionError>;
+
+    /// Measure current-sensor offsets through the platform's ISR-owned driver
+    /// (or return a deterministic equivalent in simulation).
+    #[cfg(feature = "offset-diagnostics")]
+    async fn measure_current_offsets(
+        &mut self,
+        request: CurrentOffsetRequest,
+    ) -> Result<CurrentOffsetReport, CurrentOffsetError>;
 }
 
 /// Serve `DetectEndpoint` with effectively-once dedup, forever.
@@ -303,6 +315,48 @@ async fn run_step<B: DetectionBackend>(
                 Err(e) => DetectResponse::Error(map_err(e)),
             }
         }
+
+        DetectRequest::MeasureCurrentOffsets {
+            method,
+            samples_per_channel,
+            stationary_confirmed,
+        } => {
+            #[cfg(not(feature = "offset-diagnostics"))]
+            {
+                let _ = (method, samples_per_channel, stationary_confirmed);
+                return DetectResponse::Error(DetectError::MissingPrerequisite);
+            }
+            #[cfg(feature = "offset-diagnostics")]
+            {
+                if method == CurrentOffsetMethod::AllPhases50 && !stationary_confirmed {
+                    return DetectResponse::Error(DetectError::Unsafe);
+                }
+                let request = CurrentOffsetRequest::diagnostic(
+                    method,
+                    samples_per_channel,
+                    stationary_confirmed,
+                );
+                if !request.is_valid() {
+                    return DetectResponse::Error(DetectError::OutOfRange);
+                }
+                match backend.measure_current_offsets(request).await {
+                    Ok(report) => DetectResponse::CurrentOffsets(report),
+                    Err(error) => DetectResponse::Error(map_current_offset_err(error)),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "offset-diagnostics")]
+fn map_current_offset_err(error: CurrentOffsetError) -> DetectError {
+    match error {
+        CurrentOffsetError::Busy => DetectError::Busy,
+        CurrentOffsetError::InvalidRequest => DetectError::OutOfRange,
+        CurrentOffsetError::UnsafeWhileMoving
+        | CurrentOffsetError::RequiresExistingCalibration
+        | CurrentOffsetError::OverCurrent => DetectError::Unsafe,
+        CurrentOffsetError::Cancelled => DetectError::HardwareFault,
     }
 }
 

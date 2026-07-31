@@ -8,6 +8,9 @@
 
 use ergot::net_stack::NetStackHandle;
 use ergot::net_stack::endpoints::Endpoints;
+use oxifoc_core::foc::current_offset::{
+    CurrentOffsetError, CurrentOffsetReport, CurrentOffsetRequest,
+};
 use oxifoc_core::foc::detection::sweep::{
     calibrate_hall, measure_flux_linkage_auto, measure_inductance_auto, measure_resistance,
 };
@@ -106,6 +109,19 @@ impl DetectionBackend for VirtualBackend {
         })
         .await
         .unwrap_or(Err(DetectionError::HardwareFault))
+    }
+
+    async fn measure_current_offsets(
+        &mut self,
+        request: CurrentOffsetRequest,
+    ) -> Result<CurrentOffsetReport, CurrentOffsetError> {
+        if !request.is_valid() {
+            return Err(CurrentOffsetError::InvalidRequest);
+        }
+        // The live virtual loop encodes zero current around ADC mid-scale.
+        Ok(CurrentOffsetReport {
+            offsets: [2047.5; 3],
+        })
     }
 }
 
