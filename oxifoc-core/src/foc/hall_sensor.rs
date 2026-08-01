@@ -92,6 +92,16 @@ pub const STALE_MIN_WINDOW_S: f32 = 0.002;
 /// 100ms is reasonable for low-speed detection.
 pub const DEFAULT_HALL_TIMEOUT_US: u32 = 100_000;
 
+/// Maximum electrical speed a hall edge pair is allowed to claim (rad/s).
+///
+/// 30 000 el rad/s ≈ 286 kERPM — several times any supported motor's
+/// ceiling (a Flipsky 5065 at 60 V tops out near 12 k el rad/s), yet ~30×
+/// below what a connector-bounce edge pair produces (`dt_ticks.max(1)` at a
+/// 1 MHz timebase reads a 1 µs "sector" as ~10⁶ rad/s). Edges whose implied
+/// speed exceeds this are glitches: the velocity estimate keeps its
+/// previous value instead of adopting them.
+pub const MAX_PLAUSIBLE_E_RAD_S: f32 = 30_000.0;
+
 /// Platform-agnostic Hall sensor angle estimator
 ///
 /// Tracks Hall sensor state transitions to estimate electrical angle
@@ -653,16 +663,26 @@ impl HallSensor {
 
             // On direction reversal, negate velocity sign but keep magnitude relationship
             // This matches VESC's handling in foc_correct_hall()
-            if self.direction_reversed {
+            let candidate = if self.direction_reversed {
                 let angle_step = self.angle_step_signed(self.direction);
-                self.elec_velocity = -self.elec_velocity.signum() * (angle_step / dt).abs();
+                -self.elec_velocity.signum() * (angle_step / dt).abs()
             } else if prev_base_is_boundary && crossed_boundary {
                 // Boundary-to-boundary distance is the MEASURED width of the
                 // sector just traversed (handles asymmetric Hall placement —
                 // MESC carries the same per-state width for its angle step).
-                self.elec_velocity = angle_difference(base, prev_base) / dt;
+                angle_difference(base, prev_base) / dt
             } else {
-                self.elec_velocity = self.angle_step_signed(self.direction) / dt;
+                self.angle_step_signed(self.direction) / dt
+            };
+            // Plausibility gate: an edge-bounce pair from a flaky connector
+            // arrives ticks apart and would read as ~10⁵–10⁶ rad/s — an
+            // impossible speed that then feeds the dq-decoupling
+            // feedforward and the actuation advance as a full-bus torque
+            // pulse (the bench-observed OC-from-hall-bounce class). Keep
+            // the previous estimate; the angle/timestamp update above
+            // stands, and real edges re-converge the velocity immediately.
+            if candidate.abs() <= MAX_PLAUSIBLE_E_RAD_S {
+                self.elec_velocity = candidate;
             }
         }
 
@@ -1193,6 +1213,42 @@ mod tests {
         // All high (0b111)
         assert!(hall.update(7, 0).is_none());
         assert_eq!(hall.error_count(), 2);
+    }
+
+    /// A connector-bounce edge pair (adjacent edges ticks apart) used to
+    /// read as ~10^6 rad/s and feed the decoupling feedforward / actuation
+    /// advance as a full-bus pulse. Implausible edge speeds must keep the
+    /// previous velocity estimate.
+    #[test]
+    fn edge_bounce_does_not_explode_velocity() {
+        let mut hall = HallSensor::new(1_000_000); // 1 MHz timebase
+        // Steady forward rotation: one sector per millisecond
+        // (~pi/3 / 1e-3 = 1047 el rad/s).
+        let sequence = [1u8, 3, 2, 6, 4, 5, 1, 3];
+        let mut t = 0u64;
+        for &state in &sequence {
+            hall.update(state, t);
+            t += 1_000;
+        }
+        let steady = hall.elec_velocity;
+        assert!(
+            (steady.abs() - 1047.0).abs() < 60.0,
+            "unexpected steady velocity {steady}"
+        );
+        // Bounce: the next edge and its return arrive 1 tick apart.
+        hall.update(2, t);
+        hall.update(3, t + 1);
+        hall.update(2, t + 2);
+        assert!(
+            hall.elec_velocity.abs() <= MAX_PLAUSIBLE_E_RAD_S,
+            "bounce produced implausible velocity {}",
+            hall.elec_velocity
+        );
+        assert!(
+            (hall.elec_velocity.abs() - steady.abs()).abs() < 60.0,
+            "bounce should keep the previous estimate, got {}",
+            hall.elec_velocity
+        );
     }
 
     #[test]
