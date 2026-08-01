@@ -365,16 +365,34 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         (mod_alpha + comp_alpha, mod_beta + comp_beta)
     }
 
+    /// Hard bound on the actuation advance (electrical rad).
+    ///
+    /// The small-angle rotation in `apply_actuation_advance` is only a
+    /// rotation for small δ — beyond ~2 rad the truncated series becomes an
+    /// AMPLIFIER (gain ≈160 at δ=10), applied AFTER the circular voltage
+    /// limit, so an estimator velocity spike (e.g. a hall edge bounce)
+    /// would rail all three phases at full bus in an arbitrary direction.
+    /// 0.5 rad is well above the ~0.3 rad a Flipsky-class motor needs at
+    /// full speed and still inside the series' accuracy envelope (δ⁴/24 ≈
+    /// 2.6·10⁻³).
+    pub const MAX_ACTUATION_ADVANCE_RAD: f32 = 0.5;
+
     /// Set the actuation-frame advance for the next step (electrical rad).
     ///
     /// The driver recomputes this every cycle as
     /// `velocity × dt × phase_advance_cycles`. Applied as a cheap
     /// small-angle rotation of the output voltage vector — accurate to
     /// `δ⁴/24` (3·10⁻⁴ at the ~0.3 rad of a Flipsky-class motor at full
-    /// speed), with no second SinCos evaluation in the ISR.
+    /// speed), with no second SinCos evaluation in the ISR. Non-finite
+    /// values reset to 0; magnitude saturates at
+    /// [`MAX_ACTUATION_ADVANCE_RAD`](Self::MAX_ACTUATION_ADVANCE_RAD).
     pub fn set_actuation_advance(&mut self, advance_rad: f32) {
         self.actuation_advance = if advance_rad.is_finite() {
-            advance_rad
+            clamp_f32(
+                advance_rad,
+                -Self::MAX_ACTUATION_ADVANCE_RAD,
+                Self::MAX_ACTUATION_ADVANCE_RAD,
+            )
         } else {
             0.0
         };
@@ -798,6 +816,28 @@ mod tests {
 
     foc_controller_tests!(libm, LibmSinCos);
     foc_controller_tests!(fast, FastSinCos);
+
+    /// The small-angle advance rotation diverges beyond ~2 rad (gain ~160 at
+    /// delta = 10) AFTER the circular voltage limit -- an estimator velocity
+    /// spike must saturate at a value where it is still a rotation.
+    #[test]
+    fn actuation_advance_clamps_to_a_rotation() {
+        type Foc = FocController<SvpwmModulator, FastSinCos>;
+        let mut foc = Foc::new(24.0);
+
+        foc.set_actuation_advance(10.0);
+        assert_eq!(foc.actuation_advance, Foc::MAX_ACTUATION_ADVANCE_RAD);
+        foc.set_actuation_advance(-10.0);
+        assert_eq!(foc.actuation_advance, -Foc::MAX_ACTUATION_ADVANCE_RAD);
+        foc.set_actuation_advance(f32::NAN);
+        assert_eq!(foc.actuation_advance, 0.0);
+
+        // At the clamp the rotation must preserve vector magnitude.
+        foc.set_actuation_advance(Foc::MAX_ACTUATION_ADVANCE_RAD);
+        let (a, b) = foc.apply_actuation_advance(1.0, 0.5);
+        let gain2 = (a * a + b * b) / (1.0 + 0.25);
+        assert!((gain2 - 1.0).abs() < 5e-3, "gain^2 = {gain2}");
+    }
 
     /// Average phase-to-neutral αβ voltage that a duty triple applies over one
     /// PWM period, assuming ideal half-bridges (leg voltage = duty/max × vbus).
