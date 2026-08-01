@@ -590,15 +590,21 @@ where
             // wedged app that resumes affirming) would relaunch the board
             // right after the failsafe stopped it. The rejected SetMode
             // still stamped the deadman above (liveness ≠ acceptance).
-            if foc.failsafe_latched()
-                && !matches!(
+            if foc.failsafe_latched() {
+                if !matches!(
                     mode,
                     ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
-                )
-            {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("Mode rejected: failsafe latched, acknowledge with Stopped first");
-                return;
+                ) {
+                    #[cfg(feature = "defmt")]
+                    defmt::warn!("Mode rejected: failsafe latched, acknowledge with Stopped first");
+                    return;
+                }
+                // The safe-mode command IS the acknowledgement — released
+                // here at the host-command boundary only. Internal stop
+                // paths (fault kill, step error) call `set_mode` directly
+                // and keep the latch, so a failsafe brake that trips a
+                // fault mid-stop still demands this acknowledgement.
+                foc.acknowledge_failsafe();
             }
 
             // Apply the control mode

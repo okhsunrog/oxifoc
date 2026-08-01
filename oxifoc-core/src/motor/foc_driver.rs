@@ -1046,6 +1046,20 @@ where
         self.failsafe_latched
     }
 
+    /// Release the post-failsafe re-arm latch.
+    ///
+    /// Must only be called from the host-command path when an explicit safe
+    /// mode (Stopped/Coast/Brake) arrives — that command IS the "throttle
+    /// back to neutral" acknowledgement. Internal stop paths (the fault-kill
+    /// `safe_off`, step errors) go through [`set_mode`](Self::set_mode)
+    /// directly and deliberately keep the latch: a failsafe brake that
+    /// itself trips OC/OV mid-stop must still demand the acknowledgement,
+    /// or a host's `faults clear` followed by its stale throttle replay
+    /// relaunches the board — exactly what the latch exists to prevent.
+    pub fn acknowledge_failsafe(&mut self) {
+        self.failsafe_latched = false;
+    }
+
     /// Set control mode
     pub fn set_mode(&mut self, mode: ControlMode) {
         // A motor-mode command supersedes maintenance. Cancellation floats
@@ -1056,16 +1070,11 @@ where
         // command (re-arm after link loss) or a fault-stop both cancel an
         // in-progress failsafe brake. (The failsafe's own terminal Stop sets
         // `self.mode` directly, not through here, so it doesn't self-cancel.)
+        // The re-arm latch is NOT touched here: internal stops (fault kill,
+        // step error) route through this method too, and only the host's
+        // explicit safe-mode command may release it — see
+        // [`acknowledge_failsafe`](Self::acknowledge_failsafe).
         self.failsafe_ctrl.reset();
-
-        // A safe-mode command is the explicit "throttle back to neutral"
-        // acknowledgement that releases the post-failsafe re-arm latch.
-        if matches!(
-            mode,
-            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
-        ) {
-            self.failsafe_latched = false;
-        }
 
         let was_stopped = matches!(self.mode, ControlMode::Stopped);
         let will_be_active = !matches!(mode, ControlMode::Stopped);
@@ -2454,6 +2463,50 @@ mod tests {
     /// Link loss must route through the configured failsafe policy (arm the
     /// controller), not the legacy instant hard-Stop — `process_commands`
     /// forces this whenever `link_active` is false and the motor is running.
+    /// The re-arm latch survives INTERNAL stops: the fault-kill `safe_off`
+    /// and step-error paths route through `set_mode(Stopped)`, and clearing
+    /// the latch there let a failsafe brake that tripped OC/OV mid-stop be
+    /// relaunched by a stale throttle replay right after `faults clear` --
+    /// with no "throttle back to neutral". Only the explicit host-side
+    /// acknowledgement may release it.
+    #[test]
+    fn internal_stops_preserve_the_failsafe_latch() {
+        use crate::foc::phase::PhaseManager;
+        use crate::foc::trig::LibmSinCos;
+
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+
+        driver.enter_failsafe();
+        assert!(driver.failsafe_latched());
+
+        // Kill path: safe_off every cycle while the fault stays latched.
+        driver.safe_off();
+        assert!(
+            driver.failsafe_latched(),
+            "safe_off must not release the re-arm latch"
+        );
+
+        // Step-error path: a direct internal Stopped.
+        driver.set_mode(ControlMode::Stopped);
+        assert!(
+            driver.failsafe_latched(),
+            "an internal set_mode(Stopped) must not release the re-arm latch"
+        );
+
+        // The host-command boundary is the only release point.
+        driver.acknowledge_failsafe();
+        assert!(!driver.failsafe_latched());
+    }
+
     #[test]
     #[cfg(feature = "runtime")]
     fn link_loss_arms_failsafe_policy() {
