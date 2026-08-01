@@ -1028,9 +1028,15 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
             }
         }
 
-        results[axis] = (angle, meas.finish()?);
+        let inductance = meas.finish();
 
-        // Ramp down
+        // Ramp down and de-energise BEFORE acting on the measurement result.
+        // The last command was `DirectVoltage { vd_hold + pulse_v }`, sized
+        // for a one-PWM-period excursion: propagating a failed measurement
+        // (e.g. `InsufficientSamples` when every pulse was skipped on a
+        // noisy/open winding) from here would leave that level applied DC
+        // for up to the bench deadman. `measure_resistance` follows the same
+        // stop-before-bailout pattern.
         for i in (0..ramp_steps).rev() {
             let vd = vd_hold * (i as f32 / ramp_steps as f32);
             hw.send_command(ControlMode::DirectVoltage {
@@ -1043,6 +1049,8 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
         }
         hw.send_command(ControlMode::Stopped).await;
         T::after_millis(200).await;
+
+        results[axis] = (angle, inductance?);
     }
 
     let ld = results[0].1; // angle 0 = d-axis
