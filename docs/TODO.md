@@ -36,48 +36,11 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
 ## Review backlog (2026-07-09 full-codebase review)
 
 Findings from the six-agent review, verified against source at the time.
-The bridge/remote block (the review's only critical) was fixed by the
-transport rework; everything below is still open. Line numbers have
-drifted — anchors are function/area names.
-
-### Fix before the next bench session (safety)
-
-- [ ] **Hall velocity is unbounded** — a single edge-bounce pair
-  (`dt_ticks.max(1)` in `HallSensor::update`) yields ω ≈ 10⁵–10⁶ rad/s
-  passed raw on the Hall path (`manager.rs` passes `sample.omega` with
-  no tracker). Feeds (a) the dq-decoupling feedforward
-  `vq_ff = ω·(Ld·id* + λ)` → full-bus torque pulse, and (b) the
-  actuation advance below. This is the bench-observed OC-from-hall-bounce
-  class (flaky Flipsky connector). Fix at the source: max-plausible-speed
-  clamp or VESC-style minimum inter-edge dt.
-- [ ] **`apply_actuation_advance` diverges for |δ| ≳ 2** — the
-  small-angle rotation (`sd = d − d³/6`) becomes an amplifier (gain ≈160
-  at d=10) applied AFTER the circular voltage limit → several cycles of
-  full-rail PWM in arbitrary directions on a velocity spike. Clamp
-  `advance_rad` to ±0.5 rad in `set_actuation_advance`.
-- [ ] **`measure_inductance_pulse` error path leaves the winding
-  energised**: `meas.finish()?` early-returns before ramp-down/Stop
-  while the last command was `DirectVoltage { vd_hold + pulse_v }` —
-  a pulse-sized voltage applied DC for up to the 10 s deadman when all
-  pulses are skipped (`InsufficientSamples` on a noisy/open winding).
-  `measure_resistance` in the same file does it right (stop before
-  bail-outs); mirror it.
-- [ ] **Deadshort/confirm cap-skip fabricates a rotor measurement at
-  drive current ≥ `DEADSHORT_MAX_CURRENT_A`** (`startup.rs`,
-  `feed_confirm`/`feed_deadshort`): the cap-skip was designed for
-  back-EMF current but also fires on residual *drive* current — a
-  sensorless start with iq ≥ 8 A skips the settle window, one sample of
-  drive current "completes" it, and `short_current_estimate` seeds a
-  phantom handoff ~π off the rotor. Never hit on the ZD2808 (7.2 A);
-  will be hit at Flipsky currents. Fix: never cap-skip in
-  `feed_confirm` — abort/retry instead.
-- [ ] **Internal stop paths clear the failsafe re-arm latch**
-  (`set_mode(Stopped)` clears `failsafe_latched` for every caller,
-  including the Kill path via `safe_off` and StepError): deadman →
-  ControlledStop → brake trips OC/OV → latch wiped → after
-  `faults clear` a stale throttle replay is accepted with no
-  return-to-neutral. Make internal callers preserve the latch (the
-  failsafe terminal already sets `self.mode` directly for this reason).
+Fixed since: the bridge/remote block (the review's only critical, transport
+rework) and the pre-bench safety block (hall velocity gate, actuation-advance
+clamp, inductance-pulse de-energise, probe settle enforcement, failsafe-latch
+preservation). Everything below is still open; line numbers have drifted —
+anchors are function/area names.
 
 ### Before MK5 power-up
 
