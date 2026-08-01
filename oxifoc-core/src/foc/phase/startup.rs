@@ -355,6 +355,16 @@ pub struct SensorlessStartup {
     recycled: bool,
     // ── Deadshort probe state (Phase B) ──
     ds_settle: u16,
+    /// The probe was entered with drive current flowing (Confirm, or the
+    /// Hold give-up recycle) rather than from an unenergised bridge (cold
+    /// start). Drive residual is indistinguishable from back-EMF until it
+    /// has decayed, so the settle countdown must run to completion — the
+    /// over-cap early skip is only valid when the bridge was off and any
+    /// large current can ONLY be back-EMF. Without this, a sensorless start
+    /// at iq ≥ [`DEADSHORT_MAX_CURRENT_A`] skips the settle, one sample of
+    /// drive current "completes" the window, and `short_current_estimate`
+    /// fabricates a fast rotor ~π off the real one (phantom handoff).
+    ds_settle_must_complete: bool,
     /// Samples accumulated into the probe-window current average.
     ds_cycles: u16,
     /// Running sums of the α/β current over the probe window — the
@@ -401,6 +411,7 @@ impl Default for SensorlessStartup {
             strong_probes: 0,
             recycled: false,
             ds_settle: 0,
+            ds_settle_must_complete: false,
             ds_cycles: 0,
             ds_sum_alpha: 0.0,
             ds_sum_beta: 0.0,
@@ -430,6 +441,9 @@ impl SensorlessStartup {
         self.confirm_cooldown = 0.0;
         self.strong_probes = 0;
         self.ds_settle = DEADSHORT_SETTLE_CYCLES;
+        // Cold start: the bridge was off, so a large settled current can
+        // only be back-EMF — the over-cap settle skip is valid here.
+        self.ds_settle_must_complete = false;
         self.ds_cycles = 0;
         self.ds_elapsed = 0.0;
     }
@@ -607,6 +621,9 @@ impl SensorlessStartup {
                     self.strong_probes = 0;
                     self.recycled = true;
                     self.ds_settle = DEADSHORT_SETTLE_CYCLES;
+                    // The ramp/hold drive current is still decaying into
+                    // this short — never mistake it for back-EMF.
+                    self.ds_settle_must_complete = true;
                     self.ds_cycles = 0;
                     self.ds_elapsed = 0.0;
                     return StartupOutput {
@@ -655,6 +672,9 @@ impl SensorlessStartup {
             // internal gate; this probe is the external check it cannot.
             self.phase = StartupPhase::Confirm;
             self.ds_settle = CONFIRM_SETTLE_CYCLES;
+            // Amps of commanded drive current are flowing at entry; the
+            // settle window exists to decay them and must run in full.
+            self.ds_settle_must_complete = true;
             self.ds_cycles = 0;
             self.ds_elapsed = 0.0;
         }
@@ -690,12 +710,15 @@ impl SensorlessStartup {
         }
         // Let the bridge-enable transient AND the short current's own
         // exponential settle decay before averaging (see
-        // DEADSHORT_SETTLE_CYCLES). A current already at the abort cap
-        // means a genuinely energetic rotor — skip straight to the probe
-        // rather than sit shorted on a large current.
+        // DEADSHORT_SETTLE_CYCLES). On a COLD start a current already at
+        // the abort cap can only be back-EMF (the bridge was off) — skip
+        // straight to the probe rather than sit shorted on a large
+        // current. On the Hold give-up recycle the cap is met by the
+        // decaying DRIVE current, which proves nothing about the rotor:
+        // the settle must run in full (`ds_settle_must_complete`).
         if self.ds_settle > 0 {
             let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
-            if i_mag < DEADSHORT_MAX_CURRENT_A {
+            if i_mag < DEADSHORT_MAX_CURRENT_A || self.ds_settle_must_complete {
                 self.ds_settle -= 1;
                 return DeadshortResult::Probing;
             }
@@ -776,14 +799,15 @@ impl SensorlessStartup {
             return ConfirmResult::Probing;
         }
         // Drive-current decay into the short (τ = L/R); see
-        // CONFIRM_SETTLE_CYCLES. Same cap-skip as the cold-start probe.
+        // CONFIRM_SETTLE_CYCLES. NO over-cap skip here, ever: Confirm is
+        // always entered with amps of commanded drive current flowing, and
+        // treating that residual as rotor evidence is exactly the phantom
+        // handoff this probe exists to prevent (a start at iq ≥ the cap
+        // would otherwise "complete" the window on one drive-current
+        // sample and seed the observer ~π off the rotor).
         if self.ds_settle > 0 {
-            let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
-            if i_mag < DEADSHORT_MAX_CURRENT_A {
-                self.ds_settle -= 1;
-                return ConfirmResult::Probing;
-            }
-            self.ds_settle = 0;
+            self.ds_settle -= 1;
+            return ConfirmResult::Probing;
         }
         // Accumulate the settled short-circuit current over the window.
         if self.ds_cycles == 0 {
@@ -1326,6 +1350,88 @@ mod tests {
         let o = sm.tick(DT, 3.0, true, claim.velocity);
         assert!(o.handoff, "cooldown expiry must allow a retry");
         assert_eq!(sm.phase(), StartupPhase::Confirm);
+    }
+
+    /// Regression for the drive-current phantom: Confirm is entered with
+    /// commanded drive current still flowing, and the old over-cap settle
+    /// skip let ONE sample of that residual "complete" the probe window --
+    /// `short_current_estimate` then fabricated a fast rotor ~pi off the
+    /// real one and seeded the observer from it. The settle must run in
+    /// full no matter how large the entry current is.
+    #[test]
+    fn confirm_settle_survives_overcap_drive_current() {
+        let (r, l, lambda) = (0.1, 150e-6, 1.145e-3);
+        let claim = PhaseOutput {
+            angle: 1.0,
+            velocity: DEFAULT_HANDOFF_VEL,
+        };
+        let mut sm = ramp_to_hold();
+        sm.tick(DT, 3.0, true, claim.velocity);
+        assert_eq!(sm.phase(), StartupPhase::Confirm);
+        // Residual drive current far above DEADSHORT_MAX_CURRENT_A for the
+        // whole settle window: every cycle must still be Probing.
+        for _ in 0..CONFIRM_SETTLE_CYCLES {
+            assert_eq!(
+                sm.feed_confirm(10.0, 3.0, DT, r, l, lambda, claim),
+                ConfirmResult::Probing,
+                "over-cap drive current must not skip the confirm settle"
+            );
+        }
+        // By the time the window samples, the residual has decayed; a
+        // standing rotor honestly reads ~0 -> the claim is NOT confirmed.
+        let mut res = ConfirmResult::Probing;
+        for _ in 0..DEADSHORT_CYCLES {
+            assert_eq!(res, ConfirmResult::Probing);
+            res = sm.feed_confirm(0.0, 0.0, DT, r, l, lambda, claim);
+        }
+        assert!(matches!(res, ConfirmResult::Unconfirmed { .. }));
+        assert_eq!(sm.phase(), StartupPhase::Hold);
+    }
+
+    /// Same class on the Hold give-up recycle: the ramp/hold drive current
+    /// decays into the recycled deadshort, and the old skip turned it into
+    /// a `capped` probe with the catch floor waived -- a false Caught on a
+    /// slow rotor. The recycled probe must run its full settle too.
+    #[test]
+    fn recycled_deadshort_settle_survives_drive_current() {
+        let mut sm = ramp_to_hold();
+        run(&mut sm, HOLD_GIVEUP_S + 0.01, 3.0);
+        assert_eq!(sm.phase(), StartupPhase::Deadshort);
+        assert!(sm.take_recycled());
+        for _ in 0..DEADSHORT_SETTLE_CYCLES {
+            assert_eq!(
+                sm.feed_deadshort(10.0, 3.0, DT, 0.1, 150e-6, 1.145e-3),
+                DeadshortResult::Probing,
+                "recycle entry current must not skip the deadshort settle"
+            );
+            assert_eq!(sm.phase(), StartupPhase::Deadshort);
+        }
+        // Decayed residual + standing rotor: falls through to the ramp.
+        for _ in 0..DEADSHORT_CYCLES {
+            sm.feed_deadshort(0.0, 0.0, DT, 0.1, 150e-6, 1.145e-3);
+        }
+        assert_eq!(sm.phase(), StartupPhase::Ramp);
+    }
+
+    /// The COLD-start skip stays: with the bridge previously off, an
+    /// over-cap current can only be back-EMF, and sitting shorted on a
+    /// large current through a pointless settle would be the worse failure.
+    #[test]
+    fn cold_start_deadshort_keeps_the_overcap_settle_skip() {
+        let mut sm = SensorlessStartup::default();
+        sm.begin_cold_start(0.0, 1.0);
+        let mut calls: u32 = 0;
+        loop {
+            let res = sm.feed_deadshort(20.0, 0.0, DT, 0.1, 150e-6, 1.145e-3);
+            calls += 1;
+            if res != DeadshortResult::Probing || sm.phase() != StartupPhase::Deadshort {
+                break;
+            }
+            assert!(
+                calls <= u32::from(DEADSHORT_CYCLES) + 1,
+                "cold-start settle skip regressed"
+            );
+        }
     }
 
     #[test]
