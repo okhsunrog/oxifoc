@@ -39,34 +39,13 @@ Findings from the six-agent review, verified against source at the time.
 Fixed since: the bridge/remote block (the review's only critical, transport
 rework), the pre-bench safety block (hall velocity gate, actuation-advance
 clamp, inductance-pulse de-energise, probe settle enforcement, failsafe-latch
-preservation) and the MK5 power-up block (DRV config-fail Kill fault, nFAULT
+preservation), the MK5 power-up block (DRV config-fail Kill fault, nFAULT
 level check, IWDG vs 128 KB erase, per-board identity, hall-param
-pass-through, NTC decimation). Everything below is still open; line numbers
+pass-through, NTC decimation) and the config-hygiene pass (loud
+boundary validation for every group, detect request validation,
+derating zero-width-ramp step-cut, g431 phase-source mirror).
+Everything below is still open; line numbers
 have drifted — anchors are function/area names.
-
-### Config hygiene (one pass)
-
-- [ ] **PiGains writes are never validated**: NaN/0/negative kp
-  persists with `Ok`, live-apply silently drops it via `is_sane`
-  (masking the bad write), next boot applies it verbatim → NaN vd/vq
-  and `is_overcurrent(NaN, NaN)` never trips. Validate at the config
-  boundary like CurrentLimits.
-- [ ] **`speed_start_frac == 1.0` silently disables the derating speed
-  ceiling** (zero-width ramp hits the "malformed ramp never derates"
-  branch and returns 1.0 for every speed; `is_sane` accepts `<= 1.0`).
-  Require `< 1.0` or fall back to a step cut.
-- [ ] Invalid `MotorParams` write returns `Ok` but is silently ignored
-  (no `else → Invalid` arm); inconsistent with the loud-Invalid policy.
-- [ ] `VoltageLimits` and `PwmConfig` config groups are write-accepted,
-  persisted and consumed by nothing (protection uses compile-time
-  BoardConfig) — silent no-op config in the protection domain: wire
-  them up or reject the writes.
-- [ ] `DetectRequest` payloads lack boundary validation: `pole_pairs=0`
-  → inf spin_rpm; NaN `max_power_loss_w` → `sqrtf(NaN).min(max)`
-  selects the platform's maximum test current.
-- [ ] g431 sensorless boot: `SlowTelemetry::phase_source` mirror stays
-  `Hall` until the first host source switch (boot calls
-  `phase_manager.set_source` without mirroring into STATE; f405 does).
 
 ### Host
 
