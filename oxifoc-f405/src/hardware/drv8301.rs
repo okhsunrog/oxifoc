@@ -310,8 +310,16 @@ pub async fn nfault_monitor_task(mut nfault: NfaultInput, mut bus: Drv8301Spi) {
     defmt::info!("DRV8301 nFAULT monitor started");
 
     loop {
-        // Wait for falling edge (nFAULT asserted - fault condition)
-        nfault.wait_for_falling_edge().await;
+        // Level check before the edge wait: a fault asserted before this
+        // task's first poll (e.g. GVDD_UV during a brownout boot, or one
+        // raised between the config-time one-shot check and now) has no
+        // falling edge left to deliver — the DRV has already shut its
+        // outputs down, and waiting would leave the firmware accepting
+        // drive commands with zero faults while the motor freewheels.
+        if nfault.is_high() {
+            // Wait for falling edge (nFAULT asserted - fault condition)
+            nfault.wait_for_falling_edge().await;
+        }
 
         // Read detailed fault status via SPI. The task owns the bus, so the
         // blocking transfer runs with interrupts enabled — the FOC ISR keeps
