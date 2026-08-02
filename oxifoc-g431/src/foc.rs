@@ -54,28 +54,43 @@ pub static FET_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
 
 // ========== ISR cost instrumentation (DWT cycle counter) ==========
+//
+// The whole diagnostics block lives in `.ccmdata` (CPU-only CCM, zeroed by
+// main's first block before the ISR or any reader runs): all zero-init
+// atomics, never DMA'd — and the 22K SRAM region rides within single-digit
+// bytes of full on the bench build (rtt+detection+offset-diagnostics), so
+// every relocatable word counts.
 
 /// Sum of ADC1_2 ISR durations in CPU cycles since last stats swap.
 /// u32 headroom: 20 kHz × ~4000 cycles = 80 M/s, swapped at 1 Hz.
+#[unsafe(link_section = ".ccmdata")]
 pub static ISR_CYC_SUM: AtomicU32 = AtomicU32::new(0);
 
 /// Per-section DWT cycle sums for the ADC1_2 ISR (reset each 1 Hz report;
 /// avg = sum / ISR_CYC_N). Sections in ISR order — the boundaries are the
 /// timestamps in the handler, so each atomic costs one RMW (~6 cycles);
 /// total instrumentation overhead ~40 cycles, charged to `tail`.
+#[unsafe(link_section = ".ccmdata")]
 pub static ISR_PROF_ADC1: AtomicU32 = AtomicU32::new(0);
+#[unsafe(link_section = ".ccmdata")]
 pub static ISR_PROF_ADC2: AtomicU32 = AtomicU32::new(0);
+#[unsafe(link_section = ".ccmdata")]
 pub static ISR_PROF_SNAP: AtomicU32 = AtomicU32::new(0);
+#[unsafe(link_section = ".ccmdata")]
 pub static ISR_PROF_FOC: AtomicU32 = AtomicU32::new(0);
+#[unsafe(link_section = ".ccmdata")]
 pub static ISR_PROF_PUB: AtomicU32 = AtomicU32::new(0);
 /// Max single ADC1_2 ISR duration in CPU cycles since last stats swap.
+#[unsafe(link_section = ".ccmdata")]
 pub static ISR_CYC_MAX: AtomicU32 = AtomicU32::new(0);
 /// ISR executions that exceeded [`ISR_BUDGET_CYCLES`] (per stats window).
+#[unsafe(link_section = ".ccmdata")]
 pub static ISR_CYC_OVER: AtomicU32 = AtomicU32::new(0);
 /// Per-ISR cycle budget: one full PWM period of core cycles
 /// (170 MHz / 20 kHz = 8500).
 const ISR_BUDGET_CYCLES: u32 = CPU_HZ / PWM_CONFIG.pwm_freq_hz;
 /// Number of ADC1_2 ISR executions since last stats swap.
+#[unsafe(link_section = ".ccmdata")]
 pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
 
 // ========== ADC Handles ==========
@@ -136,7 +151,7 @@ pub async fn init(
         } else {
             PhaseSource::Manual
         };
-        if phase_manager.set_source(boot_source).is_err() {
+        let applied = if phase_manager.set_source(boot_source).is_err() {
             // Observer can be rejected on a PARTIAL bake: `is_some()` above is
             // weaker than the observer's own gate (`is_valid() && flux > 0`),
             // e.g. R/L present but the flux step never ran. Fall back to
@@ -147,7 +162,18 @@ pub async fn init(
                 "sensorless boot source rejected (partial motor params?); falling back to Manual"
             );
             let _ = phase_manager.set_source(PhaseSource::Manual);
-        }
+            PhaseSource::Manual
+        } else {
+            boot_source
+        };
+        // Mirror into shared state: the runtime only syncs phase_source on
+        // host-commanded changes (DriverCommand::SetPhaseSource), so without
+        // this the status endpoint reports the struct default (Hall) until
+        // the first source switch — on the exact read-back channel the ICD
+        // documents as authoritative. (Same pattern as the f405 boot.)
+        critical_section::with(|cs| {
+            STATE.borrow(cs).borrow_mut().phase_source = applied;
+        });
     }
 
     // Physics acceleration prior for the observer PLL (ZD2808 interim

@@ -22,6 +22,12 @@ detection = ["oxifoc-core/detection"]
 # Optional bench-only current-offset comparison. Boot always uses the safe
 # VESC-normal per-phase routine; this adds host-triggered alternative methods.
 offset-diagnostics = ["oxifoc-core/offset-diagnostics"]
+# Per-section ISR cycle breakdown (core's isr_prof marks in the hot path).
+# Bench profile only since 2026-08-02: the default (uart) profile ran out of
+# flash — the marks cost ~650 B of DWT reads + atomics in the opt2 hot path.
+# Without it the 1 Hz isr/s line keeps the g431-local TOTALS (sum/max/over);
+# only the per-section columns read zero.
+isr-profiling = ["oxifoc-core/isr-profiling"]
 # HFI inductance/saliency detection (rotating injection + FFT). Off by default
 # on this non-salient drone ESC; enable for HFI bench work.
 hfi-detect = ["oxifoc-core/hfi-detect"]
@@ -57,7 +63,7 @@ mutex = { version = "1.0.2", features = ["impl-unsafe-cortex-m-single-core"] }
 
 # Local dependencies
 # runtime feature includes icd (endpoints) and types (shared structs)
-oxifoc-core = { path = "../oxifoc-core", default-features = false, features = ["algorithms", "runtime", "defmt", "storage", "embassy", "cordic", "delivery", "isr-profiling", "isr-speed"] }
+oxifoc-core = { path = "../oxifoc-core", default-features = false, features = ["algorithms", "runtime", "defmt", "storage", "embassy", "cordic", "delivery", "isr-speed"] }
 # Base ergot features: embedded-io-async + defmt to RTT (both modes need this)
 # transport-uart adds: defmt-sink-network (for network forwarding)
 # transport-rtt adds: rtt (for RTT transport wrappers)
