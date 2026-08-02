@@ -209,6 +209,46 @@ pub async fn fault_server<NS, F, const N: usize>(
 /// current-limit writes are clamped to it and applied to the live driver
 /// via [`DriverCommand::SetCurrentLimits`] on the command channel.
 #[cfg(feature = "storage")]
+
+/// Per-group boundary validation for config writes: every malformed write
+/// fails loudly with `Invalid` instead of persisting garbage or a silent
+/// no-op. (A sync helper, not match guards in the server: the float checks
+/// stay out of the task's future, which the g431 flash and RAM budgets
+/// both ride.)
+///
+/// - CurrentLimits: an incoherent limits pair must fail loudly — the
+///   builder would clamp it silently, and the user has to learn the
+///   headroom rule, not wonder why full throttle is weak
+///   (notes/fault-overhaul.md §4).
+/// - Derating: a malformed ramp would silently fall back to the default
+///   config in the runtime decoder.
+/// - DcOffsets: raw ADC counts — finite and within the converter range.
+/// - PiGains: NaN/zero/negative gains used to persist with `Ok`, get
+///   silently dropped by the live-apply sanity gate (masking the bad write
+///   for the session), then apply VERBATIM at the next boot — NaN vd/vq
+///   with the dq overcurrent check comparing false.
+/// - MotorParams: an invalid write used to return `Ok` while both
+///   live-apply and boot ignored it.
+/// - VoltageLimits/PwmConfig: nothing consumes these groups (the UV/OV
+///   thresholds and the PWM frequency are compile-time BoardConfig) —
+///   accepting the write would persist a silent no-op in exactly the
+///   protection domain. Rejected until a consumer exists; reads of
+///   previously-stored values still work.
+fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
+    use crate::types::ConfigWrite;
+    let counts_ok = |v: f32| (0.0..=f32::from(u16::MAX)).contains(&v);
+    match w {
+        ConfigWrite::CurrentLimits(v) => v.is_coherent(),
+        ConfigWrite::Derating(v) => DeratingConfig::from(v).is_sane(),
+        ConfigWrite::DcOffsets(v) => {
+            counts_ok(v.phase_a) && counts_ok(v.phase_b) && counts_ok(v.phase_c)
+        }
+        ConfigWrite::PiGains(v) => v.is_sane(),
+        ConfigWrite::MotorParams(v) => v.is_valid(),
+        ConfigWrite::VoltageLimits(_) | ConfigWrite::PwmConfig(_) => false,
+        _ => true,
+    }
+}
 pub async fn config_server<NS, const N: usize>(
     endpoints: Endpoints<NS>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
@@ -291,35 +331,12 @@ pub async fn config_server<NS, const N: usize>(
                                 },
                             }
                         }
-                        // Boundary validation, before any persistence:
-                        // an incoherent limits pair must fail loudly (the
-                        // builder would clamp it silently — the user has
-                        // to learn the headroom rule, not wonder why full
-                        // throttle is weak). See notes/fault-overhaul.md §4.
-                        ConfigRequest::Write(ConfigWrite::CurrentLimits(ref v))
-                            if !v.is_coherent() =>
-                        {
-                            ConfigResponse::Invalid
-                        }
-                        // Malformed derating ramps fail loudly too — the
-                        // runtime decoder would silently fall back to the
-                        // default config otherwise.
-                        ConfigRequest::Write(ConfigWrite::Derating(ref v))
-                            if !DeratingConfig::from(v).is_sane() =>
-                        {
-                            ConfigResponse::Invalid
-                        }
-                        ConfigRequest::Write(ConfigWrite::DcOffsets(ref v))
-                            if !v.phase_a.is_finite()
-                                || !v.phase_b.is_finite()
-                                || !v.phase_c.is_finite()
-                                || v.phase_a < 0.0
-                                || v.phase_b < 0.0
-                                || v.phase_c < 0.0
-                                || v.phase_a > f32::from(u16::MAX)
-                                || v.phase_b > f32::from(u16::MAX)
-                                || v.phase_c > f32::from(u16::MAX) =>
-                        {
+                        // Boundary validation, before any persistence —
+                        // the per-group rules live in `write_is_acceptable`
+                        // (a sync helper: it keeps the float checks out of
+                        // this task's future, which both the g431 flash and
+                        // RAM budgets ride).
+                        ConfigRequest::Write(ref w) if !write_is_acceptable(w) => {
                             ConfigResponse::Invalid
                         }
                         ConfigRequest::Write(_) if maintenance_busy => ConfigResponse::Busy,
@@ -481,7 +498,9 @@ pub async fn config_server<NS, const N: usize>(
                                 // (pulse Ld/Lq are the decoupling values; the
                                 // loop runs on the HF inductance — see
                                 // FocController::from_runtime_config).
-                                ConfigWrite::MotorParams(v) if v.is_valid() => {
+                                // Validity is guaranteed by the boundary
+                                // guard above — no silent-skip arm left.
+                                ConfigWrite::MotorParams(v) => {
                                     let stored_gains = critical_section::with(|cs| {
                                         runtime_config.borrow(cs).borrow().pi_gains.clone()
                                     });

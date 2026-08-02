@@ -331,6 +331,17 @@ pub struct PiGainsConfig {
     pub bandwidth_rad_s: f32,
 }
 
+impl PiGainsConfig {
+    /// Gate for every consumer (config boundary, boot): the gains multiply
+    /// the current error straight into the output voltage, and the dq
+    /// software overcurrent check on the resulting NaN currents compares
+    /// false — a NaN/zero kp latches a dead or unstable loop that no
+    /// downstream protection catches.
+    pub fn is_sane(&self) -> bool {
+        self.kp.is_finite() && self.ki.is_finite() && self.kp > 0.0 && self.ki >= 0.0
+    }
+}
+
 impl PostcardValue<'_> for PiGainsConfig {}
 
 impl Default for PiGainsConfig {
@@ -780,5 +791,19 @@ mod tests {
             f(&mut bad);
             assert!(!bad.is_coherent(), "must reject {bad:?}");
         }
+    }
+    #[test]
+    fn pi_gains_sanity_gate() {
+        let ok = PiGainsConfig {
+            kp: 0.4,
+            ki: 40.0,
+            bandwidth_rad_s: 1000.0,
+        };
+        assert!(ok.is_sane());
+        assert!(!PiGainsConfig { kp: 0.0, ..ok }.is_sane());
+        assert!(!PiGainsConfig { kp: -1.0, ..ok }.is_sane());
+        assert!(!PiGainsConfig { ki: -1.0, ..ok }.is_sane());
+        assert!(!PiGainsConfig { kp: f32::NAN, ..ok }.is_sane());
+        assert!(!PiGainsConfig { ki: f32::NAN, ..ok }.is_sane());
     }
 }

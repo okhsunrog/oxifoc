@@ -260,7 +260,12 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
                 mp.pole_pairs
             );
             let mut foc = Self::from_motor_params(mp.resistance_ohm, l_avg, vbus);
-            if let Some(ref pg) = config.pi_gains {
+            // is_sane: stored bits are arbitrary (older firmware accepted
+            // unvalidated writes) — insane gains fall back to the
+            // params-derived tuning instead of a NaN current loop.
+            if let Some(ref pg) = config.pi_gains
+                && pg.is_sane()
+            {
                 foc.id_pi.set_gains(pg.kp, pg.ki);
                 foc.iq_pi.set_gains(pg.kp, pg.ki);
                 #[cfg(feature = "defmt")]
