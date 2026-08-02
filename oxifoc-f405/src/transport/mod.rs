@@ -236,7 +236,14 @@ pub fn init_usb(
     let mut usb_dev_cfg = embassy_usb::Config::new(0x16c0, 0x27DD);
     usb_dev_cfg.manufacturer = Some("oxifoc");
     usb_dev_cfg.product = Some("oxifoc-f405");
-    usb_dev_cfg.serial_number = Some("simple-focer2");
+    #[cfg(feature = "board-cf2")]
+    {
+        usb_dev_cfg.serial_number = Some("simple-focer2");
+    }
+    #[cfg(feature = "board-vesc6-mk5")]
+    {
+        usb_dev_cfg.serial_number = Some("vesc6-mk5");
+    }
 
     let (usb_dev, ep_in, ep_out) = USB_STORAGE.init_ergot(driver, usb_dev_cfg);
 

@@ -183,7 +183,12 @@ pub async fn measure_flux_linkage_ez(params: &FluxLinkageParams) -> Result<f32, 
     measure_flux_linkage(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
 }
 
-/// Calibrate Hall sensors using platform statics.
-pub async fn calibrate_hall_default_ez() -> Result<HallCalibrationResult, DetectionError> {
-    calibrate_hall_default(&STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
+/// Calibrate Hall sensors using platform statics with the host-supplied
+/// parameters (current, timing) — the g431 backend passes them through the
+/// same way; silently substituting defaults made a tuned `detect hall`
+/// request calibrate at the wrong current.
+pub async fn calibrate_hall_ez(
+    params: HallCalibrationParams,
+) -> Result<HallCalibrationResult, DetectionError> {
+    calibrate_hall(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
 }

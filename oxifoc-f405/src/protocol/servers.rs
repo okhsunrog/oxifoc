@@ -22,8 +22,7 @@ use oxifoc_core::timer::EmbassyTimer;
 
 use crate::RUNTIME_CONFIG;
 use crate::calibration::{
-    calibrate_hall_default_ez, measure_flux_linkage_ez, measure_inductance_ez,
-    measure_resistance_ez,
+    calibrate_hall_ez, measure_flux_linkage_ez, measure_inductance_ez, measure_resistance_ez,
 };
 use crate::config::{BOARD, MAX_PACKET_SIZE, PWM_CONFIG, UART_BAUD, USB_OUT_QUEUE_SIZE};
 use crate::control::foc::VBUS_MV;
@@ -128,7 +127,10 @@ pub async fn protocol_servers(stack: &'static Stack) {
     let mut sw: String<32> = String::new();
     let mut mcu: String<32> = String::new();
     let mut uuid: String<32> = String::new();
+    #[cfg(feature = "board-cf2")]
     let _ = hw.push_str("Simple FOCer 2 (F405)");
+    #[cfg(feature = "board-vesc6-mk5")]
+    let _ = hw.push_str("VESC 6 MK5 (F405)");
     let _ = sw.push_str(concat!("oxifoc-", env!("CARGO_PKG_VERSION")));
     let _ = mcu.push_str("STM32F405RG");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
@@ -282,9 +284,9 @@ impl DetectionBackend for F405Backend {
     }
     fn calibrate_hall(
         &mut self,
-        _params: HallCalibrationParams,
+        params: HallCalibrationParams,
     ) -> impl Future<Output = Result<HallCalibrationResult, DetectionError>> {
-        calibrate_hall_default_ez()
+        calibrate_hall_ez(params)
     }
     fn measure_current_offsets(
         &mut self,
