@@ -37,35 +37,12 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
 
 Findings from the six-agent review, verified against source at the time.
 Fixed since: the bridge/remote block (the review's only critical, transport
-rework) and the pre-bench safety block (hall velocity gate, actuation-advance
+rework), the pre-bench safety block (hall velocity gate, actuation-advance
 clamp, inductance-pulse de-energise, probe settle enforcement, failsafe-latch
-preservation). Everything below is still open; line numbers have drifted —
-anchors are function/area names.
-
-### Before MK5 power-up
-
-- [ ] **F405 boots drivable after DRV8301 configuration failure**
-  (`main.rs` DRV init): a config `Err` is only logged, EN_GATE is
-  already high, no fault raised → DRV stays at power-on gain 10 while
-  `BOARD.calib.amp_gain = 20`: all currents read 2× low, the 70 A
-  software OC trip is effectively 140 A, VDS-OCP never programmed —
-  and the host can command drive. One flaky bit-bang wire on MK5 is
-  exactly this path. Raise a Kill-class fault / block non-Stopped.
-- [ ] F405 nFAULT monitor is edge-triggered only — a fault already
-  asserted when the task starts (e.g. GVDD_UV at boot) is never
-  registered; check the level before the first `wait_for_falling_edge`.
-- [ ] **F405 IWDG (1 s) does not cover the 128 KB storage-sector erase
-  (up to 2 s)**: sectors 10–11 are 128 KB, the accepted margin in
-  decisions.md was computed for 16 KB sectors — the dog bites mid
-  config-save at spec-typical erase times. Raise the timeout or feed
-  around the erase.
-- [ ] MK5 builds identify as "Simple FOCer 2 (F405)" / usb serial
-  `simple-focer2` — cfg-gate the identity per board.
-- [ ] F405 detection backend ignores host-supplied hall-calibration
-  params (`calibrate_hall(_params)` → `calibrate_hall_default_ez()`);
-  g431 passes them through.
-- [ ] F405 FOC ISR runs two libm-logf NTC conversions every cycle
-  (~5–7 % of budget); port g431's 1/128 decimation.
+preservation) and the MK5 power-up block (DRV config-fail Kill fault, nFAULT
+level check, IWDG vs 128 KB erase, per-board identity, hall-param
+pass-through, NTC decimation). Everything below is still open; line numbers
+have drifted — anchors are function/area names.
 
 ### Config hygiene (one pass)
 
