@@ -12,9 +12,14 @@
 use embassy_stm32::{Peri, pac, peripherals, wdg::IndependentWatchdog};
 
 /// Watchdog timeout. Must outlive the longest CPU stall with no ISR
-/// running: an F405 16 KB flash sector erase stalls the core for up to
-/// ~500 ms (code executes from the same flash).
-const IWDG_TIMEOUT_US: u32 = 1_000_000;
+/// running: the storage region sits in sectors 10-11, which are 128 KB
+/// sectors — a blocking erase stalls the core (code executes from the
+/// same flash) for 1 s TYPICAL, up to 2 s at temperature/voltage corners
+/// (RM0090/F405 datasheet). The old 1 s value was derived from the 16 KB
+/// sector figure and reset the chip mid config-save at spec-typical
+/// erase times. Config writes are Busy-gated, so the motor is stopped
+/// for the whole stall either way.
+const IWDG_TIMEOUT_US: u32 = 3_000_000;
 
 /// Drop all gate outputs at the register level. No ownership of TIM1 or
 /// the GPIO needed — callable from panic/fault context.

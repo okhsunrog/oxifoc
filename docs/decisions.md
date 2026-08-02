@@ -57,10 +57,13 @@ their section.
   production is back-EMF-vector (magnitude), spin-down only when coast
   telemetry exists. The method ladders (`measure_*_auto`) are shared by
   full and step-by-step detection.
-- **2026-06-11 — F405: the blocking 128 KB sector erase (~0.5 s) is
-  accepted as a known residual.** The TOCTOU is closed by the Busy gate
-  (the motor is guaranteed stopped for the duration of the write), the
-  IWDG margin is the backstop. Not fixing until it hurts.
+- **2026-06-11 — F405: the blocking 128 KB sector erase is accepted as a
+  known residual.** The TOCTOU is closed by the Busy gate (the motor is
+  guaranteed stopped for the duration of the write), the IWDG margin is
+  the backstop. Not fixing until it hurts. *Correction 2026-08-02: the
+  "~0.5 s" figure was the 16 KB-sector number — a 128 KB erase is 1 s
+  typical / 2 s max, so the 1 s IWDG had NO margin and reset the chip at
+  spec-typical erase times; the timeout is now 3 s.*
 - **2026-06-12 — hall calibration convention: the table stores
   CENTROIDS** (what `HallCalibrator`'s sin/cos averaging measures);
   interpolation anchors on the BOUNDARY = the midpoint of adjacent

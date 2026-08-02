@@ -162,8 +162,9 @@ for inspection.
   write.
 - Timeout must outlive the longest CPU stall with no ISR running — an
   internal-flash erase stalls the chip since code executes from the same
-  flash: **100 ms on G431** (page erase ~25 ms), **1 s on F405** (16 KB
-  sector erase up to ~500 ms). Config writes are additionally blocked while
+  flash: **100 ms on G431** (page erase ~25 ms), **3 s on F405** (the
+  storage region uses the 128 KB sectors 10-11: erase is 1 s typical, up
+  to 2 s at corners). Config writes are additionally blocked while
   the motor runs (Busy gate + `FLASH_OP_PENDING` TOCTOU guard), so a stall
   with the motor energized cannot happen by design; the IWDG margin is the
   backstop.
