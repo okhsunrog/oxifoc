@@ -339,6 +339,13 @@ fn ADC() {
 
     let isr_t0 = cortex_m::peripheral::DWT::cycle_count();
 
+    // NTC Beta-model conversion runs libm::logf + several float divides
+    // (~200 cycles per sensor, two sensors here = ~5-7% of the cycle
+    // budget) — decimate to every 128th cycle (156 Hz); the thermal time
+    // constants are seconds, and consumers read the atomics. Same scheme
+    // as the g431 ISR.
+    let convert_temp = *SEQ & 127 == 0;
+
     // Read ADC1 injected data (phase A current + board temp)
     let (ia_raw, board_temp_raw) = ADC1_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
@@ -351,9 +358,13 @@ fn ADC() {
     IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
     // Convert board temperature raw ADC to 0.1°C units
-    let board_temp_c_x10 =
-        NTC_BOARD.temp_c_x10_from_adc(board_temp_raw, BOARD.calib.adc_max_counts);
-    BOARD_TEMP_C_X10.store(board_temp_c_x10, Ordering::Relaxed);
+    let board_temp_c_x10 = if convert_temp {
+        let t = NTC_BOARD.temp_c_x10_from_adc(board_temp_raw, BOARD.calib.adc_max_counts);
+        BOARD_TEMP_C_X10.store(t, Ordering::Relaxed);
+        t
+    } else {
+        BOARD_TEMP_C_X10.load(Ordering::Relaxed)
+    };
 
     // Read ADC2 injected data (phase B current + motor temp)
     let (ib_raw, motor_temp_raw) = ADC2_INJECTED.lock(|cell| {
@@ -368,9 +379,13 @@ fn ADC() {
 
     MOTOR_TEMP_RAW.store(motor_temp_raw, Ordering::Relaxed);
     // Convert motor temperature raw ADC to 0.1°C units
-    let motor_temp_c_x10 =
-        NTC_MOTOR.temp_c_x10_from_adc(motor_temp_raw, BOARD.calib.adc_max_counts);
-    MOTOR_TEMP_C_X10.store(motor_temp_c_x10, Ordering::Relaxed);
+    let motor_temp_c_x10 = if convert_temp {
+        let t = NTC_MOTOR.temp_c_x10_from_adc(motor_temp_raw, BOARD.calib.adc_max_counts);
+        MOTOR_TEMP_C_X10.store(t, Ordering::Relaxed);
+        t
+    } else {
+        MOTOR_TEMP_C_X10.load(Ordering::Relaxed)
+    };
 
     // Read ADC3 injected data (phase C current + VBUS)
     let (ic_raw, vbus_raw) = ADC3_INJECTED.lock(|cell| {
