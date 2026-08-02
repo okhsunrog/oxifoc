@@ -258,6 +258,11 @@ fn upstream_discovered(stack: &'static transport::Stack) -> bool {
 /// the liveness window from marking a quiet-but-healthy line Inactive. After
 /// a genuine quiet period the interface IS Inactive and TX is gated off —
 /// re-arm link-local addressing first so the ping can leave at all.
+#[allow(
+    clippy::large_stack_frames,
+    reason = "the ergot request future dominates; this future lives in main's \
+    arena-allocated join, not on a call stack"
+)]
 async fn upstream_link_task(stack: &'static transport::Stack) {
     let mut seq: u32 = 0;
     loop {
@@ -298,6 +303,11 @@ async fn upstream_link_task(stack: &'static transport::Stack) {
 /// Lease a routable net_id for the BLE segment from the root, waiting for
 /// upstream discovery first. Bounded: a central that connects while the
 /// upstream is dead gets dropped rather than parked forever.
+#[allow(
+    clippy::large_stack_frames,
+    reason = "the ergot request future dominates; this future lives in main's \
+    arena-allocated join, not on a call stack"
+)]
 async fn acquire_ble_lease(stack: &'static transport::Stack, ble_ident: u8) -> Option<SeedLease> {
     for _ in 0..10 {
         if upstream_discovered(stack) {
@@ -487,6 +497,11 @@ fn lease_refresh_deadline(lease: &SeedLease) -> Instant {
 /// (expired while the link was down, root rebooted), fall back to a fresh
 /// assignment, which also re-points the slot's net_id. Returns the next
 /// refresh deadline: a full window on success, a short retry on failure.
+#[allow(
+    clippy::large_stack_frames,
+    reason = "the ergot request future dominates; this future lives in main's \
+    arena-allocated join, not on a call stack"
+)]
 async fn maintain_ble_lease(
     stack: &'static transport::Stack,
     ble_ident: u8,
