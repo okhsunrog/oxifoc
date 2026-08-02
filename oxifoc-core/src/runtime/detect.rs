@@ -167,6 +167,15 @@ pub async fn detect_server<NS, B>(
     }
 }
 
+/// Positive-and-finite gate for detection request payloads. Wire input is
+/// arbitrary bits and the safe-current formulas are NaN-transparent —
+/// `f32::min` discards a NaN operand, so `sqrtf(NaN).min(max_current_a)`
+/// SELECTS the platform's maximum test current instead of failing.
+#[inline]
+fn pos(v: f32) -> bool {
+    v.is_finite() && v > 0.0
+}
+
 /// Run a single detection step: compute safe parameters, call the backend, map
 /// the result. Kept as one concrete (non-closure) `async fn` so the enclosing
 /// server future stays `Send`.
@@ -179,6 +188,9 @@ async fn run_step<B: DetectionBackend>(
 ) -> DetectResponse {
     match req {
         DetectRequest::MeasureResistance { max_power_loss_w } => {
+            if !pos(max_power_loss_w) {
+                return DetectResponse::Error(DetectError::OutOfRange);
+            }
             // Probe at low current to find a safe test current, then measure.
             let probe_current = (max_current_a / 50.0).max(0.5);
             let probe = ResistanceParams {
@@ -218,6 +230,9 @@ async fn run_step<B: DetectionBackend>(
             max_power_loss_w,
             resistance_ohm: r,
         } => {
+            if !pos(max_power_loss_w) || !pos(r) {
+                return DetectResponse::Error(DetectError::OutOfRange);
+            }
             let safe_current = sqrtf(max_power_loss_w / r / 1.5)
                 .min(max_current_a)
                 .max(0.5);
@@ -249,6 +264,16 @@ async fn run_step<B: DetectionBackend>(
             pole_pairs,
             openloop_erpm,
         } => {
+            // pole_pairs = 0 would turn openloop_erpm into an infinite
+            // spin target via the erpm/pole_pairs division below.
+            if !pos(max_power_loss_w)
+                || !pos(r)
+                || !pos(inductance_h)
+                || pole_pairs == 0
+                || !pos(openloop_erpm)
+            {
+                return DetectResponse::Error(DetectError::OutOfRange);
+            }
             let safe_current = sqrtf(max_power_loss_w / r / 1.5)
                 .min(max_current_a)
                 .min((backend.vbus() * 0.577 * 0.85) / r.max(0.001))
@@ -289,6 +314,11 @@ async fn run_step<B: DetectionBackend>(
             max_power_loss_w,
             resistance_ohm,
         } => {
+            // Non-positive means "use the default sweep current" by design,
+            // but non-finite bits are still rejected.
+            if !max_power_loss_w.is_finite() || !resistance_ohm.is_finite() {
+                return DetectResponse::Error(DetectError::OutOfRange);
+            }
             // Sweep current from the power class, same formula as the other
             // steps (√(P/R/1.5)), capped by the platform ceiling. Falls back
             // to the conservative default when R is unknown.
@@ -371,5 +401,84 @@ fn map_err(e: DetectionError) -> DetectError {
         DetectionError::LowConfidence => DetectError::LowConfidence,
         DetectionError::MissingPrerequisite => DetectError::MissingPrerequisite,
         _ => DetectError::HardwareFault,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request_is_sane(req: &DetectRequest) -> bool {
+        // Mirror of the per-arm guards in `run_step`, kept in one place so
+        // the boundary rules stay unit-testable without an async backend.
+        match *req {
+            DetectRequest::MeasureResistance { max_power_loss_w } => pos(max_power_loss_w),
+            DetectRequest::MeasureInductance {
+                max_power_loss_w,
+                resistance_ohm,
+            } => pos(max_power_loss_w) && pos(resistance_ohm),
+            DetectRequest::MeasureFlux {
+                max_power_loss_w,
+                resistance_ohm,
+                inductance_h,
+                pole_pairs,
+                openloop_erpm,
+            } => {
+                pos(max_power_loss_w)
+                    && pos(resistance_ohm)
+                    && pos(inductance_h)
+                    && pole_pairs >= 1
+                    && pos(openloop_erpm)
+            }
+            DetectRequest::CalibrateHall {
+                max_power_loss_w,
+                resistance_ohm,
+            } => max_power_loss_w.is_finite() && resistance_ohm.is_finite(),
+            DetectRequest::MeasureCurrentOffsets { .. } => true,
+        }
+    }
+
+    #[test]
+    fn detect_requests_reject_nan_and_degenerate_payloads() {
+        // NaN power: sqrtf(NaN).min(max) would SELECT the platform maximum.
+        assert!(!request_is_sane(&DetectRequest::MeasureResistance {
+            max_power_loss_w: f32::NAN,
+        }));
+        assert!(!request_is_sane(&DetectRequest::MeasureResistance {
+            max_power_loss_w: 0.0,
+        }));
+        assert!(request_is_sane(&DetectRequest::MeasureResistance {
+            max_power_loss_w: 25.0,
+        }));
+        // Zero resistance divides the bus-current clamp.
+        assert!(!request_is_sane(&DetectRequest::MeasureInductance {
+            max_power_loss_w: 25.0,
+            resistance_ohm: 0.0,
+        }));
+        // pole_pairs = 0 turns openloop_erpm into an infinite spin target.
+        assert!(!request_is_sane(&DetectRequest::MeasureFlux {
+            max_power_loss_w: 25.0,
+            resistance_ohm: 0.03,
+            inductance_h: 10e-6,
+            pole_pairs: 0,
+            openloop_erpm: 3000.0,
+        }));
+        assert!(request_is_sane(&DetectRequest::MeasureFlux {
+            max_power_loss_w: 25.0,
+            resistance_ohm: 0.03,
+            inductance_h: 10e-6,
+            pole_pairs: 7,
+            openloop_erpm: 3000.0,
+        }));
+        // CalibrateHall: non-positive means "use defaults" by design, but
+        // non-finite bits are still rejected.
+        assert!(request_is_sane(&DetectRequest::CalibrateHall {
+            max_power_loss_w: 0.0,
+            resistance_ohm: 0.0,
+        }));
+        assert!(!request_is_sane(&DetectRequest::CalibrateHall {
+            max_power_loss_w: f32::NAN,
+            resistance_ohm: 0.0,
+        }));
     }
 }
