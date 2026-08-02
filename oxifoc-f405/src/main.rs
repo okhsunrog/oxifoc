@@ -161,11 +161,22 @@ async fn main(spawner: Spawner) {
 
     let (drv_spi, drv_result) = hardware::drv8301::configure_drv8301(drv_config);
     match drv_result {
-        Ok(()) => defmt::info!("DRV8301 ready"),
-        Err(_e) => defmt::error!("DRV8301 configuration failed"),
+        Ok(()) => {
+            defmt::info!("DRV8301 ready");
+            hardware::drv8301::enable_gate_driver();
+        }
+        Err(_e) => {
+            // An unconfigured DRV runs on its power-on defaults: shunt gain
+            // 10 where the board calib assumes 20 (every current reads 2x
+            // low, the software OC trip is effectively doubled) and no
+            // VDS-OCP programmed. On the MK5's bit-bang SPI one flaky wire
+            // lands exactly here. Kill-class fault + gate driver held off:
+            // even after a fault clear the bridge cannot switch.
+            defmt::error!("DRV8301 configuration failed: DriverFault raised, gate driver disabled");
+            hardware::drv8301::disable_gate_driver();
+            FAULT_REGISTRY.set(fault::F405Fault::DrvConfigFailed);
+        }
     }
-
-    hardware::drv8301::enable_gate_driver();
     spawner.spawn(defmt::unwrap!(hardware::drv8301::nfault_monitor_task(
         nfault, drv_spi
     )));

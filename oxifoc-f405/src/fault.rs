@@ -23,6 +23,11 @@ pub enum F405Fault {
     OverTemp,
     /// DRV8301 gate driver fault with detailed status
     DrvFault(DrvFaultStatus),
+    /// DRV8301 SPI configuration failed at boot: the chip is running on its
+    /// power-on defaults (shunt gain 10 instead of the calibrated 20, no
+    /// VDS-OCP programmed), so every current reading and the software OC
+    /// trip would be wrong. Kill class; the gate driver is held disabled.
+    DrvConfigFailed,
     /// Hall sensor error (warning class: the ride continues on the
     /// fallback chain; the payload names the degradation, e.g. which wire)
     HallError(HallFaultKind),
@@ -40,6 +45,7 @@ impl PlatformFault for F405Fault {
             Self::UnderVoltage => FaultCategory::UnderVoltage,
             Self::OverTemp => FaultCategory::OverTemp,
             Self::DrvFault(_) => FaultCategory::DriverFault,
+            Self::DrvConfigFailed => FaultCategory::DriverFault,
             Self::HallError(_) => FaultCategory::HallError,
             Self::CommTimeout => FaultCategory::CommTimeout,
             Self::Derating => FaultCategory::Derating,
@@ -84,6 +90,9 @@ impl PlatformFault for F405Fault {
                 if status.pvdd_uv {
                     let _ = s.push_str("PVDD_UV ");
                 }
+            }
+            Self::DrvConfigFailed => {
+                let _ = s.push_str("config SPI failed, gate driver disabled");
             }
             Self::HallError(kind) => {
                 return kind.details();
