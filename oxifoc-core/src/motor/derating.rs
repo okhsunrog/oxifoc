@@ -160,8 +160,12 @@ impl DeratingConfig {
             || (self.vbus_cut_end_v > 0.0 && self.vbus_cut_start_v > self.vbus_cut_end_v);
         let regen_ok =
             self.vbus_regen_start_v <= 0.0 || self.vbus_regen_end_v > self.vbus_regen_start_v;
+        // frac == 1.0 is a zero-width ramp: it used to hit ramp_down's
+        // malformed-ramp branch and return 1.0 for EVERY speed — "cut
+        // exactly at the ceiling" silently became "no ceiling at all", on
+        // the only speed bound torque mode has on a free rotor.
         let speed_ok = self.max_speed_erad_s <= 0.0
-            || (self.speed_start_frac > 0.0 && self.speed_start_frac <= 1.0);
+            || (self.speed_start_frac > 0.0 && self.speed_start_frac < 1.0);
         (0.0..=1.0).contains(&self.accel_dec)
             && fet_ok
             && motor_ok
@@ -254,9 +258,14 @@ impl From<&DeratingConfigStored> for DeratingConfig {
 }
 
 /// 1.0 at/below `start`, 0.0 at/above `end`, linear between.
+///
+/// A zero/negative-width ramp (`end <= start` — stored by older firmware
+/// that accepted `speed_start_frac == 1.0`, or a malformed pair) degrades
+/// to a hard STEP at `end` instead of never derating: for a protection
+/// ramp, cutting late is strictly safer than not cutting at all.
 fn ramp_down(x: f32, start: f32, end: f32) -> f32 {
     if end <= start {
-        return 1.0; // malformed ramp never derates (is_sane rejects writes)
+        return if x >= end { 0.0 } else { 1.0 };
     }
     clamp_f32((end - x) / (end - start), 0.0, 1.0)
 }
@@ -404,5 +413,42 @@ mod tests {
             }
             .is_sane()
         );
+    }
+
+    /// frac == 1.0 is a zero-width ramp: it used to fall into ramp_down's
+    /// malformed branch and disable the ceiling entirely — the only speed
+    /// bound torque mode has on a free rotor.
+    #[test]
+    fn full_fraction_speed_ramp_is_rejected() {
+        assert!(
+            !DeratingConfig {
+                max_speed_erad_s: 2000.0,
+                speed_start_frac: 1.0,
+                ..cfg()
+            }
+            .is_sane()
+        );
+        assert!(
+            DeratingConfig {
+                max_speed_erad_s: 2000.0,
+                speed_start_frac: 0.9,
+                ..cfg()
+            }
+            .is_sane()
+        );
+    }
+
+    /// A legacy stored config with frac == 1.0 (accepted by older firmware)
+    /// must degrade to a hard step at the ceiling, not to "no limit".
+    #[test]
+    fn zero_width_speed_ramp_degrades_to_a_step_cut() {
+        let c = DeratingConfig {
+            max_speed_erad_s: 2000.0,
+            speed_start_frac: 1.0,
+            ..cfg()
+        };
+        assert_eq!(c.speed_cut(1999.0), 1.0);
+        assert_eq!(c.speed_cut(2000.0), 0.0, "at the ceiling: full cut");
+        assert_eq!(c.speed_cut(3000.0), 0.0, "beyond the ceiling: full cut");
     }
 }
