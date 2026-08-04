@@ -48,6 +48,10 @@ embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
 embassy-futures = { version = "0.1.2", features = ["defmt"] }
 embassy-stm32 = { version = "0.6.0", features = ["stm32f405rg", "time-driver-tim2", "unstable-pac", "exti", "defmt"] }
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
+# embassy-time no longer backs any f405-crate timing (that moved to the TIM5
+# rtic-monotonics — see src/time.rs); it stays because ergot hard-depends on
+# it (embassy-usb-v0_6 / nostd-seed-router features) and oxifoc-core's
+# detection wrappers use EmbassyTimer. This dep pins the tick rate for them.
 embassy-time = { version = "0.5.1", features = ["tick-hz-32_768", "defmt"] }
 embassy-usb = { version = "0.6.0", features = ["defmt"] }
 
@@ -91,6 +95,9 @@ libm = "0.2.16"
 serde = { version = "1.0.228", default-features = false }
 embedded-hal = "1.0.0"
 bitbang-hal-ng = { version = "0.5.0", features = ["cortex-m"] }
+# App timebase: TIM5 monotonic @ 1 MHz (src/time.rs). Shares stm32-metapac
+# with embassy-stm32 (same major), so no PAC duplication.
+rtic-monotonics = { version = "2.2", features = ["stm32f405rg", "stm32_tim5"] }
 
 [profile.dev]
 debug = true

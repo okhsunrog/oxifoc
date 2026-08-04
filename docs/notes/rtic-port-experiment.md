@@ -92,6 +92,42 @@ port exists to measure whether that holds, and what it costs.
    resource structs are hand-expanded in `#[init]`; keep them in sync with
    `hardware/resources.rs`.
 
+## Step 2: how far can embassy-time be removed?
+
+Tested by migrating everything the f405 crate controls onto
+**rtic-monotonics** (TIM5 @ 1 MHz, `src/time.rs`): LED loops, the 1 kHz
+timer probe, `first_vbus_v`, the isr-stats cadence, the UART TX timeout, and
+the core `Timer`-trait consumers (fast-telemetry stream) via a `MonoTimer`
+impl. The TIM5 IRQ handler is macro-generated; rtic-monotonics reads RTIC's
+`RTIC_ASYNC_MAX_LOGICAL_PRIO` symbol and places it just above the async
+dispatchers — no manual NVIC work.
+
+**Full removal is blocked by ergot**, whose `embassy-usb-v0_6` and
+`nostd-seed-router` features (both required here) carry unconditional
+`dep:embassy-time`, used for: RX-worker liveness timestamps
+(`transports/eio.rs`, `eusb_0_6.rs`, `packet.rs`), router interface-state
+`Instant`s (`profiles/router.rs`), and seed-router lease timing
+(`net_stack/services.rs`). Removing embassy-time from the build means
+adding a time abstraction to ergot (we own the fork — that list sizes the
+change). Two smaller stragglers live in oxifoc-core, deliberately untouched
+on this branch: `detection/embassy_hw.rs` hardcodes `EmbassyTimer` (the
+sweep fns are already generic — the wrappers just pin the type) and the
+current-offset calibrate delay in `foc/sensors.rs`.
+
+Consequences of the resulting **dual timebase**:
+
+- Cost: ~3.4 KB flash and ~2.2 KB .bss on top of the RTIC port (rtic-time
+  queue + TIM5 backend), while the embassy-time driver + generic queue stay
+  for ergot. Strictly worse on size — this step buys diagnosis, not bytes.
+- Diagnostic value: app timing (probe, UART timeouts, telemetry pacing) now
+  runs on rtic-time's intrusive queue, ergot's timing still on the gp16
+  driver + generic queue. If the g431-class freeze ever reproduces, which
+  half stalls identifies the faulty layer immediately. Note the 1 kHz probe
+  no longer watches embassy-time at all — ergot liveness/timeout behavior
+  is the embassy-time health signal now.
+- `Ticker` has no rtic-monotonics equivalent; the isr-stats cadence uses
+  the `delay_until(next += 1s)` pattern instead.
+
 ## Flash / RAM vs. the embassy baseline
 
 Release builds, default features (`transport-usb,transport-uart,board-cf2`),

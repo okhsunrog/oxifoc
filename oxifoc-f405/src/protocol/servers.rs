@@ -17,7 +17,10 @@ use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationR
 use oxifoc_core::foc::trig::FastSinCos;
 use oxifoc_core::runtime::streaming::{fast_telemetry_stream, fault_topic_stream};
 use oxifoc_core::runtime::{DetectionBackend, run_all_servers_with_config};
-use oxifoc_core::timer::EmbassyTimer;
+use rtic_monotonics::Monotonic;
+use rtic_monotonics::fugit::ExtU64;
+
+use crate::time::{Mono, MonoTimer};
 
 use crate::RUNTIME_CONFIG;
 use crate::calibration::{
@@ -95,12 +98,7 @@ pub async fn run_uart_tx(mut tx: UartWriter, stack: &'static Stack, uart_ident: 
         if is_active {
             let mut remaining = &grant[..];
             while !remaining.is_empty() {
-                match embassy_time::with_timeout(
-                    embassy_time::Duration::from_micros(TX_TIMEOUT_US),
-                    tx.write(remaining),
-                )
-                .await
-                {
+                match Mono::timeout_after(TX_TIMEOUT_US.micros(), tx.write(remaining)).await {
                     Ok(Ok(n)) => remaining = &remaining[n..],
                     _ => break,
                 }
@@ -310,7 +308,7 @@ pub async fn defmt_forwarder(
 
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
 pub async fn fast_telemetry_task(stack: &'static Stack) {
-    fast_telemetry_stream::<_, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
+    fast_telemetry_stream::<_, MonoTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
 }
 
 /// Fault topic publisher — pushes the full fault snapshot on every

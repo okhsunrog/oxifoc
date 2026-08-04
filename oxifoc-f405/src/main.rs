@@ -24,7 +24,10 @@ compile_error!("transport-rtt is not supported on the RTIC experiment branch");
 
 use embassy_stm32::gpio::Output;
 use embassy_stm32::{bind_interrupts, exti, interrupt};
-use embassy_time::{Duration, Timer};
+use rtic_monotonics::Monotonic;
+use rtic_monotonics::fugit::ExtU64;
+
+use crate::time::Mono;
 
 // Bind EXTI9_5 interrupt for nFAULT monitoring (PB7/EXTI7)
 bind_interrupts!(struct ExtiIrqs {
@@ -43,6 +46,9 @@ mod protocol;
 mod safety;
 mod sensors;
 mod storage;
+// App timebase: rtic-monotonics on TIM5 (see the module docs for what
+// remains on embassy-time and why).
+mod time;
 mod transport;
 
 // Define platform state with our fault type
@@ -85,9 +91,9 @@ unsafe impl<T> Send for SendMove<T> {}
 async fn heartbeat_loop(mut led: Output<'static>) {
     loop {
         led.set_low();
-        Timer::after(Duration::from_millis(50)).await;
+        Mono::delay(50u64.millis()).await;
         led.set_high();
-        Timer::after(Duration::from_millis(950)).await;
+        Mono::delay(950u64.millis()).await;
     }
 }
 
@@ -99,7 +105,7 @@ async fn fault_led_loop(mut led: Output<'static>) {
         } else {
             led.set_high();
         }
-        Timer::after(Duration::from_millis(100)).await;
+        Mono::delay(100u64.millis()).await;
     }
 }
 
@@ -110,18 +116,18 @@ async fn fault_led_loop(mut led: Output<'static>) {
 /// dispatcher hog or a timer-queue stall shows up here identically).
 async fn timer_probe_loop() {
     let mut late_max: u32 = 0;
-    let mut last_report = embassy_time::Instant::now();
+    let mut last_report = Mono::now();
     loop {
-        let before = embassy_time::Instant::now();
-        Timer::after(Duration::from_micros(1000)).await;
-        let late = (before.elapsed().as_micros() as u32).saturating_sub(1000);
+        let before = Mono::now();
+        Mono::delay(1000u64.micros()).await;
+        let late = ((Mono::now() - before).to_micros() as u32).saturating_sub(1000);
         late_max = late_max.max(late);
         // Live marker for gross stalls; steady-state jitter is well below this.
         if late > 20_000 {
             defmt::warn!("exec stall: {}us late", late);
         }
-        let now = embassy_time::Instant::now();
-        if now.duration_since(last_report).as_millis() >= 1000 {
+        let now = Mono::now();
+        if (now - last_report).to_millis() >= 1000 {
             defmt::info!("probe/s: late_max={}us", late_max);
             late_max = 0;
             last_report = now;
@@ -170,6 +176,17 @@ mod app {
 
         // ========== Clock ==========
         let p = hardware::peripherals::init_clock();
+
+        // ========== App timebase (TIM5 monotonic @ 1 MHz) ==========
+        // Derive the TIM5 kernel clock from the live RCC config (84 MHz at
+        // our tree: APB1 42 MHz × 2 timer doubler) the same way the hall
+        // TIM3 setup does — hardcoding would silently skew every delay if
+        // the RCC config moved. The temporary low-level Timer is dropped
+        // immediately; Mono::start() re-enables and owns TIM5 from here on.
+        let tim5_hz = embassy_stm32::timer::low_level::Timer::new(p.TIM5)
+            .get_clock_frequency()
+            .0;
+        crate::time::Mono::start(tim5_hz);
 
         // ========== RNG + Ergot Router Stack ==========
         // Stack first (no defmt), then the RTT/defmt sink so an ergot-over-RTT

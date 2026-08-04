@@ -17,7 +17,8 @@ use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, AtomicU16, AtomicU32, 
 use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::peripherals;
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
-use embassy_time::{Duration, Timer};
+use rtic_monotonics::Monotonic;
+use rtic_monotonics::fugit::ExtU64;
 
 use oxifoc_core::foc::controller::FocController;
 use oxifoc_core::foc::current_offset::CurrentOffsetRequest;
@@ -38,6 +39,7 @@ use oxifoc_core::storage::RuntimeConfig;
 use crate::hardware::peripherals::AdcHandles;
 use crate::safety::feed_watchdog;
 use crate::sensors::hall;
+use crate::time::Mono;
 
 use crate::config::{BOARD, CPU_HZ, NTC_BOARD, NTC_MOTOR, PWM_CONFIG};
 use crate::motor::MotorPwm;
@@ -306,7 +308,7 @@ async fn first_vbus_v() -> f32 {
         if VBUS_MEASURED.load(Ordering::Acquire) {
             return VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0;
         }
-        Timer::after(Duration::from_micros(100)).await;
+        Mono::delay(100u64.micros()).await;
     }
     defmt::error!("no VBUS measurement within 100ms - ADC/ISR pipeline dead?");
     0.0
@@ -463,10 +465,12 @@ pub fn adc_isr(seq: &mut u32) {
 /// parser works unchanged: `isr/s: n= avg= max= over= load_pct=` plus the
 /// per-section and core-bucket breakdowns.
 pub async fn isr_stats_task() {
-    use embassy_time::Ticker;
-    let mut ticker = Ticker::every(Duration::from_secs(1));
+    // Drift-free 1 Hz cadence on the TIM5 monotonic (embassy Ticker
+    // equivalent: absolute deadline, not a relative sleep).
+    let mut next = Mono::now();
     loop {
-        ticker.next().await;
+        next += 1u64.secs();
+        Mono::delay_until(next).await;
         let cyc_sum = ISR_CYC_SUM.swap(0, Ordering::Relaxed);
         let cyc_max = ISR_CYC_MAX.swap(0, Ordering::Relaxed);
         let cyc_n = ISR_CYC_N.swap(0, Ordering::Relaxed);
