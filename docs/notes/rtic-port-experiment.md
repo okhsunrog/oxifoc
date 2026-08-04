@@ -92,6 +92,36 @@ port exists to measure whether that holds, and what it costs.
    resource structs are hand-expanded in `#[init]`; keep them in sync with
    `hardware/resources.rs`.
 
+## Flash / RAM vs. the embassy baseline
+
+Release builds, default features (`transport-usb,transport-uart,board-cf2`),
+RTIC branch vs. `main` @ c610fbf, section sizes from readelf:
+
+| section | embassy | RTIC | Δ |
+|---|---|---|---|
+| .text | 315,248 | 317,928 | **+2,680** |
+| .rodata | 17,732 | 16,676 | −1,056 |
+| .data | 2,224 | 3,252 | +1,028 |
+| **flash total** | **335,204** | **337,856** | **+2,652 (+0.8%)** |
+| .bss | 32,856 | 18,888 | −13,968 |
+
+- **Flash: +2.6 KB** for the executor swap (dispatcher trampolines,
+  per-priority executors, the generic timer queue's O(n) insert). Irrelevant
+  on the F405 (768K firmware region), but decision-relevant for any future
+  g431 port: that board could not afford 650 B for ISR profiling in the
+  default profile (docs/flash-size.md), so ~2.6 KB likely doesn't fit.
+- **.data +1,028 B** is the generic timer queue: the embassy-stm32 `DRIVER`
+  static grows 56 → 1,056 B (64 × 16 B slots).
+- **The .bss drop is an accounting artifact, not freed RAM.** The 18
+  embassy task `POOL` statics (14,032 B of task futures) disappear, but
+  RTIC 2.3 allocates its async-task executors in `main`'s stack frame
+  (`AsyncTaskExecutorPtr::set_in_main` — the 4-byte `*_EXEC` statics just
+  point there), and `main` never returns. The same ~14 KB now lives in the
+  stack region where `size(1)` and flip-link's static accounting cannot see
+  it. Net static RAM is roughly a wash (slightly worse, +1 KB of .data);
+  treat stack-headroom numbers on this branch with suspicion until measured
+  with a paint/high-water check on hardware.
+
 ## Status / how to run
 
 - Builds clean (dev + release, both boards): `cargo build` /
