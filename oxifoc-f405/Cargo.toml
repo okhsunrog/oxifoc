@@ -34,8 +34,17 @@ transport-rtt = ["ergot/rtt"]
 obs-debug-telem = ["oxifoc-core/obs-debug-telem"]
 
 [dependencies]
+# RTIC executor (port experiment — replaces embassy-executor; embassy-time
+# and the embassy-stm32 HAL stay, see docs/notes/rtic-port-experiment.md)
+rtic = { version = "2.3", features = ["thumbv7-backend"] }
+# Without embassy-executor the embassy-stm32 time driver cannot use its
+# integrated timer queue (task headers provide the queue items — the
+# `__embassy_time_queue_item_from_waker` symbol). The generic queue stores
+# (instant, waker) pairs by value and works under any executor; 64 entries
+# bounds the number of concurrently pending timers.
+embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
+
 # Embassy + Cortex-M
-embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 embassy-futures = { version = "0.1.2", features = ["defmt"] }
 embassy-stm32 = { version = "0.6.0", features = ["stm32f405rg", "time-driver-tim2", "unstable-pac", "exti", "defmt"] }
 embassy-sync = { version = "0.8.0", features = ["defmt"] }

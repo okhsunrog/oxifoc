@@ -7,7 +7,6 @@
 
 use defmt::info;
 use embassy_embedded_hal::adapter::BlockingAsync;
-use embassy_executor::task;
 use embassy_stm32::flash::{Blocking, Flash as StmFlash, WRITE_SIZE};
 use sequential_storage::cache::NoCache;
 use sequential_storage::map::{MapConfig, MapStorage};
@@ -59,7 +58,6 @@ type Storage = MapStorage<ConfigKey, AsyncFlash, NoCache>;
 /// Storage worker: loads all configs at boot, then handles write operations.
 ///
 /// Signals `CONFIG_LOADED` after boot-time reads, then loops on `FLASH_CHANNEL`.
-#[task]
 pub async fn storage_worker(flash: AsyncFlash) {
     let buf = BUFFER.take();
     let config: MapConfig<AsyncFlash> =

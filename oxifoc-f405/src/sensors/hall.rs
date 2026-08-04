@@ -18,11 +18,10 @@ use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_stm32::gpio::Pull;
-use embassy_stm32::interrupt::typelevel::Interrupt;
 use embassy_stm32::timer::input_capture::CapturePin;
 use embassy_stm32::timer::low_level::{InputCaptureMode, InputTISelection, Timer};
 use embassy_stm32::timer::{Ch1, Ch2, Ch3, Channel};
-use embassy_stm32::{Peri, interrupt, pac, peripherals};
+use embassy_stm32::{Peri, pac, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
 use oxifoc_core::foc::capture_timebase::CaptureTimebase;
@@ -145,27 +144,13 @@ pub fn init_hall(
     // is None until the rotor moves — on a sensored cold start the first
     // torque command would commutate via the open-loop recovery override
     // instead of the actual angle. A disconnected cable (pull-ups read
-    // 0b111) surfaces immediately as an invalid state. Safe: the capture
-    // interrupt is not unmasked yet.
+    // 0b111) surfaces immediately as an invalid state. Safe: this runs in
+    // RTIC `#[init]` (interrupts globally disabled); RTIC unmasks TIM3 and
+    // sets its priority when init returns — the `tim3_irq` hardware task in
+    // main.rs sits one logical level below the FOC ADC task, which is fine:
+    // edge timestamps are latched in hardware, so delaying this handler only
+    // delays when the estimator learns of the edge, not the timestamp.
     update_hall_edge(read_hall_idr(), now_ticks());
-
-    #[expect(
-        clippy::multiple_unsafe_ops_per_block,
-        reason = "single logical operation: hall-capture IRQ bring-up"
-    )]
-    // SAFETY: one-time IRQ bring-up during init, before the capture
-    // interrupt can fire; Peripherals::steal() only touches NVIC priority
-    // registers nothing else owns at this point.
-    unsafe {
-        interrupt::typelevel::TIM3::unpend();
-        cortex_m::peripheral::NVIC::unmask(interrupt::TIM3);
-        let mut nvic = cortex_m::peripheral::Peripherals::steal().NVIC;
-        // NVIC::set_priority takes the RAW 8-bit IPR value; STM32 implements
-        // only the upper 4 bits. Below the FOC ADC ISR is fine: edge
-        // timestamps are latched in hardware, so delaying this handler only
-        // delays when the estimator learns of the edge, not the timestamp.
-        nvic.set_priority(interrupt::TIM3, 1 << 4);
-    }
 
     defmt::info!(
         "Hall: TIM3 XOR capture @ 1 MHz (clk {} Hz, psc {}), H1=PC6 H2=PC7 H3=PC8",
@@ -196,10 +181,10 @@ pub fn read_hall_state_raw() -> u8 {
 
 // ========== TIM3 Interrupt Handler ==========
 
-/// TIM3 capture/update interrupt: extend the hardware-latched edge
-/// timestamp and feed the estimator.
-#[interrupt]
-fn TIM3() {
+/// TIM3 capture/update interrupt body: extend the hardware-latched edge
+/// timestamp and feed the estimator. Called from the RTIC `tim3_irq`
+/// hardware task (main.rs).
+pub fn tim3_isr() {
     let regs = pac::TIM3;
     let sr = regs.sr().read();
 

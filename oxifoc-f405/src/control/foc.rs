@@ -15,7 +15,7 @@ use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
-use embassy_stm32::{interrupt, peripherals};
+use embassy_stm32::peripherals;
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
@@ -149,30 +149,15 @@ pub async fn init(
         Ordering::Relaxed,
     );
 
-    // Enable the ADC interrupt and its internal PWM trigger. Phase channels
-    // stay high-Z until the calibration state machine selects one.
-    // Order: install ADC handles → enable interrupt → enable PWM triggers.
-    // ADC at priority 0 (highest) — the FOC loop is the actuator's most
-    // time-critical ISR; comms ISRs (USB/UART) must never preempt or
-    // jitter it (mirrors the G431 setup).
-    #[expect(
-        clippy::multiple_unsafe_ops_per_block,
-        reason = "single logical operation: FOC ADC IRQ bring-up"
-    )]
-    // SAFETY: one-time IRQ bring-up during init, before the PWM trigger is
-    // enabled (so the ISR cannot fire mid-setup); Peripherals::steal() only
-    // touches NVIC priority registers nothing else owns at this point.
-    unsafe {
-        use embassy_stm32::interrupt::typelevel::Interrupt;
-        // DWT cycle counter for ISR-cost stats (ISR_CYC_* atomics).
-        let mut cp = cortex_m::Peripherals::steal();
-        cp.DCB.enable_trace();
-        cp.DWT.enable_cycle_counter();
-        let irq = interrupt::ADC;
-        cortex_m::peripheral::NVIC::set_priority(&mut cortex_m::Peripherals::steal().NVIC, irq, 0);
-        <interrupt::typelevel::ADC as Interrupt>::unpend();
-        <interrupt::typelevel::ADC as Interrupt>::enable();
-    }
+    // The ADC interrupt itself is owned by RTIC (`adc_irq` hardware task in
+    // main.rs, logical priority = max → NVIC priority 0, mirroring the G431
+    // setup: the FOC loop is the actuator's most time-critical ISR and comms
+    // ISRs must never preempt or jitter it). RTIC unmasked it right after
+    // `#[init]` returned; that is safe because nothing triggers the ADC until
+    // the PWM trigger below is enabled — and the handles are installed above,
+    // preserving the install-handles → enable-trigger ordering. The DWT cycle
+    // counter (ISR_CYC_* stats) is likewise enabled in RTIC `#[init]` via
+    // `cx.core`.
     motor_pwm.enable_adc_trigger();
 
     // Build current sensor and phase manager
@@ -329,14 +314,15 @@ async fn first_vbus_v() -> f32 {
 
 // ========== ADC Interrupt Handler ==========
 
-/// ADC interrupt: read all injected ADC samples and run FOC control.
+/// ADC interrupt body: read all injected ADC samples and run FOC control.
 ///
 /// Triggered by ADC3 JEOC (end of injected conversion sequence).
 /// ADC1, ADC2, ADC3 all start conversion simultaneously on TIM1_CC4.
-#[interrupt]
-fn ADC() {
-    static mut SEQ: u32 = 0;
-
+///
+/// Called from the RTIC `adc_irq` hardware task (main.rs), which owns the
+/// cycle sequence counter as a task-local resource (the RTIC replacement
+/// for the old `static mut SEQ` handler-local).
+pub fn adc_isr(seq: &mut u32) {
     let isr_t0 = cortex_m::peripheral::DWT::cycle_count();
 
     // NTC Beta-model conversion runs libm::logf + several float divides
@@ -344,7 +330,7 @@ fn ADC() {
     // budget) — decimate to every 128th cycle (156 Hz); the thermal time
     // constants are seconds, and consumers read the atomics. Same scheme
     // as the g431 ISR.
-    let convert_temp = *SEQ & 127 == 0;
+    let convert_temp = *seq & 127 == 0;
 
     // Read ADC1 injected data (phase A current + board temp)
     let (ia_raw, board_temp_raw) = ADC1_INJECTED.lock(|cell| {
@@ -416,8 +402,8 @@ fn ADC() {
     let now_ticks = hall::now_ticks();
 
     // Build ADC snapshot
-    *SEQ = SEQ.wrapping_add(1);
-    let adc_snapshot = AdcSnapshot::new(ia_raw, ib_raw, ic_raw, vbus_mv, *SEQ)
+    *seq = seq.wrapping_add(1);
+    let adc_snapshot = AdcSnapshot::new(ia_raw, ib_raw, ic_raw, vbus_mv, *seq)
         .with_temp(TempSensorId::Fet, board_temp_c_x10)
         .with_temp(TempSensorId::Motor, motor_temp_c_x10);
 
@@ -449,7 +435,7 @@ fn ADC() {
         hall_snapshot,
         foc_telem.unwrap_or_default(),
         MOTOR_POLE_PAIRS.load(Ordering::Relaxed),
-        *SEQ,
+        *seq,
     );
 
     let prof_t4 = cortex_m::peripheral::DWT::cycle_count();
@@ -476,7 +462,6 @@ fn ADC() {
 /// 1 Hz ISR-cost stats — same line format as the g431 so the bench-suite
 /// parser works unchanged: `isr/s: n= avg= max= over= load_pct=` plus the
 /// per-section and core-bucket breakdowns.
-#[embassy_executor::task]
 pub async fn isr_stats_task() {
     use embassy_time::Ticker;
     let mut ticker = Ticker::every(Duration::from_secs(1));

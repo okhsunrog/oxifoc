@@ -1,6 +1,5 @@
 //! Ergot protocol servers and I/O worker tasks
 
-use embassy_executor::Spawner;
 use embedded_io_async::Write;
 use ergot::{
     exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as usb_kit,
@@ -31,19 +30,16 @@ use crate::transport::UART_OUTQ;
 // ========== Worker Tasks ==========
 
 /// USB device task — runs USB state machine
-#[embassy_executor::task]
 pub async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
     usb.run().await;
 }
 
 /// Worker task for incoming ergot data (USB)
-#[embassy_executor::task]
 pub async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
     rcvr.run(recv_buf, usb_kit::USB_FS_MAX_PACKET_SIZE).await;
 }
 
 /// Worker task for outgoing ergot data (USB framed)
-#[embassy_executor::task]
 pub async fn run_usb_tx(
     mut ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
     rx: FramedConsumer<&'static UsbQueue>,
@@ -58,7 +54,6 @@ pub async fn run_usb_tx(
 }
 
 /// Worker task for incoming ergot data (UART)
-#[embassy_executor::task]
 pub async fn run_uart_rx(
     mut rcvr: UartRxWorker,
     recv_buf: &'static mut [u8],
@@ -82,7 +77,6 @@ const TX_TIMEOUT_US: u64 = (MAX_WIRE_BYTES as u64 * 10 * 1_000_000) / (UART_BAUD
 /// Worker task for outgoing ergot data (UART COBS stream)
 ///
 /// When the interface is not Active, frames are discarded without writing to UART.
-#[embassy_executor::task]
 pub async fn run_uart_tx(mut tx: UartWriter, stack: &'static Stack, uart_ident: u8) {
     use ergot::interface_manager::{InterfaceState, Profile};
 
@@ -119,7 +113,6 @@ pub async fn run_uart_tx(mut tx: UartWriter, stack: &'static Stack, uart_ident: 
 // ========== Protocol Servers ==========
 
 /// All protocol servers running concurrently in a single task
-#[embassy_executor::task]
 pub async fn protocol_servers(stack: &'static Stack) {
     defmt::info!("Starting protocol servers");
 
@@ -170,7 +163,6 @@ pub async fn protocol_servers(stack: &'static Stack) {
 /// is the bridge's upstream-discovery bootstrap: the bridge pings the root
 /// link-local, and the *reply* is the first frame addressed to the bridge,
 /// which is what its edge processor learns the upstream net_id from.
-#[embassy_executor::task]
 pub async fn seed_router_task(stack: &'static Stack) {
     embassy_futures::join::join(
         stack.services().seed_router_request_handler::<2>(),
@@ -181,7 +173,6 @@ pub async fn seed_router_task(stack: &'static Stack) {
 
 /// State monitor — watches interface state transitions and reacts to disconnect.
 /// Stops motor and disables telemetry when ALL interfaces go down.
-#[embassy_executor::task]
 pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) {
     use crate::transport::STATE_NOTIFY;
     use ergot::interface_manager::{InterfaceState, Profile};
@@ -239,7 +230,6 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
 /// `detect hall --apply` does exactly that). The stale claim that the F405
 /// "has no RUNTIME_CONFIG yet" silently discarded every calibration
 /// (found on the Flipsky bring-up, 2026-07-08).
-#[embassy_executor::task]
 pub async fn detect_server(stack: &'static Stack) {
     oxifoc_core::runtime::detect_server(
         stack.endpoints(),
@@ -303,7 +293,6 @@ impl DetectionBackend for F405Backend {
 
 /// Forward defmt frames from the network bbqueue to the ergot defmt topic.
 /// Connected hosts receive these on `ErgotDefmtRxOwnedTopic`.
-#[embassy_executor::task]
 pub async fn defmt_forwarder(
     consumer: ergot::logging::defmt_sink::DefmtConsumer,
     stack: &'static Stack,
@@ -320,7 +309,6 @@ pub async fn defmt_forwarder(
 }
 
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
-#[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
     fast_telemetry_stream::<_, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
 }
@@ -328,34 +316,19 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
 /// Fault topic publisher — pushes the full fault snapshot on every
 /// registry change (the remote's vibration/UI path; FaultEndpoint stays
 /// the pull/clear side).
-#[embassy_executor::task]
 pub async fn fault_topic_task(stack: &'static Stack) {
     fault_topic_stream(stack, &FAULT_REGISTRY).await;
 }
 
-// ========== Task Spawning ==========
-
-/// Spawn all protocol server tasks
-pub fn spawn_servers(
-    spawner: &Spawner,
-    stack: &'static Stack,
-    idents: &heapless::Vec<u8, 3>,
-    defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
-) {
-    spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
-    spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
-    spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
-    spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
-    spawner.spawn(defmt::unwrap!(detect_server(stack)));
-    spawner.spawn(defmt::unwrap!(seed_router_task(stack)));
-    spawner.spawn(defmt::unwrap!(defmt_forwarder(defmt_consumer, stack)));
-}
+// Task spawning lives in main.rs: every worker/server here is a plain
+// `async fn` wrapped by an RTIC software task (see the `app` module's
+// priority map).
 
 // ========== RTT Transport workers (feature = "transport-rtt") ==========
 
 /// Worker task for incoming ergot data (RTT down channel)
 #[cfg(feature = "transport-rtt")]
-#[embassy_executor::task]
+
 pub async fn run_rtt_rx(
     mut rcvr: crate::transport::RttRxWorker,
     recv_buf: &'static mut [u8],
@@ -371,7 +344,7 @@ pub async fn run_rtt_rx(
 
 /// Worker task for outgoing ergot data (RTT up channel)
 #[cfg(feature = "transport-rtt")]
-#[embassy_executor::task]
+
 pub async fn run_rtt_tx(mut tx: ergot::transport::rtt::RttWriter) {
     use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
     loop {

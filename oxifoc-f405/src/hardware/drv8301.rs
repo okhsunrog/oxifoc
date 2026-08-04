@@ -305,7 +305,6 @@ pub fn disable_gate_driver() {
 /// # Note
 /// This does NOT auto-clear the fault - the host must clear it via
 /// the fault management protocol after investigating the cause.
-#[embassy_executor::task]
 pub async fn nfault_monitor_task(mut nfault: NfaultInput, mut bus: Drv8301Spi) {
     defmt::info!("DRV8301 nFAULT monitor started");
 
