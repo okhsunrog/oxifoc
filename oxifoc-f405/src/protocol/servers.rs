@@ -179,7 +179,14 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
     let mut any_was_active = false;
 
     loop {
-        defmt::unwrap!(STATE_NOTIFY.wait().await.ok());
+        // RTIC branch: without ergot's `embassy-time` feature the UART RX
+        // worker has no state-notify hook, so a UART-only link-up would
+        // never wake this task. Poll as a fallback (250 ms link-up latency
+        // worst case); USB transitions still notify immediately.
+        match Mono::timeout_after(250u64.millis(), STATE_NOTIFY.wait()).await {
+            Ok(res) => defmt::unwrap!(res.ok()),
+            Err(_timeout) => {} // fall through to the rescan below
+        }
 
         let any_active = idents.iter().any(|&id| {
             stack.manage_profile(|im| {

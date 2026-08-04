@@ -14,6 +14,12 @@
 //! dispatchers (it reads RTIC's `RTIC_ASYNC_MAX_LOGICAL_PRIO`), far below
 //! the FOC/hall hardware tasks.
 
+use core::cell::RefCell;
+use core::task::Waker;
+
+use critical_section::Mutex as CsMutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use rtic_monotonics::stm32::prelude::*;
 
 stm32_tim5_monotonic!(Mono, 1_000_000);
@@ -29,5 +35,77 @@ impl oxifoc_core::timer::Timer for MonoTimer {
 
     async fn after_micros(us: u64) {
         Mono::delay(us.micros()).await;
+    }
+}
+
+// ========== embassy-time driver bridge ==========
+//
+// ergot uses embassy-time unconditionally (router `Instant`s, seed-router
+// lease timer, USB transport liveness), so the embassy-time API must stay
+// functional — but instead of the embassy-stm32 TIM2 driver we implement
+// the driver here, on the SAME TIM5 monotonic. One hardware timebase; TIM2
+// is free again. `now()` reads the monotonic directly; `schedule_wake` goes
+// through the generic (instant, waker) queue, and a dedicated task services
+// that queue off `Mono::delay_until` — wake latency is dispatcher-priority
+// (µs-scale), fine for ergot's ms-scale timeouts.
+
+// Identity tick mapping: the driver hands monotonic ticks straight to
+// embassy-time, so the Cargo tick-hz feature must match the TIM5 rate.
+const _: () = assert!(
+    embassy_time_driver::TICK_HZ == 1_000_000,
+    "embassy-time tick-hz feature must match the 1 MHz TIM5 monotonic"
+);
+
+struct Tim5EmbassyDriver {
+    queue: CsMutex<RefCell<embassy_time_queue_utils::Queue>>,
+}
+
+embassy_time_driver::time_driver_impl!(static EMBASSY_DRIVER: Tim5EmbassyDriver = Tim5EmbassyDriver {
+    queue: CsMutex::new(RefCell::new(embassy_time_queue_utils::Queue::new())),
+});
+
+/// Wakes [`embassy_alarm_task`] to recompute its deadline: latched, so a
+/// signal between the task's queue read and its `wait()` is never lost.
+static ALARM_RECHECK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+impl embassy_time_driver::Driver for Tim5EmbassyDriver {
+    fn now(&self) -> u64 {
+        Mono::now().ticks()
+    }
+
+    fn schedule_wake(&self, at: u64, waker: &Waker) {
+        let became_earliest = critical_section::with(|cs| {
+            self.queue.borrow(cs).borrow_mut().schedule_wake(at, waker)
+        });
+        if became_earliest {
+            ALARM_RECHECK.signal(());
+        }
+    }
+}
+
+/// Services the embassy-time queue: waits for the earliest deadline on the
+/// TIM5 monotonic (or a recheck signal when an earlier timer is scheduled)
+/// and dispatches due wakers. Spawned at I/O-pump priority in main.rs.
+pub async fn embassy_alarm_task() {
+    use embassy_time_driver::Driver;
+    loop {
+        // next_expiration() wakes everything already due as a side effect
+        // and returns the next pending deadline (u64::MAX if none).
+        let next_at = critical_section::with(|cs| {
+            EMBASSY_DRIVER
+                .queue
+                .borrow(cs)
+                .borrow_mut()
+                .next_expiration(EMBASSY_DRIVER.now())
+        });
+        if next_at == u64::MAX {
+            ALARM_RECHECK.wait().await;
+        } else {
+            let deadline = <Mono as Monotonic>::Instant::from_ticks(next_at);
+            // Either the deadline passed (dispatch on next loop) or an
+            // earlier timer arrived (recompute).
+            embassy_futures::select::select(Mono::delay_until(deadline), ALARM_RECHECK.wait())
+                .await;
+        }
     }
 }

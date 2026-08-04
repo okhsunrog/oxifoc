@@ -27,6 +27,7 @@ use static_cell::StaticCell;
 
 use crate::config::{MAX_PACKET_SIZE, UART_BAUD, UART_RX_BUF_LEN, UART_TX_BUF_LEN};
 use crate::config::{RTT_OUT_QUEUE_SIZE, UART_OUT_QUEUE_SIZE, USB_OUT_QUEUE_SIZE};
+#[cfg(feature = "transport-rtt")]
 use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 
 // ========== Multi-Interface Definition ==========
@@ -322,6 +323,13 @@ pub fn init_uart(
         "UART interface registration failed"
     );
 
+    // RTIC branch: ergot's `embassy-time` feature is off, which strips the
+    // eio worker's liveness timeout AND its state-notify hook (both are
+    // feature-gated upstream). The frame processor still flips the interface
+    // Active on traffic; state_monitor compensates for the missing notify by
+    // polling (servers.rs). Consequences: UART link-DOWN is never detected
+    // (state stays Active once traffic was seen) — the ISR-side
+    // command-staleness deadman remains the failsafe for a dead UART link.
     let rx_worker = UartRxWorker::new(
         stack,
         UartReader::new(uart_rx),
@@ -329,11 +337,7 @@ pub fn init_uart(
             stack.manage_profile(|router| router.net_id_of(uart_ident))
         )),
         uart_ident,
-    )
-    .with_liveness(LivenessConfig {
-        timeout_ms: LIVENESS_TIMEOUT_MS,
-    })
-    .with_state_notify(&STATE_NOTIFY);
+    );
 
     (
         UartTransport {

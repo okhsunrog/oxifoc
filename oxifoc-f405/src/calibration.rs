@@ -6,6 +6,8 @@
 #![allow(dead_code)]
 
 use oxifoc_core::foc::detection::DetectionError;
+
+use crate::time::MonoTimer;
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::foc::trig::SinCos;
 
@@ -35,7 +37,7 @@ pub async fn measure_resistance(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::measure_resistance(
+    oxifoc_core::foc::detection::embassy_hw::measure_resistance_with_timer::<MonoTimer>(
         params,
         state_mutex,
         ia,
@@ -56,7 +58,7 @@ pub async fn measure_inductance<S: SinCos>(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<(f32, f32), DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::measure_inductance::<S>(
+    oxifoc_core::foc::detection::embassy_hw::measure_inductance_with_timer::<MonoTimer, S>(
         params,
         pwm_freq_hz,
         state_mutex,
@@ -77,7 +79,7 @@ pub async fn measure_flux_linkage(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::measure_flux_linkage(
+    oxifoc_core::foc::detection::embassy_hw::measure_flux_linkage_with_timer::<MonoTimer>(
         params,
         state_mutex,
         ia,
@@ -97,7 +99,7 @@ pub async fn run_full_detection<S: SinCos>(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<DetectionResult, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::run_full_detection::<S>(
+    oxifoc_core::foc::detection::embassy_hw::run_full_detection_with_timer::<MonoTimer, S>(
         params,
         state_mutex,
         ia,
@@ -117,7 +119,7 @@ pub async fn calibrate_hall(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<HallCalibrationResult, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::calibrate_hall(
+    oxifoc_core::foc::detection::embassy_hw::calibrate_hall_with_timer::<MonoTimer>(
         params,
         state_mutex,
         ia,

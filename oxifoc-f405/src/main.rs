@@ -312,6 +312,9 @@ mod app {
             defmt::assert!(uart_tx::spawn(uart_transport.tx, stack, uart_ident).is_ok());
         }
 
+        // embassy-time bridge (must run for ergot's timeouts to fire)
+        defmt::assert!(embassy_alarm::spawn().is_ok());
+
         // ========== Protocol/logic tasks (priority 1) ==========
         defmt::assert!(protocol_srv::spawn(stack).is_ok());
         defmt::assert!(fast_telemetry::spawn(stack).is_ok());
@@ -489,6 +492,14 @@ mod app {
         scratch_buf: &'static mut [u8],
     ) {
         servers::run_uart_rx(rcvr, recv_buf, scratch_buf).await;
+    }
+
+    /// embassy-time queue service (TIM5-bridge driver in time.rs). Pump
+    /// priority so ergot's ms-scale timeouts fire promptly even when the
+    /// logic tier is busy.
+    #[task(priority = 2)]
+    async fn embassy_alarm(_cx: embassy_alarm::Context) {
+        crate::time::embassy_alarm_task().await;
     }
 
     /// Outgoing ergot data (UART COBS stream)

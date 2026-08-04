@@ -37,22 +37,23 @@ obs-debug-telem = ["oxifoc-core/obs-debug-telem"]
 # RTIC executor (port experiment — replaces embassy-executor; embassy-time
 # and the embassy-stm32 HAL stay, see docs/notes/rtic-port-experiment.md)
 rtic = { version = "2.3", features = ["thumbv7-backend"] }
-# Without embassy-executor the embassy-stm32 time driver cannot use its
-# integrated timer queue (task headers provide the queue items — the
-# `__embassy_time_queue_item_from_waker` symbol). The generic queue stores
-# (instant, waker) pairs by value and works under any executor; 64 entries
-# bounds the number of concurrently pending timers.
-embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
 
-# Embassy + Cortex-M
+# Embassy + Cortex-M. NOTE: no `time-driver-*` feature on embassy-stm32 —
+# the embassy-time driver is provided by src/time.rs, bridged onto the same
+# TIM5 monotonic that rtic-monotonics runs (single hardware timebase; TIM2
+# is free again). embassy-time itself stays only for ergot's unconditional
+# uses (router Instants, seed-router lease, USB transport liveness).
 embassy-futures = { version = "0.1.2", features = ["defmt"] }
-embassy-stm32 = { version = "0.6.0", features = ["stm32f405rg", "time-driver-tim2", "unstable-pac", "exti", "defmt"] }
+embassy-stm32 = { version = "0.6.0", features = ["stm32f405rg", "unstable-pac", "exti", "defmt"] }
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
-# embassy-time no longer backs any f405-crate timing (that moved to the TIM5
-# rtic-monotonics — see src/time.rs); it stays because ergot hard-depends on
-# it (embassy-usb-v0_6 / nostd-seed-router features) and oxifoc-core's
-# detection wrappers use EmbassyTimer. This dep pins the tick rate for them.
-embassy-time = { version = "0.5.1", features = ["tick-hz-32_768", "defmt"] }
+# tick-hz matches the TIM5 monotonic (1 MHz) so driver tick conversion is
+# identity — src/time.rs const-asserts this.
+embassy-time = { version = "0.5.1", features = ["tick-hz-1_000_000", "defmt"] }
+# The bridge driver's trait + its (instant, waker) queue. 64 entries bounds
+# concurrently pending embassy-time timers (ergot only — app timers run on
+# rtic-time's intrusive queue and have no bound).
+embassy-time-driver = "0.2"
+embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
 embassy-usb = { version = "0.6.0", features = ["defmt"] }
 
 cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
@@ -81,11 +82,17 @@ postcard = { version = "1.1", features = ["use-defmt"] }
 
 # Local crates
 oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy", "embassy-hal", "delivery", "hfi", "hfi-detect", "isr-speed", "isr-profiling"] }
+# NOTE (RTIC branch): ergot's `embassy-time` feature is dropped — it gated
+# the eio (UART/RTT) liveness timeout machinery. UART link-loss detection is
+# therefore GONE on this branch (the ISR-side command-staleness deadman
+# failsafe is unaffected, and USB liveness is unconditional in ergot).
+# ergot still uses embassy-time unconditionally in the USB transport
+# (per-frame Instant::now), the router lease bookkeeping, and the
+# seed-router service — see docs/notes/rtic-port-experiment.md.
 ergot = { git = "https://github.com/okhsunrog/ergot", rev = "8d7db27e030564a048eb16c90080ae6730d14e11", default-features = false, features = [
     "embassy-usb-v0_6",
     "embedded-io-async-v0_7",
     "nostd-seed-router",
-    "embassy-time",
     "disable-cache-padding",
     "defmt-sink-rtt",
     "defmt-sink-network",

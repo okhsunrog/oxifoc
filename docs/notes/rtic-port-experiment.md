@@ -128,6 +128,50 @@ Consequences of the resulting **dual timebase**:
 - `Ticker` has no rtic-monotonics equivalent; the isr-stats cadence uses
   the `delay_until(next += 1s)` pattern instead.
 
+## Step 3: single hardware timebase (TIM2 driver removed)
+
+Goal: kill the dual timekeeping from step 2. Tested in two stages:
+
+1. **Dropping ergot's `embassy-time` feature** (the liveness machinery) is
+   NOT sufficient. With the TIM2 driver removed, the linker enumerates the
+   survivors precisely — all in ergot, none in core (the detection
+   `*_with_timer` variants added in this step unpin `EmbassyTimer`
+   additively; g431/g474 callers unaffected): the Router profile calls
+   `Instant::now` in `find`/`register_interface` (26 references — every
+   frame route goes through it under `nostd-seed-router`), and the
+   seed-router lease service sleeps on `embassy_time::Timer`.
+2. **So the embassy-time *driver* is implemented in-crate instead**
+   (src/time.rs): `time_driver_impl!` backed by the SAME TIM5 monotonic —
+   `now()` reads the monotonic (tick-hz feature switched 32768 → 1 MHz so
+   the mapping is identity, const-asserted), `schedule_wake` goes through
+   the 64-slot generic queue, and an `embassy_alarm` task at pump priority
+   services it via `Mono::delay_until` + a latched recheck signal. Result:
+   **zero embassy-stm32 `time_driver` symbols in the binary, TIM2 free
+   again, one hardware timebase** — with ergot completely untouched.
+
+Functional consequences of the liveness removal (deliberate, this branch
+only):
+
+- **UART link-loss detection is gone** — the eio worker's liveness timeout
+  AND its state-notify hook are both feature-gated upstream. The interface
+  still goes Active on traffic (the frame processor does that), but never
+  Inactive. The ISR-side command-staleness deadman remains the failsafe
+  for a dead UART link; USB liveness is unconditional in ergot and still
+  works.
+- `state_monitor` polls every 250 ms (via the monotonic) as a fallback for
+  the missing UART state-notify, else a UART-only link-up would never be
+  observed and the link gate would hold the motor Stopped.
+- Timer-wake latency for ergot's embassy-time users is now dispatcher-
+  priority (µs-scale) instead of ISR-priority — irrelevant at their
+  ms-scale timeouts.
+
+Size: release text 346,060 (+7.7 KB over step 2) — the bridge plus
+monomorphization shifts (detection re-instantiated with `MonoTimer`,
+non-power-of-2 tick divisions); .data drops 1 KB (gp16 DRIVER static gone),
+.bss +1 KB (queue moved into our driver). The clean way to reclaim all of
+this later is an ergot time abstraction over the ~5 listed call sites —
+then embassy-time, the bridge, and the queue all leave the build.
+
 ## Flash / RAM vs. the embassy baseline
 
 Release builds, default features (`transport-usb,transport-uart,board-cf2`),

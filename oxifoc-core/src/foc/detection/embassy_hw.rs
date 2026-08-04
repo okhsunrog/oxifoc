@@ -20,7 +20,7 @@ use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult}
 use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
 use crate::state::{self, MotorControlState};
-use crate::timer::EmbassyTimer;
+use crate::timer::{EmbassyTimer, Timer};
 
 // Re-export types from core for convenience
 pub use crate::foc::detection::sweep::{DetectionParams, DetectionResult};
@@ -125,6 +125,12 @@ impl HallReader for EmbassyHallReader {
 // Public API
 // ============================================================================
 
+// The `*_with_timer` variants exist for platforms whose async delays do NOT
+// run on embassy-time (the RTIC port experiment passes its rtic-monotonics
+// backed timer): the `sweep` fns underneath are already generic over
+// [`Timer`], these wrappers only differ in who pins the type. The original
+// names keep pinning [`EmbassyTimer`] so existing platforms are untouched.
+
 /// Measure motor phase resistance.
 pub async fn measure_resistance(
     params: &ResistanceParams,
@@ -134,8 +140,20 @@ pub async fn measure_resistance(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
+    measure_resistance_with_timer::<EmbassyTimer>(params, state_mutex, ia, ib, ic, board).await
+}
+
+/// [`measure_resistance`] with a caller-chosen [`Timer`] impl.
+pub async fn measure_resistance_with_timer<T: Timer>(
+    params: &ResistanceParams,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
+) -> Result<f32, DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
-    sweep::measure_resistance::<_, EmbassyTimer>(&mut hw, params).await
+    sweep::measure_resistance::<_, T>(&mut hw, params).await
 }
 
 /// Measure motor inductance: rotating HFI with voltage-pulse fallback
@@ -150,14 +168,35 @@ pub async fn measure_inductance<S: SinCos>(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<(f32, f32), DetectionError> {
+    measure_inductance_with_timer::<EmbassyTimer, S>(
+        params,
+        pwm_freq_hz,
+        state_mutex,
+        ia,
+        ib,
+        ic,
+        board,
+    )
+    .await
+}
+
+/// [`measure_inductance`] with a caller-chosen [`Timer`] impl.
+pub async fn measure_inductance_with_timer<T: Timer, S: SinCos>(
+    params: &InductanceParams,
+    pwm_freq_hz: f32,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
+) -> Result<(f32, f32), DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     // Experiment build (`impedance-sweep`): replace the normal L step with a
     // one-lock R(f)/L(f) frequency sweep, logged to RTT. Same safe lock + probe.
     #[cfg(feature = "impedance-sweep")]
-    return sweep::measure_impedance_sweep::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz)
-        .await;
+    return sweep::measure_impedance_sweep::<_, T, S>(&mut hw, params, pwm_freq_hz).await;
     #[cfg(not(feature = "impedance-sweep"))]
-    sweep::measure_inductance_auto::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz).await
+    sweep::measure_inductance_auto::<_, T, S>(&mut hw, params, pwm_freq_hz).await
 }
 
 /// Measure motor flux linkage via open-loop spinning.
@@ -176,8 +215,20 @@ pub async fn measure_flux_linkage(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
+    measure_flux_linkage_with_timer::<EmbassyTimer>(params, state_mutex, ia, ib, ic, board).await
+}
+
+/// [`measure_flux_linkage`] with a caller-chosen [`Timer`] impl.
+pub async fn measure_flux_linkage_with_timer<T: Timer>(
+    params: &FluxLinkageParams,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
+) -> Result<f32, DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
-    sweep::measure_flux_linkage_auto::<_, EmbassyTimer>(&mut hw, params).await
+    sweep::measure_flux_linkage_auto::<_, T>(&mut hw, params).await
 }
 
 /// Run full motor parameter detection sequence.
@@ -189,8 +240,20 @@ pub async fn run_full_detection<S: SinCos>(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<DetectionResult, DetectionError> {
+    run_full_detection_with_timer::<EmbassyTimer, S>(params, state_mutex, ia, ib, ic, board).await
+}
+
+/// [`run_full_detection`] with a caller-chosen [`Timer`] impl.
+pub async fn run_full_detection_with_timer<T: Timer, S: SinCos>(
+    params: DetectionParams,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
+) -> Result<DetectionResult, DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
-    sweep::run_full_detection::<_, EmbassyTimer, S>(&mut hw, params).await
+    sweep::run_full_detection::<_, T, S>(&mut hw, params).await
 }
 
 /// Run Hall sensor calibration.
@@ -203,9 +266,31 @@ pub async fn calibrate_hall(
     board: &'static BoardConfig,
     read_hall_fn: fn() -> u8,
 ) -> Result<HallCalibrationResult, DetectionError> {
+    calibrate_hall_with_timer::<EmbassyTimer>(
+        params,
+        state_mutex,
+        ia,
+        ib,
+        ic,
+        board,
+        read_hall_fn,
+    )
+    .await
+}
+
+/// [`calibrate_hall`] with a caller-chosen [`Timer`] impl.
+pub async fn calibrate_hall_with_timer<T: Timer>(
+    params: HallCalibrationParams,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    ia: &'static AtomicU16,
+    ib: &'static AtomicU16,
+    ic: &'static AtomicU16,
+    board: &'static BoardConfig,
+    read_hall_fn: fn() -> u8,
+) -> Result<HallCalibrationResult, DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     let reader = EmbassyHallReader::new(read_hall_fn);
-    sweep::calibrate_hall::<_, EmbassyTimer, _>(&mut hw, &reader, params).await
+    sweep::calibrate_hall::<_, T, _>(&mut hw, &reader, params).await
 }
 
 /// Calibrate Hall sensors with default parameters.
