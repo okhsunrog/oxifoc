@@ -294,6 +294,22 @@ their section.
   queue (64K vs the firmware's 2K — tens of ms of tokio jitter must not
   fake losses that embassy doesn't have) and a half-batch drain cadence.
 
+- **2026-08-05 — config-validation split: rich validation belongs to
+  host-lib; the device only refuses what it would not apply.** There is
+  exactly one host funnel (host-lib — CLI, GUI and benchsuite all ride
+  it) and writing to the device around ergot is impractical, so
+  field-level validation with actionable messages is implemented once,
+  host-side (open item in TODO). The device keeps three narrow gates,
+  none of which "validates the host": (1) the boot gate over its own
+  flash — old blobs and layout drift never pass through host-lib at
+  all; (2) the config endpoint mirrors the pre-existing ISR command
+  gate (`DriverCommand::is_sane`), so a write the driver would silently
+  drop is refused loudly instead of acknowledged-and-ignored (the
+  masking failure found in the 2026-07 review); (3) groups nothing
+  consumes are rejected — the device is the source of truth for its own
+  capabilities, same as the persist-capable flag. The stale-host layout
+  class is closed by the planned schema hash, not by per-field checks.
+
 ## Virtual motor / tests
 
 - **2026-06-10 — new plant effects only behind optional parameters with

@@ -49,6 +49,13 @@ have drifted — anchors are function/area names.
 
 ### Host
 
+- [ ] **Rich config validation in host-lib** (the single funnel — CLI,
+  GUI and benchsuite all go through it): per-field range checks with
+  actionable messages BEFORE sending. The device's write gate only
+  mirrors its ISR-side sanity verdict and answers a bare `Invalid` with
+  no field or reason; units, typical ranges and cross-field help belong
+  here, once. See decisions.md 2026-08-05 (config-validation split).
+
 - [ ] **GUI MotorParams write wipes `ld/lq_fundamental_h`**
   (struct-literal `..Default::default()` instead of read-modify-write;
   the CLI JSON RMW path preserves them). Same class: GUI Velocity
