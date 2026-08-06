@@ -62,7 +62,9 @@ oxifoc-core = { path = "oxifoc-core" }
 # Git deps are pinned to revs for reproducible builds (CI runs with --locked).
 # To bump: update the rev here AND in the excluded device crates' Cargo.toml
 # (oxifoc-g474/f405/bridge/remote), then refresh all Cargo.lock files.
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "8d7db27e030564a048eb16c90080ae6730d14e11" }
+# ergot rev = upstream main HEAD 2026-08-06 (edge_link_local ctor +
+# revert-to-link-local liveness policy + the #217 soundness batch)
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "5a5fab8234339ecdc252e18c41ef2676bd6bb091" }
 tokio = { version = "1.45", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

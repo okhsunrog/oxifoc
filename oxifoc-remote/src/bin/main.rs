@@ -20,9 +20,7 @@ use embassy_futures::select::{Either, select};
 use embassy_time::Timer;
 
 use ergot::NetStack;
-use ergot::interface_manager::profiles::direct_edge::{
-    DirectEdge, EDGE_NODE_ID, EdgeFrameProcessor,
-};
+use ergot::interface_manager::profiles::direct_edge::{DirectEdge, EdgeFrameProcessor};
 use ergot::interface_manager::utils::framed_stream;
 use ergot::interface_manager::{FrameProcessor, InterfaceState, Profile};
 
@@ -246,18 +244,12 @@ async fn nus_session<C: Controller>(
         }
     };
 
-    // Activate the ergot interface with link-local addressing (net 0): the
-    // real net_id is whatever the bridge's seed lease assigned to this BLE
+    // Activate the ergot interface with link-local addressing: the real
+    // net_id is whatever the bridge's seed lease assigned to this BLE
     // segment, and the edge processor discovers it from the first inbound
     // frame. A guessed constant here would race the lease allocation.
     stack.manage_profile(|im| {
-        let _ = im.set_interface_state(
-            (),
-            InterfaceState::Active {
-                net_id: 0,
-                node_id: EDGE_NODE_ID,
-            },
-        );
+        let _ = im.set_interface_state((), InterfaceState::edge_link_local());
     });
     transport::STATE_NOTIFY.wake_all();
 

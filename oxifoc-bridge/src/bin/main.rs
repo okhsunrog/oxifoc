@@ -21,9 +21,7 @@ use embassy_futures::select::{Either3, select3};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 
 use ergot::NetStack;
-use ergot::interface_manager::profiles::direct_edge::{
-    CENTRAL_NODE_ID, EDGE_NODE_ID, EdgeFrameProcessor,
-};
+use ergot::interface_manager::profiles::direct_edge::{CENTRAL_NODE_ID, EdgeFrameProcessor};
 use ergot::interface_manager::profiles::router::{RouterFrameProcessor, UPSTREAM_IDENT};
 use ergot::interface_manager::utils::{cobs_stream, framed_stream};
 use ergot::interface_manager::{FrameProcessor, InterfaceState, LivenessConfig, Profile};
@@ -137,6 +135,9 @@ async fn main(spawner: Spawner) -> ! {
             .with_liveness(LivenessConfig {
                 timeout_ms: transport::LIVENESS_TIMEOUT_MS,
             })
+            // Upstream policy: a quiet line reverts to link-local (transmit
+            // stays ungated for the bootstrap ping) instead of Inactive.
+            .revert_to_link_local_on_timeout()
             .with_state_notify(&transport::STATE_NOTIFY);
 
     // Spawn UART TX worker
@@ -171,14 +172,7 @@ async fn main(spawner: Spawner) -> ! {
                 let scratch_buf = SCRATCH_BUF.init_with(|| [0u8; 64]);
                 loop {
                     let res = uart_rx_worker
-                        .run(
-                            InterfaceState::Active {
-                                net_id: 0,
-                                node_id: EDGE_NODE_ID,
-                            },
-                            recv_buf,
-                            scratch_buf,
-                        )
+                        .run(InterfaceState::edge_link_local(), recv_buf, scratch_buf)
                         .await;
                     error!("[uart] rx worker error ({:?}), restarting", res.err());
                     Timer::after_millis(100).await;
@@ -254,10 +248,10 @@ fn upstream_discovered(stack: &'static transport::Stack) -> bool {
 ///
 /// The edge-style upstream learns its net_id from the first frame addressed
 /// to the bridge, so somebody has to provoke that frame: a link-local ping to
-/// the root does it. The steady-state ping doubles as a keepalive that stops
-/// the liveness window from marking a quiet-but-healthy line Inactive. After
-/// a genuine quiet period the interface IS Inactive and TX is gated off —
-/// re-arm link-local addressing first so the ping can leave at all.
+/// the root does it. The steady-state ping doubles as a keepalive that keeps
+/// the liveness window fed. Transmit stays open across quiet periods — the
+/// worker's `revert_to_link_local_on_timeout` policy handles that — so this
+/// task only ever needs to ping.
 #[allow(
     clippy::large_stack_frames,
     reason = "the ergot request future dominates; this future lives in main's \
@@ -266,22 +260,6 @@ fn upstream_discovered(stack: &'static transport::Stack) -> bool {
 async fn upstream_link_task(stack: &'static transport::Stack) {
     let mut seq: u32 = 0;
     loop {
-        if !upstream_discovered(stack) {
-            stack.manage_profile(|router| {
-                if matches!(
-                    router.interface_state(UPSTREAM_IDENT),
-                    Some(InterfaceState::Inactive)
-                ) {
-                    let _ = router.set_interface_state(
-                        UPSTREAM_IDENT,
-                        InterfaceState::Active {
-                            net_id: 0,
-                            node_id: EDGE_NODE_ID,
-                        },
-                    );
-                }
-            });
-        }
         seq = seq.wrapping_add(1);
         let _ = with_timeout(
             Duration::from_millis(750),
