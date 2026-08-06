@@ -190,31 +190,11 @@ pub async fn fault_server<NS, F, const N: usize>(
     }
 }
 
-/// Configuration server - handles config read/write/reset requests
-///
-/// Reads from the shared RuntimeConfig. Two write modes:
-///
-/// * `persist = true` — writes go through FLASH_CHANNEL to the platform's
-///   storage worker task, then mirror into RAM. Writes are refused with
-///   [`ConfigResponse::Busy`] while the motor is running: internal-flash
-///   erase stalls the whole chip (single-bank parts; up to seconds for an
-///   F4 sector), which would starve the FOC ISR with the motor energized.
-/// * `persist = false` — **RAM-backed**: no flash exists (baked-config
-///   profile); writes update the in-RAM config + live-apply only. Nothing
-///   can stall, so writes are allowed with the motor running — live tuning
-///   on the bench. Lost at reboot by design: the host extracts the result
-///   with `config dump --rust` and bakes it into the next build.
-///
-/// `hw_max_current_a` is the board's hardware phase-current ceiling —
-/// current-limit writes are clamped to it and applied to the live driver
-/// via [`DriverCommand::SetCurrentLimits`] on the command channel.
-#[cfg(feature = "storage")]
-
 /// Per-group boundary validation for config writes: every malformed write
 /// fails loudly with `Invalid` instead of persisting garbage or a silent
 /// no-op. (A sync helper, not match guards in the server: the float checks
-/// stay out of the task's future, which the g431 flash and RAM budgets
-/// both ride.)
+/// stay out of the task's future, which flash-tight boards' flash and RAM
+/// budgets ride.)
 ///
 /// - CurrentLimits: an incoherent limits pair must fail loudly — the
 ///   builder would clamp it silently, and the user has to learn the
@@ -234,6 +214,7 @@ pub async fn fault_server<NS, F, const N: usize>(
 ///   accepting the write would persist a silent no-op in exactly the
 ///   protection domain. Rejected until a consumer exists; reads of
 ///   previously-stored values still work.
+#[cfg(feature = "storage")]
 fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
     use crate::types::ConfigWrite;
     let counts_ok = |v: f32| (0.0..=f32::from(u16::MAX)).contains(&v);
@@ -249,6 +230,26 @@ fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
         _ => true,
     }
 }
+
+/// Configuration server - handles config read/write/reset requests
+///
+/// Reads from the shared RuntimeConfig. Two write modes:
+///
+/// * `persist = true` — writes go through FLASH_CHANNEL to the platform's
+///   storage worker task, then mirror into RAM. Writes are refused with
+///   [`ConfigResponse::Busy`] while the motor is running: internal-flash
+///   erase stalls the whole chip (single-bank parts; up to seconds for an
+///   F4 sector), which would starve the FOC ISR with the motor energized.
+/// * `persist = false` — **RAM-backed**: no flash exists (baked-config
+///   profile); writes update the in-RAM config + live-apply only. Nothing
+///   can stall, so writes are allowed with the motor running — live tuning
+///   on the bench. Lost at reboot by design: the host extracts the result
+///   with `config dump --rust` and bakes it into the next build.
+///
+/// `hw_max_current_a` is the board's hardware phase-current ceiling —
+/// current-limit writes are clamped to it and applied to the live driver
+/// via [`DriverCommand::SetCurrentLimits`] on the command channel.
+#[cfg(feature = "storage")]
 pub async fn config_server<NS, const N: usize>(
     endpoints: Endpoints<NS>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
@@ -334,8 +335,8 @@ pub async fn config_server<NS, const N: usize>(
                         // Boundary validation, before any persistence —
                         // the per-group rules live in `write_is_acceptable`
                         // (a sync helper: it keeps the float checks out of
-                        // this task's future, which both the g431 flash and
-                        // RAM budgets ride).
+                        // this task's future, which flash-tight boards'
+                        // flash and RAM budgets ride).
                         ConfigRequest::Write(ref w) if !write_is_acceptable(w) => {
                             ConfigResponse::Invalid
                         }

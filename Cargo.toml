@@ -9,18 +9,16 @@ members = [
     "oxifoc-virtual",
 ]
 exclude = [
-    "oxifoc-g431",    # Different toolchain (thumbv7em-none-eabihf)
     "oxifoc-g474",    # Different toolchain (thumbv7em-none-eabihf)
     "oxifoc-f405",    # Different toolchain (thumbv7em-none-eabihf)
     "oxifoc-bridge",  # Different toolchain (riscv32imac-unknown-none-elf, ESP32-C6)
     "oxifoc-remote",  # Different toolchain (riscv32imac-unknown-none-elf, ESP32-C6)
-    "tests/stm32g431", # On-target integration tests
     "tests/stm32g474", # On-target integration tests
     "tests/stm32f405", # On-target integration tests
 ]
 
 # Curated strict lints; members opt in via `[lints] workspace = true`.
-# The excluded device crates (oxifoc-g431/g474/f405, bridge, remote, tests/*)
+# The excluded device crates (oxifoc-g474/f405, bridge, remote, tests/*)
 # carry a verbatim copy of these tables — keep them in sync when editing.
 [workspace.lints.rust]
 unused_qualifications = "warn"
@@ -63,8 +61,7 @@ strip = true
 oxifoc-core = { path = "oxifoc-core" }
 # Git deps are pinned to revs for reproducible builds (CI runs with --locked).
 # To bump: update the rev here AND in the excluded device crates' Cargo.toml
-# (oxifoc-g431/g474/f405/bridge/remote), then refresh all Cargo.lock files.
-# ergot rev = upstream main HEAD (udp-link-local fix merged)
+# (oxifoc-g474/f405/bridge/remote), then refresh all Cargo.lock files.
 ergot = { git = "https://github.com/okhsunrog/ergot", rev = "8d7db27e030564a048eb16c90080ae6730d14e11" }
 tokio = { version = "1.45", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

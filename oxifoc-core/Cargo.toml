@@ -99,7 +99,7 @@ hfi = []
 # HFI-based inductance/saliency detection: rotating HF injection + FFT
 # (microfft). Builds on `detection`. When off, `measure_inductance_auto`
 # uses the voltage-pulse method only — wanted on non-salient boards (drone
-# outrunners) and to drop the FFT on flash-tight boards (g431).
+# outrunners) and to drop the FFT on flash-tight boards.
 hfi-detect = ["detection", "dep:microfft"]
 
 # Bench experiment: replace the inductance step with a one-lock R(f)/L(f)

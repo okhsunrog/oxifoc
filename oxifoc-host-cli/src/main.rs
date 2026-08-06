@@ -173,7 +173,7 @@ struct Cli {
     #[arg(long)]
     probe: Option<String>,
 
-    /// Target chip name (e.g., STM32G431CBUx). Required for RTT transport.
+    /// Target chip name (e.g., STM32F405RGTx). Required for RTT transport.
     #[arg(long)]
     chip: Option<String>,
 

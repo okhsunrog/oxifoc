@@ -31,6 +31,15 @@ their section.
 
 ## Firmware / platform
 
+- **2026-08-06 — g431 (B-G431B-ESC1) support is DROPPED entirely** —
+  crate, on-target tests, CI/justfile steps deleted. The board only ever
+  existed for the first bringup; every core feature since has been a
+  fight against its 128K flash / 32K RAM walls (baked-only profile,
+  isr-profiling gate, .ccmdata moves), and the 2026-08 ergot repin
+  finally pushed the default profile ~3 KB past the wall. Not worth
+  maintaining for a board that won't be used again. Board notes and the
+  g431 bench protocol live in docs/archive/; size history stays in
+  flash-size.md. [flash-size.md → history]
 - **2026-06-11 — g431 defaults to the baked-config profile.** Runtime
   flash persistence cost −25.5 KB (config server + sequential-storage +
   postcard codecs). Workflow: detect → live tuning → `config dump --rust`

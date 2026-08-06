@@ -1,8 +1,0 @@
-disallowed-methods = [
-    { path = "f32::clamp", reason = "pulls in panic + core::fmt::float (~20KB on embedded). Use oxifoc_core::foc::clamp_f32" },
-    { path = "f64::clamp", reason = "pulls in panic + core::fmt::float (~20KB on embedded). Use oxifoc_core::foc::clamp_f32" },
-]
-
-# large_futures threshold: on a small-RAM MCU futures above this deserve
-# a look at what they hold across await points (default 16 KB = never fires).
-future-size-threshold = 2048

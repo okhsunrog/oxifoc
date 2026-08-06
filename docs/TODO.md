@@ -1038,7 +1038,9 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
 
 ## Sensorless tracking / BEMF (bench-blocked)
 
-- [ ] Bring up the B-G431B-ESC1 phase dividers (BEMF sense) as ADC channels.
+- [ ] Bring up the phase voltage dividers (BEMF sense) as ADC channels —
+  first board with usable-under-PWM sensing is the MK5
+  ([notes/phase-sense.md](notes/phase-sense.md) Phase 2).
 - [ ] MESC-style TRACKING: gates off → measured v_αβ into the observer →
   flying start from a converged observer. Hall-based already works; this
   is the sensorless case. Also unlocks the spin-down flux method on
@@ -1140,7 +1142,9 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
   Validated: full benchsuite PASS pure-USB (captures/bench/cf2-usb-1),
   device markers + isr/s over USB at the full log rate. The
   transport-rtt bench interim is no longer required.
-- [ ] **embassy-time thread-timer freeze under ISR load (g431, 2026-07-05)** —
+- [ ] **embassy-time thread-timer freeze under ISR load (observed on the
+  g431 bench 2026-07-05; the board is gone but the gp16 time driver is
+  shared — re-check if thread timers misbehave on f405/g474)** —
   moving the RTT TX loop to a SAI1 InterruptExecutor (P6) froze ALL
   thread-executor embassy timers for a deterministic ~44.93 s while
   detection+streaming ran (1 Hz stats task, 4 ms detect-ramp timers, a
@@ -1231,10 +1235,10 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
   `run_protection` 2026-06-13). Move the rest of the ISR glue into core
   BEFORE reviving g474 (otherwise it will reproduce already-fixed F405
   bugs). Same refactor should absorb the `init_foc` boot-sequence tail,
-  duplicated byte-for-byte across g431/g474/f405: `set_failsafe` /
+  duplicated byte-for-byte across g474/f405: `set_failsafe` /
   `set_velocity_config` / `set_derating` from stored config, the ADC
   settle delay, `calibrate().await`, the DcOffsets publish block, and
-  the `FOC_DRIVER` install. No technical blocker — all three crates
+  the `FOC_DRIVER` install. No technical blocker — both crates
   declare the identical `Mutex<RefCell<oxifoc_core::storage::RuntimeConfig>>`
   static, so a core helper taking `&'static` refs works as-is; the
   g474 DcOffsets miss caught in the 2026-07 branch review is exactly
@@ -1244,7 +1248,7 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
 - [ ] **Migrate G474 current-offset calibration before enabling its motor
   path.** `oxifoc-g474/src/control/foc.rs` still uses the legacy async
   `calibrate().await` routine while its FOC ISR is dormant. Once the ISR is
-  activated, port the G431/F405 sequence: enable only the TIM1 CH4 ADC
+  activated, port the F405 sequence: enable only the TIM1 CH4 ADC
   trigger initially, install the driver with
   `CurrentOffsetRequest::boot()`, let the shared ISR-owned VESC per-phase
   state machine collect/apply offsets, publish `DcOffsets`, and release the
@@ -1259,7 +1263,7 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
     autonomous (fixed Vref ≈30 A); PB4 is the threshold of a separate
     U23 → CPOUT → TIM1_ETR.
   - BKIN PA6 (AF6) active-LOW + BKF; optional PA11 = BKIN2; BKIN flag in
-    the FOC ISR + MOE re-arm (port from g431).
+    the FOC ISR + MOE re-arm (port from f405).
   - Injected ADC per the mapping (ADC1 PA0/PA1/PC2, ADC2 PC1/PC0,
     TRGO2); delete the commented-out internal-OPAMP plan in
     peripherals.rs.
@@ -1293,8 +1297,6 @@ and the item above). Remaining:
 Current numbers and rules — [flash-size.md](flash-size.md); benchmarks —
 [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 
-- [ ] f405/g474 build with `opt-level = 3`, g431 with `"z"` — deliberate,
-  but unmeasured: what `"z"` would cost f405/g474 in ISR time.
 - [x] Live ISR load counter — DONE on g431 2026-07-05 (DWT CYCCNT
   avg/max/load 1 Hz over defmt, `isr/s:` line; g474/f405 still pending).
   First real numbers, and they are damning: **Stopped + 20 kHz stream =
@@ -1486,72 +1488,9 @@ the sim = batch tick).
   sensing → unblocks [notes/phase-sense.md](notes/phase-sense.md)
   Phase 2.
 
-### Bench session 2026-07-05 (g431 + ZD2808) — detection re-measured, with recording
-
-First detection run with full telemetry recording (the original goal of the
-RTT pipeline work). Setup: B-G431B-ESC1 + ZD2808 (wye, 7 pp), 12 V / 4 A PSU,
-firmware at 295a800 (transport-rtt + detection), `--record-hz 10000` (M=2,
-loss-free; M=1 loses ~half the samples during detection — see the ISR-load
-item under Size / performance).
-
-| step | 2026-07-05 | 2026-06-13 | notes |
-|------|------------|------------|-------|
-| R    | **0.1271 Ω** (recorded, 71 k rows 0 gaps) / 0.1273 no-record | 0.127 | ΔV/ΔI recomputed from the capture = 0.127 ✓; LCR 0.104/ph + dead-time |
-| Ld/Lq | **85.7 / 129.4 µH** (no-record — MUST run unrecorded, see Firmware/core item) | 86 / 122 | pulse ≈ DC L; AC L stays ~24 µH (eddy currents, known) |
-| λ    | **1.2786 mWb** (recorded, 111 k rows 0 gaps, spin confirmed 700 eRPM) | 1.30 | expected ≈1.13 → bias REPRODUCED, then RESOLVED (below) |
-| Kv   | **616 RPM/V** | 611 (after √3 fix) | nameplate 700 |
-
-Everything reproduces June within ~2 % — June's numbers were solid (they were
-taken without recording, so the ISR-trigger-loss bug never touched them).
-Captures: `captures/detect-r-10k.parquet`, `detect-flux-10k.parquet`
-(`detect-l-10k.parquet` exists but its device result is the distorted one).
-
-**λ +13 % bias RESOLVED (same session, offline analysis of the capture +
-validation run).** The back-EMF-vector λ at one speed carries an additive
-`V_err/ω` bias: regressing the capture's per-window λ against 1/ω over the
-ramp (iq held at 2 A) gives a clean fit (rms ~1 %) with **λ_true =
-1.145 mWb** (intercept) and **V_err ≈ 9 mV** — the residual bridge/dead-time
-error after compensation (0.38 V raw → 9 mV ≈ 97.6 % cancelled). At the
-default `--erpm 700` the BEMF is only ~0.09 V (vs R·i ≈ 0.25 V), so 9 mV =
-+12 %; the measurement regime is just too slow for a 12 V low-λ drone motor.
-Validation: `detect flux --erpm 2800` → device reported **1.1673 mWb / Kv
-675**, within 0.8 % of the model's prediction (1.176). True Kv ≈ **688** —
-1.7 % off the nameplate 700. Motor and firmware math are fine.
 - [ ] flux step: raise the default spin speed (scale `openloop_erpm` to the
   motor: target BEMF ≥ R·I, e.g. ω ≥ 3·R·I/λ_est) and/or measure at 2–3
   speeds and extrapolate 1/ω → 0 device-side; document the bias otherwise.
-
-### Bench session 2026-06-13 (g431 + ZD2808 700 KV sensorless) — findings
-
-First real-hardware run of the g431 firmware on a sensorless drone motor
-(ZD2808, 700 KV, 7 pp; 12 V / 4 A lab PSU). Detection ran end-to-end:
-
-- [x] **HW comparator OCP — RESOLVED 2026-06-13: unusable on this board, break
-  disabled.** Proven by on-device DAC sweep + stm32-data + host PWM test (full
-  account in docs/hw/b-g431b-esc1.md). COMP1/2/4 tap the *raw shunt pad* (idle
-  128 mV, slope only R_shunt×4/7 ≈ 1.71 mV/A — the ×16 PGA is downstream, so the
-  comparator never sees the amplified signal), not the op-amp output. No current
-  threshold clears the PWM switching-noise band; even ST's near-rail DAC=4083
-  (≈3.29 V), with the break enabled, trips to Error on the *first* PWM-output
-  enable every time (capacitive gate-drive transient spikes the hi-Z pad to the
-  rail) → the motor can't start. ST parks the DAC at the rail (≈1850 A-equiv =
-  effectively off) and relies on software OCP; so do we. `set_break_enable(false)`
-  in `motor.rs`; COMP+DAC still configured near-rail for one-line re-arm *if*
-  ST-style enable-sequencing (boot-cap-charge + non-fatal enable-window break) is
-  added. Real protection = software measured-OC (40 A, ×9.14 ADC) + PSU CC.
-- [x] **Detection biases — ALL three explained/fixed** (kept as a pointer;
-  the original item's dead-time theory for L was WRONG). (1) L 3.6–5×
-  "high": the pulse method measures ~DC L and L is genuinely
-  frequency-dependent (eddy currents, NOT dead-time — disproven on HW
-  2026-06-13c, see
-  [notes/inductance-freq-detection.md](notes/inductance-freq-detection.md));
-  the remaining gap is control-grade AC-L from detection — open item in
-  «Algorithms». (2) λ +15 %: resolved 2026-07-05 — additive `V_err/ω`
-  bias at the slow default spin, λ_true = 1.145 mWb (see the 2026-07-05
-  bench section above). (3) Kv ×√3: fixed 2026-06-13 (`calculate_kv`
-  carries the phase→line factor; verified 616–688 vs nameplate 700).
-
-
 
 - [ ] **Hall timer-capture validation** (2026-06-10 migration): turn by
   hand — sequence 1→3→2→6→4→5, velocity without the 2× skew,
@@ -1578,10 +1517,9 @@ First real-hardware run of the g431 firmware on a sensorless drone motor
   delivery may add more), verify the |Z| cross-check stays quiet, and
   cross-check the detected L against the Flipsky LCR numbers (mind the
   small-signal-vs-incremental saturation difference).
-- [ ] OCP with the BKF break filter under real load (g431).
 - [ ] Dead-time compensation at low speed.
 - [ ] Hall dropout at speed and the sensorless crossover.
-- [ ] HFI on the real B-G431B-ESC1: the carrier amplitude is now solved
+- [ ] HFI on real hardware: the carrier amplitude is now solved
   from the measured L (Flipsky: ~25 µH equivalent, saliency Lq/Ld ≈ 1.5
   per LCR and VESC detection — HFI is physically meaningful); verify the
   2 A ripple target on hardware, tune the polarity-probe

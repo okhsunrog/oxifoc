@@ -6,31 +6,34 @@ what has been done, and what reserves exist when a board runs out
 again. Perf-side numbers (cycle counts) live in
 [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 
-## Current state (2026-06-13, after the g431 HFI/six-step slim)
+## Current state
 
 | board | profile | flash used | flash region | headroom | static RAM (.data+.bss) | RAM region |
 |---|---|---|---|---|---|---|
-| g431 (B-G431B-ESC1) | **baked (the only profile)** | 114 580 (87%) | **128K** (no storage region) | **16.1 KB** | **18 712** | **32K** |
 | g474 (Nucleo + IHM08M1) | storage | 171 784 | 256K (bank 1; bank 2 = config) | 88 KB | 21 748 | 128K |
 | f405 | storage | 271 732 | 768K (sectors 0–9) | 503 KB | 32 236 | 128K (+64K CCM unused) |
 
-g431 drops three things the drone board doesn't use, behind feature flags so
-the roomy boards keep them: **six-step** (removed for all boards), **`hfi`**
-(runtime HFI sensorless observer) and **`hfi-detect`** (rotating-injection +
-FFT inductance measurement, pulls `microfft`). g474/f405 enable both HFI flags.
-See the history table and [decisions.md](decisions.md → Firmware / platform).
+(The flash-tight g431 board that drove most of the rules below was
+dropped 2026-08-06 — see the history table. The size discipline stays:
+the rules are what let a 128K board carry the full stack.)
+
+**Six-step** was removed for all boards; **`hfi`** (runtime HFI
+sensorless observer) and **`hfi-detect`** (rotating-injection + FFT
+inductance measurement, pulls `microfft`) are per-board feature flags —
+g474/f405 enable both. See the history table and
+[decisions.md](decisions.md → Firmware / platform).
 
 `flash used` = `.vector_table + .text + .rodata + .data` (everything
 that occupies flash; `.data` is load-image). Run `just size` for live
 numbers. Everything RAM not claimed by `.data+.bss` is stack —
 flip-link inverts the layout so the stack is bounded and overflow
-faults instead of corrupting statics; on g431 every static byte saved
-is a stack byte gained.
+faults instead of corrupting statics; on a RAM-tight board every static
+byte saved is a stack byte gained.
 
 ## How to measure
 
 - **`just size`** — builds all STM32 firmwares and prints used/total
-  per board. Run it after any feature lands on g431.
+  per board. Run it after any feature lands in firmware.
 - **`cargo bloat --release --crates`** (in the firmware crate) — per-crate
   split. Caveats: embassy_executor's share is mostly *your* task bodies
   inlined into `poll()`; `[Unknown]` is mostly ISRs (ADC1_2 = the FOC
@@ -50,13 +53,13 @@ is a stack byte gained.
 
 - **`.rodata` contents:**
   `arm-none-eabi-objcopy -O binary --only-section=.rodata <elf> /tmp/ro.bin && strings -n 8 /tmp/ro.bin`
-  — on g431 it is ~13.4 KB, of which ~8 KB are panic/expect strings
-  from dependencies (see *Dead ends*).
+  — measured ~13.4 KB on the g431, of which ~8 KB were panic/expect
+  strings from dependencies (see *Dead ends*).
 - The test crates (`tests/stm32*`) use `opt-level = "s"`; shipped
-  firmware uses `"z"` — relative comparisons transfer, absolute sizes
-  don't.
+  firmware uses its own per-board opt-level — relative comparisons
+  transfer, absolute sizes don't.
 
-### Measuring RAM (the g431-critical axis since 2026-06-13)
+### Measuring RAM
 
 - **`arm-none-eabi-size -A <elf>`** — `.data + .bss` = static RAM; the
   rest of the region is stack.
@@ -79,9 +82,10 @@ is a stack byte gained.
 
 ## Standing build configuration (already maximal)
 
-All three boards: `opt-level = "z"` (g431) / per-board, `lto = "fat"`,
-`codegen-units = 1`, `build-std = ["core"]` (rebuilds libcore at "z"
-instead of the shipped -O3), flip-link (RAM safety, not flash).
+All boards: per-board `opt-level`, `lto = "fat"`,
+`codegen-units = 1`, `build-std = ["core"]` (rebuilds libcore at the
+board's opt-level instead of the shipped -O3), flip-link (RAM safety,
+not flash).
 `debug = 2` costs zero flash — debug info is not loaded. There is no
 remaining "compiler flag" win; everything below is about code.
 
@@ -94,7 +98,7 @@ remaining "compiler flag" win; everything below is about code.
    site pays ~5 KB of flash (rem_pio2f + k_sinf/k_cosf + the entire
    f64 softfloat runtime) and ~6200 cycles/pair at runtime. Use the
    `SinCos` trait backends (`FastSinCos`, `CordicSinCos`) or
-   `fast_math`. As of 2026-06-11 the only libm left in g431 is
+   `fast_math`. As of 2026-06-11 the only libm left in firmware is
    `atanf` + `remainderf` (602 B, pure f32, kept for exactness) —
    check it stays that way:
 
@@ -116,7 +120,7 @@ remaining "compiler flag" win; everything below is about code.
 
 4. **New dependency? Check for a `defmt` feature** (`cargo info <crate>`)
    and enable it: switches the crate's internal asserts to interned
-   defmt strings and derives `Format` on its error types. Already on (all three boards):
+   defmt strings and derives `Format` on its error types. Already on (all boards):
    embassy-stm32/executor/sync/time/futures/embedded-hal, embassy-usb
    (f405/g474), postcard (`use-defmt`), heapless, embedded-io-async,
    sequential-storage, oxifoc-core. Deliberately off: `rtt-target/defmt` (defmt→RTT already
@@ -124,8 +128,8 @@ remaining "compiler flag" win; everything below is about code.
    pull a second defmt 0.3 next to 1.0).
 
 5. **Async task bodies are the biggest single symbols** — everything
-   awaited gets inlined into the task's `poll()`. A new server/task on
-   g431 is typically 1–10 KB of flash AND its full future size in
+   awaited gets inlined into the task's `poll()`. A new server/task is
+   typically 1–10 KB of flash AND its full future size in
    `.bss` (see *Measuring RAM*). Budget for both; run `just size`
    before and after.
 
@@ -178,112 +182,11 @@ remaining "compiler flag" win; everything below is about code.
 | 2026-06-13 | **six-step removed** entirely (`ControlMode::SixStep`, `motor::six_step`, host-cli) — unused | −812 B (→ 121 924, all boards: g474 −148, f405 −508) |
 | 2026-06-13 | **`hfi-detect` feature gate** (HFI inductance: rotating injection + FFT, `microfft`); g431 off → voltage-pulse only. The visible `microfft` symbols are ~588 B; the rest is the sweep monomorphized over SinCos/Hardware generics | **−6 076 B** (→ 115 848, headroom 15.2 KB) |
 | 2026-06-13 | **`hfi` feature gate** (runtime HFI sensorless observer + PhaseManager slot); g431 off (no saliency on a drone motor). `PhaseSource` Hfi* variants kept for wire compat, rejected at runtime | **−2 024 B** (→ 113 824, headroom 17.2 KB; RAM −440 B) |
+| 2026-08-06 | **g431 support dropped entirely** (bringup board only; the ergot repin pushed the default profile −3 000 B past the 128K wall and the maintenance treadmill wasn't worth a board that wouldn't be used again). The g431 profile/reserve sections that lived in this doc are in git history and [archive/b-g431b-esc1.md](archive/b-g431b-esc1.md) | crate deleted |
 
 Panic handler kept `defmt::error!("PANIC: {}", Display2Format(info))`:
 full panic text over RTT costs only 240 B once dependency fmt is gone
 (measured), and the gate-kill ordering in safety.rs is untouched.
-
-## g431 profiles: baked config (2026-06-11)
-
-The 2026-06-11 safety/velocity work (deadman + failsafe, parking brake,
-velocity loop, two config groups) cost **+6.2 KB** and dropped the g431
-storage-profile headroom to ~2 KB. Per-commit attribution (rebuilt at each
-commit): deadman+failsafe +3 344 B, brake+hardening +484 B, velocity loop
-+680 B, ControlledStop v2 +676 B, velocity config persistence +828 B.
-
-Measurements of candidate diets (temporary-patch builds, 2026-06-11):
-
-| build | size | note |
-|---|---|---|
-| full (detection + storage) | 124 880 | the crisis state |
-| no detection | 109 732 | −15.1 KB |
-| detection, **no storage** | 99 340 | −25.5 KB (!) |
-| no detection, no storage | 83 888 | −41.0 KB |
-
-Key finding: **flash storage + config server cost −25.5 KB**, far more than
-the −15.9 KB previously estimated — the config server drags in the postcard
-codecs for every group, the TOCTOU machinery and a fat ergot server state
-machine. So the decisive lever was removing runtime persistence, not
-detection.
-
-**Decision (2026-06-11): g431 defaults to the *baked-config* profile.**
-**Decision (2026-06-12): the g431 `storage` profile is REMOVED entirely** —
-the 2026-06-12 detection fixes (+1 760 B) overflowed the 124K storage layout
-by ~700 B, and rather than dieting a reserve profile nobody flashes, the
-board gave up runtime persistence for good. The 4K config region belongs to
-code now.
-
-What g431 has (the only profile):
-
-- Configuration is compiled in (`src/baked_config.rs`), memory.x grants the
-  full 128K to code, the config server runs RAM-backed (reads/writes/
-  live-apply work — live tuning on the bench — but nothing persists across
-  reboots; the server reports persist-capable = false). Detection stays in.
-  Workflow: flash → detect → tune live →
-  `oxifoc-host-cli config dump --rust > src/baked_config.rs` → rebuild →
-  reflash.
-- f405/g474 keep flash-backed storage as their default — they have flash to
-  spare and persistence is convenient there.
-
-Removed with the profile: `oxifoc-g431/src/storage.rs` (flash worker +
-sequential-storage), `memory-storage.x` + the `build.rs` feature switch and
-its `FIRMWARE_END_OFFSET` overlap assert (nothing to overlap any more),
-the `sequential-storage`/`embedded-storage-async`/`embassy-embedded-hal`
-deps, and the storage-profile steps in `just check`/`just size`. To ever
-bring it back: revert the removal commit — but it must re-fit in 124K.
-
-### Why NOT a separate detection firmware (the two-image idea, evaluated)
-
-A detect/run firmware split only makes sense if the detect image also
-*removes* run-only functionality — otherwise detect ⊇ run, and the moment
-run stops fitting, detect stopped fitting earlier. Right now a "detect
-image" would just be the run image + detection (+15.5 KB), pointless while
-a single image holds everything with ~24 KB of headroom. The ladder when
-pressure returns:
-
-1. **Now**: one g431 image, baked profile — detection + safety + velocity,
-   ~24 KB headroom.
-2. **When tight**: build with `--no-default-features --features
-   transport-uart` (detection off, −15.5 KB) — re-detection then needs a
-   temporary reflash with detection on.
-3. **Last resort**: the symmetric two-image split — requires core feature
-   gates for the *run-only* subsystems detection doesn't need (sensorless
-   estimators, velocity loop, failsafe machinery ≈ 8–13 KB): detect image =
-   run − those + detection. Only then are two images genuinely
-   complementary. Gating safety behind features is unpleasant; do this only
-   under real pressure.
-
-Additional measured idea for later: the per-config-group cost is dominated
-by postcard codecs (+828 B for a 3-field group) — check whether the
-`postcard_schema::Schema` derives are needed on-device at all or only by
-the host; gating them could shave ~1 KB per group.
-
-## Measured reserves (when g431 gets tight again)
-
-Measured 2026-06-11 by temporarily removing the root reference and
-letting fat LTO drop the subtree — re-verify when invoked, the numbers
-age:
-
-- **Runtime HFI (HfiObserver + polarity probe + injection plumbing)
-  behind a separate feature: not implemented, estimate if ever needed.**
-  The protocol enum PhaseSource cannot be gated (postcard indices); the
-  manager already degrades via `hfi: Option` + `HfiNotConfigured`. The
-  decision NOT to do it now — decisions.md 2026-06-12.
-- **`detection` off: −14.7 KB.** The gate already exists
-  (`oxifoc-core/detection`, default-on). Build the board with
-  `default-features = false` + the rest of its feature list.
-  `detection::types` and `pi_tuning` remain available unconditionally.
-  Trade-off: motor must be configured with known params from the host.
-- **`transport-rtt` instead of `transport-uart`: −2.6 KB.** Already a
-  feature flag. Trade-off: device only talks through a debug probe —
-  not for field use; default stays UART.
-- **No persistent storage: −25.5 KB measured 2026-06-11** (storage_worker
-  task + sequential-storage + flash driver + config server + postcard
-  codecs; the old −15.9 KB estimate missed the config-server share).
-  **Spent: this is now the only g431 configuration** (storage profile
-  removed 2026-06-12, see above) — no longer a reserve. The RAM-backed
-  config server itself is still compiled in; gating the per-group postcard
-  codecs (~1 KB/group, see above) remains an unspent idea.
 
 ## Dead ends (evaluated, rejected)
 

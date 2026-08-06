@@ -1,10 +1,10 @@
 # oxifoc — FOC motor controller monorepo
 
 # Device firmware crates (excluded from workspace, different toolchain)
-device_crates := "oxifoc-g431 oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
+device_crates := "oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
 
 # On-target test crates (run on hardware; compiled here so they don't rot)
-target_test_crates := "tests/stm32g431 tests/stm32g474 tests/stm32f405"
+target_test_crates := "tests/stm32g474 tests/stm32f405"
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
@@ -49,21 +49,11 @@ check-device:
     # f405 second board must not rot (default = board-cf2).
     echo "oxifoc-f405 (vesc6-mk5): build..."
     (cd oxifoc-f405 && cargo build --release --quiet --no-default-features --features transport-usb,transport-uart,board-vesc6-mk5 2>&1 | filter) || exit 1
-    # Restore the canonical CF2 ELF — same trap as the g431 below: the mk5
-    # variant overwrites target/…/oxifoc-f405, and flashing/decoding with a
-    # mismatched board ELF fails confusingly.
+    # LAST: restore the canonical CF2 ELF — the mk5 variant overwrites
+    # target/…/oxifoc-f405, and flashing/decoding with a mismatched board
+    # ELF fails confusingly.
     echo "oxifoc-f405 (cf2): restore canonical ELF..."
     (cd oxifoc-f405 && cargo build --release --quiet 2>&1 | filter) || exit 1
-    # g431 non-default profile must not rot (default = baked + detection):
-    # the detection-off reserve.
-    echo "oxifoc-g431 (no detection): build..."
-    (cd oxifoc-g431 && cargo build --release --quiet --no-default-features --features transport-uart 2>&1 | filter) || exit 1
-    # LAST: restore the canonical BENCH build so the ELF in target/ matches
-    # the flashed firmware. The host CLI pins the RTT control block to this
-    # ELF's _SEGGER_RTT — a stale variant ELF makes every attach fail with
-    # ControlBlockNotFound (bit three times on 2026-07-06 alone).
-    echo "oxifoc-g431 (bench rtt+detection): restore canonical ELF..."
-    (cd oxifoc-g431 && cargo build --release --quiet --no-default-features --features transport-rtt,detection,offset-diagnostics,isr-profiling 2>&1 | filter) || exit 1
 
 # Format all code (workspace + device crates)
 fmt:
@@ -78,17 +68,16 @@ fmt:
 # Run workspace tests
 test:
     cargo test --workspace
-    # HFI is behind features that are off by default (g431 drops both via
-    # exp/g431-flash-slim); the workspace pass above is g431's config. This
-    # pass runs the `hfi`/`hfi-detect`-gated tests (g474/f405 config).
+    # HFI is behind features that are off by default; this pass runs the
+    # `hfi`/`hfi-detect`-gated tests (g474/f405 config).
     cargo test -p oxifoc-core --features runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect
 
 # Build device firmware (release)
-build target="oxifoc-g431":
+build target="oxifoc-f405":
     cd {{ target }} && cargo build --release
 
 # Flash device firmware (release)
-flash target="oxifoc-g431":
+flash target="oxifoc-f405":
     cd {{ target }} && cargo run --release
 
 # Run host CLI with arguments
@@ -137,7 +126,6 @@ size:
         printf "%-24s %7d / %7d bytes (%2d%%), headroom %d\n" \
             "$label" "$used" "$limit" "$((used * 100 / limit))" "$((limit - used))"
     }
-    measure oxifoc-g431 oxifoc-g431 memory.x
     measure oxifoc-g474 oxifoc-g474 memory.x
     measure oxifoc-f405 oxifoc-f405 memory.x
 

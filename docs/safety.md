@@ -32,7 +32,7 @@ Status legend: **[done]** implemented · **[planned]** not yet · **[idea]** to 
 | 1. Link gate | Host disconnected / link silent | ergot liveness → `state_notify` → `state_monitor` clears `link_active` → FOC routes through the failsafe policy | liveness timeout (1 s) | **[done]** |
 | 2. ISR command-staleness deadman | Host alive but not commanding; **async executor hung** | Stamp `last_cmd_tick` in ISR when draining `CMD_CHANNEL`; if `now - last_cmd_tick > thr` → configurable failsafe mode | ~150 ms (configurable) | **[done]** |
 | 3. Panic/HardFault gate kill | **Firmware panicked / hard-faulted** | Custom handlers clear `TIM1 BDTR.MOE` (+ EN_GATE low on F405) *before* any reporting (`safety.rs` per board) | immediate | **[done]** |
-| 4. Independent watchdog (IWDG) | **FOC ISR itself stopped** (lockup, clock fault, priority lock) | IWDG petted from the FOC ISR; if even the ISR stops → MCU reset → PWM goes high-Z/off | 100 ms (G431) / 1 s (F405) | **[done]** (G474 pending — FOC ISR dormant) |
+| 4. Independent watchdog (IWDG) | **FOC ISR itself stopped** (lockup, clock fault, priority lock) | IWDG petted from the FOC ISR; if even the ISR stops → MCU reset → PWM goes high-Z/off | 3 s (F405) | **[done]** (G474 pending — FOC ISR dormant) |
 
 Key insight: Layer 1 is **async-executor-dependent** (liveness runs in the RX
 worker; `link_active` is cleared by the async `state_monitor`). If the executor
@@ -162,7 +162,7 @@ for inspection.
   write.
 - Timeout must outlive the longest CPU stall with no ISR running — an
   internal-flash erase stalls the chip since code executes from the same
-  flash: **100 ms on G431** (page erase ~25 ms), **3 s on F405** (the
+  flash: **3 s on F405** (the
   storage region uses the 128 KB sectors 10-11: erase is 1 s typical, up
   to 2 s at corners). Config writes are additionally blocked while
   the motor runs (Busy gate + `FLASH_OP_PENDING` TOCTOU guard), so a stall
@@ -222,7 +222,7 @@ feedforward applies `vq = ω·(Ld·id + λ)` from the very first cycle, so the
 PI loops start near the operating point instead of from zero. What is
 missing is the **sensorless** case (MESC's `MOTOR_STATE_TRACKING`): with
 the gates off there is no current to observe, so it requires the phase
-BEMF voltage dividers (the B-G431B-ESC1 has them) brought up as ADC
+BEMF voltage dividers (VESC-class boards have them) brought up as ADC
 channels + a tracking mode that feeds measured v_αβ to the observer while
 undriven. Bench-blocked; see TODO.
 

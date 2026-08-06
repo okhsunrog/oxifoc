@@ -115,8 +115,8 @@ Roles are determined by topology, not firmware — disconnect two controllers an
 
 | Board | MCU | Current Sensing | Communication | Gate Driver |
 |-------|-----|-----------------|---------------|-------------|
-| B-G431B-ESC1 | STM32G431CB | 3 op-amps (PGA x16) | UART / RTT | Integrated |
 | Cheap FOCer 2 | STM32F405RG | DRV8301 (10 V/V) | USB + UART | DRV8301 SPI |
+| Flipsky VESC 6 MK5 | STM32F405RG | DRV8301 (20 V/V) | USB + UART | DRV8301 SPI |
 | NUCLEO-G474RE + IHM08M1 | STM32G474RE | External op-amps | USB + LPUART | L6398 |
 
 All platforms: 20 kHz center-aligned PWM, TIM1-triggered injected ADC, Hall polling via TIM6 (5 us, 7-read majority voting), persistent config in internal flash (`sequential-storage` + `postcard`).
@@ -135,8 +135,8 @@ Transports: Serial (UART VCP), RTT (probe-rs), TCP (virtual), UDP (virtual), USB
 
 ```bash
 just check                # fmt + clippy + tests (workspace + all device firmware)
-just build oxifoc-g431    # Build device firmware (release)
-just flash oxifoc-g431    # Flash via probe-rs
+just build oxifoc-f405    # Build device firmware (release)
+just flash oxifoc-f405    # Flash via probe-rs
 just gui           # Run Slint GUI
 just cli -- list   # Run CLI
 ```
@@ -148,7 +148,7 @@ Device firmware requires Rust nightly (`thumbv7em-none-eabihf`). Host crates bui
 ```bash
 cargo test --workspace                              # Host tests
 cargo test -p oxifoc-core --features virtual-motor  # Virtual motor + detection
-cd tests/stm32g431 && cargo test                    # On-target (requires hardware)
+cd tests/stm32f405 && cargo test                    # On-target (requires hardware)
 ```
 
 ## Development Status

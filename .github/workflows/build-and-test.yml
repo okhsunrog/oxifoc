@@ -24,7 +24,7 @@ jobs:
 
       - name: install device toolchains
         run: |
-          for crate in oxifoc-g431 oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote; do
+          for crate in oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote; do
             channel=$(grep '^channel' "$crate/rust-toolchain.toml" | sed 's/.*= *"\(.*\)"/\1/')
             rustup toolchain install "$channel" --component rustfmt
           done
@@ -34,13 +34,13 @@ jobs:
 
       - name: format check (device crates)
         run: |
-          for crate in oxifoc-g431 oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote; do
+          for crate in oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote; do
             (cd "$crate" && cargo fmt --check)
           done
 
       - name: format check (on-target test crates)
         run: |
-          for crate in tests/stm32g431 tests/stm32g474 tests/stm32f405; do
+          for crate in tests/stm32g474 tests/stm32f405; do
             (cd "$crate" && cargo fmt --check)
           done
 
@@ -86,10 +86,10 @@ jobs:
 
       - name: oxifoc-core with HFI features (hfi + hfi-detect)
         # The Hfi* runtime observer and the FFT inductance path are behind
-        # features off by default (g431 drops both); the workspace pass above
-        # is g431's config. Without this, the gated tests (HFI estimator /
-        # crossovers, the inductance module, run_full_detection_high_r_low_vbus
-        # and _nonideal_plant_with_delay) would never run.
+        # features off by default; the workspace pass above runs without them.
+        # Without this, the gated tests (HFI estimator / crossovers, the
+        # inductance module, run_full_detection_high_r_low_vbus and
+        # _nonideal_plant_with_delay) would never run.
         run: >
           cargo test -p oxifoc-core --locked
           --features runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect
@@ -106,7 +106,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [oxifoc-g431, oxifoc-g474, oxifoc-f405]
+        target: [oxifoc-g474, oxifoc-f405]
     runs-on: ubuntu-latest
     defaults:
       run:

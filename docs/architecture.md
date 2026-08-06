@@ -105,7 +105,7 @@ where
 
 **Key simplification:** All phase/angle complexity is delegated to
 `PhaseProvider`. The fourth type parameter `S: SinCos` defaults to
-`LibmSinCos`; platforms with hardware trig (G431 CORDIC) substitute their own.
+`LibmSinCos`; platforms with hardware trig (G4 CORDIC) substitute their own.
 
 ### 2. PhaseProvider Trait
 
@@ -1155,13 +1155,13 @@ phase.configure_observers_from_config(&config, vbus);
 let driver = FocDriver::new(controller, pwm, current_sensor, phase, PWM_CONFIG.dt_s());
 ```
 
-### Full Example (G431)
+### Full Example (G474)
 
-Condensed from `oxifoc-g431/src/foc.rs`:
+Condensed from `oxifoc-g474/src/control/foc.rs`:
 
 ```rust
 // Initialize hardware
-let current_sensor = G431CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
+let current_sensor = G474CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
 let mut phase_manager = PhaseManager::with_hall(HallAngleProxy::new());
 
 // Arm the sensorless estimators (back-EMF + HFI) from detected motor
@@ -1202,7 +1202,7 @@ fn ADC1_2() {
             oxifoc_core::state::run_foc_cycle(
                 &STATE, &FAULT_REGISTRY, driver,
                 vbus_mv as f32 / 1000.0, now_ticks, &BOARD,
-                G431Fault::OverCurrent,
+                G474Fault::OverCurrent,
             )
         })
     });
@@ -1306,15 +1306,14 @@ oxifoc-core/src/
     ├── foc_driver.rs        # FocDriver, CurrentLimits (ControlMode re-export)
     └── six_step.rs          # Six-step commutation tables
 
-oxifoc-g431/src/             # STM32G431 platform (B-G431B-ESC1), flat layout
+oxifoc-g474/src/             # STM32G474 platform (Nucleo + IHM08M1)
 ├── main.rs
 ├── config.rs                # BoardConfig, PWM config, NTC
-├── foc.rs                   # ADC ISR + FOC driver init
+├── control/foc.rs           # ADC ISR + FOC driver init
 ├── cordic.rs                # CordicSinCos (hardware trig)
 ├── calibration.rs           # DetectionHardware glue
-├── hardware.rs / motor.rs / sensors.rs
-├── protocol.rs / transport.rs
-├── fault.rs / storage.rs
+├── hardware/ sensors/ protocol/ transport/
+├── safety.rs / motor.rs / storage.rs
 
 oxifoc-f405/src/             # STM32F405 platform
 ├── main.rs
@@ -1325,7 +1324,7 @@ oxifoc-f405/src/             # STM32F405 platform
 ├── fault.rs / motor.rs / storage.rs
 ```
 
-Other crates in the repo: `oxifoc-g474` (STM32G474 platform),
+Other crates in the repo:
 `oxifoc-virtual` (host-side virtual motor controller), `oxifoc-host-lib` /
 `oxifoc-host-cli` / `oxifoc-host-slint` (host tooling), `oxifoc-bridge` /
 `oxifoc-remote` (ESP32-C6 wireless link).

@@ -1,7 +1,7 @@
 # MMIO status-register access: why `modify` is banned on SR
 
 Verified 2026-06-11 against the stm32-metapac source and the generated
-Cortex-M assembly (release build of oxifoc-g431). This documents the
+Cortex-M assembly (release firmware build). This documents the
 finding so the next person doesn't have to re-derive it — or worse,
 "simplify" a complement write back into a `modify`.
 
@@ -74,11 +74,11 @@ at the call site.
 
 ## Where the race actually mattered here
 
-- **Hall capture timers (TIM4 g431 / TIM3 f405 / TIM2 g474)** — real
+- **Hall capture timers (TIM3 f405 / TIM2 g474)** — real
   consumers: a lost `UIF` breaks the 16→64-bit timebase extension (a
   65 ms hole in velocity math), a lost `CC1IF` drops a hall edge. The
   complement write is load-bearing there.
-- **TIM1 `BIF` (g431 enable() + ADC ISR)** — today nothing else consumes
+- **TIM1 `BIF` (enable() + ADC ISR)** — today nothing else consumes
   TIM1 SR flags, so the old `modify` was harmless *in practice*; the fix
   is correctness + future-proofing (the moment someone polls another
   TIM1 flag, the race is live).

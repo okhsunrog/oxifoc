@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["polars>=1", "pyarrow>=16", "numpy>=1.26"]
 # ///
-"""benchsuite — sensorless regression suite for the B-G431B-ESC1 bench.
+"""benchsuite — sensorless regression suite for the FOC bench.
 
 Runs the canonical maneuvers through oxifoc-host-cli, captures fast
 telemetry + the device defmt log, and gates each run against the
@@ -17,8 +17,8 @@ Scenarios (all thresholds live in SCENARIOS below):
   openloop-960  maneuvers/prof-openloop-ramp960.json @ 1 kHz capture
   endurance     maneuvers/endurance-20s.json         @ 1 kHz capture
 
-Preconditions: the canonical g431 firmware is flashed and the probe is
-attached; the rotor is free to spin; no active faults. The runner checks
+Preconditions: the canonical firmware is flashed and the transport is
+reachable; the rotor is free to spin; no active faults. The runner checks
 faults before and after every scenario and inserts a coast-down settle
 between scenarios so each one starts from standstill (the cold-start
 check would fail otherwise — that is intentional).
@@ -49,8 +49,8 @@ import pyarrow.parquet as pq
 REPO = Path(__file__).resolve().parent.parent
 CLI = REPO / "target" / "release" / "oxifoc-host-cli"
 
-# Set from --transport; the g431 bench is RTT, the CF2/f405 bench is USB.
-TRANSPORT = "rtt"
+# Set from --transport; the CF2/f405 bench is USB.
+TRANSPORT = "usb"
 # Optional --elf/--chip overrides: oxifoc-host.toml's elf/chip keys name ONE
 # board; on any other board the defmt table is wrong (device log lines
 # vanish) and the RTT control-block pin never routes.
@@ -67,7 +67,7 @@ SETTLE_S = 6.0
 # Device-log markers (defmt lines relayed by the host as `... INFO device: ...`).
 # Sources: oxifoc-core/src/foc/phase/manager.rs (startup sequencer),
 # oxifoc-core/src/state.rs ("FOC step error"), foc_driver.rs voltage FAULTs,
-# oxifoc-g431/src/foc.rs (COMP trip), oxifoc-g431/src/protocol.rs (isr/s).
+# the board's foc ISR module (COMP/OC trip), protocol servers (isr/s).
 MARK_COLD_START = "ramp cold start"
 MARK_HANDOFF = (
     "handoff confirmed by probe",       # two-sided confirm passed
@@ -156,7 +156,6 @@ SCENARIOS = {
 # a 1.5 A command measures 1.33-1.46 A here (161 mA/LSB quantization +
 # board gain/dead-time differences vs the g431's 1.44-1.46).
 BOARD_OVERRIDES = {
-    "g431": {},
     "cf2": {
         "spin-punch": dict(
             climb=dict(ev_from=0, iq_median_min=1.3),
@@ -403,15 +402,15 @@ def main() -> int:
     ap.add_argument("--out-dir", default=None,
                     help="capture/report directory (default: captures/bench/<UTC>)")
     ap.add_argument("--json", action="store_true", help="JSON report on stdout")
-    ap.add_argument("--transport", default="rtt", choices=["rtt", "usb", "serial"],
-                    help="host transport (g431 bench: rtt; CF2/f405 bench: usb)")
+    ap.add_argument("--transport", default="usb", choices=["rtt", "usb", "serial"],
+                    help="host transport (CF2/f405 bench: usb)")
     ap.add_argument("--elf", default=None,
                     help="firmware ELF for defmt decoding (required when the "
                          "bench board differs from oxifoc-host.toml's elf)")
     ap.add_argument("--chip", default=None,
                     help="probe-rs chip name for the rtt transport (required "
                          "when the bench board differs from oxifoc-host.toml)")
-    ap.add_argument("--board", default="g431", choices=BOARD_OVERRIDES,
+    ap.add_argument("--board", default="cf2", choices=BOARD_OVERRIDES,
                     help="bench board profile (scenario/threshold overrides)")
     args = ap.parse_args()
     global TRANSPORT, ELF, CHIP
