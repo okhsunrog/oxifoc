@@ -18,7 +18,7 @@
 //! (αβ) volts/amps, `dt` per call (no fixed-rate assumption). Every design
 //! decision here is pinned by the closed-loop sims in this file and
 //! `manager.rs` (VirtualMotor plant), plus on-target parity tests in
-//! `tests/stm32g431`; numbers quoted in comments come from
+//! `tests/stm32g474`; numbers quoted in comments come from
 //! docs/perf-bench-2026-06-11.md.
 
 // TAU (carrier advance), PhantomData (`HfiObserver<S>` marker) and the SinCos

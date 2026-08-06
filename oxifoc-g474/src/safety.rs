@@ -6,7 +6,7 @@
 //!
 //! No IWDG here yet: the motor modules (and the FOC ISR that would feed
 //! the dog) are dormant until the IHM08M1 shield is connected. When
-//! control/foc.rs comes back to life, mirror the g431 safety.rs —
+//! control/foc.rs comes back to life, mirror the f405 safety.rs —
 //! arm_watchdog(p.IWDG) after foc::init, feed from the ADC ISR,
 //! DBGMCU.apb1lfzr().set_iwdg(true) for debugging.
 

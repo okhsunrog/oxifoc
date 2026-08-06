@@ -2,7 +2,7 @@
 //!
 //! Provides platform-agnostic traits for angle and current sensing.
 //! Hardware implementations can be found in platform-specific crates
-//! (e.g., oxifoc-g431, oxifoc-f405).
+//! (e.g., oxifoc-f405, oxifoc-g474).
 //!
 //! ## Trait Hierarchy
 //!
