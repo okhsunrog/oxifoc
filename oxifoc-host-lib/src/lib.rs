@@ -138,6 +138,9 @@ pub fn init_tracing() {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        // CLI stdout is a stable data channel (`--json` emits exactly one
+        // document); diagnostics and connection logs belong on stderr.
+        .with_writer(std::io::stderr)
         .with_target(true)
         .with_level(true)
         .compact()
