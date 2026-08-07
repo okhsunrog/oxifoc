@@ -37,6 +37,16 @@ impl Scale {
     pub fn enc(self, v: f32) -> i32 {
         (v / self.lsb) as i32
     }
+    /// Physical value → saturated unsigned 16-bit quantum.
+    #[inline]
+    fn enc_u16(self, v: f32) -> u16 {
+        self.enc(v).clamp(0, i32::from(u16::MAX)) as u16
+    }
+    /// Physical value → saturated signed 16-bit quantum.
+    #[inline]
+    fn enc_i16(self, v: f32) -> i16 {
+        self.enc(v).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+    }
     /// Integer quantum → physical value.
     #[inline]
     pub fn dec(self, raw: i32) -> f32 {
@@ -57,17 +67,17 @@ impl FastTelemetry {
     /// Pack bus voltage (volts) → `vbus` field.
     #[inline]
     pub fn pack_vbus(volts: f32) -> u16 {
-        VOLT.enc(volts) as u16
+        VOLT.enc_u16(volts)
     }
     /// Pack a dq voltage (volts) → `vd`/`vq` field.
     #[inline]
     pub fn pack_volt(volts: f32) -> i16 {
-        VOLT.enc(volts) as i16
+        VOLT.enc_i16(volts)
     }
     /// Pack mechanical speed (RPM) → `rpm` field.
     #[inline]
     pub fn pack_rpm(mech_rpm: f32) -> i16 {
-        RPM.enc(mech_rpm) as i16
+        RPM.enc_i16(mech_rpm)
     }
     /// Pack electrical angle (radians, any range) → full-scale `angle` field.
     /// `rem_euclid` is std-only, so wrap via a truncating cast of the turn count.
@@ -241,6 +251,21 @@ mod tests {
             };
             assert!((f.mech_rpm() - r).abs() <= 2.0 + 1e-3, "rpm {r}");
         }
+    }
+
+    #[test]
+    fn field_scalar_packers_saturate_instead_of_wrapping() {
+        assert_eq!(FastTelemetry::pack_vbus(-1.0), 0);
+        assert_eq!(FastTelemetry::pack_vbus(f32::NAN), 0);
+        assert_eq!(FastTelemetry::pack_vbus(f32::INFINITY), u16::MAX);
+
+        assert_eq!(FastTelemetry::pack_volt(f32::NEG_INFINITY), i16::MIN);
+        assert_eq!(FastTelemetry::pack_volt(f32::INFINITY), i16::MAX);
+        assert_eq!(FastTelemetry::pack_volt(f32::NAN), 0);
+
+        assert_eq!(FastTelemetry::pack_rpm(-100_000.0), i16::MIN);
+        assert_eq!(FastTelemetry::pack_rpm(100_000.0), i16::MAX);
+        assert_eq!(FastTelemetry::pack_rpm(f32::NAN), 0);
     }
 
     #[test]
