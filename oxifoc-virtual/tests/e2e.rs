@@ -15,7 +15,7 @@
 //! `start_host` runs its own tokio runtime on a background thread, so these are
 //! plain `#[test]`s that drive the runtime via its (sync) channels.
 
-use std::net::{TcpListener, UdpSocket};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -210,4 +210,41 @@ fn e2e_motor_and_detect_over_tcp() {
 #[test]
 fn e2e_motor_and_detect_over_udp() {
     run_e2e(TransportType::Udp);
+}
+
+#[test]
+fn tcp_connection_churn_does_not_kill_server() {
+    let port = free_tcp_port();
+    let child = Command::new(env!("CARGO_BIN_EXE_oxifoc-virtual"))
+        .args(["--transport", "tcp", "--port", &port.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn oxifoc-virtual");
+    let mut guard = ChildGuard(child);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let first = loop {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => break stream,
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => panic!("virtual TCP listener did not start: {e}"),
+        }
+    };
+
+    // Keep every client open. The old server accumulated four live Router
+    // interfaces and returned from run() on the fifth registration failure.
+    let mut clients = vec![first];
+    for _ in 0..8 {
+        clients.push(TcpStream::connect(("127.0.0.1", port)).expect("connect churn client"));
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    std::thread::sleep(Duration::from_millis(250));
+
+    assert!(
+        guard.0.try_wait().unwrap().is_none(),
+        "connection churn must not terminate the virtual device"
+    );
 }

@@ -134,20 +134,19 @@ pub async fn run(
         }
     });
 
-    let mut prev_conn_token: Option<CancellationToken> = None;
+    let mut prev_conn: Option<(CancellationToken, u8)> = None;
     loop {
         let (socket, addr) = listener.accept().await?;
         info!("Client connected: {addr}");
 
-        // Single-client server: stop the previous connection's telemetry tasks
-        // NOW. The fast-telemetry bbqueue is single-consumer — a lingering stream
-        // task from a dead connection keeps draining it and broadcasting into a
-        // dead interface (NoRoute), starving the live client of most frames (seen
-        // as massive seq gaps in `record`). The previous *interface* deregisters
-        // on its own (socket EOF / liveness timeout); the Router recycles its
-        // net_id.
-        if let Some(prev) = prev_conn_token.take() {
-            prev.cancel();
+        // Single-client server: cancel the previous telemetry tasks and remove
+        // its interface immediately. Waiting for socket EOF/liveness lets open
+        // clients accumulate until all Router slots are occupied; the fifth
+        // registration used to terminate the whole virtual device.
+        if let Some((token, ident)) = prev_conn.take() {
+            token.cancel();
+            let _ = stack.manage_profile(|router| router.deregister_interface(ident));
+            tokio::task::yield_now().await;
         }
 
         // Attach this connection's COBS stream as a fresh Router interface. The
@@ -158,7 +157,7 @@ pub async fn run(
         let state_notify = Arc::new(WaitQueue::new());
         // No turbofish: M/SS (and CC on branches that have it) infer from the
         // `RouterStack` type alias, keeping this portable across ergot branches.
-        let ident = register_router(
+        let Ok(ident) = register_router(
             stack.clone(),
             rx,
             tx,
@@ -170,12 +169,18 @@ pub async fn run(
             Some(state_notify.clone()),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("router interface registration failed"))?;
+        else {
+            // A per-client resource/race failure must not take down the
+            // listener and persistent endpoint tasks. Dropping the split
+            // halves closes only this rejected socket.
+            warn!("Router interface registration failed; rejecting client {addr}");
+            continue;
+        };
 
         // Cancel token for this connection's telemetry — cancelled when the
         // interface goes down (or when the next client connects, above).
         let conn_token = CancellationToken::new();
-        prev_conn_token = Some(conn_token.clone());
+        prev_conn = Some((conn_token.clone(), ident));
 
         // Monitor interface state — cancel this connection's telemetry when the
         // host disconnects.
@@ -185,7 +190,6 @@ pub async fn run(
             let token = conn_token.clone();
             async move {
                 loop {
-                    let _ = state_notify.wait().await;
                     // A COBS-stream disconnect deregisters the interface straight
                     // to `None` (not just Down/Inactive), so cancel on anything no
                     // longer Active. Matching only Down/Inactive would miss the
@@ -201,6 +205,7 @@ pub async fn run(
                         token.cancel();
                         break;
                     }
+                    let _ = state_notify.wait().await;
                 }
             }
         });
