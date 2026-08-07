@@ -209,6 +209,9 @@ pub async fn fault_server<NS, F, const N: usize>(
 ///   with the dq overcurrent check comparing false.
 /// - MotorParams: an invalid write used to return `Ok` while both
 ///   live-apply and boot ignored it.
+/// - HallCalibration: only physical states 1-6 may be marked valid and their
+///   angles must be finite; otherwise Hall commutation can ingest NaN or boot
+///   with an incomplete table.
 /// - VoltageLimits/PwmConfig: nothing consumes these groups (the UV/OV
 ///   thresholds and the PWM frequency are compile-time BoardConfig) —
 ///   accepting the write would persist a silent no-op in exactly the
@@ -226,6 +229,7 @@ fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
         }
         ConfigWrite::PiGains(v) => v.is_sane(),
         ConfigWrite::MotorParams(v) => v.is_valid(),
+        ConfigWrite::HallCalibration(v) => v.is_calibrated(),
         ConfigWrite::VoltageLimits(_) | ConfigWrite::PwmConfig(_) => false,
         _ => true,
     }

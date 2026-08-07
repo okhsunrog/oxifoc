@@ -199,9 +199,13 @@ impl Default for HallCalibrationConfig {
 }
 
 impl HallCalibrationConfig {
-    /// Check if all 6 valid Hall states have been calibrated
+    /// Check that exactly the six physical Hall states are calibrated and
+    /// that every angle which will reach commutation math is finite.
     pub fn is_calibrated(&self) -> bool {
-        self.valid.iter().filter(|&&v| v).count() == 6
+        !self.valid[0]
+            && !self.valid[7]
+            && self.valid[1..=6].iter().all(|&valid| valid)
+            && self.angles[1..=6].iter().all(|angle| angle.is_finite())
     }
 }
 
@@ -805,5 +809,26 @@ mod tests {
         assert!(!PiGainsConfig { ki: -1.0, ..ok }.is_sane());
         assert!(!PiGainsConfig { kp: f32::NAN, ..ok }.is_sane());
         assert!(!PiGainsConfig { ki: f32::NAN, ..ok }.is_sane());
+    }
+
+    #[test]
+    fn hall_calibration_requires_physical_states_and_finite_angles() {
+        let good = HallCalibrationConfig::default();
+        assert!(good.is_calibrated());
+
+        let mut missing = good.clone();
+        missing.valid[3] = false;
+        assert!(!missing.is_calibrated());
+
+        let mut shifted = good.clone();
+        shifted.valid[3] = false;
+        shifted.valid[0] = true;
+        assert!(!shifted.is_calibrated());
+
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut non_finite = good.clone();
+            non_finite.angles[4] = invalid;
+            assert!(!non_finite.is_calibrated());
+        }
     }
 }

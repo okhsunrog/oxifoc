@@ -192,7 +192,11 @@ pub async fn init(
     // detection has filled motor params (before that, Manual: commutation
     // stays inert until the host drives it, and unwired hall inputs never
     // get consulted, so they can't spam HallError).
-    if config.hall_calibration.is_none() {
+    if !config
+        .hall_calibration
+        .as_ref()
+        .is_some_and(oxifoc_core::storage::HallCalibrationConfig::is_calibrated)
+    {
         let boot_source = if config.motor_params.is_some() {
             PhaseSource::Observer
         } else {
