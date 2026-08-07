@@ -779,10 +779,15 @@ where
 
         enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
 
-        if !defmt_started && cfg.stream_defmt() {
+        let defmt_reader = transport.defmt_reader;
+        let transport_scoped_defmt = defmt_reader.is_some();
+        if should_start_defmt(cfg.stream_defmt(), defmt_started, transport_scoped_defmt) {
             // Non-fatal: see the framed-transport path. Retried on the next
-            // reconnect in case the ELF appears after a firmware build.
-            match start_defmt_decoder(cfg, &stack, transport.defmt_reader) {
+            // reconnect in case the ELF appears after a firmware build. RTT
+            // readers belong to one transport generation, so every successful
+            // reconnect gets a fresh decoder; network subscriptions live on
+            // the persistent stack and are started only once.
+            match start_defmt_decoder(cfg, &stack, defmt_reader) {
                 Ok(()) => defmt_started = true,
                 Err(e) => {
                     tracing::warn!("defmt decoder unavailable, continuing without it: {e:#}");
@@ -1490,6 +1495,11 @@ async fn handle_command<NS>(
 
 // ── Defmt decoding ───────────────────────────────────────────────────────────
 
+#[inline]
+fn should_start_defmt(enabled: bool, already_started: bool, transport_scoped: bool) -> bool {
+    enabled && (!already_started || transport_scoped)
+}
+
 fn start_defmt_decoder<NS>(
     cfg: &HostConfig,
     stack: &NS,
@@ -1602,5 +1612,18 @@ fn log_defmt_frame(level: Option<DefmtLevel>, msg: &impl std::fmt::Display) {
         Some(DefmtLevel::Warn) => tracing::warn!(target: "device", "{}", msg),
         Some(DefmtLevel::Error) => tracing::error!(target: "device", "{}", msg),
         None => tracing::info!(target: "device", "{}", msg),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_start_defmt;
+
+    #[test]
+    fn transport_scoped_defmt_restarts_but_network_decoder_does_not() {
+        assert!(!should_start_defmt(false, false, true));
+        assert!(should_start_defmt(true, false, false));
+        assert!(!should_start_defmt(true, true, false));
+        assert!(should_start_defmt(true, true, true));
     }
 }
