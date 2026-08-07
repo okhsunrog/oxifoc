@@ -170,12 +170,14 @@ pub fn send_write(cmd: &CommandSender, write: ConfigWrite) -> Result<()> {
     }
 }
 
-/// `config set GROUP field=value ...` — read-modify-write.
-///
-/// Values are parsed as JSON (numbers, booleans, arrays); anything that
-/// fails to parse is taken as a string. Returns the resulting group JSON.
-pub fn set_fields(cmd: &CommandSender, group: ConfigGroupId, kvs: &[String]) -> Result<Value> {
-    let (mut value, _stored) = current_value(cmd, group)?;
+/// Patch fields in an already-read group value and build the typed write.
+/// Kept separate from transport so GUI/CLI preservation semantics are directly
+/// testable: fields absent from `kvs` must survive byte-for-byte.
+pub fn patch_fields(
+    group: ConfigGroupId,
+    mut value: Value,
+    kvs: &[String],
+) -> Result<(Value, ConfigWrite)> {
     let obj = value
         .as_object_mut()
         .context("config group is not a JSON object")?;
@@ -199,6 +201,16 @@ pub fn set_fields(cmd: &CommandSender, group: ConfigGroupId, kvs: &[String]) -> 
 
     let write = write_from_value(group, value.clone())
         .with_context(|| format!("patched {} no longer deserializes", group_name(group)))?;
+    Ok((value, write))
+}
+
+/// `config set GROUP field=value ...` — read-modify-write.
+///
+/// Values are parsed as JSON (numbers, booleans, arrays); anything that
+/// fails to parse is taken as a string. Returns the resulting group JSON.
+pub fn set_fields(cmd: &CommandSender, group: ConfigGroupId, kvs: &[String]) -> Result<Value> {
+    let (value, _stored) = current_value(cmd, group)?;
+    let (value, write) = patch_fields(group, value, kvs)?;
     send_write(cmd, write)?;
     Ok(value)
 }
@@ -229,5 +241,49 @@ pub fn reset_all(cmd: &CommandSender) -> Result<()> {
     match resp {
         ConfigResponse::Ok => Ok(()),
         other => bail!("config reset rejected: {other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxifoc_core::storage::{MotorParamsConfig, VelocityConfigStored};
+
+    #[test]
+    fn field_patches_preserve_unmentioned_motor_and_velocity_values() {
+        let motor = MotorParamsConfig {
+            resistance_ohm: 0.1,
+            ld_fundamental_h: 81e-6,
+            lq_fundamental_h: 127e-6,
+            ..Default::default()
+        };
+        let (_, write) = patch_fields(
+            ConfigGroupId::MotorParams,
+            serde_json::to_value(motor).unwrap(),
+            &["resistance_ohm=0.2".into()],
+        )
+        .unwrap();
+        let ConfigWrite::MotorParams(patched) = write else {
+            panic!("wrong write variant");
+        };
+        assert_eq!(patched.resistance_ohm, 0.2);
+        assert_eq!(patched.ld_fundamental_h, 81e-6);
+        assert_eq!(patched.lq_fundamental_h, 127e-6);
+
+        let velocity = VelocityConfigStored {
+            accel_ff: 0.75,
+            ..Default::default()
+        };
+        let (_, write) = patch_fields(
+            ConfigGroupId::Velocity,
+            serde_json::to_value(velocity).unwrap(),
+            &["kp=0.3".into()],
+        )
+        .unwrap();
+        let ConfigWrite::Velocity(patched) = write else {
+            panic!("wrong write variant");
+        };
+        assert_eq!(patched.kp, 0.3);
+        assert_eq!(patched.accel_ff, 0.75);
     }
 }

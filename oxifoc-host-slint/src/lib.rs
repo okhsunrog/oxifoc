@@ -1436,7 +1436,15 @@ pub fn main() {
             let group_idx = app.get_config_group();
 
             use oxifoc_core::storage::*;
-            use oxifoc_core::types::ConfigWrite;
+            use oxifoc_core::types::{ConfigGroupId, ConfigWrite};
+
+            enum ConfigAction {
+                Replace(ConfigWrite),
+                Patch {
+                    group: ConfigGroupId,
+                    fields: Vec<String>,
+                },
+            }
 
             let mut parse_err: Option<String> = None;
             let err = &mut parse_err;
@@ -1450,16 +1458,18 @@ pub fn main() {
                     let rating: f32 = parse_field("motor rating", &app.get_cfg_motor_rating(), err);
                     let ploss: f32 =
                         parse_field("motor power loss", &app.get_cfg_motor_power_loss(), err);
-                    ConfigWrite::MotorParams(MotorParamsConfig {
-                        resistance_ohm: r,
-                        inductance_d_h: ld,
-                        inductance_q_h: lq,
-                        flux_linkage_wb: fl,
-                        pole_pairs: pp,
-                        max_current_a: rating,
-                        max_power_loss_w: ploss,
-                        ..Default::default()
-                    })
+                    ConfigAction::Patch {
+                        group: ConfigGroupId::MotorParams,
+                        fields: vec![
+                            format!("resistance_ohm={r}"),
+                            format!("inductance_d_h={ld}"),
+                            format!("inductance_q_h={lq}"),
+                            format!("flux_linkage_wb={fl}"),
+                            format!("pole_pairs={pp}"),
+                            format!("max_current_a={rating}"),
+                            format!("max_power_loss_w={ploss}"),
+                        ],
+                    }
                 }
                 1 => {
                     let iq: f32 = parse_field("max iq", &app.get_cfg_max_iq(), err);
@@ -1468,43 +1478,43 @@ pub fn main() {
                     let bus_in: f32 = parse_field("bus in max", &app.get_cfg_bus_in_max(), err);
                     let bus_regen: f32 =
                         parse_field("bus regen max", &app.get_cfg_bus_regen_max(), err);
-                    ConfigWrite::CurrentLimits(CurrentLimitsConfig {
+                    ConfigAction::Replace(ConfigWrite::CurrentLimits(CurrentLimitsConfig {
                         max_iq_a: iq,
                         max_phase_current_a: ph,
                         bus_in_max_a: bus_in,
                         bus_regen_max_a: bus_regen,
-                    })
+                    }))
                 }
                 2 => {
                     let min: u32 = parse_field("min vbus", &app.get_cfg_min_vbus(), err);
                     let max: u32 = parse_field("max vbus", &app.get_cfg_max_vbus(), err);
-                    ConfigWrite::VoltageLimits(VoltageLimitsConfig {
+                    ConfigAction::Replace(ConfigWrite::VoltageLimits(VoltageLimitsConfig {
                         min_vbus_mv: min,
                         max_vbus_mv: max,
-                    })
+                    }))
                 }
                 3 => {
                     let kp: f32 = parse_field("kp", &app.get_cfg_kp(), err);
                     let ki: f32 = parse_field("ki", &app.get_cfg_ki(), err);
                     let bw: f32 = parse_field("bandwidth", &app.get_cfg_bandwidth(), err);
-                    ConfigWrite::PiGains(PiGainsConfig {
+                    ConfigAction::Replace(ConfigWrite::PiGains(PiGainsConfig {
                         kp,
                         ki,
                         bandwidth_rad_s: bw,
-                    })
+                    }))
                 }
                 4 => {
                     let kp: f32 = parse_field("velocity kp", &app.get_cfg_vel_kp(), err);
                     let ki: f32 = parse_field("velocity ki", &app.get_cfg_vel_ki(), err);
                     let accel: f32 = parse_field("accel limit", &app.get_cfg_vel_accel(), err);
-                    ConfigWrite::Velocity(VelocityConfigStored {
-                        kp,
-                        ki,
-                        accel_limit: accel,
-                        // Not exposed in the GUI yet — a GUI write resets the
-                        // feedforward; tune accel_ff via the CLI for now.
-                        accel_ff: 0.0,
-                    })
+                    ConfigAction::Patch {
+                        group: ConfigGroupId::Velocity,
+                        fields: vec![
+                            format!("kp={kp}"),
+                            format!("ki={ki}"),
+                            format!("accel_limit={accel}"),
+                        ],
+                    }
                 }
                 5 => {
                     let staleness: u32 = parse_field("staleness", &app.get_cfg_fs_staleness(), err);
@@ -1518,7 +1528,7 @@ pub fn main() {
                         parse_field("standstill", &app.get_cfg_fs_standstill(), err);
                     let decel: f32 = parse_field("decel", &app.get_cfg_fs_decel(), err);
                     let terminal: u8 = parse_field("terminal", &app.get_cfg_fs_terminal(), err);
-                    ConfigWrite::Failsafe(FailsafeConfigStored {
+                    ConfigAction::Replace(ConfigWrite::Failsafe(FailsafeConfigStored {
                         staleness_timeout_ms: staleness,
                         policy,
                         brake_current_a: brake,
@@ -1527,7 +1537,7 @@ pub fn main() {
                         standstill_rad_s: standstill,
                         decel_rad_s2: decel,
                         terminal,
-                    })
+                    }))
                 }
                 _ => return,
             };
@@ -1538,26 +1548,23 @@ pub fn main() {
                 return;
             }
 
-            let (tx, rx) = config_channel();
-            if runtime
-                .cmd_tx
-                .send(HostCommand::ConfigWrite(write, tx))
-                .is_err()
-            {
-                return;
-            }
+            let cmd_tx = runtime.cmd_tx.clone();
+            drop(guard);
+            app.set_config_status(SharedString::from("Writing..."));
 
             thread::spawn(move || {
-                let result = rx.blocking_recv();
+                let result = match write {
+                    ConfigAction::Replace(write) => ops::config::send_write(&cmd_tx, write),
+                    ConfigAction::Patch { group, fields } => {
+                        ops::config::set_fields(&cmd_tx, group, &fields).map(|_| ())
+                    }
+                };
                 let _ = weak.upgrade_in_event_loop(move |app| match result {
-                    Ok(Ok(_)) => {
+                    Ok(()) => {
                         app.set_config_status(SharedString::from("Written OK"));
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         app.set_config_status(SharedString::from(format!("Error: {e}")));
-                    }
-                    Err(_) => {
-                        app.set_config_status(SharedString::from("No response"));
                     }
                 });
             });
