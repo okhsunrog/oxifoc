@@ -1647,9 +1647,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             PhaseSource::Hall
             | PhaseSource::Encoder
             | PhaseSource::HallToObserver { .. }
-            | PhaseSource::EncoderToObserver { .. }
-            | PhaseSource::HfiToHall { .. }
-            | PhaseSource::HfiToEncoder { .. } => !self.open_loop_override.active,
+            | PhaseSource::EncoderToObserver { .. } => !self.open_loop_override.active,
             // Calibration/detection sources: the commanded angle IS the
             // reference frame, trusted by construction.
             PhaseSource::Manual | PhaseSource::OpenLoop => true,
@@ -1666,12 +1664,23 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             | PhaseSource::HfiToObserverVolts { .. } => {
                 self.hfi.as_ref().is_some_and(HfiObserver::is_ready) || self.observer.is_ready()
             }
+            // Before the latch, these modes actually commute from HFI, so a
+            // present Hall/encoder does not make a cold demodulation estimate
+            // safe. After the latch the hardware sensor carries the angle.
+            #[cfg(feature = "hfi")]
+            PhaseSource::HfiToHall { .. } | PhaseSource::HfiToEncoder { .. } => {
+                !self.open_loop_override.active
+                    && (self.crossover_latched
+                        || self.hfi.as_ref().is_some_and(HfiObserver::is_ready))
+            }
             // HFI compiled out: these sources are unreachable (set_source
             // rejects them), but the match must stay exhaustive.
             #[cfg(not(feature = "hfi"))]
             PhaseSource::Hfi
             | PhaseSource::HfiToObserver { .. }
-            | PhaseSource::HfiToObserverVolts { .. } => self.observer.is_ready(),
+            | PhaseSource::HfiToObserverVolts { .. }
+            | PhaseSource::HfiToHall { .. }
+            | PhaseSource::HfiToEncoder { .. } => self.observer.is_ready(),
         }
     }
 
@@ -2088,6 +2097,33 @@ mod tests {
         // Latched and clear of the band: carrier off.
         phase.output.velocity = 100.0 * (1.0 + CROSSOVER_HYSTERESIS) + 10.0;
         assert_eq!(phase.injection(), (0.0, 0.0));
+    }
+
+    #[test]
+    #[cfg(feature = "hfi")]
+    fn hfi_to_sensor_is_untrusted_until_hfi_ready_or_sensor_latched() {
+        use crate::foc::phase::HfiObserver;
+
+        let mut phase =
+            PhaseManager::with_hall(MockHallSensor::new()).with_encoder(MockHallSensor::new());
+        phase.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+
+        for source in [
+            PhaseSource::HfiToHall { switch_vel: 100.0 },
+            PhaseSource::HfiToEncoder { switch_vel: 100.0 },
+        ] {
+            phase.set_source(source).unwrap();
+            assert!(
+                !phase.angle_trustworthy(),
+                "a cold HFI estimate must not pass the torque trust gate"
+            );
+
+            phase.crossover_latched = true;
+            assert!(
+                phase.angle_trustworthy(),
+                "the latched hardware sensor carries a trustworthy angle"
+            );
+        }
     }
 
     #[test]
