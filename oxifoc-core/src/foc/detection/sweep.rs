@@ -225,7 +225,13 @@ async fn sample_vd_id<H: DetectionHardware, T: Timer>(
             }
         }
     };
-    Ok((vd_sum.get() / n as f32, id_sum.get() / n as f32))
+    let vd = vd_sum.get() / n as f32;
+    let id = id_sum.get() / n as f32;
+    if !vd.is_finite() || !id.is_finite() {
+        warn!("telemetry sampling produced non-finite vd/id");
+        return Err(DetectionError::HardwareFault);
+    }
+    Ok((vd, id))
 }
 
 /// Settled DirectVoltage holding voltage for `hold_current_a` at the
@@ -389,6 +395,9 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
 
     let resistance = (delta_v / delta_i).abs();
 
+    if !resistance.is_finite() {
+        return Err(DetectionError::HardwareFault);
+    }
     if resistance < 0.001 {
         return Err(DetectionError::OutOfRange);
     }

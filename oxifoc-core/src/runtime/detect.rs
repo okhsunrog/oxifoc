@@ -176,6 +176,18 @@ fn pos(v: f32) -> bool {
     v.is_finite() && v > 0.0
 }
 
+/// Validate a physical resistance result before it reaches current-limit math.
+/// Backend implementations are a trust boundary just like wire requests: a
+/// non-finite result would otherwise make `f32::min` select the platform limit.
+#[inline]
+fn measured_resistance(v: f32) -> Result<f32, DetectError> {
+    if pos(v) {
+        Ok(v)
+    } else {
+        Err(DetectError::HardwareFault)
+    }
+}
+
 /// Run a single detection step: compute safe parameters, call the backend, map
 /// the result. Kept as one concrete (non-closure) `async fn` so the enclosing
 /// server future stays `Send`.
@@ -203,6 +215,10 @@ async fn run_step<B: DetectionBackend>(
             };
             match backend.measure_resistance(&probe).await {
                 Ok(r_probe) => {
+                    let r_probe = match measured_resistance(r_probe) {
+                        Ok(r) => r,
+                        Err(e) => return DetectResponse::Error(e),
+                    };
                     // Clamp by the bus too: the thermal formula alone asks a
                     // high-R motor for more voltage than the bus has, the PI
                     // saturates short of the setpoint and the settle check
@@ -218,7 +234,10 @@ async fn run_step<B: DetectionBackend>(
                         ..Default::default()
                     };
                     match backend.measure_resistance(&params).await {
-                        Ok(r) => DetectResponse::Resistance { resistance_ohm: r },
+                        Ok(r) => match measured_resistance(r) {
+                            Ok(resistance_ohm) => DetectResponse::Resistance { resistance_ohm },
+                            Err(e) => DetectResponse::Error(e),
+                        },
                         Err(e) => DetectResponse::Error(map_err(e)),
                     }
                 }
@@ -480,5 +499,16 @@ mod tests {
             max_power_loss_w: f32::NAN,
             resistance_ohm: 0.0,
         }));
+    }
+
+    #[test]
+    fn resistance_results_reject_non_finite_and_non_positive_values() {
+        assert_eq!(measured_resistance(0.25).unwrap(), 0.25);
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.1] {
+            assert!(matches!(
+                measured_resistance(invalid),
+                Err(DetectError::HardwareFault)
+            ));
+        }
     }
 }
