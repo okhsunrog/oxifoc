@@ -52,8 +52,11 @@ pub struct PlotRenderer {
     /// Reused scratch space for the CPU→GPU copy; allocated once.
     scratch: Vec<f32>,
     config: PlotConfig,
-    /// Last write_pos seen — skip upload+render when unchanged.
-    last_write_pos: u32,
+    /// Last content generation seen — skip upload+render when unchanged.
+    last_generation: u64,
+    /// Effective range used for the cached texture.
+    last_y_min: f32,
+    last_y_max: f32,
     /// Track whether we need to re-render due to resize (even if data unchanged).
     last_width: u32,
     last_height: u32,
@@ -168,6 +171,8 @@ impl PlotRenderer {
         });
 
         let texture = Self::make_texture(device, 1, 1);
+        let fallback_y_min = config.y_min;
+        let fallback_y_max = config.y_max;
 
         Self {
             device: device.clone(),
@@ -179,7 +184,9 @@ impl PlotRenderer {
             bind_group,
             scratch: Vec::with_capacity(config.capacity * config.num_channels),
             config,
-            last_write_pos: u32::MAX, // force first render
+            last_generation: u64::MAX, // force first render
+            last_y_min: fallback_y_min,
+            last_y_max: fallback_y_max,
             last_width: 0,
             last_height: 0,
             last_visible: 0,
@@ -222,11 +229,11 @@ impl PlotRenderer {
         let width = width.max(1);
         let height = height.max(1);
         let vis = visible_samples.clamp(2, buffer.capacity as u32);
-        let wp = buffer.write_pos();
+        let generation = buffer.generation();
 
         // Check if anything changed since last render
         let needs_resize = width != self.last_width || height != self.last_height;
-        let needs_render = wp != self.last_write_pos
+        let needs_render = generation != self.last_generation
             || vis != self.last_visible
             || view_offset != self.last_view_offset
             || needs_resize;
@@ -236,10 +243,10 @@ impl PlotRenderer {
         }
 
         if !needs_render {
-            return (self.texture.clone(), self.config.y_min, self.config.y_max);
+            return (self.texture.clone(), self.last_y_min, self.last_y_max);
         }
 
-        self.last_write_pos = wp;
+        self.last_generation = generation;
         self.last_width = width;
         self.last_height = height;
         self.last_visible = vis;
@@ -339,9 +346,8 @@ impl PlotRenderer {
             rpass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
-        // Cache Y range for skip-render path
-        self.config.y_min = y_min;
-        self.config.y_max = y_max;
+        self.last_y_min = y_min;
+        self.last_y_max = y_max;
         (self.texture.clone(), y_min, y_max)
     }
 
@@ -349,5 +355,6 @@ impl PlotRenderer {
     pub fn set_y_range(&mut self, y_min: f32, y_max: f32) {
         self.config.y_min = y_min;
         self.config.y_max = y_max;
+        self.last_generation = u64::MAX;
     }
 }

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Lock-free SPSC ring buffer for real-time visualization.
 ///
@@ -19,6 +19,9 @@ pub struct PlotBuffer {
     data: Vec<AtomicU32>,
     /// Index of the *next* frame slot to write; wraps at `capacity`.
     write_pos: AtomicU32,
+    /// Monotonic content generation used by render caches. Unlike write_pos,
+    /// this changes across complete ring wraps and clear operations.
+    generation: AtomicU64,
     pub num_channels: usize,
     pub capacity: usize,
 }
@@ -40,6 +43,7 @@ impl PlotBuffer {
         Self {
             data,
             write_pos: AtomicU32::new(0),
+            generation: AtomicU64::new(0),
             num_channels,
             capacity,
         }
@@ -58,6 +62,7 @@ impl PlotBuffer {
         }
         self.write_pos
             .store(((pos + 1) % self.capacity) as u32, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     /// Push a contiguous slice of frames.
@@ -80,6 +85,9 @@ impl PlotBuffer {
         // the reader's Acquire on write_pos synchronises with all the
         // Relaxed sample stores above.
         self.write_pos.store(pos as u32, Ordering::Release);
+        if n > 0 {
+            self.generation.fetch_add(1, Ordering::Release);
+        }
     }
 
     /// Reset the buffer: fill with NaN and reset write position.
@@ -92,12 +100,19 @@ impl PlotBuffer {
             atom.store(nan_bits, Ordering::Relaxed);
         }
         self.write_pos.store(0, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     /// Current write position for use in the GPU shader.
     #[inline]
     pub fn write_pos(&self) -> u32 {
         self.write_pos.load(Ordering::Acquire)
+    }
+
+    /// Monotonic version of the buffer contents for renderer cache invalidation.
+    #[inline]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     /// Copy the entire ring buffer into `dst` as `f32` values for GPU upload.
@@ -111,5 +126,33 @@ impl PlotBuffer {
         for (i, atom) in self.data.iter().enumerate() {
             dst[i] = f32::from_bits(atom.load(Ordering::Relaxed));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlotBuffer;
+
+    #[test]
+    fn generation_changes_across_full_wrap_and_clear() {
+        let buffer = PlotBuffer::new(1, 2);
+        let initial = buffer.generation();
+
+        buffer.push_batch(&[1.0, 2.0]);
+        assert_eq!(buffer.write_pos(), 0, "batch completed a full ring wrap");
+        let wrapped = buffer.generation();
+        assert!(wrapped > initial);
+
+        buffer.clear();
+        assert_eq!(buffer.write_pos(), 0);
+        assert!(buffer.generation() > wrapped);
+    }
+
+    #[test]
+    fn empty_batch_does_not_invalidate_renderer_cache() {
+        let buffer = PlotBuffer::new(1, 2);
+        let generation = buffer.generation();
+        buffer.push_batch(&[]);
+        assert_eq!(buffer.generation(), generation);
     }
 }
