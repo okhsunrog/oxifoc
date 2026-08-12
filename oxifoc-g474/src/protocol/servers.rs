@@ -220,7 +220,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
     // joined); embassy arena-allocates it statically, so its size is the
     // task's intended footprint, not an accident the lint should flag.
     #[expect(clippy::large_futures, reason = "the joined servers are the task")]
-    run_all_servers_with_config(
+    run_all_servers_with_config::<_, _, EmbassyTimer>(
         stack.endpoints(),
         device_info,
         &STATE,

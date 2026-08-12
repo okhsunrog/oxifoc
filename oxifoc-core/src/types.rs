@@ -252,6 +252,12 @@ pub enum MotorCommandOutcome {
     RejectedSafety,
     /// Payload failed validation.
     RejectedInvalid,
+    // postcard encodes the variant index — append only.
+    /// The ISR did not confirm the command within the ack window (control
+    /// loop not running yet, or stalled — e.g. by a flash erase). The
+    /// command MAY still be applied once the ISR resumes; retrying with the
+    /// same `seq` is safe (a late application answers `AlreadyApplied`).
+    TimedOut,
 }
 
 impl MotorCommandOutcome {
@@ -541,7 +547,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 3;
+pub const ICD_PROTO_VERSION: u16 = 4;
 
 /// Stable marker at the front of every [`HardwareInfo`] bootstrap response.
 pub const ICD_BOOTSTRAP_MAGIC: [u8; 4] = *b"OXIC";

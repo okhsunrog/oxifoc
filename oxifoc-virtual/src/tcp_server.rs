@@ -117,7 +117,7 @@ pub async fn run(
         async move {
             // Box::pin: ~5 KB future; the 2 KB large_futures threshold is tuned
             // for firmware, on the host we just heap it.
-            Box::pin(run_all_servers_with_config(
+            Box::pin(run_all_servers_with_config::<_, _, crate::TokioTimer>(
                 endpoints,
                 device_info,
                 state_mutex,

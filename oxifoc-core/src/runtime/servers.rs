@@ -28,6 +28,7 @@ use core::pin::pin;
 
 use critical_section::Mutex as CriticalSectionMutex;
 use embassy_futures::join::{join, join3};
+use embassy_futures::select::{Either, select};
 
 use crate::foc::controller::Decoupling;
 use crate::foc::detection::pi_tuning::{DEFAULT_BANDWIDTH_RAD_S, calculate_current_gains};
@@ -48,6 +49,17 @@ use crate::icd::{
     TelemetryConfigAck, TelemetryConfigEndpoint,
 };
 use crate::state::{CMD_CHANNEL, MOTOR_COMMAND_DONE, MotorControlState};
+use crate::types::MotorCommandOutcome;
+
+/// Bound on the ISR-confirmation wait in [`motor_command_server`]. Normal
+/// confirmation is sub-millisecond (the 20 kHz ISR drains the channel every
+/// cycle); the bound exists for the pathological cases — control loop not
+/// started yet, or the chip stalled by an internal-flash erase (up to ~2 s on
+/// an F4 128 KB sector, but Persist guarantees the motor is stopped and no
+/// motor traffic is in flight then). Must stay below the host's 2 s response
+/// timeout so the host receives a typed [`MotorCommandOutcome::TimedOut`]
+/// instead of an unattributable transport timeout.
+pub const MOTOR_ACK_TIMEOUT_MS: u64 = 1_000;
 #[cfg(feature = "storage")]
 use crate::storage::{
     ConfigKey, ConfigPayload, FLASH_CHANNEL, FLASH_DONE, FlashOperation, RuntimeConfig,
@@ -94,14 +106,17 @@ pub async fn info_server<NS, const N: usize>(
 /// Motor control server - handles motor control mode changes
 ///
 /// Sends the sequenced request to CMD_CHANNEL and responds only after the ISR
-/// has applied or rejected it.
-pub async fn motor_command_server<NS, F, const N: usize>(
+/// has applied or rejected it — or after [`MOTOR_ACK_TIMEOUT_MS`] with
+/// [`MotorCommandOutcome::TimedOut`] if the ISR never confirms (control loop
+/// not running yet, or stalled by a flash erase).
+pub async fn motor_command_server<NS, F, T, const N: usize>(
     endpoints: Endpoints<NS>,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<F>,
 ) where
     NS: NetStackHandle,
     F: PlatformFault,
+    T: crate::timer::Timer,
 {
     let server = endpoints.bounded_server::<MotorEndpoint, N>(Some("motor"));
     let server = pin!(server);
@@ -114,11 +129,31 @@ pub async fn motor_command_server<NS, F, const N: usize>(
                 crate::runtime::streaming::cmd_stats::MOTOR_REQS
                     .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 async move {
-                    MOTOR_COMMAND_DONE.reset();
-                    CMD_CHANNEL.send(DriverCommand::Motor(request)).await;
-                    let (session, seq, outcome) = MOTOR_COMMAND_DONE.wait().await;
-                    debug_assert_eq!(session, request.source_session);
-                    debug_assert_eq!(seq, request.seq);
+                    let confirm = async {
+                        MOTOR_COMMAND_DONE.reset();
+                        CMD_CHANNEL.send(DriverCommand::Motor(request)).await;
+                        loop {
+                            let (session, seq, outcome) = MOTOR_COMMAND_DONE.wait().await;
+                            if session == request.source_session && seq == request.seq {
+                                break outcome;
+                            }
+                            // Completion of an earlier request that timed out
+                            // server-side and was drained late (e.g. the ISR
+                            // resumed after a flash-erase stall). Not ours —
+                            // keep waiting for this request's confirmation
+                            // instead of reporting a foreign outcome.
+                        }
+                    };
+                    let outcome = match select(confirm, T::after_millis(MOTOR_ACK_TIMEOUT_MS)).await
+                    {
+                        Either::First(outcome) => outcome,
+                        // Timeout also covers CMD_CHANNEL.send never
+                        // completing (channel full because nothing drains
+                        // it): dropping the send future un-queues us and the
+                        // host gets a typed outcome instead of a transport
+                        // timeout with no diagnosis.
+                        Either::Second(()) => MotorCommandOutcome::TimedOut,
+                    };
                     critical_section::with(|cs| {
                         let state = state_mutex.borrow(cs).borrow();
                         MotorStatus {
@@ -251,7 +286,10 @@ fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
         ConfigWrite::MotorParams(v) => v.is_valid(),
         ConfigWrite::HallCalibration(v) => v.is_calibrated(),
         ConfigWrite::VoltageLimits(_) | ConfigWrite::PwmConfig(_) => false,
-        _ => true,
+        // No boundary invariant beyond is_sane() at the ISR gate; listed
+        // explicitly (no catch-all) so a new group cannot compile without
+        // being classified here — an unclassified group would fail OPEN.
+        ConfigWrite::Failsafe(_) | ConfigWrite::Velocity(_) | ConfigWrite::HallTuning(_) => true,
     }
 }
 
@@ -644,7 +682,20 @@ pub async fn config_server<NS, const N: usize>(
                                         ]))
                                         .await;
                                 }
-                                _ => {}
+                                // Deliberately no live-apply (exhaustive, no
+                                // catch-all — a new group must be classified
+                                // here or it will not compile):
+                                // - HallCalibration reaches the live sensor
+                                //   through the detect/apply flow; a config
+                                //   write takes effect at the next boot.
+                                // - HallTuning is consumed at hall-estimator
+                                //   construction (boot only).
+                                // - VoltageLimits/PwmConfig are rejected by
+                                //   write_is_acceptable and never get here.
+                                ConfigWrite::HallCalibration(_)
+                                | ConfigWrite::HallTuning(_)
+                                | ConfigWrite::VoltageLimits(_)
+                                | ConfigWrite::PwmConfig(_) => {}
                             }
                             let revision = current_revision.wrapping_add(1);
                             critical_section::with(|cs| {
@@ -939,7 +990,7 @@ where
 ///
 /// Use [`run_all_servers_with_config`] when the `storage` feature is enabled
 /// to include the configuration endpoint.
-pub async fn run_all_servers<NS, F>(
+pub async fn run_all_servers<NS, F, T>(
     endpoints: Endpoints<NS>,
     device_info: HardwareInfo,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
@@ -948,11 +999,12 @@ pub async fn run_all_servers<NS, F>(
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
+    T: crate::timer::Timer,
 {
     join(
         join3(
             info_server::<NS, 2>(endpoints.clone(), device_info, state_mutex),
-            motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
+            motor_command_server::<NS, F, T, 2>(endpoints.clone(), state_mutex, fault_registry),
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),
         join3(
@@ -967,7 +1019,7 @@ pub async fn run_all_servers<NS, F>(
 /// Run all protocol servers including config endpoint.
 #[cfg(feature = "storage")]
 #[allow(clippy::too_many_arguments)] // flat board-init facade; a struct would just move the names
-pub async fn run_all_servers_with_config<NS, F>(
+pub async fn run_all_servers_with_config<NS, F, T>(
     endpoints: Endpoints<NS>,
     device_info: HardwareInfo,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
@@ -979,11 +1031,12 @@ pub async fn run_all_servers_with_config<NS, F>(
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
+    T: crate::timer::Timer,
 {
     join(
         join3(
             info_server::<NS, 2>(endpoints.clone(), device_info, state_mutex),
-            motor_command_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
+            motor_command_server::<NS, F, T, 2>(endpoints.clone(), state_mutex, fault_registry),
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),
         join(
