@@ -19,12 +19,15 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use oxifoc_core::storage::FailsafeConfigStored;
 use oxifoc_core::types::{
-    ControlMode, CurrentOffsetMethod, DetectRequest, DetectResponse, MotorCommandOutcome,
+    ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, ConfigValue, ConfigWrite,
+    ControlMode, CurrentOffsetMethod, DetectRequest, DetectResponse, Keyed, MotorCommandOutcome,
+    ReqId,
 };
 use oxifoc_host_lib::{
-    HostCommand, HostConfig, ReconnectPolicy, TransportType, detect_channel, motor_channel,
-    start_host,
+    HostCommand, HostConfig, ReconnectPolicy, TransportType, config_channel, detect_channel,
+    motor_channel, start_host,
 };
 
 /// Kills the spawned virtual device when the test ends (even on panic).
@@ -240,6 +243,112 @@ fn run_e2e(transport: TransportType) {
         rx.blocking_recv().expect("safe response channel").is_ok(),
         "safe neutral must release the emergency latch"
     );
+
+    // 6) Config mutation is a revisioned two-phase operation. A retried Apply
+    // is deduplicated, a stale writer conflicts, and Persist marks only the
+    // exact live revision durable.
+    let (tx, rx) = config_channel();
+    rt.cmd_tx
+        .send(HostCommand::ConfigRead(ConfigGroupId::Failsafe, tx))
+        .expect("send initial config read");
+    let initial = rx
+        .blocking_recv()
+        .expect("initial config response channel")
+        .expect("initial config read");
+    assert_eq!(
+        initial,
+        ConfigResponse::Snapshot(oxifoc_core::types::ConfigSnapshot {
+            group: ConfigGroupId::Failsafe,
+            revision: 0,
+            persisted: false,
+            value: None,
+        })
+    );
+
+    let apply = Keyed::new(
+        ReqId(0xA11E_0001),
+        ConfigApply {
+            expected_revision: 0,
+            write: ConfigWrite::Failsafe(FailsafeConfigStored::default()),
+        },
+    );
+    for attempt in 0..2 {
+        let (tx, rx) = config_channel();
+        rt.cmd_tx
+            .send(HostCommand::ConfigApply(apply.clone(), tx))
+            .expect("send config apply");
+        assert_eq!(
+            rx.blocking_recv()
+                .expect("apply response channel")
+                .expect("config apply"),
+            ConfigResponse::Applied {
+                req_id: apply.id,
+                revision: 1,
+            },
+            "apply attempt {attempt} must return the same deduplicated acknowledgement"
+        );
+    }
+
+    let (tx, rx) = config_channel();
+    rt.cmd_tx
+        .send(HostCommand::ConfigApply(
+            Keyed::new(
+                ReqId(0xA11E_0002),
+                ConfigApply {
+                    expected_revision: 0,
+                    write: ConfigWrite::Failsafe(FailsafeConfigStored::default()),
+                },
+            ),
+            tx,
+        ))
+        .expect("send stale config apply");
+    assert_eq!(
+        rx.blocking_recv()
+            .expect("stale apply response channel")
+            .expect("stale apply protocol response"),
+        ConfigResponse::Conflict {
+            current_revision: 1,
+        }
+    );
+
+    let persist = Keyed::new(
+        ReqId(0xA11E_0003),
+        ConfigPersist {
+            group: ConfigGroupId::Failsafe,
+            expected_revision: 1,
+        },
+    );
+    for attempt in 0..2 {
+        let (tx, rx) = config_channel();
+        rt.cmd_tx
+            .send(HostCommand::ConfigPersist(persist.clone(), tx))
+            .expect("send config persist");
+        assert_eq!(
+            rx.blocking_recv()
+                .expect("persist response channel")
+                .expect("config persist"),
+            ConfigResponse::Persisted {
+                req_id: persist.id,
+                revision: 1,
+            },
+            "persist attempt {attempt} must return the same deduplicated acknowledgement"
+        );
+    }
+
+    let (tx, rx) = config_channel();
+    rt.cmd_tx
+        .send(HostCommand::ConfigRead(ConfigGroupId::Failsafe, tx))
+        .expect("send final config read");
+    let ConfigResponse::Snapshot(snapshot) = rx
+        .blocking_recv()
+        .expect("final config response channel")
+        .expect("final config read")
+    else {
+        panic!("final config response must be a snapshot");
+    };
+    assert_eq!(snapshot.revision, 1);
+    assert!(snapshot.persisted);
+    assert!(matches!(snapshot.value, Some(ConfigValue::Failsafe(_))));
 
     rt.shutdown();
 }

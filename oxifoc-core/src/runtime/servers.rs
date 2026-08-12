@@ -231,20 +231,112 @@ fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
     }
 }
 
+#[cfg(feature = "storage")]
+fn write_is_live_safe_while_running(w: &crate::types::ConfigWrite) -> bool {
+    use crate::types::ConfigWrite;
+    matches!(
+        w,
+        ConfigWrite::CurrentLimits(_)
+            | ConfigWrite::Failsafe(_)
+            | ConfigWrite::Velocity(_)
+            | ConfigWrite::Derating(_)
+    )
+}
+
+#[cfg(feature = "storage")]
+fn config_value(
+    cfg: &RuntimeConfig,
+    group: crate::types::ConfigGroupId,
+) -> Option<crate::types::ConfigValue> {
+    use crate::types::{ConfigGroupId as G, ConfigValue as V};
+    match group {
+        G::MotorParams => cfg.motor_params.clone().map(V::MotorParams),
+        G::HallCalibration => cfg.hall_calibration.clone().map(V::HallCalibration),
+        G::DcOffsets => cfg.dc_offsets.clone().map(V::DcOffsets),
+        G::CurrentLimits => cfg.current_limits.clone().map(V::CurrentLimits),
+        G::VoltageLimits => cfg.voltage_limits.clone().map(V::VoltageLimits),
+        G::PwmConfig => cfg.pwm_config.clone().map(V::PwmConfig),
+        G::PiGains => cfg.pi_gains.clone().map(V::PiGains),
+        G::HallTuning => cfg.hall_tuning.clone().map(V::HallTuning),
+        G::Failsafe => cfg.failsafe.clone().map(V::Failsafe),
+        G::Velocity => cfg.velocity.clone().map(V::Velocity),
+        G::Derating => cfg.derating.clone().map(V::Derating),
+    }
+}
+
+#[cfg(feature = "storage")]
+fn flash_parts(value: crate::types::ConfigValue) -> (ConfigKey, ConfigPayload) {
+    use crate::types::ConfigValue as V;
+    match value {
+        V::MotorParams(v) => (ConfigKey::MotorParams, ConfigPayload::MotorParams(v)),
+        V::CurrentLimits(v) => (ConfigKey::CurrentLimits, ConfigPayload::CurrentLimits(v)),
+        V::VoltageLimits(v) => (ConfigKey::VoltageLimits, ConfigPayload::VoltageLimits(v)),
+        V::PwmConfig(v) => (ConfigKey::PwmConfig, ConfigPayload::PwmConfig(v)),
+        V::PiGains(v) => (ConfigKey::PiGains, ConfigPayload::PiGains(v)),
+        V::HallTuning(v) => (ConfigKey::HallTuning, ConfigPayload::HallTuning(v)),
+        V::HallCalibration(v) => (
+            ConfigKey::HallCalibration,
+            ConfigPayload::HallCalibration(v),
+        ),
+        V::DcOffsets(v) => (ConfigKey::DcOffsets, ConfigPayload::DcOffsets(v)),
+        V::Failsafe(v) => (ConfigKey::Failsafe, ConfigPayload::Failsafe(v)),
+        V::Velocity(v) => (ConfigKey::Velocity, ConfigPayload::Velocity(v)),
+        V::Derating(v) => (ConfigKey::Derating, ConfigPayload::Derating(v)),
+    }
+}
+
+#[cfg(feature = "storage")]
+#[derive(Clone, Copy)]
+enum CachedConfigAck {
+    Applied(u32),
+    Persisted(u32),
+}
+
+#[cfg(feature = "storage")]
+struct ConfigActionCache {
+    entries: [Option<(crate::types::ReqId, CachedConfigAck)>; 4],
+    next: usize,
+}
+
+#[cfg(feature = "storage")]
+impl ConfigActionCache {
+    const fn new() -> Self {
+        Self {
+            entries: [None; 4],
+            next: 0,
+        }
+    }
+
+    fn get(&self, id: crate::types::ReqId) -> Option<CachedConfigAck> {
+        self.entries
+            .iter()
+            .flatten()
+            .find_map(|(cached, ack)| (*cached == id).then_some(*ack))
+    }
+
+    fn insert(&mut self, id: crate::types::ReqId, ack: CachedConfigAck) {
+        self.entries[self.next] = Some((id, ack));
+        self.next = (self.next + 1) % self.entries.len();
+    }
+}
+
 /// Configuration server - handles config read/write/reset requests
 ///
-/// Reads from the shared RuntimeConfig. Two write modes:
+/// Reads return the live value, its optimistic-concurrency revision, and
+/// whether flash contains that exact revision. Writes are deliberately split:
 ///
-/// * `persist = true` — writes go through FLASH_CHANNEL to the platform's
-///   storage worker task, then mirror into RAM. Writes are refused with
-///   [`ConfigResponse::Busy`] while the motor is running: internal-flash
-///   erase stalls the whole chip (single-bank parts; up to seconds for an
-///   F4 sector), which would starve the FOC ISR with the motor energized.
-/// * `persist = false` — **RAM-backed**: no flash exists (baked-config
-///   profile); writes update the in-RAM config + live-apply only. Nothing
-///   can stall, so writes are allowed with the motor running — live tuning
-///   on the bench. Lost at reboot by design: the host extracts the result
-///   with `config dump --rust` and bakes it into the next build.
+/// * `Apply` validates and changes RAM/live driver state, then increments the
+///   group revision. Groups whose driver update is known to be live-safe may
+///   be applied while running; structural/calibration groups remain stop-only.
+/// * `Persist` writes one explicitly named live revision through
+///   `FLASH_CHANNEL`. It is always stop-only because internal-flash erase can
+///   stall a single-bank MCU long enough to starve the FOC ISR. A concurrent
+///   Apply causes `Conflict`, never persistence of an unintended newer value.
+/// * baked-config firmware returns `Unsupported` for `Persist`; the volatile
+///   Apply remains useful for bench tuning and `config dump --rust` extraction.
+///
+/// Apply/Persist carry independent request IDs. The small response cache makes
+/// host retries effectively-once without retaining full configuration payloads.
 ///
 /// `hw_max_current_a` is the board's hardware phase-current ceiling —
 /// current-limit writes are clamped to it and applied to the live driver
@@ -260,11 +352,26 @@ pub async fn config_server<NS, const N: usize>(
     NS: NetStackHandle,
 {
     use crate::icd::ConfigGroupId;
-    use crate::types::{ConfigWrite, MotorState};
+    use crate::types::{ConfigSnapshot, ConfigWrite, MotorState};
 
     let server = endpoints.bounded_server::<ConfigEndpoint, N>(Some("config"));
     let server = pin!(server);
     let mut h = server.attach();
+    let revisions_storage = CriticalSectionMutex::new(RefCell::new([0u32; ConfigGroupId::COUNT]));
+    let revisions = &revisions_storage;
+    let mut initially_persisted = [None; ConfigGroupId::COUNT];
+    if persist {
+        let cfg = critical_section::with(|cs| runtime_config.borrow(cs).borrow().clone());
+        for group in ConfigGroupId::ALL {
+            if config_value(&cfg, group).is_some() {
+                initially_persisted[group.index()] = Some(0);
+            }
+        }
+    }
+    let persisted_revisions_storage = CriticalSectionMutex::new(RefCell::new(initially_persisted));
+    let persisted_revisions = &persisted_revisions_storage;
+    let action_cache_storage = CriticalSectionMutex::new(RefCell::new(ConfigActionCache::new()));
+    let action_cache = &action_cache_storage;
 
     loop {
         let _ = h
@@ -280,146 +387,78 @@ pub async fn config_server<NS, const N: usize>(
                                 || crate::state::current_offset_request_pending(),
                         )
                     });
+                    let action_id = match &req {
+                        ConfigRequest::Apply(keyed) => Some(keyed.id),
+                        ConfigRequest::Persist(keyed) => Some(keyed.id),
+                        ConfigRequest::Read(_) | ConfigRequest::ResetAll => None,
+                    };
+                    if let Some((id, ack)) = action_id.and_then(|id| {
+                        critical_section::with(|cs| {
+                            action_cache
+                                .borrow(cs)
+                                .borrow()
+                                .get(id)
+                                .map(|ack| (id, ack))
+                        })
+                    }) {
+                        return match ack {
+                            CachedConfigAck::Applied(revision) => ConfigResponse::Applied {
+                                req_id: id,
+                                revision,
+                            },
+                            CachedConfigAck::Persisted(revision) => ConfigResponse::Persisted {
+                                req_id: id,
+                                revision,
+                            },
+                        };
+                    }
                     match req {
                         ConfigRequest::Read(group) => {
                             let cfg = critical_section::with(|cs| {
                                 runtime_config.borrow(cs).borrow().clone()
                             });
-                            match group {
-                                ConfigGroupId::MotorParams => match cfg.motor_params {
-                                    Some(v) => ConfigResponse::MotorParams(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                                ConfigGroupId::HallCalibration => match cfg.hall_calibration {
-                                    Some(v) => ConfigResponse::HallCalibration(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                                ConfigGroupId::DcOffsets => match cfg.dc_offsets {
-                                    Some(v) => ConfigResponse::DcOffsets(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                                ConfigGroupId::CurrentLimits => match cfg.current_limits {
-                                    Some(v) => ConfigResponse::CurrentLimits(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                                ConfigGroupId::VoltageLimits => match cfg.voltage_limits {
-                                    Some(v) => ConfigResponse::VoltageLimits(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                                ConfigGroupId::PwmConfig => match cfg.pwm_config {
-                                    Some(v) => ConfigResponse::PwmConfig(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                                ConfigGroupId::PiGains => match cfg.pi_gains {
-                                    Some(v) => ConfigResponse::PiGains(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                                ConfigGroupId::HallTuning => match cfg.hall_tuning {
-                                    Some(v) => ConfigResponse::HallTuning(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                                ConfigGroupId::Failsafe => match cfg.failsafe {
-                                    Some(v) => ConfigResponse::Failsafe(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                                ConfigGroupId::Velocity => match cfg.velocity {
-                                    Some(v) => ConfigResponse::Velocity(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                                ConfigGroupId::Derating => match cfg.derating {
-                                    Some(v) => ConfigResponse::Derating(v),
-                                    None => ConfigResponse::NotFound,
-                                },
-                            }
+                            let revision = critical_section::with(|cs| {
+                                revisions.borrow(cs).borrow()[group.index()]
+                            });
+                            ConfigResponse::Snapshot(ConfigSnapshot {
+                                group,
+                                revision,
+                                persisted: critical_section::with(|cs| {
+                                    persisted_revisions.borrow(cs).borrow()[group.index()]
+                                        == Some(revision)
+                                }),
+                                value: config_value(&cfg, group),
+                            })
                         }
                         // Boundary validation, before any persistence —
                         // the per-group rules live in `write_is_acceptable`
                         // (a sync helper: it keeps the float checks out of
                         // this task's future, which flash-tight boards'
                         // flash and RAM budgets ride).
-                        ConfigRequest::Write(ref w) if !write_is_acceptable(w) => {
+                        ConfigRequest::Apply(ref keyed)
+                            if !write_is_acceptable(&keyed.inner.write) =>
+                        {
                             ConfigResponse::Invalid
                         }
-                        ConfigRequest::Write(_) if maintenance_busy => ConfigResponse::Busy,
-                        ConfigRequest::Write(_) if persist && motor_running => ConfigResponse::Busy,
+                        ConfigRequest::Apply(_) if maintenance_busy => ConfigResponse::Busy,
+                        ConfigRequest::Apply(ref keyed)
+                            if motor_running
+                                && !write_is_live_safe_while_running(&keyed.inner.write) =>
+                        {
+                            ConfigResponse::Busy
+                        }
                         ConfigRequest::ResetAll if motor_running || maintenance_busy => {
                             ConfigResponse::Busy
                         }
-                        ConfigRequest::Write(write) => {
-                            let (key, payload) = match write.clone() {
-                                ConfigWrite::MotorParams(v) => {
-                                    (ConfigKey::MotorParams, ConfigPayload::MotorParams(v))
-                                }
-                                ConfigWrite::CurrentLimits(v) => {
-                                    (ConfigKey::CurrentLimits, ConfigPayload::CurrentLimits(v))
-                                }
-                                ConfigWrite::VoltageLimits(v) => {
-                                    (ConfigKey::VoltageLimits, ConfigPayload::VoltageLimits(v))
-                                }
-                                ConfigWrite::PwmConfig(v) => {
-                                    (ConfigKey::PwmConfig, ConfigPayload::PwmConfig(v))
-                                }
-                                ConfigWrite::PiGains(v) => {
-                                    (ConfigKey::PiGains, ConfigPayload::PiGains(v))
-                                }
-                                ConfigWrite::HallTuning(v) => {
-                                    (ConfigKey::HallTuning, ConfigPayload::HallTuning(v))
-                                }
-                                ConfigWrite::HallCalibration(v) => (
-                                    ConfigKey::HallCalibration,
-                                    ConfigPayload::HallCalibration(v),
-                                ),
-                                ConfigWrite::DcOffsets(v) => {
-                                    (ConfigKey::DcOffsets, ConfigPayload::DcOffsets(v))
-                                }
-                                ConfigWrite::Failsafe(v) => {
-                                    (ConfigKey::Failsafe, ConfigPayload::Failsafe(v))
-                                }
-                                ConfigWrite::Velocity(v) => {
-                                    (ConfigKey::Velocity, ConfigPayload::Velocity(v))
-                                }
-                                ConfigWrite::Derating(v) => {
-                                    (ConfigKey::Derating, ConfigPayload::Derating(v))
-                                }
-                            };
-                            if persist {
-                                // TOCTOU guard: arm the pending flag, then
-                                // re-check the motor state. The ISR refuses to
-                                // start the motor while the flag is set (the
-                                // Busy fast path above ran before the flag was
-                                // armed, so it alone is not enough). The guard
-                                // clears the flag on every return path.
-                                let _flash_pending = FlashPendingGuard::arm();
-                                let actuator_busy = critical_section::with(|cs| {
-                                    state_mutex.borrow(cs).borrow().actuator_busy()
-                                });
-                                if actuator_busy {
-                                    return ConfigResponse::Busy;
-                                }
-                                // Write-through ack: this server is the only
-                                // FLASH_CHANNEL producer, so FLASH_DONE pairs
-                                // 1:1 with our operation. Reset before sending
-                                // to discard any stale signal.
-                                FLASH_DONE.reset();
-                                if FLASH_CHANNEL
-                                    .try_send(FlashOperation::Save(key, payload))
-                                    .is_err()
-                                {
-                                    return ConfigResponse::Error;
-                                }
-                                if !FLASH_DONE.wait().await {
-                                    // Flash write failed: report it, and leave
-                                    // the in-memory copy alone — it must keep
-                                    // mirroring what is actually persisted.
-                                    return ConfigResponse::Error;
-                                }
-                            } else {
-                                // RAM-backed: nothing to persist; the (key,
-                                // payload) pair is only needed by the flash
-                                // path.
-                                let _ = (key, payload);
+                        ConfigRequest::Apply(keyed) => {
+                            let write = keyed.inner.write;
+                            let group = write.group();
+                            let current_revision = critical_section::with(|cs| {
+                                revisions.borrow(cs).borrow()[group.index()]
+                            });
+                            if keyed.inner.expected_revision != current_revision {
+                                return ConfigResponse::Conflict { current_revision };
                             }
-
                             // Update the in-memory mirror.
                             critical_section::with(|cs| {
                                 let mut cfg = runtime_config.borrow(cs).borrow_mut();
@@ -583,7 +622,66 @@ pub async fn config_server<NS, const N: usize>(
                                 }
                                 _ => {}
                             }
-                            ConfigResponse::Ok
+                            let revision = current_revision.wrapping_add(1);
+                            critical_section::with(|cs| {
+                                revisions.borrow(cs).borrow_mut()[group.index()] = revision;
+                                action_cache
+                                    .borrow(cs)
+                                    .borrow_mut()
+                                    .insert(keyed.id, CachedConfigAck::Applied(revision));
+                            });
+                            ConfigResponse::Applied {
+                                req_id: keyed.id,
+                                revision,
+                            }
+                        }
+                        ConfigRequest::Persist(keyed) => {
+                            if !persist {
+                                return ConfigResponse::Unsupported;
+                            }
+                            let group = keyed.inner.group;
+                            let current_revision = critical_section::with(|cs| {
+                                revisions.borrow(cs).borrow()[group.index()]
+                            });
+                            if keyed.inner.expected_revision != current_revision {
+                                return ConfigResponse::Conflict { current_revision };
+                            }
+                            let _flash_pending = FlashPendingGuard::arm();
+                            let actuator_busy = critical_section::with(|cs| {
+                                state_mutex.borrow(cs).borrow().actuator_busy()
+                            });
+                            if actuator_busy {
+                                return ConfigResponse::Busy;
+                            }
+                            let value = critical_section::with(|cs| {
+                                config_value(&runtime_config.borrow(cs).borrow(), group)
+                            });
+                            let Some(value) = value else {
+                                return ConfigResponse::Invalid;
+                            };
+                            let (key, payload) = flash_parts(value);
+                            FLASH_DONE.reset();
+                            if FLASH_CHANNEL
+                                .try_send(FlashOperation::Save(key, payload))
+                                .is_err()
+                            {
+                                return ConfigResponse::Error;
+                            }
+                            if !FLASH_DONE.wait().await {
+                                return ConfigResponse::Error;
+                            }
+                            critical_section::with(|cs| {
+                                persisted_revisions.borrow(cs).borrow_mut()[group.index()] =
+                                    Some(current_revision);
+                                action_cache
+                                    .borrow(cs)
+                                    .borrow_mut()
+                                    .insert(keyed.id, CachedConfigAck::Persisted(current_revision));
+                            });
+                            ConfigResponse::Persisted {
+                                req_id: keyed.id,
+                                revision: current_revision,
+                            }
                         }
                         ConfigRequest::ResetAll => {
                             if persist {
@@ -612,7 +710,12 @@ pub async fn config_server<NS, const N: usize>(
                                     CurrentLimits::from_max_current(hw_max_current_a),
                                 ))
                                 .await;
-                            ConfigResponse::Ok
+                            critical_section::with(|cs| {
+                                *revisions.borrow(cs).borrow_mut() = [0; ConfigGroupId::COUNT];
+                                *persisted_revisions.borrow(cs).borrow_mut() =
+                                    [None; ConfigGroupId::COUNT];
+                            });
+                            ConfigResponse::Reset
                         }
                     }
                 }

@@ -32,11 +32,13 @@ pub use crate::foc::fault::{FaultCategory, FaultInfo};
 /// request. The server deduplicates on it so a non-idempotent action runs at
 /// most once. See the `delivery` module for the full ladder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ReqId(pub u64);
 
 /// A request payload tagged with a [`ReqId`] — the wire envelope for a
 /// deduplicated (effectively-once) endpoint. Mirrors an HTTP idempotency key.
-#[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Keyed<T> {
     /// Stable across retries; the dedup key.
     pub id: ReqId,
@@ -495,7 +497,7 @@ pub struct SlowTelemetry {
 }
 
 /// Response to a phase-source change request.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PhaseSourceAck {
     /// Whether the command was enqueued to the control ISR. Confirm the
@@ -785,20 +787,22 @@ mod config_types {
 
     use super::*;
 
-    /// Configuration request from host
-    #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+    /// Configuration request from host.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub enum ConfigRequest {
-        /// Read a config group (returns current value or defaults)
+        /// Read a live config group with its revision and persistence state.
         Read(ConfigGroupId),
-        /// Write a config group to flash
-        Write(ConfigWrite),
+        /// Apply a value to RAM and the live driver. No flash access.
+        Apply(Keyed<ConfigApply>),
+        /// Persist the current live value of one group.
+        Persist(Keyed<ConfigPersist>),
         /// Reset all config to defaults (erase flash)
         ResetAll,
     }
 
     /// Config group identifier for read requests
-    #[derive(Clone, Copy, Debug, Serialize, Deserialize, Schema)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Schema)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub enum ConfigGroupId {
         MotorParams,
@@ -815,8 +819,41 @@ mod config_types {
         Derating,
     }
 
+    impl ConfigGroupId {
+        pub const COUNT: usize = 11;
+        pub const ALL: [Self; Self::COUNT] = [
+            Self::MotorParams,
+            Self::HallCalibration,
+            Self::DcOffsets,
+            Self::CurrentLimits,
+            Self::VoltageLimits,
+            Self::PwmConfig,
+            Self::PiGains,
+            Self::HallTuning,
+            Self::Failsafe,
+            Self::Velocity,
+            Self::Derating,
+        ];
+
+        pub const fn index(self) -> usize {
+            match self {
+                Self::MotorParams => 0,
+                Self::HallCalibration => 1,
+                Self::DcOffsets => 2,
+                Self::CurrentLimits => 3,
+                Self::VoltageLimits => 4,
+                Self::PwmConfig => 5,
+                Self::PiGains => 6,
+                Self::HallTuning => 7,
+                Self::Failsafe => 8,
+                Self::Velocity => 9,
+                Self::Derating => 10,
+            }
+        }
+    }
+
     /// Config write payload — one variant per group
-    #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub enum ConfigWrite {
         MotorParams(MotorParamsConfig),
@@ -838,34 +875,79 @@ mod config_types {
         Derating(DeratingConfigStored),
     }
 
+    impl ConfigWrite {
+        pub const fn group(&self) -> ConfigGroupId {
+            match self {
+                Self::MotorParams(_) => ConfigGroupId::MotorParams,
+                Self::CurrentLimits(_) => ConfigGroupId::CurrentLimits,
+                Self::VoltageLimits(_) => ConfigGroupId::VoltageLimits,
+                Self::PwmConfig(_) => ConfigGroupId::PwmConfig,
+                Self::PiGains(_) => ConfigGroupId::PiGains,
+                Self::HallTuning(_) => ConfigGroupId::HallTuning,
+                Self::HallCalibration(_) => ConfigGroupId::HallCalibration,
+                Self::DcOffsets(_) => ConfigGroupId::DcOffsets,
+                Self::Failsafe(_) => ConfigGroupId::Failsafe,
+                Self::Velocity(_) => ConfigGroupId::Velocity,
+                Self::Derating(_) => ConfigGroupId::Derating,
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub struct ConfigApply {
+        pub expected_revision: u32,
+        pub write: ConfigWrite,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Schema)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub struct ConfigPersist {
+        pub group: ConfigGroupId,
+        pub expected_revision: u32,
+    }
+
+    /// Typed value returned by a revisioned read.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub enum ConfigValue {
+        MotorParams(MotorParamsConfig),
+        CurrentLimits(CurrentLimitsConfig),
+        VoltageLimits(VoltageLimitsConfig),
+        PwmConfig(PwmConfigStored),
+        PiGains(PiGainsConfig),
+        HallTuning(HallTuningConfig),
+        HallCalibration(HallCalibrationConfig),
+        DcOffsets(DcOffsetsConfig),
+        Failsafe(FailsafeConfigStored),
+        Velocity(VelocityConfigStored),
+        Derating(DeratingConfigStored),
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub struct ConfigSnapshot {
+        pub group: ConfigGroupId,
+        pub revision: u32,
+        /// True only when flash contains this exact live revision.
+        pub persisted: bool,
+        pub value: Option<ConfigValue>,
+    }
+
     /// Configuration response
-    #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub enum ConfigResponse {
-        /// Operation succeeded
-        Ok,
-        /// Motor parameters
-        MotorParams(MotorParamsConfig),
-        /// Current limits
-        CurrentLimits(CurrentLimitsConfig),
-        /// Voltage limits
-        VoltageLimits(VoltageLimitsConfig),
-        /// PWM configuration
-        PwmConfig(PwmConfigStored),
-        /// PI gains
-        PiGains(PiGainsConfig),
-        /// Hall tuning
-        HallTuning(HallTuningConfig),
-        /// Hall calibration data
-        HallCalibration(HallCalibrationConfig),
-        /// DC offsets
-        DcOffsets(DcOffsetsConfig),
-        /// Failsafe (deadman + policy)
-        Failsafe(FailsafeConfigStored),
-        /// Cruise velocity-loop tuning
-        Velocity(VelocityConfigStored),
-        /// Requested group has no stored value
-        NotFound,
+        Snapshot(ConfigSnapshot),
+        Applied {
+            req_id: ReqId,
+            revision: u32,
+        },
+        Persisted {
+            req_id: ReqId,
+            revision: u32,
+        },
+        Reset,
         /// Flash operation failed
         Error,
         /// Refused: motor is running. Flash writes stall the chip (sector
@@ -876,8 +958,12 @@ mod config_types {
         /// Refused: the written value fails boundary validation (e.g. the
         /// current-limits headroom rule, `CurrentLimitsConfig::is_coherent`).
         Invalid,
-        /// Graduated derating ramps
-        Derating(DeratingConfigStored),
+        /// The expected revision is stale; re-read before retrying.
+        Conflict {
+            current_revision: u32,
+        },
+        /// Persistence is unavailable on this baked-config firmware profile.
+        Unsupported,
     }
 }
 

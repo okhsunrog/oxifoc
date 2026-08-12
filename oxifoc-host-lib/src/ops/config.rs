@@ -12,7 +12,10 @@
 //! (`config dump --rust`) stays in the CLI.
 
 use anyhow::{Context, Result, bail};
-use oxifoc_core::types::{ConfigGroupId, ConfigResponse, ConfigWrite};
+use oxifoc_core::types::{
+    ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, ConfigSnapshot, ConfigValue,
+    ConfigWrite, Keyed, ReqId,
+};
 use serde_json::Value;
 
 use crate::{CommandSender, HostCommand, config_channel};
@@ -57,8 +60,34 @@ pub fn group_name(group: ConfigGroupId) -> &'static str {
         .unwrap_or("?")
 }
 
-/// Read one config group (None when the device has nothing stored for it).
-pub fn read_group(cmd: &CommandSender, group: ConfigGroupId) -> Result<Option<ConfigResponse>> {
+fn next_config_id() -> ReqId {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: std::sync::OnceLock<AtomicU64> = std::sync::OnceLock::new();
+    let ctr = CTR.get_or_init(|| {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        AtomicU64::new(seed | 1)
+    });
+    ReqId(ctr.fetch_add(1, Ordering::Relaxed))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ConfigState {
+    pub revision: u32,
+    pub persisted: bool,
+    pub present: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ConfigCommit {
+    pub revision: u32,
+    pub persisted: bool,
+}
+
+/// Read one config group with its optimistic-concurrency revision.
+pub fn read_group(cmd: &CommandSender, group: ConfigGroupId) -> Result<ConfigSnapshot> {
     let (tx, rx) = config_channel();
     cmd.send(HostCommand::ConfigRead(group, tx))
         .context("send config read")?;
@@ -66,29 +95,27 @@ pub fn read_group(cmd: &CommandSender, group: ConfigGroupId) -> Result<Option<Co
         .blocking_recv()
         .context("backend dropped the config read")?
         .context("config read failed")?;
-    Ok(match resp {
-        ConfigResponse::NotFound => None,
-        other => Some(other),
-    })
+    match resp {
+        ConfigResponse::Snapshot(snapshot) if snapshot.group == group => Ok(snapshot),
+        other => bail!("device answered {other:?} to a read of {group:?}"),
+    }
 }
 
 /// JSON value of a group response payload (None for non-payload variants).
 #[must_use]
-pub fn group_value(resp: &ConfigResponse) -> Option<Value> {
-    use ConfigResponse as R;
-    match resp {
-        R::MotorParams(v) => serde_json::to_value(v).ok(),
-        R::CurrentLimits(v) => serde_json::to_value(v).ok(),
-        R::VoltageLimits(v) => serde_json::to_value(v).ok(),
-        R::PwmConfig(v) => serde_json::to_value(v).ok(),
-        R::PiGains(v) => serde_json::to_value(v).ok(),
-        R::HallTuning(v) => serde_json::to_value(v).ok(),
-        R::HallCalibration(v) => serde_json::to_value(v).ok(),
-        R::DcOffsets(v) => serde_json::to_value(v).ok(),
-        R::Failsafe(v) => serde_json::to_value(v).ok(),
-        R::Velocity(v) => serde_json::to_value(v).ok(),
-        R::Derating(v) => serde_json::to_value(v).ok(),
-        R::Ok | R::NotFound | R::Error | R::Busy | R::Invalid => None,
+pub fn group_value(value: &ConfigValue) -> Option<Value> {
+    match value {
+        ConfigValue::MotorParams(v) => serde_json::to_value(v).ok(),
+        ConfigValue::CurrentLimits(v) => serde_json::to_value(v).ok(),
+        ConfigValue::VoltageLimits(v) => serde_json::to_value(v).ok(),
+        ConfigValue::PwmConfig(v) => serde_json::to_value(v).ok(),
+        ConfigValue::PiGains(v) => serde_json::to_value(v).ok(),
+        ConfigValue::HallTuning(v) => serde_json::to_value(v).ok(),
+        ConfigValue::HallCalibration(v) => serde_json::to_value(v).ok(),
+        ConfigValue::DcOffsets(v) => serde_json::to_value(v).ok(),
+        ConfigValue::Failsafe(v) => serde_json::to_value(v).ok(),
+        ConfigValue::Velocity(v) => serde_json::to_value(v).ok(),
+        ConfigValue::Derating(v) => serde_json::to_value(v).ok(),
     }
 }
 
@@ -131,33 +158,48 @@ pub fn write_from_value(group: ConfigGroupId, v: Value) -> Result<ConfigWrite> {
     })
 }
 
-/// Current JSON of a group: stored value, or the typed default. The bool is
-/// `true` when the value came from the device (stored), `false` for defaults.
-pub fn current_value(cmd: &CommandSender, group: ConfigGroupId) -> Result<(Value, bool)> {
-    Ok(match read_group(cmd, group)? {
-        Some(resp) => match group_value(&resp) {
-            Some(v) => (v, true),
-            None => bail!("device answered {resp:?} to a read of {group:?}"),
+/// Current JSON of a group: the live value, or the typed default when the
+/// firmware has no value for this group. `ConfigState` distinguishes absence
+/// from a volatile value that has not yet reached flash.
+pub fn current_value(cmd: &CommandSender, group: ConfigGroupId) -> Result<(Value, ConfigState)> {
+    let snapshot = read_group(cmd, group)?;
+    let present = snapshot.value.is_some();
+    let value = match snapshot.value.as_ref() {
+        Some(value) => group_value(value).context("config value is not JSON-serializable")?,
+        None => group_default_value(group),
+    };
+    Ok((
+        value,
+        ConfigState {
+            revision: snapshot.revision,
+            persisted: snapshot.persisted,
+            present,
         },
-        None => (group_default_value(group), false),
-    })
+    ))
 }
 
-/// Send a `ConfigWrite` and require the `Ok` ack.
-pub fn send_write(cmd: &CommandSender, write: ConfigWrite) -> Result<()> {
+pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigWrite) -> Result<u32> {
     let (tx, rx) = config_channel();
-    cmd.send(HostCommand::ConfigWrite(write, tx))
-        .context("send config write")?;
+    let id = next_config_id();
+    cmd.send(HostCommand::ConfigApply(
+        Keyed::new(
+            id,
+            ConfigApply {
+                expected_revision,
+                write,
+            },
+        ),
+        tx,
+    ))
+    .context("send volatile config apply")?;
     let resp = rx
         .blocking_recv()
-        .context("backend dropped the config write")?
-        .context("config write failed")?;
+        .context("backend dropped the config apply")?
+        .context("config apply failed")?;
     match resp {
-        ConfigResponse::Ok => Ok(()),
+        ConfigResponse::Applied { req_id, revision } if req_id == id => Ok(revision),
         ConfigResponse::Busy => {
-            bail!(
-                "device refused the write: motor is running (flash writes stall the control loop)"
-            )
+            bail!("device refused volatile apply: this group is not live-safe while running")
         }
         ConfigResponse::Invalid => bail!(
             "device refused the write: value fails validation. Rules: all fields \
@@ -166,8 +208,62 @@ pub fn send_write(cmd: &CommandSender, write: ConfigWrite) -> Result<()> {
              enabled ramp well-formed (temp/regen end > start, battery cut start > \
              end, accel_dec and speed_start_frac in 0..=1)"
         ),
-        other => bail!("config write rejected: {other:?}"),
+        ConfigResponse::Conflict { current_revision } => bail!(
+            "config changed concurrently (expected revision {expected_revision}, current {current_revision}); re-read and retry"
+        ),
+        other => bail!("config apply rejected: {other:?}"),
     }
+}
+
+pub fn persist_group(
+    cmd: &CommandSender,
+    group: ConfigGroupId,
+    expected_revision: u32,
+) -> Result<bool> {
+    let (tx, rx) = config_channel();
+    let id = next_config_id();
+    cmd.send(HostCommand::ConfigPersist(
+        Keyed::new(
+            id,
+            ConfigPersist {
+                group,
+                expected_revision,
+            },
+        ),
+        tx,
+    ))
+    .context("send config persist")?;
+    let resp = rx
+        .blocking_recv()
+        .context("backend dropped the config persist")?
+        .context("config persist failed")?;
+    match resp {
+        ConfigResponse::Persisted { req_id, revision }
+            if req_id == id && revision == expected_revision =>
+        {
+            Ok(true)
+        }
+        ConfigResponse::Unsupported => Ok(false),
+        ConfigResponse::Busy => bail!(
+            "device refused persistence: motor/maintenance is active; volatile value remains applied"
+        ),
+        ConfigResponse::Conflict { current_revision } => bail!(
+            "config changed before persistence (expected revision {expected_revision}, current {current_revision}); current live value was not persisted"
+        ),
+        other => bail!("config persist rejected: {other:?}"),
+    }
+}
+
+/// Apply a value, then persist that exact revision when flash is available.
+pub fn send_write(cmd: &CommandSender, write: ConfigWrite) -> Result<ConfigCommit> {
+    let group = write.group();
+    let snapshot = read_group(cmd, group)?;
+    let revision = apply_write(cmd, snapshot.revision, write)?;
+    let persisted = persist_group(cmd, group, revision)?;
+    Ok(ConfigCommit {
+        revision,
+        persisted,
+    })
 }
 
 /// Patch fields in an already-read group value and build the typed write.
@@ -207,12 +303,24 @@ pub fn patch_fields(
 /// `config set GROUP field=value ...` — read-modify-write.
 ///
 /// Values are parsed as JSON (numbers, booleans, arrays); anything that
-/// fails to parse is taken as a string. Returns the resulting group JSON.
-pub fn set_fields(cmd: &CommandSender, group: ConfigGroupId, kvs: &[String]) -> Result<Value> {
-    let (value, _stored) = current_value(cmd, group)?;
+/// fails to parse is taken as a string. Returns the resulting group JSON and
+/// whether its new revision was persisted.
+pub fn set_fields(
+    cmd: &CommandSender,
+    group: ConfigGroupId,
+    kvs: &[String],
+) -> Result<(Value, ConfigCommit)> {
+    let (value, state) = current_value(cmd, group)?;
     let (value, write) = patch_fields(group, value, kvs)?;
-    send_write(cmd, write)?;
-    Ok(value)
+    let revision = apply_write(cmd, state.revision, write)?;
+    let persisted = persist_group(cmd, group, revision)?;
+    Ok((
+        value,
+        ConfigCommit {
+            revision,
+            persisted,
+        },
+    ))
 }
 
 /// Snapshot of every config group as one JSON object (stored groups only).
@@ -220,8 +328,9 @@ pub fn set_fields(cmd: &CommandSender, group: ConfigGroupId, kvs: &[String]) -> 
 pub fn config_snapshot(cmd: &CommandSender) -> Value {
     let mut obj = serde_json::Map::new();
     for (name, group) in GROUPS {
-        if let Ok(Some(resp)) = read_group(cmd, group)
-            && let Some(v) = group_value(&resp)
+        if let Ok(snapshot) = read_group(cmd, group)
+            && let Some(value) = snapshot.value.as_ref()
+            && let Some(v) = group_value(value)
         {
             obj.insert(name.to_string(), v);
         }
@@ -239,7 +348,7 @@ pub fn reset_all(cmd: &CommandSender) -> Result<()> {
         .context("backend dropped the config reset")?
         .context("config reset failed")?;
     match resp {
-        ConfigResponse::Ok => Ok(()),
+        ConfigResponse::Reset => Ok(()),
         other => bail!("config reset rejected: {other:?}"),
     }
 }

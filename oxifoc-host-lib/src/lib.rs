@@ -23,8 +23,8 @@ use oxifoc_core::icd::{
 };
 use oxifoc_core::timer::Timer;
 use oxifoc_core::types::{
-    ConfigGroupId, ConfigResponse, ConfigWrite, DetectRequest, DetectResponse, FaultRequest,
-    HardwareInfo, MotorCommand, MotorRequest, MotorStatus,
+    ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, DetectRequest, DetectResponse,
+    FaultRequest, HardwareInfo, MotorCommand, MotorRequest, MotorStatus,
 };
 use oxifoc_core::types::{ControlMode, FastTelemetry, FaultResponse, Keyed, ReqId, SlowTelemetry};
 use std::{
@@ -234,7 +234,8 @@ pub enum HostCommand {
     SetPhaseSource(PhaseSource),
     SetTelemetryConfig(TelemetryConfig),
     ConfigRead(ConfigGroupId, ConfigResponseSender),
-    ConfigWrite(ConfigWrite, ConfigResponseSender),
+    ConfigApply(Keyed<ConfigApply>, ConfigResponseSender),
+    ConfigPersist(Keyed<ConfigPersist>, ConfigResponseSender),
     /// Erase every stored config group (factory reset).
     ConfigResetAll(ConfigResponseSender),
     Detect(DetectRequest, DetectResponseSender),
@@ -322,7 +323,7 @@ pub fn build_enrich_ctx(
     cmd: &CommandSender,
     hw: Option<&HardwareInfo>,
 ) -> Option<oxifoc_core::foc::telemetry::EnrichCtx> {
-    use oxifoc_core::types::{ConfigGroupId, ConfigResponse};
+    use oxifoc_core::types::{ConfigGroupId, ConfigValue};
     let calib = hw?.calib;
     // Fallbacks below are LOUD: a transient config-read failure (busy link,
     // reconnect window) silently degrading to mid-scale offsets skews every
@@ -330,9 +331,8 @@ pub fn build_enrich_ctx(
     // the columns still look plausible. The warn is the only trace.
     let offsets = ops::config::read_group(cmd, ConfigGroupId::DcOffsets)
         .ok()
-        .flatten()
-        .and_then(|r| match r {
-            ConfigResponse::DcOffsets(c) => Some((c.phase_a, c.phase_b, c.phase_c)),
+        .and_then(|snapshot| match snapshot.value {
+            Some(ConfigValue::DcOffsets(c)) => Some((c.phase_a, c.phase_b, c.phase_c)),
             _ => None,
         })
         .unwrap_or_else(|| {
@@ -345,9 +345,8 @@ pub fn build_enrich_ctx(
         });
     let pole_pairs = ops::config::read_group(cmd, ConfigGroupId::MotorParams)
         .ok()
-        .flatten()
-        .and_then(|r| match r {
-            ConfigResponse::MotorParams(c) => Some(c.pole_pairs),
+        .and_then(|snapshot| match snapshot.value {
+            Some(ConfigValue::MotorParams(c)) => Some(c.pole_pairs),
             _ => None,
         })
         .unwrap_or_else(|| {
@@ -1617,10 +1616,28 @@ async fn handle_command<NS>(
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }
-        HostCommand::ConfigWrite(write, reply_tx) => {
+        HostCommand::ConfigApply(request, reply_tx) => {
             use oxifoc_core::types::ConfigRequest;
-            tracing::info!("Writing config: {:?}", write);
-            let req = ConfigRequest::Write(write);
+            tracing::info!("Applying volatile config: {:?}", request.inner.write);
+            let req = ConfigRequest::Apply(request);
+            let res = client
+                .at_least_once::<ConfigEndpoint>(
+                    DEVICE_ADDR,
+                    &req,
+                    Some("config"),
+                    &SETPOINT_POLICY,
+                )
+                .await;
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
+        }
+        HostCommand::ConfigPersist(request, reply_tx) => {
+            use oxifoc_core::types::ConfigRequest;
+            tracing::info!(
+                "Persisting config group {:?} at revision {}",
+                request.inner.group,
+                request.inner.expected_revision
+            );
+            let req = ConfigRequest::Persist(request);
             let res = client
                 .at_least_once::<ConfigEndpoint>(
                     DEVICE_ADDR,

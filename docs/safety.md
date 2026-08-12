@@ -235,7 +235,7 @@ interface). Reliability is the application's job:
 - **At-least-once** via host-side `timeout + bounded retry` → requires
   **idempotent** commands (the receiver must tolerate duplicates).
 - Prefer **declarative / level-triggered** commands (absolute setpoints:
-  `MotorRequest::SetMode`, absolute config) — idempotent by construction, retry-safe, and
+  `MotorRequest::SetMode`, absolute config values) — idempotent by construction, retry-safe, and
   they fail safe naturally (absence of fresh setpoint → deadman → safe state).
 - For the few genuine **actions**: either no-op-if-already-running (e.g.
   `DetectEndpoint` returns `Busy` during a run) or dedup by an app-level
@@ -243,8 +243,10 @@ interface). Reliability is the application's job:
   gets a fresh seq).
 - Encode retry policy in the **type** (a `Idempotent` marker trait + `call` /
   `call_once` host helpers) so it can't be misapplied and there's no per-call
-  boilerplate. `MotorEndpoint`/`ConfigEndpoint` → `Idempotent`; `DetectEndpoint`
-  → not.
+  boilerplate. `MotorEndpoint` and `ConfigEndpoint` → `Idempotent` at the wire
+  request boundary; `DetectEndpoint` → `Deduplicated`. Config Apply/Persist are
+  internally keyed actions, so replaying the same complete `ConfigRequest` is
+  idempotent even though issuing a fresh key is a new action.
 
 `MotorEndpoint` adds application ordering above ergot: every request carries a
 fresh process `source_session` and wrapping `seq`. The device accepts active
@@ -262,6 +264,16 @@ floats the bridge, and latches re-arm until a subsequent safe neutral command.
 Safety corollary: even a universal stop command can be lost. The deadman remains
 the backstop (absence of fresh accepted affirmation → safe); emergency stop
 adds an immediate best-effort path, not a replacement for that backstop.
+
+Configuration deliberately has no connection-wide lease. A client may keep
+monitoring and editing while another source drives; optimistic per-group
+revisions prevent lost updates. `Apply` is volatile and only known live-safe
+groups may change while running (`CurrentLimits`, `Failsafe`, `Velocity`,
+`Derating`). `Persist` names the exact revision to save and is always stop-only:
+internal-flash erase on single-bank MCUs can stall execution long enough to
+starve control. The host reports a successful Apply even when a later Persist
+is refused, so the operator knows the live value changed but will not survive a
+reboot.
 
 ## Non-idempotent endpoints (track these)
 

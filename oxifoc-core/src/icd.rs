@@ -26,7 +26,7 @@
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
 //! | `DetectEndpoint` | `Keyed<DetectRequest>` | `DetectResponse` | Motor detection |
 //! | `PhaseSourceEndpoint` | `PhaseSource` | `PhaseSourceAck` | Angle source selection |
-//! | `ConfigEndpoint` | `ConfigRequest` | `ConfigResponse` | Config read/write (`storage` feature) |
+//! | `ConfigEndpoint` | `ConfigRequest` | `ConfigResponse` | Revisioned config apply/persist (`storage` feature) |
 
 use ergot::endpoint;
 
@@ -152,9 +152,10 @@ endpoint!(ConfigEndpoint, ConfigRequest, ConfigResponse, "cmd/config");
 // Every command declares where it sits on the delivery ladder. Almost all
 // endpoints are idempotent by construction — reads and absolute setpoints —
 // so the host may `at_least_once` them (retry on timeout is safe). The one
-// action, `DetectEndpoint`, is `Deduplicated`: its `Keyed<DetectRequest>`
-// payload carries a `ReqId` the server dedups on (see
-// `oxifoc_core::runtime::detect`), making retries effectively-once.
+// action, `DetectEndpoint`, is `Deduplicated`: its whole request is keyed.
+// `ConfigEndpoint` remains retry-idempotent at the endpoint boundary because
+// its action variants embed stable keys and replay cached responses; Read and
+// ResetAll are naturally idempotent.
 #[cfg(feature = "delivery")]
 mod delivery_classes {
     use super::*;

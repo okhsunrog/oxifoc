@@ -22,10 +22,12 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
     if json_mode && !rust {
         let mut obj = serde_json::Map::new();
         for (name, group) in GROUPS {
-            let v = match read_group(cmd, group)? {
-                Some(resp) => group_value(&resp).unwrap_or(Value::Null),
-                None => Value::Null,
-            };
+            let snapshot = read_group(cmd, group)?;
+            let v = snapshot
+                .value
+                .as_ref()
+                .and_then(group_value)
+                .unwrap_or(Value::Null);
             obj.insert(name.to_string(), v);
         }
         println!("{:#}", Value::Object(obj));
@@ -39,9 +41,17 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
 
     if !rust {
         for (g, resp) in &read {
-            match resp {
-                Some(r) => println!("{g:?}: {r:?}"),
-                None => println!("{g:?}: (not stored)"),
+            match &resp.value {
+                Some(value) => println!(
+                    "{g:?} (revision {}, {}): {value:?}",
+                    resp.revision,
+                    if resp.persisted {
+                        "persisted"
+                    } else {
+                        "volatile"
+                    }
+                ),
+                None => println!("{g:?} (revision {}): (not configured)", resp.revision),
             }
         }
         return Ok(());
@@ -64,7 +74,7 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
         let resp = read
             .iter()
             .find(|(g, _)| format!("{g:?}") == format!("{group:?}"))
-            .and_then(|(_, r)| r.as_ref());
+            .and_then(|(_, r)| r.value.as_ref());
         match resp.and_then(group_value) {
             Some(v) => {
                 let struct_name = rust_struct_name(name);

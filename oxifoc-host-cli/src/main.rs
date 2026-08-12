@@ -824,27 +824,50 @@ fn main() -> Result<()> {
             ConfigAction::Dump { rust } => config_cli::dump_config(&runtime, rust, json)?,
             ConfigAction::Get { group } => {
                 let g = config_cli::parse_group(&group)?;
-                let (value, stored) = config_cli::current_value(&runtime.cmd_tx, g)?;
+                let (value, state) = config_cli::current_value(&runtime.cmd_tx, g)?;
                 emit(
                     json,
-                    json!({"group": group, "stored": stored, "value": value}),
+                    json!({
+                        "group": group,
+                        "present": state.present,
+                        "persisted": state.persisted,
+                        "revision": state.revision,
+                        "value": value,
+                    }),
                     format!(
-                        "{group}{}: {value:#}",
-                        if stored {
-                            ""
+                        "{group} (revision {}, {}): {value:#}",
+                        state.revision,
+                        if !state.present {
+                            "defaults, not configured"
+                        } else if state.persisted {
+                            "persisted"
                         } else {
-                            " (defaults, not stored)"
+                            "volatile, not persisted"
                         }
                     ),
                 );
             }
             ConfigAction::Set { group, fields } => {
                 let g = config_cli::parse_group(&group)?;
-                let value = config_cli::set_fields(&runtime.cmd_tx, g, &fields)?;
+                let (value, commit) = config_cli::set_fields(&runtime.cmd_tx, g, &fields)?;
                 emit(
                     json,
-                    json!({"group": group, "written": true, "value": value}),
-                    format!("{group} written: {value:#}"),
+                    json!({
+                        "group": group,
+                        "applied": true,
+                        "persisted": commit.persisted,
+                        "revision": commit.revision,
+                        "value": value,
+                    }),
+                    format!(
+                        "{group} applied as revision {} ({}): {value:#}",
+                        commit.revision,
+                        if commit.persisted {
+                            "persisted"
+                        } else {
+                            "volatile"
+                        }
+                    ),
                 );
             }
             ConfigAction::Reset { yes } => {
@@ -861,7 +884,7 @@ fn main() -> Result<()> {
                     .context("backend dropped the config reset")?
                     .context("config reset failed")?;
                 match resp {
-                    ConfigResponse::Ok => emit(
+                    ConfigResponse::Reset => emit(
                         json,
                         json!({"reset": true}),
                         "all stored config groups erased".to_string(),

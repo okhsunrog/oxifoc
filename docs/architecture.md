@@ -1095,6 +1095,9 @@ Notable wire-type details:
   `motor_temp_c_x10`, `board_temp_c_x10`.
 - Detection is the one non-idempotent action: its request carries a `ReqId`
   and the device deduplicates on it (effectively-once retries).
+- Config mutation is revisioned and keyed: retries replay the cached action
+  response, while a different writer with a stale `expected_revision` receives
+  `Conflict` instead of overwriting or persisting an unintended value.
 
 ### Config Pipeline
 
@@ -1104,12 +1107,20 @@ worker, `storage::run_storage_worker()`: it loads all config groups at boot
 `FLASH_DONE` (success/failure) after every operation.
 
 `config_server` (in `runtime/servers.rs`) handles host requests:
-- **Writes are refused with `ConfigResponse::Busy` while the motor is
-  Running** — internal-flash erase stalls the whole chip (up to seconds for
-  an F4 sector), which would starve the FOC ISR with the motor energized.
-- **Write-through ack**: `Ok` is returned only after `FLASH_DONE` confirms
-  the flash write. The in-memory `RuntimeConfig` mirror is updated only after
-  the persist succeeds, so it always mirrors what is actually stored.
+- **Read** returns a `ConfigSnapshot`: live typed value, group revision, and a
+  `persisted` bit which is true only when flash contains that exact revision.
+- **Apply** validates, updates `RuntimeConfig` plus the live driver, and then
+  increments the group revision. `CurrentLimits`, `Failsafe`, `Velocity`, and
+  `Derating` are allowed while running; structural and calibration groups are
+  stop-only. There is no broad client lease.
+- **Persist** names the exact expected live revision. A mismatch returns
+  `Conflict`; a running motor returns `Busy`. Internal-flash erase stalls the
+  whole chip (up to seconds for an F4 sector), which would starve the FOC ISR.
+  `Persisted` is returned only after `FLASH_DONE` confirms the write.
+- Both mutations carry independent `ReqId`s and cache their compact ACK, so a
+  host timeout/retry cannot apply twice or advance a revision twice.
+- Firmware built around baked config accepts volatile Apply but returns
+  `Unsupported` for Persist; CLI and GUI expose the result as `volatile`.
 - **Documented invariant**: `config_server` is the *only* `FLASH_CHANNEL`
   producer, so each `FLASH_DONE` pairs 1:1 with its operation.
 - **Live-apply** (via `CMD_CHANNEL`, taking effect without reboot):

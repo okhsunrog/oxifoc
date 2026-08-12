@@ -134,7 +134,7 @@ pub fn compare_current_offsets(
 /// Persist a measured report through the normal config write-through path;
 /// the device also applies that write to the live sensor immediately.
 pub fn apply_current_offsets(cmd: &CommandSender, report: &CurrentOffsetReport) -> Result<()> {
-    let (mut value, _stored) = config::current_value(cmd, ConfigGroupId::DcOffsets)?;
+    let (mut value, state) = config::current_value(cmd, ConfigGroupId::DcOffsets)?;
     let obj = value
         .as_object_mut()
         .context("dc-offsets is not a JSON object")?;
@@ -143,7 +143,9 @@ pub fn apply_current_offsets(cmd: &CommandSender, report: &CurrentOffsetReport) 
     obj.insert("phase_c".into(), json!(report.offsets[2]));
     let write = config::write_from_value(ConfigGroupId::DcOffsets, value)
         .context("patched dc-offsets no longer deserializes")?;
-    config::send_write(cmd, write)
+    let revision = config::apply_write(cmd, state.revision, write)?;
+    config::persist_group(cmd, ConfigGroupId::DcOffsets, revision)?;
+    Ok(())
 }
 
 /// Run the full R → L → flux → hall sequence and collect the results.
@@ -230,7 +232,7 @@ pub fn apply_motor_params(
     pole_pairs: u8,
     max_power_loss_w: f32,
 ) -> Result<()> {
-    let (mut value, _stored) = config::current_value(cmd, ConfigGroupId::MotorParams)?;
+    let (mut value, state) = config::current_value(cmd, ConfigGroupId::MotorParams)?;
     let obj = value
         .as_object_mut()
         .context("motor-params is not a JSON object")?;
@@ -247,5 +249,7 @@ pub fn apply_motor_params(
 
     let write = config::write_from_value(ConfigGroupId::MotorParams, value)
         .context("patched motor-params no longer deserializes")?;
-    config::send_write(cmd, write)
+    let revision = config::apply_write(cmd, state.revision, write)?;
+    config::persist_group(cmd, ConfigGroupId::MotorParams, revision)?;
+    Ok(())
 }

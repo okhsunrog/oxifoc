@@ -23,7 +23,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use oxifoc_core::types::{ControlMode, FaultCategory, FaultRequest, FaultResponse, MotorState};
+use oxifoc_core::types::{
+    ConfigResponse, ConfigValue, ControlMode, FaultCategory, FaultRequest, FaultResponse,
+    MotorState,
+};
 use oxifoc_host_lib::{
     BleDeviceInfo, HostCommand, HostConfig, HostRuntime, TransportType, config_channel,
     fault_channel, motor_channel, ops, scan_ble_devices, start_host,
@@ -1102,8 +1105,8 @@ pub fn main() {
                     {
                         return;
                     }
-                    if let Ok(Ok(oxifoc_core::types::ConfigResponse::MotorParams(p))) =
-                        rx.blocking_recv()
+                    if let Ok(Ok(ConfigResponse::Snapshot(snapshot))) = rx.blocking_recv()
+                        && let Some(ConfigValue::MotorParams(p)) = snapshot.value
                         && p.pole_pairs > 0
                     {
                         tracing::info!(
@@ -1318,133 +1321,135 @@ pub fn main() {
 
             thread::spawn(move || {
                 let result = rx.blocking_recv();
-                let _ = weak.upgrade_in_event_loop(move |app| {
-                    use oxifoc_core::types::ConfigResponse;
-                    match result {
-                        Ok(Ok(resp)) => {
-                            match resp {
-                                ConfigResponse::MotorParams(p) => {
-                                    app.set_cfg_resistance(SharedString::from(format!(
-                                        "{}",
-                                        p.resistance_ohm
-                                    )));
-                                    app.set_cfg_inductance_d(SharedString::from(format!(
-                                        "{}",
-                                        p.inductance_d_h
-                                    )));
-                                    app.set_cfg_inductance_q(SharedString::from(format!(
-                                        "{}",
-                                        p.inductance_q_h
-                                    )));
-                                    app.set_cfg_flux_linkage(SharedString::from(format!(
-                                        "{}",
-                                        p.flux_linkage_wb
-                                    )));
-                                    app.set_cfg_pole_pairs(SharedString::from(format!(
-                                        "{}",
-                                        p.pole_pairs
-                                    )));
-                                    app.set_cfg_motor_rating(SharedString::from(format!(
-                                        "{}",
-                                        p.max_current_a
-                                    )));
-                                    app.set_cfg_motor_power_loss(SharedString::from(format!(
-                                        "{}",
-                                        p.max_power_loss_w
-                                    )));
-                                }
-                                ConfigResponse::CurrentLimits(c) => {
-                                    app.set_cfg_max_iq(SharedString::from(format!(
-                                        "{}",
-                                        c.max_iq_a
-                                    )));
-                                    app.set_cfg_max_phase_current(SharedString::from(format!(
-                                        "{}",
-                                        c.max_phase_current_a
-                                    )));
-                                    app.set_cfg_bus_in_max(SharedString::from(format!(
-                                        "{}",
-                                        c.bus_in_max_a
-                                    )));
-                                    app.set_cfg_bus_regen_max(SharedString::from(format!(
-                                        "{}",
-                                        c.bus_regen_max_a
-                                    )));
-                                }
-                                ConfigResponse::VoltageLimits(v) => {
-                                    app.set_cfg_min_vbus(SharedString::from(format!(
-                                        "{}",
-                                        v.min_vbus_mv
-                                    )));
-                                    app.set_cfg_max_vbus(SharedString::from(format!(
-                                        "{}",
-                                        v.max_vbus_mv
-                                    )));
-                                }
-                                ConfigResponse::PiGains(g) => {
-                                    app.set_cfg_kp(SharedString::from(format!("{}", g.kp)));
-                                    app.set_cfg_ki(SharedString::from(format!("{}", g.ki)));
-                                    app.set_cfg_bandwidth(SharedString::from(format!(
-                                        "{}",
-                                        g.bandwidth_rad_s
-                                    )));
-                                }
-                                ConfigResponse::Velocity(v) => {
-                                    app.set_cfg_vel_kp(SharedString::from(format!("{}", v.kp)));
-                                    app.set_cfg_vel_ki(SharedString::from(format!("{}", v.ki)));
-                                    app.set_cfg_vel_accel(SharedString::from(format!(
-                                        "{}",
-                                        v.accel_limit
-                                    )));
-                                }
-                                ConfigResponse::Failsafe(f) => {
-                                    app.set_cfg_fs_staleness(SharedString::from(format!(
-                                        "{}",
-                                        f.staleness_timeout_ms
-                                    )));
-                                    app.set_cfg_fs_policy(SharedString::from(format!(
-                                        "{}",
-                                        f.policy
-                                    )));
-                                    app.set_cfg_fs_brake_current(SharedString::from(format!(
-                                        "{}",
-                                        f.brake_current_a
-                                    )));
-                                    app.set_cfg_fs_ramp(SharedString::from(format!(
-                                        "{}",
-                                        f.ramp_ms
-                                    )));
-                                    app.set_cfg_fs_brake_time(SharedString::from(format!(
-                                        "{}",
-                                        f.brake_time_ms
-                                    )));
-                                    app.set_cfg_fs_standstill(SharedString::from(format!(
-                                        "{}",
-                                        f.standstill_rad_s
-                                    )));
-                                    app.set_cfg_fs_decel(SharedString::from(format!(
-                                        "{}",
-                                        f.decel_rad_s2
-                                    )));
-                                    app.set_cfg_fs_terminal(SharedString::from(format!(
-                                        "{}",
-                                        f.terminal
-                                    )));
-                                }
-                                ConfigResponse::NotFound => {
-                                    app.set_config_status(SharedString::from("Not stored"));
-                                    return;
-                                }
-                                _ => {}
+                let _ = weak.upgrade_in_event_loop(move |app| match result {
+                    Ok(Ok(ConfigResponse::Snapshot(snapshot))) => {
+                        match snapshot.value {
+                            Some(ConfigValue::MotorParams(p)) => {
+                                app.set_cfg_resistance(SharedString::from(format!(
+                                    "{}",
+                                    p.resistance_ohm
+                                )));
+                                app.set_cfg_inductance_d(SharedString::from(format!(
+                                    "{}",
+                                    p.inductance_d_h
+                                )));
+                                app.set_cfg_inductance_q(SharedString::from(format!(
+                                    "{}",
+                                    p.inductance_q_h
+                                )));
+                                app.set_cfg_flux_linkage(SharedString::from(format!(
+                                    "{}",
+                                    p.flux_linkage_wb
+                                )));
+                                app.set_cfg_pole_pairs(SharedString::from(format!(
+                                    "{}",
+                                    p.pole_pairs
+                                )));
+                                app.set_cfg_motor_rating(SharedString::from(format!(
+                                    "{}",
+                                    p.max_current_a
+                                )));
+                                app.set_cfg_motor_power_loss(SharedString::from(format!(
+                                    "{}",
+                                    p.max_power_loss_w
+                                )));
                             }
-                            app.set_config_status(SharedString::from("OK"));
+                            Some(ConfigValue::CurrentLimits(c)) => {
+                                app.set_cfg_max_iq(SharedString::from(format!("{}", c.max_iq_a)));
+                                app.set_cfg_max_phase_current(SharedString::from(format!(
+                                    "{}",
+                                    c.max_phase_current_a
+                                )));
+                                app.set_cfg_bus_in_max(SharedString::from(format!(
+                                    "{}",
+                                    c.bus_in_max_a
+                                )));
+                                app.set_cfg_bus_regen_max(SharedString::from(format!(
+                                    "{}",
+                                    c.bus_regen_max_a
+                                )));
+                            }
+                            Some(ConfigValue::VoltageLimits(v)) => {
+                                app.set_cfg_min_vbus(SharedString::from(format!(
+                                    "{}",
+                                    v.min_vbus_mv
+                                )));
+                                app.set_cfg_max_vbus(SharedString::from(format!(
+                                    "{}",
+                                    v.max_vbus_mv
+                                )));
+                            }
+                            Some(ConfigValue::PiGains(g)) => {
+                                app.set_cfg_kp(SharedString::from(format!("{}", g.kp)));
+                                app.set_cfg_ki(SharedString::from(format!("{}", g.ki)));
+                                app.set_cfg_bandwidth(SharedString::from(format!(
+                                    "{}",
+                                    g.bandwidth_rad_s
+                                )));
+                            }
+                            Some(ConfigValue::Velocity(v)) => {
+                                app.set_cfg_vel_kp(SharedString::from(format!("{}", v.kp)));
+                                app.set_cfg_vel_ki(SharedString::from(format!("{}", v.ki)));
+                                app.set_cfg_vel_accel(SharedString::from(format!(
+                                    "{}",
+                                    v.accel_limit
+                                )));
+                            }
+                            Some(ConfigValue::Failsafe(f)) => {
+                                app.set_cfg_fs_staleness(SharedString::from(format!(
+                                    "{}",
+                                    f.staleness_timeout_ms
+                                )));
+                                app.set_cfg_fs_policy(SharedString::from(format!("{}", f.policy)));
+                                app.set_cfg_fs_brake_current(SharedString::from(format!(
+                                    "{}",
+                                    f.brake_current_a
+                                )));
+                                app.set_cfg_fs_ramp(SharedString::from(format!("{}", f.ramp_ms)));
+                                app.set_cfg_fs_brake_time(SharedString::from(format!(
+                                    "{}",
+                                    f.brake_time_ms
+                                )));
+                                app.set_cfg_fs_standstill(SharedString::from(format!(
+                                    "{}",
+                                    f.standstill_rad_s
+                                )));
+                                app.set_cfg_fs_decel(SharedString::from(format!(
+                                    "{}",
+                                    f.decel_rad_s2
+                                )));
+                                app.set_cfg_fs_terminal(SharedString::from(format!(
+                                    "{}",
+                                    f.terminal
+                                )));
+                            }
+                            None => {
+                                app.set_config_status(SharedString::from(format!(
+                                    "Revision {}: not configured",
+                                    snapshot.revision
+                                )));
+                                return;
+                            }
+                            _ => {}
                         }
-                        Ok(Err(e)) => {
-                            app.set_config_status(SharedString::from(format!("Error: {e}")));
-                        }
-                        Err(_) => {
-                            app.set_config_status(SharedString::from("No response"));
-                        }
+                        app.set_config_status(SharedString::from(format!(
+                            "Revision {}: {}",
+                            snapshot.revision,
+                            if snapshot.persisted {
+                                "persisted"
+                            } else {
+                                "volatile"
+                            }
+                        )));
+                    }
+                    Ok(Ok(other)) => app.set_config_status(SharedString::from(format!(
+                        "Unexpected response: {other:?}"
+                    ))),
+                    Ok(Err(e)) => {
+                        app.set_config_status(SharedString::from(format!("Error: {e}")));
+                    }
+                    Err(_) => {
+                        app.set_config_status(SharedString::from("No response"));
                     }
                 });
             });
@@ -1584,12 +1589,20 @@ pub fn main() {
                 let result = match write {
                     ConfigAction::Replace(write) => ops::config::send_write(&cmd_tx, write),
                     ConfigAction::Patch { group, fields } => {
-                        ops::config::set_fields(&cmd_tx, group, &fields).map(|_| ())
+                        ops::config::set_fields(&cmd_tx, group, &fields).map(|(_, commit)| commit)
                     }
                 };
                 let _ = weak.upgrade_in_event_loop(move |app| match result {
-                    Ok(()) => {
-                        app.set_config_status(SharedString::from("Written OK"));
+                    Ok(commit) => {
+                        app.set_config_status(SharedString::from(format!(
+                            "Revision {}: {}",
+                            commit.revision,
+                            if commit.persisted {
+                                "persisted"
+                            } else {
+                                "volatile"
+                            }
+                        )));
                     }
                     Err(e) => {
                         app.set_config_status(SharedString::from(format!("Error: {e}")));
