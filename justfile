@@ -39,21 +39,21 @@ check-device:
         echo "$crate: fmt + clippy + build..."
         (cd "$crate" && cargo fmt --check) || exit 1
         (cd "$crate" && cargo clippy --quiet -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
-        (cd "$crate" && cargo build --release --quiet 2>&1 | filter) || exit 1
+        if [ "$crate" = "oxifoc-f405" ]; then
+            (cd "$crate" && cargo build --release --quiet --target-dir target/cf2 2>&1 | filter) || exit 1
+        else
+            (cd "$crate" && cargo build --release --quiet 2>&1 | filter) || exit 1
+        fi
     done
     for crate in {{ target_test_crates }}; do
         echo "$crate: fmt + compile..."
         (cd "$crate" && cargo fmt --check) || exit 1
         (cd "$crate" && cargo build --tests --quiet 2>&1 | filter) || exit 1
     done
-    # f405 second board must not rot (default = board-cf2).
+    # The second F405 board must not rot. Keep board artifacts in separate
+    # directories so no ELF path silently changes electrical meaning.
     echo "oxifoc-f405 (vesc6-mk5): build..."
-    (cd oxifoc-f405 && cargo build --release --quiet --no-default-features --features transport-usb,transport-uart,board-vesc6-mk5 2>&1 | filter) || exit 1
-    # LAST: restore the canonical CF2 ELF — the mk5 variant overwrites
-    # target/…/oxifoc-f405, and flashing/decoding with a mismatched board
-    # ELF fails confusingly.
-    echo "oxifoc-f405 (cf2): restore canonical ELF..."
-    (cd oxifoc-f405 && cargo build --release --quiet 2>&1 | filter) || exit 1
+    (cd oxifoc-f405 && cargo build --release --quiet --target-dir target/vesc6-mk5 --no-default-features --features transport-usb,transport-uart,board-vesc6-mk5 2>&1 | filter) || exit 1
 
 # Format all code (workspace + device crates)
 fmt:
@@ -72,13 +72,47 @@ test:
     # `hfi`/`hfi-detect`-gated tests (g474/f405 config).
     cargo test -p oxifoc-core --features runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect
 
-# Build device firmware (release)
-build target="oxifoc-f405":
-    cd {{ target }} && cargo build --release
+# Build STM32G474 firmware.
+build-g474:
+    cd oxifoc-g474 && cargo build --release
 
-# Flash device firmware (release)
-flash target="oxifoc-f405":
-    cd {{ target }} && cargo run --release
+# Build and flash STM32G474 firmware.
+flash-g474:
+    cd oxifoc-g474 && cargo run --release
+
+# Build Cheap FOCer 2 firmware (explicit board selection; no F405 default).
+build-f405-cf2:
+    cd oxifoc-f405 && cargo build --release --target-dir target/cf2
+
+# Build and flash Cheap FOCer 2 firmware.
+flash-f405-cf2:
+    cd oxifoc-f405 && cargo run --release --target-dir target/cf2
+
+# Build Flipsky Mini V6 MK5 firmware.
+build-f405-vesc6-mk5:
+    cd oxifoc-f405 && cargo build --release --target-dir target/vesc6-mk5 --no-default-features \
+        --features transport-usb,transport-uart,board-vesc6-mk5
+
+# Build and flash Flipsky Mini V6 MK5 firmware.
+flash-f405-vesc6-mk5:
+    cd oxifoc-f405 && cargo run --release --target-dir target/vesc6-mk5 --no-default-features \
+        --features transport-usb,transport-uart,board-vesc6-mk5
+
+# Build ESP32 bridge firmware.
+build-bridge:
+    cd oxifoc-bridge && cargo build --release
+
+# Build and flash ESP32 bridge firmware.
+flash-bridge:
+    cd oxifoc-bridge && cargo run --release
+
+# Build ESP32 remote firmware.
+build-remote:
+    cd oxifoc-remote && cargo build --release
+
+# Build and flash ESP32 remote firmware.
+flash-remote:
+    cd oxifoc-remote && cargo run --release
 
 # Run host CLI with arguments
 cli *ARGS:
@@ -98,50 +132,24 @@ virtual *ARGS:
 e2e:
     cargo test -p oxifoc-virtual --test e2e
 
-# Build oxifoc-f405 for a board: `just f405` (cf2) or `just f405 vesc6-mk5`.
-# Both boards share one ELF path (target/…/release/oxifoc-f405) — flash the
-# board that matches the last build.
-f405 board="cf2":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd oxifoc-f405
-    if [ "{{ board }}" = "cf2" ]; then
-        cargo build --release
-    else
-        cargo build --release --no-default-features \
-            --features "transport-usb,transport-uart,board-{{ board }}"
-    fi
-
-# Build and flash the selected F405 board variant in one command. Keep this
-# board-aware: the generic `just flash oxifoc-f405` uses the crate defaults
-# and would silently rebuild a CF2 image before flashing an MK5.
-f405-flash board="cf2":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd oxifoc-f405
-    if [ "{{ board }}" = "cf2" ]; then
-        cargo run --release
-    else
-        cargo run --release --no-default-features \
-            --features "transport-usb,transport-uart,board-{{ board }}"
-    fi
-
 # Flash usage of the STM32 firmwares (see docs/flash-size.md)
 size:
     #!/usr/bin/env bash
     set -euo pipefail
-    measure() { # crate label limit_file extra_flags...
-        local crate="$1" label="$2" memx="$3"; shift 3
-        (cd "$crate" && cargo build --release --quiet "$@" 2>/dev/null) || { echo "$label: build failed"; exit 1; }
-        local elf="$crate/target/thumbv7em-none-eabihf/release/$crate"
+    measure() { # crate label limit_file target_dir extra_flags...
+        local crate="$1" label="$2" memx="$3" target_dir="$4"; shift 4
+        (cd "$crate" && cargo build --release --quiet --target-dir "$target_dir" "$@" 2>/dev/null) || { echo "$label: build failed"; exit 1; }
+        local elf="$crate/$target_dir/thumbv7em-none-eabihf/release/$crate"
         local limit_k=$(grep -oP 'FLASH\s*:\s*ORIGIN[^,]*,\s*LENGTH\s*=\s*\K[0-9]+(?=K)' "$crate/$memx")
         local limit=$((limit_k * 1024))
         local used=$(arm-none-eabi-size "$elf" | tail -1 | awk '{print $1+$2}')
         printf "%-24s %7d / %7d bytes (%2d%%), headroom %d\n" \
             "$label" "$used" "$limit" "$((used * 100 / limit))" "$((limit - used))"
     }
-    measure oxifoc-g474 oxifoc-g474 memory.x
-    measure oxifoc-f405 oxifoc-f405 memory.x
+    measure oxifoc-g474 oxifoc-g474 memory.x target
+    measure oxifoc-f405 oxifoc-f405-cf2 memory.x target/cf2
+    measure oxifoc-f405 oxifoc-f405-vesc6-mk5 memory.x target/vesc6-mk5 --no-default-features \
+        --features transport-usb,transport-uart,board-vesc6-mk5
 
 # Clean all build artifacts
 clean:

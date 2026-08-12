@@ -113,8 +113,8 @@ Flashing flow:
 2. **Tap the power button** so the stock firmware boots and latches PC5 → the
    board stays on.
 3. Connect SWD (GND + CLK + DIO; VCC to Vtref sense if the probe needs it) and
-   flash with `just f405-flash vesc6-mk5`. Do not use
-   `just flash oxifoc-f405`: that command uses the crate's default CF2 feature.
+   flash with `just flash-f405-vesc6-mk5`. The recipe name includes the board
+   deliberately; there is no generic/default F405 flash command.
 
 ### Recovery — don't let a bad flash brick it
 
@@ -138,7 +138,7 @@ Keep this in mind on every first flash of a new image.
    is below spec for this board).
 2. Before reflashing: quick VESC Tool connect, confirm reported HW `60_MK5`
    (formality — the listing states it; see the verification-model note).
-3. Flash the exact board build via SWD: `just f405-flash vesc6-mk5`.
+3. Flash the exact board build via SWD: `just flash-f405-vesc6-mk5`.
    Confirm the boot log contains `board=VESC6_MK5`, `MK5 board ctrl`, the
    bit-bang SPI line and `DRV8301 ready` (including a valid device-ID read).
 4. Release the power button. The board must remain powered from the PC5 latch.

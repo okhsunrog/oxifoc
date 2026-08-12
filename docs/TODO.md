@@ -1486,7 +1486,7 @@ the sim = batch tick).
 ## Bench (waiting for hardware)
 
 - [ ] **Mini V6 MK5 bring-up** (board ordered, firmware support landed:
-  `board-vesc6-mk5` feature, `just f405 vesc6-mk5`): follow the checklist
+  `board-vesc6-mk5` feature, `just flash-f405-vesc6-mk5`): follow the checklist
   in [hw/vesc6-mk5.md](hw/vesc6-mk5.md) — bench PSU ≥14 V (plan: 20 V),
   confirm the stock firmware reports HW `60_MK5` in VESC Tool before
   reflashing (formality — the listing states it), then detect + hall-cal

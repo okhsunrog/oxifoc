@@ -135,11 +135,16 @@ Transports: Serial (UART VCP), RTT (probe-rs), TCP (virtual), UDP (virtual), USB
 
 ```bash
 just check                # fmt + clippy + tests (workspace + all device firmware)
-just build oxifoc-f405    # Build device firmware (release)
-just flash oxifoc-f405    # Flash via probe-rs
-just gui           # Run Slint GUI
-just cli -- list   # Run CLI
+just build-f405-cf2       # Build Cheap FOCer 2 firmware
+just flash-f405-cf2       # Build and flash Cheap FOCer 2 via probe-rs
+just build-f405-vesc6-mk5 # Build Mini V6 MK5 firmware
+just flash-f405-vesc6-mk5 # Build and flash Mini V6 MK5 via probe-rs
+just gui                  # Run Slint GUI
+just cli -- list          # Run CLI
 ```
+
+The two F405 variants use separate artifact directories:
+`oxifoc-f405/target/cf2` and `oxifoc-f405/target/vesc6-mk5`.
 
 Device firmware requires Rust nightly (`thumbv7em-none-eabihf`). Host crates build with stable Rust.
 
