@@ -12,6 +12,13 @@
 use sequential_storage::map::{Key, PostcardValue, SerializationError};
 use serde::{Deserialize, Serialize};
 
+pub type UncachedStorage<KEY> = sequential_storage::cache::Cache<
+    sequential_storage::cache::Uncached,
+    sequential_storage::cache::Uncached,
+    sequential_storage::cache::Uncached,
+    KEY,
+>;
+
 // ============================================================================
 // Storage Keys
 // ============================================================================
@@ -607,11 +614,7 @@ pub use channels::*;
 /// boards and lives here.
 #[cfg(all(feature = "runtime", feature = "storage"))]
 pub async fn run_storage_worker<F>(
-    storage: &mut sequential_storage::map::MapStorage<
-        ConfigKey,
-        F,
-        sequential_storage::cache::NoCache,
-    >,
+    storage: &mut sequential_storage::map::MapStorage<ConfigKey, F, UncachedStorage<ConfigKey>>,
     buf: &mut [u8],
 ) -> !
 where
@@ -663,11 +666,7 @@ where
 /// Load all stored configs. Missing keys (or any read error) become None.
 #[cfg(all(feature = "runtime", feature = "storage"))]
 async fn load_all<F>(
-    storage: &mut sequential_storage::map::MapStorage<
-        ConfigKey,
-        F,
-        sequential_storage::cache::NoCache,
-    >,
+    storage: &mut sequential_storage::map::MapStorage<ConfigKey, F, UncachedStorage<ConfigKey>>,
     buf: &mut [u8],
 ) -> RuntimeConfig
 where

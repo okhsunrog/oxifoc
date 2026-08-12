@@ -52,14 +52,14 @@ mod tests {
             mode: HseMode::Oscillator,
         });
         config.rcc.pll = Some(Pll {
-            source: PllSource::HSE,
-            prediv: PllPreDiv::DIV6,
-            mul: PllMul::MUL85,
+            source: PllSource::Hse,
+            prediv: PllPreDiv::Div6,
+            mul: PllMul::Mul85,
             divp: None,
             divq: None,
-            divr: Some(PllRDiv::DIV2),
+            divr: Some(PllRDiv::Div2),
         });
-        config.rcc.sys = Sysclk::PLL1_R;
+        config.rcc.sys = Sysclk::Pll1R;
         config.rcc.boost = true;
 
         let dp = embassy_stm32::init(config);

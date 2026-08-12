@@ -65,16 +65,21 @@ oxifoc-core = { path = "oxifoc-core" }
 # ergot rev = upstream main HEAD 2026-08-06 (edge_link_local ctor +
 # revert-to-link-local liveness policy + the #217 soundness batch)
 ergot = { git = "https://github.com/okhsunrog/ergot", rev = "5a5fab8234339ecdc252e18c41ef2676bd6bb091" }
-tokio = { version = "1.45", features = ["full"] }
+tokio = { version = "1.53", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 anyhow = "1.0"
-crossbeam-channel = "0.5.15"
-clap = { version = "4.5", features = ["derive"] }
-toml = "0.9"
-slint = { version = "1.17.0", default-features = false, features = ["std", "unstable-wgpu-28", "compat-1-2"] }
+crossbeam-channel = "0.5.16"
+clap = { version = "4.6", features = ["derive"] }
+toml = "1.1"
+slint = { version = "1.17.1", default-features = false, features = ["std", "unstable-wgpu-28", "compat-1-2"] }
 wgpu = { version = "28", default-features = false, features = ["wgsl", "vulkan"] }
-slint-build = "1.17.0"
+slint-build = "1.17.1"
 bytemuck = { version = "1", features = ["derive"] }
 bbqueue = "0.7"
+
+# Keep ergot's Embassy time dependency on the same main-branch revision as the
+# optional STM32 HAL slice in oxifoc-core.
+[patch.crates-io]
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }

@@ -46,7 +46,7 @@ pub fn arm_watchdog(iwdg: Peri<'static, peripherals::IWDG>) {
 pub fn feed_watchdog() {
     pac::IWDG
         .kr()
-        .write(|w| w.set_key(pac::iwdg::vals::Key::RESET));
+        .write(|w| w.set_key(pac::iwdg::vals::Key::Reset));
 }
 
 #[panic_handler]

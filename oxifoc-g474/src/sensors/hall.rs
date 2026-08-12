@@ -24,8 +24,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_stm32::gpio::Pull;
 use embassy_stm32::interrupt::typelevel::Interrupt;
-use embassy_stm32::timer::input_capture::CapturePin;
-use embassy_stm32::timer::low_level::{InputCaptureMode, InputTISelection, Timer};
+use embassy_stm32::timer::input_capture::CaptureInput;
+use embassy_stm32::timer::low_level::{InputCaptureMode, Timer};
 use embassy_stm32::timer::{Ch1, Ch2, Ch3, Channel};
 use embassy_stm32::{Peri, interrupt, pac, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
@@ -94,9 +94,12 @@ pub fn init_hall(
     // Pins to TIM2 channel inputs with pull-ups (CapturePin sets AF).
     // GPIO IDR still reflects pin levels in AF mode, so raw state reads
     // for calibration keep working.
-    let ch1: CapturePin<'static, peripherals::TIM2, Ch1> = CapturePin::new(pa15, Pull::Up);
-    let ch2: CapturePin<'static, peripherals::TIM2, Ch2> = CapturePin::new(pb3, Pull::Up);
-    let ch3: CapturePin<'static, peripherals::TIM2, Ch3> = CapturePin::new(pb10, Pull::Up);
+    let ch1: CaptureInput<'static, peripherals::TIM2, Ch1> =
+        CaptureInput::from_pin(pa15, Pull::Up).expect("PA15 supports TIM2_CH1");
+    let ch2: CaptureInput<'static, peripherals::TIM2, Ch2> =
+        CaptureInput::from_pin(pb3, Pull::Up).expect("PB3 supports TIM2_CH2");
+    let ch3: CaptureInput<'static, peripherals::TIM2, Ch3> =
+        CaptureInput::from_pin(pb10, Pull::Up).expect("PB10 supports TIM2_CH3");
     // Pins must stay configured for the lifetime of the firmware: dropping
     // a CapturePin reverts the pin from AF mode and kills hall capture.
     #[expect(clippy::mem_forget, reason = "deliberate leak keeps AF pin config")]
@@ -128,13 +131,13 @@ pub fn init_hall(
     // velocity math.
     regs16
         .cr1()
-        .modify(|w| w.set_ckd(pac::timer::vals::Ckd::DIV4));
+        .modify(|w| w.set_ckd(pac::timer::vals::Ckd::Div4));
     // XOR CH1^CH2^CH3 → TI1: any single hall transition flips parity.
     regs16
         .cr2()
-        .modify(|w| w.set_ti1s(pac::timer::vals::Ti1s::XOR));
-    timer.set_input_ti_selection(Channel::Ch1, InputTISelection::Normal);
-    timer.set_input_capture_filter(Channel::Ch1, pac::timer::vals::FilterValue::FDTS_DIV32_N8);
+        .modify(|w| w.set_ti1s(pac::timer::vals::Ti1s::Xor));
+    timer.set_input_ti_seletion(Channel::Ch1, 0);
+    timer.set_input_capture_filter(Channel::Ch1, pac::timer::vals::FilterValue::FdtsDiv32N8);
     timer.set_input_capture_mode(Channel::Ch1, InputCaptureMode::BothEdges);
     // Latch PSC into the shadow register (UG sets UIF as a side effect —
     // clear before enabling interrupts).

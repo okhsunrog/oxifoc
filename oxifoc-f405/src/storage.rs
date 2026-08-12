@@ -9,7 +9,7 @@ use defmt::info;
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::task;
 use embassy_stm32::flash::{Blocking, Flash as StmFlash, WRITE_SIZE};
-use sequential_storage::cache::NoCache;
+use sequential_storage::cache::Cache;
 use sequential_storage::map::{MapConfig, MapStorage};
 use static_cell::ConstStaticCell;
 
@@ -50,7 +50,7 @@ const fn const_parse_u32(s: &str) -> u32 {
 static BUFFER: ConstStaticCell<[u8; BUFFER_SIZE]> = ConstStaticCell::new([0u8; BUFFER_SIZE]);
 
 pub type AsyncFlash = BlockingAsync<StmFlash<'static, Blocking>>;
-type Storage = MapStorage<ConfigKey, AsyncFlash, NoCache>;
+type Storage = MapStorage<ConfigKey, AsyncFlash, UncachedStorage<ConfigKey>>;
 
 // ============================================================================
 // Storage Worker Task
@@ -64,7 +64,7 @@ pub async fn storage_worker(flash: AsyncFlash) {
     let buf = BUFFER.take();
     let config: MapConfig<AsyncFlash> =
         MapConfig::new(STORAGE_START..(STORAGE_START + STORAGE_SIZE));
-    let mut storage: Storage = MapStorage::new(flash, config, NoCache::new());
+    let mut storage: Storage = MapStorage::new(flash, config, Cache::new_uncached());
 
     info!(
         "Storage worker started, range: {:#x}..{:#x}, write_size: {}",

@@ -17,14 +17,14 @@ oxifoc-core = { workspace = true, features = [
 ergot = { workspace = true, features = ["tokio-std"] }
 tokio = { workspace = true }
 critical-section = { version = "1.2", features = ["std"] }
-sequential-storage = { version = "7.1", features = ["postcard", "_test"] }
+sequential-storage = { version = "8.0", features = ["postcard", "_test"] }
 heapless = "0.9"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
-tokio-util = { version = "0.7.18", features = ["rt"] }
-socket2 = "0.6.3"
+tokio-util = { version = "0.7.19", features = ["rt"] }
+socket2 = "0.6.5"
 rand = "0.9"
 
 [dev-dependencies]

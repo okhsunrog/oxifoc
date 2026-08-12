@@ -208,6 +208,7 @@ pub fn angle_to_cordic_q31(angle_rad: f32) -> i32 {
 mod cordic_impl {
     use core::cell::RefCell;
 
+    use dsp_fixedpoint::Q32;
     use embassy_stm32::Peri;
     use embassy_stm32::cordic::{self, Cordic};
     use embassy_stm32::peripherals;
@@ -242,10 +243,9 @@ mod cordic_impl {
             ) {
                 Ok(c) => c,
                 Err(_) => panic!("CORDIC config failed"),
-            }
-            .res_count(cordic::AccessCount::Two);
+            };
 
-            let cordic = Cordic::new(peri, config);
+            let cordic = Cordic::new(peri, &config);
             CORDIC_INSTANCE.lock(|cell| cell.replace(Some(cordic)));
         }
     }
@@ -254,8 +254,8 @@ mod cordic_impl {
         #[inline(always)]
         fn sin_cos(angle: f32) -> (f32, f32) {
             let angle_q31 = angle_to_cordic_q31(angle);
-            let input = [angle_q31 as u32];
-            let mut output = [0u32; 2];
+            let input = [Q32::<31>::from_bits(angle_q31)];
+            let mut output = [Q32::<31>::from_bits(0); 2];
 
             CORDIC_INSTANCE.lock(|cell| {
                 let mut cordic = cell.borrow_mut();
@@ -263,14 +263,18 @@ mod cordic_impl {
                     Some(c) => c,
                     None => panic!("CORDIC not initialized"),
                 };
-                if let Err(_) = cordic.blocking_calc_32bit(&input, &mut output) {
+                if cordic
+                    .q1_31(cordic::AccessCount::One, cordic::AccessCount::Two)
+                    .blocking_calc(&input, &mut output)
+                    .is_err()
+                {
                     panic!("CORDIC calc failed");
                 }
             });
 
             // Cosine function: primary result = cos, secondary = sin
-            let cos_q31 = output[0] as i32;
-            let sin_q31 = output[1] as i32;
+            let cos_q31 = output[0].into_bits();
+            let sin_q31 = output[1].into_bits();
 
             (q31_to_f32(sin_q31), q31_to_f32(cos_q31))
         }

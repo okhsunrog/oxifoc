@@ -19,8 +19,8 @@ tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }
 
 # Desktop-only transports
-tokio-serial = { version = "5.4.4", optional = true }
-probe-rs = { version = "0.28", optional = true }
+tokio-serial = { version = "5.5.0", optional = true }
+probe-rs = { version = "0.32", optional = true }
 
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -28,16 +28,16 @@ tracing-log = "0.2"
 
 anyhow = { workspace = true }
 crossbeam-channel = { workspace = true }
-defmt-decoder = "1.0"
+defmt-decoder = "1.1"
 defmt-parser = "1.0"
 serde = { workspace = true }
 toml = { workspace = true }
-tokio-stream = "0.1.18"
-bytes = "1.11.1"
-futures = "0.3.32"
+tokio-stream = "0.1.19"
+bytes = "1.12.1"
+futures = "0.3.34"
 bluest = { git = "https://github.com/okhsunrog/bluest", rev = "9cb9dbcad63d7d2ffe18a20f87b7ffe1cb670537", features = ["unstable"] }
-serde_json = "1.0.150"
-object = { version = "0.39.1", default-features = false, features = ["read"] }
+serde_json = "1.0.151"
+object = { version = "0.40.0", default-features = false, features = ["read"] }
 
 [lints]
 workspace = true

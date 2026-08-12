@@ -21,7 +21,7 @@ pub fn init_clock() -> Peripherals {
 
         // Configure LSE: 32.768kHz crystal oscillator
         config.rcc.ls = LsConfig {
-            rtc: RtcClockSource::LSE,
+            rtc: RtcClockSource::Lse,
             lsi: false,
             lse: Some(LseConfig {
                 frequency: Hertz(32_768),
@@ -40,21 +40,21 @@ pub fn init_clock() -> Peripherals {
         // VCO: 4MHz * 85 = 340MHz
         // SYSCLK: 340MHz / 2 = 170MHz
         config.rcc.pll = Some(Pll {
-            source: PllSource::HSE,
-            prediv: PllPreDiv::DIV6,
-            mul: PllMul::MUL85,
+            source: PllSource::Hse,
+            prediv: PllPreDiv::Div6,
+            mul: PllMul::Mul85,
             divp: None,
             divq: None,
-            divr: Some(PllRDiv::DIV2),
+            divr: Some(PllRDiv::Div2),
         });
 
-        config.rcc.sys = Sysclk::PLL1_R;
+        config.rcc.sys = Sysclk::Pll1R;
 
         // Above 150MHz, enable Range1 boost mode per RM0440 guidance
         config.rcc.boost = true;
 
         // ADC clock source: use SYSCLK (170MHz) - will be needed for motor control
-        config.rcc.mux.adc12sel = mux::Adcsel::SYS;
+        config.rcc.mux.adc12sel = mux::Adcsel::Sys;
 
         // Note: LPUART1 clock is configured automatically by Embassy based on the
         // peripheral clock. For 115200 baud, the default PCLK is sufficient.
@@ -63,7 +63,7 @@ pub fn init_clock() -> Peripherals {
         config.rcc.hsi48 = Some(Hsi48Config {
             sync_from_usb: true,
         });
-        config.rcc.mux.clk48sel = mux::Clk48sel::HSI48;
+        config.rcc.mux.clk48sel = mux::Clk48sel::Hsi48;
     }
     embassy_stm32::init(config)
 }

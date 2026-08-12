@@ -22,23 +22,23 @@ transport-rtt = ["ergot/rtt"]
 
 [dependencies]
 # Embassy dependencies (main branch with async flash support for G4)
-embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-embassy-futures = { version = "0.1.2", features = ["defmt"] }
-embassy-stm32 = { version = "0.6.0", features = ["stm32g474re", "time-driver-tim5", "unstable-pac", "dual-bank", "defmt"] }
-embassy-sync = { version = "0.8.0", features = ["defmt"] }
-embassy-time = { version = "0.5.1", features = ["tick-hz-32_768", "defmt"] }
-embassy-usb = { version = "0.6.0", features = ["defmt"] }
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
+embassy-futures = { version = "0.1.2", features = ["defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
+embassy-stm32 = { version = "0.6.0", features = ["stm32g474re", "time-driver-tim5", "unstable-pac", "dual-bank", "defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
+embassy-sync = { version = "0.8.0", features = ["defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
+embassy-time = { version = "0.5.1", features = ["tick-hz-32_768", "defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
+embassy-usb = { version = "0.6.0", features = ["defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
 
 # Cortex-M dependencies
-cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
-cortex-m-rt = "0.7.5"
+cortex-m = { version = "0.7.8", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.6"
 critical-section = "1.2"
 
 # Debugging and logging
-defmt = "1.0.1"
+defmt = "1.1.1"
 
 # Serialization
-serde = { version = "1.0.219", features = ["derive"], default-features = false }
+serde = { version = "1.0.229", features = ["derive"], default-features = false }
 postcard-schema = "0.2.5"
 
 # Synchronization
@@ -59,15 +59,21 @@ ergot = { git = "https://github.com/okhsunrog/ergot", rev = "5a5fab8234339ecdc25
 static_cell = "2.1"
 assign-resources = "0.5.0"
 embedded-io-async = { version = "0.7", features = ["defmt"] }
-heapless = { version = "0.9.2", default-features = false, features = ["defmt"] }
-libm = { version = "0.2.15", default-features = false }
+heapless = { version = "0.9.3", default-features = false, features = ["defmt"] }
+libm = { version = "0.2.16", default-features = false }
 
 # Persistent configuration storage
-sequential-storage = { version = "7.1", features = ["postcard", "defmt"] }
+sequential-storage = { version = "8.0", features = ["postcard", "defmt"] }
 embedded-storage-async = "0.4"
-embassy-embedded-hal = { version = "0.6.0", features = ["defmt"] }
+embassy-embedded-hal = { version = "0.6.0", features = ["defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
 postcard = { version = "1.1", features = ["use-defmt"] }
 rtt-target = "0.6"
+
+# Keep Embassy types used through ergot on the same main-branch revision as
+# embassy-stm32.
+[patch.crates-io]
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
 
 [profile.dev]
 debug = true

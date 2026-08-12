@@ -15,7 +15,7 @@ use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
-use embassy_stm32::{interrupt, peripherals};
+use embassy_stm32::interrupt;
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
@@ -110,15 +110,21 @@ pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
 
 /// ADC1 injected handle: phase A current + board temperature
 pub static ADC1_INJECTED: CriticalSectionMutex<
-    RefCell<Option<InjectedAdc<'static, peripherals::ADC1, 2>>>,
+    RefCell<
+        Option<InjectedAdc<'static, embassy_stm32::pac::adc::Adc, embassy_stm32::mode::Blocking>>,
+    >,
 > = CriticalSectionMutex::new(RefCell::new(None));
 /// ADC2 injected handle: phase B current + motor temperature
 pub static ADC2_INJECTED: CriticalSectionMutex<
-    RefCell<Option<InjectedAdc<'static, peripherals::ADC2, 2>>>,
+    RefCell<
+        Option<InjectedAdc<'static, embassy_stm32::pac::adc::Adc, embassy_stm32::mode::Blocking>>,
+    >,
 > = CriticalSectionMutex::new(RefCell::new(None));
 /// ADC3 injected handle: phase C current + VBUS
 pub static ADC3_INJECTED: CriticalSectionMutex<
-    RefCell<Option<InjectedAdc<'static, peripherals::ADC3, 2>>>,
+    RefCell<
+        Option<InjectedAdc<'static, embassy_stm32::pac::adc::Adc, embassy_stm32::mode::Blocking>>,
+    >,
 > = CriticalSectionMutex::new(RefCell::new(None));
 
 // ========== FOC Control ==========
@@ -353,7 +359,8 @@ fn ADC() {
     // Read ADC1 injected data (phase A current + board temp)
     let (ia_raw, board_temp_raw) = ADC1_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
-            let samples = injected.read_injected_samples();
+            let mut samples = [0; 2];
+            injected.read_latest(&mut samples);
             (samples[0], samples[1])
         } else {
             (0, 0)
@@ -373,7 +380,8 @@ fn ADC() {
     // Read ADC2 injected data (phase B current + motor temp)
     let (ib_raw, motor_temp_raw) = ADC2_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
-            let samples = injected.read_injected_samples();
+            let mut samples = [0; 2];
+            injected.read_latest(&mut samples);
             (samples[0], samples[1])
         } else {
             (0, 0)
@@ -394,7 +402,8 @@ fn ADC() {
     // Read ADC3 injected data (phase C current + VBUS)
     let (ic_raw, vbus_raw) = ADC3_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
-            let samples = injected.read_injected_samples();
+            let mut samples = [0; 2];
+            injected.read_latest(&mut samples);
             (samples[0], samples[1])
         } else {
             (0, 0)
