@@ -1292,6 +1292,7 @@ pub fn main() {
                 tracing::info!("Starting fast telemetry at {} Hz", hz);
                 let _ = runtime.cmd_tx.send(HostCommand::SetTelemetryConfig(
                     oxifoc_core::icd::TelemetryConfig { fast_hz: hz },
+                    None,
                 ));
             }
         });
@@ -1306,6 +1307,7 @@ pub fn main() {
                 tracing::info!("Stopping fast telemetry");
                 let _ = runtime.cmd_tx.send(HostCommand::SetTelemetryConfig(
                     oxifoc_core::icd::TelemetryConfig { fast_hz: 0 },
+                    None,
                 ));
             }
         });

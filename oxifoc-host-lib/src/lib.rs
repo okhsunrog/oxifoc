@@ -26,7 +26,9 @@ use oxifoc_core::types::{
     ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, DetectRequest, DetectResponse,
     FaultRequest, FaultSnapshot, HardwareInfo, MotorCommand, MotorRequest, MotorStatus,
 };
-use oxifoc_core::types::{ControlMode, FastTelemetry, FaultResponse, Keyed, ReqId, SlowTelemetry};
+use oxifoc_core::types::{
+    ControlMode, FastTelemetry, FaultResponse, Keyed, ReqId, SlowTelemetry, TelemetryConfigAck,
+};
 use std::{
     fs,
     sync::{
@@ -225,6 +227,18 @@ pub fn fault_channel() -> (FaultResponseSender, FaultResponseReceiver) {
     tokio::sync::oneshot::channel()
 }
 
+/// Telemetry-config ack channel: carries the device's ack (or the delivery
+/// error) back to the caller, correlated with exactly this request — the
+/// `HostRuntime::fast_hz` flag alone cannot distinguish a fresh ack from a
+/// rate that was already active before the request.
+pub type TelemetryAckSender = tokio::sync::oneshot::Sender<Result<TelemetryConfigAck>>;
+pub type TelemetryAckReceiver = tokio::sync::oneshot::Receiver<Result<TelemetryConfigAck>>;
+
+/// Create a oneshot channel pair for an acknowledged telemetry-config change
+pub fn telemetry_channel() -> (TelemetryAckSender, TelemetryAckReceiver) {
+    tokio::sync::oneshot::channel()
+}
+
 pub enum HostCommand {
     Motor(ControlMode),
     /// Like [`Motor`](Self::Motor) but replies with the device's status
@@ -234,7 +248,10 @@ pub enum HostCommand {
     /// latches re-arm until a later safe mode command.
     EmergencyStop(MotorResponseSender),
     SetPhaseSource(PhaseSource),
-    SetTelemetryConfig(TelemetryConfig),
+    /// Change the fast-telemetry rate. The optional ack channel receives the
+    /// device's response for THIS request; the requested rate also becomes
+    /// the rate re-applied after a reconnect.
+    SetTelemetryConfig(TelemetryConfig, Option<TelemetryAckSender>),
     ConfigRead(ConfigGroupId, ConfigResponseSender),
     ConfigApply(Keyed<ConfigApply>, ConfigResponseSender),
     ConfigPersist(Keyed<ConfigPersist>, ConfigResponseSender),
@@ -383,6 +400,9 @@ struct BackendCtx {
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected: Arc<AtomicBool>,
     fast_hz: Arc<AtomicU16>,
+    /// The last fast rate the application asked for (config default until a
+    /// SetTelemetryConfig arrives) — what a reconnect re-applies.
+    requested_fast_hz: Arc<AtomicU16>,
     cancel: CancellationToken,
 }
 
@@ -450,6 +470,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         cmd_rx,
         connected: connected.clone(),
         fast_hz: fast_hz.clone(),
+        requested_fast_hz: Arc::new(AtomicU16::new(cfg.fast_hz())),
         cancel: cancel_token.clone(),
     };
 
@@ -610,6 +631,7 @@ where
 {
     let connected = ctx.connected.clone();
     let fast_hz_flag = ctx.fast_hz.clone();
+    let requested_fast_hz = ctx.requested_fast_hz.clone();
     let cancel = ctx.cancel.clone();
     let info_tx = ctx.info_tx.clone();
     let fault_sink = ctx.fault_sink.clone();
@@ -709,7 +731,12 @@ where
             }
         }
 
-        enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
+        enable_fast_telemetry(
+            &stack,
+            requested_fast_hz.load(Ordering::Relaxed),
+            &fast_hz_flag,
+        )
+        .await;
 
         if !defmt_started && cfg.stream_defmt() {
             // defmt decoding is a debugging nicety — a missing/unreadable ELF
@@ -788,6 +815,7 @@ where
 
     let connected = ctx.connected.clone();
     let fast_hz_flag = ctx.fast_hz.clone();
+    let requested_fast_hz = ctx.requested_fast_hz.clone();
     let cancel = ctx.cancel.clone();
     let info_tx = ctx.info_tx.clone();
     let fault_sink = ctx.fault_sink.clone();
@@ -915,7 +943,12 @@ where
             }
         }
 
-        enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
+        enable_fast_telemetry(
+            &stack,
+            requested_fast_hz.load(Ordering::Relaxed),
+            &fast_hz_flag,
+        )
+        .await;
 
         let defmt_reader = transport.defmt_reader;
         let transport_scoped_defmt = defmt_reader.is_some();
@@ -1235,6 +1268,7 @@ where
     tokio::spawn({
         let stack = stack.clone();
         let fast_hz_flag = ctx.fast_hz;
+        let requested_fast_hz = ctx.requested_fast_hz;
         let connected = ctx.connected.clone();
         let cancel = ctx.cancel.clone();
         let mut cmd_rx = ctx.cmd_rx;
@@ -1265,6 +1299,7 @@ where
                             &stack,
                             cmd,
                             &fast_hz_flag,
+                            &requested_fast_hz,
                             &mut active_setpoint,
                             drive_session,
                             &mut motor_seq,
@@ -1450,8 +1485,11 @@ fn reject_unverified_command(cmd: HostCommand) {
         HostCommand::SetPhaseSource(source) => {
             tracing::warn!("Dropping phase-source command before verified handshake: {source:?}");
         }
-        HostCommand::SetTelemetryConfig(config) => {
+        HostCommand::SetTelemetryConfig(config, reply) => {
             tracing::warn!("Dropping telemetry config before verified handshake: {config:?}");
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(error()));
+            }
         }
         HostCommand::ConfigRead(_, reply)
         | HostCommand::ConfigApply(_, reply)
@@ -1583,6 +1621,7 @@ async fn handle_command<NS>(
     ns: &NS,
     cmd: HostCommand,
     fast_hz_flag: &Arc<AtomicU16>,
+    requested_fast_hz: &Arc<AtomicU16>,
     active_setpoint: &mut Option<ControlMode>,
     drive_session: u64,
     motor_seq: &mut u32,
@@ -1714,8 +1753,13 @@ async fn handle_command<NS>(
                 Err(e) => tracing::warn!("Phase source command failed: {:?}", e),
             }
         }
-        HostCommand::SetTelemetryConfig(cfg) => {
+        HostCommand::SetTelemetryConfig(cfg, reply) => {
             tracing::info!("Setting telemetry config: {:?}", cfg);
+            // Remember the *requested* rate as the reconnect intent — the
+            // reconnect path re-applies it instead of the static config
+            // value (which used to silently kill a capture's stream after
+            // a mid-capture reconnect).
+            requested_fast_hz.store(cfg.fast_hz, Ordering::Relaxed);
             match client
                 .at_least_once::<TelemetryConfigEndpoint>(
                     DEVICE_ADDR,
@@ -1728,8 +1772,16 @@ async fn handle_command<NS>(
                 Ok(ack) => {
                     tracing::info!("Telemetry config ack: fast={}Hz", ack.actual_fast_hz);
                     fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Ok(ack));
+                    }
                 }
-                Err(e) => tracing::warn!("Telemetry config failed: {:?}", e),
+                Err(e) => {
+                    tracing::warn!("Telemetry config failed: {:?}", e);
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Err(anyhow!("{e:?}")));
+                    }
+                }
             }
         }
         HostCommand::ConfigRead(group_id, reply_tx) => {

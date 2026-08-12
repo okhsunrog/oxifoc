@@ -14,7 +14,6 @@
 
 use std::fs::File;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -97,21 +96,26 @@ impl Capture {
         // Build the enrichment context up front (config reads) — while the link
         // is quiet, before the high-rate stream starts competing for it.
         let enrich = build_enrich_ctx(&runtime.cmd_tx, hw.as_ref());
+        // Correlated ack: the oneshot answers for exactly THIS request. The
+        // old poll of `runtime.fast_hz` accepted any nonzero value, so a
+        // rate already active before the capture produced a silently wrong
+        // decimation_m (and with it a wrong time axis and loss accounting).
+        let (ack_tx, ack_rx) = oxifoc_host_lib::telemetry_channel();
         runtime
             .cmd_tx
-            .send(HostCommand::SetTelemetryConfig(TelemetryConfig { fast_hz }))
+            .send(HostCommand::SetTelemetryConfig(
+                TelemetryConfig { fast_hz },
+                Some(ack_tx),
+            ))
             .context("send telemetry config")?;
-        let ack_deadline = Instant::now() + Duration::from_secs(3);
-        let fast_hz_actual = loop {
-            let v = runtime.fast_hz.load(Ordering::Relaxed);
-            if v != 0 {
-                break v;
-            }
-            if Instant::now() >= ack_deadline {
-                bail!("device did not acknowledge telemetry config within 3 s");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
+        let ack = ack_rx
+            .blocking_recv()
+            .context("backend dropped the telemetry config request")?
+            .context("device did not acknowledge the telemetry config")?;
+        let fast_hz_actual = ack.actual_fast_hz;
+        if fast_hz_actual == 0 {
+            bail!("device acknowledged a zero fast rate for a capture");
+        }
         let foc_freq_hz = hw.as_ref().map(|h| h.foc_freq_hz).unwrap_or(0);
         let decimation_m = if foc_freq_hz > 0 {
             foc_freq_hz / u32::from(fast_hz_actual)
@@ -160,11 +164,10 @@ impl Capture {
 
     /// Disable streaming (best effort).
     pub fn stop(&self, runtime: &HostRuntime) {
-        let _ = runtime
-            .cmd_tx
-            .send(HostCommand::SetTelemetryConfig(TelemetryConfig {
-                fast_hz: 0,
-            }));
+        let _ = runtime.cmd_tx.send(HostCommand::SetTelemetryConfig(
+            TelemetryConfig { fast_hz: 0 },
+            None,
+        ));
     }
 
     /// Expected seq step between consecutive samples.
