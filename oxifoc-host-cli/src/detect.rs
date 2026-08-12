@@ -182,8 +182,10 @@ pub fn run_detect(
         .send(HostCommand::Detect(req, tx))
         .context("send detect command")?;
     // The detect oneshot is async; poll it (no tokio runtime on this
-    // thread). Bounded by a generous deadline (detection can be slow).
-    let deadline = Instant::now() + Duration::from_secs(90);
+    // thread). The deadline derives from the backend's own retry budget
+    // plus margin, so the CLI cannot give up before the backend does.
+    let deadline = Instant::now()
+        + Duration::from_millis(oxifoc_host_lib::DETECT_POLICY.deadline_ms + 5_000);
     let detect_result: Result<DetectResponse> = loop {
         if let Ok(res) = rx.try_recv() {
             break res;
@@ -230,57 +232,13 @@ pub fn run_detect(
         bail!("detection failed: {e:?}");
     }
 
-    let mut applied = serde_json::Value::Null;
-    if apply {
-        if let DetectResponse::CurrentOffsets(report) = resp {
-            oxifoc_host_lib::ops::detect::apply_current_offsets(&runtime.cmd_tx, &report)?;
-            applied = json!({
-                "phase_a": report.offsets[0],
-                "phase_b": report.offsets[1],
-                "phase_c": report.offsets[2],
-            });
-        } else {
-            let (mut mp, _) =
-                config_cli::current_value(&runtime.cmd_tx, ConfigGroupId::MotorParams)?;
-            let obj = mp.as_object_mut().context("motor-params not an object")?;
-            match resp {
-                DetectResponse::Resistance { resistance_ohm } => {
-                    obj.insert("resistance_ohm".into(), json!(resistance_ohm));
-                }
-                DetectResponse::Inductance {
-                    inductance_d_h,
-                    inductance_q_h,
-                } => {
-                    obj.insert("inductance_d_h".into(), json!(inductance_d_h));
-                    obj.insert("inductance_q_h".into(), json!(inductance_q_h));
-                }
-                DetectResponse::FluxLinkage {
-                    flux_linkage_wb, ..
-                } => {
-                    obj.insert("flux_linkage_wb".into(), json!(flux_linkage_wb));
-                }
-                DetectResponse::HallCalibrated => {}
-                DetectResponse::CurrentOffsets(_) => {}
-                DetectResponse::Error(_) => {}
-            }
-            if matches!(resp, DetectResponse::HallCalibrated) {
-                // The device parks the calibration in its in-RAM runtime config;
-                // persisting is the host's job (device comment in
-                // runtime/detect.rs). Read the live group back and write it —
-                // the write path is what lands it in flash.
-                let (hall, _) =
-                    config_cli::current_value(&runtime.cmd_tx, ConfigGroupId::HallCalibration)?;
-                let write =
-                    config_cli::write_from_value(ConfigGroupId::HallCalibration, hall.clone())?;
-                config_cli::send_write(&runtime.cmd_tx, write)?;
-                applied = hall;
-            } else {
-                let write = config_cli::write_from_value(ConfigGroupId::MotorParams, mp.clone())?;
-                config_cli::send_write(&runtime.cmd_tx, write)?;
-                applied = mp;
-            }
-        }
-    }
+    // Shared per-step apply (ops::detect): the CLI used to hand-roll a copy
+    // that skipped the rating recompute and could drift from the GUI path.
+    let applied = if apply {
+        oxifoc_host_lib::ops::detect::apply_step(&runtime.cmd_tx, &resp)?
+    } else {
+        serde_json::Value::Null
+    };
 
     emit(
         json,

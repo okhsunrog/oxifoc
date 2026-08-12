@@ -48,7 +48,7 @@ pub struct HostConfig {
 }
 
 /// Controls how the host handles transport disconnection/failure.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ReconnectPolicy {
     /// Disconnect immediately on any failure, including loss of an established

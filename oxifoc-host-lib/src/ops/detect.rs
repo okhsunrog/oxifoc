@@ -223,6 +223,78 @@ pub fn run_sequence(
     Ok(out)
 }
 
+/// Apply a SINGLE detection step's result into config, patching only what
+/// the step measured. Returns the JSON that was written (for display).
+///
+/// This is the shared per-step apply used by every front-end (the CLI used
+/// to hand-roll its own copy that skipped the rating recompute below):
+/// - measured motor params patch the `motor-params` group field-by-field;
+///   a new resistance also recomputes the thermal current rating from the
+///   stored dissipation class (rating = √(P/R/1.5) tracks R);
+/// - hall calibration reads the device's in-RAM result back and writes it —
+///   persisting is the host's job (device comment in runtime/detect.rs);
+/// - current offsets persist through [`apply_current_offsets`].
+pub fn apply_step(cmd: &CommandSender, resp: &DetectResponse) -> Result<serde_json::Value> {
+    match resp {
+        DetectResponse::CurrentOffsets(report) => {
+            apply_current_offsets(cmd, report)?;
+            Ok(json!({
+                "phase_a": report.offsets[0],
+                "phase_b": report.offsets[1],
+                "phase_c": report.offsets[2],
+            }))
+        }
+        DetectResponse::HallCalibrated => {
+            let (hall, state) = config::current_value(cmd, ConfigGroupId::HallCalibration)?;
+            let write = config::write_from_value(ConfigGroupId::HallCalibration, hall.clone())
+                .context("hall calibration read-back no longer deserializes")?;
+            let revision = config::apply_write(cmd, state.revision, write)?;
+            config::persist_group(cmd, ConfigGroupId::HallCalibration, revision)?;
+            Ok(hall)
+        }
+        DetectResponse::Error(e) => bail!("cannot apply a failed detection: {e:?}"),
+        measured => {
+            let (mut value, state) = config::current_value(cmd, ConfigGroupId::MotorParams)?;
+            let obj = value
+                .as_object_mut()
+                .context("motor-params is not a JSON object")?;
+            match measured {
+                DetectResponse::Resistance { resistance_ohm } => {
+                    obj.insert("resistance_ohm".into(), json!(resistance_ohm));
+                    let ploss = obj
+                        .get("max_power_loss_w")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0) as f32;
+                    if ploss > 0.0 {
+                        obj.insert(
+                            "max_current_a".into(),
+                            json!(rating_from_loss(*resistance_ohm, ploss)),
+                        );
+                    }
+                }
+                DetectResponse::Inductance {
+                    inductance_d_h,
+                    inductance_q_h,
+                } => {
+                    obj.insert("inductance_d_h".into(), json!(inductance_d_h));
+                    obj.insert("inductance_q_h".into(), json!(inductance_q_h));
+                }
+                DetectResponse::FluxLinkage {
+                    flux_linkage_wb, ..
+                } => {
+                    obj.insert("flux_linkage_wb".into(), json!(flux_linkage_wb));
+                }
+                _ => bail!("unexpected detect response: {measured:?}"),
+            }
+            let write = config::write_from_value(ConfigGroupId::MotorParams, value.clone())
+                .context("patched motor-params no longer deserializes")?;
+            let revision = config::apply_write(cmd, state.revision, write)?;
+            config::persist_group(cmd, ConfigGroupId::MotorParams, revision)?;
+            Ok(value)
+        }
+    }
+}
+
 /// Write the measured parameters into the `motor-params` group: the four
 /// measured fields, the supplied pole pairs, and the thermal current rating.
 /// PI gains are intentionally *not* written — the device retunes them.

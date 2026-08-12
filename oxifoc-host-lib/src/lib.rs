@@ -42,7 +42,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 pub use config::{HostConfig, ReconnectPolicy};
-pub use discovery::{BleDeviceInfo, scan_ble_devices};
+pub use discovery::{BleDeviceInfo, scan_ble_devices, scan_ble_devices_blocking};
 #[cfg(feature = "desktop")]
 pub use discovery::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
 pub use transport::{TransportConfig, TransportType};
@@ -74,7 +74,9 @@ const SETPOINT_POLICY: RetryPolicy = RetryPolicy {
 };
 /// Effectively-once budget for motor detection: one ~60 s attempt, plus room
 /// for a single retry whose (cached) response returns near-instantly.
-const DETECT_POLICY: RetryPolicy = RetryPolicy {
+/// Public so front-ends derive their own wait deadlines from it instead of
+/// hardcoding a second number that can drift.
+pub const DETECT_POLICY: RetryPolicy = RetryPolicy {
     deadline_ms: 70_000,
     base_backoff_ms: 500,
     max_backoff_ms: 2_000,

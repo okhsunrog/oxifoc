@@ -186,6 +186,24 @@ pub async fn scan_ble_devices(scan_duration: Duration) -> Vec<BleDeviceInfo> {
     }
 }
 
+/// Blocking convenience over [`scan_ble_devices`] for synchronous callers
+/// (the CLI): spins a private current-thread runtime for the scan.
+///
+/// Must NOT be called from within a tokio runtime (use the async variant
+/// there).
+pub fn scan_ble_devices_blocking(scan_duration: Duration) -> Vec<BleDeviceInfo> {
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt.block_on(scan_ble_devices(scan_duration)),
+        Err(e) => {
+            tracing::warn!("BLE scan runtime unavailable: {e}");
+            Vec::new()
+        }
+    }
+}
+
 async fn scan_ble_devices_inner(scan_duration: Duration) -> anyhow::Result<Vec<BleDeviceInfo>> {
     let adapter = Adapter::default().await?;
     adapter.wait_available().await?;

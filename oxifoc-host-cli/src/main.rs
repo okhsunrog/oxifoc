@@ -12,7 +12,7 @@ mod maneuver;
 mod record;
 mod watch;
 
-use oxifoc_core::types::{ConfigResponse, MotorStatus};
+use oxifoc_core::types::MotorStatus;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -96,6 +96,9 @@ enum Transport {
     Tcp,
     Udp,
     Usb,
+    /// BLE (NUS framing); the device is selected by a pre-connect scan —
+    /// narrow it with --ble-name when more than one is in range
+    Ble,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -190,6 +193,12 @@ struct Cli {
     /// Serial baud rate (overrides config file; default: config value, else 921600)
     #[arg(long)]
     baud: Option<u32>,
+
+    /// BLE device name (substring of the advertised name or device id) used
+    /// to pick the peripheral for --transport ble. With no filter, a single
+    /// named device in range is accepted; anything ambiguous is refused.
+    #[arg(long)]
+    ble_name: Option<String>,
 
     /// Debug probe identifier (VID:PID or VID:PID:SERIAL). Required for RTT transport if not in config.
     #[arg(long)]
@@ -510,6 +519,19 @@ enum SourceArg {
     HfiObserverVolts,
 }
 
+impl From<SourceArg> for oxifoc_host_lib::ops::phase::PhaseSourceKind {
+    fn from(value: SourceArg) -> Self {
+        match value {
+            SourceArg::Hall => Self::Hall,
+            SourceArg::HallFallback => Self::HallFallback,
+            SourceArg::Observer => Self::Observer,
+            SourceArg::Hfi => Self::Hfi,
+            SourceArg::HfiObserver => Self::HfiObserver,
+            SourceArg::HfiObserverVolts => Self::HfiObserverVolts,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     init_tracing();
 
@@ -724,16 +746,8 @@ fn main() -> Result<()> {
             switch_vel,
             toggle_v,
         } => {
-            use oxifoc_host_lib::ops::phase::{self, PhaseSourceKind};
-            let kind = match source {
-                SourceArg::Hall => PhaseSourceKind::Hall,
-                SourceArg::HallFallback => PhaseSourceKind::HallFallback,
-                SourceArg::Observer => PhaseSourceKind::Observer,
-                SourceArg::Hfi => PhaseSourceKind::Hfi,
-                SourceArg::HfiObserver => PhaseSourceKind::HfiObserver,
-                SourceArg::HfiObserverVolts => PhaseSourceKind::HfiObserverVolts,
-            };
-            let ps = phase::preset(kind, switch_vel, toggle_v);
+            use oxifoc_host_lib::ops::phase;
+            let ps = phase::preset(source.into(), switch_vel, toggle_v);
             runtime
                 .cmd_tx
                 .send(HostCommand::SetPhaseSource(ps))
@@ -868,23 +882,12 @@ fn main() -> Result<()> {
                 if !yes {
                     bail!("config reset erases every stored group; pass --yes to confirm");
                 }
-                let (tx, rx) = oxifoc_host_lib::config_channel();
-                runtime
-                    .cmd_tx
-                    .send(HostCommand::ConfigResetAll(tx))
-                    .context("send config reset")?;
-                let resp = rx
-                    .blocking_recv()
-                    .context("backend dropped the config reset")?
-                    .context("config reset failed")?;
-                match resp {
-                    ConfigResponse::Reset => emit(
-                        json,
-                        json!({"reset": true}),
-                        "all stored config groups erased".to_string(),
-                    ),
-                    other => bail!("config reset rejected: {other:?}"),
-                }
+                oxifoc_host_lib::ops::config::reset_all(&runtime.cmd_tx)?;
+                emit(
+                    json,
+                    json!({"reset": true}),
+                    "all stored config groups erased".to_string(),
+                );
             }
         },
         Command::Detect {
@@ -935,7 +938,40 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
             Transport::Tcp => TransportType::Tcp,
             Transport::Udp => TransportType::Udp,
             Transport::Usb => TransportType::Usb,
+            Transport::Ble => TransportType::Ble,
         });
+    }
+
+    // BLE needs a live device handle: scan and pin the peripheral before
+    // the backend starts. Ambiguity is refused (mirrors the USB identity
+    // pinning) — a motor controller must not be picked by luck.
+    if cfg.transport == Some(TransportType::Ble) && cfg.ble_device.is_none() {
+        let devices = oxifoc_host_lib::scan_ble_devices_blocking(Duration::from_secs(4));
+        let matches: Vec<_> = devices
+            .iter()
+            .filter(|d| match cli.ble_name.as_deref() {
+                Some(pat) => {
+                    d.name.as_deref().is_some_and(|n| n.contains(pat)) || d.id.contains(pat)
+                }
+                None => d.name.is_some(),
+            })
+            .collect();
+        match matches.as_slice() {
+            [one] => cfg.ble_device = Some(one.device.clone()),
+            [] => bail!(
+                "no BLE device matched (scanned {} peripheral(s)); \
+                 check the device is advertising or pass --ble-name",
+                devices.len()
+            ),
+            many => bail!(
+                "ambiguous BLE selection — {} devices match, pass --ble-name:\n{}",
+                many.len(),
+                many.iter()
+                    .map(|d| format!("  {d}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        }
     }
 
     if let Some(ref path) = cli.serial_path {
@@ -1046,4 +1082,24 @@ fn list_devices(json: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::ValueEnum;
+    use oxifoc_host_lib::ops::phase::PhaseSourceKind;
+
+    use super::SourceArg;
+
+    /// Enforcer: the clap mirror covers every shared phase-source kind in
+    /// selector order — a kind added to ops::phase without a CLI arm fails
+    /// here instead of being silently unreachable from the CLI.
+    #[test]
+    fn source_arg_mirrors_phase_source_kinds() {
+        let args = SourceArg::value_variants();
+        assert_eq!(args.len(), PhaseSourceKind::ALL.len());
+        for (arg, kind) in args.iter().zip(PhaseSourceKind::ALL) {
+            assert_eq!(PhaseSourceKind::from(*arg), kind);
+        }
+    }
 }

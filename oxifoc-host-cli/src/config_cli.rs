@@ -11,8 +11,7 @@ use serde_json::Value;
 // sites (`config_cli::parse_group`, `config_cli::current_value`, …) and the
 // `detect` module keep working unchanged.
 pub use oxifoc_host_lib::ops::config::{
-    GROUPS, config_snapshot, current_value, group_value, parse_group, read_group, send_write,
-    set_fields, write_from_value,
+    GROUPS, config_snapshot, current_value, group_value, parse_group, read_group, set_fields,
 };
 
 /// Dump every config group; `--rust` renders a ready-to-paste
