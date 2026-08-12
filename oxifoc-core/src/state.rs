@@ -28,7 +28,9 @@ use crate::motor::derating::{DeratingConfig, DeratingScales};
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::foc_driver::{CurrentLimits, StepError};
 use crate::motor::{ControlMode, FocDriver};
-use crate::types::MotorState;
+use crate::types::{
+    DriveOwnership, DriveSessionId, MotorCommand, MotorCommandOutcome, MotorRequest, MotorState,
+};
 
 /// Maximum |ω_e| (electrical rad/s) at which a `Brake` (windings-short)
 /// command is accepted — above this the short-circuit current is governed by
@@ -52,6 +54,8 @@ pub const BRAKE_ENTRY_MAX_E_RAD_S: f32 = 50.0;
 pub enum DriverCommand {
     /// Change control mode (start/stop/targets)
     SetMode(ControlMode),
+    /// Source-owned, sequenced protocol command.
+    Motor(MotorRequest),
     /// Apply current limits (already clamped to the board ceiling)
     SetCurrentLimits(CurrentLimits),
     /// Apply current-loop PI gains (post-detection tune, config write)
@@ -81,6 +85,7 @@ impl DriverCommand {
     pub fn is_sane(&self) -> bool {
         match *self {
             Self::SetMode(mode) => mode.is_finite(),
+            Self::Motor(request) => request.command.is_finite(),
             Self::SetCurrentLimits(limits) => {
                 limits.max_current_a.is_finite()
                     && limits.overcurrent_threshold_a.is_finite()
@@ -104,6 +109,14 @@ impl DriverCommand {
 
 /// Command channel - servers send DriverCommands here, ISR receives them
 pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, DriverCommand, 8> = Channel::new();
+
+/// Completion of the single serialized protocol motor request. The motor
+/// server resets this before enqueue; `Signal` retains an ISR completion that
+/// arrives before the async waiter is polled.
+pub static MOTOR_COMMAND_DONE: Signal<
+    CriticalSectionRawMutex,
+    (DriveSessionId, u32, MotorCommandOutcome),
+> = Signal::new();
 
 /// Single-flight completion for current-offset calibration. Boot starts the
 /// driver operation directly; runtime diagnostics enqueue the typed command.
@@ -246,6 +259,9 @@ pub struct MotorControlState {
     /// ISR-owned maintenance operation. Configuration/flash and motor starts
     /// use this to avoid racing an energised calibration topology.
     pub driver_operation: DriverOperation,
+    /// Source currently allowed to send active setpoints. Safe-mode and
+    /// emergency commands are never owner-gated.
+    drive_ownership: DriveOwnership,
 }
 
 impl MotorControlState {
@@ -261,6 +277,7 @@ impl MotorControlState {
             phase_source: PhaseSource::Hall,
             derating: DeratingScales::IDENTITY,
             driver_operation: DriverOperation::Idle,
+            drive_ownership: DriveOwnership::new(),
         }
     }
 
@@ -275,6 +292,7 @@ impl MotorControlState {
             self.motor_state = MotorState::Stopped;
         }
         self.control_mode = ControlMode::Stopped;
+        self.drive_ownership.release();
     }
 
     /// Set motor to running with given control mode
@@ -292,6 +310,7 @@ impl MotorControlState {
     pub fn clear_error(&mut self) {
         self.motor_state = MotorState::Stopped;
         self.control_mode = ControlMode::Stopped;
+        self.drive_ownership.release();
     }
 
     /// Update Hall snapshot
@@ -318,6 +337,7 @@ impl MotorControlState {
     /// [`process_commands`] forces [`ControlMode::Stopped`] while inactive.
     pub fn set_link_inactive(&mut self) {
         self.link_active = false;
+        self.drive_ownership.release();
     }
 
     /// Whether any operation currently owns or energises the bridge.
@@ -400,6 +420,10 @@ where
     )
 }
 
+fn signal_motor_completion(request: MotorRequest, outcome: MotorCommandOutcome) {
+    MOTOR_COMMAND_DONE.signal((request.source_session, request.seq, outcome));
+}
+
 /// Like [`process_commands`] but reports whether a `SetMode` was drained on
 /// this call via `saw_set_mode` — the command-staleness deadman's "fresh
 /// affirmation" signal (set even for a `SetMode` the gates reject: a rejected
@@ -421,10 +445,17 @@ where
 {
     // Process all pending commands
     while let Ok(cmd) = CMD_CHANNEL.try_receive() {
+        let protocol_request = match cmd {
+            DriverCommand::Motor(request) => Some(request),
+            _ => None,
+        };
         // NaN/inf payloads die here, not in the PI loop.
         if !cmd.is_sane() {
             #[cfg(feature = "defmt")]
             defmt::warn!("Dropping non-finite driver command");
+            if let Some(request) = protocol_request {
+                signal_motor_completion(request, MotorCommandOutcome::RejectedInvalid);
+            }
             continue;
         }
         let mode = match cmd {
@@ -436,6 +467,33 @@ where
                     .fetch_add(1, Ordering::Relaxed);
                 mode
             }
+            DriverCommand::Motor(request) => match request.command {
+                MotorCommand::EmergencyStop => {
+                    foc.emergency_stop();
+                    critical_section::with(|cs| {
+                        state_mutex.borrow(cs).borrow_mut().set_stopped();
+                    });
+                    publish_current_offset_outcome(state_mutex, foc);
+                    signal_motor_completion(request, MotorCommandOutcome::Applied);
+                    continue;
+                }
+                MotorCommand::SetMode(mode) => {
+                    let authorization = critical_section::with(|cs| {
+                        let state = state_mutex.borrow(cs).borrow();
+                        state.drive_ownership.authorize(request)
+                    });
+                    if let Err(outcome) = authorization {
+                        signal_motor_completion(request, outcome);
+                        continue;
+                    }
+                    // Only an authorized, non-duplicate request affirms the
+                    // deadman. Busy/stale traffic cannot keep old torque alive.
+                    *saw_set_mode = true;
+                    crate::runtime::streaming::cmd_stats::SETMODE_DRAINED
+                        .fetch_add(1, Ordering::Relaxed);
+                    mode
+                }
+            },
             DriverCommand::SetCurrentLimits(limits) => {
                 foc.set_current_limits(limits);
                 continue;
@@ -520,17 +578,23 @@ where
             if BOOT_CURRENT_OFFSET_PENDING.load(Ordering::Relaxed) {
                 #[cfg(feature = "defmt")]
                 defmt::warn!("Mode rejected: boot current calibration active");
+                if let Some(request) = protocol_request {
+                    signal_motor_completion(request, MotorCommandOutcome::RejectedSafety);
+                }
                 continue;
             }
             if mode != ControlMode::Stopped {
                 #[cfg(feature = "defmt")]
                 defmt::warn!("Mode rejected: current-offset calibration active");
+                if let Some(request) = protocol_request {
+                    signal_motor_completion(request, MotorCommandOutcome::RejectedSafety);
+                }
                 continue;
             }
             foc.cancel_current_offset_calibration();
             publish_current_offset_outcome(state_mutex, foc);
         }
-        critical_section::with(|cs| {
+        let outcome = critical_section::with(|cs| {
             let mut state = state_mutex.borrow(cs).borrow_mut();
 
             // Exit the Error latch only once the host has explicitly cleared
@@ -551,7 +615,7 @@ where
             if mode != ControlMode::Stopped
                 && (state.motor_state == MotorState::Error || fault_registry.any_stopping())
             {
-                return;
+                return MotorCommandOutcome::RejectedSafety;
             }
 
             // A queued flash write/erase would stall the chip mid-spin —
@@ -559,7 +623,7 @@ where
             if mode != ControlMode::Stopped && FLASH_OP_PENDING.load(Ordering::SeqCst) {
                 #[cfg(feature = "defmt")]
                 defmt::warn!("Motor start rejected: flash operation in flight");
-                return;
+                return MotorCommandOutcome::RejectedSafety;
             }
 
             // Brake (windings shorted) is only safe to enter near standstill:
@@ -576,11 +640,13 @@ where
                 if foc.enter_brake_ramp() {
                     #[cfg(feature = "defmt")]
                     defmt::info!("Brake at speed: ramping to standstill first");
+                    state.drive_ownership.release();
+                    return MotorCommandOutcome::Applied;
                 } else {
                     #[cfg(feature = "defmt")]
                     defmt::warn!("Brake rejected: at speed and current sensor uncalibrated");
+                    return MotorCommandOutcome::RejectedSafety;
                 }
-                return;
             }
 
             // After a failsafe engagement (deadman or link loss) the host
@@ -597,7 +663,7 @@ where
                 ) {
                     #[cfg(feature = "defmt")]
                     defmt::warn!("Mode rejected: failsafe latched, acknowledge with Stopped first");
-                    return;
+                    return MotorCommandOutcome::RejectedSafety;
                 }
                 // The safe-mode command IS the acknowledgement — released
                 // here at the host-command boundary only. Internal stop
@@ -616,8 +682,15 @@ where
                     state.set_running(mode);
                 }
             }
+            if let Some(request) = protocol_request {
+                state.drive_ownership.record_applied(request);
+            }
             foc.set_mode(mode);
+            MotorCommandOutcome::Applied
         });
+        if let Some(request) = protocol_request {
+            signal_motor_completion(request, outcome);
+        }
     }
 
     // Fail-safe: while the link is inactive (liveness timed out / host gone),

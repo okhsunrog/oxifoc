@@ -235,7 +235,7 @@ interface). Reliability is the application's job:
 - **At-least-once** via host-side `timeout + bounded retry` → requires
   **idempotent** commands (the receiver must tolerate duplicates).
 - Prefer **declarative / level-triggered** commands (absolute setpoints:
-  `ControlMode`, absolute config) — idempotent by construction, retry-safe, and
+  `MotorRequest::SetMode`, absolute config) — idempotent by construction, retry-safe, and
   they fail safe naturally (absence of fresh setpoint → deadman → safe state).
 - For the few genuine **actions**: either no-op-if-already-running (e.g.
   `DetectEndpoint` returns `Busy` during a run) or dedup by an app-level
@@ -246,9 +246,22 @@ interface). Reliability is the application's job:
   boilerplate. `MotorEndpoint`/`ConfigEndpoint` → `Idempotent`; `DetectEndpoint`
   → not.
 
-Safety corollary: a "stop" command is **not** a safety guarantee (it can be
-lost). Safety is the deadman (absence of affirmation → safe), not the delivery
-of stop.
+`MotorEndpoint` adds application ordering above ergot: every request carries a
+fresh process `source_session` and wrapping `seq`. The device accepts active
+setpoints only from the current source and rejects duplicates/stale sequences
+before they can refresh the ISR deadman. This is intentionally a narrow drive
+guard, not a broad lease: monitoring, reads, and live-safe configuration remain
+available from another client. `Stopped`, `Coast`, `Brake`, and
+`EmergencyStop` always supersede the active source.
+
+The response is emitted after the ISR gate and carries an explicit outcome; it
+never reports a pre-application status snapshot as acknowledgement.
+`EmergencyStop` reuses the motor endpoint (no extra socket cost), immediately
+floats the bridge, and latches re-arm until a subsequent safe neutral command.
+
+Safety corollary: even a universal stop command can be lost. The deadman remains
+the backstop (absence of fresh accepted affirmation → safe); emergency stop
+adds an immediate best-effort path, not a replacement for that backstop.
 
 ## Non-idempotent endpoints (track these)
 

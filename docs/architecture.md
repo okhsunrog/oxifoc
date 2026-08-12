@@ -1077,7 +1077,7 @@ generic servers in `runtime/servers.rs`:
 | Endpoint | Path | Request → Response |
 |----------|------|--------------------|
 | `HardwareInfoEndpoint` | `req/hardware_info` | `()` → `HardwareInfo` |
-| `MotorEndpoint` | `cmd/motor` | `ControlMode` → `MotorStatus` |
+| `MotorEndpoint` | `cmd/motor` | `MotorRequest` → `MotorStatus` (source session, sequence, ISR outcome, emergency stop) |
 | `PhaseSourceEndpoint` | `cmd/phase_source` | `PhaseSource` → `PhaseSourceAck` |
 | `TelemetryConfigEndpoint` | `cmd/telemetry_config` | `TelemetryConfig` → `TelemetryConfigAck` |
 | `SlowTelemetryEndpoint` | `req/telemetry_slow` | `()` → `SlowTelemetry` |

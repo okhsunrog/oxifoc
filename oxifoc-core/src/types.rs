@@ -199,9 +199,137 @@ impl ControlMode {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
+/// One host/remote process generation. A new process chooses a fresh value;
+/// sequence numbers are compared only within that generation.
+pub type DriveSessionId = u64;
+
+/// Action carried by the existing motor endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum MotorCommand {
+    /// Apply an absolute control mode/setpoint.
+    SetMode(ControlMode),
+    /// Immediately float the bridge and latch re-arm until a subsequent safe
+    /// neutral command (Stopped/Coast/Brake).
+    EmergencyStop,
+}
+
+impl MotorCommand {
+    pub fn is_finite(self) -> bool {
+        match self {
+            Self::SetMode(mode) => mode.is_finite(),
+            Self::EmergencyStop => true,
+        }
+    }
+}
+
+/// Sequenced request for [`crate::icd::MotorEndpoint`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct MotorRequest {
+    pub source_session: DriveSessionId,
+    pub seq: u32,
+    pub command: MotorCommand,
+}
+
+/// Result produced by the ISR command gate.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum MotorCommandOutcome {
+    /// The action was applied by the ISR.
+    #[default]
+    Applied,
+    /// This exact source/sequence had already been applied; it was not applied
+    /// again and did not refresh the command deadman.
+    AlreadyApplied,
+    /// Sequence is older than the last accepted value for this source.
+    RejectedStale,
+    /// A different source currently owns active drive control.
+    RejectedSourceBusy,
+    /// A fault, calibration, flash operation, or re-arm latch blocked it.
+    RejectedSafety,
+    /// Payload failed validation.
+    RejectedInvalid,
+}
+
+impl MotorCommandOutcome {
+    pub fn is_success(self) -> bool {
+        matches!(self, Self::Applied | Self::AlreadyApplied)
+    }
+}
+
+/// Device-local ownership/sequence guard for active drive commands. This is
+/// deliberately not serialized: both the real ISR and virtual device use the
+/// same policy implementation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DriveOwnership {
+    owner: Option<DriveOwner>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DriveOwner {
+    session: DriveSessionId,
+    last_seq: u32,
+}
+
+impl DriveOwnership {
+    pub const fn new() -> Self {
+        Self { owner: None }
+    }
+
+    pub fn authorize(self, request: MotorRequest) -> Result<(), MotorCommandOutcome> {
+        let MotorCommand::SetMode(mode) = request.command else {
+            return Ok(());
+        };
+        if matches!(
+            mode,
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+        ) {
+            return Ok(());
+        }
+        let Some(owner) = self.owner else {
+            return Ok(());
+        };
+        if owner.session != request.source_session {
+            return Err(MotorCommandOutcome::RejectedSourceBusy);
+        }
+        if request.seq == owner.last_seq {
+            return Err(MotorCommandOutcome::AlreadyApplied);
+        }
+        let delta = request.seq.wrapping_sub(owner.last_seq);
+        if delta >= (1 << 31) {
+            return Err(MotorCommandOutcome::RejectedStale);
+        }
+        Ok(())
+    }
+
+    pub fn record_applied(&mut self, request: MotorRequest) {
+        self.owner = match request.command {
+            MotorCommand::SetMode(mode)
+                if !matches!(
+                    mode,
+                    ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+                ) =>
+            {
+                Some(DriveOwner {
+                    session: request.source_session,
+                    last_seq: request.seq,
+                })
+            }
+            MotorCommand::SetMode(_) | MotorCommand::EmergencyStop => None,
+        };
+    }
+
+    pub fn release(&mut self) {
+        self.owner = None;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MotorStatus {
+    /// Whether this request was applied (or was an idempotent duplicate).
+    pub outcome: MotorCommandOutcome,
     /// Current motor state
     pub state: MotorState,
     /// Current control mode
@@ -791,6 +919,94 @@ mod tests {
         assert_eq!(MotorState::Stopped.to_u8(), 0);
         assert_eq!(MotorState::Running.to_u8(), 1);
         assert_eq!(MotorState::Error.to_u8(), 2);
+    }
+
+    fn motor_request(session: u64, seq: u32, command: MotorCommand) -> MotorRequest {
+        MotorRequest {
+            source_session: session,
+            seq,
+            command,
+        }
+    }
+
+    #[test]
+    fn active_drive_is_source_owned_and_sequence_checked() {
+        let active = |session, seq| {
+            motor_request(
+                session,
+                seq,
+                MotorCommand::SetMode(ControlMode::CurrentControl {
+                    iq_target: 1.0,
+                    id_target: 0.0,
+                }),
+            )
+        };
+        let mut ownership = DriveOwnership::new();
+        ownership.record_applied(active(7, 10));
+
+        assert_eq!(ownership.authorize(active(7, 11)), Ok(()));
+        assert_eq!(
+            ownership.authorize(active(7, 10)),
+            Err(MotorCommandOutcome::AlreadyApplied)
+        );
+        assert_eq!(
+            ownership.authorize(active(7, 9)),
+            Err(MotorCommandOutcome::RejectedStale)
+        );
+        assert_eq!(
+            ownership.authorize(active(8, 1)),
+            Err(MotorCommandOutcome::RejectedSourceBusy)
+        );
+    }
+
+    #[test]
+    fn safe_and_emergency_commands_ignore_and_release_drive_owner() {
+        let active = motor_request(
+            7,
+            u32::MAX,
+            MotorCommand::SetMode(ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0,
+            }),
+        );
+        let mut ownership = DriveOwnership::new();
+        ownership.record_applied(active);
+
+        for command in [
+            MotorCommand::SetMode(ControlMode::Stopped),
+            MotorCommand::SetMode(ControlMode::Coast),
+            MotorCommand::SetMode(ControlMode::Brake),
+            MotorCommand::EmergencyStop,
+        ] {
+            let safe = motor_request(99, 0, command);
+            assert_eq!(ownership.authorize(safe), Ok(()));
+            let mut released = ownership;
+            released.record_applied(safe);
+            assert_eq!(
+                released.authorize(motor_request(
+                    8,
+                    0,
+                    MotorCommand::SetMode(ControlMode::CurrentControl {
+                        iq_target: 1.0,
+                        id_target: 0.0,
+                    })
+                )),
+                Ok(())
+            );
+        }
+
+        assert_eq!(
+            ownership.authorize(motor_request(7, 0, active.command)),
+            Ok(())
+        );
+        assert_eq!(
+            ownership.authorize(motor_request(7, u32::MAX - 1, active.command)),
+            Err(MotorCommandOutcome::RejectedStale)
+        );
+        assert_eq!(
+            ownership.authorize(motor_request(7, (1 << 31) - 1, active.command)),
+            Err(MotorCommandOutcome::RejectedStale)
+        );
     }
 
     /// Raw-Pod batch: push → postcard wire → decode must reproduce the exact

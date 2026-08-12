@@ -24,7 +24,7 @@ use oxifoc_core::icd::{
 use oxifoc_core::timer::Timer;
 use oxifoc_core::types::{
     ConfigGroupId, ConfigResponse, ConfigWrite, DetectRequest, DetectResponse, FaultRequest,
-    HardwareInfo, MotorStatus,
+    HardwareInfo, MotorCommand, MotorRequest, MotorStatus,
 };
 use oxifoc_core::types::{ControlMode, FastTelemetry, FaultResponse, Keyed, ReqId, SlowTelemetry};
 use std::{
@@ -135,6 +135,25 @@ fn next_detect_id() -> ReqId {
     ReqId(ctr.fetch_add(1, Ordering::Relaxed))
 }
 
+fn new_drive_session() -> u64 {
+    static CTR: AtomicU64 = AtomicU64::new(0);
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    seed ^ CTR.fetch_add(1, Ordering::Relaxed).rotate_left(29)
+}
+
+fn next_motor_request(session: u64, seq: &mut u32, command: MotorCommand) -> MotorRequest {
+    let request = MotorRequest {
+        source_session: session,
+        seq: *seq,
+        command,
+    };
+    *seq = seq.wrapping_add(1);
+    request
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Resolve the running firmware ELF path from `cfg.elf` (CLI `--elf`). Used both
@@ -209,6 +228,9 @@ pub enum HostCommand {
     /// Like [`Motor`](Self::Motor) but replies with the device's status
     /// (or the delivery error).
     MotorAck(ControlMode, MotorResponseSender),
+    /// Immediate high-Z stop through the existing motor endpoint. The device
+    /// latches re-arm until a later safe mode command.
+    EmergencyStop(MotorResponseSender),
     SetPhaseSource(PhaseSource),
     SetTelemetryConfig(TelemetryConfig),
     ConfigRead(ConfigGroupId, ConfigResponseSender),
@@ -1150,6 +1172,8 @@ where
         let cancel = ctx.cancel.clone();
         let mut cmd_rx = ctx.cmd_rx;
         async move {
+            let drive_session = new_drive_session();
+            let mut motor_seq = 0u32;
             let mut active_setpoint: Option<ControlMode> = None;
             let mut ticker = tokio::time::interval(AFFIRM_INTERVAL);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1165,7 +1189,14 @@ where
                     _ = cancel.cancelled() => break,
                     cmd = cmd_rx.recv() => {
                         let Some(cmd) = cmd else { break };
-                        handle_command(&stack, cmd, &fast_hz_flag, &mut active_setpoint).await;
+                        handle_command(
+                            &stack,
+                            cmd,
+                            &fast_hz_flag,
+                            &mut active_setpoint,
+                            drive_session,
+                            &mut motor_seq,
+                        ).await;
                     }
                     _ = ticker.tick() => {
                         if let Some(prev) = last_affirm_tick {
@@ -1196,7 +1227,12 @@ where
                             // round-trip delay the NEXT affirm past the
                             // device's 150 ms deadman. The device-side
                             // `stale_max_us` counter is the margin meter.
-                            match send_motor_now(&stack, mode) {
+                            let request = next_motor_request(
+                                drive_session,
+                                &mut motor_seq,
+                                MotorCommand::SetMode(mode),
+                            );
+                            match send_motor_now(&stack, request) {
                                 Err(e) => {
                                     tracing::warn!("setpoint affirm send failed: {e:?}");
                                 }
@@ -1394,7 +1430,7 @@ type MotorResponseFut = std::pin::Pin<
 /// the motor — the correct direction.
 fn send_motor_now<NS>(
     ns: &NS,
-    mode: ControlMode,
+    request: MotorRequest,
 ) -> Result<MotorResponseFut, ergot::net_stack::ReqRespError>
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
@@ -1405,7 +1441,7 @@ where
     let client =
         ergot::socket::endpoint::single::Client::<MotorEndpoint, NS>::new(ns.clone(), None);
     let mut client = Box::pin(client).attach_boxed();
-    client.send_request(DEVICE_ADDR, &mode, Some("motor"))?;
+    client.send_request(DEVICE_ADDR, &request, Some("motor"))?;
     Ok(Box::pin(async move {
         match client.recv().await {
             Ok(response) => Ok(response.t),
@@ -1419,6 +1455,8 @@ async fn handle_command<NS>(
     cmd: HostCommand,
     fast_hz_flag: &Arc<AtomicU16>,
     active_setpoint: &mut Option<ControlMode>,
+    drive_session: u64,
+    motor_seq: &mut u32,
 ) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
@@ -1444,7 +1482,8 @@ async fn handle_command<NS>(
             // Send inline (ordered), observe the response detached — the
             // await must not hold up this select! loop, or the affirm ticker
             // starves and the device deadman fires (see send_motor_now).
-            match send_motor_now(ns, *mc) {
+            let request = next_motor_request(drive_session, motor_seq, MotorCommand::SetMode(*mc));
+            match send_motor_now(ns, request) {
                 Err(e) => tracing::warn!("Motor command send failed: {:?}", e),
                 Ok(fut) => {
                     tokio::spawn(async move {
@@ -1480,19 +1519,53 @@ async fn handle_command<NS>(
                 Some(*mc)
             };
             tracing::info!("Sending motor command (acked): {:?}", mc);
-            match send_motor_now(ns, *mc) {
+            let request = next_motor_request(drive_session, motor_seq, MotorCommand::SetMode(*mc));
+            match send_motor_now(ns, request) {
                 Err(error) => {
                     let _ = reply_tx.send(Err(anyhow::anyhow!("{error:?}")));
                 }
                 Ok(fut) => {
                     tokio::spawn(async move {
                         let res = match tokio::time::timeout(MOTOR_RESPONSE_TIMEOUT, fut).await {
-                            Ok(r) => r.map_err(|e| anyhow::anyhow!("{e:?}")),
+                            Ok(Ok(status)) if status.outcome.is_success() => Ok(status),
+                            Ok(Ok(status)) => Err(anyhow::anyhow!(
+                                "motor command rejected: {:?}",
+                                status.outcome
+                            )),
+                            Ok(Err(e)) => Err(anyhow::anyhow!("{e:?}")),
                             Err(_) => Err(anyhow::anyhow!(
                                 "motor response lost (sent, no reply in {MOTOR_RESPONSE_TIMEOUT:?})"
                             )),
                         };
                         let _ = reply_tx.send(res);
+                    });
+                }
+            }
+        }
+        HostCommand::EmergencyStop(reply_tx) => {
+            // Safety commands clear the local affirm immediately, before the
+            // frame is sent, so an older throttle can never follow it.
+            *active_setpoint = None;
+            let request = next_motor_request(drive_session, motor_seq, MotorCommand::EmergencyStop);
+            tracing::warn!("Sending emergency stop");
+            match send_motor_now(ns, request) {
+                Err(error) => {
+                    let _ = reply_tx.send(Err(anyhow::anyhow!("{error:?}")));
+                }
+                Ok(fut) => {
+                    tokio::spawn(async move {
+                        let result = match tokio::time::timeout(MOTOR_RESPONSE_TIMEOUT, fut).await {
+                            Ok(Ok(status)) if status.outcome.is_success() => Ok(status),
+                            Ok(Ok(status)) => Err(anyhow::anyhow!(
+                                "emergency stop rejected: {:?}",
+                                status.outcome
+                            )),
+                            Ok(Err(error)) => Err(anyhow::anyhow!("{error:?}")),
+                            Err(_) => Err(anyhow::anyhow!(
+                                "emergency stop response lost (sent, no reply in {MOTOR_RESPONSE_TIMEOUT:?})"
+                            )),
+                        };
+                        let _ = reply_tx.send(result);
                     });
                 }
             }

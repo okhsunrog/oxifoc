@@ -1034,6 +1034,16 @@ where
         self.pwm_off = true;
     }
 
+    /// Operator-requested emergency stop: float immediately and require an
+    /// explicit safe neutral command before any active mode can run again.
+    /// Kept inside the existing motor endpoint to avoid another socket's
+    /// flash/RAM cost.
+    pub fn emergency_stop(&mut self) {
+        self.failsafe_latched = true;
+        self.failsafe_reset();
+        self.safe_off();
+    }
+
     /// Whether the failsafe is currently carrying the motor.
     pub fn failsafe_active(&self) -> bool {
         self.failsafe_ctrl.is_active()
@@ -2712,6 +2722,19 @@ mod tests {
             "safe_off must float the bridge immediately"
         );
         assert_eq!(driver.mode(), ControlMode::Stopped);
+
+        driver.acknowledge_failsafe();
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 1.0,
+            id_target: 0.0,
+        });
+        driver.emergency_stop();
+        assert!(!driver.pwm().enabled);
+        assert_eq!(driver.mode(), ControlMode::Stopped);
+        assert!(
+            driver.failsafe_latched(),
+            "emergency stop must require an explicit safe re-arm command"
+        );
     }
 
     #[test]

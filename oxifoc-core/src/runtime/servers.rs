@@ -44,11 +44,11 @@ use crate::icd::PhaseSourceEndpoint;
 #[cfg(feature = "storage")]
 use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
 use crate::icd::{
-    ControlMode, FaultEndpoint, FaultRequest, FaultResponse, HardwareInfo, HardwareInfoEndpoint,
-    MotorEndpoint, MotorStatus, SlowTelemetry, SlowTelemetryEndpoint, TelemetryConfig,
+    FaultEndpoint, FaultRequest, FaultResponse, HardwareInfo, HardwareInfoEndpoint, MotorEndpoint,
+    MotorRequest, MotorStatus, SlowTelemetry, SlowTelemetryEndpoint, TelemetryConfig,
     TelemetryConfigAck, TelemetryConfigEndpoint,
 };
-use crate::state::{CMD_CHANNEL, MotorControlState};
+use crate::state::{CMD_CHANNEL, MOTOR_COMMAND_DONE, MotorControlState};
 #[cfg(feature = "storage")]
 use crate::storage::{
     ConfigKey, ConfigPayload, FLASH_CHANNEL, FLASH_DONE, FlashOperation, RuntimeConfig,
@@ -94,8 +94,8 @@ pub async fn info_server<NS, const N: usize>(
 ///
 /// Motor control server - handles motor control mode changes
 ///
-/// Sends ControlMode to CMD_CHANNEL for ISR processing.
-/// Returns the current motor status.
+/// Sends the sequenced request to CMD_CHANNEL and responds only after the ISR
+/// has applied or rejected it.
 pub async fn motor_command_server<NS, F, const N: usize>(
     endpoints: Endpoints<NS>,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
@@ -110,24 +110,20 @@ pub async fn motor_command_server<NS, F, const N: usize>(
 
     loop {
         let _ = h
-            .serve(|mode: &ControlMode| {
-                let mode = *mode;
+            .serve(|request: &MotorRequest| {
+                let request = *request;
                 crate::runtime::streaming::cmd_stats::MOTOR_REQS
                     .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 async move {
-                    // Guaranteed enqueue: the ISR drains the channel every
-                    // cycle, so this resolves within one FOC period. The old
-                    // try_send silently dropped commands on a full channel —
-                    // the host then got an OK-shaped status for a command
-                    // that never reached the driver.
-                    CMD_CHANNEL.send(DriverCommand::SetMode(mode)).await;
-
-                    // Status snapshot is pre-application by design (the ISR
-                    // applies the mode asynchronously); the host confirms
-                    // via a follow-up status poll.
+                    MOTOR_COMMAND_DONE.reset();
+                    CMD_CHANNEL.send(DriverCommand::Motor(request)).await;
+                    let (session, seq, outcome) = MOTOR_COMMAND_DONE.wait().await;
+                    debug_assert_eq!(session, request.source_session);
+                    debug_assert_eq!(seq, request.seq);
                     critical_section::with(|cs| {
                         let state = state_mutex.borrow(cs).borrow();
                         MotorStatus {
+                            outcome,
                             state: state.motor_state,
                             mode: state.control_mode,
                             fault_count: fault_registry.count() as u8,

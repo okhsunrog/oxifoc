@@ -19,9 +19,12 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use oxifoc_core::types::{ControlMode, CurrentOffsetMethod, DetectRequest, DetectResponse};
+use oxifoc_core::types::{
+    ControlMode, CurrentOffsetMethod, DetectRequest, DetectResponse, MotorCommandOutcome,
+};
 use oxifoc_host_lib::{
-    HostCommand, HostConfig, ReconnectPolicy, TransportType, detect_channel, start_host,
+    HostCommand, HostConfig, ReconnectPolicy, TransportType, detect_channel, motor_channel,
+    start_host,
 };
 
 /// Kills the spawned virtual device when the test ends (even on panic).
@@ -198,6 +201,45 @@ fn run_e2e(transport: TransportType) {
     )
     .expect("offset diagnostic should succeed");
     assert_eq!(offsets.offsets, [2047.5; 3]);
+
+    // 5) EmergencyStop shares the motor endpoint, floats immediately, and
+    // latches active drive until an explicit safe neutral command.
+    let (tx, rx) = motor_channel();
+    rt.cmd_tx
+        .send(HostCommand::EmergencyStop(tx))
+        .expect("send emergency stop");
+    let emergency = rx
+        .blocking_recv()
+        .expect("emergency response channel")
+        .expect("emergency stop should apply");
+    assert_eq!(emergency.outcome, MotorCommandOutcome::Applied);
+    assert_eq!(emergency.mode, ControlMode::Stopped);
+
+    let (tx, rx) = motor_channel();
+    rt.cmd_tx
+        .send(HostCommand::MotorAck(
+            ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0,
+            },
+            tx,
+        ))
+        .expect("send latched drive request");
+    assert!(
+        rx.blocking_recv()
+            .expect("latched response channel")
+            .is_err(),
+        "active drive must remain rejected until neutral"
+    );
+
+    let (tx, rx) = motor_channel();
+    rt.cmd_tx
+        .send(HostCommand::MotorAck(ControlMode::Stopped, tx))
+        .expect("send safe re-arm acknowledgement");
+    assert!(
+        rx.blocking_recv().expect("safe response channel").is_ok(),
+        "safe neutral must release the emergency latch"
+    );
 
     rt.shutdown();
 }

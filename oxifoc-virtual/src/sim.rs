@@ -12,7 +12,8 @@ use oxifoc_core::foc::pi_controller::PIController;
 use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::HallSnapshot;
 use oxifoc_core::motor::ControlMode;
-use oxifoc_core::state::{self, CMD_CHANNEL, MotorControlState};
+use oxifoc_core::state::{self, CMD_CHANNEL, MOTOR_COMMAND_DONE, MotorControlState};
+use oxifoc_core::types::{DriveOwnership, MotorCommand, MotorCommandOutcome};
 use oxifoc_core::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 use tracing::info;
 
@@ -42,6 +43,8 @@ pub async fn foc_loop(
     let mut motor = VirtualMotor::new(params);
     let mut out = VirtualMotorOutput::default();
     let mut control_mode = ControlMode::Stopped;
+    let mut drive_ownership = DriveOwnership::new();
+    let mut rearm_latched = false;
     let mut seq: u32 = 0;
 
     let sleep_us = (batch as u64 * 1_000_000) / u64::from(foc_freq);
@@ -60,8 +63,58 @@ pub async fn foc_loop(
             // The virtual device has no FocDriver — only mode commands
             // affect the simulation; limits/gains commands are accepted
             // and ignored.
-            let state::DriverCommand::SetMode(mode) = cmd else {
-                continue;
+            let (mode, protocol_request) = match cmd {
+                state::DriverCommand::SetMode(mode) => (mode, None),
+                state::DriverCommand::Motor(request) => {
+                    if !request.command.is_finite() {
+                        MOTOR_COMMAND_DONE.signal((
+                            request.source_session,
+                            request.seq,
+                            MotorCommandOutcome::RejectedInvalid,
+                        ));
+                        continue;
+                    }
+                    if let Err(outcome) = drive_ownership.authorize(request) {
+                        MOTOR_COMMAND_DONE.signal((request.source_session, request.seq, outcome));
+                        continue;
+                    }
+                    match request.command {
+                        MotorCommand::EmergencyStop => {
+                            rearm_latched = true;
+                            control_mode = ControlMode::Stopped;
+                            foc.reset();
+                            drive_ownership.record_applied(request);
+                            critical_section::with(|cs| {
+                                state_mutex.borrow(cs).borrow_mut().set_stopped();
+                            });
+                            MOTOR_COMMAND_DONE.signal((
+                                request.source_session,
+                                request.seq,
+                                MotorCommandOutcome::Applied,
+                            ));
+                            continue;
+                        }
+                        MotorCommand::SetMode(mode) => {
+                            let safe = matches!(
+                                mode,
+                                ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+                            );
+                            if rearm_latched && !safe {
+                                MOTOR_COMMAND_DONE.signal((
+                                    request.source_session,
+                                    request.seq,
+                                    MotorCommandOutcome::RejectedSafety,
+                                ));
+                                continue;
+                            }
+                            if safe {
+                                rearm_latched = false;
+                            }
+                            (mode, Some(request))
+                        }
+                    }
+                }
+                _ => continue,
             };
             control_mode = mode;
             critical_section::with(|cs| {
@@ -74,6 +127,14 @@ pub async fn foc_loop(
                     _ => s.set_running(mode),
                 }
             });
+            if let Some(request) = protocol_request {
+                drive_ownership.record_applied(request);
+                MOTOR_COMMAND_DONE.signal((
+                    request.source_session,
+                    request.seq,
+                    MotorCommandOutcome::Applied,
+                ));
+            }
         }
 
         let (id_target, iq_target) = match control_mode {

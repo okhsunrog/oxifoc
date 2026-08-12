@@ -57,6 +57,28 @@ pub(crate) fn send_motor_acked(runtime: &HostRuntime, mode: ControlMode) -> Resu
     Err(last.unwrap()).context("motor command not acknowledged by the device (3 attempts)")
 }
 
+fn send_emergency_stop(runtime: &HostRuntime) -> Result<MotorStatus> {
+    let mut last: Option<anyhow::Error> = None;
+    for attempt in 1..=3u32 {
+        let (tx, rx) = motor_channel();
+        runtime
+            .cmd_tx
+            .send(HostCommand::EmergencyStop(tx))
+            .context("send emergency stop")?;
+        match rx
+            .blocking_recv()
+            .context("backend dropped the emergency stop")?
+        {
+            Ok(status) => return Ok(status),
+            Err(error) => {
+                eprintln!("emergency-stop ack attempt {attempt} failed (retrying): {error:?}");
+                last = Some(error);
+            }
+        }
+    }
+    Err(last.unwrap()).context("emergency stop not acknowledged by the device (3 attempts)")
+}
+
 /// Print a command result: one JSON document in `--json` mode, the human
 /// line otherwise.
 pub(crate) fn emit(json_mode: bool, value: serde_json::Value, human: String) {
@@ -256,6 +278,8 @@ enum Command {
     Coast,
     /// Engage the parking brake (short the windings; near-standstill only)
     Brake,
+    /// Immediately float the bridge and latch re-arm until a safe command
+    EmergencyStop,
     /// Run velocity control at the given electrical rad/s (sign = direction)
     Velocity {
         #[arg(allow_hyphen_values = true, help = "Target velocity, electrical rad/s")]
@@ -647,6 +671,14 @@ fn main() -> Result<()> {
                 json,
                 json!({"sent": "brake", "device": format!("{status:?}")}),
                 format!("Brake engaged (ramps to standstill first if moving) — device: {status:?}"),
+            );
+        }
+        Command::EmergencyStop => {
+            let status = send_emergency_stop(&runtime)?;
+            emit(
+                json,
+                json!({"sent": "emergency_stop", "device": format!("{status:?}")}),
+                format!("Emergency stop applied — device: {status:?}"),
             );
         }
         Command::Velocity { rad_s } => {

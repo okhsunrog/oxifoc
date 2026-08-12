@@ -20,7 +20,7 @@
 //! | Endpoint | Request | Response | Description |
 //! |----------|---------|----------|-------------|
 //! | `HardwareInfoEndpoint` | `()` | `HardwareInfo` | Hardware information query |
-//! | `MotorEndpoint` | `ControlMode` | `MotorStatus` | Motor control commands |
+//! | `MotorEndpoint` | `MotorRequest` | `MotorStatus` | Sequenced motor control and emergency stop |
 //! | `SlowTelemetryEndpoint` | `()` | `SlowTelemetry` | System health poll (~10 Hz, doubles as heartbeat) |
 //! | `TelemetryConfigEndpoint` | `TelemetryConfig` | `TelemetryConfigAck` | Configure streaming rates |
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
@@ -99,8 +99,9 @@ ergot::topic!(FaultTopic, FaultResponse, "telemetry/faults");
 // Hardware info endpoint (host → device)
 endpoint!(HardwareInfoEndpoint, (), HardwareInfo, "req/hardware_info");
 
-// Motor control endpoint (host → device)
-endpoint!(MotorEndpoint, ControlMode, MotorStatus, "cmd/motor");
+// Motor control endpoint (host → device). Safe modes and EmergencyStop are
+// universal; active setpoints are source-owned and sequence checked.
+endpoint!(MotorEndpoint, MotorRequest, MotorStatus, "cmd/motor");
 
 // Telemetry rate configuration endpoint (host → device)
 // Host configures fast/slow telemetry streaming rates.
