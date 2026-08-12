@@ -382,9 +382,28 @@ class one level up).
 - Host/bench tools keep the landed resolve-any + ambiguity-refusal +
   UUID pinning — they legitimately need to pick a specific board
   (including a slave) for config/diagnostics.
-- In an assembled vehicle the master is de-facto the tree root; the
-  design encodes the role in config rather than inferring it from
-  topology (on the bench, root-ness says nothing about who to drive).
+- **Master ↔ root relationship (refined after discussion):** the build
+  rule is "the drive master MUST be the tree root" — and it holds
+  naturally, because root-ness is itself configuration (whoever has no
+  upstream link; the bridge and the CAN slaves point their upstreams at
+  the master). The remote still *selects* by role, not by topology,
+  because of failure direction: a mis-wired tree (slave accidentally
+  root) drives the wrong node SILENTLY under root-addressing, while role
+  resolution refuses to arm — nobody serves `"drive"` (or two do) is a
+  loud pre-ride error. Role is the fail-closed verification of the
+  topology, not its replacement.
+- Root addressing per se would also need a real mechanism: the root has
+  no well-known address today — "net 1, node 1" works only as an
+  UNDOCUMENTED artifact of boot-time slot-allocation order. If we ever
+  want it (e.g. as a transport optimization once the role check passed
+  at connect), the honest path is an explicit ergot guarantee
+  (documented net-1 ownership, or the reserved root-sentinel dst —
+  ergot-wishlist item 12), not riding the implicit invariant.
+- **[open] Host-side selector for multi-controller benches** (2WD
+  A–CAN–B is a planned bench setup): resolve-any currently fails closed
+  on ambiguity, which is safe but useless there. Follow-up: enumerate
+  responders (address + device-info/UUID), select by --uuid/role in
+  CLI/GUI, pin the selection for the connection generation.
 
 ---
 
