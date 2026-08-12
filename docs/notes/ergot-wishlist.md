@@ -94,6 +94,93 @@ Each entry: the pain as observed in oxifoc, then the upstream shape.
     (`bridge_seed_assign(&stack, ...)` all over the bridge). Blanket impl or
     by-value handles would tidy every call site.
 
+## Design fit vs ergot's stated goals (assessed 2026-08-12)
+
+Checked every entry against ergot's own written intent (book chapters
+`_01.._04`, `notes/`, conformance spec, code TODOs). Summary:
+
+- **Item 1 (message-sized grants) — aligned, precedent in-repo.**
+  `send_raw` is already size-aware; `socket/borrow.rs:257` does a measured
+  grant; `borrow.rs:194` carries the exact TODO ("we could probably use a
+  smaller grant here than the MTU"); ergot #211 fixed the same defect in
+  the defmt sink with exact-size grants. postcard's `ser_flavors::Size`
+  is available ungated for a measuring pass. Also fixes the
+  `grant_exact` early-wrap failure mode (MTU-sized request fails with
+  plenty of aggregate free space). Straight PR, no design discussion.
+- **Item 2 (request timeout) — explicitly invited.** Book `_02:40`:
+  socket kinds with timeouts/retries "in the future… please start a
+  discussion". The runtime-agnostic shape already exists in-repo: the
+  sleeper-closure pattern (`futures_io.rs:170`) and
+  `delegated_seed_rpc_timeout` (caller supplies the timeout future). So:
+  `request_with_deadline(dst, req, name, timeout_future)` — no Timer
+  trait, no runtime coupling.
+- **Item 3 (edge hello/keepalive) — on the roadmap already** ("Keepalives,
+  notice when device drops" under Sessionful Sockets, `_03:281`). Services
+  are user-spawned plain futures (no_std-clean, no executor assumption) —
+  a `Services::edge_hello(interval_sleeper)` fits the existing model
+  exactly; use the sleeper closure to avoid embassy-time version coupling.
+- **Item 4 (dead vs undiscovered) — fixing a self-documented deficiency.**
+  The trade-off comment ("state alone no longer distinguishes…
+  diagnostics move to logs or counters") is duplicated verbatim in
+  futures_io.rs:105 and eio.rs:150. Cost measured: 117 references,
+  26 match sites, only 3 exhaustive matches (all in edge_port.rs — incl.
+  the transmit gate, which a new still-transmitting variant must handle);
+  the review surface is the `matches!(.., Active{..})` fallthroughs.
+- **Item 5 (resolve-by-key) — MOSTLY ALREADY WORKS.** Port-255 broadcasts
+  flood across bridges (router re-floods incl. upstream, split-horizon by
+  source ident, TTL 16); responses unicast back; ergot's own
+  `e2e_bridge_discovery` test proves host→bridge→root discovery end to
+  end. `discover_sockets` returns full Addresses. Remaining upstream
+  gaps: (a) tokio-std only — fine for the oxifoc host, blocks the no_std
+  remote; (b) one socket per device per query (query_searcher returns
+  first match); (c) always burns the full timeout (no early-exit for
+  resolve-one); (d) the typed-helper TODO (`discovery.rs:70`:
+  `discover_endpoint_socket`). **oxifoc can adopt this host-side TODAY
+  with zero ergot changes** — see the plan below.
+- **Item 6 (seed-lease worker) — aligned** with the services model
+  (user-spawned `-> !` futures); pure upstreaming of the bridge's
+  hand-rolled lifecycle.
+- **Item 7 (QoS classes) — AGAINST the written stance, reframed.**
+  `_04:136`: "the answer … is not a QoS policy — shed the high-volume,
+  low-value traffic"; the QoS header field was considered in
+  notes/interfaces.md and not adopted; "higher QoS" is parked under
+  future Sessionful Sockets. But the book also rules MTU/fragmentation/
+  integrity "the concern of a given interface" — priority can live
+  there too. Reframed: if oxifoc ever needs it, implement a two-queue
+  sink in oxifoc's own interface impl; do not propose core changes.
+- **Item 8 (broadcast NoSpace observability) — semantics are normative,
+  counters are sanctioned.** Full-subscriber-counts-as-delivered is
+  codified in the conformance spec (do not touch); the transport docs
+  themselves say "diagnostics move to logs or counters" while zero
+  counters exist. Shape: feature-gated per-stack drop/delivery counters.
+- **Item 9 (uniform MTU error) — solves together with item 1**: measure
+  first → size > mtu ⇒ `PacketTooBig { mtu }` (matches the recent typed
+  ProtocolError/MTU-discovery direction, #200); else grant(size) failure
+  ⇒ genuine `InterfaceFull`.
+- **Item 10 (port exhaustion) — trivial**: non-panicking
+  `try_attach_socket` already exists pub(crate); expose a fallible
+  attach. The allocator itself already returns Option.
+- **Item 11 (&&NetStack) — cosmetic, neutral.**
+
+Non-goals to respect in any proposal: no retransmission/ack/priority in
+the netstack core, no background tasks inside the stack (passive,
+mutex-serialized, everything immediate), drop-don't-block, strict tree /
+one arbiter per segment, no fragmentation or integrity in core (interface
+concern), no auth.
+
+### oxifoc adoption plan for item 5 (no ergot changes needed)
+
+Host-lib connect flow: after the interface is Active, run
+`discover_sockets(SocketQuery { key: MotorEndpoint::REQ_KEY, frame_kind:
+ENDPOINT_REQ, broadcast: false, .. })` (and the device-info
+interrogation for UUID pinning), refuse ambiguity, and replace the
+`DEVICE_ADDR = {0,1,0}` constant with the resolved Address per
+connection generation. Caveat: responders behind a bridge are reachable
+only once their segment has a routable net_id (seed lease) — gate the
+resolution on that, with the existing RECOVERY_TIMEOUT. The no_std
+remote needs the same resolve later → that is the real driver for a
+no_std `discover_endpoint_socket` upstream (item 5a).
+
 ## Landed (kept for the record)
 
 - **Split endpoint request API** (`send_request` + `recv`, `attach_boxed`)
