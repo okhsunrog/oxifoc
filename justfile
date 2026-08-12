@@ -112,6 +112,20 @@ f405 board="cf2":
             --features "transport-usb,transport-uart,board-{{ board }}"
     fi
 
+# Build and flash the selected F405 board variant in one command. Keep this
+# board-aware: the generic `just flash oxifoc-f405` uses the crate defaults
+# and would silently rebuild a CF2 image before flashing an MK5.
+f405-flash board="cf2":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd oxifoc-f405
+    if [ "{{ board }}" = "cf2" ]; then
+        cargo run --release
+    else
+        cargo run --release --no-default-features \
+            --features "transport-usb,transport-uart,board-{{ board }}"
+    fi
+
 # Flash usage of the STM32 firmwares (see docs/flash-size.md)
 size:
     #!/usr/bin/env bash

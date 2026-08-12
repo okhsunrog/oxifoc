@@ -113,7 +113,8 @@ Flashing flow:
 2. **Tap the power button** so the stock firmware boots and latches PC5 → the
    board stays on.
 3. Connect SWD (GND + CLK + DIO; VCC to Vtref sense if the probe needs it) and
-   flash the `board-vesc6-mk5` build via probe-rs.
+   flash with `just f405-flash vesc6-mk5`. Do not use
+   `just flash oxifoc-f405`: that command uses the crate's default CF2 feature.
 
 ### Recovery — don't let a bad flash brick it
 
@@ -137,10 +138,30 @@ Keep this in mind on every first flash of a new image.
    is below spec for this board).
 2. Before reflashing: quick VESC Tool connect, confirm reported HW `60_MK5`
    (formality — the listing states it; see the verification-model note).
-3. PSU-safe profile (RampToZero, bus_regen=0), current limit low.
-4. Flash `board-vesc6-mk5` build via SWD; confirm boot log prints the MK5
-   pin map and DRV8301 device ID reads back (bit-bang SPI works).
-5. USB monitor 5 s: all six defmt categories at 1 Hz.
-6. ADC sanity: VBUS matches PSU, temps plausible, phase currents ~0.
-7. Motor detect (R/L) on the Flipsky 5065, then hall calibration,
-   then `scripts/benchsuite.py`.
+3. Flash the exact board build via SWD: `just f405-flash vesc6-mk5`.
+   Confirm the boot log contains `board=VESC6_MK5`, `MK5 board ctrl`, the
+   bit-bang SPI line and `DRV8301 ready` (including a valid device-ID read).
+4. Release the power button. The board must remain powered from the PC5 latch.
+5. Before connecting/energising the motor, run `just cli monitor --seconds 5
+   --fast-hz 0` and `just cli faults`. VBUS must match the PSU, temperatures
+   must be plausible and all three phase currents must be near zero.
+6. Check the 1 Hz `isr/s` and `hall/s` log lines before enabling PWM. At a
+   20 kHz PWM setting the ADC/control ISR cadence must be 20 kHz, not 40 kHz;
+   `over=0` is required. Turn the motor by hand and require Hall edges, valid
+   states (1, 3, 2, 6, 4, 5 in one direction or the reverse sequence) and
+   `overcap=0`.
+7. Persist the initial PSU-safe limits while stopped:
+
+   ```sh
+   just cli config set current-limits \
+       max_iq_a=3 max_phase_current_a=5 bus_in_max_a=2 bus_regen_max_a=0
+   just cli config set failsafe staleness_timeout_ms=800 policy=1
+   just cli config get current-limits
+   just cli config get failsafe
+   ```
+
+   `policy=1` is RampToZero. Do not use ControlledStop on a bench PSU until
+   the board/motor pair has been validated for regenerative braking.
+8. Only after those gates pass: motor R/L detection, Hall calibration and a
+   very-low-current spin. Run `scripts/benchsuite.py` after the smoke test;
+   CF2 thresholds are not automatically acceptance limits for this motor/MK5.
