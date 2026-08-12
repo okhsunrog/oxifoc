@@ -433,9 +433,10 @@ export component App inherits Window {
                         color: #e0e0e0;
                     }
                     Text {
-                        text: "Connects to the first ergot USB device found";
+                        text: "Requires one unambiguous ergot USB device and pins it across reconnects";
                         horizontal-alignment: center;
                         color: #999;
+                        wrap: word-wrap;
                     }
                 }
             }
@@ -550,7 +551,7 @@ export component App inherits Window {
                     Button {
                         text: "STOP";
                         primary: root.motor-running;
-                        enabled: root.motor-running && !root.motor-command-pending;
+                        enabled: root.is-connected;
                         clicked => { root.motor-stop(); }
                     }
                 }
@@ -564,12 +565,12 @@ export component App inherits Window {
                     }
                     Button {
                         text: "Coast";
-                        enabled: root.motor-running && !root.motor-command-pending;
+                        enabled: root.is-connected;
                         clicked => { root.motor-coast(); }
                     }
                     Button {
                         text: "Brake";
-                        enabled: root.motor-running && !root.motor-command-pending;
+                        enabled: root.is-connected;
                         clicked => { root.motor-brake(); }
                     }
                 }
@@ -790,7 +791,12 @@ export component App inherits Window {
                         min-width: 160px;
                     }
                     Button { text: "Read"; clicked => { root.config-read(); } }
-                    Button { text: "Write"; primary: true; clicked => { root.config-write(); } }
+                    Button {
+                        text: root.config-group == 2 ? "Read-only" : "Write";
+                        primary: root.config-group != 2;
+                        enabled: root.config-group != 2;
+                        clicked => { root.config-write(); }
+                    }
                     Rectangle { width: 16px; }
                     CheckBox { text: "confirm"; checked <=> root.config-reset-confirm; }
                     Button {
@@ -838,6 +844,11 @@ export component App inherits Window {
                         Text { text: "Min VBUS (mV):"; } LineEdit { text <=> root.cfg-min-vbus; min-width: 120px; }
                         Text { text: "Max VBUS (mV):"; } LineEdit { text <=> root.cfg-max-vbus; min-width: 120px; }
                     }
+                }
+                if root.config-group == 2 : Text {
+                    text: "Voltage limits are stored for inspection only; this firmware does not apply runtime writes.";
+                    color: Palette.foreground.transparentize(0.4);
+                    font-size: 11px;
                 }
                 if root.config-group == 3 : GridLayout {
                     spacing: 6px;

@@ -19,7 +19,7 @@ fn android_main(app: slint::android::AndroidApp) {
 }
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -133,9 +133,18 @@ fn apply_motor_state(app: &App, state: MotorState) {
     app.set_motor_state_text(SharedString::from(format!("{state:?}")));
 }
 
+fn begin_motor_request(generation: &AtomicU64) -> u64 {
+    generation.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+fn motor_request_is_current(generation: &AtomicU64, request: u64) -> bool {
+    generation.load(Ordering::Relaxed) == request
+}
+
 fn send_motor_request(
     rt: &Arc<std::sync::Mutex<Option<HostRuntime>>>,
     weak: &slint::Weak<App>,
+    request_generation: &Arc<AtomicU64>,
     mode: ControlMode,
     pending: &'static str,
 ) {
@@ -152,12 +161,14 @@ fn send_motor_request(
         }
     };
 
+    let generation = begin_motor_request(request_generation);
     if let Some(app) = weak.upgrade() {
         app.set_motor_command_pending(true);
         app.set_motor_status(SharedString::from(pending));
     }
 
     let weak = weak.clone();
+    let request_generation = request_generation.clone();
     thread::spawn(move || {
         let (tx, rx) = motor_channel();
         let send_result = cmd_tx.send(HostCommand::MotorAck(mode, tx));
@@ -165,14 +176,19 @@ fn send_motor_request(
             Ok(()) => rx.blocking_recv(),
             Err(_) => {
                 let _ = weak.upgrade_in_event_loop(move |app| {
-                    app.set_motor_command_pending(false);
-                    app.set_motor_status(SharedString::from("Failed to queue motor command"));
+                    if motor_request_is_current(&request_generation, generation) {
+                        app.set_motor_command_pending(false);
+                        app.set_motor_status(SharedString::from("Failed to queue motor command"));
+                    }
                 });
                 return;
             }
         };
 
         let _ = weak.upgrade_in_event_loop(move |app| {
+            if !motor_request_is_current(&request_generation, generation) {
+                return;
+            }
             app.set_motor_command_pending(false);
             match result {
                 Ok(Ok(status)) => {
@@ -385,6 +401,7 @@ pub fn main() {
     let ble_devices_list: Arc<std::sync::Mutex<Vec<BleDeviceInfo>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let runtime: Arc<std::sync::Mutex<Option<HostRuntime>>> = Arc::new(std::sync::Mutex::new(None));
+    let motor_request_generation = Arc::new(AtomicU64::new(0));
     let stop_adc = Arc::new(AtomicBool::new(false));
 
     // ── Ring buffers shared between data thread and render notifier ───────────
@@ -1021,29 +1038,37 @@ pub fn main() {
                 });
             }
 
-            // Device info listener — runs once on connection: mirror identity to
+            // Device info listener — mirror every successful handshake to
             // the UI AND build the raw→engineering enrichment context. Clone
             // cmd_tx out of the runtime mutex first, so the blocking config reads
             // (DcOffsets, MotorParams) don't hold the lock.
             let weak_info = weak.clone();
             let rt_info = rt.clone();
             let esl_info = esl_connect.clone();
+            let stop_info = stop.clone();
             thread::spawn(move || {
-                if let Ok(info) = info_rx.recv() {
-                    let cmd_tx = rt_info.lock().unwrap().as_ref().map(|r| r.cmd_tx.clone());
-                    if let Some(cmd_tx) = cmd_tx
-                        && let Some(ctx) = oxifoc_host_lib::build_enrich_ctx(&cmd_tx, Some(&info))
-                    {
-                        *esl_info.lock().unwrap() = Some(ctx);
+                while !stop_info.load(Ordering::Relaxed) {
+                    match info_rx.recv_timeout(Duration::from_millis(200)) {
+                        Ok(info) => {
+                            let cmd_tx = rt_info.lock().unwrap().as_ref().map(|r| r.cmd_tx.clone());
+                            if let Some(cmd_tx) = cmd_tx
+                                && let Some(ctx) =
+                                    oxifoc_host_lib::build_enrich_ctx(&cmd_tx, Some(&info))
+                            {
+                                *esl_info.lock().unwrap() = Some(ctx);
+                            }
+                            let _ = weak_info.upgrade_in_event_loop(move |app| {
+                                app.set_device_hw(info.hw.as_str().into());
+                                app.set_device_sw(info.sw.as_str().into());
+                                app.set_device_mcu(info.mcu.as_str().into());
+                                app.set_device_uuid(info.uuid.as_str().into());
+                                app.set_device_foc_hz(info.foc_freq_hz as i32);
+                                app.set_device_max_current(info.max_current_a);
+                            });
+                        }
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                     }
-                    let _ = weak_info.upgrade_in_event_loop(move |app| {
-                        app.set_device_hw(info.hw.as_str().into());
-                        app.set_device_sw(info.sw.as_str().into());
-                        app.set_device_mcu(info.mcu.as_str().into());
-                        app.set_device_uuid(info.uuid.as_str().into());
-                        app.set_device_foc_hz(info.foc_freq_hz as i32);
-                        app.set_device_max_current(info.max_current_a);
-                    });
                 }
             });
 
@@ -1128,6 +1153,7 @@ pub fn main() {
     {
         let rt = runtime.clone();
         let weak = app.as_weak();
+        let generation = motor_request_generation.clone();
         app.on_motor_start(move || {
             let app = weak.unwrap();
             let iq_target = app.get_iq_target();
@@ -1142,6 +1168,7 @@ pub fn main() {
             send_motor_request(
                 &rt,
                 &weak,
+                &generation,
                 ControlMode::CurrentControl {
                     iq_target,
                     id_target,
@@ -1155,9 +1182,10 @@ pub fn main() {
     {
         let rt = runtime.clone();
         let weak = app.as_weak();
+        let generation = motor_request_generation.clone();
         app.on_motor_stop(move || {
             tracing::info!("Motor stop");
-            send_motor_request(&rt, &weak, ControlMode::Stopped, "Stopping...");
+            send_motor_request(&rt, &weak, &generation, ControlMode::Stopped, "Stopping...");
         });
     }
 
@@ -1165,9 +1193,10 @@ pub fn main() {
     {
         let rt = runtime.clone();
         let weak = app.as_weak();
+        let generation = motor_request_generation.clone();
         app.on_motor_coast(move || {
             tracing::info!("Motor coast");
-            send_motor_request(&rt, &weak, ControlMode::Coast, "Coasting...");
+            send_motor_request(&rt, &weak, &generation, ControlMode::Coast, "Coasting...");
         });
     }
 
@@ -1175,9 +1204,10 @@ pub fn main() {
     {
         let rt = runtime.clone();
         let weak = app.as_weak();
+        let generation = motor_request_generation.clone();
         app.on_motor_brake(move || {
             tracing::info!("Motor brake");
-            send_motor_request(&rt, &weak, ControlMode::Brake, "Braking...");
+            send_motor_request(&rt, &weak, &generation, ControlMode::Brake, "Braking...");
         });
     }
 
@@ -1486,12 +1516,10 @@ pub fn main() {
                     }))
                 }
                 2 => {
-                    let min: u32 = parse_field("min vbus", &app.get_cfg_min_vbus(), err);
-                    let max: u32 = parse_field("max vbus", &app.get_cfg_max_vbus(), err);
-                    ConfigAction::Replace(ConfigWrite::VoltageLimits(VoltageLimitsConfig {
-                        min_vbus_mv: min,
-                        max_vbus_mv: max,
-                    }))
+                    app.set_config_status(SharedString::from(
+                        "Voltage Limits are read-only until firmware runtime support is added",
+                    ));
+                    return;
                 }
                 3 => {
                     let kp: f32 = parse_field("kp", &app.get_cfg_kp(), err);
@@ -1796,4 +1824,21 @@ fn refresh_probes(app: &App, probes: &Arc<std::sync::Mutex<Vec<ProbeInfo>>>) {
     *probes.lock().unwrap() = all_probes;
     app.set_probes(ModelRc::new(VecModel::from(items)));
     app.set_selected_probe(-1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{begin_motor_request, motor_request_is_current};
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn newer_motor_request_supersedes_late_response() {
+        let generation = AtomicU64::new(0);
+        let start = begin_motor_request(&generation);
+        assert!(motor_request_is_current(&generation, start));
+
+        let stop = begin_motor_request(&generation);
+        assert!(!motor_request_is_current(&generation, start));
+        assert!(motor_request_is_current(&generation, stop));
+    }
 }
