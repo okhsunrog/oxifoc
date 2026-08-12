@@ -107,6 +107,16 @@ Each entry: the pain as observed in oxifoc, then the upstream shape.
     (`bridge_seed_assign(&stack, ...)` all over the bridge). Blanket impl or
     by-value handles would tidy every call site.
 
+12. **[discussion only] Reserved "tree root" destination.** The strict-tree
+    invariant guarantees exactly one root; a reserved sentinel dst (net
+    65535 is already reserved) that routers forward strictly upstream and
+    the root delivers locally would make "address the arbiter" generic and
+    cheap (TTL already bounds it). Deliberately NOT part of oxifoc's plan:
+    our remote targets a configured *drive-master role* via named
+    SocketQuery (see notes/remote-design.md §10), because role ≠ topology
+    on the bench. Filed here because the mechanism is elegant and other
+    ergot users may want it.
+
 ## Design fit vs ergot's stated goals (assessed 2026-08-12)
 
 Checked every entry against ergot's own written intent (book chapters

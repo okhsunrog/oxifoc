@@ -362,6 +362,30 @@ delay. Three additions, layered:
 Layering summary: safety (graceful slowdown) is handled by the failsafe;
 comfort/UX (no stale surge + no surprise) is seq-drop → haptic → TTL.
 
+### Target selection — role resolution, not topology (2026-08-13)
+
+**[decided]** The remote resolves its command target by ROLE, not by "first
+node serving MotorEndpoint" (wrong in a multi-controller vehicle — 2WD is
+the roadmap-normal topology) and not by a fixed root address (net ids are
+dynamic by design; "root = net 1 node 1" is an unstated
+registration-order invariant that churn breaks — the DEVICE_ADDR bug
+class one level up).
+
+- Exactly one controller per vehicle is configured as the **drive
+  master**; it serves the motor socket under a distinct role name
+  (e.g. `"drive"`), so the remote's SocketQuery with
+  `NameRequirement::Specific` is unique **by construction** — two answers
+  mean a mis-configured vehicle and fail closed.
+- VESC-style command fan-out: the remote talks to the master only; the
+  master forwards drive commands to slave controllers (CAN), owns torque
+  split, and each slave keeps its own deadman for master/CAN death.
+- Host/bench tools keep the landed resolve-any + ambiguity-refusal +
+  UUID pinning — they legitimately need to pick a specific board
+  (including a slave) for config/diagnostics.
+- In an assembled vehicle the master is de-facto the tree root; the
+  design encodes the role in config rather than inferring it from
+  topology (on the bench, root-ness says nothing about who to drive).
+
 ---
 
 ## 11. Wired bridge ↔ motor-controller link
