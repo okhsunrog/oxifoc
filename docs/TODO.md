@@ -1245,6 +1245,13 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
   the bug class this eliminates.
 - [ ] g474 motor modules are commented out until the IHM08M1 is
   connected; `control/foc.rs` is synced by hand with no compile check.
+- [ ] **G474 CORDIC: avoid rewriting CSR on every `sin_cos`.** Embassy's
+  typed `q1_31(One, Two)` facade configures the access width/count with a
+  CSR read-modify-write for each FOC iteration. This is correct and not a
+  priority while F405 is the active firmware; revisit when bringing up the
+  G474 motor path, preferably with a cycle-count measurement and an upstream
+  API that can retain a preconfigured q1.31 calculator without a
+  self-referential owner/borrow pair.
 - [ ] **Migrate G474 current-offset calibration before enabling its motor
   path.** `oxifoc-g474/src/control/foc.rs` still uses the legacy async
   `calibrate().await` routine while its FOC ISR is dormant. Once the ISR is

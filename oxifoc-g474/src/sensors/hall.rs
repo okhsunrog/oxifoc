@@ -25,7 +25,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_stm32::gpio::Pull;
 use embassy_stm32::interrupt::typelevel::Interrupt;
 use embassy_stm32::timer::input_capture::CaptureInput;
-use embassy_stm32::timer::low_level::{InputCaptureMode, Timer};
+use embassy_stm32::timer::low_level::{InputCaptureMode, InputCaptureSelection, Timer};
 use embassy_stm32::timer::{Ch1, Ch2, Ch3, Channel};
 use embassy_stm32::{Peri, interrupt, pac, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
@@ -137,6 +137,7 @@ pub fn init_hall(
         .cr2()
         .modify(|w| w.set_ti1s(pac::timer::vals::Ti1s::Xor));
     timer.set_input_ti_seletion(Channel::Ch1, 0);
+    timer.set_input_capture_selection(Channel::Ch1, InputCaptureSelection::Normal);
     timer.set_input_capture_filter(Channel::Ch1, pac::timer::vals::FilterValue::FdtsDiv32N8);
     timer.set_input_capture_mode(Channel::Ch1, InputCaptureMode::BothEdges);
     // Latch PSC into the shadow register (UG sets UIF as a side effect —

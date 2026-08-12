@@ -4,6 +4,8 @@ use core::cell::RefCell;
 use core::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
+use embassy_stm32::mode::Blocking;
+use embassy_stm32::pac::adc::Adc as AdcRegs;
 use embassy_stm32::{Peri, interrupt, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
@@ -36,10 +38,14 @@ static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
 // ========== ADC Handles ==========
 
 /// Handle for ADC1 injected conversions (TIM1-triggered): ia, vbus, temp.
-pub static ADC1_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<peripherals::ADC1, 3>>>> =
+pub static ADC1_INJECTED: CriticalSectionMutex<
+    RefCell<Option<InjectedAdc<'static, AdcRegs, Blocking>>>,
+> =
     CriticalSectionMutex::new(RefCell::new(None));
 /// Handle for ADC2 injected conversions (TIM1-triggered).
-pub static ADC2_INJECTED: CriticalSectionMutex<RefCell<Option<InjectedAdc<peripherals::ADC2, 2>>>> =
+pub static ADC2_INJECTED: CriticalSectionMutex<
+    RefCell<Option<InjectedAdc<'static, AdcRegs, Blocking>>>,
+> =
     CriticalSectionMutex::new(RefCell::new(None));
 
 // ========== FOC Control ==========
@@ -56,8 +62,8 @@ static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
 /// Initialize FOC driver with motor PWM, sensors, and stored config.
 pub async fn init(
     mut motor_pwm: MotorPwm<'static>,
-    adc1: InjectedAdc<peripherals::ADC1, 3>,
-    adc2: InjectedAdc<peripherals::ADC2, 2>,
+    adc1: InjectedAdc<'static, AdcRegs, Blocking>,
+    adc2: InjectedAdc<'static, AdcRegs, Blocking>,
     cordic_peri: Peri<'static, peripherals::CORDIC>,
     config: &oxifoc_core::storage::RuntimeConfig,
 ) {
@@ -186,7 +192,8 @@ fn ADC1_2() {
     // Read ADC1 injected: phase A current, VBUS voltage, FET temperature
     ADC1_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
-            let samples = injected.read_injected_samples();
+            let mut samples = [0; 3];
+            injected.read_latest(&mut samples);
             ia_raw = samples[0];
             IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
@@ -203,7 +210,8 @@ fn ADC1_2() {
     // Read ADC2 injected: phase B and C currents
     ADC2_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
-            let samples = injected.read_injected_samples();
+            let mut samples = [0; 2];
+            injected.read_latest(&mut samples);
             ib_raw = samples[0];
             ic_raw = samples[1];
             IB_SAMPLE.store(ib_raw, Ordering::Relaxed);

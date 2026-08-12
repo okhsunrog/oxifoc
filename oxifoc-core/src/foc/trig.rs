@@ -263,6 +263,10 @@ mod cordic_impl {
                     Some(c) => c,
                     None => panic!("CORDIC not initialized"),
                 };
+                // Embassy selects the q1.31 access width/count through a
+                // short-lived facade, so this currently rewrites CORDIC CSR
+                // on every FOC iteration. Correct but avoidable overhead; see
+                // the deferred G474 item in docs/TODO.md.
                 if cordic
                     .q1_31(cordic::AccessCount::One, cordic::AccessCount::Two)
                     .blocking_calc(&input, &mut output)
