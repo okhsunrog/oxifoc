@@ -119,7 +119,7 @@ Roles are determined by topology, not firmware — disconnect two controllers an
 | Flipsky VESC 6 MK5 | STM32F405RG | DRV8301 (20 V/V) | USB + UART | DRV8301 SPI |
 | NUCLEO-G474RE + IHM08M1 | STM32G474RE | External op-amps | USB + LPUART | L6398 |
 
-All platforms: 20 kHz center-aligned PWM, TIM1-triggered injected ADC, Hall sensing via the timer hall interface (TIM3 on F405, TIM2 on G474: the three inputs XOR into TI1, every transition is timestamped by hardware input capture on a 1 MHz timebase, glitches rejected by the ICF input filter), persistent config in internal flash (`sequential-storage` + `postcard`).
+All platforms: 20 kHz center-aligned PWM, TIM1-triggered injected ADC, Hall polling via TIM6 (5 us, 7-read majority voting), persistent config in internal flash (`sequential-storage` + `postcard`).
 
 ## Host Tools
 
