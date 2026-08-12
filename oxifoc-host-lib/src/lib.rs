@@ -87,6 +87,25 @@ const AFFIRM_INTERVAL: Duration = Duration::from_millis(50);
 /// then; this bounds only the reply bookkeeping).
 const MOTOR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HandshakeOutcome {
+    Connected,
+    RetryableFailure,
+    FatalMismatch,
+}
+
+/// Record a failed connection generation and decide whether another one is
+/// permitted. `Limited(n)` preserves the existing meaning: at most `n`
+/// consecutive failed generations, including the one that just failed.
+fn may_retry(policy: ReconnectPolicy, failures: &mut u32) -> bool {
+    *failures = failures.saturating_add(1);
+    match policy {
+        ReconnectPolicy::None => false,
+        ReconnectPolicy::Limited(max) => *failures < max,
+        ReconnectPolicy::Infinite => true,
+    }
+}
+
 /// Tokio-backed timer for the reliable-delivery client driver.
 struct TokioTimer;
 impl Timer for TokioTimer {
@@ -543,23 +562,15 @@ where
         };
 
         if let Err(e) = reg_result {
-            connect_attempts += 1;
+            let retry = may_retry(policy, &mut connect_attempts);
             tracing::warn!(
                 "Framed transport connect failed (attempt {}): {:?}",
                 connect_attempts,
                 e
             );
-
-            match policy {
-                ReconnectPolicy::None => {
-                    info!("Reconnect policy: none — giving up");
-                    break;
-                }
-                ReconnectPolicy::Limited(max) if connect_attempts >= max => {
-                    info!("Reconnect policy: exhausted {} attempts — giving up", max);
-                    break;
-                }
-                _ => {}
+            if !retry {
+                info!("Reconnect policy exhausted — giving up");
+                break;
             }
 
             tokio::select! {
@@ -567,21 +578,24 @@ where
                 _ = cancel.cancelled() => break,
             }
         }
-        connect_attempts = 0;
-
         // Wait for the interface to become Active — bounded like the
         // recovery path: a half-open link that registered but never goes
         // Active would otherwise pin the connect path until cancel.
         let became_active = tokio::select! {
-            r = tokio::time::timeout(RECOVERY_TIMEOUT, wait_for_active(&state_notify, &stack)) => r.is_ok(),
+            r = tokio::time::timeout(RECOVERY_TIMEOUT, wait_for_active(&state_notify, &stack)) => matches!(r, Ok(true)),
             _ = cancel.cancelled() => break,
         };
         if !became_active {
             tracing::warn!("Interface not Active within {RECOVERY_TIMEOUT:?}, reconnecting...");
+            connected.store(false, Ordering::Relaxed);
             stack
                 .stack()
                 .manage_profile(ergot::prelude::DirectEdge::teardown);
             tokio::task::yield_now().await;
+            if !may_retry(policy, &mut connect_attempts) {
+                info!("Reconnect policy exhausted after interface activation failure");
+                break;
+            }
             tokio::select! {
                 _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
                 _ = cancel.cancelled() => break,
@@ -589,21 +603,36 @@ where
         }
 
         // HardwareInfo handshake on each (re)connection
-        let handshake_ok =
+        let handshake =
             hardware_info_handshake(&stack, &info_tx, &connected, &mut expected_device_uuid).await;
 
-        if !handshake_ok {
-            tracing::warn!("Handshake failed, reconnecting...");
-            connected.store(false, Ordering::Relaxed);
-            stack
-                .stack()
-                .manage_profile(ergot::prelude::DirectEdge::teardown);
-            tokio::task::yield_now().await;
-            tokio::select! {
-                _ = tokio::time::sleep(RECONNECT_DELAY) => {}
-                _ = cancel.cancelled() => break,
+        match handshake {
+            HandshakeOutcome::Connected => connect_attempts = 0,
+            HandshakeOutcome::FatalMismatch => {
+                tracing::error!("Fatal handshake mismatch — refusing to reconnect");
+                connected.store(false, Ordering::Relaxed);
+                stack
+                    .stack()
+                    .manage_profile(ergot::prelude::DirectEdge::teardown);
+                break;
             }
-            continue;
+            HandshakeOutcome::RetryableFailure => {
+                tracing::warn!("Handshake failed, reconnecting...");
+                connected.store(false, Ordering::Relaxed);
+                stack
+                    .stack()
+                    .manage_profile(ergot::prelude::DirectEdge::teardown);
+                tokio::task::yield_now().await;
+                if !may_retry(policy, &mut connect_attempts) {
+                    info!("Reconnect policy exhausted after handshake failure");
+                    break;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(RECONNECT_DELAY) => {}
+                    _ = cancel.cancelled() => break,
+                }
+                continue;
+            }
         }
 
         enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
@@ -626,6 +655,11 @@ where
 
         if !disconnected {
             // Cancelled
+            break;
+        }
+
+        if !may_retry(policy, &mut connect_attempts) {
+            info!("Reconnect policy exhausted after connection loss");
             break;
         }
 
@@ -696,26 +730,14 @@ where
         let transport = tokio::select! {
             result = connect_fn() => {
                 match result {
-                    Ok(t) => {
-                        connect_attempts = 0;
-                        t
-                    }
+                    Ok(t) => t,
                     Err(e) => {
-                        connect_attempts += 1;
+                        let retry = may_retry(policy, &mut connect_attempts);
                         tracing::warn!("Transport connect failed (attempt {}): {:?}", connect_attempts, e);
-
-                        match policy {
-                            ReconnectPolicy::None => {
-                                info!("Reconnect policy: none — giving up");
-                                break;
-                            }
-                            ReconnectPolicy::Limited(max) if connect_attempts >= max => {
-                                info!("Reconnect policy: exhausted {} attempts — giving up", max);
-                                break;
-                            }
-                            _ => {}
+                        if !retry {
+                            info!("Reconnect policy exhausted — giving up");
+                            break;
                         }
-
                         tokio::select! {
                             _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
                             _ = cancel.cancelled() => break,
@@ -750,8 +772,15 @@ where
         )
         .await;
 
-        if reg_result.is_err() {
-            tracing::warn!("Stream registration failed (interface not in Down state), retrying...");
+        if let Err(e) = reg_result {
+            tracing::warn!("Stream registration failed: {e:?}");
+            connected.store(false, Ordering::Relaxed);
+            stack.manage_profile(ergot::prelude::DirectEdge::teardown);
+            tokio::task::yield_now().await;
+            if !may_retry(policy, &mut connect_attempts) {
+                info!("Reconnect policy exhausted after stream registration failure");
+                break;
+            }
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
                 _ = cancel.cancelled() => break,
@@ -761,13 +790,18 @@ where
         // Wait for the interface to become Active — bounded, same rationale
         // as the framed path above.
         let became_active = tokio::select! {
-            r = tokio::time::timeout(RECOVERY_TIMEOUT, wait_for_active(&state_notify, &stack)) => r.is_ok(),
+            r = tokio::time::timeout(RECOVERY_TIMEOUT, wait_for_active(&state_notify, &stack)) => matches!(r, Ok(true)),
             _ = cancel.cancelled() => break,
         };
         if !became_active {
             tracing::warn!("Interface not Active within {RECOVERY_TIMEOUT:?}, reconnecting...");
+            connected.store(false, Ordering::Relaxed);
             stack.manage_profile(ergot::prelude::DirectEdge::teardown);
             tokio::task::yield_now().await;
+            if !may_retry(policy, &mut connect_attempts) {
+                info!("Reconnect policy exhausted after interface activation failure");
+                break;
+            }
             tokio::select! {
                 _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
                 _ = cancel.cancelled() => break,
@@ -775,19 +809,32 @@ where
         }
 
         // HardwareInfo handshake on each (re)connection
-        let handshake_ok =
+        let handshake =
             hardware_info_handshake(&stack, &info_tx, &connected, &mut expected_device_uuid).await;
 
-        if !handshake_ok {
-            tracing::warn!("Handshake failed, reconnecting...");
-            connected.store(false, Ordering::Relaxed);
-            stack.manage_profile(ergot::prelude::DirectEdge::teardown);
-            tokio::task::yield_now().await;
-            tokio::select! {
-                _ = tokio::time::sleep(RECONNECT_DELAY) => {}
-                _ = cancel.cancelled() => break,
+        match handshake {
+            HandshakeOutcome::Connected => connect_attempts = 0,
+            HandshakeOutcome::FatalMismatch => {
+                tracing::error!("Fatal handshake mismatch — refusing to reconnect");
+                connected.store(false, Ordering::Relaxed);
+                stack.manage_profile(ergot::prelude::DirectEdge::teardown);
+                break;
             }
-            continue;
+            HandshakeOutcome::RetryableFailure => {
+                tracing::warn!("Handshake failed, reconnecting...");
+                connected.store(false, Ordering::Relaxed);
+                stack.manage_profile(ergot::prelude::DirectEdge::teardown);
+                tokio::task::yield_now().await;
+                if !may_retry(policy, &mut connect_attempts) {
+                    info!("Reconnect policy exhausted after handshake failure");
+                    break;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(RECONNECT_DELAY) => {}
+                    _ = cancel.cancelled() => break,
+                }
+                continue;
+            }
         }
 
         enable_fast_telemetry(&stack, cfg.fast_hz(), &fast_hz_flag).await;
@@ -814,6 +861,11 @@ where
 
         if !disconnected {
             // Cancelled
+            break;
+        }
+
+        if !may_retry(policy, &mut connect_attempts) {
+            info!("Reconnect policy exhausted after connection loss");
             break;
         }
 
@@ -864,29 +916,41 @@ where
 {
     loop {
         tokio::select! {
-            _ = state_notify.wait() => {
+            observed = state_notify.wait_for_value(|| {
                 let state = stack.stack().manage_profile(|im| im.interface_state(()));
-                let is_active = matches!(state, Some(InterfaceState::Active { .. }));
-                let was_active = connected.swap(is_active, Ordering::Relaxed);
-
-                if !was_active && is_active {
+                let is_active = interface_is_active(state);
+                (is_active != connected.load(Ordering::Relaxed)).then_some(state)
+            }) => {
+                let Ok(state) = observed else {
+                    connected.store(false, Ordering::Relaxed);
+                    return true;
+                };
+                if interface_is_active(state) {
+                    connected.store(true, Ordering::Relaxed);
                     info!("Interface active — device connected");
-                } else if was_active && !is_active {
-                    tracing::warn!("Interface inactive, waiting for recovery...");
+                    continue;
+                }
 
-                    let recovered = tokio::time::timeout(
+                connected.store(false, Ordering::Relaxed);
+                if matches!(state, Some(InterfaceState::Down) | None) {
+                    tracing::warn!("Interface down, reconnecting transport...");
+                    return true;
+                }
+
+                tracing::warn!("Interface inactive, waiting for recovery...");
+                let recovered = matches!(
+                    tokio::time::timeout(
                         RECOVERY_TIMEOUT,
                         wait_for_active(state_notify, stack),
-                    ).await.is_ok();
-
-                    if recovered {
-                        info!("Connection recovered");
-                        connected.store(true, Ordering::Relaxed);
-                    } else {
-                        tracing::warn!("Recovery timeout, reconnecting transport...");
-                        connected.store(false, Ordering::Relaxed);
-                        return true; // needs reconnect
-                    }
+                    ).await,
+                    Ok(true),
+                );
+                if recovered {
+                    info!("Connection recovered");
+                    connected.store(true, Ordering::Relaxed);
+                } else {
+                    tracing::warn!("Recovery failed or timed out, reconnecting transport...");
+                    return true;
                 }
             }
             _ = cancel.cancelled() => return false,
@@ -895,35 +959,49 @@ where
 }
 
 /// Wait until the interface is Active.
+fn interface_is_active(state: Option<InterfaceState>) -> bool {
+    matches!(
+        state,
+        Some(InterfaceState::Active { .. } | InterfaceState::ActiveLocal { .. })
+    )
+}
+
+/// Wait until the interface becomes Active, or report that it reached Down.
+/// The condition is registered with the waiter, so a transition immediately
+/// before this call cannot be lost.
 async fn wait_for_active<NS>(
     state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
     stack: &NS,
-) where
+) -> bool
+where
     NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>>,
 {
-    let state = stack.stack().manage_profile(|im| im.interface_state(()));
-    if matches!(state, Some(InterfaceState::Active { .. })) {
-        return;
-    }
-    loop {
-        let _ = state_notify.wait().await;
-        let state = stack.stack().manage_profile(|im| im.interface_state(()));
-        if matches!(state, Some(InterfaceState::Active { .. })) {
-            return;
-        }
-    }
+    state_notify
+        .wait_for_value(|| {
+            let state = stack.stack().manage_profile(|im| im.interface_state(()));
+            if interface_is_active(state) {
+                Some(true)
+            } else if matches!(state, Some(InterfaceState::Down) | None) {
+                Some(false)
+            } else {
+                None
+            }
+        })
+        .await
+        .unwrap_or(false)
 }
 
 // ── Device handshake & telemetry setup ───────────────────────────────────────
 
 /// Run HardwareInfo handshake with retries and exponential backoff.
-/// Returns `true` on success.
+/// Protocol/bootstrap and identity mismatches are fatal: retrying the same
+/// transport must never silently select or accept an incompatible controller.
 async fn hardware_info_handshake<NS>(
     stack: &NS,
     info_tx: &Sender<HardwareInfo>,
     connected: &Arc<AtomicBool>,
     expected_device_uuid: &mut Option<String>,
-) -> bool
+) -> HandshakeOutcome
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
@@ -935,6 +1013,15 @@ where
                 .request::<HardwareInfoEndpoint>(DEVICE_ADDR, &(), Some("hardware_info"));
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, fut).await {
             Ok(Ok(dev_info)) => {
+                if dev_info.bootstrap_magic != oxifoc_core::types::ICD_BOOTSTRAP_MAGIC {
+                    tracing::error!(
+                        "INVALID PROTOCOL BOOTSTRAP: device magic={:?}, expected={:?}",
+                        dev_info.bootstrap_magic,
+                        oxifoc_core::types::ICD_BOOTSTRAP_MAGIC,
+                    );
+                    connected.store(false, Ordering::Relaxed);
+                    return HandshakeOutcome::FatalMismatch;
+                }
                 info!(
                     "Device connected: hw='{}' sw='{}' mcu='{}' uuid='{}' foc={}Hz max_i={}A proto=v{}",
                     dev_info.hw.as_str(),
@@ -953,7 +1040,7 @@ where
                         oxifoc_core::types::ICD_PROTO_VERSION,
                     );
                     connected.store(false, Ordering::Relaxed);
-                    return false;
+                    return HandshakeOutcome::FatalMismatch;
                 }
                 let device_uuid = dev_info.uuid.as_str();
                 if let Some(expected) = expected_device_uuid.as_deref() {
@@ -965,7 +1052,7 @@ where
                             expected,
                         );
                         connected.store(false, Ordering::Relaxed);
-                        return false;
+                        return HandshakeOutcome::FatalMismatch;
                     }
                 } else {
                     *expected_device_uuid = Some(device_uuid.to_owned());
@@ -973,7 +1060,7 @@ where
                 // Never block the backend if a consumer stops reading.
                 let _ = info_tx.try_send(dev_info);
                 connected.store(true, Ordering::Relaxed);
-                return true;
+                return HandshakeOutcome::Connected;
             }
             Ok(Err(e)) => {
                 tracing::warn!("HardwareInfo attempt {} failed: {:?}", attempt, e);
@@ -986,7 +1073,7 @@ where
         backoff = (backoff * 2).min(Duration::from_secs(2));
     }
     tracing::warn!("Device info not received after retries; giving up — caller will reconnect");
-    false
+    HandshakeOutcome::RetryableFailure
 }
 
 fn protocol_is_compatible(device_version: u16) -> bool {
@@ -1642,7 +1729,8 @@ fn log_defmt_frame(level: Option<DefmtLevel>, msg: &impl std::fmt::Display) {
 
 #[cfg(test)]
 mod tests {
-    use super::{protocol_is_compatible, should_start_defmt};
+    use super::{may_retry, protocol_is_compatible, should_start_defmt};
+    use crate::ReconnectPolicy;
 
     #[test]
     fn transport_scoped_defmt_restarts_but_network_decoder_does_not() {
@@ -1658,5 +1746,22 @@ mod tests {
         assert!(protocol_is_compatible(current));
         assert!(!protocol_is_compatible(current.wrapping_add(1)));
         assert!(!protocol_is_compatible(current.wrapping_sub(1)));
+    }
+
+    #[test]
+    fn reconnect_policy_covers_every_connection_generation() {
+        let mut failures = 0;
+        assert!(!may_retry(ReconnectPolicy::None, &mut failures));
+        assert_eq!(failures, 1);
+
+        let mut failures = 0;
+        assert!(may_retry(ReconnectPolicy::Limited(3), &mut failures));
+        assert!(may_retry(ReconnectPolicy::Limited(3), &mut failures));
+        assert!(!may_retry(ReconnectPolicy::Limited(3), &mut failures));
+        assert_eq!(failures, 3);
+
+        let mut failures = u32::MAX;
+        assert!(may_retry(ReconnectPolicy::Infinite, &mut failures));
+        assert_eq!(failures, u32::MAX);
     }
 }

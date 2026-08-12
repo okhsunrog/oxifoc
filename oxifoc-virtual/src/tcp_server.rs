@@ -93,7 +93,10 @@ pub async fn run(
         let _ = mcu.push_str("x86_64 (virtual)");
         let _ = uuid.push_str("00000000-virtual");
         HardwareInfo {
+            bootstrap_magic: oxifoc_core::types::ICD_BOOTSTRAP_MAGIC,
             proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
+            capabilities: 0,
+            reserved: [0; 8],
             hw,
             sw,
             mcu,

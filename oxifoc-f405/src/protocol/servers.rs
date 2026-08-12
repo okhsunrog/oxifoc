@@ -135,7 +135,10 @@ pub async fn protocol_servers(stack: &'static Stack) {
     let _ = mcu.push_str("STM32F405RG");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
     let device_info = HardwareInfo {
+        bootstrap_magic: oxifoc_core::types::ICD_BOOTSTRAP_MAGIC,
         proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
+        capabilities: 0,
+        reserved: [0; 8],
         hw,
         sw,
         mcu,
@@ -190,13 +193,25 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
     let mut any_was_active = false;
 
     loop {
-        defmt::unwrap!(STATE_NOTIFY.wait().await.ok());
-
-        let any_active = idents.iter().any(|&id| {
-            stack.manage_profile(|im| {
-                matches!(im.interface_state(id), Some(InterfaceState::Active { .. }))
-            })
-        });
+        let any_active = defmt::unwrap!(
+            STATE_NOTIFY
+                .wait_for_value(|| {
+                    let any_active = idents.iter().any(|&id| {
+                        stack.manage_profile(|im| {
+                            matches!(
+                                im.interface_state(id),
+                                Some(
+                                    InterfaceState::Active { .. }
+                                        | InterfaceState::ActiveLocal { .. }
+                                )
+                            )
+                        })
+                    });
+                    (any_active != any_was_active).then_some(any_active)
+                })
+                .await
+                .ok()
+        );
 
         if any_active && !any_was_active {
             defmt::info!("Interface active — link up");

@@ -51,9 +51,11 @@ pub struct HostConfig {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReconnectPolicy {
-    /// Disconnect immediately on failure, no retries
+    /// Disconnect immediately on any failure, including loss of an established
+    /// connection, with no retry.
     None,
-    /// Retry up to N times, then give up
+    /// Allow at most N consecutive connection generations before giving up.
+    /// A completed protocol handshake resets the failure count.
     Limited(u32),
     /// Retry forever (default behavior)
     Infinite,

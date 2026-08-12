@@ -404,17 +404,28 @@ pub struct TelemetryConfigAck {
 /// (already enforced fail-closed by ergot's schema-hashed keys) OR *semantics*
 /// (units/meaning of a field whose type is unchanged, which the key hash cannot
 /// see). The device reports it in [`HardwareInfo::proto_version`]; the host
-/// compares it to its own value at the connect handshake and warns on mismatch
-/// — the human-readable gate that also covers topics (whose key change would
-/// otherwise fail as *silent absence*). See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 2;
+/// requires an exact match before exposing the connection. The bootstrap
+/// response shape itself is frozen so a future semantic version mismatch still
+/// reaches this field instead of merely changing the schema-hashed endpoint
+/// key. See `docs/notes/protocol-versioning.md`.
+pub const ICD_PROTO_VERSION: u16 = 3;
+
+/// Stable marker at the front of every [`HardwareInfo`] bootstrap response.
+pub const ICD_BOOTSTRAP_MAGIC: [u8; 4] = *b"OXIC";
 
 /// Hardware information returned on initial handshake
-#[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
+#[derive(Clone, Debug, Serialize, Deserialize, Schema)]
 pub struct HardwareInfo {
-    /// Application protocol version ([`ICD_PROTO_VERSION`]) — host compares to
-    /// its own and warns on mismatch.
+    /// Stable bootstrap marker ([`ICD_BOOTSTRAP_MAGIC`]).
+    pub bootstrap_magic: [u8; 4],
+    /// Application protocol version ([`ICD_PROTO_VERSION`]) — host requires an
+    /// exact match.
     pub proto_version: u16,
+    /// Feature bits. New optional protocol behavior must consume a bit here,
+    /// not change this bootstrap struct's schema.
+    pub capabilities: u32,
+    /// Reserved bootstrap extension bytes. Keep the array length fixed.
+    pub reserved: [u8; 8],
     /// Hardware identifier (e.g., "B-G431B-ESC1")
     pub hw: String<32>,
     /// Software version (e.g., "oxifoc-0.1.0")
@@ -430,6 +441,24 @@ pub struct HardwareInfo {
     /// Static current-sense / vbus constants for host-side telemetry
     /// enrichment (raw frame → engineering units). See [`BoardCalib`].
     pub calib: BoardCalib,
+}
+
+impl Default for HardwareInfo {
+    fn default() -> Self {
+        Self {
+            bootstrap_magic: ICD_BOOTSTRAP_MAGIC,
+            proto_version: ICD_PROTO_VERSION,
+            capabilities: 0,
+            reserved: [0; 8],
+            hw: String::new(),
+            sw: String::new(),
+            mcu: String::new(),
+            uuid: String::new(),
+            foc_freq_hz: 0,
+            max_current_a: 0.0,
+            calib: BoardCalib::default(),
+        }
+    }
 }
 
 /// Static board electrical constants the host needs to reconstruct engineering

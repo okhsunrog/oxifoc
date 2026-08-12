@@ -1,11 +1,35 @@
 # Protocol versioning & compatibility — design notes
 
-Status: **Phases 0–3 IMPLEMENTED** (8ee6f84/3ef160a/cde3a80/4f00909, 2026-06;
-header was stale until 2026-07-06). Remaining work is the ergot-side L1 items
-below. Cross-repo (some of this lands in
+Status: **application bootstrap implemented in ICD v3**. The ergot-side L1 and
+introspection ideas below remain future work. Cross-repo (some of this lands in
 [ergot](https://github.com/okhsunrog/ergot), some in oxifoc). Captured so it is
-not forgotten; supersedes the old one-line "`protocol_version` in HardwareInfo"
-TODO (whose premise was wrong — see §1).
+not forgotten.
+
+## 0. Current fail-closed bootstrap (ICD v3)
+
+`HardwareInfoEndpoint` is now the deliberately frozen bootstrap endpoint. Its
+response begins with a fixed `OXIC` magic, exact `proto_version`, capability
+bits, and reserved bytes. The complete struct shape must remain stable so its
+schema-derived ergot key remains reachable after later semantic ICD changes.
+Optional future behavior consumes a capability bit or reserved byte; it must
+not append fields to this response.
+
+The host validates, in order:
+
+1. bootstrap magic;
+2. exact application protocol version;
+3. stable device UUID across reconnects.
+
+A mismatch is terminal and the backend never publishes `connected = true`.
+Transient absence/timeouts follow the configured reconnect policy. That policy
+also covers failure to become Active, stream registration, and loss of an
+established connection; `reconnect = none` therefore means no automatic retry
+at any stage.
+
+This small application-level gate is intentionally independent of the larger
+ergot-native discovery/introspection design below. It solves semantic skew now,
+including changes which remain postcard-compatible, without paying for a new
+endpoint or per-socket schema storage.
 
 ## 1. The pivotal mechanic: ergot addresses ARE schema-versioned
 

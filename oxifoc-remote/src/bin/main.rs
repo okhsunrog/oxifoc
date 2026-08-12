@@ -298,7 +298,10 @@ async fn info_server(stack: &'static transport::Stack) {
     use core::pin::pin;
 
     let device_info = HardwareInfo {
+        bootstrap_magic: oxifoc_core::types::ICD_BOOTSTRAP_MAGIC,
         proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
+        capabilities: 0,
+        reserved: [0; 8],
         hw: "ESP32-C6 Remote".try_into().unwrap_or_default(),
         sw: "oxifoc-remote-0.1.0".try_into().unwrap_or_default(),
         mcu: "ESP32-C6".try_into().unwrap_or_default(),

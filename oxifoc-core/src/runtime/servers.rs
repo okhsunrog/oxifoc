@@ -13,7 +13,7 @@
 //! // In platform - single task wrapper
 //! #[embassy_executor::task]
 //! pub async fn protocol_servers() {
-//!     let device_info = HardwareInfo { hw: "My Board", sw: "v0.1.0" };
+//!     let device_info = HardwareInfo { hw, sw, ..Default::default() };
 //!     oxifoc_core::runtime::run_all_servers(
 //!         STACK.endpoints(),
 //!         device_info,
@@ -804,7 +804,7 @@ where
 ///
 ///     oxifoc_core::runtime::run_all_servers(
 ///         STACK.endpoints(),
-///         HardwareInfo { hw, sw },
+///         HardwareInfo { hw, sw, ..Default::default() },
 ///         &STATE,
 ///         &FAULT_REGISTRY,
 ///     ).await
