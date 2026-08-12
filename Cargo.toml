@@ -64,7 +64,7 @@ oxifoc-core = { path = "oxifoc-core" }
 # (oxifoc-g474/f405/bridge/remote), then refresh all Cargo.lock files.
 # ergot rev = upstream main HEAD 2026-08-12 (edge_link_local ctor +
 # revert-to-link-local liveness policy + the #217 soundness batch)
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "5a5fab8234339ecdc252e18c41ef2676bd6bb091" }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "e93b03b" }
 tokio = { version = "1.53", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

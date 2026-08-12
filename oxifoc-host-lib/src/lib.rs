@@ -520,7 +520,7 @@ where
     I: ergot::interface_manager::Interface,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
-    NS::Target: Send,
+    NS::Target: Send + Sync,
 {
     let connected = ctx.connected.clone();
     let fast_hz_flag = ctx.fast_hz.clone();
@@ -1025,7 +1025,7 @@ where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
-    NS::Target: Send,
+    NS::Target: Send + Sync,
 {
     spawn_fast_telemetry_subscriber(stack, ctx.fast_tx, ctx.cancel.clone());
     spawn_fault_topic_subscriber(stack, ctx.fault_tx, ctx.cancel.clone());
@@ -1097,8 +1097,9 @@ where
                             continue;
                         }
                         if let Some(mode) = active_setpoint {
-                            // Truly fire-and-forget: the send is committed on
-                            // the inline first poll (ordered with commands —
+                            // Truly fire-and-forget: the send is committed by
+                            // `send_request` before the response future is
+                            // returned (ordered with commands —
                             // the destination socket name is "motor", the
                             // device's motor server; `Some("affirm")` once
                             // pointed at a nonexistent socket and every
@@ -1108,12 +1109,11 @@ where
                             // round-trip delay the NEXT affirm past the
                             // device's 150 ms deadman. The device-side
                             // `stale_max_us` counter is the margin meter.
-                            match send_motor_now(&stack, mode).await {
-                                Ok(Ok(_)) => {}
-                                Ok(Err(e)) => {
+                            match send_motor_now(&stack, mode) {
+                                Err(e) => {
                                     tracing::warn!("setpoint affirm send failed: {e:?}");
                                 }
-                                Err(fut) => {
+                                Ok(fut) => {
                                     tokio::spawn(async move {
                                         match tokio::time::timeout(Duration::from_secs(1), fut)
                                             .await
@@ -1290,12 +1290,11 @@ type MotorResponseFut = std::pin::Pin<
 
 /// Send a `MotorEndpoint` request NOW and hand back the pending response.
 ///
-/// ergot's `request_full` commits the frame to the interface queue
-/// *synchronously*, before its first await point — so polling the future
-/// exactly once guarantees the frame is on the wire when this returns, and
-/// sends stay strictly ordered by call order within the command task. The
-/// caller then observes the response OUT of the task (detached), so response
-/// latency can never stall the affirm ticker again.
+/// Ergot's split request API commits the frame synchronously, then hands the
+/// owned response socket to this future. Sends therefore stay strictly ordered
+/// by call order within the command task, while the caller observes the
+/// response OUT of that task so response latency cannot stall the affirm
+/// ticker.
 ///
 /// Why this exists (2026-07-06 deadman hunt): the drive-`Start` used to be
 /// awaited inline in the command/affirm `select!` loop. At drive engage the
@@ -1306,30 +1305,26 @@ type MotorResponseFut = std::pin::Pin<
 /// missed: for drive modes the 50 ms affirm cadence IS the retry, and for
 /// stop-class commands a lost frame ends in the deadman failsafe stopping
 /// the motor — the correct direction.
-async fn send_motor_now<NS>(
+fn send_motor_now<NS>(
     ns: &NS,
     mode: ControlMode,
-) -> Result<Result<MotorStatus, ergot::net_stack::ReqRespError>, MotorResponseFut>
+) -> Result<MotorResponseFut, ergot::net_stack::ReqRespError>
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
-    NS::Target: Send,
+    NS::Target: Send + Sync,
 {
-    let ns = ns.clone();
-    let mut fut: MotorResponseFut = Box::pin(async move {
-        ns.stack()
-            .endpoints()
-            .request::<MotorEndpoint>(DEVICE_ADDR, &mode, Some("motor"))
-            .await
-    });
-    // Poll exactly once: executes the synchronous send, then (normally)
-    // parks on the response receive.
-    let first = std::future::poll_fn(|cx| std::task::Poll::Ready(fut.as_mut().poll(cx))).await;
-    match first {
-        std::task::Poll::Ready(r) => Ok(r),
-        std::task::Poll::Pending => Err(fut),
-    }
+    let client =
+        ergot::socket::endpoint::single::Client::<MotorEndpoint, NS>::new(ns.clone(), None);
+    let mut client = Box::pin(client).attach_boxed();
+    client.send_request(DEVICE_ADDR, &mode, Some("motor"))?;
+    Ok(Box::pin(async move {
+        match client.recv().await {
+            Ok(response) => Ok(response.t),
+            Err(error) => Err(ergot::net_stack::ReqRespError::Remote(error.t)),
+        }
+    }))
 }
 
 async fn handle_command<NS>(
@@ -1341,7 +1336,7 @@ async fn handle_command<NS>(
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
-    NS::Target: Send,
+    NS::Target: Send + Sync,
 {
     let client = ns.clone().reliable::<TokioTimer>();
     match cmd {
@@ -1362,10 +1357,9 @@ async fn handle_command<NS>(
             // Send inline (ordered), observe the response detached — the
             // await must not hold up this select! loop, or the affirm ticker
             // starves and the device deadman fires (see send_motor_now).
-            match send_motor_now(ns, *mc).await {
-                Ok(Ok(status)) => tracing::info!("Motor response: {:?}", status),
-                Ok(Err(e)) => tracing::warn!("Motor command failed: {:?}", e),
-                Err(fut) => {
+            match send_motor_now(ns, *mc) {
+                Err(e) => tracing::warn!("Motor command send failed: {:?}", e),
+                Ok(fut) => {
                     tokio::spawn(async move {
                         match tokio::time::timeout(MOTOR_RESPONSE_TIMEOUT, fut).await {
                             Ok(Ok(status)) => tracing::info!("Motor response: {:?}", status),
@@ -1399,11 +1393,11 @@ async fn handle_command<NS>(
                 Some(*mc)
             };
             tracing::info!("Sending motor command (acked): {:?}", mc);
-            match send_motor_now(ns, *mc).await {
-                Ok(res) => {
-                    let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
+            match send_motor_now(ns, *mc) {
+                Err(error) => {
+                    let _ = reply_tx.send(Err(anyhow::anyhow!("{error:?}")));
                 }
-                Err(fut) => {
+                Ok(fut) => {
                     tokio::spawn(async move {
                         let res = match tokio::time::timeout(MOTOR_RESPONSE_TIMEOUT, fut).await {
                             Ok(r) => r.map_err(|e| anyhow::anyhow!("{e:?}")),
