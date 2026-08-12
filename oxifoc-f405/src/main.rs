@@ -64,6 +64,21 @@ async fn main(spawner: Spawner) {
     // ========== STEP 1: Initialize Clock ==========
     let p = hardware::peripherals::init_clock();
 
+    // Comms/housekeeping IRQs sit BELOW the control ISRs. The FOC ADC ISR
+    // runs at 0 and the hall capture (TIM3) at 1, but every other vector
+    // ships at the reset default 0: an in-flight handler at the SAME level
+    // cannot be preempted, so a USB/UART/RNG/EXTI/time-driver handler
+    // delayed ADC entry by its full duration. Demoting them lets the FOC
+    // ISR preempt immediately.
+    {
+        use embassy_stm32::interrupt::{InterruptExt, Priority};
+        interrupt::OTG_FS.set_priority(Priority::P5); // USB transport
+        interrupt::USART3.set_priority(Priority::P5); // UART transport
+        interrupt::EXTI9_5.set_priority(Priority::P4); // DRV8301 nFAULT
+        interrupt::RNG.set_priority(Priority::P6);
+        interrupt::TIM2.set_priority(Priority::P6); // embassy time driver
+    }
+
     // ========== STEP 2: Initialize RNG + Ergot Router Stack ==========
     // Stack first (no defmt), then the RTT/defmt sink so an ergot-over-RTT
     // interface (transport-rtt) can register on it in one rtt_init!.

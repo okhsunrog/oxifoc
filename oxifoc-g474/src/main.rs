@@ -61,6 +61,19 @@ async fn main(spawner: Spawner) {
     // ========== STEP 1: Initialize Clock ==========
     let p = hardware::peripherals::init_clock();
 
+    // Comms/housekeeping IRQs sit BELOW the control ISRs (mirrors the
+    // f405): hall capture (TIM2) runs at 1, the future FOC ADC ISR at 0;
+    // everything else ships at the reset default 0 and would delay them by
+    // its full handler duration when in flight.
+    {
+        use embassy_stm32::interrupt::{self, InterruptExt, Priority};
+        interrupt::USB_LP.set_priority(Priority::P5); // USB transport
+        interrupt::LPUART1.set_priority(Priority::P5); // UART transport
+        interrupt::RNG.set_priority(Priority::P6);
+        interrupt::TIM5.set_priority(Priority::P6); // embassy time driver
+        interrupt::FLASH.set_priority(Priority::P6); // async flash ops
+    }
+
     defmt::info!("NUCLEO-G474RE clock initialized: 170MHz SYSCLK from 24MHz HSE");
 
     // ========== STEP 2: Initialize RNG + Ergot Router Stack ==========
