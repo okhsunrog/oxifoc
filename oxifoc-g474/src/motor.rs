@@ -4,10 +4,10 @@
 
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::time::Hertz;
+use embassy_stm32::timer::Channel;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin, Mms2, Ossr};
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::PwmPin;
-use embassy_stm32::timer::Channel;
 
 use crate::hardware::resources::MotorResources;
 use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm, PhaseState};
@@ -15,8 +15,8 @@ use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm, PhaseState};
 /// Motor PWM controller using TIM1 with complementary outputs.
 pub struct MotorPwm<'d> {
     pwm: ComplementaryPwm<'d, embassy_stm32::peripherals::TIM1>,
-    max_duty: u16,
-    duty_limit: u16,
+    max_duty: u32,
+    duty_limit: u32,
 }
 
 impl<'d> MotorPwm<'d> {
@@ -70,8 +70,8 @@ impl<'d> MotorPwm<'d> {
         pwm.set_dead_time(dead_time);
 
         // Enable OSSR for safer off-state behavior when channels are disabled.
-        // IDLE_LEVEL means outputs go to their idle state when disabled.
-        pwm.set_off_state_selection_run(Ossr::IDLE_LEVEL);
+        // IdleLevel means outputs go to their idle state when disabled.
+        pwm.set_off_state_selection_run(Ossr::IdleLevel);
 
         // Channel 4: internal "sampling" channel to generate TIM1_TRGO2 for ADC.
         //
@@ -82,10 +82,10 @@ impl<'d> MotorPwm<'d> {
         let peak_offset = max_duty / 50; // ~2% margin
         pwm.set_duty(Channel::Ch4, max_duty.saturating_sub(peak_offset));
         pwm.enable(Channel::Ch4);
-        pwm.set_mms2(Mms2::COMPARE_OC4);
+        pwm.set_mms2(Mms2::CompareOc4);
 
         // Calculate duty limit using shared helper
-        let duty_limit = pwm::duty_limit(max_duty, config.max_duty_percent);
+        let duty_limit = u32::from(pwm::duty_limit(max_duty as u16, config.max_duty_percent));
 
         defmt::info!(
             "G474 Motor PWM init: freq={}Hz, max_duty={}, limit={}%",
@@ -119,15 +119,15 @@ impl<'d> MotorPwm<'d> {
 
 impl<'d> PhasePwm for MotorPwm<'d> {
     fn max_duty(&self) -> u16 {
-        self.max_duty
+        self.max_duty as u16
     }
 
     fn set_duties(&mut self, duties: [u16; 3]) {
         // Set duty cycles for all three phases
         // Clamp to duty_limit for safety
-        let duty_a = duties[0].min(self.duty_limit);
-        let duty_b = duties[1].min(self.duty_limit);
-        let duty_c = duties[2].min(self.duty_limit);
+        let duty_a = u32::from(duties[0]).min(self.duty_limit);
+        let duty_b = u32::from(duties[1]).min(self.duty_limit);
+        let duty_c = u32::from(duties[2]).min(self.duty_limit);
 
         self.pwm.set_duty(Channel::Ch1, duty_a);
         self.pwm.set_duty(Channel::Ch2, duty_b);
@@ -144,7 +144,7 @@ impl<'d> PhasePwm for MotorPwm<'d> {
             match state {
                 PhaseState::Pwm(duty) => {
                     self.pwm.enable(ch);
-                    self.pwm.set_duty(ch, (*duty).min(self.duty_limit));
+                    self.pwm.set_duty(ch, u32::from(*duty).min(self.duty_limit));
                 }
                 PhaseState::Low => {
                     self.pwm.enable(ch);
