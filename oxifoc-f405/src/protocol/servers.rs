@@ -165,19 +165,23 @@ pub async fn protocol_servers(stack: &'static Stack) {
     .await;
 }
 
-/// Ergot well-known services for downstream bridges.
+/// Ergot well-known services for downstream bridges and host discovery.
 ///
 /// The seed-router handler answers net-id assignment/refresh/release requests
 /// (the BLE bridge leases a net for its radio segment here — without it a
 /// bridge's pending downstream never gets a routable net). The ping handler
 /// is the bridge's upstream-discovery bootstrap: the bridge pings the root
 /// link-local, and the *reply* is the first frame addressed to the bridge,
-/// which is what its edge processor learns the upstream net_id from.
+/// which is what its edge processor learns the upstream net_id from. The
+/// socket-query handler answers the host's connect-time address resolution
+/// (SocketQuery by endpoint key) so a host behind a bridge can find this
+/// controller instead of assuming its peer is the controller.
 #[embassy_executor::task]
 pub async fn seed_router_task(stack: &'static Stack) {
-    embassy_futures::join::join(
+    embassy_futures::join::join3(
         stack.services().seed_router_request_handler::<2>(),
         stack.services().ping_handler::<2>(),
+        stack.services().socket_query_handler::<2>(),
     )
     .await;
 }

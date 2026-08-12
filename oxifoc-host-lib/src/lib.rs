@@ -33,7 +33,7 @@ use std::{
     fs,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -48,18 +48,34 @@ pub use discovery::{BleDeviceInfo, scan_ble_devices, scan_ble_devices_blocking};
 #[cfg(feature = "desktop")]
 pub use discovery::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
 pub use transport::{TransportConfig, TransportType};
+// The resolved-controller accessor returns an ergot address.
+pub use ergot::Address as DeviceAddress;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/// Link-local address of the directly connected device (Router).
+/// Link-local address of the directly connected peer (Router).
 ///
 /// Uses net_id=0 ("link-local"): the router rewrites this to the real net_id.
-/// node_id=1 is CENTRAL_NODE_ID (the router side of the link).
-const DEVICE_ADDR: Address = Address {
+/// node_id=1 is CENTRAL_NODE_ID (the router side of the link). This is only
+/// the FALLBACK controller address: correct point-to-point, wrong through a
+/// bridge (there the link peer is the bridge, not the motor controller).
+/// Connect-time resolution (see [`resolve_device_addr`]) replaces it with
+/// the address that actually serves `MotorEndpoint`.
+const LINK_LOCAL_PEER: Address = Address {
     network_id: 0,
     node_id: 1,
     port_id: 0,
 };
+/// Per-attempt wait for the FIRST SocketQuery answer. The query is a single
+/// best-effort broadcast datagram — on a connectionless transport (UDP) the
+/// first attempt can race the peer binding its socket, so resolution retries
+/// like the handshake does.
+const RESOLVE_TIMEOUT: Duration = Duration::from_millis(400);
+/// Resolution attempts before falling back to the link-local peer.
+const RESOLVE_ATTEMPTS: u32 = 4;
+/// After the first answer, keep listening briefly so a SECOND controller on
+/// the network is detected as ambiguity instead of racing the winner.
+const RESOLVE_SETTLE: Duration = Duration::from_millis(150);
 const ERGOT_MTU: u16 = 4096;
 const ERGOT_QUEUE_SIZE: usize = 32768;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(800);
@@ -278,6 +294,7 @@ pub struct HostRuntime {
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
     pub fast_hz: Arc<AtomicU16>,
+    device_addr: Arc<AtomicU32>,
     cancel_token: CancellationToken,
     /// Backend thread handle — joined (bounded) on shutdown so the process
     /// never exits while the RTT I/O thread is mid-USB-transaction (which
@@ -287,6 +304,13 @@ pub struct HostRuntime {
 }
 
 impl HostRuntime {
+    /// The controller address the backend currently targets: the SocketQuery
+    /// resolution result for this connection generation, or the link-local
+    /// peer when nothing answered (plain point-to-point).
+    pub fn device_address(&self) -> Address {
+        unpack_addr(self.device_addr.load(Ordering::Relaxed))
+    }
+
     pub fn wait_for_connection(&self, timeout: Duration) -> bool {
         if self.connected.load(Ordering::Relaxed) {
             return true;
@@ -403,6 +427,11 @@ struct BackendCtx {
     /// The last fast rate the application asked for (config default until a
     /// SetTelemetryConfig arrives) — what a reconnect re-applies.
     requested_fast_hz: Arc<AtomicU16>,
+    /// Packed [`Address`] of the resolved motor controller (see
+    /// [`pack_addr`]). Starts as the link-local peer; each connection
+    /// generation overwrites it with the SocketQuery resolution result
+    /// before `connected` is published.
+    device_addr: Arc<AtomicU32>,
     cancel: CancellationToken,
 }
 
@@ -460,6 +489,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
     let fast_hz = Arc::new(AtomicU16::new(0));
+    let device_addr = Arc::new(AtomicU32::new(pack_addr(LINK_LOCAL_PEER)));
     let cancel_token = CancellationToken::new();
 
     let ctx = BackendCtx {
@@ -471,6 +501,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         connected: connected.clone(),
         fast_hz: fast_hz.clone(),
         requested_fast_hz: Arc::new(AtomicU16::new(cfg.fast_hz())),
+        device_addr: device_addr.clone(),
         cancel: cancel_token.clone(),
     };
 
@@ -489,6 +520,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         cmd_tx,
         connected,
         fast_hz,
+        device_addr,
         cancel_token,
         backend_thread: std::sync::Mutex::new(Some(backend_thread)),
     }
@@ -632,6 +664,7 @@ where
     let connected = ctx.connected.clone();
     let fast_hz_flag = ctx.fast_hz.clone();
     let requested_fast_hz = ctx.requested_fast_hz.clone();
+    let device_addr = ctx.device_addr.clone();
     let cancel = ctx.cancel.clone();
     let info_tx = ctx.info_tx.clone();
     let fault_sink = ctx.fault_sink.clone();
@@ -692,9 +725,41 @@ where
             }
         }
 
+        // Resolve the controller's address before the handshake: through a
+        // bridge the link peer is the bridge, not the motor controller, so
+        // the handshake must target whoever actually serves MotorEndpoint.
+        let resolved = match resolve_device_addr(&stack, RESOLVE_TIMEOUT).await {
+            AddrResolution::Resolved(addr) => {
+                info!(
+                    "Controller resolved at net={} node={}",
+                    addr.network_id, addr.node_id
+                );
+                addr
+            }
+            AddrResolution::NoAnswer => {
+                info!("No socket-query answer; using the link-local peer");
+                LINK_LOCAL_PEER
+            }
+            AddrResolution::Ambiguous(n) => {
+                tracing::error!(
+                    "AMBIGUOUS CONTROLLER: {n} nodes serve MotorEndpoint on this network — \
+                     refusing to pick one by luck"
+                );
+                connected.store(false, Ordering::Relaxed);
+                break;
+            }
+        };
+        device_addr.store(pack_addr(resolved), Ordering::Relaxed);
+
         // HardwareInfo handshake on each (re)connection
-        let handshake =
-            hardware_info_handshake(&stack, &info_tx, &connected, &mut expected_device_uuid).await;
+        let handshake = hardware_info_handshake(
+            &stack,
+            &info_tx,
+            &connected,
+            &mut expected_device_uuid,
+            resolved,
+        )
+        .await;
 
         match handshake {
             HandshakeOutcome::Connected => {
@@ -735,6 +800,7 @@ where
             &stack,
             requested_fast_hz.load(Ordering::Relaxed),
             &fast_hz_flag,
+            resolved,
         )
         .await;
 
@@ -816,6 +882,7 @@ where
     let connected = ctx.connected.clone();
     let fast_hz_flag = ctx.fast_hz.clone();
     let requested_fast_hz = ctx.requested_fast_hz.clone();
+    let device_addr = ctx.device_addr.clone();
     let cancel = ctx.cancel.clone();
     let info_tx = ctx.info_tx.clone();
     let fault_sink = ctx.fault_sink.clone();
@@ -911,9 +978,41 @@ where
             }
         }
 
+        // Resolve the controller's address before the handshake: through a
+        // bridge the link peer is the bridge, not the motor controller, so
+        // the handshake must target whoever actually serves MotorEndpoint.
+        let resolved = match resolve_device_addr(&stack, RESOLVE_TIMEOUT).await {
+            AddrResolution::Resolved(addr) => {
+                info!(
+                    "Controller resolved at net={} node={}",
+                    addr.network_id, addr.node_id
+                );
+                addr
+            }
+            AddrResolution::NoAnswer => {
+                info!("No socket-query answer; using the link-local peer");
+                LINK_LOCAL_PEER
+            }
+            AddrResolution::Ambiguous(n) => {
+                tracing::error!(
+                    "AMBIGUOUS CONTROLLER: {n} nodes serve MotorEndpoint on this network — \
+                     refusing to pick one by luck"
+                );
+                connected.store(false, Ordering::Relaxed);
+                break;
+            }
+        };
+        device_addr.store(pack_addr(resolved), Ordering::Relaxed);
+
         // HardwareInfo handshake on each (re)connection
-        let handshake =
-            hardware_info_handshake(&stack, &info_tx, &connected, &mut expected_device_uuid).await;
+        let handshake = hardware_info_handshake(
+            &stack,
+            &info_tx,
+            &connected,
+            &mut expected_device_uuid,
+            resolved,
+        )
+        .await;
 
         match handshake {
             HandshakeOutcome::Connected => {
@@ -947,6 +1046,7 @@ where
             &stack,
             requested_fast_hz.load(Ordering::Relaxed),
             &fast_hz_flag,
+            resolved,
         )
         .await;
 
@@ -1102,6 +1202,104 @@ where
         .unwrap_or(false)
 }
 
+// ── Device address resolution ────────────────────────────────────────────────
+
+/// `Address` packs losslessly into a `u32` (net << 16 | node << 8 | port) —
+/// the shared resolved-controller cell is a lock-free `AtomicU32`.
+fn pack_addr(a: Address) -> u32 {
+    (u32::from(a.network_id) << 16) | (u32::from(a.node_id) << 8) | u32::from(a.port_id)
+}
+
+fn unpack_addr(v: u32) -> Address {
+    Address {
+        network_id: (v >> 16) as u16,
+        node_id: (v >> 8) as u8,
+        port_id: v as u8,
+    }
+}
+
+enum AddrResolution {
+    /// Exactly one node on the network serves `MotorEndpoint`.
+    Resolved(Address),
+    /// Nobody answered the socket query (device predates the handler, or a
+    /// transport that cannot flood) — fall back to the link-local peer.
+    NoAnswer,
+    /// More than one motor controller answered. Fail closed: a controller
+    /// must never be selected by luck (mirrors the USB identity pinning).
+    Ambiguous(usize),
+}
+
+/// Resolve the motor controller's address by asking the whole reachable
+/// network who serves `MotorEndpoint` (port-255 SocketQuery flood; routers
+/// re-flood it across bridges, answers come back unicast). Returns net+node
+/// with port 0 so the existing per-endpoint key/name resolution at the
+/// destination keeps working unchanged.
+async fn resolve_device_addr<NS>(stack: &NS, timeout: Duration) -> AddrResolution
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    use ergot::FrameKind;
+    use ergot::traits::Endpoint as _;
+    use ergot::well_known::{
+        ErgotSocketQueryResponseTopic, ErgotSocketQueryTopic, NameRequirement, SocketQuery,
+    };
+
+    let ns = stack.stack();
+    // Subscribe BEFORE sending the query; responses are unicast topic
+    // messages addressed to this socket's port.
+    let subber = ns
+        .topics()
+        .heap_bounded_receiver::<ErgotSocketQueryResponseTopic>(16, None);
+    let subber = std::pin::pin!(subber);
+    let mut hdl = subber.subscribe_unicast();
+    let port = hdl.port();
+
+    let query = SocketQuery {
+        key: MotorEndpoint::REQ_KEY.to_bytes(),
+        nash_req: NameRequirement::Any,
+        frame_kind: FrameKind::ENDPOINT_REQ,
+        broadcast: false,
+    };
+
+    let mut nodes: Vec<(u16, u8)> = Vec::new();
+    for attempt in 1..=RESOLVE_ATTEMPTS {
+        if let Err(e) = ns
+            .topics()
+            .broadcast_with_src_port::<ErgotSocketQueryTopic>(&query, None, port)
+        {
+            // Best-effort: a failed broadcast just means an empty attempt.
+            tracing::debug!("socket query broadcast failed (attempt {attempt}): {e:?}");
+        }
+        let Ok(first) = tokio::time::timeout(timeout, hdl.recv()).await else {
+            continue;
+        };
+        nodes.push((first.hdr.src.network_id, first.hdr.src.node_id));
+        // Settle window: a duplicate answer (retried attempt) dedups away; a
+        // DIFFERENT node answering means two controllers are reachable.
+        let settle = async {
+            loop {
+                let msg = hdl.recv().await;
+                let node = (msg.hdr.src.network_id, msg.hdr.src.node_id);
+                if !nodes.contains(&node) {
+                    nodes.push(node);
+                }
+            }
+        };
+        let _ = tokio::time::timeout(RESOLVE_SETTLE, settle).await;
+        break;
+    }
+
+    match nodes.as_slice() {
+        [] => AddrResolution::NoAnswer,
+        [(network_id, node_id)] => AddrResolution::Resolved(Address {
+            network_id: *network_id,
+            node_id: *node_id,
+            port_id: 0,
+        }),
+        many => AddrResolution::Ambiguous(many.len()),
+    }
+}
+
 // ── Device handshake & telemetry setup ───────────────────────────────────────
 
 /// Run HardwareInfo handshake with retries and exponential backoff.
@@ -1112,6 +1310,7 @@ async fn hardware_info_handshake<NS>(
     info_tx: &Sender<HardwareInfo>,
     connected: &Arc<AtomicBool>,
     expected_device_uuid: &mut Option<String>,
+    device_addr: Address,
 ) -> HandshakeOutcome
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
@@ -1121,7 +1320,7 @@ where
     for attempt in 1..=10u32 {
         let fut =
             ns.endpoints()
-                .request::<HardwareInfoEndpoint>(DEVICE_ADDR, &(), Some("hardware_info"));
+                .request::<HardwareInfoEndpoint>(device_addr, &(), Some("hardware_info"));
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, fut).await {
             Ok(Ok(dev_info)) => {
                 if dev_info.bootstrap_magic != oxifoc_core::types::ICD_BOOTSTRAP_MAGIC {
@@ -1192,7 +1391,12 @@ fn protocol_is_compatible(device_version: u16) -> bool {
 }
 
 /// Send TelemetryConfig to enable fast telemetry streaming.
-async fn enable_fast_telemetry<NS>(stack: &NS, fast_hz: u16, fast_hz_flag: &Arc<AtomicU16>)
+async fn enable_fast_telemetry<NS>(
+    stack: &NS,
+    fast_hz: u16,
+    fast_hz_flag: &Arc<AtomicU16>,
+    device_addr: Address,
+)
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
@@ -1202,7 +1406,7 @@ where
     let telem_cfg = TelemetryConfig { fast_hz };
     let client = stack.clone().reliable::<TokioTimer>();
     match client
-        .at_least_once::<TelemetryConfigEndpoint>(DEVICE_ADDR, &telem_cfg, None, &SETPOINT_POLICY)
+        .at_least_once::<TelemetryConfigEndpoint>(device_addr, &telem_cfg, None, &SETPOINT_POLICY)
         .await
     {
         Ok(ack) => {
@@ -1242,6 +1446,7 @@ where
         ctx.slow_tx,
         ctx.fault_sink,
         ctx.connected.clone(),
+        ctx.device_addr.clone(),
         ctx.cancel.clone(),
     );
 
@@ -1269,6 +1474,7 @@ where
         let stack = stack.clone();
         let fast_hz_flag = ctx.fast_hz;
         let requested_fast_hz = ctx.requested_fast_hz;
+        let device_addr = ctx.device_addr.clone();
         let connected = ctx.connected.clone();
         let cancel = ctx.cancel.clone();
         let mut cmd_rx = ctx.cmd_rx;
@@ -1300,6 +1506,7 @@ where
                             cmd,
                             &fast_hz_flag,
                             &requested_fast_hz,
+                            unpack_addr(device_addr.load(Ordering::Relaxed)),
                             &mut active_setpoint,
                             drive_session,
                             &mut motor_seq,
@@ -1339,7 +1546,8 @@ where
                                 &mut motor_seq,
                                 MotorCommand::SetMode(mode),
                             );
-                            match send_motor_now(&stack, request) {
+                            let addr = unpack_addr(device_addr.load(Ordering::Relaxed));
+                            match send_motor_now(&stack, request, addr) {
                                 Err(e) => {
                                     tracing::warn!("setpoint affirm send failed: {e:?}");
                                 }
@@ -1511,6 +1719,7 @@ fn spawn_slow_telemetry_poller<NS>(
     slow_tx: Sender<SlowTelemetry>,
     fault_sink: FaultSnapshotSink,
     connected: Arc<AtomicBool>,
+    device_addr: Arc<AtomicU32>,
     cancel: CancellationToken,
 ) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
@@ -1541,7 +1750,11 @@ fn spawn_slow_telemetry_poller<NS>(
                             continue;
                         }
                         let fut = ns.endpoints()
-                            .request::<SlowTelemetryEndpoint>(DEVICE_ADDR, &(), Some("slow_telem"));
+                            .request::<SlowTelemetryEndpoint>(
+                                unpack_addr(device_addr.load(Ordering::Relaxed)),
+                                &(),
+                                Some("slow_telem"),
+                            );
                         if let Ok(Ok(sample)) = tokio::time::timeout(
                             Duration::from_millis(500), fut
                         ).await {
@@ -1552,7 +1765,7 @@ fn spawn_slow_telemetry_poller<NS>(
                             // snapshot is successfully handed to consumers.
                             if fault_sink.needs(sample.fault_generation) {
                                 let fault_fut = ns.endpoints().request::<FaultEndpoint>(
-                                    DEVICE_ADDR,
+                                    unpack_addr(device_addr.load(Ordering::Relaxed)),
                                     &FaultRequest::Query,
                                     Some("fault_reconcile"),
                                 );
@@ -1598,6 +1811,7 @@ type MotorResponseFut = std::pin::Pin<
 fn send_motor_now<NS>(
     ns: &NS,
     request: MotorRequest,
+    device_addr: Address,
 ) -> Result<MotorResponseFut, ergot::net_stack::ReqRespError>
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
@@ -1608,7 +1822,7 @@ where
     let client =
         ergot::socket::endpoint::single::Client::<MotorEndpoint, NS>::new(ns.clone(), None);
     let mut client = Box::pin(client).attach_boxed();
-    client.send_request(DEVICE_ADDR, &request, Some("motor"))?;
+    client.send_request(device_addr, &request, Some("motor"))?;
     Ok(Box::pin(async move {
         match client.recv().await {
             Ok(response) => Ok(response.t),
@@ -1617,11 +1831,16 @@ where
     }))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "flat backend dispatch; a struct would just move the names"
+)]
 async fn handle_command<NS>(
     ns: &NS,
     cmd: HostCommand,
     fast_hz_flag: &Arc<AtomicU16>,
     requested_fast_hz: &Arc<AtomicU16>,
+    device_addr: Address,
     active_setpoint: &mut Option<ControlMode>,
     drive_session: u64,
     motor_seq: &mut u32,
@@ -1651,7 +1870,7 @@ async fn handle_command<NS>(
             // await must not hold up this select! loop, or the affirm ticker
             // starves and the device deadman fires (see send_motor_now).
             let request = next_motor_request(drive_session, motor_seq, MotorCommand::SetMode(*mc));
-            match send_motor_now(ns, request) {
+            match send_motor_now(ns, request, device_addr) {
                 Err(e) => tracing::warn!("Motor command send failed: {:?}", e),
                 Ok(fut) => {
                     tokio::spawn(async move {
@@ -1688,7 +1907,7 @@ async fn handle_command<NS>(
             };
             tracing::info!("Sending motor command (acked): {:?}", mc);
             let request = next_motor_request(drive_session, motor_seq, MotorCommand::SetMode(*mc));
-            match send_motor_now(ns, request) {
+            match send_motor_now(ns, request, device_addr) {
                 Err(error) => {
                     let _ = reply_tx.send(Err(anyhow::anyhow!("{error:?}")));
                 }
@@ -1716,7 +1935,7 @@ async fn handle_command<NS>(
             *active_setpoint = None;
             let request = next_motor_request(drive_session, motor_seq, MotorCommand::EmergencyStop);
             tracing::warn!("Sending emergency stop");
-            match send_motor_now(ns, request) {
+            match send_motor_now(ns, request, device_addr) {
                 Err(error) => {
                     let _ = reply_tx.send(Err(anyhow::anyhow!("{error:?}")));
                 }
@@ -1742,7 +1961,7 @@ async fn handle_command<NS>(
             tracing::info!("Setting phase source: {:?}", source);
             match client
                 .at_least_once::<PhaseSourceEndpoint>(
-                    DEVICE_ADDR,
+                    device_addr,
                     &source,
                     Some("phase_source"),
                     &SETPOINT_POLICY,
@@ -1762,7 +1981,7 @@ async fn handle_command<NS>(
             requested_fast_hz.store(cfg.fast_hz, Ordering::Relaxed);
             match client
                 .at_least_once::<TelemetryConfigEndpoint>(
-                    DEVICE_ADDR,
+                    device_addr,
                     &cfg,
                     Some("telemetry_config"),
                     &SETPOINT_POLICY,
@@ -1790,7 +2009,7 @@ async fn handle_command<NS>(
             let req = ConfigRequest::Read(group_id);
             let res = client
                 .at_least_once::<ConfigEndpoint>(
-                    DEVICE_ADDR,
+                    device_addr,
                     &req,
                     Some("config"),
                     &SETPOINT_POLICY,
@@ -1804,7 +2023,7 @@ async fn handle_command<NS>(
             let req = ConfigRequest::Apply(request);
             let res = client
                 .at_least_once::<ConfigEndpoint>(
-                    DEVICE_ADDR,
+                    device_addr,
                     &req,
                     Some("config"),
                     &SETPOINT_POLICY,
@@ -1822,7 +2041,7 @@ async fn handle_command<NS>(
             let req = ConfigRequest::Persist(request);
             let res = client
                 .at_least_once::<ConfigEndpoint>(
-                    DEVICE_ADDR,
+                    device_addr,
                     &req,
                     Some("config"),
                     &SETPOINT_POLICY,
@@ -1835,7 +2054,7 @@ async fn handle_command<NS>(
             tracing::info!("Resetting all config to defaults");
             let res = client
                 .at_least_once::<ConfigEndpoint>(
-                    DEVICE_ADDR,
+                    device_addr,
                     &ConfigRequest::ResetAll,
                     Some("config"),
                     &SETPOINT_POLICY,
@@ -1846,7 +2065,7 @@ async fn handle_command<NS>(
         HostCommand::Fault(req, reply_tx) => {
             tracing::info!("Fault request: {:?}", req);
             let res = client
-                .at_least_once::<FaultEndpoint>(DEVICE_ADDR, &req, Some("fault"), &SETPOINT_POLICY)
+                .at_least_once::<FaultEndpoint>(device_addr, &req, Some("fault"), &SETPOINT_POLICY)
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }
@@ -1864,7 +2083,7 @@ async fn handle_command<NS>(
                 let keyed = Keyed::new(next_detect_id(), req);
                 let res = client
                     .effectively_once::<DetectEndpoint>(
-                        DEVICE_ADDR,
+                        device_addr,
                         &keyed,
                         Some("detect"),
                         &DETECT_POLICY,

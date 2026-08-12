@@ -293,9 +293,23 @@ pub async fn fault_topic_task(stack: &'static Stack) {
     fault_topic_stream::<_, _, EmbassyTimer>(stack, &FAULT_REGISTRY).await;
 }
 
+/// Ergot well-known services (mirrors the f405's rationale, minus the seed
+/// router — no bridge is expected downstream of this board yet): ping is the
+/// bridge/upstream discovery bootstrap, socket-query answers the host's
+/// connect-time address resolution.
+#[embassy_executor::task]
+pub async fn well_known_services_task(stack: &'static Stack) {
+    embassy_futures::join::join(
+        stack.services().ping_handler::<2>(),
+        stack.services().socket_query_handler::<2>(),
+    )
+    .await;
+}
+
 pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, idents: &heapless::Vec<u8, 3>) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
     spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
+    spawner.spawn(defmt::unwrap!(well_known_services_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
     // RTT bench: broadcaster + synthetic generator (no FOC ISR on this board).
     #[cfg(feature = "transport-rtt")]

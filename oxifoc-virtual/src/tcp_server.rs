@@ -141,6 +141,14 @@ pub async fn run(
             detect_server(endpoints, vbus, max_current_a, foc_freq_hz, motor_params).await;
         }
     });
+    // Well-known socket-query handler: answers the host's connect-time
+    // address resolution (same service the firmware runs).
+    tokio::spawn({
+        let services = stack.services();
+        async move {
+            services.socket_query_handler::<4>().await;
+        }
+    });
 
     let mut prev_conn: Option<(CancellationToken, u8)> = None;
     loop {

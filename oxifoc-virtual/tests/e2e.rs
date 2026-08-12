@@ -121,6 +121,15 @@ fn run_e2e(transport: TransportType) {
         rt.wait_for_connection(Duration::from_secs(15)),
         "[{transport_arg}] device should connect (HardwareInfo handshake)"
     );
+    // The connect path must have RESOLVED the controller via SocketQuery,
+    // not silently fallen back to the link-local peer — the virtual device
+    // serves socket_query_handler, so a fallback means the resolution flood
+    // or the handler regressed.
+    let addr = rt.device_address();
+    assert!(
+        (addr.network_id, addr.node_id) != (0, 1),
+        "[{transport_arg}] controller address should be resolved, got link-local fallback"
+    );
     let hw = {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut latest = None;
