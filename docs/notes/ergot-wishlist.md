@@ -26,13 +26,26 @@ Each entry: the pain as observed in oxifoc, then the upstream shape.
    `request_with_deadline` taking an implementation of the same Timer-style
    trait core uses, or a first-class `deadline` param on the client handle.
 
-3. **Edge net-id discovery without an app-layer keep-alive.** The
-   `EdgeFrameProcessor` can only learn its net_id from an inbound frame
-   addressed to it, so oxifoc-bridge runs `upstream_link_task` — a 2 s ping
-   loop whose only real job is to provoke that frame — and the f405 serves
-   `ping_handler` mostly to answer it. Upstream shape: a built-in periodic
-   hello/solicitation on edge interfaces (tiny frame, off by default, one
-   config knob), which would also give liveness a TX-side signal.
+3. **Edge net-id discovery via solicit, not keep-alive.** (Reframed
+   2026-08-13 — the earlier "hello service" phrasing conflated two needs.)
+   The `EdgeFrameProcessor` can only learn its net_id from an inbound
+   frame addressed to it and ergot generates no traffic itself, so
+   discovery parasitizes on application traffic: oxifoc-bridge runs
+   `upstream_link_task` — a 2 s ping loop, forever, even once discovered —
+   and every central must remember to serve `ping_handler` (the g474
+   didn't; a bridge behind it could never discover its upstream).
+   Upstream shape: an *event-driven* solicit — after registration or a
+   liveness revert the edge sends a link-local "assign me a net_id"
+   request (well-known endpoint next to the seed-router family, or via
+   the `direct_edge.rs` TODO "accept any packet if we don't have a
+   net_id yet"), retries until first answer, then goes quiet. Pairs with
+   the `AwaitingDiscovery` state (entry 4): a quiet discovered link stays
+   silent and stable; "undiscovered" is visible in state, not logs.
+   Deliberately NOT a periodic keepalive: liveness stays a passive RX
+   watchdog, which is fine — links with natural traffic feed it already,
+   and fast dead-link detection on genuinely quiet links is an
+   application concern (oxifoc doesn't need it: safety rides the ISR
+   deadman, and the host's slow-poll feeds liveness on its own).
 
 4. **Split "link dead" from "not yet discovered".**
    `revert_to_link_local_on_timeout()` folds both into
