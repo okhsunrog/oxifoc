@@ -1,4 +1,5 @@
 use crate::transport::{TransportConfig, TransportType};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::{env, fs, path::PathBuf};
 
@@ -59,32 +60,23 @@ pub enum ReconnectPolicy {
 }
 
 impl HostConfig {
-    pub fn load_default() -> Option<Self> {
-        if let Ok(p) = env::var("OXIFOC_HOST_CONFIG") {
-            return Self::from_path(PathBuf::from(p));
+    pub fn load_default() -> Result<Option<Self>> {
+        if let Some(p) = env::var_os("OXIFOC_HOST_CONFIG") {
+            return Self::from_path(PathBuf::from(p)).map(Some);
         }
-        let cwd = env::current_dir().ok()?;
+        let cwd = env::current_dir().context("resolve current directory for host config")?;
         let p = cwd.join("oxifoc-host.toml");
         if p.exists() {
-            return Self::from_path(p);
+            return Self::from_path(p).map(Some);
         }
-        None
+        Ok(None)
     }
 
-    fn from_path(path: PathBuf) -> Option<Self> {
-        match fs::read_to_string(&path) {
-            Ok(s) => match toml::from_str::<Self>(&s) {
-                Ok(cfg) => Some(cfg),
-                Err(e) => {
-                    eprintln!("Failed to parse config (TOML) {}: {}", path.display(), e);
-                    None
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read config {}: {}", path.display(), e);
-                None
-            }
-        }
+    fn from_path(path: PathBuf) -> Result<Self> {
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("read host config {}", path.display()))?;
+        toml::from_str::<Self>(&contents)
+            .with_context(|| format!("parse host config {} as TOML", path.display()))
     }
 
     pub fn reconnect_policy(&self) -> ReconnectPolicy {
@@ -117,7 +109,7 @@ impl HostConfig {
         self.transport.clone().unwrap_or_default()
     }
 
-    pub fn transport_config(&self) -> anyhow::Result<TransportConfig> {
+    pub fn transport_config(&self) -> Result<TransportConfig> {
         match self.transport_type() {
             #[cfg(feature = "desktop")]
             TransportType::Serial => Ok(TransportConfig::Serial {
@@ -156,5 +148,37 @@ impl HostConfig {
                 Ok(TransportConfig::Ble { device })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_config_path(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        env::temp_dir().join(format!("oxifoc-host-{name}-{nonce}.toml"))
+    }
+
+    #[test]
+    fn explicit_invalid_config_is_an_error() {
+        let path = temp_config_path("invalid");
+        fs::write(&path, "transport = [not valid toml").expect("write temporary invalid config");
+
+        let err = HostConfig::from_path(path.clone()).expect_err("invalid config must fail");
+        assert!(err.to_string().contains("parse host config"));
+
+        fs::remove_file(path).expect("remove temporary config");
+    }
+
+    #[test]
+    fn missing_explicit_config_is_an_error() {
+        let path = temp_config_path("missing");
+        let err = HostConfig::from_path(path).expect_err("missing config must fail");
+        assert!(err.to_string().contains("read host config"));
     }
 }

@@ -458,7 +458,16 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
             let register_fn = {
                 let stack = stack.clone();
                 let notify = state_notify.clone();
-                async move || transport::usb::register(&stack, &queue, Some(notify.clone())).await
+                let mut selected_identity = None;
+                async move || {
+                    transport::usb::register(
+                        &stack,
+                        &queue,
+                        Some(notify.clone()),
+                        &mut selected_identity,
+                    )
+                    .await
+                }
             };
             run_framed_with_reconnect(stack, register_fn, state_notify, &cfg, ctx).await
         }
@@ -525,6 +534,7 @@ where
     let mut defmt_started = false;
     let policy = cfg.reconnect_policy();
     let mut connect_attempts: u32 = 0;
+    let mut expected_device_uuid: Option<String> = None;
 
     loop {
         let reg_result = tokio::select! {
@@ -579,7 +589,8 @@ where
         }
 
         // HardwareInfo handshake on each (re)connection
-        let handshake_ok = hardware_info_handshake(&stack, &info_tx, &connected).await;
+        let handshake_ok =
+            hardware_info_handshake(&stack, &info_tx, &connected, &mut expected_device_uuid).await;
 
         if !handshake_ok {
             tracing::warn!("Handshake failed, reconnecting...");
@@ -678,6 +689,7 @@ where
     let mut defmt_started = false;
     let policy = cfg.reconnect_policy();
     let mut connect_attempts: u32 = 0;
+    let mut expected_device_uuid: Option<String> = None;
 
     loop {
         // Try to connect
@@ -763,7 +775,8 @@ where
         }
 
         // HardwareInfo handshake on each (re)connection
-        let handshake_ok = hardware_info_handshake(&stack, &info_tx, &connected).await;
+        let handshake_ok =
+            hardware_info_handshake(&stack, &info_tx, &connected, &mut expected_device_uuid).await;
 
         if !handshake_ok {
             tracing::warn!("Handshake failed, reconnecting...");
@@ -909,6 +922,7 @@ async fn hardware_info_handshake<NS>(
     stack: &NS,
     info_tx: &Sender<HardwareInfo>,
     connected: &Arc<AtomicBool>,
+    expected_device_uuid: &mut Option<String>,
 ) -> bool
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
@@ -931,19 +945,32 @@ where
                     dev_info.max_current_a,
                     dev_info.proto_version,
                 );
-                if dev_info.proto_version != oxifoc_core::types::ICD_PROTO_VERSION {
-                    tracing::warn!(
-                        "PROTOCOL VERSION MISMATCH: device proto v{}, host proto v{} — update \
-                         whichever is older; some endpoints/topics may not route or may be \
-                         misinterpreted",
+                if !protocol_is_compatible(dev_info.proto_version) {
+                    tracing::error!(
+                        "PROTOCOL VERSION MISMATCH: device proto v{}, host proto v{} — refusing \
+                         the connection; update whichever side is older",
                         dev_info.proto_version,
                         oxifoc_core::types::ICD_PROTO_VERSION,
                     );
+                    connected.store(false, Ordering::Relaxed);
+                    return false;
                 }
-                // try_send: the consumer may have stopped reading (the GUI's
-                // info listener reads exactly one message). A blocking send
-                // on this bounded channel would wedge the whole backend after
-                // a few reconnects. Dropping a handshake info is harmless.
+                let device_uuid = dev_info.uuid.as_str();
+                if let Some(expected) = expected_device_uuid.as_deref() {
+                    if device_uuid != expected {
+                        tracing::error!(
+                            "DEVICE IDENTITY MISMATCH: connected uuid='{}', expected uuid='{}' — \
+                             refusing to switch controllers during reconnect",
+                            device_uuid,
+                            expected,
+                        );
+                        connected.store(false, Ordering::Relaxed);
+                        return false;
+                    }
+                } else {
+                    *expected_device_uuid = Some(device_uuid.to_owned());
+                }
+                // Never block the backend if a consumer stops reading.
                 let _ = info_tx.try_send(dev_info);
                 connected.store(true, Ordering::Relaxed);
                 return true;
@@ -960,6 +987,10 @@ where
     }
     tracing::warn!("Device info not received after retries; giving up — caller will reconnect");
     false
+}
+
+fn protocol_is_compatible(device_version: u16) -> bool {
+    device_version == oxifoc_core::types::ICD_PROTO_VERSION
 }
 
 /// Send TelemetryConfig to enable fast telemetry streaming.
@@ -1617,7 +1648,7 @@ fn log_defmt_frame(level: Option<DefmtLevel>, msg: &impl std::fmt::Display) {
 
 #[cfg(test)]
 mod tests {
-    use super::should_start_defmt;
+    use super::{protocol_is_compatible, should_start_defmt};
 
     #[test]
     fn transport_scoped_defmt_restarts_but_network_decoder_does_not() {
@@ -1625,5 +1656,13 @@ mod tests {
         assert!(should_start_defmt(true, false, false));
         assert!(!should_start_defmt(true, true, false));
         assert!(should_start_defmt(true, true, true));
+    }
+
+    #[test]
+    fn protocol_version_must_match_exactly() {
+        let current = oxifoc_core::types::ICD_PROTO_VERSION;
+        assert!(protocol_is_compatible(current));
+        assert!(!protocol_is_compatible(current.wrapping_add(1)));
+        assert!(!protocol_is_compatible(current.wrapping_sub(1)));
     }
 }

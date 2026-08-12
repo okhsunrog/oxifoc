@@ -137,6 +137,7 @@ pub async fn register(
             Ok(n) => n,
             Err(e) => {
                 error!("[ble] failed to subscribe to NUS TX: {:?}", e);
+                mark_down(&rx_stack, rx_notify.as_ref());
                 return;
             }
         };
@@ -145,8 +146,10 @@ pub async fn register(
 
     // Spawn TX worker
     let tx_queue = queue.clone();
+    let tx_stack = stack.clone();
+    let tx_notify = state_notify.clone();
     workers.push(tokio::spawn(async move {
-        ble_tx_worker(tx_queue, rx_char).await;
+        ble_tx_worker(tx_queue, rx_char, tx_stack, tx_notify).await;
     }));
 
     info!("BLE NUS transport registered");
@@ -181,17 +184,17 @@ async fn ble_rx_worker(
         }
     }
 
-    stack.manage_profile(|im| {
-        let _ = im.set_interface_state((), InterfaceState::Down);
-    });
-    if let Some(ref n) = state_notify {
-        n.wake_all();
-    }
+    mark_down(&stack, state_notify.as_ref());
     warn!("[ble rx] worker exited");
 }
 
 /// TX worker: reads framed ergot data from bbqueue and writes to NUS RX char.
-async fn ble_tx_worker(queue: StdQueue, rx_char: Characteristic) {
+async fn ble_tx_worker(
+    queue: StdQueue,
+    rx_char: Characteristic,
+    stack: EdgeStack,
+    state_notify: Option<Arc<WaitQueue>>,
+) {
     use ergot::exports::bbqueue::traits::bbqhdl::BbqHandle;
     let consumer: ergot::exports::bbqueue::prod_cons::framed::FramedConsumer<StdQueue> =
         queue.framed_consumer();
@@ -207,5 +210,15 @@ async fn ble_tx_worker(queue: StdQueue, rx_char: Characteristic) {
         frame.release();
     }
 
+    mark_down(&stack, state_notify.as_ref());
     warn!("[ble tx] worker exited");
+}
+
+fn mark_down(stack: &EdgeStack, state_notify: Option<&Arc<WaitQueue>>) {
+    stack.manage_profile(|im| {
+        let _ = im.set_interface_state((), InterfaceState::Down);
+    });
+    if let Some(notify) = state_notify {
+        notify.wake_all();
+    }
 }

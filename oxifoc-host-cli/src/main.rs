@@ -876,7 +876,7 @@ fn main() -> Result<()> {
 
 fn build_config(cli: &Cli) -> Result<HostConfig> {
     // Start with defaults from config file
-    let mut cfg = HostConfig::load_default().unwrap_or_default();
+    let mut cfg = HostConfig::load_default()?.unwrap_or_default();
 
     // Override with CLI arguments
     if let Some(transport) = cli.transport {
