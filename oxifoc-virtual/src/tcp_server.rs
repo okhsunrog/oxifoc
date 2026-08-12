@@ -50,6 +50,11 @@ use oxifoc_core::foc::fault::StandardFault;
 
 const ERGOT_MTU: u16 = 2048;
 
+const _: () = assert!(
+    ERGOT_MTU as usize
+        >= oxifoc_core::types::FAST_BATCH_BYTES + oxifoc_core::types::FAST_BATCH_WIRE_OVERHEAD
+);
+
 /// Router sizing for the persistent stack: at most one live client interface,
 /// but reconnects can briefly overlap (the previous interface deregisters on
 /// socket EOF / liveness timeout, which may lag the next `accept`). A handful of

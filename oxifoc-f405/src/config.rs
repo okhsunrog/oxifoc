@@ -138,6 +138,13 @@ pub const RTT_OUT_QUEUE_SIZE: usize = 4096;
 /// Maximum packet size for ergot framing
 pub const MAX_PACKET_SIZE: usize = 512;
 
+// This value is also every interface's TX MTU: a full fast-telemetry batch
+// plus wire overhead must fit or full batches silently fail to broadcast.
+const _: () = assert!(
+    MAX_PACKET_SIZE
+        >= oxifoc_core::types::FAST_BATCH_BYTES + oxifoc_core::types::FAST_BATCH_WIRE_OVERHEAD
+);
+
 /// UART baud rate for USART3 (Cheap FOCer 2 external connector)
 pub const UART_BAUD: u32 = 921_600;
 

@@ -399,14 +399,22 @@ pub struct FastTelemetry {
 }
 
 /// Samples per fast-telemetry batch. Sized so the encoded batch statically
-/// fits every board's `MAX_PACKET_SIZE` (1024): 576 B payload + ~15 B
-/// header/len/COBS. Batch size does not move throughput on the byte-rate-bound
-/// debug links (docs/notes/rtt-telemetry-throughput.md §4.7) — it only has to
-/// fit the MTU.
-pub const FAST_BATCH_SAMPLES: usize = 32;
+/// fits the SMALLEST board interface MTU (f405 `MAX_PACKET_SIZE` = 512):
+/// 26 × 18 = 468 B payload + [`FAST_BATCH_WIRE_OVERHEAD`]. The previous 32
+/// (576 B) exceeded 512 and full batches silently failed to broadcast on the
+/// f405 (visible only as `BCAST_FAILS`). Every device crate pins the
+/// relationship with a compile-time assert next to its `MAX_PACKET_SIZE`.
+/// Batch size does not move throughput on the byte-rate-bound debug links
+/// (docs/notes/rtt-telemetry-throughput.md §4.7) — it only has to fit the MTU.
+pub const FAST_BATCH_SAMPLES: usize = 26;
 
 /// Byte capacity of a fast-telemetry batch: samples × 18 B Pod frame.
 pub const FAST_BATCH_BYTES: usize = FAST_BATCH_SAMPLES * size_of::<FastTelemetry>();
+
+/// Worst-case wire bytes around an encoded batch topic frame: ergot's
+/// `MAX_HDR_ENCODED_SIZE` (28, includes the broadcast key appendix) + the
+/// postcard varint length prefix (2 for lengths ≤ 16383) + slack.
+pub const FAST_BATCH_WIRE_OVERHEAD: usize = 32;
 
 /// Batch of fast telemetry samples for efficient network transmission.
 ///

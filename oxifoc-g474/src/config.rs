@@ -85,6 +85,13 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
 /// Maximum size of a single packet
 pub const MAX_PACKET_SIZE: usize = 1024;
 
+// This value is also every interface's TX MTU: a full fast-telemetry batch
+// plus wire overhead must fit or full batches silently fail to broadcast.
+const _: () = assert!(
+    MAX_PACKET_SIZE
+        >= oxifoc_core::types::FAST_BATCH_BYTES + oxifoc_core::types::FAST_BATCH_WIRE_OVERHEAD
+);
+
 /// USB liveness timeout (ms): mark the USB interface Down if no frame arrives
 /// within this window. Shorter than the UART/ICD timeout for faster reaction.
 pub const USB_LIVENESS_TIMEOUT_MS: u64 = 3000;

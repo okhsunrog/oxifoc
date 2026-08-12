@@ -53,6 +53,11 @@ use oxifoc_core::foc::fault::StandardFault;
 
 const ERGOT_MTU: u16 = 2048;
 
+const _: () = assert!(
+    ERGOT_MTU as usize
+        >= oxifoc_core::types::FAST_BATCH_BYTES + oxifoc_core::types::FAST_BATCH_WIRE_OVERHEAD
+);
+
 /// Router sizing for the persistent stack: sessions are strictly sequential
 /// (rebind waits for full teardown), so one live interface at a time — a few
 /// slots give headroom and freed net_ids are recycled. No downstream seed routes.
