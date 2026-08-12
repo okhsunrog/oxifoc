@@ -1,5 +1,5 @@
 use crate::{MAX_CHANNELS, PlotBuffer};
-use slint::wgpu_28::wgpu;
+use slint::wgpu_30::wgpu;
 
 // Matches the `PlotParams` struct in shader.wgsl exactly.
 #[repr(C)]
@@ -141,7 +141,7 @@ impl PlotRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("plot_pipeline_layout"),
-            bind_group_layouts: &[&bgl],
+            bind_group_layouts: &[Some(&bgl)],
             immediate_size: size_of::<PlotParams>() as u32,
         });
 

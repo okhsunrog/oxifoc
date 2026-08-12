@@ -4,7 +4,7 @@ mod renderer;
 pub use buffer::PlotBuffer;
 pub use renderer::{PlotConfig, PlotRenderer};
 
-use slint::wgpu_28::{WGPUSettings, wgpu};
+use slint::wgpu_30::{WGPUSettings, wgpu};
 
 /// Maximum number of channels supported by the shader.
 pub const MAX_CHANNELS: usize = 8;
@@ -14,7 +14,7 @@ pub const MAX_CHANNELS: usize = 8;
 /// - `max_capacity`  — largest ring-buffer capacity you will use across all charts.
 /// - `max_channels`  — largest number of channels in any single chart.
 ///
-/// Pass the returned settings to [`slint::BackendSelector::require_wgpu_28`].
+/// Pass the returned settings to [`slint::BackendSelector::require_wgpu_30`].
 pub fn required_wgpu_settings(max_capacity: usize, max_channels: usize) -> WGPUSettings {
     let mut s = WGPUSettings::default();
     s.device_required_features = wgpu::Features::IMMEDIATES;
@@ -22,6 +22,6 @@ pub fn required_wgpu_settings(max_capacity: usize, max_channels: usize) -> WGPUS
     s.device_required_limits
         .max_storage_buffers_per_shader_stage = 1;
     s.device_required_limits.max_storage_buffer_binding_size =
-        (max_capacity * max_channels * size_of::<f32>()) as u32;
+        (max_capacity * max_channels * size_of::<f32>()) as u64;
     s
 }

@@ -30,7 +30,7 @@ use oxifoc_host_lib::{
 };
 #[cfg(feature = "desktop")]
 use oxifoc_host_lib::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
-use slint::wgpu_28::WGPUConfiguration;
+use slint::wgpu_30::WGPUConfiguration;
 use slint::{
     GraphicsAPI, Image, Model, ModelRc, RenderingState, SharedString, StandardListViewItem,
     VecModel,
@@ -301,7 +301,7 @@ pub fn main() {
     // The largest chart has 3 channels (phase currents).
     let wgpu_settings = required_wgpu_settings(CAPACITY, 3);
     slint::BackendSelector::new()
-        .require_wgpu_28(WGPUConfiguration::Automatic(wgpu_settings))
+        .require_wgpu_30(WGPUConfiguration::Automatic(wgpu_settings))
         .select()
         .expect("Failed to initialise WGPU backend");
 
@@ -450,7 +450,7 @@ pub fn main() {
             .set_rendering_notifier(move |state, graphics_api| match state {
                 RenderingState::RenderingSetup => {
                     tracing::info!("RenderingSetup: graphics_api = {:?}", graphics_api);
-                    if let GraphicsAPI::WGPU28 { device, queue, .. } = graphics_api {
+                    if let GraphicsAPI::WGPU30 { device, queue, .. } = graphics_api {
                         cr = Some(PlotRenderer::new(
                             device,
                             queue,

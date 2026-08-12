@@ -62,7 +62,7 @@ oxifoc-core = { path = "oxifoc-core" }
 # Git deps are pinned to revs for reproducible builds (CI runs with --locked).
 # To bump: update the rev here AND in the excluded device crates' Cargo.toml
 # (oxifoc-g474/f405/bridge/remote), then refresh all Cargo.lock files.
-# ergot rev = upstream main HEAD 2026-08-06 (edge_link_local ctor +
+# ergot rev = upstream main HEAD 2026-08-12 (edge_link_local ctor +
 # revert-to-link-local liveness policy + the #217 soundness batch)
 ergot = { git = "https://github.com/okhsunrog/ergot", rev = "5a5fab8234339ecdc252e18c41ef2676bd6bb091" }
 tokio = { version = "1.53", features = ["full"] }
@@ -73,9 +73,11 @@ anyhow = "1.0"
 crossbeam-channel = "0.5.16"
 clap = { version = "4.6", features = ["derive"] }
 toml = "1.1"
-slint = { version = "1.17.1", default-features = false, features = ["std", "unstable-wgpu-28", "compat-1-2"] }
-wgpu = { version = "28", default-features = false, features = ["wgsl", "vulkan"] }
-slint-build = "1.17.1"
+# Slint upstream calls its default branch `master`; pin its current HEAD for
+# reproducible access to the wgpu 30 integration.
+slint = { git = "https://github.com/slint-ui/slint.git", rev = "64ee54de49999a97d97ffe004e30904e8e9118a3", version = "1.18.0", default-features = false, features = ["std", "unstable-wgpu-30", "compat-1-2"] }
+wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan"] }
+slint-build = { git = "https://github.com/slint-ui/slint.git", rev = "64ee54de49999a97d97ffe004e30904e8e9118a3", version = "1.18.0" }
 bytemuck = { version = "1", features = ["derive"] }
 bbqueue = "0.7"
 
