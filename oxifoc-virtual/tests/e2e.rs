@@ -22,12 +22,12 @@ use std::time::{Duration, Instant};
 use oxifoc_core::storage::FailsafeConfigStored;
 use oxifoc_core::types::{
     ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, ConfigValue, ConfigWrite,
-    ControlMode, CurrentOffsetMethod, DetectRequest, DetectResponse, Keyed, MotorCommandOutcome,
-    ReqId,
+    ControlMode, CurrentOffsetMethod, DetectRequest, DetectResponse, FaultClear, FaultClearTarget,
+    FaultRequest, FaultResponse, Keyed, MotorCommandOutcome, ReqId,
 };
 use oxifoc_host_lib::{
     HostCommand, HostConfig, ReconnectPolicy, TransportType, config_channel, detect_channel,
-    motor_channel, start_host,
+    fault_channel, motor_channel, start_host,
 };
 
 /// Kills the spawned virtual device when the test ends (even on panic).
@@ -349,6 +349,63 @@ fn run_e2e(transport: TransportType) {
     assert_eq!(snapshot.revision, 1);
     assert!(snapshot.persisted);
     assert!(matches!(snapshot.value, Some(ConfigValue::Failsafe(_))));
+
+    // 7) Fault Clear is generation-guarded and keyed. Retrying a lost ACK
+    // cannot clear a later occurrence, while a stale observation conflicts.
+    let (tx, rx) = fault_channel();
+    rt.cmd_tx
+        .send(HostCommand::Fault(FaultRequest::Query, tx))
+        .expect("send fault query");
+    let FaultResponse::Snapshot(faults) = rx
+        .blocking_recv()
+        .expect("fault query response channel")
+        .expect("fault query")
+    else {
+        panic!("fault query must return a snapshot");
+    };
+    let clear = Keyed::new(
+        ReqId(0xFA17_0001),
+        FaultClear {
+            expected_generation: faults.generation,
+            target: FaultClearTarget::All,
+        },
+    );
+    for attempt in 0..2 {
+        let (tx, rx) = fault_channel();
+        rt.cmd_tx
+            .send(HostCommand::Fault(FaultRequest::Clear(clear.clone()), tx))
+            .expect("send fault clear");
+        assert_eq!(
+            rx.blocking_recv()
+                .expect("fault clear response channel")
+                .expect("fault clear"),
+            FaultResponse::Cleared {
+                req_id: clear.id,
+                snapshot: faults.clone(),
+            },
+            "fault clear attempt {attempt} must be deduplicated"
+        );
+    }
+
+    let (tx, rx) = fault_channel();
+    rt.cmd_tx
+        .send(HostCommand::Fault(
+            FaultRequest::Clear(Keyed::new(
+                ReqId(0xFA17_0002),
+                FaultClear {
+                    expected_generation: faults.generation.wrapping_add(1),
+                    target: FaultClearTarget::All,
+                },
+            )),
+            tx,
+        ))
+        .expect("send stale fault clear");
+    assert_eq!(
+        rx.blocking_recv()
+            .expect("stale fault response channel")
+            .expect("stale fault protocol response"),
+        FaultResponse::Conflict(faults)
+    );
 
     rt.shutdown();
 }

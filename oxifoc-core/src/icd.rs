@@ -13,7 +13,7 @@
 //! | Topic | Message | Description |
 //! |-------|---------|-------------|
 //! | `FastTelemetryTopic` | `FastTelemetryBatch` | High-frequency motor data (default 1kHz) |
-//! | `FaultTopic` | `FaultResponse` | Fault snapshot pushed on every registry change |
+//! | `FaultTopic` | `FaultSnapshot` | Revisioned snapshot pushed on every registry change |
 //!
 //! # Endpoints (request/response)
 //!
@@ -84,10 +84,10 @@ endpoint!(
 // once at stream start. Snapshot-not-delta on purpose: topics are
 // fire-and-forget (no ack), so a lost packet must cost staleness, not a
 // wrong state — the next change resends everything, and the remote's
-// SlowTelemetry poll (`fault_count`) detects a stale view and re-queries
-// via FaultEndpoint. The remote keys vibration/UI off `FaultInfo::severity`,
+// SlowTelemetry poll (`fault_generation`) detects a stale view and re-queries
+// via FaultEndpoint, including same-count refinements. The remote keys vibration/UI off `FaultInfo::severity`,
 // never off hardcoded categories.
-ergot::topic!(FaultTopic, FaultResponse, "telemetry/faults");
+ergot::topic!(FaultTopic, FaultSnapshot, "telemetry/faults");
 
 // TODO: EnergyTelemetryTopic — add when energy tracking is implemented
 // topic!(EnergyTelemetryTopic, EnergyTelemetry, "telemetry/energy");

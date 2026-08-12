@@ -345,7 +345,7 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
 /// the pull/clear side).
 #[embassy_executor::task]
 pub async fn fault_topic_task(stack: &'static Stack) {
-    fault_topic_stream(stack, &FAULT_REGISTRY).await;
+    fault_topic_stream::<_, _, EmbassyTimer>(stack, &FAULT_REGISTRY).await;
 }
 
 // ========== Task Spawning ==========

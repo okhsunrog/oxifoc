@@ -1069,6 +1069,22 @@ pub fn run_foc_cycle<P, C, Ph, S, F>(
 pub fn publish_cycle_telemetry(state_mutex, adc, hall, foc, seq);
 ```
 
+### Host connection admission
+
+Transport `Active` is only a physical/routing state; it is not permission to
+operate a controller. On every connection generation the host completes the
+frozen `HardwareInfo` bootstrap and requires exact magic, protocol version,
+and the UUID pinned by the first successful handshake. Command dispatch and
+topic delivery remain closed until those checks pass, so a newly enumerated
+USB device cannot receive a command during the identity-check window.
+
+USB enumeration additionally pins descriptor identity and refuses ambiguous
+matches rather than selecting the first device. The firmware UUID is the final
+controller identity check after reconnect. RTT similarly refuses implicit
+selection when multiple probes are present. Every transport worker must drive
+the ergot interface to `Down` and wake the reconnect waiter on either RX or TX
+failure; BLE does this symmetrically for notification and write failures.
+
 ### Protocol Endpoints
 
 Ergot endpoints (defined in `oxifoc-core/src/icd.rs`) are served by the
@@ -1095,6 +1111,14 @@ Notable wire-type details:
   `motor_temp_c_x10`, `board_temp_c_x10`.
 - Detection is the one non-idempotent action: its request carries a `ReqId`
   and the device deduplicates on it (effectively-once retries).
+- Fault state carries a monotonic generation in both `FaultSnapshot` and
+  `SlowTelemetry`. A failed topic enqueue stays dirty and retries the latest
+  coalesced snapshot; the host queries when slow telemetry is newer than the
+  last snapshot delivered to its consumer. This catches payload refinements
+  and clear+add changes even when `fault_count` is unchanged.
+- Fault Clear carries `ReqId + expected_generation`; the comparison and clear
+  happen under the registry lock. A retry returns the current snapshot without
+  executing Clear twice, while a concurrent fault mutation returns `Conflict`.
 - Config mutation is revisioned and keyed: retries replay the cached action
   response, while a different writer with a stale `expected_revision` receives
   `Conflict` instead of overwriting or persisting an unintended value.

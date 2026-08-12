@@ -475,6 +475,15 @@ their section.
   hardcoded categories. Host side: `HostRuntime::fault_rx` +
   `oxifoc-host-cli faults --watch`. E2E-verified against the virtual
   device.
+- **2026-08-12 — fault snapshots are generation-reconciled; Clear is
+  conditional and keyed.** The earlier `fault_count` loss backstop could not
+  see a payload refinement or clear+add with the same count, and a retried
+  blind Clear could erase a new occurrence after its first ACK was lost.
+  `FaultSnapshot` and `SlowTelemetry` now carry the same monotonic generation;
+  failed topic enqueue remains dirty and host reconciliation queries until the
+  newest snapshot reaches its consumer. Clear uses `ReqId +
+  expected_generation`, checked atomically with registry mutation; duplicate
+  delivery never executes the action twice.
 - **2026-06-13 — graduated derating + protection consolidation (phase 5
   of the fault overhaul).** Continuous power rolloff BEFORE any fault
   (`motor/derating.rs`): two min-composed scales — drive (thermal with

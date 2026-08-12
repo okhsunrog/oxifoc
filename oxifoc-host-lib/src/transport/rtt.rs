@@ -179,7 +179,12 @@ pub fn connect(
         if probes.is_empty() {
             return Err(anyhow!("No debug probes found"));
         }
-        info!("Auto-selecting first probe: {:?}", probes[0]);
+        if probes.len() > 1 {
+            return Err(anyhow!(
+                "Multiple debug probes found; refusing to reset an arbitrary target. Select one with probe = 'VID:PID:SERIAL': {probes:?}"
+            ));
+        }
+        info!("Auto-selecting the only probe: {:?}", probes[0]);
         probes[0].open().context("Failed to open probe")?
     };
 

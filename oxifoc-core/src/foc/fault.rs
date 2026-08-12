@@ -22,7 +22,7 @@
 
 use crate::foc::hall_sensor::HallFaultKind;
 #[cfg(feature = "runtime")]
-use crate::types::{FaultResponse, MAX_FAULT_RESPONSE};
+use crate::types::{FaultSnapshot, MAX_FAULT_RESPONSE};
 #[cfg(feature = "runtime")]
 use core::cell::RefCell;
 #[cfg(feature = "runtime")]
@@ -133,7 +133,7 @@ impl FaultCategory {
 /// Contains a category (fixed enum), the response class, plus a
 /// human-readable detail string that platforms can populate with specific
 /// information.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct FaultInfo {
     /// Fault category
@@ -336,6 +336,9 @@ pub struct FaultRegistry<F: PlatformFault> {
     /// as bit index); bit 16: any Kill-class; bit 17: any stopping-class
     /// (GracefulStop or Kill). Rebuilt inside the lock on every mutation.
     summary: core::sync::atomic::AtomicU32,
+    /// Monotonic mutation generation mirrored into the wire snapshot and
+    /// SlowTelemetry. Updated while the fault-list lock is held.
+    generation: core::sync::atomic::AtomicU32,
 }
 
 #[cfg(feature = "runtime")]
@@ -365,6 +368,7 @@ impl<F: PlatformFault> FaultRegistry<F> {
             faults: CriticalSectionMutex::new(RefCell::new(Vec::new())),
             changed: Signal::new(),
             summary: core::sync::atomic::AtomicU32::new(0),
+            generation: core::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -393,6 +397,10 @@ impl<F: PlatformFault> FaultRegistry<F> {
             };
             self.summary
                 .store(summary_of(&faults), core::sync::atomic::Ordering::Relaxed);
+            if res.0 || res.1 {
+                self.generation
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
             res
         });
 
@@ -411,6 +419,8 @@ impl<F: PlatformFault> FaultRegistry<F> {
                 faults.swap_remove(pos);
                 self.summary
                     .store(summary_of(&faults), core::sync::atomic::Ordering::Relaxed);
+                self.generation
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 true
             } else {
                 false
@@ -434,12 +444,61 @@ impl<F: PlatformFault> FaultRegistry<F> {
             let had = !faults.is_empty();
             faults.clear();
             self.summary.store(0, core::sync::atomic::Ordering::Relaxed);
+            if had {
+                self.generation
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
             had
         });
 
         if had_faults {
             self.changed.signal(());
         }
+    }
+
+    /// Clear one category (`Some`) or all faults (`None`) only if the caller
+    /// observed the exact current generation. The check and mutation share
+    /// the registry lock, closing the query→clear TOCTOU window against ISR
+    /// fault updates.
+    pub fn clear_if_generation(
+        &self,
+        expected_generation: u32,
+        category: Option<FaultCategory>,
+    ) -> bool {
+        let (matched, changed) = self.faults.lock(|cell| {
+            if self.generation.load(core::sync::atomic::Ordering::Relaxed) != expected_generation {
+                return (false, false);
+            }
+
+            let mut faults = cell.borrow_mut();
+            let changed = match category {
+                Some(category) => {
+                    if let Some(pos) = faults.iter().position(|f| f.category() == category) {
+                        faults.swap_remove(pos);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                None => {
+                    let had = !faults.is_empty();
+                    faults.clear();
+                    had
+                }
+            };
+            if changed {
+                self.summary
+                    .store(summary_of(&faults), core::sync::atomic::Ordering::Relaxed);
+                self.generation
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
+            (true, changed)
+        });
+
+        if changed {
+            self.changed.signal(());
+        }
+        matched
     }
 
     /// Returns true if any fault is active
@@ -484,18 +543,29 @@ impl<F: PlatformFault> FaultRegistry<F> {
         })
     }
 
-    /// Protocol snapshot (`FaultResponse`): at most `MAX_FAULT_RESPONSE`
+    /// Protocol snapshot (`FaultSnapshot`): at most `MAX_FAULT_RESPONSE`
     /// entries plus the true total so the consumer can see truncation.
     /// Shared by the fault endpoint server and the fault topic publisher —
     /// both must serialize the registry identically.
-    pub fn snapshot_response(&self) -> FaultResponse {
-        let infos = self.to_fault_info_vec();
-        let total = infos.len() as u8;
-        let mut faults = Vec::new();
-        for info in infos.iter().take(MAX_FAULT_RESPONSE) {
-            let _ = faults.push(info.clone());
-        }
-        FaultResponse { faults, total }
+    pub fn snapshot_response(&self) -> FaultSnapshot {
+        self.faults.lock(|cell| {
+            let stored = cell.borrow();
+            let total = stored.len() as u8;
+            let mut faults = Vec::new();
+            for fault in stored.iter().take(MAX_FAULT_RESPONSE) {
+                let _ = faults.push(fault.to_fault_info());
+            }
+            FaultSnapshot {
+                generation: self.generation.load(core::sync::atomic::Ordering::Relaxed),
+                faults,
+                total,
+            }
+        })
+    }
+
+    /// Current fault-registry generation for the slow-telemetry loss backstop.
+    pub fn generation(&self) -> u32 {
+        self.generation.load(core::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get count of active faults
@@ -600,20 +670,31 @@ mod tests {
         }
 
         let reg: FaultRegistry<TF> = FaultRegistry::new();
+        assert_eq!(reg.generation(), 0);
         assert!(!reg.changed.signaled());
 
         reg.set(TF(1));
+        assert_eq!(reg.generation(), 1);
         assert!(reg.changed.signaled(), "new fault must signal");
         reg.changed.reset();
 
         reg.set(TF(1));
+        assert_eq!(reg.generation(), 1);
         assert!(!reg.changed.signaled(), "identical re-set must stay silent");
 
         reg.set(TF(2));
+        assert_eq!(reg.generation(), 2);
         assert!(reg.changed.signaled(), "payload refinement must signal");
         reg.changed.reset();
 
-        reg.clear(FaultCategory::HallError);
+        assert!(
+            !reg.clear_if_generation(1, Some(FaultCategory::HallError)),
+            "stale clear must not mutate the current occurrence"
+        );
+        assert!(reg.has_category(FaultCategory::HallError));
+        assert_eq!(reg.generation(), 2);
+        assert!(reg.clear_if_generation(2, Some(FaultCategory::HallError)));
+        assert_eq!(reg.generation(), 3);
         assert!(reg.changed.signaled(), "clearing must signal");
     }
 }

@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod detect;
+pub mod fault;
 pub mod phase;
 
 /// Fast-telemetry stream rates offered to the user (Hz), shared so the

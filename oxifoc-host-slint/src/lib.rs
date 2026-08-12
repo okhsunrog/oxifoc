@@ -24,12 +24,12 @@ use std::thread;
 use std::time::Duration;
 
 use oxifoc_core::types::{
-    ConfigResponse, ConfigValue, ControlMode, FaultCategory, FaultRequest, FaultResponse,
+    ConfigResponse, ConfigValue, ControlMode, FaultCategory, FaultClearTarget, FaultSnapshot,
     MotorState,
 };
 use oxifoc_host_lib::{
     BleDeviceInfo, HostCommand, HostConfig, HostRuntime, TransportType, config_channel,
-    fault_channel, motor_channel, ops, scan_ble_devices, start_host,
+    motor_channel, ops, scan_ble_devices, start_host,
 };
 #[cfg(feature = "desktop")]
 use oxifoc_host_lib::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
@@ -84,7 +84,7 @@ fn fault_category_from_id(id: i32) -> Option<FaultCategory> {
 }
 
 /// Render a device fault snapshot into Slint rows + the active total.
-fn faults_to_rows(resp: &FaultResponse) -> (Vec<FaultRow>, i32) {
+fn faults_to_rows(resp: &FaultSnapshot) -> (Vec<FaultRow>, i32) {
     let rows = resp
         .faults
         .iter()
@@ -99,7 +99,7 @@ fn faults_to_rows(resp: &FaultResponse) -> (Vec<FaultRow>, i32) {
 }
 
 /// Push a fault snapshot into the UI model (call from the event loop).
-fn apply_faults(app: &App, resp: &FaultResponse) {
+fn apply_faults(app: &App, resp: &FaultSnapshot) {
     let (rows, total) = faults_to_rows(resp);
     app.set_faults(ModelRc::new(VecModel::from(rows)));
     app.set_fault_total(total);
@@ -110,7 +110,7 @@ fn apply_faults(app: &App, resp: &FaultResponse) {
 fn send_fault_request(
     rt: &Arc<std::sync::Mutex<Option<HostRuntime>>>,
     weak: &slint::Weak<App>,
-    req: FaultRequest,
+    clear: Option<FaultClearTarget>,
 ) {
     let cmd_tx = {
         let guard = rt.lock().unwrap();
@@ -121,12 +121,22 @@ fn send_fault_request(
     };
     let weak = weak.clone();
     thread::spawn(move || {
-        let (tx, rx) = fault_channel();
-        if cmd_tx.send(HostCommand::Fault(req, tx)).is_err() {
-            return;
-        }
-        if let Ok(Ok(resp)) = rx.blocking_recv() {
-            let _ = weak.upgrade_in_event_loop(move |app| apply_faults(&app, &resp));
+        let result = match clear {
+            Some(target) => ops::fault::clear(&cmd_tx, target),
+            None => ops::fault::query(&cmd_tx),
+        };
+        match result {
+            Ok(snapshot) => {
+                let _ = weak.upgrade_in_event_loop(move |app| apply_faults(&app, &snapshot));
+            }
+            Err(error) => {
+                tracing::warn!("Fault operation failed: {error:#}");
+                // A conflict means nothing was cleared; refresh so the UI
+                // shows the concurrent fault that protected the operation.
+                if let Ok(snapshot) = ops::fault::query(&cmd_tx) {
+                    let _ = weak.upgrade_in_event_loop(move |app| apply_faults(&app, &snapshot));
+                }
+            }
         }
     });
 }
@@ -1775,14 +1785,14 @@ pub fn main() {
         let rt = runtime.clone();
         let weak = app.as_weak();
         app.on_faults_refresh(move || {
-            send_fault_request(&rt, &weak, FaultRequest::Query);
+            send_fault_request(&rt, &weak, None);
         });
     }
     {
         let rt = runtime.clone();
         let weak = app.as_weak();
         app.on_clear_faults(move || {
-            send_fault_request(&rt, &weak, FaultRequest::ClearAll);
+            send_fault_request(&rt, &weak, Some(FaultClearTarget::All));
         });
     }
     {
@@ -1790,7 +1800,7 @@ pub fn main() {
         let weak = app.as_weak();
         app.on_clear_fault_category(move |id| {
             if let Some(cat) = fault_category_from_id(id) {
-                send_fault_request(&rt, &weak, FaultRequest::Clear(cat));
+                send_fault_request(&rt, &weak, Some(FaultClearTarget::Category(cat)));
             }
         });
     }

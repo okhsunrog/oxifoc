@@ -59,6 +59,12 @@ not force the shared state to stopped while the brake still runs — that syncs
 at the failsafe terminal in `run_foc_cycle`, so the config server's
 motor-running gate can't admit a flash stall mid-brake.
 
+Host-side admission is stricter than transport liveness: no command or topic is
+accepted merely because an interface became Active. The `connected` gate opens
+only after exact protocol bootstrap/version checks and per-runtime UUID pinning.
+This prevents the reconnect window from sending queued control/config traffic
+to a different USB controller before the mismatch is discovered.
+
 ### Layer 2 — ISR command-staleness deadman (implemented 2026-06-11)
 
 `FocDriver` carries `last_cmd_tick`; `process_commands` stamps it on every
@@ -274,6 +280,12 @@ internal-flash erase on single-bank MCUs can stall execution long enough to
 starve control. The host reports a successful Apply even when a later Persist
 is refused, so the operator knows the live value changed but will not survive a
 reboot.
+
+Fault clearing is also state-conditional rather than a blind command. The host
+first observes `fault_generation`, then sends a keyed Clear for that exact
+generation. Firmware checks and mutates under one registry lock. If an ISR
+raises or refines a fault between those steps, Clear returns `Conflict`; a lost
+ACK retry is deduplicated and cannot erase a later re-occurrence.
 
 ## Non-idempotent endpoints (track these)
 

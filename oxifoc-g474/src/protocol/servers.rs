@@ -8,6 +8,7 @@ use ergot::{
 use heapless::String;
 use oxifoc_core::runtime::run_all_servers_with_config;
 use oxifoc_core::runtime::streaming::{FAST_TELEM_PERIOD, fault_topic_stream};
+use oxifoc_core::timer::EmbassyTimer;
 use oxifoc_core::types::HardwareInfo;
 
 use crate::RUNTIME_CONFIG;
@@ -22,7 +23,6 @@ use {
     crate::transport::{RTT_OUTQ, RttRxWorkerType},
     ergot::transport::rtt::RttWriter,
     oxifoc_core::runtime::streaming::{fast_telemetry_stream, push_fast_telemetry},
-    oxifoc_core::timer::EmbassyTimer,
     oxifoc_core::types::FastTelemetry,
 };
 
@@ -290,7 +290,7 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
 /// the pull/clear side).
 #[embassy_executor::task]
 pub async fn fault_topic_task(stack: &'static Stack) {
-    fault_topic_stream(stack, &FAULT_REGISTRY).await;
+    fault_topic_stream::<_, _, EmbassyTimer>(stack, &FAULT_REGISTRY).await;
 }
 
 pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, idents: &heapless::Vec<u8, 3>) {

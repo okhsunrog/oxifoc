@@ -24,7 +24,7 @@ use oxifoc_core::icd::{
 use oxifoc_core::timer::Timer;
 use oxifoc_core::types::{
     ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, DetectRequest, DetectResponse,
-    FaultRequest, HardwareInfo, MotorCommand, MotorRequest, MotorStatus,
+    FaultRequest, FaultSnapshot, HardwareInfo, MotorCommand, MotorRequest, MotorStatus,
 };
 use oxifoc_core::types::{ControlMode, FastTelemetry, FaultResponse, Keyed, ReqId, SlowTelemetry};
 use std::{
@@ -252,9 +252,9 @@ pub type CommandSender = tokio::sync::mpsc::UnboundedSender<HostCommand>;
 pub struct HostRuntime {
     pub fast_rx: Receiver<FastTelemetry>,
     pub slow_rx: Receiver<SlowTelemetry>,
-    /// Fault snapshots pushed by the device on every registry change
-    /// (FaultTopic). Full snapshots, not deltas — safe to miss one.
-    pub fault_rx: Receiver<FaultResponse>,
+    /// Full fault snapshots from FaultTopic plus generation-based query
+    /// reconciliation when a topic or host handoff was lost.
+    pub fault_rx: Receiver<FaultSnapshot>,
     pub device_info_rx: Receiver<HardwareInfo>,
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
@@ -376,7 +376,7 @@ impl Drop for HostRuntime {
 struct BackendCtx {
     fast_tx: Sender<FastTelemetry>,
     slow_tx: Sender<SlowTelemetry>,
-    fault_tx: Sender<FaultResponse>,
+    fault_sink: FaultSnapshotSink,
     info_tx: Sender<HardwareInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected: Arc<AtomicBool>,
@@ -384,12 +384,56 @@ struct BackendCtx {
     cancel: CancellationToken,
 }
 
+/// Ordered, loss-aware handoff from protocol tasks to synchronous consumers.
+/// Topic delivery and SlowTelemetry reconciliation can race; the mutex makes
+/// it impossible for an older snapshot to overwrite a newer one.
+#[derive(Clone)]
+struct FaultSnapshotSink {
+    tx: Sender<FaultSnapshot>,
+    delivered_generation: Arc<std::sync::Mutex<Option<u32>>>,
+}
+
+impl FaultSnapshotSink {
+    fn new(tx: Sender<FaultSnapshot>) -> Self {
+        Self {
+            tx,
+            delivered_generation: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    fn offer(&self, snapshot: FaultSnapshot) {
+        let mut delivered = self.delivered_generation.lock().unwrap();
+        if delivered.is_some_and(|current| !generation_is_newer(snapshot.generation, current)) {
+            return;
+        }
+        if self.tx.try_send(snapshot.clone()).is_ok() {
+            *delivered = Some(snapshot.generation);
+        }
+    }
+
+    fn needs(&self, generation: u32) -> bool {
+        self.delivered_generation
+            .lock()
+            .unwrap()
+            .is_none_or(|current| generation_is_newer(generation, current))
+    }
+
+    fn reset_generation(&self) {
+        *self.delivered_generation.lock().unwrap() = None;
+    }
+}
+
+fn generation_is_newer(candidate: u32, current: u32) -> bool {
+    let distance = candidate.wrapping_sub(current);
+    distance != 0 && distance < (1 << 31)
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(4096);
     let (slow_tx, slow_rx) = crossbeam_channel::bounded::<SlowTelemetry>(64);
-    let (fault_tx, fault_rx) = crossbeam_channel::bounded::<FaultResponse>(64);
+    let (fault_tx, fault_rx) = crossbeam_channel::bounded::<FaultSnapshot>(64);
     let (info_tx, device_info_rx) = crossbeam_channel::bounded::<HardwareInfo>(4);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
@@ -399,7 +443,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let ctx = BackendCtx {
         fast_tx,
         slow_tx,
-        fault_tx,
+        fault_sink: FaultSnapshotSink::new(fault_tx),
         info_tx,
         cmd_rx,
         connected: connected.clone(),
@@ -566,6 +610,7 @@ where
     let fast_hz_flag = ctx.fast_hz.clone();
     let cancel = ctx.cancel.clone();
     let info_tx = ctx.info_tx.clone();
+    let fault_sink = ctx.fault_sink.clone();
 
     // Protocol tasks are spawned once — they operate on the stack, not the
     // per-connection interface.
@@ -628,7 +673,13 @@ where
             hardware_info_handshake(&stack, &info_tx, &connected, &mut expected_device_uuid).await;
 
         match handshake {
-            HandshakeOutcome::Connected => connect_attempts = 0,
+            HandshakeOutcome::Connected => {
+                // Fault generation is boot-local. A controller reset may
+                // reconnect with the same UUID and generation 0; force a
+                // fresh snapshot instead of treating it as older.
+                fault_sink.reset_generation();
+                connect_attempts = 0;
+            }
             HandshakeOutcome::FatalMismatch => {
                 tracing::error!("Fatal handshake mismatch — refusing to reconnect");
                 connected.store(false, Ordering::Relaxed);
@@ -737,6 +788,7 @@ where
     let fast_hz_flag = ctx.fast_hz.clone();
     let cancel = ctx.cancel.clone();
     let info_tx = ctx.info_tx.clone();
+    let fault_sink = ctx.fault_sink.clone();
 
     // Protocol tasks are spawned once — they operate on the stack, not the transport
     spawn_protocol_tasks(&stack, ctx);
@@ -834,7 +886,10 @@ where
             hardware_info_handshake(&stack, &info_tx, &connected, &mut expected_device_uuid).await;
 
         match handshake {
-            HandshakeOutcome::Connected => connect_attempts = 0,
+            HandshakeOutcome::Connected => {
+                fault_sink.reset_generation();
+                connect_attempts = 0;
+            }
             HandshakeOutcome::FatalMismatch => {
                 tracing::error!("Fatal handshake mismatch — refusing to reconnect");
                 connected.store(false, Ordering::Relaxed);
@@ -1135,11 +1190,22 @@ where
     NS::Profile: Send,
     NS::Target: Send + Sync,
 {
-    spawn_fast_telemetry_subscriber(stack, ctx.fast_tx, ctx.cancel.clone());
-    spawn_fault_topic_subscriber(stack, ctx.fault_tx, ctx.cancel.clone());
+    spawn_fast_telemetry_subscriber(
+        stack,
+        ctx.fast_tx,
+        ctx.connected.clone(),
+        ctx.cancel.clone(),
+    );
+    spawn_fault_topic_subscriber(
+        stack,
+        ctx.fault_sink.clone(),
+        ctx.connected.clone(),
+        ctx.cancel.clone(),
+    );
     spawn_slow_telemetry_poller(
         stack,
         ctx.slow_tx,
+        ctx.fault_sink,
         ctx.connected.clone(),
         ctx.cancel.clone(),
     );
@@ -1188,6 +1254,11 @@ where
                     _ = cancel.cancelled() => break,
                     cmd = cmd_rx.recv() => {
                         let Some(cmd) = cmd else { break };
+                        if !connected.load(Ordering::Relaxed) {
+                            active_setpoint = None;
+                            reject_unverified_command(cmd);
+                            continue;
+                        }
                         handle_command(
                             &stack,
                             cmd,
@@ -1262,6 +1333,7 @@ where
 fn spawn_fast_telemetry_subscriber<NS>(
     stack: &NS,
     fast_tx: Sender<FastTelemetry>,
+    connected: Arc<AtomicBool>,
     cancel: CancellationToken,
 ) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
@@ -1294,6 +1366,9 @@ fn spawn_fast_telemetry_subscriber<NS>(
                 tokio::select! {
                     _ = cancel.cancelled() => break,
                     msg = hdl.recv() => {
+                        if !connected.load(Ordering::Relaxed) {
+                            continue;
+                        }
                         batches += 1;
                         for sample in msg.t.samples() {
                             // try_send: drop-on-full is the right semantics
@@ -1323,7 +1398,8 @@ fn spawn_fast_telemetry_subscriber<NS>(
 
 fn spawn_fault_topic_subscriber<NS>(
     stack: &NS,
-    fault_tx: Sender<FaultResponse>,
+    fault_sink: FaultSnapshotSink,
+    connected: Arc<AtomicBool>,
     cancel: CancellationToken,
 ) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
@@ -1345,10 +1421,9 @@ fn spawn_fault_topic_subscriber<NS>(
                 tokio::select! {
                     _ = cancel.cancelled() => break,
                     msg = hdl.recv() => {
-                        // try_send: snapshots are self-contained, dropping
-                        // one on a full queue only delays the view until
-                        // the next event.
-                        let _ = fault_tx.try_send(msg.t.clone());
+                        if connected.load(Ordering::Relaxed) {
+                            fault_sink.offer(msg.t.clone());
+                        }
                     }
                 }
             }
@@ -1356,9 +1431,45 @@ fn spawn_fault_topic_subscriber<NS>(
     });
 }
 
+/// Refuse every externally visible command until HardwareInfo has passed the
+/// bootstrap/version/UUID checks. An interface can be Active for several
+/// round trips before that handshake completes; sending during that window
+/// could otherwise mutate a different USB controller before UUID mismatch is
+/// detected.
+fn reject_unverified_command(cmd: HostCommand) {
+    let error = || anyhow::anyhow!("device is not connected and identity-verified");
+    match cmd {
+        HostCommand::Motor(mode) => {
+            tracing::warn!("Dropping motor command before verified handshake: {mode:?}");
+        }
+        HostCommand::MotorAck(_, reply) | HostCommand::EmergencyStop(reply) => {
+            let _ = reply.send(Err(error()));
+        }
+        HostCommand::SetPhaseSource(source) => {
+            tracing::warn!("Dropping phase-source command before verified handshake: {source:?}");
+        }
+        HostCommand::SetTelemetryConfig(config) => {
+            tracing::warn!("Dropping telemetry config before verified handshake: {config:?}");
+        }
+        HostCommand::ConfigRead(_, reply)
+        | HostCommand::ConfigApply(_, reply)
+        | HostCommand::ConfigPersist(_, reply)
+        | HostCommand::ConfigResetAll(reply) => {
+            let _ = reply.send(Err(error()));
+        }
+        HostCommand::Detect(_, reply) => {
+            let _ = reply.send(Err(error()));
+        }
+        HostCommand::Fault(_, reply) => {
+            let _ = reply.send(Err(error()));
+        }
+    }
+}
+
 fn spawn_slow_telemetry_poller<NS>(
     stack: &NS,
     slow_tx: Sender<SlowTelemetry>,
+    fault_sink: FaultSnapshotSink,
     connected: Arc<AtomicBool>,
     cancel: CancellationToken,
 ) where
@@ -1394,6 +1505,23 @@ fn spawn_slow_telemetry_poller<NS>(
                         if let Ok(Ok(sample)) = tokio::time::timeout(
                             Duration::from_millis(500), fut
                         ).await {
+                            // A fault topic can be dropped without changing
+                            // fault_count (payload refinement or clear+add).
+                            // The generation in the regular poll is the
+                            // reliable loss detector; query until the latest
+                            // snapshot is successfully handed to consumers.
+                            if fault_sink.needs(sample.fault_generation) {
+                                let fault_fut = ns.endpoints().request::<FaultEndpoint>(
+                                    DEVICE_ADDR,
+                                    &FaultRequest::Query,
+                                    Some("fault_reconcile"),
+                                );
+                                if let Ok(Ok(FaultResponse::Snapshot(snapshot))) =
+                                    tokio::time::timeout(Duration::from_millis(500), fault_fut).await
+                                {
+                                    fault_sink.offer(snapshot);
+                                }
+                            }
                             // try_send: see fast telemetry — never block the
                             // runtime on a slow/absent consumer.
                             let _ = slow_tx.try_send(sample);
@@ -1819,8 +1947,12 @@ fn log_defmt_frame(level: Option<DefmtLevel>, msg: &impl std::fmt::Display) {
 
 #[cfg(test)]
 mod tests {
-    use super::{may_retry, protocol_is_compatible, should_start_defmt};
+    use super::{
+        FaultSnapshotSink, generation_is_newer, may_retry, protocol_is_compatible,
+        reject_unverified_command, should_start_defmt,
+    };
     use crate::ReconnectPolicy;
+    use oxifoc_core::types::FaultSnapshot;
 
     #[test]
     fn transport_scoped_defmt_restarts_but_network_decoder_does_not() {
@@ -1853,5 +1985,63 @@ mod tests {
         let mut failures = u32::MAX;
         assert!(may_retry(ReconnectPolicy::Infinite, &mut failures));
         assert_eq!(failures, u32::MAX);
+    }
+
+    #[test]
+    fn fault_generation_order_handles_wrap() {
+        assert!(generation_is_newer(2, 1));
+        assert!(!generation_is_newer(1, 1));
+        assert!(!generation_is_newer(1, 2));
+        assert!(generation_is_newer(0, u32::MAX));
+        assert!(!generation_is_newer(u32::MAX, 0));
+    }
+
+    #[test]
+    fn full_fault_consumer_queue_keeps_generation_dirty() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let sink = FaultSnapshotSink::new(tx);
+        let snapshot = |generation| FaultSnapshot {
+            generation,
+            ..Default::default()
+        };
+
+        sink.offer(snapshot(1));
+        sink.offer(snapshot(2)); // full: must not claim generation 2 delivered
+        assert!(sink.needs(2));
+        assert_eq!(rx.recv().unwrap().generation, 1);
+
+        sink.offer(snapshot(2));
+        sink.offer(snapshot(1)); // stale: must not regress the consumer view
+        assert_eq!(rx.recv().unwrap().generation, 2);
+        assert!(!sink.needs(2));
+    }
+
+    #[test]
+    fn fault_generation_resets_across_verified_reconnect() {
+        let (tx, rx) = crossbeam_channel::bounded(2);
+        let sink = FaultSnapshotSink::new(tx);
+        sink.offer(FaultSnapshot {
+            generation: 100,
+            ..Default::default()
+        });
+        assert_eq!(rx.recv().unwrap().generation, 100);
+
+        sink.reset_generation();
+        sink.offer(FaultSnapshot {
+            generation: 0,
+            ..Default::default()
+        });
+        assert_eq!(rx.recv().unwrap().generation, 0);
+    }
+
+    #[test]
+    fn unverified_connection_rejects_acknowledged_commands() {
+        let (tx, rx) = crate::motor_channel();
+        reject_unverified_command(super::HostCommand::EmergencyStop(tx));
+        let error = rx
+            .blocking_recv()
+            .expect("rejection sender must answer")
+            .expect_err("unverified command must fail");
+        assert!(error.to_string().contains("identity-verified"));
     }
 }

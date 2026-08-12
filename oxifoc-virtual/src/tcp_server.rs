@@ -245,7 +245,7 @@ pub async fn run(
                 tokio::select! {
                     _ = token.cancelled() => {}
                     _ = fast_telemetry_stream::<_, crate::TokioTimer>(stack.clone(), foc_freq_hz) => {}
-                    _ = fault_topic_stream(stack, fault_registry) => {}
+                    _ = fault_topic_stream::<_, _, crate::TokioTimer>(stack, fault_registry) => {}
                 }
             }
         });

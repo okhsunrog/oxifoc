@@ -89,9 +89,11 @@ Stranding the rider over a transient is itself a hazard.
   The remote reacts to severity (vibration pattern, display), never to
   hardcoded categories.
 - **FaultTopic**: a task on `registry.wait_for_change()` publishes the
-  full snapshot (`Vec<FaultInfo>` + total — idempotent, BLE-loss
-  tolerant). `SlowTelemetry.fault_count` stays as the poll backstop
-  (count mismatch → re-query via `FaultEndpoint`).
+  full snapshot (`generation + Vec<FaultInfo> + total` — idempotent,
+  BLE-loss tolerant). Failed enqueue remains dirty and retries the newest
+  coalesced state. `SlowTelemetry.fault_generation` is the host poll
+  backstop (newer generation → re-query via `FaultEndpoint`), including
+  refinements where the count is unchanged.
 - Fault moment snapshot: put I/vbus/erpm/temp at trip time into
   `details` (VESC fdata pattern). The full answer is the device-RAM
   burst capture with fault pre-trigger (TODO.md Host) — same trigger
@@ -204,7 +206,10 @@ HFI carrier ripple + noise.
    virtual device; host-lib subscribes (`HostRuntime::fault_rx`), CLI
    `faults --watch` prints JSONL/human per event. Remaining: the remote
    firmware consuming it (vibration by severity, display) — blocked on
-   remote maturity (notes/remote-design.md).
+   remote maturity (notes/remote-design.md). **Hardened 2026-08-12:**
+   generation reconciliation closes same-count topic loss; Clear is keyed
+   and conditional on the exact observed generation, so a lost-ACK retry
+   cannot erase a later occurrence.
 5. **[landed 2026-06-13]** Derating layer + integrating detectors:
    `motor/derating.rs` (drive/brake scales, min-composed ramps: FET +
    motor thermal with VESC accel/brake asymmetry, battery cutoff,

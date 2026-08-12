@@ -494,6 +494,9 @@ pub struct SlowTelemetry {
     pub derate_drive_pct: u8,
     /// Live brake-side derating (percent, 100 = no derate)
     pub derate_brake_pct: u8,
+    /// Fault-registry generation. Lets consumers detect a lost/refined fault
+    /// snapshot even when the number of active faults did not change.
+    pub fault_generation: u32,
 }
 
 /// Response to a phase-source change request.
@@ -627,28 +630,58 @@ pub struct BoardCalib {
 /// Maximum number of faults that can be returned in a response
 pub const MAX_FAULT_RESPONSE: usize = 8;
 
-/// Fault management request
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
+/// Fault management request.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FaultRequest {
     /// Query all active faults
     #[default]
     Query,
-    /// Clear a specific fault by category
-    Clear(FaultCategory),
-    /// Clear all faults
-    ClearAll,
+    /// Clear against an exact observed registry generation. The request ID
+    /// makes a lost-response retry unable to clear a later re-occurrence.
+    Clear(Keyed<FaultClear>),
 }
 
-/// Fault management response
-#[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct FaultResponse {
+pub enum FaultClearTarget {
+    Category(FaultCategory),
+    All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct FaultClear {
+    pub expected_generation: u32,
+    pub target: FaultClearTarget,
+}
+
+/// A complete fault-registry snapshot. Topics carry snapshots rather than
+/// deltas, and `generation` lets a consumer prove whether it missed one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct FaultSnapshot {
+    /// Increments on every actual add, refinement, or clear.
+    pub generation: u32,
     /// List of active faults with details (at most `MAX_FAULT_RESPONSE`)
     pub faults: Vec<FaultInfo, MAX_FAULT_RESPONSE>,
     /// Total active faults in the registry; `total > faults.len()` means
     /// the list above is truncated.
     pub total: u8,
+}
+
+/// Fault endpoint response. A conflict carries the current snapshot so the
+/// host can refresh its UI without a second round trip, but must not report
+/// the clear as successful.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum FaultResponse {
+    Snapshot(FaultSnapshot),
+    Cleared {
+        req_id: ReqId,
+        snapshot: FaultSnapshot,
+    },
+    Conflict(FaultSnapshot),
 }
 
 // ============================================================================

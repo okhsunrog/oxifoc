@@ -36,7 +36,6 @@ use crate::motor::derating::DeratingConfig;
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::foc_driver::CurrentLimits;
 use crate::state::{DriverCommand, DriverOperation, FlashPendingGuard};
-use crate::types::MAX_FAULT_RESPONSE;
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
 use crate::foc::fault::{FaultRegistry, PlatformFault};
@@ -145,42 +144,67 @@ pub async fn fault_server<NS, F, const N: usize>(
     NS: NetStackHandle,
     F: PlatformFault,
 {
+    use crate::types::FaultClearTarget;
+
     let server = endpoints.bounded_server::<FaultEndpoint, N>(Some("fault"));
     let server = pin!(server);
     let mut h = server.attach();
+    // Compact action cache: retaining only IDs is sufficient because a retry
+    // returns the *current* snapshot without executing Clear again. That is
+    // stronger than caching the old snapshot: a re-asserted fault is visible
+    // in the retry response but cannot be accidentally cleared.
+    let clear_cache_storage = CriticalSectionMutex::new(RefCell::new([None; 4]));
+    let clear_cache = &clear_cache_storage;
+    let clear_cache_next_storage = CriticalSectionMutex::new(RefCell::new(0usize));
+    let clear_cache_next = &clear_cache_next_storage;
 
     loop {
         let _ = h
             .serve(|req: &FaultRequest| {
-                // Handle requests
-                match req {
+                let response = match req {
                     FaultRequest::Query => {
-                        // Just query, no action needed
+                        FaultResponse::Snapshot(fault_registry.snapshot_response())
                     }
-                    FaultRequest::Clear(category) => {
-                        fault_registry.clear(*category);
+                    FaultRequest::Clear(keyed) => {
+                        let duplicate = critical_section::with(|cs| {
+                            clear_cache
+                                .borrow(cs)
+                                .borrow()
+                                .iter()
+                                .flatten()
+                                .any(|id| *id == keyed.id)
+                        });
+                        if duplicate {
+                            let snapshot = fault_registry.snapshot_response();
+                            FaultResponse::Cleared {
+                                req_id: keyed.id,
+                                snapshot,
+                            }
+                        } else {
+                            let category = match keyed.inner.target {
+                                FaultClearTarget::Category(category) => Some(category),
+                                FaultClearTarget::All => None,
+                            };
+                            if !fault_registry
+                                .clear_if_generation(keyed.inner.expected_generation, category)
+                            {
+                                FaultResponse::Conflict(fault_registry.snapshot_response())
+                            } else {
+                                critical_section::with(|cs| {
+                                    let mut entries = clear_cache.borrow(cs).borrow_mut();
+                                    let mut next = clear_cache_next.borrow(cs).borrow_mut();
+                                    entries[*next] = Some(keyed.id);
+                                    *next = (*next + 1) % entries.len();
+                                });
+                                FaultResponse::Cleared {
+                                    req_id: keyed.id,
+                                    snapshot: fault_registry.snapshot_response(),
+                                }
+                            }
+                        }
                     }
-                    FaultRequest::ClearAll => {
-                        fault_registry.clear_all();
-                    }
-                }
-
-                // Build response with all faults converted to FaultInfo.
-                // `total` lets the host see truncation (registry holds up to
-                // MAX_FAULTS=16, the response carries at most 8).
-                let fault_infos = fault_registry.to_fault_info_vec();
-                let total = fault_infos.len() as u8;
-                let mut response_faults = heapless::Vec::new();
-                for info in fault_infos.iter().take(MAX_FAULT_RESPONSE) {
-                    let _ = response_faults.push(info.clone());
-                }
-
-                async move {
-                    FaultResponse {
-                        faults: response_faults,
-                        total,
-                    }
-                }
+                };
+                async move { response }
             })
             .await;
     }
@@ -816,6 +840,7 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
                     critical_section::with(|cs| state_mutex.borrow(cs).borrow().phase_source);
 
                 let fault_count = fault_registry.count() as u8;
+                let fault_generation = fault_registry.generation();
                 let derating =
                     critical_section::with(|cs| state_mutex.borrow(cs).borrow().derating);
 
@@ -832,6 +857,7 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
                         seq: current_seq,
                         derate_drive_pct: (derating.drive * 100.0) as u8,
                         derate_brake_pct: (derating.brake * 100.0) as u8,
+                        fault_generation,
                     }
                 }
             })

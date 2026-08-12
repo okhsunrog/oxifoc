@@ -1469,6 +1469,17 @@ the sim = batch tick).
   `AppInfoEndpoint` (foc/current/**BoardCalib**/semver via
   `env!("CARGO_PKG_VERSION")`), drop the HardwareInfo handshake role. Mandatory
   before any release/distribution.
+- [ ] **Dual-controller degraded-mode contract (when dual-motor hardware
+  exists).** Do not immediately stop the healthy motor merely because one
+  controller/node disappears; continuing at reduced torque is likely safer
+  for a moving longboard. Define group membership, per-node freshness and
+  torque degradation, rider notification, recovery/re-arm, and how universal
+  safe/EmergencyStop commands fan out. Do not justify per-node control ACKs as
+  eliminating a single point of failure: the current OxiFoc bridge is itself
+  the sole ingress, so its loss prevents either forwarding model. Measure the
+  flash/RAM cost and bus behavior before choosing broadcast setpoints versus
+  direct requests; VESC-style real-time control without per-setpoint ACK is a
+  valid baseline.
 - [ ] **Fast-telemetry enrichment** (raw 18-byte frame → engineering units in
   CLI/GUI via one shared `oxifoc-core` path) —
   [notes/telemetry-enrichment.md](notes/telemetry-enrichment.md): `Scale`
@@ -1476,10 +1487,12 @@ the sim = batch tick).
   `ShuntCurrentSense::convert_raw` + `clarke`/`park`; `BoardCalib` as a
   sub-struct of `BoardConfig` carried in `AppInfoEndpoint`; offsets/pole_pairs
   via existing config reads; round-trip/golden tests in core.
-- [ ] Reconnect state machine has no test coverage; slint-wgpu-plot: the
-  ring index arithmetic (`renderer.rs:262`) under a large zoom-out +
-  scroll-back may compute the Y auto-range over a different window than
-  the shader draws.
+- [ ] Reconnect state-machine fault injection beyond the existing TCP/UDP E2E
+  and TCP client-churn coverage: force Active→Inactive→Down, lost handshake,
+  wrong UUID after reconnect, BLE TX-only failure, and fault-generation reset
+  after controller reboot. slint-wgpu-plot: the ring index arithmetic
+  (`renderer.rs:262`) under a large zoom-out + scroll-back may compute the Y
+  auto-range over a different window than the shader draws.
 - [ ] bridge/remote: pairing via a hardcoded MAC; stub tests. Remote
   design — [notes/remote-design.md](notes/remote-design.md).
 

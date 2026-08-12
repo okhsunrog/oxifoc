@@ -288,33 +288,44 @@ pub fn push_fast_telemetry(telem: &FastTelemetry) {
 
 /// Run the fault topic publisher.
 ///
-/// Broadcasts the FULL fault snapshot (`FaultResponse`) on
+/// Broadcasts the FULL fault snapshot (`FaultSnapshot`) on
 /// [`crate::icd::FaultTopic`]: once at start (a reconnecting consumer gets
 /// the current state without waiting for a change) and then on every
 /// registry change — fault raised, payload refined (the registry signals
 /// on value changes, e.g. a sticky HallError upgrading `InvalidState` →
 /// `WireDead`), or cleared, so the consumer can drop its indication too.
 ///
-/// Snapshot-not-delta: ergot topics are fire-and-forget, a lost packet
-/// must cost staleness rather than a wrong state. The loss backstop is the
-/// consumer's regular SlowTelemetry poll: `fault_count` disagreeing with
-/// its local view means a push was lost → re-query via `FaultEndpoint`.
-pub async fn fault_topic_stream<NS, F>(stack: NS, fault_registry: &'static FaultRegistry<F>)
+/// Snapshot-not-delta: ergot topics are fire-and-forget, a lost packet must
+/// cost staleness rather than a wrong state. A failed enqueue remains dirty
+/// and retries the latest coalesced snapshot. The consumer's regular
+/// SlowTelemetry poll compares `fault_generation`, so refinement and
+/// clear+add losses are detected even when `fault_count` stays unchanged.
+pub async fn fault_topic_stream<NS, F, T>(stack: NS, fault_registry: &'static FaultRegistry<F>)
 where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
+    T: Timer,
 {
+    let mut _retrying = false;
     loop {
         let snapshot = fault_registry.snapshot_response();
-        let _result = stack
+        let result = stack
             .stack()
             .topics()
             .broadcast::<FaultTopic>(&snapshot, None);
         #[cfg(feature = "log")]
-        if _result.is_err() {
-            log::warn!("fault topic broadcast failed: {_result:?}");
+        if result.is_err() && !_retrying {
+            log::warn!("fault topic broadcast failed: {result:?}; retrying latest snapshot");
         }
-        fault_registry.wait_for_change().await;
+        if result.is_ok() {
+            _retrying = false;
+            fault_registry.wait_for_change().await;
+        } else {
+            _retrying = true;
+            // Keep the state dirty. A bounded retry publishes the latest
+            // coalesced snapshot even if no later registry mutation occurs.
+            T::after_millis(100).await;
+        }
     }
 }
 

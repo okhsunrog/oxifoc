@@ -18,9 +18,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use oxifoc_core::types::{ControlMode, FaultCategory, FaultRequest};
+use oxifoc_core::types::{ControlMode, FaultCategory, FaultClearTarget};
 use oxifoc_host_lib::{
-    HostCommand, HostConfig, HostRuntime, TransportType, fault_channel, init_tracing, list_probes,
+    HostCommand, HostConfig, HostRuntime, TransportType, init_tracing, list_probes,
     list_serial_ports, motor_channel, start_host,
 };
 use serde_json::json;
@@ -549,9 +549,9 @@ fn main() -> Result<()> {
 
     let wait = Duration::from_secs(cli.wait_secs);
     if cli.wait_secs > 0 && !runtime.wait_for_connection(wait) {
-        eprintln!(
-            "Device did not report connected within {}s; continuing anyway",
-            cli.wait_secs
+        bail!(
+            "device did not complete the protocol/identity handshake within {}s",
+            cli.wait_secs,
         );
     }
 
@@ -607,22 +607,16 @@ fn main() -> Result<()> {
                 watch::watch_faults(&runtime, seconds, json)?;
                 return Ok(());
             }
-            let req = if clear {
-                FaultRequest::ClearAll
+            let resp = if clear {
+                oxifoc_host_lib::ops::fault::clear(&runtime.cmd_tx, FaultClearTarget::All)?
             } else if let Some(cat) = clear_category {
-                FaultRequest::Clear(cat.into())
+                oxifoc_host_lib::ops::fault::clear(
+                    &runtime.cmd_tx,
+                    FaultClearTarget::Category(cat.into()),
+                )?
             } else {
-                FaultRequest::Query
+                oxifoc_host_lib::ops::fault::query(&runtime.cmd_tx)?
             };
-            let (tx, rx) = fault_channel();
-            runtime
-                .cmd_tx
-                .send(HostCommand::Fault(req, tx))
-                .context("send fault request")?;
-            let resp = rx
-                .blocking_recv()
-                .context("backend dropped the fault request")?
-                .context("fault request failed")?;
             let human = if resp.faults.is_empty() {
                 format!("no active faults (total={})", resp.total)
             } else {
