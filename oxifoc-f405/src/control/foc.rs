@@ -160,7 +160,17 @@ pub async fn init(
     // Order: install ADC handles → enable interrupt → enable PWM triggers.
     // ADC at priority 0 (highest) — the FOC loop is the actuator's most
     // time-critical ISR; comms ISRs (USB/UART) must never preempt or
-    // jitter it (mirrors the G431 setup).
+    // jitter it (mirrors the G431 setup; main.rs demotes every other
+    // vector below the control ISRs for exactly this reason).
+    //
+    // DELIBERATE: the ISR free-runs with FOC_DRIVER == None until the
+    // driver is installed below — first_vbus_v() and the boot current-
+    // offset calibration are fed by the ISR's atomics, so it MUST start
+    // first. The window is benign by construction: run_foc_cycle is
+    // skipped (None), the bridge stays high-Z, host commands are rejected
+    // by BOOT_CURRENT_OFFSET_PENDING and bounded by the motor server's
+    // ack timeout, and publish_cycle_telemetry emits a default FocOutput
+    // (streaming is off until the host enables it anyway).
     #[expect(
         clippy::multiple_unsafe_ops_per_block,
         reason = "single logical operation: FOC ADC IRQ bring-up"
