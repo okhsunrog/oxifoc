@@ -55,7 +55,7 @@ pub fn parse_group(s: &str) -> Result<ConfigGroupId> {
 pub fn group_name(group: ConfigGroupId) -> &'static str {
     GROUPS
         .iter()
-        .find(|(_, g)| format!("{g:?}") == format!("{group:?}"))
+        .find(|(_, g)| *g == group)
         .map(|(n, _)| *n)
         .unwrap_or("?")
 }
@@ -394,5 +394,31 @@ mod tests {
         };
         assert_eq!(patched.kp, 0.3);
         assert_eq!(patched.accel_ff, 0.75);
+    }
+
+    /// Enforcer: `GROUPS` is a hand-maintained mirror of the wire enum and
+    /// this is the only thing that catches a newly appended group — the
+    /// typed matches (`write_from_value` & co) are compile-enforced, an
+    /// array of a stale length is not.
+    #[test]
+    fn groups_table_mirrors_protocol_order() {
+        assert_eq!(GROUPS.len(), ConfigGroupId::COUNT);
+        for (i, (name, group)) in GROUPS.iter().enumerate() {
+            assert_eq!(
+                *group,
+                ConfigGroupId::ALL[i],
+                "GROUPS[{i}] ({name}) out of protocol order"
+            );
+        }
+    }
+
+    /// Every group id resolves to a unique kebab-case name that parses back.
+    #[test]
+    fn group_names_round_trip() {
+        for group in ConfigGroupId::ALL {
+            let name = group_name(group);
+            assert_ne!(name, "?", "{group:?} missing from GROUPS");
+            assert_eq!(parse_group(name).unwrap(), group);
+        }
     }
 }

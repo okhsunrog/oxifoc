@@ -73,11 +73,11 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
         let field = name.replace('-', "_");
         let resp = read
             .iter()
-            .find(|(g, _)| format!("{g:?}") == format!("{group:?}"))
+            .find(|(g, _)| *g == group)
             .and_then(|(_, r)| r.value.as_ref());
         match resp.and_then(group_value) {
             Some(v) => {
-                let struct_name = rust_struct_name(name);
+                let struct_name = rust_struct_name(group);
                 println!("        {field}: Some({struct_name} {{");
                 if let Some(obj) = v.as_object() {
                     for (k, val) in obj {
@@ -94,20 +94,23 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
     Ok(())
 }
 
-fn rust_struct_name(group: &str) -> &'static str {
+fn rust_struct_name(group: oxifoc_core::types::ConfigGroupId) -> &'static str {
+    use oxifoc_core::types::ConfigGroupId as G;
+    // Exhaustive on purpose: a newly appended group fails to compile here
+    // instead of panicking at dump time (this used to be a string match
+    // ending in unreachable!()).
     match group {
-        "motor-params" => "MotorParamsConfig",
-        "hall-calibration" => "HallCalibrationConfig",
-        "dc-offsets" => "DcOffsetsConfig",
-        "current-limits" => "CurrentLimitsConfig",
-        "voltage-limits" => "VoltageLimitsConfig",
-        "pwm-config" => "PwmConfigStored",
-        "pi-gains" => "PiGainsConfig",
-        "hall-tuning" => "HallTuningConfig",
-        "failsafe" => "FailsafeConfigStored",
-        "velocity" => "VelocityConfigStored",
-        "derating" => "DeratingConfigStored",
-        _ => unreachable!(),
+        G::MotorParams => "MotorParamsConfig",
+        G::HallCalibration => "HallCalibrationConfig",
+        G::DcOffsets => "DcOffsetsConfig",
+        G::CurrentLimits => "CurrentLimitsConfig",
+        G::VoltageLimits => "VoltageLimitsConfig",
+        G::PwmConfig => "PwmConfigStored",
+        G::PiGains => "PiGainsConfig",
+        G::HallTuning => "HallTuningConfig",
+        G::Failsafe => "FailsafeConfigStored",
+        G::Velocity => "VelocityConfigStored",
+        G::Derating => "DeratingConfigStored",
     }
 }
 

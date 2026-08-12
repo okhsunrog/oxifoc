@@ -47,6 +47,22 @@ const CAPACITY: usize = 32768;
 const MAX_LOG_LINES: usize = 2000;
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];
 
+/// Config groups exposed by the GUI, indexed by the `config-group` ComboBox
+/// in `ui/app.slint` — MUST stay in the same order as that ComboBox `model`
+/// (the write path's per-group forms are keyed by the same index). This
+/// const is the single Rust-side copy of that mapping.
+const GUI_CONFIG_GROUPS: [oxifoc_core::types::ConfigGroupId; 6] = {
+    use oxifoc_core::types::ConfigGroupId as G;
+    [
+        G::MotorParams,   // "Motor Params"
+        G::CurrentLimits, // "Current Limits"
+        G::VoltageLimits, // "Voltage Limits" (read-only)
+        G::PiGains,       // "PI Gains"
+        G::Velocity,      // "Velocity Loop"
+        G::Failsafe,      // "Failsafe"
+    ]
+};
+
 /// FaultCategory ↔ stable discriminant (postcard variant index): used to
 /// round-trip a category through the Slint model's `category-id` int so a
 /// per-row "Clear" can rebuild the request. Append-only, matching the wire
@@ -1309,15 +1325,11 @@ pub fn main() {
             let app = weak.unwrap();
             let group_idx = app.get_config_group();
 
-            use oxifoc_core::types::ConfigGroupId;
-            let group_id = match group_idx {
-                0 => ConfigGroupId::MotorParams,
-                1 => ConfigGroupId::CurrentLimits,
-                2 => ConfigGroupId::VoltageLimits,
-                3 => ConfigGroupId::PiGains,
-                4 => ConfigGroupId::Velocity,
-                5 => ConfigGroupId::Failsafe,
-                _ => return,
+            let Some(group_id) = usize::try_from(group_idx)
+                .ok()
+                .and_then(|i| GUI_CONFIG_GROUPS.get(i).copied())
+            else {
+                return;
             };
 
             let (tx, rx) = config_channel();
