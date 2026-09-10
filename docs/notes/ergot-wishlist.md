@@ -243,6 +243,21 @@ oxifoc ICD, collected 2026-09-10:
 
 ## Landed (kept for the record)
 
+- **Wire format v1** — ergot PR #226 (branch `wire-v1`, 2026-09-11, draft):
+  `seq_no` dropped and `Header`/`HeaderSeq` merged; `kind 2 | class 2 |
+  ttl 4` packed into one byte (`PROTOCOL_ERROR = 0`, `MAX_TTL = 15`,
+  `MAX_HDR_ENCODED_SIZE = 24`); `TrafficClass { Control, Normal, Bulk,
+  Background }` on `Endpoint::CLASS` / `Topic::CLASS` via `class = ...` in
+  the macros, inherited by responses; `WIRE_VERSION = 1` reported in
+  `DeviceInfo`. Closes wishlist items 7 (reframed as a class hint — the
+  sinks ignore it, CAN maps it) and the seq_no question; oxifoc adoption
+  needs a repin + `class` on its ICD (`DriveIntent`/affirms → Control,
+  `FastTelemetryBatch` → Bulk, defmt → Background).
+- **Split endpoint request API** — ergot PR #225 (`split-request-api`,
+  `55f8f6d`): `send_request` + `recv`, `attach_boxed`, `RequestPending`
+  guard, serialize-only request bound. #225 and #226 touch the same header
+  literals; whichever lands second rebases.
+
 - **Split endpoint request API** (`send_request` + `recv`, `attach_boxed`)
   — ergot branch `split-request-api`, rev `e93b03b`, born from the
   2026-07-06 deadman hunt: awaiting a request inline in the affirm loop
