@@ -117,10 +117,9 @@ Each entry: the pain as observed in oxifoc, then the upstream shape.
     65535 is already reserved) that routers forward strictly upstream and
     the root delivers locally would make "address the arbiter" generic and
     cheap (TTL already bounds it). Deliberately NOT part of oxifoc's plan:
-    our remote targets a configured *drive-master role* via named
-    SocketQuery (see notes/remote-design.md §10), because role ≠ topology
-    on the bench. Filed here because the mechanism is elegant and other
-    ergot users may want it.
+    the remote sends intent as a topic and addresses no one; root-ness is
+    config (notes/remote-design.md §10). Filed here because the mechanism
+    is elegant and other ergot users may want it.
 
 ## Design fit vs ergot's stated goals (assessed 2026-08-12)
 
