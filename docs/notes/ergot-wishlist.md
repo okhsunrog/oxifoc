@@ -64,6 +64,11 @@ Each entry: the pain as observed in oxifoc, then the upstream shape.
    a resolved value instead of a constant, and the BLE topology starts
    working end-to-end. Refusal on ambiguity (two controllers serving the
    same key) should be the default, mirroring oxifoc's USB identity pinning.
+   **Update 2026-09-10:** landed host-side in oxifoc (`e446dde`, hand-rolled
+   over the public `topics()` facade). The no_std variant is NO LONGER a
+   blocker: the remote sends intent as a topic and needs no address
+   (notes/remote-design.md §10). `discover_endpoint_socket` remains a
+   nice-to-have for host code shrinkage and the std helper TODO.
 
 ## Medium value
 
@@ -203,6 +208,39 @@ only once their segment has a routable net_id (seed lease) — gate the
 resolution on that, with the existing RECOVERY_TIMEOUT. The no_std
 remote needs the same resolve later → that is the real driver for a
 no_std `discover_endpoint_socket` upstream (item 5a).
+
+## CAN transport inputs (for the CAN FD work, ESP32-C5 + FDCAN board)
+
+Facts from `canbus_experiments` (merge-base 25392ff, 2025-11-13) and the
+oxifoc ICD, collected 2026-09-10:
+
+- The header-in-ID layout (priority 3 b, dst_node, dst_port, frame_kind
+  in the 29-bit ID; 6–8 B header in payload) is the right shape and is
+  the natural home for interface-level QoS — keep it. The surrounding
+  code predates the FrameProcessor refactor, link-local, seed delegation
+  and bus address claim: port `can_fd.rs` as a FrameProcessor-based
+  transport rather than rebasing 175 files.
+- **Fragmentation is mandatory, not optional.** The frozen bootstrap
+  `HardwareInfo` (four `String<32>` + calib + reserved) is ~110–130 B on
+  the wire — over CAN FD it cannot even handshake without it; config
+  snapshots are borderline, `FastTelemetryBatch` (468 B) far over. ergot
+  philosophy allows it at the interface layer (ISO-TP-like first frame
+  with total length + continuations). Reassembly key `(src_node,
+  seq_no)` — which finally gives `seq_no` a job.
+- Priority policy: the core has no per-socket priority to map; start
+  with a transport-side policy keyed on the topic/endpoint key (drive
+  intent/affirms → Critical, status → Normal, fragmented bulk → Bulk).
+  A core-level hint is a separate discussion.
+- Classic CAN (F405 bxCAN, C6 TWAI) is the same transport with a 1-byte
+  fragment header and ~everything fragmented: control plane fits
+  (intent ~3 frames × 50 Hz, status ~6 × 100 Hz × N ≈ 20 % of 1 Mbit at
+  N=2), telemetry does not.
+- Bus budget on FD (2–5 Mbit data phase): full-rate fast telemetry of one
+  controller ≈ 2.9 Mbit/s — CAN carries decimated streams only; full rate
+  stays on USB/Wi-Fi.
+- Root-by-config: bridge-mode cannot self-promote (downstream nets are
+  leased from upstream) — documented behaviour we accept, not a change
+  request; every oxifoc node carries an `upstream` config field.
 
 ## Landed (kept for the record)
 

@@ -294,6 +294,57 @@ ACK retry is deduplicated and cannot erase a later re-occurrence.
   returns the cached response, payload verified), and requests are served one
   at a time by the single server loop.
 
+## Multi-motor vehicles — symmetric failsafe
+
+Decided 2026-09-10 (design discussion; see notes/remote-design.md §10).
+Applies once a vehicle has ≥2 controllers (2WD is the roadmap-normal
+case). Single-motor behaviour is unchanged except for the coast sync
+window.
+
+**The hazard.** One motor braking while another drives (same truck) is a
+yaw kick — worse than either state alone. Any per-controller deadman
+produces exactly this asymmetry when one controller loses its link and
+the others do not.
+
+**What an isolated controller can decide: nothing but brake.** It has no
+usable local signal: "speed does not fall under braking" is
+indistinguishable between "a sibling is pushing" and "downhill (gravity
+is pushing)"; a coast decision on that basis would release the brake on
+a slope. Sibling-status on the bus is unavailable precisely when the
+controller is the isolated one (intent and sibling status share the
+link). Therefore the isolated side keeps the existing policy —
+`ControlledStop → ParkBrake` — and never makes a coast-vs-brake choice.
+
+**Symmetry comes from the hearing side.**
+- **Sibling-deadman** (new, `FailsafeConfig`, default 150 ms): every
+  controller subscribes to `DriveStatusTopic` and enters its own
+  failsafe when a sibling that was alive at arm time falls silent, or
+  publishes a failsafe state (contagion). Valid intent does NOT override
+  this — it is a vehicle-level failsafe.
+- **Coast sync window** (new, default 120 ms): the first phase of every
+  link-loss failsafe is high-Z, braking starts only after the window. In
+  that window no asymmetric torque exists at all; by its end the others
+  have detected the silence and joined, so the whole vehicle brakes
+  together. Cost on a single-motor board: ~120 ms of freewheel before
+  the controlled stop.
+- **Fully dead sibling** (gates off, no status): the survivors brake, the
+  dead wheel is free — "one wheel without brake", no opposing torque.
+  Accepted; topology cannot fix a power-stage failure either.
+- **Limp-home is never automatic.** After the stop, a re-arm with a
+  sibling that was already silent BEFORE arming enters an explicit limp
+  mode (reduced torque/speed, full bus budget to the survivor, indicated
+  on the remote). A sibling lost mid-ride always stops the vehicle.
+- **Coast-on-loss** (VESC's `timeout_brake_current = 0` default) stays
+  available as a per-vehicle config, never the default.
+- **Heartbeat wire** (C5 GPIO toggle to each controller, independent of
+  CAN) is the only channel that could inform the *isolated* side; planned
+  for the custom board, not part of the baseline.
+
+**Related check (single-motor too):** the `ControlledStop` no-progress
+give-up exits to high-Z. On a steep descent with a regen-limited brake
+"no progress" can be honest, and high-Z then releases the board on the
+slope — candidate for ParkBrake instead. Bench item in TODO.md.
+
 ## Open questions / TODO
 
 Done: Layers 1–4 (link gate, ISR command-staleness deadman + configurable

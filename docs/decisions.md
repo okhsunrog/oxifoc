@@ -29,6 +29,16 @@ their section.
   lab-PSU-safe mode; ControlledStop then degrades itself to coast via the
   no-progress watchdog, and the windings-short Brake never touches the bus.
 
+- **2026-09-10 — multi-motor link loss: symmetric failsafe, always
+  brake.** An isolated controller cannot distinguish a pushing sibling
+  from a downhill by any local physics, so it never chooses coast; every
+  controller additionally holds a sibling-deadman (status topic, 150 ms)
+  and a coast sync window (120 ms) precedes braking so the vehicle stops
+  together. Sibling-aware terminal state (coast while siblings drive) was
+  REJECTED — the signal is unavailable exactly when needed. Limp-home
+  only via explicit re-arm with a pre-dead sibling. [safety.md →
+  Multi-motor vehicles]
+
 ## Firmware / platform
 
 - **2026-08-06 — g431 (B-G431B-ESC1) support is DROPPED entirely** —
@@ -587,3 +597,31 @@ their section.
   "host-side" exception: virtual's ~6 KB udp server future is Box::pin'd
   (threshold is firmware-tuned; the host has a heap). FOC ISR is sync —
   none of this touches control timing.
+
+## Vehicle / network architecture
+
+- **2026-09-10 — the remote sends vehicle INTENT (one signed channel +
+  mode), never a motor command.** The remote must not know how many
+  motors exist; intent→per-motor mapping is the vehicle's job.
+  [notes/remote-design.md §10]
+- **2026-09-10 — intent travels as a TOPIC, not an endpoint.** No
+  destination address, no discovery, no re-resolution on the remote;
+  the flood reaches every controller on any tree and is one transmission
+  on a shared bus. Supersedes the 2026-08-13 "drive-master role
+  resolution" idea for the remote; SocketQuery resolution stays a HOST
+  tool (config/diagnostics, per-controller selection).
+- **2026-09-10 — intent→motor logic is REPLICATED on every controller**
+  (portable core module, pure function over intent + vehicle config +
+  sibling states). Master fan-out (VESC) and a gateway on the radio MCU
+  rejected for now; a correction-coefficient coordinator on the C5 is
+  the door left open.
+- **2026-09-10 — root is CONFIG, not topology.** An ergot bridge-mode
+  router cannot self-promote to root (its downstream nets are leased
+  from upstream), so every node carries `upstream: None|Uart|Can`.
+  Chain (C5–UART–controller) now; CAN-FD star with the C5 as root when
+  the FDCAN controller board exists. Migration design-ins: upstream
+  lifecycle as a reusable module, nothing master-centric or
+  UART-specific in the bridge.
+- **2026-09-10 — source ownership by class.** `Remote > BenchHost >
+  Phone`; an active setpoint wins if its class ≥ the current owner's,
+  equal class keeps session/seq first-come, safe modes bypass.

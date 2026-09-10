@@ -362,50 +362,78 @@ delay. Three additions, layered:
 Layering summary: safety (graceful slowdown) is handled by the failsafe;
 comfort/UX (no stale surge + no surprise) is seq-drop → haptic → TTL.
 
-### Target selection — role resolution, not topology (2026-08-13)
+### Drive architecture — three axes (decided 2026-09-10)
 
-**[decided]** The remote resolves its command target by ROLE, not by "first
-node serving MotorEndpoint" (wrong in a multi-controller vehicle — 2WD is
-the roadmap-normal topology) and not by a fixed root address (net ids are
-dynamic by design; "root = net 1 node 1" is an unstated
-registration-order invariant that churn breaks — the DEVICE_ADDR bug
-class one level up).
+Supersedes the 2026-08-13 "role resolution" section. The design was
+re-cut along three independent axes; the earlier role/root debate was a
+consequence of conflating them.
 
-- Exactly one controller per vehicle is configured as the **drive
-  master**; it serves the motor socket under a distinct role name
-  (e.g. `"drive"`), so the remote's SocketQuery with
-  `NameRequirement::Specific` is unique **by construction** — two answers
-  mean a mis-configured vehicle and fail closed.
-- VESC-style command fan-out: the remote talks to the master only; the
-  master forwards drive commands to slave controllers (CAN), owns torque
-  split, and each slave keeps its own deadman for master/CAN death.
-- Host/bench tools keep the landed resolve-any + ambiguity-refusal +
-  UUID pinning — they legitimately need to pick a specific board
-  (including a slave) for config/diagnostics.
-- **Master ↔ root relationship (refined after discussion):** the build
-  rule is "the drive master MUST be the tree root" — and it holds
-  naturally, because root-ness is itself configuration (whoever has no
-  upstream link; the bridge and the CAN slaves point their upstreams at
-  the master). The remote still *selects* by role, not by topology,
-  because of failure direction: a mis-wired tree (slave accidentally
-  root) drives the wrong node SILENTLY under root-addressing, while role
-  resolution refuses to arm — nobody serves `"drive"` (or two do) is a
-  loud pre-ride error. Role is the fail-closed verification of the
-  topology, not its replacement.
-- Root addressing per se would also need a real mechanism: the root has
-  no well-known address today — "net 1, node 1" works only as an
-  UNDOCUMENTED artifact of boot-time slot-allocation order. If we ever
-  want it (e.g. as a transport optimization once the role check passed
-  at connect), the honest path is an explicit ergot guarantee
-  (documented net-1 ownership, or the reserved root-sentinel dst —
-  ergot-wishlist item 12), not riding the implicit invariant.
-- **[open] Host-side selector for multi-controller benches** (2WD
-  A–CAN–B is a planned bench setup): resolve-any currently fails closed
-  on ambiguity, which is safe but useless there. Follow-up: enumerate
-  responders (address + device-info/UUID), select by --uuid/role in
-  CLI/GUI, pin the selection for the connection generation.
+**Axis 1 — what the remote sends: vehicle INTENT, never a motor command.**
+`DriveIntentTopic` payload: `session: u64, seq: u32, source: SourceClass,
+drive: f32 ∈ [−1, 1]` (positive = drive, negative = brake, 0 = released =
+safe mode, which is also the re-arm), `mode: u8` (eco/sport/reverse —
+interpreted by the controller). Published at 50 Hz as the affirm
+(unchanged deadman semantics). No TTL/timestamp yet (§10 item 3 stays
+[later]). One signed channel instead of throttle+brake rules out "both at
+once" by construction.
 
----
+**Axis 2 — transport: a TOPIC, not an endpoint.** The remote needs no
+destination address, no discovery, no re-resolution after reconnect:
+routers flood the topic across the tree (one transmission on a shared
+bus), every subscribed controller receives it. Feedback is symmetric —
+each controller publishes `DriveStatusTopic` (~50 Hz: `session_obeyed,
+failsafe_state, erpm, iq, fet_temp, fault_generation, limp`), the remote
+subscribes and tells senders apart by `src`. The only address the remote
+ever uses is its link-local peer (the bridge) for ping/RTT haptics. The
+host's per-controller endpoints + SocketQuery resolution remain the tool
+for config/diagnostics — see the host selector follow-up in TODO.md.
+
+**Axis 3 — where intent→per-motor mapping lives: REPLICATED on every
+controller.** Vehicle logic (torque ratio, brake bias, bus-current
+share, modes; later sibling-derate) is a portable core module with a
+pure `map(intent, my_vehicle_config, sibling_states) → MotorCommand`;
+each controller runs it locally. Rejected for now: a drive master
+(VESC-style fan-out — puts a node in the torque path, needs remote-side
+resolution) and a gateway on the radio MCU (authority on the least
+stable node; two code paths on the bench). Door kept open: a
+*coordinator* that only publishes correction coefficients (also a
+topic, its death decays to 1.0) can run on the C5 later without
+touching the remote or the controllers.
+
+**Ownership across sources.** `SourceClass` order `Remote > BenchHost >
+Phone`: an active setpoint is accepted if its class ≥ the current
+owner's; equal class keeps today's session/seq rule; safe modes bypass
+as today. Two remotes of equal class = first-come, with indication.
+
+**Vehicle config (new append-only group #12, ICD v5 with the topics):**
+`position` (FL/FR/RL/RR/single), `torque_ratio`, `brake_bias`,
+`bus_share`, `upstream: None | Uart | Can` (root is CONFIG, see below).
+The sibling set is NOT config — sibling-deadman applies to whoever was
+alive at arm time.
+
+**Topology: UART chain now, CAN-FD star with the ESP32-C5 as root when
+the second controller (FDCAN board) arrives.** Root-ness must be config
+on every node, because an ergot bridge-mode router cannot degrade to
+root when its upstream never appears (its downstream nets are leased
+from upstream). Design-ins that make the migration a flag flip rather
+than a rewrite: (1) `upstream` in vehicle config on controllers too;
+(2) the bridge's upstream lifecycle (discovery ping, lease
+acquire/refresh/release) as a reusable module — it moves from the C5 to
+the controllers under the star; (3) nothing master-centric or
+UART-specific in the bridge. With intent as a topic the application
+layer is topology-blind.
+
+**Multi-motor failsafe — symmetric, always brake.** See
+[safety.md → Multi-motor vehicles](../safety.md#multi-motor-vehicles--symmetric-failsafe).
+Summary: an isolated controller cannot distinguish "sibling pushing"
+from "downhill" by any local physics, so it may only brake; symmetry is
+produced by the hearing side — every controller also holds a
+sibling-deadman and enters failsafe on sibling silence or a sibling's
+failsafe status; a coast sync window precedes braking so no asymmetric
+torque exists while the others catch up. Limp-home is never automatic
+mid-ride. Sibling-aware *terminal state* (coast when siblings drive)
+was considered and REJECTED — the signal is unavailable exactly when
+needed.
 
 ## 11. Wired bridge ↔ motor-controller link
 
@@ -459,6 +487,11 @@ physical layout is fixed — no firmware rework.
 | ergot/BLE | GATT, custom 128-bit UUIDs (NUS structure) | Windows has no BLE L2CAP; desktop BLE is required |
 | Staleness | seq latest-wins + haptic warn + (later) TTL | kill late-stale surge; *tell the rider* it's laggy |
 | Bridge↔MC | UART now; CAN FD if separate cabled module | integration/EMI decides; SPI rejected |
+| Remote payload | vehicle intent, one signed channel | remote never knows motors; no throttle+brake conflict |
+| Intent transport | topic (flood), 50 Hz affirm | no address/discovery on the remote; topology-blind |
+| Intent→motor logic | replicated per controller, portable core module | no node in the torque path; coordinator later via correction topic |
+| Multi-motor link loss | symmetric failsafe via sibling-deadman + coast sync window; always brake | isolated node can't tell sibling-push from downhill |
+| Root | config (`upstream` field), C5 root under the CAN-FD star | bridge-mode can't self-promote; migration = flag flip |
 
 ---
 

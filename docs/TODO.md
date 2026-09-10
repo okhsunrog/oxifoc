@@ -33,6 +33,28 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
 - [ ] Configurable post-watchdog policy (coast / regen / hold).
 - [ ] `Idempotent` marker trait + `call`/`call_once` helpers in host-lib.
 
+### Multi-motor (2WD) — from the 2026-09-10 drive-architecture decisions
+
+- [ ] `DriveIntentTopic` + `DriveStatusTopic` in the ICD (v5) and a
+      per-controller drive task: subscribe → vehicle-logic map →
+      `DriverCommand::Motor` with session/seq → CMD_CHANNEL; publish
+      status at 50 Hz. Host `drive`/`maneuver` publish the same topic.
+- [ ] Vehicle-config group #12 (`position`, `torque_ratio`, `brake_bias`,
+      `bus_share`, `upstream`); host tool writes it to ALL controllers
+      with a version check (replicated logic must not drift).
+- [ ] `SourceClass` ownership (`Remote > BenchHost > Phone`) in
+      `DriveOwnership`.
+- [ ] Sibling-deadman (150 ms) + coast sync window (120 ms) in
+      `FailsafeConfig`; failsafe contagion on a sibling's failsafe status;
+      explicit limp re-arm only with a pre-dead sibling.
+- [ ] Bench: `ControlledStop` no-progress give-up exits to high-Z —
+      releases the board on a steep descent; evaluate ParkBrake instead.
+- [ ] Migration design-ins (chain → CAN-FD star): bridge upstream
+      lifecycle as a reusable module (or ergot's seed-lease worker), no
+      master-centric/UART-specific code in the bridge.
+- [ ] Custom board: C5 heartbeat GPIO to each controller (the only
+      channel that can inform the isolated side).
+
 ## Review backlog (2026-07-09 full-codebase review)
 
 Findings from the six-agent review, verified against source at the time.
@@ -1495,6 +1517,11 @@ the sim = batch tick).
   auto-range over a different window than the shader draws.
 - [ ] bridge/remote: pairing via a hardcoded MAC; stub tests. Remote
   design — [notes/remote-design.md](notes/remote-design.md).
+
+- [ ] Multi-controller bench selector: the connect-time resolution
+      currently fails closed on ambiguity (`e446dde`); enumerate responders
+      (address + device-info/UUID), select by `--uuid`/role in CLI/GUI, pin
+      the selection for the connection generation.
 
 ## Bench (waiting for hardware)
 
