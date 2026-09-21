@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 fn main() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let plot_ui = manifest
         .parent()
         .unwrap()
