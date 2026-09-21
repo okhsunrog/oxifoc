@@ -92,4 +92,12 @@ fn peak_tail_line_mode_reset_and_cache() {
     let sparse = pixels(&device, &queue, &texture);
     assert!(sparse[32 * 256 + 63 * 4 + 3] > 128);
     assert_eq!(sparse[32 * 256 + 3], 0);
+
+    // Projection must use the pixel metric on a wide, non-square plot.
+    buffer.clear();
+    buffer.push_batch(&[-0.5, 0.5]);
+    let texture = renderer.render(&buffer, 320, 64, 2, 0).0;
+    let diagonal = pixels(&device, &queue, &texture);
+    assert!(diagonal[32 * 1280 + 160 * 4 + 3] > 128);
+    assert!(diagonal[35 * 1280 + 160 * 4 + 3] < 16);
 }
