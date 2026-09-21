@@ -47,6 +47,7 @@ pub struct PlotRenderer {
     pipeline: wgpu::RenderPipeline,
     peak_pipeline: wgpu::ComputePipeline,
     peak_bind_group: wgpu::BindGroup,
+    peak_width_capacity: u32,
     snapshot: crate::buffer::Snapshot,
     texture: wgpu::Texture,
     samples_buffer: wgpu::Buffer,
@@ -109,11 +110,15 @@ impl PlotRenderer {
         });
         queue.write_buffer(&colors_buffer, 0, bytemuck::bytes_of(&colors_data));
 
+        // Slint requests the adapter's full texture resolution, which can be
+        // larger than our storage binding limit (e.g. 65536 columns on Mali).
+        let peak_width_capacity = device.limits().max_texture_dimension_2d.min(
+            (device.limits().max_storage_buffer_binding_size / (config.num_channels as u64 * 16))
+                as u32,
+        );
         let peaks_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("plot_peaks"),
-            size: u64::from(device.limits().max_texture_dimension_2d)
-                * config.num_channels as u64
-                * 16,
+            size: u64::from(peak_width_capacity) * config.num_channels as u64 * 16,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -256,6 +261,7 @@ impl PlotRenderer {
             pipeline,
             peak_pipeline,
             peak_bind_group,
+            peak_width_capacity,
             snapshot: Default::default(),
             texture,
             samples_buffer,
@@ -307,8 +313,8 @@ impl PlotRenderer {
         visible_samples: u32,
         view_offset: u32,
     ) -> (wgpu::Texture, f32, f32) {
-        let width = width.max(1);
-        let height = height.max(1);
+        let width = width.clamp(1, self.peak_width_capacity);
+        let height = height.clamp(1, self.device.limits().max_texture_dimension_2d);
         let vis = visible_samples.clamp(2, buffer.capacity as u32);
         assert_eq!(buffer.capacity, self.config.capacity);
         assert_eq!(buffer.num_channels, self.config.num_channels);
