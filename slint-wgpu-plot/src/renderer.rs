@@ -45,6 +45,9 @@ pub struct PlotRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    peak_pipeline: wgpu::ComputePipeline,
+    peak_bind_group: wgpu::BindGroup,
+    snapshot: crate::buffer::Snapshot,
     texture: wgpu::Texture,
     samples_buffer: wgpu::Buffer,
     _colors_buffer: wgpu::Buffer,
@@ -66,6 +69,11 @@ pub struct PlotRenderer {
 
 impl PlotRenderer {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, config: PlotConfig) -> Self {
+        assert!((1..=MAX_CHANNELS).contains(&config.num_channels));
+        assert!(config.capacity >= 2);
+        assert!(
+            config.y_min.is_finite() && config.y_max.is_finite() && config.y_min < config.y_max
+        );
         assert_eq!(
             config.channel_colors.len(),
             config.num_channels,
@@ -101,36 +109,104 @@ impl PlotRenderer {
         });
         queue.write_buffer(&colors_buffer, 0, bytemuck::bytes_of(&colors_data));
 
+        let peaks_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("plot_peaks"),
+            size: u64::from(device.limits().max_texture_dimension_2d)
+                * config.num_channels as u64
+                * 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let mut entries = vec![
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ];
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("plot_bgl"),
+            entries: &entries,
+        });
+        entries[2].visibility = wgpu::ShaderStages::COMPUTE;
+        entries[2].ty = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let peak_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("plot_peak_bgl"),
+            entries: &entries,
+        });
+        let peak_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("plot_peak_bg"),
+            layout: &peak_bgl,
             entries: &[
-                wgpu::BindGroupLayoutEntry {
+                wgpu::BindGroupEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
+                    resource: samples_buffer.as_entire_binding(),
                 },
-                wgpu::BindGroupLayoutEntry {
+                wgpu::BindGroupEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
+                    resource: colors_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: peaks_buffer.as_entire_binding(),
                 },
             ],
+        });
+        let peak_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("plot_peak_layout"),
+            bind_group_layouts: &[Some(&peak_bgl)],
+            immediate_size: size_of::<PlotParams>() as u32,
+        });
+        let peak_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("plot_reduce"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("reduce.wgsl").into()),
+        });
+        let peak_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("plot_reduce"),
+            layout: Some(&peak_layout),
+            module: &peak_shader,
+            entry_point: Some("reduce"),
+            compilation_options: Default::default(),
+            cache: None,
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("plot_bg"),
             layout: &bgl,
             entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: peaks_buffer.as_entire_binding(),
+                },
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: samples_buffer.as_entire_binding(),
@@ -178,6 +254,9 @@ impl PlotRenderer {
             device: device.clone(),
             queue: queue.clone(),
             pipeline,
+            peak_pipeline,
+            peak_bind_group,
+            snapshot: Default::default(),
             texture,
             samples_buffer,
             _colors_buffer: colors_buffer,
@@ -206,7 +285,9 @@ impl PlotRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         })
     }
@@ -229,7 +310,27 @@ impl PlotRenderer {
         let width = width.max(1);
         let height = height.max(1);
         let vis = visible_samples.clamp(2, buffer.capacity as u32);
-        let generation = buffer.generation();
+        assert_eq!(buffer.capacity, self.config.capacity);
+        assert_eq!(buffer.num_channels, self.config.num_channels);
+        let uploads = buffer.sync_to(&mut self.scratch, &mut self.snapshot);
+        for range in &uploads {
+            self.queue.write_buffer(
+                &self.samples_buffer,
+                (range.start * size_of::<f32>()) as u64,
+                bytemuck::cast_slice(&self.scratch[range.clone()]),
+            );
+        }
+        let generation = self.snapshot.generation;
+        if !uploads.is_empty() {
+            self.last_generation = u64::MAX;
+        }
+        let view_offset = view_offset.min(self.snapshot.available.saturating_sub(vis));
+
+        let reduce_peaks = (vis as f32 / width as f32) > 8.0
+            && (generation != self.last_generation
+                || vis != self.last_visible
+                || view_offset != self.last_view_offset
+                || width != self.last_width);
 
         // Check if anything changed since last render
         let needs_resize = width != self.last_width || height != self.last_height;
@@ -252,15 +353,11 @@ impl PlotRenderer {
         self.last_visible = vis;
         self.last_view_offset = view_offset;
 
-        buffer.copy_to(&mut self.scratch);
-        self.queue
-            .write_buffer(&self.samples_buffer, 0, bytemuck::cast_slice(&self.scratch));
-
         // Compute Y range from visible window only (auto-range)
         let (y_min, y_max) = if self.config.auto_range {
             let nch = buffer.num_channels;
             let cap = buffer.capacity;
-            let wp = buffer.write_pos() as usize;
+            let wp = self.snapshot.write_pos as usize;
             let mut lo = f32::INFINITY;
             let mut hi = f32::NEG_INFINITY;
 
@@ -298,7 +395,7 @@ impl PlotRenderer {
         };
 
         let params = PlotParams {
-            write_pos: buffer.write_pos(),
+            write_pos: self.snapshot.write_pos,
             num_samples: buffer.capacity as u32,
             y_min,
             y_max,
@@ -318,6 +415,16 @@ impl PlotRenderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("plot_encoder"),
             });
+        if reduce_peaks {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("plot_reduce"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.peak_pipeline);
+            pass.set_bind_group(0, &self.peak_bind_group, &[]);
+            pass.set_immediates(0, bytemuck::bytes_of(&params));
+            pass.dispatch_workgroups((width * params.num_channels).div_ceil(64), 1, 1);
+        }
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("plot_pass"),
@@ -353,6 +460,7 @@ impl PlotRenderer {
 
     /// Update the Y-axis range at runtime (e.g. for auto-scaling).
     pub fn set_y_range(&mut self, y_min: f32, y_max: f32) {
+        assert!(y_min.is_finite() && y_max.is_finite() && y_min < y_max);
         self.config.y_min = y_min;
         self.config.y_max = y_max;
         self.last_generation = u64::MAX;

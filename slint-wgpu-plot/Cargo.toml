@@ -10,3 +10,6 @@ wgpu = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+pollster = "1.0.1"

@@ -1,158 +1,180 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::{
+    ops::Range,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
-/// Lock-free SPSC ring buffer for real-time visualization.
-///
-/// Samples are stored interleaved: `[ch0_f0, ch1_f0, …, chN_f0, ch0_f1, …]`
-///
-/// # Concurrency contract
-/// - Exactly **one** writer thread calls [`push_frame`] / [`push_batch`].
-/// - Exactly **one** reader thread calls [`write_pos`] / [`copy_to`].
-/// - Torn f32 reads at the ring boundary are visually imperceptible and
-///   accepted as the cost of a zero-lock design.
-///
-/// [`push_frame`]: PlotBuffer::push_frame
-/// [`push_batch`]: PlotBuffer::push_batch
-/// [`write_pos`]: PlotBuffer::write_pos
-/// [`copy_to`]: PlotBuffer::copy_to
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Interleaved frames protected by a short lock, so snapshots include a
+/// consistent write position. No GPU operations run while holding this lock.
 pub struct PlotBuffer {
-    /// Interleaved sample data stored as bit-identical u32s for atomic access.
-    data: Vec<AtomicU32>,
-    /// Index of the *next* frame slot to write; wraps at `capacity`.
-    write_pos: AtomicU32,
-    /// Monotonic content generation used by render caches. Unlike write_pos,
-    /// this changes across complete ring wraps and clear operations.
-    generation: AtomicU64,
+    id: u64,
+    inner: Mutex<Inner>,
     pub num_channels: usize,
     pub capacity: usize,
 }
-
+struct Inner {
+    data: Vec<f32>,
+    written: u64,
+    generation: u64,
+    epoch: u64,
+}
+#[derive(Default)]
+pub(crate) struct Snapshot {
+    source: u64,
+    pub generation: u64,
+    pub write_pos: u32,
+    pub available: u32,
+    written: u64,
+    epoch: u64,
+    initialized: bool,
+}
 impl PlotBuffer {
     pub fn new(num_channels: usize, capacity: usize) -> Self {
-        assert!(
-            (1..=crate::MAX_CHANNELS).contains(&num_channels),
-            "num_channels must be 1..={}",
-            crate::MAX_CHANNELS
-        );
-        assert!(capacity >= 2, "capacity must be at least 2");
-
-        let nan_bits = f32::NAN.to_bits();
-        let data = (0..capacity * num_channels)
-            .map(|_| AtomicU32::new(nan_bits))
-            .collect();
-
+        assert!((1..=crate::MAX_CHANNELS).contains(&num_channels));
+        assert!((2..=u32::MAX as usize).contains(&capacity));
         Self {
-            data,
-            write_pos: AtomicU32::new(0),
-            generation: AtomicU64::new(0),
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            inner: Mutex::new(Inner {
+                data: vec![f32::NAN; capacity.checked_mul(num_channels).unwrap()],
+                written: 0,
+                generation: 0,
+                epoch: 0,
+            }),
             num_channels,
             capacity,
         }
     }
-
-    /// Push one frame (one `f32` value per channel).
-    ///
-    /// `values.len()` must equal `num_channels`.
-    #[inline]
     pub fn push_frame(&self, values: &[f32]) {
-        debug_assert_eq!(values.len(), self.num_channels);
-        let pos = self.write_pos.load(Ordering::Relaxed) as usize;
-        let base = pos * self.num_channels;
-        for (ch, &v) in values.iter().enumerate() {
-            self.data[base + ch].store(v.to_bits(), Ordering::Relaxed);
-        }
-        self.write_pos
-            .store(((pos + 1) % self.capacity) as u32, Ordering::Release);
-        self.generation.fetch_add(1, Ordering::Release);
+        assert_eq!(values.len(), self.num_channels);
+        self.push_batch(values);
     }
-
-    /// Push a contiguous slice of frames.
-    ///
-    /// `frames.len()` must be a multiple of `num_channels`; values are
-    /// ordered as `[ch0_f0, ch1_f0, …, ch0_f1, …]`.
     pub fn push_batch(&self, frames: &[f32]) {
-        debug_assert_eq!(frames.len() % self.num_channels, 0);
-        let n = frames.len() / self.num_channels;
-        let mut pos = self.write_pos.load(Ordering::Relaxed) as usize;
-        for i in 0..n {
-            let src = i * self.num_channels;
-            let dst = pos * self.num_channels;
-            for ch in 0..self.num_channels {
-                self.data[dst + ch].store(frames[src + ch].to_bits(), Ordering::Relaxed);
-            }
-            pos = (pos + 1) % self.capacity;
+        assert_eq!(frames.len() % self.num_channels, 0);
+        if frames.is_empty() {
+            return;
         }
-        // Update write_pos once after all frames, with Release ordering so
-        // the reader's Acquire on write_pos synchronises with all the
-        // Relaxed sample stores above.
-        self.write_pos.store(pos as u32, Ordering::Release);
-        if n > 0 {
-            self.generation.fetch_add(1, Ordering::Release);
+        let mut inner = self.inner.lock().unwrap();
+        for frame in frames.chunks_exact(self.num_channels) {
+            let base = (inner.written % self.capacity as u64) as usize * self.num_channels;
+            inner.data[base..base + self.num_channels].copy_from_slice(frame);
+            inner.written += 1;
         }
+        inner.generation += 1;
     }
-
-    /// Reset the buffer: fill with NaN and reset write position.
-    ///
-    /// NaN values are rendered as transparent by the shader, avoiding
-    /// visible steps when the buffer is partially filled.
     pub fn clear(&self) {
-        let nan_bits = f32::NAN.to_bits();
-        for atom in self.data.iter() {
-            atom.store(nan_bits, Ordering::Relaxed);
-        }
-        self.write_pos.store(0, Ordering::Release);
-        self.generation.fetch_add(1, Ordering::Release);
+        let mut inner = self.inner.lock().unwrap();
+        inner.data.fill(f32::NAN);
+        inner.written = 0;
+        inner.epoch += 1;
+        inner.generation += 1;
     }
-
-    /// Current write position for use in the GPU shader.
-    #[inline]
     pub fn write_pos(&self) -> u32 {
-        self.write_pos.load(Ordering::Acquire)
+        (self.inner.lock().unwrap().written % self.capacity as u64) as u32
     }
-
-    /// Monotonic version of the buffer contents for renderer cache invalidation.
-    #[inline]
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation.load(Ordering::Acquire)
+    pub fn available_samples(&self) -> u32 {
+        self.inner.lock().unwrap().written.min(self.capacity as u64) as u32
     }
-
-    /// Copy the entire ring buffer into `dst` as `f32` values for GPU upload.
-    ///
-    /// `dst` is resized to `capacity * num_channels` and overwritten.
-    pub fn copy_to(&self, dst: &mut Vec<f32>) {
-        // Acquire on write_pos synchronises-with the Release in push_frame /
-        // push_batch, ensuring all previously written data is visible here.
-        let _wp = self.write_pos.load(Ordering::Acquire);
-        dst.resize(self.capacity * self.num_channels, 0.0);
-        for (i, atom) in self.data.iter().enumerate() {
-            dst[i] = f32::from_bits(atom.load(Ordering::Relaxed));
+    pub fn read_back(&self, frames_back: usize, dst: &mut [f32]) {
+        assert_eq!(dst.len(), self.num_channels);
+        let inner = self.inner.lock().unwrap();
+        if frames_back == 0 || frames_back as u64 > inner.written.min(self.capacity as u64) {
+            dst.fill(f32::NAN);
+            return;
         }
+        let base = ((inner.written - frames_back as u64) % self.capacity as u64) as usize
+            * self.num_channels;
+        dst.copy_from_slice(&inner.data[base..base + self.num_channels]);
+    }
+    pub fn copy_to(&self, dst: &mut Vec<f32>) {
+        dst.clone_from(&self.inner.lock().unwrap().data);
+    }
+    pub(crate) fn sync_to(&self, dst: &mut Vec<f32>, snapshot: &mut Snapshot) -> Vec<Range<usize>> {
+        let inner = self.inner.lock().unwrap();
+        if snapshot.source == self.id
+            && snapshot.initialized
+            && snapshot.generation == inner.generation
+        {
+            return Vec::new();
+        }
+        let count = inner.written.saturating_sub(snapshot.written);
+        let full = snapshot.source != self.id
+            || !snapshot.initialized
+            || snapshot.epoch != inner.epoch
+            || count >= self.capacity as u64;
+        let mut ranges = Vec::with_capacity(2);
+        if full {
+            dst.clone_from(&inner.data);
+            ranges.push(0..inner.data.len());
+        } else if count > 0 {
+            let start = (snapshot.written % self.capacity as u64) as usize;
+            let first = (count as usize).min(self.capacity - start);
+            ranges.push(start * self.num_channels..(start + first) * self.num_channels);
+            if first < count as usize {
+                ranges.push(0..(count as usize - first) * self.num_channels);
+            }
+            for range in &ranges {
+                dst[range.clone()].copy_from_slice(&inner.data[range.clone()]);
+            }
+        }
+        *snapshot = Snapshot {
+            source: self.id,
+            generation: inner.generation,
+            write_pos: (inner.written % self.capacity as u64) as u32,
+            available: inner.written.min(self.capacity as u64) as u32,
+            written: inner.written,
+            epoch: inner.epoch,
+            initialized: true,
+        };
+        ranges
     }
 }
-
 #[cfg(test)]
 mod tests {
-    use super::PlotBuffer;
-
+    use super::*;
     #[test]
-    fn generation_changes_across_full_wrap_and_clear() {
-        let buffer = PlotBuffer::new(1, 2);
-        let initial = buffer.generation();
-
-        buffer.push_batch(&[1.0, 2.0]);
-        assert_eq!(buffer.write_pos(), 0, "batch completed a full ring wrap");
-        let wrapped = buffer.generation();
-        assert!(wrapped > initial);
-
+    fn incremental_snapshot_wrap_overrun_and_clear() {
+        let buffer = PlotBuffer::new(1, 4);
+        let mut snapshot = Snapshot::default();
+        let mut data = Vec::new();
+        assert_eq!(buffer.sync_to(&mut data, &mut snapshot), vec![0..4]);
+        buffer.push_batch(&[1., 2., 3.]);
+        assert_eq!(buffer.sync_to(&mut data, &mut snapshot), vec![0..3]);
+        buffer.push_batch(&[4., 5.]);
+        assert_eq!(buffer.sync_to(&mut data, &mut snapshot), vec![3..4, 0..1]);
+        assert_eq!(data, vec![5., 2., 3., 4.]);
+        assert_eq!(snapshot.write_pos, 1);
+        buffer.push_batch(&[6., 7., 8., 9., 10.]);
+        assert_eq!(buffer.sync_to(&mut data, &mut snapshot), vec![0..4]);
+        assert_eq!(data, vec![9., 10., 7., 8.]);
+        assert!(buffer.sync_to(&mut data, &mut snapshot).is_empty());
         buffer.clear();
-        assert_eq!(buffer.write_pos(), 0);
-        assert!(buffer.generation() > wrapped);
+        assert_eq!(buffer.sync_to(&mut data, &mut snapshot), vec![0..4]);
+        assert!(data.iter().all(|v| v.is_nan()));
+        assert_eq!(snapshot.available, 0);
     }
-
     #[test]
-    fn empty_batch_does_not_invalidate_renderer_cache() {
-        let buffer = PlotBuffer::new(1, 2);
-        let generation = buffer.generation();
-        buffer.push_batch(&[]);
-        assert_eq!(buffer.generation(), generation);
+    fn concurrent_snapshots_match_their_write_position() {
+        let buffer = std::sync::Arc::new(PlotBuffer::new(2, 64));
+        let other = buffer.clone();
+        let writer = std::thread::spawn(move || {
+            for i in 0..2000 {
+                other.push_frame(&[i as f32, i as f32]);
+            }
+        });
+        let mut snapshot = Snapshot::default();
+        let mut data = Vec::new();
+        for _ in 0..2000 {
+            buffer.sync_to(&mut data, &mut snapshot);
+            for i in 0..snapshot.available {
+                let index = (snapshot.write_pos as usize + 64 - 1 - i as usize) % 64;
+                let expected = (snapshot.written - 1 - u64::from(i)) as f32;
+                assert_eq!(&data[index * 2..index * 2 + 2], &[expected, expected]);
+            }
+        }
+        writer.join().unwrap();
     }
 }

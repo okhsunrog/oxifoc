@@ -115,19 +115,23 @@ export component App inherits Window {
     out property <length> hall-w:     hall-plot.requested-texture-width;
     out property <length> hall-h:     hall-plot.requested-texture-height;
 
+    in property <int> currents-available: 0;
+    in property <int> vbus-available: 0;
+    in property <int> temp-available: 0;
+    in property <int> hall-available: 0;
     // ── Chart pan/zoom state (read by Rust) ──
     out property <bool> currents-paused: currents-plot.paused;
-    out property <int> currents-view-offset: currents-plot.view-offset;
-    out property <float> currents-time-window: currents-plot.time-window;
+    out property <int> currents-view-offset: currents-plot.effective-view-offset;
+    out property <float> currents-time-window: currents-plot.visible-samples / currents-plot.sample-rate;
     out property <bool> vbus-paused: vbus-plot.paused;
-    out property <int> vbus-view-offset: vbus-plot.view-offset;
-    out property <float> vbus-time-window: vbus-plot.time-window;
+    out property <int> vbus-view-offset: vbus-plot.effective-view-offset;
+    out property <float> vbus-time-window: vbus-plot.visible-samples / vbus-plot.sample-rate;
     out property <bool> temp-paused: temp-plot.paused;
-    out property <int> temp-view-offset: temp-plot.view-offset;
-    out property <float> temp-time-window: temp-plot.time-window;
+    out property <int> temp-view-offset: temp-plot.effective-view-offset;
+    out property <float> temp-time-window: temp-plot.visible-samples / temp-plot.sample-rate;
     out property <bool> hall-paused: hall-plot.paused;
-    out property <int> hall-view-offset: hall-plot.view-offset;
-    out property <float> hall-time-window: hall-plot.time-window;
+    out property <int> hall-view-offset: hall-plot.effective-view-offset;
+    out property <float> hall-time-window: hall-plot.visible-samples / hall-plot.sample-rate;
 
     // ── Sample rate for plots (set by Rust from actual_fast_hz) ──
     in property <float> fast-sample-rate: 1000.0;
@@ -716,6 +720,7 @@ export component App inherits Window {
                     vertical-stretch: 3;
                     title: "Phase Currents (A)";
                     texture: root.currents-texture;
+                    available-samples: root.currents-available;
                     y-min: root.currents-y-min;
                     y-max: root.currents-y-max;
                     y-divisions: 4;
@@ -734,6 +739,7 @@ export component App inherits Window {
                         horizontal-stretch: 1;
                         title: "Bus Voltage (V)";
                         texture: root.vbus-texture;
+                    available-samples: root.vbus-available;
                         y-min: root.vbus-y-min;
                         y-max: root.vbus-y-max;
                         y-divisions: 3;
@@ -748,6 +754,7 @@ export component App inherits Window {
                         horizontal-stretch: 1;
                         title: "FET Temperature (°C)";
                         texture: root.temp-texture;
+                    available-samples: root.temp-available;
                         y-min: root.temp-y-min;
                         y-max: root.temp-y-max;
                         y-divisions: 3;
@@ -764,6 +771,7 @@ export component App inherits Window {
                     min-height: 130px;
                     title: "Angle & eRPM";
                     texture: root.hall-texture;
+                    available-samples: root.hall-available;
                     y-min: root.hall-y-min;
                     y-max: root.hall-y-max;
                     y-divisions: 4;

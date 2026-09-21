@@ -15,7 +15,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     );
     let pos = positions[vi];
     return VertexOutput(
-        vec4<f32>(pos.x, -pos.y, 0.0, 1.0),
+        vec4<f32>(pos.x, pos.y, 0.0, 1.0),
         vec2<f32>(pos.x * 0.5 + 0.5, 0.5 - pos.y * 0.5),
     );
 }
@@ -42,9 +42,14 @@ struct Colors {
 };
 
 var<immediate> params: PlotParams;
+@group(0) @binding(2) var<storage, read> peaks: array<vec4<f32>>;
 
 @group(0) @binding(0) var<storage, read> samples:        array<f32>;
 @group(0) @binding(1) var<uniform>       channel_colors: Colors;
+
+fn finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -65,25 +70,20 @@ fn value_to_y(v: f32) -> f32 {
 // Distance from point p to the line segment from a to b,
 // measured in pixel space (accounting for aspect ratio).
 fn dist_to_segment_px(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
-    let ab = b - a;
-    let ap = p - a;
-    let t = clamp(dot(ap, ab) / dot(ab, ab), 0.0, 1.0);
-    let closest = a + t * ab;
-    let diff = p - closest;
-    // Scale to pixel space: X in pixels, Y in pixels
-    let diff_px = vec2<f32>(
-        diff.x * f32(params.texture_width),
-        diff.y * f32(params.texture_height)
-    );
-    return length(diff_px);
+    let size = vec2<f32>(f32(params.texture_width), f32(params.texture_height));
+    let ab = (b - a) * size;
+    let ap = (p - a) * size;
+    let t = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-20), 0.0, 1.0);
+    let diff = ap - t * ab;
+    return dot(diff, diff);
 }
 
 // ── Fragment shader ───────────────────────────────────────────────────────────
 //
 // Hybrid rendering:
-// - When samples_per_pixel <= 4: LINE mode — connects consecutive samples
+// - When samples_per_pixel <= 8: LINE mode — connects consecutive samples
 //   with anti-aliased line segments for a smooth waveform.
-// - When samples_per_pixel > 4: PEAK-DETECT mode — finds min/max per pixel
+// - When samples_per_pixel > 8: PEAK-DETECT mode — finds min/max per pixel
 //   column and draws vertical bars, like an oscilloscope.
 
 @fragment
@@ -104,7 +104,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         // At close zoom (< 1 sample/pixel), each segment spans many pixels,
         // so we need enough margin to find the segment passing through us.
         let sample_center = uv.x * f32(vis - 1u);
-        let half_span = max(samples_per_pixel * 0.5 + 1.0, 2.0);
+        let half_span = max(samples_per_pixel * 4.0 + 1.0, 2.0);
         let s_start = u32(clamp(floor(sample_center - half_span), 0.0, f32(vis - 2u)));
         let s_end   = u32(clamp(ceil(sample_center + half_span), 1.0, f32(vis - 1u)));
 
@@ -116,15 +116,20 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
             for (var s = s_start; s < s_end; s++) {
                 let va = get_sample(ch, s);
                 let vb_val = get_sample(ch, s + 1u);
-                if va == va && vb_val == vb_val {
+                if finite(va) && finite(vb_val) {
                     let pa = vec2<f32>(f32(s) / f32(vis - 1u), 1.0 - value_to_y(va));
                     let pb = vec2<f32>(f32(s + 1u) / f32(vis - 1u), 1.0 - value_to_y(vb_val));
-                    min_dist = min(min_dist, dist_to_segment_px(pixel_pos, pa, pb));
+                    // Reject pixels outside the segment's glow bounds before
+                    // projection; most of a chart is empty background.
+                    let margin = 4.0 / f32(params.texture_height);
+                    if pixel_pos.y >= min(pa.y, pb.y) - margin && pixel_pos.y <= max(pa.y, pb.y) + margin {
+                        min_dist = min(min_dist, dist_to_segment_px(pixel_pos, pa, pb));
+                    }
                 }
             }
 
             // min_dist is already in pixel space
-            let dist_px = min_dist;
+            let dist_px = sqrt(min_dist);
 
             let line_col   = channel_colors.data[ch].rgb;
             let line_alpha = smoothstep(1.5, 0.0, dist_px);
@@ -139,27 +144,12 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         // ── PEAK-DETECT MODE ─────────────────────────────────────────────
         // For every pixel column, find min/max of all samples mapping to it
         // and draw a vertical line segment (oscilloscope style).
-        let sample_center = uv.x * f32(vis - 1u);
-        let half_span  = max(samples_per_pixel * 0.5, 0.5);
-        let s_start    = u32(clamp(floor(sample_center - half_span), 0.0, f32(vis - 1u)));
-        let s_end      = u32(clamp(ceil( sample_center + half_span), 0.0, f32(vis - 1u)));
-        let iter_count = min(s_end - s_start + 1u, 256u);
-
+        let column = min(u32(uv.x * f32(params.texture_width)), params.texture_width - 1u);
         for (var ch = 0u; ch < params.num_channels; ch++) {
-            var val_min = 1e30f;
-            var val_max = -1e30f;
-            var valid = false;
-
-            for (var i = 0u; i < iter_count; i++) {
-                let v = get_sample(ch, s_start + i);
-                if v == v {
-                    val_min = min(val_min, v);
-                    val_max = max(val_max, v);
-                    valid = true;
-                }
-            }
-
-            if !valid { continue; }
+            let envelope = peaks[column * params.num_channels + ch];
+            if envelope.z == 0.0 { continue; }
+            let val_min = envelope.x;
+            let val_max = envelope.y;
 
             let y_top = 1.0 - value_to_y(val_max);
             let y_bot = 1.0 - value_to_y(val_min);

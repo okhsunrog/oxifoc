@@ -75,9 +75,9 @@ clap = { version = "4.6", features = ["derive"] }
 toml = "1.1"
 # Slint upstream calls its default branch `master`; pin its current HEAD for
 # reproducible access to the wgpu 30 integration.
-slint = { git = "https://github.com/slint-ui/slint.git", rev = "64ee54de49999a97d97ffe004e30904e8e9118a3", version = "1.18.0", default-features = false, features = ["std", "unstable-wgpu-30", "compat-1-2"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "unstable-wgpu-30", "compat-1-2"] }
 wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan"] }
-slint-build = { git = "https://github.com/slint-ui/slint.git", rev = "64ee54de49999a97d97ffe004e30904e8e9118a3", version = "1.18.0" }
+slint-build = "=1.18.1"
 bytemuck = { version = "1", features = ["derive"] }
 bbqueue = "0.7"
 

@@ -733,6 +733,10 @@ pub fn main() {
                             app.set_rate_warning(SharedString::from(""));
                         }
 
+                        app.set_currents_available(cb.available_samples() as i32);
+                        app.set_vbus_available(vb.available_samples() as i32);
+                        app.set_temp_available(tb.available_samples() as i32);
+                        app.set_hall_available(hb.available_samples() as i32);
                         // Per-plot time windows and view offsets (each plot can be independently paused/zoomed)
                         let c_tw = app.get_currents_time_window();
                         let c_vis = (c_tw * fast_rate) as u32;

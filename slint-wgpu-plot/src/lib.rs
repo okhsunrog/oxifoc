@@ -1,6 +1,9 @@
 mod buffer;
 mod renderer;
 
+#[cfg(test)]
+mod gpu_tests;
+
 pub use buffer::PlotBuffer;
 pub use renderer::{PlotConfig, PlotRenderer};
 
@@ -18,10 +21,22 @@ pub const MAX_CHANNELS: usize = 8;
 pub fn required_wgpu_settings(max_capacity: usize, max_channels: usize) -> WGPUSettings {
     let mut s = WGPUSettings::default();
     s.device_required_features = wgpu::Features::IMMEDIATES;
+    s.device_required_limits
+        .max_compute_invocations_per_workgroup = 64;
+    s.device_required_limits.max_compute_workgroup_size_x = 64;
+    s.device_required_limits.max_compute_workgroup_size_y = 1;
+    s.device_required_limits.max_compute_workgroup_size_z = 1;
+    s.device_required_limits
+        .max_compute_workgroups_per_dimension = 65535;
     s.device_required_limits.max_immediate_size = size_of::<renderer::PlotParams>() as u32;
     s.device_required_limits
-        .max_storage_buffers_per_shader_stage = 1;
+        .max_storage_buffers_per_shader_stage = 2;
     s.device_required_limits.max_storage_buffer_binding_size =
-        (max_capacity * max_channels * size_of::<f32>()) as u64;
+        ((max_capacity * max_channels * size_of::<f32>()) as u64).max(
+            // Slint upgrades texture dimensions to the adapter's resolution
+            // limits. Reserve envelopes for up to 32768 columns, not just
+            // the small WebGL-compatible default requested above.
+            32768 * max_channels as u64 * 16,
+        );
     s
 }
