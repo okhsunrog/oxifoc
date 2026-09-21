@@ -67,108 +67,84 @@ fn value_to_y(v: f32) -> f32 {
     return (v - params.y_min) / (params.y_max - params.y_min);
 }
 
-// Distance from point p to the line segment from a to b,
-// measured in pixel space (accounting for aspect ratio).
-fn dist_to_segment_px(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
-    let size = vec2<f32>(f32(params.texture_width), f32(params.texture_height));
-    let ab = (b - a) * size;
-    let ap = (p - a) * size;
-    let t = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-20), 0.0, 1.0);
-    let diff = ap - t * ab;
-    return dot(diff, diff);
-}
-
-// ── Fragment shader ───────────────────────────────────────────────────────────
-//
-// Hybrid rendering:
-// - When samples_per_pixel <= 8: LINE mode — connects consecutive samples
-//   with anti-aliased line segments for a smooth waveform.
-// - When samples_per_pixel > 8: PEAK-DETECT mode — finds min/max per pixel
-//   column and draws vertical bars, like an oscilloscope.
-
+// Peak rendering only reads precomputed envelopes.
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     var color = vec3<f32>(0.0);
     var alpha = 0.0;
-
     let px_y = 1.0 / f32(params.texture_height);
-    let px_x = 1.0 / f32(params.texture_width);
-    let vis  = params.visible_samples;
+    let column = min(u32(uv.x * f32(params.texture_width)), params.texture_width - 1u);
+    for (var ch = 0u; ch < params.num_channels; ch++) {
+        let envelope = peaks[column * params.num_channels + ch];
+        if envelope.z == 0.0 { continue; }
+        let val_min = envelope.x;
+        let val_max = envelope.y;
 
-    let samples_per_pixel = f32(vis) / f32(params.texture_width);
-    let use_lines = samples_per_pixel <= 8.0;
+        let y_top = 1.0 - value_to_y(val_max);
+        let y_bot = 1.0 - value_to_y(val_min);
 
-    if use_lines {
-        // ── LINE MODE ────────────────────────────────────────────────────
-        // Check all line segments that could contribute to this pixel.
-        // At close zoom (< 1 sample/pixel), each segment spans many pixels,
-        // so we need enough margin to find the segment passing through us.
-        let sample_center = uv.x * f32(vis - 1u);
-        let half_span = max(samples_per_pixel * 4.0 + 1.0, 2.0);
-        let s_start = u32(clamp(floor(sample_center - half_span), 0.0, f32(vis - 2u)));
-        let s_end   = u32(clamp(ceil(sample_center + half_span), 1.0, f32(vis - 1u)));
+        var dist: f32;
+        if      uv.y < y_top { dist = y_top - uv.y; }
+        else if uv.y > y_bot { dist = uv.y - y_bot; }
+        else                 { dist = 0.0; }
 
-        let pixel_pos = vec2<f32>(uv.x, uv.y);
+        let line_col   = channel_colors.data[ch].rgb;
+        let line_alpha = smoothstep(px_y * 2.0, 0.0, dist);
+        let glow_alpha = smoothstep(px_y * 6.0, 0.0, dist) * 0.25;
 
-        for (var ch = 0u; ch < params.num_channels; ch++) {
-            var min_dist = 1e30f;
-
-            for (var s = s_start; s < s_end; s++) {
-                let va = get_sample(ch, s);
-                let vb_val = get_sample(ch, s + 1u);
-                if finite(va) && finite(vb_val) {
-                    let pa = vec2<f32>(f32(s) / f32(vis - 1u), 1.0 - value_to_y(va));
-                    let pb = vec2<f32>(f32(s + 1u) / f32(vis - 1u), 1.0 - value_to_y(vb_val));
-                    // Reject pixels outside the segment's glow bounds before
-                    // projection; most of a chart is empty background.
-                    let margin = 4.0 / f32(params.texture_height);
-                    if pixel_pos.y >= min(pa.y, pb.y) - margin && pixel_pos.y <= max(pa.y, pb.y) + margin {
-                        min_dist = min(min_dist, dist_to_segment_px(pixel_pos, pa, pb));
-                    }
-                }
-            }
-
-            // min_dist is already in pixel space
-            let dist_px = sqrt(min_dist);
-
-            let line_col   = channel_colors.data[ch].rgb;
-            let line_alpha = smoothstep(1.5, 0.0, dist_px);
-            let glow_alpha = smoothstep(4.0, 0.0, dist_px) * 0.2;
-
-            color = mix(color, line_col * 0.35, glow_alpha);
-            alpha = max(alpha, glow_alpha);
-            color = mix(color, line_col, line_alpha);
-            alpha = max(alpha, line_alpha);
-        }
-    } else {
-        // ── PEAK-DETECT MODE ─────────────────────────────────────────────
-        // For every pixel column, find min/max of all samples mapping to it
-        // and draw a vertical line segment (oscilloscope style).
-        let column = min(u32(uv.x * f32(params.texture_width)), params.texture_width - 1u);
-        for (var ch = 0u; ch < params.num_channels; ch++) {
-            let envelope = peaks[column * params.num_channels + ch];
-            if envelope.z == 0.0 { continue; }
-            let val_min = envelope.x;
-            let val_max = envelope.y;
-
-            let y_top = 1.0 - value_to_y(val_max);
-            let y_bot = 1.0 - value_to_y(val_min);
-
-            var dist: f32;
-            if      uv.y < y_top { dist = y_top - uv.y; }
-            else if uv.y > y_bot { dist = uv.y - y_bot; }
-            else                 { dist = 0.0; }
-
-            let line_col   = channel_colors.data[ch].rgb;
-            let line_alpha = smoothstep(px_y * 2.0, 0.0, dist);
-            let glow_alpha = smoothstep(px_y * 6.0, 0.0, dist) * 0.25;
-
-            color = mix(color, line_col * 0.35, glow_alpha);
-            alpha = max(alpha, glow_alpha);
-            color = mix(color, line_col, line_alpha);
-            alpha = max(alpha, line_alpha);
-        }
+        color = mix(color, line_col * 0.35, glow_alpha);
+        alpha = max(alpha, glow_alpha);
+        color = mix(color, line_col, line_alpha);
+        alpha = max(alpha, line_alpha);
     }
-
     return vec4<f32>(color, alpha);
+}
+
+struct LineVertex {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) a: vec2<f32>,
+    @location(1) @interpolate(flat) b: vec2<f32>,
+    @location(2) @interpolate(flat) color: vec4<f32>,
+};
+
+// One oriented, glow-width quad per segment. Only pixels close to the
+// waveform run the distance calculation, rather than the entire texture.
+@vertex
+fn vs_line(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> LineVertex {
+    let segments = params.visible_samples - 1u;
+    let channel = instance / segments;
+    let sample_index = instance % segments;
+    let va = get_sample(channel, sample_index);
+    let vb = get_sample(channel, sample_index + 1u);
+    if !finite(va) || !finite(vb) {
+        return LineVertex(vec4<f32>(2.0, 2.0, 0.0, 1.0), vec2<f32>(0.0), vec2<f32>(0.0), vec4<f32>(0.0));
+    }
+    let size = vec2<f32>(f32(params.texture_width), f32(params.texture_height));
+    let a = vec2<f32>(f32(sample_index) / f32(segments), 1.0 - value_to_y(va)) * size;
+    let b = vec2<f32>(f32(sample_index + 1u) / f32(segments), 1.0 - value_to_y(vb)) * size;
+    let direction = normalize(b - a);
+    let normal = vec2<f32>(-direction.y, direction.x);
+    let radius = 4.0 * 1.0;
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(0.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0)
+    );
+    let corner = corners[vertex];
+    let point = mix(a, b, corner.x) + direction * ((corner.x * 2.0 - 1.0) * radius) + normal * corner.y * radius;
+    let clip = point / size;
+    return LineVertex(vec4<f32>(clip.x * 2.0 - 1.0, 1.0 - clip.y * 2.0, 0.0, 1.0),
+        a, b, channel_colors.data[channel]);
+}
+
+@fragment
+fn fs_line(input: LineVertex) -> @location(0) vec4<f32> {
+    let ab = input.b - input.a;
+    let ap = input.position.xy - input.a;
+    let t = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-20), 0.0, 1.0);
+    let distance = length(ap - t * ab);
+    let core = 1.0 - smoothstep(0.0, 1.5 * 1.0, distance);
+    let glow = (1.0 - smoothstep(0.0, 4.0 * 1.0, distance)) * 0.2;
+    let alpha = max(core, glow) * input.color.a;
+    let color = input.color.rgb * mix(0.35, 1.0, core);
+    return vec4<f32>(color * alpha, alpha);
 }

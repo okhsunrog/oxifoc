@@ -45,6 +45,7 @@ pub struct PlotRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    line_pipeline: wgpu::RenderPipeline,
     peak_pipeline: wgpu::ComputePipeline,
     peak_bind_group: wgpu::BindGroup,
     peak_width_capacity: u32,
@@ -125,7 +126,9 @@ impl PlotRenderer {
         let mut entries = vec![
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                visibility: wgpu::ShaderStages::VERTEX
+                    | wgpu::ShaderStages::FRAGMENT
+                    | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
@@ -135,7 +138,7 @@ impl PlotRenderer {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -251,6 +254,32 @@ impl PlotRenderer {
             cache: None,
         });
 
+        let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("plot_lines"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_line"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_line"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let texture = Self::make_texture(device, 1, 1);
         let fallback_y_min = config.y_min;
         let fallback_y_max = config.y_max;
@@ -259,6 +288,7 @@ impl PlotRenderer {
             device: device.clone(),
             queue: queue.clone(),
             pipeline,
+            line_pipeline,
             peak_pipeline,
             peak_bind_group,
             peak_width_capacity,
@@ -453,10 +483,19 @@ impl PlotRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            rpass.set_pipeline(&self.pipeline);
+            let use_lines = vis as f32 / width as f32 <= 8.0;
+            rpass.set_pipeline(if use_lines {
+                &self.line_pipeline
+            } else {
+                &self.pipeline
+            });
             rpass.set_bind_group(0, &self.bind_group, &[]);
             rpass.set_immediates(0, bytemuck::bytes_of(&params));
-            rpass.draw(0..3, 0..1);
+            if use_lines {
+                rpass.draw(0..6, 0..((vis - 1) * params.num_channels));
+            } else {
+                rpass.draw(0..3, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         self.last_y_min = y_min;
