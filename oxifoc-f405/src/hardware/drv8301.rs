@@ -218,7 +218,7 @@ fn configure_registers(spi: &mut DrvSpiBus, cs: &mut Output<'static>) -> Result<
     // catching dead shorts (~340A cold) before FET failure.
     // MK5 clone: FETs unidentified — 511mV kept until the board is inspected
     // (docs/hw/vesc6-mk5.md bring-up checklist).
-    drv.set_oc_threshold(OcAdjSet::Vds511mV)?;
+    drv.set_oc_threshold(OcAdjSet::Vds511Mv)?;
     drv.set_ocp_mode(OcpMode::OcLatchShutdown)?;
     drv.set_pwm_mode(false)?;
     drv.set_gate_current(GateCurrent::Low)?;

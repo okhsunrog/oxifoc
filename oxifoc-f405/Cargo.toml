@@ -57,7 +57,7 @@ assign-resources = "0.5.0"
 embedded-io-async = { version = "0.7", features = ["defmt"] }
 
 # Gate driver
-drv8301-dd = { version = "0.2.0", features = ["defmt"] }
+drv8301-dd = { version = "0.3.0", features = ["defmt"] }
 embedded-hal-bus = "0.3"
 
 # Persistent configuration storage
