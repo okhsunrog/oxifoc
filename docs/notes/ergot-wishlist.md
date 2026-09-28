@@ -251,7 +251,7 @@ oxifoc ICD, collected 2026-09-10:
 - **CAN transport** — ergot PR #227 (`can-transport`, draft, 2026-09-28):
   design note `notes/2026-09-28-can-transport.md` + implementation
   (`utils::can`, `transports::can`, `interface_impls::can`,
-  `InterfaceSink::set_local_node_id`). Universal profile (ID = segment
+  `InterfaceSink::set_local_segment`). Universal profile (ID = segment
   delivery, payload = full frame), link-level fragmentation with per-fragment
   `xfer_id`, two-level TX queue, e2e over the bus mock on 8-byte frames.
   Supersedes #222/#223 direction; driver adapters follow with hardware.
