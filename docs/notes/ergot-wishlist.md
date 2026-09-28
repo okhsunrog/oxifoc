@@ -243,6 +243,20 @@ oxifoc ICD, collected 2026-09-10:
 
 ## Landed (kept for the record)
 
+- **Header compaction + traffic class** — ergot #226 merged 2026-09-28 as
+  `70cb01c`: `seq_no` gone, `kind|class|ttl` in one byte,
+  `TrafficClass` via `class = …` in the macros. No wire-version field (the
+  author dropped it before merge). oxifoc still pins `e93b03b`; a repin
+  needs `class` on the ICD types.
+- **CAN transport** — ergot PR #227 (`can-transport`, draft, 2026-09-28):
+  design note `notes/2026-09-28-can-transport.md` + implementation
+  (`utils::can`, `transports::can`, `interface_impls::can`,
+  `InterfaceSink::set_local_node_id`). Universal profile (ID = segment
+  delivery, payload = full frame), link-level fragmentation with per-fragment
+  `xfer_id`, two-level TX queue, e2e over the bus mock on 8-byte frames.
+  Supersedes #222/#223 direction; driver adapters follow with hardware.
+  Closes wishlist items 7 (via CAN ID priority) and the CAN inputs section.
+
 - **Wire format v1** — ergot PR #226 (branch `wire-v1`, 2026-09-11, draft):
   `seq_no` dropped and `Header`/`HeaderSeq` merged; `kind 2 | class 2 |
   ttl 4` packed into one byte (`PROTOCOL_ERROR = 0`, `MAX_TTL = 15`,
