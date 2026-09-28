@@ -211,7 +211,11 @@ no_std `discover_endpoint_socket` upstream (item 5a).
 ## CAN transport inputs (for the CAN FD work, ESP32-C5 + FDCAN board)
 
 Facts from `canbus_experiments` (merge-base 25392ff, 2025-11-13) and the
-oxifoc ICD, collected 2026-09-10:
+oxifoc ICD, collected 2026-09-10. Historical input, superseded by the
+design in ergot #227 (`notes/2026-09-28-can-transport.md`): `seq_no` no
+longer exists, reassembly is keyed on `(src_node, xfer_id)` with a
+per-fragment transfer id, and the ID carries only segment delivery
+(`prio | dst_node | src_node | role | frag_idx`), not the port or kind.
 
 - The header-in-ID layout (priority 3 b, dst_node, dst_port, frame_kind
   in the 29-bit ID; 6–8 B header in payload) is the right shape and is
@@ -244,10 +248,16 @@ oxifoc ICD, collected 2026-09-10:
 ## Landed (kept for the record)
 
 - **Header compaction + traffic class** — ergot #226 merged 2026-09-28 as
-  `70cb01c`: `seq_no` gone, `kind|class|ttl` in one byte,
-  `TrafficClass` via `class = …` in the macros. No wire-version field (the
-  author dropped it before merge). oxifoc still pins `e93b03b`; a repin
-  needs `class` on the ICD types.
+  `70cb01c`: `seq_no` dropped and `Header`/`HeaderSeq` merged; `kind 2 |
+  class 2 | ttl 4` packed into one byte (`PROTOCOL_ERROR = 0`, `MAX_TTL =
+  15`, `MAX_HDR_ENCODED_SIZE = 24`); `TrafficClass { Control, Normal, Bulk,
+  Background }` on `Endpoint::CLASS` / `Topic::CLASS` via `class = …` in the
+  macros, inherited by responses. No wire-version field (the author dropped
+  it before merge). Closes wishlist item 7 (reframed as a class hint: the
+  existing sinks ignore it, CAN maps it) and the seq_no question. oxifoc
+  still pins `e93b03b`; a repin needs `class` on the ICD types
+  (`DriveIntent`/affirms → Control, `FastTelemetryBatch` → Bulk, defmt →
+  Background).
 - **CAN transport** — ergot PR #227 (`can-transport`, draft, 2026-09-28):
   design note `notes/2026-09-28-can-transport.md` + implementation
   (`utils::can`, `transports::can`, `interface_impls::can`,
@@ -255,28 +265,13 @@ oxifoc ICD, collected 2026-09-10:
   delivery, payload = full frame), link-level fragmentation with per-fragment
   `xfer_id`, two-level TX queue, e2e over the bus mock on 8-byte frames.
   Supersedes #222/#223 direction; driver adapters follow with hardware.
-  Closes wishlist items 7 (via CAN ID priority) and the CAN inputs section.
-
-- **Wire format v1** — ergot PR #226 (branch `wire-v1`, 2026-09-11, draft):
-  `seq_no` dropped and `Header`/`HeaderSeq` merged; `kind 2 | class 2 |
-  ttl 4` packed into one byte (`PROTOCOL_ERROR = 0`, `MAX_TTL = 15`,
-  `MAX_HDR_ENCODED_SIZE = 24`); `TrafficClass { Control, Normal, Bulk,
-  Background }` on `Endpoint::CLASS` / `Topic::CLASS` via `class = ...` in
-  the macros, inherited by responses; `WIRE_VERSION = 1` reported in
-  `DeviceInfo`. Closes wishlist items 7 (reframed as a class hint — the
-  sinks ignore it, CAN maps it) and the seq_no question; oxifoc adoption
-  needs a repin + `class` on its ICD (`DriveIntent`/affirms → Control,
-  `FastTelemetryBatch` → Bulk, defmt → Background).
-- **Split endpoint request API** — ergot PR #225 (`split-request-api`,
-  `55f8f6d`): `send_request` + `recv`, `attach_boxed`, `RequestPending`
-  guard, serialize-only request bound. #225 and #226 touch the same header
-  literals; whichever lands second rebases.
-
-- **Split endpoint request API** (`send_request` + `recv`, `attach_boxed`)
-  — ergot branch `split-request-api`, rev `e93b03b`, born from the
-  2026-07-06 deadman hunt: awaiting a request inline in the affirm loop
-  delayed the next affirm past the device's 150 ms deadman. oxifoc rides it
-  since `2f4365b`.
+  Closes the CAN inputs section above, which records the pre-design facts;
+  where the two disagree, the design note wins.
+- **Split endpoint request API** (`send_request` + `recv`, `attach_boxed`,
+  `RequestPending` guard, serialize-only request bound) — ergot #225, merged
+  as `d42d38a`. Born from the 2026-07-06 deadman hunt: awaiting a request
+  inline in the affirm loop delayed the next affirm past the device's
+  150 ms deadman. oxifoc rides the pre-merge rev `e93b03b` since `2f4365b`.
 - **`edge_link_local()` + revert-to-link-local liveness policy** (#221,
   rev `5a5fab8`) — adopted in oxifoc 2026-08-06; its "dead vs undiscovered"
   ambiguity is entry 4 above.
