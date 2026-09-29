@@ -47,6 +47,46 @@ const CAPACITY: usize = 32768;
 const MAX_LOG_LINES: usize = 2000;
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];
 
+fn cursor_readout(
+    buffer: &PlotBuffer,
+    fraction: f32,
+    visible_samples: u32,
+    view_offset: u32,
+    sample_rate: f32,
+    channels: &[&str],
+    visible_channels: Option<&[bool]>,
+) -> SharedString {
+    if buffer.available_samples() == 0 {
+        return SharedString::default();
+    }
+    debug_assert_eq!(channels.len(), buffer.num_channels);
+    let visible = visible_samples.clamp(2, buffer.capacity as u32);
+    let offset = view_offset.min(buffer.available_samples().saturating_sub(visible));
+    let index =
+        (oxifoc_core::foc::clamp_f32(fraction, 0.0, 1.0) * (visible - 1) as f32).round() as u32;
+    let frames_back = (offset + visible - index) as usize;
+    let mut frame = vec![0.0; buffer.num_channels];
+    buffer.read_back(frames_back, &mut frame);
+    let mut text = format!(
+        "t: -{:.0} ms",
+        (frames_back - 1) as f32 * 1000.0 / sample_rate
+    );
+    for (index, (name, value)) in channels.iter().zip(frame).enumerate() {
+        if visible_channels.is_some_and(|visible| !visible[index]) {
+            continue;
+        }
+        text.push_str(&format!(
+            "  {name} {}",
+            if value.is_finite() {
+                format!("{value:.2}")
+            } else {
+                "—".to_string()
+            }
+        ));
+    }
+    SharedString::from(text)
+}
+
 /// Config groups exposed by the GUI, indexed by the `config-group` ComboBox
 /// in `ui/app.slint` — MUST stay in the same order as that ComboBox `model`
 /// (the write path's per-group forms are keyed by the same index). This
@@ -343,8 +383,8 @@ pub fn main() {
         .init();
 
     // Configure the WGPU backend (required for GPU chart rendering).
-    // The largest chart has 3 channels (phase currents).
-    let wgpu_settings = required_wgpu_settings(CAPACITY, 3);
+    // The current chart overlays five signals on the same ampere axis.
+    let wgpu_settings = required_wgpu_settings(CAPACITY, 5);
     slint::BackendSelector::new()
         .require_wgpu_30(WGPUConfiguration::Automatic(wgpu_settings))
         .select()
@@ -434,7 +474,7 @@ pub fn main() {
     let stop_adc = Arc::new(AtomicBool::new(false));
 
     // ── Ring buffers shared between data thread and render notifier ───────────
-    let currents_buf = Arc::new(PlotBuffer::new(3, CAPACITY)); // ia, ib, ic
+    let currents_buf = Arc::new(PlotBuffer::new(5, CAPACITY)); // ia, ib, ic, id, iq
     let vbus_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // V
     let temp_buf = Arc::new(PlotBuffer::new(1, CAPACITY)); // °C
     let hall_buf = Arc::new(PlotBuffer::new(2, CAPACITY)); // angle_rad, erpm/1000
@@ -501,7 +541,7 @@ pub fn main() {
                             device,
                             queue,
                             PlotConfig {
-                                num_channels: 3,
+                                num_channels: 5,
                                 capacity: CAPACITY,
                                 y_min: -1.0,
                                 y_max: 1.0,
@@ -510,6 +550,8 @@ pub fn main() {
                                     [0.133, 0.827, 0.933, 1.0], // cyan  – Phase A
                                     [0.545, 0.361, 0.965, 1.0], // violet – Phase B
                                     [0.976, 0.451, 0.086, 1.0], // orange – Phase C
+                                    [0.141, 0.655, 0.349, 1.0], // green – Id
+                                    [0.918, 0.271, 0.463, 1.0], // rose – Iq
                                 ],
                             },
                         ));
@@ -588,11 +630,13 @@ pub fn main() {
                             if !currents_paused {
                                 match &rich {
                                     // amps once calibrated, else raw ADC counts
-                                    Some(r) => cb.push_frame(&[r.ia, r.ib, r.ic]),
+                                    Some(r) => cb.push_frame(&[r.ia, r.ib, r.ic, r.id, r.iq]),
                                     None => cb.push_frame(&[
                                         f32::from(sample.ia),
                                         f32::from(sample.ib),
                                         f32::from(sample.ic),
+                                        f32::NAN,
+                                        f32::NAN,
                                     ]),
                                 }
                             }
@@ -634,6 +678,14 @@ pub fn main() {
                         tr.as_mut(),
                         hr.as_mut(),
                     ) {
+                        let current_visibility = [
+                            app.get_show_ia(),
+                            app.get_show_ib(),
+                            app.get_show_ic(),
+                            app.get_show_id(),
+                            app.get_show_iq(),
+                        ];
+                        cr.set_channel_visibility(&current_visibility);
                         // Throttled motor update: send at most once per frame (~60Hz)
                         if motor_pending.swap(false, Ordering::Relaxed) {
                             let iq_target = app.get_iq_target();
@@ -754,49 +806,151 @@ pub fn main() {
                         let h_vis = (h_tw * fast_rate) as u32;
                         let h_off = app.get_hall_view_offset().max(0) as u32;
 
-                        let (tex, y_lo, y_hi) = cr.render(
-                            &cb,
-                            app.get_currents_w() as u32,
-                            app.get_currents_h() as u32,
-                            c_vis,
-                            c_off,
-                        );
-                        app.set_currents_texture(Image::try_from(tex).unwrap());
-                        app.set_currents_y_min(y_lo);
-                        app.set_currents_y_max(y_hi);
+                        let current_cursor = if app.get_currents_cursor_active() {
+                            cursor_readout(
+                                &cb,
+                                app.get_currents_cursor_frac(),
+                                c_vis,
+                                c_off,
+                                fast_rate,
+                                &["Ia", "Ib", "Ic", "Id", "Iq"],
+                                Some(&current_visibility),
+                            )
+                        } else {
+                            SharedString::default()
+                        };
+                        if app.get_currents_cursor_text() != current_cursor {
+                            app.set_currents_cursor_text(current_cursor);
+                        }
+                        let vbus_cursor = if app.get_vbus_cursor_active() {
+                            cursor_readout(
+                                &vb,
+                                app.get_vbus_cursor_frac(),
+                                v_vis,
+                                v_off,
+                                10.0,
+                                &["V"],
+                                None,
+                            )
+                        } else {
+                            SharedString::default()
+                        };
+                        if app.get_vbus_cursor_text() != vbus_cursor {
+                            app.set_vbus_cursor_text(vbus_cursor);
+                        }
+                        let temp_cursor = if app.get_temp_cursor_active() {
+                            cursor_readout(
+                                &tb,
+                                app.get_temp_cursor_frac(),
+                                t_vis,
+                                t_off,
+                                10.0,
+                                &["°C"],
+                                None,
+                            )
+                        } else {
+                            SharedString::default()
+                        };
+                        if app.get_temp_cursor_text() != temp_cursor {
+                            app.set_temp_cursor_text(temp_cursor);
+                        }
+                        let hall_cursor = if app.get_hall_cursor_active() {
+                            cursor_readout(
+                                &hb,
+                                app.get_hall_cursor_frac(),
+                                h_vis,
+                                h_off,
+                                fast_rate,
+                                &["Angle", "eRPM/1000"],
+                                None,
+                            )
+                        } else {
+                            SharedString::default()
+                        };
+                        if app.get_hall_cursor_text() != hall_cursor {
+                            app.set_hall_cursor_text(hall_cursor);
+                        }
 
-                        let (tex, y_lo, y_hi) = vr.render(
-                            &vb,
-                            app.get_vbus_w() as u32,
-                            app.get_vbus_h() as u32,
-                            v_vis,
-                            v_off,
-                        );
-                        app.set_vbus_texture(Image::try_from(tex).unwrap());
-                        app.set_vbus_y_min(y_lo);
-                        app.set_vbus_y_max(y_hi);
+                        let scale_factor = app.window().scale_factor();
+                        let layout = app.get_chart_layout();
+                        let primary = app.get_primary_chart();
+                        let secondary = app.get_secondary_chart();
+                        let chart_visible = |index| {
+                            app.get_active_tab() == 0
+                                && match layout {
+                                    0 => index == primary,
+                                    1 => index == primary || index == secondary,
+                                    2 => index != 3,
+                                    _ => true,
+                                }
+                        };
+                        if chart_visible(0) {
+                            let output = cr.render(
+                                &cb,
+                                app.get_currents_w() as u32,
+                                app.get_currents_h() as u32,
+                                c_vis,
+                                c_off,
+                                scale_factor,
+                            );
+                            if output.rendered {
+                                app.set_currents_texture(Image::try_from(output.texture).unwrap());
+                                app.set_currents_y_min(output.y_min);
+                                app.set_currents_y_max(output.y_max);
+                                app.set_currents_y_divisions(output.y_divisions as i32);
+                            }
+                        }
 
-                        let (tex, y_lo, y_hi) = tr.render(
-                            &tb,
-                            app.get_temp_w() as u32,
-                            app.get_temp_h() as u32,
-                            t_vis,
-                            t_off,
-                        );
-                        app.set_temp_texture(Image::try_from(tex).unwrap());
-                        app.set_temp_y_min(y_lo);
-                        app.set_temp_y_max(y_hi);
+                        if chart_visible(1) {
+                            let output = vr.render(
+                                &vb,
+                                app.get_vbus_w() as u32,
+                                app.get_vbus_h() as u32,
+                                v_vis,
+                                v_off,
+                                scale_factor,
+                            );
+                            if output.rendered {
+                                app.set_vbus_texture(Image::try_from(output.texture).unwrap());
+                                app.set_vbus_y_min(output.y_min);
+                                app.set_vbus_y_max(output.y_max);
+                                app.set_vbus_y_divisions(output.y_divisions as i32);
+                            }
+                        }
 
-                        let (tex, y_lo, y_hi) = hr.render(
-                            &hb,
-                            app.get_hall_w() as u32,
-                            app.get_hall_h() as u32,
-                            h_vis,
-                            h_off,
-                        );
-                        app.set_hall_texture(Image::try_from(tex).unwrap());
-                        app.set_hall_y_min(y_lo);
-                        app.set_hall_y_max(y_hi);
+                        if chart_visible(2) {
+                            let output = tr.render(
+                                &tb,
+                                app.get_temp_w() as u32,
+                                app.get_temp_h() as u32,
+                                t_vis,
+                                t_off,
+                                scale_factor,
+                            );
+                            if output.rendered {
+                                app.set_temp_texture(Image::try_from(output.texture).unwrap());
+                                app.set_temp_y_min(output.y_min);
+                                app.set_temp_y_max(output.y_max);
+                                app.set_temp_y_divisions(output.y_divisions as i32);
+                            }
+                        }
+
+                        if chart_visible(3) {
+                            let output = hr.render(
+                                &hb,
+                                app.get_hall_w() as u32,
+                                app.get_hall_h() as u32,
+                                h_vis,
+                                h_off,
+                                scale_factor,
+                            );
+                            if output.rendered {
+                                app.set_hall_texture(Image::try_from(output.texture).unwrap());
+                                app.set_hall_y_min(output.y_min);
+                                app.set_hall_y_max(output.y_max);
+                                app.set_hall_y_divisions(output.y_divisions as i32);
+                            }
+                        }
 
                         // Keep rendering continuously so charts update with data.
                         app.window().request_redraw();

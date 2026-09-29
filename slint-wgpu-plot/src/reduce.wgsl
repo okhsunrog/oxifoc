@@ -8,9 +8,9 @@ struct PlotParams {
     texture_width:   u32,
     texture_height:  u32,
     view_offset:     u32,   // samples to shift back from write_pos (for pan)
+    scale:           f32,   // physical pixels per logical pixel (hidpi)
     _pad0:           u32,
     _pad1:           u32,
-    _pad2:           u32,
 };
 
 

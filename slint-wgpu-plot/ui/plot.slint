@@ -4,10 +4,12 @@
 // The widget feeds back the pixel dimensions the renderer should target
 // through `requested-texture-width` / `requested-texture-height`.
 //
-// Supports mouse interaction:
-// - Scroll wheel: zoom in/out (changes visible-samples via time-window)
+// Supports mouse and touch interaction:
+// - Scroll wheel / pinch / +− buttons: zoom in/out (changes time-window)
 // - Click + drag: pan horizontally (when paused)
-// - Double-click: toggle pause/resume
+// - Double-click/tap: request a focused chart
+// - Hover: cursor line with per-channel readout (values fed back by Rust
+//   through `cursor-frac` → `cursor-text`)
 
 import { Palette } from "std-widgets.slint";
 
@@ -21,13 +23,17 @@ export component PlotWidget inherits Rectangle {
 
     // Chart title shown above the plot area.
     in property <string> title: "";
+    callback focus-requested();
 
-    // Y-axis range (must match PlotConfig y_min/y_max)
+    // Y-axis range (must match PlotConfig y_min/y_max, or the auto-range
+    // values returned by `PlotRenderer::render()`).
     in property <float> y-min: -1.0;
     in property <float> y-max: 1.0;
 
     // Time window in seconds (for X-axis labels)
     in-out property <float> time-window: 2.0;
+
+    // Upper bound for zoom-out (match ring capacity / sample rate).
     in property <float> max-time-window: 10.0;
 
     // Number of Y divisions (creates N+1 labels, N-1 interior grid lines)
@@ -42,10 +48,21 @@ export component PlotWidget inherits Rectangle {
     // Legend colors (ARGB hex): must match channel_colors order
     in property <[color]> legend-colors: [];
 
+    // Cursor readout: the widget reports where the pointer is (fraction of
+    // the plot width) and Rust feeds back the formatted values at that point.
+    out property <bool> cursor-active: touch.has-hover || touch.pressed;
+    out property <float> cursor-frac: clamp(touch.mouse-x / plot-area.width, 0.0, 1.0);
+    in property <string> cursor-text: "";
+
     // Pan/zoom state (read by Rust for rendering)
     in-out property <bool> paused: false;
     // View offset in samples (how far back from live to look when paused)
     in-out property <int> view-offset: 0;
+    // Samples that arrived since the view was paused. A source that keeps
+    // streaming while paused grows view-offset by the same amount to hold the
+    // picture still; this keeps the time labels relative to the pause moment
+    // instead of counting up.
+    in property <int> paused-shift: 0;
     // Sample rate in Hz (needed to convert pixel drag to sample offset)
     in property <float> sample-rate: 1000.0;
     in property <int> capacity: 32768;
@@ -56,8 +73,10 @@ export component PlotWidget inherits Rectangle {
     property <float> min-window: 2 / root.sample-rate;
     property <float> window-limit: max(root.min-window, min(root.max-time-window, root.capacity / root.sample-rate));
 
-    // Theme-aware colors
-    property <bool> is-dark: Palette.color-scheme == ColorScheme.dark;
+    // Theme-aware colors. Darkness is derived from the palette's actual
+    // background luminance: `Palette.color-scheme` stays `unknown` when
+    // following the system theme, so comparing it against `dark` misfires.
+    property <bool> is-dark: Palette.background.to-hsv().value < 0.5;
     property <color> plot-bg: is-dark ? #0f0f1e : #fafafa;
     property <color> grid-color: is-dark ? #1a1a30 : #e0e0e0;
     property <color> axis-color: is-dark ? #5555aa : #909090;
@@ -71,6 +90,11 @@ export component PlotWidget inherits Rectangle {
     property <length> x-label-height: 18px;
     property <length> title-height: title != "" ? 20px : 0px;
     property <length> legend-height: legend-labels.length > 0 ? 18px : 0px;
+
+    // Zoom keeping the right (live) edge anchored — used by the +/− buttons.
+    function zoom-by(factor: float) {
+        self.time-window = clamp(self.time-window * factor, self.min-window, self.window-limit);
+    }
 
     background: transparent;
     min-height: 80px;
@@ -89,11 +113,27 @@ export component PlotWidget inherits Rectangle {
                 color: root.title-color;
                 horizontal-alignment: left;
             }
-            if root.paused : Text {
-                text: " [PAUSED]";
-                font-size: 11px;
-                font-weight: 600;
-                color: root.paused-border-color;
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                width: 54px;
+                Text {
+                    text: root.paused ? "Resume" : "Pause";
+                    font-size: 10px;
+                    color: root.paused ? root.paused-border-color : root.label-color;
+                    horizontal-alignment: center;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.paused = !root.paused;
+                        if (!root.paused) { root.view-offset = 0; }
+                    }
+                }
+            }
+            Rectangle {
+                width: 48px;
+                Text { text: "Focus"; font-size: 10px; color: root.label-color; horizontal-alignment: center; }
+                TouchArea { mouse-cursor: pointer; clicked => { root.focus-requested(); } }
             }
         }
 
@@ -112,6 +152,11 @@ export component PlotWidget inherits Rectangle {
                     width: root.y-label-width;
                     clip: true;
 
+                    // Enough decimals to tell adjacent grid lines apart: a
+                    // 0.005 step needs three, where a fixed two repeated labels.
+                    property <float> y-step: (root.y-max - root.y-min) / max(1, root.y-divisions);
+                    property <int> y-decimals: clamp(ceil(-Math.log(self.y-step, 10)), 0, 4);
+
                     for i in (root.y-divisions + 1): Text {
                         property <float> y-val: root.y-max - i * (root.y-max - root.y-min) / root.y-divisions;
                         property <float> y-frac: i / root.y-divisions;
@@ -121,9 +166,7 @@ export component PlotWidget inherits Rectangle {
                          : y-frac * parent.height - self.height / 2;
                         width: root.y-label-width - 4px;
                         horizontal-alignment: right;
-                        text: abs(self.y-val) >= 10.0 ? "\{Math.round(self.y-val)}"
-                            : abs(self.y-val) < 0.01 ? "0"
-                            : "\{Math.round(self.y-val * 100) / 100}";
+                        text: abs(self.y-val) < parent.y-step / 2 ? "0" : self.y-val.to-fixed(parent.y-decimals);
                         font-size: 10px;
                         color: root.label-color;
                     }
@@ -173,61 +216,163 @@ export component PlotWidget inherits Rectangle {
                         image-fit: fill;
                     }
 
-                    // Mouse interaction overlay
-                    touch := TouchArea {
-                        width: parent.width;
-                        height: parent.height;
+                    // Pinch zoom (touchscreens everywhere; trackpad on macOS/iOS),
+                    // wrapping the single-pointer interaction overlay.
+                    pinch := ScaleRotateGestureHandler {
+                        property <float> start-window;
+                        property <int> start-offset;
+                        // Set while the touches since the last first-finger-down
+                        // formed a pinch; its finger lifts are not taps.
+                        property <bool> pinched;
 
-                        property <float> drag-start-offset;
-
-                        // Double-click: toggle pause
-                        double-clicked => {
-                            root.paused = !root.paused;
-                            if (!root.paused) {
-                                root.view-offset = 0;
-                            }
+                        started => {
+                            self.start-window = root.time-window;
+                            self.start-offset = root.effective-view-offset;
+                            self.pinched = true;
+                            tap-timer.running = false;
                         }
-
-                        // Drag start: save current offset (pan only works when paused)
-                        pointer-event(event) => {
-                            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
-                                self.drag-start-offset = root.effective-view-offset;
-                            }
-                        }
-
-                        // Drag: pan horizontally
-                        moved => {
-                            if (self.pressed && root.paused) {
-                                // Convert pixel delta to sample offset
-                                // pixels dragged * (samples_in_view / plot_width)
-                                let dx-px = (self.mouse-x - self.pressed-x) / 1px;
-                                let samples-in-view = root.visible-samples - 1;
-                                let samples-per-pixel = samples-in-view / (parent.width / 1px);
-                                let delta-samples = dx-px * samples-per-pixel;
-                                root.view-offset = max(0, round(self.drag-start-offset + delta-samples));
-                            }
-                        }
-
-                        // Scroll wheel: zoom toward cursor position
-                        scroll-event(event) => {
-                            let factor = 1.0 - (event.delta-y / 1px) / 200.0;
-                            let old-window = root.time-window;
-                            let new-window = clamp(old-window * factor, root.min-window, root.window-limit);
-
-                            // Fraction of plot width where cursor is (0=left, 1=right)
-                            let fx = clamp(self.mouse-x / parent.width, 0.0, 1.0);
-
-                            // Samples under cursor before and after zoom
-                            let old-vis = root.visible-samples;
+                        updated => {
+                            let new-window = clamp(self.start-window / self.scale, root.min-window, root.window-limit);
+                            // Keep the sample under the gesture center fixed
+                            let fx = clamp(self.center.x / plot-area.width, 0.0, 1.0);
+                            let old-vis = self.start-window * root.sample-rate;
                             let new-vis = new-window * root.sample-rate;
-
-                            // Shift view-offset so the sample under cursor stays put
-                            // Cursor is at (1-fx) from the right edge (live edge)
-                            let shift = round((1.0 - fx) * (old-vis - new-vis));
-                            root.view-offset = max(0, root.effective-view-offset + shift);
-
+                            // Live, the view stays on the newest sample; anchoring the
+                            // gesture centre would leave the live edge off screen.
+                            root.view-offset = !root.paused ? 0 : max(0, self.start-offset + round((1.0 - fx) * (old-vis - new-vis)));
                             root.time-window = new-window;
-                            return accept;
+                        }
+
+                        touch := TouchArea {
+                            width: parent.width;
+                            height: parent.height;
+
+                            property <float> drag-start-offset;
+
+                            // Double tap or double click: toggle pause. `double-clicked`
+                            // does not fire for touch input on Android, so pair two
+                            // clicks within the timer window instead. A drag is a pan,
+                            // not a tap, and neither is lifting the fingers of a pinch:
+                            // two lifts within the window used to read as a double tap.
+                            clicked => {
+                                if (pinch.pinched || abs(self.mouse-x - self.pressed-x) > 12px || abs(self.mouse-y - self.pressed-y) > 12px) {
+                                    tap-timer.running = false;
+                                } else if (tap-timer.running) {
+                                    tap-timer.running = false;
+                                    root.focus-requested();
+                                } else {
+                                    tap-timer.running = true;
+                                }
+                            }
+
+                            tap-timer := Timer {
+                                interval: 350ms;
+                                running: false;
+                                triggered => { self.running = false; }
+                            }
+
+                            // Drag start: save current offset (pan only works when paused)
+                            pointer-event(event) => {
+                                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                    self.drag-start-offset = root.effective-view-offset;
+                                    // A new touch sequence; a pinch sets this again
+                                    // once it is recognised.
+                                    pinch.pinched = false;
+                                }
+                            }
+
+                            // Drag: pan horizontally
+                            moved => {
+                                if (self.pressed && root.paused) {
+                                    // Convert pixel delta to sample offset
+                                    // pixels dragged * (samples_in_view / plot_width)
+                                    let dx-px = (self.mouse-x - self.pressed-x) / 1px;
+                                    let samples-in-view = root.visible-samples - 1;
+                                    let samples-per-pixel = samples-in-view / (parent.width / 1px);
+                                    let delta-samples = dx-px * samples-per-pixel;
+                                    root.view-offset = max(0, round(self.drag-start-offset + delta-samples));
+                                }
+                            }
+
+                            // Scroll wheel: zoom toward cursor position
+                            scroll-event(event) => {
+                                let factor = 1.0 - (event.delta-y / 1px) / 200.0;
+                                let old-window = root.time-window;
+                                let new-window = clamp(old-window * factor, root.min-window, root.window-limit);
+
+                                // Fraction of plot width where cursor is (0=left, 1=right)
+                                let fx = clamp(self.mouse-x / parent.width, 0.0, 1.0);
+
+                                // Samples under cursor before and after zoom
+                                let old-vis = root.visible-samples;
+                                let new-vis = new-window * root.sample-rate;
+
+                                // Shift view-offset so the sample under cursor stays put
+                                // Cursor is at (1-fx) from the right edge (live edge).
+                                // Live, the view stays on the newest sample instead.
+                                let shift = round((1.0 - fx) * (old-vis - new-vis));
+                                root.view-offset = !root.paused ? 0 : max(0, root.effective-view-offset + shift);
+
+                                root.time-window = new-window;
+                                return accept;
+                            }
+                        }
+                    }
+
+                    // Cursor line + readout (hover measurement)
+                    if root.cursor-active : Rectangle {
+                        x: touch.mouse-x;
+                        y: 0;
+                        width: 1px;
+                        height: parent.height;
+                        background: root.axis-color.with-alpha(0.6);
+                    }
+                    if root.cursor-active && root.cursor-text != "" : Rectangle {
+                        x: (touch.mouse-x + 12px + self.width > parent.width)
+                            ? touch.mouse-x - self.width - 8px
+                            : touch.mouse-x + 8px;
+                        y: 6px;
+                        width: cursor-label.preferred-width + 12px;
+                        height: cursor-label.preferred-height + 8px;
+                        background: root.is-dark ? #0f0f1ee0 : #fafafae0;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: root.grid-color;
+
+                        cursor-label := Text {
+                            x: 6px;
+                            y: 4px;
+                            text: root.cursor-text;
+                            font-size: 10px;
+                            color: root.title-color;
+                        }
+                    }
+
+                    // Touch-friendly zoom buttons (top-right)
+                    HorizontalLayout {
+                        x: parent.width - 60px;
+                        y: 8px;
+                        width: 52px;
+                        height: 24px;
+                        spacing: 4px;
+
+                        for zoom[i] in [0.8, 1.25]: Rectangle {
+                            width: 24px;
+                            background: root.is-dark ? #1a1a30cc : #ffffffcc;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: zoom-touch.has-hover ? root.axis-color : root.grid-color;
+
+                            Text {
+                                text: i == 0 ? "+" : "−";
+                                font-size: 14px;
+                                color: root.label-color;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            zoom-touch := TouchArea {
+                                clicked => { root.zoom-by(zoom); }
+                            }
                         }
                     }
 
@@ -282,14 +427,20 @@ export component PlotWidget inherits Rectangle {
                     horizontal-stretch: 1;
 
                     for i in (root.x-divisions + 1): Text {
-                        property <float> offset-time: root.effective-view-offset / root.sample-rate;
+                        // Time before the reference point: now, or the pause moment.
+                        property <float> offset-time: (root.effective-view-offset - root.paused-shift) / root.sample-rate;
                         property <float> abs-time: root.effective-window * (root.x-divisions - i) / root.x-divisions + offset-time;
-                        x: i * (parent.width / root.x-divisions) - self.width / 2;
+                        property <float> magnitude: abs(self.abs-time);
+                        // Samples newer than the pause moment read as "+".
+                        property <string> sign: self.abs-time < 0 ? "+" : "-";
+                        // Centred on its grid line, but kept inside the right edge:
+                        // the last label used to be cut off ("-968m").
+                        x: min(i * (parent.width / root.x-divisions) - self.width / 2, parent.width - self.width);
                         y: 1px;
-                        text: self.abs-time == 0 ? "0s"
-                            : self.abs-time < 0.01 ? "-\{Math.round(self.abs-time * 10000) / 10}ms"
-                            : self.abs-time < 1.0 ? "-\{Math.round(self.abs-time * 1000)}ms"
-                            : "-\{Math.round(self.abs-time * 10) / 10}s";
+                        text: self.magnitude == 0 ? "0s"
+                            : self.magnitude < 0.01 ? "\{self.sign}\{Math.round(self.magnitude * 10000) / 10}ms"
+                            : self.magnitude < 1.0 ? "\{self.sign}\{Math.round(self.magnitude * 1000)}ms"
+                            : "\{self.sign}\{Math.round(self.magnitude * 10) / 10}s";
                         font-size: 10px;
                         color: root.label-color;
                     }

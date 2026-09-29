@@ -6159,6 +6159,7 @@ name = "slint-wgpu-plot"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "png",
  "pollster",
  "slint",
  "wgpu",

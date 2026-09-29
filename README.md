@@ -123,7 +123,7 @@ All platforms: 20 kHz center-aligned PWM, TIM1-triggered injected ADC, Hall poll
 
 ## Host Tools
 
-**GUI** (`oxifoc-host-slint`) — Slint desktop app with GPU-accelerated real-time charts (WGPU). Motor control, detection wizard, config read/write.
+**GUI** (`oxifoc-host-slint`) — Slint desktop app with GPU-accelerated real-time charts (WGPU). The Monitor offers Focus, Compare, Overview, and 2 × 2 layouts without scrolling the chart workspace. Focus and Compare let you choose chart groups; the current chart can overlay any combination of Ia, Ib, Ic, Id, and Iq on a shared ampere axis. Click Focus or double-click a chart to enlarge it, then use Back or Esc to restore the previous layout. Use Pause/Resume on each chart, scroll/pinch or the on-plot buttons to zoom, drag to pan while paused, and hover for cursor measurements. Motor control, detection wizard, config read/write.
 
 **CLI** (`oxifoc-host-cli`) — Command-line monitor, motor control, detection.
 

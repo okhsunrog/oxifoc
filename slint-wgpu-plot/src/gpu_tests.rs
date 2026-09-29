@@ -65,30 +65,32 @@ fn peak_tail_line_mode_reset_and_cache() {
             channel_colors: vec![[1.0, 0.0, 0.0, 1.0]],
         },
     );
-    let texture = renderer.render(&buffer, 64, 64, 32768, 0).0;
+    let texture = renderer.render(&buffer, 64, 64, 32768, 0, 1.0).texture;
     let peak = pixels(&device, &queue, &texture);
     assert!(
         peak[6 * 256 + 3] > 128,
         "peak beyond sample 256 must remain visible"
     );
-    let texture = renderer.render(&buffer, 64, 64, 32768, u32::MAX).0;
+    let texture = renderer
+        .render(&buffer, 64, 64, 32768, u32::MAX, 1.0)
+        .texture;
     assert_eq!(
         peak,
         pixels(&device, &queue, &texture),
         "pan must clamp to available history"
     );
     buffer.clear();
-    let texture = renderer.render(&buffer, 64, 64, 32768, 0).0;
+    let texture = renderer.render(&buffer, 64, 64, 32768, 0, 1.0).texture;
     assert!(
         pixels(&device, &queue, &texture)
             .chunks_exact(4)
             .all(|p| p[3] == 0)
     );
     buffer.push_batch(&[0.0, 0.0]);
-    let texture = renderer.render(&buffer, 64, 64, 2, 0).0;
+    let texture = renderer.render(&buffer, 64, 64, 2, 0, 1.0).texture;
     let line = pixels(&device, &queue, &texture);
     assert!(line[32 * 256 + 32 * 4 + 3] > 128);
-    let texture = renderer.render(&buffer, 64, 64, 32768, 0).0;
+    let texture = renderer.render(&buffer, 64, 64, 32768, 0, 1.0).texture;
     let sparse = pixels(&device, &queue, &texture);
     assert!(sparse[32 * 256 + 63 * 4 + 3] > 128);
     assert_eq!(sparse[32 * 256 + 3], 0);
@@ -96,7 +98,7 @@ fn peak_tail_line_mode_reset_and_cache() {
     // Projection must use the pixel metric on a wide, non-square plot.
     buffer.clear();
     buffer.push_batch(&[-0.5, 0.5]);
-    let texture = renderer.render(&buffer, 320, 64, 2, 0).0;
+    let texture = renderer.render(&buffer, 320, 64, 2, 0, 1.0).texture;
     let diagonal = pixels(&device, &queue, &texture);
     assert!(diagonal[32 * 1280 + 160 * 4 + 3] > 128);
     assert!(diagonal[35 * 1280 + 160 * 4 + 3] < 16);

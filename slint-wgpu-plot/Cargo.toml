@@ -7,6 +7,7 @@ edition = "2024"
 slint = { workspace = true }
 bytemuck = { workspace = true }
 wgpu = { workspace = true }
+png = "0.18.1"
 
 [lints]
 workspace = true

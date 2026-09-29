@@ -32,9 +32,9 @@ struct PlotParams {
     texture_width:   u32,
     texture_height:  u32,
     view_offset:     u32,   // samples to shift back from write_pos (for pan)
+    scale:           f32,   // physical pixels per logical pixel (hidpi)
     _pad0:           u32,
     _pad1:           u32,
-    _pad2:           u32,
 };
 
 struct Colors {
@@ -75,6 +75,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let px_y = 1.0 / f32(params.texture_height);
     let column = min(u32(uv.x * f32(params.texture_width)), params.texture_width - 1u);
     for (var ch = 0u; ch < params.num_channels; ch++) {
+        if channel_colors.data[ch].a == 0.0 { continue; }
         let envelope = peaks[column * params.num_channels + ch];
         if envelope.z == 0.0 { continue; }
         let val_min = envelope.x;
@@ -89,11 +90,8 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         else                 { dist = 0.0; }
 
         let line_col   = channel_colors.data[ch].rgb;
-        let line_alpha = smoothstep(px_y * 2.0, 0.0, dist);
-        let glow_alpha = smoothstep(px_y * 6.0, 0.0, dist) * 0.25;
+        let line_alpha = smoothstep(px_y * 2.0 * params.scale, 0.0, dist);
 
-        color = mix(color, line_col * 0.35, glow_alpha);
-        alpha = max(alpha, glow_alpha);
         color = mix(color, line_col, line_alpha);
         alpha = max(alpha, line_alpha);
     }
@@ -107,7 +105,7 @@ struct LineVertex {
     @location(2) @interpolate(flat) color: vec4<f32>,
 };
 
-// One oriented, glow-width quad per segment. Only pixels close to the
+// One oriented, line-width quad per segment. Only pixels close to the
 // waveform run the distance calculation, rather than the entire texture.
 @vertex
 fn vs_line(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> LineVertex {
@@ -124,7 +122,8 @@ fn vs_line(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance
     let b = vec2<f32>(f32(sample_index + 1u) / f32(segments), 1.0 - value_to_y(vb)) * size;
     let direction = normalize(b - a);
     let normal = vec2<f32>(-direction.y, direction.x);
-    let radius = 4.0 * 1.0;
+    // Covers the anti-aliased edge of the line, which fades out at 1.5 px.
+    let radius = 2.0 * params.scale;
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(0.0, 1.0),
         vec2<f32>(0.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0)
@@ -142,9 +141,7 @@ fn fs_line(input: LineVertex) -> @location(0) vec4<f32> {
     let ap = input.position.xy - input.a;
     let t = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-20), 0.0, 1.0);
     let distance = length(ap - t * ab);
-    let core = 1.0 - smoothstep(0.0, 1.5 * 1.0, distance);
-    let glow = (1.0 - smoothstep(0.0, 4.0 * 1.0, distance)) * 0.2;
-    let alpha = max(core, glow) * input.color.a;
-    let color = input.color.rgb * mix(0.35, 1.0, core);
-    return vec4<f32>(color * alpha, alpha);
+    let core = 1.0 - smoothstep(0.0, 1.5 * params.scale, distance);
+    let alpha = core * input.color.a;
+    return vec4<f32>(input.color.rgb * alpha, alpha);
 }
