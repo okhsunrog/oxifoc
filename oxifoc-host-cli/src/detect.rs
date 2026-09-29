@@ -184,8 +184,8 @@ pub fn run_detect(
     // The detect oneshot is async; poll it (no tokio runtime on this
     // thread). The deadline derives from the backend's own retry budget
     // plus margin, so the CLI cannot give up before the backend does.
-    let deadline = Instant::now()
-        + Duration::from_millis(oxifoc_host_lib::DETECT_POLICY.deadline_ms + 5_000);
+    let deadline =
+        Instant::now() + Duration::from_millis(oxifoc_host_lib::DETECT_POLICY.deadline_ms + 5_000);
     let detect_result: Result<DetectResponse> = loop {
         if let Ok(res) = rx.try_recv() {
             break res;

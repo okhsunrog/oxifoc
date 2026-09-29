@@ -1396,8 +1396,7 @@ async fn enable_fast_telemetry<NS>(
     fast_hz: u16,
     fast_hz_flag: &Arc<AtomicU16>,
     device_addr: Address,
-)
-where
+) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
     if fast_hz == 0 {
