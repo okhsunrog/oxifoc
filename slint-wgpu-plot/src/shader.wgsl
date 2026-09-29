@@ -62,6 +62,14 @@ fn get_sample(channel: u32, index: u32) -> f32 {
     return samples[actual * params.num_channels + channel];
 }
 
+// Channel colours are configured as sRGB values, but the render target is an
+// sRGB texture that encodes on write, so feed it linear values.
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / 12.92;
+    let high = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
+}
+
 // Map a data value to a normalised Y coordinate in [0, 1].
 fn value_to_y(v: f32) -> f32 {
     return (v - params.y_min) / (params.y_max - params.y_min);
@@ -89,7 +97,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         else if uv.y > y_bot { dist = uv.y - y_bot; }
         else                 { dist = 0.0; }
 
-        let line_col   = channel_colors.data[ch].rgb;
+        let line_col   = srgb_to_linear(channel_colors.data[ch].rgb);
         let line_alpha = smoothstep(px_y * 2.0 * params.scale, 0.0, dist);
 
         color = mix(color, line_col, line_alpha);
@@ -143,5 +151,5 @@ fn fs_line(input: LineVertex) -> @location(0) vec4<f32> {
     let distance = length(ap - t * ab);
     let core = 1.0 - smoothstep(0.0, 1.5 * params.scale, distance);
     let alpha = core * input.color.a;
-    return vec4<f32>(input.color.rgb * alpha, alpha);
+    return vec4<f32>(srgb_to_linear(input.color.rgb) * alpha, alpha);
 }
