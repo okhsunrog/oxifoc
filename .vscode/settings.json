@@ -1,8 +1,8 @@
 {
   "rust-analyzer.linkedProjects": [
     "Cargo.toml",
-    "oxifoc-g431/Cargo.toml",
+    "oxifoc-g474/Cargo.toml",
     "oxifoc-f405/Cargo.toml",
-    "ergot/crates/ergot/Cargo.toml"
+    "../ergot/crates/ergot/Cargo.toml"
   ]
 }
