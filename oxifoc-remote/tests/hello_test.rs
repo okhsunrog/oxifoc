@@ -4,6 +4,8 @@
 
 #![no_std]
 #![no_main]
+// embedded_test::tests expands to `cfg(rust_analyzer)`, unknown to check-cfg.
+#![allow(unexpected_cfgs)]
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
