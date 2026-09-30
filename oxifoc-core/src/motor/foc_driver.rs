@@ -5633,7 +5633,7 @@ mod tests {
     struct HallRig {
         motor: VirtualMotor,
         out: VirtualMotorOutput,
-        driver: FocDriver<MockPwm, MockCurrentSensor, PhaseManager<HallSensor>>,
+        driver: FocDriver<GatedPwm, MockCurrentSensor, PhaseManager<HallSensor>>,
         last_hall: u8,
         prev_angle: f32,
         step: u64,
@@ -5686,7 +5686,10 @@ mod tests {
             }));
             let mut driver = FocDriver::new(
                 foc,
-                MockPwm { duties: [0; 3] },
+                GatedPwm {
+                    enabled: false,
+                    applied: [0; 3],
+                },
                 MockCurrentSensor {
                     currents: (0.0, 0.0, 0.0),
                 },
@@ -5757,7 +5760,13 @@ mod tests {
             let telem = self.driver.step(now).expect("FOC step failed");
             self.prev_angle = sample.angle_rad;
             let load = self.load * libm::tanhf(sample.omega_e / 10.0);
-            self.out = self.motor.step(telem.v_alpha, telem.v_beta, load, Self::DT);
+            // A disabled bridge floats the phases: the plant coasts. (Zero
+            // volts would be all windings shorted — a brake.)
+            self.out = if self.driver.pwm.enabled {
+                self.motor.step(telem.v_alpha, telem.v_beta, load, Self::DT)
+            } else {
+                self.motor.step_coast(load, Self::DT)
+            };
             (sample, telem)
         }
 
