@@ -26,7 +26,10 @@
 //! - near standstill the active brake stands down and the parking brake —
 //!   the passive windings short, which opposes motion either way without
 //!   an angle or a speed estimate — takes over and holds a roll-back
-//!   (never engaged at speed).
+//!   (turning current-controlled if pushed past its limit, see
+//!   `FocDriver`'s parking brake);
+//! - losing the angle mid-stop (sensorless below the observer's floor)
+//!   hands over to the parking brake too, which needs no angle.
 //!
 //! While the rotor moves and the angle is trustworthy, the stop never
 //! releases the brake on its own: a brake that cannot slow a descent still
@@ -124,9 +127,10 @@ impl FailsafePolicy {
     }
 }
 
-/// What a clean [`ControlledStop`](FailsafePolicy::ControlledStop) leaves
-/// behind. A stop that loses the angle always ends high-Z regardless — the
-/// parking brake is never engaged at speed.
+/// What a [`ControlledStop`](FailsafePolicy::ControlledStop) leaves behind:
+/// at standstill, or when the angle is lost (the parking brake's short needs
+/// none, and guards itself by its current — see `FocDriver`'s parking
+/// brake).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
@@ -256,7 +260,8 @@ enum Phase {
     Brake,
     /// Clean stop reached — the driver applies the configured terminal.
     Stopped,
-    /// Gave up (lost angle trust) — always high-Z.
+    /// Gave up (lost angle trust with the high-Z terminal, or a coast
+    /// policy) — high-Z.
     GaveUp,
 }
 
@@ -340,8 +345,7 @@ impl FailsafeController {
     /// Change what a clean stop leaves behind, mid-sequence. Used when a
     /// user Brake command arrives while a stop is already in progress —
     /// `arm` is idempotent then, but the user's parking-brake intent must
-    /// not be silently dropped. A stop that loses the angle still ends
-    /// high-Z.
+    /// not be silently dropped.
     pub fn set_terminal(&mut self, terminal: FailsafeTerminal) {
         self.terminal = terminal;
     }
@@ -403,10 +407,20 @@ impl FailsafeController {
             }
             Phase::Brake => {
                 // Without a trustworthy angle a q current is torque in an
-                // unknown direction: coast instead of braking blind.
+                // unknown direction. The parking brake's short needs no
+                // angle — typically the sensorless observer just dropped
+                // below its speed floor, where the short carries ~15 A on a
+                // 5065 — and releases to high-Z by itself if its current
+                // says the rotor is faster than it may take. Without that
+                // terminal: coast.
                 if !angle_trustworthy {
-                    self.phase = Phase::GaveUp;
-                    return FailsafeAction::Stop;
+                    return if self.terminal == FailsafeTerminal::ParkBrake {
+                        self.phase = Phase::Stopped;
+                        FailsafeAction::EngageBrake
+                    } else {
+                        self.phase = Phase::GaveUp;
+                        FailsafeAction::Stop
+                    };
                 }
                 self.brake_step(omega_e, dt, cfg, max_brake_a, vbus, ov_threshold_v)
             }
@@ -913,8 +927,10 @@ mod tests {
     }
 
     #[test]
-    fn stop_coasts_without_trustworthy_angle() {
-        // Sensorless angle not trustworthy → must not brake blind; coast.
+    fn stop_without_trustworthy_angle_hands_over_to_the_short() {
+        // Sensorless angle not trustworthy → no current brake (torque in an
+        // unknown direction). The parking brake's short needs no angle (and
+        // guards itself by its current); without it, coast.
         let cfg = cfg(FailsafePolicy::ControlledStop);
         let mut c = FailsafeController::new();
         c.arm(
@@ -922,6 +938,12 @@ mod tests {
             FailsafePolicy::ControlledStop,
             FailsafeTerminal::ParkBrake,
         );
+        assert_eq!(
+            c.step(300.0, DT, &cfg, 40.0, 0.0, 0.0, false),
+            FailsafeAction::EngageBrake
+        );
+        let mut c = FailsafeController::new();
+        c.arm(5.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
         assert_eq!(
             c.step(300.0, DT, &cfg, 40.0, 0.0, 0.0, false),
             FailsafeAction::Stop

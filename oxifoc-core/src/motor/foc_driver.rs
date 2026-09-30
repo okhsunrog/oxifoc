@@ -510,6 +510,10 @@ where
     /// loop could actually deliver while it was out of voltage (see
     /// `step_velocity_control`).
     last_iq_meas: f32,
+    /// Parking brake (`ControlMode::Brake`) regulating instead of shorting:
+    /// the brake q current being commanded (see `step_park_brake`). `None`
+    /// = the plain windings short.
+    park_iq: Option<f32>,
     /// Low-passed q-axis modulation (vq·1.5/vbus) of the previous cycles —
     /// the duty factor relating phase current to bus current
     /// (`i_bus ≈ iq·mod_q`, VESC mcpwm_foc.c:3632). Filtered (τ ≈ 2 ms) so
@@ -606,6 +610,7 @@ where
             ov_threshold_v: 0.0,
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
             last_iq_meas: 0.0,
+            park_iq: None,
             bus_mod_q_filt: 0.0,
             derating_cfg: DeratingConfig::default(),
             derating: DeratingScales::default(),
@@ -1241,6 +1246,8 @@ where
                 .begin_cold_start(if start_dir < 0.0 { -1.0 } else { 1.0 });
         }
 
+        // The parking brake always starts as the plain short.
+        self.park_iq = None;
         self.mode = mode;
     }
 
@@ -1468,52 +1475,97 @@ where
                 self.update_phase_with_applied_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
-            ControlMode::Brake => {
-                // Parking brake: all low-side FETs on — windings shorted to
-                // ground. Speed-proportional drag, energy dissipates in the
-                // motor; zero draw at standstill. Entry is speed-gated at the
-                // command boundary (see `process_commands`).
-                self.pwm
-                    .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
-                self.controller.reset();
+            ControlMode::Brake => self.step_park_brake(dt, now_ticks),
+        }
+    }
 
-                // The short-circuit current is real and measurable (the low
-                // sides conduct continuously, so low-side shunts see the
-                // phase currents and the ADC keeps triggering): read it, so
-                // the brake is not a protection blind spot — a parked board
-                // shoved fast (downhill runaway) must still trip — and so
-                // telemetry/estimators see the truth instead of zeros.
-                let (ia, ib, ic) = if self.current_sensor.is_calibrated() {
-                    self.current_sensor.read_currents()
-                } else {
-                    (0.0, 0.0, 0.0)
-                };
-                let (i_alpha, i_beta) = clarke(ia, ib);
-                // αβ magnitude equals the dq magnitude (Park preserves it);
-                // no current loop runs here, so this check is the only
-                // software protection the mode has. Trip → high-Z: a coast
-                // is safer than an uncontrolled short at whatever speed
-                // produced this much current.
-                if self.current_limits.is_overcurrent(i_alpha, i_beta) {
-                    self.pwm.disable();
-                    self.mode = ControlMode::Stopped;
-                    return Err(StepError::Overcurrent);
-                }
+    /// Parking brake, VESC-style (its `CURRENT_BRAKE` mode shorts the
+    /// phases around zero and current-brakes above).
+    ///
+    /// While the short's current stays within `max_brake_a`, all low sides
+    /// conduct: the windings short opposes motion either way with no angle
+    /// or speed estimate, draws nothing at standstill, and holds a roll-back
+    /// (as speed-proportional drag — not a position hold). When the rotor is
+    /// pushed faster (a board rolling down a steep slope) the short would
+    /// grow toward λ/L at whatever speed; instead the brake turns
+    /// current-controlled at `max_brake_a` against the motion — never let
+    /// go — and returns to the short once slow again. Without a trustworthy
+    /// angle there is no controlled brake: a short current past the limit
+    /// then releases to high-Z (the speed that produced it is unknown, and
+    /// shorting on at it could mean ~100 A of uncontrolled current and a
+    /// violent stop).
+    fn step_park_brake(&mut self, dt: f32, now_ticks: u64) -> Result<FocOutput, StepError> {
+        let limit = self.current_limits.max_brake_a;
+        let omega = self.phase.get().velocity;
+        if let Some(iq) = self.park_iq
+            && self.phase.angle_trustworthy()
+        {
+            let target = if omega > 0.0 { -limit } else { limit };
+            let step = self.failsafe_cfg.slew_a_per_s * dt;
+            let iq = iq + clamp_f32(target - iq, -step, step);
+            let out = self.step_current_control(iq, 0.0, dt, now_ticks)?;
+            // Back to the short once holding the limit takes a q voltage
+            // against the motion (back-EMF below R·I): the short alone now
+            // carries less than the limit — the switch point is where the
+            // two currents meet, so no step. VESC switches on the same vq
+            // sign change.
+            self.park_iq = (out.vq * omega > 0.0).then_some(iq);
+            return Ok(out);
+        }
+        self.park_iq = None;
 
-                // Terminal voltage is zero while shorted; the estimators
-                // integrate that with the real circulating currents.
-                self.update_phase_with_applied_voltage(0.0, 0.0, i_alpha, i_beta, dt, now_ticks);
-                Ok(FocOutput {
-                    ia,
-                    ib,
-                    ic,
-                    i_alpha,
-                    i_beta,
-                    angle_rad: self.phase.get().angle,
-                    ..Default::default()
-                })
+        self.pwm
+            .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
+        self.controller.reset();
+
+        // The short-circuit current is real and measurable (the low sides
+        // conduct continuously, so low-side shunts see the phase currents
+        // and the ADC keeps triggering): read it — it decides the brake
+        // above, keeps the mode from being a protection blind spot, and
+        // gives telemetry/estimators the truth instead of zeros.
+        let (ia, ib, ic) = if self.current_sensor.is_calibrated() {
+            self.current_sensor.read_currents()
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        let (i_alpha, i_beta) = clarke(ia, ib);
+        // αβ magnitude equals the dq magnitude (Park preserves it). The
+        // hard trip stays the backstop (a limit left unset).
+        if self.current_limits.is_overcurrent(i_alpha, i_beta) {
+            self.pwm.disable();
+            self.mode = ControlMode::Stopped;
+            return Err(StepError::Overcurrent);
+        }
+        let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
+        if limit > 0.0 && i_mag > limit {
+            if self.phase.angle_trustworthy() {
+                // Continue from the short's current, capped, as a brake
+                // against the motion (next cycle on).
+                let start = i_mag.min(limit);
+                self.park_iq = Some(if omega > 0.0 { -start } else { start });
+            } else {
+                warn!(
+                    "park brake: short current {} A past the {} A limit without an angle, releasing",
+                    i_mag, limit
+                );
+                self.pwm.disable();
+                self.pwm_off = true;
+                self.mode = ControlMode::Stopped;
             }
         }
+
+        // Terminal voltage is zero while shorted; the estimators integrate
+        // that with the real circulating currents.
+        self.update_phase_with_applied_voltage(0.0, 0.0, i_alpha, i_beta, dt, now_ticks);
+        Ok(FocOutput {
+            ia,
+            ib,
+            ic,
+            i_alpha,
+            i_beta,
+            angle_rad: self.phase.get().angle,
+            ..Default::default()
+        })
     }
 
     /// Run one cycle of the active failsafe sequence (see
@@ -1546,13 +1598,14 @@ where
                 self.update_phase_with_applied_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
-            // Clean stop with the parking-brake terminal: hand over to
-            // ControlMode::Brake (its step arm re-asserts the low-side short
-            // every cycle from here on). Only ever emitted at standstill.
+            // Stop with the parking-brake terminal: hand over to
+            // ControlMode::Brake (see step_park_brake), starting as the
+            // plain low-side short.
             FailsafeAction::EngageBrake => {
                 self.pwm
                     .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
                 self.controller.reset();
+                self.park_iq = None;
                 self.mode = ControlMode::Brake;
                 self.failsafe_ctrl.reset();
                 self.update_phase_with_applied_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
@@ -5683,6 +5736,9 @@ mod tests {
         glitch_steps: u32,
         /// Coulomb load (N·m, opposes motion).
         load: f32,
+        /// Constant torque of a slope (N·m, same sign convention as a
+        /// load: positive pulls toward negative ω).
+        slope: f32,
     }
 
     #[cfg(feature = "virtual-motor")]
@@ -5748,6 +5804,7 @@ mod tests {
                 hall_alive: true,
                 glitch_steps: 0,
                 load: 0.0,
+                slope: 0.0,
             }
         }
 
@@ -5799,7 +5856,7 @@ mod tests {
             self.driver.current_sensor_mut().currents = (sample.ia, sample.ib, sample.ic);
             let telem = self.driver.step(now).expect("FOC step failed");
             self.prev_angle = sample.angle_rad;
-            let load = self.load * libm::tanhf(sample.omega_e / 10.0);
+            let load = self.load * libm::tanhf(sample.omega_e / 10.0) + self.slope;
             // A disabled bridge floats the phases: the plant coasts. (Zero
             // volts would be all windings shorted — a brake.)
             self.out = if self.driver.pwm.enabled {
@@ -5815,6 +5872,143 @@ mod tests {
                 self.step();
             }
         }
+    }
+
+    /// The parking brake entered at 1500 el rad/s on a 5065: the plain
+    /// short would drive toward ~90 A (λω/|Z|) and trip the 39 A
+    /// overcurrent, leaving the rotor to coast. It turns current-controlled
+    /// at `max_brake_a` instead, brakes the rotor down, and returns to the
+    /// short once slow.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn park_brake_regulates_when_pushed_past_its_limit() {
+        let mut rig = HallRig::new(0.5, 2e-5);
+        rig.driver.set_current_limits(CurrentLimits {
+            max_brake_a: 10.0,
+            ..CurrentLimits::from_max_current(30.0)
+        });
+        rig.driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 20.0,
+            id_target: 0.0,
+        });
+        rig.run(0.2);
+        assert!(rig.out.omega_e > 1_200.0, "ω {}", rig.out.omega_e);
+        rig.driver.set_mode(ControlMode::Brake);
+        let mut peak = 0.0f32;
+        for _ in 0..(2.0 / HallRig::DT) as u32 {
+            rig.step();
+            peak = peak
+                .max(rig.out.ia.abs())
+                .max(rig.out.ib.abs())
+                .max(rig.out.ic.abs());
+        }
+        assert_eq!(rig.driver.mode(), ControlMode::Brake);
+        assert!(rig.out.omega_e.abs() < 50.0, "ω {}", rig.out.omega_e);
+        assert!(peak < 25.0, "peak phase current {peak} A");
+        assert!(rig.driver.park_iq.is_none(), "back on the short");
+    }
+
+    /// Parked on a slope the short cannot hold within `max_brake_a` (the
+    /// slope needs ~13 A of short current, the limit is 10 A): the brake
+    /// regulates at the limit and never lets go, where the plain short
+    /// kept growing with the speed it let the board reach.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn park_brake_keeps_braking_a_slope_it_cannot_short() {
+        let mut rig = HallRig::new(0.5, 2e-5);
+        rig.driver.set_current_limits(CurrentLimits {
+            max_brake_a: 10.0,
+            ..CurrentLimits::from_max_current(30.0)
+        });
+        rig.driver.set_mode(ControlMode::Brake);
+        rig.slope = -0.4;
+        let mut peak = 0.0f32;
+        for _ in 0..(1.0 / HallRig::DT) as u32 {
+            let (_, t) = rig.step();
+            peak = peak.max(t.iq.abs());
+        }
+        let (_, t) = rig.step();
+        assert_eq!(rig.driver.mode(), ControlMode::Brake);
+        assert!(rig.driver.park_iq.is_some(), "regulating");
+        assert!((t.iq + 10.0).abs() < 1.0, "holding {} A", t.iq);
+        // The hand-over from the short overshoots by what the short adds
+        // during the actuation pipeline.
+        assert!(peak < 14.0, "peak {peak} A");
+    }
+
+    /// Sensorless with no trustworthy angle (the observer never locked):
+    /// the short still brakes a slow rotor, and releases to high-Z — not a
+    /// trip — when its current says the rotor is too fast for it.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn park_brake_without_an_angle_guards_itself_by_its_current() {
+        use crate::foc::phase::{BackEmfObserver, Observer, PhaseManager, PhaseSource};
+        use crate::foc::trig::LibmSinCos;
+        use crate::virtual_motor::{MotorParams, VirtualMotor};
+
+        const DT: f32 = 1.0 / 20_000.0;
+        let params = MotorParams {
+            r: 0.036,
+            ld: 22e-6,
+            lq: 22e-6,
+            lambda: 2.92e-3,
+            pole_pairs: 7,
+            j: 4e-4,
+            friction_b: 2e-5,
+            substeps: 8,
+            actuation_delay: 0.5,
+            ..MotorParams::default()
+        };
+        let run = |omega0: f32| {
+            let mut motor = VirtualMotor::new(params);
+            motor.set_velocity(omega0);
+            let mut mgr = PhaseManager::sensorless();
+            mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
+                params.r,
+                params.ld,
+                params.lambda,
+            )));
+            mgr.set_source(PhaseSource::Observer).unwrap();
+            let mut driver = FocDriver::new(
+                FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+                    params.r, params.ld, 24.0,
+                ),
+                GatedPwm {
+                    enabled: false,
+                    applied: [0; 3],
+                },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                mgr,
+                DT,
+            );
+            driver.set_current_limits(CurrentLimits {
+                max_brake_a: 15.0,
+                ..CurrentLimits::from_max_current(30.0)
+            });
+            driver.set_mode(ControlMode::Brake);
+            let mut out = motor.step_coast(0.0, DT);
+            for step in 1..4_000u64 {
+                driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+                driver.step(step * 50).expect("no trip");
+                out = if driver.pwm.enabled {
+                    motor.step(0.0, 0.0, 0.0, DT)
+                } else {
+                    motor.step_coast(0.0, DT)
+                };
+            }
+            assert!(!driver.phase().angle_trustworthy());
+            (driver.mode(), out.omega_e)
+        };
+        // 100 el rad/s: ~8 A of short current — held, braked to a stop.
+        let (mode, omega) = run(100.0);
+        assert_eq!(mode, ControlMode::Brake);
+        assert!(omega.abs() < 20.0, "ω {omega}");
+        // 1500 el rad/s: the short heads for ~90 A — released at once.
+        let (mode, omega) = run(1_500.0);
+        assert_eq!(mode, ControlMode::Stopped);
+        assert!(omega > 1_400.0, "barely touched: ω {omega}");
     }
 
     /// Link lost on a descent the failsafe brake cannot beat (the slope's

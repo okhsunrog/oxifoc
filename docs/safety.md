@@ -113,9 +113,12 @@ with no further input, host-configurable via `FailsafeConfigStored` (ConfigKey
     below `BRAKE_ENTRY_MAX_E_RAD_S`, else high-Z). A zero crossing read
     below that gate counts as the stop too.
 
-  Exits to high-Z mid-stop: the angle source lost trust (never commutate
-  blind), and regen pushing the bus into the OverVoltage fault (fault
-  gate). Brake escalation past `brake_current_a` when the stop is too slow
+  The angle source losing trust mid-stop (sensorless below the observer's
+  floor, ~150 el rad/s — ~12–15 A of short current on a 5065) hands over
+  to the parking brake with the `ParkBrake` terminal (the short needs no
+  angle and guards itself by its current, below), else coasts. Regen
+  pushing the bus into the OverVoltage fault exits high-Z via the fault
+  gate. Brake escalation past `brake_current_a` when the stop is too slow
   for the slope is a backlog option (TODO.md).
 
 The same machinery serves the user-commanded **ramp-into-brake**: a `Brake`
@@ -139,9 +142,17 @@ velocity/position once they exist) — what a vehicle rides on. Exempt:
   Layer-1 gate skips them too. `Brake` entry is speed-gated in
   `process_commands` (`BRAKE_ENTRY_MAX_E_RAD_S`): shorting the windings at
   speed dumps an uncontrolled back-EMF-driven current (→ λ/L) through the
-  FETs. Note it is a *viscous* brake (torque ∝ speed, dissipated in the
-  motor, zero draw at standstill) — on a slope the board creeps; true
-  position hold is a future position-loop feature (see TODO).
+  FETs. Once in, the brake is **VESC-style hybrid** (2026-09-30): the short
+  while its current stays within `max_brake_a` — a *viscous* brake (torque
+  ∝ speed, dissipated in the motor, zero draw at standstill, no angle
+  needed) — and a current-controlled brake at `max_brake_a` against the
+  motion when the board is pushed faster (a steep slope), back to the
+  short where holding the limit would take a q voltage against the motion
+  (the two currents meet there; VESC's vq-sign switch). It never lets go
+  on a slope; without a trustworthy angle a short current past the limit
+  releases to high-Z instead (the speed behind it is unknown). The board
+  still creeps on a slope — true position hold is a future position-loop
+  feature (see TODO).
 - `OpenLoop`/`DirectVoltage`/`SixStep` — bench/calibration modes: on-device
   detection dwells up to ~1 s between `SetMode`s (R-measurement settle),
   which a 150 ms deadman would cut mid-measurement. The Layer-1 link gate

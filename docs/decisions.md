@@ -55,6 +55,15 @@ their section.
   over: an active current on a lagging low-speed estimate pumped a light
   rotor into a ±700 el rad/s limit cycle. Escalation past the stop
   current is a backlog option. [safety.md → failsafe]
+- **2026-09-30 — the parking brake is VESC's hybrid.** A plain short
+  let its current grow with whatever speed a slope produced (λω/|Z|, up
+  to ~100 A on a 5065) until the overcurrent trip released the board. Now
+  it is the short while that current stays within `max_brake_a`, a
+  current-controlled brake at the limit above (never letting go), back to
+  the short at the vq sign change where the two currents meet. Without an
+  angle a short current past the limit releases to high-Z — which is what
+  makes it safe for the failsafe to hand over to the short on losing the
+  sensorless angle at unknown speed. [safety.md → Scope]
 
 ## Firmware / platform
 
