@@ -27,13 +27,16 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
   cuts charging leaves only the bus capacitors (volts per ms) — the regen
   derate is decimated to ~78 Hz, likely too slow there (per-cycle, like
   the speed cut?).
-- [ ] **Position hold** (after position control): capture the target on
-  engage, cascade position P → `VelocityLoop` → current. Engaged only by
-  an explicit command (a dedicated remote button, like the parking brake)
-  — never implicitly: a released throttle coasts, as riders expect.
-  Needs an angle at standstill (hall sector / encoder / HFI) and a
-  current/thermal budget with a fall-back to the parking brake; could
-  also be a failsafe terminal. `Brake` stays the default.
+- [ ] **Command model** ([notes/command-model.md](notes/command-model.md),
+  RFC 2026-09-30): mode classes, `Brake { current }` (VESC
+  `CURRENT_BRAKE`), `Hold` (anchored brake, standstill-only, explicit
+  action — never implicit: a released throttle coasts), session deadman,
+  failsafe terminal `Coast | Brake | Hold`; under discussion: vehicle
+  logic with typed actions, the reverse gesture. Fixes two defects on
+  the way: **Coast is
+  exempt from both link-loss paths at any speed** (a coasting rider
+  loses the link downhill → nobody brakes), and safe modes drop drive
+  ownership mid-ride.
 - [ ] G474: arm the IWDG once the motor modules come alive (FOC ISR).
 - [ ] Bench: IWDG reset → PWM safe on hardware (provoke a hang).
 - [ ] Boot: read reset-reason + detect a spinning motor +
