@@ -176,11 +176,11 @@ impl AngleSensor for HallAngleProxy {
         })
     }
 
-    fn is_stale(&self, now_ticks: u64) -> bool {
+    fn is_stale(&self, now_ticks: u64, omega_ref: f32) -> bool {
         HALL_ESTIMATOR.lock(|est| {
             est.borrow()
                 .as_ref()
-                .is_some_and(|h| h.is_stale_at_speed(now_ticks))
+                .is_some_and(|h| h.is_stale_at_speed(now_ticks, omega_ref))
         })
     }
 

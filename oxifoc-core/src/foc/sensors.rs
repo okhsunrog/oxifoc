@@ -84,11 +84,13 @@ pub trait AngleSensor {
         self.sample(now_ticks)
     }
 
-    /// Whether the sensor's data has implausibly stopped updating (e.g. a
-    /// hall estimator whose edges ceased while the rotor was demonstrably
-    /// spinning). Default: never stale — absolute encoders and mocks have
-    /// no notion of edge timing.
-    fn is_stale(&self, _now_ticks: u64) -> bool {
+    /// Whether the sensor's data has implausibly stopped updating while an
+    /// INDEPENDENT estimate says the rotor turns at `omega_ref` (electrical
+    /// rad/s) — e.g. hall edges that should have arrived at that speed but
+    /// did not. The caller supplies the evidence: edge timing alone cannot
+    /// tell a rotor that stopped from a sensor that died. Default: never
+    /// stale — absolute encoders and mocks have no notion of edge timing.
+    fn is_stale(&self, _now_ticks: u64, _omega_ref: f32) -> bool {
         false
     }
 

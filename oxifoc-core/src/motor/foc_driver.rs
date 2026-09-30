@@ -2129,10 +2129,8 @@ mod tests {
     use crate::foc::phase::{PhaseManager, PhaseSource};
     #[cfg(feature = "runtime")]
     use crate::state::CMD_CHANNEL;
-    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
-    use crate::virtual_motor::VirtualMotorOutput;
     #[cfg(feature = "virtual-motor")]
-    use crate::virtual_motor::{MotorParams, VirtualMotor};
+    use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
     #[cfg(feature = "virtual-motor")]
     use core::f32::consts::{FRAC_PI_3, FRAC_PI_6};
 
@@ -5518,88 +5516,201 @@ mod tests {
     /// operating point with no speed loop in the way. Spins up on hall
     /// (edges time-stamped at the true crossing, like the capture timer),
     /// then switches to `source` and settles.
+    /// Closed-loop rig: FocDriver (hall source + a back-EMF observer + the
+    /// f405 phase tracker) against a near-continuous (16-substep)
+    /// Flipsky-5065-class plant whose actuation delay matches the
+    /// driver's. Hall edges are time-stamped at the true boundary crossing,
+    /// like the capture timer.
     #[cfg(feature = "virtual-motor")]
-    fn measure_frame_timing(source: PhaseSource, delay: f32) -> FrameTiming {
+    struct HallRig {
+        motor: VirtualMotor,
+        out: VirtualMotorOutput,
+        driver: FocDriver<MockPwm, MockCurrentSensor, PhaseManager<HallSensor>>,
+        last_hall: u8,
+        prev_angle: f32,
+        step: u64,
+        /// Feed hall edges to the driver (false = a dead sensor).
+        hall_alive: bool,
+        /// Coulomb load (N·m, opposes motion).
+        load: f32,
+    }
+
+    #[cfg(feature = "virtual-motor")]
+    impl HallRig {
         const DT: f32 = 1.0 / 20_000.0;
         const TICKS: u64 = 50;
-        let params = MotorParams {
-            r: 0.036,
-            ld: 22e-6,
-            lq: 22e-6,
-            lambda: 2.92e-3,
-            pole_pairs: 7,
-            j: 4e-4,
-            // 1.5·pp·λ·10 A = 0.31 N·m balances B·ωm at ωm ≈ 215 rad/s.
-            friction_b: 1.4e-3,
-            substeps: 16,
-            actuation_delay: delay,
-            ..MotorParams::default()
-        };
-        let mut motor = VirtualMotor::new(params);
-        let mut out = motor.step(0.0, 0.0, 0.0, DT);
 
-        let mut hall = HallSensor::new(1_000_000);
-        hall.update(out.hall_state, 0);
-        let mut last_hall = out.hall_state;
-        let mut mgr = PhaseManager::with_hall(hall);
-        mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-            params.r,
-            params.ld,
-            params.lambda,
-        )));
-        mgr.set_phase_tracker(100.0, 1.2); // the f405 boot configuration
-        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-            params.r, params.ld, 24.0,
+        fn new(delay: f32, friction_b: f32) -> Self {
+            let params = MotorParams {
+                r: 0.036,
+                ld: 22e-6,
+                lq: 22e-6,
+                lambda: 2.92e-3,
+                pole_pairs: 7,
+                j: 4e-4,
+                friction_b,
+                substeps: 16,
+                actuation_delay: delay,
+                ..MotorParams::default()
+            };
+            let mut motor = VirtualMotor::new(params);
+            let out = motor.step(0.0, 0.0, 0.0, Self::DT);
+            let mut hall = HallSensor::new(1_000_000);
+            hall.update(out.hall_state, 0);
+            let mut mgr = PhaseManager::with_hall(hall);
+            mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
+                params.r,
+                params.ld,
+                params.lambda,
+            )));
+            mgr.set_phase_tracker(100.0, 1.2); // the f405 boot configuration
+            let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+                params.r, params.ld, 24.0,
+            );
+            let mut driver = FocDriver::new(
+                foc,
+                MockPwm { duties: [0; 3] },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                mgr,
+                Self::DT,
+            );
+            driver.set_current_limits(CurrentLimits::from_max_current(30.0));
+            driver.set_actuation_delay(delay);
+            Self {
+                motor,
+                out,
+                driver,
+                last_hall: out.hall_state,
+                prev_angle: out.angle_rad,
+                step: 0,
+                hall_alive: true,
+                load: 0.0,
+            }
+        }
+
+        /// One FOC period: (the plant state the driver sampled, its output).
+        fn step(&mut self) -> (VirtualMotorOutput, FocOutput) {
+            self.step += 1;
+            let now = self.step * Self::TICKS;
+            if self.hall_alive && self.out.hall_state != self.last_hall {
+                // Crossing of the hall boundary (π/6 + k·π/3) inside the step.
+                let a0 = self.prev_angle;
+                let a1 = a0 + angle_difference(self.out.angle_rad, a0);
+                let k0 = libm::floorf((a0 - FRAC_PI_6) / FRAC_PI_3);
+                let k1 = libm::floorf((a1 - FRAC_PI_6) / FRAC_PI_3);
+                let frac = if k0 == k1 {
+                    1.0
+                } else {
+                    clamp_f32(
+                        (FRAC_PI_6 + FRAC_PI_3 * k0.max(k1) - a0) / (a1 - a0),
+                        0.0,
+                        1.0,
+                    )
+                };
+                let t = now - ((1.0 - frac) * Self::TICKS as f32) as u64;
+                self.driver
+                    .phase_mut()
+                    .hall_mut()
+                    .update(self.out.hall_state, t);
+                self.last_hall = self.out.hall_state;
+            }
+            let sample = self.out;
+            self.driver.current_sensor_mut().currents = (sample.ia, sample.ib, sample.ic);
+            let telem = self.driver.step(now).expect("FOC step failed");
+            self.prev_angle = sample.angle_rad;
+            let load = self.load * libm::tanhf(sample.omega_e / 10.0);
+            self.out = self.motor.step(telem.v_alpha, telem.v_beta, load, Self::DT);
+            (sample, telem)
+        }
+
+        fn run(&mut self, seconds: f32) {
+            for _ in 0..(seconds / Self::DT) as u32 {
+                self.step();
+            }
+        }
+    }
+
+    /// A hall-driven motor must restart after it came to a stop. The
+    /// sensor's staleness check compares the silence against the speed at
+    /// the LAST edge, so every stop used to be declared a dead sensor a few
+    /// sector-times later: the recovery override took commutation, the
+    /// angle turned untrustworthy and the torque gate held iq at zero —
+    /// the motor stayed put until someone turned it by hand.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn hall_drive_restarts_after_a_stop() {
+        let mut rig = HallRig::new(0.5, 2e-5);
+        rig.load = 0.2;
+        let torque = |iq| ControlMode::CurrentControl {
+            iq_target: iq,
+            id_target: 0.0,
+        };
+        rig.driver.set_mode(torque(10.0));
+        rig.run(0.5);
+        rig.driver.set_mode(torque(0.0));
+        rig.run(1.0); // coasts to a stop well within this
+        assert!(
+            rig.out.omega_e.abs() < 5.0,
+            "should have stopped, ω {}",
+            rig.out.omega_e
         );
-        let mut driver = FocDriver::new(
-            foc,
-            MockPwm { duties: [0; 3] },
-            MockCurrentSensor {
-                currents: (0.0, 0.0, 0.0),
-            },
-            mgr,
-            DT,
+        rig.driver.set_mode(torque(10.0));
+        rig.run(0.3);
+        assert!(
+            rig.out.omega_e > 300.0,
+            "must restart after the stop, ω {}",
+            rig.out.omega_e
         );
-        driver.set_current_limits(CurrentLimits::from_max_current(30.0));
-        driver.set_actuation_delay(delay);
-        driver.set_mode(ControlMode::CurrentControl {
+        assert!(rig.driver.phase().angle_trustworthy());
+    }
+
+    /// The other half of the staleness contract: hall edges stopping while
+    /// the back-EMF observer still sees the rotor turning IS a dead sensor —
+    /// commutation must move to the observer and the drive keep going. With
+    /// the old 8-sector window the clamped hall angle ran ~1 rad off the
+    /// rotor within a millisecond and the overcurrent trip fired first
+    /// (true id +32 A); the 1.5-sector window hands over with a ~10 A blip.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn hall_dying_at_speed_hands_over_to_the_observer() {
+        let mut rig = HallRig::new(0.5, 1.4e-3);
+        rig.driver.set_mode(ControlMode::CurrentControl {
             iq_target: 10.0,
             id_target: 0.0,
         });
+        rig.run(1.0);
+        let cruise = rig.out.omega_e;
+        assert!(cruise > 1000.0, "cruise ω {cruise}");
+        rig.hall_alive = false;
+        rig.run(0.5);
+        assert!(
+            rig.out.omega_e > 0.9 * cruise,
+            "must keep driving on the observer: ω {} (was {cruise})",
+            rig.out.omega_e
+        );
+        assert!(rig.driver.phase().angle_trustworthy());
+    }
 
-        // Crossing time of the hall boundary (π/6 + k·π/3) the last plant
-        // step passed, interpolated inside the step.
-        let edge_ticks = |now: u64, a0: f32, a1: f32| -> u64 {
-            let a1 = a0 + angle_difference(a1, a0);
-            let k0 = libm::floorf((a0 - FRAC_PI_6) / FRAC_PI_3);
-            let k1 = libm::floorf((a1 - FRAC_PI_6) / FRAC_PI_3);
-            let boundary = FRAC_PI_6 + FRAC_PI_3 * k0.max(k1);
-            let frac = if k0 == k1 {
-                1.0
-            } else {
-                clamp_f32((boundary - a0) / (a1 - a0), 0.0, 1.0)
-            };
-            now - ((1.0 - frac) * TICKS as f32) as u64
-        };
-
+    /// 10 A of torque current against a viscous load settles at ~1500 el
+    /// rad/s (~2000 rpm) — a steady operating point with no speed loop in
+    /// the way. Spins up on hall, then switches to `source` and settles.
+    #[cfg(feature = "virtual-motor")]
+    fn measure_frame_timing(source: PhaseSource, delay: f32) -> FrameTiming {
+        // 1.5·pp·λ·10 A = 0.31 N·m balances B·ωm at ωm ≈ 215 rad/s.
+        let mut rig = HallRig::new(delay, 1.4e-3);
+        rig.driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 10.0,
+            id_target: 0.0,
+        });
         let (mut err, mut w, mut tid, mut tiq) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
         let mut n = 0u32;
-        let mut prev_angle = out.angle_rad;
         for step in 1..=24_000u64 {
-            let now = step * TICKS;
             if step == 12_000 {
-                driver.phase_mut().set_source(source).unwrap();
+                rig.driver.phase_mut().set_source(source).unwrap();
             }
-            if out.hall_state != last_hall {
-                let t = edge_ticks(now, prev_angle, out.angle_rad);
-                driver.phase_mut().hall_mut().update(out.hall_state, t);
-                last_hall = out.hall_state;
-            }
-            let sample = out;
-            driver.current_sensor_mut().currents = (sample.ia, sample.ib, sample.ic);
-            let telem = driver.step(now).expect("FOC step failed");
-            prev_angle = sample.angle_rad;
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            let (sample, telem) = rig.step();
             if step > 20_000 {
                 err += angle_difference(telem.angle_rad, sample.angle_rad);
                 w += sample.omega_e;
@@ -5613,7 +5724,7 @@ mod tests {
         }
         let n = n as f32;
         FrameTiming {
-            frame_err_periods: (err / n) / (w / n * DT),
+            frame_err_periods: (err / n) / (w / n * HallRig::DT),
             true_id: tid / n,
             true_iq: tiq / n,
         }

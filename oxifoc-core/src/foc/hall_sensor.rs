@@ -76,16 +76,20 @@ pub const DEFAULT_DRIFT_CORRECTION_GAIN: f32 = 0.01;
 /// VESC uses 1.5 (allows 50% overshoot for transients)
 pub const DEFAULT_RATE_LIMIT_FACTOR: f32 = 1.5;
 
-/// Sector-time multiple for velocity-adaptive staleness detection
-/// ([`HallSensor::is_stale_at_speed`]). At the last estimated speed an edge
-/// is expected every `angle_per_state / |vel|` seconds; if more than this
-/// many expected sector times pass with no edge, the sensor is dead or the
-/// rotor stopped far faster than physics allows.
-pub const STALE_SECTOR_MULTIPLE: f32 = 8.0;
+/// Sector-time multiple for staleness detection
+/// ([`HallSensor::is_stale_at_speed`]): with a reference speed an edge is
+/// expected every `angle_per_state / |ω|` seconds; this many sector times
+/// with no edge means the sensor stopped reporting. Only consulted with
+/// INDEPENDENT evidence of rotation (the caller's `omega_ref`), which is
+/// what makes a tight window safe: past the sector end the interpolated
+/// angle is clamped, and on a low-impedance motor the frame error grows
+/// into amps within a sector — the old 8× window (5.6 ms at 1500 rad/s)
+/// let a dying hall reach +32 A of true id and the overcurrent trip first.
+pub const STALE_SECTOR_MULTIPLE: f32 = 1.5;
 
-/// Absolute floor for the velocity-adaptive staleness window (seconds), so
-/// jitter at very high speed can't produce sub-millisecond false trips.
-pub const STALE_MIN_WINDOW_S: f32 = 0.002;
+/// Absolute floor for the staleness window (seconds): a few PWM periods,
+/// so capture/ISR jitter at very high speed can't trip it.
+pub const STALE_MIN_WINDOW_S: f32 = 0.000_3;
 
 /// Default Hall sensor timeout (microseconds)
 /// If no valid Hall edge is received for this duration, sensor is considered stale.
@@ -421,21 +425,21 @@ impl HallSensor {
         }
     }
 
-    /// Velocity-adaptive staleness: edges stopped arriving although the
-    /// last estimate says the rotor should keep producing them.
+    /// Staleness against an independent speed estimate: edges stopped
+    /// arriving although the rotor demonstrably turns at `omega_ref`.
     ///
-    /// Unlike [`is_stale`](Self::is_stale) (fixed timeout), this never
-    /// trips at standstill — a stopped motor legitimately produces no
-    /// edges — and reacts within a few sector times at speed (a cable cut
-    /// at 700 rad/s is detected in ~12 ms instead of the 100 ms fixed
-    /// timeout). VESC reaches the same behavior through its decaying
-    /// `hall_dt` interpolation clamp.
-    pub fn is_stale_at_speed(&self, now_ticks: u64) -> bool {
+    /// Edge timing alone cannot separate a stopped rotor from a dead
+    /// sensor (a coasting stop leaves the last edge's speed behind), so the
+    /// caller must supply evidence of rotation — the back-EMF observer's
+    /// speed. The expected sector time uses the SLOWER of the two speeds:
+    /// the observer's velocity lags a deceleration, and the hall's last
+    /// edge speed is the better bound there. `omega_ref = 0` never trips.
+    pub fn is_stale_at_speed(&self, now_ticks: u64, omega_ref: f32) -> bool {
         let Some(dt_ticks) = self.time_since_edge(now_ticks) else {
             // No edge ever seen: "no data yet", not "data stopped".
             return false;
         };
-        let vel = self.elec_velocity.abs();
+        let vel = self.elec_velocity.abs().min(omega_ref.abs());
         if vel < 1.0 {
             return false;
         }
@@ -1098,8 +1102,8 @@ impl AngleSensor for HallSensor {
         self.sample_at_mut(now_ticks)
     }
 
-    fn is_stale(&self, now_ticks: u64) -> bool {
-        self.is_stale_at_speed(now_ticks)
+    fn is_stale(&self, now_ticks: u64, omega_ref: f32) -> bool {
+        self.is_stale_at_speed(now_ticks, omega_ref)
     }
 
     fn error_count(&self) -> u32 {
@@ -1181,6 +1185,7 @@ impl HallSensorTrait for HallSensor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::f32::consts::FRAC_PI_3;
 
     #[test]
     fn test_hall_state_table() {
@@ -1593,23 +1598,41 @@ mod tests {
             hall.update(*s, t).unwrap();
             t += 1000; // 1 ms per sector
         }
-        // Healthy: well within the expected edge cadence.
-        assert!(!hall.is_stale_at_speed(t));
-        assert!(!hall.is_stale_at_speed(t + 3_000));
-        // Cable cut: 8 expected sector times (8 ms) with no edge.
-        assert!(hall.is_stale_at_speed(t + 9_000));
+        // The last edge was at t − 1 ms; one sector takes 1 ms (1047 rad/s)
+        // and the observer confirms that speed.
+        let w = FRAC_PI_3 / 1e-3;
+        assert!(!hall.is_stale_at_speed(t, w));
+        assert!(!hall.is_stale_at_speed(t + 400, w));
+        // Cable cut: 1.5 expected sector times with no edge.
+        assert!(hall.is_stale_at_speed(t + 600, w));
+    }
+
+    #[test]
+    fn stale_at_speed_needs_evidence_of_rotation() {
+        let mut hall = HallSensor::new(1_000_000);
+        let mut t = 0u64;
+        for s in CW_SEQ.iter().cycle().take(12) {
+            hall.update(*s, t).unwrap();
+            t += 1000;
+        }
+        // Coasted to a stop: no independent rotation evidence → the rotor
+        // stopped, however stale the last edge's speed looks.
+        assert!(!hall.is_stale_at_speed(t + 1_000_000, 0.0));
+        // A slower reference (decelerating; the observer lags) stretches the
+        // window: the slower of the two speeds sets the expected cadence.
+        assert!(!hall.is_stale_at_speed(t + 5_000, 100.0));
     }
 
     #[test]
     fn stale_at_speed_never_trips_at_standstill() {
-        // A motor that was never moved (or stopped cleanly) produces no
-        // edges — that is not staleness.
+        // A motor that was never moved produces no edges — not staleness,
+        // whatever the reference claims.
         let hall = HallSensor::new(1_000_000);
-        assert!(!hall.is_stale_at_speed(10_000_000));
+        assert!(!hall.is_stale_at_speed(10_000_000, 1000.0));
 
         let mut hall = HallSensor::new(1_000_000);
         hall.update(1, 0).unwrap(); // single state, velocity 0
-        assert!(!hall.is_stale_at_speed(10_000_000));
+        assert!(!hall.is_stale_at_speed(10_000_000, 1000.0));
     }
 
     #[test]
