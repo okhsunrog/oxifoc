@@ -6,6 +6,7 @@
 //! current loop step and returns the computed PWM duties plus telemetry.
 
 use super::{
+    constants::{FRAC_1_SQRT_3, SQRT_3_DIV_2},
     detection::pi_tuning::{self, DEFAULT_BANDWIDTH_RAD_S},
     pi_controller::PIController,
     pwm::{Modulator, SvpwmModulator},
@@ -111,8 +112,12 @@ pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> 
     pub iq_pi: PIController,
     /// DC bus voltage (Volts)
     vbus: f32,
-    /// Modulation limit as a fraction of `vbus` (0.0–1.0)
+    /// Modulation limit as a fraction of `vbus` (volt space: |V| ≤
+    /// vbus × limit; linear SVPWM ends at 1/√3)
     modulation_limit: f32,
+    /// Highest duty the PWM stage lets a high side hold, as a fraction of
+    /// the timer period (1.0 = no cap). See [`Self::set_duty_cap`].
+    duty_cap: f32,
     /// Dead time compensation factor = dead_time_s × pwm_freq_hz (0.0 = disabled)
     dead_time_comp: f32,
     /// Actuation-frame advance (electrical rad, 0.0 = disabled): the output
@@ -167,6 +172,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             iq_pi: PIController::new(0.4, 40.0),
             vbus: vbus.max(Self::MIN_VBUS),
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
+            duty_cap: 1.0,
             dead_time_comp: 0.0,
             actuation_advance: 0.0,
             decoupling: None,
@@ -216,6 +222,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             iq_pi: PIController::new(kp, ki),
             vbus,
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
+            duty_cap: 1.0,
             dead_time_comp: 0.0,
             actuation_advance: 0.0,
             decoupling: None,
@@ -288,7 +295,11 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
                 flux_linkage_wb: mp.flux_linkage_wb,
             }));
             foc
-        } else if let Some(ref pg) = config.pi_gains {
+        } else if let Some(ref pg) = config.pi_gains
+            && pg.is_sane()
+        {
+            // Same sanity gate as above: NaN or negative stored gains would
+            // otherwise run the current loop as-is.
             let mut foc = Self::new(vbus);
             foc.id_pi.set_gains(pg.kp, pg.ki);
             foc.iq_pi.set_gains(pg.kp, pg.ki);
@@ -300,13 +311,51 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         }
     }
 
-    /// Override the modulation limit (fraction of `vbus`).
+    /// Override the modulation limit (volt space, fraction of `vbus`).
     ///
-    /// Values above 1.0 request over-modulation; keep within 0.0–1.0 for
-    /// predictable behavior.
+    /// Clamped to `0..=1/√3`: that is where linear SVPWM ends (100% duty on
+    /// the top leg). Anything above only let the phases clip while the
+    /// circular limit never engaged, so the PI integrators wound up.
     pub fn with_modulation_limit(mut self, limit: f32) -> Self {
-        self.modulation_limit = clamp_f32(limit, 0.0, 1.2);
+        self.modulation_limit = clamp_f32(limit, 0.0, FRAC_1_SQRT_3);
         self
+    }
+
+    /// Tell the controller the highest duty the PWM stage lets a high side
+    /// hold (fraction of the period, clamped to 0.5–1.0; boards cap it to
+    /// keep a low-side window for bootstrap charging and shunt sampling).
+    ///
+    /// The circular voltage limit shrinks to `cap/√3` and the SVPWM common
+    /// mode shifts down whenever the top leg would exceed the cap, so the
+    /// commanded vector is what the bridge applies. Without this the board
+    /// clipped the top leg silently: above 0.52·vbus the applied voltage
+    /// departed from the command by up to 0.8 V at 24 V (PI, anti-windup,
+    /// observer voltage and the bus-current estimate all saw the command).
+    pub fn set_duty_cap(&mut self, fraction: f32) {
+        self.duty_cap = if fraction.is_finite() {
+            clamp_f32(fraction, 0.5, 1.0)
+        } else {
+            1.0
+        };
+    }
+
+    /// Circular voltage limit (V): the modulation limit, tightened to what
+    /// the duty cap leaves (the SVPWM duty spread is `√3·|V|/vbus`).
+    fn voltage_limit(&self) -> f32 {
+        self.vbus * self.modulation_limit.min(self.duty_cap * FRAC_1_SQRT_3)
+    }
+
+    /// Modulate, then shift the common mode down if the top leg exceeds the
+    /// duty cap (the voltage limit guarantees the spread fits under it).
+    fn duties_for(&self, mod_a: f32, mod_b: f32, max_duty: u16) -> [u16; 3] {
+        let duties = M::to_duties(mod_a, mod_b, max_duty);
+        let cap = (self.duty_cap * f32::from(max_duty)) as u16;
+        let top = duties[0].max(duties[1]).max(duties[2]);
+        if top <= cap {
+            return duties;
+        }
+        let shift = top - cap;
+        duties.map(|d| d.saturating_sub(shift))
     }
 
     /// Update the cached DC bus voltage.
@@ -362,10 +411,14 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let sign_b = if ib >= 0.0 { 1.0f32 } else { -1.0 };
         let sign_c = if ic >= 0.0 { 1.0f32 } else { -1.0 };
 
-        // Per-phase ±comp_factor mapped to the αβ frame through the Clarke
-        // transform: α gets (2·sa − sb − sc)/3, β gets (sb − sc)/√3.
-        let comp_alpha = (1.0 / 3.0) * (2.0 * sign_a - sign_b - sign_c) * comp_factor;
-        let comp_beta = super::constants::FRAC_1_SQRT_3 * (sign_b - sign_c) * comp_factor;
+        // Per-leg duty offsets ±comp_factor in MODULATION units: the legs'
+        // phase-to-neutral volts map through Clarke as (2·sa − sb − sc)/3
+        // and (sb − sc)/√3 (× comp_factor·vbus), and modulation is
+        // VOLTS_TO_MOD = 1.5 × volts/vbus — so α gets (2·sa − sb − sc)/2,
+        // β gets (√3/2)·(sb − sc). The volt-space coefficients alone
+        // compensated only 2/3 of the dead time.
+        let comp_alpha = 0.5 * (2.0 * sign_a - sign_b - sign_c) * comp_factor;
+        let comp_beta = SQRT_3_DIV_2 * (sign_b - sign_c) * comp_factor;
 
         (mod_alpha + comp_alpha, mod_beta + comp_beta)
     }
@@ -422,7 +475,8 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         self.vbus
     }
 
-    /// Fractional modulation limit (0.0–1.2).
+    /// Modulation limit in volt space (fraction of vbus, 0..=1/√3). The
+    /// effective limit also honors the duty cap — see `set_duty_cap`.
     pub fn modulation_limit(&self) -> f32 {
         self.modulation_limit
     }
@@ -462,7 +516,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
 
         // Circular voltage limiting
-        let v_limit = self.vbus * self.modulation_limit;
+        let v_limit = self.voltage_limit();
         let v_mag_sq = vd * vd + vq * vq;
         let v_limit_sq = v_limit * v_limit;
 
@@ -482,7 +536,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             i_beta,
             self.dead_time_comp,
         );
-        let duties = M::to_duties(mod_a, mod_b, max_duty);
+        let duties = self.duties_for(mod_a, mod_b, max_duty);
 
         FocOutput {
             angle_rad,
@@ -592,9 +646,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let vd_raw = self.id_pi.update(id_target, id, dt) + vd_ff + vd_inject;
         let vq_raw = self.iq_pi.update(iq_target, iq, dt) + vq_ff + vq_inject;
 
-        // Circular voltage limiting: constrain |V| ≤ vbus × modulation_limit
-        // Preserves voltage vector direction (unlike independent axis clamping)
-        let v_limit = self.vbus * self.modulation_limit;
+        // Circular voltage limiting (modulation limit ∧ duty cap); preserves
+        // the voltage vector direction (unlike independent axis clamping).
+        let v_limit = self.voltage_limit();
         let v_mag_sq = vd_raw * vd_raw + vq_raw * vq_raw;
         let v_limit_sq = v_limit * v_limit;
 
@@ -625,14 +679,21 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
         let (v_alpha, v_beta) = self.apply_actuation_advance(v_alpha, v_beta);
         let volts_to_mod = Self::VOLTS_TO_MOD / self.vbus;
+        // Dead-time signs from the REFERENCE current vector: in closed loop
+        // the current follows it, and unlike the measured current it does
+        // not flip sign on ADC noise at low current (sim: with ±0.15 A of
+        // sensor noise at 0.3 A the measured-sign compensation made the
+        // current error worse than none).
+        let (i_ref_alpha, i_ref_beta) =
+            transforms::inverse_park(id_target, iq_target, sin_theta, cos_theta);
         let (mod_a, mod_b) = Self::apply_dead_time_comp(
             v_alpha * volts_to_mod,
             v_beta * volts_to_mod,
-            i_alpha,
-            i_beta,
+            i_ref_alpha,
+            i_ref_beta,
             self.dead_time_comp,
         );
-        let duties = M::to_duties(mod_a, mod_b, max_duty);
+        let duties = self.duties_for(mod_a, mod_b, max_duty);
 
         FocOutput {
             ia,
@@ -909,5 +970,81 @@ mod tests {
             0.0, 0.5, 0.0, 10.0, comp,
         );
         assert!(mb > 0.5, "mod_beta must increase with iβ > 0, got {mb}");
+    }
+
+    /// The compensation must move each LEG by exactly ±t_dt·f_pwm of duty
+    /// (common mode aside) — the sign test above would also pass the old
+    /// volt-space coefficients, which moved the legs by only 2/3 of that.
+    #[test]
+    fn dead_time_comp_moves_each_leg_by_the_dead_time() {
+        let vbus = 24.0;
+        let max_duty = 10_000u16;
+        let c = 0.02;
+        let plain = FocController::<SvpwmModulator, LibmSinCos>::new(vbus);
+        let mut comp = FocController::<SvpwmModulator, LibmSinCos>::new(vbus);
+        comp.set_dead_time_comp_factor(c);
+        for angle_deg in (15..360).step_by(30) {
+            let angle = (angle_deg as f32).to_radians();
+            // Current along the voltage vector: signs of the three phases.
+            let (sin, cos) = angle.sin_cos();
+            let (i_alpha, i_beta) = (10.0 * cos, 10.0 * sin);
+            let (ia, ib, ic) = transforms::inverse_clarke(i_alpha, i_beta);
+            let s = [ia, ib, ic].map(|i| if i >= 0.0 { 1.0f32 } else { -1.0 });
+            let s_mean = (s[0] + s[1] + s[2]) / 3.0;
+            let d0 = plain
+                .apply_dq(3.0, 0.0, angle, i_alpha, i_beta, max_duty)
+                .duties;
+            let d1 = comp
+                .apply_dq(3.0, 0.0, angle, i_alpha, i_beta, max_duty)
+                .duties;
+            let delta: [f32; 3] =
+                core::array::from_fn(|k| (f32::from(d1[k]) - f32::from(d0[k])) / 10_000.0);
+            let d_mean = (delta[0] + delta[1] + delta[2]) / 3.0;
+            for k in 0..3 {
+                let expected = c * (s[k] - s_mean);
+                assert!(
+                    (delta[k] - d_mean - expected).abs() < 3e-4,
+                    "leg {k} at {angle_deg}°: moved {} (common mode removed), expected {expected}",
+                    delta[k] - d_mean
+                );
+            }
+        }
+    }
+
+    /// With a board duty cap the controller must keep the WHOLE vector
+    /// under it — limit |V| to cap/√3·vbus and shift the common mode down —
+    /// so the bridge applies exactly what the controller reports (and the
+    /// observer integrates). Before, the board clipped the top leg alone.
+    #[test]
+    fn duty_cap_keeps_applied_voltage_equal_to_command() {
+        let vbus = 24.0;
+        let max_duty = 10_000u16;
+        let cap = 0.95;
+        let mut foc = FocController::<SvpwmModulator, LibmSinCos>::new(vbus);
+        foc.set_duty_cap(cap);
+        let v_max = cap * FRAC_1_SQRT_3 * vbus;
+        let tol = 3.0 * vbus / f32::from(max_duty);
+        for angle_deg in (0..360).step_by(7) {
+            let angle = (angle_deg as f32).to_radians();
+            // Demand far beyond the circle: the limit must engage.
+            let out = foc.apply_dq(0.0, 30.0, angle, 0.0, 0.0, max_duty);
+            let top = out.duties.iter().copied().max().unwrap_or(0);
+            assert!(
+                f32::from(top) <= cap * f32::from(max_duty) + 1.0,
+                "top leg {top} over the cap at {angle_deg}°"
+            );
+            let v_mag = sqrtf(out.v_alpha * out.v_alpha + out.v_beta * out.v_beta);
+            assert!(
+                (v_mag - v_max).abs() < 0.01,
+                "|V| {v_mag} should sit on the capped limit {v_max}"
+            );
+            let (va, vb) = alpha_beta_from_duties(out.duties, max_duty, vbus);
+            assert!(
+                (va - out.v_alpha).abs() < tol && (vb - out.v_beta).abs() < tol,
+                "applied ({va}, {vb}) != reported ({}, {}) at {angle_deg}°",
+                out.v_alpha,
+                out.v_beta
+            );
+        }
     }
 }

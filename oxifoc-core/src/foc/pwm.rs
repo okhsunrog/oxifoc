@@ -118,6 +118,16 @@ pub trait PhasePwm {
     /// Maximum duty value supported by the timer (e.g. ARR value)
     fn max_duty(&self) -> u16;
 
+    /// Highest duty `set_duties` lets through (≤ `max_duty()`): boards cap
+    /// the high-side on-time to keep a low-side window for bootstrap
+    /// charging and shunt sampling. `FocDriver::new` hands it to the
+    /// controller, which limits the voltage and shifts the common mode to
+    /// stay under it instead of having the board clip one leg silently.
+    /// Default: no cap.
+    fn duty_limit(&self) -> u16 {
+        self.max_duty()
+    }
+
     /// Apply three phase duties
     ///
     /// Duties are expected to be pre-clamped to `0..=max_duty()`.
@@ -149,7 +159,8 @@ pub trait PhasePwm {
 
 /// Modulation strategy (SVPWM, sine PWM, etc.)
 pub trait Modulator {
-    /// Convert stationary-frame voltages (normalized to ±1.0) into duty cycles.
+    /// Convert a stationary-frame MODULATION vector (`1.5 × volts / vbus`;
+    /// linear up to |m| = √3/2) into duty cycles.
     fn to_duties(alpha: f32, beta: f32, max_duty: u16) -> [u16; 3];
 }
 

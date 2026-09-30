@@ -40,15 +40,14 @@ impl SinCos for LibmSinCos {
     }
 }
 
-/// Fast sin/cos using degree-5 minimax (Chebyshev) polynomial approximation.
+/// Fast sin/cos using a degree-7 odd minimax polynomial.
 ///
-/// Better than 20 bits of accuracy (< 1e-6 max error), ~16-20 cycles per call
-/// on Cortex-M4F. Zero memory footprint (no lookup tables).
+/// Max error 7.2e-7 (f32 evaluation over the whole circle), ~16-20 cycles
+/// per call on Cortex-M4F. Zero memory footprint (no lookup tables).
 ///
-/// Uses degree-7 minimax polynomial coefficients optimized over [0, π/2] to
-/// minimize peak error (Remez/Chebyshev criterion). This is strictly superior
-/// to Taylor series (which minimizes error only at x=0) and the
-/// Bhaskara/devmaster parabolic approximation (~9-10 bits).
+/// The coefficients are a minimax (Lawson/IRLS) fit over [0, π/2]. The
+/// previous set was essentially the Taylor series under a "minimax" label:
+/// 1.5e-4 max error (cos(0) = 0.99985) against a documented < 1e-6.
 ///
 /// The polynomial in Horner form:
 ///   sin(x) ≈ x · (c₁ + x² · (c₂ + x² · (c₃ + x² · c₄)))
@@ -60,17 +59,17 @@ pub struct FastSinCos;
 
 /// Compute sin(x) for x in [0, π/2] using degree-7 minimax polynomial.
 ///
-/// Coefficients minimize the maximum absolute error over [0, π/2].
-/// Max error: < 1e-6 (better than 20 bits of accuracy).
+/// Coefficients minimize the maximum absolute error over [0, π/2]
+/// (7.2e-7 in f32 evaluation).
 /// Cost: 4 multiplies + 3 adds in Horner form (~16-20 cycles on M4F).
 #[inline(always)]
 fn sin_poly(x: f32) -> f32 {
     // Degree-7 minimax coefficients for sin(x) on [0, π/2]
     // sin(x) ≈ x * (c1 + x² * (c2 + x² * (c3 + x² * c4)))
-    const C1: f32 = 0.999_999_6;
-    const C2: f32 = -0.166_666_47;
-    const C3: f32 = 0.008_333_025;
-    const C4: f32 = -0.000_198_074;
+    const C1: f32 = 0.999_996_6;
+    const C2: f32 = -0.166_648_29;
+    const C3: f32 = 0.008_306_327;
+    const C4: f32 = -0.000_183_637_1;
 
     let x2 = x * x;
     x * (C1 + x2 * (C2 + x2 * (C3 + x2 * C4)))
@@ -327,7 +326,9 @@ mod tests {
 
     // ── FastSinCos: known values ────────────────────────────────────────────
 
-    const FAST_TOL: f32 = 2e-4; // ~14 bits of accuracy
+    // Minimax polynomial error 7.2e-7 plus range-reduction rounding. (Was
+    // 2e-4 — sized to the old Taylor-like coefficients, not their doc.)
+    const FAST_TOL: f32 = 2e-6;
 
     #[test]
     fn fast_sin_cos_zero() {
@@ -556,8 +557,7 @@ mod tests {
     #[test]
     fn fast_sin_cos_very_small_angle() {
         // For very small x, sin(x) ≈ x and cos(x) ≈ 1
-        let angle = 1e-4; // Not 1e-6: cos is computed via sin(x+π/2),
-        // f32 loses the tiny offset in π/2 + ε subtraction
+        let angle = 1e-4;
         let (sin, cos) = FastSinCos::sin_cos(angle);
         assert!((sin - angle).abs() < FAST_TOL, "sin(1e-4) = {sin}");
         assert!((cos - ref_cos(angle)).abs() < FAST_TOL, "cos(1e-4) = {cos}");

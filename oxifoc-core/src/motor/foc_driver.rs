@@ -10,7 +10,6 @@
 //!
 //! Platform code just needs to provide trait implementations and call `step()`.
 
-use crate::foc::clamp_f32;
 #[cfg(feature = "runtime")]
 use crate::foc::config::BoardConfig;
 use crate::foc::controller::{FocController, FocOutput};
@@ -28,6 +27,7 @@ use crate::foc::sensors::CurrentSensor;
 use crate::foc::transforms::{clarke, park};
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::velocity::{VelocityLoop, VelocityLoopConfig};
+use crate::foc::{clamp_f32, wrap_angle};
 use crate::motor::derating::{DeratingConfig, DeratingScales};
 use crate::motor::failsafe::{
     FailsafeAction, FailsafeConfig, FailsafeController, FailsafePolicy, FailsafeTerminal,
@@ -538,13 +538,18 @@ where
     /// * `phase` - Phase provider (manages angle sources)
     /// * `dt` - Control loop period in seconds (from `MotorPwmConfig::dt_s()`)
     pub fn new(
-        controller: FocController<SvpwmModulator, S>,
+        mut controller: FocController<SvpwmModulator, S>,
         pwm: P,
         current_sensor: C,
         phase: Phase,
         dt: f32,
     ) -> Self {
         let vbus = controller.vbus();
+        // The board's duty cap, so the controller never commands a vector
+        // the bridge would clip (see FocController::set_duty_cap).
+        if pwm.max_duty() > 0 {
+            controller.set_duty_cap(f32::from(pwm.duty_limit()) / f32::from(pwm.max_duty()));
+        }
         Self {
             controller,
             pwm,
@@ -1005,6 +1010,15 @@ where
         true
     }
 
+    /// Enable the bridge outputs if the current topology left them off
+    /// (Stopped disables, Coast/calibration float every phase).
+    fn ensure_bridge_enabled(&mut self) {
+        if self.pwm_off || matches!(self.mode, ControlMode::Stopped | ControlMode::Coast) {
+            self.pwm.enable();
+            self.pwm_off = false;
+        }
+    }
+
     /// Common arm body for the failsafe and the user brake ramp. Idempotent
     /// while a sequence is active. Falls back to Coast when the current
     /// sensor isn't calibrated — the brake needs the current loop, which
@@ -1018,6 +1032,11 @@ where
         } else {
             FailsafePolicy::Coast
         };
+        // A brake ramp drives the bridge through duties: from Stopped or
+        // Coast (a user Brake at speed while coasting) the channels are off.
+        if !matches!(policy, FailsafePolicy::Coast) {
+            self.ensure_bridge_enabled();
+        }
         // Bumpless: seed the ramp from the q-current currently commanded
         // (OpenLoop applies its `current` as the q-target; VelocityControl's
         // last PI output is what the current loop was just driven with).
@@ -1130,13 +1149,16 @@ where
         // [`acknowledge_failsafe`](Self::acknowledge_failsafe).
         self.failsafe_ctrl.reset();
 
-        let was_stopped = matches!(self.mode, ControlMode::Stopped);
-        let will_be_active = !matches!(mode, ControlMode::Stopped);
-
-        // Re-enable PWM outputs when leaving Stopped mode
-        if was_stopped && will_be_active {
-            self.pwm.enable();
-            self.pwm_off = false;
+        // Re-enable the outputs for any mode that drives the bridge through
+        // duties. Coast/Stopped/calibration float or disable the channels,
+        // and `set_duties` never re-enables them — gating this on leaving
+        // Stopped alone left Coast → CurrentControl writing duties into a
+        // disabled bridge forever (no torque, PI winding up).
+        if !matches!(
+            mode,
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+        ) {
+            self.ensure_bridge_enabled();
         }
 
         // Entering velocity mode from another mode: re-arm the loop bumpless
@@ -1391,7 +1413,9 @@ where
                 ..
             } => self.step_open_loop(angle_rad, current, velocity_rad_s, dt, now_ticks),
             ControlMode::DirectVoltage { vd, vq, angle_rad } => {
-                self.step_direct_voltage(vd, vq, angle_rad, dt, now_ticks)
+                // Host-supplied angle: wrap it (see step_open_loop).
+                let angle = wrap_angle(angle_rad);
+                self.step_direct_voltage(vd, vq, angle, dt, now_ticks)
             }
             ControlMode::Coast => {
                 // High-Z: all FETs off, motor spins freely.
@@ -1400,6 +1424,7 @@ where
                     PhaseState::Float,
                     PhaseState::Float,
                 ]);
+                self.pwm_off = true;
                 self.controller.reset();
                 self.update_phase_with_applied_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
@@ -1805,12 +1830,13 @@ where
         // here is always a small step from an already-wrapped angle —
         // wrap_angle's branch+subtract hot path.
         let angle = if velocity_rad_s != 0.0 {
-            self.open_loop_angle =
-                crate::foc::wrap_angle(self.open_loop_angle + velocity_rad_s * dt);
+            self.open_loop_angle = wrap_angle(self.open_loop_angle + velocity_rad_s * dt);
             self.open_loop_angle
         } else {
-            self.open_loop_angle = angle_rad;
-            angle_rad
+            // A host-supplied angle is not wrapped (maneuvers, CLI); the
+            // g474 CORDIC mapping breaks beyond ±3π.
+            self.open_loop_angle = wrap_angle(angle_rad);
+            self.open_loop_angle
         };
 
         // Clamp open-loop current to the target limit
@@ -2098,11 +2124,9 @@ mod tests {
     use crate::foc::angle_difference;
     #[cfg(feature = "virtual-motor")]
     use crate::foc::hall_sensor::HallSensor;
-    use crate::foc::phase::PhaseManager;
     #[cfg(feature = "virtual-motor")]
-    use crate::foc::phase::{BackEmfObserver, Observer, PhaseSource};
-    #[cfg(feature = "virtual-motor")]
-    use crate::foc::wrap_angle;
+    use crate::foc::phase::{BackEmfObserver, Observer};
+    use crate::foc::phase::{PhaseManager, PhaseSource};
     #[cfg(feature = "runtime")]
     use crate::state::CMD_CHANNEL;
     #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
@@ -2149,6 +2173,87 @@ mod tests {
                 PhaseState::Low | PhaseState::Float => 0,
             });
         }
+    }
+
+    /// PWM that models the boards' channel gating: `disable()` and a
+    /// `Float` phase turn channels off, `set_duties` never turns them on —
+    /// only `enable()` or a driven `set_phase_states` does.
+    struct GatedPwm {
+        enabled: bool,
+        applied: [u16; 3],
+    }
+
+    impl PhasePwm for GatedPwm {
+        fn max_duty(&self) -> u16 {
+            1000
+        }
+        fn set_duties(&mut self, duties: [u16; 3]) {
+            if self.enabled {
+                self.applied = duties;
+            }
+        }
+        fn disable(&mut self) {
+            self.enabled = false;
+            self.applied = [0; 3];
+        }
+        fn enable(&mut self) {
+            self.enabled = true;
+        }
+        fn set_phase_states(&mut self, states: [PhaseState; 3]) {
+            self.enabled = !states.iter().all(|s| matches!(s, PhaseState::Float));
+            self.applied = states.map(|state| match state {
+                PhaseState::Pwm(duty) => duty,
+                PhaseState::Low | PhaseState::Float => 0,
+            });
+        }
+    }
+
+    /// Every mode that drives the bridge through duties must re-enable it,
+    /// whatever left it off — not only Stopped. Coast → CurrentControl used
+    /// to write duties into the floated (disabled) bridge forever.
+    #[test]
+    fn driving_modes_reenable_the_bridge_after_coast_and_stop() {
+        let mut driver = FocDriver::new(
+            FocController::<SvpwmModulator>::new(24.0),
+            GatedPwm {
+                enabled: false,
+                applied: [0; 3],
+            },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        driver.phase_mut().set_manual_angle(0.0);
+        driver.phase_mut().set_source(PhaseSource::Manual).unwrap();
+        let drive = ControlMode::CurrentControl {
+            iq_target: 2.0,
+            id_target: 0.0,
+        };
+        for (step, from) in [ControlMode::Stopped, ControlMode::Coast]
+            .into_iter()
+            .enumerate()
+        {
+            driver.set_mode(from);
+            let t = (step as u64 + 1) * 1_000;
+            let _ = driver.step(t);
+            assert!(!driver.pwm().enabled, "{from:?} must leave the bridge off");
+            driver.set_mode(drive);
+            let _ = driver.step(t + 50);
+            assert!(
+                driver.pwm().enabled && driver.pwm().applied != [0; 3],
+                "{from:?} → CurrentControl must drive the bridge"
+            );
+        }
+        // A user Brake while coasting: the brake ramp needs the bridge.
+        driver.set_mode(ControlMode::Coast);
+        let _ = driver.step(10_000);
+        assert!(driver.enter_brake_ramp());
+        assert!(
+            driver.pwm().enabled,
+            "the brake ramp must enable the bridge"
+        );
     }
 
     struct MockCurrentSensor {
@@ -5394,6 +5499,7 @@ mod tests {
 
     /// Steady-state commutation timing, measured at the driver's own
     /// sampling instants.
+    #[cfg(feature = "virtual-motor")]
     struct FrameTiming {
         /// Mean (Park angle − rotor angle at the current sample), in PWM
         /// periods of rotor travel.

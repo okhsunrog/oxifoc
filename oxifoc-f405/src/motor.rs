@@ -125,8 +125,13 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         self.max_duty as u16
     }
 
+    fn duty_limit(&self) -> u16 {
+        self.duty_limit as u16
+    }
+
     fn set_duties(&mut self, duties: [u16; 3]) {
-        // Clamp to duty limit for safety
+        // Clamp to duty limit for safety (the controller already keeps the
+        // vector under it — see PhasePwm::duty_limit)
         let duty_a = u32::from(duties[0]).min(self.duty_limit);
         let duty_b = u32::from(duties[1]).min(self.duty_limit);
         let duty_c = u32::from(duties[2]).min(self.duty_limit);

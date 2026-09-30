@@ -867,9 +867,12 @@ mod tests {
         const MAX_DUTY: u16 = 4250;
         const DEAD_TIME_NS: u32 = 800; // g431 PWM config
 
-        let run = |comp: bool| -> f32 {
+        // RMS dq tracking error at `iq_target` with `noise_a` of uniform
+        // current-sensor noise.
+        let run = |comp: bool, iq_target: f32, noise_a: f32| -> f32 {
             let params = MotorParams {
                 dead_time_v: DEAD_TIME_NS as f32 * 1e-9 * 20_000.0 * VBUS, // 0.384 V
+                adc_noise_a: noise_a,
                 substeps: 10,
                 // Settle near ωe ≈ 735 rad/s — fast enough that the
                 // 6th-harmonic distortion (~700 Hz) sits above the current
@@ -898,7 +901,7 @@ mod tests {
                     (out.ia, out.ib, out.ic),
                     out.angle_rad,
                     0.0,
-                    2.0,
+                    iq_target,
                     MAX_DUTY,
                     DT,
                 );
@@ -910,8 +913,10 @@ mod tests {
                 let v_beta = (vb - vc) * FRAC_1_SQRT_3;
                 out = motor.step(v_alpha, v_beta, 0.0, DT);
                 if step >= 10_000 {
-                    let ed = telem.id;
-                    let eq = telem.iq - 2.0;
+                    // TRUE dq current (noise-free plant state) — the
+                    // measured one would score the sensor noise itself.
+                    let ed = motor.id;
+                    let eq = motor.iq - iq_target;
                     err_sq += ed * ed + eq * eq;
                     n += 1;
                 }
@@ -919,15 +924,27 @@ mod tests {
             libm::sqrtf(err_sq / n as f32)
         };
 
-        let uncompensated = run(false);
-        let compensated = run(true);
+        let uncompensated = run(false, 2.0, 0.0);
+        let compensated = run(true, 2.0, 0.0);
+        let noisy_off = run(false, 0.3, 0.15);
+        let noisy_on = run(true, 0.3, 0.15);
         assert!(
             uncompensated > 0.05,
             "plant must produce real dead-time current distortion: RMS = {uncompensated}"
         );
+        // ~0.19× now; the old volt-space coefficients compensated only 2/3
+        // of the dead time and landed at 0.35× — under the 0.5 this bound
+        // used to be, so it never noticed.
         assert!(
-            compensated < uncompensated * 0.5,
+            compensated < uncompensated * 0.25,
             "compensation must cancel most of the distortion: {compensated} vs {uncompensated}"
+        );
+        // Low current under sensor noise: signs taken from the MEASURED
+        // current flipped on noise and made the error worse than no
+        // compensation (0.078 vs 0.063 A); reference signs reach ~0.35×.
+        assert!(
+            noisy_on < noisy_off * 0.5,
+            "compensation must still help at low current under noise: {noisy_on} vs {noisy_off}"
         );
     }
 

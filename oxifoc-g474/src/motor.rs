@@ -122,9 +122,14 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         self.max_duty as u16
     }
 
+    fn duty_limit(&self) -> u16 {
+        self.duty_limit as u16
+    }
+
     fn set_duties(&mut self, duties: [u16; 3]) {
         // Set duty cycles for all three phases
-        // Clamp to duty_limit for safety
+        // Clamp to duty_limit for safety (the controller already keeps the
+        // vector under it — see PhasePwm::duty_limit)
         let duty_a = u32::from(duties[0]).min(self.duty_limit);
         let duty_b = u32::from(duties[1]).min(self.duty_limit);
         let duty_c = u32::from(duties[2]).min(self.duty_limit);
@@ -136,6 +141,20 @@ impl<'d> PhasePwm for MotorPwm<'d> {
 
     fn disable(&mut self) {
         self.emergency_stop();
+    }
+
+    fn enable(&mut self) {
+        // Must be overridden: the trait default is a no-op, but disable()
+        // turns the channels off — without this the driver's re-enable
+        // after Stopped/Coast wrote duties into disabled channels and the
+        // motor could never run in FOC modes again (same as oxifoc-f405).
+        // Duties to 0 first so enabling doesn't glitch.
+        self.pwm.set_duty(Channel::Ch1, 0);
+        self.pwm.set_duty(Channel::Ch2, 0);
+        self.pwm.set_duty(Channel::Ch3, 0);
+        self.pwm.enable(Channel::Ch1);
+        self.pwm.enable(Channel::Ch2);
+        self.pwm.enable(Channel::Ch3);
     }
 
     fn set_phase_states(&mut self, states: [PhaseState; 3]) {

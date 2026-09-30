@@ -168,8 +168,10 @@ pub fn calculate_foc_gains(params: &MotorParams, bandwidth_rad_s: f32) -> Option
 /// Estimate suitable bandwidth from motor parameters.
 ///
 /// Uses heuristics based on typical motor characteristics:
-/// - Smaller inductance → can use higher bandwidth
-/// - Accounts for PWM switching frequency limits
+/// - Smaller inductance → LOWER bandwidth: a low-L motor has large PWM
+///   ripple and amplifies measurement noise into voltage (Kp = L·ω is small
+///   but the plant responds fast), so it gets the conservative end
+/// - Capped at 1/10 of the PWM frequency (sampling/delay limit)
 ///
 /// # Arguments
 /// * `inductance_h` - Motor inductance in Henries

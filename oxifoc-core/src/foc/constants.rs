@@ -17,6 +17,11 @@ pub const FRAC_1_SQRT_3: f32 = 0.577_350_27;
 /// Used in SVPWM switching time calculations
 pub const FRAC_2_SQRT_3: f32 = 1.154_700_5;
 
+/// √3/2 = 0.866025403784439...
+///
+/// Used in the modulation-space dead-time compensation
+pub const SQRT_3_DIV_2: f32 = 0.866_025_4;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -32,6 +37,8 @@ mod tests {
 
         let frac_2_sqrt3_actual = 2.0 / 3.0_f32.sqrt();
         assert!((FRAC_2_SQRT_3 - frac_2_sqrt3_actual).abs() < 1e-6);
+
+        assert!((SQRT_3_DIV_2 - sqrt3_actual / 2.0).abs() < 1e-6);
     }
 
     #[test]
