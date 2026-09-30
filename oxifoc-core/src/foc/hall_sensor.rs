@@ -646,13 +646,17 @@ impl HallSensor {
             let dt = dt_ticks as f32 / self.ticks_per_sec as f32;
 
             // Direction reversal: the rotor left the sector through the
-            // boundary it entered by, so no sector width was traversed and
-            // the edge interval only bounds the speed. Take the new sign
-            // and one sector over the interval as the magnitude — a rough
-            // estimate the next edge replaces.
+            // boundary it entered by — no sector width was traversed, and
+            // the speed passed through zero inside the interval. A rotor
+            // that turns around symmetrically leaves about as fast as it
+            // came in, and cannot have averaged more than one sector over
+            // the interval: take the smaller, with the new sign. The
+            // interval alone read a slow rotor rocking across a boundary
+            // as hundreds of rad/s (5 ms → 209 rad/s at 5 rad/s) — a
+            // velocity spike at every low-speed turnaround.
             let candidate = if self.direction_reversed {
                 let angle_step = self.angle_step_signed(self.direction);
-                -self.elec_velocity.signum() * (angle_step / dt).abs()
+                angle_step.signum() * self.elec_velocity.abs().min((angle_step / dt).abs())
             } else if prev_base_is_boundary && crossed_boundary {
                 // Boundary-to-boundary distance is the MEASURED width of the
                 // sector just traversed (handles asymmetric Hall placement —
@@ -1423,6 +1427,30 @@ mod tests {
         hall.update(5, 3).unwrap();
         assert_eq!(hall.direction(), Direction::CounterClockwise);
         assert!(!hall.direction_reversed());
+    }
+
+    /// A slow rotor that turns around just past a boundary (a hold, a
+    /// reversal through zero) crosses it twice within milliseconds. The
+    /// interval then bounds nothing useful: one sector over 5 ms read as
+    /// 209 rad/s for a rotor moving at 5 — the spikes the sim showed at
+    /// every low-speed reversal.
+    #[test]
+    fn slow_turnaround_past_a_boundary_reads_slow() {
+        let mut hall = HallSensor::new(1_000_000); // µs ticks
+        let sector_us = 209_440; // 5 el rad/s
+        let mut t = 0u64;
+        for &state in &CW_SEQ[..4] {
+            hall.update(state, t).unwrap();
+            t += sector_us;
+        }
+        let omega = hall.electrical_velocity();
+        assert!((omega - 5.0).abs() < 0.1, "ω {omega}");
+        // Into the next sector, and straight back out 5 ms later.
+        hall.update(CW_SEQ[4], t).unwrap();
+        hall.update(CW_SEQ[3], t + 5_000).unwrap();
+        assert!(hall.direction_reversed());
+        let omega = hall.electrical_velocity();
+        assert!(omega < 0.0 && omega > -10.0, "ω {omega}");
     }
 
     #[test]
