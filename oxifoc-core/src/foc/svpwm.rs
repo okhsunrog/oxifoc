@@ -156,26 +156,49 @@ mod tests {
         }
     }
 
+    /// The duties must REALIZE the requested vector: the Clarke transform of
+    /// the terminal voltages they produce is (2/3)·m·vbus, i.e. 1.5·Clarke
+    /// of the duty fractions gives back (α, β) — across every sector and up
+    /// to the linear limit √3/2, within duty quantization.
     #[test]
-    fn test_svpwm_duties_in_range() {
-        // Test various angles and magnitudes
-        for angle_deg in (0..360).step_by(15) {
+    fn duties_realize_the_requested_vector() {
+        let max = f32::from(MAX_DUTY);
+        for angle_deg in 0..360 {
             let angle_rad = (angle_deg as f32).to_radians();
-
-            for magnitude in [0.3, 0.5, 0.7, 0.9] {
-                let alpha = magnitude * libm::cosf(angle_rad);
-                let beta = magnitude * libm::sinf(angle_rad);
-
-                let duties = space_vector_pwm(alpha, beta, MAX_DUTY);
-
-                // All duties should be in valid range
-                for (i, &duty) in duties.iter().enumerate() {
-                    assert!(
-                        duty <= MAX_DUTY,
-                        "Duty cycle {i} out of range at angle={angle_deg}, mag={magnitude}: got {duty}"
-                    );
-                }
+            for magnitude in [0.05, 0.3, 0.6, 0.86] {
+                let (alpha, beta) = (
+                    magnitude * libm::cosf(angle_rad),
+                    magnitude * libm::sinf(angle_rad),
+                );
+                let [a, b, c] = space_vector_pwm(alpha, beta, MAX_DUTY).map(|d| f32::from(d) / max);
+                let got_alpha = 1.5 * (2.0 * a - b - c) / 3.0;
+                let got_beta = 1.5 * (b - c) * ONE_BY_SQRT3;
+                assert!(
+                    (got_alpha - alpha).abs() < 4.0 / max && (got_beta - beta).abs() < 4.0 / max,
+                    "{angle_deg}° m={magnitude}: asked ({alpha:.4}, {beta:.4}), \
+                     got ({got_alpha:.4}, {got_beta:.4})"
+                );
             }
+        }
+    }
+
+    /// Center-aligned SVPWM splits the zero-vector time evenly between V0
+    /// and V7: the highest and lowest duty sit symmetrically about 50%.
+    #[test]
+    fn zero_vectors_are_split_evenly() {
+        for angle_deg in (0..360).step_by(7) {
+            let angle_rad = (angle_deg as f32).to_radians();
+            let duties = space_vector_pwm(
+                0.7 * libm::cosf(angle_rad),
+                0.7 * libm::sinf(angle_rad),
+                MAX_DUTY,
+            );
+            let hi = i32::from(*duties.iter().max().unwrap());
+            let lo = i32::from(*duties.iter().min().unwrap());
+            assert!(
+                (hi + lo - i32::from(MAX_DUTY)).abs() <= 2,
+                "{angle_deg}°: {duties:?}"
+            );
         }
     }
 
@@ -198,31 +221,6 @@ mod tests {
                 sector, expected_sector,
                 "Expected sector {expected_sector} for α={alpha}, β={beta}, got {sector}"
             );
-
-            // Also verify SVPWM produces valid output
-            let duties = space_vector_pwm(alpha, beta, MAX_DUTY);
-            assert!(duties[0] <= MAX_DUTY);
-            assert!(duties[1] <= MAX_DUTY);
-            assert!(duties[2] <= MAX_DUTY);
-        }
-    }
-
-    #[test]
-    fn test_sector_boundaries() {
-        // Test angles at exact sector boundaries
-        let boundary_angles: [f32; 6] = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0];
-
-        for angle_deg in boundary_angles {
-            let angle_rad = angle_deg.to_radians();
-            let alpha = 0.5 * libm::cosf(angle_rad);
-            let beta = 0.5 * libm::sinf(angle_rad);
-
-            // Should not panic and should produce valid duties
-            let duties = space_vector_pwm(alpha, beta, MAX_DUTY);
-
-            for duty in duties {
-                assert!(duty <= MAX_DUTY, "Duty out of range at boundary");
-            }
         }
     }
 
@@ -266,41 +264,6 @@ mod tests {
 
         for duty in duties {
             assert!(duty <= MAX_DUTY, "Duty should be clamped to max");
-        }
-    }
-
-    #[test]
-    fn test_vesc_algorithm_zero_voltage() {
-        // Zero voltage should give 50% duty cycle (centered PWM)
-        let duties = space_vector_pwm(0.0, 0.0, 1000);
-
-        // All phases should be at mid-point (500 ± tolerance for rounding)
-        for duty in duties {
-            assert!(
-                (i32::from(duty) - 500).abs() <= 2,
-                "Zero voltage should give ~500 duty, got {duty}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_svpwm_phase_balance() {
-        // For balanced 3-phase SVPWM, verify duties are reasonable
-        // Note: The exact sum varies by sector due to SVPWM algorithm
-        for angle_deg in (0..360).step_by(30) {
-            let angle_rad = (angle_deg as f32).to_radians();
-            let alpha = 0.5 * libm::cosf(angle_rad);
-            let beta = 0.5 * libm::sinf(angle_rad);
-
-            let duties = space_vector_pwm(alpha, beta, MAX_DUTY);
-            let sum: u32 = duties.iter().map(|&d| u32::from(d)).sum();
-
-            // Sum should be reasonable (between 1.0x and 2.0x max_duty)
-            // SVPWM centering means it won't be exactly 1.5x everywhere
-            assert!(
-                sum >= u32::from(MAX_DUTY) && sum <= (u32::from(MAX_DUTY) * 2),
-                "Duty sum {sum} outside reasonable range at angle {angle_deg}"
-            );
         }
     }
 }
