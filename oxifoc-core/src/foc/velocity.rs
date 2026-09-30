@@ -24,6 +24,11 @@ use crate::foc::pi_controller::ClampedPI;
 #[cfg(feature = "storage")]
 use crate::storage::VelocityConfigStored;
 
+/// How far (s of ramp) the reference may lead a rotor whose actuator is at
+/// its limit — also how long a lower command then waits for the reference
+/// to come back to the rotor.
+const HOLD_LEAD_S: f32 = 0.1;
+
 /// Slew-rate limiter: a value that moves toward a target at a bounded rate.
 ///
 /// Used as the velocity-reference ramp (accel/decel limit). `rate <= 0` or
@@ -161,6 +166,8 @@ pub struct VelocityLoop {
     cfg: VelocityLoopConfig,
     /// Last commanded iq (A) — lets the failsafe arm bumpless from this loop.
     last_iq: f32,
+    /// Which bound the last output sat at (+1 max, −1 min, 0 neither).
+    saturated: f32,
 }
 
 impl VelocityLoop {
@@ -170,6 +177,7 @@ impl VelocityLoop {
             ramp: SlewLimiter::new(cfg.accel_limit),
             cfg,
             last_iq: 0.0,
+            saturated: 0.0,
         }
     }
 
@@ -197,6 +205,7 @@ impl VelocityLoop {
         });
         self.pi.reset();
         self.last_iq = 0.0;
+        self.saturated = 0.0;
     }
 
     /// Re-arm taking over a q-current already being driven: the reference
@@ -237,8 +246,43 @@ impl VelocityLoop {
         iq_max: f32,
         dt: f32,
     ) -> f32 {
+        self.step_blocked(omega_target, omega_meas, iq_min, iq_max, 0.0, dt)
+    }
+
+    /// [`step_clamped`](Self::step_clamped) for a caller that knows the
+    /// actuator cannot push further one way whatever the bounds say:
+    /// `blocked` = +1 (q current can't rise), −1 (can't fall), 0 — the
+    /// current loop out of voltage at top speed.
+    pub fn step_blocked(
+        &mut self,
+        omega_target: f32,
+        omega_meas: f32,
+        iq_min: f32,
+        iq_max: f32,
+        blocked: f32,
+        dt: f32,
+    ) -> f32 {
         let ref_prev = self.ramp.value();
-        let omega_ref = self.ramp.step(omega_target, dt);
+        let mut omega_ref = self.ramp.step(omega_target, dt);
+        // With the actuator at its limit in the direction the reference is
+        // ramping, the reference may lead the rotor by at most
+        // HOLD_LEAD_S of ramp: enough to take whatever the rotor still
+        // gains, not enough to run on toward a target it cannot reach — a
+        // reference that did had to be ramped all the way back before a
+        // lower command took effect (sim: told to slow down from a target
+        // past top speed, the motor held top speed for 6 s).
+        let moved = omega_ref - ref_prev;
+        let stuck = (moved > 0.0 && (blocked > 0.0 || self.saturated > 0.0))
+            || (moved < 0.0 && (blocked < 0.0 || self.saturated < 0.0));
+        if self.cfg.accel_limit > 0.0 && stuck {
+            let lead = self.cfg.accel_limit * HOLD_LEAD_S;
+            omega_ref = if moved > 0.0 {
+                omega_ref.min((omega_meas + lead).max(ref_prev))
+            } else {
+                omega_ref.max((omega_meas - lead).min(ref_prev))
+            };
+            self.ramp.reset_to(omega_ref);
+        }
         // Acceleration feedforward from the REFERENCE slew (known exactly —
         // it is our own ramp). Charged against the PI's anti-windup bounds
         // so back-calculation sees only the PI's own share of the budget
@@ -254,6 +298,14 @@ impl VelocityLoop {
         };
         self.pi.set_limits(iq_min - ff, iq_max - ff);
         self.last_iq = self.pi.update(omega_ref, omega_meas, dt) + ff;
+        // (The tolerance absorbs the feedforward split's rounding.)
+        self.saturated = if self.last_iq >= iq_max - 1e-4 {
+            1.0
+        } else if self.last_iq <= iq_min + 1e-4 {
+            -1.0
+        } else {
+            0.0
+        };
         self.last_iq
     }
 }
@@ -389,6 +441,35 @@ mod tests {
             "matched FF must cut mid-ramp lag ≥4x: without {} vs with {}",
             lag[0],
             lag[1]
+        );
+    }
+
+    /// A plant that accelerates slower than the ramp (200 vs 500 rad/s² at
+    /// its 0.5 A limit): the reference must not run away from it, so a
+    /// lower target brakes at once instead of after the reference has
+    /// ramped back from wherever it ran to.
+    #[test]
+    fn reference_lead_is_bounded_at_the_output_limit() {
+        let (j, kt, b) = (5e-5, 0.02, 1e-5);
+        let mut vl = VelocityLoop::new(VelocityLoopConfig::default());
+        vl.reset(0.0);
+        let mut omega = 0.0f32;
+        let mut lead = 0.0f32;
+        for _ in 0..(3.0 / DT) as u32 {
+            let iq = vl.step(5_000.0, omega, 0.5, DT);
+            omega += (kt * iq - b * omega) / j * DT;
+            lead = lead.max(vl.ramp.value() - omega);
+        }
+        let max_lead = VelocityLoopConfig::default().accel_limit * HOLD_LEAD_S;
+        assert!(lead < max_lead + 10.0, "reference led by {lead}");
+        let omega_cmd = omega;
+        for _ in 0..(0.2 / DT) as u32 {
+            let iq = vl.step(0.5 * omega_cmd, omega, 0.5, DT);
+            omega += (kt * iq - b * omega) / j * DT;
+        }
+        assert!(
+            omega < omega_cmd - 5.0,
+            "still at {omega} (was {omega_cmd})"
         );
     }
 

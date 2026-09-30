@@ -143,6 +143,12 @@ pub const DEFAULT_ACTUATION_DELAY_CYCLES: f32 = 0.5;
 /// Upper bound of [`FocDriver::set_actuation_delay`] (PWM periods).
 pub const MAX_ACTUATION_DELAY_CYCLES: f32 = 2.0;
 
+/// While the current loop is out of voltage, the cruise loop may ask for
+/// this much (A) beyond the q current actually flowing — enough to follow
+/// the deliverable current up as the voltage frees, not enough to bank the
+/// current limit.
+const VOLTAGE_LIMITED_IQ_MARGIN_A: f32 = 1.0;
+
 /// Command history depth: a delay of up to `MAX_ACTUATION_DELAY_CYCLES`
 /// needs the commands of the last `2 + 2` cycles (the fractional share
 /// reaches one further back).
@@ -481,8 +487,12 @@ where
     /// Cruise velocity loop for `ControlMode::VelocityControl`: slew-limited
     /// ω reference + clamped PI → iq, routed through the normal current
     /// loop. Host-tunable (motor/load dependent); reset bumpless on mode
-    /// entry. The failsafe does NOT use this instance (own gains, planned).
+    /// entry. The failsafe does NOT use this instance (it has its own).
     velocity_loop: VelocityLoop,
+    /// Measured q current of the last current-loop step — the current the
+    /// loop could actually deliver while it was out of voltage (see
+    /// `step_velocity_control`).
+    last_iq_meas: f32,
     /// Low-passed q-axis modulation (vq·1.5/vbus) of the previous cycles —
     /// the duty factor relating phase current to bus current
     /// (`i_bus ≈ iq·mod_q`, VESC mcpwm_foc.c:3632). Filtered (τ ≈ 2 ms) so
@@ -578,6 +588,7 @@ where
             failsafe_latched: false,
             ov_threshold_v: 0.0,
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
+            last_iq_meas: 0.0,
             bus_mod_q_filt: 0.0,
             derating_cfg: DeratingConfig::default(),
             derating: DeratingScales::default(),
@@ -1592,9 +1603,32 @@ where
             self.derating.drive.min(self.derating_cfg.speed_cut(omega)),
             self.derating.brake,
         );
+        // Same for the clamps further down the chain: the bus-current clamp
+        // (monotonic in iq, so it maps the bounds directly), and — while the
+        // current loop is out of voltage — the q current it is actually
+        // delivering. Without them the PI banked the current limit against
+        // a bus-limited or top-speed motor (sim: 10.8 A commanded against
+        // 1 A delivered), and the reference ran on toward a target past top
+        // speed: told to slow down, the motor held top speed for seconds
+        // while the reference ramped back.
+        let (iq_min, iq_max) = (self.clamp_iq_for_bus(iq_min), self.clamp_iq_for_bus(iq_max));
+        let clip = self.controller.q_voltage_clip();
+        let (iq_min, iq_max) = if clip > 0.0 {
+            (
+                iq_min,
+                iq_max.min(self.last_iq_meas.max(0.0) + VOLTAGE_LIMITED_IQ_MARGIN_A),
+            )
+        } else if clip < 0.0 {
+            (
+                iq_min.max(self.last_iq_meas.min(0.0) - VOLTAGE_LIMITED_IQ_MARGIN_A),
+                iq_max,
+            )
+        } else {
+            (iq_min, iq_max)
+        };
         let iq_target = self
             .velocity_loop
-            .step_clamped(target_vel, omega, iq_min, iq_max, dt);
+            .step_blocked(target_vel, omega, iq_min, iq_max, clip, dt);
         self.step_current_control(iq_target, 0.0, dt, now_ticks)
     }
 
@@ -1739,6 +1773,7 @@ where
 
         // Track the q-axis modulation for the bus-limit clamp (next cycle).
         self.update_bus_mod_q(out.vq, dt);
+        self.last_iq_meas = out.iq;
 
         // Set PWM duties and feed to current sensor for next-cycle reconstruction
         self.pwm.set_duties(out.duties);
@@ -5733,6 +5768,69 @@ mod tests {
         assert!(
             peak < resumed_at + 30.0,
             "resumed at {resumed_at} but climbed to {peak}"
+        );
+    }
+
+    /// Cruise commanded past top speed (the bus voltage caps it at ~4700
+    /// el rad/s here), then told to slow down. The reference used to run on
+    /// to the unreachable target and had to ramp all the way back first:
+    /// the motor held top speed for 6.6 s after the lower command. Top
+    /// speed itself must not suffer for the fix.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn cruise_past_top_speed_answers_a_lower_target_at_once() {
+        // Top speed at full torque, for reference.
+        let mut rig = HallRig::new(0.5, 2e-5);
+        rig.driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 30.0,
+            id_target: 0.0,
+        });
+        rig.run(1.5);
+        let top = rig.out.omega_e;
+
+        let mut rig = HallRig::new(0.5, 2e-5);
+        rig.driver
+            .set_mode(ControlMode::VelocityControl { target_vel: 8000.0 });
+        rig.run(12.0);
+        let cruise = rig.out.omega_e;
+        assert!(cruise > 0.995 * top, "cruise {cruise} vs top speed {top}");
+        rig.driver
+            .set_mode(ControlMode::VelocityControl { target_vel: 2000.0 });
+        rig.run(0.5);
+        assert!(
+            rig.out.omega_e < cruise - 100.0,
+            "0.5 s after the lower command: ω {} (was {cruise})",
+            rig.out.omega_e
+        );
+    }
+
+    /// The cruise loop must see the bus-current clamp as its own bound: it
+    /// used to bank 10.8 A of command against the ~1 A the clamp let
+    /// through, then overshoot the target by 6%.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn cruise_loop_sees_the_bus_current_clamp() {
+        let mut rig = HallRig::new(0.5, 2e-5);
+        let mut limits = CurrentLimits::from_max_current(30.0);
+        limits.bus_in_max_a = 0.5;
+        rig.driver.set_current_limits(limits);
+        rig.driver
+            .set_mode(ControlMode::VelocityControl { target_vel: 3000.0 });
+        let (mut peak, mut banked) = (0.0f32, 0.0f32);
+        for _ in 0..(10.0 / HallRig::DT) as u32 {
+            let (_, telem) = rig.step();
+            peak = peak.max(rig.out.omega_e);
+            banked = banked.max(rig.driver.velocity_loop.last_iq() - telem.iq);
+        }
+        assert!(
+            (rig.out.omega_e - 3000.0).abs() < 10.0,
+            "ω {}",
+            rig.out.omega_e
+        );
+        assert!(peak < 3030.0, "overshoot to {peak}");
+        assert!(
+            banked < 2.0,
+            "commanded {banked} A beyond the delivered current"
         );
     }
 

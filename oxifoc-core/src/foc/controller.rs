@@ -131,6 +131,10 @@ pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> 
     /// dq decoupling + back-EMF feedforward; None = plain PI (motor
     /// parameters unknown, e.g. before detection)
     decoupling: Option<Decoupling>,
+    /// Direction the last step's q voltage ran into the voltage limit
+    /// (+1 / −1, 0 = inside it): the side the q current cannot be pushed
+    /// further. See [`Self::q_voltage_clip`].
+    q_clip: f32,
     /// Modulator + SinCos phantom (both are ZSTs)
     _phantom: core::marker::PhantomData<(M, S)>,
 }
@@ -176,6 +180,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             dead_time_comp: 0.0,
             actuation_advance: 0.0,
             decoupling: None,
+            q_clip: 0.0,
             _phantom: core::marker::PhantomData,
         }
     }
@@ -226,6 +231,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             dead_time_comp: 0.0,
             actuation_advance: 0.0,
             decoupling: None,
+            q_clip: 0.0,
             _phantom: core::marker::PhantomData,
         }
     }
@@ -485,6 +491,16 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     pub fn reset(&mut self) {
         self.id_pi.reset();
         self.iq_pi.reset();
+        self.q_clip = 0.0;
+    }
+
+    /// Whether the last [`step_with_injection`](Self::step_with_injection)
+    /// ran out of voltage on the q axis: +1 / −1 when the q demand reached
+    /// (within 2%) the voltage left for it — the q current cannot be pushed
+    /// further that way — 0 otherwise. Outer loops use it to keep their
+    /// integrators off authority the current loop does not have.
+    pub fn q_voltage_clip(&self) -> f32 {
+        self.q_clip
     }
 
     /// Convert dq-frame voltages to PWM duties without PI control.
@@ -669,6 +685,16 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         if vq != vq_raw {
             self.iq_pi.apply_anti_windup(vq - vq_raw);
         }
+        // Within 2% of the limit counts too: at the limit the q demand
+        // hovers across it cycle to cycle, and an outer loop must not
+        // regain its authority on every cycle it dips under.
+        self.q_clip = if vq_raw > 0.0 && vq_raw >= 0.98 * vq_room {
+            1.0
+        } else if vq_raw < 0.0 && vq_raw <= -0.98 * vq_room {
+            -1.0
+        } else {
+            0.0
+        };
 
         // dq -> stationary frame, then advance the actuation frame: the
         // voltage acts ~one PWM period after the currents were sampled and
