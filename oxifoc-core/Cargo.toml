@@ -171,5 +171,9 @@ required-features = ["virtual-motor", "std", "detection"]
 name = "sim_trace"
 required-features = ["virtual-motor", "std", "storage"]
 
+[[example]]
+name = "loop_response"
+required-features = ["virtual-motor", "std", "storage"]
+
 [lints]
 workspace = true
