@@ -17,7 +17,6 @@
 //!    (Hall-specific)       (Encoder-specific)
 //! ```
 
-use super::current_reconstruction::ReconstructionState;
 use super::current_sense::ShuntCurrentSense;
 use super::hall_calibration::HallCalibrationResult;
 use super::hall_sensor::Direction;
@@ -56,13 +55,6 @@ pub trait CurrentSensor {
 
     /// Apply current calibration offsets (in ADC counts).
     fn set_offsets(&mut self, offsets: (f32, f32, f32));
-
-    /// Provide previous-cycle duty values for sector-based current reconstruction.
-    ///
-    /// Boards with unipolar shunt sensing (no Vref/2 bias) override this to
-    /// feed duty info into the reconstruction logic. Default is a no-op for
-    /// boards that don't need reconstruction (e.g., with DRV8301 Vref/2 bias).
-    fn update_duties(&mut self, _duties: [u16; 3]) {}
 }
 
 /// Platform-agnostic angle sensor trait
@@ -340,8 +332,6 @@ pub struct GenericCurrentSensor<R: RawCurrentReader> {
     converter: ShuntCurrentSense,
     /// Platform-specific raw ADC reader
     reader: R,
-    /// Optional sector-based reconstruction for unipolar shunt sensing
-    reconstruction: Option<ReconstructionState>,
 }
 
 impl<R: RawCurrentReader> GenericCurrentSensor<R> {
@@ -363,7 +353,6 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
         Self {
             converter: ShuntCurrentSense::new(shunt_ohms, amp_gain, adc_vref_mv, adc_max_counts),
             reader,
-            reconstruction: None,
         }
     }
 
@@ -406,25 +395,12 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
     pub fn calibrate_offsets_from_sums(&mut self, sums: (u32, u32, u32), count: u32) {
         self.converter.calibrate_offsets_from_sums(sums, count);
     }
-
-    /// Enable sector-based current reconstruction for unipolar shunt sensing.
-    ///
-    /// Call this on boards where OPAMPs have no Vref/2 bias and negative
-    /// currents clip to 0V (e.g., B-G431B-ESC1 with low-side shunts).
-    /// Boards with proper bias (e.g., DRV8301) should NOT call this.
-    pub fn enable_reconstruction(&mut self) {
-        self.reconstruction = Some(ReconstructionState::new());
-    }
 }
 
 impl<R: RawCurrentReader> CurrentSensor for GenericCurrentSensor<R> {
     fn read_currents(&self) -> (f32, f32, f32) {
         let (adc_a, adc_b, adc_c) = self.reader.read_raw();
-        let (ia, ib, ic) = self.converter.convert_raw(adc_a, adc_b, adc_c);
-        match &self.reconstruction {
-            Some(recon) => recon.reconstruct(ia, ib, ic),
-            None => (ia, ib, ic),
-        }
+        self.converter.convert_raw(adc_a, adc_b, adc_c)
     }
 
     fn read_raw(&self) -> (u16, u16, u16) {
@@ -441,12 +417,6 @@ impl<R: RawCurrentReader> CurrentSensor for GenericCurrentSensor<R> {
 
     fn set_offsets(&mut self, offsets: (f32, f32, f32)) {
         self.converter.set_offsets(offsets.0, offsets.1, offsets.2);
-    }
-
-    fn update_duties(&mut self, duties: [u16; 3]) {
-        if let Some(recon) = &mut self.reconstruction {
-            recon.set_duties(duties);
-        }
     }
 }
 

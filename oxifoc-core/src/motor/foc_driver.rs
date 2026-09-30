@@ -1458,7 +1458,6 @@ where
                 self.pwm
                     .set_phase_states([PhaseState::Low, PhaseState::Low, PhaseState::Low]);
                 self.controller.reset();
-                self.current_sensor.update_duties([0; 3]);
 
                 // The short-circuit current is real and measurable (the low
                 // sides conduct continuously, so low-side shunts see the
@@ -1776,9 +1775,7 @@ where
         self.update_bus_mod_q(out.vq, dt);
         self.last_iq_meas = out.iq;
 
-        // Set PWM duties and feed to current sensor for next-cycle reconstruction
         self.pwm.set_duties(out.duties);
-        self.current_sensor.update_duties(out.duties);
         let prof_t3 = crate::isr_prof::now();
         crate::isr_prof::add(&crate::isr_prof::STEP_POST, prof_t2, prof_t3);
 
@@ -1922,9 +1919,7 @@ where
             return Err(StepError::Overcurrent);
         }
 
-        // Set PWM duties and feed to current sensor for next-cycle reconstruction
         self.pwm.set_duties(out.duties);
-        self.current_sensor.update_duties(out.duties);
 
         // Update phase provider (for sensor tracking, even in open-loop)
         self.update_phase_with_applied_voltage(
@@ -1971,7 +1966,6 @@ where
             .apply_dq(vd, vq, angle_rad, i_alpha_m, i_beta_m, max_duty);
 
         self.pwm.set_duties(out.duties);
-        self.current_sensor.update_duties(out.duties);
 
         // Read currents for telemetry and phase observer
         if let Some(currents) = currents {

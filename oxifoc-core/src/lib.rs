@@ -280,9 +280,6 @@ pub mod foc {
     /// Phase-terminal voltage sensing (back-EMF / undriven rotation detection)
     pub mod phase_voltage;
 
-    /// Sector-based phase current reconstruction for unipolar shunt sensing
-    pub mod current_reconstruction;
-
     /// Hall sensor calibration algorithm
     pub mod hall_calibration;
 

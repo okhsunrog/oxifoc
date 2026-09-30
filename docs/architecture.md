@@ -928,10 +928,8 @@ impl<P: PhasePwm, C: CurrentSensor, Phase: PhaseProvider, S: SinCos> FocDriver<P
             return Err("Overcurrent: measured current exceeds limit");
         }
 
-        // 6. Set PWM duties; feed duties to the current sensor for
-        //    next-cycle reconstruction
+        // 6. Set PWM duties
         self.pwm.set_duties(out.duties);
-        self.current_sensor.update_duties(out.duties);
 
         // 7. Update phase provider for next iteration (feeds both estimators)
         self.phase.update(&PhaseInput {
@@ -1310,7 +1308,6 @@ oxifoc-core/src/
 │   ├── constants.rs         # Math constants (√3, 1/√3, etc.)
 │   ├── controller.rs        # FocController (step / step_with_injection / apply_dq)
 │   ├── current_sense.rs     # ShuntCurrentSense helper
-│   ├── current_reconstruction.rs
 │   ├── fault.rs             # Fault registry + shared fault checkers
 │   ├── hall_calibration.rs  # HallCalibrator, HallCalibrationResult
 │   ├── hall_sensor.rs       # HallSensor struct

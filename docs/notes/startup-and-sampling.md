@@ -19,7 +19,7 @@ evaluating.
 
 Reference points for "us":
 - `oxifoc-g431/src/hardware.rs`, `oxifoc-g431/src/motor.rs` — ADC↔PWM timing
-- `oxifoc-core/src/foc/current_sense.rs`, `current_reconstruction.rs`
+- `oxifoc-core/src/foc/current_sense.rs`
 - `oxifoc-core/src/foc/phase/manager.rs` — open-loop override / source selection
 - `oxifoc-core/src/types.rs` — `ControlMode` (the building blocks)
 
@@ -35,9 +35,10 @@ Center-aligned complementary PWM (`motor.rs:63`,
 (all low-side FETs on — `motor.rs:80`). Both ADCs injected, fired together,
 phase A at 6.5 ADC cycles (~0.15 µs), all phase currents within ~0.45 µs of the
 trigger (`hardware.rs:169`). **One sample per period at V0.** Duty capped at 95%
-(`pwm.rs:48`, also helps bootstrap charging). `current_reconstruction.rs` exists
-(reconstruct the highest-duty phase via ia+ib+ic=0) but is **disabled on g431** —
-the bias network gives bidirectional sensing, so no negative-clipping to fix.
+(`pwm.rs:48`, also helps bootstrap charging). A `current_reconstruction.rs`
+(reconstruct the highest-duty phase via ia+ib+ic=0) existed but was never
+enabled — the bias network gives bidirectional sensing, so no negative-clipping
+to fix; deleted 2026-09-30.
 
 ### What the references do
 
@@ -196,7 +197,6 @@ demands it.
 **ours**
 - `oxifoc-g431/src/motor.rs:63,80,86` — center-aligned PWM, V0 trigger via OC4→TRGO2
 - `oxifoc-g431/src/hardware.rs:169-202` — injected ADC setup, sample times
-- `oxifoc-core/src/foc/current_reconstruction.rs` — highest-duty-phase reconstruction (disabled on g431)
 - `oxifoc-core/src/foc/phase/manager.rs:53,73,485,571` — `OpenLoopOverride`, `DEFAULT_OPENLOOP_MIN_VEL`, `try_observer_fallback`
 - `oxifoc-core/src/types.rs` — `ControlMode::OpenLoop { angle, current, velocity, pi_gains }`
 
