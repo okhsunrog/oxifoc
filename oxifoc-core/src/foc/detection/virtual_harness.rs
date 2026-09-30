@@ -136,8 +136,10 @@ impl SimState {
         };
 
         self.out = match self.mode {
-            ControlMode::Coast => self.motor.step_coast(0.0, DT),
-            ControlMode::Stopped => self.motor.step_shorted(0.0, DT),
+            // Stopped disables the bridge on the boards (high-Z), exactly
+            // like Coast floats it; shorting the plant here braked a
+            // spinning rotor the hardware would let coast.
+            ControlMode::Coast | ControlMode::Stopped => self.motor.step_coast(0.0, DT),
             _ => {
                 // Drive the plant from the *duties*, not the commanded
                 // v_αβ: that is what the inverter applies, and it is the
@@ -234,17 +236,10 @@ impl DetectionHardware for VirtualHardware {
         })
     }
 
-    fn supports_coast_telemetry(&self) -> bool {
-        true
-    }
-
-    fn read_coast_telemetry(&self) -> (f32, f32, f32) {
-        SIM.with(|s| {
-            let s = s.borrow();
-            let s = s.as_ref().unwrap();
-            (s.out.bemf_alpha, s.out.bemf_beta, s.out.omega_e)
-        })
-    }
+    // No coast telemetry, like every board so far: the full-detection
+    // tests must run the driven flux method the hardware runs. (Reading the
+    // plant's own λ·ω back as "measured" back-EMF made the spin-down path a
+    // tautology that no real board takes.)
 }
 
 // ── Timer ──────────────────────────────────────────────────────────────────

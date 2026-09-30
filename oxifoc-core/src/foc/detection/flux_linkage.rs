@@ -648,6 +648,29 @@ mod tests {
         assert!(error < 0.05);
     }
 
+    /// Spin-down accumulator: a decelerating coast (|e| = λ·ω throughout)
+    /// gives λ, samples below the ω floor are refused, and a coast that
+    /// ends before the window fills reports it.
+    #[test]
+    fn spin_down_measurement_reads_lambda_off_a_coast() {
+        let lambda = 0.0085;
+        let mut m = SpinDownFluxMeasurement::new(100, 50.0);
+        let mut omega = 1_000.0f32;
+        while !m.has_enough_samples() {
+            assert!(m.record(lambda * omega, -omega), "ω {omega} refused");
+            omega *= 0.99;
+        }
+        assert!(!m.record(lambda * 40.0, 40.0), "below the ω floor");
+        let measured = m.finish().unwrap();
+        assert!((measured - lambda).abs() < 1e-3 * lambda, "{measured}");
+
+        let mut short = SpinDownFluxMeasurement::new(100, 50.0);
+        for k in 0..20 {
+            short.record(lambda * 100.0, 100.0 - k as f32);
+        }
+        assert_eq!(short.finish(), Err(DetectionError::InsufficientSamples));
+    }
+
     #[test]
     fn test_flux_measurement_insufficient_samples() {
         let mut measurement = FluxLinkageMeasurement::new(0.1, 100);
