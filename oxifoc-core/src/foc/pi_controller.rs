@@ -111,6 +111,13 @@ impl PIController {
         self.integral
     }
 
+    /// Restart with the integral at `integral`: at zero error the output
+    /// continues from there (bumpless takeover of an existing command).
+    pub fn preload(&mut self, integral: f32) {
+        self.integral = integral;
+        self.prev_error = 0.0;
+    }
+
     /// Update controller gains at runtime
     pub fn set_gains(&mut self, kp: f32, ki: f32) {
         self.kp = kp;
@@ -201,6 +208,11 @@ impl ClampedPI {
     /// Reset the integral term to zero
     pub fn reset(&mut self) {
         self.pi.reset();
+    }
+
+    /// See [`PIController::preload`].
+    pub fn preload(&mut self, integral: f32) {
+        self.pi.preload(integral);
     }
 
     /// Get current integral value (for debugging/telemetry)

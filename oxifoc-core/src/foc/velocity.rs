@@ -199,6 +199,15 @@ impl VelocityLoop {
         self.last_iq = 0.0;
     }
 
+    /// Re-arm taking over a q-current already being driven: the reference
+    /// starts at the measured velocity and the integrator at `iq`, so the
+    /// first output continues `iq` instead of dropping to zero.
+    pub fn reset_holding(&mut self, omega_meas: f32, iq: f32) {
+        self.reset(omega_meas);
+        self.pi.preload(iq);
+        self.last_iq = iq;
+    }
+
     /// Last commanded q-current (A) from the previous [`step`](Self::step).
     pub fn last_iq(&self) -> f32 {
         self.last_iq

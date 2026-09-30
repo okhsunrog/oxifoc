@@ -1041,11 +1041,13 @@ where
             self.ensure_bridge_enabled();
         }
         // Bumpless: seed the ramp from the q-current currently commanded
-        // (OpenLoop applies its `current` as the q-target; VelocityControl's
-        // last PI output is what the current loop was just driven with).
+        // (VelocityControl's last PI output is what the current loop was
+        // just driven with). Not OpenLoop's `current`: it is applied along
+        // the open-loop angle, not the rotor's q axis — seeding it would
+        // turn a load-angle-dependent current into full q torque in the
+        // estimate's frame, sign included. Zero is the honest seed there.
         let current_iq = match self.mode {
             ControlMode::CurrentControl { iq_target, .. } => iq_target,
-            ControlMode::OpenLoop { current, .. } => current,
             ControlMode::VelocityControl { .. } => self.velocity_loop.last_iq(),
             _ => 0.0,
         };
@@ -4759,6 +4761,39 @@ mod tests {
         driver.note_command_tick(0);
         assert!(!driver.deadman_expired(5_000_000));
         assert!(driver.deadman_expired(BENCH_STALENESS_TIMEOUT_US + 1_000));
+    }
+
+    /// OpenLoop's `current` rides the open-loop angle, not the angle
+    /// source's q axis: a stop armed from it must not seed that current as
+    /// q torque in the source's frame (old: 5 A of q current, direction
+    /// set by the open-loop sign rather than any rotor state).
+    #[test]
+    fn stop_from_open_loop_seeds_no_q_torque() {
+        use crate::foc::hall_sensor::HallSensor;
+        use crate::foc::phase::PhaseManager;
+        use crate::foc::trig::LibmSinCos;
+
+        let mut hall = HallSensor::new(1_000_000);
+        hall.update(1, 0); // a valid state: rotor parked in its sector
+        let mut driver = FocDriver::new(
+            FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::with_hall(hall),
+            1.0 / 20_000.0,
+        );
+        driver.set_current_limits(CurrentLimits::from_max_current(20.0));
+        driver.set_mode(ControlMode::OpenLoop {
+            angle_rad: 0.0,
+            current: 5.0,
+            velocity_rad_s: 0.0,
+            pi_gains: None,
+        });
+        assert!(driver.enter_brake_ramp());
+        let out = driver.step(50).expect("stop step");
+        assert!(out.vq.abs() < 1e-3, "stop seeded q torque: vq {}", out.vq);
     }
 
     /// Closed-loop: spin a VirtualMotor up on Hall, stop affirming, and the

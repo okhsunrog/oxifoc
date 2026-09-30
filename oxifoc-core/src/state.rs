@@ -25,19 +25,12 @@ use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
 use crate::foc::trig::SinCos;
 use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::derating::{DeratingConfig, DeratingScales};
-use crate::motor::failsafe::FailsafeConfig;
+use crate::motor::failsafe::{BRAKE_ENTRY_MAX_E_RAD_S, FailsafeConfig};
 use crate::motor::foc_driver::{CurrentLimits, StepError};
 use crate::motor::{ControlMode, FocDriver};
 use crate::types::{
     DriveOwnership, DriveSessionId, MotorCommand, MotorCommandOutcome, MotorRequest, MotorState,
 };
-
-/// Maximum |ω_e| (electrical rad/s) at which a `Brake` (windings-short)
-/// command is accepted — above this the short-circuit current is governed by
-/// back-EMF against the motor impedance, outside any control loop. Kept a
-/// little above the failsafe standstill threshold (20 rad/s default) so a
-/// rider standing next to the board can always engage it. Bench-tune.
-pub const BRAKE_ENTRY_MAX_E_RAD_S: f32 = 50.0;
 
 // ============================================================================
 // Global Communication Channels

@@ -88,16 +88,21 @@ with no further input, host-configurable via `FailsafeConfigStored` (ConfigKey
 
 - **Coast** — cut PWM (high-Z / free-wheel); reproduces the legacy hard Stop.
 - **RampToZero** — slew the q-current to zero, then coast.
-- **ControlledStop** — ramp to zero, then **regen-brake to a standstill at a
+- **ControlledStop** — ramp to zero (unless the q-current already opposes
+  the rotation — the rider was braking — in which case the brake is taken
+  over at its level, capped), then **regen-brake to a standstill at a
   bounded deceleration**: the velocity reference ramps to zero at
   `decel_rad_s2` through the failsafe's *own* `VelocityLoop` instance (fixed
   conservative gains — the host-tunable cruise loop is never the safety
   net), so the stop feels the same on a slope as on the flat, up to the
   current cap. Unidirectional (only ever opposes the original rotation),
-  capped at `brake_current_a`, OV-derated. On a clean stop the configurable
+  capped at `brake_current_a`, OV-derated. On a clean stop (standstill
+  debounce, or a zero crossing read below the Brake entry gate — a fast
+  "reverse" reading is an estimate glitch, not a crossing) the configurable
   **terminal** applies: high-Z, or `ParkBrake` (default — hand over to
-  `ControlMode::Brake` so the stopped board doesn't roll away). The give-up
-  exits never engage the brake at speed:
+  `ControlMode::Brake` so the stopped board doesn't roll away; only below
+  `BRAKE_ENTRY_MAX_E_RAD_S`, else high-Z). The give-up exits never engage
+  the brake at speed:
   - **no-progress watchdog** — |ω| hasn't improved for 2 s (broken estimate,
     or a descent the cap can't beat) → coast; a brake merely *holding* speed
     on a hill gets the full window first.
