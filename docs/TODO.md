@@ -24,8 +24,12 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
   energy in the windings (active short / d-current) with thermal control.
   Needs the bench.
 - [ ] **Position hold** (after position control): capture the target on
-  engage, cascade position P → `VelocityLoop` → current. `Brake` stays
-  the default.
+  engage, cascade position P → `VelocityLoop` → current. Engaged only by
+  an explicit command (a dedicated remote button, like the parking brake)
+  — never implicitly: a released throttle coasts, as riders expect.
+  Needs an angle at standstill (hall sector / encoder / HFI) and a
+  current/thermal budget with a fall-back to the parking brake; could
+  also be a failsafe terminal. `Brake` stays the default.
 - [ ] G474: arm the IWDG once the motor modules come alive (FOC ISR).
 - [ ] Bench: IWDG reset → PWM safe on hardware (provoke a hang).
 - [ ] Boot: read reset-reason + detect a spinning motor +
