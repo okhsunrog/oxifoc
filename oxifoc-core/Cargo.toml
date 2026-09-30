@@ -167,5 +167,9 @@ cortex-m = ["dep:cortex-m"]
 name = "detection_report"
 required-features = ["virtual-motor", "std", "detection"]
 
+[[example]]
+name = "sim_trace"
+required-features = ["virtual-motor", "std", "storage"]
+
 [lints]
 workspace = true
