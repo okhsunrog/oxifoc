@@ -101,14 +101,20 @@ pub const STARTUP_MIN_DRIVE_A: f32 = 1.5;
 /// the per-cycle speed cut) derates torque in the direction of motion;
 /// `brake_scale` derates opposing torque (never for speed). At standstill
 /// (ω = 0) the motoring side is "positive" by convention — matching the
-/// downstream clamp's `iq·ω ≥ 0` motoring test. `limit <= 0` = unlimited
-/// (mirrors `CurrentLimits` semantics).
-fn velocity_iq_bounds(omega: f32, limit: f32, drive_scale: f32, brake_scale: f32) -> (f32, f32) {
-    if limit <= 0.0 || !limit.is_finite() {
+/// downstream clamp's `iq·ω ≥ 0` motoring test. The motoring side scales
+/// `limits.max_current_a`, the braking side `limits.max_brake_a`;
+/// `max_current_a <= 0` = unlimited (mirrors `CurrentLimits` semantics).
+fn velocity_iq_bounds(
+    omega: f32,
+    limits: &CurrentLimits,
+    drive_scale: f32,
+    brake_scale: f32,
+) -> (f32, f32) {
+    if limits.max_current_a <= 0.0 || !limits.max_current_a.is_finite() {
         return (f32::NEG_INFINITY, f32::INFINITY);
     }
-    let drive = limit * clamp_f32(drive_scale, 0.0, 1.0);
-    let brake = limit * clamp_f32(brake_scale, 0.0, 1.0);
+    let drive = limits.max_current_a * clamp_f32(drive_scale, 0.0, 1.0);
+    let brake = limits.max_brake_a * clamp_f32(brake_scale, 0.0, 1.0);
     if omega >= 0.0 {
         (-brake, drive)
     } else {
@@ -174,6 +180,9 @@ pub struct CurrentLimits {
     /// be asked to produce more than this. Set from BoardConfig or
     /// CurrentLimitsConfig. 0 = no limit.
     pub max_current_a: f32,
+    /// Maximum braking q current (A): the limit whenever iq opposes the
+    /// rotation. At most `max_current_a`.
+    pub max_brake_a: f32,
     /// Hard overcurrent threshold on measured current (A). If actual
     /// sqrt(id² + iq²) exceeds this, PWM is immediately disabled.
     /// Typically set to 1.2-1.5× max_current_a. 0 = no limit.
@@ -216,6 +225,7 @@ impl CurrentLimits {
     pub fn from_max_current(max_a: f32) -> Self {
         Self {
             max_current_a: max_a,
+            max_brake_a: max_a,
             overcurrent_threshold_a: max_a * OVERCURRENT_HEADROOM,
             bus_in_max_a: -1.0,
             bus_regen_max_a: -1.0,
@@ -278,8 +288,14 @@ impl CurrentLimits {
         } else {
             iq_ceiling
         };
+        let max_current_a = iq.min(trip / OVERCURRENT_HEADROOM);
         Self {
-            max_current_a: iq.min(trip / OVERCURRENT_HEADROOM),
+            max_current_a,
+            max_brake_a: if cfg.max_brake_a > 0.0 {
+                cfg.max_brake_a.min(max_current_a)
+            } else {
+                max_current_a
+            },
             overcurrent_threshold_a: trip,
             bus_in_max_a: bus(cfg.bus_in_max_a),
             bus_regen_max_a: bus(cfg.bus_regen_max_a),
@@ -305,6 +321,7 @@ impl CurrentLimits {
             None => Self::from_config_clamped(
                 &CurrentLimitsConfig {
                     max_iq_a: 0.0,
+                    max_brake_a: 0.0,
                     max_phase_current_a: 0.0,
                     bus_in_max_a: -1.0,
                     bus_regen_max_a: -1.0,
@@ -1510,7 +1527,7 @@ where
             omega_e,
             dt,
             &self.failsafe_cfg,
-            self.current_limits.max_current_a,
+            self.current_limits.max_brake_a,
             self.vbus,
             self.ov_threshold_v,
             angle_trustworthy,
@@ -1599,7 +1616,7 @@ where
         // the bounds are asymmetric and oriented by the direction of motion.
         let (iq_min, iq_max) = velocity_iq_bounds(
             omega,
-            self.current_limits.max_current_a,
+            &self.current_limits,
             self.derating.drive.min(self.derating_cfg.speed_cut(omega)),
             self.derating.brake,
         );
@@ -1688,28 +1705,25 @@ where
             0.0
         };
 
-        // Graduated derating (motor/derating.rs): scale the iq budget by
-        // direction — iq·ω ≥ 0 is motoring (standstill counts as motoring:
-        // pulling away is acceleration), opposing is braking. Drive derates
-        // for heat/sag/speed; brake only for heat/regen-OV — and never for
-        // speed. Every torque path funnels through here, so the failsafe
-        // brake inherits the regen-OV rolloff too. The speed cut is
-        // re-evaluated FRESH each cycle on top of the decimated scales —
-        // a 78 Hz-stale cut bang-bangs the torque around the ceiling on a
-        // fast free rotor (see DeratingConfig::speed_cut).
+        // Direction-dependent budget: iq·ω ≥ 0 is motoring (standstill
+        // counts as motoring: pulling away is acceleration), opposing is
+        // braking, which has its own limit (`max_brake_a`). Graduated
+        // derating (motor/derating.rs) scales each side: drive derates for
+        // heat/sag/speed, brake only for heat/regen-OV — never for speed.
+        // Every torque path funnels through here (remote, velocity loop,
+        // failsafe). The speed cut is re-evaluated FRESH each cycle on top
+        // of the decimated scales — a 78 Hz-stale cut bang-bangs the torque
+        // around the ceiling on a fast free rotor (see
+        // DeratingConfig::speed_cut).
         let iq_target = if self.current_limits.max_current_a > 0.0 {
             let omega = self.phase.get().velocity;
-            let scale = if iq_target * omega >= 0.0 {
-                self.derating.drive.min(self.derating_cfg.speed_cut(omega))
+            let lim = if iq_target * omega >= 0.0 {
+                self.current_limits.max_current_a
+                    * self.derating.drive.min(self.derating_cfg.speed_cut(omega))
             } else {
-                self.derating.brake
+                self.current_limits.max_brake_a * self.derating.brake
             };
-            if scale < 1.0 {
-                let lim = self.current_limits.max_current_a * scale;
-                clamp_f32(iq_target, -lim, lim)
-            } else {
-                iq_target
-            }
+            clamp_f32(iq_target, -lim, lim)
         } else {
             iq_target
         };
@@ -2179,17 +2193,27 @@ mod tests {
         // braking untouched — the PI's positive bound must shrink, the
         // negative must not (this asymmetry is what kills the ceiling
         // windup: the integral can no longer bank the un-grantable 90%).
-        let (lo, hi) = velocity_iq_bounds(500.0, 10.0, 0.1, 1.0);
+        let ten = CurrentLimits::from_max_current(10.0);
+        let (lo, hi) = velocity_iq_bounds(500.0, &ten, 0.1, 1.0);
         assert_eq!((lo, hi), (-10.0, 1.0));
         // Reverse motion mirrors the orientation.
-        let (lo, hi) = velocity_iq_bounds(-500.0, 10.0, 0.1, 1.0);
+        let (lo, hi) = velocity_iq_bounds(-500.0, &ten, 0.1, 1.0);
         assert_eq!((lo, hi), (-1.0, 10.0));
         // Standstill counts as motoring-positive (matches the downstream
         // clamp's iq·ω >= 0 test).
-        let (lo, hi) = velocity_iq_bounds(0.0, 10.0, 0.5, 0.25);
+        let (lo, hi) = velocity_iq_bounds(0.0, &ten, 0.5, 0.25);
         assert_eq!((lo, hi), (-2.5, 5.0));
+        // The braking side has its own limit.
+        let soft_brake = CurrentLimits {
+            max_brake_a: 4.0,
+            ..ten
+        };
+        let (lo, hi) = velocity_iq_bounds(500.0, &soft_brake, 1.0, 1.0);
+        assert_eq!((lo, hi), (-4.0, 10.0));
+        let (lo, hi) = velocity_iq_bounds(-500.0, &soft_brake, 1.0, 1.0);
+        assert_eq!((lo, hi), (-10.0, 4.0));
         // Unlimited when the limit is unset — mirrors CurrentLimits.
-        let (lo, hi) = velocity_iq_bounds(100.0, 0.0, 0.1, 1.0);
+        let (lo, hi) = velocity_iq_bounds(100.0, &CurrentLimits::from_max_current(0.0), 0.1, 1.0);
         assert!(lo.is_infinite() && hi.is_infinite());
     }
 
@@ -3130,6 +3154,7 @@ mod tests {
         let hw_max = 10.0;
         let cfg = |iq: f32, ph: f32, bus_in: f32, bus_regen: f32| CurrentLimitsConfig {
             max_iq_a: iq,
+            max_brake_a: 0.0,
             max_phase_current_a: ph,
             bus_in_max_a: bus_in,
             bus_regen_max_a: bus_regen,
@@ -3180,6 +3205,7 @@ mod tests {
         let l = CurrentLimits::from_config_clamped(
             &CurrentLimitsConfig {
                 max_iq_a: 40.0,
+                max_brake_a: 0.0,
                 max_phase_current_a: 40.0,
                 bus_in_max_a: -1.0,
                 bus_regen_max_a: -1.0,
@@ -3208,6 +3234,7 @@ mod tests {
         let hw_max = 30.0;
         let cfg = |iq: f32, phase: f32| CurrentLimitsConfig {
             max_iq_a: iq,
+            max_brake_a: 0.0,
             max_phase_current_a: phase,
             bus_in_max_a: -1.0,
             bus_regen_max_a: -1.0,
@@ -5775,6 +5802,31 @@ mod tests {
                 self.step();
             }
         }
+    }
+
+    /// Braking has its own limit: a remote brake command past `max_brake_a`
+    /// is held there while the same magnitude of drive is granted in full.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn braking_is_held_to_its_own_limit() {
+        let mut rig = HallRig::new(0.5, 2e-5);
+        rig.driver.set_current_limits(CurrentLimits {
+            max_brake_a: 8.0,
+            ..CurrentLimits::from_max_current(30.0)
+        });
+        let torque = |iq_target| ControlMode::CurrentControl {
+            iq_target,
+            id_target: 0.0,
+        };
+        rig.driver.set_mode(torque(20.0));
+        rig.run(0.1);
+        let (_, t) = rig.step();
+        assert!((t.iq - 20.0).abs() < 1.5, "drive iq {}", t.iq);
+        rig.driver.set_mode(torque(-20.0));
+        rig.run(0.05);
+        let (_, t) = rig.step();
+        assert!(rig.out.omega_e > 100.0, "still rolling forward");
+        assert!((t.iq + 8.0).abs() < 1.0, "brake iq {}", t.iq);
     }
 
     /// Cruise → Brake at speed (the controlled brake ramp) → cruise again

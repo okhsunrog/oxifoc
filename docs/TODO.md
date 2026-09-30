@@ -68,15 +68,12 @@ rigs). Open — each needs a decision or the bench:
   contract, the probe estimator and the tracker seed.
 - [ ] **Measure the real f405 actuation delay** (0.5 if the ISR always
   beats the valley update, else 1.0) and set it per board.
-- [ ] **ControlledStop give-up on a descent** (policy): the no-progress
-  (2 s) and `brake_time_s` (10 s) exits coast, against the 2026-09-10 "an
-  isolated controller can decide nothing but brake" decision — yet the
-  watchdog also catches a brake in a wrong frame driving the motor. A
-  frame-independent criterion: keep braking while the brake brakes
-  (mechanical power `1.5·v·i − 1.5·R·|i|²` < 0), give up only when it
-  drives. Related: the 15 A default brake holds a ~3% grade on a 5065
-  board (a 10% grade needs ~48 A), and the soft failsafe loop takes ~0.4 s
-  to build it.
+- [ ] **Failsafe brake escalation** (optional feature, off by default):
+  when the stop decelerates too slowly for the slope, raise the brake
+  current past `brake_current_a` up to the general brake limits (never
+  above). The criterion must be configurable — "speed not decreasing" is
+  too weak (a board slowing very slowly on a descent is already a
+  problem). VESC has nothing like it; revisit after riding the failsafe.
 - [ ] **Observer PLL retune + tracker removal** (experiment branch, bench
   A/B): the PLL (kp 1000 / ki 20000, slow pole ~20 rad/s) lags an
   accelerating rotor by ~a/ki — 0.3 rad 20 ms after a flying catch on the

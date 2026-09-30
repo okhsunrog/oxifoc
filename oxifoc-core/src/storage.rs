@@ -236,6 +236,13 @@ impl PostcardValue<'_> for DcOffsetsConfig {}
 pub struct CurrentLimitsConfig {
     /// Maximum q-axis (torque) current target (A)
     pub max_iq_a: f32,
+    /// Maximum braking q current (A, magnitude): the torque limit whenever
+    /// iq opposes the rotation — remote braking, the velocity loop, the
+    /// failsafe stop. Separate from `max_iq_a` because braking has its own
+    /// reasons to be softer (rider balance, traction, belt skip), and at low
+    /// speed the battery regen limit hardly bounds it. `<= 0` = not set:
+    /// same as `max_iq_a`. VESC's `l_current_min`.
+    pub max_brake_a: f32,
     /// Maximum instantaneous phase current (A)
     pub max_phase_current_a: f32,
     /// Maximum supply (bus) current draw (A). `< 0` = unlimited.
@@ -268,6 +275,7 @@ impl CurrentLimitsConfig {
     pub fn is_coherent(&self) -> bool {
         use crate::motor::foc_driver::OVERCURRENT_HEADROOM;
         let finite = self.max_iq_a.is_finite()
+            && self.max_brake_a.is_finite()
             && self.max_phase_current_a.is_finite()
             && self.bus_in_max_a.is_finite()
             && self.bus_regen_max_a.is_finite();
@@ -281,6 +289,7 @@ impl Default for CurrentLimitsConfig {
     fn default() -> Self {
         Self {
             max_iq_a: 10.0,
+            max_brake_a: 0.0,
             max_phase_current_a: 40.0,
             bus_in_max_a: -1.0,
             bus_regen_max_a: -1.0,
@@ -790,6 +799,7 @@ mod tests {
         // NaN tolerance is for the boot path, not for explicit writes).
         for f in [
             |c: &mut CurrentLimitsConfig| c.max_iq_a = f32::NAN,
+            |c: &mut CurrentLimitsConfig| c.max_brake_a = f32::NAN,
             |c: &mut CurrentLimitsConfig| c.max_phase_current_a = f32::INFINITY,
             |c: &mut CurrentLimitsConfig| c.bus_in_max_a = f32::NAN,
             |c: &mut CurrentLimitsConfig| c.bus_regen_max_a = f32::NAN,

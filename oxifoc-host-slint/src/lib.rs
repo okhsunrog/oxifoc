@@ -1538,6 +1538,10 @@ pub fn main() {
                             }
                             Some(ConfigValue::CurrentLimits(c)) => {
                                 app.set_cfg_max_iq(SharedString::from(format!("{}", c.max_iq_a)));
+                                app.set_cfg_max_brake(SharedString::from(format!(
+                                    "{}",
+                                    c.max_brake_a
+                                )));
                                 app.set_cfg_max_phase_current(SharedString::from(format!(
                                     "{}",
                                     c.max_phase_current_a
@@ -1690,6 +1694,7 @@ pub fn main() {
                 }
                 1 => {
                     let iq: f32 = parse_field("max iq", &app.get_cfg_max_iq(), err);
+                    let brake: f32 = parse_field("max brake", &app.get_cfg_max_brake(), err);
                     let ph: f32 =
                         parse_field("max phase current", &app.get_cfg_max_phase_current(), err);
                     let bus_in: f32 = parse_field("bus in max", &app.get_cfg_bus_in_max(), err);
@@ -1697,6 +1702,7 @@ pub fn main() {
                         parse_field("bus regen max", &app.get_cfg_bus_regen_max(), err);
                     ConfigAction::Replace(ConfigWrite::CurrentLimits(CurrentLimitsConfig {
                         max_iq_a: iq,
+                        max_brake_a: brake,
                         max_phase_current_a: ph,
                         bus_in_max_a: bus_in,
                         bus_regen_max_a: bus_regen,
