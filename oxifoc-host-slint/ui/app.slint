@@ -272,8 +272,7 @@ export component App inherits Window {
     in-out property <string> cfg-fs-staleness: "";
     in-out property <string> cfg-fs-policy: "";
     in-out property <string> cfg-fs-brake-current: "";
-    in-out property <string> cfg-fs-ramp: "";
-    in-out property <string> cfg-fs-brake-time: "";
+    in-out property <string> cfg-fs-slew: "";
     in-out property <string> cfg-fs-standstill: "";
     in-out property <string> cfg-fs-decel: "";
     in-out property <string> cfg-fs-terminal: "";
@@ -1072,15 +1071,14 @@ export component App inherits Window {
                         Text { text: "Policy (0=coast 1=ramp 2=stop):"; } LineEdit { text <=> root.cfg-fs-policy; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Brake current (A):"; } LineEdit { text <=> root.cfg-fs-brake-current; min-width: 120px; }
-                        Text { text: "Ramp (ms):"; } LineEdit { text <=> root.cfg-fs-ramp; min-width: 120px; }
+                        Text { text: "Brake current (A, 0 = max brake):"; } LineEdit { text <=> root.cfg-fs-brake-current; min-width: 120px; }
+                        Text { text: "Slew (A/s):"; } LineEdit { text <=> root.cfg-fs-slew; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Brake time cap (ms):"; } LineEdit { text <=> root.cfg-fs-brake-time; min-width: 120px; }
                         Text { text: "Standstill (erad/s):"; } LineEdit { text <=> root.cfg-fs-standstill; min-width: 120px; }
+                        Text { text: "Max decel (erad/s²):"; } LineEdit { text <=> root.cfg-fs-decel; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Decel (erad/s²):"; } LineEdit { text <=> root.cfg-fs-decel; min-width: 120px; }
                         Text { text: "Terminal (0=high-Z 1=brake):"; } LineEdit { text <=> root.cfg-fs-terminal; min-width: 120px; }
                     }
                 }

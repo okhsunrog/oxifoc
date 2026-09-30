@@ -1591,10 +1591,9 @@ pub fn main() {
                                     "{}",
                                     f.brake_current_a
                                 )));
-                                app.set_cfg_fs_ramp(SharedString::from(format!("{}", f.ramp_ms)));
-                                app.set_cfg_fs_brake_time(SharedString::from(format!(
+                                app.set_cfg_fs_slew(SharedString::from(format!(
                                     "{}",
-                                    f.brake_time_ms
+                                    f.slew_a_per_s
                                 )));
                                 app.set_cfg_fs_standstill(SharedString::from(format!(
                                     "{}",
@@ -1742,9 +1741,7 @@ pub fn main() {
                     let policy: u8 = parse_field("policy", &app.get_cfg_fs_policy(), err);
                     let brake: f32 =
                         parse_field("brake current", &app.get_cfg_fs_brake_current(), err);
-                    let ramp: f32 = parse_field("ramp", &app.get_cfg_fs_ramp(), err);
-                    let brake_time: f32 =
-                        parse_field("brake time", &app.get_cfg_fs_brake_time(), err);
+                    let slew: f32 = parse_field("slew", &app.get_cfg_fs_slew(), err);
                     let standstill: f32 =
                         parse_field("standstill", &app.get_cfg_fs_standstill(), err);
                     let decel: f32 = parse_field("decel", &app.get_cfg_fs_decel(), err);
@@ -1753,8 +1750,7 @@ pub fn main() {
                         staleness_timeout_ms: staleness,
                         policy,
                         brake_current_a: brake,
-                        ramp_ms: ramp,
-                        brake_time_ms: brake_time,
+                        slew_a_per_s: slew,
                         standstill_rad_s: standstill,
                         decel_rad_s2: decel,
                         terminal,

@@ -26,8 +26,10 @@ their section.
   motion is covered by the speed-adaptive `is_stale_at_speed` path.
 - **2026-06-12 — bus current limits: `< 0` = disabled (default), `0` =
   full ban, otherwise amps.** `bus_regen_max_a = 0` is the standard
-  lab-PSU-safe mode; ControlledStop then degrades itself to coast via the
-  no-progress watchdog, and the windings-short Brake never touches the bus.
+  lab-PSU-safe mode; ControlledStop then brakes with whatever the bus
+  clamp lets through (next to nothing) until standstill — the no-progress
+  watchdog that turned it into a coast was removed 2026-09-30 — and the
+  windings-short Brake never touches the bus.
 
 - **2026-09-10 — multi-motor link loss: symmetric failsafe, always
   brake.** An isolated controller cannot distinguish a pushing sibling
@@ -38,6 +40,21 @@ their section.
   REJECTED — the signal is unavailable exactly when needed. Limp-home
   only via explicit re-arm with a pre-dead sibling. [safety.md →
   Multi-motor vehicles]
+- **2026-09-30 — the failsafe stop is shaped in amps and never lets go
+  while moving.** A velocity loop on a deceleration target cannot be
+  "safe on any motor": the plant gain runs from ~9 el rad/s² per amp (a
+  loaded 5065 board) to ~8000 (a bare bench rotor), and with fixed gains
+  the loop on a real board only ramped the current to its cap. The stop
+  now slews the q current (`slew_a_per_s`, both directions — a rider's
+  brake in progress is kept, never weakened) to `brake_current_a` within
+  the new general `max_brake_a`; deceleration only bounds it from above.
+  The no-progress and time-cap coasts are gone (a brake that cannot beat
+  a descent still beats a coast — the "tripping on a wrong frame"
+  concern needs two independent faults and no report of it was found;
+  VESC brakes indefinitely too). Near zero the parking-brake short takes
+  over: an active current on a lagging low-speed estimate pumped a light
+  rotor into a ±700 el rad/s limit cycle. Escalation past the stop
+  current is a backlog option. [safety.md → failsafe]
 
 ## Firmware / platform
 

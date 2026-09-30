@@ -700,7 +700,7 @@ where
     // free-wheel stays a free-wheel (Coast) — "braking" Coast would drive
     // the current loop into floated phases anyway. The shared state is NOT
     // forced to stopped here: the failsafe is still actively driving the
-    // motor (up to brake_time_s) — it syncs at the failsafe terminal in
+    // motor (until standstill) — it syncs at the failsafe terminal in
     // `run_foc_cycle`, so e.g. the config server's motor-running gate can't
     // admit a flash stall mid-brake.
     if !link_active

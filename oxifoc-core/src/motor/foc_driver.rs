@@ -1080,16 +1080,17 @@ where
             _ => 0.0,
         };
         // Bound the seed: mode payloads are finite-checked at the command
-        // boundary but not clamped, and the RampDown duration scales with
-        // the seed (slew = brake_current_a/ramp_s) — an absurd value must
-        // not stretch the failsafe ramp toward forever. The physically
-        // delivered current was never above the limit anyway, so clamping
-        // keeps the ramp bumpless. NaN (nothing upstream should produce
-        // one, but the failsafe must not hinge on that) seeds from zero.
+        // boundary but not clamped, and the failsafe slews from the seed at
+        // a fixed rate — an absurd value must not stretch its hand-over
+        // toward forever. The physically delivered current was never above
+        // the limit anyway, so clamping keeps it bumpless. NaN (nothing
+        // upstream should produce one, but the failsafe must not hinge on
+        // that) seeds from zero.
         let seed_bound = if self.current_limits.max_current_a > 0.0 {
             self.current_limits.max_current_a
         } else {
-            10.0 * self.failsafe_cfg.brake_current_a
+            // Unlimited limits are a sim/test setup; still keep it finite.
+            1_000.0
         };
         let current_iq = if current_iq.is_finite() {
             clamp_f32(current_iq, -seed_bound, seed_bound)
@@ -4869,17 +4870,27 @@ mod tests {
     #[test]
     #[cfg(feature = "virtual-motor")]
     fn controlled_stop_brakes_spinning_motor_to_standstill() {
+        const DT: f32 = 1.0 / 20_000.0;
         const DECEL: f32 = 800.0;
-        let (peak, braked, driver) = controlled_stop_run(FailsafePolicy::ControlledStop, DECEL);
+        let (peak, trace, driver) = controlled_stop_run(FailsafePolicy::ControlledStop, DECEL);
         assert!(
             peak > 1_000.0,
             "motor should have spun up, peak ωe = {peak}"
         );
-        let braked = braked.expect("failsafe must brake to ~standstill");
-        let ramp_s = peak / DECEL;
+        let below = |w: f32| {
+            trace
+                .iter()
+                .position(|o| o.abs() < w)
+                .map(|i| i as f32 * DT)
+        };
+        assert!(below(25.0).is_some(), "failsafe must brake to ~standstill");
+        // This light rotor gets 7000+ el rad/s² per amp: the deceleration
+        // bound, not the stop current, shapes the stop.
+        let (t_hi, t_lo) = (below(0.75 * peak).unwrap(), below(0.25 * peak).unwrap());
+        let decel = 0.5 * peak / (t_lo - t_hi);
         assert!(
-            (ramp_s - 0.05..ramp_s + 0.3).contains(&braked),
-            "stopped after {braked} s, the decel ramp takes {ramp_s} s"
+            (decel / DECEL - 1.0).abs() < 0.1,
+            "mid-stop deceleration {decel} el rad/s² vs bound {DECEL}"
         );
         assert_eq!(
             driver.mode(),
@@ -4892,19 +4903,22 @@ mod tests {
         );
         // The harness must coast an unbraked rotor for far longer.
         let (_, coasted, _) = controlled_stop_run(FailsafePolicy::Coast, DECEL);
-        assert!(coasted.is_none(), "coast stopped after {coasted:?} s");
+        assert!(
+            coasted.iter().all(|o| o.abs() > 25.0),
+            "a coast stopped within the window"
+        );
     }
 
     /// Spin up for 1.5 s, stop affirming, run 2 s more. Returns the peak
-    /// speed, when (after the last affirmation) |ωe| fell below 25, and the
-    /// driver.
+    /// speed, the ωe trace after the last affirmation (one sample per
+    /// period) and the driver.
     #[cfg(feature = "virtual-motor")]
     fn controlled_stop_run(
         policy: FailsafePolicy,
         decel_rad_s2: f32,
     ) -> (
         f32,
-        Option<f32>,
+        Vec<f32>,
         FocDriver<GatedPwm, MockCurrentSensor, PhaseManager<HallSensor>>,
     ) {
         use crate::foc::trig::LibmSinCos;
@@ -4947,8 +4961,7 @@ mod tests {
             policy,
             staleness_timeout_us: 5_000,
             brake_current_a: 20.0,
-            ramp_s: 0.02,
-            brake_time_s: 2.0,
+            slew_a_per_s: 1_000.0,
             standstill_rad_s: 20.0,
             decel_rad_s2,
             terminal: FailsafeTerminal::HighZ,
@@ -4960,7 +4973,7 @@ mod tests {
 
         const STOP_AFFIRMING_AT: u64 = 30_000; // 1.5 s of drive, then go silent
         let mut peak_omega = 0.0f32;
-        let mut stopped_at = None;
+        let mut trace = Vec::new();
         for step in 1..70_000u64 {
             let now = step * 50; // µs
 
@@ -4987,11 +5000,11 @@ mod tests {
 
             if step < STOP_AFFIRMING_AT {
                 peak_omega = peak_omega.max(out.omega_e.abs());
-            } else if stopped_at.is_none() && out.omega_e.abs() < 25.0 {
-                stopped_at = Some((step - STOP_AFFIRMING_AT) as f32 * DT);
+            } else {
+                trace.push(out.omega_e);
             }
         }
-        (peak_omega, stopped_at, driver)
+        (peak_omega, trace, driver)
     }
 
     /// Closed-loop ramp-into-brake: a user Brake command at speed substitutes
@@ -5802,6 +5815,42 @@ mod tests {
                 self.step();
             }
         }
+    }
+
+    /// Link lost on a descent the failsafe brake cannot beat (the slope's
+    /// 0.6 N·m against the 15 A brake's 0.46): the board keeps speeding up,
+    /// and the stop keeps braking all the way. It used to give up to a
+    /// coast after 2 s without progress — and the rotor then ran away to
+    /// 3× top speed within a second.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn failsafe_keeps_braking_a_descent_it_cannot_beat() {
+        let mut rig = HallRig::new(0.5, 2e-5);
+        rig.driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 8.0,
+            id_target: 0.0,
+        });
+        rig.run(0.4);
+        rig.driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 0.0,
+            id_target: 0.0,
+        });
+        rig.load = -0.6;
+        rig.driver.enter_failsafe();
+        let start = rig.out.omega_e;
+        for _ in 0..(5.0 / HallRig::DT) as u32 {
+            rig.step();
+            assert!(rig.driver.failsafe_active(), "the stop let go");
+        }
+        let (_, t) = rig.step();
+        assert!(
+            rig.out.omega_e > start,
+            "the slope wins: {}",
+            rig.out.omega_e
+        );
+        // At least the commanded 15 A (past top speed the back-EMF pushes
+        // some regen beyond what the current loop holds).
+        assert!(t.iq < -14.0, "braking at {} A", t.iq);
     }
 
     /// Braking has its own limit: a remote brake command past `max_brake_a`

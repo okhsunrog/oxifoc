@@ -8,18 +8,30 @@
 //! when the executor that would normally feed commands is wedged.
 //!
 //! Three policies (configurable, see [`FailsafePolicy`]); the important one is
-//! [`ControlledStop`](FailsafePolicy::ControlledStop): ramp the q-current to
-//! zero, then **regen-brake to a standstill at a bounded deceleration** —
-//! the velocity reference ramps to zero at [`FailsafeConfig::decel_rad_s2`]
-//! through a dedicated [`VelocityLoop`] instance with fixed conservative
-//! gains, so the stop feels the same on a slope as on the flat (a constant
-//! *current* brake would not — gravity adds/subtracts). The same machinery
-//! also serves the user-commanded ramp-into-parking-brake
-//! (`FocDriver::enter_brake_ramp`).
+//! [`ControlledStop`](FailsafePolicy::ControlledStop): **regen-brake to a
+//! standstill**. The actuator is the brake CURRENT — proportional to the
+//! force on the wheel whatever the rider weighs or the slope does — so the
+//! stop is shaped in amps:
 //!
-//! The loop instance is the failsafe's own — the host-tunable cruise loop in
-//! `FocDriver` is never used here, so a mis-tuned cruise config cannot become
-//! the link-loss safety net.
+//! - the q current moves at [`FailsafeConfig::slew_a_per_s`] from whatever
+//!   was flowing (a drive command, the rider's own brake) toward the brake,
+//!   in both directions — no step anywhere, including the hand-over;
+//! - the brake settles at [`FailsafeConfig::brake_current_a`] (within the
+//!   general `max_brake_a`), or at the rider's harder brake if one was in
+//!   progress — the stop never weakens a brake it took over;
+//! - [`FailsafeConfig::decel_rad_s2`] only bounds the stop from above (a
+//!   light rotor under a strong brake);
+//! - it brakes the way the rotor moves when the stop begins (a board
+//!   already rolling back is braked back);
+//! - near standstill the active brake stands down and the parking brake —
+//!   the passive windings short, which opposes motion either way without
+//!   an angle or a speed estimate — takes over and holds a roll-back
+//!   (never engaged at speed).
+//!
+//! While the rotor moves and the angle is trustworthy, the stop never
+//! releases the brake on its own: a brake that cannot slow a descent still
+//! beats a coast. The same machinery also serves the user-commanded
+//! ramp-into-parking-brake (`FocDriver::enter_brake_ramp`).
 //!
 //! Safety: the brake target is *intent* — it is routed back through the
 //! normal current-control path in `FocDriver`, so the current-limit clamp and
@@ -28,7 +40,6 @@
 //! `run_foc_cycle` fault gate turns into high-Z (and resets this controller).
 
 use crate::foc::clamp_f32;
-use crate::foc::velocity::{VelocityLoop, VelocityLoopConfig};
 #[cfg(feature = "storage")]
 use crate::storage::FailsafeConfigStored;
 
@@ -38,20 +49,27 @@ use crate::storage::FailsafeConfigStored;
 /// [`ControlledStop`]: FailsafePolicy::ControlledStop
 const STANDSTILL_DEBOUNCE_S: f32 = 0.05;
 
+/// A reversal read above the parking-brake gate (an estimate jump) must
+/// persist this long (s) before the brake turns around; a one-sample glitch
+/// never gets there.
+const REVERSAL_DEBOUNCE_S: f32 = 0.05;
+
+/// Low-pass time constant (s) of the deceleration estimate (the derivative
+/// of the velocity estimate — hall velocity steps at every edge).
+const DECEL_FILTER_TAU_S: f32 = 0.05;
+
+/// The deceleration bound acts once the measured deceleration passes this
+/// fraction of it; below, the current cap alone shapes the stop.
+const DECEL_BOUND_ENGAGE: f32 = 0.25;
+
+/// For this long (s) after arming, the measured deceleration raises the
+/// deceleration bound instead of being held to it: the rider's own brake
+/// in progress is taken over, never softened by the bound.
+const TAKEOVER_WINDOW_S: f32 = 0.1;
+
 /// Top fraction of the OV window over which the regen brake current is
 /// derated to zero — a soft landing instead of bang-bang into the OV fault.
 const OV_DERATE_BAND: f32 = 0.1;
-
-/// Give up (coast) if |ω| hasn't decreased by [`NO_PROGRESS_MARGIN_RAD_S`]
-/// for this long — the velocity estimate is broken, or the brake physically
-/// can't slow the vehicle (steep descent at the current cap). Deliberately
-/// generous: a brake that *holds* speed on a hill is still better than a
-/// coast, so only a sustained total lack of progress gives up. The hard cap
-/// is [`FailsafeConfig::brake_time_s`].
-const NO_PROGRESS_WINDOW_S: f32 = 2.0;
-
-/// Minimum |ω| improvement (electrical rad/s) that counts as progress.
-const NO_PROGRESS_MARGIN_RAD_S: f32 = 10.0;
 
 /// Maximum |ω_e| (electrical rad/s) at which the windings may be shorted
 /// (`ControlMode::Brake`, the parking brake) — above this the short-circuit
@@ -61,14 +79,6 @@ const NO_PROGRESS_MARGIN_RAD_S: f32 = 10.0;
 /// threshold (20 rad/s default) so a rider standing next to the board can
 /// always engage it. Bench-tune.
 pub const BRAKE_ENTRY_MAX_E_RAD_S: f32 = 50.0;
-
-/// Fixed gains for the failsafe's own velocity loop. Soft on purpose: the
-/// hall velocity estimate only updates at edges, so the loop must not change
-/// the speed much within one edge interval (see `foc::velocity`), and these
-/// must be safe on *any* motor — the decel ramp does the shaping, the gains
-/// only have to track it.
-const BRAKE_VEL_KP: f32 = 0.01;
-const BRAKE_VEL_KI: f32 = 0.2;
 
 /// What the FOC driver should do this cycle while the failsafe is active.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -81,9 +91,8 @@ pub enum FailsafeAction {
     /// Terminal: cut PWM (high-Z / free-wheel) and leave the failsafe.
     Stop,
     /// Terminal: engage the parking brake (windings short) and leave the
-    /// failsafe. Emitted **only** after a clean stop (standstill debounce or
-    /// zero crossing) — the give-up paths (timeout, no progress, lost angle
-    /// trust) always coast, never short the windings at speed.
+    /// failsafe. Emitted **only** after a clean stop at a speed the short
+    /// can take (see [`BRAKE_ENTRY_MAX_E_RAD_S`]).
     EngageBrake,
 }
 
@@ -94,10 +103,9 @@ pub enum FailsafeAction {
 pub enum FailsafePolicy {
     /// Free-wheel: cut PWM (high-Z). Matches the legacy link-loss behavior.
     Coast = 0,
-    /// Ramp the q-current to zero, then free-wheel.
+    /// Slew the q-current to zero, then free-wheel.
     RampToZero = 1,
-    /// Ramp to zero, then regen-brake to a standstill (or a time / OV limit),
-    /// then coast.
+    /// Regen-brake to a standstill, then apply the configured terminal.
     ///
     /// Brakes to a full stop only while the angle source tracks to standstill
     /// (Hall, or HFI). A pure back-EMF observer loses lock below its speed
@@ -117,8 +125,8 @@ impl FailsafePolicy {
 }
 
 /// What a clean [`ControlledStop`](FailsafePolicy::ControlledStop) leaves
-/// behind. The give-up exits (timeout, no progress, lost angle trust) always
-/// end high-Z regardless — the parking brake is never engaged at speed.
+/// behind. A stop that loses the angle always ends high-Z regardless — the
+/// parking brake is never engaged at speed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
@@ -150,22 +158,21 @@ pub struct FailsafeConfig {
     /// Command-staleness threshold (µs). Past this with no fresh setpoint and
     /// the motor running, the deadman arms the failsafe.
     pub staleness_timeout_us: u64,
-    /// Regen-brake current cap (A); also clamped to the current limit at use.
-    /// With the decel-ramped brake this is the *ceiling*, not the operating
-    /// point — the loop only saturates here when the ramp can't be met
-    /// (heavy load, downhill).
+    /// Brake current of the stop (A); the general `max_brake_a` still
+    /// bounds it. `0` = the general brake limit alone. A harder brake the
+    /// rider had in progress is kept.
     pub brake_current_a: f32,
-    /// Time (s) to slew the q-current by `brake_current_a` (the bumpless
-    /// ramp-down from the last drive command).
-    pub ramp_s: f32,
-    /// Hard cap on the brake duration (s); the earlier give-up is the
-    /// no-progress detector ([`NO_PROGRESS_WINDOW_S`]).
-    pub brake_time_s: f32,
+    /// Rate (A/s) at which the stop changes the q current: building the
+    /// brake, handing over from the last command, turning it around,
+    /// fading it out. The force on the wheel moves at this rate — what the
+    /// rider feels as the brake coming on.
+    pub slew_a_per_s: f32,
     /// |ω_e| (electrical rad/s) below which the rotor counts as stopped.
     pub standstill_rad_s: f32,
-    /// Brake deceleration (electrical rad/s²): the velocity reference ramps
-    /// to zero at this rate, so the felt deceleration is the same on a slope
-    /// as on the flat — up to the current cap.
+    /// Upper bound on the stop's deceleration (electrical rad/s²): the brake
+    /// current backs off when the rotor slows faster (a light rotor under a
+    /// strong brake). Not a target — with a rider the current usually binds
+    /// first.
     pub decel_rad_s2: f32,
     /// What a clean stop leaves behind (high-Z vs parking brake).
     pub terminal: FailsafeTerminal,
@@ -179,8 +186,7 @@ impl Default for FailsafeConfig {
             policy: FailsafePolicy::ControlledStop,
             staleness_timeout_us: 150_000, // ≈3× the 50 ms host affirmation
             brake_current_a: 15.0,
-            ramp_s: 0.1,
-            brake_time_s: 10.0,
+            slew_a_per_s: 150.0,
             standstill_rad_s: 20.0,
             decel_rad_s2: 1_000.0,
             terminal: FailsafeTerminal::ParkBrake,
@@ -189,7 +195,7 @@ impl Default for FailsafeConfig {
 }
 
 impl FailsafeConfig {
-    /// Build from the stored (host-writable) form: ms → µs/s, `policy: u8` →
+    /// Build from the stored (host-writable) form: ms → µs, `policy: u8` →
     /// enum (unknown → Coast). A missing or non-sane stored value falls back
     /// to [`Default`] — a corrupt config can never disable the deadman.
     #[cfg(feature = "storage")]
@@ -200,8 +206,7 @@ impl FailsafeConfig {
                     policy: FailsafePolicy::from_u8(c.policy),
                     staleness_timeout_us: u64::from(c.staleness_timeout_ms) * 1_000,
                     brake_current_a: c.brake_current_a,
-                    ramp_s: c.ramp_ms * 1e-3,
-                    brake_time_s: c.brake_time_ms * 1e-3,
+                    slew_a_per_s: c.slew_a_per_s,
                     standstill_rad_s: c.standstill_rad_s,
                     decel_rad_s2: c.decel_rad_s2,
                     terminal: FailsafeTerminal::from_u8(c.terminal),
@@ -223,18 +228,16 @@ impl FailsafeConfig {
 
     /// All numeric fields finite and in a usable range.
     ///
-    /// `brake_current_a` must be strictly positive: it sets the RampDown
-    /// slew rate, and a zero would freeze the ramp at the seeded current —
-    /// a failsafe that drives the last commanded torque forever.
+    /// `slew_a_per_s` must be strictly positive: a zero would freeze the
+    /// q current where the failsafe found it — a stop that drives the last
+    /// commanded torque forever.
     pub fn is_sane(&self) -> bool {
         self.staleness_timeout_us > 0
             && self.staleness_timeout_us <= Self::MAX_STALENESS_TIMEOUT_US
             && self.brake_current_a.is_finite()
-            && self.brake_current_a > 0.0
-            && self.ramp_s.is_finite()
-            && self.ramp_s > 0.0
-            && self.brake_time_s.is_finite()
-            && self.brake_time_s >= 0.0
+            && self.brake_current_a >= 0.0
+            && self.slew_a_per_s.is_finite()
+            && self.slew_a_per_s > 0.0
             && self.standstill_rad_s.is_finite()
             && self.standstill_rad_s > 0.0
             && self.decel_rad_s2.is_finite()
@@ -242,30 +245,18 @@ impl FailsafeConfig {
     }
 }
 
-/// Internal phase of the failsafe sequence.
+/// Where the failsafe sequence is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Phase {
     /// Not engaged.
     Inactive,
-    /// Slewing the q-current toward zero (bumpless from the last command).
-    RampDown { iq: f32 },
-    /// Regen-braking: the velocity reference ramps to zero at the configured
-    /// deceleration through the failsafe's own velocity loop. The output is
-    /// clamped to oppose the *original* rotation direction (`brake_sign` =
-    /// −sign(ω) captured at entry) — unidirectional by design, so a lagging
-    /// velocity estimate can't pump a limit cycle by driving past zero.
-    Brake {
-        elapsed_s: f32,
-        standstill_s: f32,
-        brake_sign: f32,
-        /// Lowest |ω| seen so far (progress tracking).
-        best_speed: f32,
-        /// Time (s) since |ω| last improved by [`NO_PROGRESS_MARGIN_RAD_S`].
-        no_progress_s: f32,
-    },
+    /// RampToZero: slewing the q-current to zero, then high-Z.
+    RampToZero,
+    /// ControlledStop: braking whichever way the rotor moves.
+    Brake,
     /// Clean stop reached — the driver applies the configured terminal.
     Stopped,
-    /// Gave up (timeout / no progress / lost angle trust) — always high-Z.
+    /// Gave up (lost angle trust) — always high-Z.
     GaveUp,
 }
 
@@ -278,9 +269,35 @@ pub struct FailsafeController {
     /// What a clean stop leaves behind — from the config at arm time, or
     /// forced to ParkBrake for a user-commanded ramp-into-brake.
     terminal: FailsafeTerminal,
-    /// The failsafe's own velocity loop (fixed conservative gains; the
-    /// decel limit is set from the config at arm time).
-    vel_loop: VelocityLoop,
+    /// The q current being commanded (A), slewed.
+    iq: f32,
+    /// Direction of motion being braked (±1; 0 until the first brake step
+    /// has seen the rotor).
+    brake_dir: f32,
+    /// Brake magnitude taken over from the rider at arm time (A).
+    takeover_a: f32,
+    /// Time since arming (s).
+    since_arm_s: f32,
+    /// Time the rotor has spent below the standstill threshold (s).
+    standstill_s: f32,
+    /// Time the rotor has moved against `brake_dir` (s).
+    reverse_s: f32,
+    /// Previous velocity sample, for the deceleration estimate.
+    omega_prev: Option<f32>,
+    /// Low-passed dω/dt (electrical rad/s²).
+    accel_filt: f32,
+    /// Low-passed brake current along the braked direction (A), filtered
+    /// like `accel_filt`.
+    brake_filt: f32,
+    /// Measured deceleration per amp of brake (el rad/s² / A; 0 = not
+    /// measured yet).
+    decel_per_a: f32,
+    /// Keep applying the deceleration bound after a turn-around until it
+    /// is measured afresh in the new direction.
+    hold_bound: bool,
+    /// Deceleration bound in force (el rad/s²): the configured one, raised
+    /// by the rider's harder brake during the takeover window.
+    decel_limit: f32,
 }
 
 impl Default for FailsafeController {
@@ -294,14 +311,18 @@ impl FailsafeController {
         Self {
             phase: Phase::Inactive,
             terminal: FailsafeTerminal::HighZ,
-            vel_loop: VelocityLoop::new(VelocityLoopConfig {
-                kp: BRAKE_VEL_KP,
-                ki: BRAKE_VEL_KI,
-                accel_limit: 0.0, // set from the config at arm time
-                // No feedforward in the safety instance: fixed conservative
-                // gains, no dependence on measured motor constants.
-                accel_ff: 0.0,
-            }),
+            iq: 0.0,
+            brake_dir: 0.0,
+            takeover_a: 0.0,
+            since_arm_s: 0.0,
+            standstill_s: 0.0,
+            reverse_s: 0.0,
+            omega_prev: None,
+            accel_filt: 0.0,
+            brake_filt: 0.0,
+            decel_per_a: 0.0,
+            hold_bound: false,
+            decel_limit: 0.0,
         }
     }
 
@@ -319,7 +340,8 @@ impl FailsafeController {
     /// Change what a clean stop leaves behind, mid-sequence. Used when a
     /// user Brake command arrives while a stop is already in progress —
     /// `arm` is idempotent then, but the user's parking-brake intent must
-    /// not be silently dropped. The give-up paths still always end high-Z.
+    /// not be silently dropped. A stop that loses the angle still ends
+    /// high-Z.
     pub fn set_terminal(&mut self, terminal: FailsafeTerminal) {
         self.terminal = terminal;
     }
@@ -332,23 +354,26 @@ impl FailsafeController {
         if self.is_active() {
             return;
         }
-        self.terminal = terminal;
-        self.phase = match policy {
-            // Coast: nothing to drive; always high-Z (a coast never ends at
-            // standstill deliberately, so the parking-brake terminal does
-            // not apply).
-            FailsafePolicy::Coast => Phase::GaveUp,
-            FailsafePolicy::RampToZero | FailsafePolicy::ControlledStop => {
-                Phase::RampDown { iq: current_iq }
-            }
+        *self = Self {
+            phase: match policy {
+                // Coast: nothing to drive; always high-Z (a coast never ends
+                // at standstill deliberately, so the parking-brake terminal
+                // does not apply).
+                FailsafePolicy::Coast => Phase::GaveUp,
+                FailsafePolicy::RampToZero => Phase::RampToZero,
+                FailsafePolicy::ControlledStop => Phase::Brake,
+            },
+            terminal,
+            iq: current_iq,
+            ..Self::new()
         };
     }
 
     /// One ISR cycle.
     ///
     /// * `omega_e` — electrical velocity (rad/s) from the phase provider.
-    /// * `max_current_a` — hard current-limit magnitude (0 = unset). Caps the
-    ///   brake intent; the driver's `clamp_targets` is still the real ceiling.
+    /// * `max_brake_a` — the general braking-current limit (0 = unset).
+    ///   Bounds the stop; the driver's clamps are still the real ceiling.
     /// * `vbus`, `ov_threshold_v` — for the proactive regen derate near OV
     ///   (`ov_threshold_v == 0` disables it; the OV fault is the backstop).
     /// * `angle_trustworthy` — false when the (sensorless) angle source has
@@ -359,159 +384,163 @@ impl FailsafeController {
         omega_e: f32,
         dt: f32,
         cfg: &FailsafeConfig,
-        max_current_a: f32,
+        max_brake_a: f32,
         vbus: f32,
         ov_threshold_v: f32,
         angle_trustworthy: bool,
     ) -> FailsafeAction {
-        let cap = if max_current_a > 0.0 {
-            cfg.brake_current_a.min(max_current_a)
-        } else {
-            cfg.brake_current_a
-        };
-        // Slew the q-current by brake_current_a over ramp_s (A per cycle).
-        let slew = (cfg.brake_current_a / cfg.ramp_s) * dt;
-
-        let brake = matches!(cfg.policy, FailsafePolicy::ControlledStop) && angle_trustworthy;
+        let slew = cfg.slew_a_per_s * dt;
         match self.phase {
             Phase::Inactive | Phase::GaveUp => FailsafeAction::Stop,
             Phase::Stopped => self.terminal_action(omega_e),
-
-            // Already braking (the q-current opposes the rotation — the
-            // rider was on the brake when the link died): take the brake
-            // over at its current level. Ramping it to zero first released
-            // it for the ramp plus the ~0.4 s the soft loop takes to build
-            // it back.
-            Phase::RampDown { iq } if brake && iq * omega_e < 0.0 => {
-                let eff_cap = derate_for_ov(cap, vbus, ov_threshold_v);
-                let iq = clamp_f32(iq, -eff_cap, eff_cap);
-                self.start_brake(omega_e, cfg, iq);
-                FailsafeAction::Drive {
-                    id_target: 0.0,
-                    iq_target: iq,
+            Phase::RampToZero => {
+                self.iq = ramp_toward(self.iq, 0.0, slew);
+                if self.iq == 0.0 {
+                    self.phase = Phase::GaveUp;
+                    return FailsafeAction::Stop;
                 }
+                drive(self.iq)
             }
-
-            Phase::RampDown { iq } => {
-                let iq = ramp_toward(iq, 0.0, slew);
-                if iq.abs() <= slew.max(1e-3) {
-                    // Reached zero current.
-                    if brake {
-                        self.start_brake(omega_e, cfg, 0.0);
-                        FailsafeAction::Drive {
-                            id_target: 0.0,
-                            iq_target: 0.0,
-                        }
-                    } else {
-                        // RampToZero, Coast-after-ramp, or no trustworthy angle
-                        // to brake against: free-wheel from here.
-                        self.phase = Phase::GaveUp;
-                        FailsafeAction::Stop
-                    }
-                } else {
-                    self.phase = Phase::RampDown { iq };
-                    FailsafeAction::Drive {
-                        id_target: 0.0,
-                        iq_target: iq,
-                    }
-                }
-            }
-
-            Phase::Brake {
-                elapsed_s,
-                standstill_s,
-                brake_sign,
-                best_speed,
-                no_progress_s,
-            } => {
-                // Sensorless angle dropped below its floor mid-brake -> coast
-                // the rest rather than commutate on a stale angle.
+            Phase::Brake => {
+                // Without a trustworthy angle a q current is torque in an
+                // unknown direction: coast instead of braking blind.
                 if !angle_trustworthy {
                     self.phase = Phase::GaveUp;
                     return FailsafeAction::Stop;
                 }
-
-                let elapsed_s = elapsed_s + dt;
-                let speed = omega_e.abs();
-                let stopped = speed < cfg.standstill_rad_s;
-                let standstill_s = if stopped { standstill_s + dt } else { 0.0 };
-                // The estimate has crossed zero (now spinning the way the brake
-                // torque points) — we've stopped/overshot; never drive past it.
-                // A real zero crossing reads slow; a fast "reverse" reading is
-                // an estimate glitch at speed (the unidirectional clamp holds
-                // the brake at zero through it) and must not end the stop.
-                let reversed = omega_e * brake_sign > 0.0 && speed <= BRAKE_ENTRY_MAX_E_RAD_S;
-
-                // Clean stop: held standstill, or crossed zero.
-                if reversed || standstill_s >= STANDSTILL_DEBOUNCE_S {
-                    self.phase = Phase::Stopped;
-                    return self.terminal_action(omega_e);
-                }
-
-                // Progress watchdog: |ω| must keep coming down. A frozen
-                // estimate or a descent the cap can't beat eventually gives
-                // up (coast); a brake merely *holding* speed on a hill gets
-                // the full window before that — better than coasting early.
-                let (best_speed, no_progress_s) = if speed < best_speed - NO_PROGRESS_MARGIN_RAD_S {
-                    (speed, 0.0)
-                } else {
-                    (best_speed, no_progress_s + dt)
-                };
-
-                // Give up: out of time or no progress — high-Z regardless of
-                // the configured terminal (never short windings at speed).
-                if elapsed_s >= cfg.brake_time_s || no_progress_s >= NO_PROGRESS_WINDOW_S {
-                    self.phase = Phase::GaveUp;
-                    return FailsafeAction::Stop;
-                }
-
-                // Decel-limited stop: the loop's internal reference ramps to
-                // zero at cfg.decel_rad_s2; clamp the output unidirectional
-                // (only oppose the original rotation) and inside the
-                // OV-derated cap — regen pushes energy into the bus, so back
-                // off approaching the trip instead of slamming into it.
-                let eff_cap = derate_for_ov(cap, vbus, ov_threshold_v);
-                let (iq_min, iq_max) = if brake_sign < 0.0 {
-                    (-eff_cap, 0.0)
-                } else {
-                    (0.0, eff_cap)
-                };
-                let iq = self.vel_loop.step_clamped(0.0, omega_e, iq_min, iq_max, dt);
-
-                self.phase = Phase::Brake {
-                    elapsed_s,
-                    standstill_s,
-                    brake_sign,
-                    best_speed,
-                    no_progress_s,
-                };
-                FailsafeAction::Drive {
-                    id_target: 0.0,
-                    iq_target: iq,
-                }
+                self.brake_step(omega_e, dt, cfg, max_brake_a, vbus, ov_threshold_v)
             }
         }
     }
 
-    /// Enter the decel-limited brake, continuing from `iq` (0, or the brake
-    /// current already flowing). The brake is locked to oppose the direction
-    /// the rotor spins *now* — it won't change for the rest of the sequence
-    /// — and the decel ramp starts at this speed.
-    fn start_brake(&mut self, omega_e: f32, cfg: &FailsafeConfig, iq: f32) {
-        self.vel_loop.set_config(VelocityLoopConfig {
-            kp: BRAKE_VEL_KP,
-            ki: BRAKE_VEL_KI,
-            accel_limit: cfg.decel_rad_s2,
-            accel_ff: 0.0,
-        });
-        self.vel_loop.reset_holding(omega_e, iq);
-        self.phase = Phase::Brake {
-            elapsed_s: 0.0,
-            standstill_s: 0.0,
-            brake_sign: -sign(omega_e),
-            best_speed: omega_e.abs(),
-            no_progress_s: 0.0,
+    fn brake_step(
+        &mut self,
+        omega_e: f32,
+        dt: f32,
+        cfg: &FailsafeConfig,
+        max_brake_a: f32,
+        vbus: f32,
+        ov_threshold_v: f32,
+    ) -> FailsafeAction {
+        let speed = omega_e.abs();
+        let motion = sign(omega_e);
+        if self.omega_prev.is_none() {
+            // First look at the rotor: brake the way it moves, and keep a
+            // brake the rider already had on (iq opposing the motion).
+            self.brake_dir = motion;
+            self.takeover_a = if self.iq * omega_e < 0.0 {
+                self.iq.abs()
+            } else {
+                0.0
+            };
+            self.decel_limit = cfg.decel_rad_s2;
+        }
+        self.since_arm_s += dt;
+
+        // Deceleration of the braked motion and the brake current that
+        // acted over the same interval, low-passed alike (so their ratio
+        // carries no filter lag).
+        if let Some(prev) = self.omega_prev
+            && dt > 0.0
+        {
+            let a = (dt / DECEL_FILTER_TAU_S).min(1.0);
+            self.accel_filt += a * ((omega_e - prev) / dt - self.accel_filt);
+            self.brake_filt += a * (-self.iq * self.brake_dir - self.brake_filt);
+        }
+        self.omega_prev = Some(omega_e);
+        let decel = -self.accel_filt * self.brake_dir;
+        // Taking over the rider's brake: hold it for the window (below) and
+        // let the deceleration it produces raise the bound, so the bound
+        // never softens it afterwards. Our own brake must not raise it.
+        let taking_over = self.takeover_a > 0.0 && self.since_arm_s < TAKEOVER_WINDOW_S;
+        if taking_over {
+            self.decel_limit = self.decel_limit.max(decel);
+        }
+
+        // Near standstill the active brake stands down and the parking
+        // brake takes over. The velocity estimate lags there (hall: tens of
+        // el rad/s behind at a reversal), and a q current commanded on it
+        // pushed the rotor through zero and pumped a light one into a
+        // ±700 el rad/s limit cycle. The windings short opposes any motion
+        // without an angle or a speed estimate — VESC shorts the phases
+        // around zero for the same reason — and holds a roll-back the same
+        // way.
+        let slow = speed < cfg.standstill_rad_s;
+        self.standstill_s = if slow { self.standstill_s + dt } else { 0.0 };
+        let crossed = motion != 0.0 && motion != self.brake_dir;
+        // Clean stop: held standstill with the brake released, or a zero
+        // crossing read at a speed the short can take.
+        if (self.standstill_s >= STANDSTILL_DEBOUNCE_S && self.iq == 0.0)
+            || (crossed && speed <= BRAKE_ENTRY_MAX_E_RAD_S)
+        {
+            self.phase = Phase::Stopped;
+            return self.terminal_action(omega_e);
+        }
+
+        // A reversal read above that is an estimate jump (a sampled rotor
+        // crosses zero slowly). While it lasts, the old brake would drive
+        // the rotor: release. If it persists, brake the new direction, held
+        // to the deceleration bound measured so far — the rotor's mass
+        // does not change with direction.
+        if crossed {
+            self.reverse_s += dt;
+            if self.reverse_s >= REVERSAL_DEBOUNCE_S || self.brake_dir == 0.0 {
+                self.brake_dir = motion;
+                self.reverse_s = 0.0;
+                // Both filters straddle the jump; start them afresh.
+                self.brake_filt = 0.0;
+                self.accel_filt = 0.0;
+                self.hold_bound = self.decel_per_a > 0.0;
+            }
+        } else {
+            self.reverse_s = 0.0;
+        }
+        let against = motion != 0.0 && motion != self.brake_dir;
+
+        // Brake magnitude: the configured stop current (or the general
+        // limit), never below a brake taken over from the rider, never
+        // above the general limit; derated approaching OV.
+        let general = if max_brake_a > 0.0 {
+            max_brake_a
+        } else {
+            f32::INFINITY
         };
+        let configured = if cfg.brake_current_a > 0.0 {
+            cfg.brake_current_a
+        } else {
+            general
+        };
+        let cap = derate_for_ov(
+            configured.max(self.takeover_a).min(general),
+            vbus,
+            ov_threshold_v,
+        );
+        let mut magnitude = if cap.is_finite() && !against && !slow {
+            cap
+        } else {
+            0.0
+        };
+        // Deceleration bound, once the rotor decelerates noticeably: brake
+        // current = bound / (deceleration per amp). The per-amp figure is
+        // measured with brake and deceleration filtered alike (no lag in
+        // the ratio) and it includes the slope, so the fixed point is
+        // exactly the bound. Far below the bound (a loaded board) the
+        // current cap governs.
+        let bound_engaged = !taking_over && decel > DECEL_BOUND_ENGAGE * self.decel_limit;
+        // (Not across a reversal read: the estimate's jump is no
+        // deceleration the brake produced.)
+        if bound_engaged && !crossed && self.brake_filt > 0.0 {
+            self.decel_per_a = decel / self.brake_filt;
+            self.hold_bound = false;
+        }
+        if taking_over {
+            magnitude = magnitude.min(self.takeover_a);
+        } else if (bound_engaged || self.hold_bound) && self.decel_per_a > 0.0 {
+            magnitude = magnitude.min(self.decel_limit / self.decel_per_a);
+        }
+
+        self.iq = ramp_toward(self.iq, -self.brake_dir * magnitude, cfg.slew_a_per_s * dt);
+        drive(self.iq)
     }
 
     /// What a clean stop hands over to. The parking brake shorts the
@@ -524,6 +553,15 @@ impl FailsafeController {
             }
             _ => FailsafeAction::Stop,
         }
+    }
+}
+
+/// A q-current-only command.
+#[inline]
+fn drive(iq: f32) -> FailsafeAction {
+    FailsafeAction::Drive {
+        id_target: 0.0,
+        iq_target: iq,
     }
 }
 
@@ -580,24 +618,40 @@ mod tests {
         }
     }
 
-    /// Run the controller to completion against a constant ω_e, returning the
-    /// last Drive iq seen, how many cycles it took, and the terminal action.
-    fn run_to_done(
-        ctrl: &mut FailsafeController,
-        omega_e: f32,
+    /// A rotor the failsafe current acts on: dω/dt = k·iq + load, with k in
+    /// el rad/s² per A (≈ 8.7 for a loaded one-motor 5065 board, thousands
+    /// for a bare bench rotor) and `load` the slope's pull (el rad/s², along
+    /// +ω). Runs `secs` or until a terminal action; `probe` sees every
+    /// cycle. Returns the final ω and the last action.
+    #[allow(clippy::too_many_arguments)]
+    fn ride(
+        c: &mut FailsafeController,
         cfg: &FailsafeConfig,
-        max_a: f32,
-        trustworthy: bool,
-        max_cycles: u32,
-    ) -> (f32, u32, FailsafeAction) {
-        let mut last_iq = 0.0;
-        for n in 0..max_cycles {
-            match ctrl.step(omega_e, DT, cfg, max_a, 0.0, 0.0, trustworthy) {
-                FailsafeAction::Drive { iq_target, .. } => last_iq = iq_target,
-                terminal => return (last_iq, n, terminal),
+        max_brake_a: f32,
+        omega0: f32,
+        k: f32,
+        load: f32,
+        secs: f32,
+        mut probe: impl FnMut(f32, FailsafeAction),
+    ) -> (f32, FailsafeAction) {
+        let mut omega = omega0;
+        let mut last = FailsafeAction::Stop;
+        for _ in 0..(secs / DT) as u32 {
+            last = c.step(omega, DT, cfg, max_brake_a, 0.0, 0.0, true);
+            probe(omega, last);
+            match last {
+                FailsafeAction::Drive { iq_target, .. } => omega += (k * iq_target + load) * DT,
+                _ => break,
             }
         }
-        (last_iq, max_cycles, FailsafeAction::Stop)
+        (omega, last)
+    }
+
+    fn iq_of(a: FailsafeAction) -> f32 {
+        match a {
+            FailsafeAction::Drive { iq_target, .. } => iq_target,
+            other => panic!("expected Drive, got {other:?}"),
+        }
     }
 
     #[test]
@@ -624,276 +678,289 @@ mod tests {
     }
 
     #[test]
-    fn ramp_to_zero_brings_iq_down_then_stops() {
+    fn ramp_to_zero_slews_at_the_configured_rate() {
+        let cfg = cfg(FailsafePolicy::RampToZero);
         let mut c = FailsafeController::new();
         c.arm(8.0, FailsafePolicy::RampToZero, FailsafeTerminal::HighZ);
-        // First cycle still drives a (reduced) current, not Stop.
-        match c.step(
-            300.0,
-            DT,
-            &cfg(FailsafePolicy::RampToZero),
-            40.0,
-            0.0,
-            0.0,
-            true,
-        ) {
-            FailsafeAction::Drive { iq_target, .. } => assert!(iq_target < 8.0 && iq_target > 0.0),
-            other => panic!("should ramp, not terminate immediately: {other:?}"),
-        }
-        let (_iq, cycles, terminal) = run_to_done(
-            &mut c,
-            300.0,
-            &cfg(FailsafePolicy::RampToZero),
-            40.0,
-            true,
-            100_000,
-        );
-        // ~8 A at 150 A/s ≈ 53 ms ≈ 1067 cycles; never enters Brake.
-        assert!(cycles > 100 && cycles < 5_000, "cycles {cycles}");
-        assert_eq!(terminal, FailsafeAction::Stop);
+        let mut cycles = 0u32;
+        let (_, last) = ride(&mut c, &cfg, 40.0, 300.0, 0.0, 0.0, 1.0, |_, _| cycles += 1);
+        assert_eq!(last, FailsafeAction::Stop);
+        // 8 A at 150 A/s = 53 ms = 1067 cycles.
+        let expected = (8.0 / cfg.slew_a_per_s / DT) as u32;
+        assert!(cycles.abs_diff(expected) <= 2, "{cycles} vs {expected}");
     }
 
+    /// From a drive command the stop crosses zero into the brake at the
+    /// configured rate — no step anywhere — and settles at the stop current.
     #[test]
-    fn controlled_stop_brakes_negative_for_forward_rotation() {
-        // ω_e > 0 → braking torque must be negative iq, and never positive
-        // (unidirectional clamp).
-        let mut c = FailsafeController::new();
-        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
+    fn stop_builds_the_brake_at_the_slew_rate() {
         let cfg = cfg(FailsafePolicy::ControlledStop);
-        let mut min_iq = 0.0f32;
-        let mut max_iq = 0.0f32;
-        for _ in 0..4_000 {
-            if let FailsafeAction::Drive { iq_target, .. } =
-                c.step(300.0, DT, &cfg, 40.0, 0.0, 0.0, true)
-            {
-                min_iq = min_iq.min(iq_target);
-                max_iq = max_iq.max(iq_target);
-            }
-        }
-        assert!(min_iq < -1.0, "expected negative brake iq, got {min_iq}");
-        // Capped at min(brake_current, limit) = min(15, 40) = 15 A.
-        assert!(min_iq >= -15.5, "brake exceeded cap: {min_iq}");
-        assert!(max_iq <= 1e-3, "must never drive forward: {max_iq}");
-    }
-
-    #[test]
-    fn controlled_stop_brakes_positive_for_reverse_rotation() {
-        // ω_e < 0 → braking torque must be positive iq (sign test).
-        let mut c = FailsafeController::new();
-        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
-        let cfg = cfg(FailsafePolicy::ControlledStop);
-        let mut max_iq = 0.0f32;
-        for _ in 0..4_000 {
-            if let FailsafeAction::Drive { iq_target, .. } =
-                c.step(-300.0, DT, &cfg, 40.0, 0.0, 0.0, true)
-            {
-                max_iq = max_iq.max(iq_target);
-            }
-        }
-        assert!(max_iq > 1.0, "expected positive brake iq, got {max_iq}");
-    }
-
-    /// The rider was braking (iq opposes ω) when the link died: the brake
-    /// must continue, not be released through RampDown while the soft loop
-    /// rebuilds it (old: 10 A → 0 within 67 ms, back to ~10 A only after
-    /// ~0.3 s).
-    #[test]
-    fn controlled_stop_takes_over_a_brake_in_progress() {
         let mut c = FailsafeController::new();
         c.arm(
-            -10.0,
+            10.0,
             FailsafePolicy::ControlledStop,
             FailsafeTerminal::HighZ,
         );
+        let (mut prev, mut max_step, mut last_iq) = (10.0f32, 0.0f32, 0.0);
+        ride(&mut c, &cfg, 40.0, 500.0, 0.0, 0.0, 0.5, |_, a| {
+            last_iq = iq_of(a);
+            max_step = max_step.max((last_iq - prev).abs());
+            prev = last_iq;
+        });
+        assert!(
+            max_step <= cfg.slew_a_per_s * DT * 1.001,
+            "step {max_step} A"
+        );
+        assert!(
+            (last_iq + cfg.brake_current_a).abs() < 1e-3,
+            "settled at {last_iq}"
+        );
+    }
+
+    /// A rotor spinning backward is braked with positive q current.
+    #[test]
+    fn stop_brakes_reverse_rotation_with_positive_current() {
         let cfg = cfg(FailsafePolicy::ControlledStop);
+        let mut c = FailsafeController::new();
+        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
+        let mut last_iq = 0.0;
+        ride(&mut c, &cfg, 40.0, -500.0, 0.0, 0.0, 0.3, |_, a| {
+            last_iq = iq_of(a);
+        });
+        assert!((last_iq - cfg.brake_current_a).abs() < 1e-3, "{last_iq}");
+    }
+
+    /// The rider was braking harder than the stop current when the link
+    /// died: the stop keeps that brake instead of easing off to its own.
+    #[test]
+    fn stop_takes_over_a_harder_brake_without_weakening() {
+        let cfg = cfg(FailsafePolicy::ControlledStop);
+        let mut c = FailsafeController::new();
+        c.arm(
+            -25.0,
+            FailsafePolicy::ControlledStop,
+            FailsafeTerminal::HighZ,
+        );
         let mut weakest = f32::INFINITY;
-        for _ in 0..(0.3 / DT) as u32 {
-            match c.step(500.0, DT, &cfg, 40.0, 0.0, 0.0, true) {
-                FailsafeAction::Drive { iq_target, .. } => weakest = weakest.min(-iq_target),
-                other => panic!("stopped braking: {other:?}"),
+        // A loaded board: the rider's 25 A decelerates ~220 el rad/s².
+        ride(&mut c, &cfg, 40.0, 1_500.0, 8.7, 0.0, 1.0, |omega, a| {
+            if omega > cfg.standstill_rad_s {
+                weakest = weakest.min(-iq_of(a));
             }
-        }
-        assert!(weakest >= 9.99, "brake dipped to {weakest} A");
+        });
+        assert!(weakest >= 24.999, "brake eased to {weakest} A");
     }
 
-    /// A brake in progress above the failsafe cap is taken over AT the cap.
+    /// ...but never beyond the general brake limit: a brake above it is
+    /// brought down to it at the configured rate, not in one step.
     #[test]
-    fn brake_takeover_respects_the_cap() {
+    fn stop_brings_a_brake_above_the_limit_down_smoothly() {
+        let cfg = cfg(FailsafePolicy::ControlledStop);
         let mut c = FailsafeController::new();
         c.arm(
-            -30.0,
+            -25.0,
             FailsafePolicy::ControlledStop,
             FailsafeTerminal::HighZ,
         );
-        let cfg = cfg(FailsafePolicy::ControlledStop);
-        match c.step(500.0, DT, &cfg, 40.0, 0.0, 0.0, true) {
-            FailsafeAction::Drive { iq_target, .. } => {
-                assert!(
-                    (iq_target + cfg.brake_current_a).abs() < 1e-3,
-                    "{iq_target}"
-                );
-            }
-            other => panic!("{other:?}"),
-        }
+        let (mut prev, mut max_step, mut last_iq) = (-25.0f32, 0.0f32, 0.0);
+        ride(&mut c, &cfg, 20.0, 1_500.0, 0.0, 0.0, 0.3, |_, a| {
+            last_iq = iq_of(a);
+            max_step = max_step.max((last_iq - prev).abs());
+            prev = last_iq;
+        });
+        assert!(
+            max_step <= cfg.slew_a_per_s * DT * 1.001,
+            "step {max_step} A"
+        );
+        assert!((last_iq + 20.0).abs() < 1e-3, "settled at {last_iq}");
     }
 
-    /// One fast "reverse" reading mid-brake (an estimate glitch at speed)
-    /// is not a zero crossing: the parking brake must not short the
-    /// windings at 400 el rad/s, and the stop carries on.
+    /// A descent the brake cannot beat: the board keeps speeding up, and the
+    /// stop keeps braking — it used to give up to a coast after 2 s.
     #[test]
-    fn reverse_glitch_at_speed_is_not_a_clean_stop() {
+    fn stop_keeps_braking_a_descent_it_cannot_beat() {
+        let cfg = cfg(FailsafePolicy::ControlledStop);
+        let mut c = FailsafeController::new();
+        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
+        // 15 A × 8.7 = 130 el rad/s² of brake against 200 of slope.
+        let (omega, last) = ride(&mut c, &cfg, 40.0, 1_000.0, 8.7, 200.0, 20.0, |_, _| {});
+        assert!(omega > 1_000.0, "the slope wins: {omega}");
+        assert!((iq_of(last) + cfg.brake_current_a).abs() < 1e-3, "{last:?}");
+    }
+
+    /// `brake_current_a = 0`: the stop uses the general brake limit.
+    #[test]
+    fn zero_stop_current_means_the_general_limit() {
+        let cfg = FailsafeConfig {
+            brake_current_a: 0.0,
+            ..cfg(FailsafePolicy::ControlledStop)
+        };
+        let mut c = FailsafeController::new();
+        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
+        let mut last_iq = 0.0;
+        ride(&mut c, &cfg, 32.0, 1_000.0, 0.0, 0.0, 0.5, |_, a| {
+            last_iq = iq_of(a);
+        });
+        assert!((last_iq + 32.0).abs() < 1e-3, "{last_iq}");
+    }
+
+    /// A light rotor under the stop current would decelerate far past the
+    /// bound: the current backs off to hold it.
+    #[test]
+    fn deceleration_bound_softens_a_violent_stop() {
+        let cfg = cfg(FailsafePolicy::ControlledStop);
+        let mut c = FailsafeController::new();
+        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
+        // 15 A × 500 = 7500 el rad/s² unbounded.
+        let (mut prev_omega, mut worst) = (3_000.0f32, 0.0f32);
+        let mut t = 0.0f32;
+        ride(&mut c, &cfg, 40.0, 3_000.0, 500.0, 0.0, 3.0, |omega, _| {
+            t += DT;
+            if t > 0.3 && omega > 200.0 {
+                worst = worst.max((prev_omega - omega) / DT);
+            }
+            prev_omega = omega;
+        });
+        assert!(
+            worst < 1.3 * cfg.decel_rad_s2,
+            "decelerated at {worst} el rad/s² (bound {})",
+            cfg.decel_rad_s2
+        );
+    }
+
+    /// Stopped by a slope that then pulls it back: the zero crossing hands
+    /// over to the parking brake, which holds the roll-back passively.
+    #[test]
+    fn roll_back_hands_over_to_the_parking_brake() {
+        let cfg = cfg(FailsafePolicy::ControlledStop);
         let mut c = FailsafeController::new();
         c.arm(
             0.0,
             FailsafePolicy::ControlledStop,
             FailsafeTerminal::ParkBrake,
         );
+        // Slope pulls backward harder than the brake: 15 A × 50 = 750
+        // against 2000.
+        let (omega, last) = ride(&mut c, &cfg, 40.0, 300.0, 50.0, -2_000.0, 1.0, |_, _| {});
+        assert_eq!(last, FailsafeAction::EngageBrake);
+        assert!(omega.abs() <= BRAKE_ENTRY_MAX_E_RAD_S, "{omega}");
+    }
+
+    /// A reversal that persists above the parking-brake gate (the estimate
+    /// jumped across zero): released at once, then braked the other way,
+    /// held to the deceleration bound measured before the turn.
+    #[test]
+    fn persistent_reversal_turns_the_brake_around() {
         let cfg = cfg(FailsafePolicy::ControlledStop);
-        for _ in 0..200 {
+        let mut c = FailsafeController::new();
+        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
+        for _ in 0..4_000 {
             c.step(500.0, DT, &cfg, 40.0, 0.0, 0.0, true);
         }
-        assert!(matches!(c.phase, Phase::Brake { .. }));
-        let glitch = c.step(-400.0, DT, &cfg, 40.0, 0.0, 0.0, true);
-        assert!(matches!(glitch, FailsafeAction::Drive { .. }), "{glitch:?}");
-        assert!(matches!(
-            c.step(500.0, DT, &cfg, 40.0, 0.0, 0.0, true),
-            FailsafeAction::Drive { .. }
-        ));
+        let first = iq_of(c.step(-500.0, DT, &cfg, 40.0, 0.0, 0.0, true));
+        assert!(first > -cfg.brake_current_a, "released: {first}");
+        let mut last = 0.0;
+        for _ in 0..4_000 {
+            last = iq_of(c.step(-500.0, DT, &cfg, 40.0, 0.0, 0.0, true));
+        }
+        assert!((last - cfg.brake_current_a).abs() < 1e-3, "{last}");
+    }
+
+    /// One fast "reverse" reading mid-brake (an estimate glitch at speed)
+    /// neither ends the stop nor turns the brake around.
+    #[test]
+    fn reverse_glitch_at_speed_changes_nothing() {
+        let cfg = cfg(FailsafePolicy::ControlledStop);
+        let mut c = FailsafeController::new();
+        c.arm(
+            0.0,
+            FailsafePolicy::ControlledStop,
+            FailsafeTerminal::ParkBrake,
+        );
+        for _ in 0..2_000 {
+            c.step(500.0, DT, &cfg, 40.0, 0.0, 0.0, true);
+        }
+        let before = iq_of(c.step(500.0, DT, &cfg, 40.0, 0.0, 0.0, true));
+        let glitch = iq_of(c.step(-400.0, DT, &cfg, 40.0, 0.0, 0.0, true));
+        let after = iq_of(c.step(500.0, DT, &cfg, 40.0, 0.0, 0.0, true));
+        assert!(
+            before < 0.0 && glitch < 0.0 && after < 0.0,
+            "{before} {glitch} {after}"
+        );
+    }
+
+    /// Approaching standstill the active brake stands down and the parking
+    /// brake takes over; no current is ever pushed through zero.
+    #[test]
+    fn stop_hands_over_to_the_parking_brake() {
+        let cfg = cfg(FailsafePolicy::ControlledStop);
+        let mut c = FailsafeController::new();
+        c.arm(
+            0.0,
+            FailsafePolicy::ControlledStop,
+            FailsafeTerminal::ParkBrake,
+        );
+        let mut drove_backward = false;
+        let (omega, last) = ride(&mut c, &cfg, 40.0, 600.0, 20.0, 0.0, 10.0, |omega, a| {
+            if let FailsafeAction::Drive { iq_target, .. } = a {
+                // A negative brake on a rotor already moving backward.
+                drove_backward |= omega < 0.0 && iq_target < 0.0;
+            }
+        });
+        assert_eq!(last, FailsafeAction::EngageBrake);
+        assert!(omega.abs() <= BRAKE_ENTRY_MAX_E_RAD_S, "{omega}");
+        assert!(!drove_backward);
+    }
+
+    #[test]
+    fn stop_coasts_without_trustworthy_angle() {
+        // Sensorless angle not trustworthy → must not brake blind; coast.
+        let cfg = cfg(FailsafePolicy::ControlledStop);
+        let mut c = FailsafeController::new();
+        c.arm(
+            5.0,
+            FailsafePolicy::ControlledStop,
+            FailsafeTerminal::ParkBrake,
+        );
+        assert_eq!(
+            c.step(300.0, DT, &cfg, 40.0, 0.0, 0.0, false),
+            FailsafeAction::Stop
+        );
+    }
+
+    #[test]
+    fn park_brake_terminal_engages_on_clean_stop() {
+        let cfg = cfg(FailsafePolicy::ControlledStop);
+        let mut c = FailsafeController::new();
+        c.arm(
+            0.0,
+            FailsafePolicy::ControlledStop,
+            FailsafeTerminal::ParkBrake,
+        );
+        let (_, last) = ride(&mut c, &cfg, 40.0, 5.0, 0.0, 0.0, 1.0, |_, _| {});
+        assert_eq!(last, FailsafeAction::EngageBrake);
+        // Terminal is stable until the driver resets it.
+        assert_eq!(
+            c.step(5.0, DT, &cfg, 40.0, 0.0, 0.0, true),
+            FailsafeAction::EngageBrake
+        );
     }
 
     /// A host-configured standstill threshold above the parking-brake gate
     /// ends the stop high-Z rather than shorting the windings there.
     #[test]
     fn park_brake_terminal_respects_the_entry_gate() {
-        let mut c = FailsafeController::new();
-        c.arm(
-            0.0,
-            FailsafePolicy::ControlledStop,
-            FailsafeTerminal::ParkBrake,
-        );
         let mut cfg = cfg(FailsafePolicy::ControlledStop);
         cfg.standstill_rad_s = 2.0 * BRAKE_ENTRY_MAX_E_RAD_S;
+        let mut c = FailsafeController::new();
+        c.arm(
+            0.0,
+            FailsafePolicy::ControlledStop,
+            FailsafeTerminal::ParkBrake,
+        );
         let omega = 1.5 * BRAKE_ENTRY_MAX_E_RAD_S;
-        let (_, _, terminal) = run_to_done(&mut c, omega, &cfg, 40.0, true, 100_000);
-        assert_eq!(terminal, FailsafeAction::Stop);
-    }
-
-    #[test]
-    fn controlled_stop_terminates_on_standstill() {
-        // ω_e below the standstill threshold from the start → no real braking,
-        // terminates after the debounce window.
-        let mut c = FailsafeController::new();
-        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
-        let (_iq, cycles, terminal) = run_to_done(
-            &mut c,
-            5.0, // < standstill_rad_s (20)
-            &cfg(FailsafePolicy::ControlledStop),
-            40.0,
-            true,
-            100_000,
-        );
-        // RampDown(~instant) + STANDSTILL_DEBOUNCE_S (50 ms = 1000 cycles).
-        assert!(cycles > 500 && cycles < 2_000, "cycles {cycles}");
-        assert_eq!(terminal, FailsafeAction::Stop);
-        // Terminal is stable: the controller stays terminal (returning the
-        // same action) until the *driver* resets it.
-        assert_eq!(
-            c.step(
-                5.0,
-                DT,
-                &cfg(FailsafePolicy::ControlledStop),
-                40.0,
-                0.0,
-                0.0,
-                true
-            ),
-            FailsafeAction::Stop
-        );
-    }
-
-    #[test]
-    fn park_brake_terminal_engages_on_clean_stop_only() {
-        // Clean stop with the ParkBrake terminal → EngageBrake, stable.
-        let mut c = FailsafeController::new();
-        c.arm(
-            0.0,
-            FailsafePolicy::ControlledStop,
-            FailsafeTerminal::ParkBrake,
-        );
-        let cfg = cfg(FailsafePolicy::ControlledStop);
-        let (_iq, _cycles, terminal) = run_to_done(&mut c, 5.0, &cfg, 40.0, true, 100_000);
-        assert_eq!(terminal, FailsafeAction::EngageBrake);
-        assert_eq!(
-            c.step(5.0, DT, &cfg, 40.0, 0.0, 0.0, true),
-            FailsafeAction::EngageBrake
-        );
-
-        // Give-up path (constant speed, hard time cap) → Stop (high-Z), the
-        // windings are never shorted at speed regardless of the terminal.
-        let mut c = FailsafeController::new();
-        c.arm(
-            0.0,
-            FailsafePolicy::ControlledStop,
-            FailsafeTerminal::ParkBrake,
-        );
-        let mut short_cap = cfg;
-        short_cap.brake_time_s = 0.5;
-        let (_iq, _cycles, terminal) = run_to_done(&mut c, 300.0, &short_cap, 40.0, true, 100_000);
-        assert_eq!(terminal, FailsafeAction::Stop);
-    }
-
-    #[test]
-    fn controlled_stop_terminates_on_brake_timeout() {
-        // Rotor never slows (infinite inertia in the harness) → the hard time
-        // cap fires (set below the no-progress window here).
-        let mut c = FailsafeController::new();
-        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
-        let mut cfg = cfg(FailsafePolicy::ControlledStop);
-        cfg.brake_time_s = 0.5;
-        let (_iq, cycles, terminal) = run_to_done(&mut c, 300.0, &cfg, 40.0, true, 100_000);
-        // ~0.5 s = 10_000 cycles (+ ramp); generous bounds.
-        assert!(cycles > 9_000 && cycles < 12_000, "cycles {cycles}");
-        assert_eq!(terminal, FailsafeAction::Stop);
-    }
-
-    #[test]
-    fn controlled_stop_gives_up_when_no_progress() {
-        // |ω| never improves (broken estimate / un-brakeable descent) → the
-        // no-progress watchdog coasts after NO_PROGRESS_WINDOW_S, well before
-        // the 10 s hard cap.
-        let mut c = FailsafeController::new();
-        c.arm(
-            0.0,
-            FailsafePolicy::ControlledStop,
-            FailsafeTerminal::ParkBrake,
-        );
-        let cfg = cfg(FailsafePolicy::ControlledStop); // brake_time_s = 10
-        let (_iq, cycles, terminal) = run_to_done(&mut c, 300.0, &cfg, 40.0, true, 300_000);
-        let expected = (NO_PROGRESS_WINDOW_S / DT) as u32;
-        assert!(
-            cycles > expected - 2_000 && cycles < expected + 4_000,
-            "cycles {cycles}, expected ≈{expected}"
-        );
-        // Gave up at speed → high-Z, not the parking brake.
-        assert_eq!(terminal, FailsafeAction::Stop);
-    }
-
-    #[test]
-    fn controlled_stop_coasts_without_trustworthy_angle() {
-        // Sensorless angle not trustworthy → must not brake blind; coast.
-        let mut c = FailsafeController::new();
-        c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
-        let (_iq, cycles, terminal) = run_to_done(
-            &mut c,
-            300.0,
-            &cfg(FailsafePolicy::ControlledStop),
-            40.0,
-            false, // not trustworthy
-            100_000,
-        );
-        // RampDown reaches 0 then gives up (no Brake phase); short.
-        assert!(cycles < 200, "should coast quickly, took {cycles}");
-        assert_eq!(terminal, FailsafeAction::Stop);
+        let (_, last) = ride(&mut c, &cfg, 40.0, omega, 0.0, 0.0, 1.0, |_, _| {});
+        assert_eq!(last, FailsafeAction::Stop);
     }
 
     #[test]
@@ -915,29 +982,30 @@ mod tests {
         c.arm(0.0, FailsafePolicy::Coast, FailsafeTerminal::ParkBrake); // ignored
         assert_eq!(c.phase, p1);
         assert_eq!(c.terminal, FailsafeTerminal::HighZ);
+        assert_eq!(c.iq, 5.0);
     }
 
     #[test]
     fn config_default_is_sane() {
         assert!(FailsafeConfig::default().is_sane());
         let bad = FailsafeConfig {
-            ramp_s: 0.0,
-            ..FailsafeConfig::default()
-        };
-        assert!(!bad.is_sane());
-        let bad = FailsafeConfig {
             decel_rad_s2: 0.0,
             ..FailsafeConfig::default()
         };
         assert!(!bad.is_sane());
-        // Zero brake current would freeze RampDown at the seeded iq (slew
-        // = brake/ramp_s = 0) — a failsafe driving the last commanded
-        // torque forever. Must be rejected outright.
+        // A zero slew would freeze the q current where the failsafe found
+        // it — a stop driving the last commanded torque forever.
         let bad = FailsafeConfig {
-            brake_current_a: 0.0,
+            slew_a_per_s: 0.0,
             ..FailsafeConfig::default()
         };
         assert!(!bad.is_sane());
+        // Zero stop current is meaningful (the general limit alone).
+        let zero = FailsafeConfig {
+            brake_current_a: 0.0,
+            ..FailsafeConfig::default()
+        };
+        assert!(zero.is_sane());
         // A staleness timeout beyond the cap is "deadman off" in disguise.
         let bad = FailsafeConfig {
             staleness_timeout_us: FailsafeConfig::MAX_STALENESS_TIMEOUT_US + 1,
@@ -950,13 +1018,12 @@ mod tests {
     /// silently dropped: the terminal switches to ParkBrake mid-sequence.
     #[test]
     fn set_terminal_updates_running_sequence() {
+        let cfg = cfg(FailsafePolicy::ControlledStop);
         let mut c = FailsafeController::new();
         c.arm(0.0, FailsafePolicy::ControlledStop, FailsafeTerminal::HighZ);
         c.set_terminal(FailsafeTerminal::ParkBrake);
-        // Run to a clean stop from standstill speed: must end in the brake.
-        let cfg = cfg(FailsafePolicy::ControlledStop);
-        let (_iq, _cycles, terminal) = run_to_done(&mut c, 5.0, &cfg, 40.0, true, 100_000);
-        assert_eq!(terminal, FailsafeAction::EngageBrake);
+        let (_, last) = ride(&mut c, &cfg, 40.0, 5.0, 0.0, 0.0, 1.0, |_, _| {});
+        assert_eq!(last, FailsafeAction::EngageBrake);
     }
 
     #[test]
@@ -964,12 +1031,10 @@ mod tests {
     fn from_stored_converts_units_and_falls_back() {
         use crate::storage::FailsafeConfigStored;
 
-        // Default stored → the runtime default, with ms→µs/s conversion.
+        // Default stored → the runtime default, with ms→µs conversion.
         let d = FailsafeConfig::from_stored(Some(&FailsafeConfigStored::default()));
         assert_eq!(d, FailsafeConfig::default());
         assert_eq!(d.staleness_timeout_us, 150_000);
-        assert!((d.ramp_s - 0.1).abs() < 1e-6);
-        assert!((d.brake_time_s - 10.0).abs() < 1e-6);
         assert_eq!(d.terminal, FailsafeTerminal::ParkBrake);
 
         // Missing → default.
@@ -988,9 +1053,9 @@ mod tests {
         assert_eq!(decoded.policy, FailsafePolicy::Coast);
         assert_eq!(decoded.terminal, FailsafeTerminal::HighZ);
 
-        // Non-sane stored (zero ramp) → full default fallback, never disabled.
+        // Non-sane stored (zero slew) → full default fallback, never disabled.
         let bad = FailsafeConfigStored {
-            ramp_ms: 0.0,
+            slew_a_per_s: 0.0,
             ..FailsafeConfigStored::default()
         };
         assert_eq!(

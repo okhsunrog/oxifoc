@@ -47,8 +47,6 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
 - [ ] Sibling-deadman (150 ms) + coast sync window (120 ms) in
       `FailsafeConfig`; failsafe contagion on a sibling's failsafe status;
       explicit limp re-arm only with a pre-dead sibling.
-- [ ] Bench: `ControlledStop` no-progress give-up exits to high-Z —
-      releases the board on a steep descent; evaluate ParkBrake instead.
 - [ ] Migration design-ins (chain → CAN-FD star): bridge upstream
       lifecycle as a reusable module (or ergot's seed-lease worker), no
       master-centric/UART-specific code in the bridge.

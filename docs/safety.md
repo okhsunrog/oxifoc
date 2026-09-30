@@ -88,28 +88,35 @@ with no further input, host-configurable via `FailsafeConfigStored` (ConfigKey
 
 - **Coast** — cut PWM (high-Z / free-wheel); reproduces the legacy hard Stop.
 - **RampToZero** — slew the q-current to zero, then coast.
-- **ControlledStop** — ramp to zero (unless the q-current already opposes
-  the rotation — the rider was braking — in which case the brake is taken
-  over at its level, capped), then **regen-brake to a standstill at a
-  bounded deceleration**: the velocity reference ramps to zero at
-  `decel_rad_s2` through the failsafe's *own* `VelocityLoop` instance (fixed
-  conservative gains — the host-tunable cruise loop is never the safety
-  net), so the stop feels the same on a slope as on the flat, up to the
-  current cap. Unidirectional (only ever opposes the original rotation),
-  capped at `brake_current_a`, OV-derated. On a clean stop (standstill
-  debounce, or a zero crossing read below the Brake entry gate — a fast
-  "reverse" reading is an estimate glitch, not a crossing) the configurable
-  **terminal** applies: high-Z, or `ParkBrake` (default — hand over to
-  `ControlMode::Brake` so the stopped board doesn't roll away; only below
-  `BRAKE_ENTRY_MAX_E_RAD_S`, else high-Z). The give-up exits never engage
-  the brake at speed:
-  - **no-progress watchdog** — |ω| hasn't improved for 2 s (broken estimate,
-    or a descent the cap can't beat) → coast; a brake merely *holding* speed
-    on a hill gets the full window first.
-  - hard time cap (`brake_time_s`, default 10 s) → coast.
-  - angle source lost trust mid-brake → coast (never commutate blind).
-  - regen pushing the bus into the OverVoltage fault → high-Z via the fault
-    gate.
+- **ControlledStop** — **regen-brake to a standstill, shaped in amps**
+  (the brake current is the force on the wheel whatever the rider weighs
+  or the slope does; decided 2026-09-30):
+  - the q current moves at `slew_a_per_s` from whatever was flowing — a
+    drive command, the rider's own brake — toward the brake, in both
+    directions: no step on entry, hand-over or release;
+  - it brakes at `brake_current_a` (`0` = the general `max_brake_a`),
+    always within `max_brake_a`, OV-derated; a harder brake the rider had
+    in progress is kept (the stop never weakens a brake it takes over);
+  - `decel_rad_s2` only bounds the stop from above (a light rotor — a
+    wheel in the air — under a strong brake); with a rider the current
+    binds first;
+  - **while the rotor moves and the angle is trustworthy the stop never
+    lets go**: a brake that cannot slow a descent still beats a coast
+    (the old 2 s no-progress watchdog and 10 s time cap coasted — sim: a
+    runaway to 3× top speed within a second);
+  - near standstill (`standstill_rad_s`) the active brake stands down —
+    the velocity estimate lags around zero and a current commanded on it
+    pumps a light rotor through zero — and the configurable **terminal**
+    applies: high-Z, or `ParkBrake` (default — `ControlMode::Brake`, the
+    passive windings short, which opposes motion either way without an
+    angle and holds a roll-back like VESC's zero-crossing short; only
+    below `BRAKE_ENTRY_MAX_E_RAD_S`, else high-Z). A zero crossing read
+    below that gate counts as the stop too.
+
+  Exits to high-Z mid-stop: the angle source lost trust (never commutate
+  blind), and regen pushing the bus into the OverVoltage fault (fault
+  gate). Brake escalation past `brake_current_a` when the stop is too slow
+  for the slope is a backlog option (TODO.md).
 
 The same machinery serves the user-commanded **ramp-into-brake**: a `Brake`
 command above the standstill gate is substituted with ControlledStop ending
@@ -345,10 +352,9 @@ link). Therefore the isolated side keeps the existing policy —
   CAN) is the only channel that could inform the *isolated* side; planned
   for the custom board, not part of the baseline.
 
-**Related check (single-motor too):** the `ControlledStop` no-progress
-give-up exits to high-Z. On a steep descent with a regen-limited brake
-"no progress" can be honest, and high-Z then releases the board on the
-slope — candidate for ParkBrake instead. Bench item in TODO.md.
+**Related check (single-motor too):** resolved 2026-09-30 — `ControlledStop`
+no longer gives up on "no progress"; it keeps braking while the rotor moves
+(see the failsafe section above).
 
 ## Open questions / TODO
 

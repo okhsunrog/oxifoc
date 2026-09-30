@@ -416,16 +416,14 @@ pub struct FailsafeConfigStored {
     /// Reaction policy, as `FailsafePolicy as u8` (0=Coast, 1=RampToZero,
     /// 2=ControlledStop; unknown → Coast).
     pub policy: u8,
-    /// Regen-brake current cap (A).
+    /// Brake current of the stop (A), within the general `max_brake_a`;
+    /// 0 = the general limit alone.
     pub brake_current_a: f32,
-    /// q-current slew time (ms).
-    pub ramp_ms: f32,
-    /// Hard cap on the brake duration (ms); the smart give-up is the
-    /// no-progress detector in the controller.
-    pub brake_time_ms: f32,
+    /// Rate (A/s) at which the stop changes the q current.
+    pub slew_a_per_s: f32,
     /// |ω_e| (electrical rad/s) treated as stopped.
     pub standstill_rad_s: f32,
-    /// Brake deceleration (electrical rad/s²) for the velocity-ramped stop.
+    /// Upper bound on the stop's deceleration (electrical rad/s²).
     pub decel_rad_s2: f32,
     /// Clean-stop terminal, as `FailsafeTerminal as u8` (0=HighZ,
     /// 1=ParkBrake; unknown → HighZ).
@@ -475,8 +473,7 @@ impl Default for FailsafeConfigStored {
             staleness_timeout_ms: 150,
             policy: 2, // ControlledStop
             brake_current_a: 15.0,
-            ramp_ms: 100.0,
-            brake_time_ms: 10_000.0,
+            slew_a_per_s: 150.0,
             standstill_rad_s: 20.0,
             decel_rad_s2: 1_000.0,
             terminal: 1, // ParkBrake
