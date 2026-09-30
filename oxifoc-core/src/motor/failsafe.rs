@@ -110,9 +110,11 @@ pub enum FailsafePolicy {
     RampToZero = 1,
     /// Regen-brake to a standstill, then apply the configured terminal.
     ///
-    /// Brakes to a full stop only while the angle source tracks to standstill
-    /// (Hall, or HFI). A pure back-EMF observer loses lock below its speed
-    /// floor, so sensorless-only this brakes to that floor and then coasts.
+    /// The current brake runs while the angle is trustworthy (Hall, HFI,
+    /// the back-EMF observer above its speed floor). When the angle drops
+    /// out — a pure observer below its floor — the terminal takes over
+    /// early: the parking brake's short needs no angle (`ParkBrake`),
+    /// high-Z coasts the rest.
     ControlledStop = 2,
 }
 
