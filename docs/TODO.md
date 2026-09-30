@@ -55,6 +55,49 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
 - [ ] Custom board: C5 heartbeat GPIO to each controller (the only
       channel that can inform the isolated side).
 
+## Review backlog (2026-09-30 algorithm review)
+
+Sim-verified fixes landed on main the same day (timing contract, dead-time
+comp, duty cap, voltage-limit d priority, hall restart/dying/glitch,
+flying-restart probe, tracker seed, failsafe brake takeover and park gate,
+cruise-loop authority, hall wiring/filter delay, plant integration, test
+rigs). Open — each needs a decision or the bench:
+
+- [ ] **Bench-validate the 2026-09-30 batch** with `scripts/benchsuite.py`
+  before and after: the startup/handoff tuning predates the timing
+  contract, the probe estimator and the tracker seed.
+- [ ] **Measure the real f405 actuation delay** (0.5 if the ISR always
+  beats the valley update, else 1.0) and set it per board.
+- [ ] **ControlledStop give-up on a descent** (policy): the no-progress
+  (2 s) and `brake_time_s` (10 s) exits coast, against the 2026-09-10 "an
+  isolated controller can decide nothing but brake" decision — yet the
+  watchdog also catches a brake in a wrong frame driving the motor. A
+  frame-independent criterion: keep braking while the brake brakes
+  (mechanical power `1.5·v·i − 1.5·R·|i|²` < 0), give up only when it
+  drives. Related: the 15 A default brake holds a ~3% grade on a 5065
+  board (a 10% grade needs ~48 A), and the soft failsafe loop takes ~0.4 s
+  to build it.
+- [ ] **Observer PLL retune + tracker removal** (experiment branch, bench
+  A/B): the PLL (kp 1000 / ki 20000, slow pole ~20 rad/s) lags an
+  accelerating rotor by ~a/ki — 0.3 rad 20 ms after a flying catch on the
+  light ZD2808 rotor; the tracker amplifies rotor motion 1.9× near 45 Hz.
+  Candidate kp ≈ 800 / ki ≈ 150k.
+- [ ] **Confirm probe does not gate commutation**: once the observer
+  reads ready it commutates during Ramp/Hold, before the probe confirms
+  (`compute_phase_with_fallback`); a phantom lock drives the hold until
+  the probe or the give-up catches it. Behavior the hold was tuned
+  around — decide on the bench.
+- [ ] **Flux-integrator offset with λ_cfg > λ_true**: the magnitude clamp
+  never engages, so a DC offset is never bled off.
+- [ ] **Probe saliency**: the shorted-circuit probe uses the observer's
+  single L; on the ZD2808 (Lq = 1.5 Ld) that costs ~5% of seed speed at
+  300 el rad/s.
+- [ ] **Dead hall tuning fields**: `HallTuningConfig.timeout_us` (the
+  staleness check is `is_stale_at_speed`) and `drift_correction_gain` (the
+  interpolation stays within ±30° of the centroid by construction) do
+  nothing. Removing them changes the stored/wire format — host CLI in
+  lockstep.
+
 ## Review backlog (2026-07-09 full-codebase review)
 
 Findings from the six-agent review, verified against source at the time.
