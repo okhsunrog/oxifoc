@@ -257,6 +257,7 @@ export component App inherits Window {
     in-out property <string> cfg-max-phase-current: "";
     in-out property <string> cfg-bus-in-max: "";
     in-out property <string> cfg-bus-regen-max: "";
+    in-out property <string> cfg-max-dissipation: "";
     // Voltage limits
     in-out property <string> cfg-min-vbus: "";
     in-out property <string> cfg-max-vbus: "";
@@ -1034,6 +1035,7 @@ export component App inherits Window {
                     }
                     Row {
                         Text { text: "Bus regen max (A, 0 = none):"; } LineEdit { text <=> root.cfg-bus-regen-max; min-width: 120px; }
+                        Text { text: "Dissipation max (W, 0 = off):"; } LineEdit { text <=> root.cfg-max-dissipation; min-width: 120px; }
                     }
                 }
                 if root.config-group == 2 : GridLayout {

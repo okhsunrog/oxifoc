@@ -626,13 +626,13 @@ pub async fn config_server<NS, const N: usize>(
                                             .await;
                                     }
                                     // New inductances/flux also re-arm the
-                                    // dq-decoupling feedforward, same as boot.
+                                    // dq-decoupling feedforward, same as boot
+                                    // (this used to arm the AC inductances
+                                    // where boot arms the fundamental ones).
                                     CMD_CHANNEL
-                                        .send(DriverCommand::SetDecoupling(Decoupling {
-                                            ld_h: v.inductance_d_h,
-                                            lq_h: v.inductance_q_h,
-                                            flux_linkage_wb: v.flux_linkage_wb,
-                                        }))
+                                        .send(DriverCommand::SetDecoupling(
+                                            Decoupling::from_motor_params(&v),
+                                        ))
                                         .await;
                                     // A new rating re-clamps the live limits
                                     // (a lower-rated motor must take effect
@@ -910,6 +910,7 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
                         derate_drive_pct: (derating.drive * 100.0) as u8,
                         derate_brake_pct: (derating.brake * 100.0) as u8,
                         fault_generation,
+                        derate_regen_pct: (derating.regen * 100.0) as u8,
                     }
                 }
             })

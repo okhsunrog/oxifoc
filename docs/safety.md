@@ -126,12 +126,16 @@ command above the standstill gate is substituted with ControlledStop ending
 in `ParkBrake` instead of being rejected (`FocDriver::enter_brake_ramp`) —
 but as a *user* action it does not set the re-arm latch.
 
-Physical limit (document once, accept forever): on a long descent with a
-**full battery** regen has nowhere to put the energy — the OV derate sheds
-the brake exactly when it's needed most. Electrically the only answer there
-is dissipative braking (short/heat in the windings); until that exists,
-guaranteed stopping power on a steep descent at full charge does not — the
-rider's foot is the backstop.
+**Full battery on a descent**: regen has nowhere to go, and the OV derate
+alone would shed the brake exactly when it's needed most. With
+`max_dissipation_w` set, the brake keeps its torque and a negative d
+current burns the refused regen in the windings instead
+(`motor::dissipation`; the same covers `bus_regen_max_a` and a lab PSU).
+The physical limit remains, just higher: the motor can burn only
+`1.5·R·I²` inside the current circle — ≈ 50 W at 30 A, 190 W at 60 A on a
+5065 — so on a steep descent at full charge the brake still weakens past
+that, and the rider's foot is the backstop. Heat is bounded by the budget
+(scaled down with the thermal brake derate) and by the motor rating.
 
 **Scope.** The deadman covers only the *drive* modes (`CurrentControl`, plus
 velocity/position once they exist) — what a vehicle rides on. Exempt:

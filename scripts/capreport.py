@@ -263,7 +263,7 @@ def fmt_manifest(md, integ):
         f"rates      : foc={md.get('oxifoc.foc_freq_hz','?')}Hz fast={md.get('oxifoc.fast_hz_actual','?')}Hz (req {md.get('oxifoc.fast_hz_requested','?')}) decim M={integ['decimation_m']}",
         f"motor      : R={mp.get('resistance_ohm')}Ω Ld={mp.get('inductance_d_h')}H Lq={mp.get('inductance_q_h')}H λ={mp.get('flux_linkage_wb')}Wb PP={mp.get('pole_pairs')}",
         f"pi-gains   : kp={pi.get('kp')} ki={pi.get('ki')} bw={pi.get('bandwidth_rad_s')}rad/s",
-        f"limits     : max_iq={lim.get('max_iq_a')}A bus_in={lim.get('bus_in_max_a')}A regen={lim.get('bus_regen_max_a')}A",
+        f"limits     : max_iq={lim.get('max_iq_a')}A bus_in={lim.get('bus_in_max_a')}A regen={lim.get('bus_regen_max_a')}A dissipation={lim.get('max_dissipation_w')}W",
         "caveat     : erpm/angle = ACTIVE phase source (startup openloop during"
         " starts, observer after handoff) — NOT ground-truth rotor",
     ]

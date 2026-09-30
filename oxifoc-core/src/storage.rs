@@ -254,6 +254,16 @@ pub struct CurrentLimitsConfig {
     /// the safe setting for a lab PSU, which cannot absorb reverse
     /// current. VESC's `l_in_current_min` (negated).
     pub bus_regen_max_a: f32,
+    /// Dissipative braking (W): regen the supply refuses (the
+    /// regen-overvoltage derate, `bus_regen_max_a`) is burned in the
+    /// windings — up to this much heat from the extra d current,
+    /// `1.5·R·id²` — instead of cutting the brake torque
+    /// (`motor::dissipation`). The d current stays inside the `max_iq_a`
+    /// circle, so the total copper loss never exceeds the motor's rating
+    /// (`MotorParamsConfig::max_power_loss_w`); this sets how much of it a
+    /// long descent may use. Needs detected motor params (R, λ).
+    /// `<= 0` = off.
+    pub max_dissipation_w: f32,
 }
 
 impl PostcardValue<'_> for CurrentLimitsConfig {}
@@ -278,7 +288,8 @@ impl CurrentLimitsConfig {
             && self.max_brake_a.is_finite()
             && self.max_phase_current_a.is_finite()
             && self.bus_in_max_a.is_finite()
-            && self.bus_regen_max_a.is_finite();
+            && self.bus_regen_max_a.is_finite()
+            && self.max_dissipation_w.is_finite();
         let headroom_ok = !(self.max_iq_a > 0.0 && self.max_phase_current_a > 0.0)
             || self.max_phase_current_a >= OVERCURRENT_HEADROOM * self.max_iq_a;
         finite && headroom_ok
@@ -293,6 +304,7 @@ impl Default for CurrentLimitsConfig {
             max_phase_current_a: 40.0,
             bus_in_max_a: -1.0,
             bus_regen_max_a: -1.0,
+            max_dissipation_w: 0.0,
         }
     }
 }
@@ -800,6 +812,7 @@ mod tests {
             |c: &mut CurrentLimitsConfig| c.max_phase_current_a = f32::INFINITY,
             |c: &mut CurrentLimitsConfig| c.bus_in_max_a = f32::NAN,
             |c: &mut CurrentLimitsConfig| c.bus_regen_max_a = f32::NAN,
+            |c: &mut CurrentLimitsConfig| c.max_dissipation_w = f32::NAN,
         ] {
             let mut bad = base.clone();
             f(&mut bad);

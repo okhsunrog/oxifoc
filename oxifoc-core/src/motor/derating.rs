@@ -6,17 +6,22 @@
 //! measurements —
 //!
 //! - `drive` scales torque in the direction of motion (acceleration),
-//! - `brake` scales torque opposing it (incl. regen),
+//! - `brake` scales torque opposing it,
+//! - `regen` scales the share of the brake's regen the supply takes,
 //!
 //! each the `min`-composition of independent linear ramps:
 //!
 //! | Ramp | Side | Shape |
 //! |---|---|---|
-//! | FET temperature | both, accel earlier | 1 below `start`, 0 at `end`; the accel copy has start/end lerped toward 25 °C by `accel_dec` (VESC `l_temp_accel_dec`) — a hot board loses acceleration first and keeps braking |
-//! | Motor temperature | both, accel earlier | same shape, separate thresholds (off when no NTC) |
+//! | FET temperature | drive + brake, accel earlier | 1 below `start`, 0 at `end`; the accel copy has start/end lerped toward 25 °C by `accel_dec` (VESC `l_temp_accel_dec`) — a hot board loses acceleration first and keeps braking |
+//! | Motor temperature | drive + brake, accel earlier | same shape, separate thresholds (off when no NTC) |
 //! | Battery cutoff | drive | 1 above `vbus_cut_start`, 0 at `vbus_cut_end` (start > end) — a sagging pack sheds drive current before the UV fault can trip |
-//! | Regen overvoltage | brake | 1 below `vbus_regen_start`, 0 at `vbus_regen_end` — braking into a full pack sheds regen before the OV fault |
+//! | Regen overvoltage | regen | 1 below `vbus_regen_start`, 0 at `vbus_regen_end` — braking into a full pack sheds regen before the OV fault |
 //! | Speed cut | drive | 1 below `frac·max`, 0 at `max_speed_erad_s` — a soft ceiling, NEVER limits braking (descending past the limit must still brake) |
+//!
+//! `regen` is not a torque scale by itself: the driver either burns the
+//! refused share in the windings (dissipative braking,
+//! `motor::dissipation`) or, with that off, scales the brake torque by it.
 //!
 //! The scales are computed ISR-side (decimated — temperatures and bus
 //! voltage are slow), so the protection survives an async-executor hang,
@@ -27,22 +32,21 @@ use crate::foc::clamp_f32;
 #[cfg(feature = "storage")]
 use crate::storage::DeratingConfigStored;
 
-/// Live derating factors (1.0 = no derate). Applied as multipliers on the
-/// iq budget in `step_current_control`, selected by direction.
+/// Live derating factors (1.0 = no derate), applied by the driver's
+/// torque grant (`FocDriver::grant_torque`), selected by direction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeratingScales {
     /// Torque in the direction of motion (acceleration), 0..=1
     pub drive: f32,
-    /// Torque opposing motion (braking/regen), 0..=1
+    /// Torque opposing motion (braking), 0..=1
     pub brake: f32,
+    /// Share of the brake's regen the supply takes, 0..=1
+    pub regen: f32,
 }
 
 impl Default for DeratingScales {
     fn default() -> Self {
-        Self {
-            drive: 1.0,
-            brake: 1.0,
-        }
+        Self::IDENTITY
     }
 }
 
@@ -51,11 +55,14 @@ impl DeratingScales {
     pub const IDENTITY: Self = Self {
         drive: 1.0,
         brake: 1.0,
+        regen: 1.0,
     };
 
-    /// The stronger of the two derates (for the Warning threshold).
+    /// The strongest derate (for the Warning threshold) — `regen`
+    /// included: burning refused regen heats the motor, the rider should
+    /// know the pack is full.
     pub fn worst(&self) -> f32 {
-        self.drive.min(self.brake)
+        self.drive.min(self.brake).min(self.regen)
     }
 }
 
@@ -185,6 +192,7 @@ impl DeratingConfig {
     ) -> DeratingScales {
         let mut drive = 1.0f32;
         let mut brake = 1.0f32;
+        let mut regen = 1.0f32;
 
         let mut thermal = |temp: Option<f32>, start: f32, end: f32| {
             let Some(t) = temp else { return };
@@ -209,15 +217,15 @@ impl DeratingConfig {
             drive = drive.min(1.0 - ramp_down(vbus_v, self.vbus_cut_end_v, self.vbus_cut_start_v));
         }
         if self.vbus_regen_start_v > 0.0 && self.vbus_regen_end_v > self.vbus_regen_start_v {
-            brake = brake.min(ramp_down(
-                vbus_v,
-                self.vbus_regen_start_v,
-                self.vbus_regen_end_v,
-            ));
+            regen = ramp_down(vbus_v, self.vbus_regen_start_v, self.vbus_regen_end_v);
         }
         drive = drive.min(self.speed_cut(omega_e_rad_s));
 
-        DeratingScales { drive, brake }
+        DeratingScales {
+            drive,
+            brake,
+            regen,
+        }
     }
 
     /// The speed-cut factor alone, cheap enough for per-cycle use (one
@@ -324,17 +332,18 @@ mod tests {
     }
 
     #[test]
-    fn regen_ov_sheds_brake_keeps_drive() {
+    fn regen_ov_sheds_regen_only() {
         let c = DeratingConfig {
             vbus_regen_start_v: 56.0,
             vbus_regen_end_v: 58.0,
             ..cfg()
         };
         let s = c.compute(Some(40.0), None, 57.0, 100.0);
-        assert!((s.brake - 0.5).abs() < 1e-3, "mid-regen-cut: {s:?}");
-        assert_eq!(s.drive, 1.0);
+        assert!((s.regen - 0.5).abs() < 1e-3, "mid-regen-cut: {s:?}");
+        assert_eq!((s.drive, s.brake), (1.0, 1.0));
         let s = c.compute(Some(40.0), None, 58.5, 100.0);
-        assert_eq!(s.brake, 0.0, "full pack: no regen");
+        assert_eq!(s.regen, 0.0, "full pack: no regen");
+        assert_eq!(s.worst(), 0.0, "and the rider is warned");
     }
 
     #[test]

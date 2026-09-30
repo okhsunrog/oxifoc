@@ -29,6 +29,7 @@ use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::velocity::{VelocityLoop, VelocityLoopConfig};
 use crate::foc::{clamp_f32, wrap_angle};
 use crate::motor::derating::{DeratingConfig, DeratingScales};
+use crate::motor::dissipation::{RegenBudget, WindingModel, dissipate};
 use crate::motor::failsafe::{
     FailsafeAction, FailsafeConfig, FailsafeController, FailsafePolicy, FailsafeTerminal,
 };
@@ -94,33 +95,6 @@ pub const CURRENT_OFFSET_STANDSTILL_MAX_E_RAD_S: f32 = 5.0;
 /// soft-start scale; commands at or above it are untouched. Restores the
 /// commanded torque the moment the sequencer hands off.
 pub const STARTUP_MIN_DRIVE_A: f32 = 1.5;
-
-/// Asymmetric iq bounds for the velocity loop's anti-windup: the PI must
-/// see the same authority the downstream derating clamp will actually
-/// grant, or it winds up the difference. `drive_scale` (thermal/sag AND
-/// the per-cycle speed cut) derates torque in the direction of motion;
-/// `brake_scale` derates opposing torque (never for speed). At standstill
-/// (ω = 0) the motoring side is "positive" by convention — matching the
-/// downstream clamp's `iq·ω ≥ 0` motoring test. The motoring side scales
-/// `limits.max_current_a`, the braking side `limits.max_brake_a`;
-/// `max_current_a <= 0` = unlimited (mirrors `CurrentLimits` semantics).
-fn velocity_iq_bounds(
-    omega: f32,
-    limits: &CurrentLimits,
-    drive_scale: f32,
-    brake_scale: f32,
-) -> (f32, f32) {
-    if limits.max_current_a <= 0.0 || !limits.max_current_a.is_finite() {
-        return (f32::NEG_INFINITY, f32::INFINITY);
-    }
-    let drive = limits.max_current_a * clamp_f32(drive_scale, 0.0, 1.0);
-    let brake = limits.max_brake_a * clamp_f32(brake_scale, 0.0, 1.0);
-    if omega >= 0.0 {
-        (-brake, drive)
-    } else {
-        (-drive, brake)
-    }
-}
 
 /// Why a [`FocDriver::step`] cycle could not run. Typed so `run_foc_cycle`
 /// can route each cause differently: an overcurrent trip must latch a
@@ -197,6 +171,10 @@ pub struct CurrentLimits {
     /// windings-short parking brake is unaffected — it never touches the
     /// bus).
     pub bus_regen_max_a: f32,
+    /// Heat budget (W, `1.5·R·id²`) for burning refused regen in the
+    /// windings (`motor::dissipation`); the d current it buys stays inside
+    /// the `max_current_a` circle. `0` = off.
+    pub max_dissipation_w: f32,
 }
 
 impl Default for CurrentLimits {
@@ -221,7 +199,7 @@ pub const OVERCURRENT_HEADROOM: f32 = 1.3;
 impl CurrentLimits {
     /// Create current limits from a maximum current value. Sets the
     /// overcurrent threshold [`OVERCURRENT_HEADROOM`] above the max;
-    /// bus limits off.
+    /// bus limits and dissipation off.
     pub fn from_max_current(max_a: f32) -> Self {
         Self {
             max_current_a: max_a,
@@ -229,6 +207,7 @@ impl CurrentLimits {
             overcurrent_threshold_a: max_a * OVERCURRENT_HEADROOM,
             bus_in_max_a: -1.0,
             bus_regen_max_a: -1.0,
+            max_dissipation_w: 0.0,
         }
     }
 
@@ -299,6 +278,13 @@ impl CurrentLimits {
             overcurrent_threshold_a: trip,
             bus_in_max_a: bus(cfg.bus_in_max_a),
             bus_regen_max_a: bus(cfg.bus_regen_max_a),
+            // `> 0` is false for NaN too: off. No ceiling needed here: the
+            // current circle bounds what the budget can buy.
+            max_dissipation_w: if cfg.max_dissipation_w > 0.0 {
+                cfg.max_dissipation_w
+            } else {
+                0.0
+            },
         }
     }
 
@@ -325,6 +311,7 @@ impl CurrentLimits {
                     max_phase_current_a: 0.0,
                     bus_in_max_a: -1.0,
                     bus_regen_max_a: -1.0,
+                    max_dissipation_w: 0.0,
                 },
                 hw_max_a,
                 rating_a,
@@ -1662,27 +1649,26 @@ where
             target_vel
         };
         // Anti-windup must see the actuator's REAL authority, not the raw
-        // current limit: near the ceiling the per-cycle speed cut shrinks
-        // the motoring budget to the friction level, and a PI clamped only
-        // at max_current_a silently banks the difference as integral —
-        // released as a torque step the moment the target (or the cut)
-        // moves. Brake authority is never speed-derated (derating.rs), so
-        // the bounds are asymmetric and oriented by the direction of motion.
-        let (iq_min, iq_max) = velocity_iq_bounds(
-            omega,
-            &self.current_limits,
-            self.derating.drive.min(self.derating_cfg.speed_cut(omega)),
-            self.derating.brake,
-        );
-        // Same for the clamps further down the chain: the bus-current clamp
-        // (monotonic in iq, so it maps the bounds directly), and — while the
-        // current loop is out of voltage — the q current it is actually
-        // delivering. Without them the PI banked the current limit against
-        // a bus-limited or top-speed motor (sim: 10.8 A commanded against
-        // 1 A delivered), and the reference ran on toward a target past top
-        // speed: told to slow down, the motor held top speed for seconds
-        // while the reference ramped back.
-        let (iq_min, iq_max) = (self.clamp_iq_for_bus(iq_min), self.clamp_iq_for_bus(iq_max));
+        // current limit: a PI clamped only at max_current_a silently banks
+        // whatever the grant withholds as integral — released as a torque
+        // step the moment the target (or the derate) moves. Near the
+        // ceiling the per-cycle speed cut shrinks the motoring budget to the
+        // friction level; a bus-limited or full-pack brake grants less than
+        // its limit. So the bounds are the grant itself, asked for a full
+        // request each way — asymmetric, since braking is never
+        // speed-derated. Same for the q current the current loop actually
+        // delivers while it is out of voltage. Without these the PI banked
+        // the current limit against a bus-limited or top-speed motor (sim:
+        // 10.8 A commanded against 1 A delivered), and the reference ran on
+        // toward a target past top speed: told to slow down, the motor held
+        // top speed for seconds while the reference ramped back.
+        let full = if self.current_limits.max_current_a > 0.0 {
+            self.current_limits.max_current_a
+        } else {
+            f32::INFINITY
+        };
+        let iq_min = self.grant_torque(0.0, -full, omega).1;
+        let iq_max = self.grant_torque(0.0, full, omega).1;
         let clip = self.controller.q_voltage_clip();
         let (iq_min, iq_max) = if clip > 0.0 {
             (
@@ -1759,33 +1745,8 @@ where
             0.0
         };
 
-        // Direction-dependent budget: iq·ω ≥ 0 is motoring (standstill
-        // counts as motoring: pulling away is acceleration), opposing is
-        // braking, which has its own limit (`max_brake_a`). Graduated
-        // derating (motor/derating.rs) scales each side: drive derates for
-        // heat/sag/speed, brake only for heat/regen-OV — never for speed.
-        // Every torque path funnels through here (remote, velocity loop,
-        // failsafe). The speed cut is re-evaluated FRESH each cycle on top
-        // of the decimated scales — a 78 Hz-stale cut bang-bangs the torque
-        // around the ceiling on a fast free rotor (see
-        // DeratingConfig::speed_cut).
-        let iq_target = if self.current_limits.max_current_a > 0.0 {
-            let omega = self.phase.get().velocity;
-            let lim = if iq_target * omega >= 0.0 {
-                self.current_limits.max_current_a
-                    * self.derating.drive.min(self.derating_cfg.speed_cut(omega))
-            } else {
-                self.current_limits.max_brake_a * self.derating.brake
-            };
-            clamp_f32(iq_target, -lim, lim)
-        } else {
-            iq_target
-        };
-
-        // Bus (supply) current limits: every regen-capable path (host
-        // current commands, the velocity loop, the failsafe brake) funnels
-        // through here, so they all inherit the clamp.
-        let iq_target = self.clamp_iq_for_bus(iq_target);
+        let (id_target, iq_target) =
+            self.grant_torque(id_target, iq_target, self.phase.get().velocity);
 
         // Get phase from provider: the previous update's prediction of the
         // rotor at THIS current sample (PhaseProvider timing contract). It
@@ -1877,15 +1838,89 @@ where
         self.bus_mod_q_filt += alpha * (mod_q - self.bus_mod_q_filt);
     }
 
+    /// The (id, iq) targets a torque request is granted this cycle. Every
+    /// torque path funnels through here (remote, velocity loop, failsafe,
+    /// the regulated parking brake), and the velocity loop takes its
+    /// anti-windup bounds from it.
+    ///
+    /// - iq·ω ≥ 0 is motoring (standstill counts: pulling away is
+    ///   acceleration), limited by `max_current_a` × the drive derate
+    ///   (heat, sag, speed). The speed cut is re-evaluated FRESH each cycle
+    ///   on top of the decimated scales — a 78 Hz-stale cut bang-bangs the
+    ///   torque around the ceiling on a fast free rotor (see
+    ///   [`DeratingConfig::speed_cut`]).
+    /// - Opposing is braking: `max_brake_a` × the brake derate (heat only,
+    ///   never speed). The regen the supply refuses (the regen-OV derate,
+    ///   `bus_regen_max_a`) is burned in the windings when dissipation is
+    ///   on ([`dissipation`](crate::motor::dissipation)); with it off, the
+    ///   regen derate scales the torque instead.
+    /// - The bus-current clamp last — except for a brake the dissipation
+    ///   already shaped: its bus estimate ignores the d current.
+    fn grant_torque(&self, id_target: f32, iq_target: f32, omega: f32) -> (f32, f32) {
+        let limits = &self.current_limits;
+        if !limits.is_enabled() {
+            return (id_target, self.clamp_iq_for_bus(iq_target));
+        }
+        if iq_target * omega >= 0.0 {
+            let lim =
+                limits.max_current_a * self.derating.drive.min(self.derating_cfg.speed_cut(omega));
+            return (
+                id_target,
+                self.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
+            );
+        }
+        let brake = self.derating.brake;
+        let Some(model) = self.dissipation_model() else {
+            let lim = limits.max_brake_a * brake.min(self.derating.regen);
+            return (
+                id_target,
+                self.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
+            );
+        };
+        let lim = limits.max_brake_a * brake;
+        let iq = clamp_f32(iq_target, -lim, lim);
+        let budget = RegenBudget {
+            frac: self.derating.regen,
+            max_w: if limits.bus_regen_max_a >= 0.0 {
+                self.vbus * limits.bus_regen_max_a
+            } else {
+                f32::INFINITY
+            },
+        };
+        // The heat budget buys id_max = √(W / 1.5·R), and follows the
+        // thermal brake derate: a hot motor or board burns less (and so
+        // brakes less on a full pack).
+        let id_max = sqrtf(limits.max_dissipation_w * brake / (1.5 * model.r_ohm));
+        match dissipate(iq, omega, &model, &budget, id_max, limits.max_current_a) {
+            // A caller's own larger id burns at least as much.
+            Some((id, iq)) if id * id > id_target * id_target => (id, iq),
+            Some((_, iq)) => (id_target, iq),
+            // Plugging: the brake draws from the supply, nothing to shape.
+            None => (id_target, self.clamp_iq_for_bus(iq)),
+        }
+    }
+
+    /// The winding model dissipative braking runs on: `Some` when it is on
+    /// (`max_dissipation_w > 0`) and the motor params carry R and λ.
+    fn dissipation_model(&self) -> Option<WindingModel> {
+        let d = self
+            .controller
+            .decoupling()
+            .filter(|_| self.current_limits.max_dissipation_w > 0.0)?;
+        (d.resistance_ohm > 0.0 && d.flux_linkage_wb > 0.0).then_some(WindingModel {
+            r_ohm: d.resistance_ohm,
+            flux_wb: d.flux_linkage_wb,
+        })
+    }
+
     /// Clamp the iq target so the implied bus current stays inside
     /// `[-bus_regen_max_a, bus_in_max_a]` (VESC mcpwm_foc.c:3629-3637).
     ///
     /// `i_bus ≈ iq·mod_q` (electrical power over vbus, q-axis only — the
     /// d-axis share is losses/HFI carrier, small and consumption-side).
     /// With `bus_regen_max_a = 0` no energy is ever pushed into the supply:
-    /// current braking degrades to ~zero torque in the regen zone (a lab
-    /// PSU cannot absorb reverse current), and a ControlledStop failsafe
-    /// then exits via its no-progress watchdog to a coast. The
+    /// without dissipation, current braking degrades to ~zero torque in the
+    /// regen zone (a lab PSU cannot absorb reverse current). The
     /// windings-short parking brake is unaffected — it never sees the bus.
     fn clamp_iq_for_bus(&self, iq_target: f32) -> f32 {
         let in_max = self.current_limits.bus_in_max_a;
@@ -2229,11 +2264,13 @@ mod tests {
     use super::*;
     #[cfg(feature = "virtual-motor")]
     use crate::foc::angle_difference;
+    use crate::foc::controller::Decoupling;
     #[cfg(feature = "virtual-motor")]
     use crate::foc::hall_sensor::HallSensor;
     #[cfg(feature = "virtual-motor")]
     use crate::foc::phase::{BackEmfObserver, Observer};
     use crate::foc::phase::{PhaseManager, PhaseSource};
+    use crate::foc::sensors::NoSensor;
     #[cfg(feature = "runtime")]
     use crate::state::CMD_CHANNEL;
     #[cfg(feature = "virtual-motor")]
@@ -2241,34 +2278,132 @@ mod tests {
     #[cfg(feature = "virtual-motor")]
     use core::f32::consts::{FRAC_PI_3, FRAC_PI_6};
 
+    /// A driver for exercising the torque grant, which reads no plant
+    /// state — only the limits, the derating, the motor model and vbus.
+    fn grant_driver(
+        limits: CurrentLimits,
+        scales: DeratingScales,
+    ) -> FocDriver<MockPwm, MockCurrentSensor, PhaseManager<NoSensor, NoSensor>> {
+        let mut foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        foc.set_decoupling(Some(Decoupling {
+            ld_h: 22e-6,
+            lq_h: 22e-6,
+            flux_linkage_wb: 2.92e-3,
+            resistance_ohm: 0.036,
+        }));
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            1.0 / 20_000.0,
+        );
+        driver.set_current_limits(limits);
+        driver.set_derating_scales(scales);
+        driver
+    }
+
     #[test]
-    fn velocity_iq_bounds_track_derated_authority() {
+    fn grant_derates_drive_and_brake_by_direction() {
+        let iq = |d: &FocDriver<_, _, _>, iq, omega| d.grant_torque(0.0, iq, omega).1;
         // Cruising forward at the ceiling: motoring budget cut to 10%,
-        // braking untouched — the PI's positive bound must shrink, the
-        // negative must not (this asymmetry is what kills the ceiling
+        // braking untouched — the velocity PI's positive bound must shrink,
+        // the negative must not (this asymmetry is what kills the ceiling
         // windup: the integral can no longer bank the un-grantable 90%).
-        let ten = CurrentLimits::from_max_current(10.0);
-        let (lo, hi) = velocity_iq_bounds(500.0, &ten, 0.1, 1.0);
-        assert_eq!((lo, hi), (-10.0, 1.0));
+        let d = grant_driver(
+            CurrentLimits::from_max_current(10.0),
+            DeratingScales {
+                drive: 0.1,
+                ..DeratingScales::IDENTITY
+            },
+        );
+        assert_eq!((iq(&d, -10.0, 500.0), iq(&d, 10.0, 500.0)), (-10.0, 1.0));
         // Reverse motion mirrors the orientation.
-        let (lo, hi) = velocity_iq_bounds(-500.0, &ten, 0.1, 1.0);
-        assert_eq!((lo, hi), (-1.0, 10.0));
-        // Standstill counts as motoring-positive (matches the downstream
-        // clamp's iq·ω >= 0 test).
-        let (lo, hi) = velocity_iq_bounds(0.0, &ten, 0.5, 0.25);
-        assert_eq!((lo, hi), (-2.5, 5.0));
-        // The braking side has its own limit.
-        let soft_brake = CurrentLimits {
-            max_brake_a: 4.0,
-            ..ten
-        };
-        let (lo, hi) = velocity_iq_bounds(500.0, &soft_brake, 1.0, 1.0);
-        assert_eq!((lo, hi), (-4.0, 10.0));
-        let (lo, hi) = velocity_iq_bounds(-500.0, &soft_brake, 1.0, 1.0);
-        assert_eq!((lo, hi), (-10.0, 4.0));
+        assert_eq!((iq(&d, -10.0, -500.0), iq(&d, 10.0, -500.0)), (-1.0, 10.0));
+        // Standstill: either way is pulling away — motoring.
+        assert_eq!((iq(&d, -10.0, 0.0), iq(&d, 10.0, 0.0)), (-1.0, 1.0));
+        // The braking side has its own limit and its own derate.
+        let d = grant_driver(
+            CurrentLimits {
+                max_brake_a: 4.0,
+                ..CurrentLimits::from_max_current(10.0)
+            },
+            DeratingScales {
+                brake: 0.5,
+                ..DeratingScales::IDENTITY
+            },
+        );
+        assert_eq!((iq(&d, -10.0, 500.0), iq(&d, 10.0, 500.0)), (-2.0, 10.0));
+        assert_eq!((iq(&d, -10.0, -500.0), iq(&d, 10.0, -500.0)), (-10.0, 2.0));
         // Unlimited when the limit is unset — mirrors CurrentLimits.
-        let (lo, hi) = velocity_iq_bounds(100.0, &CurrentLimits::from_max_current(0.0), 0.1, 1.0);
-        assert!(lo.is_infinite() && hi.is_infinite());
+        let d = grant_driver(
+            CurrentLimits::from_max_current(0.0),
+            DeratingScales::IDENTITY,
+        );
+        assert!(iq(&d, f32::INFINITY, 100.0).is_infinite());
+    }
+
+    /// A full pack (regen derate at 0) on a 5065 at 400 el rad/s: without
+    /// dissipation the brake is cut to nothing; with it the brake keeps
+    /// its torque and a negative d current burns the regen.
+    #[test]
+    fn a_full_pack_brake_burns_what_it_cannot_charge() {
+        let full_pack = DeratingScales {
+            regen: 0.0,
+            ..DeratingScales::IDENTITY
+        };
+        let off = grant_driver(CurrentLimits::from_max_current(30.0), full_pack);
+        assert_eq!(off.grant_torque(0.0, -10.0, 400.0), (0.0, 0.0));
+        let on = grant_driver(
+            CurrentLimits {
+                max_dissipation_w: 100.0,
+                ..CurrentLimits::from_max_current(30.0)
+            },
+            full_pack,
+        );
+        let (id, iq) = on.grant_torque(0.0, -10.0, 400.0);
+        assert_eq!(iq, -10.0);
+        // 1.5·R·(id² + iq²) = 1.5·ω·λ·|iq|: id² = (1.168·10 − 3.6)/0.036
+        // — 12.1 W of the 100 W budget.
+        assert!((id + 14.98).abs() < 0.05, "id {id}");
+        // Motoring and plugging are left alone.
+        assert_eq!(on.grant_torque(0.0, 10.0, 400.0), (0.0, 10.0));
+        assert_eq!(on.grant_torque(0.0, -10.0, 50.0), (0.0, -10.0));
+        // A hot motor burns less: the budget follows the brake derate —
+        // 30% of 20 W buys 10.5 A of id, which balances ~3.9 A of brake.
+        let hot = grant_driver(
+            CurrentLimits {
+                max_dissipation_w: 20.0,
+                ..CurrentLimits::from_max_current(30.0)
+            },
+            DeratingScales {
+                brake: 0.3,
+                ..full_pack
+            },
+        );
+        let (id, iq) = hot.grant_torque(0.0, -10.0, 400.0);
+        let heat_w = 1.5 * 0.036 * id * id;
+        assert!((heat_w - 6.0).abs() < 0.01, "{heat_w} W");
+        assert!(iq > -4.5 && iq < -3.5, "iq {iq}");
+    }
+
+    /// A lab PSU (`bus_regen_max_a = 0`) takes no regen: dissipation turns
+    /// the brake's regen into heat instead of cutting the torque.
+    #[test]
+    fn a_no_regen_supply_brakes_by_dissipation() {
+        let d = grant_driver(
+            CurrentLimits {
+                bus_regen_max_a: 0.0,
+                max_dissipation_w: 100.0,
+                ..CurrentLimits::from_max_current(30.0)
+            },
+            DeratingScales::IDENTITY,
+        );
+        let (id, iq) = d.grant_torque(0.0, -10.0, 400.0);
+        assert_eq!(iq, -10.0);
+        assert!((id + 14.98).abs() < 0.05, "id {id}");
     }
 
     struct MockPwm {
@@ -3212,6 +3347,7 @@ mod tests {
             max_phase_current_a: ph,
             bus_in_max_a: bus_in,
             bus_regen_max_a: bus_regen,
+            max_dissipation_w: 0.0,
         };
 
         // Normal config below the ceiling: passes through.
@@ -3242,6 +3378,20 @@ mod tests {
         let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, f32::NAN, f32::NAN), hw_max, 0.0);
         assert_eq!(l.bus_in_max_a, -1.0);
         assert_eq!(l.bus_regen_max_a, -1.0);
+
+        // The dissipation budget passes through (the current circle bounds
+        // what it buys); unset, negative or NaN is off.
+        let dissipation = |v: f32| {
+            let c = CurrentLimitsConfig {
+                max_dissipation_w: v,
+                ..cfg(5.0, 8.0, -1.0, -1.0)
+            };
+            CurrentLimits::from_config_clamped(&c, hw_max, 0.0).max_dissipation_w
+        };
+        assert_eq!(dissipation(80.0), 80.0);
+        assert_eq!(dissipation(0.0), 0.0);
+        assert_eq!(dissipation(-5.0), 0.0);
+        assert_eq!(dissipation(f32::NAN), 0.0);
     }
 
     /// The 2026-06-12 foot-gun (notes/fault-overhaul.md §4): a config that
@@ -3263,6 +3413,7 @@ mod tests {
                 max_phase_current_a: 40.0,
                 bus_in_max_a: -1.0,
                 bus_regen_max_a: -1.0,
+                max_dissipation_w: 0.0,
             },
             hw_max,
             0.0,
@@ -3292,6 +3443,7 @@ mod tests {
             max_phase_current_a: phase,
             bus_in_max_a: -1.0,
             bus_regen_max_a: -1.0,
+            max_dissipation_w: 0.0,
         };
         let rating = 10.0;
 
@@ -3742,7 +3894,7 @@ mod tests {
     /// electrical velocity, or the step at which the driver tripped.
     #[cfg(feature = "virtual-motor")]
     fn run_bench_spin_with_decoupling(
-        decoupling: crate::foc::controller::Decoupling,
+        decoupling: Decoupling,
         observer_l: f32,
         observer_salient: bool,
         actuation_delay: f32,
@@ -3927,7 +4079,6 @@ mod tests {
 
     #[cfg(feature = "virtual-motor")]
     fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
-        use crate::foc::controller::Decoupling;
         use crate::foc::phase::{BackEmfObserver, Observer, PhaseManager, PhaseSource};
         use crate::foc::trig::LibmSinCos;
         use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
@@ -3976,6 +4127,7 @@ mod tests {
             ld_h: 86e-6,
             lq_h: 129e-6,
             flux_linkage_wb: LAMBDA,
+            resistance_ohm: 0.127,
         }));
         if cfg.dead_time {
             foc.set_dead_time_comp(DEAD_TIME_NS as u32, 20_000);
@@ -4472,7 +4624,6 @@ mod tests {
     #[test]
     #[cfg(feature = "virtual-motor")]
     fn trust_loss_mid_drive_restarts_cold_start() {
-        use crate::foc::controller::Decoupling;
         use crate::foc::phase::{BackEmfObserver, Observer, PhaseManager, PhaseSource};
         use crate::foc::trig::LibmSinCos;
         use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
@@ -4501,6 +4652,7 @@ mod tests {
             ld_h: 86e-6,
             lq_h: 129e-6,
             flux_linkage_wb: LAMBDA,
+            resistance_ohm: 0.127,
         }));
         let mut mgr = PhaseManager::sensorless();
         mgr.set_observer(Observer::BackEmf(
@@ -4609,7 +4761,7 @@ mod tests {
     /// estimation chain.
     #[cfg(feature = "virtual-motor")]
     fn run_perfect_angle_spin(
-        decoupling: crate::foc::controller::Decoupling,
+        decoupling: Decoupling,
         actuation_delay: f32,
     ) -> Result<(f32, f32), (u64, &'static str)> {
         use crate::foc::trig::LibmSinCos;
@@ -4687,13 +4839,12 @@ mod tests {
     #[test]
     #[cfg(feature = "virtual-motor")]
     fn sensorless_chain_stable_through_bench_trip_zone() {
-        use crate::foc::controller::Decoupling;
-
         let consistent = run_bench_spin_with_decoupling(
             Decoupling {
                 ld_h: 86e-6,
                 lq_h: 129e-6,
                 flux_linkage_wb: 1.145e-3,
+                resistance_ohm: 0.127,
             },
             (86e-6 + 129e-6) / 2.0,
             true,
@@ -4725,6 +4876,7 @@ mod tests {
                 ld_h: 86e-6,
                 lq_h: 129e-6,
                 flux_linkage_wb: 1.145e-3,
+                resistance_ohm: 0.127,
             },
             1.0, // = the plant's actuation delay
         );
@@ -4745,7 +4897,6 @@ mod tests {
     #[test]
     #[cfg(feature = "virtual-motor")]
     fn cold_start_captures_rotor_from_any_initial_angle() {
-        use crate::foc::controller::Decoupling;
         for frac in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
             let delta0 = frac * core::f32::consts::PI;
             let res = run_bench_spin_with_decoupling(
@@ -4753,6 +4904,7 @@ mod tests {
                     ld_h: 86e-6,
                     lq_h: 129e-6,
                     flux_linkage_wb: 1.145e-3,
+                    resistance_ohm: 0.127,
                 },
                 (86e-6 + 129e-6) / 2.0,
                 true,
@@ -5672,7 +5824,7 @@ mod tests {
         let derated = make(
             DeratingScales {
                 drive: 0.5,
-                brake: 1.0,
+                ..DeratingScales::IDENTITY
             },
             10.0,
         );
@@ -5686,7 +5838,7 @@ mod tests {
         let brake_with_drive_derate = make(
             DeratingScales {
                 drive: 0.5,
-                brake: 1.0,
+                ..DeratingScales::IDENTITY
             },
             -10.0,
         );
@@ -5775,10 +5927,11 @@ mod tests {
             let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
                 params.r, params.ld, 24.0,
             );
-            foc.set_decoupling(Some(crate::foc::controller::Decoupling {
+            foc.set_decoupling(Some(Decoupling {
                 ld_h: params.ld,
                 lq_h: params.lq,
                 flux_linkage_wb: params.lambda,
+                resistance_ohm: params.r,
             }));
             let mut driver = FocDriver::new(
                 foc,
@@ -5872,6 +6025,44 @@ mod tests {
                 self.step();
             }
         }
+    }
+
+    /// Cruise control down a slope on a full pack (regen derate at 0): the
+    /// plain derate cuts the brake and the board runs away; dissipation
+    /// holds the cruise speed and pushes (next to) nothing into the pack.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn full_pack_descent_holds_its_cruise_by_dissipation() {
+        // (final ω, mean power into the supply over the last second)
+        let descent = |max_dissipation_w| {
+            let mut rig = HallRig::new(0.5, 2e-5);
+            rig.driver.set_current_limits(CurrentLimits {
+                max_dissipation_w,
+                ..CurrentLimits::from_max_current(30.0)
+            });
+            rig.driver
+                .set_mode(ControlMode::VelocityControl { target_vel: 800.0 });
+            rig.run(2.0);
+            // The pack is full and the road tips down: holding 800 el
+            // rad/s takes ~4.9 A of brake, ~16 W of regen to burn.
+            rig.driver.set_derating_scales(DeratingScales {
+                regen: 0.0,
+                ..DeratingScales::IDENTITY
+            });
+            rig.slope = -0.15;
+            rig.run(1.0);
+            let mut charged_j = 0.0;
+            for _ in 0..(1.0 / HallRig::DT) as u32 {
+                let (_, t) = rig.step();
+                charged_j -= 1.5 * (t.vd * t.id + t.vq * t.iq) * HallRig::DT;
+            }
+            (rig.out.omega_e, charged_j)
+        };
+        let (omega, _) = descent(0.0);
+        assert!(omega > 2_000.0, "the plain cut must run away: ω {omega}");
+        let (omega, charge_w) = descent(50.0);
+        assert!((omega - 800.0).abs() < 30.0, "ω {omega}");
+        assert!(charge_w.abs() < 2.0, "mean charge {charge_w} W");
     }
 
     /// The parking brake entered at 1500 el rad/s on a 5065: the plain
@@ -6257,10 +6448,11 @@ mod tests {
             let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
                 params.r, l_avg, vbus,
             );
-            foc.set_decoupling(Some(crate::foc::controller::Decoupling {
+            foc.set_decoupling(Some(Decoupling {
                 ld_h: params.ld,
                 lq_h: params.lq,
                 flux_linkage_wb: params.lambda,
+                resistance_ohm: params.r,
             }));
             let mut mgr = PhaseManager::sensorless();
             mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(

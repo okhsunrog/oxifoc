@@ -64,6 +64,20 @@ their section.
   angle a short current past the limit releases to high-Z — which is what
   makes it safe for the failsafe to hand over to the short on losing the
   sensorless angle at unknown speed. [safety.md → Scope]
+- **2026-09-30 — dissipative braking by d current, budgeted in watts.**
+  When the supply refuses regen (the regen-OV derate on a full pack,
+  `bus_regen_max_a`, a lab PSU) the brake keeps its torque and a negative
+  d current burns the surplus in the windings; the regen derate is a
+  separate `regen` scale, cutting the torque only with dissipation off.
+  Model-based (`1.5·(ωλ|iq| − R·i²)` on the detected R, λ), not a
+  measured-power loop: a motor warmer than at detection and the inverter
+  losses both burn more than modelled — the safe side. Budget
+  `max_dissipation_w` (`1.5·R·id²`, off by default) in the unit of the
+  motor's `max_power_loss_w`: the heat a long descent may put into the
+  motor, motor-independent; the current circle keeps the total within
+  the rating anyway. Negative id (flux-weakening direction) lowers the
+  voltage the brake needs. Neither VESC nor MESC has this.
+  [motor/dissipation.rs]
 
 ## Firmware / platform
 

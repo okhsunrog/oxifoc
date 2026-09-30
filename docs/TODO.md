@@ -19,10 +19,14 @@ failsafe design to [safety.md](safety.md). Documentation map: [README.md](README
   `BRAKE_ENTRY_MAX_E_RAD_S` (parking-brake entry gate) + windings
   short-circuit current at that speed within FET ratings.
 - [ ] **Parking brake follow-ups**: GUI button + remote mapping.
-- [ ] **Dissipative braking near OV** (downhill on a full battery, see
-  safety.md): when the OV derate cuts the regen brake — dissipate the
-  energy in the windings (active short / d-current) with thermal control.
-  Needs the bench.
+- [ ] **Bench-validate dissipative braking** (`max_dissipation_w`, sim
+  only so far): on the lab PSU with `bus_regen_max_a = 0`, brake a
+  spinning rotor — the supply must see ~no reverse current (the R/λ model
+  error), motor temperature within reason; the back-EMF observer under a
+  large −id (L·i term, saliency); pick a default budget. Open: a BMS that
+  cuts charging leaves only the bus capacitors (volts per ms) — the regen
+  derate is decimated to ~78 Hz, likely too slow there (per-cycle, like
+  the speed cut?).
 - [ ] **Position hold** (after position control): capture the target on
   engage, cascade position P → `VelocityLoop` → current. Engaged only by
   an explicit command (a dedicated remote button, like the parking brake)

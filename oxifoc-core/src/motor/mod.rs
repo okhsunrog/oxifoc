@@ -1,6 +1,7 @@
 //! Reusable motor control driver integrating FOC with sensors and PWM
 
 pub mod derating;
+pub mod dissipation;
 pub mod failsafe;
 pub mod foc_driver;
 

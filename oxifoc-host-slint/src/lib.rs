@@ -1554,6 +1554,10 @@ pub fn main() {
                                     "{}",
                                     c.bus_regen_max_a
                                 )));
+                                app.set_cfg_max_dissipation(SharedString::from(format!(
+                                    "{}",
+                                    c.max_dissipation_w
+                                )));
                             }
                             Some(ConfigValue::VoltageLimits(v)) => {
                                 app.set_cfg_min_vbus(SharedString::from(format!(
@@ -1699,12 +1703,15 @@ pub fn main() {
                     let bus_in: f32 = parse_field("bus in max", &app.get_cfg_bus_in_max(), err);
                     let bus_regen: f32 =
                         parse_field("bus regen max", &app.get_cfg_bus_regen_max(), err);
+                    let dissipation: f32 =
+                        parse_field("dissipation max", &app.get_cfg_max_dissipation(), err);
                     ConfigAction::Replace(ConfigWrite::CurrentLimits(CurrentLimitsConfig {
                         max_iq_a: iq,
                         max_brake_a: brake,
                         max_phase_current_a: ph,
                         bus_in_max_a: bus_in,
                         bus_regen_max_a: bus_regen,
+                        max_dissipation_w: dissipation,
                     }))
                 }
                 2 => {

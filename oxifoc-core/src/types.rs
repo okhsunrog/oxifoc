@@ -511,6 +511,11 @@ pub struct SlowTelemetry {
     /// Fault-registry generation. Lets consumers detect a lost/refined fault
     /// snapshot even when the number of active faults did not change.
     pub fault_generation: u32,
+    /// Share of the brake's regen the supply takes (percent, 100 = all):
+    /// below 100 the pack is full — the refused share is burned in the
+    /// windings (dissipative braking) or, with that off, cut from the
+    /// brake torque
+    pub derate_regen_pct: u8,
 }
 
 /// Response to a phase-source change request.

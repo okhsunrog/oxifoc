@@ -15,6 +15,8 @@ use super::{
 };
 use crate::foc::clamp_f32;
 use crate::foc::fast_math::sqrtf;
+#[cfg(feature = "storage")]
+use crate::storage::MotorParamsConfig;
 
 /// Output of a single FOC current-loop step
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -85,6 +87,10 @@ pub struct Decoupling {
     pub lq_h: f32,
     /// Permanent-magnet flux linkage (Wb) — the back-EMF feedforward term
     pub flux_linkage_wb: f32,
+    /// Phase resistance (Ω). Not a decoupling term: it rides along for the
+    /// driver's dissipative-braking power balance (`motor::dissipation`);
+    /// `0` = unknown, which disables that.
+    pub resistance_ohm: f32,
 }
 
 impl Decoupling {
@@ -94,9 +100,29 @@ impl Decoupling {
         self.ld_h.is_finite()
             && self.lq_h.is_finite()
             && self.flux_linkage_wb.is_finite()
+            && self.resistance_ohm.is_finite()
             && self.ld_h > 0.0
             && self.lq_h > 0.0
             && self.flux_linkage_wb >= 0.0
+            && self.resistance_ohm >= 0.0
+    }
+
+    /// The model a stored motor-params group arms, at boot and on a live
+    /// write alike. Decoupling wants the FUNDAMENTAL Ld/Lq when detection
+    /// measured them (two-inductance rule: the AC plateau under-compensates
+    /// the cross-coupling 4–5× on eddy-heavy motors — the bench 800 rad/s
+    /// OC class); the AC values otherwise.
+    #[cfg(feature = "storage")]
+    pub fn from_motor_params(mp: &MotorParamsConfig) -> Self {
+        let (ld_h, lq_h) = mp
+            .fundamental_ld_lq()
+            .unwrap_or((mp.inductance_d_h, mp.inductance_q_h));
+        Self {
+            ld_h,
+            lq_h,
+            flux_linkage_wb: mp.flux_linkage_wb,
+            resistance_ohm: mp.resistance_ohm,
+        }
     }
 }
 
@@ -288,18 +314,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
                     pg.ki
                 );
             }
-            // Decoupling wants the FUNDAMENTAL Ld/Lq when the config has
-            // them (two-inductance rule: the AC plateau under-compensates
-            // the cross-coupling 4–5× on eddy-heavy motors — the bench
-            // 800 rad/s OC class); fall back to the AC values otherwise.
-            let (ld, lq) = mp
-                .fundamental_ld_lq()
-                .unwrap_or((mp.inductance_d_h, mp.inductance_q_h));
-            foc.set_decoupling(Some(Decoupling {
-                ld_h: ld,
-                lq_h: lq,
-                flux_linkage_wb: mp.flux_linkage_wb,
-            }));
+            foc.set_decoupling(Some(Decoupling::from_motor_params(mp)));
             foc
         } else if let Some(ref pg) = config.pi_gains
             && pg.is_sane()
@@ -805,6 +820,7 @@ mod tests {
                         ld_h: 100e-6,
                         lq_h: 300e-6,
                         flux_linkage_wb: 0.02,
+                        resistance_ohm: 0.1,
                     }));
 
                     let omega = 200.0; // electrical rad/s
@@ -842,6 +858,7 @@ mod tests {
                         ld_h: f32::NAN,
                         lq_h: 300e-6,
                         flux_linkage_wb: 0.02,
+                        resistance_ohm: 0.1,
                     }));
                     assert!(foc.decoupling().is_none());
                 }
