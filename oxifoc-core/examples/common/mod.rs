@@ -25,17 +25,31 @@ pub const FOC_HZ: u32 = 20_000;
 pub const DT: f32 = 1.0 / FOC_HZ as f32;
 const TICKS: u64 = 1_000_000 / FOC_HZ as u64;
 
-pub struct Pwm([u16; 3]);
+/// PWM stage with the boards' channel gating: `disable()` or an all-Float
+/// topology turns the bridge off (the rig then coasts the plant — high-Z,
+/// not the shorted windings a zero voltage would model), and only
+/// `enable()` or a driven topology turns it back on.
+pub struct Pwm {
+    pub duties: [u16; 3],
+    pub enabled: bool,
+}
 
 impl PhasePwm for Pwm {
     fn max_duty(&self) -> u16 {
         1000
     }
     fn set_duties(&mut self, duties: [u16; 3]) {
-        self.0 = duties;
+        self.duties = duties;
+    }
+    fn disable(&mut self) {
+        self.enabled = false;
+    }
+    fn enable(&mut self) {
+        self.enabled = true;
     }
     fn set_phase_states(&mut self, states: [PhaseState; 3]) {
-        self.0 = states.map(|s| match s {
+        self.enabled = !states.iter().all(|s| matches!(s, PhaseState::Float));
+        self.duties = states.map(|s| match s {
             PhaseState::Pwm(d) => d,
             PhaseState::Low | PhaseState::Float => 0,
         });
@@ -186,7 +200,11 @@ impl Rig {
         phase.configure_observers_from_config(&config, vbus);
         phase.set_phase_tracker(cfg.tracker, 1.2);
         let foc = FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(&config, vbus);
-        let mut driver = FocDriver::new(foc, Pwm([0; 3]), Currents((0.0, 0.0, 0.0)), phase, DT);
+        let pwm = Pwm {
+            duties: [0; 3],
+            enabled: false,
+        };
+        let mut driver = FocDriver::new(foc, pwm, Currents((0.0, 0.0, 0.0)), phase, DT);
         driver.set_current_limits(CurrentLimits::from_max_current(i_max));
         driver.set_actuation_delay(cfg.delay);
         Self {
@@ -252,7 +270,11 @@ impl Rig {
         self.prev_angle = sample.angle_rad;
         let omega_m = sample.omega_e / f32::from(self.params.pole_pairs);
         let load = self.load * (omega_m / 2.0).tanh() + self.torque_disturbance;
-        self.out = self.motor.step(telem.v_alpha, telem.v_beta, load, DT);
+        self.out = if self.driver.pwm().enabled {
+            self.motor.step(telem.v_alpha, telem.v_beta, load, DT)
+        } else {
+            self.motor.step_coast(load, DT)
+        };
         self.mech_angle += f64::from(omega_m * DT);
         StepRecord { sample, telem }
     }
