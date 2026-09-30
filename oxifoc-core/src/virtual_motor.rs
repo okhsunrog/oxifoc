@@ -511,7 +511,6 @@ impl VirtualMotor {
             // saturation-effective L stays confined to the di/dt slope.
             let dl_d = p.eddy_delta_l_d;
             let dl_q = p.eddy_delta_l_q;
-            let psi_d = (p.ld - dl_d) * self.id + dl_d * self.i_fd + p.lambda;
             let psi_q = (p.lq - dl_q) * self.iq + dl_q * self.i_fq;
             // Eddy branch EMF ΔL·d(i_f)/dt = ΔL·(i − i_f)/τ_e — the lossy
             // part of L(jω) (frequency-dependent eddy resistance).
@@ -533,8 +532,16 @@ impl VirtualMotor {
             // ── Q-axis current ────────────────────────────────────────────
             // (Lq_eff−ΔLq)·diq/dt = Vq − R·iq − ωe·ψd − ΔLq·(iq−i_fq)/τe
             // Lq_eff(iq) models saliency collapse when lq_sat_k ≠ 0.
+            // ψd from the id just updated (semi-implicit Euler): the ω
+            // cross-coupling is a rotation of the current vector, which
+            // explicit Euler stretches by √(1 + (ω·dt)²) per step — unstable
+            // past ω·dt ≈ √(2·R·dt/L), 8000 el rad/s on a 5065 at one
+            // substep, well inside a 12S board's speed range. This order
+            // keeps the rotation norm-preserving.
+            let psi_d = (p.ld - dl_d) * self.id + dl_d * self.i_fd + p.lambda;
             self.iq += (vq - self.omega_e * psi_d - p.r * self.iq - e_fq) * dt_sub
                 / (p.lq_eff(self.iq) - dl_q).max(1e-9);
+            let psi_q = (p.lq - dl_q) * self.iq + dl_q * self.i_fq;
 
             // ── Eddy branch state ─────────────────────────────────────────
             if p.eddy_tau_s > 0.0 {
@@ -858,6 +865,40 @@ mod tests {
         assert!(
             uncalibrated > 0.4,
             "uncalibrated frame error {uncalibrated} rad"
+        );
+    }
+
+    /// A shorted 5065 at 12 000 el rad/s (12S top speed) on ONE substep:
+    /// ω·dt = 0.6. The short current must settle at λω/|Z|; the explicit
+    /// Euler cross-coupling grew it ×1.1 per step instead.
+    #[test]
+    fn single_substep_stays_stable_at_high_speed() {
+        const DT: f32 = 1.0 / 20_000.0;
+        let params = MotorParams {
+            r: 0.036,
+            ld: 22e-6,
+            lq: 22e-6,
+            lambda: 2.92e-3,
+            pole_pairs: 7,
+            j: 1e3, // speed held constant
+            friction_b: 0.0,
+            ..MotorParams::default()
+        };
+        let omega = 12_000.0;
+        let mut motor = VirtualMotor::new(params);
+        motor.set_velocity(omega);
+        let settled = params.lambda * omega
+            / (params.r * params.r + (omega * params.ld) * (omega * params.ld)).sqrt();
+        let mut peak = 0.0f32;
+        for _ in 0..2_000 {
+            motor.step_shorted(0.0, DT);
+            peak = peak.max(motor.id.hypot(motor.iq));
+        }
+        let last = motor.id.hypot(motor.iq);
+        assert!(peak < 2.5 * settled, "peak {peak} A vs settled {settled} A");
+        assert!(
+            (last / settled - 1.0).abs() < 0.1,
+            "{last} A vs {settled} A"
         );
     }
 
