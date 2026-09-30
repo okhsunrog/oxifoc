@@ -30,7 +30,7 @@ use embassy_stm32::timer::{Ch1, Ch2, Ch3, Channel};
 use embassy_stm32::{Peri, interrupt, pac, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
-use oxifoc_core::foc::capture_timebase::CaptureTimebase;
+use oxifoc_core::foc::capture_timebase::{CaptureTimebase, input_filter_delay_ticks};
 use oxifoc_core::foc::hall_embassy::{set_tick_source, update_hall_edge};
 
 // Re-export shared items from core (consumed by control/foc.rs once the
@@ -55,6 +55,11 @@ static TIMEBASE: CaptureTimebase<u32> = CaptureTimebase::new();
 /// so one timestamp was lost (the estimator then sees a wider sector).
 /// Diagnostics only.
 pub static OVERCAPTURES: AtomicU32 = AtomicU32::new(0);
+
+/// Mean input-filter delay (ticks) taken off each capture: the edge
+/// happened this long before the filter let it through. Set from the
+/// timer clock in [`init_hall`].
+static FILTER_DELAY_TICKS: AtomicU32 = AtomicU32::new(0);
 
 /// "Now" in hall ticks (µs), assembled from TIM2 CNT + overflow count.
 ///
@@ -128,10 +133,15 @@ pub fn init_hall(
     // f_DTS = timer clock / 4; ICF = f_DTS/32, 8 samples: the XOR signal
     // must be stable ~6 µs before an edge is accepted. Hardware debounce —
     // the filter delay is identical for every edge, so it cancels in
-    // velocity math.
+    // velocity math. Not in the angle: the capture ISR takes it back off
+    // every timestamp (see FILTER_DELAY_TICKS).
     regs16
         .cr1()
         .modify(|w| w.set_ckd(pac::timer::vals::Ckd::Div4));
+    FILTER_DELAY_TICKS.store(
+        input_filter_delay_ticks(clk, 4 * 32, 8, HALL_TICKS_PER_SEC),
+        Ordering::Relaxed,
+    );
     // XOR CH1^CH2^CH3 → TI1: any single hall transition flips parity.
     regs16
         .cr2()
@@ -216,7 +226,8 @@ fn TIM2() {
         // Reading CCR1 clears CC1IF.
         let captured = regs.ccr(0).read();
         let ticks = TIMEBASE.capture(captured, sr.uif(), || clear_flags(true, false));
-        update_hall_edge(read_hall_state(), ticks);
+        let edge = ticks.saturating_sub(u64::from(FILTER_DELAY_TICKS.load(Ordering::Relaxed)));
+        update_hall_edge(read_hall_state(), edge);
     } else if sr.uif() {
         TIMEBASE.overflow(|| clear_flags(true, false));
     }

@@ -106,6 +106,29 @@ pub fn extend_now<W: CaptureWord>(overflows: u32, cnt: W, uif_pending: bool) -> 
     }
 }
 
+/// Mean delay (in `ticks_per_sec` ticks) an STM32 timer's digital input
+/// filter adds to a captured edge. The filter samples at
+/// `timer_clk_hz / sample_div` (f_DTS prescaler × ICF divider) and accepts a
+/// level after `samples` equal samples; the edge lands at a random phase of
+/// the sample clock, so it is latched `samples − ½` sample periods late on
+/// average. Identical for every edge, it cancels in edge-to-edge velocity
+/// but not in the angle: a hall edge stamped this late anchors the sector
+/// boundary `ω·delay` behind the rotor.
+pub fn input_filter_delay_ticks(
+    timer_clk_hz: u64,
+    sample_div: u32,
+    samples: u32,
+    ticks_per_sec: u64,
+) -> u32 {
+    if timer_clk_hz == 0 || samples == 0 {
+        return 0;
+    }
+    // (samples − ½) · sample_div / clk, in ticks, rounded.
+    let num = (2 * u64::from(samples) - 1) * u64::from(sample_div) * ticks_per_sec;
+    let den = 2 * timer_clk_hz;
+    u32::try_from((num + den / 2) / den).unwrap_or(u32::MAX)
+}
+
 /// Stateful overflow accounting shared between a timer ISR (single writer)
 /// and any number of readers, including ones at higher interrupt priority.
 ///
@@ -184,6 +207,14 @@ impl<W: CaptureWord> Default for CaptureTimebase<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_filter_delay_matches_the_hall_timers() {
+        // f_DTS = clk/4, ICF = f_DTS/32 with 8 samples: 7.5 · 128 / clk.
+        assert_eq!(input_filter_delay_ticks(84_000_000, 128, 8, 1_000_000), 11); // F405 TIM3
+        assert_eq!(input_filter_delay_ticks(170_000_000, 128, 8, 1_000_000), 6); // G474 TIM2
+        assert_eq!(input_filter_delay_ticks(0, 128, 8, 1_000_000), 0);
+    }
 
     #[test]
     fn no_overflow_passthrough() {
