@@ -868,17 +868,19 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     fn tracker_output_inner(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
         let tr = &mut self.tracker;
         if !tr.active {
-            // ANGLE from the estimate (zero initial gap — the same angle
-            // step a plain confirmed handoff performs), FREQUENCY from the
-            // last output (the instantaneous raw.velocity carries the full
-            // estimate wobble; the outgoing ramp's frequency is already
-            // ≈ the rotor's). The freq-led predecessor's `self.output`
-            // angle seed froze the startup ramp's ~90° load angle into
-            // cruise — see the PhaseTracker doc and docs/TODO.md dossier.
+            // Engage on the estimate: zero initial gap (the same angle step
+            // a plain confirmed handoff performs) at its frequency. Not the
+            // last output's: after a deadshort catch that is the probe's
+            // standstill hold, ω = 0 — the tracker then trailed a
+            // 1000 rad/s rotor at the lag clamp and tripped OC at 2000 on a
+            // 5065 (flying_restart_catches_low_tau_motors). The freq-led
+            // predecessor's `self.output` angle seed froze the startup
+            // ramp's ~90° load angle into cruise — see the PhaseTracker doc
+            // and docs/TODO.md dossier.
             tr.theta = raw.angle;
-            tr.omega = self.output.velocity;
+            tr.omega = raw.velocity;
             tr.d_filt = 0.0;
-            tr.v_slow = self.output.velocity;
+            tr.v_slow = raw.velocity;
             tr.a_est = 0.0;
             tr.hunt_filt = 0.0;
             tr.active = true;

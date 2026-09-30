@@ -5769,6 +5769,7 @@ mod tests {
                 params.lambda,
             )));
             mgr.set_source(PhaseSource::Observer).unwrap();
+            mgr.set_phase_tracker(100.0, 1.2); // the f405 boot configuration
             let mut driver = FocDriver::new(
                 foc,
                 MockPwm { duties: [0; 3] },
@@ -5788,6 +5789,12 @@ mod tests {
             let mut out = motor.step_coast(0.0, DT_FLY);
             let mut peak = 0.0f32;
             let mut seed_err = f32::NAN;
+            // Worst commutation-frame error over the 2 ms after the catch:
+            // the handoff itself. (Later the observer PLL's lag under
+            // acceleration takes over — on the light ZD2808 rotor ~0.3 rad
+            // by 20 ms; a separate issue.)
+            let mut frame_err = 0.0f32;
+            let mut caught_at = None;
             let mut result = "ok";
             for step in 1..6_000u64 {
                 driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
@@ -5796,16 +5803,25 @@ mod tests {
                     result = "TRIPPED";
                     break;
                 };
-                if was_starting && !driver.phase().is_starting() && seed_err.is_nan() {
+                if was_starting && !driver.phase().is_starting() && caught_at.is_none() {
                     seed_err = driver.phase().get().velocity / out.omega_e - 1.0;
+                    caught_at = Some(step);
                 }
                 out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT_FLY);
                 peak = peak.max(out.ia.abs()).max(out.ib.abs()).max(out.ic.abs());
+                if caught_at.is_some_and(|c| step - c < 40) {
+                    // `get()` predicts the next sample instant — where the
+                    // plant now is.
+                    let e = angle_difference(driver.phase().get().angle, out.angle_rad);
+                    frame_err = frame_err.max(e.abs());
+                }
             }
-            let pass = result == "ok" && seed_err.abs() < tol && out.omega_e > 0.7 * w0;
+            let pass =
+                result == "ok" && seed_err.abs() < tol && frame_err < 0.2 && out.omega_e > 0.7 * w0;
             ok &= pass;
             report += &format!(
-                "\n  {name} w0 {w0:5.0}: {result}, seed err {:+.1}%, peak {peak:.1} A, final ω {:.0}{}",
+                "\n  {name} w0 {w0:5.0}: {result}, seed err {:+.1}%, frame err {frame_err:.2} rad, \
+                 peak {peak:.1} A, final ω {:.0}{}",
                 seed_err * 100.0,
                 out.omega_e,
                 if pass { "" } else { "  <-- FAIL" }
