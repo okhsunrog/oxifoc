@@ -5541,6 +5541,8 @@ mod tests {
         step: u64,
         /// Feed hall edges to the driver (false = a dead sensor).
         hall_alive: bool,
+        /// Remaining steps of an injected invalid-state (0b000) glitch.
+        glitch_steps: u32,
         /// Coulomb load (N·m, opposes motion).
         load: f32,
     }
@@ -5603,15 +5605,34 @@ mod tests {
                 prev_angle: out.angle_rad,
                 step: 0,
                 hall_alive: true,
+                glitch_steps: 0,
                 load: 0.0,
             }
+        }
+
+        /// Hold the hall lines at the invalid all-low state for `steps`
+        /// periods (a connector bounce); the real state returns after.
+        fn glitch(&mut self, steps: u32) {
+            let now = (self.step + 1) * Self::TICKS;
+            self.driver.phase_mut().hall_mut().update(0, now);
+            self.glitch_steps = steps;
         }
 
         /// One FOC period: (the plant state the driver sampled, its output).
         fn step(&mut self) -> (VirtualMotorOutput, FocOutput) {
             self.step += 1;
             let now = self.step * Self::TICKS;
-            if self.hall_alive && self.out.hall_state != self.last_hall {
+            if self.glitch_steps > 0 {
+                self.glitch_steps -= 1;
+                if self.glitch_steps == 0 {
+                    // The lines settle on whatever sector the rotor is in.
+                    self.driver
+                        .phase_mut()
+                        .hall_mut()
+                        .update(self.out.hall_state, now);
+                    self.last_hall = self.out.hall_state;
+                }
+            } else if self.hall_alive && self.out.hall_state != self.last_hall {
                 // Crossing of the hall boundary (π/6 + k·π/3) inside the step.
                 let a0 = self.prev_angle;
                 let a1 = a0 + angle_difference(self.out.angle_rad, a0);
@@ -5681,6 +5702,40 @@ mod tests {
             rig.out.omega_e
         );
         assert!(rig.driver.phase().angle_trustworthy());
+    }
+
+    /// Invalid-state glitches at speed (a bouncing hall connector) must not
+    /// trip the drive. The estimator used to zero its speed on the invalid
+    /// state — reporting ω = 0 at full speed when the signal came back —
+    /// and then took the glitch's END as an edge, overestimating the next
+    /// speed 1.6×: 0.2–1 ms glitches tripped overcurrent in 10 of 16
+    /// timings. A glitch longer than a sector also hides an edge, whose
+    /// boundary must be placed at the estimated crossing, not at the
+    /// glitch's end (−0.9 rad of frame error otherwise).
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn hall_glitches_at_speed_do_not_trip() {
+        let mut rig = HallRig::new(0.5, 1.4e-3);
+        rig.driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 10.0,
+            id_target: 0.0,
+        });
+        rig.run(0.8);
+        let cruise = rig.out.omega_e;
+        let mut id_max = 0.0f32;
+        for k in 0..16 {
+            // 0.2 ms and 1 ms glitches, each landing at a different phase
+            // of the sector (50.35 ms apart is no multiple of it).
+            rig.glitch(if k % 2 == 0 { 4 } else { 20 });
+            for _ in 0..1007 {
+                let (sample, _) = rig.step(); // panics on an overcurrent trip
+                let (i_alpha, i_beta) = clarke(sample.ia, sample.ib);
+                let (s, c) = (libm::sinf(sample.angle_rad), libm::cosf(sample.angle_rad));
+                id_max = id_max.max(park(i_alpha, i_beta, s, c).0.abs());
+            }
+        }
+        assert!(id_max < 12.0, "true |id| peaked at {id_max} A");
+        assert!(rig.out.omega_e > 0.9 * cruise);
     }
 
     /// Full torque into the voltage limit must settle at base speed with

@@ -151,6 +151,18 @@ pub struct HallSensor {
     last_edge_ticks: Option<u64>,
     /// Electrical velocity estimate (rad/s) from last edge
     elec_velocity: f32,
+    /// Last VALID raw state (1..=6): the sector the rotor was last seen in.
+    /// Survives an invalid-state glitch. 0 before the first valid reading.
+    valid_raw: u8,
+    /// An invalid state (0/7) interrupted the edge stream since the last
+    /// valid reading.
+    in_glitch: bool,
+    /// When that glitch began (ticks).
+    glitch_start_ticks: u64,
+    /// Upcoming edges whose timing is unusable for a speed estimate (the
+    /// edge a glitch hid, and the next one measured from it): the
+    /// pre-glitch speed is kept through them.
+    velocity_hold_edges: u8,
     /// Error counter for invalid states or transitions
     error_count: u32,
     /// Timebase (ticks per second)
@@ -312,6 +324,10 @@ impl HallSensor {
             direction_reversed: false,
             last_edge_ticks: None,
             elec_velocity: 0.0,
+            valid_raw: 0,
+            in_glitch: false,
+            glitch_start_ticks: 0,
+            velocity_hold_edges: 0,
             error_count: 0,
             ticks_per_sec: ticks_per_sec.max(1),
             interp_min_erpm: DEFAULT_INTERP_MIN_ERPM,
@@ -588,17 +604,51 @@ impl HallSensor {
         // Check for invalid states (all low or all high)
         if raw_state == 0 || raw_state > 6 {
             self.error_count += 1;
-            // Reset for clean recovery - next valid edge starts fresh.
-            // This prevents bogus velocity calculation from stale timestamps
-            // after Hall sensor glitch or cable disconnect/reconnect
-            // (VESC-style). Velocity/direction are cleared too: after a
-            // disconnect they describe a rotor we can no longer see.
-            self.last_edge_ticks = None;
-            self.elec_velocity = 0.0;
-            self.direction = Direction::Stopped;
-            self.base_is_boundary = false;
+            // A glitch (connector bounce, EMI) or a disconnect. Keep the
+            // speed, direction, last edge and base angle — VESC keeps its
+            // speed estimate across invalid readings too. Resetting them
+            // made the hall report ω = 0 at full speed once the signal came
+            // back (interpolation stopped, the back-EMF feedforward
+            // vanished: iq −22 A), and the glitch's END then counted as an
+            // edge mid-sector, so the next speed estimate came out 1.6×
+            // high (+38 A, overcurrent) — a 0.2 ms glitch at speed tripped
+            // 10 of 16 closed-loop timings. A disconnect still shows:
+            // sample() is None while the state is invalid, and staleness /
+            // the speed decay take over from there.
+            if !self.in_glitch {
+                self.in_glitch = true;
+                self.glitch_start_ticks = t_ticks;
+            }
             return None;
         }
+
+        // Back from a glitch in the SAME sector: no edge happened.
+        let mut t_ticks = t_ticks;
+        if core::mem::take(&mut self.in_glitch) {
+            if raw_state == self.valid_raw {
+                return Some(self.angle);
+            }
+            // The glitch hid an edge. The new sector is right, the time is
+            // not: the rotor crossed the boundary somewhere inside the
+            // glitch, and anchoring the boundary at the glitch's END put
+            // the frame up to a sector behind the rotor (−0.9 rad after a
+            // 1 ms glitch at 1500 rad/s — overcurrent in a few periods).
+            // Place the crossing where the pre-glitch speed says it was,
+            // inside the glitch window, and keep that speed for this edge
+            // and the next (measured from this estimated time).
+            if let Some(last) = self.last_edge_ticks {
+                let speed = self.elec_velocity.abs();
+                let t_cross = if speed > 1.0 {
+                    let sector_s = self.angle_per_state / speed;
+                    last.saturating_add((sector_s * self.ticks_per_sec as f32) as u64)
+                } else {
+                    t_ticks
+                };
+                t_ticks = t_cross.clamp(self.glitch_start_ticks, t_ticks);
+            }
+            self.velocity_hold_edges = 2;
+        }
+        let prev_raw = self.valid_raw;
 
         let prev_state = self.logical_state;
         let current_state = HALL_STATE_TABLE[raw_state as usize];
@@ -660,8 +710,10 @@ impl HallSensor {
             centroid_new
         };
 
-        // Velocity estimate from last edge
-        if let Some(last_t) = self.last_edge_ticks {
+        // Velocity estimate from last edge (not across a glitch — see above)
+        if self.velocity_hold_edges > 0 {
+            self.velocity_hold_edges -= 1;
+        } else if let Some(last_t) = self.last_edge_ticks {
             let dt_ticks = t_ticks.wrapping_sub(last_t).max(1);
             let dt = dt_ticks as f32 / self.ticks_per_sec as f32;
 
@@ -693,6 +745,7 @@ impl HallSensor {
         self.last_edge_ticks = Some(t_ticks);
         self.angle = base;
         self.base_is_boundary = crossed_boundary;
+        self.valid_raw = raw_state;
 
         // Deliberately NOT snapping rate_limited_angle here: the edge is
         // where the up-to-60° discontinuity happens, i.e. exactly what the
@@ -813,6 +866,10 @@ impl HallSensor {
     /// - Above threshold: linear interpolation with hard drift clamping
     pub fn sample_at(&self, now_ticks: u64) -> Option<AngleSample> {
         let t0 = self.last_edge_ticks?;
+        if self.in_glitch {
+            // Invalid state right now: no angle (the caller falls back).
+            return None;
+        }
         // saturating: a wrapped "negative" dt as f32 would be ~2^64 and
         // collapse the decayed velocity to zero for the cycle.
         let dt = now_ticks.saturating_sub(t0) as f32 / self.ticks_per_sec as f32;
@@ -885,6 +942,10 @@ impl HallSensor {
     /// This version mutates internal state to track rate limiting across calls.
     pub fn sample_at_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
         let t0 = self.last_edge_ticks?;
+        if self.in_glitch {
+            // Invalid state right now: no angle (the caller falls back).
+            return None;
+        }
         // saturating: see sample_at().
         let dt_from_edge = now_ticks.saturating_sub(t0) as f32 / self.ticks_per_sec as f32;
 
@@ -1636,19 +1697,36 @@ mod tests {
     }
 
     #[test]
-    fn invalid_state_clears_velocity() {
+    fn invalid_state_glitch_keeps_the_speed_estimate() {
         let mut hall = HallSensor::new(1_000_000);
         let mut t = 0u64;
         for s in CW_SEQ.iter().cycle().take(12) {
             hall.update(*s, t).unwrap();
-            t += 1000;
+            t += 1000; // 1 ms per sector
         }
-        assert!(hall.electrical_velocity().abs() > 500.0);
-        // Disconnect: all-low reading. Stale velocity/direction describe a
-        // rotor we can no longer see.
-        assert!(hall.update(0, t).is_none());
-        assert_eq!(hall.electrical_velocity(), 0.0);
-        assert_eq!(hall.direction(), Direction::Stopped);
+        let v = hall.electrical_velocity();
+        assert!(v > 500.0);
+        let last = CW_SEQ[11 % CW_SEQ.len()];
+        // A 200 µs all-low glitch mid-sector: no angle while it lasts, but
+        // the speed and direction survive it.
+        assert!(hall.update(0, t - 700).is_none());
+        assert!(hall.sample_at(t - 600).is_none());
+        assert_eq!(hall.electrical_velocity(), v);
+        assert_eq!(hall.direction(), Direction::Clockwise);
+        // Back in the SAME sector: not an edge, interpolation resumes.
+        hall.update(last, t - 500).unwrap();
+        assert_eq!(hall.electrical_velocity(), v);
+        assert!(hall.sample_at(t - 400).is_some());
+        // A glitch that hides an edge: the next sector shows up at the
+        // glitch's end, off the real crossing time. Neither that edge nor
+        // the next one (measured from it) may corrupt the speed.
+        let next = CW_SEQ[12 % CW_SEQ.len()];
+        let after = CW_SEQ[13 % CW_SEQ.len()];
+        assert!(hall.update(0, t - 100).is_none());
+        hall.update(next, t + 300).unwrap(); // real crossing was at t
+        assert_eq!(hall.electrical_velocity(), v);
+        hall.update(after, t + 1000).unwrap(); // only 0.7 ms after the fake edge
+        assert_eq!(hall.electrical_velocity(), v);
     }
 
     /// The estimate must track an INDEPENDENT continuous rotor angle — not
