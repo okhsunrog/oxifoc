@@ -593,11 +593,11 @@ impl VirtualMotor {
 mod tests {
     use super::*;
     use crate::foc::controller::FocController;
-    use crate::foc::hall_calibration::HallCalibrator;
+    use crate::foc::hall_calibration::{HallCalibrationResult, HallCalibrator};
     use crate::foc::hall_sensor::HallSensor;
     use crate::foc::pi_controller::PIController;
     use crate::foc::pwm::SvpwmModulator;
-    use crate::foc::wrap_angle;
+    use crate::foc::{angle_difference, wrap_angle};
 
     #[test]
     fn closed_loop_accelerates() {
@@ -799,56 +799,65 @@ mod tests {
             "calibration result must cover all 6 states"
         );
 
-        // Sanity-check: sector centroids sit at k·60° + offset, so the
-        // calibrated angle for raw state 1 (sector 0) should be ≈ π/6.
-        let angle_raw1 = cal_result.angle_for_raw_state(1).unwrap();
-        assert!(
-            (angle_raw1 - PI / 6.0).abs() < 0.1,
-            "calibrated angle for state 1 should be ≈π/6 with offset=π/6, got {angle_raw1:.4}"
-        );
-
-        // ── Step 2: closed-loop FOC with calibrated Hall sensor ───────────────
-        let kp = params.ld * 1_000.0;
-        let ki = params.r * 1_000.0;
-
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        foc.id_pi = PIController::new(kp, ki);
-        foc.iq_pi = PIController::new(kp, ki);
-
-        let mut motor = VirtualMotor::new(params);
-        let mut out = VirtualMotorOutput::default();
-
-        let mut hall = HallSensor::new(TICKS_PER_SEC);
-        hall.apply_calibration(&cal_result); // <-- uses measured sector angles
-
-        let mut prev_hall_state = 0u8;
-        let mut hall_angle = 0.0_f32;
-
-        for tick in 0u64..20_500 {
-            let hs = out.hall_state;
-            if hs != prev_hall_state && hs != 0 {
-                if let Some(angle) = hall.update(hs, tick) {
-                    hall_angle = angle;
-                }
-                prev_hall_state = hs;
-            }
-            if let Some(sample) = hall.sample_at_mut(tick) {
-                hall_angle = sample.angle;
-            }
-
-            let telem = foc.step((out.ia, out.ib, out.ic), hall_angle, 0.0, 2.0, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        // Every sector centroid sits at k·60° + offset.
+        for (k, raw) in HALL_CW_RAW.iter().enumerate() {
+            let angle = cal_result.angle_for_raw_state(*raw).unwrap();
+            let expected = k as f32 * PI / 3.0 + PI / 6.0;
+            assert!(
+                angle_difference(angle, expected).abs() < 0.02,
+                "raw state {raw}: calibrated {angle:.4}, expected {expected:.4}"
+            );
         }
 
+        // ── Step 2: closed-loop FOC on the Hall angle ─────────────────────────
+        // Mean |frame error| (Hall angle vs rotor) over the last quarter
+        // second of a 1 s spin-up, with or without the calibration.
+        let run = |calibration: Option<&HallCalibrationResult>| {
+            let kp = params.ld * 1_000.0;
+            let ki = params.r * 1_000.0;
+            let mut foc = FocController::<SvpwmModulator>::new(24.0);
+            foc.id_pi = PIController::new(kp, ki);
+            foc.iq_pi = PIController::new(kp, ki);
+
+            let mut motor = VirtualMotor::new(params);
+            let mut out = VirtualMotorOutput::default();
+            let mut hall = HallSensor::new(TICKS_PER_SEC);
+            if let Some(c) = calibration {
+                hall.apply_calibration(c);
+            }
+            let mut prev_hall_state = 0u8;
+            let mut hall_angle = 0.0_f32;
+            let mut err_sum = 0.0f32;
+            let mut err_n = 0u32;
+            for tick in 0u64..20_000 {
+                let hs = out.hall_state;
+                if hs != prev_hall_state && hs != 0 {
+                    if let Some(angle) = hall.update(hs, tick) {
+                        hall_angle = angle;
+                    }
+                    prev_hall_state = hs;
+                }
+                if let Some(sample) = hall.sample_at_mut(tick) {
+                    hall_angle = sample.angle;
+                }
+                if tick >= 15_000 {
+                    err_sum += angle_difference(hall_angle, out.angle_rad).abs();
+                    err_n += 1;
+                }
+                let telem = foc.step((out.ia, out.ib, out.ic), hall_angle, 0.0, 2.0, 1000, DT);
+                out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            }
+            assert!(out.omega_e > 100.0, "must spin up: ωe={}", out.omega_e);
+            err_sum / err_n as f32
+        };
+        let calibrated = run(Some(&cal_result));
+        let uncalibrated = run(None);
+        assert!(calibrated < 0.1, "calibrated frame error {calibrated} rad");
+        // The test must be able to tell: the default table is off by the
+        // full 30° offset.
         assert!(
-            out.omega_e > 100.0,
-            "motor should reach speed with calibrated Hall sensor (offset=π/6): ωe={}",
-            out.omega_e
-        );
-        assert!(
-            out.torque > 0.0,
-            "torque should be positive: T={}",
-            out.torque
+            uncalibrated > 0.4,
+            "uncalibrated frame error {uncalibrated} rad"
         );
     }
 
