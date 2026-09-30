@@ -1471,7 +1471,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 // Flying-restart probe: the driver holds the bridge at zero
                 // voltage; feed the back-EMF-driven current to the probe. A
                 // spinning rotor → seed the observer and go straight to closed
-                // loop; standstill → the probe falls through to the align ramp.
+                // loop; standstill → the probe falls through to the ramp.
                 let r = self.observer.resistance().unwrap_or(0.0);
                 let l = self.observer.inductance().unwrap_or(0.0);
                 let lambda = self.observer.lambda().unwrap_or(0.0);

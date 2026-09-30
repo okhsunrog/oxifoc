@@ -279,6 +279,24 @@ their section.
   Trap for next time: the host CLI must be REBUILT with the firmware
   after a config-struct layout change — a stale host-side
   `MotorParamsConfig` turns every config read into 2 s ack-retry stalls.
+- **2026-09-30 — the shorted-bridge probes read the circuit, not a
+  settled phasor.** Both earlier probe models assumed a regime:
+  `e = −L·dI/dt` (MESC's) only the rising edge from zero, the 2026-07-06
+  replacement `e = −(R+jωL)·i` only a fully settled short. A low-τ motor
+  at speed hits the current cap before settling, so the phasor model
+  seeded a Flipsky 5065 66–92% slow and tripped OC right after catching
+  1000–2000 el rad/s. Now every sample interval gives
+  `e = −R·ī − L·Δi/Δt` (the shorted circuit itself), valid mid-transient;
+  the window mean gives |ω| = |e|/λ and the angle, midpoint-compensated.
+  Settle rule: back-EMF driving the current up past the cap is measured
+  at once (after the 2-sample actuation pipeline); a FALLING over-cap
+  current is drive current decaying into the short (confirm, recycle)
+  and is waited out — mid-decay R·i and L·di/dt dwarf e, and a 20% L
+  error reads as ~200 rad/s of phantom rotation. Gates:
+  `flying_restart_catches_low_tau_motors` (5065 seeds within 1%, no
+  trip; ZD2808 within 6%, the rest is saliency — the probe has the
+  observer's single L), startup tests on an integrated shorted winding
+  instead of a constant synthetic phasor. Bench-pending (benchsuite).
 
 ## Host / tooling
 

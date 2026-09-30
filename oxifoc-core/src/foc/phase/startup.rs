@@ -87,15 +87,20 @@ const CEILING_MAX_FACTOR: f32 = 2.0;
 pub const DEADSHORT_CYCLES: u16 = 8;
 
 /// Shorted-bridge settle time (PWM periods) before the probe starts
-/// averaging the short-circuit current. Two transients must decay first:
-/// the bridge-enable glitch (~0.4 A pk over ~200 µs measured on
-/// B-G431B-ESC1 + ZD2808, 2026-07-06 — the old ΔI probe read it as
-/// back-EMF and falsely "caught" a spinning rotor at standstill), and the
-/// exponential approach of the short current to its steady state
-/// (τ = L/R ≈ 0.19 ms ≈ 4 PWM periods on the ZD2808 — the settled-current
-/// estimator *requires* steady state, see [`short_current_estimate`]).
-/// 16 periods = 800 µs ≈ 4τ (98% settled).
+/// measuring. The back-EMF estimate itself needs no settled current (see
+/// [`backemf_from_short`]); what must pass is anything the circuit model
+/// does not explain: the bridge-enable glitch (~0.4 A pk over ~200 µs
+/// measured on B-G431B-ESC1 + ZD2808, 2026-07-06 — read as back-EMF it
+/// "caught" a spinning rotor at standstill) and, on the give-up recycle,
+/// hold drive current decaying into the short (see the rising-current rule
+/// in `probe_sample`). 16 periods = 800 µs.
 pub const DEADSHORT_SETTLE_CYCLES: u16 = 16;
+
+/// Settle samples before the over-cap early measurement may start: the
+/// voltage commanded before the short keeps acting for the actuation delay
+/// (≤ 1 period on the supported boards), so only the interval between the
+/// 2nd and 3rd samples is certain to be fully shorted.
+const PROBE_PIPELINE_SAMPLES: u16 = 2;
 
 /// Minimum |ω| (rad/s elec) the deadshort must resolve to declare the rotor
 /// "spinning" and seed the observer for a flying restart. Below it (standstill
@@ -127,8 +132,8 @@ pub const DEADSHORT_MIN_CATCH_VEL: f32 = 140.0;
 const CONFIRM_STRONG_PROBE_VEL: f32 = 60.0;
 
 /// Abort the probe early if |i_αβ| exceeds this (A): the back-EMF drives the
-/// shorted winding toward `e/R`, which on a low-R motor is large — stop and
-/// estimate from the dI/dt accumulated so far rather than build current
+/// shorted winding toward `e/|Z|`, which on a low-R motor is large — stop and
+/// estimate from the intervals measured so far rather than build current
 /// without bound. Mirrors MESC's `DEADSHORT_CURRENT`.
 ///
 /// MUST stay below the driver's software OC trip
@@ -140,17 +145,19 @@ const CONFIRM_STRONG_PROBE_VEL: f32 = 60.0;
 /// current plus the entry transient and tripped the 10.8 A dq OC; the old
 /// 15 A cap sat unreachable above it). 8 A keeps a margin for the entry
 /// transient; a cap-ended window still yields a valid estimate from the
-/// accumulated current (and the cold-start catch treats "capped" as
-/// proven-fast). TODO: derive from the live `CurrentLimits` instead of a
-/// const once the probe plumbing carries them.
+/// intervals it measured. TODO: derive from the live `CurrentLimits`
+/// instead of a const once the probe plumbing carries them.
 const DEADSHORT_MAX_CURRENT_A: f32 = 8.0;
 
 /// Handoff-confirm probe: settle time (PWM periods) for the DRIVE current to
-/// decay into the short before the baseline is captured. Longer than the
-/// cold-start probe's settle: here amps of commanded current are flowing at
-/// entry (τ = L/R ≈ 0.8 ms on the ZD2808), and residual decay would read as
-/// back-EMF. 32 periods = 1.6 ms ≈ 2τ; the rotor coasts through it with
-/// negligible speed loss (J ≥ 5e-5, friction ~µN·m).
+/// decay into the short before the window opens. Longer than the cold-start
+/// probe's settle: here amps of commanded current are flowing at entry
+/// (τ = L/R ≈ 0.8 ms on the ZD2808). The interval model reads the decay as
+/// the circuit it is, but only as well as it knows R and L — mid-decay those
+/// terms dwarf the back-EMF (on the ZD2808 a 20% L error on 10 A of decay
+/// reads as ~220 rad/s of phantom rotation). 32 periods = 1.6 ms ≈ 2τ; the
+/// rotor coasts through it with negligible speed loss (J ≥ 5e-5, friction
+/// ~µN·m).
 pub const CONFIRM_SETTLE_CYCLES: u16 = 32;
 
 /// Handoff-confirm probe: the measured |ω| must reach this fraction of the
@@ -242,7 +249,7 @@ pub enum StartupPhase {
     /// Not sequencing — the real source (sensor / ready observer) drives.
     Inactive,
     /// Flying-restart probe (Phase B): the bridge is shorted (zero voltage)
-    /// and the back-EMF-driven current slope is measured to catch an
+    /// and the back-EMF is read from the short-circuit current to catch an
     /// already-spinning rotor before the cold-start ramp.
     Deadshort,
     /// Linearly ramping the open-loop velocity 0 → ceiling (from a cold
@@ -253,7 +260,7 @@ pub enum StartupPhase {
     Hold,
     /// Handoff-confirm probe: the observer passed its readiness gates, but
     /// before closed loop engages the bridge is shorted for ~2 ms and the
-    /// back-EMF-driven dI/dt must corroborate the claimed rotation. A
+    /// back-EMF read from the short must corroborate the claimed rotation. A
     /// converged observer whose flux is actually the machine's own residual
     /// inverter distortion (phantom lock — internally indistinguishable
     /// from a real rotation, see `BackEmfObserver::is_ready`) measures ≈ 0
@@ -355,24 +362,20 @@ pub struct SensorlessStartup {
     recycled: bool,
     // ── Deadshort probe state (Phase B) ──
     ds_settle: u16,
-    /// The probe was entered with drive current flowing (Confirm, or the
-    /// Hold give-up recycle) rather than from an unenergised bridge (cold
-    /// start). Drive residual is indistinguishable from back-EMF until it
-    /// has decayed, so the settle countdown must run to completion — the
-    /// over-cap early skip is only valid when the bridge was off and any
-    /// large current can ONLY be back-EMF. Without this, a sensorless start
-    /// at iq ≥ [`DEADSHORT_MAX_CURRENT_A`] skips the settle, one sample of
-    /// drive current "completes" the window, and `short_current_estimate`
-    /// fabricates a fast rotor ~π off the real one (phantom handoff).
-    ds_settle_must_complete: bool,
-    /// Samples accumulated into the probe-window current average.
+    /// Settle samples taken so far (the over-cap skip waits out the
+    /// actuation pipeline, see [`PROBE_PIPELINE_SAMPLES`]).
+    ds_settle_done: u16,
+    /// Samples taken in the probe window.
     ds_cycles: u16,
-    /// Running sums of the α/β current over the probe window — the
-    /// settled-current estimator works on the window AVERAGE (see
-    /// [`short_current_estimate`]).
+    /// Running sums of the α/β BACK-EMF over the probe window, one term per
+    /// sample interval (see [`backemf_from_short`]).
     ds_sum_alpha: f32,
     ds_sum_beta: f32,
+    /// Back-EMF terms in those sums.
+    ds_emf_terms: u16,
     ds_elapsed: f32,
+    /// Previous current sample (settle included), for the interval model.
+    ds_prev: Option<(f32, f32)>,
     // ── ISR log rate limit (token bucket) ──
     /// Log frames still allowed in the current window.
     log_tokens: u8,
@@ -411,11 +414,13 @@ impl Default for SensorlessStartup {
             strong_probes: 0,
             recycled: false,
             ds_settle: 0,
-            ds_settle_must_complete: false,
+            ds_settle_done: 0,
             ds_cycles: 0,
             ds_sum_alpha: 0.0,
             ds_sum_beta: 0.0,
+            ds_emf_terms: 0,
             ds_elapsed: 0.0,
+            ds_prev: None,
             log_tokens: LOG_TOKENS_PER_WINDOW,
             log_window_t: 0.0,
             log_suppressed: 0,
@@ -440,12 +445,76 @@ impl SensorlessStartup {
         self.hold_time = 0.0;
         self.confirm_cooldown = 0.0;
         self.strong_probes = 0;
-        self.ds_settle = DEADSHORT_SETTLE_CYCLES;
-        // Cold start: the bridge was off, so a large settled current can
-        // only be back-EMF — the over-cap settle skip is valid here.
-        self.ds_settle_must_complete = false;
+        self.start_probe(DEADSHORT_SETTLE_CYCLES);
+    }
+
+    /// Reset the probe for a new shorted-bridge window after `settle`
+    /// samples.
+    fn start_probe(&mut self, settle: u16) {
+        self.ds_settle = settle;
+        self.ds_settle_done = 0;
         self.ds_cycles = 0;
+        self.ds_sum_alpha = 0.0;
+        self.ds_sum_beta = 0.0;
+        self.ds_emf_terms = 0;
         self.ds_elapsed = 0.0;
+        self.ds_prev = None;
+    }
+
+    /// One shorted-bridge sample: runs the settle (cut short when back-EMF
+    /// drives the current past the cap — see below), then accumulates the
+    /// back-EMF of every sample interval. Returns `true` once the window is
+    /// done (full, or ended early by the current cap).
+    fn probe_sample(&mut self, i_alpha: f32, i_beta: f32, dt: f32, r: f32, l: f32) -> bool {
+        let prev = self.ds_prev.replace((i_alpha, i_beta));
+        let i_sq = i_alpha * i_alpha + i_beta * i_beta;
+        let i_mag = sqrtf(i_sq);
+        if self.ds_settle > 0 {
+            // A short current at the cap and still CLIMBING past the
+            // actuation pipeline is back-EMF building it: measure now
+            // instead of shorting on — the interval model needs no settled
+            // current, and on a low-τ motor at speed the short current
+            // climbs amps per period (λω/L). A FALLING one is drive current
+            // decaying into the short (confirm, recycle) and is waited out:
+            // mid-decay, R·i and L·di/dt dwarf the back-EMF, so a modest
+            // R/L model error would read as a fast rotor.
+            let rising = prev.is_some_and(|(pa, pb)| i_sq > pa * pa + pb * pb);
+            let pipelined = self.ds_settle_done >= PROBE_PIPELINE_SAMPLES;
+            if !(pipelined && rising && i_mag >= DEADSHORT_MAX_CURRENT_A) {
+                self.ds_settle -= 1;
+                self.ds_settle_done += 1;
+                return false;
+            }
+            self.ds_settle = 0;
+        }
+        if self.ds_cycles > 0 {
+            self.ds_elapsed += dt;
+        }
+        self.ds_cycles += 1;
+        if let Some((pa, pb)) = prev {
+            let (ea, eb) = backemf_from_short((pa, pb), (i_alpha, i_beta), dt, r, l);
+            self.ds_sum_alpha += ea;
+            self.ds_sum_beta += eb;
+            self.ds_emf_terms += 1;
+        }
+        self.ds_cycles >= DEADSHORT_CYCLES || i_mag >= DEADSHORT_MAX_CURRENT_A
+    }
+
+    /// Rotor estimate from the probe window (see [`backemf_estimate`]).
+    fn probe_estimate(&self, dt: f32, lambda: f32, min_vel: f32) -> Option<(f32, f32)> {
+        if self.ds_emf_terms == 0 {
+            return None;
+        }
+        let n = f32::from(self.ds_emf_terms);
+        backemf_estimate(
+            self.ds_sum_alpha / n,
+            self.ds_sum_beta / n,
+            // Mean interval midpoint, measured back from the last sample.
+            n * dt * 0.5,
+            lambda,
+            self.dir,
+            min_vel,
+        )
     }
 
     /// True while a probe needs the bridge held shorted (zero voltage): the
@@ -620,12 +689,11 @@ impl SensorlessStartup {
                     self.confirm_cooldown = 0.0;
                     self.strong_probes = 0;
                     self.recycled = true;
-                    self.ds_settle = DEADSHORT_SETTLE_CYCLES;
-                    // The ramp/hold drive current is still decaying into
-                    // this short — never mistake it for back-EMF.
-                    self.ds_settle_must_complete = true;
-                    self.ds_cycles = 0;
-                    self.ds_elapsed = 0.0;
+                    // The ramp/hold drive current decays into this short;
+                    // the interval model reads that decay as the circuit it
+                    // is (e = −R·i − L·di/dt ≈ 0 at standstill), not as
+                    // back-EMF.
+                    self.start_probe(DEADSHORT_SETTLE_CYCLES);
                     return StartupOutput {
                         angle: self.angle,
                         velocity: 0.0,
@@ -671,12 +739,7 @@ impl SensorlessStartup {
             // (`feed_confirm`). A phantom-locked observer passes every
             // internal gate; this probe is the external check it cannot.
             self.phase = StartupPhase::Confirm;
-            self.ds_settle = CONFIRM_SETTLE_CYCLES;
-            // Amps of commanded drive current are flowing at entry; the
-            // settle window exists to decay them and must run in full.
-            self.ds_settle_must_complete = true;
-            self.ds_cycles = 0;
-            self.ds_elapsed = 0.0;
+            self.start_probe(CONFIRM_SETTLE_CYCLES);
         }
 
         StartupOutput {
@@ -688,14 +751,14 @@ impl SensorlessStartup {
 
     /// Feed one shorted-winding current sample to the deadshort probe (Phase B).
     ///
-    /// `l`/`lambda` are the observer's motor model. The first call captures the
-    /// baseline current (the back-EMF response is the *change* from there); over
-    /// the next [`DEADSHORT_CYCLES`] (or until |i| hits the abort cap) it
-    /// accumulates dI/dt and estimates the back-EMF `e = −L·dI/dt`, hence the
-    /// rotor angle and speed (see [`short_current_estimate`]). A spinning rotor →
-    /// `Caught` and the machine deactivates (the manager seeds the observer);
-    /// standstill / too slow → it falls through to the cold-start ramp,
-    /// returning `Probing`.
+    /// `r`/`l`/`lambda` are the observer's motor model. After the settle,
+    /// every sample interval yields a back-EMF vector from the shorted
+    /// circuit itself (`0 = R·i + L·di/dt + e`, see [`backemf_from_short`]);
+    /// over [`DEADSHORT_CYCLES`] samples, or until |i| reaches the abort
+    /// cap, their mean gives the rotor angle and speed
+    /// ([`backemf_estimate`]). A spinning rotor → `Caught` and the machine
+    /// deactivates (the manager seeds the observer); standstill / too slow
+    /// → it falls through to the cold-start ramp, returning `Probing`.
     pub fn feed_deadshort(
         &mut self,
         i_alpha: f32,
@@ -708,60 +771,10 @@ impl SensorlessStartup {
         if self.phase != StartupPhase::Deadshort {
             return DeadshortResult::Probing;
         }
-        // Let the bridge-enable transient AND the short current's own
-        // exponential settle decay before averaging (see
-        // DEADSHORT_SETTLE_CYCLES). On a COLD start a current already at
-        // the abort cap can only be back-EMF (the bridge was off) — skip
-        // straight to the probe rather than sit shorted on a large
-        // current. On the Hold give-up recycle the cap is met by the
-        // decaying DRIVE current, which proves nothing about the rotor:
-        // the settle must run in full (`ds_settle_must_complete`).
-        if self.ds_settle > 0 {
-            let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
-            if i_mag < DEADSHORT_MAX_CURRENT_A || self.ds_settle_must_complete {
-                self.ds_settle -= 1;
-                return DeadshortResult::Probing;
-            }
-            self.ds_settle = 0;
-        }
-        // Accumulate the settled short-circuit current over the window.
-        if self.ds_cycles == 0 {
-            self.ds_sum_alpha = 0.0;
-            self.ds_sum_beta = 0.0;
-            self.ds_elapsed = 0.0;
-        } else {
-            self.ds_elapsed += dt;
-        }
-        self.ds_cycles += 1;
-        self.ds_sum_alpha += i_alpha;
-        self.ds_sum_beta += i_beta;
-        let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
-        if self.ds_cycles < DEADSHORT_CYCLES && i_mag < DEADSHORT_MAX_CURRENT_A {
+        if !self.probe_sample(i_alpha, i_beta, dt, r, l) {
             return DeadshortResult::Probing;
         }
-
-        // Probe window complete — rotor estimate from the settled current.
-        // When the CURRENT CAP ended the window early, the rotor is
-        // unambiguously fast (|i_short| ≥ cap ⇒ |e| ≥ cap·R ⇒ |ω| ≥
-        // cap·R/λ) but the averaged phasor is still RISING toward its
-        // steady state (τ = L/R) and the |i|-based ω is only a lower
-        // bound — on a high-τ motor it can sit under the catch floor at
-        // twice the floor's true speed. Skip the floor for a capped
-        // probe: the floor exists to send SLOW coasting rotors to the
-        // ramp, and ramping from near-zero frequency INTO a proven-fast
-        // rotor is the worse failure (full-speed slip at engage).
-        let capped = i_mag >= DEADSHORT_MAX_CURRENT_A;
-        let n = f32::from(self.ds_cycles);
-        match short_current_estimate(
-            self.ds_sum_alpha / n,
-            self.ds_sum_beta / n,
-            self.ds_elapsed,
-            r,
-            l,
-            lambda,
-            self.dir,
-            if capped { 0.0 } else { DEADSHORT_MIN_CATCH_VEL },
-        ) {
+        match self.probe_estimate(dt, lambda, DEADSHORT_MIN_CATCH_VEL) {
             Some((angle, velocity)) => {
                 self.deactivate();
                 DeadshortResult::Caught { angle, velocity }
@@ -798,55 +811,26 @@ impl SensorlessStartup {
         if self.phase != StartupPhase::Confirm {
             return ConfirmResult::Probing;
         }
-        // Drive-current decay into the short (τ = L/R); see
-        // CONFIRM_SETTLE_CYCLES. NO over-cap skip here, ever: Confirm is
-        // always entered with amps of commanded drive current flowing, and
-        // treating that residual as rotor evidence is exactly the phantom
-        // handoff this probe exists to prevent (a start at iq ≥ the cap
-        // would otherwise "complete" the window on one drive-current
-        // sample and seed the observer ~π off the rotor).
-        if self.ds_settle > 0 {
-            self.ds_settle -= 1;
-            return ConfirmResult::Probing;
-        }
-        // Accumulate the settled short-circuit current over the window.
-        if self.ds_cycles == 0 {
-            self.ds_sum_alpha = 0.0;
-            self.ds_sum_beta = 0.0;
-            self.ds_elapsed = 0.0;
-        } else {
-            self.ds_elapsed += dt;
-        }
-        self.ds_cycles += 1;
-        self.ds_sum_alpha += i_alpha;
-        self.ds_sum_beta += i_beta;
-        let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
-        if self.ds_cycles < DEADSHORT_CYCLES && i_mag < DEADSHORT_MAX_CURRENT_A {
+        // Confirm is entered with amps of drive current flowing; its decay
+        // into the short is waited out (see CONFIRM_SETTLE_CYCLES), unless
+        // back-EMF drives the current up past the cap (see probe_sample).
+        if !self.probe_sample(i_alpha, i_beta, dt, r, l) {
             return ConfirmResult::Probing;
         }
 
-        // Window complete — rotor estimate from the settled current (no
-        // catch floor here: the question is agreement with the observer,
-        // not absolute speed; a standing rotor honestly estimates ~0).
-        let n = f32::from(self.ds_cycles);
-        let (angle, omega) = match short_current_estimate(
-            self.ds_sum_alpha / n,
-            self.ds_sum_beta / n,
-            self.ds_elapsed,
-            r,
-            l,
-            lambda,
-            self.dir,
-            0.0,
-        ) {
+        // Window complete (no catch floor here: the question is agreement
+        // with the observer, not absolute speed; a standing rotor honestly
+        // estimates ~0).
+        let (angle, omega) = match self.probe_estimate(dt, lambda, 0.0) {
             Some((angle, velocity)) => (angle, velocity.abs()),
             // Degenerate parameters (no motor params baked) — cannot
             // corroborate anything; behave like a failed probe.
             None => (claim.angle, 0.0),
         };
         if self.log_allow() {
+            let n = f32::from(self.ds_emf_terms.max(1));
             info!(
-                "probe: i_avg=({},{}) -> omega={} angle={} (window_us={})",
+                "probe: e_avg=({},{}) -> omega={} angle={} (window_us={})",
                 self.ds_sum_alpha / n,
                 self.ds_sum_beta / n,
                 omega,
@@ -916,71 +900,57 @@ impl SensorlessStartup {
     }
 }
 
-/// Rotor estimate from the SETTLED short-circuit current phasor.
+/// Back-EMF (αβ, V) over one sample interval of a SHORTED winding, from the
+/// circuit itself: `0 = R·i + L·di/dt + e`, so `e = −R·ī − L·Δi/Δt` with
+/// `ī` the interval's mean current. Holds whether or not the short current
+/// has settled — the regimes the two earlier estimators each got wrong:
+/// `e = −L·Δi/Δt` alone (the original) dropped `R·i` and under-read a
+/// settled short by ~ω·τ; the settled-phasor `e = (R + jωL)·i` (its
+/// replacement) needed a steady state a low-τ motor at speed never reaches
+/// before the current cap (seeds 30–90% low; a 5065 tripped overcurrent
+/// right after catching a 2000 rad/s rotor).
+fn backemf_from_short(prev: (f32, f32), now: (f32, f32), dt: f32, r: f32, l: f32) -> (f32, f32) {
+    let k = l / dt;
+    (
+        -r * 0.5 * (prev.0 + now.0) - k * (now.0 - prev.0),
+        -r * 0.5 * (prev.1 + now.1) - k * (now.1 - prev.1),
+    )
+}
+
+/// Rotor estimate from the probe window's mean back-EMF vector.
 ///
-/// A shorted stator at speed obeys `e = (R + jωL)·i` in steady state, and
-/// on a low-τ motor (τ = L/R ≈ 0.19 ms ≈ 4 PWM periods on the ZD2808) the
-/// current IS in steady state by the time the probe window opens — the
-/// settle window exists precisely to let the entry transient decay. The
-/// back-EMF information is therefore in the current's MAGNITUDE and PHASE,
-/// not in its slope: the original `e = −L·ΔI/Δt` estimate measured only
-/// the residual rotation of the settled phasor and under-read |ω| by
-/// roughly a factor ω·τ (bench 2026-07-06 late, spin-gentle-180-2
-/// probe-raw windows: probes read 56–102 rad/s while the settled
-/// 5.5–7.6 A short current pinned the rotor at 530–800 — a genuine I/f
-/// runaway that the old probe kept vetoing as "unconfirmed" against a
-/// CORRECT observer).
-///
-/// `i_alpha`/`i_beta` is the current phasor averaged over the probe
-/// window (noise suppression); the average lags "now" by half the window,
-/// compensated in the returned angle. |ω| from `|e| = |Z(ω)|·|i|` with one
-/// fixed-point refinement of the ωL term; the angle chain: the current
-/// lags the back-EMF by the impedance angle `φ_z = atan(ωL/R)` in the
-/// rotation direction, and the back-EMF leads the rotor flux by
-/// 90°·`dir`. `dir` is the commanded direction, taken as the rotation
-/// sign (true for the kick-push restart; a rotor freewheeling *against*
-/// the command is the known v1 limitation — the PLL would have to pull a
-/// ±180° seed, which it can't). Returns `None` below `min_vel`
+/// `|ω| = |e|/λ`; the back-EMF leads the rotor flux by 90°·`dir`, and the
+/// mean vector sits `lag_s` before the last sample (the window's mean
+/// interval midpoint), compensated in the returned angle — the rotor angle
+/// at the LAST sample. `dir` is the commanded direction, taken as the
+/// rotation sign (true for the kick-push restart; a rotor freewheeling
+/// *against* the command is the known v1 limitation — the PLL would have to
+/// pull a ±180° seed, which it can't). Returns `None` below `min_vel`
 /// (standstill / too slow) or with degenerate parameters.
-#[allow(clippy::too_many_arguments)]
-fn short_current_estimate(
-    i_alpha: f32,
-    i_beta: f32,
-    window_s: f32,
-    r: f32,
-    l: f32,
+fn backemf_estimate(
+    e_alpha: f32,
+    e_beta: f32,
+    lag_s: f32,
     lambda: f32,
     dir: f32,
     min_vel: f32,
 ) -> Option<(f32, f32)> {
-    if lambda <= 1e-9 || r <= 0.0 || l < 0.0 {
+    if lambda <= 1e-9 {
         return None;
     }
-    let i_mag = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
-    // |e| = |i|·√(R² + (ωL)²); ωL ≪ R below ~2 krad/s el on the bench
-    // motor, one refinement pass is plenty.
-    let omega0 = i_mag * r / lambda;
-    let omega = i_mag * sqrtf(r * r + (omega0 * l) * (omega0 * l)) / lambda;
+    let omega = sqrtf(e_alpha * e_alpha + e_beta * e_beta) / lambda;
     if omega < min_vel {
         return None;
     }
-    let phi_z = atan2f(omega * l, r);
-    // Sign chain: `0 = R·i + L·di/dt + e` ⇒ the settled short current
-    // OPPOSES the back-EMF, `i = −e/(R + jωL)` — hence the π. On top of
-    // that: half-window advance (the average lags "now"), the impedance
-    // lag (i lags −e by φ_z in the rotation direction), and e leading the
-    // rotor flux by 90°·dir. Caught by the independent-plant sim test
-    // (deadshort_catches_a_spinning_rotor_on_start) — the local unit
-    // tests share the synth convention and cannot see a global flip.
-    let angle_e =
-        atan2f(i_beta, i_alpha) + core::f32::consts::PI + dir * (phi_z + omega * window_s * 0.5);
-    let angle = wrap_angle(angle_e - dir * core::f32::consts::FRAC_PI_2);
-    Some((angle, dir * omega))
+    let angle = atan2f(e_beta, e_alpha) - dir * core::f32::consts::FRAC_PI_2 + dir * omega * lag_s;
+    Some((wrap_angle(angle), dir * omega))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foc::angle_difference;
+    use crate::foc::phase::PhaseOutput;
 
     const DT: f32 = 1.0 / 20_000.0;
 
@@ -995,18 +965,6 @@ mod tests {
             }
         }
         assert_eq!(sm.phase(), StartupPhase::Ramp);
-    }
-
-    /// Feed zero current through the settle window so the next
-    /// `feed_deadshort` call captures the probe baseline.
-    fn skip_settle(sm: &mut SensorlessStartup) {
-        for _ in 0..DEADSHORT_SETTLE_CYCLES {
-            assert_eq!(
-                sm.feed_deadshort(0.0, 0.0, DT, 0.1, 200e-6, 0.01),
-                DeadshortResult::Probing
-            );
-            assert_eq!(sm.phase(), StartupPhase::Deadshort);
-        }
     }
 
     /// Begin a cold start and skip straight to the Ramp phase.
@@ -1158,89 +1116,147 @@ mod tests {
 
     // ── Phase B: deadshort flying restart ──
 
-    /// Synthesize the SETTLED short-circuit current phasor for a rotor
-    /// spinning at `omega` (elec rad/s) whose flux sits at `theta` at the
-    /// END of the probe window: `i = e/(R + jωL)` with `e` leading the flux
-    /// by 90°·dir and the current lagging `e` by the impedance angle. Fed
-    /// CONSTANT through the window, so the estimator's half-window advance
-    /// is pre-compensated here.
-    fn synth_short_current(
-        omega: f32,
-        theta: f32,
+    /// ZD2808 (R, L_avg, λ) — the bench motor the probe constants were
+    /// tuned on.
+    const ZD2808: (f32, f32, f32) = (0.127, 107e-6, 1.145e-3);
+    /// Flipsky 5065 270KV (Y-equivalent R, L, λ): τ = 0.6 ms, and at speed
+    /// the short current climbs amps per PWM period.
+    const FLIPSKY_5065: (f32, f32, f32) = (0.036, 22e-6, 2.92e-3);
+
+    /// The shorted winding the probes measure, driven by a spinning rotor
+    /// and integrated finely between samples: `0 = R·i + L·di/dt + e`,
+    /// `e = ωλ·(−sin θ, cos θ)` (θ the rotor flux angle). Unlike a constant
+    /// "settled" phasor it has the entry transient and the decay of any
+    /// drive current — the regimes the earlier estimators got wrong.
+    struct ShortedWinding {
         r: f32,
         l: f32,
         lambda: f32,
-        dir: f32,
-    ) -> (f32, f32) {
-        let window = f32::from(DEADSHORT_CYCLES - 1) * DT;
-        let z = (r * r + (omega * l) * (omega * l)).sqrt();
-        let i_mag = lambda * omega / z;
-        let phi_z = (omega * l).atan2(r);
-        // i = −e/(R+jωL): π offset from the back-EMF direction (see
-        // short_current_estimate's sign chain).
-        let ang = theta
-            + core::f32::consts::PI
-            + dir * (core::f32::consts::FRAC_PI_2 - phi_z - omega * window * 0.5);
-        (i_mag * ang.cos(), i_mag * ang.sin())
+        omega: f32,
+        theta: f32,
+        i: (f32, f32),
     }
 
-    #[test]
-    fn short_current_estimate_recovers_rotor() {
-        use crate::foc::angle_difference;
-        let (r, l, lambda, omega, theta) = (0.1, 150e-6, 0.008, 300.0, -0.8);
-        let window = f32::from(DEADSHORT_CYCLES - 1) * DT;
-        let (i_a, i_b) = synth_short_current(omega, theta, r, l, lambda, 1.0);
-        let (angle, vel) =
-            short_current_estimate(i_a, i_b, window, r, l, lambda, 1.0, DEADSHORT_MIN_CATCH_VEL)
-                .unwrap();
-        assert!(angle_difference(angle, theta).abs() < 0.05, "angle {angle}");
-        assert!((vel - omega).abs() < 0.05 * omega, "vel {vel}");
-        // A barely-moving rotor (1% of the current) is below the catch
-        // floor → None.
-        assert!(
-            short_current_estimate(
-                i_a * 0.01,
-                i_b * 0.01,
-                window,
+    impl ShortedWinding {
+        fn new((r, l, lambda): (f32, f32, f32), omega: f32, theta: f32) -> Self {
+            Self {
                 r,
                 l,
                 lambda,
-                1.0,
-                DEADSHORT_MIN_CATCH_VEL
-            )
-            .is_none()
-        );
+                omega,
+                theta,
+                i: (0.0, 0.0),
+            }
+        }
+
+        /// Entered with `amps` of drive current on the rotor's q axis (the
+        /// confirm / recycle case).
+        fn with_q_current(mut self, amps: f32) -> Self {
+            let (s, c) = self.theta.sin_cos();
+            self.i = (-amps * s, amps * c);
+            self
+        }
+
+        /// The current and rotor angle now; then one PWM period passes.
+        fn sample(&mut self) -> ((f32, f32), f32) {
+            const N: u16 = 64;
+            let now = (self.i, self.theta);
+            let h = DT / f32::from(N);
+            for _ in 0..N {
+                let (s, c) = (self.theta + 0.5 * self.omega * h).sin_cos();
+                let (ea, eb) = (-self.omega * self.lambda * s, self.omega * self.lambda * c);
+                self.i.0 -= h * (self.r * self.i.0 + ea) / self.l;
+                self.i.1 -= h * (self.r * self.i.1 + eb) / self.l;
+                self.theta += self.omega * h;
+            }
+            now
+        }
+    }
+
+    /// Run the deadshort probe on `w` until it resolves, handing the probe
+    /// the motor model `(R, L, λ)`. Returns the result, the rotor angle at
+    /// the last sample, the samples fed and the peak |i| among them.
+    fn run_deadshort(
+        sm: &mut SensorlessStartup,
+        w: &mut ShortedWinding,
+        (r, l, lambda): (f32, f32, f32),
+    ) -> (DeadshortResult, f32, u16, f32) {
+        let mut peak = 0.0f32;
+        for n in 1..=(DEADSHORT_SETTLE_CYCLES + DEADSHORT_CYCLES + 1) {
+            let ((ia, ib), theta) = w.sample();
+            peak = peak.max(ia.hypot(ib));
+            let res = sm.feed_deadshort(ia, ib, DT, r, l, lambda);
+            if res != DeadshortResult::Probing || sm.phase() != StartupPhase::Deadshort {
+                return (res, theta, n, peak);
+            }
+        }
+        panic!("deadshort probe never resolved");
+    }
+
+    /// The flying-restart catch across the regimes: a settled short (ZD2808
+    /// slow), a short still rising toward steady state when the window
+    /// closes, and a short that reaches the current cap within a few
+    /// periods (5065 at speed) — either direction. The settled-phasor
+    /// estimator read the 5065 cases 30–90% slow.
+    #[test]
+    fn deadshort_catches_spinning_rotors() {
+        let cases = [
+            ("zd2808", ZD2808, 300.0, 1.0),
+            ("zd2808", ZD2808, 1000.0, 1.0),
+            ("zd2808", ZD2808, -600.0, -1.0),
+            ("5065", FLIPSKY_5065, 300.0, 1.0),
+            ("5065", FLIPSKY_5065, 1000.0, 1.0),
+            ("5065", FLIPSKY_5065, 2000.0, 1.0),
+            ("5065", FLIPSKY_5065, -1000.0, -1.0),
+            ("τ 1.5 ms", (0.1, 150e-6, 0.008), 250.0, 1.0),
+        ];
+        for (name, motor, omega, dir) in cases {
+            let mut w = ShortedWinding::new(motor, omega, 1.2);
+            let mut sm = SensorlessStartup::default();
+            sm.begin_cold_start(0.0, dir);
+            assert!(sm.wants_short());
+            match run_deadshort(&mut sm, &mut w, motor) {
+                (DeadshortResult::Caught { angle, velocity }, theta, _, _) => {
+                    assert!(
+                        (velocity - omega).abs() < 0.03 * omega.abs(),
+                        "{name} at {omega}: velocity {velocity}"
+                    );
+                    assert!(
+                        angle_difference(angle, theta).abs() < 0.05,
+                        "{name} at {omega}: angle {angle} vs rotor {theta}"
+                    );
+                }
+                other => panic!("{name} at {omega}: expected Caught, got {other:?}"),
+            }
+            // Handed straight to the observer — sequencer done, bridge released.
+            assert!(!sm.is_active());
+            assert!(!sm.wants_short());
+        }
+    }
+
+    /// Back-EMF driving the short current past the cap is measured as soon
+    /// as the actuation pipeline has passed — not shorted on through the
+    /// settle while the current climbs ~13 A per period (5065 at 2000 el
+    /// rad/s).
+    #[test]
+    fn deadshort_measures_at_once_when_back_emf_drives_the_cap() {
+        let mut w = ShortedWinding::new(FLIPSKY_5065, 2000.0, 0.3);
+        let mut sm = SensorlessStartup::default();
+        sm.begin_cold_start(0.0, 1.0);
+        let (res, _, samples, peak) = run_deadshort(&mut sm, &mut w, FLIPSKY_5065);
+        assert!(matches!(res, DeadshortResult::Caught { .. }), "{res:?}");
+        assert_eq!(samples, PROBE_PIPELINE_SAMPLES + 1);
+        assert!(peak < 30.0, "peak short current {peak} A");
     }
 
     #[test]
-    fn deadshort_catches_spinning_rotor() {
-        use crate::foc::angle_difference;
-        let (r, l, lambda, omega, theta) = (0.15, 200e-6, 0.005, 250.0, 1.2);
-        let (i_a, i_b) = synth_short_current(omega, theta, r, l, lambda, 1.0);
-
+    fn deadshort_sends_a_slow_rotor_to_the_ramp() {
+        let mut w = ShortedWinding::new(ZD2808, 0.6 * DEADSHORT_MIN_CATCH_VEL, 0.0);
         let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(0.0, 1.0); // dir matches the (forward) rotation
-        assert_eq!(sm.phase(), StartupPhase::Deadshort);
-        assert!(sm.wants_short());
-        skip_settle(&mut sm);
-
-        // The settled current phasor is fed constant through the window;
-        // the last sample completes it.
-        let mut res = DeadshortResult::Probing;
-        for _ in 0..DEADSHORT_CYCLES {
-            assert_eq!(res, DeadshortResult::Probing);
-            res = sm.feed_deadshort(i_a, i_b, DT, r, l, lambda);
-        }
-        match res {
-            DeadshortResult::Caught { angle, velocity } => {
-                assert!(angle_difference(angle, theta).abs() < 0.1, "angle {angle}");
-                assert!((velocity - omega).abs() < 25.0, "vel {velocity}");
-            }
-            other => panic!("expected Caught, got {other:?}"),
-        }
-        // Handed straight to the observer — sequencer is done, bridge released.
-        assert!(!sm.is_active());
-        assert!(!sm.wants_short());
+        sm.begin_cold_start(0.0, 1.0);
+        let (res, ..) = run_deadshort(&mut sm, &mut w, ZD2808);
+        assert_eq!(res, DeadshortResult::Probing);
+        assert_eq!(sm.phase(), StartupPhase::Ramp);
     }
 
     #[test]
@@ -1281,8 +1297,6 @@ mod tests {
 
     // ── Handoff-confirm probe ──
 
-    use crate::foc::phase::PhaseOutput;
-
     /// Cold start driven into Hold (observer never ready), ready to fire
     /// the handoff gate.
     fn ramp_to_hold() -> SensorlessStartup {
@@ -1292,28 +1306,41 @@ mod tests {
         sm
     }
 
-    /// Feed the confirm probe a constant settled current phasor through its
-    /// settle + probe window; returns the final result.
+    /// Drive current flowing when a confirm probe starts (A, q axis).
+    const DRIVE_A: f32 = 3.0;
+
+    /// Run the confirm probe on `w` until it resolves, handing the probe
+    /// the motor model `(R, L, λ)`. The observer's claim follows the rotor
+    /// `claim_offset` rad off its angle, at `claim_vel`. Returns the result
+    /// and the rotor angle at the last sample.
     fn run_confirm(
         sm: &mut SensorlessStartup,
-        i: (f32, f32),
-        r: f32,
-        l: f32,
-        lambda: f32,
-        claim: PhaseOutput,
-    ) -> ConfirmResult {
-        for _ in 0..CONFIRM_SETTLE_CYCLES {
-            assert_eq!(
-                sm.feed_confirm(i.0, i.1, DT, r, l, lambda, claim),
-                ConfirmResult::Probing
-            );
+        w: &mut ShortedWinding,
+        (r, l, lambda): (f32, f32, f32),
+        claim_offset: f32,
+        claim_vel: f32,
+    ) -> (ConfirmResult, f32) {
+        for _ in 0..=(CONFIRM_SETTLE_CYCLES + DEADSHORT_CYCLES) {
+            let ((ia, ib), theta) = w.sample();
+            let claim = PhaseOutput {
+                angle: wrap_angle(theta + claim_offset),
+                velocity: claim_vel,
+            };
+            let res = sm.feed_confirm(ia, ib, DT, r, l, lambda, claim);
+            if res != ConfirmResult::Probing {
+                return (res, theta);
+            }
         }
-        let mut res = ConfirmResult::Probing;
-        for _ in 0..DEADSHORT_CYCLES {
-            assert_eq!(res, ConfirmResult::Probing);
-            res = sm.feed_confirm(i.0, i.1, DT, r, l, lambda, claim);
-        }
-        res
+        panic!("confirm probe never resolved");
+    }
+
+    /// Cold start driven into Hold with the observer claiming `claim_vel`,
+    /// then the handoff gate fires: the confirm probe is running.
+    fn hold_to_confirm(claim_vel: f32) -> SensorlessStartup {
+        let mut sm = ramp_to_hold();
+        sm.tick(DT, 3.0, true, claim_vel);
+        assert_eq!(sm.phase(), StartupPhase::Confirm);
+        sm
     }
 
     #[test]
@@ -1328,129 +1355,74 @@ mod tests {
 
     #[test]
     fn confirm_rejects_still_rotor_and_retries_after_cooldown() {
-        let (r, l, lambda) = (0.1, 150e-6, 1.145e-3);
-        let claim = PhaseOutput {
-            angle: 1.0,
-            velocity: DEFAULT_HANDOFF_VEL,
-        };
-        let mut sm = ramp_to_hold();
-        sm.tick(DT, 3.0, true, claim.velocity);
-        // Zero current over the whole window: no back-EMF where the
-        // observer claims rotation → unconfirmed, back to Hold.
-        let res = run_confirm(&mut sm, (0.0, 0.0), r, l, lambda, claim);
-        assert!(matches!(res, ConfirmResult::Unconfirmed { .. }));
+        let mut sm = hold_to_confirm(DEFAULT_HANDOFF_VEL);
+        // Standing rotor, drive current decaying into the short: no
+        // back-EMF where the observer claims rotation → unconfirmed, back
+        // to Hold.
+        let mut w = ShortedWinding::new(ZD2808, 0.0, 1.0).with_q_current(DRIVE_A);
+        let (res, _) = run_confirm(&mut sm, &mut w, ZD2808, 0.0, DEFAULT_HANDOFF_VEL);
+        assert!(matches!(res, ConfirmResult::Unconfirmed { .. }), "{res:?}");
         assert_eq!(sm.phase(), StartupPhase::Hold);
         assert!(sm.is_active());
         // Cooldown: the gate must not refire immediately...
-        let o = sm.tick(DT, 3.0, true, claim.velocity);
+        let o = sm.tick(DT, 3.0, true, DEFAULT_HANDOFF_VEL);
         assert!(!o.handoff);
         assert_eq!(sm.phase(), StartupPhase::Hold);
         // ...but does after it expires.
         run(&mut sm, CONFIRM_RETRY_S + 0.01, 3.0);
-        let o = sm.tick(DT, 3.0, true, claim.velocity);
+        let o = sm.tick(DT, 3.0, true, DEFAULT_HANDOFF_VEL);
         assert!(o.handoff, "cooldown expiry must allow a retry");
         assert_eq!(sm.phase(), StartupPhase::Confirm);
     }
 
-    /// Regression for the drive-current phantom: Confirm is entered with
-    /// commanded drive current still flowing, and the old over-cap settle
-    /// skip let ONE sample of that residual "complete" the probe window --
-    /// `short_current_estimate` then fabricated a fast rotor ~pi off the
-    /// real one and seeded the observer from it. The settle must run in
-    /// full no matter how large the entry current is.
+    /// Confirm is entered with drive current flowing. Mid-decay, R·i and
+    /// L·di/dt dwarf the back-EMF, so the probe's model error reads as
+    /// rotation: 10 A decaying through a probe that believes L 20% high
+    /// reads as a ~210 rad/s rotor at the q axis — exactly where a phantom
+    /// observer standing on that axis would claim it. The decay must be
+    /// waited out even though the current starts above the cap.
     #[test]
-    fn confirm_settle_survives_overcap_drive_current() {
-        let (r, l, lambda) = (0.1, 150e-6, 1.145e-3);
-        let claim = PhaseOutput {
-            angle: 1.0,
-            velocity: DEFAULT_HANDOFF_VEL,
-        };
-        let mut sm = ramp_to_hold();
-        sm.tick(DT, 3.0, true, claim.velocity);
-        assert_eq!(sm.phase(), StartupPhase::Confirm);
-        // Residual drive current far above DEADSHORT_MAX_CURRENT_A for the
-        // whole settle window: every cycle must still be Probing.
-        for _ in 0..CONFIRM_SETTLE_CYCLES {
-            assert_eq!(
-                sm.feed_confirm(10.0, 3.0, DT, r, l, lambda, claim),
-                ConfirmResult::Probing,
-                "over-cap drive current must not skip the confirm settle"
-            );
-        }
-        // By the time the window samples, the residual has decayed; a
-        // standing rotor honestly reads ~0 -> the claim is NOT confirmed.
-        let mut res = ConfirmResult::Probing;
-        for _ in 0..DEADSHORT_CYCLES {
-            assert_eq!(res, ConfirmResult::Probing);
-            res = sm.feed_confirm(0.0, 0.0, DT, r, l, lambda, claim);
-        }
-        assert!(matches!(res, ConfirmResult::Unconfirmed { .. }));
+    fn confirm_waits_out_a_decaying_drive_current() {
+        let (r, l, lambda) = ZD2808;
+        let mut sm = hold_to_confirm(DEFAULT_HANDOFF_VEL);
+        let mut w = ShortedWinding::new(ZD2808, 0.0, 1.0).with_q_current(10.0);
+        let (res, _) = run_confirm(
+            &mut sm,
+            &mut w,
+            (r, 1.2 * l, lambda),
+            0.0,
+            DEFAULT_HANDOFF_VEL,
+        );
+        assert!(matches!(res, ConfirmResult::Unconfirmed { .. }), "{res:?}");
         assert_eq!(sm.phase(), StartupPhase::Hold);
     }
 
-    /// Same class on the Hold give-up recycle: the ramp/hold drive current
-    /// decays into the recycled deadshort, and the old skip turned it into
-    /// a `capped` probe with the catch floor waived -- a false Caught on a
-    /// slow rotor. The recycled probe must run its full settle too.
+    /// Same on the Hold give-up recycle: the hold drive current decays into
+    /// the recycled deadshort and must not be caught as a spinning rotor.
     #[test]
-    fn recycled_deadshort_settle_survives_drive_current() {
+    fn recycled_deadshort_waits_out_a_decaying_drive_current() {
+        let (r, l, lambda) = ZD2808;
         let mut sm = ramp_to_hold();
         run(&mut sm, HOLD_GIVEUP_S + 0.01, 3.0);
         assert_eq!(sm.phase(), StartupPhase::Deadshort);
         assert!(sm.take_recycled());
-        for _ in 0..DEADSHORT_SETTLE_CYCLES {
-            assert_eq!(
-                sm.feed_deadshort(10.0, 3.0, DT, 0.1, 150e-6, 1.145e-3),
-                DeadshortResult::Probing,
-                "recycle entry current must not skip the deadshort settle"
-            );
-            assert_eq!(sm.phase(), StartupPhase::Deadshort);
-        }
-        // Decayed residual + standing rotor: falls through to the ramp.
-        for _ in 0..DEADSHORT_CYCLES {
-            sm.feed_deadshort(0.0, 0.0, DT, 0.1, 150e-6, 1.145e-3);
-        }
+        let mut w = ShortedWinding::new(ZD2808, 0.0, 1.0).with_q_current(10.0);
+        let (res, ..) = run_deadshort(&mut sm, &mut w, (r, 1.2 * l, lambda));
+        assert_eq!(res, DeadshortResult::Probing);
         assert_eq!(sm.phase(), StartupPhase::Ramp);
-    }
-
-    /// The COLD-start skip stays: with the bridge previously off, an
-    /// over-cap current can only be back-EMF, and sitting shorted on a
-    /// large current through a pointless settle would be the worse failure.
-    #[test]
-    fn cold_start_deadshort_keeps_the_overcap_settle_skip() {
-        let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(0.0, 1.0);
-        let mut calls: u32 = 0;
-        loop {
-            let res = sm.feed_deadshort(20.0, 0.0, DT, 0.1, 150e-6, 1.145e-3);
-            calls += 1;
-            if res != DeadshortResult::Probing || sm.phase() != StartupPhase::Deadshort {
-                break;
-            }
-            assert!(
-                calls <= u32::from(DEADSHORT_CYCLES) + 1,
-                "cold-start settle skip regressed"
-            );
-        }
     }
 
     #[test]
     fn confirm_passes_real_rotor_and_hands_off() {
-        use crate::foc::angle_difference;
         // Rotor speed relative to the handoff gate (observer_vel must be
         // ≥ 0.5 × handoff_vel for the hold to fire a probe at all).
-        let (r, l, lambda, omega, theta) = (0.1, 150e-6, 1.145e-3, DEFAULT_HANDOFF_VEL * 1.2, 0.9);
-        let claim = PhaseOutput {
-            angle: theta,
-            velocity: omega,
-        };
-        let mut sm = ramp_to_hold();
-        sm.tick(DT, 3.0, true, omega);
-        let i = synth_short_current(omega, theta, r, l, lambda, 1.0);
-        match run_confirm(&mut sm, i, r, l, lambda, claim) {
-            ConfirmResult::Confirmed { velocity } => {
+        let omega = DEFAULT_HANDOFF_VEL * 1.2;
+        let mut sm = hold_to_confirm(omega);
+        let mut w = ShortedWinding::new(ZD2808, omega, 0.9).with_q_current(DRIVE_A);
+        match run_confirm(&mut sm, &mut w, ZD2808, 0.0, omega) {
+            (ConfirmResult::Confirmed { velocity }, _) => {
                 assert!(
-                    (velocity - omega).abs() < 0.3 * omega,
+                    (velocity - omega).abs() < 0.03 * omega,
                     "probe velocity {velocity} vs rotor {omega}"
                 );
             }
@@ -1458,23 +1430,16 @@ mod tests {
         }
         assert!(!sm.is_active(), "confirmed probe completes the handoff");
         assert!(!sm.wants_short());
-        // Sanity on the synth: the probe's angle estimate matches the claim.
-        let _ = angle_difference;
     }
 
     #[test]
     fn confirm_rejects_angle_disagreement() {
         // Back-EMF present at the claimed SPEED but ~π away in angle (e.g.
         // a rotor freewheeling against the commanded direction).
-        let (r, l, lambda, omega) = (0.1, 150e-6, 1.145e-3, DEFAULT_HANDOFF_VEL * 1.2);
-        let claim = PhaseOutput {
-            angle: 0.9 + core::f32::consts::PI,
-            velocity: omega,
-        };
-        let mut sm = ramp_to_hold();
-        sm.tick(DT, 3.0, true, omega);
-        let i = synth_short_current(omega, 0.9, r, l, lambda, 1.0);
-        let res = run_confirm(&mut sm, i, r, l, lambda, claim);
+        let omega = DEFAULT_HANDOFF_VEL * 1.2;
+        let mut sm = hold_to_confirm(omega);
+        let mut w = ShortedWinding::new(ZD2808, omega, 0.9).with_q_current(DRIVE_A);
+        let (res, _) = run_confirm(&mut sm, &mut w, ZD2808, core::f32::consts::PI, omega);
         assert!(
             matches!(res, ConfirmResult::Unconfirmed { .. }),
             "π-off angle must not confirm, got {res:?}"
@@ -1490,41 +1455,37 @@ mod tests {
         // is structurally unreachable. The CONFIRM_SEED_PROBES-th
         // consecutive strong probe must seed the observer from the
         // measurement and hand off instead of waiting out the give-up.
-        use crate::foc::angle_difference;
-        let (r, l, lambda) = (0.1, 150e-6, 1.145e-3);
-        let (omega_r, theta) = (DEFAULT_HANDOFF_VEL, 0.9); // the real rotor
+        let omega_r = DEFAULT_HANDOFF_VEL; // the real rotor
         // Runaway observer: far off in speed AND angle.
-        let claim = PhaseOutput {
-            angle: theta + 2.0,
-            velocity: omega_r * 2.5,
-        };
+        let (claim_offset, claim_vel) = (2.0, omega_r * 2.5);
         let mut sm = ramp_to_hold();
-        let i = synth_short_current(omega_r, theta, r, l, lambda, 1.0);
-        for attempt in 0..CONFIRM_SEED_PROBES - 1 {
-            sm.tick(DT, 3.0, true, claim.velocity);
+        for attempt in 0..CONFIRM_SEED_PROBES {
+            sm.tick(DT, 3.0, true, claim_vel);
             assert_eq!(sm.phase(), StartupPhase::Confirm, "attempt {attempt}");
-            let res = run_confirm(&mut sm, i, r, l, lambda, claim);
-            assert!(
-                matches!(res, ConfirmResult::Unconfirmed { .. }),
-                "attempt {attempt}: {res:?}"
-            );
-            assert_eq!(sm.phase(), StartupPhase::Hold);
-            run(&mut sm, CONFIRM_RETRY_S + 0.01, 3.0);
-        }
-        sm.tick(DT, 3.0, true, claim.velocity);
-        assert_eq!(sm.phase(), StartupPhase::Confirm);
-        match run_confirm(&mut sm, i, r, l, lambda, claim) {
-            ConfirmResult::SeedAndHandoff { angle, velocity } => {
+            let mut w = ShortedWinding::new(ZD2808, omega_r, 0.9).with_q_current(DRIVE_A);
+            let (res, theta) = run_confirm(&mut sm, &mut w, ZD2808, claim_offset, claim_vel);
+            if attempt + 1 < CONFIRM_SEED_PROBES {
                 assert!(
-                    (velocity - omega_r).abs() < 0.3 * omega_r,
-                    "seed velocity {velocity} vs rotor {omega_r}"
+                    matches!(res, ConfirmResult::Unconfirmed { .. }),
+                    "attempt {attempt}: {res:?}"
                 );
-                assert!(
-                    angle_difference(angle, theta).abs() < 0.2,
-                    "seed angle {angle} vs rotor {theta}"
-                );
+                assert_eq!(sm.phase(), StartupPhase::Hold);
+                run(&mut sm, CONFIRM_RETRY_S + 0.01, 3.0);
+                continue;
             }
-            other => panic!("expected SeedAndHandoff on the 3rd strong probe, got {other:?}"),
+            match res {
+                ConfirmResult::SeedAndHandoff { angle, velocity } => {
+                    assert!(
+                        (velocity - omega_r).abs() < 0.03 * omega_r,
+                        "seed velocity {velocity} vs rotor {omega_r}"
+                    );
+                    assert!(
+                        angle_difference(angle, theta).abs() < 0.05,
+                        "seed angle {angle} vs rotor {theta}"
+                    );
+                }
+                other => panic!("expected SeedAndHandoff on the 3rd strong probe, got {other:?}"),
+            }
         }
         assert!(!sm.is_active(), "the seed completes the handoff");
         assert!(!sm.wants_short());
@@ -1542,25 +1503,18 @@ mod tests {
         // probe must seed the observer from the measurement — retrying
         // probes an ever-faster rotor whose short current walks into the
         // OC trip (bench confirm2-2; see CONFIRM_FAST_SEED_VEL).
-        use crate::foc::angle_difference;
-        let (r, l, lambda) = (0.1, 150e-6, 1.145e-3);
-        let (omega_r, theta) = (DEFAULT_HANDOFF_VEL * 2.8, 0.9); // real rotor, fast
-        let claim = PhaseOutput {
-            angle: theta, // angle agrees — velocity alone must reject
-            velocity: DEFAULT_HANDOFF_VEL,
-        };
-        let mut sm = ramp_to_hold();
-        let i = synth_short_current(omega_r, theta, r, l, lambda, 1.0);
-        sm.tick(DT, 3.0, true, claim.velocity);
-        assert_eq!(sm.phase(), StartupPhase::Confirm);
-        match run_confirm(&mut sm, i, r, l, lambda, claim) {
-            ConfirmResult::SeedAndHandoff { angle, velocity } => {
+        let omega_r = DEFAULT_HANDOFF_VEL * 2.8; // real rotor, fast
+        let mut sm = hold_to_confirm(DEFAULT_HANDOFF_VEL);
+        let mut w = ShortedWinding::new(ZD2808, omega_r, 0.9).with_q_current(DRIVE_A);
+        // The claim's angle agrees — velocity alone must reject.
+        match run_confirm(&mut sm, &mut w, ZD2808, 0.0, DEFAULT_HANDOFF_VEL) {
+            (ConfirmResult::SeedAndHandoff { angle, velocity }, theta) => {
                 assert!(
-                    (velocity - omega_r).abs() < 0.3 * omega_r,
+                    (velocity - omega_r).abs() < 0.03 * omega_r,
                     "seed velocity {velocity} vs rotor {omega_r}"
                 );
                 assert!(
-                    angle_difference(angle, theta).abs() < 0.2,
+                    angle_difference(angle, theta).abs() < 0.05,
                     "seed angle {angle} vs rotor {theta}"
                 );
             }
@@ -1574,16 +1528,12 @@ mod tests {
         // A standing rotor measures ~0 on every probe — the strong-probe
         // streak must never accumulate, whatever the (phantom) observer
         // claims; the hold breaks up via the give-up recycle instead.
-        let (r, l, lambda) = (0.1, 150e-6, 1.145e-3);
-        let claim = PhaseOutput {
-            angle: 1.0,
-            velocity: DEFAULT_HANDOFF_VEL,
-        };
         let mut sm = ramp_to_hold();
         for attempt in 0..=CONFIRM_SEED_PROBES {
-            sm.tick(DT, 3.0, true, claim.velocity);
+            sm.tick(DT, 3.0, true, DEFAULT_HANDOFF_VEL);
             assert_eq!(sm.phase(), StartupPhase::Confirm, "attempt {attempt}");
-            let res = run_confirm(&mut sm, (0.0, 0.0), r, l, lambda, claim);
+            let mut w = ShortedWinding::new(ZD2808, 0.0, 1.0).with_q_current(DRIVE_A);
+            let (res, _) = run_confirm(&mut sm, &mut w, ZD2808, 0.0, DEFAULT_HANDOFF_VEL);
             assert!(
                 matches!(res, ConfirmResult::Unconfirmed { .. }),
                 "attempt {attempt} must stay unconfirmed, got {res:?}"

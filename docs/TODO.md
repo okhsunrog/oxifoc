@@ -1046,10 +1046,7 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
   the rotor spins in the *commanded* direction (kick-push). A rotor
   freewheeling AGAINST the command needs a ±180° PLL pull it can't do —
   track the back-EMF vector's rotation across the probe cycles for the
-  sign. [`startup.rs` `deadshort_estimate`]
-- [ ] deadshort from an **already-shorted** entry (Brake/Stopped): steady
-  current → ~0 dI/dt → speed underestimated (clean case is Coast). Discharge
-  to i≈0 (brief high-Z) before the probe if it matters on the bench.
+  sign. [`startup.rs` `backemf_estimate`]
 - [ ] **handoff smoothing** ramp→observer: the commutation angle steps by
   the load angle at the switch; seed/blend it, and consider preloading the
   current-PI integrators (MESC seeds Vd/Vq) to kill the re-engage transient.

@@ -3528,14 +3528,10 @@ mod tests {
 
         const DT: f32 = 1.0 / 20_000.0;
         let params = MotorParams {
-            // τ = L/R = 0.4 ms ≈ 2 settle windows: inside the settled-
-            // current estimator's validity domain (its doc: low-τ motors,
-            // ZD2808 τ ≈ 0.19 ms). At the original R = 0.1 (τ = 2 ms) the
-            // probe honestly under-read a 200 rad/s rotor at ~70 — the
-            // current never settles inside the window — which is exactly
-            // what the DEADSHORT_MIN_CATCH_VEL floor must send to the
-            // ramp, and this test is about the CATCH path.
-            r: 0.5,
+            // τ = L/R = 2 ms: the short current is far from settled when
+            // the probe window closes (seed accuracy across τ is
+            // `flying_restart_catches_low_tau_motors`'s job).
+            r: 0.1,
             ld: 200e-6,
             lq: 200e-6,
             lambda: 0.01,
@@ -5702,6 +5698,120 @@ mod tests {
             rig.out.omega_e
         );
         assert!(rig.driver.phase().angle_trustworthy());
+    }
+
+    /// Flying restart on motors whose short-circuit current does NOT settle
+    /// inside the probe window (τ = L/R of 0.6–0.85 ms against a 0.8 ms
+    /// settle) — the regime the steady-state estimator could not handle:
+    /// seeds 28–92% slow, and on a Flipsky-class motor at 2000 el rad/s an
+    /// overcurrent trip right after the catch.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn flying_restart_catches_low_tau_motors() {
+        const DT_FLY: f32 = 1.0 / 20_000.0;
+        let flipsky = MotorParams {
+            r: 0.036,
+            ld: 22e-6,
+            lq: 22e-6,
+            lambda: 2.92e-3,
+            pole_pairs: 7,
+            j: 4e-4,
+            friction_b: 2e-5,
+            substeps: 8,
+            actuation_delay: 0.5,
+            ..MotorParams::default()
+        };
+        let zd2808 = MotorParams {
+            r: 0.127,
+            ld: 86e-6,
+            lq: 129e-6,
+            lambda: 1.145e-3,
+            pole_pairs: 7,
+            j: 5e-5,
+            friction_b: 4e-6,
+            substeps: 8,
+            actuation_delay: 0.5,
+            ..MotorParams::default()
+        };
+        // (name, plant, bus V, max current A, initial el rad/s, seed
+        // tolerance). The 5065 runs at a current limit an e-skate would:
+        // shorted at 2000 el rad/s it builds ~13 A per PWM period, so no
+        // probe fits under a 10 A limit's 13 A trip. The ZD2808 is salient
+        // (Lq = 1.5 Ld) and the probe has the observer's single L: at 300
+        // el rad/s, where ωL·i is a quarter of the back-EMF, that costs
+        // ~5%; the same plant with Ld = Lq seeds well inside 5%.
+        let cases = [
+            ("flipsky", flipsky, 24.0, 40.0, 300.0, 0.02),
+            ("flipsky", flipsky, 24.0, 40.0, 1000.0, 0.02),
+            ("flipsky", flipsky, 24.0, 40.0, 2000.0, 0.02),
+            ("zd2808", zd2808, 12.0, 10.0, 300.0, 0.08),
+            ("zd2808", zd2808, 12.0, 10.0, 1000.0, 0.08),
+        ];
+        let mut report = String::new();
+        let mut ok = true;
+        for (name, params, vbus, max_a, w0, tol) in cases {
+            let l_avg = (params.ld + params.lq) / 2.0;
+            let mut motor = VirtualMotor::new(params);
+            motor.set_angle(1.0);
+            motor.set_velocity(w0);
+            let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+                params.r, l_avg, vbus,
+            );
+            foc.set_decoupling(Some(crate::foc::controller::Decoupling {
+                ld_h: params.ld,
+                lq_h: params.lq,
+                flux_linkage_wb: params.lambda,
+            }));
+            let mut mgr = PhaseManager::sensorless();
+            mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
+                params.r,
+                l_avg,
+                params.lambda,
+            )));
+            mgr.set_source(PhaseSource::Observer).unwrap();
+            let mut driver = FocDriver::new(
+                foc,
+                MockPwm { duties: [0; 3] },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                mgr,
+                DT_FLY,
+            );
+            driver.set_current_limits(CurrentLimits::from_max_current(max_a));
+            driver.set_actuation_delay(params.actuation_delay);
+            driver.set_mode(ControlMode::CurrentControl {
+                iq_target: 3.0,
+                id_target: 0.0,
+            });
+            // Coasting with the bridge off until the throttle.
+            let mut out = motor.step_coast(0.0, DT_FLY);
+            let mut peak = 0.0f32;
+            let mut seed_err = f32::NAN;
+            let mut result = "ok";
+            for step in 1..6_000u64 {
+                driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+                let was_starting = driver.phase().is_starting();
+                let Ok(telem) = driver.step(step * 50) else {
+                    result = "TRIPPED";
+                    break;
+                };
+                if was_starting && !driver.phase().is_starting() && seed_err.is_nan() {
+                    seed_err = driver.phase().get().velocity / out.omega_e - 1.0;
+                }
+                out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT_FLY);
+                peak = peak.max(out.ia.abs()).max(out.ib.abs()).max(out.ic.abs());
+            }
+            let pass = result == "ok" && seed_err.abs() < tol && out.omega_e > 0.7 * w0;
+            ok &= pass;
+            report += &format!(
+                "\n  {name} w0 {w0:5.0}: {result}, seed err {:+.1}%, peak {peak:.1} A, final ω {:.0}{}",
+                seed_err * 100.0,
+                out.omega_e,
+                if pass { "" } else { "  <-- FAIL" }
+            );
+        }
+        assert!(ok, "flying restart:{report}");
     }
 
     /// Invalid-state glitches at speed (a bouncing hall connector) must not

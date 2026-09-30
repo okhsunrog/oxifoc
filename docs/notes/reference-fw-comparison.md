@@ -45,7 +45,8 @@ references below point into the reference trees as checked out that day.
   module NOT instantiated; ODrive/VESC decouple with the same single L
   (VESC from *measured filtered* currents — we use reference currents,
   which avoids the delayed-feedback path).
-- **Deadshort settled-current model** `e=−(R+jωL)·i`: MESC's ancestor probe
+- **Deadshort interval model** `e = −R·ī − L·Δi/Δt` per sample interval
+  (valid settled or mid-transient): MESC's ancestor probe
   uses `−L·di/dt` (neglects R) and its −90° shift "breaks for reverse
   rotation" per the author's own comment (`MESCfoc.c:1649-1652`). Also:
   MESC's rolling start (MOTOR_STATE_TRACKING) requires phase-voltage
