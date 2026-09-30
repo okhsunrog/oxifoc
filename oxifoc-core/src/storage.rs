@@ -371,12 +371,8 @@ impl Default for PiGainsConfig {
 pub struct HallTuningConfig {
     /// Minimum eRPM for angle interpolation
     pub interp_min_erpm: f32,
-    /// Drift correction gain (fraction per cycle)
-    pub drift_correction_gain: f32,
     /// Rate limit factor (1.0 = no overshoot allowed)
     pub rate_limit_factor: f32,
-    /// Hall state timeout (µs)
-    pub timeout_us: u32,
 }
 
 impl PostcardValue<'_> for HallTuningConfig {}
@@ -385,10 +381,18 @@ impl Default for HallTuningConfig {
     fn default() -> Self {
         Self {
             interp_min_erpm: 500.0,
-            drift_correction_gain: 0.01,
             rate_limit_factor: 1.5,
-            timeout_us: 100_000,
         }
+    }
+}
+
+impl HallTuningConfig {
+    /// Usable values: a finite, non-negative interpolation floor, and a rate
+    /// limit that lets the angle keep up with the rotor (a factor below 1
+    /// holds the commutation angle behind it at any steady speed).
+    pub fn is_sane(&self) -> bool {
+        (0.0..=100_000.0).contains(&self.interp_min_erpm)
+            && (1.0..=10.0).contains(&self.rate_limit_factor)
     }
 }
 
@@ -808,6 +812,34 @@ mod tests {
         assert!(!PiGainsConfig { ki: -1.0, ..ok }.is_sane());
         assert!(!PiGainsConfig { kp: f32::NAN, ..ok }.is_sane());
         assert!(!PiGainsConfig { ki: f32::NAN, ..ok }.is_sane());
+    }
+
+    #[test]
+    fn hall_tuning_rejects_a_lagging_rate_limit() {
+        let ok = HallTuningConfig::default();
+        assert!(ok.is_sane());
+        // Below 1 the rate limiter holds the angle behind a steady rotor.
+        assert!(
+            !HallTuningConfig {
+                rate_limit_factor: 0.01,
+                ..ok
+            }
+            .is_sane()
+        );
+        assert!(
+            !HallTuningConfig {
+                rate_limit_factor: f32::NAN,
+                ..ok
+            }
+            .is_sane()
+        );
+        assert!(
+            !HallTuningConfig {
+                interp_min_erpm: -1.0,
+                ..ok
+            }
+            .is_sane()
+        );
     }
 
     #[test]

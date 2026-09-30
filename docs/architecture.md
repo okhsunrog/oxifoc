@@ -476,13 +476,10 @@ pub struct HallSensor {
 
     // VESC-compatible interpolation parameters
     interp_min_erpm: f32,         // Threshold below which interpolation is disabled
-    max_drift_rad: f32,           // Max drift before soft correction
-    drift_correction_gain: f32,   // Pull-back rate (VESC default: 0.01)
     rate_limit_factor: f32,       // Max angle step multiplier (VESC default: 1.5)
 
     // State tracking
     direction_reversed: bool,     // True on direction change (for velocity handling)
-    timeout_ticks: u64,           // Timeout for stale detection
     // ... edge timestamps, velocity estimate, rate-limited angle, error counter
 }
 
@@ -490,13 +487,13 @@ impl HallSensor {
     /// Timebase-aware constructor (ticks of a caller-provided clock)
     pub fn new(ticks_per_sec: u64) -> Self;
 
-    /// Check if Hall sensor data is stale (velocity-adaptive edge timeout)
-    pub fn is_stale(&self, now_ticks: u64) -> bool;
+    /// Edges stopped although an independent estimate says the rotor turns
+    pub fn is_stale_at_speed(&self, now_ticks: u64, omega_ref: f32) -> bool;
 
     /// Set minimum eRPM for interpolation (VESC-style)
     pub fn set_interp_min_erpm(&mut self, erpm: f32);
 
-    /// Interpolated sample with soft drift correction and rate limiting
+    /// Interpolated sample with rate limiting
     /// (backs the AngleSensor::sample_mut override)
     pub fn sample_at_mut(&mut self, now_ticks: u64) -> Option<AngleSample>;
 }

@@ -6,7 +6,6 @@
 //! to VESC `mcpwm_foc` low-speed handling).
 //!
 //! ## VESC-compatible features:
-//! - **Soft drift correction**: Gradually pulls interpolated angle back toward sector (1% per sample)
 //! - **Rate limiting**: Limits angle rate of change to prevent current spikes
 //! - **Explicit direction tracking**: Handles direction reversals cleanly
 //! - **Low-speed threshold**: Disables interpolation below configurable velocity
@@ -64,13 +63,6 @@ pub enum Direction {
 /// VESC default is 500 eRPM
 pub const DEFAULT_INTERP_MIN_ERPM: f32 = 500.0;
 
-/// Default max angle drift before soft correction kicks in (radians)
-/// VESC uses 30° = π/6
-pub const DEFAULT_MAX_DRIFT_RAD: f32 = core::f32::consts::PI / 6.0;
-
-/// Default drift correction gain (VESC uses 0.01 = 1% per cycle)
-pub const DEFAULT_DRIFT_CORRECTION_GAIN: f32 = 0.01;
-
 /// Default rate limit factor for angle changes
 /// Limits angle step to max_rate = (velocity * dt * RATE_LIMIT_FACTOR)
 /// VESC uses 1.5 (allows 50% overshoot for transients)
@@ -91,11 +83,6 @@ pub const STALE_SECTOR_MULTIPLE: f32 = 1.5;
 /// so capture/ISR jitter at very high speed can't trip it.
 pub const STALE_MIN_WINDOW_S: f32 = 0.000_3;
 
-/// Default Hall sensor timeout (microseconds)
-/// If no valid Hall edge is received for this duration, sensor is considered stale.
-/// 100ms is reasonable for low-speed detection.
-pub const DEFAULT_HALL_TIMEOUT_US: u32 = 100_000;
-
 /// Maximum electrical speed a hall edge pair is allowed to claim (rad/s).
 ///
 /// 30 000 el rad/s ≈ 286 kERPM — several times any supported motor's
@@ -115,7 +102,6 @@ pub const MAX_PLAUSIBLE_E_RAD_S: f32 = 30_000.0;
 /// which completes every 6 Hall states regardless of motor pole count.
 ///
 /// ## Features (VESC-compatible):
-/// - Soft drift correction (gradual pull-back toward sector angle)
 /// - Rate limiting (prevents current spikes on Hall transitions)
 /// - Explicit direction reversal tracking
 /// - Low-speed interpolation threshold
@@ -169,18 +155,12 @@ pub struct HallSensor {
     ticks_per_sec: u64,
     /// Minimum eRPM for interpolation. Below this, use sector angle only.
     interp_min_erpm: f32,
-    /// Maximum drift from sector before correction (radians)
-    max_drift_rad: f32,
-    /// Drift correction gain (0.01 = 1% per sample, VESC default)
-    drift_correction_gain: f32,
     /// Rate limit factor (1.5 = allow 50% overshoot, VESC default)
     rate_limit_factor: f32,
     /// Rate-limited angle (tracked across samples for smooth limiting)
     rate_limited_angle: f32,
     /// Last sample timestamp for rate limiting dt calculation
     last_sample_ticks: Option<u64>,
-    /// Hall sensor timeout in ticks (converted from microseconds)
-    timeout_ticks: u64,
 
     // === Wire-health observation window (see note_wire_activity) ===
     /// Per-bit transition counts within the current window (saturating)
@@ -331,12 +311,9 @@ impl HallSensor {
             error_count: 0,
             ticks_per_sec: ticks_per_sec.max(1),
             interp_min_erpm: DEFAULT_INTERP_MIN_ERPM,
-            max_drift_rad: DEFAULT_MAX_DRIFT_RAD,
-            drift_correction_gain: DEFAULT_DRIFT_CORRECTION_GAIN,
             rate_limit_factor: DEFAULT_RATE_LIMIT_FACTOR,
             rate_limited_angle: 0.0,
             last_sample_ticks: None,
-            timeout_ticks: Self::us_to_ticks(DEFAULT_HALL_TIMEOUT_US, ticks_per_sec),
             wire_bit_changes: [0; 3],
             wire_window_updates: 0,
             wire_window_invalids: 0,
@@ -345,12 +322,6 @@ impl HallSensor {
             error_rate_flag: false,
             wire_primed: false,
         }
-    }
-
-    /// Convert microseconds to ticks
-    #[inline]
-    fn us_to_ticks(us: u32, ticks_per_sec: u64) -> u64 {
-        (u64::from(us) * ticks_per_sec) / 1_000_000
     }
 
     /// Set minimum eRPM for interpolation.
@@ -373,29 +344,6 @@ impl HallSensor {
         vel_rad_s.abs() * 60.0 / TAU
     }
 
-    /// Set maximum drift before soft correction kicks in (radians).
-    ///
-    /// If interpolated angle drifts more than this from the current
-    /// Hall sector, soft correction will gradually pull it back.
-    /// Default: 30° (π/6).
-    pub fn set_max_drift(&mut self, drift_rad: f32) {
-        self.max_drift_rad = drift_rad.abs();
-    }
-
-    /// Set drift correction gain (0.0 to 1.0).
-    ///
-    /// When angle drifts beyond max_drift_rad, it's pulled back by
-    /// `drift * gain` per sample. VESC uses 0.01 (1% per cycle).
-    /// Higher = faster correction but more aggressive.
-    pub fn set_drift_correction_gain(&mut self, gain: f32) {
-        self.drift_correction_gain = clamp_f32(gain, 0.0, 1.0);
-    }
-
-    /// Get drift correction gain
-    pub fn drift_correction_gain(&self) -> f32 {
-        self.drift_correction_gain
-    }
-
     /// Set rate limit factor for angle changes.
     ///
     /// Limits angle step per sample to `velocity * dt * factor`.
@@ -408,37 +356,6 @@ impl HallSensor {
     /// Get rate limit factor
     pub fn rate_limit_factor(&self) -> f32 {
         self.rate_limit_factor
-    }
-
-    /// Set Hall sensor timeout in microseconds.
-    ///
-    /// If no valid Hall edge is received for this duration, the sensor
-    /// is considered stale. Default: 100ms (100_000µs).
-    pub fn set_timeout_us(&mut self, timeout_us: u32) {
-        self.timeout_ticks = Self::us_to_ticks(timeout_us, self.ticks_per_sec);
-    }
-
-    /// Get Hall sensor timeout in microseconds.
-    pub fn timeout_us(&self) -> u32 {
-        ((self.timeout_ticks * 1_000_000) / self.ticks_per_sec) as u32
-    }
-
-    /// Check if Hall sensor data is stale (no edges for timeout period).
-    ///
-    /// Returns `true` if:
-    /// - No edge has ever been received, or
-    /// - Time since last edge exceeds the configured timeout
-    pub fn is_stale(&self, now_ticks: u64) -> bool {
-        match self.last_edge_ticks {
-            None => true,
-            Some(last) => {
-                // saturating: an edge timestamped just ahead of the caller's
-                // "now" snapshot (capture ISR vs FOC ISR race) must read as
-                // dt=0, not as a huge wrapped interval.
-                let elapsed = now_ticks.saturating_sub(last);
-                elapsed > self.timeout_ticks
-            }
-        }
     }
 
     /// Staleness against an independent speed estimate: edges stopped
@@ -468,7 +385,9 @@ impl HallSensor {
     ///
     /// Returns `None` if no edge has been received yet.
     pub fn time_since_edge(&self, now_ticks: u64) -> Option<u64> {
-        // saturating, not wrapping: see is_stale().
+        // saturating, not wrapping: an edge timestamped just ahead of the
+        // caller's "now" snapshot (capture ISR vs FOC ISR race) must read as
+        // dt = 0, not as a huge wrapped interval.
         self.last_edge_ticks
             .map(|last| now_ticks.saturating_sub(last))
     }
@@ -870,12 +789,12 @@ impl HallSensor {
 
     /// Interpolated sample at `now_ticks` (immutable version).
     ///
-    /// For the full VESC-style behavior with soft drift correction and
-    /// rate limiting, use `sample_at_mut()` instead.
+    /// For the rate-limited VESC-style angle, use `sample_at_mut()` instead.
     ///
     /// This version applies:
     /// - Below `interp_min_vel`: returns sector angle only (no interpolation)
-    /// - Above threshold: linear interpolation with hard drift clamping
+    /// - Above threshold: linear interpolation from the last boundary, at
+    ///   most one sector (see `decayed_velocity`)
     pub fn sample_at(&self, now_ticks: u64) -> Option<AngleSample> {
         let t0 = self.last_edge_ticks?;
         if self.in_glitch {
@@ -905,23 +824,8 @@ impl HallSensor {
         }
 
         // High speed: interpolate using velocity
-        let interpolated = wrap_angle(self.angle + velocity * dt);
-
-        // Check drift from sector angle and apply soft correction
-        let drift = angle_difference(interpolated, sector_angle);
-
-        let final_angle = if drift.abs() <= self.max_drift_rad {
-            // Within acceptable range: use interpolated angle
-            interpolated
-        } else {
-            // Too far from sector: apply soft correction (pull back by gain %)
-            // This is the VESC-style gradual correction
-            let correction = drift * self.drift_correction_gain;
-            wrap_angle(interpolated - correction)
-        };
-
         Some(AngleSample {
-            angle: final_angle,
+            angle: wrap_angle(self.angle + velocity * dt),
             omega: velocity,
             direction: self.direction,
         })
@@ -947,9 +851,8 @@ impl HallSensor {
     ///
     /// Applies:
     /// - Below `interp_min_vel`: returns sector angle only (no interpolation)
-    /// - Above threshold: linear interpolation with:
-    ///   - **Soft drift correction**: Gradually pulls angle back toward sector
-    ///   - **Rate limiting**: Limits angle rate of change to prevent current spikes
+    /// - Above threshold: linear interpolation with **rate limiting** (limits
+    ///   the angle's rate of change to prevent current spikes)
     ///
     /// This version mutates internal state to track rate limiting across calls.
     pub fn sample_at_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
@@ -989,19 +892,12 @@ impl HallSensor {
             });
         }
 
-        // High speed: interpolate using velocity
+        // High speed: interpolate using velocity. The interpolation starts at
+        // the boundary just crossed and advances at most one sector (see
+        // decayed_velocity), so it stays within the sector. (VESC's soft
+        // drift correction — 1% of the drift, only past 30° from the
+        // centroid — moved the angle by at most ~0.6° here and was dropped.)
         let target_angle = wrap_angle(self.angle + velocity * dt_from_edge);
-
-        // === SOFT DRIFT CORRECTION (VESC-style) ===
-        // Check drift from sector angle
-        let drift = angle_difference(target_angle, sector_angle);
-        let corrected_target = if drift.abs() > self.max_drift_rad {
-            // Too far from sector: apply soft correction (pull back by gain %)
-            let correction = drift * self.drift_correction_gain;
-            wrap_angle(target_angle - correction)
-        } else {
-            target_angle
-        };
 
         // === RATE LIMITING (VESC-style) ===
         // Limit how fast angle can change per sample to prevent current spikes
@@ -1012,7 +908,7 @@ impl HallSensor {
         let max_step = effective_vel * dt_sample * self.rate_limit_factor;
 
         // Calculate desired step from current rate-limited angle
-        let desired_step = angle_difference(corrected_target, self.rate_limited_angle);
+        let desired_step = angle_difference(target_angle, self.rate_limited_angle);
 
         // Apply rate limiting
         let actual_step = if desired_step.abs() <= max_step {
@@ -1460,38 +1356,27 @@ mod tests {
         );
     }
 
+    /// Interpolation runs from the boundary just crossed at the measured
+    /// speed, capped at one sector: 1 ms after the edge at 60°/ms it sits
+    /// at the next boundary (90°), and it stays there if no edge comes.
     #[test]
-    fn test_soft_drift_correction() {
-        // With the boundary anchor + the decayed-velocity advance bound,
-        // the interpolated angle can run at most one sector past the base
-        // boundary — i.e. exactly half a (uniform) sector past the
-        // centroid, which equals the default 30° threshold. Tighten the
-        // threshold to exercise the correction mechanism itself.
+    fn interpolation_runs_one_sector_from_the_boundary() {
         let mut hall = HallSensor::new(1_000_000);
-        hall.set_max_drift(0.3); // ~17°
         hall.update(1, 0).unwrap();
-        hall.update(3, 1000).unwrap(); // 1ms = 1047 rad/s (high speed)
-
-        // 1 ms after the edge: interpolation reaches base(30°) + 60° = 90°,
-        // 30° past the 60° centroid — beyond the tightened threshold.
-        let sample = hall.sample_at(2000).unwrap();
-
-        let sector_angle = TAU / 6.0;
-        let uncorrected_angle = wrap_angle(TAU / 12.0 + TAU / 6.0); // 90°
-        let diff_from_uncorrected = angle_difference(sample.angle, uncorrected_angle).abs();
-
-        // Should be pulled back by gain × drift ≈ 0.01 × 0.52 ≈ 0.005 rad
-        assert!(
-            diff_from_uncorrected > 0.004,
-            "Soft correction should pull angle back, but diff from uncorrected was only {diff_from_uncorrected} rad"
-        );
-
-        // Should still be reasonable (not wildly off)
-        let diff_from_sector = angle_difference(sample.angle, sector_angle).abs();
-        assert!(
-            diff_from_sector < TAU / 4.0, // Less than 90°
-            "Drift should be reasonable, got {diff_from_sector} rad from sector"
-        );
+        hall.update(3, 1000).unwrap(); // 1 ms per sector = 1047 rad/s
+        let next_boundary = wrap_angle(TAU / 12.0 + TAU / 6.0); // 90°
+        for t in [1_500, 2_000, 3_000] {
+            let expected = if t == 1_500 {
+                wrap_angle(TAU / 12.0 + TAU / 12.0)
+            } else {
+                next_boundary
+            };
+            let angle = hall.sample_at(t).unwrap().angle;
+            assert!(
+                angle_difference(angle, expected).abs() < 1e-4,
+                "t={t}: {angle}"
+            );
+        }
     }
 
     #[test]
@@ -1541,48 +1426,6 @@ mod tests {
     }
 
     #[test]
-    fn test_timeout_detection() {
-        let mut hall = HallSensor::new(1_000_000); // 1 MHz ticks
-
-        // No edges yet - should be stale
-        assert!(hall.is_stale(0));
-        assert!(hall.is_stale(1_000_000));
-
-        // Receive an edge
-        hall.update(1, 0).unwrap();
-
-        // Immediately after - not stale
-        assert!(!hall.is_stale(0));
-        assert!(!hall.is_stale(1000)); // 1ms later
-
-        // Default timeout is 100ms = 100_000 ticks at 1MHz (100_000µs * 1MHz / 1_000_000)
-        // Just before timeout - not stale
-        assert!(!hall.is_stale(99_999));
-
-        // At timeout - not stale (uses > not >=)
-        assert!(!hall.is_stale(100_000));
-
-        // After timeout - stale
-        assert!(hall.is_stale(100_001));
-        assert!(hall.is_stale(200_000));
-    }
-
-    #[test]
-    fn test_is_stale_with_recent_edge() {
-        let mut hall = HallSensor::new(1_000_000); // 1 MHz
-
-        // First edge at t=0
-        hall.update(1, 0).unwrap();
-        assert!(hall.is_stale(100_001)); // Stale 100ms after first edge
-
-        // Another edge at t=100_001 resets the timeout
-        hall.update(3, 100_001).unwrap();
-        assert!(!hall.is_stale(100_001)); // Fresh again (just received edge)
-        assert!(!hall.is_stale(150_000)); // 50ms later - still fresh
-        assert!(hall.is_stale(200_002)); // 100ms after second edge - stale
-    }
-
-    #[test]
     fn test_time_since_edge() {
         let mut hall = HallSensor::new(1_000_000); // 1 MHz
 
@@ -1599,24 +1442,6 @@ mod tests {
 
         let elapsed_us = hall.time_since_edge_us(1_500_000).unwrap();
         assert_eq!(elapsed_us, 500_000); // 500ms = 500_000µs
-    }
-
-    #[test]
-    fn test_set_timeout() {
-        let mut hall = HallSensor::new(1_000_000); // 1 MHz
-
-        // Default is 100ms = 100_000µs
-        assert_eq!(hall.timeout_us(), 100_000);
-
-        // Set to 50ms = 50_000µs
-        hall.set_timeout_us(50_000);
-        assert_eq!(hall.timeout_us(), 50_000);
-
-        // Verify the shorter timeout works
-        // At 1MHz, 50ms = 50_000 ticks
-        hall.update(1, 0).unwrap();
-        assert!(!hall.is_stale(49_999)); // Just before 50ms
-        assert!(hall.is_stale(50_001)); // Just after 50ms
     }
 
     /// CW raw-state sequence (one electrical revolution = 6 edges).

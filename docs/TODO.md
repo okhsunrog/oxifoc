@@ -92,11 +92,6 @@ rigs). Open — each needs a decision or the bench:
 - [ ] **Probe saliency**: the shorted-circuit probe uses the observer's
   single L; on the ZD2808 (Lq = 1.5 Ld) that costs ~5% of seed speed at
   300 el rad/s.
-- [ ] **Dead hall tuning fields**: `HallTuningConfig.timeout_us` (the
-  staleness check is `is_stale_at_speed`) and `drift_correction_gain` (the
-  interpolation stays within ±30° of the centroid by construction) do
-  nothing. Removing them changes the stored/wire format — host CLI in
-  lockstep.
 
 ## Review backlog (2026-07-09 full-codebase review)
 

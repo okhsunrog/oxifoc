@@ -135,11 +135,11 @@ pub fn apply_stored_config(config: &RuntimeConfig) {
                 h.set_calibration_raw(cal.angles);
                 info!("Applied stored Hall calibration");
             }
-            if let Some(ref tuning) = config.hall_tuning {
+            if let Some(ref tuning) = config.hall_tuning
+                && tuning.is_sane()
+            {
                 h.set_interp_min_erpm(tuning.interp_min_erpm);
-                h.set_drift_correction_gain(tuning.drift_correction_gain);
                 h.set_rate_limit_factor(tuning.rate_limit_factor);
-                h.set_timeout_us(tuning.timeout_us);
                 info!("Applied stored Hall tuning params");
             }
         }

@@ -285,11 +285,12 @@ fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
         ConfigWrite::PiGains(v) => v.is_sane(),
         ConfigWrite::MotorParams(v) => v.is_valid(),
         ConfigWrite::HallCalibration(v) => v.is_calibrated(),
+        ConfigWrite::HallTuning(v) => v.is_sane(),
         ConfigWrite::VoltageLimits(_) | ConfigWrite::PwmConfig(_) => false,
         // No boundary invariant beyond is_sane() at the ISR gate; listed
         // explicitly (no catch-all) so a new group cannot compile without
         // being classified here — an unclassified group would fail OPEN.
-        ConfigWrite::Failsafe(_) | ConfigWrite::Velocity(_) | ConfigWrite::HallTuning(_) => true,
+        ConfigWrite::Failsafe(_) | ConfigWrite::Velocity(_) => true,
     }
 }
 
