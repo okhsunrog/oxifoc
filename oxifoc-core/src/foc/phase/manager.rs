@@ -969,10 +969,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
             PhaseSource::Observer => {
                 // Pure sensorless: commutate from a converged observer; else
-                // run the cold-start sequencer open-loop (align→ramp→handoff)
+                // run the cold-start sequencer open-loop (ramp→hold→confirm)
                 // if it is active; else hold the last output (and raise the
                 // fault). The sequencer is advanced in `update`, which hands
-                // off (deactivates) the moment the observer converges.
+                // off (deactivates) once a probe confirms the observer.
                 if self.observer.is_ready() {
                     self.clear_fault(PhaseFault::ObserverNotReady);
                     match (self.observer.phase(), self.observer.velocity()) {
@@ -996,8 +996,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                         _ => self.output,
                     }
                 } else if self.startup.is_active() {
-                    // The sequencer owns commutation: the freq-led filter
-                    // re-seeds continuity at the next handoff.
+                    // The sequencer owns commutation: the tracker re-seeds
+                    // continuity at the next handoff.
                     self.tracker.active = false;
                     PhaseOutput {
                         angle: self.startup.angle(),

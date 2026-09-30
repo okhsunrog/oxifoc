@@ -768,11 +768,12 @@ impl BackEmfObserver {
         // with a mis-stored λ the integrator tracks the true flux while the
         // clamp circle sits elsewhere, and a λ-normalized projection would
         // carry the λ error TWICE (once here, once in bemf_expected) —
-        // λ_cfg 1.8× true put the ratio at 0.31, below the 0.4 window, and
-        // validity could never be granted (which the λ-adaptation gate
-        // below would deadlock on). The 0.1·λ floor only bounds the
-        // amplification while the integrator is still building up from a
-        // reset — there the direction is noise and the 2-revolution
+        // λ_cfg 1.8× true put the ratio at 0.31 (1/1.8²), below the window
+        // floor of the time (0.4), and validity could never be granted
+        // (which the λ-adaptation gate below would deadlock on). The 0.1·λ
+        // floor only bounds the amplification while the integrator is still
+        // building up from a reset — there the direction is noise and the
+        // 2-revolution
         // consecutive-corroboration requirement is what protects the grant.
         let e_q = (e_beta * self.x1 - e_alpha * self.x2) / flux_mag.max(0.1 * self.lambda);
         let a_e = (dt / BEMF_PROXY_TAU_S).min(1.0);

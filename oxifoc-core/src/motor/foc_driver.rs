@@ -1205,7 +1205,8 @@ where
 
         // Cold-start the sensorless commutation when leaving a non-driving mode
         // for a torque/velocity command: a pure back-EMF observer can't
-        // commutate from standstill, so begin the align→ramp→handoff sequence.
+        // commutate from standstill, so begin the deadshort→ramp→confirm
+        // sequence.
         // No-op for sensored sources or an already-tracking observer (see
         // PhaseProvider::begin_cold_start). Direction = sign of the command.
         let was_idle = matches!(
@@ -1668,7 +1669,7 @@ where
             iq_target
         };
 
-        // Startup soft-start: the align phase ramps the torque command in
+        // Startup soft-start: the ramp phase ramps the torque command in
         // instead of step-engaging it onto the rotor's undamped magnetic
         // spring (see PhaseProvider::startup_current_scale). 1.0 outside
         // the startup sequencer.
@@ -3448,7 +3449,7 @@ mod tests {
     }
 
     /// Sensorless cold start: a pure-`Observer` motor commanded torque from
-    /// standstill must spin up via the align→ramp→handoff sequencer and hand
+    /// standstill must spin up via the ramp→hold→confirm sequencer and hand
     /// off to the back-EMF observer. The observer alone cannot commutate at
     /// zero speed (no back-EMF), so without the sequencer this deadlocks; the
     /// test asserts it does NOT — the rotor reaches speed forward and the
@@ -3556,7 +3557,7 @@ mod tests {
     /// Deadshort flying restart: a sensorless motor already spinning when
     /// torque is commanded must be CAUGHT by the deadshort probe and handed
     /// straight to the observer within a handful of cycles — NOT dragged
-    /// through the full align→ramp cold start (which would brake/fight the
+    /// through the full ramp cold start (which would brake/fight the
     /// moving rotor). Distinguishes flying restart from cold start by the
     /// handoff happening fast and the rotor never being braked to a stop.
     #[test]
@@ -3629,7 +3630,7 @@ mod tests {
         }
 
         // Caught FAST — within the probe window + a few cycles, not the ~0.7 s
-        // align→ramp (which would be >14000 cycles).
+        // ramp (which would be >14000 cycles).
         let caught = caught_cycle.expect("flying restart must hand off");
         assert!(
             caught < 30,
@@ -4836,27 +4837,68 @@ mod tests {
     }
 
     /// Closed-loop: spin a VirtualMotor up on Hall, stop affirming, and the
-    /// ControlledStop policy must regen-brake it to a near standstill and end
-    /// Stopped. Drives the failsafe through the real current-control path.
+    /// ControlledStop policy must regen-brake it to standstill at the
+    /// configured deceleration and end Stopped. Drives the failsafe through
+    /// the real current-control path.
+    ///
+    /// The plant coasts whenever the driver has the bridge off — it used to
+    /// be stepped at zero volts, i.e. with the windings SHORTED, which
+    /// stopped a "coasting" rotor in 36 ms; with the old heavy friction on
+    /// top, a stop sequence that never braked passed as well.
     #[test]
     #[cfg(feature = "virtual-motor")]
     fn controlled_stop_brakes_spinning_motor_to_standstill() {
-        use crate::foc::hall_sensor::HallSensor;
-        use crate::foc::phase::PhaseManager;
+        const DECEL: f32 = 800.0;
+        let (peak, braked, driver) = controlled_stop_run(FailsafePolicy::ControlledStop, DECEL);
+        assert!(
+            peak > 1_000.0,
+            "motor should have spun up, peak ωe = {peak}"
+        );
+        let braked = braked.expect("failsafe must brake to ~standstill");
+        let ramp_s = peak / DECEL;
+        assert!(
+            (ramp_s - 0.05..ramp_s + 0.3).contains(&braked),
+            "stopped after {braked} s, the decel ramp takes {ramp_s} s"
+        );
+        assert_eq!(
+            driver.mode(),
+            ControlMode::Stopped,
+            "ends Stopped after the brake"
+        );
+        assert!(
+            !driver.failsafe_active(),
+            "failsafe cleared at the terminal"
+        );
+        // The harness must coast an unbraked rotor for far longer.
+        let (_, coasted, _) = controlled_stop_run(FailsafePolicy::Coast, DECEL);
+        assert!(coasted.is_none(), "coast stopped after {coasted:?} s");
+    }
+
+    /// Spin up for 1.5 s, stop affirming, run 2 s more. Returns the peak
+    /// speed, when (after the last affirmation) |ωe| fell below 25, and the
+    /// driver.
+    #[cfg(feature = "virtual-motor")]
+    fn controlled_stop_run(
+        policy: FailsafePolicy,
+        decel_rad_s2: f32,
+    ) -> (
+        f32,
+        Option<f32>,
+        FocDriver<GatedPwm, MockCurrentSensor, PhaseManager<HallSensor>>,
+    ) {
         use crate::foc::trig::LibmSinCos;
-        use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
+        use crate::motor::failsafe::FailsafeConfig;
         use crate::virtual_motor::{MotorParams, VirtualMotor};
 
         const DT: f32 = 1.0 / 20_000.0;
-        // Light rotor + some friction so it both spins up and brakes quickly.
         let params = MotorParams {
-            friction_b: 2e-3,
+            friction_b: 2e-5,
             ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
 
         // Prime the hall estimator with the initial rotor state.
-        let mut out = motor.step(0.0, 0.0, 0.0, DT);
+        let mut out = motor.step_coast(0.0, DT);
         let mut hall = HallSensor::new(1_000_000); // µs timebase
         hall.update(out.hall_state, 0);
         let mut last_hall = out.hall_state;
@@ -4869,7 +4911,10 @@ mod tests {
         );
         let mut driver = FocDriver::new(
             foc,
-            MockPwm { duties: [0; 3] },
+            GatedPwm {
+                enabled: false,
+                applied: [0; 3],
+            },
             MockCurrentSensor {
                 currents: (0.0, 0.0, 0.0),
             },
@@ -4878,13 +4923,13 @@ mod tests {
         );
         driver.set_current_limits(CurrentLimits::from_max_current(40.0));
         driver.set_failsafe(FailsafeConfig {
-            policy: FailsafePolicy::ControlledStop,
+            policy,
             staleness_timeout_us: 5_000,
             brake_current_a: 20.0,
             ramp_s: 0.02,
             brake_time_s: 2.0,
             standstill_rad_s: 20.0,
-            decel_rad_s2: 800.0,
+            decel_rad_s2,
             terminal: FailsafeTerminal::HighZ,
         });
         driver.set_mode(ControlMode::CurrentControl {
@@ -4894,6 +4939,7 @@ mod tests {
 
         const STOP_AFFIRMING_AT: u64 = 30_000; // 1.5 s of drive, then go silent
         let mut peak_omega = 0.0f32;
+        let mut stopped_at = None;
         for step in 1..70_000u64 {
             let now = step * 50; // µs
 
@@ -4912,31 +4958,19 @@ mod tests {
             }
 
             let telem = driver.step(now).unwrap_or_default();
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            out = if driver.pwm.enabled {
+                motor.step(telem.v_alpha, telem.v_beta, 0.0, DT)
+            } else {
+                motor.step_coast(0.0, DT)
+            };
 
             if step < STOP_AFFIRMING_AT {
                 peak_omega = peak_omega.max(out.omega_e.abs());
+            } else if stopped_at.is_none() && out.omega_e.abs() < 25.0 {
+                stopped_at = Some((step - STOP_AFFIRMING_AT) as f32 * DT);
             }
         }
-
-        assert!(
-            peak_omega > 50.0,
-            "motor should have spun up, peak ωe = {peak_omega}"
-        );
-        assert!(
-            out.omega_e.abs() < 25.0,
-            "failsafe must brake to ~standstill, ωe = {}",
-            out.omega_e
-        );
-        assert_eq!(
-            driver.mode(),
-            ControlMode::Stopped,
-            "ends Stopped after the brake"
-        );
-        assert!(
-            !driver.failsafe_active(),
-            "failsafe cleared at the terminal"
-        );
+        (peak_omega, stopped_at, driver)
     }
 
     /// Closed-loop ramp-into-brake: a user Brake command at speed substitutes
