@@ -291,8 +291,12 @@ impl CurrentLimits {
             Some(c) => Self::from_config_clamped(c, hw_max_a, rating_a),
             // No limits group stored: the ceilings ARE the limits (an
             // all-unset config, NOT CurrentLimitsConfig::default() — that
-            // one carries concrete 10 A/40 A values).
-            None if rating_a.is_finite() && rating_a > 0.0 => Self::from_config_clamped(
+            // one carries concrete 10 A/40 A values). Also without a motor
+            // rating: `from_max_current(hw_max_a)` here put the iq budget
+            // ON the board's kill line (and the dq trip 1.3× above it) on
+            // every fresh board — the exact state the headroom fix above
+            // was meant to end.
+            None => Self::from_config_clamped(
                 &CurrentLimitsConfig {
                     max_iq_a: 0.0,
                     max_phase_current_a: 0.0,
@@ -302,7 +306,6 @@ impl CurrentLimits {
                 hw_max_a,
                 rating_a,
             ),
-            None => Self::from_max_current(hw_max_a),
         }
     }
 
@@ -3214,6 +3217,13 @@ mod tests {
         // …and bus limits stay off (boot default).
         assert_eq!(l.bus_in_max_a, -1.0);
         assert_eq!(l.bus_regen_max_a, -1.0);
+
+        // A fresh board: no limits group AND no motor rating. The iq budget
+        // must still sit one headroom factor below the board's kill line —
+        // it used to BE the kill line, with the dq trip 1.3× above it.
+        let l = CurrentLimits::from_stored(None, hw_max, 0.0);
+        assert_eq!(l.max_current_a, hw_max / OVERCURRENT_HEADROOM);
+        assert_eq!(l.overcurrent_threshold_a, hw_max);
     }
 
     /// Bus (supply) current limits: `i_bus ≈ iq·mod_q`, so the allowed iq
