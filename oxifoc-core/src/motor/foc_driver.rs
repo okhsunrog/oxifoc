@@ -5564,9 +5564,16 @@ mod tests {
                 params.lambda,
             )));
             mgr.set_phase_tracker(100.0, 1.2); // the f405 boot configuration
-            let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            // As from_runtime_config builds it on the f405: params-derived
+            // PI gains plus dq decoupling / back-EMF feedforward.
+            let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
                 params.r, params.ld, 24.0,
             );
+            foc.set_decoupling(Some(crate::foc::controller::Decoupling {
+                ld_h: params.ld,
+                lq_h: params.lq,
+                flux_linkage_wb: params.lambda,
+            }));
             let mut driver = FocDriver::new(
                 foc,
                 MockPwm { duties: [0; 3] },
@@ -5664,6 +5671,31 @@ mod tests {
             rig.out.omega_e
         );
         assert!(rig.driver.phase().angle_trustworthy());
+    }
+
+    /// Full torque into the voltage limit must settle at base speed with
+    /// the current under control. Uniform scaling of (vd, vq) at the limit
+    /// let id run away negative (−37 A at a 25 A command) until the
+    /// overcurrent trip killed the drive at top speed.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn full_torque_into_the_voltage_limit_keeps_id_regulated() {
+        let mut rig = HallRig::new(0.5, 2e-5);
+        rig.load = 0.1;
+        rig.driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 25.0,
+            id_target: 0.0,
+        });
+        rig.run(1.0); // base speed is reached at ~0.4 s
+        let mut id_max = 0.0f32;
+        for _ in 0..4000 {
+            let (sample, _) = rig.step(); // panics on an overcurrent trip
+            let (i_alpha, i_beta) = clarke(sample.ia, sample.ib);
+            let (s, c) = (libm::sinf(sample.angle_rad), libm::cosf(sample.angle_rad));
+            id_max = id_max.max(park(i_alpha, i_beta, s, c).0.abs());
+        }
+        assert!(id_max < 2.0, "true |id| {id_max} A at the voltage limit");
+        assert!(rig.out.omega_e > 4000.0, "ω {}", rig.out.omega_e);
     }
 
     /// The other half of the staleness contract: hall edges stopping while

@@ -646,32 +646,29 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let vd_raw = self.id_pi.update(id_target, id, dt) + vd_ff + vd_inject;
         let vq_raw = self.iq_pi.update(iq_target, iq, dt) + vq_ff + vq_inject;
 
-        // Circular voltage limiting (modulation limit ∧ duty cap); preserves
-        // the voltage vector direction (unlike independent axis clamping).
+        // Circular voltage limit (modulation limit ∧ duty cap) with d-axis
+        // PRIORITY: the d loop keeps the current vector on its axis
+        // (id → id*) and the torque axis gets the voltage that remains.
+        // Scaling (vd, vq) uniformly instead handed the vector's direction
+        // to whichever demand was larger: at top speed vq (≈ ω·λ) dwarfs
+        // the vd the d loop needs (≈ −ω·Lq·iq), the scaling took that vd
+        // away and id ran negative uncontrolled — sim, 5065 at 24 V with a
+        // 25 A command: −37 A of id, then the overcurrent trip. With d
+        // priority the torque current just falls off at base speed.
         let v_limit = self.voltage_limit();
-        let v_mag_sq = vd_raw * vd_raw + vq_raw * vq_raw;
-        let v_limit_sq = v_limit * v_limit;
-
-        let (vd, vq) = if v_mag_sq > v_limit_sq {
-            let scale = v_limit / sqrtf(v_mag_sq);
-            let vd = vd_raw * scale;
-            let vq = vq_raw * scale;
-            // Coordinated anti-windup, charged to the PI's own share only.
-            // The circular limit scales the whole vector uniformly, so the
-            // PI's realizable output is pi·scale and the back-calculation
-            // term is pi·(scale−1). Using the full `v − v_raw` (which
-            // includes feedforward + injection) unwound the integrator for
-            // saturation the feedforward caused, costing a recovery
-            // transient once the demand dropped back inside the circle.
-            // With ff = inject = 0 this reduces to the classic v − v_raw.
-            let pi_d = vd_raw - vd_ff - vd_inject;
-            let pi_q = vq_raw - vq_ff - vq_inject;
-            self.id_pi.apply_anti_windup(pi_d * (scale - 1.0));
-            self.iq_pi.apply_anti_windup(pi_q * (scale - 1.0));
-            (vd, vq)
-        } else {
-            (vd_raw, vq_raw)
-        };
+        let vd = clamp_f32(vd_raw, -v_limit, v_limit);
+        let vq_room = sqrtf((v_limit * v_limit - vd * vd).max(0.0));
+        let vq = clamp_f32(vq_raw, -vq_room, vq_room);
+        // Back-calculation anti-windup per axis, charged the whole clipped
+        // amount: the integrator then absorbs a feedforward that overshoots
+        // (the old PI-share rule peaked at 15 A vs 6 A on a 2 V back-EMF
+        // feedforward error).
+        if vd != vd_raw {
+            self.id_pi.apply_anti_windup(vd - vd_raw);
+        }
+        if vq != vq_raw {
+            self.iq_pi.apply_anti_windup(vq - vq_raw);
+        }
 
         // dq -> stationary frame, then advance the actuation frame: the
         // voltage acts ~one PWM period after the currents were sampled and
