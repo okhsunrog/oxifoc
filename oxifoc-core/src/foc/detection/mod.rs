@@ -504,7 +504,7 @@ mod integration_tests {
             dead_time_v: 300e-9 * 20_000.0 * VBUS,
             adc_lsb_a: ADC_LSB_A,
             adc_noise_a: ADC_LSB_A,
-            actuation_delay_steps: 1,
+            actuation_delay: 1.0,
             ..MotorParams::default()
         };
 
@@ -555,7 +555,7 @@ mod integration_tests {
             j: 1e-3,
             friction_b: 1e-3,
             substeps: 10,
-            actuation_delay_steps: 1, // harness depth becomes 2 cycles
+            actuation_delay: 1.0, // harness depth becomes 2 cycles
             ..MotorParams::default()
         };
         let run = |pipeline_lag: i8| {

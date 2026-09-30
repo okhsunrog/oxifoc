@@ -17,9 +17,12 @@ pub struct PhaseOutput {
 /// Input for phase provider update
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PhaseInput {
-    /// Commanded α voltage (for observer, V)
+    /// α voltage (V) that acted on the motor over the sampling interval
+    /// ending at this cycle's current sample — NOT the command computed
+    /// this cycle, which only acts after the actuation delay (see
+    /// `FocDriver::set_actuation_delay`).
     pub v_alpha: f32,
-    /// Commanded β voltage (for observer, V)
+    /// β counterpart of [`v_alpha`](Self::v_alpha) (V).
     pub v_beta: f32,
     /// Measured α current (A)
     pub i_alpha: f32,
@@ -52,8 +55,22 @@ pub struct PhaseInput {
 /// │                                                          │
 /// └──────────────────────────────────────────────────────────┘
 /// ```
+///
+/// ## Timing contract
+///
+/// `update()` at step N sees measurements up to the step-N current sample
+/// (time `t_N`), but its output is consumed by `get()` at step N+1, whose
+/// Park transform needs the rotor angle at `t_{N+1} = t_N + dt`. So the
+/// output of `update()` is the PREDICTED state at the next sampling
+/// instant. Every source must honor this: a sensor sample taken at `t_N`
+/// is extrapolated by `ω·dt`; a PLL of the form "compare the measurement
+/// with the previous output, then advance by `ω·dt`" already predicts one
+/// step and must not be advanced again. A one-period violation parks the
+/// current vector `ω·dt` off the q axis while the controller's own frame
+/// reports id = 0 (see `commutation_frame_tracks_rotor_at_sample_instant`).
 pub trait PhaseProvider {
-    /// Get current phase estimate
+    /// Rotor state at THIS step's current-sampling instant, as predicted
+    /// by the previous [`update`](Self::update).
     ///
     /// Called at the START of each control step to obtain the electrical
     /// angle for Park/Clarke transforms.
@@ -61,9 +78,10 @@ pub trait PhaseProvider {
 
     /// Update with latest measurements
     ///
-    /// Called at the END of each control step with commanded voltages
-    /// and measured currents. This information is used by observers
-    /// to estimate phase for the next step.
+    /// Called at the END of each control step with the voltage that acted
+    /// over the last sampling interval and this step's measured currents;
+    /// leaves [`get`](Self::get) returning the predicted state at the NEXT
+    /// sampling instant (see the timing contract above).
     ///
     /// # Arguments
     /// * `input` - Voltages and currents from the current step

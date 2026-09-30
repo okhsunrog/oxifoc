@@ -138,20 +138,23 @@ pub struct MotorParams {
     /// `1/(2π·τ_e)`. Only used when a ΔL is nonzero. ZD2808: plateau
     /// reached by ~1 kHz ⇒ τ_e ≈ 0.2–0.5 ms.
     pub eddy_tau_s: f32,
-    /// Actuation pipeline delay in whole `step()` calls (0 = none,
-    /// default; clamped to 3).
+    /// Actuation pipeline delay in `step()` periods (0 = none, default;
+    /// clamped to 0..=3, fractions allowed).
     ///
-    /// Real hardware applies the voltage computed in ISR cycle N during
-    /// PWM period N+1 (timer registers latch on the update event), so the
-    /// rotor has moved `ωe·T_pwm` by the time the command acts — ~17°
-    /// electrical for a Flipsky-class motor at full speed. The firmware
-    /// compensates with `phase_advance_cycles` (foc_driver) and feeds
-    /// estimators the previous cycle's voltage
-    /// (`update_phase_with_prev_voltage`) — with `actuation_delay_steps =
-    /// 1` both of those conventions become exactly right in sim instead
-    /// of injecting the error they exist to cancel. `step_coast` /
+    /// The command passed to call N starts acting `actuation_delay` periods
+    /// after that call's start and holds until the next command takes
+    /// over. Real hardware cannot act on a command before it is computed:
+    /// the ISR samples the currents, computes the duties, and the timer
+    /// latches them at its next update event — half a period later on a
+    /// center-aligned timer that updates at both ends (the ISR finished
+    /// before the valley), a full period later when it did not. The
+    /// firmware models the same quantity as
+    /// `FocDriver::set_actuation_delay`; set both equal to test a
+    /// compensation against the delay it exists for. A fractional delay
+    /// splits each period's volt-seconds exactly between the previous and
+    /// the new command, whatever `substeps` is. `step_coast` /
     /// `step_shorted` push zeros through the pipeline (gates off / low).
-    pub actuation_delay_steps: u8,
+    pub actuation_delay: f32,
 }
 
 impl MotorParams {
@@ -195,7 +198,7 @@ impl Default for MotorParams {
             eddy_delta_l_d: 0.0,
             eddy_delta_l_q: 0.0,
             eddy_tau_s: 0.0,
-            actuation_delay_steps: 0,
+            actuation_delay: 0.0,
         }
     }
 }
@@ -250,10 +253,35 @@ pub struct VirtualMotor {
     // xorshift32 state for current-sensor noise (deterministic seed so
     // every test run sees the identical noise stream)
     rng: u32,
-    // Actuation pipeline ring buffer (αβ commands awaiting application);
-    // sized for the max supported delay of 3 steps.
-    v_ring: [(f32, f32); 4],
+    // Actuation pipeline: the last `V_RING` αβ commands, newest at
+    // `v_ring_idx − 1`. A delay of up to 3 periods needs the command from
+    // 4 calls ago for the fractional share.
+    v_ring: [(f32, f32); V_RING],
     v_ring_idx: usize,
+}
+
+/// Command history depth of the actuation pipeline (max delay 3 + 1).
+const V_RING: usize = 5;
+
+/// The commands acting during one `step()` period: `older` for the first
+/// `older_share` of it, `newer` for the rest.
+#[derive(Clone, Copy)]
+struct Actuation {
+    older: (f32, f32),
+    newer: (f32, f32),
+    older_share: f32,
+}
+
+impl Actuation {
+    /// Volt-second-weighted command over the sub-interval `[t0, t1)` of the
+    /// period (fractions of it).
+    fn over(&self, t0: f32, t1: f32) -> (f32, f32) {
+        let w = clamp_f32((self.older_share - t0) / (t1 - t0), 0.0, 1.0);
+        (
+            w * self.older.0 + (1.0 - w) * self.newer.0,
+            w * self.older.1 + (1.0 - w) * self.newer.1,
+        )
+    }
 }
 
 impl VirtualMotor {
@@ -270,23 +298,28 @@ impl VirtualMotor {
             sin_phi: 0.0,
             cos_phi: 1.0,
             rng: 0x6F78_6601, // "oxf\x01"
-            v_ring: [(0.0, 0.0); 4],
+            v_ring: [(0.0, 0.0); V_RING],
             v_ring_idx: 0,
         }
     }
 
-    /// Pass an αβ command through the actuation pipeline: returns the
-    /// command issued `actuation_delay_steps` calls ago (zeros until the
-    /// pipeline fills). Delay 0 is a transparent pass-through.
-    fn delayed_voltage(&mut self, v_alpha: f32, v_beta: f32) -> (f32, f32) {
-        let delay = (self.params.actuation_delay_steps as usize).min(3);
-        if delay == 0 {
-            return (v_alpha, v_beta);
-        }
-        let out = self.v_ring[(self.v_ring_idx + 4 - delay) % 4];
+    /// Push an αβ command into the actuation pipeline and return what acts
+    /// during this period (zeros until the pipeline fills). A delay
+    /// `d = m + f` puts the command from `m + 1` calls ago on the first `f`
+    /// of the period and the one from `m` calls ago on the rest; delay 0 is
+    /// a transparent pass-through.
+    fn actuation(&mut self, v_alpha: f32, v_beta: f32) -> Actuation {
         self.v_ring[self.v_ring_idx] = (v_alpha, v_beta);
-        self.v_ring_idx = (self.v_ring_idx + 1) % 4;
-        out
+        let newest = self.v_ring_idx;
+        self.v_ring_idx = (self.v_ring_idx + 1) % V_RING;
+        let delay = clamp_f32(self.params.actuation_delay, 0.0, 3.0);
+        let m = delay as usize; // floor for delay ≥ 0
+        let ago = |k: usize| self.v_ring[(newest + V_RING - k) % V_RING];
+        Actuation {
+            older: ago(m + 1),
+            newer: ago(m),
+            older_share: delay - m as f32,
+        }
     }
 
     /// Next noise sample, uniform in [−1, 1) (xorshift32).
@@ -356,7 +389,7 @@ impl VirtualMotor {
     /// viscous friction.  The motor decelerates purely mechanically.
     pub fn step_coast(&mut self, load_torque: f32, dt: f32) -> VirtualMotorOutput {
         // Gates off: nothing is commanded this cycle, the pipeline moves on.
-        let _ = self.delayed_voltage(0.0, 0.0);
+        let _ = self.actuation(0.0, 0.0);
         let p = self.params;
         let pp = f32::from(p.pole_pairs);
         let n = p.substeps.max(1);
@@ -438,17 +471,19 @@ impl VirtualMotor {
         dt: f32,
         switching: bool,
     ) -> VirtualMotorOutput {
-        let (v_alpha, v_beta) = self.delayed_voltage(v_alpha, v_beta);
+        let act = self.actuation(v_alpha, v_beta);
         let p = self.params;
         let pp = f32::from(p.pole_pairs);
         let n = p.substeps.max(1);
         let dt_sub = dt / n as f32;
         let mut torque = 0.0;
 
-        // The αβ voltage is a zero-order hold over the whole FOC period
-        // (that is what the inverter applies); the rotor and currents keep
-        // evolving inside it, so everything below is re-derived per sub-step.
-        for _ in 0..n {
+        // The αβ voltage is a zero-order hold per command (that is what the
+        // inverter applies) — one command per period, or two split at the
+        // fractional actuation delay; the rotor and currents keep evolving
+        // inside it, so everything below is re-derived per sub-step.
+        for j in 0..n {
+            let (v_alpha, v_beta) = act.over(j as f32 / n as f32, (j + 1) as f32 / n as f32);
             // ── Dead-time distortion (instantaneous phase-current signs) ──
             let (va, vb) = if switching && p.dead_time_v != 0.0 {
                 let i_alpha = self.cos_phi * self.id - self.sin_phi * self.iq;
@@ -898,7 +933,7 @@ mod tests {
 
     /// Pipeline-delay compensation must rotate the ACTUATION frame only.
     ///
-    /// With `actuation_delay_steps = 1` the plant applies each command one
+    /// With `actuation_delay = 1` the plant applies each command one
     /// FOC period late. The firmware compensates via
     /// `set_actuation_advance` (output-vector rotation); the original code
     /// instead advanced the single commutation angle, which also advanced
@@ -917,7 +952,7 @@ mod tests {
         // true-frame mean d-current after settling
         let run = |advance_measurement_frame: bool| -> f32 {
             let params = MotorParams {
-                actuation_delay_steps: 1,
+                actuation_delay: 1.0,
                 substeps: 10,
                 friction_b: 1.2e-3, // settle ≈ 1200 rad/s el (δ ≈ 0.06 rad)
                 ..MotorParams::default()

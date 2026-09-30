@@ -882,6 +882,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             tr.a_est = 0.0;
             tr.hunt_filt = 0.0;
             tr.active = true;
+        } else {
+            // Timing contract: `raw` already predicts the NEXT sampling
+            // instant (the observer PLL advances one step itself), and the
+            // previous output predicted THIS one — so move the frame one
+            // period first, THEN compare. The original compare-then-advance
+            // order (a PLL's own step) predicted a second period on top:
+            // commutation ran one PWM period early.
+            tr.theta = wrap_angle(tr.theta + tr.omega * dt);
         }
         let d = angle_difference(raw.angle, tr.theta);
         // Acceleration feedforward (see TRACKER_FF_TAU_S): the filtered
@@ -907,7 +915,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // from the hunt mode instead of storing it.
         let a_h = (dt / TRACKER_HUNT_TAU_S).min(1.0);
         tr.hunt_filt += a_h * (TRACKER_HUNT_DAMP * (raw.velocity - tr.omega) - tr.hunt_filt);
-        tr.theta = wrap_angle(tr.theta + (tr.omega + tr.kd * tr.d_filt + tr.hunt_filt) * dt);
+        tr.theta = wrap_angle(tr.theta + (tr.kd * tr.d_filt + tr.hunt_filt) * dt);
         // Hard load-angle bound. A soft tracker that filters the 35–100 Hz
         // mid-band wobble cannot also follow an unloaded max-torque punch
         // (ω̇ up to ~5.6 k rad/s² at 1.5 A): the type-2 lag ω̇/ωn²
@@ -1329,6 +1337,16 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         } else {
             None
         };
+        // Sensor samples describe the rotor at `now_ticks` — this cycle's
+        // current sample — but the output commutates the NEXT cycle (see
+        // the PhaseProvider timing contract): extrapolate one period.
+        // Without it hall/encoder commutation ran one period late.
+        let predict = |s: AngleSample| AngleSample {
+            angle: wrap_angle(s.angle + s.omega * input.dt),
+            ..s
+        };
+        let hall_sample = hall_sample.map(predict);
+        let encoder_sample = encoder_sample.map(predict);
 
         // Hall health is only meaningful for sources that consume hall data:
         // an idle hall during Manual-angle calibration or pure-observer
@@ -1452,7 +1470,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                             angle, velocity
                         );
                     }
-                    self.observer.seed(angle, velocity);
+                    // The probe measured the rotor at this sample; the
+                    // observer's phase lives one period ahead.
+                    self.observer
+                        .seed(wrap_angle(angle + velocity * input.dt), velocity);
                 } else if self.startup.phase() == StartupPhase::Ramp && self.startup.log_allow() {
                     info!("startup: deadshort saw standstill, ramp cold start");
                 }
@@ -1464,11 +1485,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 let r = self.observer.resistance().unwrap_or(0.0);
                 let l = self.observer.inductance().unwrap_or(0.0);
                 let lambda = self.observer.lambda().unwrap_or(0.0);
+                // The probe measures the rotor at THIS sample; the
+                // observer's phase predicts the next one — compare on the
+                // probe's time base.
+                let obs_vel = self.observer.velocity().unwrap_or(0.0);
                 let claim = PhaseOutput {
-                    angle: self.observer.phase().unwrap_or(0.0),
-                    velocity: self.observer.velocity().unwrap_or(0.0),
+                    angle: wrap_angle(self.observer.phase().unwrap_or(0.0) - obs_vel * input.dt),
+                    velocity: obs_vel,
                 };
-                let obs_vel = claim.velocity;
                 match self.startup.feed_confirm(
                     input.i_alpha,
                     input.i_beta,
@@ -1508,7 +1532,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                                 velocity, obs_vel
                             );
                         }
-                        self.observer.seed(angle, velocity);
+                        self.observer
+                            .seed(wrap_angle(angle + velocity * input.dt), velocity);
                     }
                     ConfirmResult::Probing => {}
                 }
@@ -2501,14 +2526,16 @@ mod tests {
             0,
         );
 
+        // The output predicts the next sample: hall extrapolated by ω·dt.
+        let expected = hall_angle + 400.0 * 0.001;
         let out = phase.get();
-        let err = angle_difference(out.angle, hall_angle).abs();
+        let err = angle_difference(out.angle, expected).abs();
         assert!(
             err < 0.3,
-            "output {} drifted {} rad toward the flipped observer (hall at {})",
+            "output {} drifted {} rad toward the flipped observer (hall predicts {})",
             out.angle,
             err,
-            hall_angle
+            expected
         );
     }
 
@@ -2539,13 +2566,15 @@ mod tests {
             0,
         );
 
+        // The output predicts the next sample: hall extrapolated by ω·dt.
+        let expected = hall_angle + 450.0 * 0.001;
         let out = phase.get();
-        let err = angle_difference(out.angle, hall_angle).abs();
+        let err = angle_difference(out.angle, expected).abs();
         assert!(
             err < 0.05,
-            "output {} must equal the hall angle {} while observer is not ready (err {})",
+            "output {} must equal the predicted hall angle {} while observer is not ready (err {})",
             out.angle,
-            hall_angle,
+            expected,
             err
         );
     }

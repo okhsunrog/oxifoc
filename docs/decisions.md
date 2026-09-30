@@ -597,6 +597,36 @@ their section.
   "host-side" exception: virtual's ~6 KB udp server future is Box::pin'd
   (threshold is firmware-tuned; the host has a heap). FOC ISR is sync —
   none of this touches control timing.
+- **2026-09-30 — explicit phase-timing contract; one actuation-delay
+  knob.** `PhaseProvider::update()` at step N leaves the PREDICTED rotor
+  state at the NEXT sample instant (`get()` is consumed one step later).
+  Measured at the driver's own sampling instants on a 16-substep plant,
+  three sources broke it: hall/encoder samples were not extrapolated
+  (commutation one PWM period LATE, true id = +iq·sin ωT with the
+  controller's frame reporting 0), the phase tracker ran
+  compare-then-advance on top of the observer PLL that already predicts
+  a step (one period EARLY), and the observer was fed the previous
+  command whatever the hardware delay (a further period early on a
+  one-period pipeline). Separately, the output advance assumed delay ½
+  (1.0 cycle) while the pairing assumed delay 0 — no hardware satisfied
+  both. Now: `FocDriver::set_actuation_delay(d)` (default ½, center-
+  aligned timer updating at both ends with the ISR done before the
+  valley) drives both the output advance `(d + ½)·ω·T` and the observer
+  voltage `f·v[N−2−m] + (1−f)·v[N−1−m]`; `VirtualMotor::actuation_delay`
+  is fractional. Gate: `commutation_frame_tracks_rotor_at_sample_instant`
+  (hall and observer at d = 0, ½, 1: frame within 0.15 period, true id
+  within 3% of iq; before: −1.0 / +2.7 periods). SUPERSEDES the
+  2026-06-12 "prev-voltage convention is sim-proven" entry: that test
+  updates the observer AFTER the plant step, `FocDriver` before it — the
+  ordering difference hid the extra period. Bench: set d per board (1.0
+  if the ISR can miss the valley update) and re-run
+  `scripts/benchsuite.py` — the handoff/tracker tuning was done on the
+  shifted frame.
+- **2026-09-30 — stale test bounds tightened.** The bench-trip-zone and
+  cold-start sweep tests allowed |i_dq| < 6.5 A for a 1.5 A command,
+  justified by a 5.7–6.05 A peak of an earlier chain; the chain peaks at
+  ~2.0 A (unchanged by the timing fix — verified on pristine HEAD), so
+  the bound was 3× slack. Now 3.0 A.
 
 ## Vehicle / network architecture
 

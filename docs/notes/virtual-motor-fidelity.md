@@ -105,9 +105,9 @@ sim only because the sim never produces the disturbance they exist to cancel.
 - **[blind-spot] Dead-time compensation** (`controller.rs` `apply_dead_time_comp`)
   cancels dead-time distortion the plant **doesn't generate** → the comp runs
   but is never actually exercised in sim.
-- **[blind-spot] Phase advance** (`DEFAULT_PHASE_ADVANCE_CYCLES = 1`,
-  `foc_driver.rs`) compensates an ADC→actuation latency the plant **doesn't
-  have** → not validated.
+- **[blind-spot, closed 2026-09-30] Phase advance** — now derived from
+  `FocDriver::set_actuation_delay` and tested against a plant with the same
+  (fractional) `actuation_delay`; see the trust map below.
 - **[blind-spot] HFI confidence / readiness thresholds** are tuned and tested on
   **noiseless** currents → on a real shunt the demod SNR may not clear those
   thresholds.
@@ -157,7 +157,7 @@ passes with it** — otherwise the compensation is still effectively untested.
 | Detection (R/Ld/Lq/λ) numerically correct | **high** | validated vs known plant params, now also on the non-ideal plant (detection_report, e2e `run_full_detection_nonideal_plant`) |
 | HFI polarity probe works | **medium** | needs `sat_k`; modeled, but saturation curve is a simple `1/(1+k·id)` |
 | Dead-time comp correct | **medium (2026-06-12)** | the plant generates the distortion; `dead_time_compensation_cancels_plant_distortion` tests cancellation, not idling; the simple-sign model remains |
-| Phase advance correct | **medium (2026-06-12)** | `actuation_delay_steps` models the pipeline; the frame split is pinned by `actuation_advance_must_not_displace_current_vector` |
+| Phase advance correct | **medium (2026-09-30)** | fractional `actuation_delay` models the pipeline; the frame split is pinned by `actuation_advance_must_not_displace_current_vector`, the whole timing contract (hall, observer, tracker, voltage pairing) by `commutation_frame_tracks_rotor_at_sample_instant`; the hardware value of the delay is still a per-board assumption |
 | HFI robust under real sensing | **medium (2026-06-12)** | 12-bit quantization + noise pinned (`hfi_locks_through_quantized_noisy_sensor`); non-sinusoidal bemf still missing |
 | HFI under saliency collapse | **known failure (pinned)** | `lq_sat_k` + test: confidence is blind to the collapse, the angle walks away silently — saliency monitor in TODO |
 | Failsafe OV soft-landing | **low (untested)** | no bus dynamics |

@@ -132,6 +132,11 @@ impl Observer {
     }
 
     /// Seed the estimate from a trusted external source (sensor handoff).
+    ///
+    /// `angle` is on the same time base as [`phase`](Self::phase): the
+    /// rotor at the NEXT sampling instant (the PhaseProvider timing
+    /// contract) — a measurement taken at this cycle's sample must be
+    /// advanced by `velocity·dt` first.
     pub fn seed(&mut self, angle: f32, velocity: f32) {
         match self {
             Self::None => {}
@@ -2049,12 +2054,20 @@ mod tests {
         );
     }
 
-    /// The firmware feeds estimators the PREVIOUS cycle's voltage
-    /// (`update_phase_with_prev_voltage`): with a one-period actuation
-    /// pipeline, the currents measured now responded to the voltage
-    /// commanded one cycle ago. This pins that convention against a plant
-    /// that actually has the delay — previous-cycle pairing must match the
-    /// no-delay baseline, same-cycle pairing degrades roughly 2×.
+    /// The observer must integrate the voltage that acted while the
+    /// currents it is fed built up. In THIS harness the observer runs after
+    /// the plant step, on the currents that step produced, so on a plant
+    /// with a one-period pipeline that voltage is the previous command:
+    /// previous-cycle pairing must match the no-delay baseline, same-cycle
+    /// pairing degrades roughly 2×.
+    ///
+    /// It pins the observer, not the driver: `FocDriver` updates the phase
+    /// provider BEFORE the plant step, on the currents sampled at the start
+    /// of it, so its pairing is one period deeper — derived from the
+    /// actuation delay (`FocDriver::applied_voltage`) and pinned end to end
+    /// by `commutation_frame_tracks_rotor_at_sample_instant`. This test
+    /// once stood in for that one; the ordering difference hid a period of
+    /// observer lead.
     #[test]
     #[cfg(feature = "virtual-motor")]
     fn observer_prev_voltage_pairing_matches_actuation_delay() {
@@ -2068,9 +2081,9 @@ mod tests {
         const VBUS: f32 = 24.0;
 
         // mean |angle error| of a passive observer after settling
-        let run = |delay: u8, prev_pairing: bool| -> f32 {
+        let run = |delay: f32, prev_pairing: bool| -> f32 {
             let params = MotorParams {
-                actuation_delay_steps: delay,
+                actuation_delay: delay,
                 substeps: 10,
                 friction_b: 1.2e-3, // settle ≈ 1200 rad/s el
                 ..MotorParams::default()
@@ -2116,9 +2129,9 @@ mod tests {
             err_sum / n as f32
         };
 
-        let baseline = run(0, false);
-        let faithful = run(1, true);
-        let naive = run(1, false);
+        let baseline = run(0.0, false);
+        let faithful = run(1.0, true);
+        let naive = run(1.0, false);
         assert!(
             faithful < baseline * 1.2 + 0.01,
             "prev-voltage pairing must match the no-delay baseline: {faithful} vs {baseline}"

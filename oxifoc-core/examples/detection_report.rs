@@ -233,7 +233,7 @@ fn det_params(def: &MotorDef) -> DetectionParams {
 /// matching duty-domain compensation, as the firmware does), and a 12-bit
 /// ±31 A current sensor with 1 LSB of uniform noise (B-G431B-ESC1-class).
 ///
-/// The one-cycle actuation pipeline (`actuation_delay_steps: 1`) is ON:
+/// The one-cycle actuation pipeline (`actuation_delay: 1.0`) is ON:
 /// the detection now measures the command→apply depth in place
 /// (`probe_hfi_pipeline_lag`) instead of assuming one cycle, pairs the
 /// demod through a command-history ring, cross-checks the demod L against
@@ -247,7 +247,7 @@ fn nonideal(def: &MotorDef) -> MotorParams {
         dead_time_v: 300e-9 * 20_000.0 * def.vbus,
         adc_lsb_a: ADC_LSB_A,
         adc_noise_a: ADC_LSB_A,
-        actuation_delay_steps: 1,
+        actuation_delay: 1.0,
         ..def.params
     }
 }

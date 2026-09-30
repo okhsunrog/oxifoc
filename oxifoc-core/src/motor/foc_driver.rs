@@ -132,12 +132,21 @@ pub enum StepError {
     NotImplemented,
 }
 
-/// Default commutation phase advance (PWM cycles): ADC samples at the PWM
-/// center, the resulting duties latch at the next update event and act
-/// (on average) at the middle of that period — one full cycle later. At
-/// 20 kHz and 10k eRPM skipping this costs ~3° of angle (cos-loss torque
-/// plus d-axis current); VESC compensates the same way (foc_observer_offset).
-pub const DEFAULT_PHASE_ADVANCE_CYCLES: f32 = 1.0;
+/// Default actuation delay (PWM periods), see
+/// [`FocDriver::set_actuation_delay`]: currents sampled at the peak of a
+/// center-aligned timer that latches new compare values at BOTH ends of
+/// the count, with an ISR that writes the duties before the next (valley)
+/// update event — the new duties act from half a period after the sample.
+/// A board whose ISR can miss the valley update must configure 1.0.
+pub const DEFAULT_ACTUATION_DELAY_CYCLES: f32 = 0.5;
+
+/// Upper bound of [`FocDriver::set_actuation_delay`] (PWM periods).
+pub const MAX_ACTUATION_DELAY_CYCLES: f32 = 2.0;
+
+/// Command history depth: a delay of up to `MAX_ACTUATION_DELAY_CYCLES`
+/// needs the commands of the last `2 + 2` cycles (the fractional share
+/// reaches one further back).
+const V_HIST: usize = 4;
 
 /// Current limiting configuration for the FOC driver.
 ///
@@ -405,19 +414,17 @@ where
     current_limits: CurrentLimits,
     /// Accumulated angle for open-loop velocity mode
     open_loop_angle: f32,
-    /// Commanded αβ voltage of the PREVIOUS cycle — what was physically
-    /// applied while this cycle's currents were flowing. The estimators
-    /// must integrate this one, not the voltage computed this cycle
-    /// (which only acts during the next PWM period).
-    v_alpha_prev: f32,
-    v_beta_prev: f32,
-    /// Commutation phase advance in PWM cycles (VESC's observer-offset
-    /// idea, applied source-independently): the angle estimate is from the
-    /// ADC sample instant, but the voltage acts ~one period later (duty
-    /// registers latch at the next update event; ZOH centroid at that
-    /// period's middle). Advance the Park angle by vel·dt·k so the vector
-    /// lands where the rotor will be. 0 = off.
-    phase_advance_cycles: f32,
+    /// αβ commands of the previous cycles, newest first (`[0]` = the one
+    /// computed last cycle). With the actuation delay they reconstruct the
+    /// voltage that actually acted while this cycle's currents built up —
+    /// what the estimators must integrate (see [`Self::applied_voltage`]).
+    v_hist: [(f32, f32); V_HIST],
+    /// Actuation delay `d` in PWM periods: the command computed at the
+    /// current sample `t_N` starts acting at `t_N + d·T` (see
+    /// [`Self::set_actuation_delay`]). Sets both pipeline compensations:
+    /// the output-vector advance `(d + ½)·ω·T` and the estimators'
+    /// voltage pairing.
+    actuation_delay_cycles: f32,
     /// Tick (in the ISR `now_ticks` domain) of the last fresh setpoint drained
     /// from the command channel. `None` until the first command. The
     /// command-staleness deadman compares `now_ticks - last_cmd_tick` against
@@ -548,9 +555,8 @@ where
             dt,
             current_limits: CurrentLimits::default(),
             open_loop_angle: 0.0,
-            v_alpha_prev: 0.0,
-            v_beta_prev: 0.0,
-            phase_advance_cycles: DEFAULT_PHASE_ADVANCE_CYCLES,
+            v_hist: [(0.0, 0.0); V_HIST],
+            actuation_delay_cycles: DEFAULT_ACTUATION_DELAY_CYCLES,
             last_cmd_tick: None,
             pwm_off: false,
             was_starting: false,
@@ -733,32 +739,70 @@ where
         }
     }
 
-    /// Override the commutation phase advance (in PWM cycles; 0 = off).
-    /// See the field docs — default 1.0 for center-sampled, next-period
-    /// applied pipelines.
-    pub fn set_phase_advance(&mut self, cycles: f32) {
+    /// Set the actuation delay `d` (PWM periods, clamped to
+    /// `0..=MAX_ACTUATION_DELAY_CYCLES`; default
+    /// [`DEFAULT_ACTUATION_DELAY_CYCLES`]): the time from a current sample
+    /// until the duties computed from it start acting — a hardware
+    /// property of the timer/ADC/ISR arrangement. Both pipeline
+    /// compensations derive from it:
+    /// - the output vector is rotated by `(d + ½)·ω·T`: it acts from
+    ///   `t + d·T` for one period, centered `(d + ½)·T` after the sample
+    ///   the Park angle describes (the Park angle itself stays at the
+    ///   sample — see `actuation_advance_must_not_displace_current_vector`);
+    /// - the estimators integrate the voltage that acted over the last
+    ///   sampling interval (see [`Self::applied_voltage`]).
+    ///
+    /// These used to be two unrelated conventions — a fixed 1.0-cycle
+    /// advance (= d ½) and a previous-command pairing (= d 0) — so no
+    /// hardware delay satisfied both, and the back-EMF observer's angle
+    /// ran up to a period early.
+    pub fn set_actuation_delay(&mut self, cycles: f32) {
         if cycles.is_finite() {
-            self.phase_advance_cycles = cycles;
+            self.actuation_delay_cycles = clamp_f32(cycles, 0.0, MAX_ACTUATION_DELAY_CYCLES);
         }
     }
 
+    /// Output-vector advance (rad) for the configured actuation delay.
+    fn actuation_advance(&self, velocity: f32, dt: f32) -> f32 {
+        velocity * dt * (self.actuation_delay_cycles + 0.5)
+    }
+
+    /// The αβ voltage that acted over the sampling interval ending at this
+    /// cycle's current sample, reconstructed from the command history.
+    ///
+    /// With delay `d = m + f`, command `k` acts on `[t_k + d·T,
+    /// t_{k+1} + d·T)`, so the interval `[t_{N−1}, t_N)` sees command
+    /// `N−2−m` for its first `f` and command `N−1−m` for the rest. At
+    /// d = 0 this is the previous cycle's command; at d = 1 the one before.
+    fn applied_voltage(&self) -> (f32, f32) {
+        let d = self.actuation_delay_cycles;
+        let m = (d as usize).min(V_HIST - 2); // floor for d ≥ 0
+        let f = d - m as f32;
+        let (newer, older) = (self.v_hist[m], self.v_hist[m + 1]);
+        (
+            f * older.0 + (1.0 - f) * newer.0,
+            f * older.1 + (1.0 - f) * newer.1,
+        )
+    }
+
     /// Feed the phase provider with this cycle's measurements and the
-    /// causally-matching voltage. Stores the new command for the next cycle.
+    /// causally-matching voltage, then record this cycle's command.
     ///
     /// Two voltage sources, chosen by [`observer_voltage_source`]:
     /// - **Commanded** (default; every board without phase filters while
-    ///   driving, and every board with no sensing): the voltage commanded LAST
-    ///   cycle — what was physically applied while these currents were
-    ///   measured (the command computed *this* cycle only acts next period).
+    ///   driving, and every board with no sensing): the voltage that acted
+    ///   while these currents built up, reconstructed from the command
+    ///   history and the actuation delay ([`Self::applied_voltage`]; the
+    ///   command computed *this* cycle has not acted yet).
     /// - **Measured**: the phase terminals sampled *this* cycle (concurrent
-    ///   with the currents, so no one-cycle delay). Used when the bridge is
+    ///   with the currents, so no pipeline delay). Used when the bridge is
     ///   high-Z on a sensing board (coasting back-EMF) — or while driving on a
     ///   board with RC phase filters. Lets the observer track a free-spinning
     ///   rotor for flying start (mirrors MESC `MOTOR_STATE_TRACKING` and VESC's
     ///   released-motor observer).
     #[allow(clippy::too_many_arguments)] // per-cycle scalars, same as the step fns
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
-    fn update_phase_with_prev_voltage(
+    fn update_phase_with_applied_voltage(
         &mut self,
         v_alpha_new: f32,
         v_beta_new: f32,
@@ -774,9 +818,9 @@ where
                     (Some(pv), Some(raw)) => pv.alpha_beta(raw),
                     // Policy said Measured but no sample yet (e.g. ADC not wired
                     // this cycle) — fall back to the commanded path.
-                    _ => (self.v_alpha_prev, self.v_beta_prev),
+                    _ => self.applied_voltage(),
                 },
-                ObserverVoltage::Commanded => (self.v_alpha_prev, self.v_beta_prev),
+                ObserverVoltage::Commanded => self.applied_voltage(),
             };
         self.phase.update(
             &PhaseInput {
@@ -788,8 +832,8 @@ where
             },
             now_ticks,
         );
-        self.v_alpha_prev = v_alpha_new;
-        self.v_beta_prev = v_beta_new;
+        self.v_hist.rotate_right(1);
+        self.v_hist[0] = (v_alpha_new, v_beta_new);
     }
 
     /// Get the control loop period (dt) in seconds
@@ -1320,7 +1364,7 @@ where
                 // sources keep their standstill angle (hall edges latch in
                 // their own capture, read on the next update).
                 if self.stopped_housekeeping & 0x3 == 0 {
-                    self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt * 4.0, now_ticks);
+                    self.update_phase_with_applied_voltage(0.0, 0.0, 0.0, 0.0, dt * 4.0, now_ticks);
                 }
                 crate::isr_prof::add(
                     &crate::isr_prof::STEP_PHASE,
@@ -1357,7 +1401,7 @@ where
                     PhaseState::Float,
                 ]);
                 self.controller.reset();
-                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
+                self.update_phase_with_applied_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
             ControlMode::Brake => {
@@ -1395,7 +1439,7 @@ where
 
                 // Terminal voltage is zero while shorted; the estimators
                 // integrate that with the real circulating currents.
-                self.update_phase_with_prev_voltage(0.0, 0.0, i_alpha, i_beta, dt, now_ticks);
+                self.update_phase_with_applied_voltage(0.0, 0.0, i_alpha, i_beta, dt, now_ticks);
                 Ok(FocOutput {
                     ia,
                     ib,
@@ -1436,7 +1480,7 @@ where
                 self.controller.reset();
                 self.mode = ControlMode::Stopped;
                 self.failsafe_ctrl.reset();
-                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
+                self.update_phase_with_applied_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
             // Clean stop with the parking-brake terminal: hand over to
@@ -1448,7 +1492,7 @@ where
                 self.controller.reset();
                 self.mode = ControlMode::Brake;
                 self.failsafe_ctrl.reset();
-                self.update_phase_with_prev_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
+                self.update_phase_with_applied_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
                 Ok(FocOutput::default())
             }
         }
@@ -1607,10 +1651,11 @@ where
         // through here, so they all inherit the clamp.
         let iq_target = self.clamp_iq_for_bus(iq_target);
 
-        // Get phase from provider (uses previous update's estimate). The
-        // estimate is sample-time truth and is used as-is for the current
-        // Park — the pipeline delay is compensated on the ACTUATION side
-        // only (output-vector rotation, see set_actuation_advance).
+        // Get phase from provider: the previous update's prediction of the
+        // rotor at THIS current sample (PhaseProvider timing contract). It
+        // is used as-is for the current Park — the pipeline delay is
+        // compensated on the ACTUATION side only (output-vector rotation,
+        // see set_actuation_delay).
         // Advancing this angle instead, as the code originally did, also
         // advanced the measurement frame: the PI then regulated the
         // current vector `ωe·dt·cycles` off the true q axis
@@ -1620,7 +1665,7 @@ where
         let phase_out = self.phase.get();
         let angle_rad = phase_out.angle;
         self.controller
-            .set_actuation_advance(phase_out.velocity * dt * self.phase_advance_cycles);
+            .set_actuation_advance(self.actuation_advance(phase_out.velocity, dt));
 
         // HFI carrier for this cycle (zero for non-HFI sources). Must be
         // read between get() and update(): the estimator demodulates the
@@ -1674,7 +1719,7 @@ where
         // Update phase provider for next step (feeds observer if present).
         // The observer gets the PREVIOUS command — the voltage that was
         // actually acting while these currents were measured.
-        self.update_phase_with_prev_voltage(
+        self.update_phase_with_applied_voltage(
             out.v_alpha,
             out.v_beta,
             out.i_alpha,
@@ -1793,7 +1838,7 @@ where
         // exact frame rate (also clears any stale advance from a previous
         // closed-loop cycle when velocity is 0).
         self.controller
-            .set_actuation_advance(velocity_rad_s * dt * self.phase_advance_cycles);
+            .set_actuation_advance(self.actuation_advance(velocity_rad_s, dt));
         let out = self
             .controller
             .step(currents, angle, id_target, iq_target, max_duty, dt);
@@ -1811,7 +1856,7 @@ where
         self.current_sensor.update_duties(out.duties);
 
         // Update phase provider (for sensor tracking, even in open-loop)
-        self.update_phase_with_prev_voltage(
+        self.update_phase_with_applied_voltage(
             out.v_alpha,
             out.v_beta,
             out.i_alpha,
@@ -1881,7 +1926,7 @@ where
             }
         }
 
-        self.update_phase_with_prev_voltage(
+        self.update_phase_with_applied_voltage(
             out.v_alpha,
             out.v_beta,
             out.i_alpha,
@@ -2049,13 +2094,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "virtual-motor")]
+    use crate::foc::angle_difference;
+    #[cfg(feature = "virtual-motor")]
+    use crate::foc::hall_sensor::HallSensor;
     use crate::foc::phase::PhaseManager;
-    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
-    use crate::foc::{angle_difference, wrap_angle};
+    #[cfg(feature = "virtual-motor")]
+    use crate::foc::phase::{BackEmfObserver, Observer, PhaseSource};
+    #[cfg(feature = "virtual-motor")]
+    use crate::foc::wrap_angle;
     #[cfg(feature = "runtime")]
     use crate::state::CMD_CHANNEL;
     #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     use crate::virtual_motor::VirtualMotorOutput;
+    #[cfg(feature = "virtual-motor")]
+    use crate::virtual_motor::{MotorParams, VirtualMotor};
+    #[cfg(feature = "virtual-motor")]
+    use core::f32::consts::{FRAC_PI_3, FRAC_PI_6};
 
     #[test]
     fn velocity_iq_bounds_track_derated_authority() {
@@ -3464,7 +3519,7 @@ mod tests {
         decoupling: crate::foc::controller::Decoupling,
         observer_l: f32,
         observer_salient: bool,
-        phase_advance_cycles: f32,
+        actuation_delay: f32,
         initial_rotor_angle: f32,
     ) -> Result<(f32, f32), (u64, StepError)> {
         use crate::foc::phase::{BackEmfObserver, Observer, PhaseManager, PhaseSource};
@@ -3495,7 +3550,7 @@ mod tests {
             // phase-advance convention is exact against it — with the
             // ideal (0-delay) plant the advance itself injects a growing
             // ω·dt lead error and destabilizes the loop near ω_e ≈ 2000.
-            actuation_delay_steps: 1,
+            actuation_delay: 1.0,
             ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
@@ -3529,7 +3584,7 @@ mod tests {
             DT,
         );
         driver.set_current_limits(CurrentLimits::from_max_current(10.0));
-        driver.set_phase_advance(phase_advance_cycles);
+        driver.set_actuation_delay(actuation_delay);
         driver.set_mode(ControlMode::CurrentControl {
             iq_target: 1.5,
             id_target: 0.0,
@@ -3664,7 +3719,7 @@ mod tests {
             pole_pairs: 7,
             j: cfg.j,
             friction_b: 4e-6,
-            actuation_delay_steps: 1,
+            actuation_delay: 1.0,
             substeps: 10,
             // Bench-level bridge distortion + sensor imperfection: the
             // firmware's dead-time comp is on below, so only the residual
@@ -3724,7 +3779,7 @@ mod tests {
             DT,
         );
         driver.set_current_limits(CurrentLimits::from_max_current(10.0));
-        driver.set_phase_advance(DEFAULT_PHASE_ADVANCE_CYCLES);
+        driver.set_actuation_delay(1.0); // = the plant's
         driver.set_mode(ControlMode::CurrentControl {
             iq_target: cfg.iq_target,
             id_target: 0.0,
@@ -3761,9 +3816,7 @@ mod tests {
             if cfg.kick_at_step > 0 && step == cfg.kick_at_step {
                 let ph = driver.phase().observer().phase().unwrap_or(0.0) + cfg.kick_rad;
                 let vel = driver.phase().observer().velocity().unwrap_or(0.0);
-                driver
-                    .phase_mut()
-                    .seed_observer(crate::foc::wrap_angle(ph), vel);
+                driver.phase_mut().seed_observer(wrap_angle(ph), vel);
             }
             if cfg.trace_every > 0 && step % cfg.trace_every == 0 {
                 println!(
@@ -4210,7 +4263,7 @@ mod tests {
             pole_pairs: 7,
             j: 5e-5,
             friction_b: 4e-6,
-            actuation_delay_steps: 1,
+            actuation_delay: 1.0,
             substeps: 10,
             ..MotorParams::default()
         };
@@ -4240,7 +4293,7 @@ mod tests {
             DT,
         );
         driver.set_current_limits(CurrentLimits::from_max_current(10.0));
-        driver.set_phase_advance(DEFAULT_PHASE_ADVANCE_CYCLES);
+        driver.set_actuation_delay(1.0); // = the plant's
         driver.set_mode(ControlMode::CurrentControl {
             iq_target: 1.5,
             id_target: 0.0,
@@ -4331,7 +4384,7 @@ mod tests {
     #[cfg(feature = "virtual-motor")]
     fn run_perfect_angle_spin(
         decoupling: crate::foc::controller::Decoupling,
-        advance_cycles: f32,
+        actuation_delay: f32,
     ) -> Result<(f32, f32), (u64, &'static str)> {
         use crate::foc::trig::LibmSinCos;
         use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
@@ -4345,7 +4398,7 @@ mod tests {
             pole_pairs: 7,
             j: 5e-5,
             friction_b: 4e-6,
-            actuation_delay_steps: 1,
+            actuation_delay: 1.0,
             ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
@@ -4359,10 +4412,11 @@ mod tests {
         let mut out = VirtualMotorOutput::default();
         let mut max_idq = 0.0f32;
         for step in 1..40_000u64 {
-            foc.set_actuation_advance(out.omega_e * DT * advance_cycles);
+            // Same advance as FocDriver::set_actuation_delay.
+            foc.set_actuation_advance(out.omega_e * DT * (actuation_delay + 0.5));
             let telem = foc.step_with_injection(
                 (out.ia, out.ib, out.ic),
-                crate::foc::wrap_angle(out.angle_rad),
+                wrap_angle(out.angle_rad),
                 out.omega_e,
                 0.0,
                 1.5,
@@ -4417,19 +4471,18 @@ mod tests {
             },
             (86e-6 + 129e-6) / 2.0,
             true,
-            DEFAULT_PHASE_ADVANCE_CYCLES,
+            1.0, // = the plant's actuation delay
             0.0,
         );
         let (max_idq, omega_final) =
             consistent.expect("consistent-params sensorless chain must not trip");
-        // 6.5, same rationale as cold_start_captures_rotor_from_any_initial_
-        // angle: the estimation chain's known oscillation peak through the
-        // ~800 rad/s mid-band zone depends on the hunt phase at handoff —
-        // the distortion-floor handoff move (60 → 180 rad/s el) landed this
-        // run at 5.7 where the old timing saw < 5. The bound still asserts
-        // what matters: no growth toward the 10 A trip.
+        // The chain runs at ~2.0 A peak for the 1.5 A command. This bound
+        // was 6.5 while an earlier estimation chain peaked at 5.7–6.05 A
+        // through the ~800 rad/s zone; it outlived that behavior by months
+        // and would have passed a 3× regression. Same bound as
+        // cold_start_captures_rotor_from_any_initial_angle.
         assert!(
-            max_idq < 6.5,
+            max_idq < 3.0,
             "post-handoff |i_dq| must stay bounded, got {max_idq}"
         );
         assert!(
@@ -4447,7 +4500,7 @@ mod tests {
                 lq_h: 129e-6,
                 flux_linkage_wb: 1.145e-3,
             },
-            DEFAULT_PHASE_ADVANCE_CYCLES,
+            1.0, // = the plant's actuation delay
         );
         let (max_idq, omega_final) = perfect.expect("perfect-angle loop must not trip");
         assert!(
@@ -4477,21 +4530,17 @@ mod tests {
                 },
                 (86e-6 + 129e-6) / 2.0,
                 true,
-                DEFAULT_PHASE_ADVANCE_CYCLES,
+                1.0, // = the plant's actuation delay
                 delta0,
             );
             let (max_idq, omega_final) = res.unwrap_or_else(|(step, e)| {
                 panic!("cold start from rotor angle {delta0} tripped at step {step}: {e:?}")
             });
-            // 6.5, not 5.0: the estimation chain has a known oscillation
-            // peak passing the ~800 rad/s zone (the bench trip zone / the
-            // mid-band investigation) whose amplitude depends on the hunt
-            // phase at handoff — the confirm-probe handoff timing lands one
-            // sweep angle at 6.05 A where the instant handoff saw < 5. The
-            // bound still asserts what matters: no growth toward the 10 A
-            // trip.
+            // ~2.0 A peak for the 1.5 A command from every sweep angle (see
+            // sensorless_chain_stable_through_bench_trip_zone for why this
+            // is no longer the old 6.5).
             assert!(
-                max_idq < 6.5,
+                max_idq < 3.0,
                 "post-handoff |i_dq| bounded from angle {delta0}, got {max_idq}"
             );
             assert!(
@@ -5341,5 +5390,164 @@ mod tests {
             (brake_with_drive_derate - full_brake).abs() < 0.05 * full_brake.abs(),
             "a drive derate must not weaken the brake: {full_brake} vs {brake_with_drive_derate}"
         );
+    }
+
+    /// Steady-state commutation timing, measured at the driver's own
+    /// sampling instants.
+    struct FrameTiming {
+        /// Mean (Park angle − rotor angle at the current sample), in PWM
+        /// periods of rotor travel.
+        frame_err_periods: f32,
+        /// Mean TRUE dq current (plant currents Park-transformed with the
+        /// plant's rotor angle, both at the sample instant).
+        true_id: f32,
+        true_iq: f32,
+    }
+
+    /// Closed loop FocDriver + near-continuous plant (16 substeps) whose
+    /// actuation delay matches the driver's configured one, on a
+    /// Flipsky-5065-class motor (low R and L — the regime where frame
+    /// errors cost the most current). 10 A of torque current against a
+    /// viscous load settles at ~1500 el rad/s (~2000 rpm) — a steady
+    /// operating point with no speed loop in the way. Spins up on hall
+    /// (edges time-stamped at the true crossing, like the capture timer),
+    /// then switches to `source` and settles.
+    #[cfg(feature = "virtual-motor")]
+    fn measure_frame_timing(source: PhaseSource, delay: f32) -> FrameTiming {
+        const DT: f32 = 1.0 / 20_000.0;
+        const TICKS: u64 = 50;
+        let params = MotorParams {
+            r: 0.036,
+            ld: 22e-6,
+            lq: 22e-6,
+            lambda: 2.92e-3,
+            pole_pairs: 7,
+            j: 4e-4,
+            // 1.5·pp·λ·10 A = 0.31 N·m balances B·ωm at ωm ≈ 215 rad/s.
+            friction_b: 1.4e-3,
+            substeps: 16,
+            actuation_delay: delay,
+            ..MotorParams::default()
+        };
+        let mut motor = VirtualMotor::new(params);
+        let mut out = motor.step(0.0, 0.0, 0.0, DT);
+
+        let mut hall = HallSensor::new(1_000_000);
+        hall.update(out.hall_state, 0);
+        let mut last_hall = out.hall_state;
+        let mut mgr = PhaseManager::with_hall(hall);
+        mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
+            params.r,
+            params.ld,
+            params.lambda,
+        )));
+        mgr.set_phase_tracker(100.0, 1.2); // the f405 boot configuration
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            params.r, params.ld, 24.0,
+        );
+        let mut driver = FocDriver::new(
+            foc,
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            mgr,
+            DT,
+        );
+        driver.set_current_limits(CurrentLimits::from_max_current(30.0));
+        driver.set_actuation_delay(delay);
+        driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 10.0,
+            id_target: 0.0,
+        });
+
+        // Crossing time of the hall boundary (π/6 + k·π/3) the last plant
+        // step passed, interpolated inside the step.
+        let edge_ticks = |now: u64, a0: f32, a1: f32| -> u64 {
+            let a1 = a0 + angle_difference(a1, a0);
+            let k0 = libm::floorf((a0 - FRAC_PI_6) / FRAC_PI_3);
+            let k1 = libm::floorf((a1 - FRAC_PI_6) / FRAC_PI_3);
+            let boundary = FRAC_PI_6 + FRAC_PI_3 * k0.max(k1);
+            let frac = if k0 == k1 {
+                1.0
+            } else {
+                clamp_f32((boundary - a0) / (a1 - a0), 0.0, 1.0)
+            };
+            now - ((1.0 - frac) * TICKS as f32) as u64
+        };
+
+        let (mut err, mut w, mut tid, mut tiq) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let mut n = 0u32;
+        let mut prev_angle = out.angle_rad;
+        for step in 1..=24_000u64 {
+            let now = step * TICKS;
+            if step == 12_000 {
+                driver.phase_mut().set_source(source).unwrap();
+            }
+            if out.hall_state != last_hall {
+                let t = edge_ticks(now, prev_angle, out.angle_rad);
+                driver.phase_mut().hall_mut().update(out.hall_state, t);
+                last_hall = out.hall_state;
+            }
+            let sample = out;
+            driver.current_sensor_mut().currents = (sample.ia, sample.ib, sample.ic);
+            let telem = driver.step(now).expect("FOC step failed");
+            prev_angle = sample.angle_rad;
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            if step > 20_000 {
+                err += angle_difference(telem.angle_rad, sample.angle_rad);
+                w += sample.omega_e;
+                let (i_alpha, i_beta) = clarke(sample.ia, sample.ib);
+                let (s, c) = (libm::sinf(sample.angle_rad), libm::cosf(sample.angle_rad));
+                let (id, iq) = park(i_alpha, i_beta, s, c);
+                tid += id;
+                tiq += iq;
+                n += 1;
+            }
+        }
+        let n = n as f32;
+        FrameTiming {
+            frame_err_periods: (err / n) / (w / n * DT),
+            true_id: tid / n,
+            true_iq: tiq / n,
+        }
+    }
+
+    /// The commutation frame must sit on the rotor at the current sample
+    /// instant, for every angle source and actuation delay: a frame one
+    /// PWM period off regulates the current vector `ωe·T` off the q axis
+    /// (true id = −iq·sin δ) while the controller's own frame reports
+    /// id = 0. Before the timing contract was made explicit, hall
+    /// commutated one period LATE (the angle was evaluated at the previous
+    /// cycle's ticks), the observer chain ~1–2 periods EARLY (the phase
+    /// tracker predicted a second step on top of the observer PLL's own,
+    /// and the observer was fed the command one period newer than the
+    /// voltage that actually produced the sampled currents).
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn commutation_frame_tracks_rotor_at_sample_instant() {
+        let cases = [
+            ("hall", PhaseSource::Hall, 0.5),
+            ("observer, delay 0", PhaseSource::Observer, 0.0),
+            ("observer, delay 0.5", PhaseSource::Observer, 0.5),
+            ("observer, delay 1", PhaseSource::Observer, 1.0),
+        ];
+        let mut report = String::new();
+        let mut ok = true;
+        for (name, source, delay) in cases {
+            let t = measure_frame_timing(source, delay);
+            let pass = t.true_iq > 5.0
+                && t.frame_err_periods.abs() < 0.15
+                && t.true_id.abs() < 0.03 * t.true_iq;
+            ok &= pass;
+            report += &format!(
+                "\n  {name:22} frame {:+.2} periods, true id {:+.3} A at iq {:.2} A{}",
+                t.frame_err_periods,
+                t.true_id,
+                t.true_iq,
+                if pass { "" } else { "  <-- FAIL" }
+            );
+        }
+        assert!(ok, "commutation frame off the rotor:{report}");
     }
 }

@@ -79,7 +79,7 @@ impl SimState {
             mode: ControlMode::Stopped,
             sim_angle: 0.0,
             ol_omega: 0.0,
-            pipeline_steps: f32::from(motor_params.actuation_delay_steps),
+            pipeline_steps: motor_params.actuation_delay,
         }
     }
 
@@ -103,13 +103,16 @@ impl SimState {
                     (0.0, current)
                 };
                 // Mirror FocDriver::step_open_loop's actuation-frame
-                // advance, scaled to the PLANT's actual pipeline depth:
-                // firmware uses 1.0 cycle because its pipeline is one
-                // cycle; the ideal plant applies in the same step (depth
-                // 0 — advancing there would itself rotate the frame and
-                // bias the flux vector method by |v|·ω·dt cross-terms).
+                // advance for a driver configured with the PLANT's actual
+                // pipeline depth (`set_actuation_delay`): `(d + ½)·ω·T`,
+                // the centre of the period the command acts over. Exact
+                // on a sub-stepped plant; the single-substep Euler plant
+                // applies each period at its START angle, so there the
+                // half period is a discretization bias (gimbal λ −2.9% in
+                // the ideal table vs +0.1% with a bare `d`, while the
+                // sub-stepped non-ideal table improves 10.3% → 7.4%).
                 self.foc
-                    .set_actuation_advance(self.ol_omega * DT * self.pipeline_steps);
+                    .set_actuation_advance(self.ol_omega * DT * (self.pipeline_steps + 0.5));
                 self.foc.step(
                     (self.out.ia, self.out.ib, self.out.ic),
                     self.sim_angle,
