@@ -532,6 +532,77 @@ mod integration_tests {
         assert!(lam_err < 0.02, "λ error {:.1}%", lam_err * 100.0);
     }
 
+    /// The voltage-pulse L step promises a peak of `I_hold + di` — sized
+    /// against the safe current — "regardless of L". It held each pulse for
+    /// the whole latency-search window (5 periods) while the current kept
+    /// ramping: 27.8 A instead of 9 A on a 15 µH eskate motor at 48 V.
+    #[test]
+    fn voltage_pulse_inductance_stays_inside_its_current_budget() {
+        use super::sweep::measure_inductance_pulse;
+        use super::types::VoltagePulseParams;
+        use super::virtual_harness::{
+            VirtualHardware, VirtualTimer, block_on, peak_phase_current, with_sim,
+        };
+        use crate::foc::trig::LibmSinCos;
+
+        const VBUS: f32 = 48.0;
+        // measure_inductance_auto's split of a 10 A safe current.
+        const LOCK_A: f32 = 4.0;
+        const TARGET_DI_A: f32 = 5.0;
+        let eskate = MotorParams {
+            r: 0.035,
+            ld: 1.5e-5,
+            lq: 1.5e-5,
+            lambda: 0.0085,
+            pole_pairs: 7,
+            j: 1e-3,
+            friction_b: 1e-3,
+            substeps: 10,
+            ..MotorParams::default()
+        };
+        let hobby = MotorParams {
+            j: 5e-4,
+            substeps: 10,
+            ..MotorParams::default()
+        };
+        for (name, base) in [("eskate", eskate), ("hobby", hobby)] {
+            for delay in [0.0, 0.5, 1.0] {
+                let plant = MotorParams {
+                    actuation_delay: delay,
+                    ..base
+                };
+                let (res, peak) = with_sim(plant, VBUS, |hw| {
+                    let params = VoltagePulseParams {
+                        hold_current_a: LOCK_A,
+                        resistance_ohm: plant.r,
+                        pulse_voltage_v: VBUS * 0.577 - plant.r * LOCK_A,
+                        current_target_a: TARGET_DI_A,
+                        ..Default::default()
+                    };
+                    let res = block_on(measure_inductance_pulse::<
+                        VirtualHardware,
+                        VirtualTimer,
+                        LibmSinCos,
+                    >(hw, &params, 20_000.0));
+                    (res, peak_phase_current())
+                });
+                let (ld, _) = res.expect("pulse measurement");
+                let l_err = (ld - plant.ld).abs() / plant.ld;
+                // 6–8.7 A across these cases (was 27.8 A), L within 1.4%.
+                assert!(
+                    peak < 1.05 * (LOCK_A + TARGET_DI_A),
+                    "{name} d={delay}: peak {peak:.1} A over the {} A budget",
+                    LOCK_A + TARGET_DI_A
+                );
+                assert!(
+                    l_err < 0.03,
+                    "{name} d={delay}: L error {:.1}%",
+                    l_err * 100.0
+                );
+            }
+        }
+    }
+
     /// The |Z| magnitude cross-check must catch a mispaired demod: force a
     /// WRONG pipeline lag (1) on a plant whose true depth is 2 — the
     /// phase-sensitive demod corrupts silently, the latency-immune

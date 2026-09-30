@@ -439,6 +439,14 @@ const PULSE_EDGE_THRESHOLD_A: f32 = 0.02;
 /// current at the open-loop `vd_hold` equilibrium before the next pulse.
 const DISCHARGE_MAX_FRAMES: usize = 4000;
 
+/// Periods a voltage pulse can stay applied in the worst case: a command
+/// latency of up to `PIPELINE_LAG_MAX` frames, the edge frame, and the one
+/// after it (see [`pulse_once`]). The per-period step is sized to
+/// `budget / PULSE_MAX_PERIODS`, so the excursion stays inside the budget
+/// whatever the latency — the step used to be sized for ONE period while
+/// staying applied for five or more (27.8 A on a 9 A budget, 15 µH at 48 V).
+const PULSE_MAX_PERIODS: f32 = (PIPELINE_LAG_MAX + 2) as f32;
+
 /// Measure the command→apply pipeline depth by cross-correlation.
 ///
 /// Injects the rotating carrier for a few periods and correlates the
@@ -849,6 +857,11 @@ impl LockedAxis {
 /// immune to the command→apply latency and to ADC noise (the real step dwarfs
 /// it). The accumulator works from the absolute current, so a loose settle does
 /// not bias the result.
+///
+/// The pulse ends one frame after the edge shows up (the first rising frame
+/// may be a partial period under a fractional actuation delay; the next one
+/// is whole): holding it through the rest of the search window only kept
+/// the current ramping.
 async fn pulse_once<H: DetectionHardware>(hw: &mut H, ax: &LockedAxis, pulse_v: f32) -> (f32, f32) {
     // Discharge to the holding current.
     hw.send_command(ControlMode::DirectVoltage {
@@ -876,6 +889,9 @@ async fn pulse_once<H: DetectionHardware>(hw: &mut H, ax: &LockedAxis, pulse_v: 
     let mut best_before = id_before;
     let mut best_after = id_before;
     let mut best_di = f32::NEG_INFINITY;
+    // A rise this far above the settle band is the edge, not noise.
+    let edge_seen = ax.settle_tol.max(PULSE_EDGE_THRESHOLD_A);
+    let mut edge = false;
     for _ in 0..=PIPELINE_LAG_MAX {
         hw.wait_telemetry().await;
         let id_now = ax.read_id(hw);
@@ -886,15 +902,28 @@ async fn pulse_once<H: DetectionHardware>(hw: &mut H, ax: &LockedAxis, pulse_v: 
             best_after = id_now;
         }
         prev = id_now;
+        if edge {
+            break; // the frame after the edge is in
+        }
+        edge = di > edge_seen;
     }
+    // End the pulse now rather than at the next call's discharge.
+    hw.send_command(ControlMode::DirectVoltage {
+        vd: ax.vd_hold,
+        vq: 0.0,
+        angle_rad: ax.angle,
+    })
+    .await;
     (best_before, best_after)
 }
 
 /// Size the pulse step to a target current excursion — VESC's
 /// `mcpwm_foc_measure_inductance_current` idea, applied to the di/dt pulse.
 ///
-/// Ramps the step up from small until one period's di reaches `target_di`, so
-/// the peak current (`I_hold + di`) is bounded *regardless of L*. A fixed step
+/// Ramps the step up from small until one period's di reaches `target_di`
+/// (the caller passes its budget divided by `PULSE_MAX_PERIODS`, the most
+/// periods a pulse can stay applied), so the peak current is bounded
+/// *regardless of L*. A fixed step
 /// drives `di = V·dt/L`, which explodes on a low-inductance motor — a 24 µH
 /// drone winding spikes ~14 A in one period off a 12 V bus, and the bigger the
 /// bus the worse it gets. Once bracketed, trims to the target exactly
@@ -990,11 +1019,17 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
             settle_tol: (0.1 * params.hold_current_a).max(0.05),
         };
 
-        // Size the step to the current budget once (current-limited pulse).
+        // Size the step to the current budget once (current-limited pulse):
+        // one period's rise is a 1/PULSE_MAX_PERIODS share of the budget,
+        // since the pulse may stay applied that many periods.
         if !calibrated && params.current_target_a > 0.0 {
-            pulse_voltage =
-                calibrate_pulse_voltage(hw, &ax, params.pulse_voltage_v, params.current_target_a)
-                    .await;
+            pulse_voltage = calibrate_pulse_voltage(
+                hw,
+                &ax,
+                params.pulse_voltage_v,
+                params.current_target_a / PULSE_MAX_PERIODS,
+            )
+            .await;
             calibrated = true;
             debug!("Pulse step calibrated to the current target");
         }

@@ -57,6 +57,9 @@ struct SimState {
     ol_omega: f32,
     /// Plant actuation pipeline depth (cycles) — drives the advance mirror.
     pipeline_steps: f32,
+    /// Largest |phase current| the plant carried since the last
+    /// [`reset_peak_phase_current`] (A) — detection-safety assertions.
+    peak_phase_a: f32,
 }
 
 impl SimState {
@@ -80,6 +83,7 @@ impl SimState {
             sim_angle: 0.0,
             ol_omega: 0.0,
             pipeline_steps: motor_params.actuation_delay,
+            peak_phase_a: 0.0,
         }
     }
 
@@ -150,6 +154,11 @@ impl SimState {
                 self.motor.step(v_alpha, v_beta, 0.0, DT)
             }
         };
+        self.peak_phase_a = self
+            .peak_phase_a
+            .max(self.out.ia.abs())
+            .max(self.out.ib.abs())
+            .max(self.out.ic.abs());
         telem
     }
 
@@ -296,6 +305,22 @@ where
     });
     let mut hw = VirtualHardware;
     f(&mut hw)
+}
+
+/// Largest |phase current| (A) the plant carried since the simulation was
+/// set up or [`reset_peak_phase_current`] ran — for asserting that a
+/// detection step stays inside its current budget.
+pub fn peak_phase_current() -> f32 {
+    SIM.with(|s| s.borrow().as_ref().map_or(0.0, |s| s.peak_phase_a))
+}
+
+/// Restart [`peak_phase_current`] tracking.
+pub fn reset_peak_phase_current() {
+    SIM.with(|s| {
+        if let Some(s) = s.borrow_mut().as_mut() {
+            s.peak_phase_a = 0.0;
+        }
+    });
 }
 
 /// Virtual Hall sensor reader — reads the current Hall state from the simulation.

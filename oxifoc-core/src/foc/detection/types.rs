@@ -379,11 +379,14 @@ pub struct VoltagePulseParams {
     /// low-inductance motor the actual step lands well below it.  Typically
     /// the bus headroom `vbus·0.577 − R·I_hold`.
     pub pulse_voltage_v: f32,
-    /// Target current excursion (di) per pulse, in Amps. `> 0` enables the
-    /// VESC-style current-limited ramp: the step is sized so one period's di
-    /// reaches this, bounding the peak (`I_hold + di`) regardless of L
-    /// instead of letting `di = V·dt/L` blow up on a low-inductance motor.
-    /// `0.0` (default) = no limit, use `pulse_voltage_v` as-is.
+    /// Current excursion budget per pulse, in Amps: the peak stays within
+    /// `I_hold + current_target_a` regardless of L. `> 0` enables the
+    /// VESC-style current-limited ramp; since a pulse may stay applied for
+    /// up to `PIPELINE_LAG_MAX + 2` periods (command latency + edge
+    /// detection), the step is sized so ONE period's di is that fraction of
+    /// the budget — sizing it to the whole budget per period let the peak
+    /// reach several times it. `0.0` (default) = no limit, use
+    /// `pulse_voltage_v` as-is.
     pub current_target_a: f32,
     /// Number of pulses to average per axis (default: 20)
     pub num_pulses: u32,
