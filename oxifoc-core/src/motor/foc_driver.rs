@@ -1152,6 +1152,10 @@ where
         // step error) route through this method too, and only the host's
         // explicit safe-mode command may release it — see
         // [`acknowledge_failsafe`](Self::acknowledge_failsafe).
+        // A stop sequence leaves `self.mode` alone while it runs, so the
+        // cruise loop sat idle under it: its state predates the stop.
+        let velocity_loop_live = matches!(self.mode, ControlMode::VelocityControl { .. })
+            && !self.failsafe_ctrl.is_active();
         self.failsafe_ctrl.reset();
 
         // Re-enable the outputs for any mode that drives the bridge through
@@ -1166,13 +1170,13 @@ where
             self.ensure_bridge_enabled();
         }
 
-        // Entering velocity mode from another mode: re-arm the loop bumpless
-        // — reference ramp seeded at the measured velocity, integrator
-        // cleared. A retarget *within* velocity mode keeps the loop state
-        // (the ramp carries the reference to the new target).
-        if matches!(mode, ControlMode::VelocityControl { .. })
-            && !matches!(self.mode, ControlMode::VelocityControl { .. })
-        {
+        // Entering velocity mode from another mode — or from under a stop
+        // sequence — re-arms the loop bumpless: reference ramp seeded at the
+        // measured velocity, integrator cleared. A retarget *within* running
+        // velocity mode keeps the loop state (the ramp carries the reference
+        // to the new target). Resuming mid brake ramp with the pre-brake
+        // state drove the rotor back toward the speed it was braked from.
+        if matches!(mode, ControlMode::VelocityControl { .. }) && !velocity_loop_live {
             let omega = self.phase.get().velocity;
             self.velocity_loop.reset(omega);
         }
@@ -5699,6 +5703,37 @@ mod tests {
                 self.step();
             }
         }
+    }
+
+    /// Cruise → Brake at speed (the controlled brake ramp) → cruise again
+    /// at the speed the ramp had reached. The ramp runs under the unchanged
+    /// VelocityControl mode, so the resumed cruise used to count as a
+    /// retarget and keep the pre-brake loop state: the reference still at
+    /// the old speed drove the rotor back up toward it.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn cruise_resumed_mid_brake_ramp_starts_from_the_rotor() {
+        let mut rig = HallRig::new(0.5, 2e-5);
+        rig.driver
+            .set_mode(ControlMode::VelocityControl { target_vel: 1000.0 });
+        rig.run(3.0);
+        assert!(rig.out.omega_e > 950.0, "cruise ω {}", rig.out.omega_e);
+        assert!(rig.driver.enter_brake_ramp());
+        rig.run(0.3);
+        let resumed_at = rig.out.omega_e;
+        assert!(resumed_at < 850.0, "brake ramp ω {resumed_at}");
+        rig.driver.set_mode(ControlMode::VelocityControl {
+            target_vel: resumed_at,
+        });
+        let mut peak = resumed_at;
+        for _ in 0..(0.5 / HallRig::DT) as u32 {
+            rig.step();
+            peak = peak.max(rig.out.omega_e);
+        }
+        assert!(
+            peak < resumed_at + 30.0,
+            "resumed at {resumed_at} but climbed to {peak}"
+        );
     }
 
     /// A hall-driven motor must restart after it came to a stop. The
