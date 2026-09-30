@@ -664,17 +664,26 @@ impl HallSensor {
         // Save previous direction before updating
         self.prev_direction = self.direction;
 
-        // Determine new direction
-        let new_direction = if current_state == 0 && prev_state == 5 {
-            Direction::Clockwise
-        } else if current_state == 5 && prev_state == 0 {
-            Direction::CounterClockwise
-        } else if current_state > prev_state {
-            Direction::Clockwise
-        } else if current_state < prev_state {
-            Direction::CounterClockwise
+        // Direction from the CALIBRATED angles of the two states, not from
+        // the nominal wiring order: half the ways to connect three hall
+        // wires reverse that order (the calibration table absorbs any
+        // wiring), which read every forward edge as backward — the second
+        // edge after boot then got its speed with the wrong sign. A single
+        // skipped state (±120°) still resolves correctly.
+        let new_direction = if self.calib.is_valid_state(prev_raw) {
+            let step = angle_difference(
+                self.calib.angle_for_state(raw_state),
+                self.calib.angle_for_state(prev_raw),
+            );
+            if step > 0.0 {
+                Direction::Clockwise
+            } else if step < 0.0 {
+                Direction::CounterClockwise
+            } else {
+                self.direction
+            }
         } else {
-            self.direction // No change
+            self.direction // no previous state to compare with
         };
 
         // Explicit direction reversal detection (VESC-style)
@@ -717,8 +726,11 @@ impl HallSensor {
             let dt_ticks = t_ticks.wrapping_sub(last_t).max(1);
             let dt = dt_ticks as f32 / self.ticks_per_sec as f32;
 
-            // On direction reversal, negate velocity sign but keep magnitude relationship
-            // This matches VESC's handling in foc_correct_hall()
+            // Direction reversal: the rotor left the sector through the
+            // boundary it entered by, so no sector width was traversed and
+            // the edge interval only bounds the speed. Take the new sign
+            // and one sector over the interval as the magnitude — a rough
+            // estimate the next edge replaces.
             let candidate = if self.direction_reversed {
                 let angle_step = self.angle_step_signed(self.direction);
                 -self.elec_velocity.signum() * (angle_step / dt).abs()
@@ -1666,6 +1678,31 @@ mod tests {
         assert!(!hall.is_stale_at_speed(t + 400, w));
         // Cable cut: 1.5 expected sector times with no edge.
         assert!(hall.is_stale_at_speed(t + 600, w));
+    }
+
+    /// Half the ways to connect three hall wires reverse the nominal state
+    /// order. The calibration table absorbs that; direction and speed must
+    /// follow the calibrated angles, not the wiring order (the second edge
+    /// after boot used to get its speed with the wrong sign).
+    #[test]
+    fn reversed_wiring_reads_forward_rotation_forward() {
+        let mut hall = HallSensor::new(1_000_000);
+        // The nominal forward sequence wired in reverse: forward rotation
+        // now walks it backwards, one 60° sector per state.
+        let seq = [5u8, 4, 6, 2, 3, 1];
+        let mut table = [0.0f32; 8];
+        for (k, &raw) in seq.iter().enumerate() {
+            table[raw as usize] = k as f32 * FRAC_PI_3;
+        }
+        hall.set_calibration_raw(table);
+        for (k, &raw) in seq.iter().cycle().take(12).enumerate() {
+            hall.update(raw, k as u64 * 1_000);
+            if k > 0 {
+                assert_eq!(hall.direction(), Direction::Clockwise, "edge {k}");
+                let v = hall.electrical_velocity();
+                assert!((v - FRAC_PI_3 / 1e-3).abs() < 1.0, "edge {k}: {v} rad/s");
+            }
+        }
     }
 
     #[test]
