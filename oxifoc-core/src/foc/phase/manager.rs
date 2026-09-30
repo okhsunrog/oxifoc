@@ -259,8 +259,6 @@ where
 
     // Hall health tracking
     hall_health: HallHealth,
-    /// Ticks when Hall failure was first detected
-    hall_failure_ticks: Option<u64>,
 
     // Open-loop override state (for Hall failure recovery)
     open_loop_override: OpenLoopOverride,
@@ -322,7 +320,6 @@ impl PhaseManager<NoSensor, NoSensor> {
             open_loop_velocity: 0.0,
             ticks_per_sec: 1_000_000,
             hall_health: HallHealth::NotPresent,
-            hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
             tracker: PhaseTracker::default(),
@@ -355,7 +352,6 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             open_loop_velocity: 0.0,
             ticks_per_sec: 1_000_000,
             hall_health: HallHealth::Ok,
-            hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
             tracker: PhaseTracker::default(),
@@ -386,7 +382,6 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             open_loop_velocity: self.open_loop_velocity,
             ticks_per_sec: self.ticks_per_sec,
             hall_health: self.hall_health,
-            hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             startup: self.startup,
             tracker: self.tracker,
@@ -420,7 +415,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             open_loop_velocity: self.open_loop_velocity,
             ticks_per_sec: self.ticks_per_sec,
             hall_health: self.hall_health,
-            hall_failure_ticks: self.hall_failure_ticks,
             open_loop_override: self.open_loop_override,
             startup: self.startup,
             tracker: self.tracker,
@@ -453,7 +447,6 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             open_loop_velocity: 0.0,
             ticks_per_sec: 1_000_000,
             hall_health: HallHealth::NotPresent,
-            hall_failure_ticks: None,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
             tracker: PhaseTracker::default(),
@@ -752,7 +745,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     }
 
     /// Update Hall health status from sample availability and staleness.
-    fn update_hall_health(&mut self, sample_valid: bool, stale: bool, now_ticks: u64) {
+    fn update_hall_health(&mut self, sample_valid: bool, stale: bool) {
         // Skip if Hall is not configured
         if matches!(self.hall_health, HallHealth::NotPresent) {
             return;
@@ -762,27 +755,19 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             // Hall is working - clear failures
             if self.hall_health != HallHealth::Ok {
                 self.hall_health = HallHealth::Ok;
-                self.hall_failure_ticks = None;
                 self.clear_fault(PhaseFault::HallTimeout);
                 self.clear_fault(PhaseFault::HallInvalidState);
             }
+        } else if stale {
+            // Edges stopped while the rotor was spinning (velocity-adaptive
+            // check in the sensor) — dead cable / dead sensor.
+            self.hall_health = HallHealth::Stale;
+            self.set_fault(PhaseFault::HallTimeout);
         } else {
-            // Hall failed - track when failure started
-            if self.hall_failure_ticks.is_none() {
-                self.hall_failure_ticks = Some(now_ticks);
-            }
-
-            if stale {
-                // Edges stopped while the rotor was spinning (velocity-
-                // adaptive check in the sensor) — dead cable / dead sensor.
-                self.hall_health = HallHealth::Stale;
-                self.set_fault(PhaseFault::HallTimeout);
-            } else {
-                // No valid sample at all (invalid 0/7 states, never seen an
-                // edge, ...).
-                self.hall_health = HallHealth::Invalid;
-                self.set_fault(PhaseFault::HallInvalidState);
-            }
+            // No valid sample at all (invalid 0/7 states, never seen an
+            // edge, ...).
+            self.hall_health = HallHealth::Invalid;
+            self.set_fault(PhaseFault::HallInvalidState);
         }
     }
 
@@ -1369,7 +1354,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // an idle hall during Manual-angle calibration or pure-observer
         // operation is not a failure.
         if self.source.requires_hall() {
-            self.update_hall_health(hall_sample.is_some(), hall_stale, now_ticks);
+            self.update_hall_health(hall_sample.is_some(), hall_stale);
         }
 
         // Back-EMF proxy for the voltage-based crossover: park the drive
