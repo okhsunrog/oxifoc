@@ -330,8 +330,10 @@ is different:
 
 The latest prologue additionally reserves 28 stack bytes and saves fp,
 versus neither in the old version. This is the observed lost
-specialization of a known one-element transaction; identifying the exact
-MIR/LLVM pass responsible would require a compiler bisect/pass analysis.
+specialization of a known one-element transaction. The subsequent
+[compiler bisect and MIR analysis](../spi-codegen/report.md) identifies
+the first bad nightly and the MIR inlining threshold crossed by Rust's
+storage-marker correctness fix.
 No dependency-source change is involved in this SPI comparison, and this
 experiment does not introduce a SPI workaround.
 

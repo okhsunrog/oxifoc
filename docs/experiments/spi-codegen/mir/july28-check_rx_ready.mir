@@ -1,0 +1,246 @@
+// MIR for `spi::check_rx_ready` after runtime-optimized
+
+fn check_rx_ready(_1: stm32_metapac::spi::Spi) -> Result<bool, spi::Error> {
+    debug regs => _1;
+    let mut _0: core::result::Result<bool, spi::Error>;
+    let _2: stm32_metapac::spi::regs::Sr;
+    let mut _3: core::ops::ControlFlow<core::result::Result<rand_core::Infallible, spi::Error>>;
+    let mut _4: core::result::Result<(), spi::Error>;
+    let mut _23: *mut u8;
+    let mut _24: u32;
+    scope 1 {
+        debug sr => _2;
+        let _5: core::result::Result<rand_core::Infallible, spi::Error>;
+        scope 2 {
+            debug residual => _5;
+            scope 3 {
+                scope 30 (inlined #[track_caller] <Result<bool, spi::Error> as FromResidual<Result<Infallible, spi::Error>>>::from_residual) {
+                    let mut _20: isize;
+                    let _21: spi::Error;
+                    let mut _22: bool;
+                    scope 31 {
+                        scope 32 (inlined <spi::Error as From<spi::Error>>::from) {
+                        }
+                    }
+                }
+            }
+        }
+        scope 4 {
+            debug val => const ();
+            scope 5 {
+            }
+        }
+        scope 16 (inlined check_error_flags) {
+            scope 17 (inlined stm32_metapac::spi::regs::Sr::ovr) {
+                let _9: u32;
+                let mut _10: u32;
+                scope 18 {
+                }
+            }
+            scope 19 (inlined stm32_metapac::spi::regs::Sr::fre) {
+                let _11: u32;
+                let mut _12: u32;
+                scope 20 {
+                }
+            }
+            scope 21 (inlined stm32_metapac::spi::regs::Sr::modf) {
+                let _13: u32;
+                let mut _14: u32;
+                scope 22 {
+                }
+            }
+            scope 23 (inlined stm32_metapac::spi::regs::Sr::crcerr) {
+                let _15: u32;
+                let mut _16: u32;
+                scope 24 {
+                }
+            }
+        }
+        scope 25 (inlined <Result<(), spi::Error> as core::ops::Try>::branch) {
+            let _17: spi::Error;
+            let mut _18: core::result::Result<rand_core::Infallible, spi::Error>;
+            scope 26 {
+            }
+            scope 27 {
+            }
+        }
+        scope 28 (inlined stm32_metapac::spi::regs::Sr::rxne) {
+            let _19: u32;
+            scope 29 {
+            }
+        }
+    }
+    scope 6 (inlined stm32_metapac::spi::Spi::sr) {
+        scope 7 (inlined core::ptr::mut_ptr::<impl *mut u8>::wrapping_add) {
+            scope 8 (inlined core::ptr::mut_ptr::<impl *mut u8>::wrapping_offset) {
+                let mut _6: *const u8;
+                let mut _7: *const u8;
+            }
+        }
+        scope 9 (inlined stm32_metapac::common::Reg::<stm32_metapac::spi::regs::Sr, stm32_metapac::common::RW>::from_ptr) {
+        }
+    }
+    scope 10 (inlined stm32_metapac::common::Reg::<stm32_metapac::spi::regs::Sr, stm32_metapac::common::RW>::read) {
+        scope 11 (inlined #[track_caller] core::ptr::mut_ptr::<impl *mut stm32_metapac::spi::regs::Sr>::read_volatile) {
+            let mut _8: *const stm32_metapac::spi::regs::Sr;
+            scope 12 (inlined #[track_caller] read_volatile::<stm32_metapac::spi::regs::Sr>) {
+                scope 13 (inlined ub_checks::check_language_ub) {
+                    scope 14 (inlined ub_checks::check_language_ub::runtime) {
+                    }
+                }
+                scope 15 (inlined core::mem::align_of::<stm32_metapac::spi::regs::Sr>) {
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);
+        StorageLive(_23);
+        _23 = copy (_1.0: *mut u8);
+        StorageLive(_7);
+        _7 = copy _23 as *const u8 (PtrToPtr);
+        _6 = arith_offset::<u8>(move _7, const 8_isize) -> [return: bb5, unwind unreachable];
+    }
+
+    bb1: {
+        StorageDead(_19);
+        _0 = const Result::<bool, spi::Error>::Ok(true);
+        goto -> bb3;
+    }
+
+    bb2: {
+        StorageDead(_19);
+        _0 = const Result::<bool, spi::Error>::Ok(false);
+        StorageDead(_2);
+        goto -> bb4;
+    }
+
+    bb3: {
+        StorageDead(_2);
+        goto -> bb4;
+    }
+
+    bb4: {
+        return;
+    }
+
+    bb5: {
+        StorageDead(_7);
+        StorageDead(_23);
+        StorageLive(_8);
+        _8 = copy _6 as *const stm32_metapac::spi::regs::Sr (PtrToPtr);
+        _2 = volatile_load::<stm32_metapac::spi::regs::Sr>(move _8) -> [return: bb6, unwind unreachable];
+    }
+
+    bb6: {
+        StorageDead(_8);
+        StorageLive(_3);
+        StorageLive(_4);
+        _24 = copy (_2.0: u32);
+        StorageLive(_9);
+        StorageLive(_10);
+        _10 = Shr(copy _24, const 6_usize);
+        _9 = BitAnd(move _10, const 1_u32);
+        StorageDead(_10);
+        switchInt(copy _9) -> [0: bb8, otherwise: bb7];
+    }
+
+    bb7: {
+        StorageDead(_9);
+        _4 = const Result::<(), spi::Error>::Err(spi::Error::Overrun);
+        goto -> bb15;
+    }
+
+    bb8: {
+        StorageDead(_9);
+        StorageLive(_11);
+        StorageLive(_12);
+        _12 = Shr(copy _24, const 8_usize);
+        _11 = BitAnd(move _12, const 1_u32);
+        StorageDead(_12);
+        switchInt(copy _11) -> [0: bb10, otherwise: bb9];
+    }
+
+    bb9: {
+        StorageDead(_11);
+        _4 = const Result::<(), spi::Error>::Err(spi::Error::Framing);
+        goto -> bb15;
+    }
+
+    bb10: {
+        StorageDead(_11);
+        StorageLive(_13);
+        StorageLive(_14);
+        _14 = Shr(copy _24, const 5_usize);
+        _13 = BitAnd(move _14, const 1_u32);
+        StorageDead(_14);
+        switchInt(copy _13) -> [0: bb12, otherwise: bb11];
+    }
+
+    bb11: {
+        StorageDead(_13);
+        _4 = const Result::<(), spi::Error>::Err(spi::Error::ModeFault);
+        goto -> bb15;
+    }
+
+    bb12: {
+        StorageDead(_13);
+        StorageLive(_15);
+        StorageLive(_16);
+        _16 = Shr(copy _24, const 4_usize);
+        _15 = BitAnd(move _16, const 1_u32);
+        StorageDead(_16);
+        switchInt(copy _15) -> [0: bb14, otherwise: bb13];
+    }
+
+    bb13: {
+        StorageDead(_15);
+        _4 = const Result::<(), spi::Error>::Err(spi::Error::Crc);
+        goto -> bb15;
+    }
+
+    bb14: {
+        StorageDead(_15);
+        StorageDead(_4);
+        StorageDead(_3);
+        StorageLive(_19);
+        _19 = BitAnd(copy _24, const 1_u32);
+        switchInt(copy _19) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb15: {
+        StorageLive(_17);
+        _17 = move ((_4 as Err).0: spi::Error);
+        StorageLive(_18);
+        _18 = Result::<Infallible, spi::Error>::Err(copy _17);
+        _3 = ControlFlow::<Result<Infallible, spi::Error>>::Break(move _18);
+        StorageDead(_18);
+        StorageDead(_17);
+        StorageDead(_4);
+        StorageLive(_5);
+        _5 = copy ((_3 as Break).0: core::result::Result<rand_core::Infallible, spi::Error>);
+        StorageLive(_20);
+        StorageLive(_22);
+        _20 = discriminant(_5);
+        _22 = Eq(copy _20, const 1_isize);
+        assume(move _22);
+        StorageLive(_21);
+        _21 = copy ((_5 as Err).0: spi::Error);
+        _0 = Result::<bool, spi::Error>::Err(copy _21);
+        StorageDead(_21);
+        StorageDead(_22);
+        StorageDead(_20);
+        StorageDead(_5);
+        StorageDead(_3);
+        goto -> bb3;
+    }
+}
+
+alloc2799 (size: 2, align: 1) {
+    00 01                                           │ ..
+}
+
+alloc2798 (size: 2, align: 1) {
+    00 00                                           │ ..
+}

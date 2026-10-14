@@ -1,0 +1,21 @@
+[package]
+name = "spi-regression"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93", version = "0.6.0", default-features = false, features = ["stm32f405rg", "unstable-pac"] }
+embedded-hal = "1"
+embedded-hal-bus = "0.3"
+
+[lib]
+crate-type = ["staticlib"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+# Keep this diagnostic independent of the firmware workspace and its profiles.
+[workspace]
