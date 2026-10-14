@@ -1,0 +1,2247 @@
+{
+  "baseline": {
+    "g474": {
+      "sections": {
+        ".rodata": {
+          "old": 15072,
+          "new": 15072,
+          "delta": 0
+        },
+        ".vector_table": {
+          "old": 472,
+          "new": 472,
+          "delta": 0
+        },
+        ".bss": {
+          "old": 23484,
+          "new": 23484,
+          "delta": 0
+        },
+        ".text": {
+          "old": 190092,
+          "new": 190092,
+          "delta": 0
+        },
+        ".data": {
+          "old": 1064,
+          "new": 1064,
+          "delta": 0
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 1475,
+          "new": 1475
+        },
+        "blx": {
+          "old": 228,
+          "new": 228
+        },
+        "vdiv.f32": {
+          "old": 14,
+          "new": 14
+        },
+        "vmov.f32": {
+          "old": 44,
+          "new": 44
+        }
+      },
+      "symbol_changes": []
+    },
+    "cf2": {
+      "sections": {
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".rodata": {
+          "old": 18596,
+          "new": 18596,
+          "delta": 0
+        },
+        ".bss": {
+          "old": 33988,
+          "new": 33988,
+          "delta": 0
+        },
+        ".text": {
+          "old": 349384,
+          "new": 349384,
+          "delta": 0
+        },
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2870,
+          "new": 2870
+        },
+        "blx": {
+          "old": 325,
+          "new": 325
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 238
+        },
+        "vmov.f32": {
+          "old": 824,
+          "new": 824
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 26
+        }
+      },
+      "symbol_changes": []
+    },
+    "vesc6": {
+      "sections": {
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        },
+        ".bss": {
+          "old": 33972,
+          "new": 33972,
+          "delta": 0
+        },
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".text": {
+          "old": 351860,
+          "new": 351860,
+          "delta": 0
+        },
+        ".rodata": {
+          "old": 18564,
+          "new": 18564,
+          "delta": 0
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2879,
+          "new": 2879
+        },
+        "blx": {
+          "old": 325,
+          "new": 325
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 238
+        },
+        "vmov.f32": {
+          "old": 825,
+          "new": 825
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 26
+        }
+      },
+      "symbol_changes": []
+    }
+  },
+  "sqrt": {
+    "g474": {
+      "sections": {
+        ".data": {
+          "old": 1064,
+          "new": 1064,
+          "delta": 0
+        },
+        ".vector_table": {
+          "old": 472,
+          "new": 472,
+          "delta": 0
+        },
+        ".text": {
+          "old": 190092,
+          "new": 190092,
+          "delta": 0
+        },
+        ".rodata": {
+          "old": 15072,
+          "new": 15072,
+          "delta": 0
+        },
+        ".bss": {
+          "old": 23484,
+          "new": 23484,
+          "delta": 0
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 1475,
+          "new": 1475
+        },
+        "blx": {
+          "old": 228,
+          "new": 228
+        },
+        "vdiv.f32": {
+          "old": 14,
+          "new": 14
+        },
+        "vmov.f32": {
+          "old": 44,
+          "new": 44
+        }
+      },
+      "symbol_changes": []
+    },
+    "cf2": {
+      "sections": {
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        },
+        ".rodata": {
+          "old": 18596,
+          "new": 18596,
+          "delta": 0
+        },
+        ".text": {
+          "old": 349384,
+          "new": 349340,
+          "delta": -44
+        },
+        ".bss": {
+          "old": 33988,
+          "new": 33988,
+          "delta": 0
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2870,
+          "new": 2870
+        },
+        "blx": {
+          "old": 325,
+          "new": 325
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 238
+        },
+        "vmov.f32": {
+          "old": 824,
+          "new": 813
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 25
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::update_phase_with_applied_voltage",
+          "old": 13056,
+          "new": 13000,
+          "delta": -56
+        },
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::grant_torque",
+          "old": 1612,
+          "new": 1624,
+          "delta": 12
+        },
+        {
+          "symbol": "oxifoc_core::foc::detection::sweep::spin_up_open_loop::<oxifoc_core::foc::detection::embassy_hw::EmbassyDetectionHardware, oxifoc_core::timer::EmbassyTimer>::{closure#0}",
+          "old": 2848,
+          "new": 2840,
+          "delta": -8
+        },
+        {
+          "symbol": "<oxifoc_core::foc::controller::FocController<oxifoc_core::foc::pwm::SvpwmModulator, oxifoc_core::foc::trig::FastSinCos>>::apply_dq",
+          "old": 988,
+          "new": 996,
+          "delta": 8
+        },
+        {
+          "symbol": "oxifoc_core::runtime::detect::detect_server::<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::protocol::servers::F405Backend>::{closure#0}",
+          "old": 14848,
+          "new": 14840,
+          "delta": -8
+        },
+        {
+          "symbol": "<oxifoc_core::foc::controller::FocController<oxifoc_core::foc::pwm::SvpwmModulator, oxifoc_core::foc::trig::FastSinCos>>::step_with_injection",
+          "old": 1568,
+          "new": 1572,
+          "delta": 4
+        },
+        {
+          "symbol": "oxifoc_core::state::run_foc_cycle::<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos, oxifoc_f405::fault::F405Fault>",
+          "old": 14100,
+          "new": 14104,
+          "delta": 4
+        },
+        {
+          "symbol": "oxifoc_core::foc::detection::sweep::measure_inductance_auto::<oxifoc_core::foc::detection::embassy_hw::EmbassyDetectionHardware, oxifoc_core::timer::EmbassyTimer, oxifoc_core::foc::trig::FastSinCos>::{closure#0}",
+          "old": 13204,
+          "new": 13208,
+          "delta": 4
+        }
+      ]
+    },
+    "vesc6": {
+      "sections": {
+        ".rodata": {
+          "old": 18564,
+          "new": 18564,
+          "delta": 0
+        },
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        },
+        ".bss": {
+          "old": 33972,
+          "new": 33972,
+          "delta": 0
+        },
+        ".text": {
+          "old": 351860,
+          "new": 351824,
+          "delta": -36
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2879,
+          "new": 2879
+        },
+        "blx": {
+          "old": 325,
+          "new": 325
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 238
+        },
+        "vmov.f32": {
+          "old": 825,
+          "new": 814
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 25
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::update_phase_with_applied_voltage",
+          "old": 13056,
+          "new": 13000,
+          "delta": -56
+        },
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::grant_torque",
+          "old": 1612,
+          "new": 1624,
+          "delta": 12
+        },
+        {
+          "symbol": "oxifoc_core::foc::detection::sweep::spin_up_open_loop::<oxifoc_core::foc::detection::embassy_hw::EmbassyDetectionHardware, oxifoc_core::timer::EmbassyTimer>::{closure#0}",
+          "old": 2848,
+          "new": 2840,
+          "delta": -8
+        },
+        {
+          "symbol": "oxifoc_core::runtime::detect::detect_server::<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::protocol::servers::F405Backend>::{closure#0}",
+          "old": 14848,
+          "new": 14840,
+          "delta": -8
+        },
+        {
+          "symbol": "<oxifoc_core::foc::controller::FocController<oxifoc_core::foc::pwm::SvpwmModulator, oxifoc_core::foc::trig::FastSinCos>>::apply_dq",
+          "old": 988,
+          "new": 996,
+          "delta": 8
+        },
+        {
+          "symbol": "oxifoc_core::state::run_foc_cycle::<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos, oxifoc_f405::fault::F405Fault>",
+          "old": 14100,
+          "new": 14104,
+          "delta": 4
+        },
+        {
+          "symbol": "oxifoc_core::foc::detection::sweep::measure_inductance_auto::<oxifoc_core::foc::detection::embassy_hw::EmbassyDetectionHardware, oxifoc_core::timer::EmbassyTimer, oxifoc_core::foc::trig::FastSinCos>::{closure#0}",
+          "old": 13204,
+          "new": 13208,
+          "delta": 4
+        },
+        {
+          "symbol": "<oxifoc_core::foc::controller::FocController<oxifoc_core::foc::pwm::SvpwmModulator, oxifoc_core::foc::trig::FastSinCos>>::step_with_injection",
+          "old": 1568,
+          "new": 1572,
+          "delta": 4
+        }
+      ]
+    }
+  },
+  "core-math": {
+    "g474": {
+      "sections": {
+        ".data": {
+          "old": 1064,
+          "new": 1072,
+          "delta": 8
+        },
+        ".text": {
+          "old": 190092,
+          "new": 190096,
+          "delta": 4
+        },
+        ".rodata": {
+          "old": 15072,
+          "new": 15072,
+          "delta": 0
+        },
+        ".vector_table": {
+          "old": 472,
+          "new": 472,
+          "delta": 0
+        },
+        ".bss": {
+          "old": 23484,
+          "new": 23476,
+          "delta": -8
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 1475,
+          "new": 1475
+        },
+        "blx": {
+          "old": 228,
+          "new": 228
+        },
+        "vdiv.f32": {
+          "old": 14,
+          "new": 14
+        },
+        "vmov.f32": {
+          "old": 44,
+          "new": 44
+        }
+      },
+      "symbol_changes": []
+    },
+    "cf2": {
+      "sections": {
+        ".bss": {
+          "old": 33988,
+          "new": 33988,
+          "delta": 0
+        },
+        ".text": {
+          "old": 349384,
+          "new": 349356,
+          "delta": -28
+        },
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        },
+        ".rodata": {
+          "old": 18596,
+          "new": 18596,
+          "delta": 0
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2870,
+          "new": 2872
+        },
+        "blx": {
+          "old": 325,
+          "new": 325
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 238
+        },
+        "vmov.f32": {
+          "old": 824,
+          "new": 813
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 25
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "floorf",
+          "old": 0,
+          "new": 108,
+          "delta": 108
+        },
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::set_mode",
+          "old": 796,
+          "new": 716,
+          "delta": -80
+        },
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::update_phase_with_applied_voltage",
+          "old": 13056,
+          "new": 13000,
+          "delta": -56
+        },
+        {
+          "symbol": "oxifoc_core::state::run_foc_cycle::<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos, oxifoc_f405::fault::F405Fault>",
+          "old": 14100,
+          "new": 14084,
+          "delta": -16
+        },
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::grant_torque",
+          "old": 1612,
+          "new": 1624,
+          "delta": 12
+        },
+        {
+          "symbol": "<oxifoc_core::foc::controller::FocController<oxifoc_core::foc::pwm::SvpwmModulator, oxifoc_core::foc::trig::FastSinCos>>::apply_dq",
+          "old": 988,
+          "new": 996,
+          "delta": 8
+        },
+        {
+          "symbol": "oxifoc_core::foc::detection::sweep::spin_up_open_loop::<oxifoc_core::foc::detection::embassy_hw::EmbassyDetectionHardware, oxifoc_core::timer::EmbassyTimer>::{closure#0}",
+          "old": 2848,
+          "new": 2840,
+          "delta": -8
+        },
+        {
+          "symbol": "oxifoc_core::runtime::detect::detect_server::<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::protocol::servers::F405Backend>::{closure#0}",
+          "old": 14848,
+          "new": 14840,
+          "delta": -8
+        },
+        {
+          "symbol": "<oxifoc_core::foc::controller::FocController<oxifoc_core::foc::pwm::SvpwmModulator, oxifoc_core::foc::trig::FastSinCos>>::step_with_injection",
+          "old": 1568,
+          "new": 1572,
+          "delta": 4
+        },
+        {
+          "symbol": "oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}",
+          "old": 11668,
+          "new": 11672,
+          "delta": 4
+        },
+        {
+          "symbol": "oxifoc_core::foc::detection::sweep::measure_inductance_auto::<oxifoc_core::foc::detection::embassy_hw::EmbassyDetectionHardware, oxifoc_core::timer::EmbassyTimer, oxifoc_core::foc::trig::FastSinCos>::{closure#0}",
+          "old": 13204,
+          "new": 13208,
+          "delta": 4
+        }
+      ]
+    },
+    "vesc6": {
+      "sections": {
+        ".bss": {
+          "old": 33972,
+          "new": 33972,
+          "delta": 0
+        },
+        ".text": {
+          "old": 351860,
+          "new": 351840,
+          "delta": -20
+        },
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        },
+        ".rodata": {
+          "old": 18564,
+          "new": 18564,
+          "delta": 0
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2879,
+          "new": 2881
+        },
+        "blx": {
+          "old": 325,
+          "new": 325
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 238
+        },
+        "vmov.f32": {
+          "old": 825,
+          "new": 814
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 25
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "floorf",
+          "old": 0,
+          "new": 108,
+          "delta": 108
+        },
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::set_mode",
+          "old": 796,
+          "new": 716,
+          "delta": -80
+        },
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::update_phase_with_applied_voltage",
+          "old": 13056,
+          "new": 13000,
+          "delta": -56
+        },
+        {
+          "symbol": "oxifoc_core::state::run_foc_cycle::<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos, oxifoc_f405::fault::F405Fault>",
+          "old": 14100,
+          "new": 14084,
+          "delta": -16
+        },
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::grant_torque",
+          "old": 1612,
+          "new": 1624,
+          "delta": 12
+        },
+        {
+          "symbol": "oxifoc_core::runtime::detect::detect_server::<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::protocol::servers::F405Backend>::{closure#0}",
+          "old": 14848,
+          "new": 14840,
+          "delta": -8
+        },
+        {
+          "symbol": "<oxifoc_core::foc::controller::FocController<oxifoc_core::foc::pwm::SvpwmModulator, oxifoc_core::foc::trig::FastSinCos>>::apply_dq",
+          "old": 988,
+          "new": 996,
+          "delta": 8
+        },
+        {
+          "symbol": "oxifoc_core::foc::detection::sweep::spin_up_open_loop::<oxifoc_core::foc::detection::embassy_hw::EmbassyDetectionHardware, oxifoc_core::timer::EmbassyTimer>::{closure#0}",
+          "old": 2848,
+          "new": 2840,
+          "delta": -8
+        },
+        {
+          "symbol": "oxifoc_core::foc::detection::sweep::measure_inductance_auto::<oxifoc_core::foc::detection::embassy_hw::EmbassyDetectionHardware, oxifoc_core::timer::EmbassyTimer, oxifoc_core::foc::trig::FastSinCos>::{closure#0}",
+          "old": 13204,
+          "new": 13208,
+          "delta": 4
+        },
+        {
+          "symbol": "oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}",
+          "old": 11668,
+          "new": 11672,
+          "delta": 4
+        },
+        {
+          "symbol": "<oxifoc_core::foc::controller::FocController<oxifoc_core::foc::pwm::SvpwmModulator, oxifoc_core::foc::trig::FastSinCos>>::step_with_injection",
+          "old": 1568,
+          "new": 1572,
+          "delta": 4
+        }
+      ]
+    }
+  },
+  "latest-baseline-artifacts": {
+    "g474": {
+      "sections": {
+        ".vector_table": {
+          "old": 472,
+          "new": 472,
+          "delta": 0
+        },
+        ".text": {
+          "old": 190092,
+          "new": 192024,
+          "delta": 1932
+        },
+        ".rodata": {
+          "old": 15072,
+          "new": 14960,
+          "delta": -112
+        },
+        ".data": {
+          "old": 1064,
+          "new": 1072,
+          "delta": 8
+        },
+        ".bss": {
+          "old": 23484,
+          "new": 23444,
+          "delta": -40
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 1475,
+          "new": 1459
+        },
+        "blx": {
+          "old": 228,
+          "new": 235
+        },
+        "vdiv.f32": {
+          "old": 14,
+          "new": 12
+        },
+        "vmov.f32": {
+          "old": 44,
+          "new": 42
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_g474::protocol::servers::__usb_task_task::__usb_task_task_inner_function::{closure#0}>>::poll",
+          "old": 7716,
+          "new": 9460,
+          "delta": 1744
+        },
+        {
+          "symbol": "<embassy_usb::msos::RegistryPropertyFeatureDescriptor as embassy_usb::msos::Descriptor>::size",
+          "old": 0,
+          "new": 1368,
+          "delta": 1368
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 1116,
+          "delta": 1116
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}>>>",
+          "old": 1116,
+          "new": 0,
+          "delta": -1116
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}>>>",
+          "old": 806,
+          "new": 0,
+          "delta": -806
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 806,
+          "delta": 806
+        },
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_g474::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}>>::poll",
+          "old": 15610,
+          "new": 14920,
+          "delta": -690
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<ergot::socket::SocketHeader>> as core::fmt::Debug>::fmt",
+          "old": 574,
+          "new": 0,
+          "delta": -574
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<maitake_sync::wait_queue::Waiter>> as core::fmt::Debug>::fmt",
+          "old": 0,
+          "new": 574,
+          "delta": 574
+        },
+        {
+          "symbol": "<ergot::interface_manager::edge_port::EdgePort<oxifoc_g474::transport::McInterface>>::send_raw",
+          "old": 2574,
+          "new": 2112,
+          "delta": -462
+        },
+        {
+          "symbol": "<ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0> as ergot::interface_manager::Profile>::send::<ergot::well_known::SocketQueryResponse>",
+          "old": 446,
+          "new": 0,
+          "delta": -446
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<maitake_sync::wait_queue::Wait>",
+          "old": 444,
+          "new": 0,
+          "delta": -444
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<core::pin::PinMacroHelper<maitake_sync::wait_queue::Wait>>",
+          "old": 0,
+          "new": 444,
+          "delta": 444
+        },
+        {
+          "symbol": "<embassy_usb::msos::PropertyData>::size",
+          "old": 368,
+          "new": 0,
+          "delta": -368
+        },
+        {
+          "symbol": "<embassy_futures::join::Join<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}>, embassy_futures::join::Join<oxifoc_core::runtime::servers::slow_telemetry_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}, embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}>>> as core::future::future::Future>::poll",
+          "old": 14570,
+          "new": 14894,
+          "delta": 324
+        },
+        {
+          "symbol": "oxifoc_core::storage::run_storage_worker::<embassy_stm32::flash::common::Flash>::{closure#0}",
+          "old": 10296,
+          "new": 10606,
+          "delta": 310
+        },
+        {
+          "symbol": "<&mut postcard::ser::serializer::Serializer<postcard::ser::flavors::Cobs<postcard::ser::flavors::Slice>> as serde_core::ser::SerializeStruct>::serialize_field::<i16>",
+          "old": 0,
+          "new": 302,
+          "delta": 302
+        },
+        {
+          "symbol": "<ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>>::send_err",
+          "old": 2762,
+          "new": 3038,
+          "delta": 276
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<<sequential_storage::map::MapStorage<oxifoc_core::storage::ConfigKey, embassy_stm32::flash::common::Flash, sequential_storage::cache::Cache<sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, oxifoc_core::storage::ConfigKey>>>::store_item_inner<dyn sequential_storage::map::Value>::{closure#0}>",
+          "old": 252,
+          "new": 0,
+          "delta": -252
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<<sequential_storage::map::MapStorage<oxifoc_core::storage::ConfigKey, embassy_stm32::flash::common::Flash, sequential_storage::cache::Cache<sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, oxifoc_core::storage::ConfigKey>>>::store_item_inner<dyn sequential_storage::map::Value>::{closure#0}>",
+          "old": 0,
+          "new": 252,
+          "delta": 252
+        }
+      ]
+    },
+    "cf2": {
+      "sections": {
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".text": {
+          "old": 349384,
+          "new": 352432,
+          "delta": 3048
+        },
+        ".bss": {
+          "old": 33988,
+          "new": 33948,
+          "delta": -40
+        },
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        },
+        ".rodata": {
+          "old": 18596,
+          "new": 19036,
+          "delta": 440
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2870,
+          "new": 2865
+        },
+        "blx": {
+          "old": 325,
+          "new": 306
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 229
+        },
+        "vmov.f32": {
+          "old": 824,
+          "new": 865
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 0
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}>>::poll",
+          "old": 172,
+          "new": 11974,
+          "delta": 11802
+        },
+        {
+          "symbol": "oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}",
+          "old": 11668,
+          "new": 0,
+          "delta": -11668
+        },
+        {
+          "symbol": "<embassy_usb::msos::RegistryPropertyFeatureDescriptor as embassy_usb::msos::Descriptor>::size",
+          "old": 0,
+          "new": 1368,
+          "delta": 1368
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 1232,
+          "delta": 1232
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 1232,
+          "new": 0,
+          "delta": -1232
+        },
+        {
+          "symbol": "<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay> as embedded_hal::spi::SpiDevice>::transfer",
+          "old": 374,
+          "new": 1276,
+          "delta": 902
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 876,
+          "delta": 876
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 876,
+          "new": 0,
+          "delta": -876
+        },
+        {
+          "symbol": "oxifoc_f405::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}",
+          "old": 28476,
+          "new": 27600,
+          "delta": -876
+        },
+        {
+          "symbol": "oxifoc_core::runtime::detect::detect_server::<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::protocol::servers::F405Backend>::{closure#0}",
+          "old": 14848,
+          "new": 15428,
+          "delta": 580
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<maitake_sync::wait_queue::Waiter>> as core::fmt::Debug>::fmt",
+          "old": 0,
+          "new": 574,
+          "delta": 574
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<ergot::socket::SocketHeader>> as core::fmt::Debug>::fmt",
+          "old": 574,
+          "new": 0,
+          "delta": -574
+        },
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::update_phase_with_applied_voltage",
+          "old": 13056,
+          "new": 12504,
+          "delta": -552
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::get_fault_status",
+          "old": 0,
+          "new": 540,
+          "delta": 540
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, core::convert::Infallible>>>::get_fault_status",
+          "old": 536,
+          "new": 0,
+          "delta": -536
+        },
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__usb_task_task::__usb_task_task_inner_function::{closure#0}>>::poll",
+          "old": 6528,
+          "new": 7058,
+          "delta": 530
+        },
+        {
+          "symbol": "<oxifoc_core::foc::hall_sensor::HallCalibration>::from_raw_table",
+          "old": 0,
+          "new": 516,
+          "delta": 516
+        },
+        {
+          "symbol": "<ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8> as ergot::interface_manager::Profile>::send::<ergot::well_known::SocketQueryResponse>",
+          "old": 448,
+          "new": 0,
+          "delta": -448
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<maitake_sync::wait_queue::Wait>",
+          "old": 444,
+          "new": 0,
+          "delta": -444
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<core::pin::PinMacroHelper<maitake_sync::wait_queue::Wait>>",
+          "old": 0,
+          "new": 444,
+          "delta": 444
+        }
+      ]
+    },
+    "vesc6": {
+      "sections": {
+        ".text": {
+          "old": 351860,
+          "new": 353784,
+          "delta": 1924
+        },
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".rodata": {
+          "old": 18564,
+          "new": 18684,
+          "delta": 120
+        },
+        ".bss": {
+          "old": 33972,
+          "new": 33932,
+          "delta": -40
+        },
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2879,
+          "new": 2868
+        },
+        "blx": {
+          "old": 325,
+          "new": 306
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 229
+        },
+        "vmov.f32": {
+          "old": 825,
+          "new": 866
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 0
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}>>::poll",
+          "old": 172,
+          "new": 11974,
+          "delta": 11802
+        },
+        {
+          "symbol": "oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}",
+          "old": 11668,
+          "new": 0,
+          "delta": -11668
+        },
+        {
+          "symbol": "<embassy_usb::msos::RegistryPropertyFeatureDescriptor as embassy_usb::msos::Descriptor>::size",
+          "old": 0,
+          "new": 1368,
+          "delta": 1368
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 1232,
+          "delta": 1232
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 1232,
+          "new": 0,
+          "delta": -1232
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 876,
+          "new": 0,
+          "delta": -876
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 876,
+          "delta": 876
+        },
+        {
+          "symbol": "oxifoc_f405::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}",
+          "old": 28324,
+          "new": 27726,
+          "delta": -598
+        },
+        {
+          "symbol": "oxifoc_core::runtime::detect::detect_server::<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::protocol::servers::F405Backend>::{closure#0}",
+          "old": 14848,
+          "new": 15428,
+          "delta": 580
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<maitake_sync::wait_queue::Waiter>> as core::fmt::Debug>::fmt",
+          "old": 0,
+          "new": 574,
+          "delta": 574
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<ergot::socket::SocketHeader>> as core::fmt::Debug>::fmt",
+          "old": 574,
+          "new": 0,
+          "delta": -574
+        },
+        {
+          "symbol": "<oxifoc_core::motor::foc_driver::FocDriver<oxifoc_f405::motor::MotorPwm, oxifoc_core::foc::sensors::GenericCurrentSensor<oxifoc_core::foc::sensors::embassy_current::AtomicAdcReader>, oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>, oxifoc_core::foc::trig::FastSinCos>>::update_phase_with_applied_voltage",
+          "old": 13056,
+          "new": 12504,
+          "delta": -552
+        },
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__usb_task_task::__usb_task_task_inner_function::{closure#0}>>::poll",
+          "old": 6528,
+          "new": 7058,
+          "delta": 530
+        },
+        {
+          "symbol": "<oxifoc_core::foc::hall_sensor::HallCalibration>::from_raw_table",
+          "old": 0,
+          "new": 516,
+          "delta": 516
+        },
+        {
+          "symbol": "<ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8> as ergot::interface_manager::Profile>::send::<ergot::well_known::SocketQueryResponse>",
+          "old": 448,
+          "new": 0,
+          "delta": -448
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<core::pin::PinMacroHelper<maitake_sync::wait_queue::Wait>>",
+          "old": 0,
+          "new": 444,
+          "delta": 444
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<maitake_sync::wait_queue::Wait>",
+          "old": 444,
+          "new": 0,
+          "delta": -444
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut bitbang_hal_ng::spi::SPI<embassy_stm32::gpio::Input, embassy_stm32::gpio::Output, embassy_stm32::gpio::Output, bitbang_hal_ng::delay::AsmDelay>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<bitbang_hal_ng::spi::Error<core::convert::Infallible>, core::convert::Infallible>>>::get_fault_status",
+          "old": 416,
+          "new": 0,
+          "delta": -416
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut bitbang_hal_ng::spi::SPI<embassy_stm32::gpio::Input, embassy_stm32::gpio::Output, embassy_stm32::gpio::Output, bitbang_hal_ng::delay::AsmDelay>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<bitbang_hal_ng::spi::Error<!>, !>>>::get_fault_status",
+          "old": 0,
+          "new": 416,
+          "delta": 416
+        },
+        {
+          "symbol": "<ergot::interface_manager::utils::cobs_stream::Sink<&bbqueue::queue::BBQueue<bbqueue::traits::storage::Inline<4096>, bbqueue::traits::coordination::cas::AtomicCoord, bbqueue::traits::notifier::maitake::MaiNotSpsc>> as ergot::interface_manager::InterfaceSink>::send_ty::<core::result::Result<ergot::well_known::SeedRouterAssignment, ergot::interface_manager::SeedAssignmentError>>",
+          "old": 1640,
+          "new": 2048,
+          "delta": 408
+        }
+      ]
+    }
+  },
+  "latest-cfg": {
+    "g474": {
+      "sections": {
+        ".vector_table": {
+          "old": 472,
+          "new": 472,
+          "delta": 0
+        },
+        ".data": {
+          "old": 1064,
+          "new": 1072,
+          "delta": 8
+        },
+        ".rodata": {
+          "old": 15072,
+          "new": 14960,
+          "delta": -112
+        },
+        ".text": {
+          "old": 190092,
+          "new": 192024,
+          "delta": 1932
+        },
+        ".bss": {
+          "old": 23484,
+          "new": 23444,
+          "delta": -40
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 1475,
+          "new": 1459
+        },
+        "blx": {
+          "old": 228,
+          "new": 235
+        },
+        "vdiv.f32": {
+          "old": 14,
+          "new": 12
+        },
+        "vmov.f32": {
+          "old": 44,
+          "new": 42
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_g474::protocol::servers::__usb_task_task::__usb_task_task_inner_function::{closure#0}>>::poll",
+          "old": 7716,
+          "new": 9460,
+          "delta": 1744
+        },
+        {
+          "symbol": "<embassy_usb::msos::RegistryPropertyFeatureDescriptor as embassy_usb::msos::Descriptor>::size",
+          "old": 0,
+          "new": 1368,
+          "delta": 1368
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 1116,
+          "delta": 1116
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}>>>",
+          "old": 1116,
+          "new": 0,
+          "delta": -1116
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}>>>",
+          "old": 806,
+          "new": 0,
+          "delta": -806
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 806,
+          "delta": 806
+        },
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_g474::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}>>::poll",
+          "old": 15610,
+          "new": 14920,
+          "delta": -690
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<maitake_sync::wait_queue::Waiter>> as core::fmt::Debug>::fmt",
+          "old": 0,
+          "new": 574,
+          "delta": 574
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<ergot::socket::SocketHeader>> as core::fmt::Debug>::fmt",
+          "old": 574,
+          "new": 0,
+          "delta": -574
+        },
+        {
+          "symbol": "<ergot::interface_manager::edge_port::EdgePort<oxifoc_g474::transport::McInterface>>::send_raw",
+          "old": 2574,
+          "new": 2112,
+          "delta": -462
+        },
+        {
+          "symbol": "<ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0> as ergot::interface_manager::Profile>::send::<ergot::well_known::SocketQueryResponse>",
+          "old": 446,
+          "new": 0,
+          "delta": -446
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<core::pin::PinMacroHelper<maitake_sync::wait_queue::Wait>>",
+          "old": 0,
+          "new": 444,
+          "delta": 444
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<maitake_sync::wait_queue::Wait>",
+          "old": 444,
+          "new": 0,
+          "delta": -444
+        },
+        {
+          "symbol": "<embassy_usb::msos::PropertyData>::size",
+          "old": 368,
+          "new": 0,
+          "delta": -368
+        },
+        {
+          "symbol": "<embassy_futures::join::Join<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}>, embassy_futures::join::Join<oxifoc_core::runtime::servers::slow_telemetry_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}, embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}>>> as core::future::future::Future>::poll",
+          "old": 14570,
+          "new": 14894,
+          "delta": 324
+        },
+        {
+          "symbol": "oxifoc_core::storage::run_storage_worker::<embassy_stm32::flash::common::Flash>::{closure#0}",
+          "old": 10296,
+          "new": 10606,
+          "delta": 310
+        },
+        {
+          "symbol": "<&mut postcard::ser::serializer::Serializer<postcard::ser::flavors::Cobs<postcard::ser::flavors::Slice>> as serde_core::ser::SerializeStruct>::serialize_field::<i16>",
+          "old": 0,
+          "new": 302,
+          "delta": 302
+        },
+        {
+          "symbol": "<ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>>::send_err",
+          "old": 2762,
+          "new": 3038,
+          "delta": 276
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<<sequential_storage::map::MapStorage<oxifoc_core::storage::ConfigKey, embassy_stm32::flash::common::Flash, sequential_storage::cache::Cache<sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, oxifoc_core::storage::ConfigKey>>>::store_item_inner<dyn sequential_storage::map::Value>::{closure#0}>",
+          "old": 252,
+          "new": 0,
+          "delta": -252
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<<sequential_storage::map::MapStorage<oxifoc_core::storage::ConfigKey, embassy_stm32::flash::common::Flash, sequential_storage::cache::Cache<sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, oxifoc_core::storage::ConfigKey>>>::store_item_inner<dyn sequential_storage::map::Value>::{closure#0}>",
+          "old": 0,
+          "new": 252,
+          "delta": 252
+        }
+      ]
+    },
+    "cf2": {
+      "sections": {
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".rodata": {
+          "old": 18596,
+          "new": 18780,
+          "delta": 184
+        },
+        ".text": {
+          "old": 349384,
+          "new": 352156,
+          "delta": 2772
+        },
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        },
+        ".bss": {
+          "old": 33988,
+          "new": 33948,
+          "delta": -40
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2870,
+          "new": 2839
+        },
+        "blx": {
+          "old": 325,
+          "new": 306
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 235
+        },
+        "vmov.f32": {
+          "old": 824,
+          "new": 825
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 26
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}>>::poll",
+          "old": 172,
+          "new": 11974,
+          "delta": 11802
+        },
+        {
+          "symbol": "oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}",
+          "old": 11668,
+          "new": 0,
+          "delta": -11668
+        },
+        {
+          "symbol": "<embassy_usb::msos::RegistryPropertyFeatureDescriptor as embassy_usb::msos::Descriptor>::size",
+          "old": 0,
+          "new": 1368,
+          "delta": 1368
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 1232,
+          "delta": 1232
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 1232,
+          "new": 0,
+          "delta": -1232
+        },
+        {
+          "symbol": "<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay> as embedded_hal::spi::SpiDevice>::transfer",
+          "old": 374,
+          "new": 1276,
+          "delta": 902
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 876,
+          "delta": 876
+        },
+        {
+          "symbol": "oxifoc_f405::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}",
+          "old": 28476,
+          "new": 27600,
+          "delta": -876
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 876,
+          "new": 0,
+          "delta": -876
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<ergot::socket::SocketHeader>> as core::fmt::Debug>::fmt",
+          "old": 574,
+          "new": 0,
+          "delta": -574
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<maitake_sync::wait_queue::Waiter>> as core::fmt::Debug>::fmt",
+          "old": 0,
+          "new": 574,
+          "delta": 574
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::get_fault_status",
+          "old": 0,
+          "new": 540,
+          "delta": 540
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, core::convert::Infallible>>>::get_fault_status",
+          "old": 536,
+          "new": 0,
+          "delta": -536
+        },
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__usb_task_task::__usb_task_task_inner_function::{closure#0}>>::poll",
+          "old": 6528,
+          "new": 7058,
+          "delta": 530
+        },
+        {
+          "symbol": "<oxifoc_core::foc::hall_sensor::HallCalibration>::from_raw_table",
+          "old": 0,
+          "new": 516,
+          "delta": 516
+        },
+        {
+          "symbol": "oxifoc_core::runtime::detect::detect_server::<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::protocol::servers::F405Backend>::{closure#0}",
+          "old": 14848,
+          "new": 15332,
+          "delta": 484
+        },
+        {
+          "symbol": "<ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8> as ergot::interface_manager::Profile>::send::<ergot::well_known::SocketQueryResponse>",
+          "old": 448,
+          "new": 0,
+          "delta": -448
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<maitake_sync::wait_queue::Wait>",
+          "old": 444,
+          "new": 0,
+          "delta": -444
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<core::pin::PinMacroHelper<maitake_sync::wait_queue::Wait>>",
+          "old": 0,
+          "new": 444,
+          "delta": 444
+        },
+        {
+          "symbol": "<ergot::interface_manager::utils::cobs_stream::Sink<&bbqueue::queue::BBQueue<bbqueue::traits::storage::Inline<4096>, bbqueue::traits::coordination::cas::AtomicCoord, bbqueue::traits::notifier::maitake::MaiNotSpsc>> as ergot::interface_manager::InterfaceSink>::send_ty::<core::result::Result<ergot::well_known::SeedRouterAssignment, ergot::interface_manager::SeedAssignmentError>>",
+          "old": 1640,
+          "new": 2048,
+          "delta": 408
+        }
+      ]
+    },
+    "vesc6": {
+      "sections": {
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        },
+        ".text": {
+          "old": 351860,
+          "new": 353500,
+          "delta": 1640
+        },
+        ".bss": {
+          "old": 33972,
+          "new": 33932,
+          "delta": -40
+        },
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".rodata": {
+          "old": 18564,
+          "new": 18428,
+          "delta": -136
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2879,
+          "new": 2842
+        },
+        "blx": {
+          "old": 325,
+          "new": 306
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 235
+        },
+        "vmov.f32": {
+          "old": 825,
+          "new": 826
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 26
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}>>::poll",
+          "old": 172,
+          "new": 11974,
+          "delta": 11802
+        },
+        {
+          "symbol": "oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}",
+          "old": 11668,
+          "new": 0,
+          "delta": -11668
+        },
+        {
+          "symbol": "<embassy_usb::msos::RegistryPropertyFeatureDescriptor as embassy_usb::msos::Descriptor>::size",
+          "old": 0,
+          "new": 1368,
+          "delta": 1368
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 1232,
+          "new": 0,
+          "delta": -1232
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 1232,
+          "delta": 1232
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 876,
+          "new": 0,
+          "delta": -876
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 876,
+          "delta": 876
+        },
+        {
+          "symbol": "oxifoc_f405::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}",
+          "old": 28324,
+          "new": 27726,
+          "delta": -598
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<ergot::socket::SocketHeader>> as core::fmt::Debug>::fmt",
+          "old": 574,
+          "new": 0,
+          "delta": -574
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<maitake_sync::wait_queue::Waiter>> as core::fmt::Debug>::fmt",
+          "old": 0,
+          "new": 574,
+          "delta": 574
+        },
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__usb_task_task::__usb_task_task_inner_function::{closure#0}>>::poll",
+          "old": 6528,
+          "new": 7058,
+          "delta": 530
+        },
+        {
+          "symbol": "<oxifoc_core::foc::hall_sensor::HallCalibration>::from_raw_table",
+          "old": 0,
+          "new": 516,
+          "delta": 516
+        },
+        {
+          "symbol": "oxifoc_core::runtime::detect::detect_server::<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::protocol::servers::F405Backend>::{closure#0}",
+          "old": 14848,
+          "new": 15332,
+          "delta": 484
+        },
+        {
+          "symbol": "<ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8> as ergot::interface_manager::Profile>::send::<ergot::well_known::SocketQueryResponse>",
+          "old": 448,
+          "new": 0,
+          "delta": -448
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<maitake_sync::wait_queue::Wait>",
+          "old": 444,
+          "new": 0,
+          "delta": -444
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<core::pin::PinMacroHelper<maitake_sync::wait_queue::Wait>>",
+          "old": 0,
+          "new": 444,
+          "delta": 444
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut bitbang_hal_ng::spi::SPI<embassy_stm32::gpio::Input, embassy_stm32::gpio::Output, embassy_stm32::gpio::Output, bitbang_hal_ng::delay::AsmDelay>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<bitbang_hal_ng::spi::Error<!>, !>>>::get_fault_status",
+          "old": 0,
+          "new": 416,
+          "delta": 416
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut bitbang_hal_ng::spi::SPI<embassy_stm32::gpio::Input, embassy_stm32::gpio::Output, embassy_stm32::gpio::Output, bitbang_hal_ng::delay::AsmDelay>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<bitbang_hal_ng::spi::Error<core::convert::Infallible>, core::convert::Infallible>>>::get_fault_status",
+          "old": 416,
+          "new": 0,
+          "delta": -416
+        },
+        {
+          "symbol": "<ergot::interface_manager::utils::cobs_stream::Sink<&bbqueue::queue::BBQueue<bbqueue::traits::storage::Inline<4096>, bbqueue::traits::coordination::cas::AtomicCoord, bbqueue::traits::notifier::maitake::MaiNotSpsc>> as ergot::interface_manager::InterfaceSink>::send_ty::<core::result::Result<ergot::well_known::SeedRouterAssignment, ergot::interface_manager::SeedAssignmentError>>",
+          "old": 1640,
+          "new": 2048,
+          "delta": 408
+        },
+        {
+          "symbol": "<embassy_usb::msos::PropertyData>::size",
+          "old": 368,
+          "new": 0,
+          "delta": -368
+        }
+      ]
+    }
+  },
+  "latest-math": {
+    "g474": {
+      "sections": {
+        ".data": {
+          "old": 1064,
+          "new": 1072,
+          "delta": 8
+        },
+        ".rodata": {
+          "old": 15072,
+          "new": 14880,
+          "delta": -192
+        },
+        ".text": {
+          "old": 190092,
+          "new": 192024,
+          "delta": 1932
+        },
+        ".bss": {
+          "old": 23484,
+          "new": 23444,
+          "delta": -40
+        },
+        ".vector_table": {
+          "old": 472,
+          "new": 472,
+          "delta": 0
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 1475,
+          "new": 1459
+        },
+        "blx": {
+          "old": 228,
+          "new": 235
+        },
+        "vdiv.f32": {
+          "old": 14,
+          "new": 12
+        },
+        "vmov.f32": {
+          "old": 44,
+          "new": 42
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_g474::protocol::servers::__usb_task_task::__usb_task_task_inner_function::{closure#0}>>::poll",
+          "old": 7716,
+          "new": 9460,
+          "delta": 1744
+        },
+        {
+          "symbol": "<embassy_usb::msos::RegistryPropertyFeatureDescriptor as embassy_usb::msos::Descriptor>::size",
+          "old": 0,
+          "new": 1368,
+          "delta": 1368
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}>>>",
+          "old": 1116,
+          "new": 0,
+          "delta": -1116
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 1116,
+          "delta": 1116
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}>>>",
+          "old": 806,
+          "new": 0,
+          "delta": -806
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 806,
+          "delta": 806
+        },
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_g474::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}>>::poll",
+          "old": 15610,
+          "new": 14920,
+          "delta": -690
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<ergot::socket::SocketHeader>> as core::fmt::Debug>::fmt",
+          "old": 574,
+          "new": 0,
+          "delta": -574
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<maitake_sync::wait_queue::Waiter>> as core::fmt::Debug>::fmt",
+          "old": 0,
+          "new": 574,
+          "delta": 574
+        },
+        {
+          "symbol": "<ergot::interface_manager::edge_port::EdgePort<oxifoc_g474::transport::McInterface>>::send_raw",
+          "old": 2574,
+          "new": 2112,
+          "delta": -462
+        },
+        {
+          "symbol": "<ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0> as ergot::interface_manager::Profile>::send::<ergot::well_known::SocketQueryResponse>",
+          "old": 446,
+          "new": 0,
+          "delta": -446
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<core::pin::PinMacroHelper<maitake_sync::wait_queue::Wait>>",
+          "old": 0,
+          "new": 444,
+          "delta": 444
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<maitake_sync::wait_queue::Wait>",
+          "old": 444,
+          "new": 0,
+          "delta": -444
+        },
+        {
+          "symbol": "<embassy_usb::msos::PropertyData>::size",
+          "old": 368,
+          "new": 0,
+          "delta": -368
+        },
+        {
+          "symbol": "<embassy_futures::join::Join<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}>, embassy_futures::join::Join<oxifoc_core::runtime::servers::slow_telemetry_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, oxifoc_core::foc::fault::StandardFault, 2>::{closure#0}, embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>, 2>::{closure#0}>>> as core::future::future::Future>::poll",
+          "old": 14570,
+          "new": 14894,
+          "delta": 324
+        },
+        {
+          "symbol": "oxifoc_core::storage::run_storage_worker::<embassy_stm32::flash::common::Flash>::{closure#0}",
+          "old": 10296,
+          "new": 10606,
+          "delta": 310
+        },
+        {
+          "symbol": "<&mut postcard::ser::serializer::Serializer<postcard::ser::flavors::Cobs<postcard::ser::flavors::Slice>> as serde_core::ser::SerializeStruct>::serialize_field::<i16>",
+          "old": 0,
+          "new": 302,
+          "delta": 302
+        },
+        {
+          "symbol": "<ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_g474::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 0>>>::send_err",
+          "old": 2762,
+          "new": 3038,
+          "delta": 276
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<<sequential_storage::map::MapStorage<oxifoc_core::storage::ConfigKey, embassy_stm32::flash::common::Flash, sequential_storage::cache::Cache<sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, oxifoc_core::storage::ConfigKey>>>::store_item_inner<dyn sequential_storage::map::Value>::{closure#0}>",
+          "old": 252,
+          "new": 0,
+          "delta": -252
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<<sequential_storage::map::MapStorage<oxifoc_core::storage::ConfigKey, embassy_stm32::flash::common::Flash, sequential_storage::cache::Cache<sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, sequential_storage::cache::Uncached, oxifoc_core::storage::ConfigKey>>>::store_item_inner<dyn sequential_storage::map::Value>::{closure#0}>",
+          "old": 0,
+          "new": 252,
+          "delta": 252
+        }
+      ]
+    },
+    "cf2": {
+      "sections": {
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        },
+        ".bss": {
+          "old": 33988,
+          "new": 33948,
+          "delta": -40
+        },
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        },
+        ".text": {
+          "old": 349384,
+          "new": 352064,
+          "delta": 2680
+        },
+        ".rodata": {
+          "old": 18596,
+          "new": 18620,
+          "delta": 24
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2870,
+          "new": 2841
+        },
+        "blx": {
+          "old": 325,
+          "new": 306
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 235
+        },
+        "vmov.f32": {
+          "old": 824,
+          "new": 825
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 25
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}>>::poll",
+          "old": 172,
+          "new": 11974,
+          "delta": 11802
+        },
+        {
+          "symbol": "oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}",
+          "old": 11668,
+          "new": 0,
+          "delta": -11668
+        },
+        {
+          "symbol": "<embassy_usb::msos::RegistryPropertyFeatureDescriptor as embassy_usb::msos::Descriptor>::size",
+          "old": 0,
+          "new": 1368,
+          "delta": 1368
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 1232,
+          "delta": 1232
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 1232,
+          "new": 0,
+          "delta": -1232
+        },
+        {
+          "symbol": "<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay> as embedded_hal::spi::SpiDevice>::transfer",
+          "old": 374,
+          "new": 1276,
+          "delta": 902
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 876,
+          "new": 0,
+          "delta": -876
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 876,
+          "delta": 876
+        },
+        {
+          "symbol": "oxifoc_f405::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}",
+          "old": 28476,
+          "new": 27600,
+          "delta": -876
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<ergot::socket::SocketHeader>> as core::fmt::Debug>::fmt",
+          "old": 574,
+          "new": 0,
+          "delta": -574
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<maitake_sync::wait_queue::Waiter>> as core::fmt::Debug>::fmt",
+          "old": 0,
+          "new": 574,
+          "delta": 574
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::get_fault_status",
+          "old": 0,
+          "new": 540,
+          "delta": 540
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, core::convert::Infallible>>>::get_fault_status",
+          "old": 536,
+          "new": 0,
+          "delta": -536
+        },
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__usb_task_task::__usb_task_task_inner_function::{closure#0}>>::poll",
+          "old": 6528,
+          "new": 7058,
+          "delta": 530
+        },
+        {
+          "symbol": "<oxifoc_core::foc::hall_sensor::HallCalibration>::from_raw_table",
+          "old": 0,
+          "new": 516,
+          "delta": 516
+        },
+        {
+          "symbol": "oxifoc_core::runtime::detect::detect_server::<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::protocol::servers::F405Backend>::{closure#0}",
+          "old": 14848,
+          "new": 15324,
+          "delta": 476
+        },
+        {
+          "symbol": "<ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8> as ergot::interface_manager::Profile>::send::<ergot::well_known::SocketQueryResponse>",
+          "old": 448,
+          "new": 0,
+          "delta": -448
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<core::pin::PinMacroHelper<maitake_sync::wait_queue::Wait>>",
+          "old": 0,
+          "new": 444,
+          "delta": 444
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<maitake_sync::wait_queue::Wait>",
+          "old": 444,
+          "new": 0,
+          "delta": -444
+        },
+        {
+          "symbol": "<ergot::interface_manager::utils::cobs_stream::Sink<&bbqueue::queue::BBQueue<bbqueue::traits::storage::Inline<4096>, bbqueue::traits::coordination::cas::AtomicCoord, bbqueue::traits::notifier::maitake::MaiNotSpsc>> as ergot::interface_manager::InterfaceSink>::send_ty::<core::result::Result<ergot::well_known::SeedRouterAssignment, ergot::interface_manager::SeedAssignmentError>>",
+          "old": 1640,
+          "new": 2048,
+          "delta": 408
+        }
+      ]
+    },
+    "vesc6": {
+      "sections": {
+        ".rodata": {
+          "old": 18564,
+          "new": 18284,
+          "delta": -280
+        },
+        ".bss": {
+          "old": 33972,
+          "new": 33932,
+          "delta": -40
+        },
+        ".text": {
+          "old": 351860,
+          "new": 353404,
+          "delta": 1544
+        },
+        ".vector_table": {
+          "old": 392,
+          "new": 392,
+          "delta": 0
+        },
+        ".data": {
+          "old": 2300,
+          "new": 2300,
+          "delta": 0
+        }
+      },
+      "instructions": {
+        "bl": {
+          "old": 2879,
+          "new": 2844
+        },
+        "blx": {
+          "old": 325,
+          "new": 306
+        },
+        "vdiv.f32": {
+          "old": 238,
+          "new": 235
+        },
+        "vmov.f32": {
+          "old": 825,
+          "new": 826
+        },
+        "vsqrt.f32": {
+          "old": 26,
+          "new": 25
+        }
+      },
+      "symbol_changes": [
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}>>::poll",
+          "old": 172,
+          "new": 11974,
+          "delta": 11802
+        },
+        {
+          "symbol": "oxifoc_f405::protocol::servers::__protocol_servers_task::__protocol_servers_task_inner_function::{closure#0}",
+          "old": 11668,
+          "new": 0,
+          "delta": -11668
+        },
+        {
+          "symbol": "<embassy_usb::msos::RegistryPropertyFeatureDescriptor as embassy_usb::msos::Descriptor>::size",
+          "old": 0,
+          "new": 1368,
+          "delta": 1368
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 1232,
+          "new": 0,
+          "delta": -1232
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::phase_source_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::telemetry_config_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 1232,
+          "delta": 1232
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 0,
+          "new": 876,
+          "delta": 876
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<embassy_futures::join::MaybeDone<embassy_futures::join::Join3<oxifoc_core::runtime::servers::info_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, 2>::{closure#0}, oxifoc_core::runtime::servers::motor_command_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, oxifoc_core::timer::EmbassyTimer, 2>::{closure#0}, oxifoc_core::runtime::servers::fault_server<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::fault::F405Fault, 2>::{closure#0}>>>",
+          "old": 876,
+          "new": 0,
+          "delta": -876
+        },
+        {
+          "symbol": "oxifoc_f405::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}",
+          "old": 28324,
+          "new": 27726,
+          "delta": -598
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<ergot::socket::SocketHeader>> as core::fmt::Debug>::fmt",
+          "old": 574,
+          "new": 0,
+          "delta": -574
+        },
+        {
+          "symbol": "<&core::option::Option<core::ptr::non_null::NonNull<maitake_sync::wait_queue::Waiter>> as core::fmt::Debug>::fmt",
+          "old": 0,
+          "new": 574,
+          "delta": 574
+        },
+        {
+          "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__usb_task_task::__usb_task_task_inner_function::{closure#0}>>::poll",
+          "old": 6528,
+          "new": 7058,
+          "delta": 530
+        },
+        {
+          "symbol": "<oxifoc_core::foc::hall_sensor::HallCalibration>::from_raw_table",
+          "old": 0,
+          "new": 516,
+          "delta": 516
+        },
+        {
+          "symbol": "oxifoc_core::runtime::detect::detect_server::<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>, oxifoc_f405::protocol::servers::F405Backend>::{closure#0}",
+          "old": 14848,
+          "new": 15324,
+          "delta": 476
+        },
+        {
+          "symbol": "<ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8> as ergot::interface_manager::Profile>::send::<ergot::well_known::SocketQueryResponse>",
+          "old": 448,
+          "new": 0,
+          "delta": -448
+        },
+        {
+          "symbol": "core::ptr::drop_glue::<core::pin::PinMacroHelper<maitake_sync::wait_queue::Wait>>",
+          "old": 0,
+          "new": 444,
+          "delta": 444
+        },
+        {
+          "symbol": "core::ptr::drop_in_place::<maitake_sync::wait_queue::Wait>",
+          "old": 444,
+          "new": 0,
+          "delta": -444
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut bitbang_hal_ng::spi::SPI<embassy_stm32::gpio::Input, embassy_stm32::gpio::Output, embassy_stm32::gpio::Output, bitbang_hal_ng::delay::AsmDelay>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<bitbang_hal_ng::spi::Error<!>, !>>>::get_fault_status",
+          "old": 0,
+          "new": 416,
+          "delta": 416
+        },
+        {
+          "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut bitbang_hal_ng::spi::SPI<embassy_stm32::gpio::Input, embassy_stm32::gpio::Output, embassy_stm32::gpio::Output, bitbang_hal_ng::delay::AsmDelay>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<bitbang_hal_ng::spi::Error<core::convert::Infallible>, core::convert::Infallible>>>::get_fault_status",
+          "old": 416,
+          "new": 0,
+          "delta": -416
+        },
+        {
+          "symbol": "<ergot::interface_manager::utils::cobs_stream::Sink<&bbqueue::queue::BBQueue<bbqueue::traits::storage::Inline<4096>, bbqueue::traits::coordination::cas::AtomicCoord, bbqueue::traits::notifier::maitake::MaiNotSpsc>> as ergot::interface_manager::InterfaceSink>::send_ty::<core::result::Result<ergot::well_known::SeedRouterAssignment, ergot::interface_manager::SeedAssignmentError>>",
+          "old": 1640,
+          "new": 2048,
+          "delta": 408
+        },
+        {
+          "symbol": "<embassy_usb::msos::PropertyData>::size",
+          "old": 368,
+          "new": 0,
+          "delta": -368
+        }
+      ]
+    }
+  }
+}

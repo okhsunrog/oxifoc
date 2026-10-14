@@ -341,7 +341,7 @@ impl VirtualMotor {
             v += p.adc_noise_a * self.next_noise();
         }
         if p.adc_lsb_a > 0.0 {
-            v = libm::roundf(v / p.adc_lsb_a) * p.adc_lsb_a;
+            v = core::f32::math::round(v / p.adc_lsb_a) * p.adc_lsb_a;
         }
         v
     }
@@ -633,7 +633,7 @@ mod tests {
             out.omega_e
         );
         assert!(out.torque > 0.0, "torque should be positive");
-        let i_mag = libm::sqrtf(out.ia * out.ia + out.ib * out.ib + out.ic * out.ic);
+        let i_mag = core::f32::math::sqrt(out.ia * out.ia + out.ib * out.ib + out.ic * out.ic);
         assert!(
             i_mag > 0.3,
             "motor should carry current at low speed: |i|={i_mag}"
@@ -971,7 +971,7 @@ mod tests {
                     n += 1;
                 }
             }
-            libm::sqrtf(err_sq / n as f32)
+            core::f32::math::sqrt(err_sq / n as f32)
         };
 
         let uncompensated = run(false, 2.0, 0.0);
@@ -1157,7 +1157,7 @@ mod tests {
         // DC-L predictions |i| = V/|R + jωL_dc|.
         let pred_dc = |f_hz: f32| {
             let w = TAU * f_hz;
-            0.5 / libm::sqrtf(0.127f32 * 0.127 + (w * 86e-6) * (w * 86e-6))
+            0.5 / core::f32::math::sqrt(0.127f32 * 0.127 + (w * 86e-6) * (w * 86e-6))
         };
         // Low frequency: the eddy branch is invisible, DC L holds.
         let lo = amp_at(params, 50.0);

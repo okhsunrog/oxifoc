@@ -5,39 +5,19 @@
 //! on the G431 @ 170 MHz, see docs/perf-bench-2026-06-11.md). The functions
 //! here are the hot-path replacements:
 //!
-//! - [`sqrtf`]: the M4F `vsqrt.f32` instruction (IEEE correctly rounded —
-//!   bit-identical to libm, measured 25 vs 110 cycles) behind a target cfg,
-//!   libm elsewhere. No behavioral divergence between sim and hardware.
+//! - [`sqrtf`]: the compiler square-root intrinsic, lowered to `vsqrt.f32`
+//!   on M4F without inline assembly. Other targets choose their own lowering.
 //! - [`atan2f`]: a polynomial approximation (|err| ≤ ~0.011 rad), the same
 //!   pure-Rust code on every target — the simulation exercises exactly what
 //!   the firmware runs. 46 vs 169 cycles.
 
-/// Square root.
+/// Correctly rounded square root through the compiler intrinsic.
 ///
-/// On ARM with VFP (all our Cortex-M4F boards set `+vfp2`) this is the
-/// hardware `vsqrt.f32` instruction — IEEE correctly rounded, so results
-/// are bit-identical to `libm::sqrtf` (verified on target). Negative
-/// inputs return NaN, same as libm.
-#[cfg(all(target_arch = "arm", target_feature = "vfp2"))]
+/// On Cortex-M4F this lowers to `vsqrt.f32`; other targets select their
+/// own implementation. Negative inputs return NaN.
 #[inline(always)]
 pub fn sqrtf(x: f32) -> f32 {
-    let r: f32;
-    unsafe {
-        core::arch::asm!(
-            "vsqrt.f32 {o}, {i}",
-            o = out(sreg) r,
-            i = in(sreg) x,
-            options(pure, nomem, nostack),
-        )
-    };
-    r
-}
-
-/// Square root (portable fallback — bit-identical to the hardware path).
-#[cfg(not(all(target_arch = "arm", target_feature = "vfp2")))]
-#[inline(always)]
-pub fn sqrtf(x: f32) -> f32 {
-    libm::sqrtf(x)
+    core::f32::math::sqrt(x)
 }
 
 /// Fast atan2 — VESC-style polynomial (`utils_fast_atan2`).
@@ -83,6 +63,34 @@ mod tests {
         }
         assert_eq!(sqrtf(0.0), 0.0);
         assert!(sqrtf(-1.0).is_nan());
+    }
+
+    #[test]
+    fn sqrt_matches_libm_across_bit_patterns() {
+        // Include signed zero, subnormals, infinities and NaNs, then sample
+        // the full f32 bit space deterministically. NaN payloads may differ.
+        for bits in [
+            0,
+            0x8000_0000,
+            1,
+            0x007f_ffff,
+            0x0080_0000,
+            0x7f7f_ffff,
+            0x7f80_0000,
+            0xff80_0000,
+            0x7fc0_0000,
+        ]
+        .into_iter()
+        .chain((0..1_000_000u32).map(|i| i.wrapping_mul(2_654_435_761)))
+        {
+            let x = f32::from_bits(bits);
+            let actual = sqrtf(x);
+            let expected = libm::sqrtf(x);
+            assert!(
+                actual.to_bits() == expected.to_bits() || actual.is_nan() && expected.is_nan(),
+                "sqrt({bits:08x}): {actual:?} != {expected:?}"
+            );
+        }
     }
 
     #[test]

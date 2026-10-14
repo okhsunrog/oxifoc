@@ -6041,8 +6041,8 @@ mod tests {
                 // Crossing of the hall boundary (π/6 + k·π/3) inside the step.
                 let a0 = self.prev_angle;
                 let a1 = a0 + angle_difference(self.out.angle_rad, a0);
-                let k0 = libm::floorf((a0 - FRAC_PI_6) / FRAC_PI_3);
-                let k1 = libm::floorf((a1 - FRAC_PI_6) / FRAC_PI_3);
+                let k0 = core::f32::math::floor((a0 - FRAC_PI_6) / FRAC_PI_3);
+                let k1 = core::f32::math::floor((a1 - FRAC_PI_6) / FRAC_PI_3);
                 let frac = if k0 == k1 {
                     1.0
                 } else {

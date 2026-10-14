@@ -61,7 +61,7 @@ impl Position {
                 angle: a + TAU,
             };
         }
-        let whole = libm::floorf(a / TAU);
+        let whole = core::f32::math::floor(a / TAU);
         let turns = self.turns.wrapping_add(whole as i32);
         let angle = a - whole * TAU;
         // `a − whole·2π` can round to exactly 2π for a tiny negative `a`.

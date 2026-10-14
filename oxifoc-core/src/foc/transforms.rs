@@ -264,8 +264,8 @@ mod tests {
         let cos_theta = libm::cosf(theta);
         let (d, q) = park(alpha, beta, sin_theta, cos_theta);
 
-        let mag_ab = libm::sqrtf(alpha * alpha + beta * beta);
-        let mag_dq = libm::sqrtf(d * d + q * q);
+        let mag_ab = core::f32::math::sqrt(alpha * alpha + beta * beta);
+        let mag_dq = core::f32::math::sqrt(d * d + q * q);
 
         assert!(
             (mag_ab - mag_dq).abs() < EPSILON,

@@ -1675,7 +1675,6 @@ dependencies = [
  "embedded-storage-async",
  "ergot",
  "heapless 0.9.3",
- "libm",
  "mutex",
  "oxifoc-core",
  "postcard",

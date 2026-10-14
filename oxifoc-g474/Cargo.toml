@@ -60,7 +60,6 @@ static_cell = "2.1"
 assign-resources = "0.5.0"
 embedded-io-async = { version = "0.7", features = ["defmt"] }
 heapless = { version = "0.9.3", default-features = false, features = ["defmt"] }
-libm = { version = "0.2.16", default-features = false }
 
 # Persistent configuration storage
 sequential-storage = { version = "8.0", features = ["postcard", "defmt"] }

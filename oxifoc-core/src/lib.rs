@@ -70,6 +70,7 @@
 //! ```
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
+#![feature(core_float_math)]
 // The 20 kHz ISR hot path is GENERIC (FocDriver/PhaseManager/FocController
 // over platform types), so it monomorphizes into the DEVICE crate and
 // inherits its size-optimized profile — the per-package opt-level override
