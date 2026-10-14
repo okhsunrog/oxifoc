@@ -78,9 +78,8 @@
 // chops the ISR into cross-calls and struct returns become memcpys (SWD PC
 // sampling, tier-2 2026-07-06 and tier-3 2026-07-07). `#[optimize(speed)]`
 // on the hot entry points strips the minsize hint per-function wherever
-// they are instantiated. Nightly feature; the repo is nightly-pinned
-// (build-std in the device crates).
-#![cfg_attr(feature = "isr-speed", feature(optimize_attribute))]
+// they are instantiated. The attribute is stable on the pinned compiler;
+// nightly is still required for core_float_math and device build-std.
 // Firmware panic policy: this crate runs inside the FOC ISR of a vehicle.
 // Composes ON TOP of the shared [workspace.lints] table; the deliberate
 // fail-fast sites carry #[expect(..., reason = "...")]. Test code is

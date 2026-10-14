@@ -1,14 +1,13 @@
-# Repo-wide toolchain: the same nightly the device crates pin (they carry
-# their own copies of this file — keep the channel in sync). The host
-# workspace needs nightly too: oxifoc-core's `isr-speed` feature uses the
-# `optimize_attribute` nightly feature (ISR hot-path speed override under
-# the size-optimized device profile), and pinning one channel everywhere
-# keeps fmt/clippy/test behavior identical across the repo.
+# Repo-wide toolchain: keep the channel in sync with the STM32 and ESP
+# firmware crates, which carry their own copies of this file. The host
+# workspace also needs nightly for oxifoc-core's core_float_math APIs.
+# Pinning the same compiler keeps fmt/clippy/test behavior consistent across
+# these projects.
 #
 # The thumbv7em target + rust-src are here for the on-target test crates
 # (tests/stm32*), which have no toolchain file of their own and resolve to
 # this one.
 [toolchain]
-channel = "nightly-2026-03-22"
+channel = "nightly-2026-10-14"
 components = ["rust-src", "rustfmt", "clippy", "llvm-tools"]
 targets = ["thumbv7em-none-eabihf"]

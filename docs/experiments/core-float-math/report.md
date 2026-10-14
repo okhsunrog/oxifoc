@@ -1,9 +1,10 @@
 # core_float_math and nightly code generation experiment
 
 Measured 2026-10-15 on branch `experiment/core-float-math`, starting at
-`d774f09`. No flashing or hardware timing was performed. This branch retains
-all original toolchain pins; the new compiler was selected with
-`RUSTUP_TOOLCHAIN=nightly-2026-10-14` for the independent comparison.
+`d774f09`. No flashing or hardware timing was performed. The original
+comparisons retained the old pins and selected the new compiler with
+`RUSTUP_TOOLCHAIN=nightly-2026-10-14`. After the experiments, the branch
+adopts the tested October nightly; see [migration validation](../nightly-migration.md).
 
 ## Controlled variants
 
@@ -242,7 +243,7 @@ build or propose a software-sqrt configuration. Both q31 asm implementations
 are retained verbatim. The latest test worktree pins nightly-2026-10-14 in
 root and both STM32 toolchain files, replacing the board rustflags with only
 `-C target-feature=+vfp2sp`. The reproducible configuration changes are in
-`vfp2sp-toolchain.patch`; they are not applied to this branch's old pins.
+`vfp2sp-toolchain.patch`; these settings are now adopted on this branch.
 
 | Same core-math source | G474 flash | CF2 flash | VESC6 flash |
 |---|---:|---:|---:|

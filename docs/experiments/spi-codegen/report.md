@@ -269,6 +269,6 @@ retains changed symbols and sections. Full ELF/disassembly/build logs
 remain under the task directory. Build elapsed times are cache-dependent
 and are not compilation-speed benchmarks. No firmware was flashed or timed
 on hardware. The package-only setting is now enabled in both STM32
-`.cargo/config.toml` files on this experimental branch. Compiler pins and
-FP target flags remain as before; the measurements in this table explicitly
-select the October nightly and the vfp2sp configuration patch.
+`.cargo/config.toml` files on this experimental branch. The subsequent
+[nightly migration](../nightly-migration.md) also adopts the October pins
+and vfp2sp target settings used for these measurements.
