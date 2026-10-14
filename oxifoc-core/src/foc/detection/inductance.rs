@@ -36,8 +36,8 @@ use core::marker::PhantomData;
 use super::types::{DetectionError, InductanceParams};
 use crate::foc::trig::SinCos;
 
-use crate::foc::fast_math::sqrtf;
 use crate::foc::trig::LibmSinCos;
+use core::f32::math::sqrt as sqrtf;
 use microfft::real::rfft_32;
 
 /// Number of samples for FFT (must be power of 2)

@@ -8,7 +8,7 @@
 /// Based on VESC's motor size presets, each size maps to a maximum
 /// power loss (in Watts) that's safe for detection measurements.
 /// This prevents overheating during resistance/inductance measurements.
-use crate::foc::fast_math::sqrtf;
+use core::f32::math::sqrt as sqrtf;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

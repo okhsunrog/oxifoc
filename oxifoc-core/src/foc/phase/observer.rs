@@ -607,7 +607,7 @@ impl BackEmfObserver {
         // Raw (pre-correction) flux magnitude: the honest amplitude signal
         // for λ tracking and confidence, taken before centering/clamping
         // pull it onto the configured circle.
-        let flux_mag = crate::foc::fast_math::sqrtf(self.x1 * self.x1 + self.x2 * self.x2);
+        let flux_mag = core::f32::math::sqrt(self.x1 * self.x1 + self.x2 * self.x2);
 
         // Online λ adaptation (MESC MXLEMMING_LAMBDA / VESC lambda-comp):
         // slow first-order tracker, bounded. Adapts the clamp/centering

@@ -43,11 +43,11 @@ use super::types::{
 use super::voltage_pulse::VoltagePulseMeasurement;
 use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
-use crate::foc::fast_math::sqrtf;
 use crate::foc::transforms;
 use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
+use core::f32::math::sqrt as sqrtf;
 
 /// Conservative PI gains for detection (VESC-style).
 /// Motor parameters are unknown at detection time, so these must be safe

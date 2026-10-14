@@ -21,7 +21,7 @@
 //! 4. Final accurate measurement at that safe current
 
 use super::types::{DetectionError, MotorSize};
-use crate::foc::fast_math::sqrtf;
+use core::f32::math::sqrt as sqrtf;
 
 /// Minimum valid resistance in Ohms (below this suggests short circuit)
 const MIN_VALID_RESISTANCE: f32 = 0.001;

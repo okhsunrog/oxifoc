@@ -17,7 +17,6 @@ use crate::foc::current_offset::{
     CurrentOffsetCalibrator, CurrentOffsetError, CurrentOffsetMethod, CurrentOffsetReport,
     CurrentOffsetRequest, float_all,
 };
-use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "runtime")]
 use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault, VOLTAGE_HYSTERESIS_MV};
 use crate::foc::phase::{PhaseInput, PhaseProvider};
@@ -36,6 +35,7 @@ use crate::motor::failsafe::{
 };
 #[cfg(feature = "storage")]
 use crate::storage::CurrentLimitsConfig;
+use core::f32::math::sqrt as sqrtf;
 
 // Re-export ControlMode from types (single source of truth)
 pub use crate::types::ControlMode;

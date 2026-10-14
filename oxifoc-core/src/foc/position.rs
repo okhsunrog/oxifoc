@@ -12,8 +12,8 @@
 
 use core::f32::consts::TAU;
 
-use crate::foc::fast_math::sqrtf;
 use crate::foc::{angle_difference, wrap_angle};
+use core::f32::math::sqrt as sqrtf;
 
 /// An unwrapped electrical position: whole turns plus the angle within the
 /// turn. A plain f32 accumulator loses the fraction over a ride (at 10⁵ rad

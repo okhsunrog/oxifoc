@@ -31,7 +31,7 @@
 //! - λ = flux linkage (Wb)
 
 use super::types::{DetectionError, FluxLinkageParams};
-use crate::foc::fast_math::sqrtf;
+use core::f32::math::sqrt as sqrtf;
 
 /// Minimum valid flux linkage in Weber
 const MIN_VALID_FLUX: f32 = 0.0001; // 0.1 mWb

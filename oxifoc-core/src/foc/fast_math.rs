@@ -1,24 +1,13 @@
 //! Fast scalar math for the FOC hot path.
 //!
 //! `libm` is written for accuracy, not for a 8500-cycle ISR budget: on our
-//! Cortex-M4F targets `sqrtf` costs ~110 cycles and `atan2f` ~170 (measured
+//! Cortex-M4F targets `atan2f` costs ~170 cycles (measured
 //! on the G431 @ 170 MHz, see docs/perf-bench-2026-06-11.md). The functions
 //! here are the hot-path replacements:
 //!
-//! - [`sqrtf`]: the compiler square-root intrinsic, lowered to `vsqrt.f32`
-//!   on M4F without inline assembly. Other targets choose their own lowering.
 //! - [`atan2f`]: a polynomial approximation (|err| ≤ ~0.011 rad), the same
 //!   pure-Rust code on every target — the simulation exercises exactly what
 //!   the firmware runs. 46 vs 169 cycles.
-
-/// Correctly rounded square root through the compiler intrinsic.
-///
-/// On Cortex-M4F this lowers to `vsqrt.f32`; other targets select their
-/// own implementation. Negative inputs return NaN.
-#[inline(always)]
-pub fn sqrtf(x: f32) -> f32 {
-    core::f32::math::sqrt(x)
-}
 
 /// Fast atan2 — VESC-style polynomial (`utils_fast_atan2`).
 ///
@@ -53,6 +42,7 @@ pub fn atan2f(y: f32, x: f32) -> f32 {
 mod tests {
     use super::*;
     use core::f32::consts::PI;
+    use core::f32::math::sqrt as sqrtf;
 
     #[test]
     fn sqrt_matches_libm() {

@@ -14,9 +14,9 @@ use super::{
     trig::{LibmSinCos, SinCos},
 };
 use crate::foc::clamp_f32;
-use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "storage")]
 use crate::storage::MotorParamsConfig;
+use core::f32::math::sqrt as sqrtf;
 
 /// Output of a single FOC current-loop step
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -795,8 +795,7 @@ mod tests {
                     let telem = foc.step((2.0, -1.0, -1.0), 0.7, 0.0, 20.0, 800, DT);
 
                     let v_limit = foc.vbus() * foc.modulation_limit();
-                    let v_mag =
-                        $crate::foc::fast_math::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+                    let v_mag = ::core::f32::math::sqrt(telem.vd * telem.vd + telem.vq * telem.vq);
                     assert!(
                         v_mag <= v_limit + 1e-6,
                         "voltage magnitude {} exceeds limit {}",
@@ -881,7 +880,7 @@ mod tests {
                     let v_limit =
                         24.0 * FocController::<SvpwmModulator, $sincos>::DEFAULT_MODULATION_LIMIT;
                     let telem_saturated = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 100.0, 1000, 0.001);
-                    let v_mag = $crate::foc::fast_math::sqrtf(
+                    let v_mag = ::core::f32::math::sqrt(
                         telem_saturated.vd * telem_saturated.vd
                             + telem_saturated.vq * telem_saturated.vq,
                     );

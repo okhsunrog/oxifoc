@@ -32,7 +32,6 @@ use crate::foc::current_offset::{
 use crate::foc::detection::types::{
     DetectionError, FluxLinkageParams, InductanceParams, MotorSize, ResistanceParams,
 };
-use crate::foc::fast_math::sqrtf;
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use crate::icd::DetectEndpoint;
 use crate::motor::ControlMode;
@@ -40,6 +39,7 @@ use crate::state::CMD_CHANNEL;
 use crate::state::DriverCommand;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse, ReqId};
+use core::f32::math::sqrt as sqrtf;
 
 /// The platform-specific half of detection: the raw measurements, bound to the
 /// hardware (or to the virtual-motor sim). Everything else — parameter

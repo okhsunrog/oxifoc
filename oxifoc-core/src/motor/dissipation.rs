@@ -28,7 +28,7 @@
 //! modelled, and the inverter's own losses add to it — both on the safe
 //! (less charge) side.
 
-use crate::foc::fast_math::sqrtf;
+use core::f32::math::sqrt as sqrtf;
 
 /// The winding parameters the power balance runs on.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -20,8 +20,9 @@
 //! [`READY_MIN_VELOCITY`]: super::observer::READY_MIN_VELOCITY
 
 use crate::foc::clamp_f32;
-use crate::foc::fast_math::{atan2f, sqrtf};
+use crate::foc::fast_math::atan2f;
 use crate::foc::wrap_angle;
+use core::f32::math::sqrt as sqrtf;
 
 /// Ramp current soft-start (s): the torque command scales 0 → 1 over this
 /// window at ramp entry (see [`SensorlessStartup::current_scale`]).

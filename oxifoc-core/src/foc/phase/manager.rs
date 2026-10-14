@@ -13,7 +13,6 @@ use super::observer::{Observer, ObserverInput};
 use super::provider::{PhaseInput, PhaseOutput, PhaseProvider};
 use super::source::{PhaseSource, PhaseSourceError};
 use super::startup::{ConfirmResult, DeadshortResult, SensorlessStartup, StartupPhase};
-use crate::foc::fast_math::sqrtf;
 use crate::foc::hall_calibration::HallCalibrationResult;
 use crate::foc::hall_sensor::HallFaultKind;
 use crate::foc::sensors::{AngleSample, AngleSensor, HallSensorTrait, NoSensor};
@@ -22,6 +21,7 @@ use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::{angle_difference, wrap_angle};
 #[cfg(feature = "storage")]
 use crate::storage::RuntimeConfig;
+use core::f32::math::sqrt as sqrtf;
 
 /// Hysteresis band for the sharp HFI↔sensor crossovers (fraction of the
 /// switch velocity). Switch up at `switch_vel`, back down only below
