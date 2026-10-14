@@ -1,0 +1,14 @@
+# Additional config for STM32 firmware; retain the HAL=115 override in .cargo/config.toml.
+# Run from oxifoc-f405 or oxifoc-g474:
+# cargo build --release --locked --config ../docs/experiments/mir-threshold-sweep/balanced.toml
+[profile.release.package.ergot]
+rustflags = ["-Zinline-mir-hint-threshold=50"]
+
+[profile.release.package.postcard]
+rustflags = ["-Zinline-mir-hint-threshold=0"]
+
+[profile.release.package.bbqueue]
+rustflags = ["-Zinline-mir-hint-threshold=200"]
+
+[profile.release.package.sequential-storage]
+rustflags = ["-Zinline-mir-hint-threshold=50"]

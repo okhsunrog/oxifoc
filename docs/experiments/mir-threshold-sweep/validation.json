@@ -1,0 +1,231 @@
+{
+  "scope_probe": {
+    "global_hint_threshold": 75,
+    "hal_hint_threshold": 115,
+    "units": [
+      {
+        "pkg_id": "git+https://github.com/embassy-rs/embassy.git?rev=98d847be57f3ea022ce05fe9b95ab3639a1e0a93#embassy-stm32@0.6.0",
+        "platform": "thumbv7em-none-eabihf",
+        "profile": {
+          "name": "release",
+          "opt_level": "3",
+          "lto": "fat",
+          "codegen_backend": null,
+          "codegen_units": 1,
+          "debuginfo": 2,
+          "split_debuginfo": null,
+          "debug_assertions": false,
+          "overflow_checks": false,
+          "rpath": false,
+          "incremental": false,
+          "panic": "unwind",
+          "strip": {
+            "deferred": "None"
+          },
+          "rustflags": [
+            "-Zinline-mir-hint-threshold=115"
+          ],
+          "trim_paths": "none"
+        },
+        "target": "embassy_stm32"
+      },
+      {
+        "pkg_id": "git+https://github.com/okhsunrog/ergot?rev=e93b03b#0.12.0",
+        "platform": "thumbv7em-none-eabihf",
+        "profile": {
+          "name": "release",
+          "opt_level": "3",
+          "lto": "fat",
+          "codegen_backend": null,
+          "codegen_units": 1,
+          "debuginfo": 2,
+          "split_debuginfo": null,
+          "debug_assertions": false,
+          "overflow_checks": false,
+          "rpath": false,
+          "incremental": false,
+          "panic": "unwind",
+          "strip": {
+            "deferred": "None"
+          },
+          "rustflags": [
+            "-Zinline-mir-hint-threshold=75"
+          ],
+          "trim_paths": "none"
+        },
+        "target": "ergot"
+      },
+      {
+        "pkg_id": "path+file:///home/okhsunrog/tmp_zfs/codex_tmp/mir-threshold-sweep/source/oxifoc-core#0.1.0",
+        "platform": "thumbv7em-none-eabihf",
+        "profile": {
+          "name": "release",
+          "opt_level": "3",
+          "lto": "fat",
+          "codegen_backend": null,
+          "codegen_units": 1,
+          "debuginfo": 2,
+          "split_debuginfo": null,
+          "debug_assertions": false,
+          "overflow_checks": false,
+          "rpath": false,
+          "incremental": true,
+          "panic": "unwind",
+          "strip": {
+            "deferred": "None"
+          },
+          "rustflags": [
+            "-Zinline-mir-hint-threshold=75"
+          ],
+          "trim_paths": "none"
+        },
+        "target": "oxifoc_core"
+      },
+      {
+        "pkg_id": "path+file:///home/okhsunrog/tmp_zfs/codex_tmp/mir-threshold-sweep/source/oxifoc-f405#0.1.0",
+        "platform": "thumbv7em-none-eabihf",
+        "profile": {
+          "name": "release",
+          "opt_level": "3",
+          "lto": "fat",
+          "codegen_backend": null,
+          "codegen_units": 1,
+          "debuginfo": 2,
+          "split_debuginfo": null,
+          "debug_assertions": false,
+          "overflow_checks": false,
+          "rpath": false,
+          "incremental": true,
+          "panic": "unwind",
+          "strip": {
+            "deferred": "None"
+          },
+          "rustflags": [
+            "-Zinline-mir-hint-threshold=75"
+          ],
+          "trim_paths": "none"
+        },
+        "target": "oxifoc-f405"
+      }
+    ]
+  },
+  "esp_unit_opt_level_counts": {
+    "target:s": 162,
+    "host:0": 138
+  },
+  "host_tests": {
+    "opt_level": 3,
+    "incremental": false,
+    "global_hint_threshold": 500,
+    "packages": {
+      "ergot": 50,
+      "postcard": 0,
+      "bbqueue": 200,
+      "sequential-storage": 50
+    },
+    "core_features": [
+      "runtime",
+      "virtual-motor",
+      "storage",
+      "std",
+      "delivery",
+      "hfi",
+      "hfi-detect"
+    ],
+    "passed": {
+      "core_unit": 419,
+      "host_lib_unit": 14,
+      "core_doctest": 11
+    },
+    "ignored": {
+      "core_unit": 2,
+      "core_doctest": 18
+    },
+    "log": "/home/okhsunrog/tmp_zfs/codex_tmp/mir-threshold-sweep/release-tests.log"
+  },
+  "hardware_execution": false,
+  "g474_q31_test": {
+    "compiled_only": true,
+    "preset": "size.toml",
+    "hal_hint_threshold": 115,
+    "elf": "/home/okhsunrog/tmp_zfs/codex_tmp/mir-threshold-sweep/q31-build/thumbv7em-none-eabihf/release/build/oxifoc-tests-g474/c5bd6e53412edabc/out/foc-c5bd6e53412edabc",
+    "elf_sha256": "c07c11725fd343ab1a6adcc5765ab1ee84ac95035ce8fe28ddabf733a4552322",
+    "scaled_vcvt_sites": 35,
+    "instructions": [
+      " 80003dc:\tvcvt.s32.f32\ts4, s4, #31",
+      " 8000442:\tvcvt.f32.s32\ts6, s6, #31",
+      " 800044a:\tvcvt.f32.s32\ts8, s8, #31",
+      " 8000c54:\tvcvt.s32.f32\ts0, s0, #31",
+      " 8000c60:\tvcvt.f32.s32\ts18, s18, #31",
+      " 8000c84:\tvcvt.s32.f32\ts2, s2, #31",
+      " 8000c90:\tvcvt.f32.s32\ts18, s18, #31",
+      " 8000cb0:\tvcvt.s32.f32\ts2, s2, #31",
+      " 8000cbc:\tvcvt.f32.s32\ts18, s18, #31",
+      " 8000cda:\tvcvt.s32.f32\ts2, s2, #31",
+      " 8000ce6:\tvcvt.f32.s32\ts18, s18, #31",
+      " 8000d04:\tvcvt.s32.f32\ts2, s2, #31",
+      " 8000d10:\tvcvt.f32.s32\ts18, s18, #31",
+      " 8000d2e:\tvcvt.s32.f32\ts2, s2, #31",
+      " 8000d3a:\tvcvt.f32.s32\ts18, s18, #31",
+      " 8000d58:\tvcvt.s32.f32\ts2, s2, #31",
+      " 8000d64:\tvcvt.f32.s32\ts18, s18, #31",
+      " 8000eb2:\tvcvt.s32.f32\ts12, s12, #31",
+      " 8000eec:\tvcvt.f32.s32\ts26, s26, #31",
+      " 8000ef8:\tvcvt.f32.s32\ts24, s24, #31",
+      " 8001262:\tvcvt.s32.f32\ts0, s0, #31",
+      " 80012a6:\tvcvt.f32.s32\ts0, s0, #31",
+      " 80012b4:\tvcvt.f32.s32\ts2, s2, #31",
+      " 80013a8:\tvcvt.s32.f32\ts0, s0, #31",
+      " 800140c:\tvcvt.f32.s32\ts2, s2, #31",
+      " 8001418:\tvcvt.f32.s32\ts6, s6, #31",
+      " 800149c:\tvcvt.s32.f32\ts8, s8, #31",
+      " 80014ec:\tvcvt.f32.s32\ts10, s10, #31",
+      " 80014f8:\tvcvt.f32.s32\ts12, s12, #31",
+      " 8001570:\tvcvt.s32.f32\ts10, s10, #31",
+      " 80015bc:\tvcvt.f32.s32\ts10, s10, #31",
+      " 80015c8:\tvcvt.f32.s32\ts12, s12, #31",
+      " 8001640:\tvcvt.s32.f32\ts10, s10, #31",
+      " 8001688:\tvcvt.f32.s32\ts10, s10, #31",
+      " 8001694:\tvcvt.f32.s32\ts12, s12, #31"
+    ],
+    "asm": "/home/okhsunrog/tmp_zfs/codex_tmp/mir-threshold-sweep/q31-test.asm"
+  },
+  "native_config_checks": [
+    {
+      "board": "cf2",
+      "native_case": "native-balanced",
+      "cli_case": "balanced",
+      "identical_elf_sha256": "af9fa4f8ab8a82c877888174ae6e10e07bc082c7cead2829ec193c2605e647c2"
+    },
+    {
+      "board": "cf2",
+      "native_case": "native-size",
+      "cli_case": "balanced-noinc-global500",
+      "identical_elf_sha256": "c6a93278d24f53d221eded72c00e05c462e0ac1572e16b7bf52bc9eb58126a7b"
+    },
+    {
+      "board": "g474",
+      "native_case": "native-balanced",
+      "cli_case": "balanced",
+      "identical_elf_sha256": "e13cc508487a9c89479322503e5949a03e07faecf25670dc98355e6c4edad19c"
+    },
+    {
+      "board": "g474",
+      "native_case": "native-size",
+      "cli_case": "balanced-noinc-global500",
+      "identical_elf_sha256": "2c6338d2560f5978beb9ef183c10cadd27b607c5c3b26e55ae84d7e307eac053"
+    },
+    {
+      "board": "vesc6-mk5",
+      "native_case": "native-balanced",
+      "cli_case": "balanced",
+      "identical_elf_sha256": "047f746311ce1e3c4c6a0a05e40ef25631b8d67f45b8dcbf3479c74ad0f9125b"
+    },
+    {
+      "board": "vesc6-mk5",
+      "native_case": "native-size",
+      "cli_case": "balanced-noinc-global500",
+      "identical_elf_sha256": "4627ccfba9c33d8d1872208d2db104a2a885d08443cbe560cf4bda5d305d322b"
+    }
+  ]
+}

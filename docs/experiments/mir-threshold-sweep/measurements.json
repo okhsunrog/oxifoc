@@ -1,0 +1,6599 @@
+{
+  "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+  "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+  "rustc": "rustc 1.101.0-nightly (822182db4 2026-10-13)\nbinary: rustc\ncommit-hash: 822182db4c4a1827256881d8c7aa685f0bcf2b11\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.101.0-nightly\nLLVM version: 23.1.3\n",
+  "image_measure": "ELF text+data; on STM32 equals vector_table+text+rodata+data; ESP includes instruction RAM",
+  "static_ram_measure": "ELF data+bss; excludes runtime stack/heap high-water mark",
+  "artifact_root": "/home/okhsunrog/tmp_zfs/codex_tmp/mir-threshold-sweep/cases",
+  "cases": [
+    {
+      "board": "bridge",
+      "label": "balanced",
+      "global_threshold": null,
+      "packages": {
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 909234,
+      "static_ram": 94460,
+      "sections": {
+        ".defmt": 189,
+        ".trap": 1632,
+        ".rwtext": 4708,
+        ".rwtext.wifi": 25268,
+        ".data": 10476,
+        ".data.wifi": 48,
+        ".bss": 18448,
+        ".noinit": 0,
+        ".flash.appdesc": 256,
+        ".rodata_merge": 0,
+        ".rodata": 33800,
+        ".rodata.wifi": 0,
+        ".text_gap": 31480,
+        ".text": 410038,
+        ".rtc_fast.text": 0,
+        ".rtc_fast.data": 0,
+        ".rtc_fast.bss": 0,
+        ".rtc_fast.persistent": 0,
+        ".stack": 391528,
+        ".dram2_uninit": 65536,
+        ".espressif.metadata": 15,
+        ".debug_loc": 1040137,
+        ".debug_abbrev": 7186,
+        ".debug_info": 2172858,
+        ".debug_aranges": 43040,
+        ".debug_ranges": 241656,
+        ".debug_str": 3666505,
+        ".comment": 281,
+        ".riscv.attributes": 99,
+        ".debug_frame": 81572,
+        ".debug_line": 353225
+      },
+      "elf_sha256": "074374ae0cf8706c0c77927ee1f485a245804f8350494822cca662daf9059b74",
+      "elapsed_seconds": 10.051,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {},
+      "critical_symbols": {}
+    },
+    {
+      "board": "bridge",
+      "label": "current",
+      "global_threshold": null,
+      "packages": {},
+      "image_bytes": 909234,
+      "static_ram": 94460,
+      "sections": {
+        ".defmt": 189,
+        ".trap": 1632,
+        ".rwtext": 4708,
+        ".rwtext.wifi": 25268,
+        ".data": 10476,
+        ".data.wifi": 48,
+        ".bss": 18448,
+        ".noinit": 0,
+        ".flash.appdesc": 256,
+        ".rodata_merge": 0,
+        ".rodata": 33800,
+        ".rodata.wifi": 0,
+        ".text_gap": 31480,
+        ".text": 410038,
+        ".rtc_fast.text": 0,
+        ".rtc_fast.data": 0,
+        ".rtc_fast.bss": 0,
+        ".rtc_fast.persistent": 0,
+        ".stack": 391528,
+        ".dram2_uninit": 65536,
+        ".espressif.metadata": 15,
+        ".debug_loc": 1040137,
+        ".debug_abbrev": 7186,
+        ".debug_info": 2172858,
+        ".debug_aranges": 43040,
+        ".debug_ranges": 241656,
+        ".debug_str": 3666438,
+        ".comment": 281,
+        ".riscv.attributes": 99,
+        ".debug_frame": 81572,
+        ".debug_line": 353225
+      },
+      "elf_sha256": "a2f800df3449893e4b1e1b3faca2f842288356d6d59c6593c26b8769d4f324e4",
+      "elapsed_seconds": 74.588,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {},
+      "critical_symbols": {}
+    },
+    {
+      "board": "bridge",
+      "label": "global-51",
+      "global_threshold": 51,
+      "packages": {},
+      "image_bytes": 909348,
+      "static_ram": 94460,
+      "sections": {
+        ".defmt": 189,
+        ".trap": 1632,
+        ".rwtext": 4708,
+        ".rwtext.wifi": 25268,
+        ".data": 10476,
+        ".data.wifi": 48,
+        ".bss": 18448,
+        ".noinit": 0,
+        ".flash.appdesc": 256,
+        ".rodata_merge": 0,
+        ".rodata": 33800,
+        ".rodata.wifi": 0,
+        ".text_gap": 31480,
+        ".text": 410152,
+        ".rtc_fast.text": 0,
+        ".rtc_fast.data": 0,
+        ".rtc_fast.bss": 0,
+        ".rtc_fast.persistent": 0,
+        ".stack": 391528,
+        ".dram2_uninit": 65536,
+        ".espressif.metadata": 15,
+        ".debug_loc": 1040303,
+        ".debug_abbrev": 7186,
+        ".debug_info": 2173271,
+        ".debug_aranges": 43048,
+        ".debug_ranges": 241664,
+        ".debug_str": 3668044,
+        ".comment": 281,
+        ".riscv.attributes": 99,
+        ".debug_frame": 81624,
+        ".debug_line": 353553
+      },
+      "elf_sha256": "b5a866e962ebf241db8f28331e3c123fc4f6295ad9c2238a43bab9f555208026",
+      "elapsed_seconds": 49.697,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {},
+      "critical_symbols": {}
+    },
+    {
+      "board": "cf2",
+      "label": "balanced",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 368308,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 346932,
+        ".rodata": 18684,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1325485,
+        ".debug_abbrev": 10786,
+        ".debug_info": 2689295,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 482064,
+        ".debug_str": 5589407,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18520,
+        ".debug_line": 466418
+      },
+      "elf_sha256": "af9fa4f8ab8a82c877888174ae6e10e07bc082c7cead2829ec193c2605e647c2",
+      "elapsed_seconds": 18.957,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-hal300",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 300,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 368264,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 346888,
+        ".rodata": 18684,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1324881,
+        ".debug_abbrev": 10653,
+        ".debug_info": 2664346,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 482200,
+        ".debug_str": 5589499,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18520,
+        ".debug_line": 466433
+      },
+      "elf_sha256": "0cb6e355e75bcff76843859f235fb3de37d76d2bf8e180db496998ed382c1a9a",
+      "elapsed_seconds": 18.301,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-lean",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200
+      },
+      "image_bytes": 368516,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 347124,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1326377,
+        ".debug_abbrev": 10672,
+        ".debug_info": 2655784,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 482144,
+        ".debug_str": 5589230,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18524,
+        ".debug_line": 466283
+      },
+      "elf_sha256": "2a8124ba92eacccd6c7b8990c276bc076a78aeb0de09eaaa372a06e486357c79",
+      "elapsed_seconds": 17.53,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-noinc",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 367284,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 345952,
+        ".rodata": 18640,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1320165,
+        ".debug_abbrev": 10186,
+        ".debug_info": 2743489,
+        ".debug_aranges": 26640,
+        ".debug_ranges": 478560,
+        ".debug_str": 5594115,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18336,
+        ".debug_line": 461061
+      },
+      "elf_sha256": "e34fed4ec0bfae1611cc9037cbe0b7df47f4341712e39f545fd1954ded8f6ca0",
+      "elapsed_seconds": 15.404,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 109,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1624,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13212,
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "bytes": 17320,
+          "static_bl_blx": 154
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-noinc-core",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 367168,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 345800,
+        ".rodata": 18676,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1325215,
+        ".debug_abbrev": 10669,
+        ".debug_info": 2686527,
+        ".debug_aranges": 26640,
+        ".debug_ranges": 478200,
+        ".debug_str": 5592296,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18372,
+        ".debug_line": 465095
+      },
+      "elf_sha256": "3e80e07ea4fd77b59f1e683a5d8a86183abe542ea41fd4915ccee31b09e20bd8",
+      "elapsed_seconds": 13.346,
+      "incremental": "manifest",
+      "nonincremental_packages": [
+        "oxifoc-core"
+      ],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 109,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3060,
+          "static_bl_blx": 12
+        },
+        "step_direct_voltage": {
+          "bytes": 1944,
+          "static_bl_blx": 12
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1360,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13268,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-noinc-global1000",
+      "global_threshold": 1000,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 366116,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 344816,
+        ".rodata": 18608,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1312495,
+        ".debug_abbrev": 10226,
+        ".debug_info": 2792066,
+        ".debug_aranges": 26600,
+        ".debug_ranges": 479760,
+        ".debug_str": 5579897,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18108,
+        ".debug_line": 458565
+      },
+      "elf_sha256": "fd7c231cfeca9d739a01f07f1256d2f5a33cd16ffdce9c5d40fc2cd318f9882b",
+      "elapsed_seconds": 21.857,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 26,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 112,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1640,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13812,
+          "static_bl_blx": 113
+        },
+        "ADC_body": {
+          "bytes": 16592,
+          "static_bl_blx": 153
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-noinc-global200",
+      "global_threshold": 200,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 366284,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 344984,
+        ".rodata": 18608,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1323316,
+        ".debug_abbrev": 10163,
+        ".debug_info": 2774895,
+        ".debug_aranges": 26624,
+        ".debug_ranges": 480456,
+        ".debug_str": 5583119,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18256,
+        ".debug_line": 459776
+      },
+      "elf_sha256": "318a311c20a0875c8de58bfe82581e2ce2630bc5aec2a625da0504c9b1a9a77b",
+      "elapsed_seconds": 16.704,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 112,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1640,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13160,
+          "static_bl_blx": 114
+        },
+        "ADC_body": {
+          "bytes": 16488,
+          "static_bl_blx": 154
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-noinc-global2000",
+      "global_threshold": 2000,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 365980,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 344680,
+        ".rodata": 18608,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1314941,
+        ".debug_abbrev": 10226,
+        ".debug_info": 2791112,
+        ".debug_aranges": 26600,
+        ".debug_ranges": 480040,
+        ".debug_str": 5582612,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18108,
+        ".debug_line": 458586
+      },
+      "elf_sha256": "2757c7dcd82a6e9360b0250b9217055fc51dc9ae4927f2246117881ff9e75949",
+      "elapsed_seconds": 57.226,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 26,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 112,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1640,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13812,
+          "static_bl_blx": 113
+        },
+        "ADC_body": {
+          "bytes": 16456,
+          "static_bl_blx": 152
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-noinc-global300",
+      "global_threshold": 300,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 366816,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 345516,
+        ".rodata": 18608,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1318310,
+        ".debug_abbrev": 10169,
+        ".debug_info": 2787522,
+        ".debug_aranges": 26600,
+        ".debug_ranges": 479344,
+        ".debug_str": 5582139,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18108,
+        ".debug_line": 459361
+      },
+      "elf_sha256": "8a79136cb3dbecbd684812a8b04ccf821169263eb1cc9abc4c0f95069f59fcfa",
+      "elapsed_seconds": 25.823,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 26,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 112,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1832,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1672,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13952,
+          "static_bl_blx": 113
+        },
+        "ADC_body": {
+          "bytes": 16492,
+          "static_bl_blx": 152
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-noinc-global50",
+      "global_threshold": 50,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 368244,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 346912,
+        ".rodata": 18640,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1322779,
+        ".debug_abbrev": 10087,
+        ".debug_info": 2737580,
+        ".debug_aranges": 26632,
+        ".debug_ranges": 480080,
+        ".debug_str": 5595195,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18324,
+        ".debug_line": 461623
+      },
+      "elf_sha256": "a7470faf7eed04a17654b9c6bcb7abfcc4168b1f1bad14ed953aa1e5d455afd7",
+      "elapsed_seconds": 17.716,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 109,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3144,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1948,
+          "static_bl_blx": 8
+        },
+        "step_velocity_control": {
+          "bytes": 1736,
+          "static_bl_blx": 2
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13240,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-noinc-global500",
+      "global_threshold": 500,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 366100,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 344800,
+        ".rodata": 18608,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1312421,
+        ".debug_abbrev": 10226,
+        ".debug_info": 2786140,
+        ".debug_aranges": 26600,
+        ".debug_ranges": 479720,
+        ".debug_str": 5582057,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18108,
+        ".debug_line": 458574
+      },
+      "elf_sha256": "c6a93278d24f53d221eded72c00e05c462e0ac1572e16b7bf52bc9eb58126a7b",
+      "elapsed_seconds": 18.74,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 26,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 112,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1640,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13812,
+          "static_bl_blx": 113
+        },
+        "ADC_body": {
+          "bytes": 16592,
+          "static_bl_blx": 153
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "balanced-noinc-root",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 367892,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 346536,
+        ".rodata": 18664,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1325985,
+        ".debug_abbrev": 10153,
+        ".debug_info": 2719578,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 483088,
+        ".debug_str": 5591748,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18524,
+        ".debug_line": 461674
+      },
+      "elf_sha256": "101ab2cdec65e2ae010f13b5ce69941cf61e232b2bec59a3f2031622916a40ee",
+      "elapsed_seconds": 12.877,
+      "incremental": "manifest",
+      "nonincremental_packages": [
+        "oxifoc-f405"
+      ],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3128,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 952,
+          "static_bl_blx": 10
+        },
+        "step_current_control": {
+          "bytes": 1648,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "combo-ep",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 51,
+        "postcard": 51
+      },
+      "image_bytes": 369884,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 348492,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1337276,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2666751,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 486648,
+        ".debug_str": 5594485,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18532,
+        ".debug_line": 467417
+      },
+      "elf_sha256": "db956297d386483f5c5c0456ce28d46a922f7cd37690270601c58446d2c92b18",
+      "elapsed_seconds": 22.217,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "combo-epb",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 51,
+        "postcard": 51,
+        "bbqueue": 500
+      },
+      "image_bytes": 369300,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 347908,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1338556,
+        ".debug_abbrev": 10658,
+        ".debug_info": 2662913,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 484904,
+        ".debug_str": 5594592,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18528,
+        ".debug_line": 466296
+      },
+      "elf_sha256": "92137d8c7b9a9e12d4ddbb5049a63c3cff674b9e3fdc668669614ad04994f727",
+      "elapsed_seconds": 17.505,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "combo-epbs",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 51,
+        "postcard": 51,
+        "bbqueue": 500,
+        "sequential-storage": 51
+      },
+      "image_bytes": 369084,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 347708,
+        ".rodata": 18684,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1337648,
+        ".debug_abbrev": 10658,
+        ".debug_info": 2663308,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 484808,
+        ".debug_str": 5594771,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18524,
+        ".debug_line": 466424
+      },
+      "elf_sha256": "b0c73ea58efbfa3d6a2cf21044599457dff41bcccf420c2378ba6776bbd43cca",
+      "elapsed_seconds": 16.368,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "combo-epbs-hal300",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 300,
+        "ergot": 51,
+        "postcard": 51,
+        "bbqueue": 500,
+        "sequential-storage": 51
+      },
+      "image_bytes": 369044,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 347668,
+        ".rodata": 18684,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1337052,
+        ".debug_abbrev": 10639,
+        ".debug_info": 2671355,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 484952,
+        ".debug_str": 5594862,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18524,
+        ".debug_line": 466446
+      },
+      "elf_sha256": "eb2cc89daef258e48515d49987ce00f87f7c4b9d577277cd80de0e7bd3626b19",
+      "elapsed_seconds": 18.428,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "current",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364937,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690925,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490280,
+        ".debug_str": 5596774,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470384
+      },
+      "elf_sha256": "106a18fd67f7605da172cad89d8c5fb176302ae6fa1db759f851156460686de6",
+      "elapsed_seconds": 49.574,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-0",
+      "global_threshold": 0,
+      "packages": {},
+      "image_bytes": 373592,
+      "static_ram": 36244,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351920,
+        ".rodata": 18984,
+        ".data": 2296,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1369142,
+        ".debug_abbrev": 10562,
+        ".debug_info": 2596100,
+        ".debug_aranges": 26728,
+        ".debug_ranges": 493528,
+        ".debug_str": 5568694,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18668,
+        ".debug_line": 473105
+      },
+      "elf_sha256": "bce6074b27daa65744c8de4fcbf0f256518aac092ccbafd62c718e918e451891",
+      "elapsed_seconds": 52.322,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13000,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 1264,
+          "static_bl_blx": 1
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-100",
+      "global_threshold": 100,
+      "packages": {},
+      "image_bytes": 373780,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 352068,
+        ".rodata": 19020,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1366832,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2699590,
+        ".debug_aranges": 26720,
+        ".debug_ranges": 491472,
+        ".debug_str": 5602422,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18608,
+        ".debug_line": 471842
+      },
+      "elf_sha256": "7cc5d403a0ddb2e6b150cf8168ddddd3080f48437efa9da083aeec57321996db",
+      "elapsed_seconds": 59.477,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 1276,
+          "static_bl_blx": 1
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-1000",
+      "global_threshold": 1000,
+      "packages": {},
+      "image_bytes": 371340,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 349996,
+        ".rodata": 18652,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1374279,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2730931,
+        ".debug_aranges": 26680,
+        ".debug_ranges": 488840,
+        ".debug_str": 5586452,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18532,
+        ".debug_line": 467129
+      },
+      "elf_sha256": "5045d74fc4058587f71555337a2a5bec0ab4f3026689c1d9c2605a3253757c77",
+      "elapsed_seconds": 54.515,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-115",
+      "global_threshold": 115,
+      "packages": {},
+      "image_bytes": 372420,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351028,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1363660,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2697581,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 489920,
+        ".debug_str": 5595192,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470110
+      },
+      "elf_sha256": "103869571c3f23440fbce11b6e1878ef4d0138641691a4b15441715afcaa48bd",
+      "elapsed_seconds": 54.01,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-150",
+      "global_threshold": 150,
+      "packages": {},
+      "image_bytes": 372264,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350872,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1366820,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2693717,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 489856,
+        ".debug_str": 5593016,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470422
+      },
+      "elf_sha256": "41ea82d6aa833b7a46288945e222cfe89b44cb239d075ea498964e236b035fe1",
+      "elapsed_seconds": 53.561,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-200",
+      "global_threshold": 200,
+      "packages": {},
+      "image_bytes": 371832,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350488,
+        ".rodata": 18652,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1378337,
+        ".debug_abbrev": 10639,
+        ".debug_info": 2720997,
+        ".debug_aranges": 26680,
+        ".debug_ranges": 489384,
+        ".debug_str": 5586589,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18532,
+        ".debug_line": 468881
+      },
+      "elf_sha256": "2bf3b1396db28d6dc674a5689aa551b66dff0220ae5903819ecbc98271975570",
+      "elapsed_seconds": 61.485,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-25",
+      "global_threshold": 25,
+      "packages": {},
+      "image_bytes": 371600,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 349920,
+        ".rodata": 18988,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1334519,
+        ".debug_abbrev": 10628,
+        ".debug_info": 2649503,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 487048,
+        ".debug_str": 5585890,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18496,
+        ".debug_line": 469231
+      },
+      "elf_sha256": "e2ab1c6637ea8f5d5d9c5178726c3d0514be96a817c16f8a8c3d2e514355960b",
+      "elapsed_seconds": 54.937,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 1246,
+          "static_bl_blx": 1
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-300",
+      "global_threshold": 300,
+      "packages": {},
+      "image_bytes": 371368,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350024,
+        ".rodata": 18652,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1378034,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2726164,
+        ".debug_aranges": 26680,
+        ".debug_ranges": 487976,
+        ".debug_str": 5585886,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18532,
+        ".debug_line": 467327
+      },
+      "elf_sha256": "184fdfe93ccc350b203c661503e088ea2772486221f237327c7f897c9f285d14",
+      "elapsed_seconds": 54.67,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-40",
+      "global_threshold": 40,
+      "packages": {},
+      "image_bytes": 372208,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350512,
+        ".rodata": 19004,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1332471,
+        ".debug_abbrev": 10759,
+        ".debug_info": 2712486,
+        ".debug_aranges": 26696,
+        ".debug_ranges": 488016,
+        ".debug_str": 5596280,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18524,
+        ".debug_line": 470243
+      },
+      "elf_sha256": "8ecc1c212a89d1ce35d1bad228669ac4c9b58d7919d2c93d8bb2c0f67136c1eb",
+      "elapsed_seconds": 52.636,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 1320,
+          "static_bl_blx": 1
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-50",
+      "global_threshold": 50,
+      "packages": {},
+      "image_bytes": 371204,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 349508,
+        ".rodata": 19004,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1331832,
+        ".debug_abbrev": 10645,
+        ".debug_info": 2678400,
+        ".debug_aranges": 26696,
+        ".debug_ranges": 486744,
+        ".debug_str": 5594451,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18524,
+        ".debug_line": 469096
+      },
+      "elf_sha256": "8c06b03c2230509fcafc4a32f142449a0beede0d0f3550b801331c20c8c6fb20",
+      "elapsed_seconds": 58.898,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 1284,
+          "static_bl_blx": 1
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-500",
+      "global_threshold": 500,
+      "packages": {},
+      "image_bytes": 371340,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 349996,
+        ".rodata": 18652,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1374861,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2724245,
+        ".debug_aranges": 26680,
+        ".debug_ranges": 488840,
+        ".debug_str": 5586514,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18532,
+        ".debug_line": 467136
+      },
+      "elf_sha256": "813e34d4ac63db911718411cdc4d59a9c92191393b9716f607339eb2532eb4ac",
+      "elapsed_seconds": 57.634,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-51",
+      "global_threshold": 51,
+      "packages": {},
+      "image_bytes": 371116,
+      "static_ram": 36240,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 349428,
+        ".rodata": 19004,
+        ".data": 2292,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1329702,
+        ".debug_abbrev": 10771,
+        ".debug_info": 2718310,
+        ".debug_aranges": 26696,
+        ".debug_ranges": 486352,
+        ".debug_str": 5595591,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18524,
+        ".debug_line": 468939
+      },
+      "elf_sha256": "09f488b27bfd236a64d8a83979d750de273bbeaf05ad0e2ad63d0c3b9320f117",
+      "elapsed_seconds": 59.559,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 1284,
+          "static_bl_blx": 1
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-60",
+      "global_threshold": 60,
+      "packages": {},
+      "image_bytes": 373496,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351800,
+        ".rodata": 19004,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1350812,
+        ".debug_abbrev": 10647,
+        ".debug_info": 2697250,
+        ".debug_aranges": 26712,
+        ".debug_ranges": 490520,
+        ".debug_str": 5601153,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18572,
+        ".debug_line": 471816
+      },
+      "elf_sha256": "be3c3f00ec9d657069bb1c7e33894b0cb0faa63b4e7c432badbc0cb7c7e80b77",
+      "elapsed_seconds": 54.701,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 1284,
+          "static_bl_blx": 1
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "global-75",
+      "global_threshold": 75,
+      "packages": {},
+      "image_bytes": 373512,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351816,
+        ".rodata": 19004,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1362857,
+        ".debug_abbrev": 10647,
+        ".debug_info": 2690061,
+        ".debug_aranges": 26720,
+        ".debug_ranges": 491416,
+        ".debug_str": 5598545,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18600,
+        ".debug_line": 471937
+      },
+      "elf_sha256": "f886feb9318ca947145650316971404b0ba8478eb41b4b96e89336e2c8544614",
+      "elapsed_seconds": 54.407,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 1278,
+          "static_bl_blx": 1
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "mixed-global51-hal115",
+      "global_threshold": 51,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 369864,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 348472,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1329745,
+        ".debug_abbrev": 10645,
+        ".debug_info": 2665936,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 485080,
+        ".debug_str": 5591277,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18524,
+        ".debug_line": 467541
+      },
+      "elf_sha256": "3cb0b5005bea8b616aeb3b0aec46ecbbfef16dde3513a3116ab83fa01e0e2b3a",
+      "elapsed_seconds": 24.099,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "native-balanced",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 368308,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 346932,
+        ".rodata": 18684,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1325485,
+        ".debug_abbrev": 10786,
+        ".debug_info": 2689295,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 482064,
+        ".debug_str": 5589407,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18520,
+        ".debug_line": 466418
+      },
+      "elf_sha256": "af9fa4f8ab8a82c877888174ae6e10e07bc082c7cead2829ec193c2605e647c2",
+      "elapsed_seconds": 27.097,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": "d525a612d5330a05f858b1492c9ad37918030008aac2819ea0e2b9063984355c",
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "native-size",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 366100,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 344800,
+        ".rodata": 18608,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1312421,
+        ".debug_abbrev": 10226,
+        ".debug_info": 2786140,
+        ".debug_aranges": 26600,
+        ".debug_ranges": 479720,
+        ".debug_str": 5582057,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18108,
+        ".debug_line": 458574
+      },
+      "elf_sha256": "c6a93278d24f53d221eded72c00e05c462e0ac1572e16b7bf52bc9eb58126a7b",
+      "elapsed_seconds": 0.447,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": "1b2f4404a7482cbaff46849833f7a5a67e38199034a285635d695d09a2994c2f",
+      "hardware_sqrt_sites": 26,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 112,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1640,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13812,
+          "static_bl_blx": 113
+        },
+        "ADC_body": {
+          "bytes": 16592,
+          "static_bl_blx": 153
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "noinc-current",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 370732,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 349400,
+        ".rodata": 18640,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1354341,
+        ".debug_abbrev": 10203,
+        ".debug_info": 2777578,
+        ".debug_aranges": 26656,
+        ".debug_ranges": 486376,
+        ".debug_str": 5597023,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18388,
+        ".debug_line": 463993
+      },
+      "elf_sha256": "26958a3f3dc68570a05eba5919dbe1cd01c7a04ca10c6146d5f8f0cffe15ec8d",
+      "elapsed_seconds": 15.975,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 109,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1624,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13212,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        },
+        "ADC_body": {
+          "bytes": 17080,
+          "static_bl_blx": 145
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "noinc-global-200",
+      "global_threshold": 200,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 369408,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 348108,
+        ".rodata": 18608,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1371119,
+        ".debug_abbrev": 10163,
+        ".debug_info": 2808577,
+        ".debug_aranges": 26640,
+        ".debug_ranges": 485200,
+        ".debug_str": 5587294,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18308,
+        ".debug_line": 462222
+      },
+      "elf_sha256": "9526c18501770ef7bd612aa054a7560203203a4ed207a2178ab415566ec07222",
+      "elapsed_seconds": 21.803,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 112,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1640,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13160,
+          "static_bl_blx": 114
+        },
+        "ADC_body": {
+          "bytes": 16488,
+          "static_bl_blx": 154
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "noinc-global-50",
+      "global_threshold": 50,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 369228,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 347896,
+        ".rodata": 18640,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1326189,
+        ".debug_abbrev": 10077,
+        ".debug_info": 2745863,
+        ".debug_aranges": 26632,
+        ".debug_ranges": 482992,
+        ".debug_str": 5597065,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18328,
+        ".debug_line": 461814
+      },
+      "elf_sha256": "96c85ce98c327abaa6936cdfe0ef227b005b27dec7a0fe38d196b5895b44e1c9",
+      "elapsed_seconds": 22.838,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 109,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3116,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1948,
+          "static_bl_blx": 8
+        },
+        "step_velocity_control": {
+          "bytes": 1736,
+          "static_bl_blx": 2
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13240,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "noinc-global-500",
+      "global_threshold": 500,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 369232,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 347932,
+        ".rodata": 18608,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1367476,
+        ".debug_abbrev": 10226,
+        ".debug_info": 2821359,
+        ".debug_aranges": 26616,
+        ".debug_ranges": 485088,
+        ".debug_str": 5587464,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18160,
+        ".debug_line": 460454
+      },
+      "elf_sha256": "c5bf197af04bb82b0260940f95e6f240be2bcfec4e3c2741e02439eeb651c82c",
+      "elapsed_seconds": 28.205,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 26,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 112,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1640,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13812,
+          "static_bl_blx": 113
+        },
+        "ADC_body": {
+          "bytes": 16592,
+          "static_bl_blx": 153
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-bbqueue-200",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "bbqueue": 200
+      },
+      "image_bytes": 371688,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350296,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1365356,
+        ".debug_abbrev": 10658,
+        ".debug_info": 2686692,
+        ".debug_aranges": 26696,
+        ".debug_ranges": 488112,
+        ".debug_str": 5596771,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18608,
+        ".debug_line": 469054
+      },
+      "elf_sha256": "53bca3a452b75919f5a20b8e5e48531a4e7b4344de2ca6792f501b2e16010805",
+      "elapsed_seconds": 17.984,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-bbqueue-300",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "bbqueue": 300
+      },
+      "image_bytes": 371688,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350296,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1365348,
+        ".debug_abbrev": 10658,
+        ".debug_info": 2687780,
+        ".debug_aranges": 26696,
+        ".debug_ranges": 488104,
+        ".debug_str": 5596881,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18608,
+        ".debug_line": 469054
+      },
+      "elf_sha256": "b77134b87f15cd689db5f1afb802f4294e0e5d979320df0b76b088981b883f44",
+      "elapsed_seconds": 17.315,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-bbqueue-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "bbqueue": 500
+      },
+      "image_bytes": 371684,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350292,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1365348,
+        ".debug_abbrev": 10658,
+        ".debug_info": 2686700,
+        ".debug_aranges": 26696,
+        ".debug_ranges": 488104,
+        ".debug_str": 5596772,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18608,
+        ".debug_line": 469054
+      },
+      "elf_sha256": "bd25d7e7a99d9cdeb0bb1b9d23cbbd69c6cddcc195595cfe7b22f0f4fc3d5d9f",
+      "elapsed_seconds": 18.982,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-bbqueue-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "bbqueue": 51
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1359205,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2688871,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 489376,
+        ".debug_str": 5596653,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470338
+      },
+      "elf_sha256": "4267b92e7d1c6f7cb31971ecff1db4402a44666db770e99649c92e6cdf1cc4b5",
+      "elapsed_seconds": 16.289,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-executor-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "embassy-executor": 500
+      },
+      "image_bytes": 372424,
+      "static_ram": 36240,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351056,
+        ".rodata": 18684,
+        ".data": 2292,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1366756,
+        ".debug_abbrev": 10792,
+        ".debug_info": 2732685,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490376,
+        ".debug_str": 5591056,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470322
+      },
+      "elf_sha256": "0443d265da2ceb8f1def26c7252bce9cb6f1f056816a2a6b4080b32655fb10fc",
+      "elapsed_seconds": 13.272,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-executor-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "embassy-executor": 51
+      },
+      "image_bytes": 372444,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351068,
+        ".rodata": 18684,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364994,
+        ".debug_abbrev": 10780,
+        ".debug_info": 2731947,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490232,
+        ".debug_str": 5597244,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470280
+      },
+      "elf_sha256": "9b4d311c986893dd7ce38481e4546b30b2c65e6328fb610d291b4644345da395",
+      "elapsed_seconds": 13.059,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-futures-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "embassy-futures": 500
+      },
+      "image_bytes": 372452,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351060,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364937,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690925,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490280,
+        ".debug_str": 5594282,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470384
+      },
+      "elf_sha256": "ba49939188a3246a463ce14096300c19ff3d473edf63c58a1b73680e3002cc23",
+      "elapsed_seconds": 21.38,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-futures-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "embassy-futures": 51
+      },
+      "image_bytes": 372460,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351068,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364945,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690917,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490288,
+        ".debug_str": 5596773,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470384
+      },
+      "elf_sha256": "1f07c3460cf6066bc2a7757d89a98fa589e7b67c20347f028a194b1739750a18",
+      "elapsed_seconds": 20.531,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-stm32-150",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 150
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364177,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2691424,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490288,
+        ".debug_str": 5596679,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470384
+      },
+      "elf_sha256": "a2754863138839f06a432eeb249988e582034cb40e1ee328d7a6d94988ec608d",
+      "elapsed_seconds": 28.609,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-stm32-300",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 300
+      },
+      "image_bytes": 372416,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351024,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364341,
+        ".debug_abbrev": 10647,
+        ".debug_info": 2698939,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490424,
+        ".debug_str": 5596865,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470406
+      },
+      "elf_sha256": "90439f85f2c07e0b24a33165418ca83637b669b68dc0d8f60b0ef5c70d1c59ca",
+      "elapsed_seconds": 21.934,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-stm32-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 500
+      },
+      "image_bytes": 372416,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351024,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364126,
+        ".debug_abbrev": 10647,
+        ".debug_info": 2700178,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490400,
+        ".debug_str": 5596785,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470406
+      },
+      "elf_sha256": "902fb6ddf308f7bbe97c656c2e8ce184196beddceb71f4faef3832d59c5a1f71",
+      "elapsed_seconds": 20.547,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-sync-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "embassy-sync": 500
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1360771,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2695004,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490288,
+        ".debug_str": 5594283,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470441
+      },
+      "elf_sha256": "d4f2fff269ce1867dab07313f225d0f4a36a337d083a272d9271d5b5a24f440d",
+      "elapsed_seconds": 19.766,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-sync-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "embassy-sync": 51
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1365328,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2691364,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490128,
+        ".debug_str": 5595690,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470382
+      },
+      "elf_sha256": "3fd56f4c06a9aab921a2e506266c9d04163f5f45e5c619dd505a2b94fa5c453b",
+      "elapsed_seconds": 19.943,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-usb-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "embassy-usb": 500
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364926,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2691911,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490672,
+        ".debug_str": 5596372,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470315
+      },
+      "elf_sha256": "fe55c63d954f3f443adece8c4f18be3057cd92a9a52ee9759ff64c3910aa0d1c",
+      "elapsed_seconds": 16.997,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embassy-usb-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "embassy-usb": 51
+      },
+      "image_bytes": 372396,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351004,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1362325,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2688457,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490344,
+        ".debug_str": 5596623,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470355
+      },
+      "elf_sha256": "bfd4324ca0c05bc17cb041a51eeaee903a85770702da340d12523b122f0abcd8",
+      "elapsed_seconds": 17.097,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embedded-hal-bus-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "embedded-hal-bus": 500
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364760,
+        ".debug_abbrev": 10780,
+        ".debug_info": 2728867,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490256,
+        ".debug_str": 5596774,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470390
+      },
+      "elf_sha256": "f1c440d6686c1a712a57a92e3e4702195a1398a8df135a3502b0e0f7377b3649",
+      "elapsed_seconds": 15.243,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-embedded-hal-bus-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "embedded-hal-bus": 51
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364937,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690925,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490280,
+        ".debug_str": 5596774,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470384
+      },
+      "elf_sha256": "8bdeb2529821a3c96014ec63c2ceed58338d92cdb3d5b73bac918d69ac4d4b70",
+      "elapsed_seconds": 17.561,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-ergot-0",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 0
+      },
+      "image_bytes": 375308,
+      "static_ram": 36244,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 353940,
+        ".rodata": 18680,
+        ".data": 2296,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1391662,
+        ".debug_abbrev": 10761,
+        ".debug_info": 2714996,
+        ".debug_aranges": 26720,
+        ".debug_ranges": 504304,
+        ".debug_str": 5598539,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18740,
+        ".debug_line": 476086
+      },
+      "elf_sha256": "e6b5feaa59d826ba16036c402f3edf92846d32568e7771bc14e953bb3d599091",
+      "elapsed_seconds": 17.383,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-ergot-200",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 200
+      },
+      "image_bytes": 372788,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351412,
+        ".rodata": 18684,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1373348,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2693819,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490168,
+        ".debug_str": 5597836,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 471125
+      },
+      "elf_sha256": "d9b13cec2bac04b736b361b205616036a62c9768f9bea7ed664a21abcda628a3",
+      "elapsed_seconds": 17.894,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-ergot-25",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 25
+      },
+      "image_bytes": 371532,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350140,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1358056,
+        ".debug_abbrev": 10647,
+        ".debug_info": 2660499,
+        ".debug_aranges": 26680,
+        ".debug_ranges": 489136,
+        ".debug_str": 5590551,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18580,
+        ".debug_line": 468900
+      },
+      "elf_sha256": "4b02f0b761fc2eff3bb7be759b3d8eba726864ef72c73d04c6b5c99b78474284",
+      "elapsed_seconds": 21.948,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-ergot-50",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50
+      },
+      "image_bytes": 370784,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 349392,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1351424,
+        ".debug_abbrev": 10647,
+        ".debug_info": 2676258,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 487728,
+        ".debug_str": 5595521,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18612,
+        ".debug_line": 468490
+      },
+      "elf_sha256": "624d4faaed615853279a3519b8b2f3c79ea6a613cc84e0c35f21b03a537e542a",
+      "elapsed_seconds": 18.456,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-ergot-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 500
+      },
+      "image_bytes": 372756,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351380,
+        ".rodata": 18684,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1373199,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2694131,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490208,
+        ".debug_str": 5598187,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 471107
+      },
+      "elf_sha256": "2c0428d655ee6af1e5373f13ee647cdec8db8b60ebf9fac3a136f10b402eeaa2",
+      "elapsed_seconds": 17.18,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-ergot-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 51
+      },
+      "image_bytes": 370784,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 349392,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1351424,
+        ".debug_abbrev": 10647,
+        ".debug_info": 2676244,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 487728,
+        ".debug_str": 5595412,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18612,
+        ".debug_line": 468490
+      },
+      "elf_sha256": "6400a8f20ab1fe7eabba8466b48c302dbc0af2190605fde11d93c796d46de004",
+      "elapsed_seconds": 17.803,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-ergot-75",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 75
+      },
+      "image_bytes": 372132,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350740,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1359163,
+        ".debug_abbrev": 10647,
+        ".debug_info": 2684650,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 489912,
+        ".debug_str": 5594681,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470107
+      },
+      "elf_sha256": "13f1afa3b9722dc72256ae97d5638fbccf12ec7a6bb11df0dd774d61e9e73eb1",
+      "elapsed_seconds": 17.289,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-maitake-sync-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "maitake-sync": 500
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1360049,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2692338,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490320,
+        ".debug_str": 5596951,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470354
+      },
+      "elf_sha256": "752916849ee04ebd546e1d28d3944b842991afd6ef128e7b828f8f4595b2f6dd",
+      "elapsed_seconds": 16.78,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-maitake-sync-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "maitake-sync": 51
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1369116,
+        ".debug_abbrev": 10685,
+        ".debug_info": 2694733,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490304,
+        ".debug_str": 5594342,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470348
+      },
+      "elf_sha256": "7bef3312e991a27352b0f13a029438267cfa482edcfbf22a29deeaef33800d59",
+      "elapsed_seconds": 18.551,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-oxifoc-core-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "oxifoc-core": 500
+      },
+      "image_bytes": 372460,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351068,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364945,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690917,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490288,
+        ".debug_str": 5596773,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470384
+      },
+      "elf_sha256": "bdcbbb0658ed0b82a790fc34189bcd5248c85143d13d8b09277d263766c5fac1",
+      "elapsed_seconds": 15.855,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-oxifoc-core-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "oxifoc-core": 51
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364937,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690925,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490280,
+        ".debug_str": 5596774,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470384
+      },
+      "elf_sha256": "ff71e76e3eb772a7f3d48506273044866973bc46588a1386a2378c2c46803c74",
+      "elapsed_seconds": 16.405,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-oxifoc-f405-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "oxifoc-f405": 500
+      },
+      "image_bytes": 372440,
+      "static_ram": 36240,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351056,
+        ".rodata": 18700,
+        ".data": 2292,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1366895,
+        ".debug_abbrev": 10792,
+        ".debug_info": 2728916,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490376,
+        ".debug_str": 5596774,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470322
+      },
+      "elf_sha256": "b126365dfa12638e833e4c81d64b93722fd6edababe79acddf0729c74b59afe3",
+      "elapsed_seconds": 13.524,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-oxifoc-f405-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "oxifoc-f405": 51
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351064,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364937,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690925,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490280,
+        ".debug_str": 5596774,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470384
+      },
+      "elf_sha256": "9b1811dab699fed73c5be4cfad67cc008522af192a939cbd28992d8d94e27940",
+      "elapsed_seconds": 13.214,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-postcard-0",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "postcard": 0
+      },
+      "image_bytes": 371400,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350008,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1343719,
+        ".debug_abbrev": 10680,
+        ".debug_info": 2675166,
+        ".debug_aranges": 26680,
+        ".debug_ranges": 486928,
+        ".debug_str": 5590484,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18532,
+        ".debug_line": 469547
+      },
+      "elf_sha256": "93ec379c4878a57638a2f45e56cebe703e8c6472c6ef07cf5fde1150a5a4ae82",
+      "elapsed_seconds": 17.969,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-postcard-200",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "postcard": 200
+      },
+      "image_bytes": 372328,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350936,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1371327,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2693077,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 489944,
+        ".debug_str": 5596813,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18580,
+        ".debug_line": 470008
+      },
+      "elf_sha256": "976786edf296099a674397af070310224ee693347353e1d53fb92e6194d295b2",
+      "elapsed_seconds": 19.415,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-postcard-25",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "postcard": 25
+      },
+      "image_bytes": 371516,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350124,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1348682,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2679751,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 489440,
+        ".debug_str": 5592665,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18496,
+        ".debug_line": 469361
+      },
+      "elf_sha256": "0a81eb7d1f001b4adf35c9802dd396771863eb3e1c6ab1deab7ef8398181762d",
+      "elapsed_seconds": 17.6,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-postcard-50",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "postcard": 50
+      },
+      "image_bytes": 371560,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350168,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1350980,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2681318,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 489240,
+        ".debug_str": 5595739,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18496,
+        ".debug_line": 469324
+      },
+      "elf_sha256": "3afcc371ffb3ae97540d1228a644a868d8999c683a5e1289eb2e873e4687d7e2",
+      "elapsed_seconds": 17.404,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-postcard-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "postcard": 500
+      },
+      "image_bytes": 372044,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350652,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1376535,
+        ".debug_abbrev": 10762,
+        ".debug_info": 2726351,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490128,
+        ".debug_str": 5596923,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18580,
+        ".debug_line": 469091
+      },
+      "elf_sha256": "19b90e136047892bae8c7be44fc4e000ca62d1d6dd54295159d524481432fb7c",
+      "elapsed_seconds": 17.784,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-postcard-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "postcard": 51
+      },
+      "image_bytes": 371556,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350164,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1350980,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2681304,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 489240,
+        ".debug_str": 5589746,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18496,
+        ".debug_line": 469324
+      },
+      "elf_sha256": "5b77215874a330cec2f6666a4a2375ccb95f719bd7288a4c099759196136a68f",
+      "elapsed_seconds": 18.157,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-postcard-75",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "postcard": 75
+      },
+      "image_bytes": 372460,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351068,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1366507,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690917,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490336,
+        ".debug_str": 5596922,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470402
+      },
+      "elf_sha256": "7fda4aeaf6dbbfbba68e558f883234c5ae74cf2cbb017bb23066adc39909143c",
+      "elapsed_seconds": 19.883,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-sequential-storage-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "sequential-storage": 500
+      },
+      "image_bytes": 372460,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351068,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1365494,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690924,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490288,
+        ".debug_str": 5591034,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470384
+      },
+      "elf_sha256": "aa086d07d925d29057b2c2381061282ae69350bc41da3605d62cc76a8460a4d7",
+      "elapsed_seconds": 15.646,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-sequential-storage-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "sequential-storage": 51
+      },
+      "image_bytes": 372240,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350864,
+        ".rodata": 18684,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364045,
+        ".debug_abbrev": 10780,
+        ".debug_info": 2729503,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490200,
+        ".debug_str": 5596950,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18572,
+        ".debug_line": 470520
+      },
+      "elf_sha256": "1022d67938e6632d96443a712cc9985c824827e3d0ae32912d65b77530b11648",
+      "elapsed_seconds": 15.899,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-serde_core-500",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "serde_core": 500
+      },
+      "image_bytes": 372452,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351060,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364937,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690925,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490280,
+        ".debug_str": 5597756,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18576,
+        ".debug_line": 470384
+      },
+      "elf_sha256": "2e737526f27dabe02de706b04fee1b15c576b6402c6bdea4c88953dcf9db5e2f",
+      "elapsed_seconds": 26.662,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "pkg-serde_core-51",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "serde_core": 51
+      },
+      "image_bytes": 372464,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 351072,
+        ".rodata": 18700,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1364839,
+        ".debug_abbrev": 10666,
+        ".debug_info": 2690697,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 490280,
+        ".debug_str": 5596735,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18572,
+        ".debug_line": 470397
+      },
+      "elf_sha256": "e66d2825b8582d93f043c408784787009d303cbdfa23c6353c698f34d65db9e3",
+      "elapsed_seconds": 28.279,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "size-core-root100",
+      "global_threshold": 500,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50,
+        "oxifoc-core": 100,
+        "oxifoc-f405": 100
+      },
+      "image_bytes": 367000,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 345700,
+        ".rodata": 18608,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1316190,
+        ".debug_abbrev": 10194,
+        ".debug_info": 2767803,
+        ".debug_aranges": 26632,
+        ".debug_ranges": 479072,
+        ".debug_str": 5581343,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18292,
+        ".debug_line": 459415
+      },
+      "elf_sha256": "40daafb785f752eb9dd27ea2f0a1783f0c8f4469e9181cf95c5c2cdb21f000e7",
+      "elapsed_seconds": 12.94,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 109,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1624,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13212,
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "bytes": 17320,
+          "static_bl_blx": 154
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "size-core100",
+      "global_threshold": 500,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50,
+        "oxifoc-core": 100
+      },
+      "image_bytes": 366936,
+      "static_ram": 36248,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 345636,
+        ".rodata": 18608,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33948,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1316558,
+        ".debug_abbrev": 10194,
+        ".debug_info": 2769118,
+        ".debug_aranges": 26632,
+        ".debug_ranges": 479248,
+        ".debug_str": 5581853,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18292,
+        ".debug_line": 459292
+      },
+      "elf_sha256": "9824755959c0d961b5a0f2b79a54e81eacf66188c120566bb15da96b42301567",
+      "elapsed_seconds": 18.134,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 109,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1624,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13212,
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "bytes": 17328,
+          "static_bl_blx": 154
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      }
+    },
+    {
+      "board": "g474",
+      "label": "balanced",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 208288,
+      "static_ram": 24516,
+      "sections": {
+        ".vector_table": 472,
+        ".text": 191640,
+        ".rodata": 15104,
+        ".data": 1072,
+        ".gnu.sgstubs": 0,
+        ".bss": 23444,
+        ".uninit": 0,
+        ".defmt": 177,
+        ".debug_loc": 810702,
+        ".debug_abbrev": 9244,
+        ".debug_info": 1709583,
+        ".debug_aranges": 28560,
+        ".debug_ranges": 280024,
+        ".debug_str": 3665989,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 12464,
+        ".debug_line": 294208
+      },
+      "elf_sha256": "e13cc508487a9c89479322503e5949a03e07faecf25670dc98355e6c4edad19c",
+      "elapsed_seconds": 20.145,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {
+        "vcvt.u32.f32": 3
+      },
+      "critical_symbols": {}
+    },
+    {
+      "board": "g474",
+      "label": "balanced-noinc-global500",
+      "global_threshold": 500,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 205476,
+      "static_ram": 24516,
+      "sections": {
+        ".vector_table": 472,
+        ".text": 188932,
+        ".rodata": 15000,
+        ".data": 1072,
+        ".gnu.sgstubs": 0,
+        ".bss": 23444,
+        ".uninit": 0,
+        ".defmt": 177,
+        ".debug_loc": 792303,
+        ".debug_abbrev": 9082,
+        ".debug_info": 1791442,
+        ".debug_aranges": 28552,
+        ".debug_ranges": 277664,
+        ".debug_str": 3658711,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 12420,
+        ".debug_line": 286451
+      },
+      "elf_sha256": "2c6338d2560f5978beb9ef183c10cadd27b607c5c3b26e55ae84d7e307eac053",
+      "elapsed_seconds": 54.133,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {
+        "vcvt.u32.f32": 3
+      },
+      "critical_symbols": {}
+    },
+    {
+      "board": "g474",
+      "label": "current",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 208672,
+      "static_ram": 24516,
+      "sections": {
+        ".vector_table": 472,
+        ".text": 192024,
+        ".rodata": 15104,
+        ".data": 1072,
+        ".gnu.sgstubs": 0,
+        ".bss": 23444,
+        ".uninit": 0,
+        ".defmt": 177,
+        ".debug_loc": 840797,
+        ".debug_abbrev": 9168,
+        ".debug_info": 1734898,
+        ".debug_aranges": 28552,
+        ".debug_ranges": 283696,
+        ".debug_str": 3671035,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 12500,
+        ".debug_line": 295292
+      },
+      "elf_sha256": "07b819fdf41a65946b8f89c91db263e1db53142e66e8d1399a7ae3d24ea715db",
+      "elapsed_seconds": 37.273,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {
+        "vcvt.u32.f32": 3
+      },
+      "critical_symbols": {}
+    },
+    {
+      "board": "g474",
+      "label": "global-51",
+      "global_threshold": 51,
+      "packages": {},
+      "image_bytes": 208116,
+      "static_ram": 24516,
+      "sections": {
+        ".vector_table": 472,
+        ".text": 191468,
+        ".rodata": 15104,
+        ".data": 1072,
+        ".gnu.sgstubs": 0,
+        ".bss": 23444,
+        ".uninit": 0,
+        ".defmt": 177,
+        ".debug_loc": 814672,
+        ".debug_abbrev": 9244,
+        ".debug_info": 1721359,
+        ".debug_aranges": 28560,
+        ".debug_ranges": 279472,
+        ".debug_str": 3670313,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 12464,
+        ".debug_line": 293634
+      },
+      "elf_sha256": "4e13edb325a22c9ce7fffdf6228fa2328e41866164a180a979fb213f03e18aab",
+      "elapsed_seconds": 35.529,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {
+        "vcvt.u32.f32": 3
+      },
+      "critical_symbols": {}
+    },
+    {
+      "board": "g474",
+      "label": "native-balanced",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 208288,
+      "static_ram": 24516,
+      "sections": {
+        ".vector_table": 472,
+        ".text": 191640,
+        ".rodata": 15104,
+        ".data": 1072,
+        ".gnu.sgstubs": 0,
+        ".bss": 23444,
+        ".uninit": 0,
+        ".defmt": 177,
+        ".debug_loc": 810702,
+        ".debug_abbrev": 9244,
+        ".debug_info": 1709583,
+        ".debug_aranges": 28560,
+        ".debug_ranges": 280024,
+        ".debug_str": 3665989,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 12464,
+        ".debug_line": 294208
+      },
+      "elf_sha256": "e13cc508487a9c89479322503e5949a03e07faecf25670dc98355e6c4edad19c",
+      "elapsed_seconds": 20.966,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": "d525a612d5330a05f858b1492c9ad37918030008aac2819ea0e2b9063984355c",
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {
+        "vcvt.u32.f32": 3
+      },
+      "critical_symbols": {}
+    },
+    {
+      "board": "g474",
+      "label": "native-size",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 205476,
+      "static_ram": 24516,
+      "sections": {
+        ".vector_table": 472,
+        ".text": 188932,
+        ".rodata": 15000,
+        ".data": 1072,
+        ".gnu.sgstubs": 0,
+        ".bss": 23444,
+        ".uninit": 0,
+        ".defmt": 177,
+        ".debug_loc": 792303,
+        ".debug_abbrev": 9082,
+        ".debug_info": 1791442,
+        ".debug_aranges": 28552,
+        ".debug_ranges": 277664,
+        ".debug_str": 3658711,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 12420,
+        ".debug_line": 286451
+      },
+      "elf_sha256": "2c6338d2560f5978beb9ef183c10cadd27b607c5c3b26e55ae84d7e307eac053",
+      "elapsed_seconds": 0.403,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": "1b2f4404a7482cbaff46849833f7a5a67e38199034a285635d695d09a2994c2f",
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {
+        "vcvt.u32.f32": 3
+      },
+      "critical_symbols": {}
+    },
+    {
+      "board": "remote",
+      "label": "balanced",
+      "global_threshold": null,
+      "packages": {
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 863372,
+      "static_ram": 86600,
+      "sections": {
+        ".defmt": 181,
+        ".trap": 1632,
+        ".rwtext": 4484,
+        ".rwtext.wifi": 25268,
+        ".data": 10252,
+        ".data.wifi": 48,
+        ".bss": 10812,
+        ".noinit": 0,
+        ".flash.appdesc": 256,
+        ".rodata_merge": 0,
+        ".rodata": 30040,
+        ".rodata.wifi": 0,
+        ".text_gap": 35240,
+        ".text": 356540,
+        ".rtc_fast.text": 0,
+        ".rtc_fast.data": 0,
+        ".rtc_fast.bss": 0,
+        ".rtc_fast.persistent": 0,
+        ".stack": 399612,
+        ".dram2_uninit": 65536,
+        ".espressif.metadata": 15,
+        ".debug_loc": 841696,
+        ".debug_abbrev": 6630,
+        ".debug_info": 1768036,
+        ".debug_aranges": 41840,
+        ".debug_ranges": 189520,
+        ".debug_str": 2652491,
+        ".comment": 281,
+        ".riscv.attributes": 99,
+        ".debug_frame": 74212,
+        ".debug_line": 297477
+      },
+      "elf_sha256": "480c49bce4e4a67c68c579ab70e5654216c282927ddd1e63512866821d74da77",
+      "elapsed_seconds": 7.682,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {},
+      "critical_symbols": {}
+    },
+    {
+      "board": "remote",
+      "label": "current",
+      "global_threshold": null,
+      "packages": {},
+      "image_bytes": 863372,
+      "static_ram": 86600,
+      "sections": {
+        ".defmt": 181,
+        ".trap": 1632,
+        ".rwtext": 4484,
+        ".rwtext.wifi": 25268,
+        ".data": 10252,
+        ".data.wifi": 48,
+        ".bss": 10812,
+        ".noinit": 0,
+        ".flash.appdesc": 256,
+        ".rodata_merge": 0,
+        ".rodata": 30040,
+        ".rodata.wifi": 0,
+        ".text_gap": 35240,
+        ".text": 356540,
+        ".rtc_fast.text": 0,
+        ".rtc_fast.data": 0,
+        ".rtc_fast.bss": 0,
+        ".rtc_fast.persistent": 0,
+        ".stack": 399612,
+        ".dram2_uninit": 65536,
+        ".espressif.metadata": 15,
+        ".debug_loc": 841696,
+        ".debug_abbrev": 6630,
+        ".debug_info": 1768036,
+        ".debug_aranges": 41840,
+        ".debug_ranges": 189520,
+        ".debug_str": 2652455,
+        ".comment": 281,
+        ".riscv.attributes": 99,
+        ".debug_frame": 74212,
+        ".debug_line": 297477
+      },
+      "elf_sha256": "12e28549967d32681e34a418d57454f40e9f33b9f30b417f422a8cecf15d6f51",
+      "elapsed_seconds": 7.798,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {},
+      "critical_symbols": {}
+    },
+    {
+      "board": "remote",
+      "label": "global-51",
+      "global_threshold": 51,
+      "packages": {},
+      "image_bytes": 863484,
+      "static_ram": 86600,
+      "sections": {
+        ".defmt": 181,
+        ".trap": 1632,
+        ".rwtext": 4484,
+        ".rwtext.wifi": 25268,
+        ".data": 10252,
+        ".data.wifi": 48,
+        ".bss": 10812,
+        ".noinit": 0,
+        ".flash.appdesc": 256,
+        ".rodata_merge": 0,
+        ".rodata": 30040,
+        ".rodata.wifi": 0,
+        ".text_gap": 35240,
+        ".text": 356652,
+        ".rtc_fast.text": 0,
+        ".rtc_fast.data": 0,
+        ".rtc_fast.bss": 0,
+        ".rtc_fast.persistent": 0,
+        ".stack": 399612,
+        ".dram2_uninit": 65536,
+        ".espressif.metadata": 15,
+        ".debug_loc": 841862,
+        ".debug_abbrev": 6630,
+        ".debug_info": 1768374,
+        ".debug_aranges": 41848,
+        ".debug_ranges": 189528,
+        ".debug_str": 2653992,
+        ".comment": 281,
+        ".riscv.attributes": 99,
+        ".debug_frame": 74264,
+        ".debug_line": 297563
+      },
+      "elf_sha256": "5f8d7729bf16ce37b90724b196c67e3685bd2bcde52b8255871eded3ef932804",
+      "elapsed_seconds": 7.747,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 0,
+      "vcvt_sites": {},
+      "critical_symbols": {}
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "balanced",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 370624,
+      "static_ram": 36232,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 349264,
+        ".rodata": 18668,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33932,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1331229,
+        ".debug_abbrev": 10691,
+        ".debug_info": 2658403,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 485880,
+        ".debug_str": 5588227,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18516,
+        ".debug_line": 469225
+      },
+      "elf_sha256": "047f746311ce1e3c4c6a0a05e40ef25631b8d67f45b8dcbf3479c74ad0f9125b",
+      "elapsed_seconds": 19.018,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        }
+      }
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "balanced-noinc-global500",
+      "global_threshold": 500,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "image_bytes": 368276,
+      "static_ram": 36232,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 346992,
+        ".rodata": 18592,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33932,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1321694,
+        ".debug_abbrev": 10202,
+        ".debug_info": 2787401,
+        ".debug_aranges": 26600,
+        ".debug_ranges": 484576,
+        ".debug_str": 5580712,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18104,
+        ".debug_line": 461735
+      },
+      "elf_sha256": "4627ccfba9c33d8d1872208d2db104a2a885d08443cbe560cf4bda5d305d322b",
+      "elapsed_seconds": 21.403,
+      "incremental": false,
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 26,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 112,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1640,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13812,
+          "static_bl_blx": 113
+        },
+        "ADC_body": {
+          "bytes": 16592,
+          "static_bl_blx": 153
+        }
+      }
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "current",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 374764,
+      "static_ram": 36232,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 353404,
+        ".rodata": 18668,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33932,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1370690,
+        ".debug_abbrev": 10685,
+        ".debug_info": 2696893,
+        ".debug_aranges": 26688,
+        ".debug_ranges": 494096,
+        ".debug_str": 5595593,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18572,
+        ".debug_line": 473182
+      },
+      "elf_sha256": "d22da689e3f43c99d6e4654cdd63fb45987ae04f16d34c35de9964ac96cd833c",
+      "elapsed_seconds": 21.986,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        }
+      }
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "global-51",
+      "global_threshold": 51,
+      "packages": {},
+      "image_bytes": 372212,
+      "static_ram": 36224,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 350860,
+        ".rodata": 18668,
+        ".data": 2292,
+        ".gnu.sgstubs": 0,
+        ".bss": 33932,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1334361,
+        ".debug_abbrev": 10806,
+        ".debug_info": 2711820,
+        ".debug_aranges": 26664,
+        ".debug_ranges": 489584,
+        ".debug_str": 5591913,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18488,
+        ".debug_line": 470641
+      },
+      "elf_sha256": "4f6a539d51cc1c34cef626317253b9e83ee09cb1a05480cc28755864a413e61c",
+      "elapsed_seconds": 20.12,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": null,
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        }
+      }
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "native-balanced",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 370624,
+      "static_ram": 36232,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 349264,
+        ".rodata": 18668,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33932,
+        ".uninit": 0,
+        ".defmt": 330,
+        ".debug_loc": 1331229,
+        ".debug_abbrev": 10691,
+        ".debug_info": 2658403,
+        ".debug_aranges": 26672,
+        ".debug_ranges": 485880,
+        ".debug_str": 5588227,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18516,
+        ".debug_line": 469225
+      },
+      "elf_sha256": "047f746311ce1e3c4c6a0a05e40ef25631b8d67f45b8dcbf3479c74ad0f9125b",
+      "elapsed_seconds": 14.931,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": "d525a612d5330a05f858b1492c9ad37918030008aac2819ea0e2b9063984355c",
+      "hardware_sqrt_sites": 25,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 114,
+        "vcvt.f32.s32": 6,
+        "vcvt.s32.f32": 21,
+        "vcvt.u32.f32": 9
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3152,
+          "static_bl_blx": 13
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        }
+      }
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "native-size",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 368276,
+      "static_ram": 36232,
+      "sections": {
+        ".vector_table": 392,
+        ".text": 346992,
+        ".rodata": 18592,
+        ".data": 2300,
+        ".gnu.sgstubs": 0,
+        ".bss": 33932,
+        ".uninit": 0,
+        ".defmt": 322,
+        ".debug_loc": 1321694,
+        ".debug_abbrev": 10202,
+        ".debug_info": 2787401,
+        ".debug_aranges": 26600,
+        ".debug_ranges": 484576,
+        ".debug_str": 5580712,
+        ".comment": 148,
+        ".ARM.attributes": 58,
+        ".debug_frame": 18104,
+        ".debug_line": 461735
+      },
+      "elf_sha256": "4627ccfba9c33d8d1872208d2db104a2a885d08443cbe560cf4bda5d305d322b",
+      "elapsed_seconds": 0.188,
+      "incremental": "manifest",
+      "nonincremental_packages": [],
+      "profile_config_sha256": "1b2f4404a7482cbaff46849833f7a5a67e38199034a285635d695d09a2994c2f",
+      "hardware_sqrt_sites": 26,
+      "vcvt_sites": {
+        "vcvt.f32.u32": 112,
+        "vcvt.u32.f32": 9,
+        "vcvt.s32.f32": 21,
+        "vcvt.f32.s32": 6
+      },
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1640,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13812,
+          "static_bl_blx": 113
+        },
+        "ADC_body": {
+          "bytes": 16592,
+          "static_bl_blx": 153
+        }
+      }
+    }
+  ]
+}

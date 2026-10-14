@@ -1,0 +1,18 @@
+# STM32 size experiment. Retain the HAL=115 override in .cargo/config.toml.
+# Changes FOC/ADC inlining boundaries; measure ISR timing on hardware before adoption.
+# cargo build --release --locked --config ../docs/experiments/mir-threshold-sweep/size.toml
+[profile.release]
+incremental = false
+rustflags = ["-Zinline-mir-hint-threshold=500"]
+
+[profile.release.package.ergot]
+rustflags = ["-Zinline-mir-hint-threshold=50"]
+
+[profile.release.package.postcard]
+rustflags = ["-Zinline-mir-hint-threshold=0"]
+
+[profile.release.package.bbqueue]
+rustflags = ["-Zinline-mir-hint-threshold=200"]
+
+[profile.release.package.sequential-storage]
+rustflags = ["-Zinline-mir-hint-threshold=50"]

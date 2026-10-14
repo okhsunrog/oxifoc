@@ -1,0 +1,20 @@
+diff --git a/oxifoc-f405/.cargo/config.toml b/oxifoc-f405/.cargo/config.toml
+index 455b8a2..c239797 100644
+--- a/oxifoc-f405/.cargo/config.toml
++++ b/oxifoc-f405/.cargo/config.toml
+@@ -15,5 +14,0 @@ profile-rustflags = true
+-# Preserve specialization of the single-operation DRV8301 SPI transaction.
+-# See docs/experiments/spi-codegen/report.md for the measured MIR cutoff.
+-[profile.release.package.embassy-stm32]
+-rustflags = ["-Zinline-mir-hint-threshold=115"]
+-
+diff --git a/oxifoc-g474/.cargo/config.toml b/oxifoc-g474/.cargo/config.toml
+index 0561c80..aca4f22 100644
+--- a/oxifoc-g474/.cargo/config.toml
++++ b/oxifoc-g474/.cargo/config.toml
+@@ -15,5 +14,0 @@ profile-rustflags = true
+-# Keep the STM32 HAL's MIR inlining policy consistent with F405.
+-# See docs/experiments/spi-codegen/report.md for the measured MIR cutoff.
+-[profile.release.package.embassy-stm32]
+-rustflags = ["-Zinline-mir-hint-threshold=115"]
+-
