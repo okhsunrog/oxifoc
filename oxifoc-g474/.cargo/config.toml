@@ -12,6 +12,14 @@ runner = ["bash", "../scripts/probe_run.sh"]
 #           FPv4-SP-D16 FPU doesn't support, and the board hangs at runtime
 rustflags = ["-C", "target-feature=+vfp2,-fp64"]
 
+[unstable]
+profile-rustflags = true
+
+# Keep the STM32 HAL's MIR inlining policy consistent with F405.
+# See docs/experiments/spi-codegen/report.md for the measured MIR cutoff.
+[profile.release.package.embassy-stm32]
+rustflags = ["-Zinline-mir-hint-threshold=115"]
+
 [env]
 # Show all defmt levels unless overridden
 DEFMT_LOG = "debug"

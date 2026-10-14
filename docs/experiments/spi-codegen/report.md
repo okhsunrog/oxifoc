@@ -17,8 +17,9 @@ Its effect on this HAL crosses a MIR inlining threshold and changes the
 cross-crate call graph. The resulting LLVM optimization sequence leaves
 a generic operation dispatcher in a known one-operation transaction.
 
-The correctness fix must be retained. Raising a diagnostic compiler
-threshold demonstrates causality; it is not a proposed firmware configuration.
+The correctness fix must be retained. Raising the compiler threshold
+demonstrates causality; the full-firmware follow-up below measures the
+impact of adopting a package-scoped override.
 
 ## Compiler boundary
 
@@ -167,8 +168,8 @@ arm-none-eabi-nm -S recovered.o
 
 Run these commands from a task directory under the dedicated temporary root.
 No hardware timing or runtime acceptance was performed. The investigation
-does not alter firmware dependencies, math implementation or target flags,
-and does not apply a workaround. A Rust compiler regression report can use
+does not alter firmware dependencies, math implementation or target flags.
+The package-scoped workaround is evaluated in the follow-up below. A Rust compiler regression report can use
 this crate, compiler boundary and MIR cutoff; a later LLVM report can reuse
 the standalone IR and reduced recovery sequence. No upstream issue/PR has
 been published by this experiment.
@@ -267,4 +268,7 @@ source/config identity and flash-image hashes; `firmware-symbol-deltas.json`
 retains changed symbols and sections. Full ELF/disassembly/build logs
 remain under the task directory. Build elapsed times are cache-dependent
 and are not compilation-speed benchmarks. No firmware was flashed or timed
-on hardware, and the measured flags have not been applied to normal builds.
+on hardware. The package-only setting is now enabled in both STM32
+`.cargo/config.toml` files on this experimental branch. Compiler pins and
+FP target flags remain as before; the measurements in this table explicitly
+select the October nightly and the vfp2sp configuration patch.
