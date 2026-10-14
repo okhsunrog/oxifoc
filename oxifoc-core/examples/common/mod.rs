@@ -122,6 +122,9 @@ pub struct RigConfig {
     pub delay: f32,
     /// Phase-tracker ωn (rad/s; 0 = off).
     pub tracker: f32,
+    /// Rotor inertia override (kg·m², mechanical; 0 = the preset's). A
+    /// rider on a 5065 / 36:15 / 83 mm board reflects ~0.024.
+    pub j: f32,
 }
 
 impl Default for RigConfig {
@@ -132,6 +135,7 @@ impl Default for RigConfig {
             substeps: 8,
             delay: 0.5,
             tracker: 100.0,
+            j: 0.0,
         }
     }
 }
@@ -178,6 +182,9 @@ pub struct Rig {
 impl Rig {
     pub fn new(cfg: &RigConfig) -> Self {
         let (mut params, vbus, i_max) = preset(&cfg.motor);
+        if cfg.j > 0.0 {
+            params.j = cfg.j;
+        }
         params.friction_b += cfg.visc;
         params.substeps = cfg.substeps;
         params.actuation_delay = cfg.delay;

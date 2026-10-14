@@ -22,6 +22,7 @@ use crate::foc::fast_math::sqrtf;
 use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault, VOLTAGE_HYSTERESIS_MV};
 use crate::foc::phase::{PhaseInput, PhaseProvider};
 use crate::foc::phase_voltage::{ObserverVoltage, PhaseVoltageSense, observer_voltage_source};
+use crate::foc::position::{Position, PositionLoopConfig, PositionTracker};
 use crate::foc::pwm::{PhasePwm, PhaseState, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::transforms::{clarke, park};
@@ -108,8 +109,6 @@ pub enum StepError {
     /// [`CurrentLimits::overcurrent_threshold_a`]; PWM was disabled and the
     /// mode forced to Stopped before returning.
     Overcurrent,
-    /// Requested control mode is not implemented yet (position control).
-    NotImplemented,
 }
 
 /// Default actuation delay (PWM periods), see
@@ -488,11 +487,20 @@ where
     /// Over-voltage trip (V) for the proactive regen-brake derate (0 = off,
     /// rely on the OV fault backstop). Set from the board config at boot.
     ov_threshold_v: f32,
-    /// Cruise velocity loop for `ControlMode::VelocityControl`: slew-limited
-    /// ω reference + clamped PI → iq, routed through the normal current
-    /// loop. Host-tunable (motor/load dependent); reset bumpless on mode
-    /// entry. The failsafe does NOT use this instance (it has its own).
+    /// Cruise velocity loop for `ControlMode::VelocityControl`, and the
+    /// inner loop of `PositionControl`: slew-limited ω reference + clamped
+    /// PI → iq, routed through the normal current loop. Host-tunable
+    /// (motor/load dependent); reset bumpless on mode entry. The failsafe
+    /// does NOT use this instance (it has its own).
     velocity_loop: VelocityLoop,
+    /// The rotor's unwrapped electrical position, followed every cycle in
+    /// every mode (the frame of `PositionControl` targets: 0 at boot).
+    position: PositionTracker,
+    /// Position P law feeding `velocity_loop` in `PositionControl`.
+    position_cfg: PositionLoopConfig,
+    /// `PositionControl`'s target, split into turns + angle once at mode
+    /// entry.
+    position_target: Position,
     /// Measured q current of the last current-loop step — the current the
     /// loop could actually deliver while it was out of voltage (see
     /// `step_velocity_control`).
@@ -596,6 +604,9 @@ where
             failsafe_latched: false,
             ov_threshold_v: 0.0,
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
+            position: PositionTracker::default(),
+            position_cfg: PositionLoopConfig::default(),
+            position_target: Position::default(),
             last_iq_meas: 0.0,
             park_iq: None,
             bus_mod_q_filt: 0.0,
@@ -906,6 +917,25 @@ where
         self.velocity_loop.config()
     }
 
+    /// Apply position-loop tuning (sane values only; see
+    /// [`PositionLoopConfig::is_sane`]).
+    pub fn set_position_config(&mut self, cfg: PositionLoopConfig) {
+        if cfg.is_sane() {
+            self.position_cfg = cfg;
+        }
+    }
+
+    /// Active position-loop tuning.
+    pub fn position_config(&self) -> PositionLoopConfig {
+        self.position_cfg
+    }
+
+    /// The rotor's unwrapped electrical position (0 at boot) — the frame
+    /// of `PositionControl` targets.
+    pub fn position(&self) -> Position {
+        self.position.position()
+    }
+
     /// Set the over-voltage trip (V) used for the proactive regen-brake
     /// derate (0 = off → rely on the OV fault backstop). From the board
     /// config at boot.
@@ -1061,14 +1091,16 @@ where
             self.ensure_bridge_enabled();
         }
         // Bumpless: seed the ramp from the q-current currently commanded
-        // (VelocityControl's last PI output is what the current loop was
+        // (the velocity loop's last PI output is what the current loop was
         // just driven with). Not OpenLoop's `current`: it is applied along
         // the open-loop angle, not the rotor's q axis — seeding it would
         // turn a load-angle-dependent current into full q torque in the
         // estimate's frame, sign included. Zero is the honest seed there.
         let current_iq = match self.mode {
             ControlMode::CurrentControl { iq_target, .. } => iq_target,
-            ControlMode::VelocityControl { .. } => self.velocity_loop.last_iq(),
+            ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. } => {
+                self.velocity_loop.last_iq()
+            }
             _ => 0.0,
         };
         // Bound the seed: mode payloads are finite-checked at the command
@@ -1175,8 +1207,10 @@ where
         // [`acknowledge_failsafe`](Self::acknowledge_failsafe).
         // A stop sequence leaves `self.mode` alone while it runs, so the
         // cruise loop sat idle under it: its state predates the stop.
-        let velocity_loop_live = matches!(self.mode, ControlMode::VelocityControl { .. })
-            && !self.failsafe_ctrl.is_active();
+        let velocity_loop_live = matches!(
+            self.mode,
+            ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. }
+        ) && !self.failsafe_ctrl.is_active();
         self.failsafe_ctrl.reset();
 
         // Re-enable the outputs for any mode that drives the bridge through
@@ -1191,15 +1225,23 @@ where
             self.ensure_bridge_enabled();
         }
 
-        // Entering velocity mode from another mode — or from under a stop
-        // sequence — re-arms the loop bumpless: reference ramp seeded at the
-        // measured velocity, integrator cleared. A retarget *within* running
-        // velocity mode keeps the loop state (the ramp carries the reference
-        // to the new target). Resuming mid brake ramp with the pre-brake
-        // state drove the rotor back toward the speed it was braked from.
-        if matches!(mode, ControlMode::VelocityControl { .. }) && !velocity_loop_live {
+        // Entering velocity or position mode from another mode — or from
+        // under a stop sequence — re-arms the loop bumpless: reference ramp
+        // seeded at the measured velocity, integrator cleared. A retarget
+        // *within* either (or a switch between the two, which share the
+        // loop) keeps the loop state (the ramp carries the reference to the
+        // new target). Resuming mid brake ramp with the pre-brake state
+        // drove the rotor back toward the speed it was braked from.
+        if matches!(
+            mode,
+            ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. }
+        ) && !velocity_loop_live
+        {
             let omega = self.phase.get().velocity;
             self.velocity_loop.reset(omega);
+        }
+        if let ControlMode::PositionControl { target_pos } = mode {
+            self.position_target = Position::from_rad(target_pos);
         }
 
         // Apply PI gains override if provided (detection uses this)
@@ -1300,6 +1342,7 @@ where
             self.engaged_tick = Some(now_ticks);
         }
         self.was_active = active;
+        self.position.update(self.phase.get().angle);
 
         let mut out = self.step_inner(now_ticks)?;
         // Stamp the ACTIVE angle source's velocity into the telemetry — one
@@ -1435,10 +1478,7 @@ where
             ControlMode::VelocityControl { target_vel } => {
                 self.step_velocity_control(target_vel, dt, now_ticks)
             }
-            ControlMode::PositionControl { .. } => {
-                // TODO: Implement position PI controller
-                Err(StepError::NotImplemented)
-            }
+            ControlMode::PositionControl { .. } => self.step_position_control(dt, now_ticks),
             ControlMode::OpenLoop {
                 angle_rad,
                 current,
@@ -1599,6 +1639,19 @@ where
                 Ok(FocOutput::default())
             }
         }
+    }
+
+    /// Execute one position-control cycle: the position error becomes a
+    /// velocity target ([`PositionLoopConfig::speed_for`] — P, bounded by
+    /// the stopping distance at the velocity loop's ramp and by the travel
+    /// ceiling) for the velocity loop, which also supplies the integral
+    /// that holds a load. Without a trustworthy angle the velocity step
+    /// degrades to zero torque, as in velocity mode.
+    fn step_position_control(&mut self, dt: f32, now_ticks: u64) -> Result<FocOutput, StepError> {
+        let err = self.position_target.minus(self.position.position());
+        let decel = self.velocity_loop.config().accel_limit;
+        let omega_target = self.position_cfg.speed_for(err, decel);
+        self.step_velocity_control(omega_target, dt, now_ticks)
     }
 
     /// Execute one velocity-control cycle: the cruise loop turns the ω
@@ -3948,9 +4001,10 @@ mod tests {
         }
         mgr.set_observer(Observer::BackEmf(obs));
         // Cannot fail with an observer installed; mapped instead of unwrapped
-        // to satisfy unwrap_in_result in this Result-returning helper.
+        // to satisfy unwrap_in_result in this Result-returning helper (the
+        // error value is a placeholder).
         mgr.set_source(PhaseSource::Observer)
-            .map_err(|_| (0u64, StepError::NotImplemented))?;
+            .map_err(|_| (0u64, StepError::NotCalibrated))?;
 
         let mut driver = FocDriver::new(
             foc,
@@ -6024,6 +6078,62 @@ mod tests {
             for _ in 0..(seconds / Self::DT) as u32 {
                 self.step();
             }
+        }
+    }
+
+    /// Position control moves the rotor 20 electrical turns and parks it
+    /// there: no overshoot past a hall sector, standing still at the end.
+    #[test]
+    #[cfg(feature = "virtual-motor")]
+    fn position_control_moves_and_parks() {
+        for (pkp, vkp, vki, ff) in [
+            (2.0, 0.01, 0.2, 0.0),
+            (1.0, 0.01, 0.2, 0.0),
+            (5.0, 0.05, 0.5, 1.0 / 536.0),
+            (10.0, 0.05, 0.5, 1.0 / 536.0),
+            (10.0, 0.1, 1.0, 1.0 / 536.0),
+        ] {
+            let mut rig = HallRig::new(0.5, 2e-5);
+            rig.driver.set_position_config(PositionLoopConfig {
+                kp: pkp,
+                max_speed: 1000.0,
+            });
+            rig.driver.set_velocity_config(VelocityLoopConfig {
+                kp: vkp,
+                ki: vki,
+                accel_limit: 500.0,
+                accel_ff: ff,
+            });
+            let target = 20.0 * core::f32::consts::TAU;
+            rig.driver
+                .set_mode(ControlMode::PositionControl { target_pos: target });
+            let mut peak = f32::NEG_INFINITY;
+            let mut worst_late = 0.0f32;
+            let mut true_lo = f32::INFINITY;
+            let mut true_hi = f32::NEG_INFINITY;
+            let mut true_pos = 0.0f32;
+            let mut prev = rig.out.angle_rad;
+            for i in 0..(4.0 / HallRig::DT) as u32 {
+                rig.step();
+                true_pos += angle_difference(rig.out.angle_rad, prev);
+                prev = rig.out.angle_rad;
+                let pos = rig.driver.position().as_rad();
+                peak = peak.max(pos);
+                if i as f32 * HallRig::DT > 3.0 {
+                    worst_late = worst_late.max((pos - target).abs());
+                    true_lo = true_lo.min(true_pos - target);
+                    true_hi = true_hi.max(true_pos - target);
+                }
+            }
+            eprintln!(
+                "DBG   true rotor band over the last second: [{true_lo:.2}, {true_hi:.2}] rad"
+            );
+            eprintln!(
+                "DBG pkp {pkp} vkp {vkp} vki {vki} ff {ff}: overshoot {:.2} late err {:.2} ω {:.1}",
+                peak - target,
+                worst_late,
+                rig.out.omega_e
+            );
         }
     }
 

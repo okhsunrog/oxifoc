@@ -13,6 +13,8 @@ Panels (pick with --panels, default "speed,frame,dq,v,flags"):
          (plant currents in the plant's rotor frame)
   v      dq voltage
   flags  startup / trust flags
+  pos    unwrapped electrical position: true rotor, the driver's view, the
+         target (PositionControl) or the lock's rest angle (mode=lock)
 Extra analysis panels:
   --fft COL          amplitude spectrum of COL over the --t0/--t1 window (mean
                      removed, Hann); with --orders the x axis is harmonic
@@ -43,6 +45,7 @@ PANELS = {
     "dq": (["iq_meas", "iq_true", "id_meas", "id_true", "iq_target"], "A"),
     "v": (["vd", "vq"], "V"),
     "flags": (["starting", "trusted"], "flag"),
+    "pos": (["pos_true", "pos_est", "pos_target"], "el rad"),
 }
 STYLE = {
     "w_true": dict(color="k", lw=2.0, label="ω true"),
@@ -59,6 +62,9 @@ STYLE = {
     "vq": dict(lw=1.2, label="vq"),
     "starting": dict(lw=1.5, label="starting"),
     "trusted": dict(lw=1.5, label="trusted"),
+    "pos_true": dict(color="k", lw=2.0, label="position true"),
+    "pos_est": dict(lw=1.4, label="position driver"),
+    "pos_target": dict(lw=1.0, color="grey", ls="--", label="target"),
 }
 
 

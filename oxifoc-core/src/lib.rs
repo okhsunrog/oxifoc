@@ -289,6 +289,10 @@ pub mod foc {
     /// PI controller with anti-windup
     pub mod pi_controller;
 
+    /// Position control: unwrapped position + the P law feeding the
+    /// velocity loop
+    pub mod position;
+
     /// Phase PWM trait for platform drivers
     pub mod pwm;
 

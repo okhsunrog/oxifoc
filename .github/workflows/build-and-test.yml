@@ -8,7 +8,7 @@ concurrency:
 
 jobs:
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
 
@@ -45,7 +45,7 @@ jobs:
           done
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
 
@@ -67,7 +67,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
 
@@ -107,7 +107,7 @@ jobs:
       fail-fast: false
       matrix:
         target: [oxifoc-g474, oxifoc-f405]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: ${{ matrix.target }}
@@ -156,7 +156,7 @@ jobs:
       fail-fast: false
       matrix:
         target: [oxifoc-bridge, oxifoc-remote]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: ${{ matrix.target }}

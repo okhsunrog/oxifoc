@@ -95,6 +95,7 @@ fn main() -> std::io::Result<()> {
         substeps: arg(&args, "substeps", 8),
         delay: arg(&args, "delay", 0.5),
         tracker: arg(&args, "tracker", 100.0),
+        j: arg(&args, "j", 0.0),
     };
     let (fmin, fmax) = match lp.as_str() {
         "current" => (arg(&args, "fmin", 20.0f32), arg(&args, "fmax", 4000.0f32)),
