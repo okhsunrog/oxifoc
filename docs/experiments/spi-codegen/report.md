@@ -172,3 +172,99 @@ and does not apply a workaround. A Rust compiler regression report can use
 this crate, compiler boundary and MIR cutoff; a later LLVM report can reuse
 the standalone IR and reduced recovery sequence. No upstream issue/PR has
 been published by this experiment.
+
+## Follow-up: full firmware and native per-package flags
+
+Measured all three firmware configurations on the same prepared worktree at
+`7743b30`, with the existing `vfp2sp-toolchain.patch` applied. Source and
+lockfiles stay identical between variants. The compiler is
+nightly-2026-10-14, hardware FP is `+vfp2sp`, release opt-level 3, fat LTO,
+one codegen unit; the manifests' existing incremental settings remain in
+place. USB uses the original `.count()` implementation, without a local
+Embassy path patch. Both q31 asm implementations and core hardware sqrt
+remain in place.
+
+Flash means `.vector_table + .text + .rodata + .data`, not ELF file size.
+These are fresh controlled pairs: their absolute sizes differ from older
+measurements made in other worktree paths/build contexts. Compare within
+this table rather than subtracting older baselines.
+
+| Board | Default threshold 100 | Global 115 | Global delta | Embassy-only 115 | Embassy-only delta |
+|---|---:|---:|---:|---:|---:|
+| G474 | 208688 | 208688 | 0 | 208688 | 0 |
+| F405 CF2 | 373808 | 372464 | **-1344** | 372504 | **-1304** |
+| F405 VESC6 Mk5 | 374812 | 374768 | **-44** | 374812 | 0 |
+
+Static RAM is unchanged for every pair: G474 24516, CF2 36248, VESC6 36232
+bytes. Each F405 ELF retains 25 `vsqrt.f32` sites; no ELF contains the libm
+software-sqrt symbol/RSQRT table or double-precision FP instructions.
+
+In CF2, both threshold variants reduce the SPI function from **1276 to
+372 bytes** and remove the 28-byte `no_delay_panic` helper. Embassy-only
+changes `.text` by -1000 and `.rodata` by -304; global changes them by
+-1040 and -304 respectively. The additional 40-byte global win is small
+compared with the shared SPI specialization benefit.
+
+VESC6 Mk5 uses `bitbang_hal_ng` for DRV8301 because its pin assignment does
+not support hardware SPI. It does not instantiate this blocking Embassy
+SPI path. Its small global win comes from other inlining/layout changes:
+two ergot service functions shrink by 28 and 14 bytes, one poll function
+grows by 2, with the remaining difference from alignment. The package-only
+variant leaves its section sizes unchanged. All three G474 variants also
+have identical section sizes; G474 still does not link the control module
+in this experiment. Equal sizes do not imply identical code bytes: the
+saved flash-image hashes differ between variants for these boards too.
+
+The native Cargo mechanism works without a rustc wrapper:
+
+```toml
+# Add to the board's existing .cargo/config.toml.
+[unstable]
+profile-rustflags = true
+
+[profile.release.package.embassy-stm32]
+rustflags = ["-Zinline-mir-hint-threshold=115"]
+```
+
+Keep the target's existing hardware-FP `rustflags`. Profile flags are added
+to them. The complete fragment is saved as `embassy115-config.toml` and was
+also tested with `cargo --config /absolute/path/to/embassy115-config.toml`.
+The mechanism is documented under
+[Cargo profile rustflags](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#profile-rustflags-option).
+A verbose build of the isolated crate verified 107 rustc invocations:
+only the `embassy-stm32` library and that package's build script receive
+the extra flag. `profile-flag-scope.json` records that check.
+
+The numeric MIR threshold is a rustc invocation setting, with no ordinary
+per-function threshold attribute. This package override is the useful
+narrow scope here. `#[inline(always)]` is not equivalent: the current
+[MIR inliner still applies its cost threshold to it](https://github.com/rust-lang/rust/blob/822182db4c4a1827256881d8c7aa685f0bcf2b11/compiler/rustc_mir_transform/src/inline.rs#L437).
+
+To repeat the matrix, create a detached worktree at the measured revision,
+apply the already committed nightly/target configuration patch, then run:
+
+```sh
+SPI_ROOT=/home/okhsunrog/tmp_zfs/codex_tmp/spi-threshold-firmware
+# Use a fresh task directory if this path already contains the experiment.
+git worktree add --detach "$SPI_ROOT/source" 7743b30
+git -C "$SPI_ROOT/source" apply --unidiff-zero \
+    /home/okhsunrog/code/rust/oxifoc/docs/experiments/core-float-math/vfp2sp-toolchain.patch
+for variant in default global115 embassy115; do
+    for board in g474 cf2 vesc6-mk5; do
+        uv run scripts/measure-mir-threshold-firmware.py \
+            --source "$SPI_ROOT/source" --output "$SPI_ROOT" \
+            --variant "$variant" --board "$board"
+    done
+done
+```
+
+The script redirects TMPDIR, Cargo build-dir and target-dir to the task
+directory; preserves separate board ELFs; and checks hardware sqrt and
+the absence of unsupported double-precision instructions. It uses Cargo's
+`-Zprofile-rustflags` plus a package-profile config override for the narrow
+variant. `firmware-thresholds.json` retains all nine section measurements,
+source/config identity and flash-image hashes; `firmware-symbol-deltas.json`
+retains changed symbols and sections. Full ELF/disassembly/build logs
+remain under the task directory. Build elapsed times are cache-dependent
+and are not compilation-speed benchmarks. No firmware was flashed or timed
+on hardware, and the measured flags have not been applied to normal builds.

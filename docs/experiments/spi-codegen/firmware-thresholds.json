@@ -1,0 +1,287 @@
+[
+  {
+    "variant": "default",
+    "board": "g474",
+    "source_commit": "7743b30242b4d32490c7f6826e002ac57e2048f3",
+    "source_diff_sha256": "e3736b5d900b8b3ed8348bdcb89fbbd025b018373a21c54c2d15854e2405685d",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--locked",
+      "--target-dir",
+      "/home/okhsunrog/tmp_zfs/codex_tmp/spi-threshold-firmware/target-default/g474"
+    ],
+    "rustflags": "-C target-feature=+vfp2sp",
+    "incremental": "manifest default (true)",
+    "flash": 208688,
+    "static_ram": 24516,
+    "sections": {
+      ".vector_table": 472,
+      ".text": 192024,
+      ".rodata": 15120,
+      ".data": 1072,
+      ".bss": 23444
+    },
+    "spi_transfer_bytes": [],
+    "hardware_sqrt_sites": 0,
+    "elapsed_seconds": 32.887,
+    "flash_image_sha256": "1d375f530e74fac1850f0abd4938fa2004034f055786901fc03b1edb9a0fb4b9"
+  },
+  {
+    "variant": "global115",
+    "board": "g474",
+    "source_commit": "7743b30242b4d32490c7f6826e002ac57e2048f3",
+    "source_diff_sha256": "e3736b5d900b8b3ed8348bdcb89fbbd025b018373a21c54c2d15854e2405685d",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--locked",
+      "--target-dir",
+      "/home/okhsunrog/tmp_zfs/codex_tmp/spi-threshold-firmware/target-global115/g474"
+    ],
+    "rustflags": "-C target-feature=+vfp2sp -Zinline-mir-hint-threshold=115",
+    "incremental": "manifest default (true)",
+    "flash": 208688,
+    "static_ram": 24516,
+    "sections": {
+      ".vector_table": 472,
+      ".text": 192024,
+      ".rodata": 15120,
+      ".data": 1072,
+      ".bss": 23444
+    },
+    "spi_transfer_bytes": [],
+    "hardware_sqrt_sites": 0,
+    "elapsed_seconds": 24.693,
+    "flash_image_sha256": "d130da985cb702ed033aa0263998d899089cc8f5f1e962f2cf1bce49bbb8cd0c"
+  },
+  {
+    "variant": "embassy115",
+    "board": "g474",
+    "source_commit": "7743b30242b4d32490c7f6826e002ac57e2048f3",
+    "source_diff_sha256": "e3736b5d900b8b3ed8348bdcb89fbbd025b018373a21c54c2d15854e2405685d",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--locked",
+      "--target-dir",
+      "/home/okhsunrog/tmp_zfs/codex_tmp/spi-threshold-firmware/target-embassy115/g474",
+      "-Zprofile-rustflags",
+      "--config",
+      "profile.release.package.embassy-stm32.rustflags=[\"-Zinline-mir-hint-threshold=115\"]"
+    ],
+    "rustflags": "-C target-feature=+vfp2sp",
+    "incremental": "manifest default (true)",
+    "flash": 208688,
+    "static_ram": 24516,
+    "sections": {
+      ".vector_table": 472,
+      ".text": 192024,
+      ".rodata": 15120,
+      ".data": 1072,
+      ".bss": 23444
+    },
+    "spi_transfer_bytes": [],
+    "hardware_sqrt_sites": 0,
+    "elapsed_seconds": 26.803,
+    "flash_image_sha256": "cf0aff01086bf1a1b76a2fa869edf5dd48a8ef7c4291cfeb2fad3a5619dde542"
+  },
+  {
+    "variant": "default",
+    "board": "cf2",
+    "source_commit": "7743b30242b4d32490c7f6826e002ac57e2048f3",
+    "source_diff_sha256": "e3736b5d900b8b3ed8348bdcb89fbbd025b018373a21c54c2d15854e2405685d",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--locked",
+      "--target-dir",
+      "/home/okhsunrog/tmp_zfs/codex_tmp/spi-threshold-firmware/target-default/cf2"
+    ],
+    "rustflags": "-C target-feature=+vfp2sp",
+    "incremental": "manifest default (true)",
+    "flash": 373808,
+    "static_ram": 36248,
+    "sections": {
+      ".vector_table": 392,
+      ".text": 352064,
+      ".rodata": 19052,
+      ".data": 2300,
+      ".bss": 33948
+    },
+    "spi_transfer_bytes": [
+      1276
+    ],
+    "hardware_sqrt_sites": 25,
+    "elapsed_seconds": 1.564,
+    "flash_image_sha256": "a7799342438cc7e1958e210f3aaaba78af0ec376733517da1133f101f554fd20"
+  },
+  {
+    "variant": "global115",
+    "board": "cf2",
+    "source_commit": "7743b30242b4d32490c7f6826e002ac57e2048f3",
+    "source_diff_sha256": "e3736b5d900b8b3ed8348bdcb89fbbd025b018373a21c54c2d15854e2405685d",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--locked",
+      "--target-dir",
+      "/home/okhsunrog/tmp_zfs/codex_tmp/spi-threshold-firmware/target-global115/cf2"
+    ],
+    "rustflags": "-C target-feature=+vfp2sp -Zinline-mir-hint-threshold=115",
+    "incremental": "manifest default (true)",
+    "flash": 372464,
+    "static_ram": 36248,
+    "sections": {
+      ".vector_table": 392,
+      ".text": 351024,
+      ".rodata": 18748,
+      ".data": 2300,
+      ".bss": 33948
+    },
+    "spi_transfer_bytes": [
+      372
+    ],
+    "hardware_sqrt_sites": 25,
+    "elapsed_seconds": 28.436,
+    "flash_image_sha256": "cee184bb27d11ab565e904338cf415a1d00c66c50dbcbab0b28dd3ec1f38a9c4"
+  },
+  {
+    "variant": "embassy115",
+    "board": "cf2",
+    "source_commit": "7743b30242b4d32490c7f6826e002ac57e2048f3",
+    "source_diff_sha256": "e3736b5d900b8b3ed8348bdcb89fbbd025b018373a21c54c2d15854e2405685d",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--locked",
+      "--target-dir",
+      "/home/okhsunrog/tmp_zfs/codex_tmp/spi-threshold-firmware/target-embassy115/cf2",
+      "-Zprofile-rustflags",
+      "--config",
+      "profile.release.package.embassy-stm32.rustflags=[\"-Zinline-mir-hint-threshold=115\"]"
+    ],
+    "rustflags": "-C target-feature=+vfp2sp",
+    "incremental": "manifest default (true)",
+    "flash": 372504,
+    "static_ram": 36248,
+    "sections": {
+      ".vector_table": 392,
+      ".text": 351064,
+      ".rodata": 18748,
+      ".data": 2300,
+      ".bss": 33948
+    },
+    "spi_transfer_bytes": [
+      372
+    ],
+    "hardware_sqrt_sites": 25,
+    "elapsed_seconds": 26.694,
+    "flash_image_sha256": "5c2841c10fb522564126315ded4424553304c288a7db15d7b4d3939644b0a24d"
+  },
+  {
+    "variant": "default",
+    "board": "vesc6-mk5",
+    "source_commit": "7743b30242b4d32490c7f6826e002ac57e2048f3",
+    "source_diff_sha256": "e3736b5d900b8b3ed8348bdcb89fbbd025b018373a21c54c2d15854e2405685d",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--locked",
+      "--target-dir",
+      "/home/okhsunrog/tmp_zfs/codex_tmp/spi-threshold-firmware/target-default/vesc6-mk5",
+      "--no-default-features",
+      "--features",
+      "transport-usb,transport-uart,board-vesc6-mk5"
+    ],
+    "rustflags": "-C target-feature=+vfp2sp",
+    "incremental": "manifest default (true)",
+    "flash": 374812,
+    "static_ram": 36232,
+    "sections": {
+      ".vector_table": 392,
+      ".text": 353404,
+      ".rodata": 18716,
+      ".data": 2300,
+      ".bss": 33932
+    },
+    "spi_transfer_bytes": [],
+    "hardware_sqrt_sites": 25,
+    "elapsed_seconds": 16.999,
+    "flash_image_sha256": "611b0b58ea88dc74723cc17f8e780cdd48ce56cda8e84bfd109152eedb9a7b75"
+  },
+  {
+    "variant": "global115",
+    "board": "vesc6-mk5",
+    "source_commit": "7743b30242b4d32490c7f6826e002ac57e2048f3",
+    "source_diff_sha256": "e3736b5d900b8b3ed8348bdcb89fbbd025b018373a21c54c2d15854e2405685d",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--locked",
+      "--target-dir",
+      "/home/okhsunrog/tmp_zfs/codex_tmp/spi-threshold-firmware/target-global115/vesc6-mk5",
+      "--no-default-features",
+      "--features",
+      "transport-usb,transport-uart,board-vesc6-mk5"
+    ],
+    "rustflags": "-C target-feature=+vfp2sp -Zinline-mir-hint-threshold=115",
+    "incremental": "manifest default (true)",
+    "flash": 374768,
+    "static_ram": 36232,
+    "sections": {
+      ".vector_table": 392,
+      ".text": 353360,
+      ".rodata": 18716,
+      ".data": 2300,
+      ".bss": 33932
+    },
+    "spi_transfer_bytes": [],
+    "hardware_sqrt_sites": 25,
+    "elapsed_seconds": 14.675,
+    "flash_image_sha256": "3413159622568e3bed641f59e78768ebec515f8d8b23308e4499966da98f1075"
+  },
+  {
+    "variant": "embassy115",
+    "board": "vesc6-mk5",
+    "source_commit": "7743b30242b4d32490c7f6826e002ac57e2048f3",
+    "source_diff_sha256": "e3736b5d900b8b3ed8348bdcb89fbbd025b018373a21c54c2d15854e2405685d",
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--locked",
+      "--target-dir",
+      "/home/okhsunrog/tmp_zfs/codex_tmp/spi-threshold-firmware/target-embassy115/vesc6-mk5",
+      "-Zprofile-rustflags",
+      "--config",
+      "profile.release.package.embassy-stm32.rustflags=[\"-Zinline-mir-hint-threshold=115\"]",
+      "--no-default-features",
+      "--features",
+      "transport-usb,transport-uart,board-vesc6-mk5"
+    ],
+    "rustflags": "-C target-feature=+vfp2sp",
+    "incremental": "manifest default (true)",
+    "flash": 374812,
+    "static_ram": 36232,
+    "sections": {
+      ".vector_table": 392,
+      ".text": 353404,
+      ".rodata": 18716,
+      ".data": 2300,
+      ".bss": 33932
+    },
+    "spi_transfer_bytes": [],
+    "hardware_sqrt_sites": 25,
+    "elapsed_seconds": 13.51,
+    "flash_image_sha256": "b1bd75b32ef58997dd4d152c4cf2be27535201b21e6ed30ca4871de458fd9b47"
+  }
+]

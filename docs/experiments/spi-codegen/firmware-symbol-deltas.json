@@ -1,0 +1,342 @@
+[
+  {
+    "board": "g474",
+    "variant": "global115",
+    "sections": {
+      ".vector_table": {
+        "old": 472,
+        "new": 472,
+        "delta": 0
+      },
+      ".text": {
+        "old": 192024,
+        "new": 192024,
+        "delta": 0
+      },
+      ".data": {
+        "old": 1072,
+        "new": 1072,
+        "delta": 0
+      },
+      ".rodata": {
+        "old": 15120,
+        "new": 15120,
+        "delta": 0
+      },
+      ".bss": {
+        "old": 23444,
+        "new": 23444,
+        "delta": 0
+      }
+    },
+    "symbols": []
+  },
+  {
+    "board": "g474",
+    "variant": "embassy115",
+    "sections": {
+      ".vector_table": {
+        "old": 472,
+        "new": 472,
+        "delta": 0
+      },
+      ".bss": {
+        "old": 23444,
+        "new": 23444,
+        "delta": 0
+      },
+      ".data": {
+        "old": 1072,
+        "new": 1072,
+        "delta": 0
+      },
+      ".rodata": {
+        "old": 15120,
+        "new": 15120,
+        "delta": 0
+      },
+      ".text": {
+        "old": 192024,
+        "new": 192024,
+        "delta": 0
+      }
+    },
+    "symbols": []
+  },
+  {
+    "board": "cf2",
+    "variant": "global115",
+    "sections": {
+      ".data": {
+        "old": 2300,
+        "new": 2300,
+        "delta": 0
+      },
+      ".text": {
+        "old": 352064,
+        "new": 351024,
+        "delta": -1040
+      },
+      ".rodata": {
+        "old": 19052,
+        "new": 18748,
+        "delta": -304
+      },
+      ".vector_table": {
+        "old": 392,
+        "new": 392,
+        "delta": 0
+      },
+      ".bss": {
+        "old": 33948,
+        "new": 33948,
+        "delta": 0
+      }
+    },
+    "symbols": [
+      {
+        "symbol": "<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay> as embedded_hal::spi::SpiDevice>::transfer",
+        "old": 1276,
+        "new": 372,
+        "delta": -904
+      },
+      {
+        "symbol": "<ergot::net_stack::services::Services<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>>>::seed_router_request_handler_with_timeout::<2, <ergot::net_stack::services::Services<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>>>::seed_router_request_handler<2>::{closure#0}::{closure#0}, embassy_time::timer::Timer>::{closure#0}",
+        "old": 15884,
+        "new": 15856,
+        "delta": -28
+      },
+      {
+        "symbol": "embedded_hal_bus::spi::no_delay_panic",
+        "old": 28,
+        "new": 0,
+        "delta": -28
+      },
+      {
+        "symbol": "oxifoc_f405::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}",
+        "old": 27600,
+        "new": 27576,
+        "delta": -24
+      },
+      {
+        "symbol": "ergot::net_stack::services::delegated_seed_rpc_timeout::<ergot::net_stack::services::release_seed_lease<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>>::{closure#0}, embassy_time::timer::Timer>::{closure#0}",
+        "old": 2602,
+        "new": 2588,
+        "delta": -14
+      },
+      {
+        "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::reset_gate_faults",
+        "old": 204,
+        "new": 194,
+        "delta": -10
+      },
+      {
+        "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::get_fault_status",
+        "old": 540,
+        "new": 532,
+        "delta": -8
+      },
+      {
+        "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::set_pwm_mode",
+        "old": 202,
+        "new": 194,
+        "delta": -8
+      },
+      {
+        "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::set_gate_current",
+        "old": 202,
+        "new": 194,
+        "delta": -8
+      },
+      {
+        "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::set_shunt_amplifier_gain",
+        "old": 202,
+        "new": 194,
+        "delta": -8
+      },
+      {
+        "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__defmt_forwarder_task::__defmt_forwarder_task_inner_function::{closure#0}>>::poll",
+        "old": 2062,
+        "new": 2064,
+        "delta": 2
+      }
+    ]
+  },
+  {
+    "board": "cf2",
+    "variant": "embassy115",
+    "sections": {
+      ".text": {
+        "old": 352064,
+        "new": 351064,
+        "delta": -1000
+      },
+      ".vector_table": {
+        "old": 392,
+        "new": 392,
+        "delta": 0
+      },
+      ".data": {
+        "old": 2300,
+        "new": 2300,
+        "delta": 0
+      },
+      ".rodata": {
+        "old": 19052,
+        "new": 18748,
+        "delta": -304
+      },
+      ".bss": {
+        "old": 33948,
+        "new": 33948,
+        "delta": 0
+      }
+    },
+    "symbols": [
+      {
+        "symbol": "<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay> as embedded_hal::spi::SpiDevice>::transfer",
+        "old": 1276,
+        "new": 372,
+        "delta": -904
+      },
+      {
+        "symbol": "embedded_hal_bus::spi::no_delay_panic",
+        "old": 28,
+        "new": 0,
+        "delta": -28
+      },
+      {
+        "symbol": "oxifoc_f405::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}",
+        "old": 27600,
+        "new": 27576,
+        "delta": -24
+      },
+      {
+        "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::reset_gate_faults",
+        "old": 204,
+        "new": 194,
+        "delta": -10
+      },
+      {
+        "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::set_pwm_mode",
+        "old": 202,
+        "new": 194,
+        "delta": -8
+      },
+      {
+        "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::set_gate_current",
+        "old": 202,
+        "new": 194,
+        "delta": -8
+      },
+      {
+        "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::set_shunt_amplifier_gain",
+        "old": 202,
+        "new": 194,
+        "delta": -8
+      },
+      {
+        "symbol": "<drv8301_dd::blocking::driver::Drv8301<drv8301_dd::DrvInterface<embedded_hal_bus::spi::exclusive::ExclusiveDevice<&mut embassy_stm32::spi::Spi<embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>, &mut embassy_stm32::gpio::Output, embedded_hal_bus::spi::NoDelay>>, embedded_hal_bus::spi::DeviceError<embassy_stm32::spi::Error, !>>>::get_fault_status",
+        "old": 540,
+        "new": 532,
+        "delta": -8
+      },
+      {
+        "symbol": "<ergot::socket::raw_owned::Socket<ergot::socket::owned::stack_vec::Bounded<core::result::Result<ergot::socket::HeaderMessage<oxifoc_core::foc::phase::source::PhaseSource>, ergot::socket::HeaderMessage<ergot::ProtocolError>>, 2>, oxifoc_core::foc::phase::source::PhaseSource, &ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>>>::recv_owned",
+        "old": 202,
+        "new": 200,
+        "delta": -2
+      }
+    ]
+  },
+  {
+    "board": "vesc6-mk5",
+    "variant": "global115",
+    "sections": {
+      ".vector_table": {
+        "old": 392,
+        "new": 392,
+        "delta": 0
+      },
+      ".rodata": {
+        "old": 18716,
+        "new": 18716,
+        "delta": 0
+      },
+      ".text": {
+        "old": 353404,
+        "new": 353360,
+        "delta": -44
+      },
+      ".bss": {
+        "old": 33932,
+        "new": 33932,
+        "delta": 0
+      },
+      ".data": {
+        "old": 2300,
+        "new": 2300,
+        "delta": 0
+      }
+    },
+    "symbols": [
+      {
+        "symbol": "<ergot::net_stack::services::Services<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>>>::seed_router_request_handler_with_timeout::<2, <ergot::net_stack::services::Services<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>>>::seed_router_request_handler<2>::{closure#0}::{closure#0}, embassy_time::timer::Timer>::{closure#0}",
+        "old": 15884,
+        "new": 15856,
+        "delta": -28
+      },
+      {
+        "symbol": "ergot::net_stack::services::delegated_seed_rpc_timeout::<ergot::net_stack::services::release_seed_lease<&ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>>::{closure#0}, embassy_time::timer::Timer>::{closure#0}",
+        "old": 2602,
+        "new": 2588,
+        "delta": -14
+      },
+      {
+        "symbol": "<embassy_executor::raw::TaskStorage<oxifoc_f405::protocol::servers::__defmt_forwarder_task::__defmt_forwarder_task_inner_function::{closure#0}>>::poll",
+        "old": 2062,
+        "new": 2064,
+        "delta": 2
+      }
+    ]
+  },
+  {
+    "board": "vesc6-mk5",
+    "variant": "embassy115",
+    "sections": {
+      ".rodata": {
+        "old": 18716,
+        "new": 18716,
+        "delta": 0
+      },
+      ".data": {
+        "old": 2300,
+        "new": 2300,
+        "delta": 0
+      },
+      ".vector_table": {
+        "old": 392,
+        "new": 392,
+        "delta": 0
+      },
+      ".bss": {
+        "old": 33932,
+        "new": 33932,
+        "delta": 0
+      },
+      ".text": {
+        "old": 353404,
+        "new": 353404,
+        "delta": 0
+      }
+    },
+    "symbols": [
+      {
+        "symbol": "<ergot::socket::raw_owned::Socket<ergot::socket::owned::stack_vec::Bounded<core::result::Result<ergot::socket::HeaderMessage<oxifoc_core::foc::phase::source::PhaseSource>, ergot::socket::HeaderMessage<ergot::ProtocolError>>, 2>, oxifoc_core::foc::phase::source::PhaseSource, &ergot::net_stack::NetStack<mutex::raw_impls::cs::CriticalSectionRawMutex, ergot::interface_manager::profiles::router::Router<oxifoc_f405::transport::McInterface, embassy_stm32::rng::Rng<embassy_stm32::_generated::peripherals::RNG>, 3, 8>>>>::recv_owned",
+        "old": 202,
+        "new": 200,
+        "delta": -2
+      }
+    ]
+  }
+]

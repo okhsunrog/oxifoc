@@ -1,0 +1,15 @@
+{
+  "checked_rustc_invocations": 107,
+  "flagged": [
+    {
+      "crate": "build_script_build",
+      "package": "embassy-stm32",
+      "threshold": 115
+    },
+    {
+      "crate": "embassy_stm32",
+      "package": "embassy-stm32",
+      "threshold": 115
+    }
+  ]
+}

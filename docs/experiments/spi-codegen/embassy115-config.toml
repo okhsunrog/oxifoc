@@ -1,0 +1,7 @@
+# Merge into a board's existing .cargo/config.toml, or pass with --config.
+# Keep the target's hardware-FP rustflags in place.
+[unstable]
+profile-rustflags = true
+
+[profile.release.package.embassy-stm32]
+rustflags = ["-Zinline-mir-hint-threshold=115"]
