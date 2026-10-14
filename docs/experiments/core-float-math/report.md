@@ -234,3 +234,118 @@ provide an aggregate flash-size win on these configurations, and upgrading
 without repairing the old cfg slows the sqrt path. Keep compiler migration
 and approximation work as independently measured changes. Floor/round
 migration is primarily API cleanup, not a demonstrated speed improvement.
+
+## Follow-up: full firmware validation with +vfp2sp
+
+The follow-up uses hardware sqrt in **both** compiler variants. It does not
+build or propose a software-sqrt configuration. Both q31 asm implementations
+are retained verbatim. The latest test worktree pins nightly-2026-10-14 in
+root and both STM32 toolchain files, replacing the board rustflags with only
+`-C target-feature=+vfp2sp`. The reproducible configuration changes are in
+`vfp2sp-toolchain.patch`; they are not applied to this branch's old pins.
+
+| Same core-math source | G474 flash | CF2 flash | VESC6 flash |
+|---|---:|---:|---:|
+| Old nightly, +vfp2,-fp64 | 206712 | 370644 | 373096 |
+| Latest nightly, +vfp2sp | 208460 | 373408 | 374396 |
+| Delta | +1748 | +2764 | +1300 |
+
+All three release builds succeeded. Both latest F405 ELFs contain 25
+`vsqrt.f32` sites, no libm software-sqrt symbol or RSQRT_TAB, and no `.f64`
+arithmetic instructions. G474 still omits the control module as described
+above. The G474 on-target test binary was additionally built on latest
+nightly with `RUSTFLAGS='-C target-feature=+vfp2sp'`; its `q31_round_trip`
+test links both actual q31 helpers. Disassembly contains both
+`vcvt.s32.f32 ..., #31` and `vcvt.f32.s32 ..., #31`. It was compiled and
+inspected, not executed on a board.
+
+Artifacts for these builds are in `vfp2sp-artifacts` under the temporary
+experiment root. Compared with the earlier latest `+vfp2,-fp64` builds,
+flash differs by +12/+32/+16 bytes; the full ELFs are not byte-identical.
+This does not change the hardware-math conclusions. The isolated FPU probe
+has identical assembly with the two flag selections. Firmware-level layout
+and hashes can vary with compiler flags and the separate worktree; do not
+interpret those small deltas as extra FP instructions.
+
+### Confirmed USB contributor: changed core UTF-16 counting
+
+This is a change in core's implementation as well as compiler codegen:
+
+- Old `EncodeUtf16` has no specialized `count`; its default counting loop
+  repeatedly calls `next`.
+- Latest `EncodeUtf16::count` directly classifies UTF-8 bytes to count
+  UTF-16 units. At opt-level 3 the ARM code unrolls byte classification
+  four ways, increasing code size when inlined into descriptors.
+- The committed `utf16-probe.rs` reproduces it without any dependencies:
+  `utf16_count` grows from 134 to 426 bytes; `utf16_count_next` remains
+  134 bytes on both compilers. This is static size, not a throughput test.
+
+A controlled full-CF2 diagnostic replaced **only** the three
+`.encode_utf16().count()` calls in Embassy USB's `msos.rs` with
+`.encode_utf16().fold(0usize, |n, _| n + 1)`. This exercises the generic
+iteration path rather than the new specialized count. The tiny
+`usb-utf16-diagnostic.patch` records this experiment; it is not a production
+dependency change.
+
+For a controlled comparison, both the original and folded builds used the
+same local copy of embassy-usb 0.6.0 at the pinned Embassy revision,
+identical latest compiler, `+vfp2sp`, firmware source, dependency versions,
+features and optimization settings. Its five relative Embassy dependencies
+were redirected to the same pinned Git revision. Both the crates.io and
+Git embassy-usb sources were patched to that local package, so ergot and
+the firmware still share one USB crate. The firmware lockfile changed only
+the source identity of embassy-usb, not package versions. Local source
+identity itself affects layout, hence the original local-source build is
+measured separately rather than treating it as identical to the Git build.
+
+| Controlled CF2 diagnostic | Flash | Static RAM |
+|---|---:|---:|
+| Local USB, original count | 373264 | 36248 |
+| Same local USB, generic fold | 372296 | 36248 |
+| Causal change | **-968** | **0** |
+
+`.text` shrinks by 968; `.rodata`, `.data` and `.bss` are unchanged. The
+1368-byte `RegistryPropertyFeatureDescriptor::size` disappears and the
+368-byte `PropertyData::size` reappears; main-task code grows by 30 bytes,
+with a small alignment remainder. Section/symbol results are preserved in
+`usb-utf16-delta.json`. The independent probe test compares count and next
+for every valid Unicode scalar plus mixed strings; it passes on latest
+nightly. No runtime speed claim follows from the size measurement.
+
+### Confirmed SPI contributor: the generic transaction survives
+
+With the same hardware-math source, CF2's concrete
+`ExclusiveDevice<...>::transfer` is 374 bytes on old nightly and 1276 on
+latest `+vfp2sp`: **+902 bytes in that function**. This is not just a rename.
+Both versions inline the transfer machinery, but the generated structure
+is different:
+
+- Old output specializes the single `Operation::Transfer` created by the
+  default `SpiDevice::transfer`. The function has no operation-dispatch
+  jump table and no call to `no_delay_panic`.
+- Latest output materializes the 20-byte Operation on the stack, retains
+  an operation loop and a `tbh` jump table covering the general operation
+  variants, and includes a call to `embedded_hal_bus::spi::no_delay_panic`.
+  That helper also appears separately (28 bytes).
+
+The latest prologue additionally reserves 28 stack bytes and saves fp,
+versus neither in the old version. This is the observed lost
+specialization of a known one-element transaction; identifying the exact
+MIR/LLVM pass responsible would require a compiler bisect/pass analysis.
+No dependency-source change is involved in this SPI comparison, and this
+experiment does not introduce a SPI workaround.
+
+USB's controlled -968 and SPI's +902 show concrete contributors on the
+scale of most of CF2's +2764-byte growth. They are not a complete additive
+accounting of the difference: changing USB inlining moves other code too,
+and other functions both shrink and grow. Remaining changes include the
+USB bus poll state machine, detect_server, packet serialization and
+inlining boundaries. Thus the source of significant growth is established,
+but attributing every remaining byte to a particular compiler pass is not.
+
+The follow-up leaves the existing source/toolchain pins in this branch
+intact and adds results plus reproducible diagnostic patches. The tested
+new settings are ready to apply together when choosing compiler migration.
+
+The diagnostic patches use zero context; replay with
+`git apply --unidiff-zero <patch>` in the corresponding project checkout.

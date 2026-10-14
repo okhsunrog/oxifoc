@@ -1,0 +1,1833 @@
+{
+  "old": "local embassy-usb, original count",
+  "new": "same local embassy-usb, generic fold",
+  "sections": {
+    ".rodata": {
+      "old": 18540,
+      "new": 18540,
+      "delta": 0
+    },
+    ".text": {
+      "old": 352032,
+      "new": 351064,
+      "delta": -968
+    },
+    ".bss": {
+      "old": 33948,
+      "new": 33948,
+      "delta": 0
+    },
+    ".data": {
+      "old": 2300,
+      "new": 2300,
+      "delta": 0
+    },
+    ".vector_table": {
+      "old": 392,
+      "new": 392,
+      "delta": 0
+    }
+  },
+  "symbols": [
+    {
+      "symbol": "<embassy_usb::msos::RegistryPropertyFeatureDescriptor as embassy_usb::msos::Descriptor>::size",
+      "old": 1368,
+      "new": 0,
+      "delta": -1368
+    },
+    {
+      "symbol": "<embassy_usb::msos::PropertyData>::size",
+      "old": 0,
+      "new": 368,
+      "delta": 368
+    },
+    {
+      "symbol": "oxifoc_f405::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}",
+      "old": 27642,
+      "new": 27672,
+      "delta": 30
+    }
+  ],
+  "instructions": {
+    "adc.w": {
+      "old": 314,
+      "new": 314
+    },
+    "adcs": {
+      "old": 46,
+      "new": 46
+    },
+    "adcs.w": {
+      "old": 37,
+      "new": 37
+    },
+    "add": {
+      "old": 2564,
+      "new": 2529
+    },
+    "add.w": {
+      "old": 3186,
+      "new": 3184
+    },
+    "addcc": {
+      "old": 7,
+      "new": 7
+    },
+    "addcc.w": {
+      "old": 1,
+      "new": 1
+    },
+    "addeq": {
+      "old": 27,
+      "new": 27
+    },
+    "addeq.w": {
+      "old": 15,
+      "new": 15
+    },
+    "addge": {
+      "old": 1,
+      "new": 1
+    },
+    "addge.w": {
+      "old": 1,
+      "new": 1
+    },
+    "addgt": {
+      "old": 12,
+      "new": 12
+    },
+    "addgt.w": {
+      "old": 8,
+      "new": 7
+    },
+    "addhi": {
+      "old": 2,
+      "new": 2
+    },
+    "addmi": {
+      "old": 2,
+      "new": 2
+    },
+    "addmi.w": {
+      "old": 3,
+      "new": 3
+    },
+    "addne": {
+      "old": 58,
+      "new": 58
+    },
+    "addne.w": {
+      "old": 19,
+      "new": 19
+    },
+    "adds": {
+      "old": 2124,
+      "new": 2126
+    },
+    "adds.w": {
+      "old": 330,
+      "new": 330
+    },
+    "addw": {
+      "old": 140,
+      "new": 140
+    },
+    "and.w": {
+      "old": 649,
+      "new": 656
+    },
+    "andcc": {
+      "old": 1,
+      "new": 1
+    },
+    "andcc.w": {
+      "old": 1,
+      "new": 1
+    },
+    "andeq.w": {
+      "old": 2,
+      "new": 2
+    },
+    "andls.w": {
+      "old": 1,
+      "new": 1
+    },
+    "andne": {
+      "old": 2,
+      "new": 2
+    },
+    "andne.w": {
+      "old": 1,
+      "new": 1
+    },
+    "ands": {
+      "old": 52,
+      "new": 52
+    },
+    "ands.w": {
+      "old": 31,
+      "new": 31
+    },
+    "andseq.w": {
+      "old": 1,
+      "new": 1
+    },
+    "andsne.w": {
+      "old": 2,
+      "new": 2
+    },
+    "asr.w": {
+      "old": 1,
+      "new": 1
+    },
+    "asrs": {
+      "old": 4,
+      "new": 4
+    },
+    "b.n": {
+      "old": 3247,
+      "new": 3207
+    },
+    "b.w": {
+      "old": 368,
+      "new": 367
+    },
+    "bcc.n": {
+      "old": 409,
+      "new": 417
+    },
+    "bcc.w": {
+      "old": 150,
+      "new": 150
+    },
+    "bcs.n": {
+      "old": 382,
+      "new": 359
+    },
+    "bcs.w": {
+      "old": 358,
+      "new": 356
+    },
+    "beq.n": {
+      "old": 2631,
+      "new": 2628
+    },
+    "beq.w": {
+      "old": 1723,
+      "new": 1716
+    },
+    "bfc": {
+      "old": 4,
+      "new": 4
+    },
+    "bfi": {
+      "old": 50,
+      "new": 52
+    },
+    "bfieq": {
+      "old": 1,
+      "new": 1
+    },
+    "bge.n": {
+      "old": 21,
+      "new": 21
+    },
+    "bge.w": {
+      "old": 12,
+      "new": 12
+    },
+    "bgt.n": {
+      "old": 72,
+      "new": 50
+    },
+    "bgt.w": {
+      "old": 81,
+      "new": 80
+    },
+    "bhi.n": {
+      "old": 195,
+      "new": 197
+    },
+    "bhi.w": {
+      "old": 208,
+      "new": 207
+    },
+    "bic.w": {
+      "old": 404,
+      "new": 401
+    },
+    "biceq.w": {
+      "old": 2,
+      "new": 2
+    },
+    "bics": {
+      "old": 18,
+      "new": 18
+    },
+    "bics.w": {
+      "old": 4,
+      "new": 4
+    },
+    "bl": {
+      "old": 2846,
+      "new": 2847
+    },
+    "ble.n": {
+      "old": 129,
+      "new": 115
+    },
+    "ble.w": {
+      "old": 72,
+      "new": 72
+    },
+    "bleq": {
+      "old": 1,
+      "new": 1
+    },
+    "blhi": {
+      "old": 6,
+      "new": 6
+    },
+    "blmi": {
+      "old": 1,
+      "new": 1
+    },
+    "blne": {
+      "old": 4,
+      "new": 4
+    },
+    "blpl": {
+      "old": 1,
+      "new": 1
+    },
+    "bls.n": {
+      "old": 277,
+      "new": 279
+    },
+    "bls.w": {
+      "old": 48,
+      "new": 47
+    },
+    "blt.n": {
+      "old": 35,
+      "new": 35
+    },
+    "blt.w": {
+      "old": 24,
+      "new": 24
+    },
+    "blx": {
+      "old": 306,
+      "new": 306
+    },
+    "blxeq": {
+      "old": 12,
+      "new": 12
+    },
+    "blxne": {
+      "old": 99,
+      "new": 99
+    },
+    "bmi.n": {
+      "old": 220,
+      "new": 221
+    },
+    "bmi.w": {
+      "old": 56,
+      "new": 56
+    },
+    "bne.n": {
+      "old": 2039,
+      "new": 2038
+    },
+    "bne.w": {
+      "old": 926,
+      "new": 926
+    },
+    "bpl.n": {
+      "old": 213,
+      "new": 213
+    },
+    "bpl.w": {
+      "old": 21,
+      "new": 21
+    },
+    "bvs.n": {
+      "old": 1,
+      "new": 1
+    },
+    "bx": {
+      "old": 68,
+      "new": 68
+    },
+    "bxeq": {
+      "old": 6,
+      "new": 6
+    },
+    "bxhi": {
+      "old": 3,
+      "new": 3
+    },
+    "bxmi": {
+      "old": 1,
+      "new": 1
+    },
+    "bxne": {
+      "old": 12,
+      "new": 12
+    },
+    "bxvs": {
+      "old": 1,
+      "new": 1
+    },
+    "cbnz": {
+      "old": 256,
+      "new": 256
+    },
+    "cbz": {
+      "old": 723,
+      "new": 719
+    },
+    "clrex": {
+      "old": 172,
+      "new": 172
+    },
+    "clz": {
+      "old": 71,
+      "new": 71
+    },
+    "clzne": {
+      "old": 1,
+      "new": 1
+    },
+    "cmn.w": {
+      "old": 29,
+      "new": 29
+    },
+    "cmp": {
+      "old": 7424,
+      "new": 7391
+    },
+    "cmp.w": {
+      "old": 1072,
+      "new": 1020
+    },
+    "cmpcc": {
+      "old": 22,
+      "new": 22
+    },
+    "cmpcc.w": {
+      "old": 2,
+      "new": 2
+    },
+    "cmpcs": {
+      "old": 9,
+      "new": 9
+    },
+    "cmpeq": {
+      "old": 131,
+      "new": 131
+    },
+    "cmpeq.w": {
+      "old": 6,
+      "new": 6
+    },
+    "cmpgt": {
+      "old": 2,
+      "new": 1
+    },
+    "cmpls.w": {
+      "old": 1,
+      "new": 1
+    },
+    "cmpne": {
+      "old": 181,
+      "new": 181
+    },
+    "cmpne.w": {
+      "old": 12,
+      "new": 12
+    },
+    "cmppl": {
+      "old": 1,
+      "new": 1
+    },
+    "cpsid": {
+      "old": 310,
+      "new": 310
+    },
+    "dmb": {
+      "old": 2024,
+      "new": 2024
+    },
+    "dmbcc": {
+      "old": 6,
+      "new": 6
+    },
+    "dmbeq": {
+      "old": 3,
+      "new": 3
+    },
+    "dmbne": {
+      "old": 4,
+      "new": 4
+    },
+    "dsb": {
+      "old": 13,
+      "new": 13
+    },
+    "eor.w": {
+      "old": 314,
+      "new": 314
+    },
+    "eoreq": {
+      "old": 2,
+      "new": 2
+    },
+    "eoreq.w": {
+      "old": 10,
+      "new": 10
+    },
+    "eorne": {
+      "old": 1,
+      "new": 1
+    },
+    "eors": {
+      "old": 106,
+      "new": 106
+    },
+    "eors.w": {
+      "old": 2,
+      "new": 2
+    },
+    "isb": {
+      "old": 1,
+      "new": 1
+    },
+    "it": {
+      "old": 1837,
+      "new": 1815
+    },
+    "ite": {
+      "old": 31,
+      "new": 31
+    },
+    "itee": {
+      "old": 15,
+      "new": 15
+    },
+    "iteee": {
+      "old": 6,
+      "new": 6
+    },
+    "itt": {
+      "old": 534,
+      "new": 534
+    },
+    "itte": {
+      "old": 33,
+      "new": 33
+    },
+    "ittt": {
+      "old": 166,
+      "new": 165
+    },
+    "itttt": {
+      "old": 70,
+      "new": 70
+    },
+    "ldmdb": {
+      "old": 2,
+      "new": 2
+    },
+    "ldmia": {
+      "old": 216,
+      "new": 216
+    },
+    "ldmia.w": {
+      "old": 975,
+      "new": 975
+    },
+    "ldmiahi.w": {
+      "old": 1,
+      "new": 1
+    },
+    "ldmiane.w": {
+      "old": 1,
+      "new": 1
+    },
+    "ldr": {
+      "old": 4900,
+      "new": 4895
+    },
+    "ldr.w": {
+      "old": 3383,
+      "new": 3382
+    },
+    "ldrb": {
+      "old": 1126,
+      "new": 1132
+    },
+    "ldrb.w": {
+      "old": 1966,
+      "new": 1966
+    },
+    "ldrbeq": {
+      "old": 24,
+      "new": 24
+    },
+    "ldrbeq.w": {
+      "old": 41,
+      "new": 41
+    },
+    "ldrbne": {
+      "old": 2,
+      "new": 2
+    },
+    "ldrbne.w": {
+      "old": 17,
+      "new": 17
+    },
+    "ldrcc": {
+      "old": 6,
+      "new": 6
+    },
+    "ldrd": {
+      "old": 1945,
+      "new": 1946
+    },
+    "ldrdeq": {
+      "old": 8,
+      "new": 8
+    },
+    "ldrdne": {
+      "old": 1,
+      "new": 1
+    },
+    "ldreq": {
+      "old": 15,
+      "new": 15
+    },
+    "ldreq.w": {
+      "old": 27,
+      "new": 27
+    },
+    "ldrex": {
+      "old": 537,
+      "new": 537
+    },
+    "ldrexb": {
+      "old": 75,
+      "new": 75
+    },
+    "ldrh": {
+      "old": 232,
+      "new": 232
+    },
+    "ldrh.w": {
+      "old": 404,
+      "new": 404
+    },
+    "ldrheq": {
+      "old": 6,
+      "new": 6
+    },
+    "ldrheq.w": {
+      "old": 40,
+      "new": 40
+    },
+    "ldrhmi": {
+      "old": 3,
+      "new": 3
+    },
+    "ldrhmi.w": {
+      "old": 5,
+      "new": 5
+    },
+    "ldrhne": {
+      "old": 5,
+      "new": 5
+    },
+    "ldrhne.w": {
+      "old": 31,
+      "new": 31
+    },
+    "ldrls.w": {
+      "old": 1,
+      "new": 1
+    },
+    "ldrmi": {
+      "old": 7,
+      "new": 7
+    },
+    "ldrmi.w": {
+      "old": 5,
+      "new": 5
+    },
+    "ldrne": {
+      "old": 225,
+      "new": 225
+    },
+    "ldrne.w": {
+      "old": 29,
+      "new": 29
+    },
+    "ldrpl": {
+      "old": 4,
+      "new": 4
+    },
+    "ldrpl.w": {
+      "old": 19,
+      "new": 19
+    },
+    "ldrsb": {
+      "old": 5,
+      "new": 0
+    },
+    "ldrsb.w": {
+      "old": 226,
+      "new": 193
+    },
+    "ldrsbcc.w": {
+      "old": 1,
+      "new": 1
+    },
+    "ldrsbmi.w": {
+      "old": 2,
+      "new": 2
+    },
+    "ldrsh.w": {
+      "old": 13,
+      "new": 13
+    },
+    "lsl.w": {
+      "old": 123,
+      "new": 123
+    },
+    "lslcc.w": {
+      "old": 1,
+      "new": 1
+    },
+    "lsleq": {
+      "old": 1,
+      "new": 1
+    },
+    "lsleq.w": {
+      "old": 1,
+      "new": 1
+    },
+    "lslls": {
+      "old": 1,
+      "new": 1
+    },
+    "lslls.w": {
+      "old": 1,
+      "new": 1
+    },
+    "lslpl.w": {
+      "old": 5,
+      "new": 5
+    },
+    "lsls": {
+      "old": 1293,
+      "new": 1293
+    },
+    "lsr.w": {
+      "old": 32,
+      "new": 32
+    },
+    "lsreq": {
+      "old": 3,
+      "new": 3
+    },
+    "lsrhi": {
+      "old": 16,
+      "new": 16
+    },
+    "lsrpl.w": {
+      "old": 1,
+      "new": 1
+    },
+    "lsrs": {
+      "old": 664,
+      "new": 664
+    },
+    "lsrs.w": {
+      "old": 1,
+      "new": 1
+    },
+    "mla": {
+      "old": 51,
+      "new": 51
+    },
+    "mlane": {
+      "old": 1,
+      "new": 1
+    },
+    "mls": {
+      "old": 33,
+      "new": 33
+    },
+    "mov": {
+      "old": 3558,
+      "new": 3564
+    },
+    "mov.w": {
+      "old": 1779,
+      "new": 1766
+    },
+    "movcc": {
+      "old": 203,
+      "new": 182
+    },
+    "movcc.w": {
+      "old": 7,
+      "new": 6
+    },
+    "movcs": {
+      "old": 95,
+      "new": 95
+    },
+    "movcs.w": {
+      "old": 2,
+      "new": 2
+    },
+    "moveq": {
+      "old": 143,
+      "new": 143
+    },
+    "moveq.w": {
+      "old": 12,
+      "new": 12
+    },
+    "movge": {
+      "old": 19,
+      "new": 19
+    },
+    "movge.w": {
+      "old": 1,
+      "new": 1
+    },
+    "movgt": {
+      "old": 44,
+      "new": 44
+    },
+    "movgt.w": {
+      "old": 9,
+      "new": 9
+    },
+    "movhi": {
+      "old": 63,
+      "new": 63
+    },
+    "movhi.w": {
+      "old": 4,
+      "new": 4
+    },
+    "movle": {
+      "old": 3,
+      "new": 3
+    },
+    "movls": {
+      "old": 41,
+      "new": 41
+    },
+    "movls.w": {
+      "old": 2,
+      "new": 2
+    },
+    "movlt": {
+      "old": 12,
+      "new": 12
+    },
+    "movlt.w": {
+      "old": 1,
+      "new": 1
+    },
+    "movmi": {
+      "old": 15,
+      "new": 15
+    },
+    "movmi.w": {
+      "old": 2,
+      "new": 2
+    },
+    "movne": {
+      "old": 266,
+      "new": 266
+    },
+    "movne.w": {
+      "old": 14,
+      "new": 14
+    },
+    "movpl": {
+      "old": 10,
+      "new": 10
+    },
+    "movpl.w": {
+      "old": 8,
+      "new": 8
+    },
+    "movs": {
+      "old": 7119,
+      "new": 7061
+    },
+    "movs.w": {
+      "old": 64,
+      "new": 64
+    },
+    "movseq.w": {
+      "old": 23,
+      "new": 23
+    },
+    "movsmi.w": {
+      "old": 12,
+      "new": 12
+    },
+    "movsne.w": {
+      "old": 20,
+      "new": 20
+    },
+    "movspl.w": {
+      "old": 15,
+      "new": 15
+    },
+    "movt": {
+      "old": 3033,
+      "new": 3032
+    },
+    "movteq": {
+      "old": 8,
+      "new": 8
+    },
+    "movtls": {
+      "old": 1,
+      "new": 1
+    },
+    "movtlt": {
+      "old": 2,
+      "new": 2
+    },
+    "movtne": {
+      "old": 1,
+      "new": 1
+    },
+    "movtpl": {
+      "old": 1,
+      "new": 1
+    },
+    "movvs": {
+      "old": 1,
+      "new": 1
+    },
+    "movvs.w": {
+      "old": 1,
+      "new": 1
+    },
+    "movw": {
+      "old": 3479,
+      "new": 3478
+    },
+    "movweq": {
+      "old": 11,
+      "new": 11
+    },
+    "movwgt": {
+      "old": 5,
+      "new": 5
+    },
+    "movwlt": {
+      "old": 2,
+      "new": 2
+    },
+    "movwne": {
+      "old": 6,
+      "new": 6
+    },
+    "movwpl": {
+      "old": 1,
+      "new": 1
+    },
+    "mrs": {
+      "old": 311,
+      "new": 311
+    },
+    "msr": {
+      "old": 440,
+      "new": 440
+    },
+    "mul.w": {
+      "old": 25,
+      "new": 25
+    },
+    "muls": {
+      "old": 36,
+      "new": 36
+    },
+    "mvn.w": {
+      "old": 147,
+      "new": 147
+    },
+    "mvneq": {
+      "old": 1,
+      "new": 1
+    },
+    "mvneq.w": {
+      "old": 3,
+      "new": 3
+    },
+    "mvns": {
+      "old": 398,
+      "new": 398
+    },
+    "negmi": {
+      "old": 4,
+      "new": 4
+    },
+    "negne": {
+      "old": 1,
+      "new": 1
+    },
+    "negs": {
+      "old": 4,
+      "new": 4
+    },
+    "nop": {
+      "old": 52,
+      "new": 55
+    },
+    "orn": {
+      "old": 2,
+      "new": 2
+    },
+    "orr.w": {
+      "old": 1063,
+      "new": 1071
+    },
+    "orrcc": {
+      "old": 4,
+      "new": 4
+    },
+    "orrcc.w": {
+      "old": 2,
+      "new": 2
+    },
+    "orreq": {
+      "old": 5,
+      "new": 5
+    },
+    "orreq.w": {
+      "old": 34,
+      "new": 34
+    },
+    "orrhi.w": {
+      "old": 11,
+      "new": 11
+    },
+    "orrls.w": {
+      "old": 2,
+      "new": 2
+    },
+    "orrlt": {
+      "old": 1,
+      "new": 1
+    },
+    "orrne": {
+      "old": 7,
+      "new": 7
+    },
+    "orrne.w": {
+      "old": 16,
+      "new": 16
+    },
+    "orrpl.w": {
+      "old": 7,
+      "new": 7
+    },
+    "orrs": {
+      "old": 274,
+      "new": 274
+    },
+    "orrs.w": {
+      "old": 40,
+      "new": 40
+    },
+    "orrseq.w": {
+      "old": 8,
+      "new": 8
+    },
+    "pkhbt": {
+      "old": 22,
+      "new": 22
+    },
+    "pop": {
+      "old": 887,
+      "new": 887
+    },
+    "popcc": {
+      "old": 15,
+      "new": 15
+    },
+    "popeq": {
+      "old": 3,
+      "new": 3
+    },
+    "pophi": {
+      "old": 2,
+      "new": 2
+    },
+    "popls": {
+      "old": 2,
+      "new": 2
+    },
+    "poplt": {
+      "old": 2,
+      "new": 2
+    },
+    "popne": {
+      "old": 10,
+      "new": 10
+    },
+    "poppl": {
+      "old": 1,
+      "new": 1
+    },
+    "push": {
+      "old": 446,
+      "new": 446
+    },
+    "rbit": {
+      "old": 6,
+      "new": 6
+    },
+    "rev16": {
+      "old": 6,
+      "new": 6
+    },
+    "revsh": {
+      "old": 9,
+      "new": 9
+    },
+    "rsb": {
+      "old": 65,
+      "new": 65
+    },
+    "rsbs": {
+      "old": 17,
+      "new": 17
+    },
+    "sbc.w": {
+      "old": 26,
+      "new": 26
+    },
+    "sbcs": {
+      "old": 50,
+      "new": 50
+    },
+    "sbcs.w": {
+      "old": 149,
+      "new": 149
+    },
+    "sev": {
+      "old": 21,
+      "new": 21
+    },
+    "smlabb": {
+      "old": 11,
+      "new": 11
+    },
+    "ssat": {
+      "old": 2,
+      "new": 2
+    },
+    "ssatne": {
+      "old": 1,
+      "new": 1
+    },
+    "stmdb": {
+      "old": 189,
+      "new": 189
+    },
+    "stmia": {
+      "old": 442,
+      "new": 442
+    },
+    "stmia.w": {
+      "old": 186,
+      "new": 186
+    },
+    "str": {
+      "old": 3396,
+      "new": 3395
+    },
+    "str.w": {
+      "old": 2721,
+      "new": 2720
+    },
+    "strb": {
+      "old": 1194,
+      "new": 1194
+    },
+    "strb.w": {
+      "old": 3364,
+      "new": 3364
+    },
+    "strbcc": {
+      "old": 1,
+      "new": 1
+    },
+    "strbcc.w": {
+      "old": 2,
+      "new": 2
+    },
+    "strbcs.w": {
+      "old": 7,
+      "new": 7
+    },
+    "strbeq": {
+      "old": 3,
+      "new": 3
+    },
+    "strbeq.w": {
+      "old": 34,
+      "new": 34
+    },
+    "strbge.w": {
+      "old": 1,
+      "new": 1
+    },
+    "strbmi": {
+      "old": 1,
+      "new": 1
+    },
+    "strbmi.w": {
+      "old": 2,
+      "new": 2
+    },
+    "strbne": {
+      "old": 4,
+      "new": 4
+    },
+    "strbne.w": {
+      "old": 57,
+      "new": 57
+    },
+    "strcc": {
+      "old": 5,
+      "new": 5
+    },
+    "strcc.w": {
+      "old": 6,
+      "new": 6
+    },
+    "strd": {
+      "old": 1655,
+      "new": 1655
+    },
+    "strdeq": {
+      "old": 7,
+      "new": 7
+    },
+    "strdge": {
+      "old": 1,
+      "new": 1
+    },
+    "strdne": {
+      "old": 2,
+      "new": 2
+    },
+    "streq": {
+      "old": 9,
+      "new": 9
+    },
+    "streq.w": {
+      "old": 17,
+      "new": 17
+    },
+    "strex": {
+      "old": 494,
+      "new": 494
+    },
+    "strexb": {
+      "old": 75,
+      "new": 75
+    },
+    "strge.w": {
+      "old": 1,
+      "new": 1
+    },
+    "strh": {
+      "old": 147,
+      "new": 147
+    },
+    "strh.w": {
+      "old": 1039,
+      "new": 1040
+    },
+    "strheq": {
+      "old": 9,
+      "new": 9
+    },
+    "strheq.w": {
+      "old": 1,
+      "new": 1
+    },
+    "strhgt": {
+      "old": 1,
+      "new": 1
+    },
+    "strhgt.w": {
+      "old": 1,
+      "new": 0
+    },
+    "strhhi": {
+      "old": 1,
+      "new": 1
+    },
+    "strhmi": {
+      "old": 2,
+      "new": 2
+    },
+    "strhmi.w": {
+      "old": 1,
+      "new": 1
+    },
+    "strle.w": {
+      "old": 4,
+      "new": 4
+    },
+    "strls": {
+      "old": 1,
+      "new": 1
+    },
+    "strls.w": {
+      "old": 2,
+      "new": 2
+    },
+    "strne": {
+      "old": 17,
+      "new": 17
+    },
+    "strne.w": {
+      "old": 9,
+      "new": 9
+    },
+    "strpl": {
+      "old": 1,
+      "new": 1
+    },
+    "strpl.w": {
+      "old": 6,
+      "new": 6
+    },
+    "sub": {
+      "old": 262,
+      "new": 261
+    },
+    "sub.w": {
+      "old": 856,
+      "new": 858
+    },
+    "subcc.w": {
+      "old": 1,
+      "new": 1
+    },
+    "subcs": {
+      "old": 5,
+      "new": 5
+    },
+    "subcs.w": {
+      "old": 7,
+      "new": 7
+    },
+    "subhi": {
+      "old": 20,
+      "new": 20
+    },
+    "subhi.w": {
+      "old": 10,
+      "new": 10
+    },
+    "subls": {
+      "old": 1,
+      "new": 1
+    },
+    "subne": {
+      "old": 25,
+      "new": 25
+    },
+    "subs": {
+      "old": 1174,
+      "new": 1172
+    },
+    "subs.w": {
+      "old": 125,
+      "new": 125
+    },
+    "subsne.w": {
+      "old": 1,
+      "new": 1
+    },
+    "subw": {
+      "old": 5,
+      "new": 5
+    },
+    "sxtb": {
+      "old": 5,
+      "new": 5
+    },
+    "sxth": {
+      "old": 3,
+      "new": 3
+    },
+    "tbb": {
+      "old": 59,
+      "new": 59
+    },
+    "tbh": {
+      "old": 101,
+      "new": 101
+    },
+    "teq": {
+      "old": 10,
+      "new": 10
+    },
+    "tst": {
+      "old": 38,
+      "new": 38
+    },
+    "tst.w": {
+      "old": 134,
+      "new": 134
+    },
+    "tsteq.w": {
+      "old": 1,
+      "new": 1
+    },
+    "tstne.w": {
+      "old": 1,
+      "new": 1
+    },
+    "ubfx": {
+      "old": 143,
+      "new": 143
+    },
+    "ubfxne": {
+      "old": 1,
+      "new": 1
+    },
+    "udf": {
+      "old": 33,
+      "new": 33
+    },
+    "udiv": {
+      "old": 51,
+      "new": 51
+    },
+    "udivne": {
+      "old": 1,
+      "new": 1
+    },
+    "umlal": {
+      "old": 50,
+      "new": 50
+    },
+    "umull": {
+      "old": 181,
+      "new": 181
+    },
+    "uqadd16": {
+      "old": 7,
+      "new": 7
+    },
+    "uqadd8": {
+      "old": 1,
+      "new": 1
+    },
+    "uqadd8cc": {
+      "old": 1,
+      "new": 1
+    },
+    "uqadd8mi": {
+      "old": 2,
+      "new": 2
+    },
+    "uqsub16": {
+      "old": 6,
+      "new": 6
+    },
+    "usat": {
+      "old": 1,
+      "new": 1
+    },
+    "uxtab": {
+      "old": 188,
+      "new": 188
+    },
+    "uxtah": {
+      "old": 32,
+      "new": 32
+    },
+    "uxtb": {
+      "old": 212,
+      "new": 192
+    },
+    "uxtb.w": {
+      "old": 26,
+      "new": 26
+    },
+    "uxtb16": {
+      "old": 4,
+      "new": 4
+    },
+    "uxtbgt.w": {
+      "old": 1,
+      "new": 1
+    },
+    "uxtbls": {
+      "old": 1,
+      "new": 1
+    },
+    "uxth": {
+      "old": 304,
+      "new": 304
+    },
+    "uxth.w": {
+      "old": 62,
+      "new": 62
+    },
+    "uxtheq": {
+      "old": 2,
+      "new": 2
+    },
+    "uxthls": {
+      "old": 1,
+      "new": 1
+    },
+    "uxthne.w": {
+      "old": 1,
+      "new": 1
+    },
+    "vabs.f32": {
+      "old": 144,
+      "new": 144
+    },
+    "vabsle.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vabsls.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vadd.f32": {
+      "old": 301,
+      "new": 301
+    },
+    "vaddge.f32": {
+      "old": 76,
+      "new": 76
+    },
+    "vaddgt.f32": {
+      "old": 11,
+      "new": 11
+    },
+    "vaddle.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vaddmi.f32": {
+      "old": 31,
+      "new": 31
+    },
+    "vaddne.f32": {
+      "old": 4,
+      "new": 4
+    },
+    "vcmp.f32": {
+      "old": 1355,
+      "new": 1355
+    },
+    "vcmpge.f32": {
+      "old": 17,
+      "new": 17
+    },
+    "vcmpgt.f32": {
+      "old": 8,
+      "new": 8
+    },
+    "vcmphi.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vcmple.f32": {
+      "old": 7,
+      "new": 7
+    },
+    "vcmpls.f32": {
+      "old": 2,
+      "new": 2
+    },
+    "vcmpmi.f32": {
+      "old": 5,
+      "new": 5
+    },
+    "vcmpne.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vcvt.f32.s32": {
+      "old": 6,
+      "new": 6
+    },
+    "vcvt.f32.u32": {
+      "old": 114,
+      "new": 114
+    },
+    "vcvt.s32.f32": {
+      "old": 21,
+      "new": 21
+    },
+    "vcvt.u32.f32": {
+      "old": 9,
+      "new": 9
+    },
+    "vdiv.f32": {
+      "old": 235,
+      "new": 235
+    },
+    "vldr": {
+      "old": 1913,
+      "new": 1913
+    },
+    "vldreq": {
+      "old": 2,
+      "new": 2
+    },
+    "vldrge": {
+      "old": 55,
+      "new": 55
+    },
+    "vldrgt": {
+      "old": 15,
+      "new": 15
+    },
+    "vldrhi": {
+      "old": 1,
+      "new": 1
+    },
+    "vldrle": {
+      "old": 1,
+      "new": 1
+    },
+    "vldrmi": {
+      "old": 29,
+      "new": 29
+    },
+    "vldrne": {
+      "old": 3,
+      "new": 3
+    },
+    "vmla.f32": {
+      "old": 327,
+      "new": 327
+    },
+    "vmlage.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vmls.f32": {
+      "old": 39,
+      "new": 39
+    },
+    "vmov": {
+      "old": 390,
+      "new": 390
+    },
+    "vmov.f32": {
+      "old": 825,
+      "new": 825
+    },
+    "vmovcc.f32": {
+      "old": 17,
+      "new": 17
+    },
+    "vmoveq.f32": {
+      "old": 21,
+      "new": 21
+    },
+    "vmovge.f32": {
+      "old": 30,
+      "new": 30
+    },
+    "vmovgt.f32": {
+      "old": 153,
+      "new": 153
+    },
+    "vmovhi.f32": {
+      "old": 3,
+      "new": 3
+    },
+    "vmovls.f32": {
+      "old": 77,
+      "new": 77
+    },
+    "vmovlt.f32": {
+      "old": 112,
+      "new": 112
+    },
+    "vmovmi.f32": {
+      "old": 77,
+      "new": 77
+    },
+    "vmovne": {
+      "old": 1,
+      "new": 1
+    },
+    "vmovne.f32": {
+      "old": 27,
+      "new": 27
+    },
+    "vmovpl.f32": {
+      "old": 2,
+      "new": 2
+    },
+    "vmovvs.f32": {
+      "old": 224,
+      "new": 224
+    },
+    "vmrs": {
+      "old": 1352,
+      "new": 1352
+    },
+    "vmrsge": {
+      "old": 17,
+      "new": 17
+    },
+    "vmrsgt": {
+      "old": 8,
+      "new": 8
+    },
+    "vmrshi": {
+      "old": 1,
+      "new": 1
+    },
+    "vmrsle": {
+      "old": 7,
+      "new": 7
+    },
+    "vmrsls": {
+      "old": 2,
+      "new": 2
+    },
+    "vmrsmi": {
+      "old": 5,
+      "new": 5
+    },
+    "vmrsne": {
+      "old": 1,
+      "new": 1
+    },
+    "vmul.f32": {
+      "old": 478,
+      "new": 478
+    },
+    "vmulge.f32": {
+      "old": 3,
+      "new": 3
+    },
+    "vmulls.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vneg.f32": {
+      "old": 38,
+      "new": 38
+    },
+    "vnegeq.f32": {
+      "old": 2,
+      "new": 2
+    },
+    "vnegle.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vnegmi.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vnmls.f32": {
+      "old": 11,
+      "new": 11
+    },
+    "vnmul.f32": {
+      "old": 37,
+      "new": 37
+    },
+    "vpop": {
+      "old": 37,
+      "new": 37
+    },
+    "vpush": {
+      "old": 29,
+      "new": 29
+    },
+    "vsqrt.f32": {
+      "old": 25,
+      "new": 25
+    },
+    "vstmia": {
+      "old": 1,
+      "new": 1
+    },
+    "vstr": {
+      "old": 606,
+      "new": 606
+    },
+    "vstrgt": {
+      "old": 3,
+      "new": 3
+    },
+    "vstrls": {
+      "old": 1,
+      "new": 1
+    },
+    "vstrne": {
+      "old": 4,
+      "new": 4
+    },
+    "vsub.f32": {
+      "old": 220,
+      "new": 220
+    },
+    "vsubgt.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vsuble.f32": {
+      "old": 1,
+      "new": 1
+    },
+    "vsubne.f32": {
+      "old": 3,
+      "new": 3
+    },
+    "vsubpl.f32": {
+      "old": 29,
+      "new": 29
+    },
+    "wfe": {
+      "old": 1,
+      "new": 1
+    },
+    "yield": {
+      "old": 29,
+      "new": 29
+    },
+    "yieldne": {
+      "old": 10,
+      "new": 10
+    }
+  }
+}

@@ -1,0 +1,45 @@
+diff --git a/oxifoc-f405/.cargo/config.toml b/oxifoc-f405/.cargo/config.toml
+index 80657b3..af941b4 100644
+--- a/oxifoc-f405/.cargo/config.toml
++++ b/oxifoc-f405/.cargo/config.toml
+@@ -9,5 +9,2 @@ runner = ["bash", "../scripts/probe_run_f405.sh"]
+-# DO NOT REMOVE these target features:
+-#  +vfp2  — required by the `sreg` register class in oxifoc-core's q31 inline asm
+-#  -fp64  — without it LLVM emits double-precision FPU instructions the
+-#           FPv4-SP-D16 FPU doesn't support, and the board hangs at runtime
+-rustflags = ["-C", "target-feature=+vfp2,-fp64"]
++# Cortex-M4F: hardware single-precision FP, including q31 vcvt asm.
++rustflags = ["-C", "target-feature=+vfp2sp"]
+diff --git a/oxifoc-f405/rust-toolchain.toml b/oxifoc-f405/rust-toolchain.toml
+index 38de41c..7273686 100644
+--- a/oxifoc-f405/rust-toolchain.toml
++++ b/oxifoc-f405/rust-toolchain.toml
+@@ -4 +4 @@
+-channel = "nightly-2026-03-22"
++channel = "nightly-2026-10-14"
+diff --git a/oxifoc-g474/.cargo/config.toml b/oxifoc-g474/.cargo/config.toml
+index ab8dfc2..d337a15 100644
+--- a/oxifoc-g474/.cargo/config.toml
++++ b/oxifoc-g474/.cargo/config.toml
+@@ -9,5 +9,2 @@ runner = ["bash", "../scripts/probe_run.sh"]
+-# DO NOT REMOVE these target features:
+-#  +vfp2  — required by the `sreg` register class in oxifoc-core's q31 inline asm
+-#  -fp64  — without it LLVM emits double-precision FPU instructions the
+-#           FPv4-SP-D16 FPU doesn't support, and the board hangs at runtime
+-rustflags = ["-C", "target-feature=+vfp2,-fp64"]
++# Cortex-M4F: hardware single-precision FP, including q31 vcvt asm.
++rustflags = ["-C", "target-feature=+vfp2sp"]
+diff --git a/oxifoc-g474/rust-toolchain.toml b/oxifoc-g474/rust-toolchain.toml
+index 38de41c..7273686 100644
+--- a/oxifoc-g474/rust-toolchain.toml
++++ b/oxifoc-g474/rust-toolchain.toml
+@@ -4 +4 @@
+-channel = "nightly-2026-03-22"
++channel = "nightly-2026-10-14"
+diff --git a/rust-toolchain.toml b/rust-toolchain.toml
+index 51caaa6..c06be64 100644
+--- a/rust-toolchain.toml
++++ b/rust-toolchain.toml
+@@ -12 +12 @@
+-channel = "nightly-2026-03-22"
++channel = "nightly-2026-10-14"
