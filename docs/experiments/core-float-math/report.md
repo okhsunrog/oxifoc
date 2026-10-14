@@ -349,3 +349,134 @@ new settings are ready to apply together when choosing compiler migration.
 
 The diagnostic patches use zero context; replay with
 `git apply --unidiff-zero <patch>` in the corresponding project checkout.
+
+## Follow-up: size profiles and timing before an Embassy fold change
+
+Measured on 2026-10-15. The updated Embassy main is `0c1abfbce` and pins
+Rust 1.97; installed `1.97` resolves to 1.97.1 (8bab26f4f). Its three MS OS
+UTF-16 counting sites still use `.count()`. The relevant size computations
+are unchanged from the pinned Embassy revision in the firmware diagnostic;
+main moves the file to `embassy-usb/src/device/msos.rs`.
+
+This comparison changes only those three count calls in the local
+embassy-usb copy. The complete CF2 size experiment still uses the existing
+pinned `98d847be` dependency graph, not an integration of current Embassy
+main into oxifoc. Each count/fold pair uses the same path, dependency
+versions, profile, nightly-2026-10-14, `+vfp2sp`, fat LTO and codegen unit
+count. All firmware variants retain the core hardware sqrt and q31 asm.
+The global release opt-level is overridden to 3, s or z; the existing
+`#[optimize(speed)]` hot-path overrides remain in place in both variants.
+
+### Full CF2 flash, measured independently within each profile
+
+| Opt-level | Count | Fold | Fold minus count |
+|---|---:|---:|---:|
+| 3 | 373264 | 372296 | **-968** |
+| s | 297820 | 298128 | **+308** |
+| z | 245928 | 245940 | **+12** |
+
+Only `.text` changes within each pair. Static RAM stays 36248 bytes at 3,
+36284 at s, and 36256 at z. Section-level data are preserved in
+`utf16-firmware-profiles.json`. Thus fold is not a universal flash win;
+opt-level s shows a material regression.
+
+### Isolated ARM implementation, including its helpers
+
+A small no_std object exports just one implementation at a time. The table
+sums every `.text*` section in that object, including any emitted next()
+or machine-outlining helpers. It does not include unwind/debug metadata.
+
+| Compiler | Opt-level | Count text bytes | Fold text bytes |
+|---|---|---:|---:|
+| Rust 1.97.1 | 3 | 134 | 134 |
+| Rust 1.97.1 | s | 124 | 124 |
+| Rust 1.97.1 | z | 130 | 130 |
+| Latest nightly | 3 | 426 | 134 |
+| Latest nightly | s | 56 | 124 |
+| Latest nightly | z | 56 | 130 |
+
+Measuring only the fold wrapper on z would suggest 28 bytes in the shared
+probe, but that excludes next() and outlining helpers. For a standalone
+implementation the total is 130 bytes. Full-firmware marginal cost differs
+because the UTF-16 writing code may already need the helpers.
+
+Rust 1.97 predates the specialized count implementation, so count and fold
+produce the same ARM code on the current Embassy pin. The flash advantage
+at 3 applies to compilers with the new count implementation.
+
+### Host timing: measured, not an ARM-cycle estimate
+
+`probe-rs list` found no debug probe, so no Cortex-M4 cycle counts were
+measured. Timing runs use Intel Core Ultra 5 125H, pinned to logical CPU 0,
+Linux powersave governor, default x86-64 codegen (no target-cpu=native).
+Each implementation has a non-inlined call; inputs/results use black_box.
+Inputs are allocated before timing and passed at runtime. There are 15
+samples per implementation/input/profile, calibrated to about 20 ms for
+the slower path. Execution order alternates count/fold between samples.
+No compilation ran concurrently with the timing phase. Frequency was not
+fixed; the raw paired samples and quartiles are retained.
+
+Median host ns per call on nightly-2026-10-14:
+
+| Input | UTF-8 bytes / UTF-16 units | 3 count / fold | s count / fold | z count / fold |
+|---|---|---:|---:|---:|
+| Empty | 0 / 0 | 1.02 / 1.04 | 0.74 / 0.76 | 0.99 / 1.01 |
+| DeviceInterfaceGUIDs | 20 / 20 | 9.86 / 12.27 | 12.48 / 18.87 | 11.92 / 20.02 |
+| GUID | 38 / 38 | 26.26 / 31.61 | 23.56 / 27.39 | 25.54 / 29.27 |
+| ASCII, 128 bytes | 128 / 128 | 46.11 / 61.36 | 50.18 / 66.74 | 48.22 / 66.19 |
+| ASCII, 4096 bytes | 4096 / 4096 | 1013.19 / 1530.49 | 1184.38 / 1814.78 | 970.63 / 1713.30 |
+| Cyrillic | 88 / 52 | 56.59 / 53.66 | 71.62 / 46.59 | 64.74 / 64.63 |
+| CJK | 288 / 96 | 124.14 / 106.66 | 137.67 / 110.49 | 132.56 / 102.49 |
+| Emoji | 256 / 128 | 108.49 / 92.77 | 124.02 / 110.19 | 118.12 / 107.24 |
+| Mixed | 192 / 144 | 106.82 / 114.34 | 161.16 / 130.74 | 145.33 / 156.86 |
+
+ASCII favors the specialized count in these host measurements; CJK and
+emoji favor fold. This is not proof of the corresponding Cortex-M4
+throughput or a measurement of complete descriptor-building latency.
+Short-input values include function/black_box overhead. On Rust 1.97 the
+host compiler even merges count/fold functions at 3 and z; differences
+between their measurements are not an algorithmic improvement. The s host
+functions remain distinct and have the same body size, with some noisy
+short-input results; raw samples document that limitation.
+
+The latest paired fold/count ratios for the property name are about
+1.25 at 3, 1.52 at s and 1.67 at z. Ratios are computed per sample before
+summarizing; a ratio of separate median ns values may differ slightly.
+
+The exhaustive Unicode-scalar correctness test also passes on Rust 1.97.1;
+latest nightly passed it in the earlier diagnostic. Both benchmarks assert
+count/fold equality for all nine inputs before measuring.
+
+### Consequence for an upstream change
+
+Replacing count with fold offers a measured flash tradeoff for opt-level 3
+on the new compiler, but regresses flash at s and generally costs ASCII
+throughput on the host. It has no ARM code-size effect on Embassy's current
+Rust 1.97 pin. A blanket replacement cannot be presented as universally
+smaller or faster. The operation happens while building MS OS descriptors,
+which are then stored as a byte slice; any throughput tradeoff is specific
+to descriptor construction, not each USB packet.
+
+Before an upstream fold PR, these profile results should be included and
+the maintainers' preference for size versus descriptor-construction time
+established. A compact counting implementation or a Rust/core codegen
+improvement is another candidate; neither is evaluated by this fold test.
+Actual ARM timing remains unmeasured until a board is available.
+
+Reproduce the isolated sizes and host timing with:
+
+```sh
+uv run scripts/benchmark-utf16.py --out /tmp/utf16-results --cpu 0
+```
+
+Required installed tools: the two toolchains with thumbv7em-none-eabihf,
+GNU Arm binutils and taskset. `--sizes-only` skips host timing.
+The Rust host harness is `utf16-bench.rs`; complete metadata, samples,
+medians, quartiles and isolated ARM sections are in
+`utf16-profile-results.json`. The ELF pairs for all profiles remain under
+`/tmp/oxifoc-math-experiment/usb-diagnostic/` as
+`original[-s|-z].elf` and `fold[-s|-z].elf`. To reproduce the firmware pairs,
+use the earlier local USB patch setup, override
+`--config 'profile.release.opt-level="s"'` or `"z"`, build count and fold
+sequentially in the same source path and preserve each ELF before changing
+the dependency source. No firmware was flashed.

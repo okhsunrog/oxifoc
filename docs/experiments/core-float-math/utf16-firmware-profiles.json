@@ -1,0 +1,65 @@
+[
+  {
+    "opt_level": "3",
+    "count": 373264,
+    "fold": 372296,
+    "sections": [
+      {
+        ".bss": 33948,
+        ".vector_table": 392,
+        ".data": 2300,
+        ".text": 352032,
+        ".rodata": 18540
+      },
+      {
+        ".text": 351064,
+        ".rodata": 18540,
+        ".bss": 33948,
+        ".vector_table": 392,
+        ".data": 2300
+      }
+    ]
+  },
+  {
+    "opt_level": "s",
+    "count": 297820,
+    "fold": 298128,
+    "sections": [
+      {
+        ".vector_table": 392,
+        ".data": 2308,
+        ".text": 276904,
+        ".bss": 33976,
+        ".rodata": 18216
+      },
+      {
+        ".data": 2308,
+        ".text": 277212,
+        ".rodata": 18216,
+        ".vector_table": 392,
+        ".bss": 33976
+      }
+    ]
+  },
+  {
+    "opt_level": "z",
+    "count": 245928,
+    "fold": 245940,
+    "sections": [
+      {
+        ".data": 2308,
+        ".text": 222232,
+        ".rodata": 20996,
+        ".vector_table": 392,
+        ".bss": 33948
+      },
+      {
+        ".bss": 33948,
+        ".vector_table": 392,
+        ".data": 2308,
+        ".rodata": 20996,
+        ".text": 222244
+      }
+    ]
+  }
+]
