@@ -1,0 +1,1072 @@
+{
+  "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+  "scope": "STM32 controller firmware only; detailed MIR/ASM inspection on CF2",
+  "notes": [
+    "MIR scopes include nested/transitive scopes and generic bodies, including unlinked code; counts are not runtime calls.",
+    "Cached unchanged crates reuse their latest preceding dump. Local incremental cases have no normal Inline pass dumps.",
+    "Diagnostic flash binaries match reference binaries byte for byte; whole ELF hashes differ.",
+    "Canonical assembly removes linked branch addresses only. ROM address materializations are checked separately."
+  ],
+  "diagnostic_builds": [
+    {
+      "label": "current",
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "global_hint_threshold": null,
+      "incremental": true,
+      "elapsed": 46.6899070799991,
+      "elf_sha256": "774d1ac4b739e8d5dfe699837cdfa535e6ff439f3588a81520644af6b0409230",
+      "reference_sha256": "106a18fd67f7605da172cad89d8c5fb176302ae6fa1db759f851156460686de6",
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "-j4",
+        "-Zprofile-rustflags",
+        "--target-dir",
+        "/home/okhsunrog/tmp_zfs/codex_tmp/mir-inlining-analysis/target",
+        "--config",
+        "profile.release.package.embassy-stm32.rustflags=[\"-Zinline-mir-hint-threshold=115\"]"
+      ],
+      "identical_reference_elf": false,
+      "flash_sha256": "f3122cdaa15b519e1dc580f53f22194e64ceb38f92e1f4b1ce5e0636a20eff1a",
+      "reference_flash_sha256": "f3122cdaa15b519e1dc580f53f22194e64ceb38f92e1f4b1ce5e0636a20eff1a",
+      "identical_reference_flash": true
+    },
+    {
+      "label": "balanced",
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "global_hint_threshold": null,
+      "incremental": true,
+      "elapsed": 18.242268007001258,
+      "elf_sha256": "7ad594e3c5c6276119dc3145572a9b024dfae5be78b854e101473780fa32c471",
+      "reference_sha256": "af9fa4f8ab8a82c877888174ae6e10e07bc082c7cead2829ec193c2605e647c2",
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "-j4",
+        "-Zprofile-rustflags",
+        "--target-dir",
+        "/home/okhsunrog/tmp_zfs/codex_tmp/mir-inlining-analysis/target",
+        "--config",
+        "profile.release.package.bbqueue.rustflags=[\"-Zinline-mir-hint-threshold=200\"]",
+        "--config",
+        "profile.release.package.embassy-stm32.rustflags=[\"-Zinline-mir-hint-threshold=115\"]",
+        "--config",
+        "profile.release.package.ergot.rustflags=[\"-Zinline-mir-hint-threshold=50\"]",
+        "--config",
+        "profile.release.package.postcard.rustflags=[\"-Zinline-mir-hint-threshold=0\"]",
+        "--config",
+        "profile.release.package.sequential-storage.rustflags=[\"-Zinline-mir-hint-threshold=50\"]"
+      ],
+      "identical_reference_elf": false,
+      "flash_sha256": "ef6c07d0140f6f7c3266788e726de6eb4eadf562fad254ae5001444f827eb9ad",
+      "reference_flash_sha256": "ef6c07d0140f6f7c3266788e726de6eb4eadf562fad254ae5001444f827eb9ad",
+      "identical_reference_flash": true
+    },
+    {
+      "label": "balanced-noinc",
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "global_hint_threshold": null,
+      "incremental": false,
+      "elapsed": 15.790924354005256,
+      "elf_sha256": "9fd0694c90a1bc07bcb666ede2c06d3f4c643a0c4adaa7aaa21816b7564d36b0",
+      "reference_sha256": "e34fed4ec0bfae1611cc9037cbe0b7df47f4341712e39f545fd1954ded8f6ca0",
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "-j4",
+        "-Zprofile-rustflags",
+        "--target-dir",
+        "/home/okhsunrog/tmp_zfs/codex_tmp/mir-inlining-analysis/target",
+        "--config",
+        "profile.release.package.bbqueue.rustflags=[\"-Zinline-mir-hint-threshold=200\"]",
+        "--config",
+        "profile.release.package.embassy-stm32.rustflags=[\"-Zinline-mir-hint-threshold=115\"]",
+        "--config",
+        "profile.release.package.ergot.rustflags=[\"-Zinline-mir-hint-threshold=50\"]",
+        "--config",
+        "profile.release.package.postcard.rustflags=[\"-Zinline-mir-hint-threshold=0\"]",
+        "--config",
+        "profile.release.package.sequential-storage.rustflags=[\"-Zinline-mir-hint-threshold=50\"]"
+      ],
+      "identical_reference_elf": false,
+      "flash_sha256": "5806bc9e10cc195cb6dd651e56ff62ced924be716aaaae1cf5c3778c26622df1",
+      "reference_flash_sha256": "5806bc9e10cc195cb6dd651e56ff62ced924be716aaaae1cf5c3778c26622df1",
+      "identical_reference_flash": true
+    },
+    {
+      "label": "size",
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0,
+        "bbqueue": 200,
+        "sequential-storage": 50
+      },
+      "global_hint_threshold": 500,
+      "incremental": false,
+      "elapsed": 52.4515895020013,
+      "elf_sha256": "ce9d2ae899ea0ebd9d021a7245ea0373d85e0e5c27f4d24ad150985ff0ffd73b",
+      "reference_sha256": "c6a93278d24f53d221eded72c00e05c462e0ac1572e16b7bf52bc9eb58126a7b",
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "-j4",
+        "-Zprofile-rustflags",
+        "--target-dir",
+        "/home/okhsunrog/tmp_zfs/codex_tmp/mir-inlining-analysis/target",
+        "--config",
+        "profile.release.rustflags=[\"-Zinline-mir-hint-threshold=500\"]",
+        "--config",
+        "profile.release.package.bbqueue.rustflags=[\"-Zinline-mir-hint-threshold=200\"]",
+        "--config",
+        "profile.release.package.embassy-stm32.rustflags=[\"-Zinline-mir-hint-threshold=115\"]",
+        "--config",
+        "profile.release.package.ergot.rustflags=[\"-Zinline-mir-hint-threshold=50\"]",
+        "--config",
+        "profile.release.package.postcard.rustflags=[\"-Zinline-mir-hint-threshold=0\"]",
+        "--config",
+        "profile.release.package.sequential-storage.rustflags=[\"-Zinline-mir-hint-threshold=50\"]"
+      ],
+      "identical_reference_elf": false,
+      "flash_sha256": "3da4962f21bac9de32dd98b1dc383fb04412616549aaf7eecaf4171a45236478",
+      "reference_flash_sha256": "3da4962f21bac9de32dd98b1dc383fb04412616549aaf7eecaf4171a45236478",
+      "identical_reference_flash": true
+    }
+  ],
+  "transport_builds": [
+    {
+      "board": "cf2",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0
+      },
+      "global_threshold": null,
+      "elf_sha256": "8806d65f39172325fbc0f6c9aa9ab1acc14318800cf5d64ec8501f3b7b9af35b",
+      "image_bytes": 369520,
+      "static_ram": 36248,
+      "image_delta": -2936
+    },
+    {
+      "board": "vesc6-mk5",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0
+      },
+      "global_threshold": null,
+      "elf_sha256": "3592e2dadbb7ee07f1fcfcf463e3b10352343609c2695f51e36e05190ea095d5",
+      "image_bytes": 371824,
+      "static_ram": 36232,
+      "image_delta": -2940
+    },
+    {
+      "board": "g474",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0
+      },
+      "global_threshold": null,
+      "elf_sha256": "7d7b2d88960e2b773ba3e272bdc8d531a28e26e4469f09f6860c91163d90651b",
+      "image_bytes": 208360,
+      "static_ram": 24516,
+      "image_delta": -312
+    }
+  ],
+  "transport_native_config_identical_elf": "8806d65f39172325fbc0f6c9aa9ab1acc14318800cf5d64ec8501f3b7b9af35b",
+  "transport_hot_comparison": {
+    "ADC": {
+      "same_operations_and_registers_except_rodata_addresses": true,
+      "changed_rodata_loads": [
+        {
+          "line": 940,
+          "register": "r0",
+          "old_rodata_address": "0x8058a40",
+          "new_rodata_address": "0x8057ec0"
+        },
+        {
+          "line": 943,
+          "register": "r0",
+          "old_rodata_address": "0x8058a70",
+          "new_rodata_address": "0x8057ef0"
+        },
+        {
+          "line": 946,
+          "register": "r0",
+          "old_rodata_address": "0x8058a50",
+          "new_rodata_address": "0x8057ed0"
+        },
+        {
+          "line": 949,
+          "register": "r0",
+          "old_rodata_address": "0x8059fb0",
+          "new_rodata_address": "0x8059440"
+        },
+        {
+          "line": 952,
+          "register": "r0",
+          "old_rodata_address": "0x8058a60",
+          "new_rodata_address": "0x8057ee0"
+        },
+        {
+          "line": 955,
+          "register": "r0",
+          "old_rodata_address": "0x8059fa0",
+          "new_rodata_address": "0x8059430"
+        }
+      ],
+      "static_bl_blx": 14
+    },
+    "run_foc_cycle": {
+      "same_operations_and_registers_except_rodata_addresses": true,
+      "changed_rodata_loads": [
+        {
+          "line": 3578,
+          "register": "r0",
+          "old_rodata_address": "0x8057ed4",
+          "new_rodata_address": "0x80573b8"
+        },
+        {
+          "line": 3758,
+          "register": "r0",
+          "old_rodata_address": "0x8057ec0",
+          "new_rodata_address": "0x80573a4"
+        },
+        {
+          "line": 3761,
+          "register": "r0",
+          "old_rodata_address": "0x8057e80",
+          "new_rodata_address": "0x8057364"
+        },
+        {
+          "line": 3764,
+          "register": "r0",
+          "old_rodata_address": "0x8057ee4",
+          "new_rodata_address": "0x80573c8"
+        },
+        {
+          "line": 4094,
+          "register": "r0",
+          "old_rodata_address": "0x8057e30",
+          "new_rodata_address": "0x8057314"
+        },
+        {
+          "line": 4097,
+          "register": "r3",
+          "old_rodata_address": "0x805a0c8",
+          "new_rodata_address": "0x8059558"
+        },
+        {
+          "line": 4134,
+          "register": "r0",
+          "old_rodata_address": "0x8057ea0",
+          "new_rodata_address": "0x8057384"
+        },
+        {
+          "line": 4215,
+          "register": "r0",
+          "old_rodata_address": "0x8057e70",
+          "new_rodata_address": "0x8057354"
+        },
+        {
+          "line": 4218,
+          "register": "r0",
+          "old_rodata_address": "0x8059fe0",
+          "new_rodata_address": "0x8059470"
+        },
+        {
+          "line": 4221,
+          "register": "r0",
+          "old_rodata_address": "0x8057e60",
+          "new_rodata_address": "0x8057344"
+        },
+        {
+          "line": 4224,
+          "register": "r0",
+          "old_rodata_address": "0x8057e90",
+          "new_rodata_address": "0x8057374"
+        },
+        {
+          "line": 4227,
+          "register": "r0",
+          "old_rodata_address": "0x8059ff0",
+          "new_rodata_address": "0x8059480"
+        },
+        {
+          "line": 4230,
+          "register": "r0",
+          "old_rodata_address": "0x8057e40",
+          "new_rodata_address": "0x8057324"
+        },
+        {
+          "line": 4233,
+          "register": "r0",
+          "old_rodata_address": "0x8057e50",
+          "new_rodata_address": "0x8057334"
+        },
+        {
+          "line": 4242,
+          "register": "r0",
+          "old_rodata_address": "0x8057eb0",
+          "new_rodata_address": "0x8057394"
+        },
+        {
+          "line": 4245,
+          "register": "r2",
+          "old_rodata_address": "0x805a0e8",
+          "new_rodata_address": "0x8059578"
+        },
+        {
+          "line": 4249,
+          "register": "r2",
+          "old_rodata_address": "0x805a0d8",
+          "new_rodata_address": "0x8059568"
+        }
+      ],
+      "static_bl_blx": 143
+    },
+    "step_current_control": {
+      "same_operations_and_registers_except_rodata_addresses": true,
+      "changed_rodata_loads": [
+        {
+          "line": 420,
+          "register": "r1",
+          "old_rodata_address": "0x8057a88",
+          "new_rodata_address": "0x8056f18"
+        }
+      ],
+      "static_bl_blx": 13
+    },
+    "update_phase_with_applied_voltage": {
+      "same_operations_and_registers_except_rodata_addresses": true,
+      "changed_rodata_loads": [
+        {
+          "line": 1808,
+          "register": "r2",
+          "old_rodata_address": "0x8057a88",
+          "new_rodata_address": "0x8056f18"
+        },
+        {
+          "line": 2606,
+          "register": "r0",
+          "old_rodata_address": "0x805a54c",
+          "new_rodata_address": "0x80599dc"
+        },
+        {
+          "line": 2613,
+          "register": "r0",
+          "old_rodata_address": "0x805a554",
+          "new_rodata_address": "0x80599e4"
+        },
+        {
+          "line": 2624,
+          "register": "r0",
+          "old_rodata_address": "0x805a56c",
+          "new_rodata_address": "0x80599fc"
+        },
+        {
+          "line": 2631,
+          "register": "r0",
+          "old_rodata_address": "0x805a574",
+          "new_rodata_address": "0x8059a04"
+        },
+        {
+          "line": 3755,
+          "register": "r0",
+          "old_rodata_address": "0x805a000",
+          "new_rodata_address": "0x8059490"
+        },
+        {
+          "line": 3817,
+          "register": "r0",
+          "old_rodata_address": "0x805a010",
+          "new_rodata_address": "0x80594a0"
+        }
+      ],
+      "static_bl_blx": 115
+    },
+    "step_direct_voltage": {
+      "same_operations_and_registers_except_rodata_addresses": true,
+      "changed_rodata_loads": [],
+      "static_bl_blx": 16
+    },
+    "step_velocity_control": {
+      "same_operations_and_registers_except_rodata_addresses": true,
+      "changed_rodata_loads": [],
+      "static_bl_blx": 3
+    }
+  },
+  "mir_inventory": [
+    {
+      "old": "current",
+      "new": "balanced",
+      "crate": "ergot",
+      "old_bodies": 1182,
+      "new_bodies": 1182,
+      "changed_bodies": 83
+    },
+    {
+      "old": "current",
+      "new": "balanced",
+      "crate": "postcard",
+      "old_bodies": 268,
+      "new_bodies": 268,
+      "changed_bodies": 134
+    },
+    {
+      "old": "current",
+      "new": "balanced",
+      "crate": "bbqueue",
+      "old_bodies": 98,
+      "new_bodies": 98,
+      "changed_bodies": 13
+    },
+    {
+      "old": "current",
+      "new": "balanced",
+      "crate": "sequential_storage",
+      "old_bodies": 470,
+      "new_bodies": 470,
+      "changed_bodies": 113
+    },
+    {
+      "old": "current",
+      "new": "balanced",
+      "crate": "maitake_sync",
+      "old_bodies": 518,
+      "new_bodies": 518,
+      "changed_bodies": 0
+    },
+    {
+      "old": "current",
+      "new": "balanced",
+      "crate": "embassy_sync",
+      "old_bodies": 1019,
+      "new_bodies": 1019,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced",
+      "new": "balanced-noinc",
+      "crate": "ergot",
+      "old_bodies": 1182,
+      "new_bodies": 1182,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced",
+      "new": "balanced-noinc",
+      "crate": "postcard",
+      "old_bodies": 268,
+      "new_bodies": 268,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced",
+      "new": "balanced-noinc",
+      "crate": "bbqueue",
+      "old_bodies": 98,
+      "new_bodies": 98,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced",
+      "new": "balanced-noinc",
+      "crate": "sequential_storage",
+      "old_bodies": 470,
+      "new_bodies": 470,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced",
+      "new": "balanced-noinc",
+      "crate": "oxifoc_core",
+      "old_bodies": 0,
+      "new_bodies": 2334,
+      "changed_bodies": 971
+    },
+    {
+      "old": "balanced",
+      "new": "balanced-noinc",
+      "crate": "oxifoc_f405",
+      "old_bodies": 0,
+      "new_bodies": 245,
+      "changed_bodies": 152
+    },
+    {
+      "old": "balanced",
+      "new": "balanced-noinc",
+      "crate": "maitake_sync",
+      "old_bodies": 518,
+      "new_bodies": 518,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced",
+      "new": "balanced-noinc",
+      "crate": "embassy_sync",
+      "old_bodies": 1019,
+      "new_bodies": 1019,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced-noinc",
+      "new": "size",
+      "crate": "ergot",
+      "old_bodies": 1182,
+      "new_bodies": 1182,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced-noinc",
+      "new": "size",
+      "crate": "postcard",
+      "old_bodies": 268,
+      "new_bodies": 268,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced-noinc",
+      "new": "size",
+      "crate": "bbqueue",
+      "old_bodies": 98,
+      "new_bodies": 98,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced-noinc",
+      "new": "size",
+      "crate": "sequential_storage",
+      "old_bodies": 470,
+      "new_bodies": 470,
+      "changed_bodies": 0
+    },
+    {
+      "old": "balanced-noinc",
+      "new": "size",
+      "crate": "oxifoc_core",
+      "old_bodies": 2334,
+      "new_bodies": 2334,
+      "changed_bodies": 182
+    },
+    {
+      "old": "balanced-noinc",
+      "new": "size",
+      "crate": "oxifoc_f405",
+      "old_bodies": 245,
+      "new_bodies": 245,
+      "changed_bodies": 19
+    },
+    {
+      "old": "balanced-noinc",
+      "new": "size",
+      "crate": "maitake_sync",
+      "old_bodies": 518,
+      "new_bodies": 518,
+      "changed_bodies": 71
+    },
+    {
+      "old": "balanced-noinc",
+      "new": "size",
+      "crate": "embassy_sync",
+      "old_bodies": 1019,
+      "new_bodies": 1019,
+      "changed_bodies": 45
+    }
+  ],
+  "mir_examples": [
+    {
+      "crate": "ergot",
+      "body": "ergot.wire_frames-encode_frame_hdr.Inline.after.mir",
+      "old_case": "current",
+      "new_case": "balanced",
+      "removed_inline_scopes": {
+        "postcard::Serializer::<F>::try_push_varint_u32": 1,
+        "Result::<(), postcard::Error>::map_err::<postcard::Error, {closure@<&mut postcard::Serializer<F> as serde::Serializer>::serialize_u32::{closure#0}}>": 1,
+        "<&mut postcard::Serializer<F> as serde::Serializer>::serialize_u32::{closure#0}": 1,
+        "core::option::Option::<&nash::NameHash>::map::<u32, for<'a> fn(&'a nash::NameHash) -> u32 {nash::NameHash::to_u32}>": 1,
+        "<for<'a> fn(&'a nash::NameHash) -> u32 {nash::NameHash::to_u32} as FnOnce<(&nash::NameHash,)>>::call_once - shim(for<'a> fn(&'a nash::NameHash) -> u32 {nash::NameHash::to_u32})": 1,
+        "nash::NameHash::to_u32": 1,
+        "#[track_caller] <NonZero<u32> as Into<u32>>::into": 1,
+        "core::num::nonzero::<impl From<NonZero<u32>> for u32>::from": 1,
+        "NonZero::<u32>::get": 1
+      },
+      "added_inline_scopes": {},
+      "remaining_old_calls": [],
+      "remaining_new_calls": [
+        "_75 = postcard::Serializer::<F>::try_push_varint_u32(move _40, move _74) -> [return: bb32, unwind unreachable];"
+      ]
+    },
+    {
+      "crate": "ergot",
+      "body": "ergot.interface_manager-edge_port-{impl#0}-send_raw.Inline.after.mir",
+      "old_case": "current",
+      "new_case": "balanced",
+      "removed_inline_scopes": {
+        "Result::<(), ()>::map_err::<InterfaceSendError, {closure@/home/okhsunrog/.cargo/git/checkouts/ergot-65115f9cf4d8b2f8/e93b03b/crates/ergot/src/interface_manager/edge_port.rs:220:22: 220:26}>": 1,
+        "EdgePort::<I>::send_raw::{closure#0}": 1,
+        "<HeaderSeq as Clone>::clone": 1,
+        "<address::Address as Clone>::clone": 2,
+        "<core::option::Option<AnyAllAppendix> as Clone>::clone": 2,
+        "<AnyAllAppendix as Clone>::clone": 2,
+        "<Key as Clone>::clone": 2,
+        "<core::option::Option<nash::NameHash> as Clone>::clone": 2,
+        "<nash::NameHash as Clone>::clone": 2,
+        "<FrameKind as Clone>::clone": 1,
+        "<Header as From<HeaderSeq>>::from": 1
+      },
+      "added_inline_scopes": {},
+      "remaining_old_calls": [],
+      "remaining_new_calls": []
+    },
+    {
+      "crate": "postcard",
+      "body": "postcard.ser-serializer-{impl#1}-serialize_u32.Inline.after.mir",
+      "old_case": "current",
+      "new_case": "balanced",
+      "removed_inline_scopes": {
+        "serializer::Serializer::<F>::try_push_varint_u32": 1,
+        "core::result::Result::<(), error::Error>::map_err::<error::Error, {closure@/home/okhsunrog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/postcard-1.1.3/src/ser/serializer.rs:145:22: 145:25}>": 1,
+        "<&mut serializer::Serializer<F> as serde::Serializer>::serialize_u32::{closure#0}": 1
+      },
+      "added_inline_scopes": {},
+      "remaining_old_calls": [],
+      "remaining_new_calls": [
+        "_3 = serializer::Serializer::<F>::try_push_varint_u32(move _4, move _5) -> [return: bb1, unwind unreachable];"
+      ]
+    },
+    {
+      "crate": "bbqueue",
+      "body": "bbqueue.traits-coordination-cas-{impl#3}-commit_inner.Inline.after.mir",
+      "old_case": "current",
+      "new_case": "balanced",
+      "removed_inline_scopes": {},
+      "added_inline_scopes": {
+        "atomic::atomic_store::<usize, false>": 3,
+        "Arguments::<'_>::from_str": 16,
+        "str::<impl str>::as_ptr": 16,
+        "str::<impl str>::len": 16,
+        "str::<impl str>::as_bytes": 16,
+        "atomic::atomic_store::<u8, false>": 1,
+        "atomic::atomic_load::<usize, false>": 3,
+        "atomic::atomic_load::<u8, false>": 1
+      },
+      "remaining_old_calls": [
+        "_55 = atomic::atomic_load::<u8, false>(move _56, move _8) -> [return: bb13, unwind unreachable];",
+        "_69 = atomic::atomic_store::<usize, false>(move _70, move _39, move _40) -> [return: bb25, unwind unreachable];",
+        "_72 = atomic::atomic_store::<usize, false>(move _73, move _46, move _47) -> [return: bb26, unwind unreachable];",
+        "_75 = atomic::atomic_store::<usize, false>(move _76, move _50, move _51) -> [return: bb27, unwind unreachable];",
+        "_14 = atomic::atomic_load::<usize, false>(move _60, move _16) -> [return: bb15, unwind unreachable];",
+        "_24 = atomic::atomic_load::<usize, false>(move _65, move _26) -> [return: bb23, unwind unreachable];",
+        "_27 = atomic::atomic_load::<usize, false>(move _67, move _29) -> [return: bb24, unwind unreachable];",
+        "_79 = atomic::atomic_store::<u8, false>(move _80, move _83, move _54) -> [return: bb28, unwind unreachable];"
+      ],
+      "remaining_new_calls": [
+        "_55 = atomic_load::<u8, core::intrinsics::AtomicOrdering::SeqCst, false>(move _56) -> [return: bb13, unwind unreachable];",
+        "_55 = atomic_load::<u8, core::intrinsics::AtomicOrdering::Acquire, false>(move _56) -> [return: bb13, unwind unreachable];",
+        "_55 = atomic_load::<u8, core::intrinsics::AtomicOrdering::Relaxed, false>(move _56) -> [return: bb13, unwind unreachable];",
+        "_14 = atomic_load::<usize, core::intrinsics::AtomicOrdering::SeqCst, false>(move _83) -> [return: bb21, unwind unreachable];",
+        "_14 = atomic_load::<usize, core::intrinsics::AtomicOrdering::Acquire, false>(move _83) -> [return: bb21, unwind unreachable];",
+        "_14 = atomic_load::<usize, core::intrinsics::AtomicOrdering::Relaxed, false>(move _83) -> [return: bb21, unwind unreachable];",
+        "_24 = atomic_load::<usize, core::intrinsics::AtomicOrdering::SeqCst, false>(move _111) -> [return: bb33, unwind unreachable];",
+        "_24 = atomic_load::<usize, core::intrinsics::AtomicOrdering::Acquire, false>(move _111) -> [return: bb33, unwind unreachable];",
+        "_24 = atomic_load::<usize, core::intrinsics::AtomicOrdering::Relaxed, false>(move _111) -> [return: bb33, unwind unreachable];",
+        "_27 = atomic_load::<usize, core::intrinsics::AtomicOrdering::SeqCst, false>(move _136) -> [return: bb39, unwind unreachable];",
+        "_27 = atomic_load::<usize, core::intrinsics::AtomicOrdering::Acquire, false>(move _136) -> [return: bb39, unwind unreachable];",
+        "_27 = atomic_load::<usize, core::intrinsics::AtomicOrdering::Relaxed, false>(move _136) -> [return: bb39, unwind unreachable];",
+        "_161 = atomic_store::<usize, core::intrinsics::AtomicOrdering::SeqCst, false>(move _162, move _39) -> [return: bb45, unwind unreachable];",
+        "_161 = atomic_store::<usize, core::intrinsics::AtomicOrdering::Release, false>(move _162, move _39) -> [return: bb45, unwind unreachable];",
+        "_161 = atomic_store::<usize, core::intrinsics::AtomicOrdering::Relaxed, false>(move _162, move _39) -> [return: bb45, unwind unreachable];",
+        "_187 = atomic_store::<usize, core::intrinsics::AtomicOrdering::SeqCst, false>(move _188, move _46) -> [return: bb51, unwind unreachable];",
+        "_187 = atomic_store::<usize, core::intrinsics::AtomicOrdering::Release, false>(move _188, move _46) -> [return: bb51, unwind unreachable];",
+        "_187 = atomic_store::<usize, core::intrinsics::AtomicOrdering::Relaxed, false>(move _188, move _46) -> [return: bb51, unwind unreachable];",
+        "_213 = atomic_store::<usize, core::intrinsics::AtomicOrdering::SeqCst, false>(move _214, move _50) -> [return: bb57, unwind unreachable];",
+        "_213 = atomic_store::<usize, core::intrinsics::AtomicOrdering::Release, false>(move _214, move _50) -> [return: bb57, unwind unreachable];",
+        "_213 = atomic_store::<usize, core::intrinsics::AtomicOrdering::Relaxed, false>(move _214, move _50) -> [return: bb57, unwind unreachable];",
+        "_240 = atomic_store::<u8, core::intrinsics::AtomicOrdering::SeqCst, false>(move _241, move _244) -> [return: bb63, unwind unreachable];",
+        "_240 = atomic_store::<u8, core::intrinsics::AtomicOrdering::Release, false>(move _241, move _244) -> [return: bb63, unwind unreachable];",
+        "_240 = atomic_store::<u8, core::intrinsics::AtomicOrdering::Relaxed, false>(move _241, move _244) -> [return: bb63, unwind unreachable];"
+      ]
+    },
+    {
+      "crate": "sequential_storage",
+      "body": "sequential_storage.item-crc32_with_initial.Inline.after.mir",
+      "old_case": "current",
+      "new_case": "balanced",
+      "removed_inline_scopes": {
+        "<core::ops::Range<i32> as iter::range::RangeIteratorImpl>::spec_next": 1,
+        "<i32 as Step>::forward_unchecked": 1,
+        "core::num::<impl i32>::checked_add_unsigned": 1,
+        "core::intrinsics::unlikely": 1,
+        "core::num::<impl i32>::overflowing_add_unsigned": 1,
+        "core::num::<impl i32>::overflowing_add": 1,
+        "#[track_caller] core::option::Option::<i32>::unwrap_unchecked": 1,
+        "#[track_caller] unreachable_unchecked": 1,
+        "ub_checks::check_language_ub": 1,
+        "ub_checks::check_language_ub::runtime": 1,
+        "core::cmp::impls::<impl PartialOrd for i32>::lt": 1
+      },
+      "added_inline_scopes": {},
+      "remaining_old_calls": [],
+      "remaining_new_calls": []
+    },
+    {
+      "crate": "oxifoc_core",
+      "body": "oxifoc_core.state-run_foc_cycle.Inline.after.mir",
+      "old_case": "balanced-noinc",
+      "new_case": "size",
+      "removed_inline_scopes": {},
+      "added_inline_scopes": {
+        "run_foc_cycle::<P, C, Ph, S, F>::{closure#4}": 1,
+        "<RefMut<'_, MotorControlState> as DerefMut>::deref_mut": 6,
+        "NonNull::<MotorControlState>::as_mut::<'_>": 6,
+        "NonNull::<MotorControlState>::as_ptr": 9,
+        "MotorControlState::set_running": 1,
+        "MotorControlState::set_stopped": 2,
+        "<MotorState as PartialEq>::ne": 2,
+        "<MotorState as PartialEq>::eq": 2,
+        "DriveOwnership::release": 2,
+        "critical_section::Mutex::<RefCell<MotorControlState>>::borrow": 5,
+        "UnsafeCell::<RefCell<MotorControlState>>::get": 5,
+        "#[track_caller] RefCell::<MotorControlState>::borrow_mut": 5,
+        "RefCell::<MotorControlState>::try_borrow_mut": 5,
+        "UnsafeCell::<MotorControlState>::get": 5,
+        "#[track_caller] NonNull::<MotorControlState>::new_unchecked": 5,
+        "ub_checks::check_language_ub": 5,
+        "ub_checks::check_language_ub::runtime": 5,
+        "cell::BorrowRefMut::<'_>::new": 5,
+        "Cell::<isize>::get": 5,
+        "UnsafeCell::<isize>::get": 10,
+        "Cell::<isize>::replace": 5,
+        "core::mem::replace::<isize>": 5,
+        "atomic::atomic_load::<u32, false>": 4,
+        "Arguments::<'_>::from_str": 10,
+        "str::<impl str>::as_ptr": 10,
+        "str::<impl str>::len": 10,
+        "str::<impl str>::as_bytes": 10,
+        "run_foc_cycle::<P, C, Ph, S, F>::{closure#2}": 1,
+        "MotorControlState::set_error": 2,
+        "run_foc_cycle::<P, C, Ph, S, F>::{closure#3}": 1,
+        "<ControlMode as PartialEq>::eq": 2,
+        "core::cmp::impls::<impl PartialEq for &f32>::eq": 20,
+        "core::cmp::impls::<impl PartialEq for f32>::eq": 24,
+        "core::cmp::impls::<impl PartialEq for &core::option::Option<(f32, f32)>>::eq": 2,
+        "<core::option::Option<(f32, f32)> as PartialEq>::eq": 2,
+        "__core::tuple::<impl PartialEq for (f32, f32)>::eq": 2,
+        "run_foc_cycle::<P, C, Ph, S, F>::{closure#1}": 1,
+        "atomic::atomic_load::<u8, false>": 1,
+        "run_foc_cycle::<P, C, Ph, S, F>::{closure#0}": 1,
+        "FocDriver::<P, C, Ph, S>::derating": 1,
+        "<RefMut<'_, MotorControlState> as Deref>::deref": 3,
+        "NonNull::<MotorControlState>::as_ref::<'_>": 3,
+        "core::ptr::mut_ptr::<impl *mut MotorControlState>::cast_const": 3
+      },
+      "remaining_old_calls": [
+        "_355 = atomic::atomic_load::<u8, false>(move _356, move _49) -> [return: bb142, unwind unreachable];",
+        "_371 = atomic::atomic_load::<u32, false>(move _376, const core::sync::atomic::Ordering::Relaxed) -> [return: bb157, unwind unreachable];",
+        "_400 = atomic::atomic_load::<u32, false>(move _402, const core::sync::atomic::Ordering::Relaxed) -> [return: bb163, unwind unreachable];",
+        "_409 = atomic::atomic_load::<u32, false>(move _411, const core::sync::atomic::Ordering::Relaxed) -> [return: bb167, unwind unreachable];",
+        "_443 = atomic::atomic_load::<u32, false>(move _448, const core::sync::atomic::Ordering::Relaxed) -> [return: bb176, unwind unreachable];"
+      ],
+      "remaining_new_calls": [
+        "_433 = atomic_load::<u32, core::intrinsics::AtomicOrdering::Relaxed, false>(move _438) -> [return: bb166, unwind unreachable];",
+        "_552 = atomic_load::<u32, core::intrinsics::AtomicOrdering::Relaxed, false>(move _554) -> [return: bb201, unwind unreachable];",
+        "_586 = atomic_load::<u32, core::intrinsics::AtomicOrdering::Relaxed, false>(move _588) -> [return: bb207, unwind unreachable];",
+        "_622 = atomic_load::<u32, core::intrinsics::AtomicOrdering::Relaxed, false>(move _627) -> [return: bb216, unwind unreachable];",
+        "_394 = atomic_load::<u8, core::intrinsics::AtomicOrdering::SeqCst, false>(move _395) -> [return: bb146, unwind unreachable];",
+        "_394 = atomic_load::<u8, core::intrinsics::AtomicOrdering::Acquire, false>(move _395) -> [return: bb146, unwind unreachable];",
+        "_394 = atomic_load::<u8, core::intrinsics::AtomicOrdering::Relaxed, false>(move _395) -> [return: bb146, unwind unreachable];"
+      ]
+    },
+    {
+      "crate": "oxifoc_core",
+      "body": "oxifoc_core.motor-foc_driver-{impl#2}-update_phase_with_applied_voltage.Inline.after.mir",
+      "old_case": "balanced-noinc",
+      "new_case": "size",
+      "removed_inline_scopes": {},
+      "added_inline_scopes": {
+        "PhaseVoltageSense::phase_voltages": 1,
+        "PhaseVoltageSense::counts_to_volts": 3,
+        "convert::num::<impl From<u16> for f32>::from": 6,
+        "FocDriver::<P, C, Phase, S>::applied_voltage": 2,
+        "core::cmp::impls::<impl Ord for usize>::min": 2
+      },
+      "remaining_old_calls": [],
+      "remaining_new_calls": []
+    },
+    {
+      "crate": "oxifoc_f405",
+      "body": "oxifoc_f405.control-foc-__cortex_m_rt_ADC.Inline.after.mir",
+      "old_case": "balanced-noinc",
+      "new_case": "size",
+      "removed_inline_scopes": {},
+      "added_inline_scopes": {
+        "atomic::atomic_load::<u8, false>": 1,
+        "Arguments::<'_>::from_str": 22,
+        "str::<impl str>::as_ptr": 22,
+        "str::<impl str>::len": 22,
+        "str::<impl str>::as_bytes": 22,
+        "atomic::atomic_store::<u32, false>": 1,
+        "atomic::atomic_store::<u8, false>": 1,
+        "atomic::atomic_store::<u16, false>": 4,
+        "atomic::atomic_store::<i16, false>": 2,
+        "NtcConfig::temp_c_from_adc": 2,
+        "libm::math::logf::logf": 2,
+        "f32::<impl f32>::to_bits": 4,
+        "f32::<impl f32>::from_bits": 4,
+        "convert::num::<impl From<u16> for f32>::from": 4,
+        "atomic::atomic_load::<i16, false>": 2
+      },
+      "remaining_old_calls": [
+        "_19 = atomic::atomic_load::<i16, false>(move _204, move _34) -> [return: bb22, unwind unreachable];",
+        "_51 = atomic::atomic_load::<i16, false>(move _221, move _66) -> [return: bb32, unwind unreachable];",
+        "_194 = atomic::atomic_store::<u16, false>(move _195, move _17, move _18) -> [return: bb15, unwind unreachable];",
+        "_201 = atomic::atomic_store::<i16, false>(move _202, move _30, move _31) -> [return: bb21, unwind unreachable];",
+        "_208 = atomic::atomic_store::<u16, false>(move _209, move _44, move _45) -> [return: bb24, unwind unreachable];",
+        "_211 = atomic::atomic_store::<u16, false>(move _212, move _49, move _50) -> [return: bb25, unwind unreachable];",
+        "_218 = atomic::atomic_store::<i16, false>(move _219, move _62, move _63) -> [return: bb31, unwind unreachable];",
+        "_225 = atomic::atomic_store::<u16, false>(move _226, move _76, move _77) -> [return: bb34, unwind unreachable];",
+        "_238 = atomic::atomic_store::<u32, false>(move _239, move _85, move _86) -> [return: bb36, unwind unreachable];",
+        "_242 = atomic::atomic_store::<u8, false>(move _243, move _246, move _90) -> [return: bb37, unwind unreachable];",
+        "_125 = atomic::atomic_load::<u8, false>(move _286, move _128) -> [return: bb55, unwind unreachable];"
+      ],
+      "remaining_new_calls": [
+        "_194 = atomic_store::<u16, core::intrinsics::AtomicOrdering::SeqCst, false>(move _195, move _17) -> [return: bb15, unwind unreachable];",
+        "_194 = atomic_store::<u16, core::intrinsics::AtomicOrdering::Release, false>(move _195, move _17) -> [return: bb15, unwind unreachable];",
+        "_194 = atomic_store::<u16, core::intrinsics::AtomicOrdering::Relaxed, false>(move _195, move _17) -> [return: bb15, unwind unreachable];",
+        "_288 = atomic_store::<i16, core::intrinsics::AtomicOrdering::SeqCst, false>(move _289, move _30) -> [return: bb46, unwind unreachable];",
+        "_288 = atomic_store::<i16, core::intrinsics::AtomicOrdering::Release, false>(move _289, move _30) -> [return: bb46, unwind unreachable];",
+        "_288 = atomic_store::<i16, core::intrinsics::AtomicOrdering::Relaxed, false>(move _289, move _30) -> [return: bb46, unwind unreachable];",
+        "_19 = atomic_load::<i16, core::intrinsics::AtomicOrdering::SeqCst, false>(move _314) -> [return: bb52, unwind unreachable];",
+        "_19 = atomic_load::<i16, core::intrinsics::AtomicOrdering::Acquire, false>(move _314) -> [return: bb52, unwind unreachable];",
+        "_19 = atomic_load::<i16, core::intrinsics::AtomicOrdering::Relaxed, false>(move _314) -> [return: bb52, unwind unreachable];",
+        "_341 = atomic_store::<u16, core::intrinsics::AtomicOrdering::SeqCst, false>(move _342, move _44) -> [return: bb59, unwind unreachable];",
+        "_341 = atomic_store::<u16, core::intrinsics::AtomicOrdering::Release, false>(move _342, move _44) -> [return: bb59, unwind unreachable];",
+        "_341 = atomic_store::<u16, core::intrinsics::AtomicOrdering::Relaxed, false>(move _342, move _44) -> [return: bb59, unwind unreachable];",
+        "_367 = atomic_store::<u16, core::intrinsics::AtomicOrdering::SeqCst, false>(move _368, move _49) -> [return: bb65, unwind unreachable];",
+        "_367 = atomic_store::<u16, core::intrinsics::AtomicOrdering::Release, false>(move _368, move _49) -> [return: bb65, unwind unreachable];",
+        "_367 = atomic_store::<u16, core::intrinsics::AtomicOrdering::Relaxed, false>(move _368, move _49) -> [return: bb65, unwind unreachable];",
+        "_461 = atomic_store::<i16, core::intrinsics::AtomicOrdering::SeqCst, false>(move _462, move _62) -> [return: bb95, unwind unreachable];",
+        "_461 = atomic_store::<i16, core::intrinsics::AtomicOrdering::Release, false>(move _462, move _62) -> [return: bb95, unwind unreachable];",
+        "_461 = atomic_store::<i16, core::intrinsics::AtomicOrdering::Relaxed, false>(move _462, move _62) -> [return: bb95, unwind unreachable];",
+        "_51 = atomic_load::<i16, core::intrinsics::AtomicOrdering::SeqCst, false>(move _487) -> [return: bb101, unwind unreachable];",
+        "_51 = atomic_load::<i16, core::intrinsics::AtomicOrdering::Acquire, false>(move _487) -> [return: bb101, unwind unreachable];",
+        "_51 = atomic_load::<i16, core::intrinsics::AtomicOrdering::Relaxed, false>(move _487) -> [return: bb101, unwind unreachable];",
+        "_514 = atomic_store::<u16, core::intrinsics::AtomicOrdering::SeqCst, false>(move _515, move _76) -> [return: bb108, unwind unreachable];",
+        "_514 = atomic_store::<u16, core::intrinsics::AtomicOrdering::Release, false>(move _515, move _76) -> [return: bb108, unwind unreachable];",
+        "_514 = atomic_store::<u16, core::intrinsics::AtomicOrdering::Relaxed, false>(move _515, move _76) -> [return: bb108, unwind unreachable];",
+        "_550 = atomic_store::<u32, core::intrinsics::AtomicOrdering::SeqCst, false>(move _551, move _85) -> [return: bb115, unwind unreachable];",
+        "_550 = atomic_store::<u32, core::intrinsics::AtomicOrdering::Release, false>(move _551, move _85) -> [return: bb115, unwind unreachable];",
+        "_550 = atomic_store::<u32, core::intrinsics::AtomicOrdering::Relaxed, false>(move _551, move _85) -> [return: bb115, unwind unreachable];",
+        "_577 = atomic_store::<u8, core::intrinsics::AtomicOrdering::SeqCst, false>(move _578, move _581) -> [return: bb121, unwind unreachable];",
+        "_577 = atomic_store::<u8, core::intrinsics::AtomicOrdering::Release, false>(move _578, move _581) -> [return: bb121, unwind unreachable];",
+        "_577 = atomic_store::<u8, core::intrinsics::AtomicOrdering::Relaxed, false>(move _578, move _581) -> [return: bb121, unwind unreachable];",
+        "_125 = atomic_load::<u8, core::intrinsics::AtomicOrdering::SeqCst, false>(move _644) -> [return: bb143, unwind unreachable];",
+        "_125 = atomic_load::<u8, core::intrinsics::AtomicOrdering::Acquire, false>(move _644) -> [return: bb143, unwind unreachable];",
+        "_125 = atomic_load::<u8, core::intrinsics::AtomicOrdering::Relaxed, false>(move _644) -> [return: bb143, unwind unreachable];"
+      ]
+    }
+  ],
+  "linked_call_deltas": [
+    {
+      "old": "current",
+      "new": "transport-only",
+      "functions": {
+        "step_direct_voltage": {
+          "old_static_bl_blx": 16,
+          "new_static_bl_blx": 16,
+          "removed": {},
+          "added": {}
+        },
+        "step_current_control": {
+          "old_static_bl_blx": 13,
+          "new_static_bl_blx": 13,
+          "removed": {},
+          "added": {}
+        },
+        "step_velocity_control": {
+          "old_static_bl_blx": 3,
+          "new_static_bl_blx": 3,
+          "removed": {},
+          "added": {}
+        },
+        "update_phase_with_applied_voltage": {
+          "old_static_bl_blx": 115,
+          "new_static_bl_blx": 115,
+          "removed": {},
+          "added": {}
+        },
+        "encode_frame_hdr_Cobs": {
+          "old_static_bl_blx": 3,
+          "new_static_bl_blx": 4,
+          "removed": {},
+          "added": {
+            "bl\t@TARGET <<postcard::ser::serializer::Serializer<postcard::ser::flavors::Cobs<postcard::ser::flavors::Slice>>>::try_push_varint_u32>": 1
+          }
+        },
+        "send_raw": {
+          "old_static_bl_blx": 4,
+          "new_static_bl_blx": 3,
+          "removed": {
+            "bl\t@TARGET <<ergot::wire_frames::CommonHeader as serde_core::ser::Serialize>::serialize::<&mut postcard::ser::serializer::Serializer<postcard::ser::flavors::Slice>>>": 1,
+            "bl\t@TARGET <__aeabi_memcpy>": 1
+          },
+          "added": {
+            "bl\t@TARGET <ergot::wire_frames::encode_frame_hdr::<postcard::ser::flavors::Slice>>": 1
+          }
+        }
+      }
+    },
+    {
+      "old": "current",
+      "new": "balanced-noinc",
+      "functions": {
+        "step_direct_voltage": {
+          "old_static_bl_blx": 16,
+          "new_static_bl_blx": 8,
+          "removed": {
+            "bl\t@TARGET <<oxifoc_core::foc::controller::FocController<oxifoc_core::foc::pwm::SvpwmModulator, oxifoc_core::foc::trig::FastSinCos>>::apply_dq>": 2,
+            "bl\t@TARGET <<embassy_stm32::timer::complementary_pwm::ComplementaryPwm<embassy_stm32::_generated::peripherals::TIM1>>::get_max_duty>": 6,
+            "bl\t@TARGET <defmt::export::acquire_header_and_release>": 1,
+            "bl\t@TARGET <__defmt_default_panic>": 1
+          },
+          "added": {
+            "bl\t@TARGET <oxifoc_core::foc::svpwm::space_vector_pwm>": 1,
+            "bl\t@TARGET <<oxifoc_f405::motor::MotorPwm as oxifoc_core::foc::pwm::PhasePwm>::set_duties>": 1
+          }
+        },
+        "step_current_control": {
+          "old_static_bl_blx": 13,
+          "new_static_bl_blx": 9,
+          "removed": {
+            "bl\t@TARGET <<embassy_stm32::timer::complementary_pwm::ComplementaryPwm<embassy_stm32::_generated::peripherals::TIM1>>::get_max_duty>": 3,
+            "bl\t@TARGET <defmt::export::acquire_header_and_release>": 1,
+            "bl\t@TARGET <__defmt_default_panic>": 1
+          },
+          "added": {
+            "bl\t@TARGET <<oxifoc_f405::motor::MotorPwm as oxifoc_core::foc::pwm::PhasePwm>::set_duties>": 1
+          }
+        },
+        "step_velocity_control": {
+          "old_static_bl_blx": 3,
+          "new_static_bl_blx": 3,
+          "removed": {},
+          "added": {}
+        },
+        "update_phase_with_applied_voltage": {
+          "old_static_bl_blx": 115,
+          "new_static_bl_blx": 115,
+          "removed": {
+            "bl\t@TARGET <_defmt_release>": 1,
+            "bl\t@TARGET <<oxifoc_core::foc::phase::observer::Observer>::is_ready>": 1,
+            "bl\t@TARGET <<oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>>::seed_hfi_from_output>": 2
+          },
+          "added": {
+            "bl\t@TARGET <fmodf>": 2,
+            "bl\t@TARGET <<oxifoc_core::foc::phase::observer::Observer>::seed>": 1,
+            "bl\t@TARGET <<heapless::vec::VecInner<oxifoc_core::foc::phase::manager::PhaseFault, usize, heapless::vec::storage::VecStorageInner<[core::mem::maybe_uninit::MaybeUninit<oxifoc_core::foc::phase::manager::PhaseFault>; 4]>>>::retain_mut::<<heapless::vec::VecInner<oxifoc_core::foc::phase::manager::PhaseFault, usize, heapless::vec::storage::VecStorageInner<[core::mem::maybe_uninit::MaybeUninit<oxifoc_core::foc::phase::manager::PhaseFault>; 4]>>>::retain<<oxifoc_core::foc::phase::manager::PhaseManager<oxifoc_core::foc::hall_embassy::HallAngleProxy, oxifoc_core::foc::sensors::NoSensor, oxifoc_core::foc::trig::FastSinCos>>::clear_fault::{closure#0}>::{closure#0}>>": 1
+          }
+        },
+        "encode_frame_hdr_Cobs": {
+          "old_static_bl_blx": 3,
+          "new_static_bl_blx": 4,
+          "removed": {},
+          "added": {
+            "bl\t@TARGET <<postcard::ser::serializer::Serializer<postcard::ser::flavors::Cobs<postcard::ser::flavors::Slice>>>::try_push_varint_u32>": 1
+          }
+        },
+        "send_raw": {
+          "old_static_bl_blx": 4,
+          "new_static_bl_blx": 3,
+          "removed": {
+            "bl\t@TARGET <<ergot::wire_frames::CommonHeader as serde_core::ser::Serialize>::serialize::<&mut postcard::ser::serializer::Serializer<postcard::ser::flavors::Slice>>>": 1,
+            "bl\t@TARGET <__aeabi_memcpy>": 1
+          },
+          "added": {
+            "bl\t@TARGET <ergot::wire_frames::encode_frame_hdr::<postcard::ser::flavors::Slice>>": 1
+          }
+        }
+      }
+    },
+    {
+      "old": "balanced-noinc",
+      "new": "balanced-noinc-global500",
+      "functions": {
+        "step_direct_voltage": {
+          "old_static_bl_blx": 8,
+          "new_static_bl_blx": 8,
+          "removed": {},
+          "added": {}
+        },
+        "step_current_control": {
+          "old_static_bl_blx": 9,
+          "new_static_bl_blx": 9,
+          "removed": {},
+          "added": {}
+        },
+        "step_velocity_control": {
+          "old_static_bl_blx": 3,
+          "new_static_bl_blx": 3,
+          "removed": {},
+          "added": {}
+        },
+        "update_phase_with_applied_voltage": {
+          "old_static_bl_blx": 115,
+          "new_static_bl_blx": 113,
+          "removed": {
+            "bl\t@TARGET <libm::math::remainderf::remainderf>": 1,
+            "bl\t@TARGET <<oxifoc_core::foc::phase::startup::SensorlessStartup>::probe_sample>": 2,
+            "bl\t@TARGET <<oxifoc_core::foc::phase::observer::Observer>::seed>": 1,
+            "bl\t@TARGET <oxifoc_core::foc::phase::manager::blend_angles>": 2
+          },
+          "added": {
+            "bl\t@TARGET <fmodf>": 3,
+            "bl\t@TARGET <_defmt_release>": 1
+          }
+        },
+        "encode_frame_hdr_Cobs": {
+          "old_static_bl_blx": 4,
+          "new_static_bl_blx": 4,
+          "removed": {},
+          "added": {}
+        },
+        "send_raw": {
+          "old_static_bl_blx": 3,
+          "new_static_bl_blx": 3,
+          "removed": {},
+          "added": {}
+        }
+      }
+    }
+  ],
+  "artifact_root": "/home/okhsunrog/tmp_zfs/codex_tmp/mir-inlining-analysis"
+}

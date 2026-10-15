@@ -8,6 +8,11 @@ application source stay fixed. The starting point already has HAL threshold 115.
 
 ## Results
 
+The [controller-only follow-up](inlining-followup.md) traces actual MIR and
+linked call changes and recommends the narrower
+[`transport-only.toml`](transport-only.toml) size option. The broader presets
+below remain experiments rather than default motor-control speed settings.
+
 Two additional Cargo configs are provided:
 
 - [`balanced.toml`](balanced.toml): HAL 115 retained, ergot 50, postcard 0,

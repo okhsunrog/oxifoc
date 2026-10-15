@@ -1,0 +1,8 @@
+# Controller-firmware size option. Retain HAL=115 in .cargo/config.toml.
+# Keeps the measured ADC/FOC instruction sequences, apart from linked data addresses.
+# cargo build --release --locked --config ../docs/experiments/mir-threshold-sweep/transport-only.toml
+[profile.release.package.ergot]
+rustflags = ["-Zinline-mir-hint-threshold=50"]
+
+[profile.release.package.postcard]
+rustflags = ["-Zinline-mir-hint-threshold=0"]
