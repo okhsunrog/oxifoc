@@ -1,0 +1,4 @@
+# STM32 controller release experiment; retain the HAL=115 target config.
+# cargo build --release --locked --config ../docs/experiments/mir-threshold-sweep/release-no-incremental.toml
+[profile.release]
+incremental = false

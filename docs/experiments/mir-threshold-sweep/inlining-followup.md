@@ -7,6 +7,11 @@ Normal build settings have not been changed by this investigation.
 
 ## Recommendation
 
+The subsequent [release check](release-check.md) isolates incremental
+compilation across all three controller configurations, including fixed stack
+frames and release tests. It confirms size/frame benefits while leaving MCU
+timing unmeasured.
+
 Keep the existing **embassy-stm32=115** override. It has an isolated reproducer
 and an explained specialization failure, rather than just a favorable total.
 

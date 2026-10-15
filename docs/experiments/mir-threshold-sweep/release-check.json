@@ -1,0 +1,1796 @@
+{
+  "scope": "STM32 release build/host-test/disassembly checks; no hardware execution",
+  "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+  "preset_sha256": "02b0dd6cdf0a125ec8c8cb1769837549ca91c86c9c96562cf0ea07b214cce181",
+  "cases": [
+    {
+      "board": "cf2",
+      "label": "current",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 372456,
+      "static_ram": 36248,
+      "elf_sha256": "106a18fd67f7605da172cad89d8c5fb176302ae6fa1db759f851156460686de6",
+      "effective_release_incremental": true,
+      "image_delta": 0,
+      "hardware_sqrt_sites": 25,
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      },
+      "profile_config_sha256": null
+    },
+    {
+      "board": "cf2",
+      "label": "transport-only",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0
+      },
+      "image_bytes": 369520,
+      "static_ram": 36248,
+      "elf_sha256": "8806d65f39172325fbc0f6c9aa9ab1acc14318800cf5d64ec8501f3b7b9af35b",
+      "effective_release_incremental": true,
+      "image_delta": -2936,
+      "hardware_sqrt_sites": 25,
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      },
+      "profile_config_sha256": null
+    },
+    {
+      "board": "cf2",
+      "label": "release-noinc",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 370732,
+      "static_ram": 36248,
+      "elf_sha256": "26958a3f3dc68570a05eba5919dbe1cd01c7a04ca10c6146d5f8f0cffe15ec8d",
+      "effective_release_incremental": false,
+      "image_delta": -1724,
+      "hardware_sqrt_sites": 25,
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1624,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13212,
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "bytes": 17080,
+          "static_bl_blx": 145
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      },
+      "profile_config_sha256": "02b0dd6cdf0a125ec8c8cb1769837549ca91c86c9c96562cf0ea07b214cce181"
+    },
+    {
+      "board": "cf2",
+      "label": "release-transport-noinc",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0
+      },
+      "image_bytes": 368064,
+      "static_ram": 36248,
+      "elf_sha256": "772cc3474749b778ba3fb9baaa54f067b3f78f7cfed04ef4eb13cf797d0a9677",
+      "effective_release_incremental": false,
+      "image_delta": -4392,
+      "hardware_sqrt_sites": 25,
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1624,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13212,
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "bytes": 17080,
+          "static_bl_blx": 145
+        },
+        "SPI_transfer": {
+          "bytes": 372,
+          "static_bl_blx": 0
+        }
+      },
+      "profile_config_sha256": "02b0dd6cdf0a125ec8c8cb1769837549ca91c86c9c96562cf0ea07b214cce181"
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "current",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 374764,
+      "static_ram": 36232,
+      "elf_sha256": "d22da689e3f43c99d6e4654cdd63fb45987ae04f16d34c35de9964ac96cd833c",
+      "effective_release_incremental": true,
+      "image_delta": 0,
+      "hardware_sqrt_sites": 25,
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        }
+      },
+      "profile_config_sha256": null
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "transport-only",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0
+      },
+      "image_bytes": 371824,
+      "static_ram": 36232,
+      "elf_sha256": "3592e2dadbb7ee07f1fcfcf463e3b10352343609c2695f51e36e05190ea095d5",
+      "effective_release_incremental": true,
+      "image_delta": -2940,
+      "hardware_sqrt_sites": 25,
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 3176,
+          "static_bl_blx": 14
+        },
+        "step_direct_voltage": {
+          "bytes": 1172,
+          "static_bl_blx": 16
+        },
+        "step_current_control": {
+          "bytes": 1752,
+          "static_bl_blx": 13
+        },
+        "step_velocity_control": {
+          "bytes": 1308,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13008,
+          "static_bl_blx": 115
+        }
+      },
+      "profile_config_sha256": null
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "release-noinc",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 373012,
+      "static_ram": 36232,
+      "elf_sha256": "6c9031eda8f66617ebe72d64cb0a04100119b7fbcc9097d82ad6757911f89d57",
+      "effective_release_incremental": false,
+      "image_delta": -1752,
+      "hardware_sqrt_sites": 25,
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1624,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13212,
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "bytes": 17080,
+          "static_bl_blx": 145
+        }
+      },
+      "profile_config_sha256": "02b0dd6cdf0a125ec8c8cb1769837549ca91c86c9c96562cf0ea07b214cce181"
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "release-transport-noinc",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0
+      },
+      "image_bytes": 370348,
+      "static_ram": 36232,
+      "elf_sha256": "fe39e8b5e245dd4e8500b1df69548d988061c3ed5103f0f4fcd57d75b103946f",
+      "effective_release_incremental": false,
+      "image_delta": -4416,
+      "hardware_sqrt_sites": 25,
+      "critical_symbols": {
+        "ADC": {
+          "bytes": 12,
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "bytes": 1836,
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "bytes": 1624,
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "bytes": 1356,
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "bytes": 13212,
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "bytes": 17080,
+          "static_bl_blx": 145
+        }
+      },
+      "profile_config_sha256": "02b0dd6cdf0a125ec8c8cb1769837549ca91c86c9c96562cf0ea07b214cce181"
+    },
+    {
+      "board": "g474",
+      "label": "current",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 208672,
+      "static_ram": 24516,
+      "elf_sha256": "07b819fdf41a65946b8f89c91db263e1db53142e66e8d1399a7ae3d24ea715db",
+      "effective_release_incremental": true,
+      "image_delta": 0,
+      "hardware_sqrt_sites": 0,
+      "critical_symbols": {},
+      "profile_config_sha256": null
+    },
+    {
+      "board": "g474",
+      "label": "transport-only",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0
+      },
+      "image_bytes": 208360,
+      "static_ram": 24516,
+      "elf_sha256": "7d7b2d88960e2b773ba3e272bdc8d531a28e26e4469f09f6860c91163d90651b",
+      "effective_release_incremental": true,
+      "image_delta": -312,
+      "hardware_sqrt_sites": 0,
+      "critical_symbols": {},
+      "profile_config_sha256": null
+    },
+    {
+      "board": "g474",
+      "label": "release-noinc",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115
+      },
+      "image_bytes": 205964,
+      "static_ram": 24516,
+      "elf_sha256": "a926317df50bee70101875beef2d36c852a8ffc1c6b9c93b73a3449b6762d205",
+      "effective_release_incremental": false,
+      "image_delta": -2708,
+      "hardware_sqrt_sites": 0,
+      "critical_symbols": {},
+      "profile_config_sha256": "02b0dd6cdf0a125ec8c8cb1769837549ca91c86c9c96562cf0ea07b214cce181"
+    },
+    {
+      "board": "g474",
+      "label": "release-transport-noinc",
+      "source_commit": "76855c104b9b3a389c65e2ee117774251e989121",
+      "source_diff_sha256": "70598cee696dee517baff1b7788ba9ad52b5447a58ebe81901ac226490715a44",
+      "global_threshold": null,
+      "packages": {
+        "embassy-stm32": 115,
+        "ergot": 50,
+        "postcard": 0
+      },
+      "image_bytes": 205584,
+      "static_ram": 24516,
+      "elf_sha256": "a6f1e8c21af04036347c5da7ebb966813195c7abfcb492a60f722ae00d481d90",
+      "effective_release_incremental": false,
+      "image_delta": -3088,
+      "hardware_sqrt_sites": 0,
+      "critical_symbols": {},
+      "profile_config_sha256": "02b0dd6cdf0a125ec8c8cb1769837549ca91c86c9c96562cf0ea07b214cce181"
+    }
+  ],
+  "native_vs_env_override_identical_elf_sha256": "26958a3f3dc68570a05eba5919dbe1cd01c7a04ca10c6146d5f8f0cffe15ec8d",
+  "fixed_prologue_frames": [
+    {
+      "board": "cf2",
+      "label": "current",
+      "functions": {
+        "ADC": {
+          "fixed_prologue_frame": 248,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d13}",
+              "bytes": 48
+            },
+            {
+              "instruction": "sub\tsp, #160\t@ 0xa0",
+              "bytes": 160
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 14
+        },
+        "run_foc_cycle": {
+          "fixed_prologue_frame": 416,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #312\t@ 0x138",
+              "bytes": 312
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 143
+        },
+        "step_current_control": {
+          "fixed_prologue_frame": 192,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #88\t@ 0x58",
+              "bytes": 88
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 13
+        },
+        "update_phase_with_applied_voltage": {
+          "fixed_prologue_frame": 160,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #56\t@ 0x38",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 115
+        },
+        "step_direct_voltage": {
+          "fixed_prologue_frame": 176,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #72\t@ 0x48",
+              "bytes": 72
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 16
+        },
+        "step_velocity_control": {
+          "fixed_prologue_frame": 80,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "str.w\tr8, [sp, #-4]!",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d14}",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 3
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "transport-only",
+      "functions": {
+        "ADC": {
+          "fixed_prologue_frame": 248,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d13}",
+              "bytes": 48
+            },
+            {
+              "instruction": "sub\tsp, #160\t@ 0xa0",
+              "bytes": 160
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 14
+        },
+        "run_foc_cycle": {
+          "fixed_prologue_frame": 416,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #312\t@ 0x138",
+              "bytes": 312
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 143
+        },
+        "step_current_control": {
+          "fixed_prologue_frame": 192,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #88\t@ 0x58",
+              "bytes": 88
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 13
+        },
+        "update_phase_with_applied_voltage": {
+          "fixed_prologue_frame": 160,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #56\t@ 0x38",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 115
+        },
+        "step_direct_voltage": {
+          "fixed_prologue_frame": 176,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #72\t@ 0x48",
+              "bytes": 72
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 16
+        },
+        "step_velocity_control": {
+          "fixed_prologue_frame": 80,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "str.w\tr8, [sp, #-4]!",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d14}",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 3
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "release-noinc",
+      "functions": {
+        "ADC": {
+          "fixed_prologue_frame": 8,
+          "components": [
+            {
+              "instruction": "push\t{r7, lr}",
+              "bytes": 8
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "fixed_prologue_frame": 120,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #16",
+              "bytes": 16
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "fixed_prologue_frame": 184,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #80\t@ 0x50",
+              "bytes": 80
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "fixed_prologue_frame": 88,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl}",
+              "bytes": 12
+            },
+            {
+              "instruction": "vpush\t{d8-d14}",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "fixed_prologue_frame": 160,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #56\t@ 0x38",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "fixed_prologue_frame": 416,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #312\t@ 0x138",
+              "bytes": 312
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 145
+        },
+        "set_duties": {
+          "fixed_prologue_frame": 24,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "str.w\tr8, [sp, #-4]!",
+              "bytes": 4
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 5
+        }
+      }
+    },
+    {
+      "board": "cf2",
+      "label": "release-transport-noinc",
+      "functions": {
+        "ADC": {
+          "fixed_prologue_frame": 8,
+          "components": [
+            {
+              "instruction": "push\t{r7, lr}",
+              "bytes": 8
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "fixed_prologue_frame": 120,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #16",
+              "bytes": 16
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "fixed_prologue_frame": 184,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #80\t@ 0x50",
+              "bytes": 80
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "fixed_prologue_frame": 88,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl}",
+              "bytes": 12
+            },
+            {
+              "instruction": "vpush\t{d8-d14}",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "fixed_prologue_frame": 160,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #56\t@ 0x38",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "fixed_prologue_frame": 416,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #312\t@ 0x138",
+              "bytes": 312
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 145
+        },
+        "set_duties": {
+          "fixed_prologue_frame": 24,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "str.w\tr8, [sp, #-4]!",
+              "bytes": 4
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 5
+        }
+      }
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "current",
+      "functions": {
+        "ADC": {
+          "fixed_prologue_frame": 248,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d13}",
+              "bytes": 48
+            },
+            {
+              "instruction": "sub\tsp, #160\t@ 0xa0",
+              "bytes": 160
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 14
+        },
+        "run_foc_cycle": {
+          "fixed_prologue_frame": 416,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #312\t@ 0x138",
+              "bytes": 312
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 143
+        },
+        "step_current_control": {
+          "fixed_prologue_frame": 192,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #88\t@ 0x58",
+              "bytes": 88
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 13
+        },
+        "update_phase_with_applied_voltage": {
+          "fixed_prologue_frame": 160,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #56\t@ 0x38",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 115
+        },
+        "step_direct_voltage": {
+          "fixed_prologue_frame": 176,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #72\t@ 0x48",
+              "bytes": 72
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 16
+        },
+        "step_velocity_control": {
+          "fixed_prologue_frame": 80,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "str.w\tr8, [sp, #-4]!",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d14}",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 3
+        }
+      }
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "transport-only",
+      "functions": {
+        "ADC": {
+          "fixed_prologue_frame": 248,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d13}",
+              "bytes": 48
+            },
+            {
+              "instruction": "sub\tsp, #160\t@ 0xa0",
+              "bytes": 160
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 14
+        },
+        "run_foc_cycle": {
+          "fixed_prologue_frame": 416,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #312\t@ 0x138",
+              "bytes": 312
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 143
+        },
+        "step_current_control": {
+          "fixed_prologue_frame": 192,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #88\t@ 0x58",
+              "bytes": 88
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 13
+        },
+        "update_phase_with_applied_voltage": {
+          "fixed_prologue_frame": 160,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #56\t@ 0x38",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 115
+        },
+        "step_direct_voltage": {
+          "fixed_prologue_frame": 176,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #72\t@ 0x48",
+              "bytes": 72
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 16
+        },
+        "step_velocity_control": {
+          "fixed_prologue_frame": 80,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "str.w\tr8, [sp, #-4]!",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d14}",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 3
+        }
+      }
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "release-noinc",
+      "functions": {
+        "ADC": {
+          "fixed_prologue_frame": 8,
+          "components": [
+            {
+              "instruction": "push\t{r7, lr}",
+              "bytes": 8
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "fixed_prologue_frame": 120,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #16",
+              "bytes": 16
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "fixed_prologue_frame": 184,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #80\t@ 0x50",
+              "bytes": 80
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "fixed_prologue_frame": 88,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl}",
+              "bytes": 12
+            },
+            {
+              "instruction": "vpush\t{d8-d14}",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "fixed_prologue_frame": 160,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #56\t@ 0x38",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "fixed_prologue_frame": 416,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #312\t@ 0x138",
+              "bytes": 312
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 145
+        },
+        "set_duties": {
+          "fixed_prologue_frame": 24,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "str.w\tr8, [sp, #-4]!",
+              "bytes": 4
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 5
+        }
+      }
+    },
+    {
+      "board": "vesc6-mk5",
+      "label": "release-transport-noinc",
+      "functions": {
+        "ADC": {
+          "fixed_prologue_frame": 8,
+          "components": [
+            {
+              "instruction": "push\t{r7, lr}",
+              "bytes": 8
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 0
+        },
+        "step_direct_voltage": {
+          "fixed_prologue_frame": 120,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #16",
+              "bytes": 16
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 8
+        },
+        "step_current_control": {
+          "fixed_prologue_frame": 184,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #80\t@ 0x50",
+              "bytes": 80
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 9
+        },
+        "step_velocity_control": {
+          "fixed_prologue_frame": 88,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl}",
+              "bytes": 12
+            },
+            {
+              "instruction": "vpush\t{d8-d14}",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 3
+        },
+        "update_phase_with_applied_voltage": {
+          "fixed_prologue_frame": 160,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #56\t@ 0x38",
+              "bytes": 56
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 115
+        },
+        "ADC_body": {
+          "fixed_prologue_frame": 416,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "stmdb\tsp!, {r8, r9, sl, fp}",
+              "bytes": 16
+            },
+            {
+              "instruction": "sub\tsp, #4",
+              "bytes": 4
+            },
+            {
+              "instruction": "vpush\t{d8-d15}",
+              "bytes": 64
+            },
+            {
+              "instruction": "sub\tsp, #312\t@ 0x138",
+              "bytes": 312
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 145
+        },
+        "set_duties": {
+          "fixed_prologue_frame": 24,
+          "components": [
+            {
+              "instruction": "push\t{r4, r5, r6, r7, lr}",
+              "bytes": 20
+            },
+            {
+              "instruction": "str.w\tr8, [sp, #-4]!",
+              "bytes": 4
+            }
+          ],
+          "later_stack_decrements": [],
+          "static_bl_blx": 5
+        }
+      }
+    }
+  ],
+  "current_control_frame_chain": {
+    "includes": [
+      "ADC or ADC_body",
+      "run_foc_cycle when separate",
+      "step_current_control",
+      "update_phase_with_applied_voltage"
+    ],
+    "incremental_bytes": 1016,
+    "nonincremental_bytes": 760,
+    "excludes": "exception context, preempted thread state, other callees/branches and nested interrupts"
+  },
+  "host_tests": {
+    "profile": "release",
+    "opt_level": 3,
+    "incremental": false,
+    "hint_budgets": "defaults",
+    "core_features": [
+      "runtime",
+      "virtual-motor",
+      "storage",
+      "std",
+      "delivery",
+      "hfi",
+      "hfi-detect"
+    ],
+    "passed": {
+      "core_unit": 419,
+      "host_lib_unit": 14,
+      "core_doctest": 11
+    },
+    "ignored": {
+      "core_unit": 2,
+      "core_doctest": 18
+    },
+    "log": "/home/okhsunrog/tmp_zfs/codex_tmp/release-incremental-check/host-tests.log"
+  },
+  "q31_target_test": {
+    "compiled_only": true,
+    "elf": "/home/okhsunrog/tmp_zfs/codex_tmp/mir-threshold-sweep/q31-build/thumbv7em-none-eabihf/release/build/oxifoc-tests-g474/7568a1fd308093a9/out/foc-7568a1fd308093a9",
+    "elf_sha256": "cbb5106b8b87c4f08be0425e5cc8e6f4af37f26d39c097da5336c1dc697bbbaa",
+    "scaled_vcvt_sites": 35,
+    "instructions": [
+      "80003dc:\tvcvt.s32.f32\ts4, s4, #31",
+      "8000442:\tvcvt.f32.s32\ts6, s6, #31",
+      "800044a:\tvcvt.f32.s32\ts8, s8, #31",
+      "8000c54:\tvcvt.s32.f32\ts0, s0, #31",
+      "8000c60:\tvcvt.f32.s32\ts18, s18, #31",
+      "8000c84:\tvcvt.s32.f32\ts2, s2, #31",
+      "8000c90:\tvcvt.f32.s32\ts18, s18, #31",
+      "8000cb0:\tvcvt.s32.f32\ts2, s2, #31",
+      "8000cbc:\tvcvt.f32.s32\ts18, s18, #31",
+      "8000cda:\tvcvt.s32.f32\ts2, s2, #31",
+      "8000ce6:\tvcvt.f32.s32\ts18, s18, #31",
+      "8000d04:\tvcvt.s32.f32\ts2, s2, #31",
+      "8000d10:\tvcvt.f32.s32\ts18, s18, #31",
+      "8000d2e:\tvcvt.s32.f32\ts2, s2, #31",
+      "8000d3a:\tvcvt.f32.s32\ts18, s18, #31",
+      "8000d58:\tvcvt.s32.f32\ts2, s2, #31",
+      "8000d64:\tvcvt.f32.s32\ts18, s18, #31",
+      "8000eb2:\tvcvt.s32.f32\ts12, s12, #31",
+      "8000eec:\tvcvt.f32.s32\ts26, s26, #31",
+      "8000ef8:\tvcvt.f32.s32\ts24, s24, #31",
+      "8001262:\tvcvt.s32.f32\ts0, s0, #31",
+      "80012a6:\tvcvt.f32.s32\ts0, s0, #31",
+      "80012b4:\tvcvt.f32.s32\ts2, s2, #31",
+      "80013a8:\tvcvt.s32.f32\ts0, s0, #31",
+      "800140c:\tvcvt.f32.s32\ts2, s2, #31",
+      "8001418:\tvcvt.f32.s32\ts6, s6, #31",
+      "800149c:\tvcvt.s32.f32\ts8, s8, #31",
+      "80014ec:\tvcvt.f32.s32\ts10, s10, #31",
+      "80014f8:\tvcvt.f32.s32\ts12, s12, #31",
+      "8001570:\tvcvt.s32.f32\ts10, s10, #31",
+      "80015bc:\tvcvt.f32.s32\ts10, s10, #31",
+      "80015c8:\tvcvt.f32.s32\ts12, s12, #31",
+      "8001640:\tvcvt.s32.f32\ts10, s10, #31",
+      "8001688:\tvcvt.f32.s32\ts10, s10, #31",
+      "8001694:\tvcvt.f32.s32\ts12, s12, #31"
+    ],
+    "f64_instructions": false
+  },
+  "hardware_execution": false,
+  "artifact_root": "/home/okhsunrog/tmp_zfs/codex_tmp/release-incremental-check"
+}
