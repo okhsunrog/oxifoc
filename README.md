@@ -133,6 +133,21 @@ Transports: Serial (UART VCP), RTT (probe-rs), TCP (virtual), UDP (virtual), USB
 
 ## Building
 
+On NixOS, enter the development shell before running Cargo or Just:
+
+```bash
+nix develop
+# Alternatively, load it automatically in this directory:
+direnv allow
+```
+
+The shell provides native build dependencies, including D-Bus, fontconfig,
+Wayland, xkbcommon and udev, plus libclang and graphics libraries for the desktop
+tools. It uses rustup with the existing `rust-toolchain.toml` files. In Cursor or
+VS Code, install the recommended `mkhl.direnv` extension and let it load `.envrc`
+so rust-analyzer receives the same environment. The workspace automatically
+restarts extensions when direnv changes the environment.
+
 ```bash
 just check                # fmt + clippy + tests (workspace + all device firmware)
 just build-f405-cf2       # Build Cheap FOCer 2 firmware
