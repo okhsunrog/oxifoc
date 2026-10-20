@@ -15,7 +15,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     // Internal phase computation
     // ========================================================================
 
-    /// One step of the commutation phase tracker (see [`PhaseTracker`]).
+    /// One step of the commutation phase tracker (see [`PhaseTracker`](super::PhaseTracker)).
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     pub(super) fn tracker_output(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
         let prof_t0 = crate::isr_prof::now();

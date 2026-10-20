@@ -114,11 +114,13 @@ where
     }
 
     /// Execute one position-control cycle: the position error becomes a
-    /// velocity target ([`PositionLoopConfig::speed_for`] — P, bounded by
+    /// velocity target ([`PositionLoopConfig::speed_for`][speed_for] — P, bounded by
     /// the stopping distance at the velocity loop's ramp and by the travel
     /// ceiling) for the velocity loop, which also supplies the integral
     /// that holds a load. Without a trustworthy angle the velocity step
     /// degrades to zero torque, as in velocity mode.
+    ///
+    /// [speed_for]: crate::foc::position::PositionLoopConfig::speed_for
     pub(super) fn step_position_control(
         &mut self,
         dt: f32,

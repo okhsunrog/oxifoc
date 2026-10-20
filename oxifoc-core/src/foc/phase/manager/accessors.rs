@@ -67,8 +67,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         Ok(())
     }
 
-    /// Enable the commutation phase tracker for the pure-Observer source
-    /// (see [`PhaseTracker`]): `omega_n` = tracker natural frequency
+    /// Enable the second-order commutation phase tracker for the pure-Observer source.
+    ///
+    /// `omega_n` = tracker natural frequency
     /// (el rad/s — wobble above it is rejected quadratically, hunting
     /// below it is followed/damped), `zeta` = damping ratio (1.0 =
     /// critical). `omega_n <= 0` disables (raw observer output).
