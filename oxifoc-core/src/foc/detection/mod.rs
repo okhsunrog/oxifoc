@@ -603,6 +603,64 @@ mod integration_tests {
         }
     }
 
+    #[test]
+    fn voltage_pulse_measures_q_without_rotating_the_rotor_lock() {
+        use super::sweep::measure_inductance_pulse;
+        use super::types::VoltagePulseParams;
+        use super::virtual_harness::{VirtualHardware, VirtualTimer, block_on, with_sim};
+        use crate::foc::trig::LibmSinCos;
+
+        for (ld, lq, delay, dead_time_v) in [
+            (100e-6, 300e-6, 0.0, 0.0),
+            (300e-6, 100e-6, 0.0, 0.0),
+            (100e-6, 300e-6, 0.5, 0.2),
+            (300e-6, 100e-6, 0.5, 0.2),
+            (100e-6, 300e-6, 1.0, 0.2),
+            (300e-6, 100e-6, 1.0, 0.2),
+        ] {
+            let plant = MotorParams {
+                r: 0.1,
+                ld,
+                lq,
+                lambda: 0.01,
+                j: 5e-4,
+                friction_b: 0.001,
+                substeps: 10,
+                actuation_delay: delay,
+                dead_time_v,
+                adc_lsb_a: 0.015,
+                adc_noise_a: 0.015,
+                ..MotorParams::default()
+            };
+            let (measured_d, measured_q) = with_sim(plant, 24.0, |hw| {
+                block_on(measure_inductance_pulse::<
+                    VirtualHardware,
+                    VirtualTimer,
+                    LibmSinCos,
+                >(
+                    hw,
+                    &VoltagePulseParams {
+                        hold_current_a: 4.0,
+                        resistance_ohm: plant.r,
+                        pulse_voltage_v: 24.0 * 0.577 - plant.r * 4.0,
+                        current_target_a: 5.0,
+                        ..Default::default()
+                    },
+                    20_000.0,
+                ))
+            })
+            .unwrap();
+            assert!(
+                (measured_d / ld - 1.0).abs() < 0.05,
+                "Ld: {measured_d}, expected {ld}, delay {delay}"
+            );
+            assert!(
+                (measured_q / lq - 1.0).abs() < 0.05,
+                "Lq: {measured_q}, expected {lq}, delay {delay}"
+            );
+        }
+    }
+
     /// The |Z| magnitude cross-check must catch a mispaired demod: force a
     /// WRONG pipeline lag (1) on a plant whose true depth is 2 — the
     /// phase-sensitive demod corrupts silently, the latency-immune

@@ -133,10 +133,12 @@ impl PostcardValue<'_> for MotorParamsConfig {}
 impl MotorParamsConfig {
     /// Check if parameters are valid (have been calibrated)
     pub fn is_valid(&self) -> bool {
-        // `> 0.0` rejects NaN for R/L (NaN comparisons are false); the flux
-        // check needs the explicit is_finite. Inductances feed PI tuning
-        // directly — a NaN there becomes NaN gains and garbage duties.
-        self.resistance_ohm > 0.0
+        // Positive infinity passes `> 0`; reject it before deriving PI
+        // gains and observer state at either the config boundary or boot.
+        self.resistance_ohm.is_finite()
+            && self.inductance_d_h.is_finite()
+            && self.inductance_q_h.is_finite()
+            && self.resistance_ohm > 0.0
             && self.inductance_d_h > 0.0
             && self.inductance_q_h > 0.0
             && self.flux_linkage_wb.is_finite()
@@ -756,7 +758,10 @@ mod tests {
         // the observers directly.
         for f in [
             |p: &mut MotorParamsConfig| p.resistance_ohm = f32::NAN,
+            |p: &mut MotorParamsConfig| p.resistance_ohm = f32::INFINITY,
             |p: &mut MotorParamsConfig| p.inductance_d_h = f32::NAN,
+            |p: &mut MotorParamsConfig| p.inductance_d_h = f32::INFINITY,
+            |p: &mut MotorParamsConfig| p.inductance_q_h = f32::INFINITY,
             |p: &mut MotorParamsConfig| p.inductance_q_h = 0.0,
             |p: &mut MotorParamsConfig| p.flux_linkage_wb = f32::NAN,
             |p: &mut MotorParamsConfig| p.flux_linkage_wb = f32::INFINITY,
@@ -764,6 +769,21 @@ mod tests {
             let mut bad = good.clone();
             f(&mut bad);
             assert!(!bad.is_valid(), "must reject {bad:?}");
+            #[cfg(feature = "algorithms")]
+            {
+                use crate::foc::controller::FocController;
+                use crate::foc::pwm::SvpwmModulator;
+                let mut controller = FocController::<SvpwmModulator>::from_runtime_config(
+                    &RuntimeConfig {
+                        motor_params: Some(bad),
+                        ..Default::default()
+                    },
+                    24.0,
+                );
+                let out = controller.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, 0.00005);
+                assert!(out.vd.is_finite() && out.vq.is_finite());
+                assert!(controller.decoupling().is_none());
+            }
         }
     }
 

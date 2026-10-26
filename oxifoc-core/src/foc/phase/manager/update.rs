@@ -464,10 +464,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             // Only `begin_cold_start` (a deliberate sensorless start) arms it.
             PhaseSource::Observer => self.observer.is_ready() || self.startup.is_active(),
             #[cfg(feature = "hfi")]
-            PhaseSource::Hfi
-            | PhaseSource::HfiToObserver { .. }
-            | PhaseSource::HfiToObserverVolts { .. } => {
-                self.hfi.as_ref().is_some_and(HfiObserver::is_ready) || self.observer.is_ready()
+            PhaseSource::Hfi => self.hfi.as_ref().is_some_and(HfiObserver::is_ready),
+            #[cfg(feature = "hfi")]
+            PhaseSource::HfiToObserver { min_confidence, .. }
+            | PhaseSource::HfiToObserverVolts { min_confidence, .. } => {
+                // The selector uses HFI until the crossover is COMPLETE,
+                // including the blend band. A ready background observer
+                // cannot certify the HFI contribution to that angle.
+                if self.crossover_latched {
+                    self.observer.is_ready() && self.observer.confidence() >= min_confidence
+                } else {
+                    self.hfi.as_ref().is_some_and(HfiObserver::is_ready)
+                }
             }
             // Before the latch, these modes actually commute from HFI, so a
             // present Hall/encoder does not make a cold demodulation estimate

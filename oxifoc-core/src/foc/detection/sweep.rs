@@ -828,6 +828,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
 /// Fixed context for a voltage-pulse session on one locked axis: where the
 /// rotor is held (`angle` + its sin/cos), the steady d-axis voltage that holds
 /// it there, and the current it settles back to between pulses.
+#[derive(Clone, Copy)]
 struct LockedAxis {
     angle: f32,
     sin_a: f32,
@@ -836,14 +837,35 @@ struct LockedAxis {
     hold_current_a: f32,
     /// Settle band around `hold_current_a` (kept above the ADC noise floor).
     settle_tol: f32,
+    /// Probe q relative to the SAME rotor lock; never rotate the lock to
+    /// measure q, since the rotor would simply follow it with its d axis.
+    q_axis: bool,
+    /// Bipolar q probes cancel their torque impulse over each pair.
+    sign: f32,
 }
 
 impl LockedAxis {
-    /// d-axis current at this lock angle, from the live phase currents.
-    fn read_id<H: DetectionHardware>(&self, hw: &H) -> f32 {
+    /// Signed current along the probe axis, from the live phase currents.
+    fn read_axis_current<H: DetectionHardware>(&self, hw: &H) -> f32 {
         let (ia, ib, _) = hw.read_phase_currents();
         let (i_alpha, i_beta) = transforms::clarke(ia, ib);
-        i_alpha * self.cos_a + i_beta * self.sin_a
+        if self.q_axis {
+            self.sign * (i_beta * self.cos_a - i_alpha * self.sin_a)
+        } else {
+            i_alpha * self.cos_a + i_beta * self.sin_a
+        }
+    }
+
+    fn voltage(&self, pulse_v: f32) -> ControlMode {
+        ControlMode::DirectVoltage {
+            vd: self.vd_hold + if self.q_axis { 0.0 } else { pulse_v },
+            vq: if self.q_axis {
+                self.sign * pulse_v
+            } else {
+                0.0
+            },
+            angle_rad: self.angle,
+        }
     }
 }
 
@@ -864,27 +886,17 @@ impl LockedAxis {
 /// the current ramping.
 async fn pulse_once<H: DetectionHardware>(hw: &mut H, ax: &LockedAxis, pulse_v: f32) -> (f32, f32) {
     // Discharge to the holding current.
-    hw.send_command(ControlMode::DirectVoltage {
-        vd: ax.vd_hold,
-        vq: 0.0,
-        angle_rad: ax.angle,
-    })
-    .await;
+    hw.send_command(ax.voltage(0.0)).await;
     for _ in 0..DISCHARGE_MAX_FRAMES {
         hw.wait_telemetry().await;
-        if (ax.read_id(hw) - ax.hold_current_a).abs() < ax.settle_tol {
+        if (ax.read_axis_current(hw) - ax.hold_current_a).abs() < ax.settle_tol {
             break;
         }
     }
 
     // Apply the step, capture the application window, take the max rise.
-    let id_before = ax.read_id(hw);
-    hw.send_command(ControlMode::DirectVoltage {
-        vd: ax.vd_hold + pulse_v,
-        vq: 0.0,
-        angle_rad: ax.angle,
-    })
-    .await;
+    let id_before = ax.read_axis_current(hw);
+    hw.send_command(ax.voltage(pulse_v)).await;
     let mut prev = id_before;
     let mut best_before = id_before;
     let mut best_after = id_before;
@@ -894,7 +906,7 @@ async fn pulse_once<H: DetectionHardware>(hw: &mut H, ax: &LockedAxis, pulse_v: 
     let mut edge = false;
     for _ in 0..=PIPELINE_LAG_MAX {
         hw.wait_telemetry().await;
-        let id_now = ax.read_id(hw);
+        let id_now = ax.read_axis_current(hw);
         let di = id_now - prev;
         if di > best_di {
             best_di = di;
@@ -908,12 +920,7 @@ async fn pulse_once<H: DetectionHardware>(hw: &mut H, ax: &LockedAxis, pulse_v: 
         edge = di > edge_seen;
     }
     // End the pulse now rather than at the next call's discharge.
-    hw.send_command(ControlMode::DirectVoltage {
-        vd: ax.vd_hold,
-        vq: 0.0,
-        angle_rad: ax.angle,
-    })
-    .await;
+    hw.send_command(ax.voltage(0.0)).await;
     (best_before, best_after)
 }
 
@@ -936,11 +943,15 @@ async fn calibrate_pulse_voltage<H: DetectionHardware>(
     ceiling: f32,
     target_di: f32,
 ) -> f32 {
+    let mut ax = *ax;
     // Start small (≈ VESC's 0.02 duty) and grow geometrically; the early
     // probes barely move the current, so they are inherently safe.
     let mut v = (ceiling * 0.02).max(0.02);
     loop {
-        let (before, after) = pulse_once(hw, ax, v).await;
+        let (before, after) = pulse_once(hw, &ax, v).await;
+        if ax.q_axis {
+            ax.sign = -ax.sign;
+        }
         let di = after - before;
         if di >= target_di && di > 0.0 {
             // Bracketed — trim down to hit the target exactly.
@@ -955,9 +966,9 @@ async fn calibrate_pulse_voltage<H: DetectionHardware>(
 
 /// Measure inductance via voltage pulse (di/dt).
 ///
-/// Locks the rotor at angle 0 (d-axis), applies a voltage step, measures
-/// the current change over one PWM period, then repeats at angle π/2
-/// (q-axis).  Works reliably on high-resistance motors where HFI fails.
+/// Aligns the rotor at angle 0 and probes d and q relative to that same
+/// alignment. The d holding voltage stays applied during q probes;
+/// alternating q pulse signs cancel their torque impulse.
 ///
 /// With `params.current_target_a > 0` the step amplitude is current-limited
 /// (see [`calibrate_pulse_voltage`]) so the peak current stays bounded on a
@@ -972,18 +983,12 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
     info!("Starting voltage-pulse inductance measurement...");
 
     let ramp_steps = 50u32;
-    let mut results = [(0.0f32, 0.0f32); 2]; // (angle, measured_L)
-    let angles = [0.0f32, core::f32::consts::FRAC_PI_2];
+    let mut results = [0.0f32; 2];
+    let angle = 0.0;
     let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
     let mut first_cmd = true;
-    // Step amplitude. Calibrated once (on the d axis) and reused: for a salient
-    // motor Lq > Ld, so the q-axis di at the same step is smaller — i.e. still
-    // within the current budget. `0` target ⇒ use the ceiling as-is.
-    let mut pulse_voltage = params.pulse_voltage_v;
-    let mut calibrated = false;
-
-    for (axis, &angle) in angles.iter().enumerate() {
-        // Lock rotor at this angle
+    for (axis, q_axis) in [false, true].into_iter().enumerate() {
+        // Re-establish the SAME d-axis lock before each series.
         for i in 1..=ramp_steps {
             let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
             hw.send_command(ControlMode::OpenLoop {
@@ -1009,30 +1014,34 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
             settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
 
         let (sin_a, cos_a) = S::sin_cos(angle);
-        let ax = LockedAxis {
+        let mut ax = LockedAxis {
             angle,
             sin_a,
             cos_a,
             vd_hold,
-            hold_current_a: params.hold_current_a,
+            hold_current_a: if q_axis { 0.0 } else { params.hold_current_a },
             // Settle band around i_hold (kept above the ADC noise floor).
             settle_tol: (0.1 * params.hold_current_a).max(0.05),
+            q_axis,
+            sign: 1.0,
         };
 
         // Size the step to the current budget once (current-limited pulse):
         // one period's rise is a 1/PULSE_MAX_PERIODS share of the budget,
         // since the pulse may stay applied that many periods.
-        if !calibrated && params.current_target_a > 0.0 {
-            pulse_voltage = calibrate_pulse_voltage(
+        let pulse_voltage = if params.current_target_a > 0.0 {
+            let voltage = calibrate_pulse_voltage(
                 hw,
                 &ax,
                 params.pulse_voltage_v,
                 params.current_target_a / PULSE_MAX_PERIODS,
             )
             .await;
-            calibrated = true;
             debug!("Pulse step calibrated to the current target");
-        }
+            voltage
+        } else {
+            params.pulse_voltage_v
+        };
 
         // Average num_pulses discharge-anchored pulses (see `pulse_once`): each
         // settles the winding back to i_hold, applies the step, and takes the
@@ -1041,9 +1050,16 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
         // ratcheting baseline cannot bias it.
         let cal_params = VoltagePulseParams {
             pulse_voltage_v: pulse_voltage,
+            hold_current_a: ax.hold_current_a,
             ..*params
         };
-        let mut meas = VoltagePulseMeasurement::new(&cal_params, pwm_freq_hz, vd_hold);
+        // q is measured about zero q current/voltage, while the independent
+        // d holding voltage continues aligning the rotor.
+        let mut meas = VoltagePulseMeasurement::new(
+            &cal_params,
+            pwm_freq_hz,
+            if q_axis { 0.0 } else { vd_hold },
+        );
         // Residual dead-time the firmware's compensation did not cancel
         // (vd_hold − R·I_hold). Removed from the pulse so L is dead-time-immune;
         // also the signal a self-calibrating comp factor would key off.
@@ -1055,12 +1071,15 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
             pulse_voltage
         );
 
-        for _ in 0..params.num_pulses * 2 {
+        for pulse in 0..params.num_pulses * 2 {
             // guard against skipped pulses
             if meas.is_complete() {
                 break;
             }
 
+            if q_axis {
+                ax.sign = if pulse % 2 == 0 { 1.0 } else { -1.0 };
+            }
             let (before, after) = pulse_once(hw, &ax, pulse_voltage).await;
 
             // A real pulse dwarfs the noise; below the floor means an open
@@ -1094,11 +1113,10 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
         hw.send_command(ControlMode::Stopped).await;
         T::after_millis(200).await;
 
-        results[axis] = (angle, inductance?);
+        results[axis] = inductance?;
     }
 
-    let ld = results[0].1; // angle 0 = d-axis
-    let lq = results[1].1; // angle π/2 = q-axis
+    let [ld, lq] = results;
     info!("Voltage-pulse inductance measurement complete");
     Ok((ld, lq))
 }

@@ -12,6 +12,79 @@ use crate::foc::wrap_angle;
 use crate::virtual_motor::VirtualMotorOutput;
 use core::f32::consts::TAU;
 
+#[test]
+#[cfg(feature = "hfi")]
+fn ready_background_observer_does_not_certify_a_cold_hfi_angle() {
+    use crate::foc::phase::{BackEmfObserver, HfiObserver};
+    for source in [
+        PhaseSource::Hfi,
+        PhaseSource::HfiToObserver {
+            min_vel: 1000.0,
+            min_confidence: 0.5,
+        },
+        PhaseSource::HfiToObserverVolts {
+            toggle_v: 10.0,
+            min_confidence: 0.5,
+        },
+    ] {
+        let mut mgr = PhaseManager::sensorless();
+        let mut observer = BackEmfObserver::new(0.1, 100e-6, 0.02);
+        observer.force_phase(2.0);
+        observer.set_velocity(100.0);
+        mgr.set_observer(Observer::BackEmf(observer));
+        mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+        mgr.set_source(source).unwrap();
+        let (s, c) = 2.0f32.sin_cos();
+        mgr.update(
+            &PhaseInput {
+                v_alpha: -2.0 * s,
+                v_beta: 2.0 * c,
+                i_alpha: 0.0,
+                i_beta: 0.0,
+                dt: 0.00005,
+            },
+            50,
+        );
+        assert!(mgr.observer().is_ready());
+        assert!(!mgr.hfi_observer().unwrap().is_ready());
+        assert!(
+            !mgr.angle_trustworthy(),
+            "{source:?} still commutates from cold HFI"
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "hfi")]
+fn partial_hfi_blend_requires_hfi_but_full_observer_crossover_does_not() {
+    use crate::foc::phase::{BackEmfObserver, HfiObserver};
+    for (speed, trustworthy) in [(900.0, false), (1100.0, true)] {
+        let mut mgr = PhaseManager::sensorless();
+        let mut observer = BackEmfObserver::new(0.1, 100e-6, 0.02);
+        observer.force_phase(2.0);
+        observer.set_velocity(speed);
+        mgr.set_observer(Observer::BackEmf(observer));
+        mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+        mgr.set_source(PhaseSource::HfiToObserver {
+            min_vel: 1000.0,
+            min_confidence: 0.5,
+        })
+        .unwrap();
+        let (s, c) = 2.0f32.sin_cos();
+        mgr.update(
+            &PhaseInput {
+                v_alpha: -speed * 0.02 * s,
+                v_beta: speed * 0.02 * c,
+                i_alpha: 0.0,
+                i_beta: 0.0,
+                dt: 0.00005,
+            },
+            50,
+        );
+        assert_eq!(mgr.angle_trustworthy(), trustworthy, "speed {speed}");
+    }
+}
+
 /// Phase-tracker shape (see PhaseTracker, TRACKER_KD_TAU_S), measured
 /// as amplitude ratios of an injected estimate wobble: the 35-100 Hz
 /// mid-band wobble is attenuated, the unavoidable low-frequency

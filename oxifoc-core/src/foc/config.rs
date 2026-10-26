@@ -188,8 +188,13 @@ pub struct NtcConfig {
 }
 
 impl NtcConfig {
+    /// Invalid sensor reading, encoded above every supported thermal trip.
+    /// Existing OverTemp protection and thermal derating fail closed when
+    /// a wired sensor reaches a rail or produces an invalid conversion.
+    pub const INVALID_TEMP_C_X10: i16 = i16::MAX;
+
     /// Convert raw ADC value to temperature in 0.1 °C units, saturated to
-    /// the i16 range and with non-finite results mapped to 0.
+    /// the i16 range. Invalid readings return [`Self::INVALID_TEMP_C_X10`].
     ///
     /// Signed on purpose: sub-zero ambient is a legitimate reading, and
     /// clamping it to 0 (as the platform ISRs used to) lies in telemetry.
@@ -200,7 +205,7 @@ impl NtcConfig {
             // `as` saturates at the i16 bounds (and maps NaN to 0).
             (temp_c * 10.0) as i16
         } else {
-            0
+            Self::INVALID_TEMP_C_X10
         }
     }
 
@@ -212,20 +217,24 @@ impl NtcConfig {
         let adc = f32::from(raw);
         let adc_max = f32::from(adc_max_counts);
 
-        // Avoid divide-by-zero
-        let eps = 0.1;
+        // At either rail resistance/temperature cannot be determined.
+        // Adding an epsilon at full scale used to make R negative and
+        // silently turn the resulting NaN into a plausible 0 °C.
+        if raw == 0 || raw >= adc_max_counts {
+            return f32::NAN;
+        }
 
         // Calculate NTC resistance based on topology
         let r_ntc = match self.topology {
             NtcTopology::LowSide => {
                 // NTC to GND, pull-up to Vref
                 // R_ntc = R_pullup / (Vmax/Vadc - 1)
-                self.r_fixed_ohm / (adc_max / (adc + eps) - 1.0)
+                self.r_fixed_ohm * adc / (adc_max - adc)
             }
             NtcTopology::HighSide => {
                 // NTC to Vref, pull-down to GND
                 // R_ntc = R_pulldown * (Vmax/Vadc - 1)
-                self.r_fixed_ohm * (adc_max / (adc + eps) - 1.0)
+                self.r_fixed_ohm * (adc_max - adc) / adc
             }
         };
 
@@ -316,6 +325,28 @@ mod tests {
         // ADC = 2.245 / 3.3 * 4095 ≈ 2785
         let temp = ntc.temp_c_from_adc(2785, 4095);
         assert!(temp > 20.0 && temp < 30.0, "temp was {temp}");
+    }
+
+    #[test]
+    fn ntc_rails_report_invalid_instead_of_a_cold_board() {
+        for topology in [NtcTopology::HighSide, NtcTopology::LowSide] {
+            let ntc = NtcConfig {
+                r_fixed_ohm: 10_000.0,
+                r0_ohm: 10_000.0,
+                beta: 3380.0,
+                t0_k: 298.15,
+                topology,
+            };
+            for raw in [0, 4095, 4096, u16::MAX] {
+                assert!(ntc.temp_c_from_adc(raw, 4095).is_nan());
+                assert_eq!(
+                    ntc.temp_c_x10_from_adc(raw, 4095),
+                    NtcConfig::INVALID_TEMP_C_X10
+                );
+            }
+            assert!(ntc.temp_c_from_adc(1, 4095).is_finite());
+            assert!(ntc.temp_c_from_adc(4094, 4095).is_finite());
+        }
     }
 
     #[test]

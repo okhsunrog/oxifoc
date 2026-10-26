@@ -633,6 +633,10 @@ where
                 if foc.enter_brake_ramp() {
                     #[cfg(feature = "defmt")]
                     defmt::info!("Brake at speed: ramping to standstill first");
+                    // The stop sequencer drives PWM even when the previous
+                    // driver mode was Stopped. Keep flash/config gates busy
+                    // for the entire ramp and its parking-brake terminal.
+                    state.set_running(ControlMode::Brake);
                     state.drive_ownership.release();
                     return MotorCommandOutcome::Applied;
                 } else {

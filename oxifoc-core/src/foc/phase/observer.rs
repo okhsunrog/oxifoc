@@ -1107,7 +1107,10 @@ enum HfiPolarity {
     Pending,
     /// Saturation probe running: carrier suspended, ±d pulses injected.
     Probing,
-    /// Resolved: probed, seeded from a sensor, or ambiguous-kept.
+    /// Probe found no significant asymmetry. Carrier tracking continues,
+    /// but torque stays gated until a trusted external seed is provided.
+    Unresolved,
+    /// Resolved by a significant probe response or a trusted sensor seed.
     Done,
 }
 
@@ -1188,7 +1191,7 @@ const HFI_POLARITY_PATTERN: [f32; 4] = [1.0, -1.0, -1.0, 1.0];
 
 /// Significance floor for the flip decision: |Σ sign·|id|| must exceed this
 /// fraction of Σ|id|. Below it there is no measurable saturation asymmetry
-/// (SPM motor, probe too weak) and the current lock is kept as-is.
+/// (SPM motor, probe too weak) and polarity remains unresolved.
 #[cfg(feature = "hfi")]
 const HFI_POLARITY_MIN_RATIO: f32 = 0.05;
 
@@ -1376,13 +1379,19 @@ impl<S: SinCos> HfiObserver<S> {
 
         self.probe_step += 1;
         if self.probe_step >= HFI_POLARITY_PATTERN.len() as u32 * SLOT {
-            if self.probe_acc < -HFI_POLARITY_MIN_RATIO * self.probe_ref {
+            let significant = self.probe_ref > 0.0
+                && self.probe_acc.abs() > HFI_POLARITY_MIN_RATIO * self.probe_ref;
+            if significant && self.probe_acc < 0.0 {
                 self.phase_est = wrap_angle(self.phase_est + core::f32::consts::PI);
             }
-            // Ambiguous result (|acc| under the floor) keeps the current
-            // lock: with no measurable saturation we cannot do better, and
-            // retrying would just stall readiness forever.
-            self.polarity = HfiPolarity::Done;
+            // A 2θ saliency lock alone cannot distinguish north from south.
+            // Keep injecting without repeatedly probing an unobservable
+            // motor, but never grant torque on an arbitrary polarity.
+            self.polarity = if significant {
+                HfiPolarity::Done
+            } else {
+                HfiPolarity::Unresolved
+            };
         }
     }
 
@@ -1989,6 +1998,26 @@ mod tests {
             wrap_angle(out.angle_rad),
             err
         );
+    }
+
+    #[test]
+    #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
+    fn hfi_ambiguous_polarity_never_grants_readiness() {
+        let (mut obs, _) = run_hfi_sim(3.5, 0.0, 0.0, 20_000);
+        assert!(
+            obs.confidence() > HFI_READY_CONFIDENCE,
+            "saliency PLL should lock"
+        );
+        assert!(!obs.polarity_resolved());
+        assert!(
+            !obs.is_ready(),
+            "a modulo-pi lock cannot certify torque direction"
+        );
+        assert_eq!(obs.polarity, HfiPolarity::Unresolved);
+        obs.set_phase(3.5);
+        assert!(obs.is_ready(), "a trusted seed may resolve the ambiguity");
+        obs.reset();
+        assert!(!obs.polarity_resolved());
     }
 
     #[test]

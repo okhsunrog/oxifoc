@@ -3285,6 +3285,74 @@ mod severity_gate {
     }
 
     #[test]
+    fn braking_a_coasting_stopped_rotor_keeps_flash_gate_busy() {
+        use crate::foc::phase::{PhaseInput, PhaseOutput};
+        use crate::state::BOOT_CURRENT_OFFSET_PENDING;
+        use core::sync::atomic::Ordering;
+        struct SpinningPhase;
+        impl PhaseProvider for SpinningPhase {
+            fn get(&self) -> PhaseOutput {
+                PhaseOutput {
+                    angle: 0.0,
+                    velocity: 100.0,
+                }
+            }
+            fn update(&mut self, _: &PhaseInput, _: u64) {}
+        }
+        let _serial = cmd_channel_lock();
+        let state = CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+        let registry = FaultRegistry::<SevFault>::new();
+        let mut driver = FocDriver::new(
+            FocController::<SvpwmModulator>::new(24.0),
+            GatedPwm {
+                enabled: false,
+                applied: [0; 3],
+            },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            SpinningPhase,
+            0.00005,
+        );
+        // Boot has completed; it must not mask the state bug in busy().
+        let boot_pending = BOOT_CURRENT_OFFSET_PENDING.swap(false, Ordering::AcqRel);
+        assert!(!critical_section::with(|cs| state
+            .borrow(cs)
+            .borrow()
+            .actuator_busy()));
+        CMD_CHANNEL
+            .try_send(DriverCommand::SetMode(ControlMode::Brake))
+            .unwrap();
+        for n in 1..=100 {
+            assert!(run_foc_cycle(&state, &registry, &mut driver, 24.0, n * 50, &BOARD).is_some());
+        }
+        BOOT_CURRENT_OFFSET_PENDING.store(boot_pending, Ordering::Release);
+        assert!(driver.failsafe_active() && driver.pwm().enabled);
+        critical_section::with(|cs| {
+            let s = state.borrow(cs).borrow();
+            assert_eq!(s.motor_state, MotorState::Running);
+            assert_eq!(s.control_mode, ControlMode::Brake);
+            assert!(s.actuator_busy());
+        });
+    }
+
+    #[test]
+    fn invalid_wired_temperature_trips_protection() {
+        use crate::foc::config::NtcConfig;
+        let _serial = cmd_channel_lock();
+        let mut h = running_harness();
+        h.driver.run_protection(
+            &h.registry,
+            &BOARD,
+            24.0,
+            Some(NtcConfig::INVALID_TEMP_C_X10),
+            None,
+        );
+        assert!(h.registry.has_category(FaultCategory::OverTemp));
+    }
+
+    #[test]
     fn warning_fault_does_not_block_start() {
         let _serial = cmd_channel_lock();
         let state: CriticalSectionMutex<RefCell<MotorControlState>> =

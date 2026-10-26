@@ -78,7 +78,11 @@ impl PIController {
         let p_term = self.kp * error;
 
         // Integral term (trapezoidal / Tustin integration)
-        self.integral += self.ki * (error + self.prev_error) * 0.5 * dt;
+        if self.ki == 0.0 {
+            self.integral = 0.0;
+        } else {
+            self.integral += self.ki * (error + self.prev_error) * 0.5 * dt;
+        }
         self.prev_error = error;
 
         p_term + self.integral
@@ -92,7 +96,9 @@ impl PIController {
     /// Used by FOC circular voltage clamping.
     #[inline]
     pub fn apply_anti_windup(&mut self, saturation: f32) {
-        self.integral += saturation;
+        if self.ki != 0.0 {
+            self.integral += saturation;
+        }
     }
 
     /// Reset the integral term to zero
@@ -113,15 +119,19 @@ impl PIController {
 
     /// Restart with the integral at `integral`: at zero error the output
     /// continues from there (bumpless takeover of an existing command).
+    /// Ignored when `ki == 0`: proportional-only control has no stored bias.
     pub fn preload(&mut self, integral: f32) {
-        self.integral = integral;
+        self.integral = if self.ki == 0.0 { 0.0 } else { integral };
         self.prev_error = 0.0;
     }
 
-    /// Update controller gains at runtime
+    /// Update controller gains at runtime, clearing state when I is disabled.
     pub fn set_gains(&mut self, kp: f32, ki: f32) {
         self.kp = kp;
         self.ki = ki;
+        if ki == 0.0 {
+            self.reset();
+        }
     }
 
     /// Current gains (kp, ki)
@@ -232,6 +242,27 @@ mod tests {
 
     const EPSILON: f32 = 0.001;
     const DT: f32 = 0.0001; // 10kHz control loop
+
+    #[test]
+    fn proportional_only_saturation_does_not_store_a_bias() {
+        let mut pi = ClampedPI::new(1.0, 0.0, -1.0, 1.0);
+        assert_eq!(pi.update(10.0, 0.0, DT), 1.0);
+        for _ in 0..10 {
+            assert_eq!(pi.update(10.0, 10.0, DT), 0.0);
+        }
+        assert_eq!(pi.get_integral(), 0.0);
+    }
+
+    #[test]
+    fn disabling_integral_gain_clears_preload_and_anti_windup() {
+        let mut pi = PIController::new(1.0, 1.0);
+        pi.preload(5.0);
+        pi.set_gains(1.0, 0.0);
+        pi.preload(3.0);
+        pi.apply_anti_windup(-10.0);
+        assert_eq!(pi.get_integral(), 0.0);
+        assert_eq!(pi.update(1.0, 1.0, DT), 0.0);
+    }
 
     #[test]
     fn test_pi_zero_error() {

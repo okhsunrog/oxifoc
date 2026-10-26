@@ -21,7 +21,7 @@ use crate::motor::derating::DeratingConfig;
 use crate::motor::derating::DeratingScales;
 use crate::motor::dissipation::RegenBudget;
 use crate::motor::dissipation::WindingModel;
-use crate::motor::dissipation::dissipate;
+use crate::motor::dissipation::dissipate_with_id;
 #[cfg(feature = "storage")]
 use crate::storage::CurrentLimitsConfig;
 
@@ -451,7 +451,7 @@ where
             );
         };
         let lim = limits.max_brake_a * brake;
-        let iq = clamp_f32(iq_target, -lim, lim);
+        let (id_target, iq) = limits.clamp_targets(id_target, clamp_f32(iq_target, -lim, lim));
         let budget = RegenBudget {
             frac: self.derating.regen,
             max_w: if limits.bus_regen_max_a >= 0.0 {
@@ -464,8 +464,17 @@ where
         // thermal brake derate: a hot motor or board burns less (and so
         // brakes less on a full pack).
         let id_max = sqrtf(limits.max_dissipation_w * brake / (1.5 * model.r_ohm));
-        match dissipate(iq, omega, &model, &budget, id_max, limits.max_current_a) {
-            // A caller's own larger id burns at least as much.
+        match dissipate_with_id(
+            id_target,
+            iq,
+            omega,
+            &model,
+            &budget,
+            id_max,
+            limits.max_current_a,
+        ) {
+            // The solve includes the caller's existing |id|. Preserve its
+            // sign unless additional negative d current is required.
             Some((id, iq)) if id * id > id_target * id_target => (id, iq),
             Some((_, iq)) => (id_target, iq),
             // Plugging: the brake draws from the supply, nothing to shape.
@@ -483,6 +492,7 @@ where
         (d.resistance_ohm > 0.0 && d.flux_linkage_wb > 0.0).then_some(WindingModel {
             r_ohm: d.resistance_ohm,
             flux_wb: d.flux_linkage_wb,
+            saliency_h: (d.lq_h - d.ld_h).abs(),
         })
     }
 
