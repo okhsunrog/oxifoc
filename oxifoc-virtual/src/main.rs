@@ -148,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
         loaded_config.motor_params = Some(config_from_motor_params(motor_params, args.max_current));
     }
     critical_section::with(|cs| {
-        *RUNTIME_CONFIG.borrow(cs).borrow_mut() = loaded_config;
+        *RUNTIME_CONFIG.borrow(cs).borrow_mut() = loaded_config.clone();
     });
     tracing::info!("Config loaded from mock flash");
 
@@ -159,6 +159,8 @@ async fn main() -> anyhow::Result<()> {
         args.vbus,
         args.load,
         motor_params,
+        sim::board(args.max_current),
+        loaded_config,
         &STATE,
         &FAULT_REGISTRY,
     ));

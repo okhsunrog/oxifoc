@@ -115,6 +115,14 @@ have drifted — anchors are function/area names.
 
 ### Host
 
+- [ ] **UDP ICMP receive errors can prevent reconnect** in pinned ergot
+  `e93b03b`: `UdpRxWorker::run` restarts its liveness sleep after each receive
+  error. Repeated `Connection refused` from the host's polling traffic keeps
+  an absent controller's interface Active. Keep the deadline anchored to the
+  last received datagram (errors and empty datagrams must not refresh it).
+  Reproducer: `cargo test -p oxifoc-virtual --test e2e
+  udp_connection_refused_must_disconnect -- --ignored --exact`.
+
 - [ ] **Rich config validation in host-lib** (the single funnel — CLI,
   GUI and benchsuite all go through it): per-field range checks with
   actionable messages BEFORE sending. The device's write gate only
@@ -127,21 +135,15 @@ have drifted — anchors are function/area names.
   the CLI JSON RMW path preserves them). Same class: GUI Velocity
   write resets the bench-tuned `accel_ff` to 0. Route both through the
   shared JSON RMW.
-- [ ] **CLI logs go to stdout, breaking the documented `--json`
-  contract** (`init_tracing` default writer; benchsuite regex-splits
-  stdout to cope). One line: `.with_writer(std::io::stderr)`.
 - [ ] **capreport.py `V-SAT` regime can never fire**: threshold
   `|vq|/vbus > 0.85` is unreachable under the firmware's circular clamp
   (0.577·vbus); saturated segments are never tagged and `--zooms`
   never triggers. Use `vmag/(0.577·vbus)`.
 - [ ] **No layout-level ICD gate**: `ICD_PROTO_VERSION` is a manual
-  constant and the handshake only warns — the known stale-host trap.
+  constant; the handshake rejects version mismatches but does not derive
+  compatibility from the actual wire layout.
   Config structs already derive `postcard_schema::Schema`; put a
   schema hash into `HardwareInfo`.
-- [ ] defmt decoding dies permanently after the first reconnect on RTT
-  transports (`defmt_started` latch; new transport's reader dropped) —
-  benchsuite device-log gates read a truncated log after a mid-run
-  reconnect.
 - [ ] capreport.py cuts segments by host wall-clock (`t_acked`) instead
   of the `seq_before`/`seq_after_ack` anchors the maneuver metadata
   provides; benchsuite anchor lookup also treats a legitimate seq of 0

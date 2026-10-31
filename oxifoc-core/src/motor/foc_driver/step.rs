@@ -30,52 +30,12 @@ where
         if self.current_offset.is_active() {
             return Ok(self.step_current_offset());
         }
-        self.note_startup_handoff(now_ticks);
-        self.note_engage_edge(now_ticks);
+        self.watchdog
+            .note_cycle(now_ticks, self.mode, self.phase.is_starting());
         self.position.update(self.phase.get().angle);
         let mut out = self.step_inner(now_ticks)?;
         self.stamp_step_telemetry(&mut out);
         Ok(out)
-    }
-
-    /// Startup → closed-loop transition: refresh the deadman stamp. The
-    /// staleness accumulated under the relaxed startup bound
-    /// ([`crate::motor::foc_driver::STARTUP_STALENESS_TIMEOUT_US`]) must not be judged retroactively
-    /// by the tight drive bound the moment the sequencer hands off — bench
-    /// 2026-07-06: 156 ms of engage-era staleness tripped CommTimeout 28 ms
-    /// AFTER a clean handoff. The tight contract starts counting from the
-    /// handoff.
-    #[inline(always)]
-    #[cfg_attr(feature = "isr-speed", optimize(speed))]
-    fn note_startup_handoff(&mut self, now_ticks: u64) {
-        let starting = self.phase.is_starting();
-        if self.was_starting && !starting {
-            self.last_cmd_tick = Some(now_ticks);
-            // ...and RE-OPEN the engage grace window: the first ~second of
-            // closed loop is exactly when the ISR runs hottest (drive + full
-            // estimator + handoff currents; over-budget bursts starve the
-            // command pump for hundreds of ms — bench 2026-07-07: a 410 ms
-            // affirm hole right after handoff vs the 400 ms bench drive
-            // bound). The stamp refresh alone switches to the tight bound
-            // at the worst possible moment.
-            self.engaged_tick = Some(now_ticks);
-        }
-        self.was_starting = starting;
-    }
-
-    /// Engage edge (any path — cold start OR flying restart): open the
-    /// deadman's engage grace window (see `engaged_tick`).
-    #[inline(always)]
-    #[cfg_attr(feature = "isr-speed", optimize(speed))]
-    fn note_engage_edge(&mut self, now_ticks: u64) {
-        let active = !matches!(
-            self.mode,
-            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
-        );
-        if active && !self.was_active {
-            self.engaged_tick = Some(now_ticks);
-        }
-        self.was_active = active;
     }
 
     /// Stamp the active angle source's velocity into the telemetry — one
@@ -147,7 +107,7 @@ where
     #[inline(always)]
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn step_deadshort(&mut self, dt: f32, now_ticks: u64) -> Option<Result<FocOutput, StepError>> {
-        let wants_short = self.phase.wants_short();
+        let wants_short = self.phase.startup_status().wants_short();
         if self.was_short && !wants_short {
             // Probe short → commutation: the PI state predates the short
             // (amps of drive current that have since decayed into the

@@ -12,7 +12,7 @@ use oxifoc_core::foc::clamp_f32;
 use oxifoc_core::foc::controller::{FocController, FocOutput};
 use oxifoc_core::foc::hall_sensor::HallSensor;
 use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
-use oxifoc_core::foc::pwm::{PhasePwm, PhaseState, SvpwmModulator};
+use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::CurrentSensor;
 use oxifoc_core::foc::transforms::{clarke, park};
 use oxifoc_core::foc::trig::LibmSinCos;
@@ -25,36 +25,7 @@ pub const FOC_HZ: u32 = 20_000;
 pub const DT: f32 = 1.0 / FOC_HZ as f32;
 const TICKS: u64 = 1_000_000 / FOC_HZ as u64;
 
-/// PWM stage with the boards' channel gating: `disable()` or an all-Float
-/// topology turns the bridge off (the rig then coasts the plant — high-Z,
-/// not the shorted windings a zero voltage would model), and only
-/// `enable()` or a driven topology turns it back on.
-pub struct Pwm {
-    pub duties: [u16; 3],
-    pub enabled: bool,
-}
-
-impl PhasePwm for Pwm {
-    fn max_duty(&self) -> u16 {
-        1000
-    }
-    fn set_duties(&mut self, duties: [u16; 3]) {
-        self.duties = duties;
-    }
-    fn disable(&mut self) {
-        self.enabled = false;
-    }
-    fn enable(&mut self) {
-        self.enabled = true;
-    }
-    fn set_phase_states(&mut self, states: [PhaseState; 3]) {
-        self.enabled = !states.iter().all(|s| matches!(s, PhaseState::Float));
-        self.duties = states.map(|s| match s {
-            PhaseState::Pwm(d) => d,
-            PhaseState::Low | PhaseState::Float => 0,
-        });
-    }
-}
+pub use oxifoc_core::virtual_motor::io::VirtualPwm as Pwm;
 
 pub struct Currents(pub (f32, f32, f32));
 

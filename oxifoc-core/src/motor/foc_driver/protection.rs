@@ -257,6 +257,142 @@ impl CurrentLimits {
     }
 }
 
+/// Slow-sensor fault detection and derating, independent of PWM and modes.
+#[derive(Default)]
+pub(super) struct ProtectionMonitor {
+    config: DeratingConfig,
+    scales: DeratingScales,
+    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
+    protection_tick: u16,
+    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
+    ov_integral_vs: f32,
+    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
+    uv_integral_vs: f32,
+}
+
+#[cfg(feature = "runtime")]
+pub(super) struct ProtectionSample {
+    pub dt: f32,
+    pub vbus_v: f32,
+    pub velocity: f32,
+    pub fet_temp_c_x10: Option<i16>,
+    pub motor_temp_c_x10: Option<i16>,
+}
+
+impl ProtectionMonitor {
+    pub(super) fn configure(&mut self, config: DeratingConfig) {
+        self.config = config;
+    }
+    pub(super) fn config(&self) -> &DeratingConfig {
+        &self.config
+    }
+    pub(super) fn scales(&self) -> DeratingScales {
+        self.scales
+    }
+    pub(super) fn set_scales(&mut self, scales: DeratingScales) {
+        self.scales = scales;
+    }
+
+    /// Integrate voltage excursions each cycle, check temperature and update
+    /// derating every 256 cycles. Fault registry hysteresis stays here too.
+    #[cfg(feature = "runtime")]
+    pub(super) fn update<F: PlatformFault>(
+        &mut self,
+        registry: &FaultRegistry<F>,
+        board: &BoardConfig,
+        sample: ProtectionSample,
+    ) {
+        // --- Voltage excursion integrals (every cycle) ---
+        // Leaky-bucket trip: integrate the excursion, fire past `trip_vs`,
+        // bleed it off in-range with τ≈5 ms. The integral is capped at a few
+        // × `trip_vs` so a long excursion can't bank unbounded "credit" and
+        // make a later marginal spike trip instantly; the cap sits above the
+        // trip point, so first-trip latency is unchanged.
+        //
+        // A non-finite `vbus_v` leaves both comparisons false → neither fault
+        // trips and the integrals just decay. Acceptable here: vbus is a
+        // linear ADC divider with no division, so NaN is not physically
+        // reachable — mirrors the host-boundary "reject NaN" philosophy (the
+        // ISR trusts its own sense path).
+        let max_v = board.max_vbus_mv as f32 / 1000.0;
+        let min_v = board.min_vbus_mv as f32 / 1000.0;
+        let trip_vs = 5e-5 * max_v;
+        let integral_ceiling = trip_vs * 4.0;
+        let decay = 1.0 - (sample.dt / 0.005).min(1.0);
+        if sample.vbus_v > max_v {
+            self.ov_integral_vs =
+                (self.ov_integral_vs + (sample.vbus_v - max_v) * sample.dt).min(integral_ceiling);
+            if self.ov_integral_vs > trip_vs
+                && !registry.has_category(FaultCategory::OverVoltage)
+                && let Some(f) = F::from_category(FaultCategory::OverVoltage)
+            {
+                registry.set(f);
+                #[cfg(feature = "defmt")]
+                defmt::error!("OverVoltage FAULT: vbus = {} V (integrated)", sample.vbus_v);
+            }
+        } else {
+            self.ov_integral_vs *= decay;
+        }
+        if sample.vbus_v < min_v {
+            self.uv_integral_vs =
+                (self.uv_integral_vs + (min_v - sample.vbus_v) * sample.dt).min(integral_ceiling);
+            if self.uv_integral_vs > trip_vs
+                && !registry.has_category(FaultCategory::UnderVoltage)
+                && let Some(f) = F::from_category(FaultCategory::UnderVoltage)
+            {
+                registry.set(f);
+                #[cfg(feature = "defmt")]
+                defmt::error!(
+                    "UnderVoltage FAULT: vbus = {} V (integrated)",
+                    sample.vbus_v
+                );
+            }
+        } else {
+            self.uv_integral_vs *= decay;
+            if sample.vbus_v * 1000.0 > (board.min_vbus_mv + VOLTAGE_HYSTERESIS_MV) as f32
+                && registry.has_category(FaultCategory::UnderVoltage)
+            {
+                registry.clear(FaultCategory::UnderVoltage);
+            }
+        }
+
+        // --- Temperatures (board thresholds; <= 0 = sensor not wired) ---
+        let fet_c = sample.fet_temp_c_x10.map(|t| f32::from(t) / 10.0);
+        let motor_c = sample.motor_temp_c_x10.map(|t| f32::from(t) / 10.0);
+        let fet_over =
+            fet_c.is_some_and(|t| board.max_fet_temp_c > 0.0 && t > board.max_fet_temp_c);
+        let motor_over =
+            motor_c.is_some_and(|t| board.max_motor_temp_c > 0.0 && t > board.max_motor_temp_c);
+        if (fet_over || motor_over)
+            && !registry.has_category(FaultCategory::OverTemp)
+            && let Some(f) = F::from_category(FaultCategory::OverTemp)
+        {
+            registry.set(f);
+            #[cfg(feature = "defmt")]
+            defmt::error!(
+                "OverTemp FAULT (fet_over={}, motor_over={})",
+                fet_over,
+                motor_over
+            );
+        }
+
+        // --- Graduated derating (decimated) ---
+        self.protection_tick = self.protection_tick.wrapping_add(1);
+        if self.protection_tick.is_multiple_of(256) {
+            let omega = sample.velocity;
+            self.scales = self.config.compute(fet_c, motor_c, sample.vbus_v, omega);
+            let worst = self.scales.worst();
+            if worst < 0.8 {
+                if let Some(f) = F::from_category(FaultCategory::Derating) {
+                    registry.set(f);
+                }
+            } else if worst > 0.95 && registry.has_category(FaultCategory::Derating) {
+                registry.clear(FaultCategory::Derating);
+            }
+        }
+    }
+}
+
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
     P: PhasePwm,
@@ -266,22 +402,22 @@ where
 {
     /// Apply derating configuration (boot / live config write).
     pub fn set_derating(&mut self, cfg: DeratingConfig) {
-        self.derating_cfg = cfg;
+        self.protection.configure(cfg);
     }
 
     /// Current derating configuration.
     pub fn derating_cfg(&self) -> &DeratingConfig {
-        &self.derating_cfg
+        self.protection.config()
     }
 
     /// Live derating scales (1.0/1.0 = no derate).
     pub fn derating(&self) -> DeratingScales {
-        self.derating
+        self.protection.scales()
     }
 
     /// Store freshly computed derating scales (protection update).
     pub fn set_derating_scales(&mut self, scales: DeratingScales) {
-        self.derating = scales;
+        self.protection.set_scales(scales);
     }
 
     /// Shared protection update, called by `run_foc_cycle` every cycle
@@ -314,91 +450,17 @@ where
         fet_temp_c_x10: Option<i16>,
         motor_temp_c_x10: Option<i16>,
     ) {
-        // --- Voltage excursion integrals (every cycle) ---
-        // Leaky-bucket trip: integrate the excursion, fire past `trip_vs`,
-        // bleed it off in-range with τ≈5 ms. The integral is capped at a few
-        // × `trip_vs` so a long excursion can't bank unbounded "credit" and
-        // make a later marginal spike trip instantly; the cap sits above the
-        // trip point, so first-trip latency is unchanged.
-        //
-        // A non-finite `vbus_v` leaves both comparisons false → neither fault
-        // trips and the integrals just decay. Acceptable here: vbus is a
-        // linear ADC divider with no division, so NaN is not physically
-        // reachable — mirrors the host-boundary "reject NaN" philosophy (the
-        // ISR trusts its own sense path).
-        let max_v = board.max_vbus_mv as f32 / 1000.0;
-        let min_v = board.min_vbus_mv as f32 / 1000.0;
-        let trip_vs = 5e-5 * max_v;
-        let integral_ceiling = trip_vs * 4.0;
-        let decay = 1.0 - (self.dt / 0.005).min(1.0);
-        if vbus_v > max_v {
-            self.ov_integral_vs =
-                (self.ov_integral_vs + (vbus_v - max_v) * self.dt).min(integral_ceiling);
-            if self.ov_integral_vs > trip_vs
-                && !registry.has_category(FaultCategory::OverVoltage)
-                && let Some(f) = F::from_category(FaultCategory::OverVoltage)
-            {
-                registry.set(f);
-                #[cfg(feature = "defmt")]
-                defmt::error!("OverVoltage FAULT: vbus = {} V (integrated)", vbus_v);
-            }
-        } else {
-            self.ov_integral_vs *= decay;
-        }
-        if vbus_v < min_v {
-            self.uv_integral_vs =
-                (self.uv_integral_vs + (min_v - vbus_v) * self.dt).min(integral_ceiling);
-            if self.uv_integral_vs > trip_vs
-                && !registry.has_category(FaultCategory::UnderVoltage)
-                && let Some(f) = F::from_category(FaultCategory::UnderVoltage)
-            {
-                registry.set(f);
-                #[cfg(feature = "defmt")]
-                defmt::error!("UnderVoltage FAULT: vbus = {} V (integrated)", vbus_v);
-            }
-        } else {
-            self.uv_integral_vs *= decay;
-            if vbus_v * 1000.0 > (board.min_vbus_mv + VOLTAGE_HYSTERESIS_MV) as f32
-                && registry.has_category(FaultCategory::UnderVoltage)
-            {
-                registry.clear(FaultCategory::UnderVoltage);
-            }
-        }
-
-        // --- Temperatures (board thresholds; <= 0 = sensor not wired) ---
-        let fet_c = fet_temp_c_x10.map(|t| f32::from(t) / 10.0);
-        let motor_c = motor_temp_c_x10.map(|t| f32::from(t) / 10.0);
-        let fet_over =
-            fet_c.is_some_and(|t| board.max_fet_temp_c > 0.0 && t > board.max_fet_temp_c);
-        let motor_over =
-            motor_c.is_some_and(|t| board.max_motor_temp_c > 0.0 && t > board.max_motor_temp_c);
-        if (fet_over || motor_over)
-            && !registry.has_category(FaultCategory::OverTemp)
-            && let Some(f) = F::from_category(FaultCategory::OverTemp)
-        {
-            registry.set(f);
-            #[cfg(feature = "defmt")]
-            defmt::error!(
-                "OverTemp FAULT (fet_over={}, motor_over={})",
-                fet_over,
-                motor_over
-            );
-        }
-
-        // --- Graduated derating (decimated) ---
-        self.protection_tick = self.protection_tick.wrapping_add(1);
-        if self.protection_tick.is_multiple_of(256) {
-            let omega = self.phase.get().velocity;
-            self.derating = self.derating_cfg.compute(fet_c, motor_c, vbus_v, omega);
-            let worst = self.derating.worst();
-            if worst < 0.8 {
-                if let Some(f) = F::from_category(FaultCategory::Derating) {
-                    registry.set(f);
-                }
-            } else if worst > 0.95 && registry.has_category(FaultCategory::Derating) {
-                registry.clear(FaultCategory::Derating);
-            }
-        }
+        self.protection.update(
+            registry,
+            board,
+            ProtectionSample {
+                dt: self.dt,
+                vbus_v,
+                velocity: self.phase.get().velocity,
+                fet_temp_c_x10,
+                motor_temp_c_x10,
+            },
+        );
     }
 
     /// Low-pass the q-axis modulation (`mod_q = 1.5·vq/vbus`, the duty
@@ -435,16 +497,19 @@ where
             return (id_target, self.clamp_iq_for_bus(iq_target));
         }
         if iq_target * omega >= 0.0 {
-            let lim =
-                limits.max_current_a * self.derating.drive.min(self.derating_cfg.speed_cut(omega));
+            let lim = limits.max_current_a
+                * self
+                    .derating()
+                    .drive
+                    .min(self.derating_cfg().speed_cut(omega));
             return (
                 id_target,
                 self.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
             );
         }
-        let brake = self.derating.brake;
+        let brake = self.derating().brake;
         let Some(model) = self.dissipation_model() else {
-            let lim = limits.max_brake_a * brake.min(self.derating.regen);
+            let lim = limits.max_brake_a * brake.min(self.derating().regen);
             return (
                 id_target,
                 self.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
@@ -453,7 +518,7 @@ where
         let lim = limits.max_brake_a * brake;
         let (id_target, iq) = limits.clamp_targets(id_target, clamp_f32(iq_target, -lim, lim));
         let budget = RegenBudget {
-            frac: self.derating.regen,
+            frac: self.derating().regen,
             max_w: if limits.bus_regen_max_a >= 0.0 {
                 self.vbus * limits.bus_regen_max_a
             } else {

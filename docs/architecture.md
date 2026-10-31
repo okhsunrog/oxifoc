@@ -63,7 +63,17 @@ The command path from the host into the ISR-owned driver is described in
 
 ### 1. FocDriver
 
-The main motor driver that orchestrates FOC control.
+The main motor driver orchestrates FOC control. Its implementation lives in
+`motor/foc_driver/`; stateful subsystems own their rules behind methods:
+
+- `ActuationModel` pairs samples with applied voltage and computes vector advance.
+- `CommandWatchdog` owns command timestamps, engage grace and startup handoff.
+- `ProtectionMonitor` integrates voltage excursions, checks temperatures and
+  updates derating. It receives measurements rather than the whole driver.
+- `FailsafeController`, `VelocityLoop` and `CurrentOffsetCalibrator` own their
+  respective sequences; the driver retains bridge ownership and cycle ordering.
+
+The following declaration shows the hardware/control boundary, not every field.
 
 ```rust
 pub struct FocDriver<P, C, Phase, S: SinCos = LibmSinCos>
@@ -109,7 +119,12 @@ where
 
 ### 2. PhaseProvider Trait
 
-Abstraction for electrical phase angle provision.
+Commutation interface for electrical phase estimates, injection and startup
+bridge requests. `startup_status()` returns `Inactive`, `ShortProbe`, or
+`Driving { current_scale }`. `PhaseManager` derives this from its sequencer;
+the default adapts the older startup accessors for existing providers.
+Angle trust and diagnostics are separate from startup ownership. Status is
+read where needed in the cycle, not cached across `update()`.
 
 ```rust
 /// Output from phase provider
@@ -122,8 +137,8 @@ pub struct PhaseOutput {
 /// Input for phase provider update
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PhaseInput {
-    pub v_alpha: f32,    // Commanded α voltage (for observer)
-    pub v_beta: f32,     // Commanded β voltage (for observer)
+    pub v_alpha: f32,    // Applied α voltage over the sampled interval
+    pub v_beta: f32,     // Applied β voltage over the sampled interval
     pub i_alpha: f32,    // Measured α current
     pub i_beta: f32,     // Measured β current
     pub dt: f32,         // Time step (seconds)
@@ -154,8 +169,11 @@ pub trait PhaseProvider {
 
 **Design rationale:**
 - `get()` is called first to obtain the angle for Park/Clarke transforms
-- `update()` is called last with the commanded voltages (needed by observers)
-- This creates a one-sample delay for observers, which is standard practice
+- `update()` receives the voltage that acted during the interval ending at
+  this cycle's current sample. Command history and actuation delay reconstruct
+  it; phase sensing can provide a concurrent measured voltage instead.
+- `update()` predicts the next sampling instant. The next `get()` supplies
+  that prediction for the next cycle's Park transform.
 - `injection()` must be read BETWEEN `get()` and `update()`: the HFI
   estimator demodulates the currents fed to the next `update()` against this
   exact carrier sample, and `update()` then advances the carrier.
@@ -864,83 +882,26 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
 `step()` takes only `now_ticks` — the loop period `dt` is stored in the
 driver (set at construction from the PWM config).
 
-```rust
-impl<P: PhasePwm, C: CurrentSensor, Phase: PhaseProvider, S: SinCos> FocDriver<P, C, Phase, S> {
-    pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, &'static str> {
-        let dt = self.dt;
-        match self.mode {
-            ControlMode::Stopped => {
-                self.pwm.disable();
-                self.phase.update(&PhaseInput { dt, ..Default::default() }, now_ticks);
-                Ok(FocOutput::default())
-            }
-            ControlMode::CurrentControl { iq_target, id_target } => {
-                self.step_current_control(iq_target, id_target, dt, now_ticks)
-            }
-            ControlMode::OpenLoop { angle_rad, current, velocity_rad_s, .. } => {
-                self.step_open_loop(angle_rad, current, velocity_rad_s, dt, now_ticks)
-            }
-            ControlMode::DirectVoltage { vd, vq, angle_rad } => {
-                self.step_direct_voltage(vd, vq, angle_rad, dt, now_ticks)
-            }
-            ControlMode::Coast => { /* all phases Float, reset PI, update phase */ }
-            ControlMode::SixStep { duty } => self.step_six_step(duty, dt, now_ticks),
-            ControlMode::VelocityControl { .. } => Err("Velocity control not implemented"),
-            ControlMode::PositionControl { .. } => Err("Position control not implemented"),
-        }
-    }
+`FocDriver::step()` returns `Result<FocOutput, StepError>` and runs in this order:
 
-    fn step_current_control(&mut self, iq_target: f32, id_target: f32, dt: f32, now_ticks: u64)
-        -> Result<FocOutput, &'static str>
-    {
-        // 0. Sensor must be calibrated
-        if !self.current_sensor.is_calibrated() {
-            return Err("Current sensor not calibrated");
-        }
+1. Service active current-offset calibration, which owns the bridge until
+   completion/cancellation and bypasses normal mode dispatch.
+2. Update watchdog startup/engage edges and the unwrapped position tracker.
+3. Run an active failsafe sequence; otherwise honour a startup short probe,
+   consider sensorless recovery, and dispatch the commanded mode.
+4. Stamp velocity and optional observer diagnostics into telemetry.
 
-        // 1. Layer 1: clamp current targets (circular, d-axis priority)
-        let (id_target, iq_target) = self.current_limits.clamp_targets(id_target, iq_target);
+Velocity control produces an iq request through `VelocityLoop`; position
+control produces a velocity target, then uses the same velocity/current loops.
+The current path applies startup scaling, angle trust, derating and current/bus
+budgets, runs PI with optional HFI injection, checks measured overcurrent, and
+applies PWM. Estimator feedback uses the causally matching voltage before the
+new command enters `ActuationModel` history. Source: `motor/foc_driver/step.rs`,
+`modes.rs`, `driver.rs`, and `protection.rs`.
 
-        // 2. Get phase estimate (from previous update)
-        let phase_out = self.phase.get();
-        let angle_rad = phase_out.angle;
-
-        // 3. HFI carrier for this cycle (zero for non-HFI sources). Must be
-        //    read between get() and update(): the estimator demodulates the
-        //    currents fed to update() against this exact carrier sample.
-        let (vd_inject, vq_inject) = self.phase.injection();
-
-        // 4. Read currents and run FOC controller (PI outputs + injection)
-        let currents = self.current_sensor.read_currents();
-        let max_duty = self.pwm.max_duty();
-        let out = self.controller.step_with_injection(
-            currents, angle_rad, id_target, iq_target, vd_inject, vq_inject, max_duty, dt,
-        );
-
-        // 5. Layer 2: measured overcurrent → disable PWM, latch Stopped
-        if self.current_limits.is_overcurrent(out.id, out.iq) {
-            self.pwm.disable();
-            self.controller.reset();
-            self.mode = ControlMode::Stopped;
-            return Err("Overcurrent: measured current exceeds limit");
-        }
-
-        // 6. Set PWM duties
-        self.pwm.set_duties(out.duties);
-
-        // 7. Update phase provider for next iteration (feeds both estimators)
-        self.phase.update(&PhaseInput {
-            v_alpha: out.v_alpha,
-            v_beta: out.v_beta,
-            i_alpha: out.i_alpha,
-            i_beta: out.i_beta,
-            dt,
-        }, now_ticks);
-
-        Ok(out)
-    }
-}
-```
+Firmware calls this through `state::run_foc_cycle()`, which first processes
+commands, detects stale commands/link loss, updates protection, and enforces
+fault severity. Kill faults cut PWM immediately; stopping faults enter failsafe.
 
 ### Phase Selection in PhaseManager
 
@@ -1064,6 +1025,15 @@ pub fn run_foc_cycle<P, C, Ph, S, F>(
 pub fn publish_cycle_telemetry(state_mutex, adc, hall, foc, seq);
 ```
 
+### Shared host connection lifecycle
+
+`oxifoc-host-lib/src/connection.rs` owns one reconnect loop for TCP/serial/RTT
+COBS streams and UDP/USB/BLE packet transports. Adapters attach an interface
+to a persistent stack. The loop waits for Active, resolves the controller,
+verifies HardwareInfo, restores telemetry, monitors recovery and tears down
+before retrying. Protocol tasks live with the stack. RTT defmt readers live
+with one connection; network defmt subscriptions start once per stack.
+
 ### Host connection admission
 
 Transport `Active` is only a physical/routing state; it is not permission to
@@ -1079,6 +1049,24 @@ controller identity check after reconnect. RTT similarly refuses implicit
 selection when multiple probes are present. Every transport worker must drive
 the ergot interface to `Down` and wake the reconnect waiter on either RX or TX
 failure; BLE does this symmetrically for notification and write failures.
+
+### Virtual device control path
+
+`oxifoc-virtual/src/sim.rs` runs `FocDriver` and `state::run_foc_cycle()` against
+`VirtualMotor`, using `PhaseManager<HallSensor>`, quantised ADC current samples
+and the shared `virtual_motor::io::VirtualPwm` adapter. Current-limit/gain,
+phase-source, failsafe, velocity and derating commands reach the same command
+handler as firmware. Link teardown clears liveness and drive ownership.
+High-Z uses `step_coast()`; a driven zero vector models a winding short.
+Telemetry is published through the shared cycle/decimator path.
+
+This covers command/protection/control behaviour under a simulated clock;
+it does not model MCU ISR deadlines, hardware break circuitry or board-specific
+sensing. Detection still uses a separate virtual measurement harness and
+returns deterministic offset diagnostics, rather than operating on the live
+network device's motor. The GUI Rust callbacks live in `motor`, `configuration`,
+`detection`, `faults` and `logging` modules; `lib.rs` assembles them with the
+connection and rendering code.
 
 ### Protocol Endpoints
 
@@ -1318,7 +1306,7 @@ oxifoc-core/src/
 │   ├── trig.rs              # SinCos trait (LibmSinCos; platforms add CORDIC)
 │   ├── phase/
 │   │   ├── provider.rs      # PhaseProvider trait (get/update/injection/request_source)
-│   │   ├── manager.rs       # PhaseManager (dual estimator slots, crossovers)
+│   │   ├── manager/         # PhaseManager (dual estimator slots, crossovers)
 │   │   ├── source.rs        # PhaseSource enum
 │   │   └── observer.rs      # Observer enum, BackEmfObserver, HfiObserver
 │   └── detection/
@@ -1332,7 +1320,12 @@ oxifoc-core/src/
 │       ├── embassy_hw.rs    # Shared embassy DetectionHardware impl
 │       └── virtual_harness.rs
 └── motor/
-    ├── foc_driver.rs        # FocDriver, CurrentLimits (ControlMode re-export)
+    ├── foc_driver/         # FocDriver orchestration and state owners
+    │   ├── mod.rs          # Driver fields and shared constants
+    │   ├── actuation.rs    # Applied voltage and vector timing
+    │   ├── watchdog.rs     # Command freshness and grace windows
+    │   ├── protection.rs   # ProtectionMonitor, current/bus limits
+    │   └── driver.rs / step.rs / modes.rs / failsafe.rs / calibration.rs
     └── six_step.rs          # Six-step commutation tables
 
 oxifoc-g474/src/             # STM32G474 platform (Nucleo + IHM08M1)
@@ -1364,11 +1357,11 @@ Other crates in the repo:
 
 | Component | Responsibility | Location |
 |-----------|---------------|----------|
-| **FocDriver** | Control loop orchestration | `motor/foc_driver.rs` |
-| **CurrentLimits** | Target clamp + overcurrent threshold | `motor/foc_driver.rs` |
+| **FocDriver** | Control loop orchestration | `motor/foc_driver/mod.rs` |
+| **CurrentLimits** | Target clamp + overcurrent threshold | `motor/foc_driver/protection.rs` |
 | **FocController** | Current loop math | `foc/controller.rs` |
 | **PhaseProvider** | Phase angle abstraction | `foc/phase/provider.rs` |
-| **PhaseManager** | Sensor/estimator management | `foc/phase/manager.rs` |
+| **PhaseManager** | Sensor/estimator management | `foc/phase/manager/mod.rs` |
 | **PhaseSource** | Source selection enum (wire type) | `foc/phase/source.rs` |
 | **Observer / BackEmfObserver** | Back-EMF (fast) estimator slot | `foc/phase/observer.rs` |
 | **HfiObserver** | HFI (low-speed) estimator slot | `foc/phase/observer.rs` |

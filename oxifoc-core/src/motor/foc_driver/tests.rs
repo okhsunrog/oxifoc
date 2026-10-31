@@ -22,6 +22,7 @@ use crate::foc::transforms::{clarke, park};
 use crate::foc::velocity::VelocityLoopConfig;
 #[cfg(feature = "virtual-motor")]
 use crate::foc::wrap_angle;
+use crate::motor::derating::{DeratingConfig, DeratingScales};
 #[cfg(feature = "virtual-motor")]
 use crate::motor::failsafe::{FailsafePolicy, FailsafeTerminal};
 #[cfg(feature = "runtime")]

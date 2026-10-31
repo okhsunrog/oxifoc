@@ -161,6 +161,7 @@ pub async fn run(
         // registration used to terminate the whole virtual device.
         if let Some((token, ident)) = prev_conn.take() {
             token.cancel();
+            critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_link_inactive());
             let _ = stack.manage_profile(|router| router.deregister_interface(ident));
             tokio::task::yield_now().await;
         }
@@ -218,10 +219,21 @@ pub async fn run(
                     );
                     if !active {
                         warn!("Host disconnected, stopping connection tasks");
+                        // A replaced connection must not clear the new host's
+                        // handshake. Test cancellation while holding the same
+                        // state lock used by info_server to publish liveness.
+                        critical_section::with(|cs| {
+                            if !token.is_cancelled() {
+                                state_mutex.borrow(cs).borrow_mut().set_link_inactive();
+                            }
+                        });
                         token.cancel();
                         break;
                     }
-                    let _ = state_notify.wait().await;
+                    tokio::select! {
+                        _ = token.cancelled() => break,
+                        _ = state_notify.wait() => {}
+                    }
                 }
             }
         });

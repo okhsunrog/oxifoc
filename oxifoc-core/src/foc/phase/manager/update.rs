@@ -11,6 +11,7 @@ use crate::foc::phase::observer::ObserverInput;
 use crate::foc::phase::provider::PhaseInput;
 use crate::foc::phase::provider::PhaseOutput;
 use crate::foc::phase::provider::PhaseProvider;
+use crate::foc::phase::provider::StartupStatus;
 use crate::foc::phase::source::PhaseSource;
 use crate::foc::phase::startup::ConfirmResult;
 use crate::foc::phase::startup::DeadshortResult;
@@ -419,15 +420,27 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     }
 
     fn wants_short(&self) -> bool {
-        self.startup.wants_short()
+        self.startup_status().wants_short()
     }
 
     fn startup_current_scale(&self) -> f32 {
-        self.startup.current_scale()
+        self.startup_status().current_scale()
     }
 
     fn is_starting(&self) -> bool {
-        self.startup.is_active()
+        self.startup_status().is_active()
+    }
+
+    fn startup_status(&self) -> StartupStatus {
+        if self.startup.wants_short() {
+            StartupStatus::ShortProbe
+        } else if self.startup.is_active() {
+            StartupStatus::Driving {
+                current_scale: self.startup.current_scale(),
+            }
+        } else {
+            StartupStatus::Inactive
+        }
     }
 
     /// Trustworthy down to standstill when a hardware sensor backs the active

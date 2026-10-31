@@ -222,6 +222,7 @@ pub async fn run(
             let _ = state_notify.wait().await;
         }
         warn!("Host disconnected, stopping session tasks");
+        critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_link_inactive());
         conn_token.cancel();
 
         info!("UDP session ended, waiting for workers to exit...");

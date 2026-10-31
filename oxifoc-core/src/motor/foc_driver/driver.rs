@@ -1,10 +1,8 @@
 //! Construction, mode entry, and the accessors platforms call every cycle.
 
 use super::{
-    ControlMode, CurrentLimits, DEFAULT_ACTUATION_DELAY_CYCLES, FocDriver,
-    MAX_ACTUATION_DELAY_CYCLES, V_HIST,
+    ActuationModel, CommandWatchdog, ControlMode, CurrentLimits, FocDriver, ProtectionMonitor,
 };
-use crate::foc::clamp_f32;
 use crate::foc::controller::FocController;
 use crate::foc::current_offset::CurrentOffsetCalibrator;
 use crate::foc::phase::PhaseInput;
@@ -21,8 +19,6 @@ use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
 use crate::foc::velocity::VelocityLoop;
 use crate::foc::velocity::VelocityLoopConfig;
-use crate::motor::derating::DeratingConfig;
-use crate::motor::derating::DeratingScales;
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::failsafe::FailsafeController;
 
@@ -64,15 +60,11 @@ where
             dt,
             current_limits: CurrentLimits::default(),
             open_loop_angle: 0.0,
-            v_hist: [(0.0, 0.0); V_HIST],
-            actuation_delay_cycles: DEFAULT_ACTUATION_DELAY_CYCLES,
-            last_cmd_tick: None,
+            actuation: ActuationModel::default(),
+            watchdog: CommandWatchdog::default(),
             pwm_off: false,
-            was_starting: false,
             was_short: false,
             untrusted_time: 0.0,
-            was_active: false,
-            engaged_tick: None,
             stopped_housekeeping: 0,
             failsafe_cfg: FailsafeConfig::default(),
             failsafe_ctrl: FailsafeController::new(),
@@ -85,11 +77,7 @@ where
             last_iq_meas: 0.0,
             park_iq: None,
             bus_mod_q_filt: 0.0,
-            derating_cfg: DeratingConfig::default(),
-            derating: DeratingScales::default(),
-            protection_tick: 0,
-            ov_integral_vs: 0.0,
-            uv_integral_vs: 0.0,
+            protection: ProtectionMonitor::default(),
             phase_voltage: None,
             vphase_raw: None,
             current_offset: CurrentOffsetCalibrator::new(),
@@ -134,32 +122,17 @@ where
     /// hardware delay satisfied both, and the back-EMF observer's angle
     /// ran up to a period early.
     pub fn set_actuation_delay(&mut self, cycles: f32) {
-        if cycles.is_finite() {
-            self.actuation_delay_cycles = clamp_f32(cycles, 0.0, MAX_ACTUATION_DELAY_CYCLES);
-        }
+        self.actuation.set_delay(cycles);
     }
 
-    /// Output-vector advance (rad) for the configured actuation delay.
+    /// Output-vector advance for the configured actuation delay.
     pub(super) fn actuation_advance(&self, velocity: f32, dt: f32) -> f32 {
-        velocity * dt * (self.actuation_delay_cycles + 0.5)
+        self.actuation.angle_advance(velocity, dt)
     }
 
-    /// The αβ voltage that acted over the sampling interval ending at this
-    /// cycle's current sample, reconstructed from the command history.
-    ///
-    /// With delay `d = m + f`, command `k` acts on `[t_k + d·T,
-    /// t_{k+1} + d·T)`, so the interval `[t_{N−1}, t_N)` sees command
-    /// `N−2−m` for its first `f` and command `N−1−m` for the rest. At
-    /// d = 0 this is the previous cycle's command; at d = 1 the one before.
+    /// Voltage that acted over the interval ending at the current sample.
     fn applied_voltage(&self) -> (f32, f32) {
-        let d = self.actuation_delay_cycles;
-        let m = (d as usize).min(V_HIST - 2); // floor for d ≥ 0
-        let f = d - m as f32;
-        let (newer, older) = (self.v_hist[m], self.v_hist[m + 1]);
-        (
-            f * older.0 + (1.0 - f) * newer.0,
-            f * older.1 + (1.0 - f) * newer.1,
-        )
+        self.actuation.applied_voltage()
     }
 
     /// Feed the phase provider with this cycle's measurements and the
@@ -209,8 +182,7 @@ where
             },
             now_ticks,
         );
-        self.v_hist.rotate_right(1);
-        self.v_hist[0] = (v_alpha_new, v_beta_new);
+        self.actuation.record_command(v_alpha_new, v_beta_new);
     }
 
     /// Get the control loop period (dt) in seconds

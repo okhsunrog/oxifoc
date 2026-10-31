@@ -57,6 +57,6 @@ pub use observer::{
 };
 #[cfg(feature = "hfi")]
 pub use observer::{HFI_DEFAULT_AMPLITUDE_RATIO, HFI_DEFAULT_FREQ_HZ, HfiObserver};
-pub use provider::{PhaseInput, PhaseOutput, PhaseProvider};
+pub use provider::{PhaseInput, PhaseOutput, PhaseProvider, StartupStatus};
 pub use source::{PhaseSource, PhaseSourceError};
 pub use startup::{SensorlessStartup, StartupOutput, StartupPhase};

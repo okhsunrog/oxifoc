@@ -11,6 +11,9 @@
 //! - HardwareInfo handshake (request/response over the Router),
 //! - `at_least_once` Motor setpoint (the sim spins up in response),
 //! - `effectively_once` Detect (a `Keyed` request the device deduplicates).
+//! - Current-limit writes affect measured current through the firmware driver.
+//! - Link loss latches re-arm; controller reboot restores handshake, streaming
+//!   and the boot-local fault generation on the existing host backend.
 //!
 //! `start_host` runs its own tokio runtime on a background thread, so these are
 //! plain `#[test]`s that drive the runtime via its (sync) channels.
@@ -19,7 +22,7 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use oxifoc_core::storage::FailsafeConfigStored;
+use oxifoc_core::storage::{CurrentLimitsConfig, FailsafeConfigStored};
 use oxifoc_core::types::{
     ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, ConfigValue, ConfigWrite,
     ControlMode, CurrentOffsetMethod, DetectRequest, DetectResponse, FaultClear, FaultClearTarget,
@@ -71,16 +74,20 @@ fn wait_until(timeout: Duration, mut cond: impl FnMut() -> bool) -> bool {
     }
 }
 
-/// Spawn the virtual device and drive handshake + Motor + Detect over the given
-/// transport, asserting each step. Shared by the TCP and UDP tests below.
-fn run_e2e(transport: TransportType) {
-    let (transport_arg, port) = match transport {
-        TransportType::Tcp => ("tcp", free_tcp_port()),
-        TransportType::Udp => ("udp", free_udp_port()),
-        other => panic!("unsupported transport in e2e: {other:?}"),
+fn spawn_device(transport_arg: &str, port: u16) -> ChildGuard {
+    let log = || {
+        std::env::var_os("OXIFOC_E2E_LOG_DIR").map_or_else(Stdio::null, |dir| {
+            let path =
+                std::path::PathBuf::from(dir).join(format!("device-{transport_arg}-{port}.log"));
+            Stdio::from(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .unwrap(),
+            )
+        })
     };
-
-    // Spawn the virtual device as a Router on the chosen port/transport.
     let child = Command::new(env!("CARGO_BIN_EXE_oxifoc-virtual"))
         .args([
             "--transport",
@@ -93,12 +100,30 @@ fn run_e2e(transport: TransportType) {
             "7",
             "--max-current",
             "20",
+            "--load",
+            "0.2",
         ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(log())
+        .stderr(log())
         .spawn()
         .expect("spawn oxifoc-virtual");
-    let _guard = ChildGuard(child);
+    ChildGuard(child)
+}
+
+/// Spawn the virtual device and drive handshake + Motor + Detect over the given
+/// transport, asserting each step. Shared by the TCP and UDP tests below.
+fn run_e2e(transport: TransportType) {
+    if std::env::var_os("OXIFOC_E2E_LOG_DIR").is_some() {
+        oxifoc_host_lib::init_tracing();
+    }
+    let (transport_arg, port) = match transport {
+        TransportType::Tcp => ("tcp", free_tcp_port()),
+        TransportType::Udp => ("udp", free_udp_port()),
+        other => panic!("unsupported transport in e2e: {other:?}"),
+    };
+
+    // Spawn the virtual device as a Router on the chosen port/transport.
+    let mut guard = spawn_device(transport_arg, port);
 
     // Connect the host backend. `stream_defmt = false` (no device ELF for
     // virtual); the host retries the connect until the device binds.
@@ -114,7 +139,7 @@ fn run_e2e(transport: TransportType) {
         reconnect: Some(ReconnectPolicy::Limited(20)),
         ..Default::default()
     };
-    let rt = start_host(cfg);
+    let rt = start_host(cfg.clone());
 
     // 1) Handshake: the host reports connected once HardwareInfo round-trips.
     assert!(
@@ -149,6 +174,19 @@ fn run_e2e(transport: TransportType) {
     let enrich = oxifoc_host_lib::build_enrich_ctx(&rt.cmd_tx, Some(&hw))
         .expect("virtual device should provide enrichment context");
 
+    // A config ACK must have a physical effect on the common control path.
+    // The bare-controller implementation ignored this command and delivered
+    // the requested 4 A under load instead of the configured 1 A.
+    oxifoc_host_lib::ops::config::apply_write(
+        &rt.cmd_tx,
+        0,
+        ConfigWrite::CurrentLimits(CurrentLimitsConfig {
+            max_iq_a: 1.0,
+            ..Default::default()
+        }),
+    )
+    .expect("apply current limit");
+
     // 2) Motor at_least_once: command a current setpoint; the sim should spin.
     rt.cmd_tx
         .send(HostCommand::Motor(ControlMode::CurrentControl {
@@ -175,6 +213,32 @@ fn run_e2e(transport: TransportType) {
         spun,
         "[{transport_arg}] motor should spin with coherent mechanical RPM and enriched eRPM"
     );
+
+    let mut iq_sum = 0.0;
+    let mut iq_count = 0;
+    assert!(
+        wait_until(Duration::from_secs(4), || {
+            while let Ok(sample) = rt.fast_rx.try_recv() {
+                iq_sum += sample.enrich(&enrich).iq.abs();
+                iq_count += 1;
+            }
+            iq_count >= 64
+        }),
+        "[{transport_arg}] need enough samples to observe the current limit"
+    );
+    let mean_iq = iq_sum / iq_count as f32;
+    assert!(
+        (0.2..1.3).contains(&mean_iq),
+        "[{transport_arg}] configured 1 A limit must constrain measured current, got {mean_iq} A"
+    );
+
+    // Detection owns a stopped motor. Clear the host's periodic drive affirm
+    // before handing over, just as the physical-device workflow does.
+    let (tx, rx) = motor_channel();
+    rt.cmd_tx
+        .send(HostCommand::MotorAck(ControlMode::Stopped, tx))
+        .unwrap();
+    rx.blocking_recv().unwrap().expect("stop before detection");
 
     // 3) Detect effectively_once: routes via Reliable::effectively_once (Keyed
     //    request + device-side dedup) and returns a measured resistance.
@@ -416,7 +480,109 @@ fn run_e2e(transport: TransportType) {
         FaultResponse::Conflict(faults)
     );
 
+    // Lose the command/link stream while driving. The firmware runtime must
+    // stop and latch; a new host session cannot immediately resume torque.
+    let (tx, rx) = motor_channel();
+    rt.cmd_tx
+        .send(HostCommand::MotorAck(
+            ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0,
+            },
+            tx,
+        ))
+        .unwrap();
+    rx.blocking_recv().unwrap().expect("drive before link loss");
     rt.shutdown();
+    // TCP EOF is immediate; UDP also exercises the one-second liveness bound.
+    std::thread::sleep(Duration::from_millis(1500));
+    let replacement = start_host(cfg);
+    assert!(replacement.wait_for_connection(Duration::from_secs(15)));
+    let (tx, rx) = motor_channel();
+    replacement
+        .cmd_tx
+        .send(HostCommand::MotorAck(
+            ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0,
+            },
+            tx,
+        ))
+        .unwrap();
+    assert!(
+        rx.blocking_recv().unwrap().is_err(),
+        "[{transport_arg}] disconnect must require neutral acknowledgement"
+    );
+    let (tx, rx) = motor_channel();
+    replacement
+        .cmd_tx
+        .send(HostCommand::MotorAck(ControlMode::Stopped, tx))
+        .unwrap();
+    rx.blocking_recv()
+        .unwrap()
+        .expect("neutral must re-arm after disconnect");
+
+    // Keep this backend alive across a controller reboot, exercising the
+    // shared reconnect loop, UUID pinning, new fault generation and streaming.
+    while replacement.device_info_rx.try_recv().is_ok() {}
+    while replacement.fault_rx.try_recv().is_ok() {}
+    // Keep a bound, silent UDP port during the outage. This exercises the
+    // liveness timeout rather than ICMP errors, whose retry-loop timeout
+    // reset in the pinned ergot is tracked separately in docs/TODO.md.
+    let silent_udp = if transport_arg == "udp" {
+        let socket =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        socket.set_reuse_address(true).unwrap();
+        socket
+            .bind(
+                &format!("127.0.0.1:{port}")
+                    .parse::<std::net::SocketAddr>()
+                    .unwrap()
+                    .into(),
+            )
+            .unwrap();
+        Some(socket)
+    } else {
+        None
+    };
+    guard.0.kill().unwrap();
+    guard.0.wait().unwrap();
+    assert!(
+        wait_until(Duration::from_secs(15), || !replacement
+            .connected
+            .load(std::sync::atomic::Ordering::Relaxed)),
+        "[{transport_arg}] backend must observe device loss"
+    );
+    while replacement.fast_rx.try_recv().is_ok() {}
+    drop(silent_udp);
+    guard = spawn_device(transport_arg, port);
+    let _reconnected_info = replacement
+        .device_info_rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("reconnect must perform a fresh HardwareInfo handshake");
+    assert!(replacement.wait_for_connection(Duration::from_secs(3)));
+    replacement
+        .fast_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("reconnect must restore telemetry streaming");
+    let (tx, rx) = fault_channel();
+    replacement
+        .cmd_tx
+        .send(HostCommand::Fault(FaultRequest::Query, tx))
+        .unwrap();
+    let FaultResponse::Snapshot(boot_faults) = rx.blocking_recv().unwrap().unwrap() else {
+        panic!("fault query must return a snapshot");
+    };
+    let mut observed = Vec::new();
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            observed.extend(replacement.fault_rx.try_iter());
+            observed.contains(&boot_faults)
+        }),
+        "[{transport_arg}] reboot must deliver the fresh boot-local faults {boot_faults:?}; observed {observed:?}"
+    );
+    replacement.shutdown();
+    drop(guard);
 }
 
 #[test]
@@ -427,6 +593,30 @@ fn e2e_motor_and_detect_over_tcp() {
 #[test]
 fn e2e_motor_and_detect_over_udp() {
     run_e2e(TransportType::Udp);
+}
+
+/// Pinned ergot restarts its receive timeout on every ICMP receive error,
+/// so repeated host requests keep the dead interface Active indefinitely.
+#[test]
+#[ignore = "ergot UDP receive errors reset the liveness deadline; see docs/TODO.md"]
+fn udp_connection_refused_must_disconnect() {
+    let port = free_udp_port();
+    let mut guard = spawn_device("udp", port);
+    let rt = start_host(HostConfig {
+        transport: Some(TransportType::Udp),
+        udp_host: Some("127.0.0.1".to_string()),
+        udp_port: Some(port),
+        stream_defmt: Some(false),
+        reconnect: Some(ReconnectPolicy::None),
+        ..Default::default()
+    });
+    assert!(rt.wait_for_connection(Duration::from_secs(15)));
+    guard.0.kill().unwrap();
+    guard.0.wait().unwrap();
+    assert!(wait_until(Duration::from_secs(5), || !rt
+        .connected
+        .load(std::sync::atomic::Ordering::Relaxed)));
+    rt.shutdown();
 }
 
 #[test]

@@ -24,6 +24,8 @@
 //! }
 //! ```
 
+pub mod io;
+
 use crate::foc::clamp_f32;
 use crate::foc::constants::FRAC_1_SQRT_3;
 use crate::foc::transforms::inverse_clarke;

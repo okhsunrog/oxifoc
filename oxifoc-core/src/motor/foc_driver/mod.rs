@@ -7,12 +7,14 @@
 //!
 //! Platform code provides the trait implementations and calls [`FocDriver::step`].
 
+mod actuation;
 mod calibration;
 mod driver;
 mod failsafe;
 mod modes;
 mod protection;
 mod step;
+mod watchdog;
 
 #[cfg(test)]
 mod tests;
@@ -35,8 +37,10 @@ use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::LibmSinCos;
 use crate::foc::trig::SinCos;
 use crate::foc::velocity::VelocityLoop;
-use crate::motor::derating::DeratingConfig;
-use crate::motor::derating::DeratingScales;
+use actuation::ActuationModel;
+use protection::ProtectionMonitor;
+use watchdog::CommandWatchdog;
+
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::failsafe::FailsafeController;
 
@@ -128,11 +132,6 @@ pub const MAX_ACTUATION_DELAY_CYCLES: f32 = 2.0;
 /// current limit.
 const VOLTAGE_LIMITED_IQ_MARGIN_A: f32 = 1.0;
 
-/// Command history depth: a delay of up to `MAX_ACTUATION_DELAY_CYCLES`
-/// needs the commands of the last `2 + 2` cycles (the fractional share
-/// reaches one further back).
-const V_HIST: usize = 4;
-
 /// Reusable FOC driver
 ///
 /// # Type Parameters
@@ -194,31 +193,16 @@ where
     current_limits: CurrentLimits,
     /// Accumulated angle for open-loop velocity mode
     open_loop_angle: f32,
-    /// αβ commands of the previous cycles, newest first (`[0]` = the one
-    /// computed last cycle). With the actuation delay they reconstruct the
-    /// voltage that actually acted while this cycle's currents built up —
-    /// what the estimators must integrate (see [`Self::applied_voltage`]).
-    v_hist: [(f32, f32); V_HIST],
-    /// Actuation delay `d` in PWM periods: the command computed at the
-    /// current sample `t_N` starts acting at `t_N + d·T` (see
-    /// [`Self::set_actuation_delay`]). Sets both pipeline compensations:
-    /// the output-vector advance `(d + ½)·ω·T` and the estimators'
-    /// voltage pairing.
-    actuation_delay_cycles: f32,
-    /// Tick (in the ISR `now_ticks` domain) of the last fresh setpoint drained
-    /// from the command channel. `None` until the first command. The
-    /// command-staleness deadman compares `now_ticks - last_cmd_tick` against
-    /// `failsafe_cfg.staleness_timeout_us`.
-    last_cmd_tick: Option<u64>,
+    /// Applied-voltage history and output-vector timing compensation.
+    actuation: ActuationModel,
+    /// Command freshness and startup/engage grace windows.
+    watchdog: CommandWatchdog,
     /// PWM already disabled by the Stopped arm — skip the per-cycle
     /// `pwm.disable()` (measured ~430 cycles/ISR on G431 for a timer that
     /// is already off). Cleared whenever `set_mode` re-enables the bridge;
     /// the Stopped arm still re-asserts the disable periodically as a
     /// backstop.
     pwm_off: bool,
-    /// Previous cycle's `phase.is_starting()` — detects the startup→closed-
-    /// loop transition so the deadman stamp can be refreshed (see `step`).
-    was_starting: bool,
     /// Previous cycle's `phase.wants_short()` — detects the probe-short →
     /// commutation transition so the current-loop PI can restart from zero
     /// (see `step_inner`).
@@ -227,17 +211,6 @@ where
     /// active nonzero drive command — drives the
     /// [`SENSORLESS_RESTART_AFTER_S`] restart.
     untrusted_time: f32,
-    /// Previous cycle's "in a deadman-covered mode" — detects engage.
-    was_active: bool,
-    /// Tick of the last Stopped/Coast/Brake → drive transition. The deadman
-    /// uses the relaxed startup bound within the first
-    /// [`STARTUP_STALENESS_TIMEOUT_US`] after ANY engage: a deadshort flying
-    /// restart skips the startup sequencer entirely (bench 2026-07-06: a
-    /// caught still-coasting rotor went straight to closed loop and the
-    /// engage-window pump latency tripped the 150 ms bound), and the engage
-    /// ISR transient starves the command pump regardless of which path
-    /// engaged.
-    engaged_tick: Option<u64>,
     /// Stopped-arm housekeeping counter: paces the periodic PWM-off
     /// re-assert and the estimator-update decimation.
     stopped_housekeeping: u8,
@@ -287,25 +260,8 @@ where
     /// the bus-limit clamp derived from it doesn't chatter on per-cycle
     /// voltage ripple.
     bus_mod_q_filt: f32,
-    /// Graduated derating ramps (host-tunable; see `motor::derating`).
-    derating_cfg: DeratingConfig,
-    /// Live derating scales, recomputed (decimated) by the protection
-    /// update in `run_foc_cycle`; applied per-direction on the iq budget
-    /// in `step_current_control`.
-    derating: DeratingScales,
-    /// Decimation counter for the protection update (temps/vbus are slow).
-    /// (Protection fields are only read by `run_protection`, which needs
-    /// the `runtime` feature for the fault registry.)
-    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
-    protection_tick: u16,
-    /// Over/under-voltage excursion integrals (V·s) — the voltage faults
-    /// trip on sustained excursion, not single samples (VESC's
-    /// `wrong_voltage_integrator`): a regen spike or an EMI blip on the
-    /// vbus sense must not cost torque mid-ride.
-    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
-    ov_integral_vs: f32,
-    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
-    uv_integral_vs: f32,
+    /// Voltage/temperature protection and graduated derating state.
+    protection: ProtectionMonitor,
     /// Phase-voltage converter, `Some` only on boards with phase sensing
     /// (`BoardConfig::phase_sense`). Drives the measured-voltage observer
     /// feed; `None` → the observer always integrates the commanded voltage,

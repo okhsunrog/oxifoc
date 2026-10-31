@@ -173,7 +173,7 @@ where
         // The derating speed ceiling also caps the cruise reference: the
         // current-side rolloff alone would leave the PI winding up against
         // an unreachable target.
-        let max_speed = self.derating_cfg.max_speed_erad_s;
+        let max_speed = self.derating_cfg().max_speed_erad_s;
         let target_vel = if max_speed > 0.0 {
             clamp_f32(target_vel, -max_speed, max_speed)
         } else {

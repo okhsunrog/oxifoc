@@ -14,6 +14,41 @@ pub struct PhaseOutput {
     pub velocity: f32,
 }
 
+/// Bridge ownership requested by the sensorless startup sequencer.
+/// Read before commutation; a provider update may change it for the next cycle.
+/// Angle trust remains independent: a startup frame and a rotor estimate have
+/// different validity rules.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum StartupStatus {
+    /// Normal commutation; startup does not constrain the current request.
+    #[default]
+    Inactive,
+    /// Apply a zero vector and feed measured currents back without running PI.
+    ShortProbe,
+    /// Startup owns commutation and scales the requested current.
+    Driving { current_scale: f32 },
+}
+
+impl StartupStatus {
+    /// Whether startup owns the bridge, including short-circuit probing.
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::Inactive)
+    }
+
+    /// Whether the current loop must yield to the short probe.
+    pub fn wants_short(self) -> bool {
+        matches!(self, Self::ShortProbe)
+    }
+
+    /// Current multiplier while startup drives; probes bypass current control.
+    pub fn current_scale(self) -> f32 {
+        match self {
+            Self::Driving { current_scale } => current_scale,
+            Self::Inactive | Self::ShortProbe => 1.0,
+        }
+    }
+}
+
 /// Input for phase provider update
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PhaseInput {
@@ -69,6 +104,21 @@ pub struct PhaseInput {
 /// current vector `ω·dt` off the q axis while the controller's own frame
 /// reports id = 0 (see `commutation_frame_tracks_rotor_at_sample_instant`).
 pub trait PhaseProvider {
+    /// Coherent startup request for the current cycle. The default adapts the
+    /// legacy accessors so existing providers keep working; providers with a
+    /// sequencer should override this from their state in one place.
+    fn startup_status(&self) -> StartupStatus {
+        if self.wants_short() {
+            StartupStatus::ShortProbe
+        } else if self.is_starting() {
+            StartupStatus::Driving {
+                current_scale: self.startup_current_scale(),
+            }
+        } else {
+            StartupStatus::Inactive
+        }
+    }
+
     /// Rotor state at THIS step's current-sampling instant, as predicted
     /// by the previous [`update`](Self::update).
     ///

@@ -1,8 +1,6 @@
 //! Command-staleness deadman and `FailsafeController` integration.
 
-use super::{
-    BENCH_STALENESS_TIMEOUT_US, ControlMode, FocDriver, STARTUP_STALENESS_TIMEOUT_US, StepError,
-};
+use super::{ControlMode, FocDriver, StepError};
 use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
 use crate::foc::phase::PhaseProvider;
@@ -50,7 +48,7 @@ where
     /// Stamp a fresh setpoint arrival (called from the ISR when a `SetMode`
     /// is drained). The deadman's "positive affirmation".
     pub fn note_command_tick(&mut self, now_ticks: u64) {
-        self.last_cmd_tick = Some(now_ticks);
+        self.watchdog.note_command(now_ticks);
     }
 
     /// Current command staleness in µs (time since the last drained
@@ -58,25 +56,20 @@ where
     /// the first stamp. Diagnostic mirror of [`Self::deadman_expired`]'s
     /// input — lets the platform stats report how close each window came.
     pub fn command_staleness_us(&self, now_ticks: u64) -> Option<u64> {
-        match self.mode {
-            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake => None,
-            // saturating for the same backward-glitch reason as
-            // [`Self::deadman_expired`].
-            _ => self.last_cmd_tick.map(|t| now_ticks.saturating_sub(t)),
-        }
+        self.watchdog.staleness_us(self.mode, now_ticks)
     }
 
     /// Whether the command link has gone stale while the motor is running —
     /// the deadman trigger.
     ///
-    /// The *drive* modes (CurrentControl, plus the velocity/position loops
-    /// once they exist) use the configured ~150 ms bound — those are what a
+    /// The drive modes (CurrentControl and velocity/position loops) use the
+    /// configured ~150 ms bound — those are what a
     /// vehicle rides on, and the host re-affirms them every 50 ms. Exempt
     /// entirely: Stopped/Coast/Brake — safe standing states: nothing to fail
     /// safe toward, and a parking brake must persist through link loss.
     ///
     /// OpenLoop/DirectVoltage — bench/calibration modes — get the LONG
-    /// [`BENCH_STALENESS_TIMEOUT_US`] bound instead: on-device detection
+    /// [`super::BENCH_STALENESS_TIMEOUT_US`] bound instead: on-device detection
     /// dwells up to ~5 s between `SetMode`s (settle waits, sample windows,
     /// the flux-spin collection), which the 150 ms deadman would cut
     /// mid-measurement — but a *hung* measurement must still be cut, because
@@ -96,35 +89,16 @@ where
     /// for its margin meter every cycle, and computing the u64 tick math
     /// twice per ISR is measurable at 20 kHz.
     pub fn deadman_expired_with(&self, staleness_us: Option<u64>, now_ticks: u64) -> bool {
-        let bound_us = match self.mode {
-            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake => return false,
-            ControlMode::OpenLoop { .. } | ControlMode::DirectVoltage { .. } => {
-                BENCH_STALENESS_TIMEOUT_US
-            }
-            // Sensorless startup or the engage-grace window: bounded
-            // device-local transient whose ISR load can starve the command
-            // pump (see [`STARTUP_STALENESS_TIMEOUT_US`] / `engaged_tick`).
-            _ if self.phase.is_starting()
-                || self.engaged_tick.is_some_and(|t| {
-                    now_ticks.saturating_sub(t) < STARTUP_STALENESS_TIMEOUT_US
-                }) =>
-            {
-                STARTUP_STALENESS_TIMEOUT_US
-            }
-            _ => self.failsafe_cfg.staleness_timeout_us,
-        };
         if self.failsafe_ctrl.is_active() {
             return false;
         }
-        // `command_staleness_us` is already saturating, NOT wrapping: the
-        // tick source (TIM4 CNT + software overflow count) can glitch
-        // BACKWARD when the overflow ISR is starved past a wrap by a
-        // saturated FOC ISR (bench 2026-07-06: deadman fired at engage+70 ms
-        // — one 65.5 ms TIM4 period — with staleness reading u32::MAX). A
-        // clock that ran backward is not a stale command. A missing stamp
-        // (None) is treated as not-stale (defensive; Running implies a
-        // SetMode was drained, which stamps).
-        staleness_us.is_some_and(|s| s > bound_us)
+        self.watchdog.expired(
+            self.mode,
+            self.phase.is_starting(),
+            now_ticks,
+            staleness_us,
+            self.failsafe_cfg.staleness_timeout_us,
+        )
     }
 
     /// Arm the failsafe sequence (deadman or link-loss). Idempotent. Falls
