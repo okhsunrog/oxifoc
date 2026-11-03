@@ -48,7 +48,12 @@ pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
 // FOC interrupt. A stop ACK must follow every previously accepted batch.
 static FAST_TELEM_GATE: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
 
-pub(super) async fn configure_fast_telemetry(period: u32) -> u32 {
+/// Set the FOC decimation period and return the applied period.
+///
+/// Zero disables streaming, waits for any task-side broadcasts and discards
+/// pending samples before returning. Nonzero changes are refused during flash
+/// maintenance. The FOC producer never waits on the task-side gate.
+pub async fn set_fast_telemetry_period(period: u32) -> u32 {
     let _gate = FAST_TELEM_GATE.lock().await;
     let actual = critical_section::with(|_| {
         if crate::state::FLASH_OP_PENDING.load(Ordering::SeqCst) && period != 0 {
@@ -472,7 +477,7 @@ mod stream_control_tests {
         grant.copy_from_slice(&[1, 2, 3, 4]);
         grant.commit(4);
 
-        let mut stop = core::pin::pin!(configure_fast_telemetry(0));
+        let mut stop = core::pin::pin!(set_fast_telemetry_period(0));
         assert!(stop.as_mut().poll(&mut cx).is_pending());
         assert_eq!(FAST_TELEM_PERIOD.load(Ordering::Acquire), 1);
         drop(gate);

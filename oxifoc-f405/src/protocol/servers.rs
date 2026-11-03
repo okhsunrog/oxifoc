@@ -194,7 +194,7 @@ pub async fn seed_router_task(stack: &'static Stack) {
 pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) {
     use crate::transport::STATE_NOTIFY;
     use ergot::interface_manager::{InterfaceState, Profile};
-    use oxifoc_core::runtime::streaming::{FAST_TELEM_PERIOD, FAST_TELEM_Q};
+    use oxifoc_core::runtime::streaming::set_fast_telemetry_period;
 
     let mut any_was_active = false;
 
@@ -236,14 +236,7 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
             // deadman armed it.
             critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_inactive());
 
-            // Stop fast telemetry streaming
-            FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);
-
-            // Drain stale data from the fast telemetry bbqueue
-            let cons = FAST_TELEM_Q.framed_consumer();
-            while let Ok(grant) = cons.read() {
-                grant.release();
-            }
+            set_fast_telemetry_period(0).await;
 
             // Yield to let TX workers drain
             for _ in 0..64 {

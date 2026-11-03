@@ -868,7 +868,7 @@ pub async fn telemetry_config_server<NS, const N: usize>(endpoints: Endpoints<NS
 where
     NS: NetStackHandle,
 {
-    use super::streaming::configure_fast_telemetry;
+    use super::streaming::set_fast_telemetry_period;
 
     let server = endpoints.bounded_server::<TelemetryConfigEndpoint, N>(Some("telemetry_config"));
     let server = pin!(server);
@@ -885,7 +885,7 @@ where
                 };
 
                 async move {
-                    let period = configure_fast_telemetry(period).await;
+                    let period = set_fast_telemetry_period(period).await;
                     let actual_fast_hz = foc_freq_hz.checked_div(period).unwrap_or(0) as u16;
 
                     #[cfg(feature = "defmt")]
