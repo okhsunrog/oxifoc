@@ -116,12 +116,13 @@ where
 
     // Protocol tasks are spawned once — they operate on the stack, not the
     // per-connection interface.
-    spawn_protocol_tasks(&stack, ctx);
+    let commands = spawn_protocol_tasks(&stack, ctx);
 
     let mut defmt_started = false;
     let policy = cfg.reconnect_policy();
     let mut connect_attempts: u32 = 0;
     let mut expected_device_uuid: Option<String> = None;
+    let mut verified_peer = None;
 
     loop {
         let reg_result = tokio::select! {
@@ -211,13 +212,14 @@ where
         // HardwareInfo handshake on each (re)connection
         let handshake = tokio::select! {
             outcome = hardware_info_handshake(
-                &stack, &info_tx, &connected, &mut expected_device_uuid, resolved,
+                &stack, &info_tx, &mut expected_device_uuid, resolved,
             ) => outcome,
             _ = cancel.cancelled() => break,
         };
 
         match handshake {
             HandshakeOutcome::Connected => {
+                verified_peer = Some(resolved);
                 // Fault generation is boot-local. A controller reset may
                 // reconnect with the same UUID and generation 0; force a
                 // fresh snapshot instead of treating it as older.
@@ -251,12 +253,29 @@ where
             }
         }
 
-        tokio::select! {
-            () = enable_fast_telemetry(
+        let configured = tokio::select! {
+            result = enable_fast_telemetry(
                 &stack, requested_fast_hz.load(Ordering::Relaxed), &fast_hz_flag, resolved,
-            ) => {},
+            ) => result,
             _ = cancel.cancelled() => break,
+        };
+        if !configured {
+            verified_peer = None;
+            stack
+                .stack()
+                .manage_profile(ergot::prelude::DirectEdge::teardown);
+            tokio::task::yield_now().await;
+            if !may_retry(policy, &mut connect_attempts) {
+                break;
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
+                _ = cancel.cancelled() => break,
+            }
         }
+        // Publish readiness after stream setup, so a caller cannot race its
+        // first rate change against a late connect-time fast_hz=0 request.
+        connected.store(true, Ordering::Relaxed);
 
         // RTT readers belong to one connection; network subscriptions belong
         // to the persistent stack and must be started only once.
@@ -278,6 +297,7 @@ where
             // Cancelled
             break;
         }
+        verified_peer = None;
 
         if !may_retry(policy, &mut connect_attempts) {
             info!("Reconnect policy exhausted after connection loss");
@@ -295,6 +315,37 @@ where
             _ = cancel.cancelled() => break,
         }
         info!("Attempting reconnection...");
+    }
+
+    // Join the command task before the final rate change: an in-flight retry
+    // must not re-enable the stream after our stop was acknowledged.
+    commands.abort();
+    let _ = commands.await;
+
+    // Cancellation stops the command task too. Send directly while the
+    // transport is still alive, rather than enqueueing a best-effort command
+    // that runtime teardown could discard. Never target an unverified peer.
+    if let Some(peer) = verified_peer {
+        let stop = async {
+            let client = stack.clone().reliable::<TokioTimer>();
+            client
+                .at_least_once::<TelemetryConfigEndpoint>(
+                    peer,
+                    &TelemetryConfig { fast_hz: 0 },
+                    Some("telemetry_config"),
+                    &SETPOINT_POLICY,
+                )
+                .await
+        };
+        match tokio::time::timeout(Duration::from_millis(500), stop).await {
+            Ok(Ok(ack)) if ack.actual_fast_hz == 0 => {
+                fast_hz_flag.store(0, Ordering::Relaxed);
+                info!("Telemetry stopped before transport shutdown (acknowledged)");
+            }
+            result => {
+                tracing::warn!("Could not confirm telemetry stop before shutdown: {result:?}");
+            }
+        }
     }
 
     // Always release the interface, including cancellation and exhausted
@@ -496,7 +547,6 @@ where
 async fn hardware_info_handshake<NS>(
     stack: &NS,
     info_tx: &Sender<HardwareInfo>,
-    connected: &Arc<AtomicBool>,
     expected_device_uuid: &mut Option<String>,
     device_addr: Address,
 ) -> HandshakeOutcome
@@ -517,7 +567,6 @@ where
                         dev_info.bootstrap_magic,
                         oxifoc_core::types::ICD_BOOTSTRAP_MAGIC,
                     );
-                    connected.store(false, Ordering::Relaxed);
                     return HandshakeOutcome::FatalMismatch;
                 }
                 info!(
@@ -537,7 +586,6 @@ where
                         dev_info.proto_version,
                         oxifoc_core::types::ICD_PROTO_VERSION,
                     );
-                    connected.store(false, Ordering::Relaxed);
                     return HandshakeOutcome::FatalMismatch;
                 }
                 let device_uuid = dev_info.uuid.as_str();
@@ -549,7 +597,6 @@ where
                             device_uuid,
                             expected,
                         );
-                        connected.store(false, Ordering::Relaxed);
                         return HandshakeOutcome::FatalMismatch;
                     }
                 } else {
@@ -557,7 +604,6 @@ where
                 }
                 // Never block the backend if a consumer stops reading.
                 let _ = info_tx.try_send(dev_info);
-                connected.store(true, Ordering::Relaxed);
                 return HandshakeOutcome::Connected;
             }
             Ok(Err(e)) => {
@@ -584,26 +630,37 @@ async fn enable_fast_telemetry<NS>(
     fast_hz: u16,
     fast_hz_flag: &Arc<AtomicU16>,
     device_addr: Address,
-) where
+) -> bool
+where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
-    if fast_hz == 0 {
-        return;
-    }
     let telem_cfg = TelemetryConfig { fast_hz };
     let client = stack.clone().reliable::<TokioTimer>();
     match client
-        .at_least_once::<TelemetryConfigEndpoint>(device_addr, &telem_cfg, None, &SETPOINT_POLICY)
+        .at_least_once::<TelemetryConfigEndpoint>(
+            device_addr,
+            &telem_cfg,
+            Some("telemetry_config"),
+            &SETPOINT_POLICY,
+        )
         .await
     {
         Ok(ack) => {
+            if (fast_hz == 0) != (ack.actual_fast_hz == 0) {
+                tracing::warn!("Telemetry acknowledgement does not match the stream state");
+                return false;
+            }
             info!(
-                "Telemetry enabled: requested={}Hz, actual={}Hz",
+                "Telemetry configured: requested={}Hz, actual={}Hz",
                 fast_hz, ack.actual_fast_hz
             );
             fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
+            true
         }
-        Err(e) => tracing::warn!("Telemetry config failed: {:?}", e),
+        Err(e) => {
+            tracing::warn!("Telemetry config failed: {:?}", e);
+            false
+        }
     }
 }
 

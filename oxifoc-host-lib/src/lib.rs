@@ -652,7 +652,7 @@ fn unpack_addr(v: u32) -> Address {
     }
 }
 
-fn spawn_protocol_tasks<NS>(stack: &NS, ctx: BackendCtx)
+fn spawn_protocol_tasks<NS>(stack: &NS, ctx: BackendCtx) -> tokio::task::JoinHandle<()>
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
@@ -802,7 +802,7 @@ where
                 }
             }
         }
-    });
+    })
 }
 
 fn spawn_fast_telemetry_subscriber<NS>(

@@ -205,7 +205,7 @@ pub fn run_detect(
     let mut capture_summary = serde_json::Value::Null;
     if let (Some(mut c), Some(path)) = (cap.take(), record_out.as_ref()) {
         let _ = c.drain_until(runtime, Instant::now() + Duration::from_millis(200));
-        c.stop(runtime);
+        let stream_stopped = c.stop(runtime);
         let outcome = match &detect_result {
             Ok(r) => serde_json::to_string(r).unwrap_or_default(),
             Err(e) => serde_json::Value::String(format!("error: {e:#}")).to_string(),
@@ -225,6 +225,11 @@ pub fn run_detect(
             );
         }
         capture_summary = serde_json::to_value(&summary)?;
+        if detect_result.is_ok() {
+            stream_stopped?;
+        } else if let Err(error) = stream_stopped {
+            eprintln!("telemetry stop after failed detection: {error:#}");
+        }
     }
 
     let resp = detect_result?;

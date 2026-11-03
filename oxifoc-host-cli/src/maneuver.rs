@@ -320,13 +320,14 @@ pub fn run(
     let terminal_res = crate::send_motor_acked(runtime, m.terminal.to_mode());
     let terminal_ok = terminal_res.is_ok();
     let _ = cap.drain_until(runtime, Instant::now() + Duration::from_millis(200));
-    cap.stop(runtime);
+    let stream_stopped = cap.stop(runtime);
 
     // A timeline failure surfaces after the terminal command went out.
     exec?;
     if let Err(e) = terminal_res {
         bail!("terminal command failed: {e:#}");
     }
+    stream_stopped?;
 
     let extra_meta = vec![
         (

@@ -10,6 +10,7 @@ pub mod config;
 pub mod detect;
 pub mod fault;
 pub mod phase;
+pub mod telemetry;
 
 /// Fast-telemetry stream rates offered to the user (Hz), shared so the
 /// combo-box order, the CLI flags and the index→Hz mapping cannot diverge.

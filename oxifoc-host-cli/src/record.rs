@@ -18,8 +18,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use oxifoc_core::foc::telemetry::{EnrichCtx, RichSample};
-use oxifoc_core::types::{FastTelemetry, HardwareInfo, TelemetryConfig};
-use oxifoc_host_lib::{HostCommand, HostRuntime, build_enrich_ctx};
+use oxifoc_core::types::{FastTelemetry, HardwareInfo};
+use oxifoc_host_lib::{HostRuntime, build_enrich_ctx};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::data_type::{DoubleType, Int32Type, Int64Type};
 use parquet::file::metadata::KeyValue;
@@ -102,18 +102,7 @@ impl Capture {
         // old poll of `runtime.fast_hz` accepted any nonzero value, so a
         // rate already active before the capture produced a silently wrong
         // decimation_m (and with it a wrong time axis and loss accounting).
-        let (ack_tx, ack_rx) = oxifoc_host_lib::telemetry_channel();
-        runtime
-            .cmd_tx
-            .send(HostCommand::SetTelemetryConfig(
-                TelemetryConfig { fast_hz },
-                Some(ack_tx),
-            ))
-            .context("send telemetry config")?;
-        let ack = ack_rx
-            .blocking_recv()
-            .context("backend dropped the telemetry config request")?
-            .context("device did not acknowledge the telemetry config")?;
+        let ack = oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, fast_hz)?;
         let fast_hz_actual = ack.actual_fast_hz;
         if fast_hz_actual == 0 {
             bail!("device acknowledged a zero fast rate for a capture");
@@ -124,10 +113,7 @@ impl Capture {
         ) {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                let _ = runtime.cmd_tx.send(HostCommand::SetTelemetryConfig(
-                    TelemetryConfig { fast_hz: 0 },
-                    None,
-                ));
+                let _ = oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, 0);
                 return Err(error).context("read active board calibration after stream ACK");
             }
         };
@@ -178,12 +164,10 @@ impl Capture {
         self.samples.last().map(|s| u32::from(s.seq))
     }
 
-    /// Disable streaming (best effort).
-    pub fn stop(&self, runtime: &HostRuntime) {
-        let _ = runtime.cmd_tx.send(HostCommand::SetTelemetryConfig(
-            TelemetryConfig { fast_hz: 0 },
-            None,
-        ));
+    /// Disable streaming and wait for the device's acknowledgement.
+    pub fn stop(&self, runtime: &HostRuntime) -> Result<()> {
+        oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, 0)?;
+        Ok(())
     }
 
     /// Expected seq step between consecutive samples.
@@ -278,9 +262,11 @@ pub fn record(
     let mut cap = Capture::start(runtime, fast_hz)?;
     let deadline = cap.started + Duration::from_secs_f64(seconds);
     let drained = cap.drain_until(runtime, deadline);
-    cap.stop(runtime);
+    let stopped = cap.stop(runtime);
+    let finished = cap.finish(out_path, &config_snapshot, &[]);
     drained?;
-    cap.finish(out_path, &config_snapshot, &[])
+    stopped?;
+    finished
 }
 
 #[allow(clippy::too_many_arguments)]
