@@ -24,7 +24,9 @@ use crate::RUNTIME_CONFIG;
 use crate::calibration::{
     calibrate_hall_ez, measure_flux_linkage_ez, measure_inductance_ez, measure_resistance_ez,
 };
-use crate::config::{BOARD, MAX_PACKET_SIZE, PWM_CONFIG, UART_BAUD, USB_OUT_QUEUE_SIZE};
+use crate::config::{
+    BOARD, MAX_PACKET_SIZE, PWM_CONFIG, UART_BAUD, USB_OUT_QUEUE_SIZE, measured_board,
+};
 use crate::control::foc::VBUS_MV;
 use crate::transport::UART_OUTQ;
 
@@ -145,7 +147,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
         uuid,
         foc_freq_hz: PWM_CONFIG.pwm_freq_hz,
         max_current_a: BOARD.max_phase_current_a,
-        calib: BOARD.calib,
+        calib: measured_board().calib,
     };
 
     // This future IS the protocol-servers task (all endpoint servers

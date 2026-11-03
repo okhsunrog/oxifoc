@@ -66,6 +66,15 @@ Different from CF2:
 
 ## Analog scaling
 
+- At boot, ADC1 samples VREFINT 64 times (480-cycle sample time) before
+  enabling the gate driver or timer-triggered conversions. The factory
+  VREFINT calibration at `0x1FFF7A2A` (3300 mV) determines the measured
+  VREF+ used by voltage/current conversion, detection and the host's
+  `HardwareInfo.calib`. The boot log reports the factory code, sample sum
+  and resulting millivolts. Invalid or out-of-range readings stop boot
+  before the gate driver is enabled. Divider nominal values remain unchanged.
+  NTC conversion remains ratiometric and does not use VREF+ in volts.
+
 - Shunts: **in-line phase shunts** (`HW_HAS_PHASE_SHUNTS`), 0.5 mΩ,
   standard polarity (hw60 does NOT define `INVERTED_SHUNT_POLARITY`).
   Reading is valid over the whole PWM cycle, not just low-side conduction —

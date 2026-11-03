@@ -153,12 +153,20 @@ pub async fn calibrate_hall_default(
 // ============================================================================
 
 use crate::STATE;
-use crate::config::BOARD;
+use crate::config::measured_board;
 use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
 
 /// Measure resistance using platform statics.
 pub async fn measure_resistance_ez(params: &ResistanceParams) -> Result<f32, DetectionError> {
-    measure_resistance(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
+    measure_resistance(
+        params,
+        &STATE,
+        &IA_SAMPLE,
+        &IB_SAMPLE,
+        &IC_SAMPLE,
+        measured_board(),
+    )
+    .await
 }
 
 /// Measure inductance using platform statics.
@@ -173,14 +181,22 @@ pub async fn measure_inductance_ez<S: SinCos>(
         &IA_SAMPLE,
         &IB_SAMPLE,
         &IC_SAMPLE,
-        &BOARD,
+        measured_board(),
     )
     .await
 }
 
 /// Measure flux linkage using platform statics.
 pub async fn measure_flux_linkage_ez(params: &FluxLinkageParams) -> Result<f32, DetectionError> {
-    measure_flux_linkage(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
+    measure_flux_linkage(
+        params,
+        &STATE,
+        &IA_SAMPLE,
+        &IB_SAMPLE,
+        &IC_SAMPLE,
+        measured_board(),
+    )
+    .await
 }
 
 /// Calibrate Hall sensors using platform statics with the host-supplied
@@ -189,5 +205,13 @@ pub async fn measure_flux_linkage_ez(params: &FluxLinkageParams) -> Result<f32, 
 pub async fn calibrate_hall_ez(
     params: HallCalibrationParams,
 ) -> Result<HallCalibrationResult, DetectionError> {
-    calibrate_hall(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
+    calibrate_hall(
+        params,
+        &STATE,
+        &IA_SAMPLE,
+        &IB_SAMPLE,
+        &IC_SAMPLE,
+        measured_board(),
+    )
+    .await
 }

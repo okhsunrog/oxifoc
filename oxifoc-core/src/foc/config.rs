@@ -94,6 +94,30 @@ pub struct BoardConfig {
     pub phase_sense: Option<PhaseSense>,
 }
 
+/// Recover the ADC reference in millivolts from a factory-calibrated internal
+/// reference and an accumulated set of samples. Both counts must use the same
+/// ADC resolution. Keeping the sum avoids rounding the average to a whole count.
+pub fn adc_reference_mv(
+    calibration_counts: u16,
+    calibration_mv: u32,
+    sample_sum: u32,
+    sample_count: u16,
+    adc_max_counts: u16,
+) -> Option<u32> {
+    if calibration_counts == 0
+        || calibration_counts >= adc_max_counts
+        || calibration_mv == 0
+        || sample_count == 0
+        || sample_sum == 0
+        || u64::from(sample_sum) >= u64::from(adc_max_counts) * u64::from(sample_count)
+    {
+        return None;
+    }
+    let numerator =
+        u64::from(calibration_counts) * u64::from(calibration_mv) * u64::from(sample_count);
+    u32::try_from((numerator + u64::from(sample_sum) / 2) / u64::from(sample_sum)).ok()
+}
+
 impl BoardConfig {
     /// Convert raw ADC value to bus voltage in millivolts
     ///
@@ -274,6 +298,37 @@ mod tests {
         // Mid-scale ADC (1.65V) with 10.39x divider = ~17.1V
         let vbus = TEST_BOARD.vbus_mv_from_adc(2048);
         assert!(vbus > 17000 && vbus < 17500);
+    }
+
+    #[test]
+    fn adc_reference_uses_factory_calibration_and_unrounded_average() {
+        // Bench capture: factory code 1496 at 3300 mV, mean 1487.625 counts.
+        assert_eq!(adc_reference_mv(1496, 3300, 71_406, 48, 4095), Some(3319));
+        assert_eq!(
+            adc_reference_mv(1500, 3300, 1500 * 64, 64, 4095),
+            Some(3300)
+        );
+        assert_eq!(
+            adc_reference_mv(1500, 3300, 1650 * 64, 64, 4095),
+            Some(3000)
+        );
+    }
+
+    #[test]
+    fn adc_reference_rejects_missing_or_saturated_measurements() {
+        for args in [
+            (0, 3300, 1500, 1, 4095),
+            (u16::MAX, 3300, 1500, 1, 4095),
+            (1496, 0, 1500, 1, 4095),
+            (1496, 3300, 1500, 0, 4095),
+            (1496, 3300, 0, 64, 4095),
+            (1496, 3300, 4095 * 64, 64, 4095),
+        ] {
+            assert_eq!(
+                adc_reference_mv(args.0, args.1, args.2, args.3, args.4),
+                None
+            );
+        }
     }
 
     #[test]

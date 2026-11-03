@@ -592,10 +592,17 @@ fn main() -> Result<()> {
                     "uuid": info.uuid.as_str(),
                     "foc_freq_hz": info.foc_freq_hz,
                     "max_current_a": info.max_current_a,
+                    "calib": info.calib,
                 }),
                 format!(
-                    "{} ({}) sw={} uuid={} foc={}Hz max_i={}A",
-                    info.hw, info.mcu, info.sw, info.uuid, info.foc_freq_hz, info.max_current_a
+                    "{} ({}) sw={} uuid={} foc={}Hz max_i={}A vref={}mV",
+                    info.hw,
+                    info.mcu,
+                    info.sw,
+                    info.uuid,
+                    info.foc_freq_hz,
+                    info.max_current_a,
+                    info.calib.adc_vref_mv
                 ),
             );
         }

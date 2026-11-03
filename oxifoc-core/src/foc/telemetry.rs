@@ -303,6 +303,35 @@ mod tests {
     // ---- full enrichment ----
 
     #[test]
+    fn enrich_uses_reported_adc_reference_without_rescaling_bus_voltage() {
+        let nominal = calib();
+        let measured = BoardCalib {
+            adc_vref_mv: 3319,
+            ..nominal
+        };
+        let offsets = (2048.0, 2048.0, 2048.0);
+        let frame = FastTelemetry {
+            ia: 2148,
+            ib: 1998,
+            ic: 1998,
+            vbus: FastTelemetry::pack_vbus(15.83),
+            ..Default::default()
+        };
+        let before = frame.enrich(&EnrichCtx::new(&nominal, offsets, 0));
+        let after = frame.enrich(&EnrichCtx::new(&measured, offsets, 0));
+        let ratio = 3319.0 / 3300.0;
+        for (a, b) in [
+            (after.ia, before.ia),
+            (after.ib, before.ib),
+            (after.ic, before.ic),
+        ] {
+            assert!((a - b * ratio).abs() < 1e-5);
+        }
+        // VBUS is already converted by the device, unlike the raw current codes.
+        assert_eq!(after.vbus_v, before.vbus_v);
+    }
+
+    #[test]
     fn enrich_zero_current_zero_angle() {
         let ctx = EnrichCtx::new(&calib(), (2048.0, 2048.0, 2048.0), 7);
         let f = FastTelemetry {

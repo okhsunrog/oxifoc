@@ -1,8 +1,23 @@
 //! Configuration constants for oxifoc-f405 (per-board `BOARD` const below)
 
+use embassy_sync::once_lock::OnceLock;
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 use oxifoc_core::types::BoardCalib;
+
+static MEASURED_BOARD: OnceLock<BoardConfig> = OnceLock::new();
+
+/// Freeze the measured ADC reference before protocol tasks or control IRQs run.
+pub fn init_measured_board(adc_vref_mv: u32) {
+    let mut board = BOARD;
+    board.calib.adc_vref_mv = adc_vref_mv;
+    defmt::unwrap!(MEASURED_BOARD.init(board).map_err(|_| ()));
+}
+
+/// One immutable calibration shared by sensing, detection and the host handshake.
+pub fn measured_board() -> &'static BoardConfig {
+    defmt::unwrap!(MEASURED_BOARD.try_get())
+}
 
 // ============================================================================
 // Board Hardware Configuration

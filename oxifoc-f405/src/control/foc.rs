@@ -39,7 +39,7 @@ use crate::hardware::peripherals::AdcHandles;
 use crate::safety::feed_watchdog;
 use crate::sensors::hall;
 
-use crate::config::{BOARD, CPU_HZ, NTC_BOARD, NTC_MOTOR, PWM_CONFIG};
+use crate::config::{BOARD, CPU_HZ, NTC_BOARD, NTC_MOTOR, PWM_CONFIG, measured_board};
 use crate::motor::MotorPwm;
 use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
@@ -192,7 +192,8 @@ pub async fn init(
     motor_pwm.enable_adc_trigger();
 
     // Build current sensor and phase manager
-    let current_sensor = F405CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
+    let current_sensor =
+        F405CurrentSensor::from_board(measured_board(), &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
     hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
     let initial_vbus_v = first_vbus_v().await;
@@ -358,6 +359,7 @@ fn ADC() {
     static mut SEQ: u32 = 0;
 
     let isr_t0 = cortex_m::peripheral::DWT::cycle_count();
+    let board = measured_board();
 
     // NTC Beta-model conversion runs libm::logf + several float divides
     // (~200 cycles per sensor, two sensors here = ~5-7% of the cycle
@@ -380,7 +382,7 @@ fn ADC() {
 
     // Convert board temperature raw ADC to 0.1°C units
     let board_temp_c_x10 = if convert_temp {
-        let t = NTC_BOARD.temp_c_x10_from_adc(board_temp_raw, BOARD.calib.adc_max_counts);
+        let t = NTC_BOARD.temp_c_x10_from_adc(board_temp_raw, board.calib.adc_max_counts);
         BOARD_TEMP_C_X10.store(t, Ordering::Relaxed);
         t
     } else {
@@ -402,7 +404,7 @@ fn ADC() {
     MOTOR_TEMP_RAW.store(motor_temp_raw, Ordering::Relaxed);
     // Convert motor temperature raw ADC to 0.1°C units
     let motor_temp_c_x10 = if convert_temp {
-        let t = NTC_MOTOR.temp_c_x10_from_adc(motor_temp_raw, BOARD.calib.adc_max_counts);
+        let t = NTC_MOTOR.temp_c_x10_from_adc(motor_temp_raw, board.calib.adc_max_counts);
         MOTOR_TEMP_C_X10.store(t, Ordering::Relaxed);
         t
     } else {
@@ -422,7 +424,7 @@ fn ADC() {
     IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
 
     // Convert VBUS raw ADC to millivolts
-    let vbus_mv = BOARD.vbus_mv_from_adc(vbus_raw);
+    let vbus_mv = board.vbus_mv_from_adc(vbus_raw);
     VBUS_MV.store(vbus_mv, Ordering::Relaxed);
     VBUS_MEASURED.store(true, Ordering::Release);
 
@@ -458,7 +460,7 @@ fn ADC() {
                 driver,
                 vbus_mv as f32 / 1000.0,
                 now_ticks,
-                &BOARD,
+                board,
             )
         })
     });

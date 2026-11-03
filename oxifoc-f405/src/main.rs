@@ -106,6 +106,13 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "board-vesc6-mk5")]
     let _board_ctrl = hardware::board_early_init(r.board_ctrl);
 
+    // Calibrate VREF+ before any host handshake can publish BoardCalib and
+    // before the gate driver or PWM can be enabled. ADC triggers start later.
+    let adc_handles = hardware::peripherals::init_adc(
+        p.ADC1, p.ADC2, p.ADC3, p.PC0, p.PA3, p.PC1, p.PC4, p.PC2, p.PC3,
+    )
+    .await;
+
     // ========== STEP 6: Initialize USB + UART transports ==========
     #[cfg(feature = "transport-usb")]
     let (usb_transport, usb_ident) = transport::init_usb(stack, p.USB_OTG_FS, p.PA12, p.PA11);
@@ -199,11 +206,6 @@ async fn main(spawner: Spawner) {
     // ========== STEP 10: Initialize Hall Sensor ==========
     sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8, p.TIM3);
 
-    // ========== STEP 11: Initialize ADCs ==========
-    let adc_handles = hardware::peripherals::init_adc(
-        p.ADC1, p.ADC2, p.ADC3, p.PC0, p.PA3, p.PC1, p.PC4, p.PC2, p.PC3,
-    );
-
     // ========== STEP 12: Initialize Motor PWM ==========
     let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
 
@@ -228,11 +230,13 @@ async fn main(spawner: Spawner) {
          bit-bang SPI CS/SCK/MISO/MOSI=PC9/PC10/PB3/PB4, halls=PC6/7/8, ADC currents PC0-2 \
          (phase shunts), VBUS PC3, USART3 TX=PB10 RX=PB11, latch PC5, filters PD2/PC13"
     );
+    let board = config::measured_board();
     defmt::info!(
-        "Board config: shunt={=f32}Ω, amp_gain={=f32} V/V, vbus_ratio={=f32}:1, faults={}",
-        config::BOARD.calib.shunt_ohms,
-        config::BOARD.calib.amp_gain,
-        config::BOARD.calib.vbus_divider_ratio,
+        "Board config: shunt={=f32}Ω, amp_gain={=f32} V/V, vbus_ratio={=f32}:1, vref={}mV, faults={}",
+        board.calib.shunt_ohms,
+        board.calib.amp_gain,
+        board.calib.vbus_divider_ratio,
+        board.calib.adc_vref_mv,
         FAULT_REGISTRY.count()
     );
 }

@@ -1,6 +1,8 @@
 //! Peripheral initialization for STM32F405
 
-use embassy_stm32::adc::{Adc, AdcChannel, Exten, InjectedAdc, InjectedAdcTrigger, SampleTime};
+use embassy_stm32::adc::{
+    Adc, AdcChannel, Exten, InjectedAdc, InjectedAdcTrigger, SampleTime, VrefInt,
+};
 use embassy_stm32::{
     Config as StmConfig, Peri, Peripherals,
     gpio::{Level, Output, Speed},
@@ -85,7 +87,7 @@ pub struct AdcHandles {
 /// All triggered simultaneously by TIM1_CC4 rising edge.
 /// ADC3 generates JEOC interrupt (signals all ADCs done).
 #[allow(clippy::too_many_arguments)]
-pub fn init_adc(
+pub async fn init_adc(
     adc1_peri: Peri<'static, peripherals::ADC1>,
     adc2_peri: Peri<'static, peripherals::ADC2>,
     adc3_peri: Peri<'static, peripherals::ADC3>,
@@ -96,7 +98,43 @@ pub fn init_adc(
     ic_pin: Peri<'static, peripherals::PC2>,
     vbus_pin: Peri<'static, peripherals::PC3>,
 ) -> AdcHandles {
-    let adc1 = Adc::new(adc1_peri);
+    let mut adc1 = Adc::new(adc1_peri);
+
+    // Measure VREF+ while ADC1 is still exclusively owned here: no injected
+    // trigger, protocol tasks or gate-driver initialization can run yet.
+    // STM32F405 datasheet: VREFINT_CAL at 0x1FFF7A2A, measured at 3300 mV.
+    // SAFETY: aligned, read-only factory calibration halfword in system memory.
+    let calibration_counts = unsafe { core::ptr::read_volatile(0x1fff_7a2a as *const u16) };
+    let mut vrefint = adc1.enable_vrefint();
+    embassy_time::Timer::after_micros(u64::from(VrefInt::start_time_us())).await;
+    // 480 cycles at the 21 MHz ADC clock exceeds the required 10 us sample time.
+    let _ = adc1.blocking_read(&mut vrefint, SampleTime::Cycles480);
+    const SAMPLE_COUNT: u16 = 64;
+    let mut sum = 0u32;
+    for _ in 0..SAMPLE_COUNT {
+        let raw = adc1.blocking_read(&mut vrefint, SampleTime::Cycles480);
+        // Fail before enabling the gate driver if the reference is unreadable.
+        defmt::assert!(raw > 0 && raw < crate::config::BOARD.calib.adc_max_counts);
+        sum += u32::from(raw);
+    }
+    let reference_mv = defmt::unwrap!(oxifoc_core::foc::config::adc_reference_mv(
+        calibration_counts,
+        3300,
+        sum,
+        SAMPLE_COUNT,
+        crate::config::BOARD.calib.adc_max_counts,
+    ));
+    // STM32F405 analog supply operating range (not a per-board correction).
+    defmt::assert!((1800..=3600).contains(&reference_mv));
+    crate::config::init_measured_board(reference_mv);
+    defmt::info!(
+        "ADC reference: factory={} sample_sum={} samples={} vref={}mV",
+        calibration_counts,
+        sum,
+        SAMPLE_COUNT,
+        reference_mv
+    );
+
     let adc2 = Adc::new(adc2_peri);
     let adc3 = Adc::new(adc3_peri);
 
