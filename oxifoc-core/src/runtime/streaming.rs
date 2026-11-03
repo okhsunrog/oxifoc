@@ -11,6 +11,7 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use bbqueue::nicknames::Churrasco;
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use ergot::net_stack::NetStackHandle;
 
 use crate::foc::controller::FocOutput;
@@ -42,6 +43,31 @@ pub static FAST_TELEM_Q: Churrasco<2048> = Churrasco::new();
 /// 0 = streaming disabled. Set by `telemetry_config_server` when host
 /// sends `TelemetryConfig { fast_hz }`.
 pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
+
+// Serializes configuration with task-side broadcasts, without blocking the
+// FOC interrupt. A stop ACK must follow every previously accepted batch.
+static FAST_TELEM_GATE: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
+
+pub(super) async fn configure_fast_telemetry(period: u32) -> u32 {
+    let _gate = FAST_TELEM_GATE.lock().await;
+    let actual = critical_section::with(|_| {
+        if crate::state::FLASH_OP_PENDING.load(Ordering::SeqCst) && period != 0 {
+            FAST_TELEM_PERIOD.load(Ordering::Acquire)
+        } else {
+            FAST_TELEM_PERIOD.store(period, Ordering::Release);
+            period
+        }
+    });
+    if actual == 0 {
+        // The stream task holds no read grant outside the gate. Discard the
+        // disabled session's pending samples so a later start cannot send them.
+        let cons = FAST_TELEM_Q.framed_consumer();
+        while let Ok(grant) = cons.read() {
+            grant.release();
+        }
+    }
+    actual
+}
 
 /// Decimation counter for the raw diagnostic stream: emit one sample every
 /// `period`-th FOC cycle. The raw-ADC frame is unfiltered (the host does any
@@ -372,6 +398,13 @@ where
 
         T::after_micros(interval_us).await;
 
+        let _gate = FAST_TELEM_GATE.lock().await;
+        // The host can stop us while the timer is pending. Do not broadcast
+        // residual samples after that stop has already been acknowledged.
+        if FAST_TELEM_PERIOD.load(Ordering::Acquire) == 0 {
+            continue;
+        }
+
         // Drain bbqueue into batches and broadcast. The queue already holds
         // raw Pod frame bytes and the batch ships raw Pod bytes, so the copy
         // below is the whole per-sample "serialization".
@@ -418,6 +451,34 @@ where
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stream_control_tests {
+    use super::*;
+    use core::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+
+    #[test]
+    fn stop_waits_for_broadcaster_and_discards_pending_samples() {
+        let mut cx = Context::from_waker(Waker::noop());
+        let gate = FAST_TELEM_GATE.try_lock().unwrap();
+        FAST_TELEM_PERIOD.store(1, Ordering::Release);
+        let prod = FAST_TELEM_Q.framed_producer();
+        let mut grant = prod.grant(4).unwrap();
+        grant.copy_from_slice(&[1, 2, 3, 4]);
+        grant.commit(4);
+
+        let mut stop = core::pin::pin!(configure_fast_telemetry(0));
+        assert!(stop.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(FAST_TELEM_PERIOD.load(Ordering::Acquire), 1);
+        drop(gate);
+        assert_eq!(stop.as_mut().poll(&mut cx), Poll::Ready(0));
+        assert_eq!(FAST_TELEM_PERIOD.load(Ordering::Acquire), 0);
+        assert!(FAST_TELEM_Q.framed_consumer().read().is_err());
     }
 }
 

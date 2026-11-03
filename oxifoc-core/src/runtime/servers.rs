@@ -868,8 +868,7 @@ pub async fn telemetry_config_server<NS, const N: usize>(endpoints: Endpoints<NS
 where
     NS: NetStackHandle,
 {
-    use super::streaming::FAST_TELEM_PERIOD;
-    use core::sync::atomic::Ordering;
+    use super::streaming::configure_fast_telemetry;
 
     let server = endpoints.bounded_server::<TelemetryConfigEndpoint, N>(Some("telemetry_config"));
     let server = pin!(server);
@@ -878,42 +877,32 @@ where
     loop {
         let _ = h
             .serve(|cfg: &TelemetryConfig| {
-                let (period, actual_fast_hz) = if cfg.fast_hz > 0 {
-                    let period = (foc_freq_hz / u32::from(cfg.fast_hz.max(1))).max(1);
-                    let actual = (foc_freq_hz / period) as u16;
-                    (period, actual)
+                let requested_fast_hz = cfg.fast_hz;
+                let period = if requested_fast_hz > 0 {
+                    (foc_freq_hz / u32::from(requested_fast_hz)).max(1)
                 } else {
-                    (0, 0) // disabled
+                    0 // disabled
                 };
 
-                let (_period, actual_fast_hz) = critical_section::with(|_| {
-                    // A flash/reset maintenance operation must not acquire a
-                    // capture halfway through updating its calibration snapshot.
-                    if crate::state::FLASH_OP_PENDING.load(Ordering::SeqCst) && period != 0 {
-                        (0, 0)
-                    } else {
-                        FAST_TELEM_PERIOD.store(period, Ordering::Release);
-                        (period, actual_fast_hz)
-                    }
-                });
+                async move {
+                    let period = configure_fast_telemetry(period).await;
+                    let actual_fast_hz = foc_freq_hz.checked_div(period).unwrap_or(0) as u16;
 
-                #[cfg(feature = "defmt")]
-                defmt::info!(
-                    "TelemetryConfig rx: fast_hz={}, period={}, actual={}Hz",
-                    cfg.fast_hz,
-                    _period,
-                    actual_fast_hz
-                );
+                    #[cfg(feature = "defmt")]
+                    defmt::info!(
+                        "TelemetryConfig rx: fast_hz={}, period={}, actual={}Hz",
+                        requested_fast_hz,
+                        period,
+                        actual_fast_hz
+                    );
 
-                #[cfg(feature = "log")]
-                log::info!(
-                    "Telemetry config: fast_hz={}, period={}, actual={}Hz",
-                    cfg.fast_hz,
-                    _period,
-                    actual_fast_hz
-                );
+                    #[cfg(feature = "log")]
+                    log::info!(
+                        "Telemetry config: fast_hz={requested_fast_hz}, period={period}, actual={actual_fast_hz}Hz"
+                    );
 
-                async move { TelemetryConfigAck { actual_fast_hz } }
+                    TelemetryConfigAck { actual_fast_hz }
+                }
             })
             .await;
     }
