@@ -75,6 +75,8 @@ pub fn latest_hw_info(runtime: &HostRuntime) -> Option<HardwareInfo> {
 /// A streaming capture in progress: device acked the rate, the warm-up
 /// transient has been discarded, samples accumulate via [`Self::drain_until`].
 pub struct Capture {
+    /// Sampled after the stream ACK, while calibration changes are blocked.
+    pub board_calibration: oxifoc_core::types::ConfigSnapshot,
     pub hw: Option<HardwareInfo>,
     pub fast_hz_requested: u16,
     pub fast_hz_actual: u16,
@@ -116,6 +118,19 @@ impl Capture {
         if fast_hz_actual == 0 {
             bail!("device acknowledged a zero fast rate for a capture");
         }
+        let board_calibration = match crate::config_cli::read_group(
+            &runtime.cmd_tx,
+            oxifoc_core::types::ConfigGroupId::BoardCalibration,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let _ = runtime.cmd_tx.send(HostCommand::SetTelemetryConfig(
+                    TelemetryConfig { fast_hz: 0 },
+                    None,
+                ));
+                return Err(error).context("read active board calibration after stream ACK");
+            }
+        };
         let foc_freq_hz = hw.as_ref().map(|h| h.foc_freq_hz).unwrap_or(0);
         let decimation_m = if foc_freq_hz > 0 {
             foc_freq_hz / u32::from(fast_hz_actual)
@@ -131,6 +146,7 @@ impl Capture {
         while runtime.fast_rx.try_recv().is_ok() {}
 
         Ok(Self {
+            board_calibration,
             hw,
             fast_hz_requested: fast_hz,
             fast_hz_actual,
@@ -212,6 +228,21 @@ impl Capture {
             bail!("no telemetry received — is the device connected and streaming?");
         }
         let (gaps, samples_lost) = self.analyze_gaps();
+        let mut config_snapshot = config_snapshot.clone();
+        if let Some(obj) = config_snapshot.as_object_mut() {
+            let active = self
+                .board_calibration
+                .value
+                .as_ref()
+                .and_then(crate::config_cli::group_value)
+                .unwrap_or_else(|| serde_json::json!({ "vbus_gain": 1.0 }));
+            obj.insert("board-calibration".to_string(), active);
+        }
+        let mut metadata = extra_meta.to_vec();
+        metadata.push((
+            "oxifoc.board_calibration".to_string(),
+            serde_json::to_string(&self.board_calibration)?,
+        ));
         write_parquet(
             out_path,
             &self.samples,
@@ -220,10 +251,10 @@ impl Capture {
             self.fast_hz_requested,
             self.fast_hz_actual,
             self.expected_step(),
-            config_snapshot,
+            &config_snapshot,
             gaps,
             samples_lost,
-            extra_meta,
+            &metadata,
         )?;
         Ok(RecordSummary {
             path: out_path.to_string(),
@@ -409,4 +440,80 @@ fn write_parquet(
     rg.close()?;
     writer.close()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxifoc_core::storage::BoardCalibrationConfig;
+    use oxifoc_core::types::{ConfigGroupId, ConfigSnapshot, ConfigValue};
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+
+    #[test]
+    fn capture_metadata_uses_calibration_read_after_stream_ack() {
+        let gain = BoardCalibrationConfig { vbus_gain: 1.01 };
+        let capture = Capture {
+            board_calibration: ConfigSnapshot {
+                group: ConfigGroupId::BoardCalibration,
+                revision: 7,
+                persisted: true,
+                valid: true,
+                value: Some(ConfigValue::BoardCalibration(gain)),
+            },
+            hw: None,
+            fast_hz_requested: 500,
+            fast_hz_actual: 500,
+            decimation_m: 2,
+            samples: vec![
+                FastTelemetry {
+                    seq: 2,
+                    ..Default::default()
+                },
+                FastTelemetry {
+                    seq: 4,
+                    ..Default::default()
+                },
+            ],
+            started: Instant::now(),
+            enrich: None,
+        };
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "board-calibration-{}-{nonce}.parquet",
+            std::process::id()
+        ));
+        capture
+            .finish(
+                path.to_str().unwrap(),
+                &serde_json::json!({"board-calibration":{"vbus_gain": 1.0}}),
+                &[],
+            )
+            .unwrap();
+        let reader = SerializedFileReader::new(File::open(&path).unwrap()).unwrap();
+        let meta = reader
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .unwrap();
+        let get = |key| {
+            meta.iter()
+                .find(|kv| kv.key == key)
+                .unwrap()
+                .value
+                .as_ref()
+                .unwrap()
+        };
+        let config: serde_json::Value = serde_json::from_str(get("oxifoc.config")).unwrap();
+        assert_eq!(
+            config["board-calibration"]["vbus_gain"],
+            serde_json::json!(gain.vbus_gain)
+        );
+        let active: ConfigSnapshot = serde_json::from_str(get("oxifoc.board_calibration")).unwrap();
+        assert_eq!(active, capture.board_calibration);
+        drop(reader);
+        std::fs::remove_file(path).unwrap();
+    }
 }

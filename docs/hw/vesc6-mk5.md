@@ -66,6 +66,46 @@ Different from CF2:
 
 ## Analog scaling
 
+- Per-device corrections live in `BoardCalibrationConfig`, exposed as the
+  `board-calibration` group. V1 contains only `vbus_gain` (default 1.0,
+  finite, allowed range 0.95–1.05). Nominal divider values, current gain,
+  NTC conversion and the boot-measured VREF remain independent.
+  The gain is applied once at the ADC-to-VBUS boundary, so control,
+  detection, protection and both telemetry streams consume the same voltage.
+  The host does not multiply the received voltage again.
+- Apply is RAM-only and atomic with respect to the ADC ISR. It requires
+  `Stopped` mode, no boot/offset/detection maintenance and no active fast
+  stream. Persist writes that exact live revision while stopped. `config set`
+  performs Apply then Persist; inspect `persisted` in the result. The value
+  belongs to this board, not every MK5 or its attached motor:
+
+  ```sh
+  just cli --transport usb --json config get board-calibration
+  just cli --transport usb --json config set board-calibration vbus_gain=1.009725
+  ```
+
+  The example gain is a candidate from this bench board's 16/20/24 V
+  measurements, not a model default. Reapply is absolute, not cumulative.
+  Export the calibration/config together with `info` (including MCU UUID)
+  and its measurement report before transferring or restoring it.
+- Flash stores a versioned V1 record at key 12 in the existing storage
+  sectors. A missing record means identity; an unreadable/invalid/unknown
+  version sets `valid=false`, raises a calibration warning and independently
+  blocks motor starts until a valid value is applied. Clearing the warning
+  alone cannot bypass that gate. Apply a valid value, persist it and clear
+  the old warning after repair. `ResetAll` erases this group as well; setting
+  `vbus_gain=1.0` resets just this correction. Reset is also refused during
+  a fast stream.
+- This changes the application protocol to version 5: host and firmware must
+  be updated together. Older firmware does not recognize key 12, so rolling
+  back firmware alone can make its storage scan fail. Retain a complete flash
+  backup from before the new key was written. Existing key numbers/layouts
+  are unchanged. Future calibration fields require a new stored-record
+  version and explicit migration; do not append them to the frozen V1 layout.
+- Capture records the active calibration and its revision/validity in
+  `oxifoc.board_calibration` after the fast-stream ACK, when calibration
+  changes are blocked; `oxifoc.config` contains that same active correction.
+
 - At boot, ADC1 samples VREFINT 64 times (480-cycle sample time) before
   enabling the gate driver or timer-triggered conversions. The factory
   VREFINT calibration at `0x1FFF7A2A` (3300 mV) determines the measured

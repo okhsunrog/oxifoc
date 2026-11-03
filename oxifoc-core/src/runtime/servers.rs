@@ -277,6 +277,7 @@ fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
     use crate::types::ConfigWrite;
     let counts_ok = |v: f32| (0.0..=f32::from(u16::MAX)).contains(&v);
     match w {
+        ConfigWrite::BoardCalibration(v) => v.is_sane(),
         ConfigWrite::CurrentLimits(v) => v.is_coherent(),
         ConfigWrite::Derating(v) => DeratingConfig::from(v).is_sane(),
         ConfigWrite::DcOffsets(v) => {
@@ -313,6 +314,7 @@ fn config_value(
 ) -> Option<crate::types::ConfigValue> {
     use crate::types::{ConfigGroupId as G, ConfigValue as V};
     match group {
+        G::BoardCalibration => cfg.board_calibration.map(V::BoardCalibration),
         G::MotorParams => cfg.motor_params.clone().map(V::MotorParams),
         G::HallCalibration => cfg.hall_calibration.clone().map(V::HallCalibration),
         G::DcOffsets => cfg.dc_offsets.clone().map(V::DcOffsets),
@@ -331,6 +333,10 @@ fn config_value(
 fn flash_parts(value: crate::types::ConfigValue) -> (ConfigKey, ConfigPayload) {
     use crate::types::ConfigValue as V;
     match value {
+        V::BoardCalibration(v) => (
+            ConfigKey::BoardCalibration,
+            ConfigPayload::BoardCalibration(v),
+        ),
         V::MotorParams(v) => (ConfigKey::MotorParams, ConfigPayload::MotorParams(v)),
         V::CurrentLimits(v) => (ConfigKey::CurrentLimits, ConfigPayload::CurrentLimits(v)),
         V::VoltageLimits(v) => (ConfigKey::VoltageLimits, ConfigPayload::VoltageLimits(v)),
@@ -486,6 +492,8 @@ pub async fn config_server<NS, const N: usize>(
                             ConfigResponse::Snapshot(ConfigSnapshot {
                                 group,
                                 revision,
+                                valid: group != ConfigGroupId::BoardCalibration
+                                    || cfg.board_calibration_is_valid(),
                                 persisted: critical_section::with(|cs| {
                                     persisted_revisions.borrow(cs).borrow()[group.index()]
                                         == Some(revision)
@@ -522,10 +530,37 @@ pub async fn config_server<NS, const N: usize>(
                             if keyed.inner.expected_revision != current_revision {
                                 return ConfigResponse::Conflict { current_revision };
                             }
+                            // A measurement-source update needs no FocDriver mutation.
+                            // Commit it with its mirror/revision under one CS, between
+                            // complete ADC ISR executions; never inside a capture.
+                            if let ConfigWrite::BoardCalibration(value) = &write {
+                                return critical_section::with(|cs| {
+                                    let mut state = state_mutex.borrow(cs).borrow_mut();
+                                    if !state.can_apply_board_calibration() {
+                                        return ConfigResponse::Busy;
+                                    }
+                                    state.board_calibration = *value;
+                                    state.board_calibration_valid = true;
+                                    let mut cfg = runtime_config.borrow(cs).borrow_mut();
+                                    cfg.board_calibration = Some(*value);
+                                    cfg.board_calibration_invalid = false;
+                                    let revision = current_revision.wrapping_add(1);
+                                    revisions.borrow(cs).borrow_mut()[group.index()] = revision;
+                                    action_cache
+                                        .borrow(cs)
+                                        .borrow_mut()
+                                        .insert(keyed.id, CachedConfigAck::Applied(revision));
+                                    ConfigResponse::Applied {
+                                        req_id: keyed.id,
+                                        revision,
+                                    }
+                                });
+                            }
                             // Update the in-memory mirror.
                             critical_section::with(|cs| {
                                 let mut cfg = runtime_config.borrow(cs).borrow_mut();
                                 match &write {
+                                    ConfigWrite::BoardCalibration(_) => {} // handled atomically above
                                     ConfigWrite::MotorParams(v) => {
                                         cfg.motor_params = Some(v.clone());
                                     }
@@ -573,6 +608,7 @@ pub async fn config_server<NS, const N: usize>(
                                     .unwrap_or(0.0)
                             });
                             match write {
+                                ConfigWrite::BoardCalibration(_) => {} // handled atomically above
                                 // Limits: clamped to the board ceiling and
                                 // the motor rating.
                                 ConfigWrite::CurrentLimits(ref v) => {
@@ -723,6 +759,16 @@ pub async fn config_server<NS, const N: usize>(
                                 return ConfigResponse::Conflict { current_revision };
                             }
                             let _flash_pending = FlashPendingGuard::arm();
+                            if group == ConfigGroupId::BoardCalibration
+                                && !critical_section::with(|cs| {
+                                    state_mutex
+                                        .borrow(cs)
+                                        .borrow()
+                                        .can_apply_board_calibration()
+                                })
+                            {
+                                return ConfigResponse::Busy;
+                            }
                             let actuator_busy = critical_section::with(|cs| {
                                 state_mutex.borrow(cs).borrow().actuator_busy()
                             });
@@ -760,9 +806,17 @@ pub async fn config_server<NS, const N: usize>(
                             }
                         }
                         ConfigRequest::ResetAll => {
+                            let _calibration_pending = FlashPendingGuard::arm();
+                            if !critical_section::with(|cs| {
+                                state_mutex
+                                    .borrow(cs)
+                                    .borrow()
+                                    .can_apply_board_calibration()
+                            }) {
+                                return ConfigResponse::Busy;
+                            }
                             if persist {
                                 // Same TOCTOU guard as the Write arm above.
-                                let _flash_pending = FlashPendingGuard::arm();
                                 let actuator_busy = critical_section::with(|cs| {
                                     state_mutex.borrow(cs).borrow().actuator_busy()
                                 });
@@ -779,6 +833,10 @@ pub async fn config_server<NS, const N: usize>(
                             }
                             critical_section::with(|cs| {
                                 *runtime_config.borrow(cs).borrow_mut() = RuntimeConfig::default();
+                                let mut state = state_mutex.borrow(cs).borrow_mut();
+                                state.board_calibration =
+                                    crate::storage::BoardCalibrationConfig::IDENTITY;
+                                state.board_calibration_valid = true;
                             });
                             // Stored limits are gone — restore board defaults.
                             CMD_CHANNEL
@@ -828,13 +886,22 @@ where
                     (0, 0) // disabled
                 };
 
-                FAST_TELEM_PERIOD.store(period, Ordering::Relaxed);
+                let (_period, actual_fast_hz) = critical_section::with(|_| {
+                    // A flash/reset maintenance operation must not acquire a
+                    // capture halfway through updating its calibration snapshot.
+                    if crate::state::FLASH_OP_PENDING.load(Ordering::SeqCst) && period != 0 {
+                        (0, 0)
+                    } else {
+                        FAST_TELEM_PERIOD.store(period, Ordering::Release);
+                        (period, actual_fast_hz)
+                    }
+                });
 
                 #[cfg(feature = "defmt")]
                 defmt::info!(
                     "TelemetryConfig rx: fast_hz={}, period={}, actual={}Hz",
                     cfg.fast_hz,
-                    period,
+                    _period,
                     actual_fast_hz
                 );
 
@@ -842,7 +909,7 @@ where
                 log::info!(
                     "Telemetry config: fast_hz={}, period={}, actual={}Hz",
                     cfg.fast_hz,
-                    period,
+                    _period,
                     actual_fast_hz
                 );
 

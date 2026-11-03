@@ -424,7 +424,7 @@ fn ADC() {
     IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
 
     // Convert VBUS raw ADC to millivolts
-    let vbus_mv = board.vbus_mv_from_adc(vbus_raw);
+    let vbus_mv = oxifoc_core::state::calibrated_vbus_mv(&STATE, board.vbus_mv_from_adc(vbus_raw));
     VBUS_MV.store(vbus_mv, Ordering::Relaxed);
     VBUS_MEASURED.store(true, Ordering::Release);
 

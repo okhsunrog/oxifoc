@@ -22,6 +22,9 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
         let mut obj = serde_json::Map::new();
         for (name, group) in GROUPS {
             let snapshot = read_group(cmd, group)?;
+            if !snapshot.valid {
+                anyhow::bail!("invalid stored calibration: {name}");
+            }
             let v = snapshot
                 .value
                 .as_ref()
@@ -35,7 +38,11 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
 
     let mut read = Vec::new();
     for (_, g) in GROUPS {
-        read.push((g, read_group(cmd, g)?));
+        let snapshot = read_group(cmd, g)?;
+        if !snapshot.valid {
+            anyhow::bail!("invalid stored calibration: {g:?}");
+        }
+        read.push((g, snapshot));
     }
 
     if !rust {
@@ -88,6 +95,7 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
             None => println!("        {field}: None,"),
         }
     }
+    println!("        board_calibration_invalid: false,");
     println!("    }}");
     println!("}}");
     Ok(())
@@ -99,6 +107,7 @@ fn rust_struct_name(group: oxifoc_core::types::ConfigGroupId) -> &'static str {
     // instead of panicking at dump time (this used to be a string match
     // ending in unreachable!()).
     match group {
+        G::BoardCalibration => "BoardCalibrationConfig",
         G::MotorParams => "MotorParamsConfig",
         G::HallCalibration => "HallCalibrationConfig",
         G::DcOffsets => "DcOffsetsConfig",

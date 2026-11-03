@@ -40,6 +40,8 @@ pub const VIRTUAL_CALIB: oxifoc_core::types::BoardCalib = oxifoc_core::types::Bo
 // Runtime config shared between config server and simulation
 static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig>> =
     critical_section::Mutex::new(core::cell::RefCell::new(RuntimeConfig {
+        board_calibration: None,
+        board_calibration_invalid: false,
         motor_params: None,
         hall_calibration: None,
         dc_offsets: None,
@@ -149,6 +151,10 @@ async fn main() -> anyhow::Result<()> {
     }
     critical_section::with(|cs| {
         *RUNTIME_CONFIG.borrow(cs).borrow_mut() = loaded_config.clone();
+        STATE
+            .borrow(cs)
+            .borrow_mut()
+            .load_board_calibration(&loaded_config);
     });
     tracing::info!("Config loaded from mock flash");
 

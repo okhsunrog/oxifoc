@@ -560,7 +560,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 4;
+pub const ICD_PROTO_VERSION: u16 = 5;
 
 /// Stable marker at the front of every [`HardwareInfo`] bootstrap response.
 pub const ICD_BOOTSTRAP_MAGIC: [u8; 4] = *b"OXIC";
@@ -832,9 +832,9 @@ pub use config_types::*;
 #[cfg(feature = "storage")]
 mod config_types {
     use crate::storage::{
-        CurrentLimitsConfig, DcOffsetsConfig, DeratingConfigStored, FailsafeConfigStored,
-        HallCalibrationConfig, HallTuningConfig, MotorParamsConfig, PiGainsConfig, PwmConfigStored,
-        VelocityConfigStored, VoltageLimitsConfig,
+        BoardCalibrationConfig, CurrentLimitsConfig, DcOffsetsConfig, DeratingConfigStored,
+        FailsafeConfigStored, HallCalibrationConfig, HallTuningConfig, MotorParamsConfig,
+        PiGainsConfig, PwmConfigStored, VelocityConfigStored, VoltageLimitsConfig,
     };
 
     use super::*;
@@ -869,10 +869,11 @@ mod config_types {
         Velocity,
         // postcard encodes the variant index — append only.
         Derating,
+        BoardCalibration,
     }
 
     impl ConfigGroupId {
-        pub const COUNT: usize = 11;
+        pub const COUNT: usize = 12;
         pub const ALL: [Self; Self::COUNT] = [
             Self::MotorParams,
             Self::HallCalibration,
@@ -885,6 +886,7 @@ mod config_types {
             Self::Failsafe,
             Self::Velocity,
             Self::Derating,
+            Self::BoardCalibration,
         ];
 
         pub const fn index(self) -> usize {
@@ -900,6 +902,7 @@ mod config_types {
                 Self::Failsafe => 8,
                 Self::Velocity => 9,
                 Self::Derating => 10,
+                Self::BoardCalibration => 11,
             }
         }
     }
@@ -925,6 +928,7 @@ mod config_types {
         // postcard encodes the variant index — append only.
         /// Graduated derating ramps (thermal/voltage/speed)
         Derating(DeratingConfigStored),
+        BoardCalibration(BoardCalibrationConfig),
     }
 
     impl ConfigWrite {
@@ -941,6 +945,7 @@ mod config_types {
                 Self::Failsafe(_) => ConfigGroupId::Failsafe,
                 Self::Velocity(_) => ConfigGroupId::Velocity,
                 Self::Derating(_) => ConfigGroupId::Derating,
+                Self::BoardCalibration(_) => ConfigGroupId::BoardCalibration,
             }
         }
     }
@@ -974,6 +979,7 @@ mod config_types {
         Failsafe(FailsafeConfigStored),
         Velocity(VelocityConfigStored),
         Derating(DeratingConfigStored),
+        BoardCalibration(BoardCalibrationConfig),
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
@@ -983,6 +989,8 @@ mod config_types {
         pub revision: u32,
         /// True only when flash contains this exact live revision.
         pub persisted: bool,
+        /// False when a stored calibration could not be decoded or validated.
+        pub valid: bool,
         pub value: Option<ConfigValue>,
     }
 

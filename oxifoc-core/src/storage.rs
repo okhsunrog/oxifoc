@@ -26,7 +26,9 @@ pub type UncachedStorage<KEY> = sequential_storage::cache::Cache<
 /// Keys for configuration groups stored in flash.
 ///
 /// Each key maps to a small struct serialized with postcard.
-/// New keys can be added without invalidating existing storage.
+/// New firmware preserves existing key numbers. Older firmware that does not
+/// recognize a newly written key may fail to scan this map: use a full backup
+/// when rolling back across a storage-schema change.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -53,6 +55,8 @@ pub enum ConfigKey {
     Velocity = 10,
     /// Graduated derating ramps (thermal/voltage/speed)
     Derating = 11,
+    /// Per-device analog measurement corrections (versioned payload).
+    BoardCalibration = 12,
 }
 
 impl Key for ConfigKey {
@@ -80,6 +84,7 @@ impl Key for ConfigKey {
             9 => Self::Failsafe,
             10 => Self::Velocity,
             11 => Self::Derating,
+            12 => Self::BoardCalibration,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -89,6 +94,69 @@ impl Key for ConfigKey {
 // ============================================================================
 // Config Group Structs
 // ============================================================================
+
+/// Persistent corrections for one physical board, independent of its motor.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct BoardCalibrationConfig {
+    /// Absolute VBUS multiplier, applied once after ADC/VREF conversion.
+    pub vbus_gain: f32,
+}
+
+impl BoardCalibrationConfig {
+    pub const IDENTITY: Self = Self { vbus_gain: 1.0 };
+
+    pub fn is_sane(&self) -> bool {
+        self.vbus_gain.is_finite() && (0.95..=1.05).contains(&self.vbus_gain)
+    }
+
+    pub fn correct_vbus_mv(&self, nominal_mv: u32) -> u32 {
+        (nominal_mv as f32 * self.vbus_gain + 0.5) as u32
+    }
+}
+
+impl Default for BoardCalibrationConfig {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+/// Freeze each stored layout: future fields require a new variant and an
+/// explicit migration, never extension of the V1 postcard struct in place.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg(any(feature = "runtime", test))]
+enum StoredBoardCalibration {
+    V1(BoardCalibrationV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg(any(feature = "runtime", test))]
+struct BoardCalibrationV1 {
+    vbus_gain: f32,
+}
+
+#[cfg(any(feature = "runtime", test))]
+impl PostcardValue<'_> for StoredBoardCalibration {}
+
+#[cfg(any(feature = "runtime", test))]
+impl From<BoardCalibrationConfig> for StoredBoardCalibration {
+    fn from(value: BoardCalibrationConfig) -> Self {
+        Self::V1(BoardCalibrationV1 {
+            vbus_gain: value.vbus_gain,
+        })
+    }
+}
+
+#[cfg(any(feature = "runtime", test))]
+impl StoredBoardCalibration {
+    fn validated(self) -> Option<BoardCalibrationConfig> {
+        let Self::V1(v) = self;
+        let value = BoardCalibrationConfig {
+            vbus_gain: v.vbus_gain,
+        };
+        value.is_sane().then_some(value)
+    }
+}
 
 /// Motor electrical parameters.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
@@ -557,6 +625,9 @@ impl Default for DeratingConfigStored {
 /// Fields are `None` if not yet stored in flash (use board defaults).
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeConfig {
+    pub board_calibration: Option<BoardCalibrationConfig>,
+    /// Boot read/validation failure; distinct from a missing optional record.
+    pub board_calibration_invalid: bool,
     pub motor_params: Option<MotorParamsConfig>,
     pub hall_calibration: Option<HallCalibrationConfig>,
     pub dc_offsets: Option<DcOffsetsConfig>,
@@ -568,6 +639,12 @@ pub struct RuntimeConfig {
     pub failsafe: Option<FailsafeConfigStored>,
     pub velocity: Option<VelocityConfigStored>,
     pub derating: Option<DeratingConfigStored>,
+}
+
+impl RuntimeConfig {
+    pub fn board_calibration_is_valid(&self) -> bool {
+        !self.board_calibration_invalid && self.board_calibration.is_none_or(|v| v.is_sane())
+    }
 }
 
 // ============================================================================
@@ -588,6 +665,7 @@ pub enum FlashOperation {
 /// Payload variants for each config group.
 #[derive(Clone, Debug)]
 pub enum ConfigPayload {
+    BoardCalibration(BoardCalibrationConfig),
     MotorParams(MotorParamsConfig),
     HallCalibration(HallCalibrationConfig),
     DcOffsets(DcOffsetsConfig),
@@ -655,6 +733,11 @@ where
         let success = match op {
             FlashOperation::Save(key, payload) => {
                 let result = match payload {
+                    ConfigPayload::BoardCalibration(v) => {
+                        storage
+                            .store_item(buf, &key, &StoredBoardCalibration::from(v))
+                            .await
+                    }
                     ConfigPayload::MotorParams(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::HallCalibration(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::DcOffsets(v) => storage.store_item(buf, &key, &v).await,
@@ -720,12 +803,114 @@ where
     load!(velocity, Velocity);
     load!(derating, Derating);
 
+    match storage
+        .fetch_item::<StoredBoardCalibration>(buf, &ConfigKey::BoardCalibration)
+        .await
+    {
+        Ok(None) => {}
+        Ok(Some(stored)) => match stored.validated() {
+            Some(value) => cfg.board_calibration = Some(value),
+            None => cfg.board_calibration_invalid = true,
+        },
+        Err(_) => cfg.board_calibration_invalid = true,
+    }
+
     cfg
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn board_calibration_validation_and_absolute_scale() {
+        let correction = BoardCalibrationConfig {
+            vbus_gain: 1.009725,
+        };
+        assert!(correction.is_sane());
+        assert_eq!(correction.correct_vbus_mv(20_000), 20_195);
+        assert_eq!(
+            BoardCalibrationConfig::default().correct_vbus_mv(20_000),
+            20_000
+        );
+        for gain in [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.0,
+            -1.0,
+            0.949,
+            1.051,
+        ] {
+            assert!(!BoardCalibrationConfig { vbus_gain: gain }.is_sane());
+        }
+    }
+
+    #[test]
+    fn board_calibration_v1_layout_is_frozen() {
+        let record = StoredBoardCalibration::from(BoardCalibrationConfig::IDENTITY);
+        let mut buf = [0; 16];
+        let encoded = postcard::to_slice(&record, &mut buf).unwrap();
+        assert_eq!(encoded, &[0, 0, 0, 128, 63]); // V1 tag + f32(1.0), LE
+        let decoded: StoredBoardCalibration = postcard::from_bytes(encoded).unwrap();
+        assert_eq!(decoded.validated(), Some(BoardCalibrationConfig::IDENTITY));
+        assert!(postcard::from_bytes::<StoredBoardCalibration>(&[1, 0, 0, 128, 63]).is_err());
+        let bad = StoredBoardCalibration::from(BoardCalibrationConfig {
+            vbus_gain: f32::NAN,
+        });
+        assert!(bad.validated().is_none());
+    }
+
+    #[cfg(feature = "runtime")]
+    #[test]
+    fn board_calibration_flash_load_distinguishes_missing_valid_and_invalid() {
+        use sequential_storage::cache::Cache;
+        use sequential_storage::map::{MapConfig, MapStorage};
+        use sequential_storage::mock_flash::{MockFlashBase, WriteCountCheck};
+        // The mock storage futures complete synchronously; no executor/dependency needed.
+        fn ready<T>(future: impl Future<Output = T>) -> T {
+            let mut future = core::pin::pin!(future);
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            match future.as_mut().poll(&mut cx) {
+                core::task::Poll::Ready(v) => v,
+                core::task::Poll::Pending => panic!("mock flash unexpectedly yielded"),
+            }
+        }
+        type Flash = MockFlashBase<4, 4, 256>;
+        let flash = Flash::new(WriteCountCheck::TwiceWithZero, None, true);
+        let mut storage = MapStorage::new(
+            flash,
+            MapConfig::new(Flash::FULL_FLASH_RANGE),
+            Cache::new_uncached(),
+        );
+        let mut buf = [0; 128];
+        let absent = ready(load_all(&mut storage, &mut buf));
+        assert_eq!(absent.board_calibration, None);
+        assert!(!absent.board_calibration_invalid);
+        let limits = CurrentLimitsConfig::default();
+        ready(storage.store_item(&mut buf, &ConfigKey::CurrentLimits, &limits)).unwrap();
+        let value = BoardCalibrationConfig {
+            vbus_gain: 1.009725,
+        };
+        ready(storage.store_item(
+            &mut buf,
+            &ConfigKey::BoardCalibration,
+            &StoredBoardCalibration::from(value),
+        ))
+        .unwrap();
+        let loaded = ready(load_all(&mut storage, &mut buf));
+        assert_eq!(loaded.board_calibration, Some(value));
+        assert!(!loaded.board_calibration_invalid);
+        assert_eq!(loaded.current_limits, Some(limits.clone()));
+        // Unknown version is an error, not an absent record or an identity fallback.
+        ready(storage.store_item(&mut buf, &ConfigKey::BoardCalibration, &99u8)).unwrap();
+        let invalid = ready(load_all(&mut storage, &mut buf));
+        assert_eq!(invalid.board_calibration, None);
+        assert!(invalid.board_calibration_invalid);
+        assert_eq!(invalid.current_limits, Some(limits));
+        ready(storage.erase_all()).unwrap();
+        assert!(!ready(load_all(&mut storage, &mut buf)).board_calibration_invalid);
+    }
 
     #[test]
     fn inductance_model_accessors_gate_on_valid_values() {

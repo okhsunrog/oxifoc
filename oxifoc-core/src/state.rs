@@ -218,6 +218,22 @@ impl Drop for FlashPendingGuard {
 // State Structure
 // ============================================================================
 
+/// Apply the active board correction exactly once at the measurement source.
+/// Control, protection and all telemetry consume this same voltage afterwards.
+#[cfg(feature = "storage")]
+pub fn calibrated_vbus_mv(
+    state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
+    nominal_mv: u32,
+) -> u32 {
+    critical_section::with(|cs| {
+        state_mutex
+            .borrow(cs)
+            .borrow()
+            .board_calibration
+            .correct_vbus_mv(nominal_mv)
+    })
+}
+
 /// Internal actuator ownership outside the public motor control modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriverOperation {
@@ -231,6 +247,10 @@ pub enum DriverOperation {
 /// It's updated by the platform's ISR and read by the protocol servers.
 #[derive(Clone, Debug)]
 pub struct MotorControlState {
+    #[cfg(feature = "storage")]
+    pub board_calibration: crate::storage::BoardCalibrationConfig,
+    #[cfg(feature = "storage")]
+    pub board_calibration_valid: bool,
     /// Current motor state (Stopped/Running/Error)
     pub motor_state: MotorState,
     /// Current control mode
@@ -261,6 +281,10 @@ impl MotorControlState {
     /// Create new state (const for static initialization)
     pub const fn new() -> Self {
         Self {
+            #[cfg(feature = "storage")]
+            board_calibration: crate::storage::BoardCalibrationConfig::IDENTITY,
+            #[cfg(feature = "storage")]
+            board_calibration_valid: true,
             motor_state: MotorState::Stopped,
             control_mode: ControlMode::Stopped,
             last_hall: None,
@@ -272,6 +296,32 @@ impl MotorControlState {
             driver_operation: DriverOperation::Idle,
             drive_ownership: DriveOwnership::new(),
         }
+    }
+
+    /// Restore calibration before starting the ADC/control loop. Missing is
+    /// identity; unreadable/invalid is a persistent start interlock until repaired.
+    #[cfg(feature = "storage")]
+    pub fn load_board_calibration(&mut self, config: &crate::storage::RuntimeConfig) {
+        let value = config.board_calibration.unwrap_or_default();
+        self.board_calibration_valid = config.board_calibration_is_valid();
+        self.board_calibration = if self.board_calibration_valid {
+            value
+        } else {
+            crate::storage::BoardCalibrationConfig::IDENTITY
+        };
+    }
+
+    /// Called under the same critical section as the live config/revision
+    /// update. The ADC ISR sees the complete new value at its next boundary.
+    #[cfg(feature = "storage")]
+    pub fn can_apply_board_calibration(&self) -> bool {
+        self.motor_state == MotorState::Stopped
+            && self.control_mode == ControlMode::Stopped
+            && self.driver_operation == DriverOperation::Idle
+            && !boot_current_offset_pending()
+            && !current_offset_request_pending()
+            && !DETECTION_ACTIVE.load(Ordering::Acquire)
+            && crate::runtime::streaming::FAST_TELEM_PERIOD.load(Ordering::Acquire) == 0
     }
 
     /// Set motor to stopped state.
@@ -619,6 +669,11 @@ where
                 return MotorCommandOutcome::RejectedSafety;
             }
 
+            #[cfg(feature = "storage")]
+            if mode != ControlMode::Stopped && !state.board_calibration_valid {
+                return MotorCommandOutcome::RejectedSafety;
+            }
+
             // Brake (windings shorted) is only safe to enter near standstill:
             // at speed the short-circuit current is set by back-EMF against
             // the motor impedance (→ λ/L), outside any control loop. Above
@@ -761,6 +816,12 @@ where
     // anyway; the slow-telemetry consumer cannot tell).
     let (link_active, fet_t, motor_t) = critical_section::with(|cs| {
         let mut st = state_mutex.borrow(cs).borrow_mut();
+        #[cfg(feature = "storage")]
+        if !st.board_calibration_valid
+            && let Some(fault) = F::from_category(FaultCategory::CalibrationFault)
+        {
+            fault_registry.set(fault);
+        }
         st.derating = driver.derating();
         (
             st.link_active,
@@ -1079,6 +1140,30 @@ pub fn update_telemetry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn board_calibration_boot_validation_and_measurement_scale() {
+        let mut state = MotorControlState::new();
+        let mut config = crate::storage::RuntimeConfig::default();
+        state.load_board_calibration(&config);
+        assert!(state.board_calibration_valid);
+        config.board_calibration = Some(crate::storage::BoardCalibrationConfig { vbus_gain: 1.01 });
+        state.load_board_calibration(&config);
+        let mutex = CriticalSectionMutex::new(RefCell::new(state.clone()));
+        assert_eq!(calibrated_vbus_mv(&mutex, 24_000), 24_240);
+        config.board_calibration_invalid = true;
+        state.load_board_calibration(&config);
+        assert!(!state.board_calibration_valid);
+        assert_eq!(
+            state.board_calibration,
+            crate::storage::BoardCalibrationConfig::IDENTITY
+        );
+        config.board_calibration_invalid = false;
+        config.board_calibration.as_mut().unwrap().vbus_gain = f32::NAN;
+        state.load_board_calibration(&config);
+        assert!(!state.board_calibration_valid);
+    }
 
     #[test]
     fn stop_does_not_clear_error_latch() {

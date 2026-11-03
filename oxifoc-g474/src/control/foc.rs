@@ -198,7 +198,7 @@ fn ADC1_2() {
             IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
             // Convert VBUS raw ADC to millivolts
-            vbus_mv = BOARD.vbus_mv_from_adc(samples[1]);
+            vbus_mv = oxifoc_core::state::calibrated_vbus_mv(&STATE, BOARD.vbus_mv_from_adc(samples[1]));
             VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
             // Convert temperature raw ADC to 0.1°C units

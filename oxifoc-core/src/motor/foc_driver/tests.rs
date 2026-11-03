@@ -3285,6 +3285,78 @@ mod severity_gate {
         assert_eq!(h.motor_state(), MotorState::Running);
     }
 
+    #[cfg(feature = "storage")]
+    #[test]
+    fn invalid_board_calibration_blocks_bridge_after_warning_clear() {
+        use crate::foc::fault::StandardFault;
+        let _serial = cmd_channel_lock();
+        let state = CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        critical_section::with(|cs| {
+            let mut state = state.borrow(cs).borrow_mut();
+            state.set_link_active();
+            state.load_board_calibration(&crate::storage::RuntimeConfig {
+                board_calibration_invalid: true,
+                ..Default::default()
+            });
+        });
+        let registry = FaultRegistry::<StandardFault>::new();
+        let mut driver = FocDriver::new(
+            FocController::<SvpwmModulator>::new(24.0),
+            GatedPwm {
+                enabled: false,
+                applied: [0; 3],
+            },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            PhaseManager::sensorless(),
+            0.00005,
+        );
+        for mode in [
+            ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0,
+            },
+            ControlMode::DirectVoltage {
+                vd: 1.0,
+                vq: 0.0,
+                angle_rad: 0.0,
+            },
+            ControlMode::Brake,
+        ] {
+            // A host can clear the warning; the independent interlock must
+            // still reject torque and detection's internal SetMode commands.
+            registry.clear_all();
+            CMD_CHANNEL.try_send(DriverCommand::SetMode(mode)).unwrap();
+            assert_eq!(
+                process_commands(&state, &mut driver, &registry),
+                ControlMode::Stopped
+            );
+            let _ = run_foc_cycle(&state, &registry, &mut driver, 24.0, 50, &BOARD);
+            assert!(!driver.pwm().enabled);
+            assert!(registry.any());
+        }
+        critical_section::with(|cs| {
+            state
+                .borrow(cs)
+                .borrow_mut()
+                .load_board_calibration(&crate::storage::RuntimeConfig::default());
+        });
+        registry.clear_all();
+        CMD_CHANNEL
+            .try_send(DriverCommand::SetMode(ControlMode::Brake))
+            .unwrap();
+        assert_eq!(
+            process_commands(&state, &mut driver, &registry),
+            ControlMode::Brake
+        );
+        let _ = run_foc_cycle(&state, &registry, &mut driver, 24.0, 100, &BOARD);
+        assert!(
+            driver.pwm().enabled,
+            "a repaired calibration must permit starts"
+        );
+    }
+
     #[test]
     fn braking_a_coasting_stopped_rotor_keeps_flash_gate_busy() {
         use crate::foc::phase::{PhaseInput, PhaseOutput};

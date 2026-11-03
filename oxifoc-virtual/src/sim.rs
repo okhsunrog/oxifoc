@@ -185,12 +185,22 @@ pub async fn foc_loop(
             driver.current_sensor_mut().sample(sample);
             seq = seq.wrapping_add(1);
             let [ia, ib, ic] = driver.current_sensor().raw;
-            let adc = AdcSnapshot::new(ia, ib, ic, (vbus * 1000.0) as u32, seq)
+            let measured_vbus_mv =
+                oxifoc_core::state::calibrated_vbus_mv(state_mutex, (vbus * 1000.0) as u32);
+            let measured_vbus = measured_vbus_mv as f32 / 1000.0;
+            let adc = AdcSnapshot::new(ia, ib, ic, measured_vbus_mv, seq)
                 .with_temp(TempSensorId::Fet, 250);
             // Protection consumes the previous ADC snapshot on boards. Publish
             // this cycle's ADC together with FOC below, preserving that order.
-            let telem = run_foc_cycle(state_mutex, fault_registry, &mut driver, vbus, now, &board)
-                .unwrap_or_default();
+            let telem = run_foc_cycle(
+                state_mutex,
+                fault_registry,
+                &mut driver,
+                measured_vbus,
+                now,
+                &board,
+            )
+            .unwrap_or_default();
             let hall = HallSnapshot {
                 angle_rad: sample.angle_rad,
                 velocity_rad_s: sample.omega_e,

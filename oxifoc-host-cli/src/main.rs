@@ -845,6 +845,7 @@ fn main() -> Result<()> {
                     json!({
                         "group": group,
                         "present": state.present,
+                        "valid": state.valid,
                         "persisted": state.persisted,
                         "revision": state.revision,
                         "value": value,
@@ -852,7 +853,9 @@ fn main() -> Result<()> {
                     format!(
                         "{group} (revision {}, {}): {value:#}",
                         state.revision,
-                        if !state.present {
+                        if !state.valid {
+                            "INVALID, motor start blocked"
+                        } else if !state.present {
                             "defaults, not configured"
                         } else if state.persisted {
                             "persisted"

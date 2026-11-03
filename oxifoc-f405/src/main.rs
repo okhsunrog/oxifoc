@@ -45,6 +45,8 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
     core::cell::RefCell<oxifoc_core::storage::RuntimeConfig>,
 > = critical_section::Mutex::new(core::cell::RefCell::new(
     oxifoc_core::storage::RuntimeConfig {
+        board_calibration: None,
+        board_calibration_invalid: false,
         motor_params: None,
         hall_calibration: None,
         dc_offsets: None,
@@ -168,7 +170,6 @@ async fn main(spawner: Spawner) {
             uart_ident
         )));
     }
-    protocol::servers::spawn_servers(&spawner, stack, &idents, defmt_consumer);
 
     // ========== STEP 8: Initialize Persistent Storage ==========
     let flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH);
@@ -176,7 +177,15 @@ async fn main(spawner: Spawner) {
     spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
     let runtime_config = storage::CONFIG_LOADED.wait().await;
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
+    critical_section::with(|cs| {
+        STATE
+            .borrow(cs)
+            .borrow_mut()
+            .load_board_calibration(&runtime_config);
+    });
     defmt::info!("Config loaded from flash");
+    // Publish config revisions/persistence only after the boot load is complete.
+    protocol::servers::spawn_servers(&spawner, stack, &idents, defmt_consumer);
 
     // ========== STEP 9: Initialize DRV8301 Gate Driver ==========
     let (drv_config, nfault) = hardware::drv8301::init_bus(r.drv, ExtiIrqs);

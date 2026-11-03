@@ -331,6 +331,7 @@ fn run_e2e(transport: TransportType) {
     assert_eq!(
         initial,
         ConfigResponse::Snapshot(oxifoc_core::types::ConfigSnapshot {
+            valid: true,
             group: ConfigGroupId::Failsafe,
             revision: 0,
             persisted: false,
@@ -653,5 +654,145 @@ fn tcp_connection_churn_does_not_kill_server() {
     assert!(
         guard.0.try_wait().unwrap().is_none(),
         "connection churn must not terminate the virtual device"
+    );
+}
+
+/// Calibration changes the measurement source, not the simulated supply or
+/// current calibration. Exercise validation, stop/capture gates and persistence.
+#[test]
+fn board_calibration_e2e_tcp() {
+    use oxifoc_core::storage::BoardCalibrationConfig;
+    use oxifoc_core::types::{ConfigSnapshot, TelemetryConfig};
+    use oxifoc_host_lib::ops::config::{persist_group, read_group, reset_all};
+    let port = free_tcp_port();
+    let _device = spawn_device("tcp", port);
+    let rt = start_host(HostConfig {
+        transport: Some(TransportType::Tcp),
+        tcp_host: Some("127.0.0.1".into()),
+        tcp_port: Some(port),
+        fast_hz: Some(0),
+        stream_defmt: Some(false),
+        reconnect: Some(ReconnectPolicy::Limited(20)),
+        ..Default::default()
+    });
+    assert!(rt.wait_for_connection(Duration::from_secs(15)));
+    let group = ConfigGroupId::BoardCalibration;
+    let initial = read_group(&rt.cmd_tx, group).unwrap();
+    assert!(initial.valid && !initial.persisted && initial.value.is_none());
+    let apply = |gain, revision, id| {
+        let (tx, rx) = config_channel();
+        rt.cmd_tx
+            .send(HostCommand::ConfigApply(
+                Keyed::new(
+                    ReqId(id),
+                    ConfigApply {
+                        expected_revision: revision,
+                        write: ConfigWrite::BoardCalibration(BoardCalibrationConfig {
+                            vbus_gain: gain,
+                        }),
+                    },
+                ),
+                tx,
+            ))
+            .unwrap();
+        rx.blocking_recv().unwrap().unwrap()
+    };
+    let telemetry = |hz| {
+        let (tx, rx) = oxifoc_host_lib::telemetry_channel();
+        rt.cmd_tx
+            .send(HostCommand::SetTelemetryConfig(
+                TelemetryConfig { fast_hz: hz },
+                Some(tx),
+            ))
+            .unwrap();
+        rx.blocking_recv().unwrap().unwrap()
+    };
+    assert_eq!(apply(1.2, 0, 100), ConfigResponse::Invalid);
+    let accepted = apply(1.01, 0, 101);
+    assert_eq!(
+        accepted,
+        ConfigResponse::Applied {
+            req_id: ReqId(101),
+            revision: 1
+        }
+    );
+    assert_eq!(apply(1.01, 0, 101), accepted, "retry must be deduplicated");
+    assert_eq!(
+        apply(1.02, 0, 102),
+        ConfigResponse::Conflict {
+            current_revision: 1
+        }
+    );
+    // Applying the same absolute multiplier with a fresh revision is not cumulative.
+    assert_eq!(
+        apply(1.01, 1, 103),
+        ConfigResponse::Applied {
+            req_id: ReqId(103),
+            revision: 2
+        }
+    );
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            rt.slow_rx
+                .try_iter()
+                .any(|s| (s.vbus_mv as i32 - 24_240).abs() <= 2)
+        }),
+        "slow telemetry must use the corrected measurement"
+    );
+    assert!(telemetry(500).actual_fast_hz > 0);
+    assert_eq!(
+        apply(1.02, 2, 104),
+        ConfigResponse::Busy,
+        "capture must block a scale change"
+    );
+    assert!(
+        reset_all(&rt.cmd_tx).is_err(),
+        "reset must not change a capture's scale"
+    );
+    telemetry(0);
+    let (tx, rx) = motor_channel();
+    rt.cmd_tx
+        .send(HostCommand::MotorAck(
+            ControlMode::CurrentControl {
+                iq_target: 0.1,
+                id_target: 0.0,
+            },
+            tx,
+        ))
+        .unwrap();
+    assert!(rx.blocking_recv().unwrap().is_ok());
+    assert_eq!(
+        apply(1.02, 2, 105),
+        ConfigResponse::Busy,
+        "running must block calibration"
+    );
+    let (tx, rx) = motor_channel();
+    rt.cmd_tx
+        .send(HostCommand::MotorAck(ControlMode::Stopped, tx))
+        .unwrap();
+    assert!(rx.blocking_recv().unwrap().is_ok());
+    assert!(persist_group(&rt.cmd_tx, group, 2).unwrap());
+    let ConfigSnapshot {
+        value,
+        persisted,
+        revision,
+        valid,
+        ..
+    } = read_group(&rt.cmd_tx, group).unwrap();
+    assert!(persisted && valid);
+    assert_eq!(revision, 2);
+    assert_eq!(
+        value,
+        Some(ConfigValue::BoardCalibration(BoardCalibrationConfig {
+            vbus_gain: 1.01
+        }))
+    );
+    reset_all(&rt.cmd_tx).unwrap();
+    assert!(read_group(&rt.cmd_tx, group).unwrap().value.is_none());
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            rt.slow_rx.try_iter().any(|s| s.vbus_mv == 24_000)
+        }),
+        "reset must restore the identity scale immediately"
     );
 }

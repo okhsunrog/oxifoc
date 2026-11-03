@@ -198,6 +198,11 @@ async fn run_step<B: DetectionBackend>(
     foc_freq_hz: u32,
     runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
 ) -> DetectResponse {
+    if runtime_config.is_some_and(|config| {
+        critical_section::with(|cs| !config.borrow(cs).borrow().board_calibration_is_valid())
+    }) {
+        return DetectResponse::Error(DetectError::Unsafe);
+    }
     match req {
         DetectRequest::MeasureResistance { max_power_loss_w } => {
             if !pos(max_power_loss_w) {

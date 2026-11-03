@@ -40,6 +40,8 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
     core::cell::RefCell<oxifoc_core::storage::RuntimeConfig>,
 > = critical_section::Mutex::new(core::cell::RefCell::new(
     oxifoc_core::storage::RuntimeConfig {
+        board_calibration: None,
+        board_calibration_invalid: false,
         motor_params: None,
         hall_calibration: None,
         dc_offsets: None,
@@ -117,6 +119,12 @@ async fn main(spawner: Spawner) {
     spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
     let runtime_config = storage::CONFIG_LOADED.wait().await;
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
+    critical_section::with(|cs| {
+        STATE
+            .borrow(cs)
+            .borrow_mut()
+            .load_board_calibration(&runtime_config);
+    });
     defmt::info!("Config loaded from flash");
 
     // ========== STEP 8: Spawn Transport and Protocol Tasks ==========

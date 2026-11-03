@@ -21,7 +21,7 @@ use serde_json::Value;
 use crate::{CommandSender, HostCommand, config_channel};
 
 /// kebab-case CLI name ↔ group id, in protocol order.
-pub const GROUPS: [(&str, ConfigGroupId); 11] = [
+pub const GROUPS: [(&str, ConfigGroupId); 12] = [
     ("motor-params", ConfigGroupId::MotorParams),
     ("hall-calibration", ConfigGroupId::HallCalibration),
     ("dc-offsets", ConfigGroupId::DcOffsets),
@@ -33,6 +33,7 @@ pub const GROUPS: [(&str, ConfigGroupId); 11] = [
     ("failsafe", ConfigGroupId::Failsafe),
     ("velocity", ConfigGroupId::Velocity),
     ("derating", ConfigGroupId::Derating),
+    ("board-calibration", ConfigGroupId::BoardCalibration),
 ];
 
 /// Parse a kebab-case group name into its id.
@@ -75,6 +76,7 @@ fn next_config_id() -> ReqId {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ConfigState {
+    pub valid: bool,
     pub revision: u32,
     pub persisted: bool,
     pub present: bool,
@@ -105,6 +107,7 @@ pub fn read_group(cmd: &CommandSender, group: ConfigGroupId) -> Result<ConfigSna
 #[must_use]
 pub fn group_value(value: &ConfigValue) -> Option<Value> {
     match value {
+        ConfigValue::BoardCalibration(v) => serde_json::to_value(v).ok(),
         ConfigValue::MotorParams(v) => serde_json::to_value(v).ok(),
         ConfigValue::CurrentLimits(v) => serde_json::to_value(v).ok(),
         ConfigValue::VoltageLimits(v) => serde_json::to_value(v).ok(),
@@ -125,6 +128,7 @@ pub fn group_default_value(group: ConfigGroupId) -> Value {
     use ConfigGroupId as G;
     use oxifoc_core::storage as st;
     let v = match group {
+        G::BoardCalibration => serde_json::to_value(st::BoardCalibrationConfig::default()),
         G::MotorParams => serde_json::to_value(st::MotorParamsConfig::default()),
         G::HallCalibration => serde_json::to_value(st::HallCalibrationConfig::default()),
         G::DcOffsets => serde_json::to_value(st::DcOffsetsConfig::default()),
@@ -144,6 +148,7 @@ pub fn group_default_value(group: ConfigGroupId) -> Value {
 pub fn write_from_value(group: ConfigGroupId, v: Value) -> Result<ConfigWrite> {
     use ConfigGroupId as G;
     Ok(match group {
+        G::BoardCalibration => ConfigWrite::BoardCalibration(serde_json::from_value(v)?),
         G::MotorParams => ConfigWrite::MotorParams(serde_json::from_value(v)?),
         G::HallCalibration => ConfigWrite::HallCalibration(serde_json::from_value(v)?),
         G::DcOffsets => ConfigWrite::DcOffsets(serde_json::from_value(v)?),
@@ -171,6 +176,7 @@ pub fn current_value(cmd: &CommandSender, group: ConfigGroupId) -> Result<(Value
     Ok((
         value,
         ConfigState {
+            valid: snapshot.valid,
             revision: snapshot.revision,
             persisted: snapshot.persisted,
             present,
@@ -206,7 +212,8 @@ pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigWri
              finite; current_limits: max_phase_current_a >= 1.3 x max_iq_a (the \
              overcurrent trip needs headroom above full throttle); derating: every \
              enabled ramp well-formed (temp/regen end > start, battery cut start > \
-             end, accel_dec and speed_start_frac in 0..=1)"
+             end, accel_dec and speed_start_frac in 0..=1); board-calibration: \
+             vbus_gain must be finite and within 0.95..=1.05"
         ),
         ConfigResponse::Conflict { current_revision } => bail!(
             "config changed concurrently (expected revision {expected_revision}, current {current_revision}); re-read and retry"

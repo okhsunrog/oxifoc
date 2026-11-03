@@ -254,6 +254,8 @@ pub trait PlatformFault: Copy + Clone + PartialEq {
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum StandardFault {
+    /// Invalid persistent board calibration; the independent state gate blocks starts.
+    BoardCalibrationInvalid,
     /// Over-current detected
     OverCurrent,
     /// Over-voltage on DC bus
@@ -274,6 +276,7 @@ pub enum StandardFault {
 impl PlatformFault for StandardFault {
     fn category(&self) -> FaultCategory {
         match self {
+            Self::BoardCalibrationInvalid => FaultCategory::CalibrationFault,
             Self::OverCurrent => FaultCategory::OverCurrent,
             Self::OverVoltage => FaultCategory::OverVoltage,
             Self::UnderVoltage => FaultCategory::UnderVoltage,
@@ -286,6 +289,10 @@ impl PlatformFault for StandardFault {
 
     fn details(&self) -> String<128> {
         match self {
+            Self::BoardCalibrationInvalid => {
+                String::try_from("invalid board calibration; repair before starting")
+                    .unwrap_or_default()
+            }
             Self::HallError(kind) => kind.details(),
             _ => String::new(),
         }
@@ -300,6 +307,7 @@ impl PlatformFault for StandardFault {
     /// Payload-free categories the shared core protection can raise.
     fn from_category(category: FaultCategory) -> Option<Self> {
         match category {
+            FaultCategory::CalibrationFault => Some(Self::BoardCalibrationInvalid),
             FaultCategory::OverCurrent => Some(Self::OverCurrent),
             FaultCategory::OverVoltage => Some(Self::OverVoltage),
             FaultCategory::UnderVoltage => Some(Self::UnderVoltage),
