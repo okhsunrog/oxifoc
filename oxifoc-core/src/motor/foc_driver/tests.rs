@@ -6,7 +6,7 @@ use crate::foc::clamp_f32;
 #[cfg(feature = "runtime")]
 use crate::foc::config::BoardConfig;
 use crate::foc::controller::Decoupling;
-#[cfg(feature = "virtual-motor")]
+#[cfg(any(feature = "virtual-motor", feature = "runtime"))]
 use crate::foc::controller::FocOutput;
 use crate::foc::current_offset::{CurrentOffsetMethod, CurrentOffsetRequest};
 #[cfg(feature = "virtual-motor")]
