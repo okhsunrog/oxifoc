@@ -132,8 +132,11 @@ where
                     Either::First(res) => {
                         let o = match &res {
                             Ok(_) => Outcome::Ok,
-                            // Local error: the frame never left — provably not applied.
-                            Err(ReqRespError::Local(_)) => Outcome::NotSent,
+                            // Local rejection: this frame was not sent, including
+                            // a client that already has a request in flight.
+                            Err(ReqRespError::Local(_) | ReqRespError::RequestPending) => {
+                                Outcome::NotSent
+                            }
                             // The server answered (with an error), or it's misuse
                             // (broadcast): authoritative, do not retry.
                             Err(ReqRespError::Remote(_)) | Err(ReqRespError::NoBroadcast) => {

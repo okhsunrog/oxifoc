@@ -22,7 +22,9 @@ use crate::{FAULT_REGISTRY, STATE};
 use {
     crate::transport::{RTT_OUTQ, RttRxWorkerType},
     ergot::transport::rtt::RttWriter,
-    oxifoc_core::runtime::streaming::{FAST_TELEM_PERIOD, fast_telemetry_stream, push_fast_telemetry},
+    oxifoc_core::runtime::streaming::{
+        FAST_TELEM_PERIOD, fast_telemetry_stream, push_fast_telemetry,
+    },
     oxifoc_core::types::FastTelemetry,
 };
 
