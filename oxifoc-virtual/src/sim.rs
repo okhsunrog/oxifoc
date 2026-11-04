@@ -70,6 +70,10 @@ impl Currents {
 }
 
 impl CurrentSensor for Currents {
+    fn current_sense_topology(&self) -> oxifoc_core::types::CurrentSenseTopology {
+        crate::CURRENT_SENSE_TOPOLOGY
+    }
+
     fn read_currents(&self) -> (f32, f32, f32) {
         self.converter
             .convert_raw(self.raw[0], self.raw[1], self.raw[2])
@@ -92,6 +96,7 @@ impl CurrentSensor for Currents {
 /// the inverter's fixed hardware limits and cannot be raised by config writes.
 pub fn board(max_current_a: f32) -> BoardConfig {
     BoardConfig {
+        current_sense_topology: crate::CURRENT_SENSE_TOPOLOGY,
         calib: crate::VIRTUAL_CALIB,
         max_iq_target_a: max_current_a,
         max_phase_current_a: max_current_a,

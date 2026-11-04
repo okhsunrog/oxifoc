@@ -34,6 +34,7 @@ pub fn measured_board() -> &'static BoardConfig {
 /// - Max VBUS: 57V (VESC HW_LIM_VIN, FET Vds=60V with margin)
 #[cfg(feature = "board-cf2")]
 pub const BOARD: BoardConfig = BoardConfig {
+    current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
     calib: BoardCalib {
         shunt_ohms: 0.0005,                     // 0.5mΩ (two 1mΩ in parallel)
         amp_gain: 10.0,                         // DRV8301 10 V/V gain
@@ -71,6 +72,7 @@ pub const BOARD: BoardConfig = BoardConfig {
 ///   power the bench from ≥14V
 #[cfg(feature = "board-vesc6-mk5")]
 pub const BOARD: BoardConfig = BoardConfig {
+    current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
     calib: BoardCalib {
         shunt_ohms: 0.0005, // 0.5mΩ in-line phase shunts
         amp_gain: 20.0,     // DRV8301 20 V/V gain (must match drv8301.rs SHUNT_AMP_GAIN)

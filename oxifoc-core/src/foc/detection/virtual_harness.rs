@@ -31,7 +31,6 @@ use crate::foc::detection::types::DetectionError;
 use crate::foc::hall_calibration::HallReader;
 use crate::foc::pi_controller::PIController;
 use crate::foc::pwm::SvpwmModulator;
-use crate::foc::transforms::clarke;
 use crate::foc::trig::LibmSinCos;
 use crate::foc::wrap_angle;
 use crate::motor::ControlMode;
@@ -127,7 +126,11 @@ impl SimState {
                 )
             }
             ControlMode::DirectVoltage { vd, vq, angle_rad } => {
-                let (i_alpha, i_beta) = clarke(self.out.ia, self.out.ib);
+                let (i_alpha, i_beta) = self.foc.current_sense_topology().clarke((
+                    self.out.ia,
+                    self.out.ib,
+                    self.out.ic,
+                ));
                 self.foc
                     .apply_dq(vd, vq, angle_rad, i_alpha, i_beta, MAX_DUTY)
             }
@@ -182,7 +185,25 @@ thread_local! {
 /// Uses a thread-local `SimState` shared with [`VirtualTimer`].
 pub struct VirtualHardware;
 
+impl VirtualHardware {
+    /// Select the same feedback projection for the simulated controller and
+    /// the detection routines reading its raw phase currents.
+    pub fn set_current_sense_topology(&mut self, topology: crate::types::CurrentSenseTopology) {
+        SIM.with(|s| {
+            s.borrow_mut()
+                .as_mut()
+                .unwrap()
+                .foc
+                .set_current_sense_topology(topology);
+        });
+    }
+}
+
 impl DetectionHardware for VirtualHardware {
+    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+        SIM.with(|s| s.borrow().as_ref().unwrap().foc.current_sense_topology())
+    }
+
     async fn send_command(&self, mode: ControlMode) {
         SIM.with(|s| {
             let mut borrow = s.borrow_mut();

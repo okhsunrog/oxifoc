@@ -266,6 +266,196 @@ struct MockCurrentSensor {
     currents: (f32, f32, f32),
 }
 
+struct TopologySensor {
+    sensor: MockCurrentSensor,
+    topology: crate::types::CurrentSenseTopology,
+}
+
+impl CurrentSensor for TopologySensor {
+    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+        self.topology
+    }
+    fn read_currents(&self) -> (f32, f32, f32) {
+        self.sensor.read_currents()
+    }
+    fn read_raw(&self) -> (u16, u16, u16) {
+        self.sensor.read_raw()
+    }
+    fn is_calibrated(&self) -> bool {
+        self.sensor.is_calibrated()
+    }
+    fn get_offsets(&self) -> (f32, f32, f32) {
+        self.sensor.get_offsets()
+    }
+    fn set_offsets(&mut self, offsets: (f32, f32, f32)) {
+        self.sensor.set_offsets(offsets);
+    }
+}
+
+#[derive(Default)]
+struct FeedbackProbe {
+    input: crate::foc::phase::PhaseInput,
+}
+
+impl PhaseProvider for FeedbackProbe {
+    fn get(&self) -> crate::foc::phase::PhaseOutput {
+        Default::default()
+    }
+    fn update(&mut self, input: &crate::foc::phase::PhaseInput, _now_ticks: u64) {
+        self.input = *input;
+    }
+}
+
+fn topology_driver(
+    topology: crate::types::CurrentSenseTopology,
+    currents: (f32, f32, f32),
+) -> FocDriver<GatedPwm, TopologySensor, FeedbackProbe> {
+    let mut driver = FocDriver::new(
+        FocController::<SvpwmModulator>::new(24.0),
+        GatedPwm {
+            enabled: false,
+            applied: [0; 3],
+        },
+        TopologySensor {
+            sensor: MockCurrentSensor { currents },
+            topology,
+        },
+        FeedbackProbe::default(),
+        0.00005,
+    );
+    driver.set_current_limits(CurrentLimits {
+        overcurrent_threshold_a: 6.0,
+        ..CurrentLimits::from_max_current(3.0)
+    });
+    driver
+}
+
+fn feedback_modes() -> [ControlMode; 3] {
+    [
+        ControlMode::CurrentControl {
+            id_target: 3.0,
+            iq_target: 0.0,
+        },
+        ControlMode::OpenLoop {
+            angle_rad: 0.0,
+            current: 3.0,
+            velocity_rad_s: 0.0,
+            pi_gains: None,
+        },
+        ControlMode::DirectVoltage {
+            vd: 0.1,
+            vq: 0.0,
+            angle_rad: 0.0,
+        },
+    ]
+}
+
+#[test]
+fn three_shunt_feedback_rejects_common_mode_and_feeds_observers() {
+    use crate::types::CurrentSenseTopology;
+    let currents = (5.0, 0.5, 0.5); // (3, -1.5, -1.5) plus a common +2 A.
+    for mode in feedback_modes() {
+        let mut driver = topology_driver(CurrentSenseTopology::ThreeShunt, currents);
+        driver.set_mode(mode);
+        let output = driver
+            .step(0)
+            .expect("common-mode error must not become dq overcurrent");
+        assert_eq!(
+            (output.ia, output.ib, output.ic),
+            currents,
+            "retain raw phases for protection"
+        );
+        assert!((output.id - 3.0).abs() < 1e-5);
+        assert!(output.iq.abs() < 1e-5);
+        assert_eq!(
+            (driver.phase().input.i_alpha, driver.phase().input.i_beta),
+            (output.i_alpha, output.i_beta)
+        );
+        assert!(driver.pwm().enabled);
+
+        let mut two = topology_driver(CurrentSenseTopology::TwoShunt, currents);
+        two.set_mode(mode);
+        assert_eq!(
+            two.step(0),
+            Err(StepError::Overcurrent),
+            "two-channel behavior stays explicit"
+        );
+        assert!(!two.pwm().enabled);
+    }
+}
+
+#[test]
+fn three_shunt_feedback_still_trips_real_and_invalid_current() {
+    use crate::types::CurrentSenseTopology;
+    for currents in [
+        (7.0, -3.5, -3.5),
+        (0.0, 0.0, f32::NAN),
+        (0.0, 0.0, f32::INFINITY),
+    ] {
+        for mode in feedback_modes() {
+            let mut driver = topology_driver(CurrentSenseTopology::ThreeShunt, currents);
+            driver.set_mode(mode);
+            assert_eq!(driver.step(0), Err(StepError::Overcurrent));
+            assert_eq!(driver.mode(), ControlMode::Stopped);
+            assert!(!driver.pwm().enabled);
+        }
+    }
+    assert!(CurrentLimits::from_max_current(0.0).is_overcurrent(f32::NAN, 0.0));
+}
+
+#[test]
+fn legacy_two_channel_sensor_remains_compatible() {
+    let sensor = MockCurrentSensor {
+        currents: (3.0, -1.5, 0.0),
+    };
+    assert_eq!(
+        sensor.current_sense_topology(),
+        crate::types::CurrentSenseTopology::TwoShunt
+    );
+}
+
+#[test]
+#[cfg(feature = "runtime")]
+fn raw_phase_protection_survives_zero_sequence_rejection() {
+    use crate::foc::fault::{FaultCategory, FaultRegistry, StandardFault};
+    use crate::state::{MotorControlState, run_foc_cycle};
+    use crate::types::CurrentSenseTopology;
+    use core::cell::RefCell;
+    use critical_section::Mutex;
+
+    let _serial = cmd_channel_lock();
+    let mut state = MotorControlState::new();
+    state.set_link_active();
+    let state = Mutex::new(RefCell::new(state));
+    let registry = FaultRegistry::<StandardFault>::new();
+    let board = BoardConfig {
+        calib: Default::default(),
+        current_sense_topology: CurrentSenseTopology::ThreeShunt,
+        max_iq_target_a: 3.0,
+        max_phase_current_a: 6.0,
+        max_vbus_mv: 60_000,
+        min_vbus_mv: 8_000,
+        max_fet_temp_c: 100.0,
+        max_motor_temp_c: 0.0,
+        phase_sense: None,
+    };
+    // Pure common mode projects to zero, but each raw phase exceeds ABS.
+    let mut driver = topology_driver(CurrentSenseTopology::ThreeShunt, (7.0, 7.0, 7.0));
+    driver.set_mode(ControlMode::DirectVoltage {
+        vd: 0.1,
+        vq: 0.0,
+        angle_rad: 0.0,
+    });
+    let out = run_foc_cycle(&state, &registry, &mut driver, 24.0, 0, &board).unwrap();
+    assert_eq!((out.id, out.iq), (0.0, 0.0));
+    assert!(registry.has_category(FaultCategory::OverCurrent));
+    run_foc_cycle(&state, &registry, &mut driver, 24.0, 50, &board);
+    assert!(
+        !driver.pwm().enabled,
+        "the independent raw-phase fault must kill PWM"
+    );
+}
+
 impl CurrentSensor for MockCurrentSensor {
     fn read_currents(&self) -> (f32, f32, f32) {
         self.currents
@@ -296,6 +486,7 @@ fn coast_observer_tracks_measured_bemf() {
     use crate::foc::wrap_angle;
 
     const BASE_BOARD: BoardConfig = BoardConfig {
+        current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
         calib: crate::types::BoardCalib {
             shunt_ohms: 0.0005,
             amp_gain: 10.0,
@@ -3193,6 +3384,7 @@ mod severity_gate {
     }
 
     const BOARD: BoardConfig = BoardConfig {
+        current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
         calib: crate::types::BoardCalib {
             shunt_ohms: 0.003,
             amp_gain: 16.0,

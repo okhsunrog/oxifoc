@@ -248,6 +248,11 @@ impl CurrentLimits {
     /// Returns true if overcurrent is detected.
     #[inline]
     pub fn is_overcurrent(&self, id: f32, iq: f32) -> bool {
+        // Invalid current feedback must not bypass the trip through NaN
+        // comparisons, including when a numeric threshold is disabled.
+        if !id.is_finite() || !iq.is_finite() {
+            return true;
+        }
         if self.overcurrent_threshold_a <= 0.0 {
             return false;
         }

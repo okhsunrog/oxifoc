@@ -8,7 +8,6 @@ use crate::foc::phase::PhaseProvider;
 use crate::foc::pwm::PhasePwm;
 use crate::foc::pwm::PhaseState;
 use crate::foc::sensors::CurrentSensor;
-use crate::foc::transforms::clarke;
 use crate::foc::transforms::park;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
@@ -73,7 +72,10 @@ where
         } else {
             (0.0, 0.0, 0.0)
         };
-        let (i_alpha, i_beta) = clarke(ia, ib);
+        let (i_alpha, i_beta) = self
+            .controller
+            .current_sense_topology()
+            .clarke((ia, ib, ic));
         // αβ magnitude equals the dq magnitude (Park preserves it). The
         // hard trip stays the backstop (a limit left unset).
         if self.current_limits.is_overcurrent(i_alpha, i_beta) {
@@ -472,7 +474,7 @@ where
             None
         };
         let (i_alpha_m, i_beta_m) = match currents {
-            Some(c) => clarke(c.0, c.1),
+            Some(c) => self.controller.current_sense_topology().clarke(c),
             None => (0.0, 0.0),
         };
         let mut out = self

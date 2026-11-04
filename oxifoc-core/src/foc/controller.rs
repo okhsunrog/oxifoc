@@ -132,6 +132,7 @@ impl Decoupling {
 /// electrical angle, then returns duty cycles that can be written through a
 /// platform `PhasePwm` implementation.
 pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> {
+    current_sense_topology: crate::types::CurrentSenseTopology,
     /// d-axis PI controller (flux)
     pub id_pi: PIController,
     /// q-axis PI controller (torque)
@@ -198,6 +199,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// which tracks `vbus × modulation_limit` every cycle.
     pub fn new(vbus: f32) -> Self {
         Self {
+            current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
             id_pi: PIController::new(0.4, 40.0),
             iq_pi: PIController::new(0.4, 40.0),
             vbus: vbus.max(Self::MIN_VBUS),
@@ -209,6 +211,16 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             q_clip: 0.0,
             _phantom: core::marker::PhantomData,
         }
+    }
+
+    /// Select the current channels that are valid on this board. The driver
+    /// sets this from its sensor at construction; standalone users opt in.
+    pub fn set_current_sense_topology(&mut self, topology: crate::types::CurrentSenseTopology) {
+        self.current_sense_topology = topology;
+    }
+
+    pub fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+        self.current_sense_topology
     }
 
     /// Create a controller with PI gains computed from motor parameters.
@@ -249,6 +261,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let vbus = vbus.max(Self::MIN_VBUS);
 
         Self {
+            current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
             id_pi: PIController::new(kp, ki),
             iq_pi: PIController::new(kp, ki),
             vbus,
@@ -649,7 +662,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         crate::isr_prof::add(&crate::isr_prof::CTRL_TRIG, prof_t0, crate::isr_prof::now());
 
         // Phase currents -> stationary frame
-        let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+        let (i_alpha, i_beta) = self.current_sense_topology.clarke(currents);
         // Stationary -> rotating frame
         let (id, iq) = transforms::park(i_alpha, i_beta, sin_theta, cos_theta);
 

@@ -99,7 +99,7 @@ pub async fn run(
         HardwareInfo {
             bootstrap_magic: oxifoc_core::types::ICD_BOOTSTRAP_MAGIC,
             proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
-            capabilities: 0,
+            capabilities: crate::CURRENT_SENSE_TOPOLOGY.capability_bits(),
             reserved: [0; 8],
             hw,
             sw,

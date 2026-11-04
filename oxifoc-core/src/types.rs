@@ -560,7 +560,39 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 5;
+pub const ICD_PROTO_VERSION: u16 = 6;
+
+/// Current feedback and host enrichment use all three measured shunts.
+pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
+
+/// Which phase-current channels are valid inputs to the Clarke transform.
+/// This is a hardware property, independent of calibration offsets and gains.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum CurrentSenseTopology {
+    /// A and B measured; C may be unused. Retains the two-input transform.
+    #[default]
+    TwoShunt,
+    /// A, B and C independently measured and valid at the sampling instant.
+    ThreeShunt,
+}
+
+impl CurrentSenseTopology {
+    pub const fn capability_bits(self) -> u32 {
+        match self {
+            Self::TwoShunt => 0,
+            Self::ThreeShunt => CAP_THREE_SHUNT_CURRENT,
+        }
+    }
+
+    pub const fn from_capabilities(capabilities: u32) -> Self {
+        if capabilities & CAP_THREE_SHUNT_CURRENT != 0 {
+            Self::ThreeShunt
+        } else {
+            Self::TwoShunt
+        }
+    }
+}
 
 /// Stable marker at the front of every [`HardwareInfo`] bootstrap response.
 pub const ICD_BOOTSTRAP_MAGIC: [u8; 4] = *b"OXIC";

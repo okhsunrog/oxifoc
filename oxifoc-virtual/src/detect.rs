@@ -47,6 +47,7 @@ impl DetectionBackend for VirtualBackend {
         let params_m = self.params;
         tokio::task::spawn_blocking(move || {
             with_sim(params_m, vbus, |hw| {
+                hw.set_current_sense_topology(crate::CURRENT_SENSE_TOPOLOGY);
                 block_on(measure_resistance::<_, VirtualTimer>(hw, &params))
             })
         })
@@ -64,6 +65,7 @@ impl DetectionBackend for VirtualBackend {
         let params_m = self.params;
         tokio::task::spawn_blocking(move || {
             with_sim(params_m, vbus, |hw| {
+                hw.set_current_sense_topology(crate::CURRENT_SENSE_TOPOLOGY);
                 // HFI with voltage-pulse fallback — same ladder the boards run.
                 block_on(measure_inductance_auto::<_, VirtualTimer, LibmSinCos>(
                     hw,
@@ -82,6 +84,7 @@ impl DetectionBackend for VirtualBackend {
         let params_m = self.params;
         tokio::task::spawn_blocking(move || {
             with_sim(params_m, vbus, |hw| {
+                hw.set_current_sense_topology(crate::CURRENT_SENSE_TOPOLOGY);
                 // Same ladder the boards run: spin-down first (the virtual
                 // harness has coast telemetry), driven fallback otherwise.
                 block_on(measure_flux_linkage_auto::<_, VirtualTimer>(hw, &params))
@@ -99,6 +102,7 @@ impl DetectionBackend for VirtualBackend {
         let params_m = self.params;
         tokio::task::spawn_blocking(move || {
             with_sim(params_m, vbus, |hw| {
+                hw.set_current_sense_topology(crate::CURRENT_SENSE_TOPOLOGY);
                 let hall_reader = VirtualHallReader;
                 block_on(calibrate_hall::<_, VirtualTimer, _>(
                     hw,

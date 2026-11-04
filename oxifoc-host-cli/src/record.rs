@@ -48,6 +48,7 @@ const SCHEMA: &str = "message oxifoc_telemetry {
     required double angle_rad;
     required double mech_rpm;
     required double erpm;
+    required double i_sum_a;
 }";
 
 #[derive(serde::Serialize)]
@@ -301,16 +302,19 @@ fn write_parquet(
         kv("oxifoc.decimation_m", decimation_m.to_string()),
         kv(
             "oxifoc.telemetry_note",
-            "ia_adc/ib_adc/ic_adc = uncalibrated 12-bit ADC counts (3 shunts, NO \
+            "ia_adc/ib_adc/ic_adc = uncalibrated 12-bit ADC counts (valid channels \
+             declared by oxifoc.current_sense_topology, NO \
              anti-alias filter — decimation is plain sample-dropping at M). The \
              *_a / *_v / angle_rad / *rpm columns are reconstructed host-side by \
-             oxifoc_core FastTelemetry::enrich (BoardCalib + dc_offsets + \
+             oxifoc_core FastTelemetry::enrich (declared current topology + BoardCalib + dc_offsets + \
              pole_pairs) — the same core code the firmware encodes with. NaN only \
              when the device handshake carried no BoardCalib at all; if the \
              DcOffsets/MotorParams config reads failed, enrichment silently falls \
              back to MID-SCALE offsets / pole_pairs=0 and the columns are wrong \
              but non-NaN — cross-check the dc-offsets group in oxifoc.config \
-             below (missing there = the fallback was used)."
+             below (missing there = the fallback was used). i_sum_a is the \
+             unprojected sum of three measured currents; NaN for TwoShunt \
+             or unavailable enrichment."
                 .to_string(),
         ),
         kv("oxifoc.config", config_snapshot.to_string()),
@@ -321,6 +325,15 @@ fn write_parquet(
         meta.push(kv(k, v.clone()));
     }
     if let Some(h) = hw {
+        meta.push(kv("oxifoc.protocol_version", h.proto_version.to_string()));
+        meta.push(kv("oxifoc.capabilities", h.capabilities.to_string()));
+        meta.push(kv(
+            "oxifoc.current_sense_topology",
+            format!(
+                "{:?}",
+                oxifoc_core::types::CurrentSenseTopology::from_capabilities(h.capabilities)
+            ),
+        ));
         meta.push(kv("oxifoc.hw", h.hw.to_string()));
         meta.push(kv("oxifoc.sw", h.sw.to_string()));
         meta.push(kv("oxifoc.mcu", h.mcu.to_string()));
@@ -390,9 +403,11 @@ fn write_parquet(
     let angle_rad = eng(|r| r.angle_rad);
     let mech_rpm = eng(|r| r.mech_rpm);
     let erpm = eng(|r| r.erpm);
+    let i_sum_a = eng(|r| r.i_sum.unwrap_or(f32::NAN));
 
-    let doubles: [&[f64]; 11] = [
+    let doubles: [&[f64]; 12] = [
         &ia_a, &ib_a, &ic_a, &id_a, &iq_a, &vbus_v, &vd_v, &vq_v, &angle_rad, &mech_rpm, &erpm,
+        &i_sum_a,
     ];
 
     let mut rg = writer.next_row_group()?;
@@ -414,7 +429,7 @@ fn write_parquet(
             4 => {
                 col.typed::<Int32Type>().write_batch(&ic, None, None)?;
             }
-            5..=15 => {
+            5..=16 => {
                 col.typed::<DoubleType>()
                     .write_batch(doubles[col_idx - 5], None, None)?;
             }
@@ -434,6 +449,85 @@ mod tests {
     use oxifoc_core::storage::BoardCalibrationConfig;
     use oxifoc_core::types::{ConfigGroupId, ConfigSnapshot, ConfigValue};
     use parquet::file::reader::{FileReader, SerializedFileReader};
+    use parquet::record::RowAccessor;
+
+    #[test]
+    fn parquet_records_projection_and_unprojected_current_residual() {
+        use oxifoc_core::types::{BoardCalib, CurrentSenseTopology};
+        let hw = HardwareInfo {
+            capabilities: CurrentSenseTopology::ThreeShunt.capability_bits(),
+            foc_freq_hz: 20_000,
+            calib: BoardCalib {
+                shunt_ohms: 0.002,
+                amp_gain: 1.0,
+                adc_vref_mv: 1000,
+                adc_max_counts: 1000,
+                invert_current_sign: false,
+                vbus_divider_ratio: 1.0,
+            },
+            ..Default::default()
+        };
+        let ctx = EnrichCtx::new(
+            &hw.calib,
+            (500.0, 500.0, 500.0),
+            0,
+            CurrentSenseTopology::ThreeShunt,
+        );
+        let frame = FastTelemetry {
+            ia: 510,
+            ib: 501,
+            ic: 501,
+            ..Default::default()
+        };
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "three-shunt-{}-{nonce}.parquet",
+            std::process::id()
+        ));
+        write_parquet(
+            path.to_str().unwrap(),
+            &[frame],
+            Some(&hw),
+            Some(&ctx),
+            20_000,
+            20_000,
+            1,
+            &serde_json::json!({}),
+            0,
+            0,
+            &[],
+        )
+        .unwrap();
+        let reader = SerializedFileReader::new(File::open(&path).unwrap()).unwrap();
+        let metadata = reader
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .unwrap();
+        let value = |name| {
+            metadata
+                .iter()
+                .find(|kv| kv.key == name)
+                .unwrap()
+                .value
+                .as_deref()
+                .unwrap()
+        };
+        assert_eq!(value("oxifoc.current_sense_topology"), "ThreeShunt");
+        assert_eq!(
+            value("oxifoc.protocol_version"),
+            hw.proto_version.to_string()
+        );
+        let row = reader.get_row_iter(None).unwrap().next().unwrap().unwrap();
+        assert!((row.get_double(8).unwrap() - 3.0).abs() < 1e-5); // Id
+        assert_eq!(row.get_double(9).unwrap(), 0.0); // Iq
+        assert!((row.get_double(16).unwrap() - 6.0).abs() < 1e-5); // Raw sum
+        drop(reader);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn capture_metadata_uses_calibration_read_after_stream_ack() {

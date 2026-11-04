@@ -44,7 +44,6 @@ use super::voltage_pulse::VoltagePulseMeasurement;
 use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
 use crate::foc::fast_math::sqrtf;
-use crate::foc::transforms;
 use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
@@ -66,6 +65,11 @@ pub const DETECTION_PI_KI: f32 = 10.0;
 ///
 /// Async delays are provided separately via the [`Timer`] trait.
 pub trait DetectionHardware {
+    /// The current channels valid for this backend's sampling topology.
+    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+        crate::types::CurrentSenseTopology::TwoShunt
+    }
+
     /// Send a control mode command to the FOC driver.
     ///
     /// Must guarantee delivery (await channel space if needed): a silently
@@ -490,8 +494,8 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
 
     for k in 0..(warmup + accum) {
         let _telem = hw.wait_telemetry().await;
-        let (ia, ib, _ic) = hw.read_phase_currents();
-        let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+        let currents = hw.read_phase_currents();
+        let (i_alpha, i_beta) = hw.current_sense_topology().clarke(currents);
 
         if k >= warmup {
             for d in 1..=PIPELINE_LAG_MAX {
@@ -617,8 +621,8 @@ async fn hfi_collect<H: DetectionHardware, S: SinCos>(
 
         // Read currents from THIS cycle (the response to the command sent
         // `lag` iterations ago)
-        let (ia, ib, _ic) = hw.read_phase_currents();
-        let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+        let currents = hw.read_phase_currents();
+        let (i_alpha, i_beta) = hw.current_sense_topology().clarke(currents);
 
         if iter >= record_from {
             let (angle, v_a, v_b) = hist[(iter + 8 - lag) % 8];
@@ -847,8 +851,8 @@ struct LockedAxis {
 impl LockedAxis {
     /// Signed current along the probe axis, from the live phase currents.
     fn read_axis_current<H: DetectionHardware>(&self, hw: &H) -> f32 {
-        let (ia, ib, _) = hw.read_phase_currents();
-        let (i_alpha, i_beta) = transforms::clarke(ia, ib);
+        let currents = hw.read_phase_currents();
+        let (i_alpha, i_beta) = hw.current_sense_topology().clarke(currents);
         if self.q_axis {
             self.sign * (i_beta * self.cos_a - i_alpha * self.sin_a)
         } else {
@@ -1194,8 +1198,8 @@ async fn measure_impedance_at_pulsating<H: DetectionHardware, S: SinCos>(
 
     for k in 0..(warmup + accum) {
         let _telem = hw.wait_telemetry().await;
-        let (ia, ib, _ic) = hw.read_phase_currents();
-        let (i_alpha, _i_beta) = transforms::clarke(ia, ib);
+        let currents = hw.read_phase_currents();
+        let (i_alpha, _i_beta) = hw.current_sense_topology().clarke(currents);
 
         if k >= warmup {
             let ph = hist[(k + 8 - lag) % 8];

@@ -62,6 +62,10 @@ impl EmbassyDetectionHardware {
 }
 
 impl DetectionHardware for EmbassyDetectionHardware {
+    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+        self.board.current_sense_topology
+    }
+
     async fn send_command(&self, mode: ControlMode) {
         // send().await, not try_send: the ISR drains the channel every FOC
         // cycle, so this parks for at most ~50 µs — and a silently dropped

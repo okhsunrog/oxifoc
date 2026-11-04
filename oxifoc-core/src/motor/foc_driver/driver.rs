@@ -44,6 +44,7 @@ where
         phase: Phase,
         dt: f32,
     ) -> Self {
+        controller.set_current_sense_topology(current_sensor.current_sense_topology());
         let vbus = controller.vbus();
         // The board's duty cap, so the controller never commands a vector
         // the bridge would clip (see FocController::set_duty_cap).

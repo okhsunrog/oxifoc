@@ -28,6 +28,9 @@ oxifoc_core::define_platform_state!(oxifoc_core::foc::fault::StandardFault);
 /// Synthetic board electrical constants reported to the host (for telemetry
 /// enrichment) and used by the sim to encode currents into raw ADC counts —
 /// generic B-G431B-ESC1-like values so the enrich round-trip is meaningful.
+pub const CURRENT_SENSE_TOPOLOGY: oxifoc_core::types::CurrentSenseTopology =
+    oxifoc_core::types::CurrentSenseTopology::ThreeShunt;
+
 pub const VIRTUAL_CALIB: oxifoc_core::types::BoardCalib = oxifoc_core::types::BoardCalib {
     shunt_ohms: 0.003,
     amp_gain: 64.0 / 7.0,

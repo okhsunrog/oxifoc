@@ -586,6 +586,9 @@ fn main() -> Result<()> {
                 json,
                 json!({
                     "connected": runtime.connected.load(Ordering::Relaxed),
+                    "protocol_version": info.proto_version,
+                    "capabilities": info.capabilities,
+                    "current_sense_topology": oxifoc_core::types::CurrentSenseTopology::from_capabilities(info.capabilities),
                     "hw": info.hw.as_str(),
                     "sw": info.sw.as_str(),
                     "mcu": info.mcu.as_str(),

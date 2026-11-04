@@ -66,6 +66,19 @@ Different from CF2:
 
 ## Analog scaling
 
+- MK5 uses `CurrentSenseTopology::ThreeShunt`: all three in-line shunts are
+  valid at the configured sample point. Control, observers, detection and host
+  enrichment use the full Clarke projection. The original phase measurements
+  remain available to the independent per-phase protection. `i_sum_a` records
+  their unprojected sum for diagnosing common-mode noise and channel faults.
+  Two-channel sensors retain the two-input path through an explicit topology.
+- ICD v6 reports this choice through `CAP_THREE_SHUNT_CURRENT` in the frozen
+  `HardwareInfo.capabilities` field. Update host and firmware together; a v5
+  host must fail the version check rather than reconstruct different dq currents.
+  The fast-frame layout and persistent configuration record layouts do not change.
+  Capture metadata includes protocol version and current topology, so earlier
+  two-input captures can be distinguished from three-input recordings.
+
 - Per-device corrections live in `BoardCalibrationConfig`, exposed as the
   `board-calibration` group. V1 contains only `vbus_gain` (default 1.0,
   finite, allowed range 0.95–1.05). Nominal divider values, current gain,
@@ -96,8 +109,8 @@ Different from CF2:
   the old warning after repair. `ResetAll` erases this group as well; setting
   `vbus_gain=1.0` resets just this correction. Reset is also refused during
   a fast stream.
-- This changes the application protocol to version 5: host and firmware must
-  be updated together. Older firmware does not recognize key 12, so rolling
+- Board calibration was introduced in application protocol version 5; host
+  and firmware must be updated together. Older firmware does not recognize key 12, so rolling
   back firmware alone can make its storage scan fail. Retain a complete flash
   backup from before the new key was written. Existing key numbers/layouts
   are unchanged. Future calibration fields require a new stored-record

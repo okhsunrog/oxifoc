@@ -139,7 +139,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
     let device_info = HardwareInfo {
         bootstrap_magic: oxifoc_core::types::ICD_BOOTSTRAP_MAGIC,
         proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
-        capabilities: 0,
+        capabilities: BOARD.current_sense_topology.capability_bits(),
         reserved: [0; 8],
         hw,
         sw,

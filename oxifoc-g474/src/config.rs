@@ -31,6 +31,7 @@ use oxifoc_core::types::BoardCalib;
 /// - VBUS divider: 169k / 9.31k ⇒ ratio 19.15
 #[allow(dead_code)]
 pub const BOARD: BoardConfig = BoardConfig {
+    current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
     calib: BoardCalib {
         shunt_ohms: 0.01,           // 0.010Ω 1W shunts (R43-45)
         amp_gain: 5.18,             // TSV994 diff amp on shield (verify vs JP2)

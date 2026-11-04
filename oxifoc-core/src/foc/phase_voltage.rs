@@ -168,6 +168,7 @@ mod tests {
 
     const fn board(phase_sense: Option<PhaseSense>) -> BoardConfig {
         BoardConfig {
+            current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
             calib: crate::types::BoardCalib {
                 shunt_ohms: 0.0005,
                 amp_gain: 10.0,

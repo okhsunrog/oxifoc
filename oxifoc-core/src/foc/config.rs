@@ -25,6 +25,7 @@
 ///         invert_current_sign: true,   // Low-side shunts
 ///         vbus_divider_ratio: 10.39,   // VBUS divider
 ///     },
+///     current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
 ///     max_iq_target_a: 10.0,       // Max torque current
 ///     // Fault thresholds
 ///     max_phase_current_a: 40.0,   // Peak phase current limit
@@ -72,6 +73,8 @@ pub struct BoardConfig {
     /// to the host for telemetry enrichment — one field list, no duplication.
     /// See [`crate::types::BoardCalib`].
     pub calib: crate::types::BoardCalib,
+    /// Valid current channels at the board's configured ADC sampling instant.
+    pub current_sense_topology: crate::types::CurrentSenseTopology,
     /// Maximum q-axis current target in Amperes
     pub max_iq_target_a: f32,
 
@@ -275,6 +278,7 @@ mod tests {
     use super::*;
 
     const TEST_BOARD: BoardConfig = BoardConfig {
+        current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
         calib: crate::types::BoardCalib {
             shunt_ohms: 0.003,
             amp_gain: 16.0,
@@ -338,6 +342,7 @@ mod tests {
         // sign-flipped currents to everything sign-sensitive in detection
         // (HFI dq separation, flux-linkage sign, observer input).
         let inverted = BoardConfig {
+            current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
             calib: crate::types::BoardCalib {
                 invert_current_sign: true,
                 ..TEST_BOARD.calib

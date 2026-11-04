@@ -9,6 +9,7 @@
 //! Based on Microsemi implementation guide and foc-calebfletcher reference.
 
 use super::constants::{FRAC_1_SQRT_3, SQRT_3};
+use crate::types::CurrentSenseTopology;
 
 /// Clarke transform: Convert 3-phase currents (ABC) to 2-phase stationary frame (αβ)
 ///
@@ -32,6 +33,28 @@ pub fn clarke(ia: f32, ib: f32) -> (f32, f32) {
     let beta = FRAC_1_SQRT_3 * (ia + 2.0 * ib);
 
     (alpha, beta)
+}
+
+/// Full, amplitude-invariant Clarke transform for three valid measurements.
+/// Equal noise on all channels contributes only to zero sequence, not αβ.
+/// Raw phase currents must still be retained for independent protection and
+/// diagnostics; this projection is not a sensor-validity check.
+#[inline]
+pub fn clarke_three(ia: f32, ib: f32, ic: f32) -> (f32, f32) {
+    ((2.0 * ia - ib - ic) / 3.0, (ib - ic) * FRAC_1_SQRT_3)
+}
+
+impl CurrentSenseTopology {
+    /// Project only the channels the hardware declares valid. In TwoShunt
+    /// mode C is ignored, including a placeholder or non-finite value.
+    #[inline]
+    pub fn clarke(self, currents: (f32, f32, f32)) -> (f32, f32) {
+        let (ia, ib, ic) = currents;
+        match self {
+            Self::TwoShunt => clarke(ia, ib),
+            Self::ThreeShunt => clarke_three(ia, ib, ic),
+        }
+    }
 }
 
 /// Inverse Clarke transform: Convert 2-phase (αβ) back to 3-phase (ABC)
@@ -141,6 +164,45 @@ mod tests {
     use super::*;
 
     const EPSILON: f32 = 0.001;
+
+    #[test]
+    fn three_input_preserves_balanced_vectors_and_rejects_common_mode() {
+        for angle_step in 0..360 {
+            let angle = angle_step as f32 * core::f32::consts::PI / 180.0;
+            let alpha = 3.0 * libm::cosf(angle);
+            let beta = 3.0 * libm::sinf(angle);
+            let (ia, ib, ic) = inverse_clarke(alpha, beta);
+            for offset in [-20.0, -1.0, 0.0, 2.0, 20.0] {
+                let (a, b) = clarke_three(ia + offset, ib + offset, ic + offset);
+                assert!((a - alpha).abs() < 1e-5);
+                assert!((b - beta).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn two_shunt_ignores_unused_third_channel() {
+        let expected = clarke(3.0, -1.5);
+        for ic in [0.0, 500.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                CurrentSenseTopology::TwoShunt.clarke((3.0, -1.5, ic)),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn capability_selects_only_the_declared_topology() {
+        for topology in [
+            CurrentSenseTopology::TwoShunt,
+            CurrentSenseTopology::ThreeShunt,
+        ] {
+            assert_eq!(
+                CurrentSenseTopology::from_capabilities(topology.capability_bits() | (1 << 31)),
+                topology
+            );
+        }
+    }
 
     #[test]
     fn test_clarke_zero() {

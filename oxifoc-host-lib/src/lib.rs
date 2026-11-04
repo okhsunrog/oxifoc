@@ -372,7 +372,9 @@ pub fn build_enrich_ctx(
     hw: Option<&HardwareInfo>,
 ) -> Option<oxifoc_core::foc::telemetry::EnrichCtx> {
     use oxifoc_core::types::{ConfigGroupId, ConfigValue};
-    let calib = hw?.calib;
+    let hw = hw?;
+    let calib = hw.calib;
+    let topology = oxifoc_core::types::CurrentSenseTopology::from_capabilities(hw.capabilities);
     // Fallbacks below are LOUD: a transient config-read failure (busy link,
     // reconnect window) silently degrading to mid-scale offsets skews every
     // reconstructed phase current — measured ~15 A/phase on the g431 — while
@@ -402,7 +404,7 @@ pub fn build_enrich_ctx(
             0
         });
     Some(oxifoc_core::foc::telemetry::EnrichCtx::new(
-        &calib, offsets, pole_pairs,
+        &calib, offsets, pole_pairs, topology,
     ))
 }
 

@@ -36,6 +36,12 @@ pub struct AngleSample {
 /// Supports both 3-phase and 2-phase sensing (set unused phase to 0.0).
 ///
 pub trait CurrentSensor {
+    /// Hardware-declared measurement topology. Existing two-channel sensors
+    /// remain compatible; three-channel implementations must opt in.
+    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+        crate::types::CurrentSenseTopology::TwoShunt
+    }
+
     /// Read 3-phase currents in Amperes
     ///
     /// Returns (i_a, i_b, i_c) in Amps.
@@ -328,6 +334,7 @@ pub trait RawCurrentReader {
 /// type MyCurrentSensor = GenericCurrentSensor<MyAdcReader>;
 /// ```
 pub struct GenericCurrentSensor<R: RawCurrentReader> {
+    topology: crate::types::CurrentSenseTopology,
     /// Core conversion logic
     converter: ShuntCurrentSense,
     /// Platform-specific raw ADC reader
@@ -351,6 +358,7 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
         reader: R,
     ) -> Self {
         Self {
+            topology: crate::types::CurrentSenseTopology::TwoShunt,
             converter: ShuntCurrentSense::new(shunt_ohms, amp_gain, adc_vref_mv, adc_max_counts),
             reader,
         }
@@ -368,6 +376,7 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
         sensor
             .converter
             .set_invert_sign(config.calib.invert_current_sign);
+        sensor.topology = config.current_sense_topology;
         sensor
     }
 
@@ -398,6 +407,10 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
 }
 
 impl<R: RawCurrentReader> CurrentSensor for GenericCurrentSensor<R> {
+    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+        self.topology
+    }
+
     fn read_currents(&self) -> (f32, f32, f32) {
         let (adc_a, adc_b, adc_c) = self.reader.read_raw();
         self.converter.convert_raw(adc_a, adc_b, adc_c)

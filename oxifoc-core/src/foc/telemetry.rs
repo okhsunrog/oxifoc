@@ -17,7 +17,8 @@
 use core::f32::consts::TAU;
 
 use crate::foc::current_sense::ShuntCurrentSense;
-use crate::foc::transforms::{clarke, park};
+use crate::foc::transforms::park;
+use crate::types::CurrentSenseTopology;
 use crate::types::{BoardCalib, FastTelemetry};
 
 /// Linear fixed-point codec: a single LSB value (physical units per quantum)
@@ -122,7 +123,7 @@ impl FastTelemetry {
     /// codec). Host-side; the single decode path shared by CLI and GUI.
     pub fn enrich(&self, ctx: &EnrichCtx) -> RichSample {
         let (ia, ib, ic) = ctx.isense.convert_raw(self.ia, self.ib, self.ic);
-        let (i_alpha, i_beta) = clarke(ia, ib);
+        let (i_alpha, i_beta) = ctx.topology.clarke((ia, ib, ic));
         let angle_rad = self.angle_rad();
         let (id, iq) = park(
             i_alpha,
@@ -135,6 +136,7 @@ impl FastTelemetry {
             ia,
             ib,
             ic,
+            i_sum: (ctx.topology == CurrentSenseTopology::ThreeShunt).then_some(ia + ib + ic),
             i_alpha,
             i_beta,
             id,
@@ -154,6 +156,8 @@ impl FastTelemetry {
 /// (built from the static [`BoardCalib`] + the calibrated `dc_offsets`) and the
 /// pole-pair count (for eRPM). Built once at connect.
 pub struct EnrichCtx {
+    /// Must match the device's feedback path, reported through capabilities.
+    pub topology: CurrentSenseTopology,
     /// Current converter — the firmware's own `ShuntCurrentSense`, configured
     /// from the device-reported calibration.
     pub isense: ShuntCurrentSense,
@@ -164,10 +168,19 @@ pub struct EnrichCtx {
 impl EnrichCtx {
     /// Build from the device-reported [`BoardCalib`], the calibrated per-phase
     /// zero-current `dc_offsets` (ADC counts), and `pole_pairs`.
-    pub fn new(calib: &BoardCalib, dc_offsets: (f32, f32, f32), pole_pairs: u8) -> Self {
+    pub fn new(
+        calib: &BoardCalib,
+        dc_offsets: (f32, f32, f32),
+        pole_pairs: u8,
+        topology: CurrentSenseTopology,
+    ) -> Self {
         let mut isense = ShuntCurrentSense::from_calib(calib);
         isense.set_offsets(dc_offsets.0, dc_offsets.1, dc_offsets.2);
-        Self { isense, pole_pairs }
+        Self {
+            isense,
+            pole_pairs,
+            topology,
+        }
     }
 }
 
@@ -178,6 +191,9 @@ pub struct RichSample {
     pub ia: f32,
     pub ib: f32,
     pub ic: f32,
+    /// Sum of the three independently measured currents, before projection.
+    /// Diagnostic residual (A); unavailable with only two measured channels.
+    pub i_sum: Option<f32>,
     /// Clarke αβ currents (A).
     pub i_alpha: f32,
     pub i_beta: f32,
@@ -215,6 +231,87 @@ mod tests {
     }
 
     // ---- scalar codec ----
+
+    #[test]
+    fn mk5_recorded_trip_frame_uses_declared_projection() {
+        // Captured at 20 kHz, row 89457 of the first MK5 R test. Keep the
+        // ADC counts and calibration so the regression includes conversion.
+        let calib = BoardCalib {
+            shunt_ohms: 0.0005,
+            amp_gain: 20.0,
+            adc_vref_mv: 3323,
+            adc_max_counts: 4095,
+            invert_current_sign: false,
+            vbus_divider_ratio: 18.727272,
+        };
+        let frame = FastTelemetry {
+            ia: 2101,
+            ib: 2049,
+            ic: 2053,
+            ..Default::default()
+        };
+        let offsets = (2040.35, 2041.443, 2038.473);
+        let magnitude = |r: RichSample| crate::foc::fast_math::sqrtf(r.id * r.id + r.iq * r.iq);
+        let two = frame.enrich(&EnrichCtx::new(
+            &calib,
+            offsets,
+            0,
+            CurrentSenseTopology::TwoShunt,
+        ));
+        let three = frame.enrich(&EnrichCtx::new(
+            &calib,
+            offsets,
+            0,
+            CurrentSenseTopology::ThreeShunt,
+        ));
+        assert!((magnitude(two) - 6.0681).abs() < 0.001);
+        assert!((magnitude(three) - 2.7035).abs() < 0.001);
+        assert!((three.i_sum.unwrap() - 6.7137).abs() < 0.001);
+        assert_eq!((two.ia, two.ib, two.ic), (three.ia, three.ib, three.ic));
+    }
+
+    #[test]
+    fn three_shunt_enrichment_matches_controller_and_retains_residual() {
+        use crate::foc::controller::FocController;
+        use crate::foc::pwm::SvpwmModulator;
+
+        // 0.5 A/count: physical (3, -1.5, -1.5) plus a common +2 A offset.
+        let calib = BoardCalib {
+            shunt_ohms: 0.002,
+            amp_gain: 1.0,
+            adc_vref_mv: 1000,
+            adc_max_counts: 1000,
+            invert_current_sign: false,
+            vbus_divider_ratio: 1.0,
+        };
+        let frame = FastTelemetry {
+            ia: 510,
+            ib: 501,
+            ic: 501,
+            ..Default::default()
+        };
+        let offsets = (500.0, 500.0, 500.0);
+        let ctx = EnrichCtx::new(&calib, offsets, 7, CurrentSenseTopology::ThreeShunt);
+        let rich = frame.enrich(&ctx);
+        let mut controller = FocController::<SvpwmModulator>::new(24.0);
+        controller.set_current_sense_topology(ctx.topology);
+        let output = controller.step((rich.ia, rich.ib, rich.ic), 0.0, 3.0, 0.0, 1000, 0.00005);
+        assert!((rich.ia - 5.0).abs() < 1e-5);
+        assert!((rich.ib - 0.5).abs() < 1e-5 && (rich.ic - 0.5).abs() < 1e-5);
+        assert!((rich.i_sum.unwrap() - 6.0).abs() < 1e-5);
+        assert!((rich.id - 3.0).abs() < 1e-5 && rich.iq.abs() < 1e-5);
+        assert_eq!((rich.id, rich.iq), (output.id, output.iq));
+
+        let two = frame.enrich(&EnrichCtx::new(
+            &calib,
+            offsets,
+            7,
+            CurrentSenseTopology::TwoShunt,
+        ));
+        assert_eq!(two.i_sum, None);
+        assert!((two.id - 5.0).abs() < 1e-5);
+        assert!(two.iq > 3.4);
+    }
 
     #[test]
     fn scale_roundtrip_within_one_lsb() {
@@ -317,8 +414,18 @@ mod tests {
             vbus: FastTelemetry::pack_vbus(15.83),
             ..Default::default()
         };
-        let before = frame.enrich(&EnrichCtx::new(&nominal, offsets, 0));
-        let after = frame.enrich(&EnrichCtx::new(&measured, offsets, 0));
+        let before = frame.enrich(&EnrichCtx::new(
+            &nominal,
+            offsets,
+            0,
+            CurrentSenseTopology::TwoShunt,
+        ));
+        let after = frame.enrich(&EnrichCtx::new(
+            &measured,
+            offsets,
+            0,
+            CurrentSenseTopology::TwoShunt,
+        ));
         let ratio = 3319.0 / 3300.0;
         for (a, b) in [
             (after.ia, before.ia),
@@ -333,7 +440,12 @@ mod tests {
 
     #[test]
     fn enrich_zero_current_zero_angle() {
-        let ctx = EnrichCtx::new(&calib(), (2048.0, 2048.0, 2048.0), 7);
+        let ctx = EnrichCtx::new(
+            &calib(),
+            (2048.0, 2048.0, 2048.0),
+            7,
+            CurrentSenseTopology::TwoShunt,
+        );
         let f = FastTelemetry {
             ia: 2048,
             ib: 2048,
@@ -360,7 +472,12 @@ mod tests {
         // Known: offsets 2048; +10 A on A, -5 A on B, 0 A on C (matches the
         // current_sense golden test); angle 0 → Park(θ=0): id=iα, iq=iβ.
         let c = calib();
-        let ctx = EnrichCtx::new(&c, (2048.0, 2048.0, 2048.0), 1);
+        let ctx = EnrichCtx::new(
+            &c,
+            (2048.0, 2048.0, 2048.0),
+            1,
+            CurrentSenseTopology::TwoShunt,
+        );
         let counts_per_mv = f32::from(c.adc_max_counts) / c.adc_vref_mv as f32;
         let d_a = (10.0 * c.shunt_ohms * c.amp_gain * 1000.0 * counts_per_mv) as i32;
         let d_b = (-5.0 * c.shunt_ohms * c.amp_gain * 1000.0 * counts_per_mv) as i32;
@@ -386,6 +503,7 @@ mod tests {
         // this guards the value mapping too).
         use crate::foc::config::BoardConfig;
         let bc = BoardConfig {
+            current_sense_topology: CurrentSenseTopology::TwoShunt,
             calib: calib(),
             max_iq_target_a: 5.0,
             max_phase_current_a: 10.0,
