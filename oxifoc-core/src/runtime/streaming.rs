@@ -2,7 +2,7 @@
 //!
 //! ISR/sim writes `FastTelemetry` structs into a bbqueue at the decimated rate.
 //! The async streaming task wakes on a timer, drains the queue, and broadcasts
-//! batches of up to 8 samples as a single ergot topic message.
+//! batches of up to FAST_BATCH_SAMPLES samples as a single ergot topic message.
 //!
 //! Streaming is disabled by default — the host must send `TelemetryConfig`
 //! with a nonzero `fast_hz` to start.
@@ -412,7 +412,7 @@ where
 
         T::after_micros(interval_us).await;
 
-        let _gate = FAST_TELEM_GATE.lock().await;
+        let mut gate = FAST_TELEM_GATE.lock().await;
         pending.enter_session(FAST_TELEM_SESSION.load(Ordering::Acquire));
         // The host can stop us while the timer is pending. Do not broadcast
         // residual samples after that stop has already been acknowledged.
@@ -486,6 +486,20 @@ where
 
             // If we got fewer than BATCH, the queue is drained
             if !batch_full {
+                break;
+            }
+
+            // A continuously replenished ISR queue need never become empty.
+            // Bound each poll to one batch even when USB runs preemptively:
+            // otherwise this task can starve protocol/detection for tens of
+            // milliseconds while its USB IRQ drains every successful send.
+            // Release the gate BEFORE yielding so stream stop can complete.
+            drop(gate);
+            embassy_futures::yield_now().await;
+            gate = FAST_TELEM_GATE.lock().await;
+            pending.enter_session(FAST_TELEM_SESSION.load(Ordering::Acquire));
+            if FAST_TELEM_PERIOD.load(Ordering::Acquire) == 0 {
+                pending.batch.clear();
                 break;
             }
         }
