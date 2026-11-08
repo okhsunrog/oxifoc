@@ -1,5 +1,7 @@
 # Current startup, transport and signed voltage measurements
 
+Follow-up: [native R source fix and timing/offset checks](bench-resistance-source-2026-11-09.md).
+
 This continues the [earlier aborted pilot](bench-voltage-capture-2026-11-08.md).
 The repeated 0.6 A pilot and subsequent signed 1.5/3 A series completed on the
 MK5 with no transport sequence gaps or controller faults. The phase-ADC signed

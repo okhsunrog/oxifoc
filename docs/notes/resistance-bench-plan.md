@@ -1,9 +1,10 @@
 # Resistance and applied-voltage bench comparison
 
-2026-11-08: [startup fix, transport and signed-current results](bench-current-voltage-2026-11-08.md).
-The repeated pilot and signed 1.5/3 A series passed without published-sample
-loss. Phase-ADC slopes are about 30 mΩ; the voltage-model contract and an
-observed host/sequence timing drift remain to be resolved.
+2026-11-09: [native R source fix and timing/offset checks](bench-resistance-source-2026-11-09.md).
+The filtered-phase-ADC detector is flashed and returns 30.17/30.21/30.74 mΩ in
+three lossless nominal-20 kHz captures. Differential R now uses measured voltage;
+the absolute phase-sense calibration and observer/inverter model remain separate.
+The relative clock discrepancy was also reproduced without an attached probe.
 
 ## Goal and confirmed setup
 
