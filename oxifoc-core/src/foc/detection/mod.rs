@@ -64,6 +64,9 @@
 /// Common types for detection (MotorSize, MotorParams, errors, etc.)
 pub mod types;
 
+#[cfg(feature = "detection")]
+pub mod excitation;
+
 /// Flux linkage (λ) measurement via open-loop spinning
 #[cfg(feature = "detection")]
 pub mod flux_linkage;

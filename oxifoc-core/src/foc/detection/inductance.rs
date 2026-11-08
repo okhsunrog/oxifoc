@@ -466,6 +466,19 @@ impl<S: SinCos> InductanceMeasurement<S> {
         self.cycles_completed
     }
 
+    pub fn remaining_cycles(&self) -> u32 {
+        self.target_cycles.saturating_sub(self.cycles_completed)
+    }
+
+    /// Start another contiguous packet without mixing its DC hold interval
+    /// into a differential current sample or discarding completed FFT windows.
+    pub fn prime_currents(&mut self, alpha: f32, beta: f32) {
+        self.prev_i_alpha = alpha;
+        self.prev_i_beta = beta;
+        self.sample_idx = 0;
+        self.first_sample = false;
+    }
+
     /// Interim average inductance ((Ld+Lq)/2) over the windows so far.
     ///
     /// Used by the amplitude-adaptation pass of `measure_inductance` to

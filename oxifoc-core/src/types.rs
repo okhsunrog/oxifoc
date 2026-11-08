@@ -1170,7 +1170,7 @@ mod tests {
         assert_eq!(timing.stream_hz(1), 20_004);
         assert_eq!(timing.stream_hz(4), 5_001);
         assert_eq!(timing.stream_hz(0), 0);
-        assert!((timing.dt_s() - 8390.0 / 167_835_842.0).abs() < 1e-11);
+        assert!((f64::from(timing.dt_s()) - 8390.0 / 167_835_842.0).abs() < 1e-11);
         assert!((timing.frequency_hz() * timing.dt_s() - 1.0).abs() < 1e-6);
         assert_eq!(ControlTiming::from_hz(20_000).stream_hz(4), 5_000);
         assert!(!ControlTiming::default().is_valid());

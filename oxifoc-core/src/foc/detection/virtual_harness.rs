@@ -200,6 +200,13 @@ impl VirtualHardware {
 }
 
 impl DetectionHardware for VirtualHardware {
+    fn capture_voltage_burst<S: crate::foc::trig::SinCos>(
+        &mut self,
+        program: super::excitation::VoltageBurst,
+    ) -> impl Future<Output = Result<super::excitation::BurstCapture, DetectionError>> {
+        super::sweep::capture_model_voltage_burst::<_, S>(self, program)
+    }
+
     fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
         SIM.with(|s| s.borrow().as_ref().unwrap().foc.current_sense_topology())
     }

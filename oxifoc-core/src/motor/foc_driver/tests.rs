@@ -3477,6 +3477,131 @@ mod severity_gate {
         assert_eq!(h.motor_state(), MotorState::Running);
     }
 
+    #[cfg(feature = "detection")]
+    mod excitation_packets {
+        use super::*;
+        use crate::foc::detection::DetectionError;
+        use crate::foc::detection::excitation::{VoltageBurst, Waveform};
+
+        fn arm(h: &mut Harness) -> VoltageBurst {
+            let program = VoltageBurst {
+                waveform: Waveform::Pulse {
+                    vd: 0.1,
+                    vq: 0.0,
+                    start: 4,
+                    periods: 2,
+                },
+                samples: 12,
+                vd_hold: 0.03,
+                hold_current: 1.0,
+                angle: 0.0,
+            };
+            h.driver.set_mode(program.hold_mode());
+            critical_section::with(|cs| {
+                let mut state = h.state.borrow(cs).borrow_mut();
+                state.set_running(program.hold_mode());
+                state.excitation.arm(program).unwrap();
+            });
+            program
+        }
+
+        fn tick(h: &mut Harness, us: u64) {
+            h.cycle(us);
+            critical_section::with(|cs| {
+                let mut state = h.state.borrow(cs).borrow_mut();
+                state.last_adc.seq = state.last_adc.seq.wrapping_add(1);
+            });
+        }
+
+        #[test]
+        fn pulse_ends_and_pi_hold_resumes_without_async_service() {
+            let _serial = cmd_channel_lock();
+            let _detect = crate::state::DetectionActiveGuard::arm();
+            let mut h = running_harness();
+            let program = arm(&mut h);
+            for i in 0..=usize::from(program.samples) {
+                tick(&mut h, (i as u64 + 1) * 50);
+                assert_eq!(
+                    h.driver.mode(),
+                    if i < usize::from(program.samples) {
+                        program.command::<LibmSinCos>(i)
+                    } else {
+                        program.hold_mode()
+                    }
+                );
+            }
+            critical_section::with(|cs| {
+                let state = h.state.borrow(cs).borrow();
+                assert_eq!(state.excitation.outcome, Some(Ok(())));
+                let samples = &state.excitation.samples[..usize::from(program.samples)];
+                assert!(
+                    samples
+                        .windows(2)
+                        .all(|s| s[1].cycle.wrapping_sub(s[0].cycle) == 1)
+                );
+            });
+            // The async consumer deliberately never reads/releases the packet.
+            for i in 14..=100 {
+                tick(&mut h, i * 50);
+            }
+            assert_eq!(h.driver.mode(), program.hold_mode());
+        }
+
+        #[test]
+        fn fault_or_missed_period_never_resumes_excitation() {
+            let _serial = cmd_channel_lock();
+            let _detect = crate::state::DetectionActiveGuard::arm();
+            for fault in [false, true] {
+                let mut h = running_harness();
+                arm(&mut h);
+                tick(&mut h, 50);
+                if fault {
+                    h.registry.set(SevFault::OverVoltage);
+                }
+                tick(&mut h, 200); // > two PWM periods, or an independent Kill.
+                assert_eq!(h.driver.mode(), ControlMode::Stopped);
+                critical_section::with(|cs| {
+                    assert_eq!(
+                        h.state.borrow(cs).borrow().excitation.outcome,
+                        Some(Err(if fault {
+                            DetectionError::HardwareFault
+                        } else {
+                            DetectionError::InsufficientSamples
+                        })),
+                    );
+                });
+                for i in 5..=20 {
+                    tick(&mut h, i * 50);
+                }
+                assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            }
+        }
+
+        #[test]
+        fn cancelled_future_and_host_stop_both_cancel_the_packet() {
+            let _serial = cmd_channel_lock();
+            let _detect = crate::state::DetectionActiveGuard::arm();
+            for host_stop in [false, true] {
+                let mut h = running_harness();
+                arm(&mut h);
+                tick(&mut h, 50);
+                if host_stop {
+                    CMD_CHANNEL
+                        .try_send(DriverCommand::SetMode(ControlMode::Stopped))
+                        .unwrap();
+                } else {
+                    critical_section::with(|cs| {
+                        h.state.borrow(cs).borrow_mut().excitation.cancelled = true;
+                    });
+                }
+                for i in 2..=20 {
+                    tick(&mut h, i * 50);
+                }
+                assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            }
+        }
+    }
+
     #[cfg(feature = "storage")]
     #[test]
     fn invalid_board_calibration_blocks_bridge_after_warning_clear() {

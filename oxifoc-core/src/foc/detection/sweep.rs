@@ -28,13 +28,14 @@
 //! }
 //! ```
 
+use super::excitation::{BurstCapture, BurstSample, VoltageBurst};
 use core::future::Future;
 
 use super::flux_linkage::{
     FluxLinkageMeasurement, MagnitudeFluxMeasurement, SpinDownFluxMeasurement,
 };
 #[cfg(feature = "hfi-detect")]
-use super::inductance::{HfiInjector, InductanceMeasurement, validate_inductance};
+use super::inductance::{FFT_SIZE, HfiInjector, InductanceMeasurement, validate_inductance};
 use super::pi_tuning::{calculate_foc_gains, estimate_bandwidth};
 use super::types::{
     DetectionError, FluxLinkageParams, InductanceParams, MotorParams, MotorSize, ResistanceParams,
@@ -84,6 +85,25 @@ pub struct ResistanceSample {
 ///
 /// Async delays are provided separately via the [`Timer`] trait.
 pub trait DetectionHardware {
+    /// Physical backends cannot use the legacy async-only experimental sweep.
+    fn requires_isr_excitation(&self) -> bool {
+        false
+    }
+    /// A fault must terminate the measurement, including between settling and
+    /// excitation and before considering another measurement method.
+    fn check_health(&self) -> Result<(), DetectionError> {
+        Ok(())
+    }
+
+    /// Execute a finite waveform on consecutive control cycles. A backend
+    /// without an ISR sequencer refuses excitation rather than using async
+    /// wakeups as a substitute for PWM periods.
+    fn capture_voltage_burst<S: SinCos>(
+        &mut self,
+        _program: VoltageBurst,
+    ) -> impl Future<Output = Result<BurstCapture, DetectionError>> {
+        async { Err(DetectionError::MissingPrerequisite) }
+    }
     /// The current channels valid for this backend's sampling topology.
     fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
         crate::types::CurrentSenseTopology::TwoShunt
@@ -151,6 +171,34 @@ pub trait DetectionHardware {
     fn supports_coast_telemetry(&self) -> bool {
         false
     }
+}
+
+/// Single-cycle simulation adapter. Physical backends must use an ISR-owned
+/// implementation; this helper explicitly advances a deterministic model.
+pub async fn capture_model_voltage_burst<H: DetectionHardware, S: SinCos>(
+    hw: &mut H,
+    program: VoltageBurst,
+) -> Result<BurstCapture, DetectionError> {
+    if !program.is_valid() {
+        return Err(DetectionError::OutOfRange);
+    }
+    let mut capture = BurstCapture::default();
+    for index in 0..usize::from(program.samples) {
+        hw.check_health()?;
+        hw.wait_telemetry().await;
+        hw.check_health()?;
+        let (alpha, beta) = hw.current_sense_topology().clarke(hw.read_phase_currents());
+        capture.samples[index] = BurstSample {
+            alpha,
+            beta,
+            cycle: index as u32,
+            tick_us: index as u32,
+        };
+        hw.send_command(program.command::<S>(index)).await;
+    }
+    hw.send_command(program.hold_mode()).await;
+    capture.len = usize::from(program.samples);
+    Ok(capture)
 }
 
 // ============================================================================
@@ -250,6 +298,7 @@ async fn sample_voltage_current<H: DetectionHardware, T: Timer>(
     let id_sum = Cell::new(0.0f32);
     let sample = async {
         for _ in 0..count {
+            hw.check_health()?;
             let (voltage, current) = if let Some(source) = resistance_source {
                 let sample = hw.wait_resistance_sample().await?;
                 if sample.source != source {
@@ -258,6 +307,7 @@ async fn sample_voltage_current<H: DetectionHardware, T: Timer>(
                 (sample.voltage_v, sample.current_a)
             } else {
                 let output = hw.wait_telemetry().await;
+                hw.check_health()?;
                 (output.vd, output.id)
             };
             if !voltage.is_finite() || !current.is_finite() {
@@ -320,11 +370,16 @@ async fn settled_hold_voltage<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     resistance_ohm: f32,
     hold_current_a: f32,
-) -> f32 {
+) -> Result<f32, DetectionError> {
+    hw.check_health()?;
     let computed = resistance_ohm * hold_current_a;
     match sample_vd_id::<H, T>(hw, 200, 1000).await {
-        Ok((avg_vd, avg_id)) => computed + (avg_vd - resistance_ohm * avg_id),
-        Err(_) => computed,
+        Ok((avg_vd, avg_id)) => Ok(computed + (avg_vd - resistance_ohm * avg_id)),
+        Err(DetectionError::MotorNotResponding) => {
+            hw.check_health()?;
+            Ok(computed)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -335,8 +390,9 @@ async fn ramp_down_stationary_current<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     hold_current_a: f32,
     angle_rad: f32,
-) {
+) -> Result<(), DetectionError> {
     for i in (0..=50).rev() {
+        hw.check_health()?;
         hw.send_command(ControlMode::OpenLoop {
             angle_rad,
             current: hold_current_a * (i as f32 / 50.0),
@@ -347,6 +403,7 @@ async fn ramp_down_stationary_current<H: DetectionHardware, T: Timer>(
         T::after_millis(10).await;
     }
     hw.send_command(ControlMode::Stopped).await;
+    Ok(())
 }
 
 /// Measure motor phase resistance.
@@ -543,17 +600,13 @@ const PIPELINE_LAG_MAX: usize = 4;
 /// treats as a real pulse; below it the winding looks open / unresponsive.
 const PULSE_EDGE_THRESHOLD_A: f32 = 0.02;
 
-/// Frame cap on the inter-pulse discharge wait (~200 ms at 20 kHz; covers an
-/// L/R decay constant up to ~10 ms). The winding settles back to the holding
-/// current at the open-loop `vd_hold` equilibrium before the next pulse.
+/// Snapshot cap on the inter-pulse PI settling wait. Async snapshots may skip
+/// FOC periods, so this is not a 200 ms wall-clock promise.
 const DISCHARGE_MAX_FRAMES: usize = 4000;
 
-/// Periods a voltage pulse can stay applied in the worst case: a command
-/// latency of up to `PIPELINE_LAG_MAX` frames, the edge frame, and the one
-/// after it (see [`pulse_once`]). The per-period step is sized to
-/// `budget / PULSE_MAX_PERIODS`, so the excursion stays inside the budget
-/// whatever the latency — the step used to be sized for ONE period while
-/// staying applied for five or more (27.8 A on a 9 A budget, 15 µH at 48 V).
+/// Conservative excursion divisor retained from the former async pulse path.
+/// Pulses now have two scheduled periods; six leaves additional headroom for
+/// current noise, PWM/ADC pipeline edges and permissible ISR entry jitter.
 const PULSE_MAX_PERIODS: f32 = (PIPELINE_LAG_MAX + 2) as f32;
 
 /// Measure the command→apply pipeline depth by cross-correlation.
@@ -582,47 +635,45 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
     hw: &mut H,
     injector: &mut HfiInjector<S>,
     vd_hold: f32,
+    hold_current: f32,
     dt: f32,
     resistance_ohm: f32,
-) -> (u32, f32) {
+) -> Result<(u32, f32), DetectionError> {
+    use super::excitation::{MAX_BURST_SAMPLES, Waveform};
     let omega_c = injector.omega_hfi();
     let amp = injector.voltage_amplitude();
     let samples_per_period = ((core::f32::consts::TAU / (omega_c * dt)) + 0.5).max(2.0) as usize;
-    // Settle the transient, then accumulate over an integer number of
-    // carrier periods (the DC hold projection cancels over full periods).
     let warmup = 3 * samples_per_period + PIPELINE_LAG_MAX;
-    let accum = 16 * samples_per_period;
-
-    let mut hist = [(0.0f32, 0.0f32); 8]; // (direction angle, carrier phase)
+    let accum = 8 * samples_per_period;
+    let count = warmup + accum;
+    if count > MAX_BURST_SAMPLES {
+        return Err(DetectionError::InsufficientSamples);
+    }
+    let program = VoltageBurst {
+        waveform: Waveform::RotatingHfi {
+            amplitude: amp,
+            phase_step: omega_c * dt,
+        },
+        samples: count as u16,
+        vd_hold,
+        hold_current,
+        angle: 0.0,
+    };
+    let capture = hw.capture_voltage_burst::<S>(program).await?;
+    capture.validate(usize::from(program.samples))?;
     let mut corr_q = [0.0f32; PIPELINE_LAG_MAX + 1];
     let mut corr_i = [0.0f32; PIPELINE_LAG_MAX + 1];
-
-    for k in 0..(warmup + accum) {
-        let _telem = hw.wait_telemetry().await;
-        let currents = hw.read_phase_currents();
-        let (i_alpha, i_beta) = hw.current_sense_topology().clarke(currents);
-
-        if k >= warmup {
-            for d in 1..=PIPELINE_LAG_MAX {
-                let (theta, phase) = hist[(k + 8 - d) % 8];
-                let (sin_t, cos_t) = S::sin_cos(theta);
-                let (sin_p, cos_p) = S::sin_cos(phase);
-                let i_dir = i_alpha * cos_t + i_beta * sin_t;
-                corr_q[d] += i_dir * (-cos_p);
-                corr_i[d] += i_dir * sin_p;
-            }
+    for k in warmup..count {
+        let sample = capture.samples[k];
+        for d in 1..=PIPELINE_LAG_MAX {
+            let theta = ((k - d) % FFT_SIZE) as f32 * core::f32::consts::TAU / FFT_SIZE as f32;
+            let phase = (k - d) as f32 * omega_c * dt;
+            let (sin_t, cos_t) = S::sin_cos(theta);
+            let (sin_p, cos_p) = S::sin_cos(phase);
+            let i_dir = sample.alpha * cos_t + sample.beta * sin_t;
+            corr_q[d] += i_dir * (-cos_p);
+            corr_i[d] += i_dir * sin_p;
         }
-
-        let theta = injector.injection_angle();
-        let phase = injector.carrier_phase();
-        let (v_a, v_b) = injector.step(dt);
-        hw.send_command(ControlMode::DirectVoltage {
-            vd: vd_hold + v_a,
-            vq: v_b,
-            angle_rad: 0.0,
-        })
-        .await;
-        hist[k % 8] = (theta, phase);
     }
 
     // Each command holds for one full period, so the discrete response
@@ -662,7 +713,7 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
         "HFI pipeline lag probe: lag={} cycles, |Z|-estimate L={} H",
         lag, l_mag
     );
-    (lag as u32, l_mag)
+    Ok((lag as u32, l_mag))
 }
 
 /// Run the HFI collection loop: rotating injection riding on `vd_hold`,
@@ -673,37 +724,27 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
 /// the injector amplitude is re-scaled and the accumulators restart, so
 /// only properly-scaled windows reach the final result.
 ///
-/// Leaves the motor in `DirectVoltage { vd: vd_hold }` — the caller ramps
-/// down.
+/// Each finite packet returns to the retained current PI hold in the ISR.
+/// The caller ramps down that current after collecting the final packet.
 #[cfg(feature = "hfi-detect")]
 async fn hfi_collect<H: DetectionHardware, S: SinCos>(
     hw: &mut H,
     injector: &mut HfiInjector<S>,
     measurement: &mut InductanceMeasurement<S>,
-    vd_hold: f32,
+    hold: (f32, f32),
     dt: f32,
     mut adapt: Option<HfiAdapt>,
     lag: u32,
-) {
-    // DirectVoltage mode — no PI interference during measurement.
-    // The captured vd_hold maintains the holding force, HFI injection is
-    // added on top.
-    //
-    // Pairing: the current change read at iteration k was driven by the
-    // command sent at iteration k − lag (lag = the measured command→apply
-    // pipeline depth, see probe_hfi_pipeline_lag). A ring buffer of sent
-    // commands resolves the pairing explicitly; `record_from` gates the
-    // first records until the post-(re)start history is deep enough.
-    let lag = (lag as usize).clamp(1, PIPELINE_LAG_MAX);
-    let mut hist = [(0.0f32, 0.0f32, 0.0f32); 8]; // (angle, v_alpha, v_beta)
-    let mut iter: usize = 0;
-    let mut record_from = lag;
-
+) -> Result<(), DetectionError> {
+    use super::excitation::Waveform;
+    let (vd_hold, hold_current) = hold;
+    let lag = lag as usize;
+    if !(1..=PIPELINE_LAG_MAX).contains(&lag) {
+        return Err(DetectionError::OutOfRange);
+    }
     while !measurement.is_complete() {
+        hw.check_health()?;
         if measurement.cycles_completed() >= HFI_PROBE_CYCLES {
-            // On a failed scout (no interim estimate) keep the configured
-            // amplitude — finish() reports the real error downstream.
-            // `adapt.take()` only fires once an interim estimate exists.
             if let Some(l_avg) = measurement.interim_l_avg()
                 && let Some(a) = adapt.take()
             {
@@ -711,44 +752,37 @@ async fn hfi_collect<H: DetectionHardware, S: SinCos>(
                 let v_run = clamp_f32(a.i_target * z, a.v_min, a.v_max);
                 info!("HFI amplitude adapted: {}V", v_run);
                 injector.set_amplitude(v_run);
-                injector.reset();
                 measurement.restart(v_run);
-                // Old-amplitude commands are still in flight for `lag`
-                // cycles; let them flush before recording resumes.
-                record_from = iter + lag;
             } else {
                 adapt = None;
             }
         }
-
-        // Wait for current PWM cycle to complete (synced to ADC ISR)
-        let _telem = hw.wait_telemetry().await;
-
-        // Read currents from THIS cycle (the response to the command sent
-        // `lag` iterations ago)
-        let currents = hw.read_phase_currents();
-        let (i_alpha, i_beta) = hw.current_sense_topology().clarke(currents);
-
-        if iter >= record_from {
-            let (angle, v_a, v_b) = hist[(iter + 8 - lag) % 8];
-            measurement.record(i_alpha, i_beta, angle, v_a, v_b);
+        // Four FFT windows at most, with explicit pipeline priming. The ISR
+        // restores the retained PI hold even if this task is never polled again.
+        let windows = measurement.remaining_cycles().min(4) as usize;
+        let program = VoltageBurst {
+            waveform: Waveform::RotatingHfi {
+                amplitude: injector.voltage_amplitude(),
+                phase_step: injector.omega_hfi() * dt,
+            },
+            samples: (lag + windows * FFT_SIZE) as u16,
+            vd_hold,
+            hold_current,
+            angle: 0.0,
+        };
+        let capture = hw.capture_voltage_burst::<S>(program).await?;
+        capture.validate(usize::from(program.samples))?;
+        let first = capture.samples[lag - 1];
+        measurement.prime_currents(first.alpha, first.beta);
+        for k in lag..capture.len {
+            let sample = capture.samples[k];
+            let index = k - lag;
+            let (v_a, v_b) = program.injection::<S>(index);
+            let angle = (index % FFT_SIZE) as f32 * core::f32::consts::TAU / FFT_SIZE as f32;
+            measurement.record(sample.alpha, sample.beta, angle, v_a, v_b);
         }
-
-        // Calculate and send NEXT injection command
-        let injection_angle = injector.injection_angle();
-        let (v_alpha_inj, v_beta_inj) = injector.step(dt);
-
-        // At angle 0, α-β = d-q: vd_hold holds rotor, injection rides on top
-        hw.send_command(ControlMode::DirectVoltage {
-            vd: vd_hold + v_alpha_inj,
-            vq: v_beta_inj,
-            angle_rad: 0.0,
-        })
-        .await;
-
-        hist[iter % 8] = (injection_angle, v_alpha_inj, v_beta_inj);
-        iter += 1;
     }
+    Ok(())
 }
 
 /// Number of FFT windows for the amplitude-scouting probe phase.
@@ -792,6 +826,19 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     params: &InductanceParams,
     pwm_freq_hz: f32,
 ) -> Result<(f32, f32), DetectionError> {
+    let result = measure_inductance_inner::<H, T, S>(hw, params, pwm_freq_hz).await;
+    if result.is_err() {
+        hw.send_command(ControlMode::Stopped).await;
+    }
+    result
+}
+
+#[cfg(feature = "hfi-detect")]
+async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
+    hw: &mut H,
+    params: &InductanceParams,
+    pwm_freq_hz: f32,
+) -> Result<(f32, f32), DetectionError> {
     info!("Starting inductance measurement (rotating HFI)...");
 
     let dt = 1.0 / pwm_freq_hz;
@@ -801,6 +848,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
 
     for i in 1..=ramp_steps {
+        hw.check_health()?;
         let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
@@ -819,7 +867,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     // adjustment) is not double-counted.
     T::after_millis(u64::from(params.settle_time_ms)).await;
     let vd_hold =
-        settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
+        settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await?;
 
     // Voltage headroom above the holding voltage (when vbus is known):
     // commanding beyond this saturates against the bus mid-carrier and
@@ -841,7 +889,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     // (3 V) instead drew tens of amps on a low-impedance outrunner and tripped
     // the bench PSU before the adaptive collection could re-scale.
     let omega = params.hfi_frequency_hz * core::f32::consts::TAU;
-    let i_cap = (HFI_PROBE_CURRENT_A * params.resistance_ohm).max(0.2);
+    let i_cap = HFI_PROBE_CURRENT_A * params.resistance_ohm;
     let probe_v = i_cap.min(headroom).min(params.hfi_voltage_v);
     info!(
         "HFI injection (probe v={}V, vd_hold={}V, I_cap={}A)...",
@@ -855,8 +903,15 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     // (pairing rotations preserve the response norm) that guards the
     // phase-sensitive demod below — an override must not silently disable
     // that safety net. `pipeline_lag ≥ 1` overrides the lag value only.
-    let (probed_lag, l_probe) =
-        probe_hfi_pipeline_lag::<H, S>(hw, &mut injector, vd_hold, dt, params.resistance_ohm).await;
+    let (probed_lag, l_probe) = probe_hfi_pipeline_lag::<H, S>(
+        hw,
+        &mut injector,
+        vd_hold,
+        params.hold_current_a,
+        dt,
+        params.resistance_ohm,
+    )
+    .await?;
     injector.reset();
     let lag = if params.pipeline_lag >= 1 {
         params.pipeline_lag as u32
@@ -879,7 +934,7 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
             0.05,
             HFI_PROBE_CURRENT_A,
         ),
-        v_min: 0.2,
+        v_min: probe_v,
         v_max: clamp_f32(HFI_PROBE_CURRENT_A * z_probe, probe_v, headroom),
     };
 
@@ -889,17 +944,17 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
         hw,
         &mut injector,
         &mut measurement,
-        vd_hold,
+        (vd_hold, params.hold_current_a),
         dt,
         Some(adapt),
         lag,
     )
-    .await;
+    .await?;
 
     // Ramp down current through the retained PI loop.
     info!("HFI measurement complete, ramping down...");
 
-    ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, 0.0).await;
+    ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, 0.0).await?;
     T::after_millis(100).await;
 
     // Compute result
@@ -933,6 +988,7 @@ struct LockedAxis {
     cos_a: f32,
     vd_hold: f32,
     hold_current_a: f32,
+    lock_current_a: f32,
     /// Settle band around `hold_current_a` (kept above the ADC noise floor).
     settle_tol: f32,
     /// Probe q relative to the SAME rotor lock; never rotate the lock to
@@ -953,73 +1009,70 @@ impl LockedAxis {
             i_alpha * self.cos_a + i_beta * self.sin_a
         }
     }
-
-    fn voltage(&self, pulse_v: f32) -> ControlMode {
-        ControlMode::DirectVoltage {
-            vd: self.vd_hold + if self.q_axis { 0.0 } else { pulse_v },
-            vq: if self.q_axis {
-                self.sign * pulse_v
-            } else {
-                0.0
-            },
-            angle_rad: self.angle,
-        }
-    }
 }
 
-/// One discharge-anchored pulse on a locked axis.
-///
-/// Settles the winding back to the holding current at `vd_hold` (the open-loop
-/// equilibrium — polled, not a fixed wait, because the L/R decay outlasts the
-/// inter-pulse gap), then applies `vd_hold + pulse_v` and returns the
-/// `(i_before, i_after)` of the *largest* single-period current rise across the
-/// next `PIPELINE_LAG_MAX + 1` frames. That argmax is the application edge:
-/// immune to the command→apply latency and to ADC noise (the real step dwarfs
-/// it). The accumulator works from the absolute current, so a loose settle does
-/// not bias the result.
-///
-/// The pulse ends one frame after the edge shows up (the first rising frame
-/// may be a partial period under a fractional actuation delay; the next one
-/// is whole): holding it through the rest of the search window only kept
-/// the current ramping.
-async fn pulse_once<H: DetectionHardware>(hw: &mut H, ax: &LockedAxis, pulse_v: f32) -> (f32, f32) {
-    // Discharge to the holding current.
-    hw.send_command(ax.voltage(0.0)).await;
+/// Settle under current PI, then capture a finite two-period pulse and its
+/// pipeline tail. The largest adjacent-sample rise locates its application
+/// edge. Pulse termination and PI restoration do not depend on task polling.
+async fn pulse_once<H: DetectionHardware>(
+    hw: &mut H,
+    ax: &LockedAxis,
+    pulse_v: f32,
+) -> Result<(f32, f32), DetectionError> {
+    use super::excitation::Waveform;
+    hw.check_health()?;
+    // Wait under closed-loop current control; an executor stall cannot extend
+    // an open-loop voltage pulse or an unstable DC voltage hold.
+    let program = VoltageBurst {
+        waveform: Waveform::Pulse {
+            vd: if ax.q_axis { 0.0 } else { pulse_v },
+            vq: if ax.q_axis { ax.sign * pulse_v } else { 0.0 },
+            start: PIPELINE_LAG_MAX as u16,
+            periods: 2,
+        },
+        samples: (2 * PIPELINE_LAG_MAX + 4) as u16,
+        vd_hold: ax.vd_hold,
+        hold_current: ax.lock_current_a,
+        angle: ax.angle,
+    };
+    hw.send_command(program.hold_mode()).await;
+    let mut settled = false;
     for _ in 0..DISCHARGE_MAX_FRAMES {
         hw.wait_telemetry().await;
+        hw.check_health()?;
         if (ax.read_axis_current(hw) - ax.hold_current_a).abs() < ax.settle_tol {
+            settled = true;
             break;
         }
     }
-
-    // Apply the step, capture the application window, take the max rise.
-    let id_before = ax.read_axis_current(hw);
-    hw.send_command(ax.voltage(pulse_v)).await;
-    let mut prev = id_before;
-    let mut best_before = id_before;
-    let mut best_after = id_before;
-    let mut best_di = f32::NEG_INFINITY;
-    // A rise this far above the settle band is the edge, not noise.
-    let edge_seen = ax.settle_tol.max(PULSE_EDGE_THRESHOLD_A);
-    let mut edge = false;
-    for _ in 0..=PIPELINE_LAG_MAX {
-        hw.wait_telemetry().await;
-        let id_now = ax.read_axis_current(hw);
-        let di = id_now - prev;
-        if di > best_di {
-            best_di = di;
-            best_before = prev;
-            best_after = id_now;
-        }
-        prev = id_now;
-        if edge {
-            break; // the frame after the edge is in
-        }
-        edge = di > edge_seen;
+    if !settled {
+        return Err(DetectionError::LowConfidence);
     }
-    // End the pulse now rather than at the next call's discharge.
-    hw.send_command(ax.voltage(0.0)).await;
-    (best_before, best_after)
+    let capture = hw
+        .capture_voltage_burst::<crate::foc::trig::LibmSinCos>(program)
+        .await?;
+    capture.validate(usize::from(program.samples))?;
+    let project = |sample: BurstSample| {
+        if ax.q_axis {
+            ax.sign * (sample.beta * ax.cos_a - sample.alpha * ax.sin_a)
+        } else {
+            sample.alpha * ax.cos_a + sample.beta * ax.sin_a
+        }
+    };
+    let mut best = (0.0, 0.0);
+    let mut best_di = f32::NEG_INFINITY;
+    for pair in capture.samples[..capture.len]
+        .windows(2)
+        .skip(PIPELINE_LAG_MAX - 1)
+    {
+        let before = project(pair[0]);
+        let after = project(pair[1]);
+        if after - before > best_di {
+            best_di = after - before;
+            best = (before, after);
+        }
+    }
+    Ok(best)
 }
 
 /// Size the pulse step to a target current excursion — VESC's
@@ -1040,23 +1093,24 @@ async fn calibrate_pulse_voltage<H: DetectionHardware>(
     ax: &LockedAxis,
     ceiling: f32,
     target_di: f32,
-) -> f32 {
+) -> Result<f32, DetectionError> {
     let mut ax = *ax;
     // Start small (≈ VESC's 0.02 duty) and grow geometrically; the early
     // probes barely move the current, so they are inherently safe.
-    let mut v = (ceiling * 0.02).max(0.02);
+    let minimum = ceiling.min(0.02);
+    let mut v = minimum;
     loop {
-        let (before, after) = pulse_once(hw, &ax, v).await;
+        let (before, after) = pulse_once(hw, &ax, v).await?;
         if ax.q_axis {
             ax.sign = -ax.sign;
         }
         let di = after - before;
         if di >= target_di && di > 0.0 {
             // Bracketed — trim down to hit the target exactly.
-            return clamp_f32(v * target_di / di, 0.02, ceiling);
+            return Ok(clamp_f32(v * target_di / di, minimum, ceiling));
         }
         if v >= ceiling {
-            return ceiling; // high-L: target unreachable, use all headroom
+            return Ok(ceiling); // high-L: target unreachable, use all headroom
         }
         v = (v * 1.5).min(ceiling);
     }
@@ -1078,6 +1132,18 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
     params: &VoltagePulseParams,
     pwm_freq_hz: f32,
 ) -> Result<(f32, f32), DetectionError> {
+    let result = measure_inductance_pulse_inner::<H, T, S>(hw, params, pwm_freq_hz).await;
+    if result.is_err() {
+        hw.send_command(ControlMode::Stopped).await;
+    }
+    result
+}
+
+async fn measure_inductance_pulse_inner<H: DetectionHardware, T: Timer, S: SinCos>(
+    hw: &mut H,
+    params: &VoltagePulseParams,
+    pwm_freq_hz: f32,
+) -> Result<(f32, f32), DetectionError> {
     info!("Starting voltage-pulse inductance measurement...");
 
     let ramp_steps = 50u32;
@@ -1088,6 +1154,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
     for (axis, q_axis) in [false, true].into_iter().enumerate() {
         // Re-establish the SAME d-axis lock before each series.
         for i in 1..=ramp_steps {
+            hw.check_health()?;
             let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
             hw.send_command(ControlMode::OpenLoop {
                 angle_rad: angle,
@@ -1109,7 +1176,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
         // still converging and to dead-time make-up — see
         // `settled_hold_voltage`).
         let vd_hold =
-            settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
+            settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await?;
 
         let (sin_a, cos_a) = S::sin_cos(angle);
         let mut ax = LockedAxis {
@@ -1118,6 +1185,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
             cos_a,
             vd_hold,
             hold_current_a: if q_axis { 0.0 } else { params.hold_current_a },
+            lock_current_a: params.hold_current_a,
             // Settle band around i_hold (kept above the ADC noise floor).
             settle_tol: (0.1 * params.hold_current_a).max(0.05),
             q_axis,
@@ -1134,7 +1202,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
                 params.pulse_voltage_v,
                 params.current_target_a / PULSE_MAX_PERIODS,
             )
-            .await;
+            .await?;
             debug!("Pulse step calibrated to the current target");
             voltage
         } else {
@@ -1178,7 +1246,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
             if q_axis {
                 ax.sign = if pulse % 2 == 0 { 1.0 } else { -1.0 };
             }
-            let (before, after) = pulse_once(hw, &ax, pulse_voltage).await;
+            let (before, after) = pulse_once(hw, &ax, pulse_voltage).await?;
 
             // A real pulse dwarfs the noise; below the floor means an open
             // winding (no rise) — record a skip so finish() reports it.
@@ -1198,7 +1266,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
         // noisy/open winding) from here would leave that level applied DC
         // for up to the bench deadman. `measure_resistance` follows the same
         // stop-before-bailout pattern.
-        ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, angle).await;
+        ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, angle).await?;
         T::after_millis(200).await;
 
         results[axis] = inductance?;
@@ -1346,6 +1414,11 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
     params: &InductanceParams,
     pwm_freq_hz: f32,
 ) -> Result<(f32, f32), DetectionError> {
+    if hw.requires_isr_excitation() {
+        // This experimental low-frequency sweep still needs a streaming ISR
+        // accumulator; do not fall back to task-paced voltage commands.
+        return Err(DetectionError::MissingPrerequisite);
+    }
     info!("Starting impedance sweep R(f)/L(f) (experiment)...");
     let dt = 1.0 / pwm_freq_hz;
     let ramp_steps = 50u32;
@@ -1353,6 +1426,7 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
 
     // Lock the rotor on the d axis (angle 0) at the holding current.
     for i in 1..=ramp_steps {
+        hw.check_health()?;
         let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
@@ -1365,7 +1439,7 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
     }
     T::after_millis(u64::from(params.settle_time_ms)).await;
     let vd_hold =
-        settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await;
+        settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await?;
 
     // Voltage headroom above the hold (so the injection never saturates the bus).
     let headroom = if params.vbus > 0.0 {
@@ -1382,8 +1456,15 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
         .max(0.2)
         .min(headroom);
     let mut injector = HfiInjector::<S>::new(params.hfi_frequency_hz, probe_v, pwm_freq_hz);
-    let (lag, l_seed) =
-        probe_hfi_pipeline_lag::<H, S>(hw, &mut injector, vd_hold, dt, params.resistance_ohm).await;
+    let (lag, l_seed) = probe_hfi_pipeline_lag::<H, S>(
+        hw,
+        &mut injector,
+        vd_hold,
+        params.hold_current_a,
+        dt,
+        params.resistance_ohm,
+    )
+    .await?;
 
     let i_target = clamp_f32(
         HFI_RIPPLE_FRACTION * params.hold_current_a,
@@ -1450,7 +1531,7 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
     }
 
     // Ramp the hold back down and stop.
-    ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, 0.0).await;
+    ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, 0.0).await?;
     T::after_millis(100).await;
 
     if l_return <= 0.0 {
@@ -1483,9 +1564,10 @@ pub async fn measure_inductance_auto<H: DetectionHardware, T: Timer, S: SinCos>(
         let hfi = measure_inductance::<H, T, S>(hw, params, pwm_freq_hz).await;
         match &hfi {
             Ok((ld, lq)) if validate_inductance(*ld, *lq).is_ok() => return hfi,
-            Err(DetectionError::MotorNotResponding) => return hfi,
-            _ => {}
+            Ok(_) | Err(DetectionError::LowConfidence | DetectionError::OutOfRange) => {}
+            _ => return hfi,
         }
+        hw.check_health()?;
         info!("HFI inductance suspicious, falling back to voltage pulse");
         T::after_millis(500).await;
     }

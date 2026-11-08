@@ -275,6 +275,8 @@ pub struct MotorControlState {
     /// Source currently allowed to send active setpoints. Safe-mode and
     /// emergency commands are never owner-gated.
     drive_ownership: DriveOwnership,
+    #[cfg(feature = "detection")]
+    pub(crate) excitation: crate::foc::detection::excitation::Excitation,
 }
 
 impl MotorControlState {
@@ -295,6 +297,8 @@ impl MotorControlState {
             derating: DeratingScales::IDENTITY,
             driver_operation: DriverOperation::Idle,
             drive_ownership: DriveOwnership::new(),
+            #[cfg(feature = "detection")]
+            excitation: crate::foc::detection::excitation::Excitation::new(),
         }
     }
 
@@ -919,6 +923,14 @@ where
     // GracefulStop routes through the failsafe machinery, warnings are
     // report-only and never touch the motor.
     if fault_registry.any_kill() {
+        #[cfg(feature = "detection")]
+        critical_section::with(|cs| {
+            state_mutex
+                .borrow(cs)
+                .borrow_mut()
+                .excitation
+                .abort(crate::foc::detection::DetectionError::HardwareFault);
+        });
         // Edge log: safe_off() latches Stopped, so this fires once per trip.
         if !matches!(driver.mode(), ControlMode::Stopped) {
             error!("KILL fault active: cutting gate drive");
@@ -964,6 +976,63 @@ where
 
     let prof_t3 = crate::isr_prof::now();
     crate::isr_prof::add(&crate::isr_prof::CYCLE_CMD, prof_t2, prof_t3);
+
+    #[cfg(feature = "detection")]
+    {
+        use crate::foc::detection::DetectionError;
+        use crate::foc::detection::excitation::BurstAction;
+        let next = critical_section::with(|cs| {
+            let mut state = state_mutex.borrow(cs).borrow_mut();
+            let cycle = state.last_adc.seq.wrapping_add(1);
+            let ex = &mut state.excitation;
+            if ex.cancelled && ex.program.is_some() {
+                ex.program = None;
+                return Some(BurstAction::Stop);
+            }
+            if !ex.running() {
+                return None;
+            }
+            let program = ex.program?;
+            let starting_in_hold = matches!(driver.mode(), ControlMode::OpenLoop {
+                velocity_rad_s: 0.0, current, angle_rad, ..
+            } if current == program.hold_current && angle_rad == program.angle);
+            if fault_registry.any_stopping()
+                || driver.failsafe_active()
+                || saw_set_mode
+                || !DETECTION_ACTIVE.load(Ordering::Relaxed)
+                || (ex.index == 0 && !starting_in_hold)
+            {
+                ex.abort(DetectionError::HardwareFault);
+                return Some(BurstAction::Stop);
+            }
+            if let Err(e) = ex.check_timing(cycle, now_ticks as u32, driver.dt()) {
+                ex.abort(e);
+                return Some(BurstAction::Stop);
+            }
+            // Copy only a small program descriptor while IRQs are masked.
+            Some(if ex.index < usize::from(program.samples) {
+                BurstAction::Voltage(program, ex.index)
+            } else {
+                BurstAction::Hold(program)
+            })
+        });
+        if let Some(action) = next {
+            let next = match action {
+                BurstAction::Stop => ControlMode::Stopped,
+                BurstAction::Voltage(program, index) => program.command::<S>(index),
+                BurstAction::Hold(program) => program.hold_mode(),
+            };
+            driver.set_mode(next);
+            critical_section::with(|cs| {
+                let mut state = state_mutex.borrow(cs).borrow_mut();
+                if next == ControlMode::Stopped {
+                    state.set_stopped();
+                } else {
+                    state.set_running(next);
+                }
+            });
+        }
+    }
 
     let was_failsafe = driver.failsafe_active();
     let step_result = driver.step(now_ticks);
@@ -1019,6 +1088,44 @@ where
             None
         }
     };
+
+    #[cfg(feature = "detection")]
+    let excitation_failed = critical_section::with(|cs| {
+        let mut state = state_mutex.borrow(cs).borrow_mut();
+        let cycle = state.last_adc.seq.wrapping_add(1);
+        let ex = &mut state.excitation;
+        if !ex.running() {
+            return false;
+        }
+        let Some(telem) = result.filter(|_| !fault_registry.any_stopping()) else {
+            ex.abort(crate::foc::detection::DetectionError::HardwareFault);
+            return true;
+        };
+        let Some(program) = ex.program else {
+            return false;
+        };
+        if ex.index == usize::from(program.samples) {
+            // The retained PI hold was actually stepped before completion.
+            ex.outcome = Some(Ok(()));
+        } else {
+            let (alpha, beta) = board
+                .current_sense_topology
+                .clarke((telem.ia, telem.ib, telem.ic));
+            ex.samples[ex.index] = crate::foc::detection::excitation::BurstSample {
+                alpha,
+                beta,
+                cycle,
+                tick_us: now_ticks as u32,
+            };
+            ex.index += 1;
+        }
+        false
+    });
+    #[cfg(feature = "detection")]
+    if excitation_failed {
+        driver.safe_off();
+        critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
+    }
 
     // Hall-degradation bridge — after the step, which is where the phase
     // manager refreshed its health. STICKY by design: set-only, never

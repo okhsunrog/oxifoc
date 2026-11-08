@@ -66,6 +66,100 @@ impl EmbassyDetectionHardware {
 }
 
 impl DetectionHardware for EmbassyDetectionHardware {
+    fn requires_isr_excitation(&self) -> bool {
+        true
+    }
+    fn check_health(&self) -> Result<(), DetectionError> {
+        critical_section::with(|cs| {
+            let state = self.state_mutex.borrow(cs).borrow();
+            if state.motor_state == crate::types::MotorState::Error {
+                Err(DetectionError::HardwareFault)
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    async fn capture_voltage_burst<S: SinCos>(
+        &mut self,
+        program: super::excitation::VoltageBurst,
+    ) -> Result<super::excitation::BurstCapture, DetectionError> {
+        use super::excitation::BurstCapture;
+        use embassy_futures::select::{Either, select};
+        self.check_health()?;
+        // No references into the buffer escape a CS. Dropping the future
+        // requests an ISR stop, including when the timeout wins.
+        struct Guard {
+            state: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+            armed: bool,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                if self.armed {
+                    critical_section::with(|cs| {
+                        self.state.borrow(cs).borrow_mut().excitation.cancelled = true;
+                    });
+                }
+            }
+        }
+        critical_section::with(|cs| {
+            self.state_mutex
+                .borrow(cs)
+                .borrow_mut()
+                .excitation
+                .arm(program)
+        })?;
+        let mut guard = Guard {
+            state: self.state_mutex,
+            armed: true,
+        };
+        let completion = poll_fn(|cx| {
+            state::TELEM_WAKER.register(cx.waker());
+            critical_section::with(|cs| {
+                match self.state_mutex.borrow(cs).borrow().excitation.outcome {
+                    Some(outcome) => Poll::Ready(outcome),
+                    None => Poll::Pending,
+                }
+            })
+        });
+        let outcome = match select(completion, embassy_time::Timer::after_millis(1000)).await {
+            Either::First(outcome) => outcome,
+            Either::Second(_) => return Err(DetectionError::Timeout),
+        };
+        let mut capture = BurstCapture::default();
+        if outcome.is_ok() {
+            capture.len = usize::from(program.samples);
+            for i in 0..capture.len {
+                // Copy one record, not the entire capture with IRQs masked.
+                capture.samples[i] = critical_section::with(|cs| {
+                    self.state_mutex.borrow(cs).borrow().excitation.samples[i]
+                });
+            }
+        }
+        critical_section::with(|cs| {
+            self.state_mutex.borrow(cs).borrow_mut().excitation.program = None;
+        });
+        guard.armed = false;
+        outcome?;
+        self.check_health()?;
+        let mut min_dt = u32::MAX;
+        let mut max_dt = 0;
+        for pair in capture.samples[..capture.len].windows(2) {
+            let dt = pair[1].tick_us.wrapping_sub(pair[0].tick_us);
+            min_dt = min_dt.min(dt);
+            max_dt = max_dt.max(dt);
+        }
+        info!(
+            "L packet: n={} seq={}..{} dt_us={}..{}",
+            capture.len,
+            capture.samples[0].cycle,
+            capture.samples[capture.len - 1].cycle,
+            min_dt,
+            max_dt
+        );
+        Ok(capture)
+    }
+
     fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
         self.board.current_sense_topology
     }

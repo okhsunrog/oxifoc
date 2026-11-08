@@ -21,6 +21,13 @@ struct CompensatedHold {
 }
 
 impl DetectionHardware for CompensatedHold {
+    fn capture_voltage_burst<S: SinCos>(
+        &mut self,
+        program: VoltageBurst,
+    ) -> impl Future<Output = Result<BurstCapture, DetectionError>> {
+        capture_model_voltage_burst::<_, S>(self, program)
+    }
+
     async fn send_command(&self, mode: ControlMode) {
         let (current, vd, stopped) = match mode {
             ControlMode::OpenLoop { current, .. } => (current, 0.03 * current - 0.22, false),
@@ -97,4 +104,71 @@ fn failed_inductance_pulse_removes_negative_voltage_hold_without_current_runaway
         "cleanup increased current to {} A",
         hw.peak.get()
     );
+}
+
+#[cfg(feature = "hfi-detect")]
+#[test]
+fn hfi_fault_timeout_or_missing_cycles_cannot_fall_back_or_report_success() {
+    struct BrokenPacket {
+        hold: CompensatedHold,
+        error: DetectionError,
+        bursts: usize,
+    }
+    impl DetectionHardware for BrokenPacket {
+        async fn send_command(&self, mode: ControlMode) {
+            self.hold.send_command(mode).await;
+        }
+        async fn wait_telemetry(&mut self) -> FocOutput {
+            self.hold.wait_telemetry().await
+        }
+        fn read_phase_currents(&self) -> (f32, f32, f32) {
+            self.hold.read_phase_currents()
+        }
+        async fn capture_voltage_burst<S: SinCos>(
+            &mut self,
+            _: VoltageBurst,
+        ) -> Result<BurstCapture, DetectionError> {
+            self.bursts += 1;
+            Err(self.error)
+        }
+    }
+    for error in [
+        DetectionError::HardwareFault,
+        DetectionError::Timeout,
+        DetectionError::InsufficientSamples,
+    ] {
+        let mut hw = BrokenPacket {
+            hold: CompensatedHold {
+                current: Cell::new(0.0),
+                vd: Cell::new(0.0),
+                peak: Cell::new(0.0),
+                stopped: Cell::new(true),
+                saw_negative_voltage: Cell::new(false),
+            },
+            error,
+            bursts: 0,
+        };
+        let params = InductanceParams {
+            resistance_ohm: 0.03,
+            hold_current_a: 1.2,
+            ..Default::default()
+        };
+        {
+            let mut future =
+                core::pin::pin!(measure_inductance_auto::<_, ImmediateTimer, LibmSinCos>(
+                    &mut hw, &params, 20_000.0
+                ));
+            assert_eq!(
+                future
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(Err(error))
+            );
+        }
+        assert_eq!(
+            hw.bursts, 1,
+            "no second excitation method after a failed packet"
+        );
+        assert!(hw.hold.stopped.get());
+    }
 }
