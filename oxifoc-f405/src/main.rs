@@ -9,6 +9,10 @@ compile_error!("board-cf2 and board-vesc6-mk5 are mutually exclusive");
 compile_error!("bench-only-phase-a and bench-no-phase-outputs are mutually exclusive");
 #[cfg(all(feature = "bench-clock-reference", not(feature = "transport-usb")))]
 compile_error!("bench-clock-reference requires transport-usb for the SOF reference");
+#[cfg(all(feature = "bench-clock-uart", feature = "transport-uart"))]
+compile_error!("bench-clock-uart owns USART3; disable transport-uart");
+#[cfg(all(feature = "bench-calibrated-clock", not(feature = "board-vesc6-mk5")))]
+compile_error!("bench-calibrated-clock is an experiment for the measured MK5 device only");
 
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::Output;
@@ -43,7 +47,11 @@ mod hardware;
 mod motor;
 mod protocol;
 // Panic/HardFault handlers (gate kill) + IWDG live here.
-#[cfg(any(feature = "bench-executor-trace", feature = "bench-clock-reference"))]
+#[cfg(any(
+    feature = "bench-executor-trace",
+    feature = "bench-clock-reference",
+    feature = "bench-clock-uart"
+))]
 mod diagnostics;
 mod safety;
 mod sensors;
@@ -165,6 +173,12 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "transport-uart")]
     let (uart_transport, uart_ident) =
         transport::init_uart(stack, r.uart.usart3, r.uart.pb10, r.uart.pb11);
+    #[cfg(feature = "bench-clock-uart")]
+    spawner.spawn(defmt::unwrap!(diagnostics::uart_clock_task(
+        r.uart.usart3,
+        r.uart.pb10,
+        p.DMA1_CH3
+    )));
 
     // Collect the idents of every registered interface for the state monitor.
     let mut idents: heapless::Vec<u8, 3> = heapless::Vec::new();

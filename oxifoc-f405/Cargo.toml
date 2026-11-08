@@ -41,6 +41,10 @@ bench-clock-reference = []
 # A/B qualification only: keep all USB handlers on the thread executor.
 bench-usb-thread = []
 bench-scheduler-priority = ["embassy-executor/scheduler-priority"]
+# USART3/PB10 sends DMA bursts of 0x55 for an independent scope reference.
+bench-clock-uart = ["bench-no-phase-outputs", "bench-clock-reference"]
+# Temporary calibration for UUID 2B002C001047343031363330 only; never a board default.
+bench-calibrated-clock = []
 # Observer-internals fast-frame mapping (erpm<-PLL, vd<-frame gap,
 # vq<-readiness err signed by trust; see oxifoc-core `obs-debug-telem`).
 # Debug builds only.

@@ -139,7 +139,8 @@ Working USB does not prove that requirement is met.
 Do not merely relabel plots and assume USB was fixed. A temporary, device-specific
 RCC/HSE-frequency experiment can correct timer calculations and put PLLQ back in
 USB tolerance without soldering, followed by scope/SOF and load qualification.
-No clock correction or per-phase calibration has been persisted in this study.
+At this point no clock correction or per-phase calibration had been persisted;
+the subsequent default-off UART trial is recorded below.
 Investigate physical oscillator type/marking and temperature stability before
 choosing a permanent board-calibration design or a hardware change. Resume R/L
 and inverter-compensation comparisons only with all motor phases reconnected.
@@ -149,3 +150,106 @@ References: [pinned scheduler implementation](https://github.com/embassy-rs/emba
 [rtos-trace backend interface](https://docs.rs/rtos-trace/0.2.1/rtos_trace/),
 [STM32 RM0090](https://www.st.com/resource/en/reference_manual/rm0090-stm32f407-advanced-armbased-32bit-mcus-stmicroelectronics.pdf),
 [sigrok Hantek 6022BE](https://sigrok.org/wiki/Hantek_6022BE).
+
+## UART reference and device-specific software trial
+
+The probe was moved to USART3/PB10 TX, physical x10, ground to input negative.
+Motor phase A stayed disconnected. `bench-clock-uart` implies
+`bench-no-phase-outputs`: every phase output remains inhibited even while active
+FOC calculations run. It is mutually exclusive with `transport-uart`.
+USART3 transmits 4096-byte DMA bursts of 0x55, 8N1, requested 100000 baud,
+OVER16, BRR=420, with a 20 ms pause. Within a burst hardware clocks the bits;
+executor latency can only change the gap between bursts.
+
+CH1 vdiv=250 mV, default 8 MHz acquisition. Each accepted rising-edge period is
+two UART bits. Fit each continuous burst independently, never across idle gaps.
+For the fixed M=4, P=2, APB1=/4 topology:
+
+```text
+PCLK1 = measured_baud * BRR
+HSE   = PCLK1 * 32 / PLL_N
+SYS   = PCLK1 * 4
+USB   = PCLK1 * 8 / 7
+```
+
+Three baseline captures gave 99311.168 / 99311.162 / 99311.159 baud. Mean inferred
+HSE was **7,944,893 Hz**, SYS 166.842754 MHz, USB 47.669358 MHz. The HSE discrepancy
+is about -0.689%, distinct from PWM's -0.664%: center-aligned ARR quantization
+explains the difference. An uncalibrated scope cannot establish ppm-level
+absolute accuracy; USB SOF and host comparisons independently support the scale.
+The scope's vertical scaling is also uncalibrated; do not interpret its displayed
+probe-scaled amplitude as a real UART over/undershoot.
+
+`bench-calibrated-clock` selects HSE=7,944,893 Hz and PLL N=169, M=4/P=2/Q=7.
+It is restricted to MK5 at compile time and UUID 2B002C001047343031363330 before
+RCC initialization at runtime. Default builds remain 8 MHz/N=168. It changes no
+BoardCalibration payload or flash storage schema. This is a measured-device
+bench profile, not a calibration for every MK5.
+
+`config::CLOCK_PROFILE` contains the same typed PLL settings used for RCC and
+CPU/USB constant derivation. Integer arithmetic follows the HAL's operation
+order. Boot guards check the TIM1 and USART3 bus assumptions. ADC aperture
+metadata reads the HAL clock and actual common ADC prescaler rather than assuming
+21 MHz. The software must not maintain separate numerical copies of PLL factors.
+
+The first trial exposed a Hall initialization assumption: TIM3 clock was required
+to divide exactly to 1 MHz. Its panic stopped USB handling; the kernel reported
+descriptor timeout -110 and address timeout -62 at 00:47–00:48 MSK. This was an
+identified firmware panic, not evidence that the corrected USB clock failed.
+The baseline was restored, then Hall conversion was fixed. TIM3 now prescales
+just below 1 MHz; both extended captures and now() are converted to logical
+microseconds with a Q32 fraction before filter-delay subtraction. The nominal
+84 MHz path retains fraction=0. Tests cover wrap boundaries, long uptime and
+intermediate overflow. Core: 470 passed, 2 ignored; doctests: 11 passed, 18 ignored.
+
+Corrected UART captures gave 99902.497 / 99902.503 / 99902.496 baud, inferred mean
+HSE 7,944,909 Hz, SYS 167.836198 MHz and **USB 47.953199 MHz**. The latter is inside
+48 MHz ±0.25% on the scope's nominal timebase. Requested 100000 baud is not the
+expected exact result: integer BRR=420 predicts **99902.286** with the declared
+clock. The ~2 ppm agreement against that prediction is repeatability against
+the same scope, not an absolute calibration certificate.
+
+With the corrected, output-inhibited build and the existing USB IRQ executor:
+
+| Stream | Zero-reference command timeline | Rows | Gaps / lost | Result |
+|---|---:|---:|---:|---|
+| 20 kHz | 30.3 s, 151 commands including initial Stop | 614,270 | 0 / 0 | All replies and terminal Stop succeeded |
+| 5 kHz | 10.3 s, 51 commands including initial Stop | 53,520 | 0 / 0 | All replies and terminal Stop succeeded |
+
+FOC/PWM remained nominal 20 kHz in both; 5 kHz streaming is decimation by four.
+Every recorded phase-enable value was 0x40 (MOE alone, phase channels disabled).
+20 kHz acknowledgement median/max was 5.41/17.20 ms; 5 kHz was 1.11/2.18 ms.
+These are finite runs, not a long-term reliability bound or a post-correction
+thread-executor comparison. Kernel USB enumeration succeeded at 00:51:14 MSK,
+with no further errors through both runs. Final status was Stopped, fault_count=0.
+
+After consolidating the typed ClockProfile and ADC prescaler readback, the final
+ELF uart-clock-profile-final.elf was reflashed and booted normally. An additional
+stopped 20 kHz capture retained 100,032 rows, zero gaps/loss, all phase channels
+disabled. Normal/default and calibrated MK5 Clippy checks both pass (existing
+target-feature/unused-UART warnings remain). Kernel enumeration succeeded again
+at 01:02:02 MSK without descriptor/address errors.
+
+The remaining timer rounding must stay visible: TIM1 ARR=4195 predicts about
+20004.3 Hz from the scope estimate, not exact 20000. The pinned Embassy TIM2
+driver floors the 32768 Hz divisor to 2560, predicting +379.6 ppm local-time
+error. Receipt/ACK sequence fits give about 20006 samples per host second, with
+millisecond queueing uncertainty. No blanket compensation is applied to these
+different clocks. Fixing requested-versus-actual period handling in FOC dt and
+host metadata, and reviewing timer rounding, are follow-up work; the UART trial
+does not claim to have made every nominal frequency exact.
+
+Before making the clock correction permanent, check temperature stability and
+the physical oscillator marking/type. A future stored correction must be
+validated and loaded before RCC initialization, remain immutable during a boot,
+and take effect on reboot. The current runtime BoardCalibration loading path is
+too late for this purpose. Continue to keep requested sample rate separate from
+measured/derived actual rate. No motor excitation was performed during this UART
+trial; reconnect phase A only with power removed before resuming motor tests.
+
+Tool: vesc-bench/analysis/analyze_uart_clock.py. Valid captures are
+scope-uart-baseline-02/03/04.csv and scope-uart-hall-fixed-01/02/03.csv under the
+artifact root. Exclude baseline-01 (probe movement) and scope-uart-calibrated-*
+(panicked build). The UART/USB comparison plot is versioned in
+vesc-bench/docs/assets/usb-clock-calibration-2026-11-09.png. Exact ELF hashes,
+features, repository revisions and exclusions are in artifact-root provenance.json.

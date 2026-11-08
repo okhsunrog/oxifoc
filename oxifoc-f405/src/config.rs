@@ -1,5 +1,6 @@
 //! Configuration constants for oxifoc-f405 (per-board `BOARD` const below)
 
+use embassy_stm32::rcc::{Pll, PllMul, PllPDiv, PllPreDiv, PllQDiv};
 use embassy_sync::once_lock::OnceLock;
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
@@ -140,11 +141,58 @@ pub const DEAD_TIME_COMP_LINEAR_CURRENT_A: f32 = 1.0;
 // Timing Configuration
 // ============================================================================
 
-/// Core clock after PLL init — MUST match the RCC setup in
-/// hardware/peripherals.rs (8 MHz HSE /4 ×168 /2 = 168 MHz).
+/// The same typed PLL settings program RCC and derive cycle-based constants.
+/// No separate numerical copy of the multiplier/dividers may be maintained.
+pub struct ClockProfile {
+    pub hse_hz: u32,
+    pub pll: Pll,
+}
+
+impl ClockProfile {
+    const fn vco_hz(&self) -> u32 {
+        // F405 M/N register values equal their factors. Match HAL integer order.
+        (self.hse_hz / self.pll.prediv.to_bits() as u32) * self.pll.mul.to_bits() as u32
+    }
+
+    const fn sys_hz(&self) -> u32 {
+        // F405 PLLP encodes Div2/4/6/8 as 0/1/2/3.
+        self.vco_hz() / (2 * (self.pll.divp.expect("system PLLP required").to_bits() as u32 + 1))
+    }
+
+    const fn usb_hz(&self) -> u32 {
+        self.vco_hz() / self.pll.divq.expect("USB PLLQ required").to_bits() as u32
+    }
+}
+
+/// Default board clock, or the UUID-guarded bench estimate; never persisted in
+/// runtime calibration. RCC must be configured before that storage is loaded.
+pub const CLOCK_PROFILE: ClockProfile = ClockProfile {
+    hse_hz: if cfg!(feature = "bench-calibrated-clock") {
+        7_944_893
+    } else {
+        8_000_000
+    },
+    pll: Pll {
+        prediv: PllPreDiv::Div4,
+        mul: if cfg!(feature = "bench-calibrated-clock") {
+            PllMul::Mul169
+        } else {
+            PllMul::Mul168
+        },
+        divp: Some(PllPDiv::Div2),
+        divq: Some(PllQDiv::Div7),
+        divr: None,
+    },
+};
+pub const HSE_HZ: u32 = CLOCK_PROFILE.hse_hz;
+pub const PLL_N: u32 = CLOCK_PROFILE.pll.mul.to_bits() as u32;
+/// Core clock after PLL init — MUST match hardware/peripherals.rs.
 /// Single source for all cycle-based timing: the ISR cycle budget,
 /// busy-wait delays (DRV8301 tWAKE, bit-bang SPI), load percentages.
-pub const CPU_HZ: u32 = 168_000_000;
+pub const CPU_HZ: u32 = CLOCK_PROFILE.sys_hz();
+const _: () = assert!(CPU_HZ <= 168_000_000);
+const _: () = assert!(CLOCK_PROFILE.usb_hz() >= 47_880_000);
+const _: () = assert!(CLOCK_PROFILE.usb_hz() <= 48_120_000);
 
 // ============================================================================
 // Protocol Configuration

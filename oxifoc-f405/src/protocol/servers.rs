@@ -199,7 +199,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
     if let Some(phase) = measured_board().phase_sense {
         device_info.set_phase_voltage_info(oxifoc_core::types::PhaseVoltageInfo {
             divider_ratio: phase.divider_ratio,
-            current_to_voltage_ns: crate::hardware::peripherals::CURRENT_TO_PHASE_SAMPLE_NS,
+            current_to_voltage_ns: crate::hardware::peripherals::current_to_phase_sample_ns(),
             filtered: phase.has_filters,
         });
     }

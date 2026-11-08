@@ -6,8 +6,8 @@
 //! latches its timestamp in hardware. The capture ISR (below the FOC ISR in
 //! priority) only picks the latched value up — its latency no longer affects
 //! hall timing, unlike the 200 kHz TIM6 polling this replaces. The ICF input
-//! filter replaces the 7-read majority vote, and the free-running 1 MHz
-//! counter replaces 32768 Hz embassy timestamps.
+//! filter replaces the 7-read majority vote, and the free-running counter
+//! converted to microseconds replaces 32768 Hz embassy timestamps.
 //!
 //! (PC6-8 also map to TIM8_CH1/2/3; TIM8 — the second advanced timer — is
 //! deliberately left free.)
@@ -25,7 +25,9 @@ use embassy_stm32::timer::{Ch1, Ch2, Ch3, Channel};
 use embassy_stm32::{Peri, interrupt, pac, peripherals};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
-use oxifoc_core::foc::capture_timebase::{CaptureTimebase, input_filter_delay_ticks};
+use oxifoc_core::foc::capture_timebase::{
+    CaptureTimebase, input_filter_delay_ticks, scale_capture_ticks,
+};
 use oxifoc_core::foc::hall_embassy::{set_tick_source, update_hall_edge};
 
 // Re-export shared items from core
@@ -33,8 +35,9 @@ pub use oxifoc_core::foc::hall_embassy::{
     HallAngleProxy, apply_stored_config, get_snapshot, init_estimator,
 };
 
-/// Hall timebase tick rate: TIM3 counts at 1 MHz.
+/// Logical Hall/FOC timestamps are microseconds, even for a fractional-MHz clock.
 pub const HALL_TICKS_PER_SEC: u64 = 1_000_000;
+static TICK_FRACTION_Q32: AtomicU32 = AtomicU32::new(0);
 
 /// Keeps TIM3 alive (RCC enabled / not reused); the ISR talks to
 /// `pac::TIM3` directly and never takes this lock.
@@ -64,13 +67,14 @@ static FILTER_DELAY_TICKS: AtomicU32 = AtomicU32::new(0);
 /// observe a torn overflow update (the writer holds a critical section),
 /// thread context retries on concurrent updates.
 pub fn now_ticks() -> u64 {
-    TIMEBASE.now(|| {
+    let raw = TIMEBASE.now(|| {
         // CNT before UIF: if the wrap lands between the two reads, UIF is
         // seen with an upper-half CNT and correctly not re-counted.
         let cnt = pac::TIM3.cnt().read().cnt();
         let uif = pac::TIM3.sr().read().uif();
         (cnt, uif)
-    })
+    });
+    scale_capture_ticks(raw, TICK_FRACTION_Q32.load(Ordering::Relaxed))
 }
 
 /// Clear selected TIM3 status flags (race-free rc_w0 complement write,
@@ -115,12 +119,18 @@ pub fn init_hall(
     // Derive PSC from the actual RCC config — TIM3 is on APB1, whose timer
     // clock doubles when the APB prescaler is > 1 (84 MHz here at 168 MHz
     // sysclk). Hardcoding would silently skew every hall velocity.
-    let psc = clk / HALL_TICKS_PER_SEC - 1;
+    let divisor = clk.div_ceil(HALL_TICKS_PER_SEC);
+    let psc = divisor - 1;
     defmt::assert!(
-        clk.is_multiple_of(HALL_TICKS_PER_SEC) && psc <= u64::from(u16::MAX),
-        "TIM3 clock {} not divisible to 1 MHz",
+        clk >= HALL_TICKS_PER_SEC && psc <= u64::from(u16::MAX),
+        "TIM3 clock {} outside Hall timebase range",
         clk
     );
+    // Ceil ensures counter <= 1 MHz. Both captures and now() convert the
+    // extended raw count into the same microsecond domain before consumers
+    // see it; filter-delay subtraction below is also in microseconds.
+    let fraction = (((HALL_TICKS_PER_SEC * divisor - clk) << 32) / clk) as u32;
+    TICK_FRACTION_Q32.store(fraction, Ordering::Relaxed);
     let regs = timer.regs_gp16();
     regs.psc().write_value(psc as u16);
     regs.arr().write(|w| w.set_arr(0xFFFF));
@@ -182,9 +192,10 @@ pub fn init_hall(
     }
 
     defmt::info!(
-        "Hall: TIM3 XOR capture @ 1 MHz (clk {} Hz, psc {}), H1=PC6 H2=PC7 H3=PC8",
+        "Hall: logical 1 MHz (TIM3 clk {} Hz, psc {}, fraction_q32 {}), H1=PC6 H2=PC7 H3=PC8",
         clk,
-        psc
+        psc,
+        fraction
     );
 }
 
@@ -227,7 +238,8 @@ fn TIM3() {
         let captured = regs.ccr(0).read().0 as u16;
         let ticks = TIMEBASE.capture(captured, sr.uif(), || clear_flags(true, false));
         EDGES.fetch_add(1, Ordering::Relaxed);
-        let edge = ticks.saturating_sub(u64::from(FILTER_DELAY_TICKS.load(Ordering::Relaxed)));
+        let edge = scale_capture_ticks(ticks, TICK_FRACTION_Q32.load(Ordering::Relaxed))
+            .saturating_sub(u64::from(FILTER_DELAY_TICKS.load(Ordering::Relaxed)));
         update_hall_edge(read_hall_idr(), edge);
     } else if sr.uif() {
         TIMEBASE.overflow(|| clear_flags(true, false));

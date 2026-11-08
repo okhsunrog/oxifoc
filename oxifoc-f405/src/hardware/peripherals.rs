@@ -7,30 +7,30 @@ use embassy_stm32::{
     Config as StmConfig, Peri, Peripherals,
     gpio::{Level, Output, Speed},
     mode::Blocking,
-    peripherals,
+    pac, peripherals,
     time::Hertz,
 };
 
-/// Initialize system clock for STM32F405 with 8MHz HSE
-/// Configured for Simple FOCer 2 / VESC layouts with external crystal
+/// Initialize the STM32F405 PLL from the external oscillator.
+/// Board defaults use 8 MHz; the device-specific bench feature uses its measured rate.
 pub fn init_clock() -> Peripherals {
+    #[cfg(feature = "bench-calibrated-clock")]
+    assert_eq!(
+        embassy_stm32::uid::uid_hex(),
+        "2B002C001047343031363330",
+        "temporary HSE estimate belongs to a different device"
+    );
     defmt::info!("oxifoc-f405 boot");
 
     let mut config = StmConfig::default();
     {
         use embassy_stm32::rcc::*;
         config.rcc.hse = Some(Hse {
-            freq: Hertz(8_000_000),
+            freq: Hertz(crate::config::HSE_HZ),
             mode: HseMode::Oscillator,
         });
         config.rcc.pll_src = PllSource::Hse;
-        config.rcc.pll = Some(Pll {
-            prediv: PllPreDiv::Div4,
-            mul: PllMul::Mul168,
-            divp: Some(PllPDiv::Div2), // 8 MHz / 4 * 168 / 2 = 168 MHz system (= config::CPU_HZ)
-            divq: Some(PllQDiv::Div7), // 8 MHz / 4 * 168 / 7 = 48 MHz for USB FS
-            divr: None,
-        });
+        config.rcc.pll = Some(crate::config::CLOCK_PROFILE.pll);
         config.rcc.ahb_pre = AHBPrescaler::Div1;
         config.rcc.apb1_pre = APBPrescaler::Div4;
         config.rcc.apb2_pre = APBPrescaler::Div2;
@@ -39,6 +39,19 @@ pub fn init_clock() -> Peripherals {
     }
 
     let p = embassy_stm32::init(config);
+
+    // Catch future bus-divider edits that invalidate cycle budgets or the UART
+    // reference model. HAL truncates each bus division independently.
+    defmt::assert!(
+        embassy_stm32::rcc::frequency::<peripherals::TIM1>()
+            .0
+            .abs_diff(crate::config::CPU_HZ)
+            <= 2
+    );
+    defmt::assert_eq!(
+        embassy_stm32::rcc::frequency::<peripherals::USART3>().0,
+        crate::config::CPU_HZ / 4
+    );
 
     // ART accelerator: embassy's F4 RCC init WRITES flash ACR with only the
     // latency field (rcc/f247.rs), and the F405 reset value is all-zero —
@@ -79,7 +92,13 @@ pub struct AdcHandles {
 /// voltages are rank 3, so their sample aperture is two conversions after
 /// rank-1 currents. This nominal offset is acquisition metadata, not a
 /// measured filter/group delay.
-pub const CURRENT_TO_PHASE_SAMPLE_NS: u32 = (2 * 27 * 1_000_000_000u64 / 21_000_000) as u32;
+pub fn current_to_phase_sample_ns() -> u32 {
+    // HAL chooses the ADC prescaler at init. Read it back instead of assuming
+    // 21 MHz or a particular APB2 divider after changing the clock profile.
+    let divider = 2 * (u32::from(pac::ADC123_COMMON.ccr().read().adcpre().to_bits()) + 1);
+    let adc_hz = embassy_stm32::rcc::frequency::<peripherals::ADC1>().0 / divider;
+    (2 * 27 * 1_000_000_000u64 / u64::from(adc_hz)) as u32
+}
 
 /// Initialize ADC1/ADC2/ADC3 with injected conversions triggered by TIM1_CC4
 ///

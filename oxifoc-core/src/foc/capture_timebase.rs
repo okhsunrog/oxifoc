@@ -106,6 +106,22 @@ pub fn extend_now<W: CaptureWord>(overflows: u32, cnt: W, uif_pending: bool) -> 
     }
 }
 
+/// Scale an extended capture timestamp by `1 + fraction_q32 / 2^32`.
+///
+/// A timer prescaled just below 1 MHz needs this small correction to produce
+/// microseconds. Splitting the product avoids both a 128-bit ISR operation and
+/// overflow at the low-word wrap (about 71 minutes). The result saturates only
+/// when the scaled timestamp itself exceeds u64, never at an intermediate product.
+#[inline]
+pub fn scale_capture_ticks(ticks: u64, fraction_q32: u32) -> u64 {
+    if fraction_q32 == 0 {
+        return ticks;
+    }
+    let fraction = u64::from(fraction_q32);
+    let correction = (ticks >> 32) * fraction + (((ticks & 0xffff_ffff) * fraction) >> 32);
+    ticks.saturating_add(correction)
+}
+
 /// Mean delay (in `ticks_per_sec` ticks) an STM32 timer's digital input
 /// filter adds to a captured edge. The filter samples at
 /// `timer_clk_hz / sample_div` (f_DTS prescaler × ICF divider) and accepts a
@@ -207,6 +223,40 @@ impl<W: CaptureWord> Default for CaptureTimebase<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fractional_capture_scale_matches_wide_reference_at_wraps_and_long_uptime() {
+        for fraction in [0, 1, 4_200_000, 123_456_789, u32::MAX] {
+            for ticks in [
+                0,
+                1,
+                0xffff,
+                0x1_0000,
+                0xffff_ffff,
+                0x1_0000_0000,
+                86400 * 1_000_000 * 365,
+                u64::MAX / 2,
+                u64::MAX - 1,
+                u64::MAX,
+            ] {
+                let exact = (u128::from(ticks) * ((1u128 << 32) + u128::from(fraction))) >> 32;
+                let expected = exact.min(u128::from(u64::MAX)) as u64;
+                assert_eq!(scale_capture_ticks(ticks, fraction), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn fractional_capture_scale_preserves_order_across_timer_wrap() {
+        let fraction = (((84_000_000u64 - 83_917_920) << 32) / 83_917_920) as u32;
+        let raw = [0xfffeu64, 0xffff, 0x1_0000, 0x1_0001, 0x1_0002];
+        let scaled = raw.map(|t| scale_capture_ticks(t, fraction));
+        assert!(scaled.windows(2).all(|w| w[1] > w[0]));
+        let year = 365 * 86400 * 1_000_000u64;
+        let represented = scale_capture_ticks(year, fraction);
+        let exact = year as f64 * 84_000_000.0 / 83_917_920.0;
+        assert!((represented as f64 - exact).abs() < 7400.0); // Q32 < 0.233 ppb
+    }
 
     #[test]
     fn input_filter_delay_matches_the_hall_timers() {
