@@ -1,5 +1,9 @@
 # F405 executor scheduling comparison, 2026-11-09
 
+Follow-up: [USB IRQ together with task priority](bench-usb-priority-2026-11-09.md)
+measures the combination and selects it for MK5. The results below concern
+the earlier comparison of scheduling alternatives and remain unchanged.
+
 This completes the earlier priority/USB experiment after clock correction and
 adds an explicitly configured deadline scheduler. All measurements below use
 one STM32F405 MK5 unit, UUID `2B002C001047343031363330`, calibrated clock profile,
