@@ -28,6 +28,9 @@ transport-uart = []
 # ergot over RTT channel 1 (defmt shares ch0). Diagnostic transport — high-rate
 # telemetry over the debug probe; adds a third interface alongside USB/UART.
 transport-rtt = ["ergot/rtt"]
+# Bench CPU/transport qualification: calculate active FOC but never enable
+# phase outputs. Default-off; do not use for motor measurements.
+bench-no-phase-outputs = []
 # Observer-internals fast-frame mapping (erpm<-PLL, vd<-frame gap,
 # vq<-readiness err signed by trust; see oxifoc-core `obs-debug-telem`).
 # Debug builds only.

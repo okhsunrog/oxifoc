@@ -118,6 +118,16 @@ impl<'d> MotorPwm<'d> {
         self.pwm.disable(Channel::Ch2);
         self.pwm.disable(Channel::Ch3);
     }
+
+    /// All phase-enable paths pass through this compile-time output inhibit.
+    /// ADC trigger CH4 is independent and must keep running for bench loads.
+    fn set_phase_enabled(&mut self, channel: Channel, enabled: bool) {
+        if enabled && !cfg!(feature = "bench-no-phase-outputs") {
+            self.pwm.enable(channel);
+        } else {
+            self.pwm.disable(channel);
+        }
+    }
 }
 
 impl<'d> PhasePwm for MotorPwm<'d> {
@@ -154,9 +164,9 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         self.pwm.set_duty(Channel::Ch1, 0);
         self.pwm.set_duty(Channel::Ch2, 0);
         self.pwm.set_duty(Channel::Ch3, 0);
-        self.pwm.enable(Channel::Ch1);
-        self.pwm.enable(Channel::Ch2);
-        self.pwm.enable(Channel::Ch3);
+        self.set_phase_enabled(Channel::Ch1, true);
+        self.set_phase_enabled(Channel::Ch2, true);
+        self.set_phase_enabled(Channel::Ch3, true);
         // CH4 (ADC trigger) is never disabled by emergency_stop(), so the
         // sampling/ISR chain keeps running across disable/enable cycles.
     }
@@ -166,11 +176,11 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         for (state, &ch) in states.iter().zip(CHANNELS.iter()) {
             match state {
                 PhaseState::Pwm(duty) => {
-                    self.pwm.enable(ch);
+                    self.set_phase_enabled(ch, true);
                     self.pwm.set_duty(ch, u32::from(*duty).min(self.duty_limit));
                 }
                 PhaseState::Low => {
-                    self.pwm.enable(ch);
+                    self.set_phase_enabled(ch, true);
                     self.pwm.set_duty(ch, 0);
                 }
                 PhaseState::Float => {

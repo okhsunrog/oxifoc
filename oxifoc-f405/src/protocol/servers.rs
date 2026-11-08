@@ -134,6 +134,8 @@ pub async fn protocol_servers(stack: &'static Stack) {
     #[cfg(feature = "board-vesc6-mk5")]
     let _ = hw.push_str("VESC 6 MK5 (F405)");
     let _ = sw.push_str(concat!("oxifoc-", env!("CARGO_PKG_VERSION")));
+    #[cfg(feature = "bench-no-phase-outputs")]
+    let _ = sw.push_str("+outputs-inhibited");
     let _ = mcu.push_str("STM32F405RG");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
     let mut device_info = HardwareInfo {
