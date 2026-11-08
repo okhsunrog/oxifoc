@@ -92,3 +92,19 @@ Caveats:
 - `coast-decay.json` — spin up, then coast: the erpm decay shape gives
   friction (viscous = exponential, coulomb = linear tail); on hardware with
   BEMF sensing the coast window is the lambda ground truth.
+- `stationary-voltage-pilot-0p6a.json` — low-current startup qualification,
+  fixed electrical angle zero, runtime PI 0.01/10 and native 20 kHz capture.
+- `stationary-voltage-signed-1p5a.json` and `stationary-voltage-signed-3a.json`
+  — +I/−I/+I plateaus for offset, voltage-slope and drift comparisons. Each
+  ramp uses 0.06 A steps every 20 ms, each hold is 1.8 s, with 0.5 s active-zero
+  intervals. Both end with Stop and write no persistent configuration. The
+  rotor can reorient even though commanded electrical velocity is zero.
+  The MK5 bench setup uses 24 V, PSU limit 5.5 A, stored current limit 3 A
+  and independent phase-current protection 6 A. Inspect the 1.5 A run before
+  proceeding to 3 A; do not bypass a protection fault or incomplete capture.
+
+Choose analysis by the measurement question. For stationary resistance, first
+inspect settling, zero-current offsets, signed V/I plateaus and repeat drift.
+FFT/PSD/spectrograms are useful for an observed oscillation, periodic artifact
+or a noise question; they are not required for every recording. Preserve raw
+20 kHz data so that a later hypothesis can be checked without repeating the run.
