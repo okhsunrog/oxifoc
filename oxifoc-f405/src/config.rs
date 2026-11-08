@@ -129,6 +129,13 @@ pub const NTC_MOTOR: NtcConfig = NtcConfig {
 pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(360);
 // VESC HW_DEAD_TIME_NSEC fallback: 360ns — neither CF2 nor hw60 overrides it
 
+// Effective command-side correction is separate from gate safety timing.
+// Start with the old amplitude, but blend through a provisional 1 A per-phase
+// region to avoid a full voltage step at the first tiny current reference.
+// This is a bench setting, not a measured calibration of the inverter.
+pub const DEAD_TIME_COMP_NS: u32 = 360;
+pub const DEAD_TIME_COMP_LINEAR_CURRENT_A: f32 = 1.0;
+
 // ============================================================================
 // Timing Configuration
 // ============================================================================

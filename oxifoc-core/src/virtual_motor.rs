@@ -904,6 +904,55 @@ mod tests {
         );
     }
 
+    /// Regression for the first 0.06 A reference step on the MK5 bench.
+    /// The ideal inverter is a deliberate over-compensation bound: an unknown
+    /// low-current distortion must not make a tiny reference inject the full
+    /// 0.23 V correction. This is not a calibrated model of discontinuous
+    /// conduction on the real power stage.
+    #[test]
+    fn dead_time_linear_region_bounds_small_reference_startup_impulse() {
+        const VBUS: f32 = 24.0;
+        const ARR: u16 = 4199;
+        const DT: f32 = 1.0 / 20_000.0;
+        let run = |linear: bool| {
+            let mut motor = VirtualMotor::new(MotorParams {
+                r: 0.031,
+                ld: 25e-6,
+                lq: 35e-6,
+                substeps: 10,
+                ..MotorParams::default()
+            });
+            let mut foc = FocController::<SvpwmModulator>::new(VBUS);
+            foc.id_pi = PIController::new(0.01, 10.0);
+            foc.iq_pi = PIController::new(0.01, 10.0);
+            foc.set_dead_time_comp(360, 20_000);
+            if linear {
+                foc.set_dead_time_comp_linear_region(1.0).unwrap();
+            }
+            let mut out = VirtualMotorOutput::default();
+            let mut peak = 0.0f32;
+            for step in 0..4000 {
+                let target = if step < 400 { 0.0 } else { 0.06 };
+                let telem = foc.step((out.ia, out.ib, out.ic), 0.0, target, 0.0, ARR, DT);
+                let [a, b, c] = telem.duties.map(|d| f32::from(d) * VBUS / f32::from(ARR));
+                out = motor.step((2.0 * a - b - c) / 3.0, (b - c) * FRAC_1_SQRT_3, 0.0, DT);
+                peak = peak.max(motor.id.abs());
+            }
+            (peak, motor.id)
+        };
+        let (hard_peak, _) = run(false);
+        let (smooth_peak, settled) = run(true);
+        assert!(hard_peak > 3.0, "missing regression stimulus: {hard_peak}");
+        assert!(
+            smooth_peak < 0.3 && smooth_peak < hard_peak / 10.0,
+            "startup impulse {smooth_peak} A vs legacy {hard_peak} A"
+        );
+        assert!(
+            (settled - 0.06).abs() < 0.01,
+            "tracking did not settle: {settled}"
+        );
+    }
+
     /// Dead-time compensation must cancel the plant's dead-time distortion.
     ///
     /// The compensation lives in the duty domain, so the plant is driven

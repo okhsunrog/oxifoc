@@ -253,7 +253,11 @@ pub async fn init(
         FocController::<_, FastSinCos>::from_runtime_config(config, initial_vbus_v);
 
     // Configure dead time compensation
-    foc_controller.set_dead_time_comp(PWM_CONFIG.dead_time_ns, PWM_CONFIG.pwm_freq_hz);
+    foc_controller.set_dead_time_comp(crate::config::DEAD_TIME_COMP_NS, PWM_CONFIG.pwm_freq_hz);
+    defmt::unwrap!(
+        foc_controller
+            .set_dead_time_comp_linear_region(crate::config::DEAD_TIME_COMP_LINEAR_CURRENT_A)
+    );
 
     // Build FOC driver with dt from PWM config
     let mut foc_driver = FocDriver::new(

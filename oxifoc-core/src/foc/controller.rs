@@ -147,6 +147,9 @@ pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> 
     duty_cap: f32,
     /// Dead time compensation factor = dead_time_s × pwm_freq_hz (0.0 = disabled)
     dead_time_comp: f32,
+    /// Reciprocal of the per-phase linear transition current. Zero retains
+    /// legacy hard signs; boards can opt into a measured/tuned smooth region.
+    dead_time_current_inv_a: f32,
     /// Actuation-frame advance (electrical rad, 0.0 = disabled): the output
     /// voltage vector is rotated by this much AFTER the inverse Park.
     /// Compensates the one-PWM-period pipeline delay (the rotor moves
@@ -206,6 +209,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
             duty_cap: 1.0,
             dead_time_comp: 0.0,
+            dead_time_current_inv_a: 0.0,
             actuation_advance: 0.0,
             decoupling: None,
             q_clip: 0.0,
@@ -268,6 +272,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
             duty_cap: 1.0,
             dead_time_comp: 0.0,
+            dead_time_current_inv_a: 0.0,
             actuation_advance: 0.0,
             decoupling: None,
             q_clip: 0.0,
@@ -415,6 +420,26 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         self.dead_time_comp = factor.max(0.0);
     }
 
+    /// Blend each phase's compensation continuously through zero current.
+    /// Outside ±transition_a this retains the full configured correction;
+    /// inside it uses clamp(i_phase_reference / transition_a, -1, 1).
+    /// This is an effective-inverter model parameter, not hardware deadtime.
+    /// Invalid values are rejected without changing the existing setting.
+    pub fn set_dead_time_comp_linear_region(
+        &mut self,
+        transition_a: f32,
+    ) -> Result<(), &'static str> {
+        if !transition_a.is_finite() || transition_a <= 0.0 {
+            return Err("deadtime transition current must be finite and positive");
+        }
+        let inverse = 1.0 / transition_a;
+        if !inverse.is_finite() {
+            return Err("deadtime transition current is too small");
+        }
+        self.dead_time_current_inv_a = inverse;
+        Ok(())
+    }
+
     /// Apply dead time compensation to normalized modulation values.
     ///
     /// During dead time the body diode of the leg carrying positive current
@@ -425,15 +450,15 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     ///
     /// Note: VESC instead leaves the command uncompensated and subtracts this
     /// same term when estimating the actually-applied voltage for its observer
-    /// (update_valpha_vbeta, mcpwm_foc.c). Compensating the command keeps the
-    /// applied voltage close to the commanded one, so our telemetry vαβ stays
-    /// valid as observer input without a separate estimate.
+    /// (update_valpha_vbeta, mcpwm_foc.c). This is a model-based correction;
+    /// the PI telemetry remains pre-compensation, not measured applied voltage.
     fn apply_dead_time_comp(
         mod_alpha: f32,
         mod_beta: f32,
         i_alpha: f32,
         i_beta: f32,
         comp_factor: f32,
+        current_inv_a: f32,
     ) -> (f32, f32) {
         if comp_factor == 0.0 {
             return (mod_alpha, mod_beta);
@@ -441,9 +466,16 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
         // Reconstruct phase current signs from αβ
         let (ia, ib, ic) = transforms::inverse_clarke(i_alpha, i_beta);
-        let sign_a = if ia >= 0.0 { 1.0f32 } else { -1.0 };
-        let sign_b = if ib >= 0.0 { 1.0f32 } else { -1.0 };
-        let sign_c = if ic >= 0.0 { 1.0f32 } else { -1.0 };
+        let polarity = |i: f32| {
+            if current_inv_a > 0.0 {
+                clamp_f32(i * current_inv_a, -1.0, 1.0)
+            } else if i >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
+        };
+        let (sign_a, sign_b, sign_c) = (polarity(ia), polarity(ib), polarity(ic));
 
         // Per-leg duty offsets ±comp_factor in MODULATION units: the legs'
         // phase-to-neutral volts map through Clarke as (2·sa − sb − sc)/3
@@ -579,6 +611,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             i_alpha,
             i_beta,
             self.dead_time_comp,
+            self.dead_time_current_inv_a,
         );
         let duties = self.duties_for(mod_a, mod_b, max_duty);
 
@@ -743,6 +776,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             i_ref_alpha,
             i_ref_beta,
             self.dead_time_comp,
+            self.dead_time_current_inv_a,
         );
         let duties = self.duties_for(mod_a, mod_b, max_duty);
 
@@ -1015,14 +1049,39 @@ mod tests {
         let comp = 0.02; // 1 µs dead time × 20 kHz PWM
         // Current along +α: ia > 0, ib < 0, ic < 0.
         let (ma, _) = FocController::<SvpwmModulator, LibmSinCos>::apply_dead_time_comp(
-            0.5, 0.0, 10.0, 0.0, comp,
+            0.5, 0.0, 10.0, 0.0, comp, 0.0,
         );
         assert!(ma > 0.5, "mod_alpha must increase with ia > 0, got {ma}");
         // Current along +β: ib > 0, ic < 0.
         let (_, mb) = FocController::<SvpwmModulator, LibmSinCos>::apply_dead_time_comp(
-            0.0, 0.5, 0.0, 10.0, comp,
+            0.0, 0.5, 0.0, 10.0, comp, 0.0,
         );
         assert!(mb > 0.5, "mod_beta must increase with iβ > 0, got {mb}");
+    }
+
+    #[test]
+    fn dead_time_linear_region_is_continuous_odd_and_preserves_full_correction() {
+        type C = FocController<SvpwmModulator, LibmSinCos>;
+        let correction = |ia, ib| C::apply_dead_time_comp(0.0, 0.0, ia, ib, 0.0072, 1.0);
+        assert_eq!(correction(0.0, 0.0), (0.0, 0.0));
+        for (ia, ib) in [(0.06, 0.0), (0.0, 0.06), (0.02, 0.03)] {
+            let p = correction(ia, ib);
+            let n = correction(-ia, -ib);
+            let half = correction(ia * 0.5, ib * 0.5);
+            assert!((p.0 + n.0).abs() < 1e-7 && (p.1 + n.1).abs() < 1e-7);
+            assert!((p.0 * 0.5 - half.0).abs() < 1e-7);
+            assert!((p.1 * 0.5 - half.1).abs() < 1e-7);
+        }
+        assert_eq!(
+            correction(10.0, 0.0),
+            C::apply_dead_time_comp(0.0, 0.0, 10.0, 0.0, 0.0072, 0.0)
+        );
+        let mut c = C::new(24.0);
+        c.set_dead_time_comp_linear_region(1.0).unwrap();
+        for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::from_bits(1)] {
+            assert!(c.set_dead_time_comp_linear_region(invalid).is_err());
+            assert_eq!(c.dead_time_current_inv_a, 1.0);
+        }
     }
 
     /// The compensation must move each LEG by exactly ±t_dt·f_pwm of duty
