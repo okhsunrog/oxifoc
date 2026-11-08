@@ -550,6 +550,24 @@ pub async fn isr_stats_task() {
             pb,
             avg.saturating_sub(adc + sn + fo + pb)
         );
+        use oxifoc_core::runtime::streaming::fast_telem_stats as ft;
+        let pushed = ft::PUSH_OK.swap(0, Ordering::Relaxed);
+        let dropped = ft::PUSH_DROPS.swap(0, Ordering::Relaxed);
+        let read = ft::READ_OK.swap(0, Ordering::Relaxed);
+        let badlen = ft::READ_BADLEN.swap(0, Ordering::Relaxed);
+        let batches = ft::BCAST_OK.swap(0, Ordering::Relaxed);
+        let failed = ft::BCAST_FAILS.swap(0, Ordering::Relaxed);
+        if pushed != 0 || dropped != 0 || read != 0 || failed != 0 {
+            defmt::info!(
+                "telem/s: push={} drop={} read={} badlen={} batches={} failed={}",
+                pushed,
+                dropped,
+                read,
+                badlen,
+                batches,
+                failed
+            );
+        }
         // Hall diagnostics: raw pin state + edge/overcapture rates. A
         // sensored motor at standstill shows a constant valid state (1-6)
         // and 0 edges; 0b111/0b000 = unpowered/disconnected sensors.
