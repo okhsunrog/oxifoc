@@ -38,12 +38,70 @@ use crate::record::RecordSummary;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use oxifoc_core::types::ControlMode;
-use oxifoc_host_lib::HostRuntime;
+use oxifoc_core::types::{ControlMode, FastTelemetry, MotorStatus};
+use oxifoc_host_lib::{HostCommand, HostRuntime, MotorResponseReceiver, motor_channel};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::record::Capture;
+
+const SCHEDULE_TOLERANCE: Duration = Duration::from_millis(5);
+const COMMAND_ACK_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Keep consuming the bounded telemetry channel while a command is pending.
+/// Blocking on the acknowledgement alone discards samples after ~200 ms at
+/// 20 kHz. Never retry an excitation and silently stretch its timeline.
+fn wait_motor_reply(
+    cap: &mut Capture,
+    fast_rx: &crossbeam_channel::Receiver<FastTelemetry>,
+    reply: &mut MotorResponseReceiver,
+    deadline: Instant,
+) -> Result<MotorStatus> {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            bail!("motor acknowledgement missed the maneuver deadline");
+        }
+        match reply.try_recv() {
+            Ok(status) => {
+                // Drain only the samples already queued at acknowledgement,
+                // so a continuously producing stream cannot delay Stop.
+                for _ in 0..fast_rx.len() {
+                    if let Ok(s) = fast_rx.try_recv() {
+                        cap.samples.push(s);
+                    }
+                }
+                return status;
+            }
+            Err(_) if reply.is_terminated() => bail!("backend dropped the motor response"),
+            Err(_) => {}
+        }
+        let timeout = deadline
+            .saturating_duration_since(now)
+            .min(Duration::from_millis(1));
+        match fast_rx.recv_timeout(timeout) {
+            Ok(s) => cap.samples.push(s),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                bail!("telemetry channel disconnected while awaiting motor response");
+            }
+        }
+    }
+}
+
+fn send_motor_captured(
+    runtime: &HostRuntime,
+    cap: &mut Capture,
+    mode: ControlMode,
+    deadline: Instant,
+) -> Result<MotorStatus> {
+    let (tx, mut reply) = motor_channel();
+    runtime
+        .cmd_tx
+        .send(HostCommand::MotorAck(mode, tx))
+        .context("send motor command")?;
+    wait_motor_reply(cap, &runtime.fast_rx, &mut reply, deadline)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -282,15 +340,26 @@ pub fn run(
         for (i, step) in m.timeline.iter().enumerate() {
             let event_at = t0 + Duration::from_secs_f64(step.t);
             cap.drain_until(runtime, event_at)?;
+            if Instant::now().saturating_duration_since(event_at) > SCHEDULE_TOLERANCE {
+                bail!("step {i}: maneuver is behind schedule; refusing a late command");
+            }
 
             let seq_before = cap.last_seq();
             let t_sent = t0.elapsed().as_secs_f64();
-            let res = crate::send_motor_acked(runtime, step.cmd.to_mode());
+            let next_slot = m
+                .timeline
+                .get(i + 1)
+                .map(|s| t0 + Duration::from_secs_f64(s.t) + SCHEDULE_TOLERANCE);
+            let deadline = (event_at + COMMAND_ACK_TIMEOUT)
+                .min(next_slot.unwrap_or(event_at + COMMAND_ACK_TIMEOUT));
+            let res = send_motor_captured(runtime, &mut cap, step.cmd.to_mode(), deadline);
             let t_acked = t0.elapsed().as_secs_f64();
             // A couple of frames may have queued during the ack round-trip;
             // pull them in so seq_after_ack is fresh.
-            while let Ok(s) = runtime.fast_rx.try_recv() {
-                cap.samples.push(s);
+            for _ in 0..runtime.fast_rx.len() {
+                if let Ok(s) = runtime.fast_rx.try_recv() {
+                    cap.samples.push(s);
+                }
             }
             let seq_after_ack = cap.last_seq();
 
@@ -322,9 +391,22 @@ pub fn run(
 
     // Terminal command on EVERY path; capture a short grace window so the
     // stop itself lands in the file.
-    let terminal_res = crate::send_motor_acked(runtime, m.terminal.to_mode());
+    let terminal_res = send_motor_captured(
+        runtime,
+        &mut cap,
+        m.terminal.to_mode(),
+        Instant::now() + Duration::from_secs(2),
+    );
     let grace = cap.drain_until(runtime, Instant::now() + Duration::from_millis(200));
     let stream_stopped = cap.stop(runtime);
+    // If the terminal response was lost under stream load, retry a safety
+    // stop after quiescing telemetry. Keep the original failure in the file.
+    let terminal_res = terminal_res.map_err(|error| {
+        let recovery = crate::send_emergency_stop(runtime);
+        error.context(format!(
+            "terminal failed; emergency stop after stream shutdown: {recovery:?}"
+        ))
+    });
 
     finish_run(
         &cap,
@@ -406,6 +488,76 @@ mod tests {
     use oxifoc_core::types::{ConfigSnapshot, FastTelemetry};
     use parquet::file::reader::{FileReader, SerializedFileReader};
 
+    fn test_capture() -> Capture {
+        Capture {
+            board_calibration: ConfigSnapshot {
+                group: ConfigGroupId::BoardCalibration,
+                revision: 0,
+                persisted: false,
+                valid: false,
+                value: None,
+            },
+            hw: None,
+            fast_hz_requested: 20_000,
+            fast_hz_actual: 20_000,
+            decimation_m: 1,
+            samples: Vec::new(),
+            started: Instant::now(),
+            enrich: None,
+        }
+    }
+
+    #[test]
+    fn pending_command_drains_telemetry_beyond_channel_capacity() {
+        let mut cap = test_capture();
+        let (fast_tx, fast_rx) = crossbeam_channel::bounded(4);
+        let (reply_tx, mut reply_rx) = motor_channel();
+        let producer = std::thread::spawn(move || {
+            for seq in 0..2000 {
+                fast_tx
+                    .send(FastTelemetry {
+                        seq,
+                        ..Default::default()
+                    })
+                    .unwrap();
+            }
+            reply_tx.send(Ok(MotorStatus::default())).unwrap();
+            fast_tx
+        });
+        wait_motor_reply(
+            &mut cap,
+            &fast_rx,
+            &mut reply_rx,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        let _fast_tx = producer.join().unwrap();
+        assert_eq!(cap.samples.len(), 2000);
+        assert!(
+            cap.samples
+                .iter()
+                .enumerate()
+                .all(|(i, s)| usize::from(s.seq) == i)
+        );
+    }
+
+    #[test]
+    fn missing_command_response_exits_at_deadline_and_keeps_samples() {
+        let mut cap = test_capture();
+        let (fast_tx, fast_rx) = crossbeam_channel::bounded(4);
+        fast_tx.send(FastTelemetry::default()).unwrap();
+        let (_reply_tx, mut reply_rx) = motor_channel();
+        let error = wait_motor_reply(
+            &mut cap,
+            &fast_rx,
+            &mut reply_rx,
+            Instant::now() + Duration::from_millis(10),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("deadline"));
+        assert_eq!(cap.samples.len(), 1);
+    }
+
     #[test]
     fn failed_maneuver_preserves_capture_and_all_failure_stages() {
         let m = Maneuver {
@@ -421,22 +573,8 @@ mod tests {
                 cmd: Cmd::Stop {},
             }],
         };
-        let cap = Capture {
-            board_calibration: ConfigSnapshot {
-                group: ConfigGroupId::BoardCalibration,
-                revision: 0,
-                persisted: false,
-                valid: false,
-                value: None,
-            },
-            hw: None,
-            fast_hz_requested: 20_000,
-            fast_hz_actual: 20_000,
-            decimation_m: 1,
-            samples: vec![FastTelemetry::default()],
-            started: Instant::now(),
-            enrich: None,
-        };
+        let mut cap = test_capture();
+        cap.samples.push(FastTelemetry::default());
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

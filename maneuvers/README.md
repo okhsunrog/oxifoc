@@ -34,6 +34,17 @@ of the timeline, including errors. Before anything is sent the timeline is
 checked against the device's stored `max_iq_a` (`--force` skips the check;
 the device clamps regardless).
 
+The runner consumes telemetry while awaiting each motor response. Timeline
+commands are sent once: a missing acknowledgement aborts the experiment
+instead of repeating an excitation or sending overdue steps in a burst. The
+response deadline is 200 ms after the planned command, or the next timeline
+slot plus 5 ms, whichever is earlier. Sending a step more than 5 ms late also
+aborts. These are host scheduling bounds, not hard real-time guarantees.
+The terminal command gets a separate 2 s acknowledgement window; if it fails,
+an emergency stop is attempted after telemetry shutdown. The capture is saved
+before operational errors are returned, with all failed stages in
+`oxifoc.maneuver_errors`, including terminal/shutdown failures.
+
 `openloop` can also carry `"pi_gains": [0.01, 10.0]` to apply a runtime PI
 override, using the existing device control-mode field. Omitting it retains
 the current gains. The override is recorded in maneuver metadata and does not
@@ -58,6 +69,10 @@ df = pl.read_parquet("cap.parquet")
 
 Caveats:
 
+- `seq` is a wrapping 16-bit counter. Repeated values in a long recording
+  cannot identify an epoch without surrounding ordered samples. An outage
+  longer than a whole wrap (3.28 s at 20 kHz) makes the reconstructed time and
+  loss count lower bounds; do not join such segments or fit R from them;
 - the distance between an event anchor and the response edge in the data is
   the real command delivery+apply latency. On `oxifoc-virtual` it is ~10 ms
   and depends on `--batch` (commands are processed at the simulation batch
