@@ -13,7 +13,7 @@ chip = "STM32F405RGTx"
 
 # Optional: path to device ELF for defmt decoding AND the RTT `_SEGGER_RTT`
 # pin (relative to the cwd the CLI runs from!)
-elf = "oxifoc-f405/target/thumbv7em-none-eabihf/release/oxifoc-f405"
+elf = "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
 
 # Serial transport (ST-LINK VCP -> USART2)
 serial_path = "/dev/ttyACM0"
