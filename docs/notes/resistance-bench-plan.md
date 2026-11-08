@@ -1,5 +1,9 @@
 # Resistance and applied-voltage bench comparison
 
+2026-11-08: [acquisition qualification and aborted pilot results](bench-voltage-capture-2026-11-08.md).
+Idle recording passed; active 20 kHz throughput and the compensation startup
+impulse must be resolved before expanding the measurement matrix.
+
 ## Goal and confirmed setup
 
 Identify winding resistance separately from inverter voltage errors, and make
