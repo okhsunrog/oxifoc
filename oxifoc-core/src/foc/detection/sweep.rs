@@ -58,6 +58,25 @@ pub const DETECTION_PI_KI: f32 = 10.0;
 // Hardware Abstraction Trait
 // ============================================================================
 
+/// Voltage definition used for a settled resistance sample. This is separate
+/// from PI telemetry, which other detection procedures use as an actuator command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResistanceVoltageSource {
+    /// Legacy backend/model path; only valid when controller voltage represents
+    /// motor voltage. An uncompensated inverter can add an effective loss here.
+    ControllerCommand,
+    /// Phase-terminal ADC with hardware filtering, paired with the same FOC cycle.
+    FilteredPhaseAdc,
+}
+
+/// One causally paired settled voltage/current sample, with an explicit source.
+#[derive(Clone, Copy, Debug)]
+pub struct ResistanceSample {
+    pub voltage_v: f32,
+    pub current_a: f32,
+    pub source: ResistanceVoltageSource,
+}
+
 /// Hardware abstraction for motor parameter detection.
 ///
 /// Platforms implement this trait to provide access to FOC control,
@@ -84,6 +103,26 @@ pub trait DetectionHardware {
     ///
     /// This should block until new telemetry is available from the FOC ISR.
     fn wait_telemetry(&mut self) -> impl Future<Output = FocOutput>;
+
+    /// Select a fixed voltage definition for both resistance plateaus.
+    fn resistance_voltage_source(&self) -> ResistanceVoltageSource {
+        ResistanceVoltageSource::ControllerCommand
+    }
+
+    /// Fresh sample for R only. The default preserves legacy/model backends;
+    /// sensing backends override this without replacing PI-command telemetry.
+    fn wait_resistance_sample(
+        &mut self,
+    ) -> impl Future<Output = Result<ResistanceSample, DetectionError>> {
+        async {
+            let output = self.wait_telemetry().await;
+            Ok(ResistanceSample {
+                voltage_v: output.vd,
+                current_a: output.id,
+                source: ResistanceVoltageSource::ControllerCommand,
+            })
+        }
+    }
 
     /// Read raw phase currents in Amps (ia, ib, ic).
     ///
@@ -193,6 +232,15 @@ async fn sample_vd_id<H: DetectionHardware, T: Timer>(
     count: u32,
     timeout_ms: u64,
 ) -> Result<(f32, f32), DetectionError> {
+    sample_voltage_current::<H, T>(hw, count, timeout_ms, None).await
+}
+
+async fn sample_voltage_current<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    count: u32,
+    timeout_ms: u64,
+    resistance_source: Option<ResistanceVoltageSource>,
+) -> Result<(f32, f32), DetectionError> {
     use core::cell::Cell;
     use embassy_futures::select::{Either, select};
     // Cells, not locals in the async block: on deadline the accumulated sums
@@ -202,14 +250,30 @@ async fn sample_vd_id<H: DetectionHardware, T: Timer>(
     let id_sum = Cell::new(0.0f32);
     let sample = async {
         for _ in 0..count {
-            let t = hw.wait_telemetry().await;
-            vd_sum.set(vd_sum.get() + t.vd);
-            id_sum.set(id_sum.get() + t.id);
+            let (voltage, current) = if let Some(source) = resistance_source {
+                let sample = hw.wait_resistance_sample().await?;
+                if sample.source != source {
+                    return Err(DetectionError::HardwareFault);
+                }
+                (sample.voltage_v, sample.current_a)
+            } else {
+                let output = hw.wait_telemetry().await;
+                (output.vd, output.id)
+            };
+            if !voltage.is_finite() || !current.is_finite() {
+                return Err(DetectionError::HardwareFault);
+            }
+            vd_sum.set(vd_sum.get() + voltage);
+            id_sum.set(id_sum.get() + current);
             got.set(got.get() + 1);
         }
+        Ok(())
     };
     let n = match select(sample, T::after_millis(timeout_ms)).await {
-        Either::First(()) => count,
+        Either::First(result) => {
+            result?;
+            count
+        }
         Either::Second(()) => {
             // Enough frames for a trustworthy DC average despite the timeout?
             let floor = (count / 8).max(64).min(count);
@@ -281,6 +345,11 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     params: &ResistanceParams,
 ) -> Result<f32, DetectionError> {
     info!("Starting resistance measurement...");
+    let source = hw.resistance_voltage_source();
+    match source {
+        ResistanceVoltageSource::FilteredPhaseAdc => info!("R voltage source: filtered phase ADC"),
+        ResistanceVoltageSource::ControllerCommand => info!("R voltage source: controller command"),
+    }
 
     // 2-point differential measurement (MESC-style):
     // Measure Vd/Id at two steady-state current levels, compute R = ΔV/ΔI.
@@ -318,13 +387,14 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     // Sample at low setpoint (at least ~100 ms at 20 kHz; 2 s deadline).
     // On timeout, command Stopped before bailing — the motor was left at the
     // setpoint and the normal ramp-down below never runs on this path.
-    let (vd_low, id_low) = match sample_vd_id::<H, T>(hw, sample_count, 2000).await {
-        Ok(avg) => avg,
-        Err(e) => {
-            hw.send_command(ControlMode::Stopped).await;
-            return Err(e);
-        }
-    };
+    let (vd_low, id_low) =
+        match sample_voltage_current::<H, T>(hw, sample_count, 2000, Some(source)).await {
+            Ok(avg) => avg,
+            Err(e) => {
+                hw.send_command(ControlMode::Stopped).await;
+                return Err(e);
+            }
+        };
     debug!("R meas: low point: vd={}, id={}", vd_low, id_low);
 
     // --- Ramp to high setpoint ---
@@ -342,13 +412,14 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     T::after_millis(settle_cycles).await;
 
     // Sample at high setpoint (same deadline and bail-out)
-    let (vd_high, id_high) = match sample_vd_id::<H, T>(hw, sample_count, 2000).await {
-        Ok(avg) => avg,
-        Err(e) => {
-            hw.send_command(ControlMode::Stopped).await;
-            return Err(e);
-        }
-    };
+    let (vd_high, id_high) =
+        match sample_voltage_current::<H, T>(hw, sample_count, 2000, Some(source)).await {
+            Ok(avg) => avg,
+            Err(e) => {
+                hw.send_command(ControlMode::Stopped).await;
+                return Err(e);
+            }
+        };
     debug!("R meas: high point: vd={}, id={}", vd_high, id_high);
 
     // --- Ramp down and stop ---
@@ -399,7 +470,10 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
         return Err(DetectionError::UnexpectedMotion);
     }
 
-    let resistance = (delta_v / delta_i).abs();
+    // A negative slope is not a physical positive resistor. In particular,
+    // command-side deadtime compensation can make pre-compensation PI slope
+    // negative; abs() used to hide that wrong voltage definition.
+    let resistance = delta_v / delta_i;
 
     if !resistance.is_finite() {
         return Err(DetectionError::HardwareFault);
@@ -418,6 +492,10 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
 
     Ok(resistance)
 }
+
+#[cfg(test)]
+#[path = "sweep_resistance_tests.rs"]
+mod resistance_tests;
 
 /// Amplitude adaptation context for the HFI loop.
 #[cfg(feature = "hfi-detect")]

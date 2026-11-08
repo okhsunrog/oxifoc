@@ -15,9 +15,13 @@ use critical_section::Mutex as CriticalSectionMutex;
 use crate::foc::config::BoardConfig;
 use crate::foc::controller::FocOutput;
 use crate::foc::detection::DetectionError;
-use crate::foc::detection::sweep::{self, DetectionHardware, HallReader};
+use crate::foc::detection::sweep::{
+    self, DetectionHardware, HallReader, ResistanceSample, ResistanceVoltageSource,
+};
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
-use crate::foc::trig::SinCos;
+use crate::foc::phase_voltage::PhaseVoltageSense;
+use crate::foc::sensors::AdcSnapshot;
+use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::motor::ControlMode;
 use crate::state::{self, MotorControlState};
 use crate::timer::EmbassyTimer;
@@ -80,6 +84,23 @@ impl DetectionHardware for EmbassyDetectionHardware {
         wait_next_telemetry(self.state_mutex).await
     }
 
+    fn resistance_voltage_source(&self) -> ResistanceVoltageSource {
+        if self
+            .board
+            .phase_sense
+            .is_some_and(|sense| sense.has_filters)
+        {
+            ResistanceVoltageSource::FilteredPhaseAdc
+        } else {
+            ResistanceVoltageSource::ControllerCommand
+        }
+    }
+
+    async fn wait_resistance_sample(&mut self) -> Result<ResistanceSample, DetectionError> {
+        let (adc, foc) = wait_next_sample(self.state_mutex).await;
+        resistance_sample(self.board, adc, foc)
+    }
+
     fn read_phase_currents(&self) -> (f32, f32, f32) {
         let ia_raw = self.ia.load(Ordering::Relaxed);
         let ib_raw = self.ib.load(Ordering::Relaxed);
@@ -91,6 +112,39 @@ impl DetectionHardware for EmbassyDetectionHardware {
 async fn wait_next_telemetry(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
 ) -> FocOutput {
+    wait_next_sample(state_mutex).await.1
+}
+
+fn resistance_sample(
+    board: &BoardConfig,
+    adc: AdcSnapshot,
+    foc: FocOutput,
+) -> Result<ResistanceSample, DetectionError> {
+    let Some(sense) = PhaseVoltageSense::from_board(board).filter(PhaseVoltageSense::has_filters)
+    else {
+        return Ok(ResistanceSample {
+            voltage_v: foc.vd,
+            current_a: foc.id,
+            source: ResistanceVoltageSource::ControllerCommand,
+        });
+    };
+    let raw = adc.vphase.ok_or(DetectionError::HardwareFault)?;
+    if raw.iter().any(|&count| count > board.calib.adc_max_counts) {
+        return Err(DetectionError::HardwareFault);
+    }
+    let (alpha, beta) = sense.alpha_beta(raw);
+    let (sin, cos) = LibmSinCos::sin_cos(foc.angle_rad);
+    let (voltage_v, _) = crate::foc::transforms::park(alpha, beta, sin, cos);
+    Ok(ResistanceSample {
+        voltage_v,
+        current_a: foc.id,
+        source: ResistanceVoltageSource::FilteredPhaseAdc,
+    })
+}
+
+async fn wait_next_sample(
+    state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
+) -> (AdcSnapshot, FocOutput) {
     let previous_seq = critical_section::with(|cs| state_mutex.borrow(cs).borrow().last_adc.seq);
     poll_fn(|cx| {
         // Re-polling alone is not proof of a new FOC cycle: the enclosing task
@@ -102,7 +156,7 @@ async fn wait_next_telemetry(
             if state.last_adc.seq != previous_seq {
                 // ADC sequence and FOC output are published in one critical
                 // section. Copy the matching output under the same guard.
-                Poll::Ready(state.last_foc)
+                Poll::Ready((state.last_adc, state.last_foc))
             } else {
                 Poll::Pending
             }
@@ -247,6 +301,78 @@ mod tests {
     use crate::foc::sensors::AdcSnapshot;
     use core::{future::Future, pin::pin, task::Context};
 
+    fn board(filtered: bool) -> BoardConfig {
+        BoardConfig {
+            calib: crate::types::BoardCalib {
+                shunt_ohms: 0.0005,
+                amp_gain: 20.0,
+                adc_vref_mv: 3300,
+                adc_max_counts: 3300, // 1 mV/count makes the projection explicit.
+                invert_current_sign: false,
+                vbus_divider_ratio: 1.0,
+            },
+            current_sense_topology: crate::types::CurrentSenseTopology::ThreeShunt,
+            max_iq_target_a: 3.0,
+            max_phase_current_a: 6.0,
+            max_vbus_mv: 57_000,
+            min_vbus_mv: 6_000,
+            max_fet_temp_c: 100.0,
+            max_motor_temp_c: 120.0,
+            phase_sense: Some(crate::foc::config::PhaseSense {
+                divider_ratio: 1.0,
+                has_filters: filtered,
+            }),
+        }
+    }
+
+    #[test]
+    fn filtered_sample_projects_measured_voltage_at_the_matching_foc_angle() {
+        let adc = AdcSnapshot::default().with_phase_voltages([1000, 1100, 900]);
+        let foc = FocOutput {
+            vd: -0.5,
+            id: 1.5,
+            angle_rad: core::f32::consts::FRAC_PI_2,
+            ..FocOutput::empty()
+        };
+        let sample = resistance_sample(&board(true), adc, foc).unwrap();
+        // α=0, β=0.2/sqrt(3), at 90° the measured d voltage is β.
+        assert!((sample.voltage_v - 0.115_470_05).abs() < 0.000001);
+        assert_eq!(sample.current_a, 1.5);
+        assert_eq!(sample.source, ResistanceVoltageSource::FilteredPhaseAdc);
+    }
+
+    #[test]
+    fn filtered_board_missing_or_invalid_adc_does_not_fall_back_to_pi() {
+        assert_eq!(
+            resistance_sample(&board(true), AdcSnapshot::default(), FocOutput::empty())
+                .unwrap_err(),
+            DetectionError::HardwareFault,
+        );
+        let adc = AdcSnapshot::default().with_phase_voltages([1000, u16::MAX, 900]);
+        assert_eq!(
+            resistance_sample(&board(true), adc, FocOutput::empty()).unwrap_err(),
+            DetectionError::HardwareFault,
+        );
+    }
+
+    #[test]
+    fn unfiltered_or_absent_sensing_retains_the_declared_controller_source() {
+        let mut board = board(false);
+        for absent in [false, true] {
+            if absent {
+                board.phase_sense = None;
+            }
+            let foc = FocOutput {
+                vd: 0.25,
+                id: 2.0,
+                ..FocOutput::empty()
+            };
+            let sample = resistance_sample(&board, AdcSnapshot::default(), foc).unwrap();
+            assert_eq!(sample.voltage_v, 0.25);
+            assert_eq!(sample.source, ResistanceVoltageSource::ControllerCommand);
+        }
+    }
+
     fn publish(state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>, seq: u32, vd: f32) {
         state::update_telemetry(
             state_mutex,
@@ -287,5 +413,31 @@ mod tests {
             panic!("wrapped ADC counter did not complete the wait");
         };
         assert_eq!(output.vd, 0.3);
+    }
+
+    #[test]
+    fn new_cycle_returns_adc_and_foc_as_one_pair() {
+        let state = CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        publish(&state, 41, -0.5);
+        let mut future = pin!(wait_next_sample(&state));
+        let mut context = Context::from_waker(core::task::Waker::noop());
+        assert!(future.as_mut().poll(&mut context).is_pending());
+        state::update_telemetry(
+            &state,
+            AdcSnapshot::new(1, 2, 3, 24_000, 42).with_phase_voltages([4, 5, 6]),
+            None,
+            FocOutput {
+                vd: -0.1,
+                id: 2.0,
+                ..FocOutput::empty()
+            },
+        );
+        let Poll::Ready((adc, foc)) = future.as_mut().poll(&mut context) else {
+            panic!("fresh pair was not returned");
+        };
+        assert_eq!(adc.seq, 42);
+        assert_eq!(adc.vphase, Some([4, 5, 6]));
+        assert_eq!(foc.id, 2.0);
+        assert_eq!(foc.vd, -0.1);
     }
 }
