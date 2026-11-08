@@ -79,3 +79,64 @@ A regression runs the complete pulse procedure with subthreshold pulses and an
 effective positive voltage correction: the holding command is negative and the
 measurement fails, yet current remains bounded and Stop is reached. The old
 voltage-to-zero cleanup would drive the fixture from 1.2 A toward 7.33 A.
+
+## Motor R after clock correction
+
+The normal, calibrated-clock build was flashed with USB SOF diagnostics and all
+motor phases connected. No detection result was applied/persisted. Native R
+uses max_power_w=1, the same 0.1→0.5 A probe then 0.6→3 A measurement, filtered
+phase ADC, angle zero and PI 0.01/10 as the previous source-correction study.
+
+| Run | Native R (mΩ) | Independent settled ΔV/ΔI (mΩ) | Rows | Gaps/lost |
+|---|---:|---:|---:|---:|
+| R02 | 30.485 | 30.593 | 316361 | 0/0 |
+| R03 | 30.201 | 30.338 | 318331 | 0/0 |
+| R04 | 30.647 | 30.563 | 318355 | 0/0 |
+
+Native mean 30.444 mΩ, sample standard deviation 0.226 mΩ. VESC 7.00 wizard
+reported 30.80 mΩ (-1.16% difference), previous OxiFOC mean was 30.374 mΩ.
+Currents/temperature are not matched calibration conditions. LCR 100 Hz
+minimum-position between-lead ESR 61–63 mΩ corresponds to equivalent-star
+30.5–31.5 mΩ, not an exact DC resistance standard. Clock correction has not
+materially changed DC ΔV/ΔI, as expected.
+
+Each rich capture ended with outputs disabled, status Stopped and fault count
+zero. Maximum reconstructed dq magnitude was about 3.385 A. The overview plots
+retain transient envelopes; no FFT is used for DC resistance. The independent
+fit selects long settled 0.6/3 A plateaus and records its windows explicitly;
+they are not the exact on-board asynchronous 2000-snapshot windows.
+
+An earlier R01 returned 30.472 mΩ with 312318 contiguous raw samples, but the
+CLI's default full-rate selection consumed HardwareInfo before Capture::start
+could use it. Engineering columns became NaN and scaling metadata was absent.
+Its untouched raw file and native result are retained; exclude it from rich
+engineering fits. Commit 2acbc49 passes the same handshake into capture, rejects
+missing handshakes before recording, and corrects stale CIC wording: decimation
+is plain sample dropping. R02–R04 use the default rate path and verify the fix.
+
+R02 contains one unprojected A-shunt value 6.109 A at seq 35558. All three raw
+channels jump together: unprojected sum 9.553 A, while projected Id/Iq remain
+2.924/0.062 A. Adjacent duty registers barely change. This is a common/zero-
+sequence component, not demonstrated 6.109 A winding current. The existing
+software trip uses dq magnitude and the hardware protection is unchanged.
+Sampling pickup/displacement current remains a possible acquisition follow-up;
+this observation does not justify raising the protection threshold.
+
+## L01: rejected after a protection trip
+
+The first native L run retained 356371 contiguous full-rate samples, but its
+reported Ld=8.115 mH / Lq=9.506 mH is invalid. Outputs were active only until
+1.009934 s. The last 0.010/0.166 V dq command was held for 19 PWM frames
+(about 0.95 ms); dq current reached 6.012 A and the configured protection
+removed phase outputs. Status then showed Error/Stopped and one fault.
+The asynchronous HFI task nevertheless continued its calculations and pulse
+fallback, eventually reporting success. No result was applied or persisted.
+
+Retain L01 as failure evidence. Before another live L run, detection must abort
+on a fault and reject missing current-sample periods; the excitation must not
+assume one async iteration equals one PWM period. The executor comparison is
+being completed first with physical outputs inhibited. Current-loop shutdown
+regression is tested, but L01 does not validate normal HFI shutdown on hardware.
+
+Raw data, exact ELFs, RTT, configs and result JSONs for this section are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-timing-bringup-2026-11-09/`.
