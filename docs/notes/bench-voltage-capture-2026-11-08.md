@@ -101,7 +101,11 @@ path, not active throughput. Seven CLI tests and CLI clippy pass. For firmware:
 453 core feature-rich tests passed (2 ignored), core clippy, MK5 release build/
 clippy passed; CF2/G474 compilation was checked for the initial wire extension.
 
-## Next gate
+## Next gate at the time of this capture
+
+Subsequent fixes and successful signed-current runs are recorded in
+[the follow-up report](bench-current-voltage-2026-11-08.md). The results below
+describe the earlier failed run, not the current qualification status.
 
 Do not expand the current/frequency matrix yet. Isolate active USB servicing/
 backpressure and protect command replies from telemetry congestion. The motor

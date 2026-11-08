@@ -1,8 +1,9 @@
 # Resistance and applied-voltage bench comparison
 
-2026-11-08: [acquisition qualification and aborted pilot results](bench-voltage-capture-2026-11-08.md).
-Idle recording passed; active 20 kHz throughput and the compensation startup
-impulse must be resolved before expanding the measurement matrix.
+2026-11-08: [startup fix, transport and signed-current results](bench-current-voltage-2026-11-08.md).
+The repeated pilot and signed 1.5/3 A series passed without published-sample
+loss. Phase-ADC slopes are about 30 mΩ; the voltage-model contract and an
+observed host/sequence timing drift remain to be resolved.
 
 ## Goal and confirmed setup
 
@@ -26,9 +27,10 @@ LCR measurement aliases remain yellow=A, blue=B, black=C. Raw LCR results:
 At 1 kHz the latest between-lead maxima are 52.9/52.5/52.9 µH; at 10 kHz,
 51.2/50.7/51.1 µH. The 100 Hz increase remains unexplained. AC ESR is not DC R.
 
-Flashing and tests without motor excitation are authorized. A new excitation
-series must be presented with its actual current limits and motion implications
-before starting. No new full-flash backup is needed for each build. Export
+The user has authorized flashing and motor tests without separate per-test
+approval; the motor is secured with its shaft unloaded. Preserve independent
+protections and inspect results before increasing excitation. No new full-flash
+backup is needed for each build. Export
 current VESC motor/application configurations before changing firmware; retain
 the original firmware backup and preserve OxiFOC's storage sectors.
 
@@ -50,11 +52,14 @@ the original firmware backup and preserve OxiFOC's storage sectors.
 
 ## Diagnostic wire and file contract
 
-ICD v7 uses a 34-byte raw-Pod fast frame: the original 18 bytes plus three raw
+The acquisition extension introduced in ICD v7 uses a 34-byte raw-Pod fast frame:
+the original 18 bytes plus three raw
 phase ADC values, three PWM compares, ARR, and output-enable bits. Fourteen
 frames occupy 476 bytes; adding the conservative 32-byte framing allowance
 still fits the 512-byte F405 MTU. Raw data alone at 20 kHz is 680 kB/s;
 lossless operation must be measured on USB, not inferred from nominal bandwidth.
+Current ICD v8 preserves all 34 raw bytes through independent lossless compressed
+batches; see [encoding and executor details](telemetry-batch-encoding.md).
 
 Missing phase samples are `[65535; 3]`; ARR=0 means PWM snapshot unavailable.
 Enable bits 0..2 are high-side A/B/C, 3..5 low-side A/B/C, bit 6 main enable.
@@ -84,8 +89,8 @@ positions or missing stream segments must not be joined into a fit.
    the 20 kHz PWM unchanged. Check sample count, sequence continuity, queue/link
    losses and ISR cost. A 5 kHz stream here is decimation, not 5 kHz PWM.
 2. **Pilot at fixed 20 kHz PWM.** Once idle recording passes, prepare a short
-   stationary-current sequence, initially no higher than 3 A, with explicit
-   permission. Start with the smallest plateau and inspect it before expanding.
+   stationary-current sequence, initially no higher than 3 A. Start with the
+   smallest plateau and inspect it before expanding.
    Preserve independent protection thresholds; read and document them first.
    Record ramps, settled plateaus and zero-current tails, not only averages.
 3. **Voltage definitions and polarity.** At fixed manual angle, compare both
@@ -104,7 +109,7 @@ positions or missing stream segments must not be joined into a fit.
    with hardware deadtime fixed. Change only one variable per pair, include
    both current signs and optionally the orthogonal current axis. Increase
    current beyond 3 A only after current/voltage acquisition and protections
-   are validated and the expanded series is approved. A thermal R estimate from
+   are validated. A thermal R estimate from
    VESC's high-current wizard is a different experiment from low-current fits.
 6. **Dynamic L cross-check.** Use measured voltage and current transients or
    known small-signal excitation to compare inductance, angle and current
@@ -112,8 +117,10 @@ positions or missing stream segments must not be joined into a fit.
    a 10 kHz sinusoidal waveform or PWM-carrier ripple; that comparison needs a
    faster/different acquisition path. Do not equate PWM rate with LCR test rate.
 
-At each stage keep numerical summaries and visual analysis: time traces,
-sample zooms, V/I scatter and signed fits, current-sum/cross-axis residuals,
-FFT, Welch PSD and time-frequency spectrograms. Split spectral windows at
-gaps/rate changes and report actual native cadence. A full matrix of runs is
+Choose analysis for the question: DC R needs settling traces, V/I means/signed
+fits, offsets and repeat drift. Investigate raw-current common-mode and
+cross-axis residuals when checking sensing. Use FFT/PSD/spectrograms for a
+specific oscillation, periodic artifact or noise question, not every recording.
+Keep the raw 20 kHz data. Split spectral windows at gaps/rate changes and
+distinguish nominal from independently verified cadence. A full matrix of runs is
 not a substitute for matched conditions and validated acquisition.

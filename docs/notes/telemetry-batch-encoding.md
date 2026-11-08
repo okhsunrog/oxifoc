@@ -44,6 +44,8 @@ in the pinned Embassy AtomicWaker. A captured debug backtrace identified that
 path. Keeping USB together avoids that preemption. The first raw-frame IRQ
 experiment and compression on thread mode each failed qualification; the
 combined path is checked on hardware with phase outputs inhibited.
+Production stationary-current recording also passed at nominal 20 kHz; see
+[qualification results and timing limits](bench-current-voltage-2026-11-08.md).
 
 `bench-no-phase-outputs` is a default-off F405 qualification feature. Every
 phase-enable path instead disables both high and low outputs, while ADC/FOC,
