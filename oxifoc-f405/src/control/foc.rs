@@ -105,6 +105,16 @@ pub static ISR_CYC_OVER: AtomicU32 = AtomicU32::new(0);
 const ISR_BUDGET_CYCLES: u32 = CPU_HZ / PWM_CONFIG.pwm_freq_hz;
 /// Number of ADC ISR executions since last stats swap.
 pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
+// Entry-to-entry timing is independent of the software FOC sequence counter.
+// Execution duration alone cannot expose an interrupt that started late or a
+// conversion whose interrupt was never serviced. These counters diagnose that
+// distinction; a long interval is not by itself a proven missed ADC trigger.
+static ISR_INTERVAL_SUM: AtomicU32 = AtomicU32::new(0);
+static ISR_INTERVAL_MIN: AtomicU32 = AtomicU32::new(u32::MAX);
+static ISR_INTERVAL_MAX: AtomicU32 = AtomicU32::new(0);
+static ISR_INTERVAL_N: AtomicU32 = AtomicU32::new(0);
+static ISR_INTERVAL_LONG: AtomicU32 = AtomicU32::new(0);
+static ISR_INTERVAL_SHORT: AtomicU32 = AtomicU32::new(0);
 
 // ========== ADC Handles ==========
 
@@ -361,8 +371,23 @@ async fn first_vbus_v() -> f32 {
 #[interrupt]
 fn ADC() {
     static mut SEQ: u32 = 0;
+    static mut LAST_START: u32 = 0;
 
     let isr_t0 = cortex_m::peripheral::DWT::cycle_count();
+    if *LAST_START != 0 {
+        let interval = isr_t0.wrapping_sub(*LAST_START);
+        ISR_INTERVAL_SUM.fetch_add(interval, Ordering::Relaxed);
+        ISR_INTERVAL_MIN.fetch_min(interval, Ordering::Relaxed);
+        ISR_INTERVAL_MAX.fetch_max(interval, Ordering::Relaxed);
+        ISR_INTERVAL_N.fetch_add(1, Ordering::Relaxed);
+        if interval > ISR_BUDGET_CYCLES * 3 / 2 {
+            ISR_INTERVAL_LONG.fetch_add(1, Ordering::Relaxed);
+        }
+        if interval < ISR_BUDGET_CYCLES / 2 {
+            ISR_INTERVAL_SHORT.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    *LAST_START = isr_t0;
     let board = measured_board();
 
     // NTC Beta-model conversion runs libm::logf + several float divides
@@ -554,6 +579,31 @@ pub async fn isr_stats_task() {
             pb,
             avg.saturating_sub(adc + sn + fo + pb)
         );
+        // Swap the timing tuple atomically relative to the ADC IRQ so average
+        // and extrema describe one window. Logging stays outside the section.
+        let (interval_n, interval_sum, interval_min, interval_max, long, short) =
+            critical_section::with(|_| {
+                (
+                    ISR_INTERVAL_N.swap(0, Ordering::Relaxed),
+                    ISR_INTERVAL_SUM.swap(0, Ordering::Relaxed),
+                    ISR_INTERVAL_MIN.swap(u32::MAX, Ordering::Relaxed),
+                    ISR_INTERVAL_MAX.swap(0, Ordering::Relaxed),
+                    ISR_INTERVAL_LONG.swap(0, Ordering::Relaxed),
+                    ISR_INTERVAL_SHORT.swap(0, Ordering::Relaxed),
+                )
+            });
+        if interval_n != 0 {
+            defmt::info!(
+                "isri/s: n={} avg={} min={} max={} long={} short={} expected={}",
+                interval_n,
+                interval_sum / interval_n,
+                interval_min,
+                interval_max,
+                long,
+                short,
+                ISR_BUDGET_CYCLES,
+            );
+        }
         use oxifoc_core::runtime::streaming::fast_telem_stats as ft;
         let pushed = ft::PUSH_OK.swap(0, Ordering::Relaxed);
         let dropped = ft::PUSH_DROPS.swap(0, Ordering::Relaxed);
