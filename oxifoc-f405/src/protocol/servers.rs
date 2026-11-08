@@ -35,6 +35,8 @@ use crate::transport::UART_OUTQ;
 /// USB device task — runs USB state machine
 #[embassy_executor::task]
 async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
+    #[cfg(feature = "bench-scheduler-deadline")]
+    crate::diagnostics::deadline::register(0, 125).await;
     #[cfg(feature = "bench-scheduler-priority")]
     embassy_executor::Metadata::for_current_task()
         .await
@@ -45,6 +47,8 @@ async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
 /// Worker task for incoming ergot data (USB)
 #[embassy_executor::task]
 async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
+    #[cfg(feature = "bench-scheduler-deadline")]
+    crate::diagnostics::deadline::register(1, 125).await;
     #[cfg(feature = "bench-scheduler-priority")]
     embassy_executor::Metadata::for_current_task()
         .await
@@ -58,6 +62,8 @@ async fn run_usb_tx(
     mut ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
     rx: FramedConsumer<&'static UsbQueue>,
 ) {
+    #[cfg(feature = "bench-scheduler-deadline")]
+    crate::diagnostics::deadline::register(2, 125).await;
     #[cfg(feature = "bench-scheduler-priority")]
     embassy_executor::Metadata::for_current_task()
         .await
@@ -162,6 +168,8 @@ pub async fn run_uart_tx(mut tx: UartWriter, stack: &'static Stack, uart_ident: 
 /// All protocol servers running concurrently in a single task
 #[embassy_executor::task]
 pub async fn protocol_servers(stack: &'static Stack) {
+    #[cfg(feature = "bench-scheduler-deadline")]
+    crate::diagnostics::deadline::register(3, 500).await;
     #[cfg(feature = "bench-scheduler-priority")]
     embassy_executor::Metadata::for_current_task()
         .await
@@ -391,6 +399,8 @@ pub async fn defmt_forwarder(
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
+    #[cfg(feature = "bench-scheduler-deadline")]
+    crate::diagnostics::deadline::register(4, 1000).await;
     #[cfg(feature = "bench-scheduler-priority")]
     embassy_executor::Metadata::for_current_task()
         .await

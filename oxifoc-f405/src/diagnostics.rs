@@ -66,6 +66,10 @@ pub mod trace {
     pub static BENCH_TRACE_CONTROL: AtomicU32 = AtomicU32::new(0);
     #[unsafe(no_mangle)]
     pub static BENCH_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
+    /// Additional delay after active FOC, set before arming over SWD.
+    #[unsafe(no_mangle)]
+    pub static BENCH_TRACE_ACTIVE_DELAY: AtomicU32 = AtomicU32::new(0);
+    static DELAY_TICKS: AtomicU32 = AtomicU32::new(0);
     static START_TICKS: AtomicU32 = AtomicU32::new(0);
     #[unsafe(no_mangle)]
     pub static BENCH_TRACE_EVENTS: [Event; CAPACITY] = [const { Event::new() }; CAPACITY];
@@ -78,7 +82,10 @@ pub mod trace {
             .is_ok()
         {
             BENCH_TRACE_COUNT.store(0, Ordering::Relaxed);
-            BENCH_TRACE_CONTROL.store(2, Ordering::Relaxed);
+            let delay = BENCH_TRACE_ACTIVE_DELAY.load(Ordering::Relaxed);
+            START_TICKS.store(embassy_stm32::pac::TIM5.cnt().read(), Ordering::Relaxed);
+            DELAY_TICKS.store(delay, Ordering::Relaxed);
+            BENCH_TRACE_CONTROL.store(if delay == 0 { 2 } else { 3 }, Ordering::Relaxed);
         }
     }
 
@@ -91,6 +98,7 @@ pub mod trace {
                 .is_ok()
         {
             START_TICKS.store(embassy_stm32::pac::TIM5.cnt().read(), Ordering::Relaxed);
+            DELAY_TICKS.store(crate::config::CPU_HZ / 20, Ordering::Relaxed);
             BENCH_TRACE_CONTROL.store(3, Ordering::Relaxed);
             return;
         } else if state == 3 {
@@ -98,7 +106,7 @@ pub mod trace {
                 .cnt()
                 .read()
                 .wrapping_sub(START_TICKS.load(Ordering::Relaxed))
-                < 8_400_000
+                < DELAY_TICKS.load(Ordering::Relaxed)
                 || BENCH_TRACE_CONTROL
                     .compare_exchange(3, 4, Ordering::Relaxed, Ordering::Relaxed)
                     .is_err()
@@ -147,11 +155,71 @@ pub mod trace {
     }
     #[unsafe(no_mangle)]
     fn _embassy_trace_task_ready_begin(_executor: u32, task: u32) {
+        #[cfg(feature = "bench-scheduler-deadline")]
+        super::deadline::ready(task);
         record(6, task);
     }
     #[unsafe(no_mangle)]
     fn _embassy_trace_executor_idle(executor: u32) {
         record(7, executor);
+    }
+}
+
+/// Experimental release-relative EDF policy. It only affects queue ordering;
+/// it cannot interrupt an in-progress poll. No changes to Ergot are needed.
+#[cfg(feature = "bench-scheduler-deadline")]
+pub mod deadline {
+    use core::{
+        future::poll_fn,
+        sync::atomic::{AtomicPtr, AtomicU32, Ordering},
+        task::Poll,
+    };
+    use embassy_executor::Metadata;
+
+    struct Slot {
+        id: AtomicU32,
+        metadata: AtomicPtr<Metadata>,
+        budget: AtomicU32,
+    }
+    static SLOTS: [Slot; 5] = [const {
+        Slot {
+            id: AtomicU32::new(0),
+            metadata: AtomicPtr::new(core::ptr::null_mut()),
+            budget: AtomicU32::new(0),
+        }
+    }; 5];
+
+    pub async fn register(index: usize, budget_us: u64) {
+        let metadata = Metadata::for_current_task().await;
+        let id = poll_fn(|cx| Poll::Ready(embassy_executor::raw::task_from_waker(cx.waker()).id()))
+            .await;
+        let slot = &SLOTS[index];
+        slot.budget.store(
+            embassy_time::Duration::from_micros(budget_us).as_ticks() as u32,
+            Ordering::Relaxed,
+        );
+        slot.metadata
+            .store(core::ptr::from_ref(metadata).cast_mut(), Ordering::Relaxed);
+        slot.id.store(id, Ordering::Release);
+        ready(id);
+    }
+
+    pub fn ready(task: u32) {
+        for slot in &SLOTS {
+            if slot.id.load(Ordering::Acquire) == task {
+                // SAFETY: published once by register from Embassy's static
+                // Metadata reference. Tasks in this bench never terminate.
+                // The ready hook runs before enqueue; the task is not already
+                // in the sorted run queue, so its ordering key is stable there.
+                let metadata = unsafe { &*slot.metadata.load(Ordering::Relaxed) };
+                metadata.set_deadline(
+                    embassy_time::Instant::now()
+                        .as_ticks()
+                        .saturating_add(u64::from(slot.budget.load(Ordering::Relaxed))),
+                );
+                return;
+            }
+        }
     }
 }
 

@@ -17,6 +17,8 @@ p.add_argument('action', choices=['arm','read'])
 p.add_argument('--symbols', required=True)
 p.add_argument('--out', help='Output binary path for read')
 p.add_argument('--on-active', action='store_true', help='Arm for the next active FOC transition')
+p.add_argument('--active-delay-ms', type=float, default=0, help='Delay from active FOC to trace window')
+p.add_argument('--timer-hz', type=int, required=True, help='Actual declared TIM5 input clock, PSC=0')
 p.add_argument('--probe', default='0483:3754:002300203234511537333934')
 a = p.parse_args()
 symbols = {}
@@ -30,6 +32,9 @@ base = ['probe-rs','--chip','STM32F405RGTx','--probe',a.probe]
 def invoke(command, *args):
     return subprocess.check_output([base[0],command,*base[1:],*map(str,args)],text=True)
 if a.action == 'arm':
+    if a.timer_hz <= 0 or a.active_delay_ms < 0:
+        p.error('timer clock must be positive and delay nonnegative')
+    invoke('write','b32',hex(symbols['BENCH_TRACE_ACTIVE_DELAY'][0]),round(a.active_delay_ms*a.timer_hz/1000))
     invoke('write','b32',hex(control),5 if a.on_active else 1)
     if not a.on_active:
         time.sleep(.3)  # 100 ms quiet delay + a finite ADC-driven trace window
@@ -50,7 +55,7 @@ else:
     data=Path(a.out).read_bytes()
     Path(a.out+'.json').write_text(json.dumps({
         'symbols':str(Path(a.symbols).resolve()),'bytes':len(data),
-        'sha256':hashlib.sha256(data).hexdigest(),'nominal_timer_hz':84_000_000,
+        'sha256':hashlib.sha256(data).hexdigest(),'timer_hz':a.timer_hz,
         'events':len(data)//12,'time_source':'TIM5, PSC=0, APB1 timer clock',
         'reservations':count,
         'state':0,'scope':'finite instrumented window; poll time includes IRQ preemption',

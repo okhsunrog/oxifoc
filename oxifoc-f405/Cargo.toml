@@ -41,6 +41,8 @@ bench-clock-reference = []
 # A/B qualification only: keep all USB handlers on the thread executor.
 bench-usb-thread = []
 bench-scheduler-priority = ["embassy-executor/scheduler-priority"]
+# Bench EDF policy: fresh relative deadlines on actual ready/enqueue events.
+bench-scheduler-deadline = ["embassy-executor/scheduler-deadline", "bench-executor-trace"]
 # USART3/PB10 sends DMA bursts of 0x55 for an independent scope reference.
 bench-clock-uart = ["bench-no-phase-outputs", "bench-clock-reference"]
 # Temporary calibration for UUID 2B002C001047343031363330 only; never a board default.
