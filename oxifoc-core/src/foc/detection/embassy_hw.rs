@@ -77,22 +77,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
     }
 
     async fn wait_telemetry(&mut self) -> FocOutput {
-        // Wait for ISR to complete a FOC cycle.
-        // First poll: register waker and return Pending.
-        // ISR calls TELEM_WAKER.wake() → executor re-polls → Ready.
-        let mut registered = false;
-        poll_fn(|cx| {
-            if registered {
-                Poll::Ready(())
-            } else {
-                state::TELEM_WAKER.register(cx.waker());
-                registered = true;
-                Poll::Pending
-            }
-        })
-        .await;
-        // Read latest FOC output from shared state
-        critical_section::with(|cs| self.state_mutex.borrow(cs).borrow().last_foc)
+        wait_next_telemetry(self.state_mutex).await
     }
 
     fn read_phase_currents(&self) -> (f32, f32, f32) {
@@ -101,6 +86,29 @@ impl DetectionHardware for EmbassyDetectionHardware {
         let ic_raw = self.ic.load(Ordering::Relaxed);
         self.board.convert_raw_currents(ia_raw, ib_raw, ic_raw)
     }
+}
+
+async fn wait_next_telemetry(
+    state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
+) -> FocOutput {
+    let previous_seq = critical_section::with(|cs| state_mutex.borrow(cs).borrow().last_adc.seq);
+    poll_fn(|cx| {
+        // Re-polling alone is not proof of a new FOC cycle: the enclosing task
+        // can wake for another future. Register before checking the counter so
+        // a publication between the initial read and registration is not lost.
+        state::TELEM_WAKER.register(cx.waker());
+        critical_section::with(|cs| {
+            let state = state_mutex.borrow(cs).borrow();
+            if state.last_adc.seq != previous_seq {
+                // ADC sequence and FOC output are published in one critical
+                // section. Copy the matching output under the same guard.
+                Poll::Ready(state.last_foc)
+            } else {
+                Poll::Pending
+            }
+        })
+    })
+    .await
 }
 
 // ============================================================================
@@ -231,4 +239,53 @@ pub async fn calibrate_hall_default(
         read_hall_fn,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::foc::sensors::AdcSnapshot;
+    use core::{future::Future, pin::pin, task::Context};
+
+    fn publish(state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>, seq: u32, vd: f32) {
+        state::update_telemetry(
+            state_mutex,
+            AdcSnapshot::new(2048, 2048, 2048, 24_000, seq),
+            None,
+            FocOutput {
+                vd,
+                ..FocOutput::empty()
+            },
+        );
+    }
+
+    #[test]
+    fn repeated_polls_without_a_new_adc_cycle_remain_pending() {
+        let state = CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        publish(&state, 17, 0.1);
+        let mut future = pin!(wait_next_telemetry(&state));
+        let mut context = Context::from_waker(core::task::Waker::noop());
+        assert!(future.as_mut().poll(&mut context).is_pending());
+        assert!(future.as_mut().poll(&mut context).is_pending());
+        publish(&state, 18, 0.2);
+        let Poll::Ready(output) = future.as_mut().poll(&mut context) else {
+            panic!("new ADC cycle did not complete the wait");
+        };
+        assert_eq!(output.vd, 0.2);
+    }
+
+    #[test]
+    fn counter_wrap_returns_the_latest_matching_output() {
+        let state = CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        publish(&state, u32::MAX, 0.1);
+        let mut future = pin!(wait_next_telemetry(&state));
+        let mut context = Context::from_waker(core::task::Waker::noop());
+        assert!(future.as_mut().poll(&mut context).is_pending());
+        publish(&state, 0, 0.2);
+        publish(&state, 1, 0.3);
+        let Poll::Ready(output) = future.as_mut().poll(&mut context) else {
+            panic!("wrapped ADC counter did not complete the wait");
+        };
+        assert_eq!(output.vd, 0.3);
+    }
 }

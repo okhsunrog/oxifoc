@@ -288,7 +288,9 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     let i_high = params.current_max.max(0.5);
     let i_low = i_high * 0.2;
     let settle_cycles = 1000_u64; // 1s settle — ensure PI fully converges and dI/dt→0
-    let sample_count = 2000_u32; // Average over 2000 FOC cycles (~100ms at 20kHz)
+    // Fresh snapshots, not a buffered stream of consecutive ISR cycles: a slow
+    // detection task can skip cycles. At 20 kHz this takes at least ~100 ms.
+    let sample_count = 2000_u32;
     let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
 
     debug!(
@@ -313,7 +315,7 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     }
     T::after_millis(settle_cycles).await;
 
-    // Sample at low setpoint (~100 ms nominal at 20 kHz; 2 s deadline).
+    // Sample at low setpoint (at least ~100 ms at 20 kHz; 2 s deadline).
     // On timeout, command Stopped before bailing — the motor was left at the
     // setpoint and the normal ramp-down below never runs on this path.
     let (vd_low, id_low) = match sample_vd_id::<H, T>(hw, sample_count, 2000).await {
