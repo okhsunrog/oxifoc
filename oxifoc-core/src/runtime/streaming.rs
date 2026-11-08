@@ -47,6 +47,9 @@ pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
 // Serializes configuration with task-side broadcasts, without blocking the
 // FOC interrupt. A stop ACK must follow every previously accepted batch.
 static FAST_TELEM_GATE: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
+// Invalidates task-held samples as well as the ISR queue on stop/restart.
+// The task may miss an intermediate period=0 if a new session starts promptly.
+static FAST_TELEM_SESSION: AtomicU32 = AtomicU32::new(0);
 
 /// Set the FOC decimation period and return the applied period.
 ///
@@ -60,6 +63,7 @@ pub async fn set_fast_telemetry_period(period: u32) -> u32 {
             FAST_TELEM_PERIOD.load(Ordering::Acquire)
         } else {
             FAST_TELEM_PERIOD.store(period, Ordering::Release);
+            FAST_TELEM_SESSION.fetch_add(1, Ordering::Release);
             period
         }
     });
@@ -377,6 +381,7 @@ where
     NS: NetStackHandle + Clone,
 {
     let cons = FAST_TELEM_Q.framed_consumer();
+    let mut pending = PendingFastBatch::new();
 
     #[cfg(feature = "log")]
     log::info!("fast_telemetry_stream: waiting for host to enable streaming");
@@ -385,6 +390,7 @@ where
         let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
 
         if period == 0 {
+            pending.batch.data.clear();
             // Streaming disabled — check again in 10ms. The bbqueue holds
             // ~40 frames, so the enable→first-drain latency must stay well
             // under the time the queue takes to fill at the highest rate
@@ -408,9 +414,11 @@ where
         T::after_micros(interval_us).await;
 
         let _gate = FAST_TELEM_GATE.lock().await;
+        pending.enter_session(FAST_TELEM_SESSION.load(Ordering::Acquire));
         // The host can stop us while the timer is pending. Do not broadcast
         // residual samples after that stop has already been acknowledged.
         if FAST_TELEM_PERIOD.load(Ordering::Acquire) == 0 {
+            pending.batch.data.clear();
             continue;
         }
 
@@ -418,7 +426,7 @@ where
         // raw Pod frame bytes and the batch ships raw Pod bytes, so the copy
         // below is the whole per-sample "serialization".
         loop {
-            let mut batch = FastTelemetryBatch::new();
+            let batch = &mut pending.batch;
 
             while !batch.is_full() {
                 match cons.read() {
@@ -442,10 +450,11 @@ where
             let _result = stack
                 .stack()
                 .topics()
-                .broadcast::<FastTelemetryTopic>(&batch, None);
+                .broadcast::<FastTelemetryTopic>(batch, None);
 
             if _result.is_ok() {
                 fast_telem_stats::BCAST_OK.fetch_add(1, Ordering::Relaxed);
+                batch.data.clear();
             } else {
                 fast_telem_stats::BCAST_FAILS.fetch_add(1, Ordering::Relaxed);
             }
@@ -455,11 +464,78 @@ where
                 log::warn!("fast_telemetry broadcast failed: {_result:?}");
             }
 
+            if _result.is_err() {
+                // Retain every sample and release the task-side gate before
+                // waiting. USB TX gets executor time to drain its queue, and
+                // a telemetry stop can still acquire the gate immediately.
+                // enter_session discards these samples if stop/restart occurs.
+                break;
+            }
+
             // If we got fewer than BATCH, the queue is drained
             if !batch_full {
                 break;
             }
         }
+    }
+}
+
+struct PendingFastBatch {
+    session: u32,
+    batch: FastTelemetryBatch,
+}
+
+impl PendingFastBatch {
+    fn new() -> Self {
+        Self {
+            session: 0,
+            batch: FastTelemetryBatch::new(),
+        }
+    }
+
+    fn enter_session(&mut self, session: u32) {
+        if self.session != session {
+            self.batch.data.clear();
+            self.session = session;
+        }
+    }
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use super::*;
+
+    #[test]
+    fn pending_samples_survive_same_session_and_cannot_leak_after_restart() {
+        let mut pending = PendingFastBatch::new();
+        pending.enter_session(11);
+        let first = FastTelemetry {
+            seq: 100,
+            ..Default::default()
+        };
+        assert!(pending.batch.push(&first));
+        // A rejected broadcast leaves this pending batch intact. The next
+        // poll must retain it and can coalesce the following sample into it.
+        pending.enter_session(11);
+        assert!(pending.batch.push(&FastTelemetry {
+            seq: 101,
+            ..Default::default()
+        }));
+        let mut samples = pending.batch.samples();
+        assert_eq!(samples.next().unwrap().seq, 100);
+        assert_eq!(samples.next().unwrap().seq, 101);
+        assert!(samples.next().is_none());
+        drop(samples);
+        // Stop and restart can happen while the stream task is asleep, so it
+        // might never observe period=0. A session change must still discard
+        // every previously accepted pending sample before the next broadcast.
+        pending.enter_session(13);
+        assert!(pending.batch.is_empty());
+        assert!(pending.batch.push(&FastTelemetry {
+            seq: 900,
+            ..Default::default()
+        }));
+        assert_eq!(pending.batch.samples().next().unwrap().seq, 900);
     }
 }
 
