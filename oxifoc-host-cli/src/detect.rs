@@ -159,19 +159,16 @@ pub fn run_detect(
         println!("Detection started: {req:?}");
     }
 
-    // Raw-rate capture around the whole step by default (M=1: the CIC is the
-    // identity, so the HFI carrier / pulse edges survive — decimated rates
-    // null exactly the frequencies HFI lives at). `--record-hz` overrides
+    // Raw-rate capture around the whole step by default (M=1 preserves the HFI
+    // carrier and pulse edges; plain sample dropping can alias them).
+    // `--record-hz` overrides
     // for steps where a loss-free decimated capture beats a lossy raw one.
     let mut cap = match &record_out {
         Some(_) => {
-            let rate = record_hz.unwrap_or_else(|| {
-                record::latest_hw_info(runtime)
-                    .map(|h| h.foc_freq_hz)
-                    .unwrap_or(20_000)
-                    .min(u32::from(u16::MAX)) as u16
-            });
-            Some(record::Capture::start(runtime, rate)?)
+            let hw = record::latest_hw_info(runtime)
+                .context("hardware handshake unavailable for detection recording")?;
+            let rate = record_hz.unwrap_or_else(|| hw.foc_freq_hz.min(u32::from(u16::MAX)) as u16);
+            Some(record::Capture::start_with_hw(runtime, rate, hw)?)
         }
         None => None,
     };

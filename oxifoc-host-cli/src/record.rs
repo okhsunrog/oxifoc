@@ -109,10 +109,17 @@ pub struct Capture {
 impl Capture {
     /// Enable streaming, wait for the device ack, eat the enable transient.
     pub fn start(runtime: &HostRuntime, fast_hz: u16) -> Result<Self> {
+        let hw = latest_hw_info(runtime).context("hardware handshake unavailable for recording")?;
+        Self::start_with_hw(runtime, fast_hz, hw)
+    }
+
+    /// Keep the same handshake used by callers to select the requested rate.
+    /// The info receiver is a consuming queue, so it must not be drained twice.
+    pub fn start_with_hw(runtime: &HostRuntime, fast_hz: u16, hw: HardwareInfo) -> Result<Self> {
         if fast_hz == 0 {
             bail!("fast_hz must be nonzero for a capture");
         }
-        let hw = latest_hw_info(runtime);
+        let hw = Some(hw);
         // Build the enrichment context up front (config reads) — while the link
         // is quiet, before the high-rate stream starts competing for it.
         let enrich = build_enrich_ctx(&runtime.cmd_tx, hw.as_ref());

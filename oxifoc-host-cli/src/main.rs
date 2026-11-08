@@ -429,8 +429,8 @@ enum Command {
         #[arg(
             long,
             help = "Record raw fast telemetry during the step into a parquet \
-                    file (fast_hz = FOC frequency, M=1: decimated rates would \
-                    CIC-null the HFI carrier). Written on failure too. NOTE: \
+                    file (M=1 preserves HFI and pulse edges; decimation can \
+                    alias them). Written on failure too. NOTE: \
                     the virtual device runs detection in a private sim that \
                     this capture cannot see; meaningful on hardware."
         )]
@@ -440,7 +440,7 @@ enum Command {
             help = "Capture rate for --record (Hz); default: FOC frequency. \
                     On a loaded link a decimated rate (e.g. 10000) records \
                     loss-free where M=1 drops samples — fine for R/flux \
-                    steps, but decimation CIC-nulls the HFI carrier, so keep \
+                    steps, but sample dropping aliases the HFI carrier, so keep \
                     M=1 for HFI inductance analysis."
         )]
         record_hz: Option<u16>,
