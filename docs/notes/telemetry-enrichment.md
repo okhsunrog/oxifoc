@@ -6,6 +6,13 @@ units (amps, volts, id/iq) from the compact 18-byte raw `FastTelemetry`
 ([rtt-telemetry-throughput.md](rtt-telemetry-throughput.md)) using **one code
 path in `oxifoc-core`** shared by firmware and host, so the two can't desync.
 
+As of ICD v7 the fast frame is **34 bytes**, adding raw phase-terminal ADC
+counts and the PWM registers from before the controller update. Phase scaling
+and acquisition timing are advertised in the existing bootstrap extension.
+See [the bench acquisition contract](resistance-bench-plan.md) for current
+fields, provenance and the staged acceptance plan. The 18-byte examples below
+describe the original enrichment implementation.
+
 ## Goal & principle
 
 The raw frame ships ADC counts + fixed-point scalars; the host reconstructs the

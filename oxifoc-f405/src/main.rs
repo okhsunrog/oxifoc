@@ -111,7 +111,7 @@ async fn main(spawner: Spawner) {
     // Calibrate VREF+ before any host handshake can publish BoardCalib and
     // before the gate driver or PWM can be enabled. ADC triggers start later.
     let adc_handles = hardware::peripherals::init_adc(
-        p.ADC1, p.ADC2, p.ADC3, p.PC0, p.PA3, p.PC1, p.PC4, p.PC2, p.PC3,
+        p.ADC1, p.ADC2, p.ADC3, p.PC0, p.PA3, p.PC1, p.PC4, p.PC2, p.PC3, p.PA0, p.PA1, p.PA2,
     )
     .await;
 

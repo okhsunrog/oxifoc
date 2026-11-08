@@ -182,6 +182,8 @@ pub async fn fake_telemetry_gen() {
                 vq: (s & 0x1FF) as i16,
                 rpm: (s & 0x7FF) as i16,
                 seq: s,
+                vphase_adc: [u16::MAX; 3],
+                ..FastTelemetry::default()
             };
             push_fast_telemetry(&t);
         }

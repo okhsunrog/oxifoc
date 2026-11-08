@@ -574,6 +574,15 @@ pub enum TempSensorId {
     Other(u8),
 }
 
+/// Timer register snapshot for the ADC cycle, before the next control update.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PwmSnapshot {
+    pub ccr: [u16; 3],
+    pub arr: u16,
+    /// Bits 0..2: high-side enables; 3..5: low-side enables; 6: main enable.
+    pub enables: u16,
+}
+
 /// ADC sample snapshot for protocol/telemetry use
 ///
 /// Platform-agnostic struct that can report ADC data to the host.
@@ -590,10 +599,12 @@ pub struct AdcSnapshot {
     pub vbus_mv: u32,
     /// Phase terminal voltages (raw ADC counts), if the board has phase
     /// sensing (`BoardConfig::phase_sense`). `None` on boards without it —
-    /// the field is internal (never serialized into wire telemetry), so a
+    /// raw counts also feed the diagnostic wire telemetry, so a
     /// no-sensing board only carries one `None` discriminant in the cached
     /// `last_adc`. Converted to volts/αβ by `foc::phase_voltage`.
     pub vphase: Option<[u16; 3]>,
+    /// Timer registers read before updating the controller on this ADC cycle.
+    pub pwm: Option<PwmSnapshot>,
     /// Temperature readings: (sensor_id, value in 0.1°C)
     /// Using a fixed array to avoid heap allocation
     pub temps: [(TempSensorId, i16); 4],
@@ -611,6 +622,7 @@ impl Default for AdcSnapshot {
             ic: 0,
             vbus_mv: 0,
             vphase: None,
+            pwm: None,
             temps: [(TempSensorId::Fet, 0); 4],
             temp_count: 0,
             seq: 0,
@@ -627,6 +639,7 @@ impl AdcSnapshot {
             ic: 0,
             vbus_mv: 0,
             vphase: None,
+            pwm: None,
             temps: [(TempSensorId::Fet, 0); 4],
             temp_count: 0,
             seq: 0,
@@ -641,6 +654,7 @@ impl AdcSnapshot {
             ic,
             vbus_mv,
             vphase: None,
+            pwm: None,
             temps: [(TempSensorId::Fet, 0); 4],
             temp_count: 0,
             seq,
@@ -651,6 +665,11 @@ impl AdcSnapshot {
     /// sensing. Leave unset (`None`) on boards without it.
     pub fn with_phase_voltages(mut self, vphase: [u16; 3]) -> Self {
         self.vphase = Some(vphase);
+        self
+    }
+
+    pub fn with_pwm(mut self, pwm: PwmSnapshot) -> Self {
+        self.pwm = Some(pwm);
         self
     }
 

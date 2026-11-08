@@ -75,14 +75,23 @@ pub struct AdcHandles {
     pub adc3: InjectedAdc<'static, embassy_stm32::pac::adc::Adc, Blocking>,
 }
 
+/// Existing 15-cycle sample + 12-cycle 12-bit conversion at 21 MHz. Phase
+/// voltages are rank 3, so their sample aperture is two conversions after
+/// rank-1 currents. This nominal offset is acquisition metadata, not a
+/// measured filter/group delay.
+pub const CURRENT_TO_PHASE_SAMPLE_NS: u32 = (2 * 27 * 1_000_000_000u64 / 21_000_000) as u32;
+
 /// Initialize ADC1/ADC2/ADC3 with injected conversions triggered by TIM1_CC4
 ///
 /// # ADC Configuration
 ///
 /// All ADC sampling via TIM1-triggered injected conversions (no DMA).
-/// - ADC1 injected: Phase A current (PC0, ch10) + Board temp (PA3, ch3)
-/// - ADC2 injected: Phase B current (PC1, ch11) + Motor temp (PC4, ch14)
-/// - ADC3 injected: Phase C current (PC2, ch12) + VBUS (PC3, ch13)
+/// - ADC1: current A (PC0) + board temp (PA3) + phase voltage A (PA0)
+/// - ADC2: current B (PC1) + motor temp (PC4) + phase voltage B (PA1)
+/// - ADC3: current C (PC2) + VBUS (PC3) + phase voltage C (PA2)
+///
+/// Current/auxiliary ranks and their sample times are preserved. The extra
+/// rank delays JEOC/FOC execution by one conversion, not the current aperture.
 ///
 /// All triggered simultaneously by TIM1_CC4 rising edge.
 /// ADC3 generates JEOC interrupt (signals all ADCs done).
@@ -97,6 +106,9 @@ pub async fn init_adc(
     motor_temp_pin: Peri<'static, peripherals::PC4>,
     ic_pin: Peri<'static, peripherals::PC2>,
     vbus_pin: Peri<'static, peripherals::PC3>,
+    va_pin: Peri<'static, peripherals::PA0>,
+    vb_pin: Peri<'static, peripherals::PA1>,
+    vc_pin: Peri<'static, peripherals::PA2>,
 ) -> AdcHandles {
     let mut adc1 = Adc::new(adc1_peri);
 
@@ -144,6 +156,7 @@ pub async fn init_adc(
         [
             (ia_pin.degrade_adc(), SampleTime::Cycles15), // Phase A current (PC0, ch10)
             (board_temp_pin.degrade_adc(), SampleTime::Cycles15), // Board temp (PA3, ch3)
+            (va_pin.degrade_adc(), SampleTime::Cycles15), // Phase A voltage (PA0, ch0)
         ],
         InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_CH4, Exten::RisingEdge),
         Blocking,
@@ -155,6 +168,7 @@ pub async fn init_adc(
         [
             (ib_pin.degrade_adc(), SampleTime::Cycles15), // Phase B current (PC1, ch11)
             (motor_temp_pin.degrade_adc(), SampleTime::Cycles15), // Motor temp (PC4, ch14)
+            (vb_pin.degrade_adc(), SampleTime::Cycles15), // Phase B voltage (PA1, ch1)
         ],
         InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_CH4, Exten::RisingEdge),
         Blocking,
@@ -166,6 +180,7 @@ pub async fn init_adc(
         [
             (ic_pin.degrade_adc(), SampleTime::Cycles15), // Phase C current (PC2, ch12)
             (vbus_pin.degrade_adc(), SampleTime::Cycles15), // VBUS (PC3, ch13)
+            (vc_pin.degrade_adc(), SampleTime::Cycles15), // Phase C voltage (PA2, ch2)
         ],
         InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_CH4, Exten::RisingEdge),
         Blocking,

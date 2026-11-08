@@ -360,7 +360,7 @@ pub struct MotorStatus {
 /// `−(ia+ib)`) so a per-phase current-sense fault stays visible in the raw
 /// data. Frame/field rationale: docs/notes/rtt-telemetry-throughput.md §6.
 ///
-/// `#[repr(C)]`, 9×u16/i16 = **18 bytes**, align 2, no padding → `Pod` clean.
+/// `#[repr(C)]`, 17×u16/i16 = **34 bytes**, align 2, no padding → `Pod` clean.
 /// The in-memory layout IS the wire layout: batches ship the little-endian
 /// Pod bytes verbatim (see [`FastTelemetryBatch`]), so this struct doubles as
 /// the wire contract — reorder/resize fields only together with the host.
@@ -381,10 +381,11 @@ pub struct FastTelemetry {
     pub vbus: u16,
     /// Electrical angle, full-scale `u16` (0..2π). Needed host-side for Park.
     pub angle: u16,
-    /// D-axis applied voltage (PI output) in **2 mV** units (i16 → ±65 V).
+    /// D-axis commanded voltage (PI output, before PWM compensation) in
+    /// **2 mV** units (i16 → ±65 V).
     /// Not reconstructable from currents (depends on PI integrator state).
     pub vd: i16,
-    /// Q-axis applied voltage (PI output) in **2 mV** units.
+    /// Q-axis commanded voltage (PI output) in **2 mV** units.
     pub vq: i16,
     /// Mechanical speed in **2 RPM** units (i16 → ±65534 RPM). The ACTIVE
     /// angle source's velocity (hall / observer / HFI / startup ramp — see
@@ -396,19 +397,31 @@ pub struct FastTelemetry {
     /// every ~3.3 s; loss detection uses `wrapping_sub` (unambiguous for gaps
     /// < 1.6 s); host accumulates deltas for the time axis on longer captures.
     pub seq: u16,
+    /// Phase-terminal ADC counts for this cycle. `[u16::MAX; 3]` means absent.
+    /// Scale/timing are declared by [`HardwareInfo::phase_voltage_info`].
+    pub vphase_adc: [u16; 3],
+    /// Timer compare registers read BEFORE this cycle's controller update.
+    /// Includes previously programmed compensation and hardware duty clamping;
+    /// these are register values, not measured gate waveforms.
+    pub pwm_ccr: [u16; 3],
+    /// Timer auto-reload value; zero means no PWM snapshot was supplied.
+    pub pwm_arr: u16,
+    /// Snapshot output enables: bits 0..2 = high-side A/B/C, 3..5 = low-side
+    /// A/B/C, bit 6 = timer main output enable. Not inferred from duty values.
+    pub pwm_enables: u16,
 }
 
 /// Samples per fast-telemetry batch. Sized so the encoded batch statically
 /// fits the SMALLEST board interface MTU (f405 `MAX_PACKET_SIZE` = 512):
-/// 26 × 18 = 468 B payload + [`FAST_BATCH_WIRE_OVERHEAD`]. The previous 32
+/// 14 × 34 = 476 B payload + [`FAST_BATCH_WIRE_OVERHEAD`]. The previous 32
 /// (576 B) exceeded 512 and full batches silently failed to broadcast on the
 /// f405 (visible only as `BCAST_FAILS`). Every device crate pins the
 /// relationship with a compile-time assert next to its `MAX_PACKET_SIZE`.
 /// Batch size does not move throughput on the byte-rate-bound debug links
 /// (docs/notes/rtt-telemetry-throughput.md §4.7) — it only has to fit the MTU.
-pub const FAST_BATCH_SAMPLES: usize = 26;
+pub const FAST_BATCH_SAMPLES: usize = 14;
 
-/// Byte capacity of a fast-telemetry batch: samples × 18 B Pod frame.
+/// Byte capacity of a fast-telemetry batch: samples × 34 B Pod frame.
 pub const FAST_BATCH_BYTES: usize = FAST_BATCH_SAMPLES * size_of::<FastTelemetry>();
 
 /// Worst-case wire bytes around an encoded batch topic frame: ergot's
@@ -419,12 +432,12 @@ pub const FAST_BATCH_WIRE_OVERHEAD: usize = 32;
 /// Batch of fast telemetry samples for efficient network transmission.
 ///
 /// **Raw-Pod encoding**: `data` holds the concatenated little-endian
-/// [`FastTelemetry`] Pod bytes (18 B each), NOT a postcard element sequence.
+/// [`FastTelemetry`] Pod bytes (34 B each), NOT a postcard element sequence.
 /// postcard serializes `Vec<u8>` as varint(len) + verbatim bytes, so:
 /// - device-side encode is a memcpy (no per-field varint work in the hot
 ///   telemetry path — measured CPU relief on a core that also runs a 20 kHz
 ///   FOC ISR);
-/// - the wire size is a compile-time constant (18 B/sample regardless of
+/// - the wire size is a compile-time constant (34 B/sample regardless of
 ///   values), so an encoded batch can never straddle the MTU — varint frames
 ///   grew with motor activity and silently exceeded it (see the BATCH=64 bug,
 ///   commit e1f65b5);
@@ -433,7 +446,7 @@ pub const FAST_BATCH_WIRE_OVERHEAD: usize = 32;
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct FastTelemetryBatch {
-    /// `18 × n` raw frame bytes for `n` samples, `n ≤ FAST_BATCH_SAMPLES`.
+    /// `34 × n` raw frame bytes for `n` samples, `n ≤ FAST_BATCH_SAMPLES`.
     pub data: Vec<u8, FAST_BATCH_BYTES>,
 }
 
@@ -451,13 +464,13 @@ impl FastTelemetryBatch {
         self.data.is_empty()
     }
 
-    /// True when another 18 B frame no longer fits.
+    /// True when another 34 B frame no longer fits.
     pub fn is_full(&self) -> bool {
         self.data.len() + size_of::<FastTelemetry>() > FAST_BATCH_BYTES
     }
 
     /// Append one frame's raw Pod bytes. Returns `false` (batch unchanged) if
-    /// `frame` is not exactly one 18 B frame or the batch is full.
+    /// `frame` is not exactly one 34 B frame or the batch is full.
     pub fn push_bytes(&mut self, frame: &[u8]) -> bool {
         frame.len() == size_of::<FastTelemetry>() && self.data.extend_from_slice(frame).is_ok()
     }
@@ -560,10 +573,25 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 6;
+pub const ICD_PROTO_VERSION: u16 = 7;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
+
+/// Raw phase capture and its descriptor in the bootstrap extension bytes.
+pub const CAP_PHASE_VOLTAGE_CAPTURE: u32 = 1 << 1;
+/// Captured phase voltages have hardware RC filtering enabled.
+pub const CAP_PHASE_VOLTAGE_FILTERED: u32 = 1 << 2;
+
+/// Static acquisition metadata. The existing fixed-size bootstrap extension
+/// carries divider f32 LE in bytes 0..4 and current-to-voltage sample offset
+/// u32 LE in bytes 4..8. It is valid only with CAP_PHASE_VOLTAGE_CAPTURE.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhaseVoltageInfo {
+    pub divider_ratio: f32,
+    pub current_to_voltage_ns: u32,
+    pub filtered: bool,
+}
 
 /// Which phase-current channels are valid inputs to the Clarke transform.
 /// This is a hardware property, independent of calibration offsets and gains.
@@ -642,6 +670,45 @@ impl Default for HardwareInfo {
             max_current_a: 0.0,
             calib: BoardCalib::default(),
         }
+    }
+}
+
+impl HardwareInfo {
+    /// Describe phase acquisition without changing the frozen bootstrap schema.
+    pub fn set_phase_voltage_info(&mut self, info: PhaseVoltageInfo) {
+        self.reserved[..4].copy_from_slice(&info.divider_ratio.to_le_bytes());
+        self.reserved[4..].copy_from_slice(&info.current_to_voltage_ns.to_le_bytes());
+        self.capabilities |= CAP_PHASE_VOLTAGE_CAPTURE;
+        self.capabilities &= !CAP_PHASE_VOLTAGE_FILTERED;
+        if info.filtered {
+            self.capabilities |= CAP_PHASE_VOLTAGE_FILTERED;
+        }
+    }
+
+    /// Decode only explicitly advertised, physically meaningful phase scaling.
+    pub fn phase_voltage_info(&self) -> Option<PhaseVoltageInfo> {
+        if self.capabilities & CAP_PHASE_VOLTAGE_CAPTURE == 0 {
+            return None;
+        }
+        let divider_ratio = f32::from_le_bytes([
+            self.reserved[0],
+            self.reserved[1],
+            self.reserved[2],
+            self.reserved[3],
+        ]);
+        if !divider_ratio.is_finite() || divider_ratio <= 0.0 {
+            return None;
+        }
+        Some(PhaseVoltageInfo {
+            divider_ratio,
+            current_to_voltage_ns: u32::from_le_bytes([
+                self.reserved[4],
+                self.reserved[5],
+                self.reserved[6],
+                self.reserved[7],
+            ]),
+            filtered: self.capabilities & CAP_PHASE_VOLTAGE_FILTERED != 0,
+        })
     }
 }
 
@@ -1187,6 +1254,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn phase_descriptor_requires_capability_and_valid_scale() {
+        let mut hw = HardwareInfo::default();
+        assert_eq!(hw.phase_voltage_info(), None);
+        let info = PhaseVoltageInfo {
+            divider_ratio: 18.727272,
+            current_to_voltage_ns: 2571,
+            filtered: true,
+        };
+        hw.set_phase_voltage_info(info);
+        assert_eq!(hw.phase_voltage_info(), Some(info));
+        hw.set_phase_voltage_info(PhaseVoltageInfo {
+            filtered: false,
+            ..info
+        });
+        assert!(!hw.phase_voltage_info().unwrap().filtered);
+        for invalid in [f32::NAN, f32::INFINITY, -1.0, 0.0] {
+            hw.set_phase_voltage_info(PhaseVoltageInfo {
+                divider_ratio: invalid,
+                ..info
+            });
+            assert_eq!(hw.phase_voltage_info(), None);
+        }
+    }
+
     /// Raw-Pod batch: push → postcard wire → decode must reproduce the exact
     /// samples, and the wire size must be value-independent (the whole point
     /// of raw-Pod vs per-field varints).
@@ -1204,10 +1296,16 @@ mod tests {
                 vq: 32000,
                 rpm: -15000,
                 seq: 65_500 + i as u16, // wraps
+                vphase_adc: [10, 2048, 4095],
+                pwm_ccr: [100, 2100, 3900],
+                pwm_arr: 4200,
+                pwm_enables: 0x7f,
             })
             .collect();
 
         let mut batch = FastTelemetryBatch::new();
+        assert_eq!(size_of::<FastTelemetry>(), 34);
+        const { assert!(FAST_BATCH_BYTES + FAST_BATCH_WIRE_OVERHEAD <= 512) };
         for s in &samples {
             assert!(batch.push(s));
         }

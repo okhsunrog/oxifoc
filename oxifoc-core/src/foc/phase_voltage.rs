@@ -45,17 +45,30 @@ impl PhaseVoltageSense {
     /// Build from a board config, or `None` if the board has no phase sensing.
     pub fn from_board(board: &BoardConfig) -> Option<Self> {
         let ps = board.phase_sense?;
-        Some(Self {
-            divider_ratio: ps.divider_ratio,
-            adc_vref_mv: board.calib.adc_vref_mv,
-            adc_max_counts: board.calib.adc_max_counts,
-            has_filters: ps.has_filters,
+        Some(Self::from_calib(
+            &board.calib,
+            ps.divider_ratio,
+            ps.has_filters,
+        ))
+    }
+
+    /// Same converter for host enrichment, using device-advertised scaling.
+    pub fn from_calib(
+        calib: &crate::types::BoardCalib,
+        divider_ratio: f32,
+        has_filters: bool,
+    ) -> Self {
+        Self {
+            divider_ratio,
+            adc_vref_mv: calib.adc_vref_mv,
+            adc_max_counts: calib.adc_max_counts,
+            has_filters,
             // Resting terminal ≈ GND; the real per-channel bias comes from
             // undriven calibration. A uniform offset cancels in alpha_beta
             // anyway, so 0 is a safe pre-calibration default.
             offsets: [0.0; 3],
             calibrated: false,
-        })
+        }
     }
 
     /// Whether the board has RC phase filters (measurement valid while driving).

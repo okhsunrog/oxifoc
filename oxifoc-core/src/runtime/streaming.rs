@@ -299,6 +299,10 @@ pub fn build_fast_telemetry(
         vq: FastTelemetry::pack_volt(foc.vq),
         rpm: FastTelemetry::pack_rpm(mech_rpm),
         seq: seq as u16,
+        vphase_adc: adc.vphase.unwrap_or([u16::MAX; 3]),
+        pwm_ccr: adc.pwm.map_or([0; 3], |p| p.ccr),
+        pwm_arr: adc.pwm.map_or(0, |p| p.arr),
+        pwm_enables: adc.pwm.map_or(0, |p| p.enables),
     }
 }
 

@@ -136,7 +136,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
     let _ = sw.push_str(concat!("oxifoc-", env!("CARGO_PKG_VERSION")));
     let _ = mcu.push_str("STM32F405RG");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
-    let device_info = HardwareInfo {
+    let mut device_info = HardwareInfo {
         bootstrap_magic: oxifoc_core::types::ICD_BOOTSTRAP_MAGIC,
         proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
         capabilities: BOARD.current_sense_topology.capability_bits(),
@@ -149,6 +149,13 @@ pub async fn protocol_servers(stack: &'static Stack) {
         max_current_a: BOARD.max_phase_current_a,
         calib: measured_board().calib,
     };
+    if let Some(phase) = measured_board().phase_sense {
+        device_info.set_phase_voltage_info(oxifoc_core::types::PhaseVoltageInfo {
+            divider_ratio: phase.divider_ratio,
+            current_to_voltage_ns: crate::hardware::peripherals::CURRENT_TO_PHASE_SAMPLE_NS,
+            filtered: phase.has_filters,
+        });
+    }
 
     // This future IS the protocol-servers task (all endpoint servers
     // joined); embassy arena-allocates it statically, so its size is the

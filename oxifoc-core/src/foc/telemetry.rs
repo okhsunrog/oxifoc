@@ -1,6 +1,6 @@
 //! Fast-telemetry fixed-point codec + shared raw→engineering enrichment.
 //!
-//! The compact 18-byte [`FastTelemetry`] frame ships raw ADC counts and
+//! The compact 34-byte [`FastTelemetry`] frame ships raw ADC counts and
 //! fixed-point scalars; the host reconstructs engineering units with the **same
 //! `oxifoc-core` code** the firmware uses, so the two cannot desync:
 //!
@@ -132,6 +132,18 @@ impl FastTelemetry {
             libm::cosf(angle_rad),
         );
         let mech_rpm = self.mech_rpm();
+        let phase_voltage_v = ctx.phase_voltage.as_ref().and_then(|sense| {
+            self.vphase_adc
+                .iter()
+                .all(|&v| v <= ctx.adc_max_counts)
+                .then(|| sense.phase_voltages(self.vphase_adc))
+        });
+        let measured_ab = ctx
+            .phase_voltage
+            .as_ref()
+            .and_then(|sense| phase_voltage_v.map(|_| sense.alpha_beta(self.vphase_adc)));
+        let measured_dq = measured_ab
+            .map(|(alpha, beta)| park(alpha, beta, libm::sinf(angle_rad), libm::cosf(angle_rad)));
         RichSample {
             ia,
             ib,
@@ -148,6 +160,11 @@ impl FastTelemetry {
             mech_rpm,
             erpm: mech_rpm * f32::from(ctx.pole_pairs),
             seq: self.seq,
+            phase_voltage_v,
+            v_alpha_measured: measured_ab.map(|v| v.0),
+            v_beta_measured: measured_ab.map(|v| v.1),
+            vd_measured: measured_dq.map(|v| v.0),
+            vq_measured: measured_dq.map(|v| v.1),
         }
     }
 }
@@ -163,6 +180,8 @@ pub struct EnrichCtx {
     pub isense: ShuntCurrentSense,
     /// Motor pole pairs (0 = unknown; eRPM then reads 0).
     pub pole_pairs: u8,
+    pub phase_voltage: Option<super::phase_voltage::PhaseVoltageSense>,
+    adc_max_counts: u16,
 }
 
 impl EnrichCtx {
@@ -180,7 +199,24 @@ impl EnrichCtx {
             isense,
             pole_pairs,
             topology,
+            phase_voltage: None,
+            adc_max_counts: calib.adc_max_counts,
         }
+    }
+
+    pub fn with_phase_voltage(
+        mut self,
+        calib: &BoardCalib,
+        info: Option<crate::types::PhaseVoltageInfo>,
+    ) -> Self {
+        self.phase_voltage = info.map(|info| {
+            super::phase_voltage::PhaseVoltageSense::from_calib(
+                calib,
+                info.divider_ratio,
+                info.filtered,
+            )
+        });
+        self
     }
 }
 
@@ -202,7 +238,7 @@ pub struct RichSample {
     pub iq: f32,
     /// Bus voltage (V).
     pub vbus_v: f32,
-    /// Applied dq voltages (V).
+    /// Commanded dq voltages before PWM compensation (V).
     pub vd: f32,
     pub vq: f32,
     /// Electrical angle (rad).
@@ -212,6 +248,15 @@ pub struct RichSample {
     pub erpm: f32,
     /// Sequence number (FOC-cycle counter mod 65536).
     pub seq: u16,
+    /// ADC-derived terminal voltages relative to ground (V), if available.
+    pub phase_voltage_v: Option<[f32; 3]>,
+    /// Common-mode-rejected measured voltage projections (V).
+    /// The phase samples occur after the currents by the advertised acquisition
+    /// delay; no phase-delay correction or assumption of PWM filtering is made.
+    pub v_alpha_measured: Option<f32>,
+    pub v_beta_measured: Option<f32>,
+    pub vd_measured: Option<f32>,
+    pub vq_measured: Option<f32>,
 }
 
 #[cfg(test)]
@@ -231,6 +276,80 @@ mod tests {
     }
 
     // ---- scalar codec ----
+
+    #[test]
+    fn measured_phase_voltage_uses_declared_scale_and_rejects_missing_samples() {
+        let c = calib();
+        let ctx = EnrichCtx::new(
+            &c,
+            (2048.0, 2048.0, 2048.0),
+            7,
+            CurrentSenseTopology::ThreeShunt,
+        )
+        .with_phase_voltage(
+            &c,
+            Some(crate::types::PhaseVoltageInfo {
+                divider_ratio: 20.0, // Deliberately different from the Vbus divider.
+                current_to_voltage_ns: 2571,
+                filtered: true,
+            }),
+        );
+        let mut frame = FastTelemetry {
+            vphase_adc: [1600, 1000, 1000],
+            angle: 0,
+            vd: FastTelemetry::pack_volt(-0.2),
+            ..FastTelemetry::default()
+        };
+        let measured = frame.enrich(&ctx);
+        let scale = 3.3 * 20.0 / 4095.0;
+        assert!((measured.phase_voltage_v.unwrap()[0] - 1600.0 * scale).abs() < 1e-4);
+        assert!((measured.vd_measured.unwrap() - 400.0 * scale).abs() < 1e-4);
+        assert!(measured.vq_measured.unwrap().abs() < 1e-4);
+        assert!((measured.vd + 0.2).abs() < 0.003); // PI command remains separate.
+        frame.vphase_adc = [1800, 1200, 1200];
+        assert!(
+            (frame.enrich(&ctx).vd_measured.unwrap() - measured.vd_measured.unwrap()).abs() < 1e-4
+        );
+        frame.vphase_adc = [u16::MAX; 3];
+        let absent = frame.enrich(&ctx);
+        assert!(absent.phase_voltage_v.is_none());
+        assert!(absent.vd_measured.is_none());
+        let no_sense = EnrichCtx::new(
+            &c,
+            (2048.0, 2048.0, 2048.0),
+            7,
+            CurrentSenseTopology::ThreeShunt,
+        );
+        frame.vphase_adc = [1600, 1000, 1000];
+        assert!(frame.enrich(&no_sense).phase_voltage_v.is_none());
+    }
+
+    #[cfg(feature = "runtime")]
+    #[test]
+    fn capture_preserves_pre_update_pwm_and_raw_adc() {
+        use crate::foc::sensors::{AdcSnapshot, PwmSnapshot};
+        let adc = AdcSnapshot::new(2000, 2100, 2200, 24_000, 55)
+            .with_phase_voltages([800, 900, 1000])
+            .with_pwm(PwmSnapshot {
+                ccr: [1900, 2000, 2100],
+                arr: 4200,
+                enables: 0x7f,
+            });
+        let foc = crate::foc::controller::FocOutput {
+            duties: [2000, 2050, 2200], // The NEXT command, distinct from the ADC cycle.
+            ..Default::default()
+        };
+        let frame = crate::runtime::streaming::build_fast_telemetry(&adc, &foc, 7, 55);
+        assert_eq!(frame.vphase_adc, [800, 900, 1000]);
+        assert_eq!(frame.pwm_ccr, [1900, 2000, 2100]);
+        assert_ne!(frame.pwm_ccr, foc.duties);
+        assert_eq!(frame.pwm_arr, 4200);
+        assert_eq!(frame.pwm_enables, 0x7f);
+        let unavailable =
+            crate::runtime::streaming::build_fast_telemetry(&AdcSnapshot::empty(), &foc, 7, 56);
+        assert_eq!(unavailable.vphase_adc, [u16::MAX; 3]);
+        assert_eq!(unavailable.pwm_arr, 0);
+    }
 
     #[test]
     fn mk5_recorded_trip_frame_uses_declared_projection() {
@@ -456,6 +575,7 @@ mod tests {
             vq: FastTelemetry::pack_volt(1.0),
             rpm: FastTelemetry::pack_rpm(1000.0),
             seq: 42,
+            ..FastTelemetry::default()
         };
         let r = f.enrich(&ctx);
         assert!(r.ia.abs() < 1e-3 && r.ib.abs() < 1e-3 && r.ic.abs() < 1e-3);

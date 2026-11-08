@@ -3,9 +3,9 @@
 //! # ADC Configuration
 //!
 //! All ADC sampling via TIM1-triggered injected conversions (no DMA for currents).
-//! - ADC1 injected: Phase A current (PC0, ch10) + Board temp (PA3, ch3)
-//! - ADC2 injected: Phase B current (PC1, ch11) + Motor temp (PC4, ch14)
-//! - ADC3 injected: Phase C current (PC2, ch12) + VBUS (PC3, ch13)
+//! - ADC1: current A (PC0) + board temp (PA3) + voltage A (PA0)
+//! - ADC2: current B (PC1) + motor temp (PC4) + voltage B (PA1)
+//! - ADC3: current C (PC2) + VBUS (PC3) + voltage C (PA2)
 //!
 //! Triggered by TIM1_CH4 compare event (at PWM center).
 
@@ -22,7 +22,7 @@ use embassy_time::{Duration, Timer};
 use oxifoc_core::foc::controller::FocController;
 use oxifoc_core::foc::current_offset::CurrentOffsetRequest;
 use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
-use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, TempSensorId};
+use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, PwmSnapshot, TempSensorId};
 use oxifoc_core::foc::trig::FastSinCos;
 use oxifoc_core::foc::velocity::VelocityLoopConfig;
 use oxifoc_core::motor::FocDriver;
@@ -369,13 +369,13 @@ fn ADC() {
     let convert_temp = *SEQ & 127 == 0;
 
     // Read ADC1 injected data (phase A current + board temp)
-    let (ia_raw, board_temp_raw) = ADC1_INJECTED.lock(|cell| {
+    let (ia_raw, board_temp_raw, va_raw) = ADC1_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
-            let mut samples = [0; 2];
+            let mut samples = [0; 3];
             injected.read_latest(&mut samples);
-            (samples[0], samples[1])
+            (samples[0], samples[1], samples[2])
         } else {
-            (0, 0)
+            (0, 0, 0)
         }
     });
     IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
@@ -390,13 +390,13 @@ fn ADC() {
     };
 
     // Read ADC2 injected data (phase B current + motor temp)
-    let (ib_raw, motor_temp_raw) = ADC2_INJECTED.lock(|cell| {
+    let (ib_raw, motor_temp_raw, vb_raw) = ADC2_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
-            let mut samples = [0; 2];
+            let mut samples = [0; 3];
             injected.read_latest(&mut samples);
-            (samples[0], samples[1])
+            (samples[0], samples[1], samples[2])
         } else {
-            (0, 0)
+            (0, 0, 0)
         }
     });
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
@@ -412,13 +412,13 @@ fn ADC() {
     };
 
     // Read ADC3 injected data (phase C current + VBUS)
-    let (ic_raw, vbus_raw) = ADC3_INJECTED.lock(|cell| {
+    let (ic_raw, vbus_raw, vc_raw) = ADC3_INJECTED.lock(|cell| {
         if let Some(injected) = cell.borrow_mut().as_mut() {
-            let mut samples = [0; 2];
+            let mut samples = [0; 3];
             injected.read_latest(&mut samples);
-            (samples[0], samples[1])
+            (samples[0], samples[1], samples[2])
         } else {
-            (0, 0)
+            (0, 0, 0)
         }
     });
     IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
@@ -442,7 +442,23 @@ fn ADC() {
 
     // Build ADC snapshot
     *SEQ = SEQ.wrapping_add(1);
+    // Read the compare/preload registers BEFORE run_foc_cycle can program
+    // the next vector. Do not pair ADC measurements with that next command.
+    let tim = embassy_stm32::pac::TIM1;
+    let ccer = tim.ccer().read();
+    let mut enables = u16::from(tim.bdtr().read().moe()) << 6;
+    for phase in 0..3 {
+        enables |= u16::from(ccer.cce(phase)) << phase;
+        enables |= u16::from(ccer.ccne(phase)) << (phase + 3);
+    }
+    let pwm_snapshot = PwmSnapshot {
+        ccr: core::array::from_fn(|i| tim.ccr(i).read().ccr()),
+        arr: tim.arr().read().arr(),
+        enables,
+    };
     let adc_snapshot = AdcSnapshot::new(ia_raw, ib_raw, ic_raw, vbus_mv, *SEQ)
+        .with_phase_voltages([va_raw, vb_raw, vc_raw])
+        .with_pwm(pwm_snapshot)
         .with_temp(TempSensorId::Fet, board_temp_c_x10)
         .with_temp(TempSensorId::Motor, motor_temp_c_x10);
 

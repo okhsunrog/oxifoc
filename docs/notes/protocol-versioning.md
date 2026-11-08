@@ -14,6 +14,12 @@ schema-derived ergot key remains reachable after later semantic ICD changes.
 Optional future behavior consumes a capability bit or reserved byte; it must
 not append fields to this response.
 
+ICD v7 extends the raw-Pod fast frame from 18 to 34 bytes (phase ADC and
+pre-update PWM registers). Its interpretation requires the exact v7 handshake;
+the element layout is hidden inside the batch's byte vector, so schema hashes
+alone cannot catch this change. Phase acquisition uses capability bits 1/2 and
+the existing eight reserved bytes; see [the acquisition contract](resistance-bench-plan.md).
+
 The host validates, in order:
 
 1. bootstrap magic;

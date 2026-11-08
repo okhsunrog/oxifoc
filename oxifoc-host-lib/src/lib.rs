@@ -403,9 +403,10 @@ pub fn build_enrich_ctx(
             warn!("enrich: MotorParams group unavailable — pole_pairs=0, erpm column will be 0");
             0
         });
-    Some(oxifoc_core::foc::telemetry::EnrichCtx::new(
-        &calib, offsets, pole_pairs, topology,
-    ))
+    Some(
+        oxifoc_core::foc::telemetry::EnrichCtx::new(&calib, offsets, pole_pairs, topology)
+            .with_phase_voltage(&calib, hw.phase_voltage_info()),
+    )
 }
 
 impl Drop for HostRuntime {

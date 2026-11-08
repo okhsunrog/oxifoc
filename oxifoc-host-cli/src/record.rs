@@ -49,6 +49,21 @@ const SCHEMA: &str = "message oxifoc_telemetry {
     required double mech_rpm;
     required double erpm;
     required double i_sum_a;
+    required int32 va_adc;
+    required int32 vb_adc;
+    required int32 vc_adc;
+    required int32 pwm_a_ccr;
+    required int32 pwm_b_ccr;
+    required int32 pwm_c_ccr;
+    required int32 pwm_arr;
+    required int32 pwm_enables;
+    required double va_v;
+    required double vb_v;
+    required double vc_v;
+    required double v_alpha_measured_v;
+    required double v_beta_measured_v;
+    required double vd_measured_v;
+    required double vq_measured_v;
 }";
 
 #[derive(serde::Serialize)]
@@ -314,7 +329,15 @@ fn write_parquet(
              but non-NaN — cross-check the dc-offsets group in oxifoc.config \
              below (missing there = the fallback was used). i_sum_a is the \
              unprojected sum of three measured currents; NaN for TwoShunt \
-             or unavailable enrichment."
+             or unavailable enrichment. va_adc/vb_adc/vc_adc are raw phase-terminal \
+             counts (65535 = absent); phase scaling and nominal acquisition offset \
+             are in oxifoc.phase_voltage_info. Measured voltage columns are not \
+             delay-corrected or guaranteed PWM-averaged on unfiltered boards. \
+             pwm_* are timer registers sampled BEFORE the controller update; \
+             ARR=0 means unavailable. pwm_enables bits 0..2 are high-side A/B/C, \
+             3..5 low-side A/B/C, bit 6 main enable. CCR may be a preload register; \
+             it is not a gate-waveform measurement. vd_v/vq_v are PI commands \
+             before compensation, not ADC-measured applied voltages."
                 .to_string(),
         ),
         kv("oxifoc.config", config_snapshot.to_string()),
@@ -325,6 +348,11 @@ fn write_parquet(
         meta.push(kv(k, v.clone()));
     }
     if let Some(h) = hw {
+        meta.push(kv("oxifoc.board_calib", serde_json::to_string(&h.calib)?));
+        meta.push(kv(
+            "oxifoc.phase_voltage_info",
+            serde_json::to_string(&h.phase_voltage_info())?,
+        ));
         meta.push(kv("oxifoc.protocol_version", h.proto_version.to_string()));
         meta.push(kv("oxifoc.capabilities", h.capabilities.to_string()));
         meta.push(kv(
@@ -404,6 +432,34 @@ fn write_parquet(
     let mech_rpm = eng(|r| r.mech_rpm);
     let erpm = eng(|r| r.erpm);
     let i_sum_a = eng(|r| r.i_sum.unwrap_or(f32::NAN));
+    let phase_v: [Vec<f64>; 3] = core::array::from_fn(|i| {
+        rich.iter()
+            .map(|r| {
+                r.as_ref()
+                    .and_then(|r| r.phase_voltage_v)
+                    .map_or(f64::NAN, |v| f64::from(v[i]))
+            })
+            .collect()
+    });
+    let measured_abd: [Vec<f64>; 4] = [
+        eng(|r| r.v_alpha_measured.unwrap_or(f32::NAN)),
+        eng(|r| r.v_beta_measured.unwrap_or(f32::NAN)),
+        eng(|r| r.vd_measured.unwrap_or(f32::NAN)),
+        eng(|r| r.vq_measured.unwrap_or(f32::NAN)),
+    ];
+    let raw_capture: [Vec<i32>; 8] = core::array::from_fn(|i| {
+        samples
+            .iter()
+            .map(|s| {
+                i32::from(match i {
+                    0..=2 => s.vphase_adc[i],
+                    3..=5 => s.pwm_ccr[i - 3],
+                    6 => s.pwm_arr,
+                    _ => s.pwm_enables,
+                })
+            })
+            .collect()
+    });
 
     let doubles: [&[f64]; 12] = [
         &ia_a, &ib_a, &ic_a, &id_a, &iq_a, &vbus_v, &vd_v, &vq_v, &angle_rad, &mech_rpm, &erpm,
@@ -433,6 +489,18 @@ fn write_parquet(
                 col.typed::<DoubleType>()
                     .write_batch(doubles[col_idx - 5], None, None)?;
             }
+            17..=24 => {
+                col.typed::<Int32Type>()
+                    .write_batch(&raw_capture[col_idx - 17], None, None)?;
+            }
+            25..=27 => {
+                col.typed::<DoubleType>()
+                    .write_batch(&phase_v[col_idx - 25], None, None)?;
+            }
+            28..=31 => {
+                col.typed::<DoubleType>()
+                    .write_batch(&measured_abd[col_idx - 28], None, None)?;
+            }
             _ => bail!("schema/column mismatch"),
         }
         col.close()?;
@@ -454,7 +522,7 @@ mod tests {
     #[test]
     fn parquet_records_projection_and_unprojected_current_residual() {
         use oxifoc_core::types::{BoardCalib, CurrentSenseTopology};
-        let hw = HardwareInfo {
+        let mut hw = HardwareInfo {
             capabilities: CurrentSenseTopology::ThreeShunt.capability_bits(),
             foc_freq_hz: 20_000,
             calib: BoardCalib {
@@ -467,16 +535,26 @@ mod tests {
             },
             ..Default::default()
         };
+        hw.set_phase_voltage_info(oxifoc_core::types::PhaseVoltageInfo {
+            divider_ratio: 20.0,
+            current_to_voltage_ns: 2571,
+            filtered: true,
+        });
         let ctx = EnrichCtx::new(
             &hw.calib,
             (500.0, 500.0, 500.0),
             0,
             CurrentSenseTopology::ThreeShunt,
-        );
+        )
+        .with_phase_voltage(&hw.calib, hw.phase_voltage_info());
         let frame = FastTelemetry {
             ia: 510,
             ib: 501,
             ic: 501,
+            vphase_adc: [600, 300, 300],
+            pwm_ccr: [1000, 2000, 3000],
+            pwm_arr: 4200,
+            pwm_enables: 0x7f,
             ..Default::default()
         };
         let nonce = SystemTime::now()
@@ -517,6 +595,11 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(value("oxifoc.current_sense_topology"), "ThreeShunt");
+        let phase_info: serde_json::Value =
+            serde_json::from_str(value("oxifoc.phase_voltage_info")).unwrap();
+        assert_eq!(phase_info["current_to_voltage_ns"], 2571);
+        assert_eq!(phase_info["divider_ratio"], 20.0);
+        assert!(value("oxifoc.board_calib").contains("adc_vref_mv"));
         assert_eq!(
             value("oxifoc.protocol_version"),
             hw.proto_version.to_string()
@@ -525,6 +608,12 @@ mod tests {
         assert!((row.get_double(8).unwrap() - 3.0).abs() < 1e-5); // Id
         assert_eq!(row.get_double(9).unwrap(), 0.0); // Iq
         assert!((row.get_double(16).unwrap() - 6.0).abs() < 1e-5); // Raw sum
+        assert_eq!(row.get_int(17).unwrap(), 600); // Phase ADC, no scaling.
+        assert_eq!(row.get_int(20).unwrap(), 1000); // Pre-update CCR A.
+        assert_eq!(row.get_int(23).unwrap(), 4200); // ARR.
+        assert_eq!(row.get_int(24).unwrap(), 0x7f); // Output enables.
+        assert!((row.get_double(25).unwrap() - 12.0).abs() < 1e-5); // Phase A volts.
+        assert!((row.get_double(30).unwrap() - 4.0).abs() < 1e-5); // Measured Vd.
         drop(reader);
         std::fs::remove_file(path).unwrap();
     }
