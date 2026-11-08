@@ -517,6 +517,8 @@ fn ADC() {
             #[cfg(feature = "bench-executor-trace")]
             if !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped) {
                 crate::diagnostics::trace::trigger_active();
+            } else {
+                crate::diagnostics::trace::trigger_stopped();
             }
             output
         })

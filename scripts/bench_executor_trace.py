@@ -17,13 +17,18 @@ p.add_argument('action', choices=['arm','read'])
 p.add_argument('--symbols', required=True)
 p.add_argument('--out', help='Output binary path for read')
 p.add_argument('--on-active', action='store_true', help='Arm for the next active FOC transition')
+p.add_argument('--task-progress', action='store_true', help='Count task progress from active FOC until Stop; export to OUT.tasks.bin')
 p.add_argument('--active-delay-ms', type=float, default=0, help='Delay from active FOC to trace window')
 p.add_argument('--timer-hz', type=int, required=True, help='Actual declared TIM5 input clock, PSC=0')
 p.add_argument('--probe', default='0483:3754:002300203234511537333934')
 a = p.parse_args()
+if a.timer_hz <= 0 or a.active_delay_ms < 0:
+    p.error('timer clock must be positive and delay nonnegative')
+if a.action == 'arm' and a.task_progress and not a.on_active:
+    p.error('--task-progress requires --on-active; arm while Stopped')
 symbols = {}
 for line in Path(a.symbols).read_text().splitlines():
-    match = re.match(r'([0-9a-f]+) ([0-9a-f]+) [Bb] (BENCH_TRACE_\w+)$',line)
+    match = re.match(r'([0-9a-f]+) ([0-9a-f]+) [Bb] (BENCH_\w+)$',line)
     if match:
         addr, size, name = match.groups()
         symbols[name] = (int(addr,16),int(size,16))
@@ -32,8 +37,8 @@ base = ['probe-rs','--chip','STM32F405RGTx','--probe',a.probe]
 def invoke(command, *args):
     return subprocess.check_output([base[0],command,*base[1:],*map(str,args)],text=True)
 if a.action == 'arm':
-    if a.timer_hz <= 0 or a.active_delay_ms < 0:
-        p.error('timer clock must be positive and delay nonnegative')
+    if a.task_progress:
+        invoke('write','b32',hex(symbols['BENCH_TASK_STATS_CONTROL'][0]),5)
     invoke('write','b32',hex(symbols['BENCH_TRACE_ACTIVE_DELAY'][0]),round(a.active_delay_ms*a.timer_hz/1000))
     invoke('write','b32',hex(control),5 if a.on_active else 1)
     if not a.on_active:
@@ -60,3 +65,21 @@ else:
         'reservations':count,
         'state':0,'scope':'finite instrumented window; poll time includes IRQ preemption',
     },indent=2)+'\n')
+    if a.task_progress:
+        def scalar(name):
+            return int(invoke('read','b32',hex(symbols[name][0]),1).split()[-1],16)
+        if scalar('BENCH_TASK_STATS_CONTROL') != 3:
+            raise RuntimeError('task progress is not frozen; finish the active profile with Stop')
+        if scalar('BENCH_TASK_STATS_OVERFLOW'):
+            raise RuntimeError('task progress registry overflowed; results incomplete')
+        progress_out=a.out+'.tasks.bin'
+        addr,size=symbols['BENCH_TASK_STATS']
+        invoke('read','b32',hex(addr),size//4,'--output',progress_out,'--format','binary')
+        progress_data=Path(progress_out).read_bytes()
+        Path(progress_out+'.json').write_text(json.dumps({
+            'symbols':str(Path(a.symbols).resolve()),'timer_hz':a.timer_hz,
+            'start_tick':scalar('BENCH_TASK_STATS_START'),'end_tick':scalar('BENCH_TASK_STATS_END'),
+            'fields':['id','polls','readies','first_poll_tick','last_poll_tick','last_ready_tick','max_poll_gap'],
+            'sha256':hashlib.sha256(progress_data).hexdigest(),
+            'scope':'Active FOC to first Stop; boundary-spanning hooks may be excluded. Poll gaps include sleep and are not ready-to-poll latency.',
+        },indent=2)+'\n')

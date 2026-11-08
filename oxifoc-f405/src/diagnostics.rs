@@ -41,12 +41,13 @@ pub async fn uart_clock_task(
 pub mod trace {
     use core::sync::atomic::{AtomicU32, Ordering};
 
-    // 36 KiB. Atomic fields allow nested IRQ writers without masking the ADC.
+    // 33 KiB of events + 1 KiB of whole-profile task statistics. Atomic fields
+    // allow nested IRQ writers without masking the ADC.
     // SWD writes CONTROL=1 to request a finite capture after 100 ms. This
     // excludes attach/detach halts from its window. 2 means recording,
     // 3 means waiting, 4 means initializing, 0 means frozen. Read after frozen and
     // outstanding IRQs have returned. Reaching capacity is normal, not a wrap.
-    const CAPACITY: usize = 3072;
+    const CAPACITY: usize = 2816;
     #[repr(C)]
     pub struct Event {
         timer_ticks: AtomicU32,
@@ -74,9 +75,124 @@ pub mod trace {
     #[unsafe(no_mangle)]
     pub static BENCH_TRACE_EVENTS: [Event; CAPACITY] = [const { Event::new() }; CAPACITY];
 
+    // Separate from the finite timeline: count task progress throughout
+    // an active profile, including low-rate background tasks that
+    // need not appear in a 30 ms trace window. Freeze on the first Stop.
+    // CONTROL: 0 disabled, 5 arm on active, 4 resetting, 2 recording, 3 frozen.
+    #[unsafe(no_mangle)]
+    pub static BENCH_TASK_STATS_CONTROL: AtomicU32 = AtomicU32::new(0);
+    #[unsafe(no_mangle)]
+    pub static BENCH_TASK_STATS_START: AtomicU32 = AtomicU32::new(0);
+    #[unsafe(no_mangle)]
+    pub static BENCH_TASK_STATS_END: AtomicU32 = AtomicU32::new(0);
+    #[repr(C)]
+    pub struct TaskStats {
+        id: AtomicU32,
+        polls: AtomicU32,
+        readies: AtomicU32,
+        first_poll_tick: AtomicU32,
+        last_poll_tick: AtomicU32,
+        last_ready_tick: AtomicU32,
+        max_poll_gap: AtomicU32,
+    }
+    impl TaskStats {
+        const fn new() -> Self {
+            Self {
+                id: AtomicU32::new(0),
+                polls: AtomicU32::new(0),
+                readies: AtomicU32::new(0),
+                first_poll_tick: AtomicU32::new(0),
+                last_poll_tick: AtomicU32::new(0),
+                last_ready_tick: AtomicU32::new(0),
+                max_poll_gap: AtomicU32::new(0),
+            }
+        }
+        fn reset(&self) {
+            self.polls.store(0, Ordering::Relaxed);
+            self.readies.store(0, Ordering::Relaxed);
+            self.first_poll_tick.store(0, Ordering::Relaxed);
+            self.last_poll_tick.store(0, Ordering::Relaxed);
+            self.last_ready_tick.store(0, Ordering::Relaxed);
+            self.max_poll_gap.store(0, Ordering::Relaxed);
+        }
+    }
+    #[unsafe(no_mangle)]
+    pub static BENCH_TASK_STATS: [TaskStats; 32] = [const { TaskStats::new() }; 32];
+    #[unsafe(no_mangle)]
+    pub static BENCH_TASK_STATS_OVERFLOW: AtomicU32 = AtomicU32::new(0);
+
+    fn register_task(task: u32) {
+        for slot in &BENCH_TASK_STATS {
+            if slot.id.load(Ordering::Relaxed) == task
+                || slot
+                    .id
+                    .compare_exchange(0, task, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                return;
+            }
+        }
+        BENCH_TASK_STATS_OVERFLOW.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn task_event(task: u32, kind: u32) {
+        if BENCH_TASK_STATS_CONTROL.load(Ordering::Relaxed) != 2 {
+            return;
+        }
+        let Some(slot) = BENCH_TASK_STATS
+            .iter()
+            .find(|s| s.id.load(Ordering::Relaxed) == task)
+        else {
+            return;
+        };
+        let now = embassy_stm32::pac::TIM5.cnt().read();
+        // A Stop IRQ can preempt this hook. Discard a hook spanning that
+        // boundary, instead of timestamping it after the frozen interval.
+        if BENCH_TASK_STATS_CONTROL.load(Ordering::Relaxed) != 2 {
+            return;
+        }
+        match kind {
+            6 => {
+                slot.last_ready_tick.store(now, Ordering::Relaxed);
+                slot.readies.fetch_add(1, Ordering::Relaxed);
+            }
+            4 => {
+                // Only exec-begin writes poll timestamps for this task. Ready
+                // hooks may preempt it but update separate fields; no extra
+                // critical section or interrupt masking is introduced here.
+                let previous = slot.last_poll_tick.swap(now, Ordering::Relaxed);
+                if slot.polls.fetch_add(1, Ordering::Relaxed) == 0 {
+                    slot.first_poll_tick.store(now, Ordering::Relaxed);
+                } else {
+                    slot.max_poll_gap
+                        .fetch_max(now.wrapping_sub(previous), Ordering::Relaxed);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn trigger_stopped() {
+        if BENCH_TASK_STATS_CONTROL.load(Ordering::Relaxed) == 2 {
+            BENCH_TASK_STATS_END.store(embassy_stm32::pac::TIM5.cnt().read(), Ordering::Relaxed);
+            BENCH_TASK_STATS_CONTROL.store(3, Ordering::Relaxed);
+        }
+    }
+
     // CONTROL=5 waits for active FOC. SWD can finish long before the workload
     // starts, avoiding debug halts in the experiment's active interval.
     pub fn trigger_active() {
+        if BENCH_TASK_STATS_CONTROL
+            .compare_exchange(5, 4, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            // Called in ADC IRQ. Other task hooks cannot run during reset.
+            for slot in &BENCH_TASK_STATS {
+                slot.reset();
+            }
+            BENCH_TASK_STATS_START.store(embassy_stm32::pac::TIM5.cnt().read(), Ordering::Relaxed);
+            BENCH_TASK_STATS_CONTROL.store(2, Ordering::Relaxed);
+        }
         if BENCH_TRACE_CONTROL
             .compare_exchange(5, 4, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
@@ -139,6 +255,7 @@ pub mod trace {
     }
     #[unsafe(no_mangle)]
     fn _embassy_trace_task_new(_executor: u32, task: u32) {
+        register_task(task);
         record(2, task);
     }
     #[unsafe(no_mangle)]
@@ -147,6 +264,7 @@ pub mod trace {
     }
     #[unsafe(no_mangle)]
     fn _embassy_trace_task_exec_begin(_executor: u32, task: u32) {
+        task_event(task, 4);
         record(4, task);
     }
     #[unsafe(no_mangle)]
@@ -157,6 +275,7 @@ pub mod trace {
     fn _embassy_trace_task_ready_begin(_executor: u32, task: u32) {
         #[cfg(feature = "bench-scheduler-deadline")]
         super::deadline::ready(task);
+        task_event(task, 6);
         record(6, task);
     }
     #[unsafe(no_mangle)]
