@@ -34,6 +34,13 @@ of the timeline, including errors. Before anything is sent the timeline is
 checked against the device's stored `max_iq_a` (`--force` skips the check;
 the device clamps regardless).
 
+`openloop` can also carry `"pi_gains": [0.01, 10.0]` to apply a runtime PI
+override, using the existing device control-mode field. Omitting it retains
+the current gains. The override is recorded in maneuver metadata and does not
+write persistent configuration; it remains active until another override or
+controller reconfiguration changes it. This lets stationary-current pilots
+use the same conservative gains as detection without modifying flash config.
+
 ## Analysis
 
 The parquet metadata embeds the maneuver itself (`oxifoc.maneuver`) and an

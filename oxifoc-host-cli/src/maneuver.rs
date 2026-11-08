@@ -102,6 +102,10 @@ pub enum Cmd {
         velocity: f32,
         #[serde(default)]
         angle: f32,
+        /// Runtime PI override recorded with the experiment; no flash write.
+        /// None retains the current gains, as on the device control mode.
+        #[serde(default)]
+        pi_gains: Option<(f32, f32)>,
     },
     Voltage {
         #[serde(default)]
@@ -128,11 +132,12 @@ impl Cmd {
                 current,
                 velocity,
                 angle,
+                pi_gains,
             } => ControlMode::OpenLoop {
                 angle_rad: angle,
                 current,
                 velocity_rad_s: velocity,
-                pi_gains: None,
+                pi_gains,
             },
             Self::Voltage { vd, vq, angle } => ControlMode::DirectVoltage {
                 vd,
@@ -356,4 +361,37 @@ pub fn summary_json(s: &ManeuverSummary) -> Value {
         "terminal_ok": s.terminal_ok,
         "record": s.record,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openloop_pi_override_is_optional_and_preserved_in_the_device_command() {
+        let old: Cmd = serde_json::from_str(r#"{"openloop":{"current":0.6}}"#).unwrap();
+        assert!(matches!(
+            old.to_mode(),
+            ControlMode::OpenLoop { pi_gains: None, .. }
+        ));
+        let explicit: Cmd = serde_json::from_str(
+            r#"{"openloop":{"current":0.6,"angle":0.0,"pi_gains":[0.01,10.0]}}"#,
+        )
+        .unwrap();
+        let ControlMode::OpenLoop {
+            current, pi_gains, ..
+        } = explicit.to_mode()
+        else {
+            panic!("wrong control mode");
+        };
+        assert_eq!(current, 0.6);
+        assert_eq!(pi_gains, Some((0.01, 10.0)));
+        let invalid = Cmd::Openloop {
+            current: 0.6,
+            velocity: 0.0,
+            angle: 0.0,
+            pi_gains: Some((f32::NAN, 10.0)),
+        };
+        assert!(!invalid.to_mode().is_finite());
+    }
 }

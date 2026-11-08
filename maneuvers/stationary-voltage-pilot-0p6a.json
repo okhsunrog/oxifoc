@@ -1,0 +1,225 @@
+{
+  "name": "stationary-voltage-pilot-0p6a",
+  "description": "Fixed alpha-axis current pilot at 20 kHz PWM: 200 ms ramp to 0.6 A, hold, ramp down, and stop. Runtime detection PI gains Kp=0.01 Ki=10; no parameter persistence. Rotor can move during alignment.",
+  "capture": {
+    "fast_hz": 20000,
+    "tail_s": 0.5
+  },
+  "terminal": "stop",
+  "timeline": [
+    {
+      "t": 0.5,
+      "cmd": {
+        "openloop": {
+          "current": 0.0,
+          "velocity": 0.0,
+          "angle": 0.0,
+          "pi_gains": [
+            0.01,
+            10.0
+          ]
+        }
+      }
+    },
+    {
+      "t": 0.52,
+      "cmd": {
+        "openloop": {
+          "current": 0.06,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 0.54,
+      "cmd": {
+        "openloop": {
+          "current": 0.12,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 0.56,
+      "cmd": {
+        "openloop": {
+          "current": 0.18,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 0.58,
+      "cmd": {
+        "openloop": {
+          "current": 0.24,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 0.6,
+      "cmd": {
+        "openloop": {
+          "current": 0.3,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 0.62,
+      "cmd": {
+        "openloop": {
+          "current": 0.36,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 0.64,
+      "cmd": {
+        "openloop": {
+          "current": 0.42,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 0.66,
+      "cmd": {
+        "openloop": {
+          "current": 0.48,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 0.68,
+      "cmd": {
+        "openloop": {
+          "current": 0.54,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 0.7,
+      "cmd": {
+        "openloop": {
+          "current": 0.6,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.52,
+      "cmd": {
+        "openloop": {
+          "current": 0.54,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.54,
+      "cmd": {
+        "openloop": {
+          "current": 0.48,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.56,
+      "cmd": {
+        "openloop": {
+          "current": 0.42,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.58,
+      "cmd": {
+        "openloop": {
+          "current": 0.36,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.6,
+      "cmd": {
+        "openloop": {
+          "current": 0.3,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.62,
+      "cmd": {
+        "openloop": {
+          "current": 0.24,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.64,
+      "cmd": {
+        "openloop": {
+          "current": 0.18,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.66,
+      "cmd": {
+        "openloop": {
+          "current": 0.12,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.68,
+      "cmd": {
+        "openloop": {
+          "current": 0.06,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    },
+    {
+      "t": 2.7,
+      "cmd": {
+        "openloop": {
+          "current": 0.0,
+          "velocity": 0.0,
+          "angle": 0.0
+        }
+      }
+    }
+  ]
+}
