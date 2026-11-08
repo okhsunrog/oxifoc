@@ -323,17 +323,43 @@ pub fn run(
     // Terminal command on EVERY path; capture a short grace window so the
     // stop itself lands in the file.
     let terminal_res = crate::send_motor_acked(runtime, m.terminal.to_mode());
-    let terminal_ok = terminal_res.is_ok();
-    let _ = cap.drain_until(runtime, Instant::now() + Duration::from_millis(200));
+    let grace = cap.drain_until(runtime, Instant::now() + Duration::from_millis(200));
     let stream_stopped = cap.stop(runtime);
 
-    // A timeline failure surfaces after the terminal command went out.
-    exec?;
-    if let Err(e) = terminal_res {
-        bail!("terminal command failed: {e:#}");
-    }
-    stream_stopped?;
+    finish_run(
+        &cap,
+        m,
+        out_path,
+        &config_snapshot,
+        events,
+        [
+            ("execution", exec),
+            ("terminal", terminal_res.map(|_| ())),
+            ("terminal_capture", grace),
+            ("stream_stop", stream_stopped),
+        ],
+    )
+}
 
+/// Save evidence before propagating operational failures, including failures
+/// after the timeline. A failed terminal command must not discard the capture.
+fn finish_run(
+    cap: &Capture,
+    m: &Maneuver,
+    out_path: &str,
+    config_snapshot: &Value,
+    events: Vec<EventRecord>,
+    outcomes: [(&str, Result<()>); 4],
+) -> Result<ManeuverSummary> {
+    let terminal_ok = outcomes[1].1.is_ok();
+    let errors: serde_json::Map<String, Value> = outcomes
+        .into_iter()
+        .filter_map(|(stage, result)| {
+            result
+                .err()
+                .map(|e| (stage.to_string(), json!(format!("{e:#}"))))
+        })
+        .collect();
     let extra_meta = vec![
         (
             "oxifoc.maneuver".to_string(),
@@ -343,8 +369,19 @@ pub fn run(
             "oxifoc.events".to_string(),
             serde_json::to_string(&events).unwrap_or_default(),
         ),
+        (
+            "oxifoc.maneuver_errors".to_string(),
+            json!(errors).to_string(),
+        ),
     ];
-    let record = cap.finish(out_path, &config_snapshot, &extra_meta)?;
+    let record = cap
+        .finish(out_path, config_snapshot, &extra_meta)
+        .with_context(|| {
+            format!("save maneuver capture to {out_path}; operational errors: {errors:?}")
+        })?;
+    if !errors.is_empty() {
+        bail!("maneuver failed: {errors:?}; capture saved to {out_path}");
+    }
 
     Ok(ManeuverSummary {
         maneuver: m.name.clone(),
@@ -366,6 +403,87 @@ pub fn summary_json(s: &ManeuverSummary) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxifoc_core::types::{ConfigSnapshot, FastTelemetry};
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+
+    #[test]
+    fn failed_maneuver_preserves_capture_and_all_failure_stages() {
+        let m = Maneuver {
+            name: "failed-capture".to_string(),
+            description: String::new(),
+            capture: CaptureCfg {
+                fast_hz: 20_000,
+                tail_s: 0.0,
+            },
+            terminal: Terminal::Stop,
+            timeline: vec![Step {
+                t: 0.0,
+                cmd: Cmd::Stop {},
+            }],
+        };
+        let cap = Capture {
+            board_calibration: ConfigSnapshot {
+                group: ConfigGroupId::BoardCalibration,
+                revision: 0,
+                persisted: false,
+                valid: false,
+                value: None,
+            },
+            hw: None,
+            fast_hz_requested: 20_000,
+            fast_hz_actual: 20_000,
+            decimation_m: 1,
+            samples: vec![FastTelemetry::default()],
+            started: Instant::now(),
+            enrich: None,
+        };
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "failed-maneuver-{}-{nonce}.parquet",
+            std::process::id()
+        ));
+        let error = finish_run(
+            &cap,
+            &m,
+            path.to_str().unwrap(),
+            &json!({}),
+            Vec::new(),
+            [
+                ("execution", Err(anyhow::anyhow!("command rejected"))),
+                ("terminal", Err(anyhow::anyhow!("stop timeout"))),
+                ("terminal_capture", Ok(())),
+                ("stream_stop", Err(anyhow::anyhow!("link disconnected"))),
+            ],
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("capture saved to"));
+        let reader = SerializedFileReader::new(std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 1);
+        let meta = reader
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .unwrap();
+        let errors: Value = serde_json::from_str(
+            meta.iter()
+                .find(|kv| kv.key == "oxifoc.maneuver_errors")
+                .unwrap()
+                .value
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(errors["execution"], "command rejected");
+        assert_eq!(errors["terminal"], "stop timeout");
+        assert_eq!(errors["stream_stop"], "link disconnected");
+        assert!(errors.get("terminal_capture").is_none());
+        drop(reader);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn openloop_pi_override_is_optional_and_preserved_in_the_device_command() {
