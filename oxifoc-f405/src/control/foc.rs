@@ -550,8 +550,43 @@ fn ADC() {
 pub async fn isr_stats_task() {
     use embassy_time::Ticker;
     let mut ticker = Ticker::every(Duration::from_secs(1));
+    #[cfg(feature = "transport-usb")]
+    let mut usb_clock_previous = None;
+    #[cfg(feature = "transport-usb")]
+    let mut usb_clock_totals = (0u64, 0u64);
     loop {
         ticker.next().await;
+        #[cfg(feature = "transport-usb")]
+        if crate::protocol::USB_IDENT.is_set() {
+            // DSTS is read-only. SOF frame numbers come from the USB host,
+            // providing a clock independent of TIM1/TIM2/DWT on this board.
+            // FS frames have an 11-bit frame number, wrapping every 2048 ms.
+            let frame = embassy_stm32::pac::USB_OTG_FS.dsts().read().fnsof() & 0x7ff;
+            let cycles = cortex_m::peripheral::DWT::cycle_count();
+            if let Some((previous_frame, previous_cycles)) = usb_clock_previous {
+                let frames = frame.wrapping_sub(previous_frame) & 0x7ff;
+                let elapsed = cycles.wrapping_sub(previous_cycles);
+                // Reject suspend/reset/long reporting gaps rather than infer
+                // missing wraps or fold them into the reference-clock fit.
+                if (900..=1100).contains(&frames)
+                    && (CPU_HZ * 4 / 5..=CPU_HZ * 6 / 5).contains(&elapsed)
+                {
+                    usb_clock_totals.0 += u64::from(frames);
+                    usb_clock_totals.1 += u64::from(elapsed);
+                    defmt::info!(
+                        "usbclk/s: frames={} cycles={} total_frames={} total_cycles={} avg_cycles_per_frame={}",
+                        frames,
+                        elapsed,
+                        usb_clock_totals.0,
+                        usb_clock_totals.1,
+                        usb_clock_totals.1 / usb_clock_totals.0,
+                    );
+                } else {
+                    usb_clock_totals = (0, 0);
+                }
+            }
+            usb_clock_previous = Some((frame, cycles));
+        }
         let cyc_sum = ISR_CYC_SUM.swap(0, Ordering::Relaxed);
         let cyc_max = ISR_CYC_MAX.swap(0, Ordering::Relaxed);
         let cyc_n = ISR_CYC_N.swap(0, Ordering::Relaxed);
