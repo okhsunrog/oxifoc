@@ -35,12 +35,20 @@ use crate::transport::UART_OUTQ;
 /// USB device task — runs USB state machine
 #[embassy_executor::task]
 async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
+    #[cfg(feature = "bench-scheduler-priority")]
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(3);
     usb.run().await;
 }
 
 /// Worker task for incoming ergot data (USB)
 #[embassy_executor::task]
 async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
+    #[cfg(feature = "bench-scheduler-priority")]
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(3);
     rcvr.run(recv_buf, usb_kit::USB_FS_MAX_PACKET_SIZE).await;
 }
 
@@ -50,6 +58,10 @@ async fn run_usb_tx(
     mut ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
     rx: FramedConsumer<&'static UsbQueue>,
 ) {
+    #[cfg(feature = "bench-scheduler-priority")]
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(3);
     usb_kit::tx_worker::<AppDriver, { USB_OUT_QUEUE_SIZE }, _>(
         &mut ep_in,
         rx,
@@ -71,9 +83,9 @@ pub async fn usb_io_task(
 ) {
     let (transport, ident) = crate::transport::init_usb(stack, usb, pa12, pa11);
     defmt::unwrap!(crate::protocol::USB_IDENT.init(ident).map_err(|_| ()));
-    // SAFETY: this future is spawned only by USB_EXECUTOR, and is polled
-    // directly by Embassy with its own task waker. The local spawner and
-    // newly constructed non-Send handlers stay on that same IRQ executor.
+    // SAFETY: Embassy polls this task with its own task waker. The local
+    // spawner and newly constructed non-Send handlers stay on this same
+    // executor (USB_EXECUTOR normally, thread mode in the bench A/B build).
     let spawner = unsafe { Spawner::for_current_executor().await };
     spawner.spawn(defmt::unwrap!(usb_task(transport.usb_dev)));
     spawner.spawn(defmt::unwrap!(run_usb_rx(
@@ -150,6 +162,10 @@ pub async fn run_uart_tx(mut tx: UartWriter, stack: &'static Stack, uart_ident: 
 /// All protocol servers running concurrently in a single task
 #[embassy_executor::task]
 pub async fn protocol_servers(stack: &'static Stack) {
+    #[cfg(feature = "bench-scheduler-priority")]
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(2);
     defmt::info!("Starting protocol servers");
 
     let mut hw: String<32> = String::new();
@@ -163,6 +179,8 @@ pub async fn protocol_servers(stack: &'static Stack) {
     let _ = sw.push_str(concat!("oxifoc-", env!("CARGO_PKG_VERSION")));
     #[cfg(feature = "bench-no-phase-outputs")]
     let _ = sw.push_str("+outputs-inhibited");
+    #[cfg(feature = "bench-only-phase-a")]
+    let _ = sw.push_str("+phase-a-only");
     let _ = mcu.push_str("STM32F405RG");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
     let mut device_info = HardwareInfo {
@@ -372,6 +390,10 @@ pub async fn defmt_forwarder(
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
+    #[cfg(feature = "bench-scheduler-priority")]
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(1);
     fast_telemetry_stream::<_, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
 }
 

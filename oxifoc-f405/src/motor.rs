@@ -122,7 +122,9 @@ impl<'d> MotorPwm<'d> {
     /// All phase-enable paths pass through this compile-time output inhibit.
     /// ADC trigger CH4 is independent and must keep running for bench loads.
     fn set_phase_enabled(&mut self, channel: Channel, enabled: bool) {
-        if enabled && !cfg!(feature = "bench-no-phase-outputs") {
+        let permitted = !cfg!(feature = "bench-no-phase-outputs")
+            && (!cfg!(feature = "bench-only-phase-a") || matches!(channel, Channel::Ch1));
+        if enabled && permitted {
             self.pwm.enable(channel);
         } else {
             self.pwm.disable(channel);

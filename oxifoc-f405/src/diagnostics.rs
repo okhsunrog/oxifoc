@@ -1,0 +1,167 @@
+//! Default-off bench diagnostics. No per-event logging or USB traffic.
+
+#[cfg(feature = "bench-executor-trace")]
+pub mod trace {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    // 36 KiB. Atomic fields allow nested IRQ writers without masking the ADC.
+    // SWD writes CONTROL=1 to request a finite capture after 100 ms. This
+    // excludes attach/detach halts from its window. 2 means recording,
+    // 3 means waiting, 4 means initializing, 0 means frozen. Read after frozen and
+    // outstanding IRQs have returned. Reaching capacity is normal, not a wrap.
+    const CAPACITY: usize = 3072;
+    #[repr(C)]
+    pub struct Event {
+        timer_ticks: AtomicU32,
+        id: AtomicU32,
+        kind: AtomicU32,
+    }
+    impl Event {
+        const fn new() -> Self {
+            Self {
+                timer_ticks: AtomicU32::new(0),
+                id: AtomicU32::new(0),
+                kind: AtomicU32::new(0),
+            }
+        }
+    }
+    #[unsafe(no_mangle)]
+    pub static BENCH_TRACE_CONTROL: AtomicU32 = AtomicU32::new(0);
+    #[unsafe(no_mangle)]
+    pub static BENCH_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
+    static START_TICKS: AtomicU32 = AtomicU32::new(0);
+    #[unsafe(no_mangle)]
+    pub static BENCH_TRACE_EVENTS: [Event; CAPACITY] = [const { Event::new() }; CAPACITY];
+
+    // CONTROL=5 waits for active FOC. SWD can finish long before the workload
+    // starts, avoiding debug halts in the experiment's active interval.
+    pub fn trigger_active() {
+        if BENCH_TRACE_CONTROL
+            .compare_exchange(5, 4, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            BENCH_TRACE_COUNT.store(0, Ordering::Relaxed);
+            BENCH_TRACE_CONTROL.store(2, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    pub fn record(kind: u32, id: u32) {
+        let state = BENCH_TRACE_CONTROL.load(Ordering::Relaxed);
+        if state == 1
+            && BENCH_TRACE_CONTROL
+                .compare_exchange(1, 4, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            START_TICKS.store(embassy_stm32::pac::TIM5.cnt().read(), Ordering::Relaxed);
+            BENCH_TRACE_CONTROL.store(3, Ordering::Relaxed);
+            return;
+        } else if state == 3 {
+            if embassy_stm32::pac::TIM5
+                .cnt()
+                .read()
+                .wrapping_sub(START_TICKS.load(Ordering::Relaxed))
+                < 8_400_000
+                || BENCH_TRACE_CONTROL
+                    .compare_exchange(3, 4, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_err()
+            {
+                return;
+            }
+            BENCH_TRACE_COUNT.store(0, Ordering::Relaxed);
+            BENCH_TRACE_CONTROL.store(2, Ordering::Relaxed);
+        } else if state != 2 {
+            return;
+        }
+        // probe-rs clears DEMCR.TRCENA on detach, freezing DWT.CYCCNT.
+        // TIM5 keeps running independently of that debugging state.
+        let ticks = embassy_stm32::pac::TIM5.cnt().read();
+        let index = BENCH_TRACE_COUNT.fetch_add(1, Ordering::Relaxed) as usize;
+        if let Some(event) = BENCH_TRACE_EVENTS.get(index) {
+            event.timer_ticks.store(ticks, Ordering::Relaxed);
+            event.id.store(id, Ordering::Relaxed);
+            event.kind.store(kind, Ordering::Relaxed);
+        } else {
+            BENCH_TRACE_CONTROL.store(0, Ordering::Relaxed);
+        }
+    }
+
+    // Task IDs are resolved against this exact ELF's TaskStorage/POOL symbols.
+    // Executor events carry executor IDs; task events carry task IDs.
+    #[unsafe(no_mangle)]
+    fn _embassy_trace_poll_start(executor: u32) {
+        record(1, executor);
+    }
+    #[unsafe(no_mangle)]
+    fn _embassy_trace_task_new(_executor: u32, task: u32) {
+        record(2, task);
+    }
+    #[unsafe(no_mangle)]
+    fn _embassy_trace_task_end(_executor: u32, task: u32) {
+        record(3, task);
+    }
+    #[unsafe(no_mangle)]
+    fn _embassy_trace_task_exec_begin(_executor: u32, task: u32) {
+        record(4, task);
+    }
+    #[unsafe(no_mangle)]
+    fn _embassy_trace_task_exec_end(_executor: u32, task: u32) {
+        record(5, task);
+    }
+    #[unsafe(no_mangle)]
+    fn _embassy_trace_task_ready_begin(_executor: u32, task: u32) {
+        record(6, task);
+    }
+    #[unsafe(no_mangle)]
+    fn _embassy_trace_executor_idle(executor: u32) {
+        record(7, executor);
+    }
+}
+
+/// TIM5 runs freely from APB1's timer clock, including while the core sleeps.
+/// It has no outputs, IRQs, DMA, or relation to the PWM/ADC triggers.
+#[cfg(feature = "bench-clock-reference")]
+#[embassy_executor::task]
+pub async fn clock_reference_task(
+    tim: embassy_stm32::Peri<'static, embassy_stm32::peripherals::TIM5>,
+) {
+    use embassy_stm32::{pac, timer::low_level::Timer};
+    use embassy_time::{Duration, Ticker};
+    let timer = Timer::new(tim);
+    timer.set_max_compare_value(u32::MAX);
+    timer.start();
+    let mut ticker = Ticker::every(Duration::from_secs(1));
+    let mut previous = None;
+    let mut totals = (0u64, 0u64, 0u64);
+    loop {
+        ticker.next().await;
+        let frame = pac::USB_OTG_FS.dsts().read().fnsof() & 0x7ff;
+        let cycles = cortex_m::peripheral::DWT::cycle_count();
+        let ticks = timer.get_counter();
+        if frame != pac::USB_OTG_FS.dsts().read().fnsof() & 0x7ff {
+            continue;
+        }
+        if let Some((prev_frame, prev_cycles, prev_ticks)) = previous {
+            let frames = frame.wrapping_sub(prev_frame) & 0x7ff;
+            let dc = cycles.wrapping_sub(prev_cycles);
+            let dt = ticks.wrapping_sub(prev_ticks);
+            if (900..=1100).contains(&frames) && (70_000_000..=100_000_000).contains(&dt) {
+                totals.0 += u64::from(frames);
+                totals.1 += u64::from(dc);
+                totals.2 += u64::from(dt);
+                defmt::info!(
+                    "clockref: frames={} dwt={} tim5={} total_frames={} total_dwt={} total_tim5={}",
+                    frames,
+                    dc,
+                    dt,
+                    totals.0,
+                    totals.1,
+                    totals.2
+                );
+            } else {
+                totals = (0, 0, 0);
+            }
+        }
+        previous = Some((frame, cycles, ticks));
+    }
+}

@@ -374,6 +374,8 @@ fn ADC() {
     static mut LAST_START: u32 = 0;
 
     let isr_t0 = cortex_m::peripheral::DWT::cycle_count();
+    #[cfg(feature = "bench-executor-trace")]
+    crate::diagnostics::trace::record(8, 0);
     if *LAST_START != 0 {
         let interval = isr_t0.wrapping_sub(*LAST_START);
         ISR_INTERVAL_SUM.fetch_add(interval, Ordering::Relaxed);
@@ -499,14 +501,19 @@ fn ADC() {
     // Run FOC control loop (shared cycle logic in core)
     let foc_telem = FOC_DRIVER.lock(|cell| {
         cell.borrow_mut().as_mut().and_then(|driver| {
-            run_foc_cycle(
+            let output = run_foc_cycle(
                 &STATE,
                 &FAULT_REGISTRY,
                 driver,
                 vbus_mv as f32 / 1000.0,
                 now_ticks,
                 board,
-            )
+            );
+            #[cfg(feature = "bench-executor-trace")]
+            if !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped) {
+                crate::diagnostics::trace::trigger_active();
+            }
+            output
         })
     });
 
@@ -532,6 +539,8 @@ fn ADC() {
     ISR_PROF_FOC.fetch_add(prof_t3.wrapping_sub(prof_t2), Ordering::Relaxed);
     ISR_PROF_PUB.fetch_add(prof_t4.wrapping_sub(prof_t3), Ordering::Relaxed);
 
+    #[cfg(feature = "bench-executor-trace")]
+    crate::diagnostics::trace::record(9, 0);
     let isr_dt = cortex_m::peripheral::DWT::cycle_count().wrapping_sub(isr_t0);
     ISR_CYC_SUM.fetch_add(isr_dt, Ordering::Relaxed);
     ISR_CYC_MAX.fetch_max(isr_dt, Ordering::Relaxed);

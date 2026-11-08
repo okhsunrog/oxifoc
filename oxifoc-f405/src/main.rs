@@ -5,6 +5,10 @@
 compile_error!("select exactly one board feature: board-cf2 or board-vesc6-mk5");
 #[cfg(all(feature = "board-cf2", feature = "board-vesc6-mk5"))]
 compile_error!("board-cf2 and board-vesc6-mk5 are mutually exclusive");
+#[cfg(all(feature = "bench-only-phase-a", feature = "bench-no-phase-outputs"))]
+compile_error!("bench-only-phase-a and bench-no-phase-outputs are mutually exclusive");
+#[cfg(all(feature = "bench-clock-reference", not(feature = "transport-usb")))]
+compile_error!("bench-clock-reference requires transport-usb for the SOF reference");
 
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::Output;
@@ -18,11 +22,11 @@ bind_interrupts!(struct ExtiIrqs {
 
 // USART1 is unused (external UART is USART3). Reserve its vector for USB
 // work below ADC, Hall and USB hardware IRQs, above thread-mode batching.
-#[cfg(feature = "transport-usb")]
+#[cfg(all(feature = "transport-usb", not(feature = "bench-usb-thread")))]
 static USB_EXECUTOR: embassy_executor::InterruptExecutor =
     embassy_executor::InterruptExecutor::new();
 
-#[cfg(feature = "transport-usb")]
+#[cfg(all(feature = "transport-usb", not(feature = "bench-usb-thread")))]
 #[embassy_stm32::interrupt]
 unsafe fn USART1() {
     // SAFETY: start() initializes the executor before enabling this vector;
@@ -39,6 +43,8 @@ mod hardware;
 mod motor;
 mod protocol;
 // Panic/HardFault handlers (gate kill) + IWDG live here.
+#[cfg(any(feature = "bench-executor-trace", feature = "bench-clock-reference"))]
+mod diagnostics;
 mod safety;
 mod sensors;
 mod storage;
@@ -79,6 +85,8 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
 async fn main(spawner: Spawner) {
     // ========== STEP 1: Initialize Clock ==========
     let p = hardware::peripherals::init_clock();
+    #[cfg(feature = "bench-clock-reference")]
+    spawner.spawn(defmt::unwrap!(diagnostics::clock_reference_task(p.TIM5)));
 
     // Comms/housekeeping IRQs sit BELOW the control ISRs. The FOC ADC ISR
     // runs at 0 and the hall capture (TIM3) at 1, but every other vector
@@ -109,6 +117,8 @@ async fn main(spawner: Spawner) {
 
     #[cfg(feature = "bench-no-phase-outputs")]
     defmt::warn!("BENCH BUILD: all phase outputs inhibited; FOC/ADC/transport remain active");
+    #[cfg(feature = "bench-only-phase-a")]
+    defmt::warn!("BENCH BUILD: only leg A permitted; motor phase A must be disconnected");
 
     // ========== STEP 4: Initialize LEDs ==========
     let green_led = hardware::peripherals::init_green_led(p.PB0);
@@ -135,9 +145,15 @@ async fn main(spawner: Spawner) {
     // ========== STEP 6: Initialize USB + UART transports ==========
     #[cfg(feature = "transport-usb")]
     let usb_ident = {
+        #[cfg(not(feature = "bench-usb-thread"))]
         use embassy_stm32::interrupt::{InterruptExt, Priority};
-        interrupt::USART1.set_priority(Priority::P6);
-        let usb_spawner = USB_EXECUTOR.start(interrupt::USART1);
+        #[cfg(not(feature = "bench-usb-thread"))]
+        let usb_spawner = {
+            interrupt::USART1.set_priority(Priority::P6);
+            USB_EXECUTOR.start(interrupt::USART1)
+        };
+        #[cfg(feature = "bench-usb-thread")]
+        let usb_spawner = spawner;
         usb_spawner.spawn(defmt::unwrap!(protocol::servers::usb_io_task(
             stack,
             p.USB_OTG_FS,

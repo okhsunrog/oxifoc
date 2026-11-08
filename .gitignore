@@ -23,3 +23,6 @@ oxifoc-host-tauri/src-tauri/target/
 
 # Local telemetry capture artifacts
 /captures/
+
+# Local chat image attachments
+/.codex-attachments/

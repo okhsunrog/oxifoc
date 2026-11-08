@@ -31,6 +31,16 @@ transport-rtt = ["ergot/rtt"]
 # Bench CPU/transport qualification: calculate active FOC but never enable
 # phase outputs. Default-off; do not use for motor measurements.
 bench-no-phase-outputs = []
+# Frequency measurement with motor phase A disconnected: permit only leg A.
+# Use DirectVoltage=0 for 50% PWM; Stop and faults still disable everything.
+bench-only-phase-a = []
+# RAM-only task/ADC timeline, armed and read over SWD after a capture.
+bench-executor-trace = ["embassy-executor/trace", "bench-clock-reference"]
+# Compare an independent free-running APB timer, DWT and received USB SOFs.
+bench-clock-reference = []
+# A/B qualification only: keep all USB handlers on the thread executor.
+bench-usb-thread = []
+bench-scheduler-priority = ["embassy-executor/scheduler-priority"]
 # Observer-internals fast-frame mapping (erpm<-PLL, vd<-frame gap,
 # vq<-readiness err signed by trust; see oxifoc-core `obs-debug-telem`).
 # Debug builds only.
