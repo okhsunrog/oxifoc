@@ -26,7 +26,10 @@ map is identical).
 - Motor/power wires 12 AWG; 67×39×18.7 mm with heatsink
 
 Firmware target: `oxifoc-f405` with `--no-default-features
---features transport-usb,transport-uart,board-vesc6-mk5`.
+--features transport-usb,transport-uart,board-vesc6-mk5,task-priority`.
+The MK5 build/flash recipes select cooperative task priorities together with
+the USB interrupt executor, following the [on-device comparison](../notes/bench-usb-priority-2026-11-09.md).
+Other F405 board defaults are unchanged; omit `task-priority` for queue A/B tests.
 
 ## Pin map
 

@@ -53,7 +53,7 @@ check-device:
     # The second F405 board must not rot. Keep board artifacts in separate
     # directories so no ELF path silently changes electrical meaning.
     echo "oxifoc-f405 (vesc6-mk5): build..."
-    (cd oxifoc-f405 && cargo build --release --quiet --target-dir target/vesc6-mk5 --no-default-features --features transport-usb,transport-uart,board-vesc6-mk5 2>&1 | filter) || exit 1
+    (cd oxifoc-f405 && cargo build --release --quiet --target-dir target/vesc6-mk5 --no-default-features --features transport-usb,transport-uart,board-vesc6-mk5,task-priority 2>&1 | filter) || exit 1
 
 # Format all code (workspace + device crates)
 fmt:
@@ -91,12 +91,12 @@ flash-f405-cf2:
 # Build Flipsky Mini V6 MK5 firmware.
 build-f405-vesc6-mk5:
     cd oxifoc-f405 && cargo build --release --target-dir target/vesc6-mk5 --no-default-features \
-        --features transport-usb,transport-uart,board-vesc6-mk5
+        --features transport-usb,transport-uart,board-vesc6-mk5,task-priority
 
 # Build and flash Flipsky Mini V6 MK5 firmware.
 flash-f405-vesc6-mk5:
     cd oxifoc-f405 && cargo run --release --target-dir target/vesc6-mk5 --no-default-features \
-        --features transport-usb,transport-uart,board-vesc6-mk5
+        --features transport-usb,transport-uart,board-vesc6-mk5,task-priority
 
 # Build ESP32 bridge firmware.
 build-bridge:
@@ -149,7 +149,7 @@ size:
     measure oxifoc-g474 oxifoc-g474 memory.x target
     measure oxifoc-f405 oxifoc-f405-cf2 memory.x target/cf2
     measure oxifoc-f405 oxifoc-f405-vesc6-mk5 memory.x target/vesc6-mk5 --no-default-features \
-        --features transport-usb,transport-uart,board-vesc6-mk5
+        --features transport-usb,transport-uart,board-vesc6-mk5,task-priority
 
 # Clean all build artifacts
 clean:
