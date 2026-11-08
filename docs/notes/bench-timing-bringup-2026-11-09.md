@@ -61,3 +61,21 @@ Applied M=4 gives 5001.067998 Hz. Both captures have phase-enable mask 0x40 only
 (MOE alone, phase channels disabled). Parquet time increments match each wrapped
 sequence delta times the source-clock ratio to below 2e-15 s arithmetic error;
 this tests serialization/time reconstruction, not absolute clock accuracy.
+
+## Stationary measurement shutdown
+
+R02 showed a positive 3 A hold with PI command Vd about -0.098 V, while measured
+phase Vd was about +0.122 V. The PI command precedes deadtime compensation and
+must not be identified with terminal voltage. Before running L, inspection found
+that HFI, voltage-pulse and impedance-sweep cleanup ramped this command toward
+zero. For a negative holding command, that can increase current rather than
+remove the hold.
+
+All three stationary paths now return to the retained current PI loop (no gains
+reset), slew the positive holding-current reference to zero, then Stop. The
+initial reference equals the previous hold. Phase angle stays fixed. The
+voltage-pulse path still shuts down before propagating an invalid measurement.
+A regression runs the complete pulse procedure with subthreshold pulses and an
+effective positive voltage correction: the holding command is negative and the
+measurement fails, yet current remains bounded and Stop is reached. The old
+voltage-to-zero cleanup would drive the fixture from 1.2 A toward 7.33 A.

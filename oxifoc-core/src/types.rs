@@ -1162,7 +1162,7 @@ impl MotorState {
 mod tests {
     #[test]
     fn control_timing_keeps_fractional_rate_and_explicit_decimation() {
-        let timing = super::ControlTiming {
+        let timing = ControlTiming {
             clock_hz: 167_835_842,
             period_ticks: 8_390,
         };
@@ -1172,11 +1172,11 @@ mod tests {
         assert_eq!(timing.stream_hz(0), 0);
         assert!((timing.dt_s() - 8390.0 / 167_835_842.0).abs() < 1e-11);
         assert!((timing.frequency_hz() * timing.dt_s() - 1.0).abs() < 1e-6);
-        assert_eq!(super::ControlTiming::from_hz(20_000).stream_hz(4), 5_000);
-        assert!(!super::ControlTiming::default().is_valid());
-        assert_eq!(super::ControlTiming::default().stream_hz(1), 0);
+        assert_eq!(ControlTiming::from_hz(20_000).stream_hz(4), 5_000);
+        assert!(!ControlTiming::default().is_valid());
+        assert_eq!(ControlTiming::default().stream_hz(1), 0);
         assert_eq!(
-            super::ControlTiming {
+            ControlTiming {
                 clock_hz: u32::MAX,
                 period_ticks: u32::MAX
             }

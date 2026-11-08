@@ -328,6 +328,27 @@ async fn settled_hold_voltage<H: DetectionHardware, T: Timer>(
     }
 }
 
+/// Re-enter the retained current PI loop before removing a stationary hold.
+/// A compensated holding command can be negative: ramping that voltage to zero
+/// increases winding current instead of removing it. None preserves PI state.
+async fn ramp_down_stationary_current<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    hold_current_a: f32,
+    angle_rad: f32,
+) {
+    for i in (0..=50).rev() {
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad,
+            current: hold_current_a * (i as f32 / 50.0),
+            velocity_rad_s: 0.0,
+            pi_gains: None,
+        })
+        .await;
+        T::after_millis(10).await;
+    }
+    hw.send_command(ControlMode::Stopped).await;
+}
+
 /// Measure motor phase resistance.
 ///
 /// Applies DC current on d-axis and measures voltage drop.
@@ -496,6 +517,10 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
 #[cfg(test)]
 #[path = "sweep_resistance_tests.rs"]
 mod resistance_tests;
+
+#[cfg(test)]
+#[path = "sweep_shutdown_tests.rs"]
+mod shutdown_tests;
 
 /// Amplitude adaptation context for the HFI loop.
 #[cfg(feature = "hfi-detect")]
@@ -871,21 +896,10 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
     )
     .await;
 
-    // Ramp down holding voltage
+    // Ramp down current through the retained PI loop.
     info!("HFI measurement complete, ramping down...");
 
-    for i in (0..ramp_steps).rev() {
-        let vd = vd_hold * (i as f32 / ramp_steps as f32);
-        hw.send_command(ControlMode::DirectVoltage {
-            vd,
-            vq: 0.0,
-            angle_rad: 0.0,
-        })
-        .await;
-        T::after_millis(10).await;
-    }
-
-    hw.send_command(ControlMode::Stopped).await;
+    ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, 0.0).await;
     T::after_millis(100).await;
 
     // Compute result
@@ -1184,17 +1198,7 @@ pub async fn measure_inductance_pulse<H: DetectionHardware, T: Timer, S: SinCos>
         // noisy/open winding) from here would leave that level applied DC
         // for up to the bench deadman. `measure_resistance` follows the same
         // stop-before-bailout pattern.
-        for i in (0..ramp_steps).rev() {
-            let vd = vd_hold * (i as f32 / ramp_steps as f32);
-            hw.send_command(ControlMode::DirectVoltage {
-                vd,
-                vq: 0.0,
-                angle_rad: angle,
-            })
-            .await;
-            T::after_millis(10).await;
-        }
-        hw.send_command(ControlMode::Stopped).await;
+        ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, angle).await;
         T::after_millis(200).await;
 
         results[axis] = inductance?;
@@ -1446,17 +1450,7 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
     }
 
     // Ramp the hold back down and stop.
-    for i in (0..ramp_steps).rev() {
-        let vd = vd_hold * (i as f32 / ramp_steps as f32);
-        hw.send_command(ControlMode::DirectVoltage {
-            vd,
-            vq: 0.0,
-            angle_rad: 0.0,
-        })
-        .await;
-        T::after_millis(10).await;
-    }
-    hw.send_command(ControlMode::Stopped).await;
+    ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, 0.0).await;
     T::after_millis(100).await;
 
     if l_return <= 0.0 {
