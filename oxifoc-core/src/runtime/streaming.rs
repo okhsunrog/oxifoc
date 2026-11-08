@@ -29,7 +29,7 @@ use crate::types::FastTelemetryBatch;
 /// ~22 frames of 46 bytes (44 data + 2 header) fit in 1024 bytes.
 /// Churrasco = Inline + Atomic + Polling + Static reference.
 ///
-/// Firmware keeps the queue small (2 KB ≈ 42 frames — embassy timer
+/// Firmware keeps the queue small (4 KB ≈ 110 enriched frames — embassy timer
 /// wakeups are microsecond-accurate, so the drain cadence holds). Host
 /// builds (virtual device, sims) get a deep queue: tokio sleep jitter
 /// reaches tens of milliseconds under load, which at 10–20 kHz overruns a
@@ -37,7 +37,7 @@ use crate::types::FastTelemetryBatch;
 #[cfg(feature = "std")]
 pub static FAST_TELEM_Q: Churrasco<65536> = Churrasco::new();
 #[cfg(not(feature = "std"))]
-pub static FAST_TELEM_Q: Churrasco<2048> = Churrasco::new();
+pub static FAST_TELEM_Q: Churrasco<4096> = Churrasco::new();
 
 /// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
 /// 0 = streaming disabled. Set by `telemetry_config_server` when host
@@ -409,7 +409,8 @@ where
             ((FAST_BATCH_SAMPLES as u64 / 2).max(1) * 1_000_000) / u64::from(sample_hz)
         } else {
             100_000 // fallback 100ms
-        };
+        }
+        .min(20_000);
 
         T::after_micros(interval_us).await;
 
@@ -444,6 +445,17 @@ where
 
             if batch.is_empty() {
                 break; // nothing left to send
+            }
+
+            // At high rates retain a partial batch until the next poll rather
+            // than flooding USB with half-sized and one-sample messages. At
+            // low rates flush partial batches; full-batch latency must stay
+            // within a nominal 20 ms. Session invalidation also covers these
+            // coalesced samples when a stop/restart occurs between polls.
+            if !batch.is_full()
+                && u64::from(sample_hz) * 20_000 >= FAST_BATCH_SAMPLES as u64 * 1_000_000
+            {
+                break;
             }
 
             let batch_full = batch.is_full();
