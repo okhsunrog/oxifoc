@@ -253,3 +253,85 @@ artifact root. Exclude baseline-01 (probe movement) and scope-uart-calibrated-*
 (panicked build). The UART/USB comparison plot is versioned in
 vesc-bench/docs/assets/usb-clock-calibration-2026-11-09.png. Exact ELF hashes,
 features, repository revisions and exclusions are in artifact-root provenance.json.
+
+## Device identity and future UART/CAN use
+
+The protocol calls the identifier UUID, but on this target it is STM32's factory
+96-bit UID, rendered by embassy_stm32::uid::uid_hex() as 24 uppercase hex digits:
+`2B002C001047343031363330`. It identifies the MCU used as the identity of this
+board instance, not the board model or the configurable VESC/CAN node ID. Normal
+firmware flashing does not change it; replacing the MCU changes the identity.
+The bench profile checks it before applying this device's HSE estimate so that
+another MK5 cannot silently inherit the correction. This is a guard, not proof
+that the oscillator remains stable with temperature or after hardware repair.
+
+At declared corrected PCLK1=41,958,960 Hz, nearest-divider USART3 estimates are:
+
+| Requested baud | BRR (OVER16) | Derived baud | Error |
+|---|---:|---:|---:|
+| 115,200 | 364 | 115,271.868 | +0.0624% |
+| 460,800 | 91 | 461,087.473 | +0.0624% |
+| 921,600 (current normal transport setting) | 46 | 912,151.304 | -1.0252% |
+| 1,000,000 | 42 | 999,022.857 | -0.0977% |
+
+These are divider calculations, not bidirectional UART qualification. For a
+future link, 1 Mbaud has a better clock-error budget than the current 921600
+setting; choose it at both ends and test before changing the transport default.
+Receiver tolerance includes the other endpoint's error, oversampling, frame
+format and line distortion. Stable HSE offset and temperature drift must be
+considered separately.
+
+Classic CAN needs a bit-timing budget for sample point, SJW, endpoint clocks and
+bus/transceiver propagation. Example integer divider 6*14=84 gives 499,511.429
+bit/s for requested 500 kbit/s (-0.0977%). Divider 3*14 gives 999,022.857 bit/s for
+1 Mbit/s. These are candidate rates only, not validated segment/SJW choices for
+a particular bus. The original uncorrected ~0.689% clock offset cannot simply
+be assumed acceptable for every CAN timing/network.
+
+In the pinned Embassy checkout, bxcan::CanConfig::set_bitrate calls
+can::util::calc_can_timings and unwraps its result. That helper requires exact
+integer agreement with the requested rate; it will not select the above nearby
+rates from the corrected PCLK1. Use explicitly budgeted NominalBitTiming via
+set_bit_timing, or improve the timing search to bound rate/sample-point error.
+No CAN code was changed or tested on the device during this study. The clock
+profile is specific to this OxiFOC build; it does not alter stock VESC or another
+firmware image automatically.
+
+## Hardware diagnosis before changing oscillator components
+
+The frequency discrepancy is supported by UART, PWM, SOF and host observations;
+the physical cause is still unproven. Diagnose in this order:
+
+1. Identify the fitted oscillator component by marking/part number and the
+   actual board revision. Distinguish a quartz crystal, ceramic resonator and
+   active oscillator; verify nominal frequency, tolerance, load capacitance,
+   ESR and drive-level requirements from its datasheet.
+2. Confirm frequency with a calibrated counter/scope or a known reference.
+   Prefer a safely routed, buffered MCO output or the known hardware UART bit
+   clock, with actual RCC/BRR values recorded. Check the MCO pin assignment first:
+   on a motor controller it may also drive a gate/PWM input. Keep physical phase
+   excitation inhibited for clock-only tests.
+3. Measure cold-start frequency, startup reliability and drift versus controlled
+   temperature and MCU supply. Check supply ripple/ground noise, including any
+   correlation with PWM, without assuming a stable DC supply reading proves
+   adequate oscillator conditions.
+4. Inspect the oscillator joints, nearby capacitors/resistors, contamination,
+   grounding and traces. Compare the fitted load capacitors with the component's
+   required effective CL, including pin/PCB parasitics; verify values off-power
+   and with suitable isolation if in-circuit readings are ambiguous. Do not
+   guess replacement capacitor values merely to force an 8 MHz reading.
+5. If a component mismatch or fault is established, replace with a known,
+   compatible part and matched loading, then repeat frequency/startup/temperature
+   tests. A hardware repair invalidates the old device-specific frequency
+   estimate even when the MCU UID remains unchanged.
+
+An ordinary passive x10 probe loads an oscillator node capacitively and can move
+its frequency or prevent oscillation. Do not use it directly on OSC_IN/OSC_OUT
+as an undisturbed frequency reference. ST AN2867 describes low-capacitance probing
+for oscillator amplitude/drive-level measurements. Those specialized checks are
+different from counting edges at a buffered output.
+
+References: [STM32 UID](https://community.st.com/stm32-mcus-60/how-to-obtain-and-use-the-stm32-96-bit-uid-125456),
+[ST clock requirements, AN6363](https://www.st.com/resource/en/application_note/an6363-introduction-to-clock-requirements-and-calibration-for-stm32-mcus-stmicroelectronics.pdf),
+[ST oscillator guide, AN2867](https://www.st.com/resource/en/application_note/an2867-guidelines-for-oscillator-design-on-stm8afals-and-stm32-mcusmpus-stmicroelectronics.pdf),
+[pinned CAN timing helper](https://github.com/embassy-rs/embassy/blob/98d847be57f3ea022ce05fe9b95ab3639a1e0a93/embassy-stm32/src/can/util.rs).
