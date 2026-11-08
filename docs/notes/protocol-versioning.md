@@ -27,6 +27,15 @@ values without exceeding the MTU. The host rejects malformed batches in full.
 This is a semantic wire change, so v7 and v8 hosts/devices must not connect.
 See [the encoding contract](telemetry-batch-encoding.md).
 
+ICD v9 keeps the bootstrap and compressed fast-frame encoding unchanged.
+`TelemetryConfigAck` now carries the applied decimation and `ControlTiming`
+(declared source-clock Hz / programmed ticks per FOC cycle). `actual_fast_hz`
+is the integer floor of the derived rate, not a promise of exact whole-Hz timing.
+Precision consumers use the ratio, not `HardwareInfo.foc_freq_hz` (requested rate)
+or the integer ACK rate. Stop also returns the timing, with decimation zero.
+Hosts must not infer decimation by dividing rounded frequencies. Firmware and
+host must both be upgraded; v8/v9 connections fail at the frozen bootstrap.
+
 The host validates, in order:
 
 1. bootstrap magic;

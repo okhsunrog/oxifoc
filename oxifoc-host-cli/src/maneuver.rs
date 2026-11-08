@@ -498,6 +498,7 @@ mod tests {
                 value: None,
             },
             hw: None,
+            control_timing: oxifoc_core::types::ControlTiming::from_hz(20_000),
             fast_hz_requested: 20_000,
             fast_hz_actual: 20_000,
             decimation_m: 1,

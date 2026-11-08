@@ -145,7 +145,7 @@ pub async fn detect_server<NS: NetStackHandle>(
             params: motor_params,
         },
         max_current_a,
-        foc_freq_hz,
+        foc_freq_hz as f32,
         Some(&crate::RUNTIME_CONFIG),
     )
     .await;

@@ -7,6 +7,9 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 use oxifoc_core::types::BoardCalib;
 
 static MEASURED_BOARD: OnceLock<BoardConfig> = OnceLock::new();
+/// Published once after TIM1 is configured, before control IRQs start. Protocol
+/// tasks may wait for it while boot calibration is still in progress.
+pub static CONTROL_TIMING: OnceLock<oxifoc_core::types::ControlTiming> = OnceLock::new();
 
 /// Freeze the measured ADC reference before protocol tasks or control IRQs run.
 pub fn init_measured_board(adc_vref_mv: u32) {

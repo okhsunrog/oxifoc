@@ -864,8 +864,11 @@ pub async fn config_server<NS, const N: usize>(
 /// Telemetry config server — host sends `TelemetryConfig { fast_hz }` to start/stop streaming.
 ///
 /// Computes decimation period from FOC frequency and stores in `FAST_TELEM_PERIOD`.
-pub async fn telemetry_config_server<NS, const N: usize>(endpoints: Endpoints<NS>, foc_freq_hz: u32)
-where
+pub async fn telemetry_config_server<NS, const N: usize>(
+    endpoints: Endpoints<NS>,
+    foc_freq_hz: u32,
+    control_timing: crate::types::ControlTiming,
+) where
     NS: NetStackHandle,
 {
     use super::streaming::set_fast_telemetry_period;
@@ -886,7 +889,7 @@ where
 
                 async move {
                     let period = set_fast_telemetry_period(period).await;
-                    let actual_fast_hz = foc_freq_hz.checked_div(period).unwrap_or(0) as u16;
+                    let actual_fast_hz = control_timing.stream_hz(period);
 
                     #[cfg(feature = "defmt")]
                     defmt::info!(
@@ -901,7 +904,7 @@ where
                         "Telemetry config: fast_hz={requested_fast_hz}, period={period}, actual={actual_fast_hz}Hz"
                     );
 
-                    TelemetryConfigAck { actual_fast_hz }
+                    TelemetryConfigAck { actual_fast_hz, decimation_m: period, control_timing }
                 }
             })
             .await;
@@ -1054,6 +1057,7 @@ pub async fn run_all_servers<NS, F, T>(
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<F>,
     foc_freq_hz: u32,
+    control_timing: crate::types::ControlTiming,
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
@@ -1068,7 +1072,7 @@ pub async fn run_all_servers<NS, F, T>(
         join3(
             slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
             phase_source_server::<NS, 2>(endpoints.clone()),
-            telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
+            telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz, control_timing),
         ),
     )
     .await;
@@ -1084,6 +1088,7 @@ pub async fn run_all_servers_with_config<NS, F, T>(
     fault_registry: &'static FaultRegistry<F>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     foc_freq_hz: u32,
+    control_timing: crate::types::ControlTiming,
     hw_max_current_a: f32,
     persist: bool,
 ) where
@@ -1108,7 +1113,7 @@ pub async fn run_all_servers_with_config<NS, F, T>(
                     persist,
                 ),
                 phase_source_server::<NS, 2>(endpoints.clone()),
-                telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz),
+                telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz, control_timing),
             ),
         ),
     )

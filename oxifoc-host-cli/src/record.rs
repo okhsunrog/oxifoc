@@ -71,6 +71,7 @@ pub struct RecordSummary {
     pub path: String,
     pub rows: usize,
     pub fast_hz_actual: u16,
+    pub fast_hz_derived: f64,
     pub decimation_m: u32,
     pub duration_s: f64,
     /// Number of places where seq jumped by more than M.
@@ -94,6 +95,7 @@ pub struct Capture {
     /// Sampled after the stream ACK, while calibration changes are blocked.
     pub board_calibration: oxifoc_core::types::ConfigSnapshot,
     pub hw: Option<HardwareInfo>,
+    pub control_timing: oxifoc_core::types::ControlTiming,
     pub fast_hz_requested: u16,
     pub fast_hz_actual: u16,
     pub decimation_m: u32,
@@ -120,8 +122,13 @@ impl Capture {
         // decimation_m (and with it a wrong time axis and loss accounting).
         let ack = oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, fast_hz)?;
         let fast_hz_actual = ack.actual_fast_hz;
-        if fast_hz_actual == 0 {
-            bail!("device acknowledged a zero fast rate for a capture");
+        if fast_hz_actual == 0
+            || ack.decimation_m == 0
+            || !ack.control_timing.is_valid()
+            || ack.control_timing.stream_hz(ack.decimation_m) != fast_hz_actual
+        {
+            let _ = oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, 0);
+            bail!("device acknowledged invalid capture timing: {ack:?}");
         }
         let board_calibration = match crate::config_cli::read_group(
             &runtime.cmd_tx,
@@ -133,12 +140,8 @@ impl Capture {
                 return Err(error).context("read active board calibration after stream ACK");
             }
         };
-        let foc_freq_hz = hw.as_ref().map(|h| h.foc_freq_hz).unwrap_or(0);
-        let decimation_m = if foc_freq_hz > 0 {
-            foc_freq_hz / u32::from(fast_hz_actual)
-        } else {
-            0
-        };
+        let decimation_m = ack.decimation_m;
+        let control_timing = ack.control_timing;
 
         // Warm-up: the enable transient (queue wrap before the device stream
         // task wakes) produces a guaranteed gap at the head of the stream.
@@ -150,6 +153,7 @@ impl Capture {
         Ok(Self {
             board_calibration,
             hw,
+            control_timing,
             fast_hz_requested: fast_hz,
             fast_hz_actual,
             decimation_m,
@@ -248,6 +252,7 @@ impl Capture {
             &self.samples,
             self.hw.as_ref(),
             self.enrich.as_ref(),
+            self.control_timing,
             self.fast_hz_requested,
             self.fast_hz_actual,
             self.expected_step(),
@@ -260,6 +265,9 @@ impl Capture {
             path: out_path.to_string(),
             rows: self.samples.len(),
             fast_hz_actual: self.fast_hz_actual,
+            fast_hz_derived: f64::from(self.control_timing.clock_hz)
+                / f64::from(self.control_timing.period_ticks)
+                / f64::from(self.expected_step()),
             decimation_m: self.expected_step(),
             duration_s: self.started.elapsed().as_secs_f64(),
             gaps,
@@ -291,6 +299,7 @@ fn write_parquet(
     samples: &[FastTelemetry],
     hw: Option<&HardwareInfo>,
     enrich: Option<&EnrichCtx>,
+    control_timing: oxifoc_core::types::ControlTiming,
     fast_hz_requested: u16,
     fast_hz_actual: u16,
     decimation_m: u32,
@@ -315,6 +324,11 @@ fn write_parquet(
         kv("oxifoc.fast_hz_requested", fast_hz_requested.to_string()),
         kv("oxifoc.fast_hz_actual", fast_hz_actual.to_string()),
         kv("oxifoc.decimation_m", decimation_m.to_string()),
+        kv("oxifoc.control_timing", serde_json::to_string(&control_timing)?),
+        kv("oxifoc.foc_hz_derived", (f64::from(control_timing.clock_hz)
+            / f64::from(control_timing.period_ticks)).to_string()),
+        kv("oxifoc.fast_hz_derived", (f64::from(control_timing.clock_hz)
+            / f64::from(control_timing.period_ticks) / f64::from(decimation_m)).to_string()),
         kv(
             "oxifoc.telemetry_note",
             "ia_adc/ib_adc/ic_adc = uncalibrated 12-bit ADC counts (valid channels \
@@ -388,7 +402,7 @@ fn write_parquet(
     // deltas into a u64 cycle count instead (each delta ≈ M ≪ 65536, so every
     // wrap is unambiguous), matching the `FastTelemetry::seq` contract. The raw
     // `seq` column stays untouched — maneuver events anchor to it by raw value.
-    let foc_freq = hw.map(|h| h.foc_freq_hz).unwrap_or(0);
+    let dt = f64::from(control_timing.period_ticks) / f64::from(control_timing.clock_hz);
     let mut cycles: u64 = 0;
     let mut prev = samples[0].seq;
     let t_s: Vec<f64> = samples
@@ -396,8 +410,8 @@ fn write_parquet(
         .map(|s| {
             cycles += u64::from(s.seq.wrapping_sub(prev));
             prev = s.seq;
-            if foc_freq > 0 {
-                cycles as f64 / f64::from(foc_freq)
+            if control_timing.is_valid() {
+                cycles as f64 * dt
             } else {
                 f64::NAN
             }
@@ -570,6 +584,7 @@ mod tests {
             &[frame],
             Some(&hw),
             Some(&ctx),
+            oxifoc_core::types::ControlTiming::from_hz(20_000),
             20_000,
             20_000,
             1,
@@ -619,6 +634,70 @@ mod tests {
     }
 
     #[test]
+    fn parquet_time_uses_timer_ratio_across_sequence_wrap_and_decimation() {
+        let timing = oxifoc_core::types::ControlTiming {
+            clock_hz: 167_835_842,
+            period_ticks: 8390,
+        };
+        let frames: Vec<_> = [65532, 0, 4, 8]
+            .into_iter()
+            .map(|seq| FastTelemetry {
+                seq,
+                ..Default::default()
+            })
+            .collect();
+        let hw = HardwareInfo {
+            foc_freq_hz: 20_000,
+            ..Default::default()
+        };
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "timer-ratio-{}-{nonce}.parquet",
+            std::process::id()
+        ));
+        write_parquet(
+            path.to_str().unwrap(),
+            &frames,
+            Some(&hw),
+            None,
+            timing,
+            5000,
+            timing.stream_hz(4),
+            4,
+            &serde_json::json!({}),
+            0,
+            0,
+            &[],
+        )
+        .unwrap();
+        let reader = SerializedFileReader::new(File::open(&path).unwrap()).unwrap();
+        for (row, cycles) in reader.get_row_iter(None).unwrap().zip([0, 4, 8, 12]) {
+            let expected = f64::from(cycles) * 8390.0 / 167_835_842.0;
+            assert!((row.unwrap().get_double(0).unwrap() - expected).abs() < 1e-14);
+        }
+        let meta = reader
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .unwrap();
+        let saved: oxifoc_core::types::ControlTiming = serde_json::from_str(
+            meta.iter()
+                .find(|x| x.key == "oxifoc.control_timing")
+                .unwrap()
+                .value
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved, timing);
+        drop(reader);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn capture_metadata_uses_calibration_read_after_stream_ack() {
         let gain = BoardCalibrationConfig { vbus_gain: 1.01 };
         let capture = Capture {
@@ -630,6 +709,7 @@ mod tests {
                 value: Some(ConfigValue::BoardCalibration(gain)),
             },
             hw: None,
+            control_timing: oxifoc_core::types::ControlTiming::from_hz(1000),
             fast_hz_requested: 500,
             fast_hz_actual: 500,
             decimation_m: 2,

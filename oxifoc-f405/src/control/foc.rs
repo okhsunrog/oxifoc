@@ -39,7 +39,7 @@ use crate::hardware::peripherals::AdcHandles;
 use crate::safety::feed_watchdog;
 use crate::sensors::hall;
 
-use crate::config::{BOARD, CPU_HZ, NTC_BOARD, NTC_MOTOR, PWM_CONFIG, measured_board};
+use crate::config::{BOARD, CPU_HZ, NTC_BOARD, NTC_MOTOR, measured_board};
 use crate::motor::MotorPwm;
 use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
@@ -102,7 +102,7 @@ pub static ISR_CYC_MAX: AtomicU32 = AtomicU32::new(0);
 pub static ISR_CYC_OVER: AtomicU32 = AtomicU32::new(0);
 /// Per-ISR cycle budget: one full PWM period of core cycles
 /// (168 MHz / 20 kHz = 8400).
-const ISR_BUDGET_CYCLES: u32 = CPU_HZ / PWM_CONFIG.pwm_freq_hz;
+static ISR_BUDGET_CYCLES: AtomicU32 = AtomicU32::new(0);
 /// Number of ADC ISR executions since last stats swap.
 pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
 // Entry-to-entry timing is independent of the software FOC sequence counter.
@@ -155,6 +155,10 @@ pub async fn init(
 ) {
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
+    let timing = motor_pwm.control_timing();
+    let budget =
+        (u64::from(CPU_HZ) * u64::from(timing.period_ticks) / u64::from(timing.clock_hz)) as u32;
+    ISR_BUDGET_CYCLES.store(budget, Ordering::Relaxed);
 
     // Store ADC handles for ISR access (before enabling PWM triggers)
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc1)));
@@ -263,19 +267,20 @@ pub async fn init(
         FocController::<_, FastSinCos>::from_runtime_config(config, initial_vbus_v);
 
     // Configure dead time compensation
-    foc_controller.set_dead_time_comp(crate::config::DEAD_TIME_COMP_NS, PWM_CONFIG.pwm_freq_hz);
+    foc_controller
+        .set_dead_time_comp_factor(crate::config::DEAD_TIME_COMP_NS as f32 * 1e-9 / timing.dt_s());
     defmt::unwrap!(
         foc_controller
             .set_dead_time_comp_linear_region(crate::config::DEAD_TIME_COMP_LINEAR_CURRENT_A)
     );
 
-    // Build FOC driver with dt from PWM config
+    // Use the same timer-derived period sent to the host and detection backend.
     let mut foc_driver = FocDriver::new(
         foc_controller,
         motor_pwm,
         current_sensor,
         phase_manager,
-        PWM_CONFIG.dt_s(),
+        timing.dt_s(),
     );
 
     // Current limits: stored config (clamped to the board ceiling) or board defaults
@@ -382,10 +387,10 @@ fn ADC() {
         ISR_INTERVAL_MIN.fetch_min(interval, Ordering::Relaxed);
         ISR_INTERVAL_MAX.fetch_max(interval, Ordering::Relaxed);
         ISR_INTERVAL_N.fetch_add(1, Ordering::Relaxed);
-        if interval > ISR_BUDGET_CYCLES * 3 / 2 {
+        if interval > ISR_BUDGET_CYCLES.load(Ordering::Relaxed) * 3 / 2 {
             ISR_INTERVAL_LONG.fetch_add(1, Ordering::Relaxed);
         }
-        if interval < ISR_BUDGET_CYCLES / 2 {
+        if interval < ISR_BUDGET_CYCLES.load(Ordering::Relaxed) / 2 {
             ISR_INTERVAL_SHORT.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -547,7 +552,7 @@ fn ADC() {
     ISR_CYC_N.fetch_add(1, Ordering::Relaxed);
     // Budget-overrun counter: an ISR that ate the whole PWM period —
     // thread mode got nothing.
-    if isr_dt > ISR_BUDGET_CYCLES {
+    if isr_dt > ISR_BUDGET_CYCLES.load(Ordering::Relaxed) {
         ISR_CYC_OVER.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -645,7 +650,7 @@ pub async fn isr_stats_task() {
                 interval_max,
                 long,
                 short,
-                ISR_BUDGET_CYCLES,
+                ISR_BUDGET_CYCLES.load(Ordering::Relaxed),
             );
         }
         use oxifoc_core::runtime::streaming::fast_telem_stats as ft;

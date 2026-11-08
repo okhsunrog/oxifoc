@@ -215,6 +215,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
         &FAULT_REGISTRY,
         &RUNTIME_CONFIG,
         PWM_CONFIG.pwm_freq_hz,
+        *crate::config::CONTROL_TIMING.get().await,
         BOARD.max_phase_current_a,
         true,
     )
@@ -313,7 +314,7 @@ pub async fn detect_server(stack: &'static Stack) {
         stack.endpoints(),
         F405Backend,
         BOARD.max_phase_current_a.min(3.0),
-        PWM_CONFIG.pwm_freq_hz,
+        crate::config::CONTROL_TIMING.get().await.frequency_hz(),
         Some(&RUNTIME_CONFIG),
     )
     .await;
@@ -394,7 +395,8 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
     embassy_executor::Metadata::for_current_task()
         .await
         .set_priority(1);
-    fast_telemetry_stream::<_, EmbassyTimer>(stack, PWM_CONFIG.pwm_freq_hz).await;
+    let hz = crate::config::CONTROL_TIMING.get().await.frequency_hz() as u32;
+    fast_telemetry_stream::<_, EmbassyTimer>(stack, hz).await;
 }
 
 /// Fault topic publisher — pushes the full fault snapshot on every

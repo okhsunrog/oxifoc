@@ -261,6 +261,16 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 12: Initialize Motor PWM ==========
     let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
+    let timing = motor_pwm.control_timing();
+    defmt::unwrap!(config::CONTROL_TIMING.init(timing).map_err(|_| ()));
+    defmt::info!(
+        "Control timing: requested={}Hz clock={}Hz period={}ticks dt={=f32}s rate={=f32}Hz",
+        config::PWM_CONFIG.pwm_freq_hz,
+        timing.clock_hz,
+        timing.period_ticks,
+        timing.dt_s(),
+        timing.frequency_hz()
+    );
 
     // ========== STEP 13: Initialize FOC Controller ==========
     control::foc::init(motor_pwm, adc_handles, &runtime_config).await;

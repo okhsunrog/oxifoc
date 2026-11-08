@@ -522,12 +522,55 @@ pub struct TelemetryConfig {
     pub fast_hz: u16,
 }
 
-/// Acknowledgment for telemetry config change
+/// One control/sequence cycle expressed in source-clock ticks.
+///
+/// Hardware uses its declared HAL timer clock and programmed period (including
+/// prescaler), not the requested integer PWM rate. Simulation can use
+/// [`Self::from_hz`]. This describes configured timing, not proof that every ADC
+/// interrupt was serviced or that the source oscillator is absolutely calibrated.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ControlTiming {
+    pub clock_hz: u32,
+    pub period_ticks: u32,
+}
+
+impl ControlTiming {
+    pub const fn from_hz(hz: u32) -> Self {
+        Self {
+            clock_hz: hz,
+            period_ticks: 1,
+        }
+    }
+
+    pub const fn is_valid(self) -> bool {
+        self.clock_hz > 0 && self.period_ticks > 0
+    }
+
+    pub fn dt_s(self) -> f32 {
+        self.period_ticks as f32 / self.clock_hz as f32
+    }
+
+    pub fn frequency_hz(self) -> f32 {
+        self.clock_hz as f32 / self.period_ticks as f32
+    }
+
+    /// Integer floor for display/pacing; precision consumers use the ratio.
+    pub fn stream_hz(self, decimation: u32) -> u16 {
+        let divisor = u64::from(self.period_ticks) * u64::from(decimation);
+        (u64::from(self.clock_hz).checked_div(divisor).unwrap_or(0)).min(u64::from(u16::MAX)) as u16
+    }
+}
+
+/// Acknowledgment for telemetry config change (ICD v9).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TelemetryConfigAck {
-    /// Actual fast rate in Hz after applying the divider
+    /// Derived fast rate rounded down to whole Hz. Use the ratio below for time.
     pub actual_fast_hz: u16,
+    /// FOC cycles between published samples; zero means disabled.
+    pub decimation_m: u32,
+    pub control_timing: ControlTiming,
 }
 
 /// Application protocol version. Bump on ANY breaking ICD change — wire *shape*
@@ -538,7 +581,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 8;
+pub const ICD_PROTO_VERSION: u16 = 9;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -611,7 +654,7 @@ pub struct HardwareInfo {
     pub mcu: String<32>,
     /// 96-bit unique device ID (STM32 UID, hex-encoded)
     pub uuid: String<32>,
-    /// FOC loop frequency in Hz (e.g., 20000)
+    /// Requested/nominal FOC frequency. The telemetry ACK carries actual timing.
     pub foc_freq_hz: u32,
     /// Hardware peak current limit in Amps
     pub max_current_a: f32,
@@ -1117,6 +1160,31 @@ impl MotorState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn control_timing_keeps_fractional_rate_and_explicit_decimation() {
+        let timing = super::ControlTiming {
+            clock_hz: 167_835_842,
+            period_ticks: 8_390,
+        };
+        assert!(timing.is_valid());
+        assert_eq!(timing.stream_hz(1), 20_004);
+        assert_eq!(timing.stream_hz(4), 5_001);
+        assert_eq!(timing.stream_hz(0), 0);
+        assert!((timing.dt_s() - 8390.0 / 167_835_842.0).abs() < 1e-11);
+        assert!((timing.frequency_hz() * timing.dt_s() - 1.0).abs() < 1e-6);
+        assert_eq!(super::ControlTiming::from_hz(20_000).stream_hz(4), 5_000);
+        assert!(!super::ControlTiming::default().is_valid());
+        assert_eq!(super::ControlTiming::default().stream_hz(1), 0);
+        assert_eq!(
+            super::ControlTiming {
+                clock_hz: u32::MAX,
+                period_ticks: u32::MAX
+            }
+            .stream_hz(u32::MAX),
+            0
+        );
+    }
+
     use super::*;
 
     #[test]

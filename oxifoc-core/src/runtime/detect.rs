@@ -92,7 +92,7 @@ pub async fn detect_server<NS, B>(
     endpoints: Endpoints<NS>,
     mut backend: B,
     max_current_a: f32,
-    foc_freq_hz: u32,
+    foc_freq_hz: f32,
     runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
 ) where
     NS: NetStackHandle + Clone,
@@ -195,7 +195,7 @@ async fn run_step<B: DetectionBackend>(
     backend: &mut B,
     req: DetectRequest,
     max_current_a: f32,
-    foc_freq_hz: u32,
+    foc_freq_hz: f32,
     runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
 ) -> DetectResponse {
     if runtime_config.is_some_and(|config| {
@@ -269,10 +269,7 @@ async fn run_step<B: DetectionBackend>(
                 vbus: backend.vbus(),
                 ..Default::default()
             };
-            match backend
-                .measure_inductance(&params, foc_freq_hz as f32)
-                .await
-            {
+            match backend.measure_inductance(&params, foc_freq_hz).await {
                 Ok((ld, lq)) => DetectResponse::Inductance {
                     inductance_d_h: ld,
                     inductance_q_h: lq,

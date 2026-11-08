@@ -28,6 +28,21 @@ pub struct MotorPwm<'d> {
 }
 
 impl<'d> MotorPwm<'d> {
+    /// One ADC/FOC cycle per full center-aligned TIM1 period. The counter runs
+    /// 0..ARR..0 in 2*ARR ticks, unlike edge-aligned PWM's ARR+1 period.
+    pub fn control_timing(&self) -> oxifoc_core::types::ControlTiming {
+        let regs = embassy_stm32::pac::TIM1;
+        let period_ticks =
+            2 * u32::from(regs.arr().read().arr()) * (u32::from(regs.psc().read()) + 1);
+        let clock_hz = embassy_stm32::rcc::frequency::<peripherals::TIM1>().0;
+        let timing = oxifoc_core::types::ControlTiming {
+            clock_hz,
+            period_ticks,
+        };
+        defmt::assert!(timing.is_valid());
+        timing
+    }
+
     /// Initialize TIM1 complementary PWM for Simple FOCer 2 board
     ///
     /// Phase mapping:

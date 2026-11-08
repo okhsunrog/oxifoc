@@ -67,7 +67,10 @@ mod tests {
             assert_eq!(config.fast_hz, 0);
             std::thread::sleep(Duration::from_millis(30));
             reply
-                .send(Ok(TelemetryConfigAck { actual_fast_hz: 0 }))
+                .send(Ok(TelemetryConfigAck {
+                    actual_fast_hz: 0,
+                    ..Default::default()
+                }))
                 .unwrap();
         });
         let started = Instant::now();
@@ -87,6 +90,7 @@ mod tests {
             reply
                 .send(Ok(TelemetryConfigAck {
                     actual_fast_hz: 5000,
+                    ..Default::default()
                 }))
                 .unwrap();
         });
