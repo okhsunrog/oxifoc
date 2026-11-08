@@ -150,12 +150,15 @@ impl DetectionHardware for EmbassyDetectionHardware {
             max_dt = max_dt.max(dt);
         }
         info!(
-            "L packet: n={} seq={}..{} dt_us={}..{}",
+            "L packet: n={} seq={}..{} dt_us={}..{} span_us={}",
             capture.len,
             capture.samples[0].cycle,
             capture.samples[capture.len - 1].cycle,
             min_dt,
-            max_dt
+            max_dt,
+            capture.samples[capture.len - 1]
+                .tick_us
+                .wrapping_sub(capture.samples[0].tick_us)
         );
         Ok(capture)
     }

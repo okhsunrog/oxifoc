@@ -173,6 +173,8 @@ pub(crate) struct Excitation {
     pub index: usize,
     last_cycle: Option<u32>,
     last_tick: u32,
+    first_tick: u32,
+    first_cycle: u32,
     pub samples: [BurstSample; MAX_BURST_SAMPLES],
 }
 
@@ -186,6 +188,8 @@ impl Excitation {
             index: 0,
             last_cycle: None,
             last_tick: 0,
+            first_tick: 0,
+            first_cycle: 0,
             samples: [BurstSample {
                 alpha: 0.0,
                 beta: 0.0,
@@ -227,12 +231,18 @@ impl Excitation {
     pub fn check_timing(&mut self, cycle: u32, tick: u32, dt: f32) -> Result<(), DetectionError> {
         if let Some(last) = self.last_cycle {
             let elapsed = tick.wrapping_sub(self.last_tick);
+            let span = tick.wrapping_sub(self.first_tick) as f32;
+            let expected = cycle.wrapping_sub(self.first_cycle) as f32 * dt * 1_000_000.0;
             if cycle.wrapping_sub(last) != 1
                 || elapsed == 0
                 || elapsed as f32 > dt * 1_900_000.0 + 1.0
+                || (span - expected).abs() > dt * 1_000_000.0 + 1.0
             {
                 return Err(DetectionError::InsufficientSamples);
             }
+        } else {
+            self.first_tick = tick;
+            self.first_cycle = cycle;
         }
         self.last_cycle = Some(cycle);
         self.last_tick = tick;

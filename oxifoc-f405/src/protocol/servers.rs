@@ -318,6 +318,10 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
 /// (found on the Flipsky bring-up, 2026-07-08).
 #[embassy_executor::task]
 pub async fn detect_server(stack: &'static Stack) {
+    #[cfg(feature = "task-priority")]
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(2);
     oxifoc_core::runtime::detect_server(
         stack.endpoints(),
         F405Backend,

@@ -25,7 +25,7 @@ board-vesc6-mk5 = []
 transport-usb = []
 # UART on USART3 (PB10 TX / PB11 RX) for Cheap FOCer 2
 transport-uart = []
-# Cooperative task classes: USB workers 3, protocol servers 2, telemetry 1,
+# Cooperative task classes: USB workers 3, protocol/detection 2, telemetry 1,
 # remaining tasks 0. Complements the default USB interrupt executor.
 task-priority = ["embassy-executor/scheduler-priority"]
 # ergot over RTT channel 1 (defmt shares ch0). Diagnostic transport — high-rate
