@@ -22,7 +22,6 @@ use crate::icd::FaultTopic;
 use crate::state::{MotorControlState, update_telemetry};
 use crate::timer::Timer;
 use crate::types::FastTelemetry;
-use crate::types::FastTelemetryBatch;
 
 /// Lock-free queue for ISR → async telemetry transfer.
 ///
@@ -100,6 +99,8 @@ pub mod fast_telem_stats {
     pub static BCAST_FAILS: AtomicU32 = AtomicU32::new(0);
     /// Stream-task broadcasts accepted by the stack.
     pub static BCAST_OK: AtomicU32 = AtomicU32::new(0);
+    /// Successfully broadcast encoded payload bytes (excluding wire headers).
+    pub static BCAST_BYTES: AtomicU32 = AtomicU32::new(0);
 }
 
 /// Command-path counters (host→device direction), 1 Hz-reported by the
@@ -370,12 +371,11 @@ where
 
 /// Run the fast telemetry streaming task.
 ///
-/// Drains `FAST_TELEM_Q` on a timer and broadcasts [`FastTelemetryBatch`]
+/// Drains `FAST_TELEM_Q` on a timer and broadcasts [`crate::types::FastTelemetryBatch`]
 /// via the ergot topic system. When streaming is disabled
 /// (`FAST_TELEM_PERIOD == 0`), polls periodically waiting for the host to
-/// enable it. Batch capacity is fixed at [`FAST_BATCH_SAMPLES`] — raw-Pod
-/// batches have a compile-time wire size, sized once against the smallest
-/// device MTU instead of per-board const generics.
+/// enable it. Lossless byte deltas are encoded here, outside the ISR. Both
+/// byte capacity and sample count are bounded independently of compression.
 pub async fn fast_telemetry_stream<NS, T: Timer>(stack: NS, foc_freq_hz: u32)
 where
     NS: NetStackHandle + Clone,
@@ -390,20 +390,18 @@ where
         let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
 
         if period == 0 {
-            pending.batch.data.clear();
-            // Streaming disabled — check again in 10ms. The bbqueue holds
-            // ~40 frames, so the enable→first-drain latency must stay well
-            // under the time the queue takes to fill at the highest rate
-            // or the capture starts with a guaranteed gap.
+            pending.batch.clear();
+            // Enable may precede this wake by more than the embedded queue's
+            // few milliseconds of buffering. Capture::start discards that
+            // startup transient before collecting the experiment baseline.
             T::after_millis(10).await;
             continue;
         }
 
         // Sleep for HALF a batch at (foc_freq_hz / period) Hz: draining at
         // exactly one batch per buffer-full leaves zero slack for timer
-        // jitter (at 5 kHz the ~40-frame queue is only 8 ms deep — one
-        // late wakeup drops frames). Half-batch cadence doubles the margin
-        // for a few hundred extra wakeups per second at worst.
+        // jitter. Half-batch cadence gives margin before the bounded ISR
+        // queue fills; incompressible batches can flush before the sample cap.
         let sample_hz = foc_freq_hz / period;
         let interval_us = if sample_hz > 0 {
             ((FAST_BATCH_SAMPLES as u64 / 2).max(1) * 1_000_000) / u64::from(sample_hz)
@@ -419,13 +417,13 @@ where
         // The host can stop us while the timer is pending. Do not broadcast
         // residual samples after that stop has already been acknowledged.
         if FAST_TELEM_PERIOD.load(Ordering::Acquire) == 0 {
-            pending.batch.data.clear();
+            pending.batch.clear();
             continue;
         }
 
-        // Drain bbqueue into batches and broadcast. The queue already holds
-        // raw Pod frame bytes and the batch ships raw Pod bytes, so the copy
-        // below is the whole per-sample "serialization".
+        // Encode raw ISR frames into independently decodable batches. The
+        // encoder reserves worst-case full-frame space before reading a
+        // grant, so incompressible input cannot discard a consumed sample.
         loop {
             let batch = &mut pending.batch;
 
@@ -462,11 +460,13 @@ where
             let _result = stack
                 .stack()
                 .topics()
-                .broadcast::<FastTelemetryTopic>(batch, None);
+                .broadcast::<FastTelemetryTopic>(batch.batch(), None);
 
             if _result.is_ok() {
                 fast_telem_stats::BCAST_OK.fetch_add(1, Ordering::Relaxed);
-                batch.data.clear();
+                fast_telem_stats::BCAST_BYTES
+                    .fetch_add(batch.batch().data.len() as u32, Ordering::Relaxed);
+                batch.clear();
             } else {
                 fast_telem_stats::BCAST_FAILS.fetch_add(1, Ordering::Relaxed);
             }
@@ -494,20 +494,20 @@ where
 
 struct PendingFastBatch {
     session: u32,
-    batch: FastTelemetryBatch,
+    batch: crate::types::FastTelemetryBatchEncoder,
 }
 
 impl PendingFastBatch {
     fn new() -> Self {
         Self {
             session: 0,
-            batch: FastTelemetryBatch::new(),
+            batch: crate::types::FastTelemetryBatchEncoder::new(),
         }
     }
 
     fn enter_session(&mut self, session: u32) {
         if self.session != session {
-            self.batch.data.clear();
+            self.batch.clear();
             self.session = session;
         }
     }
@@ -533,7 +533,7 @@ mod pending_tests {
             seq: 101,
             ..Default::default()
         }));
-        let mut samples = pending.batch.samples();
+        let mut samples = pending.batch.batch().samples().unwrap().into_iter();
         assert_eq!(samples.next().unwrap().seq, 100);
         assert_eq!(samples.next().unwrap().seq, 101);
         assert!(samples.next().is_none());
@@ -547,7 +547,7 @@ mod pending_tests {
             seq: 900,
             ..Default::default()
         }));
-        assert_eq!(pending.batch.samples().next().unwrap().seq, 900);
+        assert_eq!(pending.batch.batch().samples().unwrap()[0].seq, 900);
     }
 }
 

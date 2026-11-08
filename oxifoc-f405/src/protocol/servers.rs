@@ -34,19 +34,19 @@ use crate::transport::UART_OUTQ;
 
 /// USB device task — runs USB state machine
 #[embassy_executor::task]
-pub async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
+async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
     usb.run().await;
 }
 
 /// Worker task for incoming ergot data (USB)
 #[embassy_executor::task]
-pub async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
+async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
     rcvr.run(recv_buf, usb_kit::USB_FS_MAX_PACKET_SIZE).await;
 }
 
 /// Worker task for outgoing ergot data (USB framed)
 #[embassy_executor::task]
-pub async fn run_usb_tx(
+async fn run_usb_tx(
     mut ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
     rx: FramedConsumer<&'static UsbQueue>,
 ) {
@@ -57,6 +57,33 @@ pub async fn run_usb_tx(
         usb_kit::USB_FS_MAX_PACKET_SIZE,
     )
     .await;
+}
+
+/// Build non-Send USB handlers on their owning executor. All three tasks
+/// share one priority, so bulk I/O cannot preempt a control-side endpoint wake.
+#[cfg(feature = "transport-usb")]
+#[embassy_executor::task]
+pub async fn usb_io_task(
+    stack: &'static Stack,
+    usb: embassy_stm32::Peri<'static, embassy_stm32::peripherals::USB_OTG_FS>,
+    pa12: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PA12>,
+    pa11: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PA11>,
+) {
+    let (transport, ident) = crate::transport::init_usb(stack, usb, pa12, pa11);
+    defmt::unwrap!(crate::protocol::USB_IDENT.init(ident).map_err(|_| ()));
+    // SAFETY: this future is spawned only by USB_EXECUTOR, and is polled
+    // directly by Embassy with its own task waker. The local spawner and
+    // newly constructed non-Send handlers stay on that same IRQ executor.
+    let spawner = unsafe { Spawner::for_current_executor().await };
+    spawner.spawn(defmt::unwrap!(usb_task(transport.usb_dev)));
+    spawner.spawn(defmt::unwrap!(run_usb_rx(
+        transport.rx_worker,
+        crate::protocol::USB_RECV_BUF.init_with(|| [0; MAX_PACKET_SIZE])
+    )));
+    spawner.spawn(defmt::unwrap!(run_usb_tx(
+        transport.ep_in,
+        crate::transport::USB_OUTQ.framed_consumer()
+    )));
 }
 
 /// Worker task for incoming ergot data (UART)

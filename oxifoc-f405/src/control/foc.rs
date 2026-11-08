@@ -560,16 +560,18 @@ pub async fn isr_stats_task() {
         let read = ft::READ_OK.swap(0, Ordering::Relaxed);
         let badlen = ft::READ_BADLEN.swap(0, Ordering::Relaxed);
         let batches = ft::BCAST_OK.swap(0, Ordering::Relaxed);
+        let payload_bytes = ft::BCAST_BYTES.swap(0, Ordering::Relaxed);
         let failed = ft::BCAST_FAILS.swap(0, Ordering::Relaxed);
         if pushed != 0 || dropped != 0 || read != 0 || failed != 0 {
             defmt::info!(
-                "telem/s: push={} drop={} read={} badlen={} batches={} failed={}",
+                "telem/s: push={} drop={} read={} badlen={} batches={} failed={} payload_bytes={}",
                 pushed,
                 dropped,
                 read,
                 badlen,
                 batches,
-                failed
+                failed,
+                payload_bytes
             );
         }
         // Hall diagnostics: raw pin state + edge/overcapture rates. A

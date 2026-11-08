@@ -13,6 +13,9 @@ See [the bench acquisition contract](resistance-bench-plan.md) for current
 fields, provenance and the staged acceptance plan. The 18-byte examples below
 describe the original enrichment implementation.
 
+ICD v8 losslessly compresses frames within each batch; the decoded 34 bytes
+and enrichment math stay unchanged. See [batch encoding](telemetry-batch-encoding.md).
+
 ## Goal & principle
 
 The raw frame ships ADC counts + fixed-point scalars; the host reconstructs the

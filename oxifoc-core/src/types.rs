@@ -362,7 +362,7 @@ pub struct MotorStatus {
 ///
 /// `#[repr(C)]`, 17×u16/i16 = **34 bytes**, align 2, no padding → `Pod` clean.
 /// The in-memory layout IS the wire layout: batches ship the little-endian
-/// Pod bytes verbatim (see [`FastTelemetryBatch`]), so this struct doubles as
+/// Pod bytes losslessly (see [`FastTelemetryBatch`]), so this struct doubles as
 /// the wire contract — reorder/resize fields only together with the host.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
@@ -411,18 +411,13 @@ pub struct FastTelemetry {
     pub pwm_enables: u16,
 }
 
-/// Samples per fast-telemetry batch. Sized so the encoded batch statically
-/// fits the SMALLEST board interface MTU (f405 `MAX_PACKET_SIZE` = 512):
-/// 14 × 34 = 476 B payload + [`FAST_BATCH_WIRE_OVERHEAD`]. The previous 32
-/// (576 B) exceeded 512 and full batches silently failed to broadcast on the
-/// f405 (visible only as `BCAST_FAILS`). Every device crate pins the
-/// relationship with a compile-time assert next to its `MAX_PACKET_SIZE`.
-/// Batch size does not move throughput on the byte-rate-bound debug links
-/// (docs/notes/rtt-telemetry-throughput.md §4.7) — it only has to fit the MTU.
-pub const FAST_BATCH_SAMPLES: usize = 14;
+/// Maximum samples in a losslessly encoded batch. The independent byte cap
+/// below can stop the encoder earlier for incompressible input; neither
+/// sample values nor compression ratio can make a batch exceed the MTU.
+pub const FAST_BATCH_SAMPLES: usize = 24;
 
-/// Byte capacity of a fast-telemetry batch: samples × 34 B Pod frame.
-pub const FAST_BATCH_BYTES: usize = FAST_BATCH_SAMPLES * size_of::<FastTelemetry>();
+/// Encoded byte capacity, independent of compression ratio/sample count.
+pub const FAST_BATCH_BYTES: usize = 480;
 
 /// Worst-case wire bytes around an encoded batch topic frame: ergot's
 /// `MAX_HDR_ENCODED_SIZE` (28, includes the broadcast key appendix) + the
@@ -431,22 +426,16 @@ pub const FAST_BATCH_WIRE_OVERHEAD: usize = 32;
 
 /// Batch of fast telemetry samples for efficient network transmission.
 ///
-/// **Raw-Pod encoding**: `data` holds the concatenated little-endian
-/// [`FastTelemetry`] Pod bytes (34 B each), NOT a postcard element sequence.
-/// postcard serializes `Vec<u8>` as varint(len) + verbatim bytes, so:
-/// - device-side encode is a memcpy (no per-field varint work in the hot
-///   telemetry path — measured CPU relief on a core that also runs a 20 kHz
-///   FOC ISR);
-/// - the wire size is a compile-time constant (34 B/sample regardless of
-///   values), so an encoded batch can never straddle the MTU — varint frames
-///   grew with motor activity and silently exceeded it (see the BATCH=64 bug,
-///   commit e1f65b5);
-/// - both ends are little-endian (Cortex-M, x86); the Pod layout is the wire
-///   contract, round-trip covered by `batch_roundtrip` below.
+/// ICD v8 lossless byte-delta encoding. Each batch starts independently with
+/// a full 34-byte Pod frame (tag 0). Following frames are either full frames
+/// or sparse replacements (tag 1, five-byte little-endian changed-byte mask,
+/// then changed bytes in offset order). No state crosses a batch boundary.
+/// Arbitrary frames fall back to full encoding; payload capacity always fits
+/// the MTU, regardless of values or compression ratio. ADC/PWM bits are exact.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct FastTelemetryBatch {
-    /// `34 × n` raw frame bytes for `n` samples, `n ≤ FAST_BATCH_SAMPLES`.
+    /// Encoded frames, at most FAST_BATCH_SAMPLES, bounded by byte capacity.
     pub data: Vec<u8, FAST_BATCH_BYTES>,
 }
 
@@ -455,40 +444,16 @@ impl FastTelemetryBatch {
         Self { data: Vec::new() }
     }
 
-    /// Number of whole samples currently in the batch.
-    pub fn len(&self) -> usize {
-        self.data.len() / size_of::<FastTelemetry>()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
-
-    /// True when another 34 B frame no longer fits.
-    pub fn is_full(&self) -> bool {
-        self.data.len() + size_of::<FastTelemetry>() > FAST_BATCH_BYTES
-    }
-
-    /// Append one frame's raw Pod bytes. Returns `false` (batch unchanged) if
-    /// `frame` is not exactly one 34 B frame or the batch is full.
-    pub fn push_bytes(&mut self, frame: &[u8]) -> bool {
-        frame.len() == size_of::<FastTelemetry>() && self.data.extend_from_slice(frame).is_ok()
-    }
-
-    /// Append one sample (device-side convenience over [`Self::push_bytes`]).
-    #[cfg(feature = "pod")]
-    pub fn push(&mut self, sample: &FastTelemetry) -> bool {
-        self.push_bytes(bytemuck::bytes_of(sample))
-    }
-
-    /// Decode the batch back into samples (host-side).
-    #[cfg(feature = "pod")]
-    pub fn samples(&self) -> impl Iterator<Item = FastTelemetry> + '_ {
-        self.data
-            .chunks_exact(size_of::<FastTelemetry>())
-            .map(bytemuck::pod_read_unaligned)
-    }
 }
+
+#[cfg(feature = "pod")]
+#[path = "fast_telemetry_codec.rs"]
+mod fast_telemetry_codec;
+#[cfg(feature = "pod")]
+pub use fast_telemetry_codec::{FastBatchDecodeError, FastTelemetryBatchEncoder};
 
 /// Low-frequency system telemetry (streamed at configurable rate, default 10Hz)
 ///
@@ -573,7 +538,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 7;
+pub const ICD_PROTO_VERSION: u16 = 8;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -1303,7 +1268,7 @@ mod tests {
             })
             .collect();
 
-        let mut batch = FastTelemetryBatch::new();
+        let mut batch = FastTelemetryBatchEncoder::new();
         assert_eq!(size_of::<FastTelemetry>(), 34);
         const { assert!(FAST_BATCH_BYTES + FAST_BATCH_WIRE_OVERHEAD <= 512) };
         for s in &samples {
@@ -1314,12 +1279,11 @@ mod tests {
         assert_eq!(batch.len(), FAST_BATCH_SAMPLES);
 
         let mut buf = [0u8; FAST_BATCH_BYTES + 8];
-        let wire = postcard::to_slice(&batch, &mut buf).unwrap();
-        // varint(len=576) = 2 B + payload; the container adds nothing else.
-        assert_eq!(wire.len(), 2 + FAST_BATCH_BYTES);
+        let wire = postcard::to_slice(batch.batch(), &mut buf).unwrap();
+        assert_eq!(wire.len(), 2 + batch.batch().data.len());
 
         let decoded: FastTelemetryBatch = postcard::from_bytes(wire).unwrap();
-        let out: Vec<FastTelemetry, FAST_BATCH_SAMPLES> = decoded.samples().collect();
+        let out = decoded.samples().unwrap();
         assert_eq!(out, samples);
     }
 }

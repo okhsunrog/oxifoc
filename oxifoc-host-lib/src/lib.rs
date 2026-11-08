@@ -825,8 +825,8 @@ fn spawn_fast_telemetry_subscriber<NS>(
             let ns = stack.stack();
             let receiver = ns
                 .topics()
-                // Raw-Pod batches have one fixed capacity (FAST_BATCH_BYTES in
-                // core) shared by both ends — no per-side sizing to mismatch.
+                // Encoded batches have one fixed byte capacity shared by both
+                // ends; decoded samples retain the exact ISR frame bits.
                 .heap_bounded_receiver::<FastTelemetryTopic>(128, Some("fast_telem"));
             let mut pinned = pin!(receiver);
             let mut hdl = pinned.as_mut().subscribe();
@@ -848,7 +848,14 @@ fn spawn_fast_telemetry_subscriber<NS>(
                             continue;
                         }
                         batches += 1;
-                        for sample in msg.t.samples() {
+                        let samples = match msg.t.samples() {
+                            Ok(samples) => samples,
+                            Err(error) => {
+                                tracing::warn!(?error, "invalid fast telemetry batch");
+                                continue;
+                            }
+                        };
+                        for sample in samples {
                             // try_send: drop-on-full is the right semantics
                             // for telemetry. A blocking send would park this
                             // tokio worker whenever the UI stops draining

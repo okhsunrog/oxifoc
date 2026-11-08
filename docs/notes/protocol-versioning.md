@@ -20,6 +20,13 @@ the element layout is hidden inside the batch's byte vector, so schema hashes
 alone cannot catch this change. Phase acquisition uses capability bits 1/2 and
 the existing eight reserved bytes; see [the acquisition contract](resistance-bench-plan.md).
 
+ICD v8 keeps the 34-byte decoded frame and bootstrap unchanged, but replaces
+concatenated raw frames with independent lossless byte-delta batches. Payloads
+are capped at 480 bytes and 24 samples; full-frame fallback handles arbitrary
+values without exceeding the MTU. The host rejects malformed batches in full.
+This is a semantic wire change, so v7 and v8 hosts/devices must not connect.
+See [the encoding contract](telemetry-batch-encoding.md).
+
 The host validates, in order:
 
 1. bootstrap magic;

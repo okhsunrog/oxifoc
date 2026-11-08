@@ -16,6 +16,20 @@ bind_interrupts!(struct ExtiIrqs {
     EXTI9_5 => exti::InterruptHandler<interrupt::typelevel::EXTI9_5>;
 });
 
+// USART1 is unused (external UART is USART3). Reserve its vector for USB
+// work below ADC, Hall and USB hardware IRQs, above thread-mode batching.
+#[cfg(feature = "transport-usb")]
+static USB_EXECUTOR: embassy_executor::InterruptExecutor =
+    embassy_executor::InterruptExecutor::new();
+
+#[cfg(feature = "transport-usb")]
+#[embassy_stm32::interrupt]
+unsafe fn USART1() {
+    // SAFETY: start() initializes the executor before enabling this vector;
+    // this handler is its sole poller and USART1 hardware remains disabled.
+    unsafe { USB_EXECUTOR.on_interrupt() };
+}
+
 // Module declarations
 mod calibration;
 mod config;
@@ -120,7 +134,18 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 6: Initialize USB + UART transports ==========
     #[cfg(feature = "transport-usb")]
-    let (usb_transport, usb_ident) = transport::init_usb(stack, p.USB_OTG_FS, p.PA12, p.PA11);
+    let usb_ident = {
+        use embassy_stm32::interrupt::{InterruptExt, Priority};
+        interrupt::USART1.set_priority(Priority::P6);
+        let usb_spawner = USB_EXECUTOR.start(interrupt::USART1);
+        usb_spawner.spawn(defmt::unwrap!(protocol::servers::usb_io_task(
+            stack,
+            p.USB_OTG_FS,
+            p.PA12,
+            p.PA11
+        )));
+        *protocol::USB_IDENT.get().await
+    };
     #[cfg(feature = "transport-uart")]
     let (uart_transport, uart_ident) =
         transport::init_uart(stack, r.uart.usart3, r.uart.pb10, r.uart.pb11);
@@ -144,20 +169,6 @@ async fn main(spawner: Spawner) {
         )));
         spawner.spawn(defmt::unwrap!(protocol::servers::run_rtt_tx(
             rtt_transport.tx
-        )));
-    }
-    #[cfg(feature = "transport-usb")]
-    {
-        spawner.spawn(defmt::unwrap!(protocol::servers::usb_task(
-            usb_transport.usb_dev
-        )));
-        spawner.spawn(defmt::unwrap!(protocol::servers::run_usb_rx(
-            usb_transport.rx_worker,
-            protocol::USB_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-        )));
-        spawner.spawn(defmt::unwrap!(protocol::servers::run_usb_tx(
-            usb_transport.ep_in,
-            transport::USB_OUTQ.framed_consumer()
         )));
     }
     #[cfg(feature = "transport-uart")]
