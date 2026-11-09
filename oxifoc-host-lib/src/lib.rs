@@ -616,7 +616,14 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
                     .await
                 }
             };
-            run_framed_with_reconnect(stack, register_fn, state_notify, &cfg, ctx).await
+            Box::pin(run_framed_with_reconnect(
+                stack,
+                register_fn,
+                state_notify,
+                &cfg,
+                ctx,
+            ))
+            .await
         }
         TransportConfig::Ble { device } => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
