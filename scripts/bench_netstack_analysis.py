@@ -325,8 +325,8 @@ def analyze(events: list[Event], timer_hz: int, *, mask: str,
             "scope": "covered time of qualified recorded groups only, unioning nested locks; "
                      "not total interrupt-mask time or a whole-window mask fraction; "
                      "unknown enclosing locks cannot be ruled out for BASEPRI",
-            "cpu_scope": "subtract only recorded ADC 8/9 overlap; ADC snapshot and entry probe before 8, "
-                         "untraced IRQs, release tail and trace overhead remain included",
+            "cpu_scope": "subtract only recorded ADC 8/9 overlap; ADC work before 8/after 9, "
+                         "untraced IRQs and trace overhead remain charged; NetStack release after 16 is excluded",
         },
         "locks": per_lock,
         "adc_recorded_spans": {
