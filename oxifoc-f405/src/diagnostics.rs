@@ -291,6 +291,15 @@ pub mod trace {
         }
     }
 
+    /// Whether the finite trace is accepting events. ADC probes must remain
+    /// inactive while armed, delayed or frozen; network events advance those
+    /// states without adding MMIO work to every control cycle.
+    #[cfg(feature = "bench-netstack-trace")]
+    #[inline(always)]
+    pub fn is_recording() -> bool {
+        BENCH_TRACE_CONTROL.load(Ordering::Relaxed) == 2
+    }
+
     #[inline]
     pub fn record(kind: u32, id: u32) {
         match BENCH_TRACE_CONTROL.load(Ordering::Relaxed) {

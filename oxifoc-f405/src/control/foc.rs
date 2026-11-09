@@ -402,7 +402,9 @@ fn ADC() {
     static mut SEQ: u32 = 0;
 
     #[cfg(feature = "bench-netstack-trace")]
-    {
+    let trace_adc = crate::diagnostics::trace::is_recording();
+    #[cfg(feature = "bench-netstack-trace")]
+    if trace_adc {
         // First MMIO observations in this IRQ, before DWT or trace appends.
         // A turn between CR1 reads makes DIR/CNT phase reconstruction ambiguous.
         let dir_before = embassy_stm32::pac::TIM1.cr1().read().dir()
@@ -418,8 +420,15 @@ fn ADC() {
         crate::diagnostics::trace::record(crate::diagnostics::trace::ADC_ENTRY_PHASE, phase);
     }
     let isr_t0 = isr_timing_now();
-    #[cfg(any(feature = "bench-executor-trace", feature = "bench-netstack-trace"))]
+    #[cfg(feature = "bench-executor-trace")]
     crate::diagnostics::trace::record(8, 0);
+    #[cfg(all(
+        feature = "bench-netstack-trace",
+        not(feature = "bench-executor-trace")
+    ))]
+    if trace_adc {
+        crate::diagnostics::trace::record(8, 0);
+    }
     let last_start = if cfg!(feature = "isr-profiling") {
         ISR_LAST_START.load(Ordering::Relaxed)
     } else {
@@ -614,8 +623,15 @@ fn ADC() {
     oxifoc_core::isr_prof::add(&ISR_PROF_FOC, prof_t2, prof_t3);
     oxifoc_core::isr_prof::add(&ISR_PROF_PUB, prof_t3, prof_t4);
 
-    #[cfg(any(feature = "bench-executor-trace", feature = "bench-netstack-trace"))]
+    #[cfg(feature = "bench-executor-trace")]
     crate::diagnostics::trace::record(9, 0);
+    #[cfg(all(
+        feature = "bench-netstack-trace",
+        not(feature = "bench-executor-trace")
+    ))]
+    if trace_adc {
+        crate::diagnostics::trace::record(9, 0);
+    }
     let isr_end = isr_timing_now();
     if cfg!(feature = "isr-timing") {
         ISR_CYC_SUM.fetch_add(isr_end.wrapping_sub(isr_t0), Ordering::Relaxed);
