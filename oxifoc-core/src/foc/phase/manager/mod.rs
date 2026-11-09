@@ -6,6 +6,8 @@
 mod accessors;
 #[cfg(feature = "storage")]
 mod config;
+#[cfg(feature = "storage")]
+pub use config::PreparedPhaseModel;
 mod constructors;
 mod hall;
 mod open_loop;

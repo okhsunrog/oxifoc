@@ -104,6 +104,16 @@ pub struct PhaseInput {
 /// current vector `ω·dt` off the q axis while the controller's own frame
 /// reports id = 0 (see `commutation_frame_tracks_rotor_at_sample_instant`).
 pub trait PhaseProvider {
+    /// Install a prepared motor model. Providers without model support reject
+    /// explicitly, so configuration cannot acknowledge a partial application.
+    #[cfg(feature = "storage")]
+    fn apply_motor_model(
+        &mut self,
+        _model: &mut super::PreparedPhaseModel,
+    ) -> Option<super::PhaseSource> {
+        None
+    }
+
     /// Coherent startup request for the current cycle. The default adapts the
     /// legacy accessors so existing providers keep working; providers with a
     /// sequencer should override this from their state in one place.

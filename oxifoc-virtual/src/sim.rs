@@ -21,7 +21,7 @@ use oxifoc_core::foc::velocity::VelocityLoopConfig;
 use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::derating::DeratingConfig;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
-use oxifoc_core::motor::foc_driver::{CurrentLimits, PreparedBoardConfig};
+use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
 use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
 use oxifoc_core::state::{MotorControlState, run_foc_cycle};
 use oxifoc_core::storage::RuntimeConfig;
@@ -131,9 +131,7 @@ pub async fn foc_loop(
     if let Some(calib) = &config.hall_calibration {
         hall.set_calibration_raw(calib.angles);
     }
-    let mut phase = PhaseManager::with_hall(hall);
-    phase.configure_observers_from_config(&config, vbus);
-    phase.set_phase_tracker(100.0, 1.2);
+    let phase = PhaseManager::with_hall(hall);
     let controller = FocController::<SvpwmModulator>::from_runtime_config(&config, vbus);
     let pwm = VirtualPwm {
         duties: [0; 3],
@@ -141,15 +139,19 @@ pub async fn foc_loop(
     };
     let mut driver = FocDriver::new(controller, pwm, Currents::new(&config), phase, dt);
     driver.set_actuation_delay(params.actuation_delay);
-    driver.set_current_limits(CurrentLimits::from_stored(
-        config.current_limits.as_ref(),
+    let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(
+        &config,
+        vbus,
         board.max_phase_current_a,
-        config
-            .motor_params
-            .as_ref()
-            .and_then(oxifoc_core::storage::MotorParamsConfig::rating_current_a)
-            .unwrap_or(0.0),
-    ));
+    );
+    let source = driver
+        .apply_motor_model(&mut model)
+        .expect("virtual phase manager supports motor models");
+    critical_section::with(|cs| {
+        let mut state = state_mutex.borrow(cs).borrow_mut();
+        state.motor_pole_pairs = model.pole_pairs;
+        state.phase_source = source;
+    });
     driver.set_failsafe(FailsafeConfig::from_stored(config.failsafe.as_ref()));
     driver.set_ov_threshold(board.max_vbus_mv as f32 / 1000.0);
     driver.set_velocity_config(VelocityLoopConfig::from_stored(config.velocity.as_ref()));
@@ -223,7 +225,7 @@ pub async fn foc_loop(
                 error_count: 0,
                 edge_age_s: driver.phase().hall().time_since_edge(now).unwrap_or(0) as f32 * 1e-6,
             };
-            publish_cycle_telemetry(state_mutex, adc, Some(hall), telem, params.pole_pairs, seq);
+            publish_cycle_telemetry(state_mutex, adc, Some(hall), telem, seq);
             previous_angle = sample.angle_rad;
             // Load opposes motion, including after a direction reversal.
             let omega_m = sample.omega_e / f32::from(params.pole_pairs);

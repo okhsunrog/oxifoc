@@ -12,7 +12,7 @@
 #![allow(dead_code)] // Public API not yet wired to protocol handlers
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::interrupt;
@@ -28,7 +28,6 @@ use oxifoc_core::foc::velocity::VelocityLoopConfig;
 use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::derating::DeratingConfig;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
-use oxifoc_core::motor::foc_driver::CurrentLimits;
 use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
 use oxifoc_core::state::{
     BOOT_CURRENT_OFFSET_PENDING, CURRENT_OFFSET_DONE, DriverOperation, run_foc_cycle,
@@ -66,7 +65,6 @@ static VBUS_MEASURED: AtomicBool = AtomicBool::new(false);
 pub static BOARD_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 /// Latest motor temperature in 0.1°C units (updated in ADC interrupt).
 pub static MOTOR_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
-static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
 
 /// DIAG TEMP: raw motor-NTC ADC counts (PC4) for the hall-connector hunt.
 pub static MOTOR_TEMP_RAW: AtomicU16 = AtomicU16::new(0);
@@ -174,10 +172,6 @@ pub async fn init(
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc1)));
     ADC2_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc2)));
     ADC3_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc3)));
-    MOTOR_POLE_PAIRS.store(
-        config.motor_params.as_ref().map_or(0, |m| m.pole_pairs),
-        Ordering::Relaxed,
-    );
 
     // Enable the ADC interrupt and its internal PWM trigger. Phase channels
     // stay high-Z until the calibration state machine selects one.
@@ -221,60 +215,11 @@ pub async fn init(
     hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
     let initial_vbus_v = first_vbus_v().await;
-    let mut phase_manager = PhaseManager::with_hall(hall_proxy).with_sincos::<FastSinCos>();
-    // Arm the sensorless estimators (back-EMF + HFI) from detected motor
-    // params; the angle source stays Hall until the host switches it.
-    phase_manager.configure_observers_from_config(config, initial_vbus_v);
+    let phase_manager = PhaseManager::with_hall(hall_proxy).with_sincos::<FastSinCos>();
 
-    // Boot angle source is CONFIG-driven (this board persists config, so no
-    // compile-time SENSORLESS switch like the g431): a stored hall
-    // calibration means a sensored motor — keep the Hall boot. No hall
-    // calibration means sensorless — boot on the back-EMF observer once
-    // detection has filled motor params (before that, Manual: commutation
-    // stays inert until the host drives it, and unwired hall inputs never
-    // get consulted, so they can't spam HallError).
-    if !config
-        .hall_calibration
-        .as_ref()
-        .is_some_and(oxifoc_core::storage::HallCalibrationConfig::is_calibrated)
-    {
-        let boot_source = if config.motor_params.is_some() {
-            PhaseSource::Observer
-        } else {
-            PhaseSource::Manual
-        };
-        let applied = if phase_manager.set_source(boot_source).is_err() {
-            // Observer rejects a PARTIAL param set (R/L present, flux step
-            // never ran). Fall back to Manual, not Hall — same rationale as
-            // the g431 sensorless boot.
-            defmt::warn!(
-                "sensorless boot source rejected (partial motor params?); falling back to Manual"
-            );
-            let _ = phase_manager.set_source(PhaseSource::Manual);
-            PhaseSource::Manual
-        } else {
-            boot_source
-        };
-        // Mirror into shared state: the runtime only syncs phase_source on
-        // host-commanded changes (DriverCommand::SetPhaseSource), so without
-        // this the status endpoint reports the struct default (Hall) forever.
-        critical_section::with(|cs| {
-            STATE.borrow(cs).borrow_mut().phase_source = applied;
-        });
-    }
-    if config.motor_params.is_some() {
-        // Commutation phase tracker: 2nd-order PLL on the observer angle
-        // (ωn/ζ carried over from the g431 ZD2808 bench, 2026-07-07 —
-        // see docs/decisions.md "minimal load-bearing set"). The accel
-        // prior is deliberately NOT set here: its per_amp is a per-motor
-        // measurement (free-rotor spin-up) that has not been taken on
-        // this board yet.
-        phase_manager.set_phase_tracker(100.0, 1.2);
-    }
-
-    // Build FOC controller from stored config (motor params → PI gains → defaults)
-    let mut foc_controller =
-        FocController::<_, FastSinCos>::from_runtime_config(config, initial_vbus_v);
+    // Hardware/controller setup is independent of the electrical model.
+    // Boot and live writes install the same prepared model below.
+    let mut foc_controller = FocController::<_, FastSinCos>::new(initial_vbus_v);
 
     // Configure dead time compensation
     foc_controller
@@ -295,18 +240,53 @@ pub async fn init(
     );
     foc_driver.set_actuation_delay(actuation_delay_cycles);
 
-    // Current limits: stored config (clamped to the board ceiling) or board defaults
-    foc_driver.set_current_limits(CurrentLimits::from_stored(
-        config.current_limits.as_ref(),
+    let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(
+        config,
+        initial_vbus_v,
         BOARD.max_phase_current_a,
-        // Motor rating ceiling (detection's thermal solve), 0 = unknown.
-        config
-            .motor_params
-            .as_ref()
-            .and_then(oxifoc_core::storage::MotorParamsConfig::rating_current_a)
-            .unwrap_or(0.0),
-    ));
-
+    );
+    let source = defmt::unwrap!(foc_driver.apply_motor_model(&mut model));
+    critical_section::with(|cs| {
+        let mut state = STATE.borrow(cs).borrow_mut();
+        state.motor_pole_pairs = model.pole_pairs;
+        state.phase_source = source;
+    });
+    // Boot angle source is CONFIG-driven (this board persists config, so no
+    // compile-time SENSORLESS switch like the g431): a stored hall
+    // calibration means a sensored motor — keep the Hall boot. No hall
+    // calibration means sensorless — boot on the back-EMF observer once
+    // detection has filled motor params (before that, Manual: commutation
+    // stays inert until the host drives it, and unwired hall inputs never
+    // get consulted, so they can't spam HallError).
+    if !config
+        .hall_calibration
+        .as_ref()
+        .is_some_and(oxifoc_core::storage::HallCalibrationConfig::is_calibrated)
+    {
+        let boot_source = if config.motor_params.is_some() {
+            PhaseSource::Observer
+        } else {
+            PhaseSource::Manual
+        };
+        let applied = if foc_driver.phase_mut().set_source(boot_source).is_err() {
+            // Observer rejects a PARTIAL param set (R/L present, flux step
+            // never ran). Fall back to Manual, not Hall — same rationale as
+            // the g431 sensorless boot.
+            defmt::warn!(
+                "sensorless boot source rejected (partial motor params?); falling back to Manual"
+            );
+            let _ = foc_driver.phase_mut().set_source(PhaseSource::Manual);
+            PhaseSource::Manual
+        } else {
+            boot_source
+        };
+        // Mirror into shared state: the runtime only syncs phase_source on
+        // host-commanded changes (DriverCommand::SetPhaseSource), so without
+        // this the status endpoint reports the struct default (Hall) forever.
+        critical_section::with(|cs| {
+            STATE.borrow(cs).borrow_mut().phase_source = applied;
+        });
+    }
     // Failsafe: command-staleness deadman + reaction policy from stored config
     // (or board defaults); the OV trip feeds the regen-brake derate.
     foc_driver.set_failsafe(FailsafeConfig::from_stored(config.failsafe.as_ref()));
@@ -609,7 +589,6 @@ fn ADC() {
         adc_snapshot,
         hall_snapshot,
         foc_telem.unwrap_or_default(),
-        MOTOR_POLE_PAIRS.load(Ordering::Relaxed),
         *SEQ,
     );
 

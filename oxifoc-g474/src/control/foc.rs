@@ -1,7 +1,7 @@
 //! FOC (Field-Oriented Control) management and ADC interrupt handling
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI16, AtomicU16, AtomicU32, Ordering};
 
 use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::mode::Blocking;
@@ -36,7 +36,6 @@ pub static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
 pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
 /// Latest measured FET temperature in 0.1°C units (updated in ADC interrupt).
 pub static FET_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
-static MOTOR_POLE_PAIRS: AtomicU8 = AtomicU8::new(0);
 
 // ========== ADC Handles ==========
 
@@ -75,20 +74,13 @@ pub async fn init(
 
     // Build current sensor and phase manager
     let current_sensor = G474CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
-    MOTOR_POLE_PAIRS.store(
-        config.motor_params.as_ref().map_or(0, |m| m.pole_pairs),
-        Ordering::Relaxed,
-    );
     let hall_proxy = HallAngleProxy::new();
     // The g474 FOC ISR is not armed yet (ADC1_2 is never unmasked — the
     // motor path on this board is dormant, see docs/TODO.md), so there is
     // no measurement to wait for. Placeholder until the ISR comes alive;
     // then adopt the measured-VBUS wait used by f405/g431 (first_vbus_v).
     let initial_vbus_v = 12.0;
-    let mut phase_manager = PhaseManager::with_hall(hall_proxy).with_sincos::<CordicSinCos>();
-    // Arm the sensorless estimators (back-EMF + HFI) from detected motor
-    // params; the angle source stays Hall until the host switches it.
-    phase_manager.configure_observers_from_config(config, initial_vbus_v);
+    let phase_manager = PhaseManager::with_hall(hall_proxy).with_sincos::<CordicSinCos>();
 
     // Initialize CORDIC hardware for fast sin/cos in FOC loop
     CordicSinCos::init(cordic_peri);
@@ -96,25 +88,19 @@ pub async fn init(
     // Build FOC driver with dt from PWM config; controller and limits come
     // from the stored config (motor params → PI gains → defaults).
     let mut foc_driver = FocDriver::new(
-        FocController::<SvpwmModulator, CordicSinCos>::from_runtime_config(
-            config,
-            initial_vbus_v,
-        ),
+        FocController::<SvpwmModulator, CordicSinCos>::new(initial_vbus_v),
         motor_pwm,
         current_sensor,
         phase_manager,
         PWM_CONFIG.dt_s(),
     );
-    foc_driver.set_current_limits(oxifoc_core::motor::foc_driver::CurrentLimits::from_stored(
-        config.current_limits.as_ref(),
-        BOARD.max_phase_current_a,
-        // Motor rating ceiling (detection's thermal solve), 0 = unknown.
-        config
-            .motor_params
-            .as_ref()
-            .and_then(|m| m.rating_current_a())
-            .unwrap_or(0.0),
-    ));
+    let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(config, initial_vbus_v, BOARD.max_phase_current_a);
+    let source = defmt::unwrap!(foc_driver.apply_motor_model(&mut model));
+    critical_section::with(|cs| {
+        let mut state = STATE.borrow(cs).borrow_mut();
+        state.motor_pole_pairs = model.pole_pairs;
+        state.phase_source = source;
+    });
 
     // Failsafe: command-staleness deadman + reaction policy from stored config
     // (or board defaults); the OV trip feeds the regen-brake derate.
@@ -258,7 +244,6 @@ fn ADC1_2() {
         adc_snapshot,
         hall_snapshot,
         foc_telem.unwrap_or_default(),
-        MOTOR_POLE_PAIRS.load(Ordering::Relaxed),
         *SEQ,
     );
 }

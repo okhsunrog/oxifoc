@@ -30,12 +30,12 @@ use critical_section::Mutex as CriticalSectionMutex;
 use embassy_futures::join::{join, join3};
 use embassy_futures::select::{Either, select};
 
-use crate::foc::controller::Decoupling;
-use crate::foc::detection::pi_tuning::{DEFAULT_BANDWIDTH_RAD_S, calculate_current_gains};
 use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::derating::DeratingConfig;
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::foc_driver::CurrentLimits;
+#[cfg(feature = "storage")]
+use crate::state::model::{CachedConfigAck, ConfigActionCache, ModelApplyGuard};
 use crate::state::{DriverCommand, DriverOperation, FlashPendingGuard};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
@@ -354,41 +354,6 @@ fn flash_parts(value: crate::types::ConfigValue) -> (ConfigKey, ConfigPayload) {
     }
 }
 
-#[cfg(feature = "storage")]
-#[derive(Clone, Copy)]
-enum CachedConfigAck {
-    Applied(u32),
-    Persisted(u32),
-}
-
-#[cfg(feature = "storage")]
-struct ConfigActionCache {
-    entries: [Option<(crate::types::ReqId, CachedConfigAck)>; 4],
-    next: usize,
-}
-
-#[cfg(feature = "storage")]
-impl ConfigActionCache {
-    const fn new() -> Self {
-        Self {
-            entries: [None; 4],
-            next: 0,
-        }
-    }
-
-    fn get(&self, id: crate::types::ReqId) -> Option<CachedConfigAck> {
-        self.entries
-            .iter()
-            .flatten()
-            .find_map(|(cached, ack)| (*cached == id).then_some(*ack))
-    }
-
-    fn insert(&mut self, id: crate::types::ReqId, ack: CachedConfigAck) {
-        self.entries[self.next] = Some((id, ack));
-        self.next = (self.next + 1) % self.entries.len();
-    }
-}
-
 /// Configuration server - handles config read/write/reset requests
 ///
 /// Reads return the live value, its optimistic-concurrency revision, and
@@ -411,7 +376,7 @@ impl ConfigActionCache {
 /// current-limit writes are clamped to it and applied to the live driver
 /// via [`DriverCommand::SetCurrentLimits`] on the command channel.
 #[cfg(feature = "storage")]
-pub async fn config_server<NS, const N: usize>(
+pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
     endpoints: Endpoints<NS>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
@@ -426,8 +391,9 @@ pub async fn config_server<NS, const N: usize>(
     let server = endpoints.bounded_server::<ConfigEndpoint, N>(Some("config"));
     let server = pin!(server);
     let mut h = server.attach();
-    let revisions_storage = CriticalSectionMutex::new(RefCell::new([0u32; ConfigGroupId::COUNT]));
-    let revisions = &revisions_storage;
+    static REVISIONS: CriticalSectionMutex<RefCell<[u32; ConfigGroupId::COUNT]>> =
+        CriticalSectionMutex::new(RefCell::new([0; ConfigGroupId::COUNT]));
+    let revisions = &REVISIONS;
     let mut initially_persisted = [None; ConfigGroupId::COUNT];
     if persist {
         let cfg = critical_section::with(|cs| runtime_config.borrow(cs).borrow().clone());
@@ -437,10 +403,13 @@ pub async fn config_server<NS, const N: usize>(
             }
         }
     }
-    let persisted_revisions_storage = CriticalSectionMutex::new(RefCell::new(initially_persisted));
-    let persisted_revisions = &persisted_revisions_storage;
-    let action_cache_storage = CriticalSectionMutex::new(RefCell::new(ConfigActionCache::new()));
-    let action_cache = &action_cache_storage;
+    static PERSISTED_REVISIONS: CriticalSectionMutex<RefCell<[Option<u32>; ConfigGroupId::COUNT]>> =
+        CriticalSectionMutex::new(RefCell::new([None; ConfigGroupId::COUNT]));
+    let persisted_revisions = &PERSISTED_REVISIONS;
+    critical_section::with(|cs| *persisted_revisions.borrow(cs).borrow_mut() = initially_persisted);
+    static ACTION_CACHE: CriticalSectionMutex<RefCell<ConfigActionCache>> =
+        CriticalSectionMutex::new(RefCell::new(ConfigActionCache::new()));
+    let action_cache = &ACTION_CACHE;
 
     loop {
         let _ = h
@@ -453,7 +422,8 @@ pub async fn config_server<NS, const N: usize>(
                             state.motor_state == MotorState::Running,
                             state.driver_operation != DriverOperation::Idle
                                 || crate::state::boot_current_offset_pending()
-                                || crate::state::current_offset_request_pending(),
+                                || crate::state::current_offset_request_pending()
+                                || crate::state::model_apply_pending(),
                         )
                     });
                     let action_id = match &req {
@@ -482,25 +452,19 @@ pub async fn config_server<NS, const N: usize>(
                         };
                     }
                     match req {
-                        ConfigRequest::Read(group) => {
-                            let cfg = critical_section::with(|cs| {
-                                runtime_config.borrow(cs).borrow().clone()
-                            });
-                            let revision = critical_section::with(|cs| {
-                                revisions.borrow(cs).borrow()[group.index()]
-                            });
+                        ConfigRequest::Read(group) => critical_section::with(|cs| {
+                            let cfg = runtime_config.borrow(cs).borrow();
+                            let revision = revisions.borrow(cs).borrow()[group.index()];
                             ConfigResponse::Snapshot(ConfigSnapshot {
                                 group,
                                 revision,
                                 valid: group != ConfigGroupId::BoardCalibration
                                     || cfg.board_calibration_is_valid(),
-                                persisted: critical_section::with(|cs| {
-                                    persisted_revisions.borrow(cs).borrow()[group.index()]
-                                        == Some(revision)
-                                }),
+                                persisted: persisted_revisions.borrow(cs).borrow()[group.index()]
+                                    == Some(revision),
                                 value: config_value(&cfg, group),
                             })
-                        }
+                        }),
                         // Boundary validation, before any persistence —
                         // the per-group rules live in `write_is_acceptable`
                         // (a sync helper: it keeps the float checks out of
@@ -555,6 +519,33 @@ pub async fn config_server<NS, const N: usize>(
                                         revision,
                                     }
                                 });
+                            }
+                            if let ConfigWrite::MotorParams(value) = &write {
+                                let mut config = critical_section::with(|cs| {
+                                    runtime_config.borrow(cs).borrow().clone()
+                                });
+                                config.motor_params = Some(value.clone());
+                                let vbus = critical_section::with(|cs| {
+                                    state_mutex.borrow(cs).borrow().last_adc.vbus_mv as f32 / 1000.0
+                                });
+                                let model =
+                                    crate::motor::foc_driver::PreparedMotorModel::from_config(
+                                        &config,
+                                        vbus,
+                                        hw_max_current_a,
+                                    );
+                                let Some(guard) = ModelApplyGuard::prepare(
+                                    model,
+                                    value.clone(),
+                                    runtime_config,
+                                    revisions,
+                                    action_cache,
+                                    keyed.id,
+                                    current_revision,
+                                ) else {
+                                    return ConfigResponse::Busy;
+                                };
+                                return guard.apply::<T>().await;
                             }
                             // Update the in-memory mirror.
                             critical_section::with(|cs| {
@@ -628,63 +619,8 @@ pub async fn config_server<NS, const N: usize>(
                                         .send(DriverCommand::SetPiGains { kp: v.kp, ki: v.ki })
                                         .await;
                                 }
-                                // New motor params (post-detection write):
-                                // retune the current loop the same way boot
-                                // does, otherwise the driver keeps the
-                                // conservative detection gains until reboot.
-                                // Same precedence as boot: explicit stored PI
-                                // gains win over the l_avg-derived tuning
-                                // (pulse Ld/Lq are the decoupling values; the
-                                // loop runs on the HF inductance — see
-                                // FocController::from_runtime_config).
-                                // Validity is guaranteed by the boundary
-                                // guard above — no silent-skip arm left.
-                                ConfigWrite::MotorParams(v) => {
-                                    let stored_gains = critical_section::with(|cs| {
-                                        runtime_config.borrow(cs).borrow().pi_gains.clone()
-                                    });
-                                    if let Some(pg) = stored_gains {
-                                        CMD_CHANNEL
-                                            .send(DriverCommand::SetPiGains {
-                                                kp: pg.kp,
-                                                ki: pg.ki,
-                                            })
-                                            .await;
-                                    } else {
-                                        let l_avg = (v.inductance_d_h + v.inductance_q_h) / 2.0;
-                                        let (kp, ki) = calculate_current_gains(
-                                            v.resistance_ohm,
-                                            l_avg,
-                                            DEFAULT_BANDWIDTH_RAD_S,
-                                        );
-                                        CMD_CHANNEL
-                                            .send(DriverCommand::SetPiGains { kp, ki })
-                                            .await;
-                                    }
-                                    // New inductances/flux also re-arm the
-                                    // dq-decoupling feedforward, same as boot
-                                    // (this used to arm the AC inductances
-                                    // where boot arms the fundamental ones).
-                                    CMD_CHANNEL
-                                        .send(DriverCommand::SetDecoupling(
-                                            Decoupling::from_motor_params(&v),
-                                        ))
-                                        .await;
-                                    // A new rating re-clamps the live limits
-                                    // (a lower-rated motor must take effect
-                                    // now, not at the next boot).
-                                    let limits = critical_section::with(|cs| {
-                                        runtime_config.borrow(cs).borrow().current_limits.clone()
-                                    });
-                                    CMD_CHANNEL
-                                        .send(DriverCommand::SetCurrentLimits(
-                                            CurrentLimits::from_stored(
-                                                limits.as_ref(),
-                                                hw_max_current_a,
-                                                rating_a,
-                                            ),
-                                        ))
-                                        .await;
+                                ConfigWrite::MotorParams(_) => {
+                                    unreachable!("handled by coherent model transaction")
                                 }
                                 // Cruise velocity-loop tuning applies live.
                                 ConfigWrite::Velocity(v) => {
@@ -831,25 +767,33 @@ pub async fn config_server<NS, const N: usize>(
                                     return ConfigResponse::Error;
                                 }
                             }
-                            critical_section::with(|cs| {
-                                *runtime_config.borrow(cs).borrow_mut() = RuntimeConfig::default();
-                                let mut state = state_mutex.borrow(cs).borrow_mut();
-                                state.board_calibration =
-                                    crate::storage::BoardCalibrationConfig::IDENTITY;
-                                state.board_calibration_valid = true;
+                            // Flash is finished. Release its interlock before the
+                            // model command's ISR-side gate; the model slot owns
+                            // the stopped bridge from this point through commit.
+                            let current_revision = critical_section::with(|cs| {
+                                revisions.borrow(cs).borrow()[ConfigGroupId::MotorParams.index()]
                             });
-                            // Stored limits are gone — restore board defaults.
-                            CMD_CHANNEL
-                                .send(DriverCommand::SetCurrentLimits(
-                                    CurrentLimits::from_max_current(hw_max_current_a),
-                                ))
-                                .await;
-                            critical_section::with(|cs| {
-                                *revisions.borrow(cs).borrow_mut() = [0; ConfigGroupId::COUNT];
-                                *persisted_revisions.borrow(cs).borrow_mut() =
-                                    [None; ConfigGroupId::COUNT];
+                            let config = RuntimeConfig::default();
+                            let vbus = critical_section::with(|cs| {
+                                state_mutex.borrow(cs).borrow().last_adc.vbus_mv as f32 / 1000.0
                             });
-                            ConfigResponse::Reset
+                            let model = crate::motor::foc_driver::PreparedMotorModel::from_config(
+                                &config,
+                                vbus,
+                                hw_max_current_a,
+                            );
+                            let Some(guard) = ModelApplyGuard::prepare_reset(
+                                model,
+                                runtime_config,
+                                revisions,
+                                persisted_revisions,
+                                action_cache,
+                                current_revision,
+                            ) else {
+                                return ConfigResponse::Busy;
+                            };
+                            drop(_calibration_pending);
+                            guard.apply::<T>().await
                         }
                     }
                 }
@@ -1105,7 +1049,7 @@ pub async fn run_all_servers_with_config<NS, F, T>(
         join(
             slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
             join3(
-                config_server::<NS, 2>(
+                config_server::<NS, T, 2>(
                     endpoints.clone(),
                     runtime_config,
                     state_mutex,

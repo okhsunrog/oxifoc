@@ -11,7 +11,11 @@ mod actuation;
 mod calibration;
 mod driver;
 mod failsafe;
+#[cfg(feature = "storage")]
+mod model;
 mod modes;
+#[cfg(feature = "storage")]
+pub use model::{MotorModelError, PreparedMotorModel};
 mod protection;
 mod step;
 mod watchdog;

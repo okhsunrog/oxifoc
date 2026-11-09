@@ -22,7 +22,9 @@ use crate::foc::transforms::{clarke, park};
 use crate::foc::velocity::VelocityLoopConfig;
 #[cfg(feature = "virtual-motor")]
 use crate::foc::wrap_angle;
-use crate::motor::derating::{DeratingConfig, DeratingScales};
+#[cfg(feature = "runtime")]
+use crate::motor::derating::DeratingConfig;
+use crate::motor::derating::DeratingScales;
 #[cfg(feature = "virtual-motor")]
 use crate::motor::failsafe::{FailsafePolicy, FailsafeTerminal};
 #[cfg(feature = "runtime")]
@@ -5308,4 +5310,356 @@ fn commutation_frame_tracks_rotor_at_sample_instant() {
         );
     }
     assert!(ok, "commutation frame off the rotor:{report}");
+}
+
+#[cfg(feature = "storage")]
+fn model_config() -> crate::storage::RuntimeConfig {
+    use crate::storage::{MotorParamsConfig, RuntimeConfig};
+    RuntimeConfig {
+        motor_params: Some(MotorParamsConfig {
+            resistance_ohm: 0.03,
+            inductance_d_h: 18e-6,
+            inductance_q_h: 28e-6,
+            flux_linkage_wb: 0.0032,
+            pole_pairs: 7,
+            max_current_a: 2.0,
+            ld_fundamental_h: 35e-6,
+            lq_fundamental_h: 50e-6,
+            ..MotorParamsConfig::default()
+        }),
+        ..RuntimeConfig::default()
+    }
+}
+
+#[cfg(feature = "storage")]
+#[test]
+fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
+    use crate::storage::PiGainsConfig;
+    let mut config = model_config();
+    config.pi_gains = Some(PiGainsConfig {
+        kp: 0.017,
+        ki: 29.0,
+        ..PiGainsConfig::default()
+    });
+    let mut boot = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
+    let mut live = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
+    for driver in [&mut boot, &mut live] {
+        let mut prepared = PreparedMotorModel::from_config(&config, 24.0, 3.0);
+        assert_eq!(prepared.pole_pairs, 7);
+        assert_eq!(
+            driver.apply_motor_model(&mut prepared),
+            Ok(PhaseSource::Manual)
+        );
+        assert_eq!(driver.controller().id_pi.gains(), (0.017, 29.0));
+        assert_eq!(driver.controller().decoupling().unwrap().ld_h, 35e-6);
+        assert_eq!(driver.current_limits().max_current_a, 2.0);
+        assert_eq!(
+            driver.apply_motor_model(&mut prepared),
+            Err(MotorModelError::Consumed)
+        );
+        assert_eq!(driver.phase().observer().resistance(), Some(0.03));
+        assert_eq!(driver.phase().observer().lambda(), Some(0.0032));
+        assert!((driver.phase().observer().inductance().unwrap() - 28e-6).abs() < 1e-10);
+        #[cfg(feature = "hfi")]
+        assert!(driver.phase().hfi_observer().is_some());
+    }
+    assert_eq!(
+        boot.controller().decoupling().unwrap().ld_h,
+        live.controller().decoupling().unwrap().ld_h
+    );
+    live.phase_mut().set_source(PhaseSource::Observer).unwrap();
+    config.motor_params.as_mut().unwrap().resistance_ohm = 0.06;
+    config.motor_params.as_mut().unwrap().flux_linkage_wb = 0.004;
+    let mut changed = PreparedMotorModel::from_config(&config, 24.0, 3.0);
+    live.apply_motor_model(&mut changed).unwrap();
+    assert_eq!(live.phase().source(), PhaseSource::Observer);
+    assert_eq!(live.phase().observer().resistance(), Some(0.06));
+    assert_eq!(live.phase().observer().lambda(), Some(0.004));
+    config.motor_params.as_mut().unwrap().flux_linkage_wb = 0.0;
+    let mut partial = PreparedMotorModel::from_config(&config, 24.0, 3.0);
+    assert_eq!(
+        live.apply_motor_model(&mut partial),
+        Ok(PhaseSource::Manual)
+    );
+    assert!(!live.phase().observer().is_configured());
+    #[cfg(feature = "hfi")]
+    assert!(live.phase().hfi_observer().is_none());
+    assert_eq!(live.controller().id_pi.gains(), (0.017, 29.0));
+    assert_eq!(live.controller().decoupling().unwrap().flux_linkage_wb, 0.0);
+    let mut empty =
+        PreparedMotorModel::from_config(&crate::storage::RuntimeConfig::default(), 24.0, 3.0);
+    live.apply_motor_model(&mut empty).unwrap();
+    assert_eq!(empty.pole_pairs, 0);
+    assert_eq!(live.controller().id_pi.gains(), (0.4, 40.0));
+    assert!(live.controller().decoupling().is_none());
+    assert!(!live.phase().observer().is_configured());
+}
+
+#[cfg(all(feature = "storage", feature = "runtime"))]
+#[test]
+fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
+    use crate::state::model::{CachedConfigAck, ConfigActionCache, ModelApplyGuard};
+    use crate::state::{self, DriverCommand, MotorControlState, process_commands};
+    use crate::storage::RuntimeConfig;
+    use crate::types::{ConfigGroupId, ConfigResponse, ReqId};
+    use core::{
+        cell::RefCell,
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+    use critical_section::Mutex;
+    struct PendingTimer;
+    impl crate::timer::Timer for PendingTimer {
+        async fn after_millis(_: u64) {
+            core::future::pending::<()>().await;
+        }
+        async fn after_micros(_: u64) {
+            core::future::pending::<()>().await;
+        }
+    }
+    let _serial = cmd_channel_lock();
+    struct BootFlag(bool);
+    impl Drop for BootFlag {
+        fn drop(&mut self) {
+            state::BOOT_CURRENT_OFFSET_PENDING.store(self.0, core::sync::atomic::Ordering::Release);
+        }
+    }
+    let _boot = BootFlag(
+        state::BOOT_CURRENT_OFFSET_PENDING.swap(false, core::sync::atomic::Ordering::AcqRel),
+    );
+    let config = Box::leak(Box::new(Mutex::new(RefCell::new(RuntimeConfig::default()))));
+    let revisions = Box::leak(Box::new(Mutex::new(RefCell::new(
+        [0; ConfigGroupId::COUNT],
+    ))));
+    let cache = Box::leak(Box::new(Mutex::new(RefCell::new(ConfigActionCache::new()))));
+    let state = Mutex::new(RefCell::new(MotorControlState::new()));
+    critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+    let registry = crate::foc::fault::FaultRegistry::<crate::foc::fault::StandardFault>::new();
+    let mut driver = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
+    let next = model_config();
+    std::println!(
+        "PreparedMotorModel={} DriverCommand={} bytes",
+        size_of::<PreparedMotorModel>(),
+        size_of::<DriverCommand>()
+    );
+    let prepare = |id, expected| {
+        ModelApplyGuard::prepare(
+            PreparedMotorModel::from_config(&next, 24.0, 3.0),
+            next.motor_params.clone().unwrap(),
+            config,
+            revisions,
+            cache,
+            ReqId(id),
+            expected,
+        )
+        .unwrap()
+    };
+    let mut cx = Context::from_waker(Waker::noop());
+
+    // Cancel while Ready: the queued generation must not consume a later slot.
+    let mut cancelled = Box::pin(prepare(1, 0).apply::<PendingTimer>());
+    assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+    drop(cancelled);
+    assert!(!state::model_apply_pending());
+    let replacement = prepare(2, 0);
+    process_commands(&state, &mut driver, &registry); // stale token only
+    assert!(critical_section::with(|cs| config
+        .borrow(cs)
+        .borrow()
+        .motor_params
+        .is_none()));
+    let mut applied = Box::pin(replacement.apply::<PendingTimer>());
+    assert!(applied.as_mut().poll(&mut cx).is_pending());
+    // Already queued starts cannot run between model install and acknowledgement.
+    CMD_CHANNEL
+        .try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+            id_target: 0.0,
+            iq_target: 0.2,
+        }))
+        .unwrap();
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(driver.mode(), ControlMode::Stopped);
+    assert_eq!(
+        applied.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Applied {
+            req_id: ReqId(2),
+            revision: 1
+        })
+    );
+    drop(applied);
+    assert!(!state::model_apply_pending());
+    assert_eq!(
+        critical_section::with(|cs| config.borrow(cs).borrow().motor_params.clone()),
+        next.motor_params
+    );
+    critical_section::with(|cs| {
+        assert_eq!(state.borrow(cs).borrow().motor_pole_pairs, 7);
+        assert_eq!(
+            revisions.borrow(cs).borrow()[ConfigGroupId::MotorParams.index()],
+            1
+        );
+        assert!(matches!(
+            cache.borrow(cs).borrow().get(ReqId(2)),
+            Some(CachedConfigAck::Applied(1))
+        ));
+    });
+
+    // Cancel after Applying has finished but before the async waiter resumes:
+    // config, revision and dedup acknowledgement must already be durable.
+    let mut committed = Box::pin(prepare(3, 1).apply::<PendingTimer>());
+    assert!(committed.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    drop(committed);
+    assert!(!state::model_apply_pending());
+    critical_section::with(|cs| {
+        assert_eq!(
+            revisions.borrow(cs).borrow()[ConfigGroupId::MotorParams.index()],
+            2
+        );
+        assert!(matches!(
+            cache.borrow(cs).borrow().get(ReqId(3)),
+            Some(CachedConfigAck::Applied(2))
+        ));
+    });
+
+    // A revision changed after preparation never installs an obsolete model.
+    let mut conflict = Box::pin(prepare(4, 1).apply::<PendingTimer>());
+    assert!(conflict.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        conflict.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Conflict {
+            current_revision: 2
+        })
+    );
+    drop(conflict);
+
+    // Recheck actual driver state at the consuming ISR, not only task state.
+    driver.set_mode(ControlMode::DirectVoltage {
+        vd: 0.0,
+        vq: 0.0,
+        angle_rad: 0.0,
+    });
+    let mut busy = Box::pin(prepare(5, 2).apply::<PendingTimer>());
+    assert!(busy.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        busy.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Busy)
+    );
+    drop(busy);
+    driver.set_mode(ControlMode::Stopped);
+    assert_eq!(
+        critical_section::with(|cs| revisions.borrow(cs).borrow()[0]),
+        2
+    );
+    // Timeout cancels both an unconsumed request and a full command queue.
+    struct ImmediateTimer;
+    impl crate::timer::Timer for ImmediateTimer {
+        async fn after_millis(_: u64) {}
+        async fn after_micros(_: u64) {}
+    }
+    let mut timeout = Box::pin(prepare(6, 2).apply::<ImmediateTimer>());
+    assert_eq!(
+        timeout.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Error)
+    );
+    drop(timeout);
+    assert!(!state::model_apply_pending());
+    process_commands(&state, &mut driver, &registry);
+    for _ in 0..8 {
+        CMD_CHANNEL
+            .try_send(DriverCommand::SetMode(ControlMode::Stopped))
+            .unwrap();
+    }
+    let mut full = Box::pin(prepare(7, 2).apply::<ImmediateTimer>());
+    assert_eq!(
+        full.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Error)
+    );
+    drop(full);
+    assert!(!state::model_apply_pending());
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        critical_section::with(|cs| revisions.borrow(cs).borrow()[0]),
+        2
+    );
+
+    for flag in [&state::FLASH_OP_PENDING, &state::DETECTION_ACTIVE] {
+        flag.store(true, core::sync::atomic::Ordering::Release);
+        let mut maintenance = Box::pin(prepare(8, 2).apply::<PendingTimer>());
+        assert!(maintenance.as_mut().poll(&mut cx).is_pending());
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(
+            maintenance.as_mut().poll(&mut cx),
+            Poll::Ready(ConfigResponse::Busy)
+        );
+        drop(maintenance);
+        flag.store(false, core::sync::atomic::Ordering::Release);
+        assert_eq!(
+            critical_section::with(|cs| revisions.borrow(cs).borrow()[0]),
+            2
+        );
+    }
+
+    let persisted = Box::leak(Box::new(Mutex::new(RefCell::new(
+        [Some(2); ConfigGroupId::COUNT],
+    ))));
+    let reset = ModelApplyGuard::prepare_reset(
+        PreparedMotorModel::from_config(&RuntimeConfig::default(), 24.0, 3.0),
+        config,
+        revisions,
+        persisted,
+        cache,
+        2,
+    )
+    .unwrap();
+    let mut reset = Box::pin(reset.apply::<PendingTimer>());
+    assert!(reset.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        reset.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Reset)
+    );
+    drop(reset);
+    assert!(!driver.phase().observer().is_configured());
+    critical_section::with(|cs| {
+        assert!(config.borrow(cs).borrow().motor_params.is_none());
+        assert_eq!(state.borrow(cs).borrow().motor_pole_pairs, 0);
+        assert_eq!(revisions.borrow(cs).borrow()[0], 0);
+        assert!(persisted.borrow(cs).borrow().iter().all(Option::is_none));
+        assert!(cache.borrow(cs).borrow().get(ReqId(3)).is_none());
+    });
+}
+
+#[cfg(feature = "storage")]
+#[test]
+fn model_replacement_rejects_unsupported_provider_and_preserves_board_settings() {
+    let config = model_config();
+    let mut unsupported = topology_driver(
+        crate::types::CurrentSenseTopology::ThreeShunt,
+        (0.0, 0.0, 0.0),
+    );
+    let before_gains = unsupported.controller().id_pi.gains();
+    let before_limits = unsupported.current_limits().max_current_a;
+    let mut model = PreparedMotorModel::from_config(&config, 24.0, 3.0);
+    assert_eq!(
+        unsupported.apply_motor_model(&mut model),
+        Err(MotorModelError::Unsupported)
+    );
+    assert_eq!(unsupported.controller().id_pi.gains(), before_gains);
+    assert_eq!(unsupported.current_limits().max_current_a, before_limits);
+    let mut driver = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
+    driver.controller_mut().set_dead_time_comp_factor(0.002);
+    driver.set_actuation_delay(1.0);
+    driver.apply_motor_model(&mut model).unwrap();
+    let expected = FocController::<SvpwmModulator>::from_runtime_config(&config, 24.0);
+    assert_eq!(driver.controller().id_pi.gains(), expected.id_pi.gains());
+    assert_eq!(
+        driver.controller().current_sense_topology(),
+        crate::types::CurrentSenseTopology::TwoShunt
+    );
+    // The prebuilt control model only owns electrical-model settings; the
+    // hardware compensation remains active after the current loop is reset.
+    assert!(driver.controller().decoupling().is_some());
 }

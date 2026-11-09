@@ -1717,3 +1717,43 @@ fn set_source_clears_stranded_open_loop_override() {
         "a healthy encoder must be trustworthy once the override is cleared"
     );
 }
+
+#[cfg(feature = "storage")]
+#[test]
+fn model_replacement_preserves_hardware_source_and_clears_partial_estimators() {
+    use crate::storage::{MotorParamsConfig, RuntimeConfig};
+    let mut config = RuntimeConfig {
+        motor_params: Some(MotorParamsConfig {
+            resistance_ohm: 0.03,
+            inductance_d_h: 18e-6,
+            inductance_q_h: 28e-6,
+            flux_linkage_wb: 0.0032,
+            pole_pairs: 7,
+            ..MotorParamsConfig::default()
+        }),
+        ..RuntimeConfig::default()
+    };
+    let mut manager = PhaseManager::with_hall(MockHallSensor::new());
+    manager.hall_mut().set_reading(1.4, 25.0);
+    manager.configure_observers_from_config(&config, 24.0);
+    assert_eq!(manager.source(), PhaseSource::Hall);
+    assert_eq!(manager.hall().read_angle(), 1.4);
+    assert_eq!(manager.tracker.kp, 10_000.0);
+    assert!((manager.tracker.kd - 240.0).abs() < 1e-4);
+    #[cfg(feature = "hfi")]
+    {
+        let first = manager.hfi_observer().unwrap().get_injection().0;
+        config.motor_params.as_mut().unwrap().inductance_d_h *= 0.5;
+        config.motor_params.as_mut().unwrap().inductance_q_h *= 0.5;
+        manager.configure_observers_from_config(&config, 24.0);
+        assert!((manager.hfi_observer().unwrap().get_injection().0 - first * 0.5).abs() < 1e-6);
+    }
+    config.motor_params.as_mut().unwrap().flux_linkage_wb = 0.0;
+    manager.configure_observers_from_config(&config, 24.0);
+    assert_eq!(manager.source(), PhaseSource::Hall);
+    assert_eq!(manager.hall().read_angle(), 1.4);
+    assert!(!manager.observer().is_configured());
+    assert_eq!(manager.tracker.kp, 0.0);
+    #[cfg(feature = "hfi")]
+    assert!(manager.hfi_observer().is_none());
+}

@@ -251,10 +251,9 @@ pub fn publish_cycle_telemetry(
     adc: AdcSnapshot,
     hall: Option<HallSnapshot>,
     foc: FocOutput,
-    pole_pairs: u8,
     seq: u32,
 ) {
-    update_telemetry(state_mutex, adc, hall, foc);
+    let pole_pairs = update_telemetry(state_mutex, adc, hall, foc);
 
     let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
     if period == 0 {

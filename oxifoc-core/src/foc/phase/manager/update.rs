@@ -70,6 +70,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 // ============================================================================
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H, E, S> {
+    #[cfg(feature = "storage")]
+    fn apply_motor_model(&mut self, model: &mut super::PreparedPhaseModel) -> Option<PhaseSource> {
+        Some(self.apply_prepared_model(model))
+    }
+
     fn get(&self) -> PhaseOutput {
         self.output
     }

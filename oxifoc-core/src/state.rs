@@ -3,6 +3,9 @@
 //! This module provides centralized state management for motor control.
 //! Platforms instantiate the state with their own fault types.
 
+#[cfg(feature = "storage")]
+pub mod model;
+
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -54,6 +57,9 @@ pub enum DriverCommand {
     SetPiGains { kp: f32, ki: f32 },
     /// Apply dq-decoupling/back-EMF feedforward params (post-detection)
     SetDecoupling(Decoupling),
+    /// Small token referencing the single-flight prepared-model mailbox.
+    #[cfg(feature = "storage")]
+    ApplyMotorModel(u32),
     /// Switch the angle source (hall / observer / HFI / crossovers)
     SetPhaseSource(PhaseSource),
     /// Apply failsafe tuning (deadman timeout + reaction policy + brake params)
@@ -88,6 +94,8 @@ impl DriverCommand {
                 kp.is_finite() && ki.is_finite() && kp > 0.0 && ki >= 0.0
             }
             Self::SetDecoupling(d) => d.is_valid(),
+            #[cfg(feature = "storage")]
+            Self::ApplyMotorModel(_) => true,
             Self::SetPhaseSource(source) => source.is_finite(),
             Self::SetFailsafe(cfg) => cfg.is_sane(),
             Self::SetVelocityConfig(cfg) => cfg.is_sane(),
@@ -137,6 +145,18 @@ pub fn current_offset_request_pending() -> bool {
         CURRENT_OFFSET_REQUEST_PENDING.load(Ordering::Acquire)
     }
     #[cfg(not(feature = "offset-diagnostics"))]
+    {
+        false
+    }
+}
+
+/// A model replacement owns the stopped bridge until its durable commit.
+pub fn model_apply_pending() -> bool {
+    #[cfg(feature = "storage")]
+    {
+        model::model_apply_pending()
+    }
+    #[cfg(not(feature = "storage"))]
     {
         false
     }
@@ -309,6 +329,10 @@ pub struct MotorControlState {
     /// Active phase source (mirrors the driver's PhaseManager; updated when
     /// a SetPhaseSource command is applied)
     pub phase_source: PhaseSource,
+    /// Pole-pair count from the actually installed model, shared by telemetry.
+    pub motor_pole_pairs: u8,
+    /// Last successfully applied live model transaction (0 at boot).
+    pub motor_model_generation: u32,
     /// Live derating scales (mirrored from the driver each cycle so the
     /// slow-telemetry server can report them without touching the driver)
     pub derating: DeratingScales,
@@ -337,6 +361,8 @@ impl MotorControlState {
             last_foc: FocOutput::empty(),
             link_active: false,
             phase_source: PhaseSource::Hall,
+            motor_pole_pairs: 0,
+            motor_model_generation: 0,
             derating: DeratingScales::IDENTITY,
             driver_operation: DriverOperation::Idle,
             drive_ownership: DriveOwnership::new(),
@@ -367,6 +393,7 @@ impl MotorControlState {
             && self.driver_operation == DriverOperation::Idle
             && !boot_current_offset_pending()
             && !current_offset_request_pending()
+            && !model_apply_pending()
             && !DETECTION_ACTIVE.load(Ordering::Acquire)
             && crate::runtime::streaming::FAST_TELEM_PERIOD.load(Ordering::Acquire) == 0
     }
@@ -436,6 +463,7 @@ impl MotorControlState {
             || self.driver_operation != DriverOperation::Idle
             || boot_current_offset_pending()
             || current_offset_request_pending()
+            || model_apply_pending()
     }
 }
 
@@ -590,6 +618,22 @@ where
                     mode
                 }
             },
+            #[cfg(feature = "storage")]
+            DriverCommand::ApplyMotorModel(generation) => {
+                let allowed = critical_section::with(|cs| {
+                    let state = state_mutex.borrow(cs).borrow();
+                    state.motor_state == MotorState::Stopped
+                        && state.control_mode == ControlMode::Stopped
+                        && state.driver_operation == DriverOperation::Idle
+                        && !boot_current_offset_pending()
+                        && !current_offset_request_pending()
+                        && !FLASH_OP_PENDING.load(Ordering::Acquire)
+                        && !DETECTION_ACTIVE.load(Ordering::Acquire)
+                        && !fault_registry.any_stopping()
+                });
+                model::apply(generation, foc, state_mutex, allowed);
+                continue;
+            }
             DriverCommand::SetCurrentLimits(limits) => {
                 foc.set_current_limits(limits);
                 continue;
@@ -641,6 +685,7 @@ where
                         && state.motor_state == MotorState::Stopped
                         && !fault_registry.any_stopping()
                         && !FLASH_OP_PENDING.load(Ordering::SeqCst)
+                        && !model_apply_pending()
                 });
                 let result = if allowed {
                     foc.start_current_offset_calibration(request)
@@ -718,7 +763,9 @@ where
 
             // A queued flash write/erase would stall the chip mid-spin —
             // refuse to start until it finishes (see FLASH_OP_PENDING).
-            if mode != ControlMode::Stopped && FLASH_OP_PENDING.load(Ordering::SeqCst) {
+            if mode != ControlMode::Stopped
+                && (FLASH_OP_PENDING.load(Ordering::SeqCst) || model_apply_pending())
+            {
                 #[cfg(feature = "defmt")]
                 defmt::warn!("Motor start rejected: flash operation in flight");
                 return MotorCommandOutcome::RejectedSafety;
@@ -1341,19 +1388,21 @@ pub fn update_telemetry(
     adc: AdcSnapshot,
     hall: Option<HallSnapshot>,
     foc: FocOutput,
-) {
-    // Update state
-    critical_section::with(|cs| {
+) -> u8 {
+    // Update state and return the same cycle's applied pole-pair count.
+    let pole_pairs = critical_section::with(|cs| {
         let mut state = state_mutex.borrow(cs).borrow_mut();
         state.update_adc(adc);
         // None is a current unavailable/invalid reading, not permission to
         // retain an old valid speed beside a fresh ADC snapshot.
         state.last_hall = hall;
         state.update_foc(foc);
+        state.motor_pole_pairs
     });
 
     // Wake calibration/detection task if waiting for FOC cycle
     TELEM_WAKER.wake();
+    pole_pairs
 }
 
 #[cfg(test)]
