@@ -98,12 +98,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             // floor), against the observer's speed. Without that evidence
             // the rotor has stopped, and the hall's last sector is the
             // right angle to start from.
-            let omega_ref = self
-                .observer
-                .is_ready()
-                .then(|| self.observer.velocity().unwrap_or(0.0));
-            let reading = self.hall.sample_for_control(now_ticks, omega_ref);
-            (reading.stale, reading.sample)
+            let stale = self.observer.is_ready()
+                && self
+                    .hall
+                    .is_stale(now_ticks, self.observer.velocity().unwrap_or(0.0));
+            (
+                stale,
+                if stale {
+                    None
+                } else {
+                    self.hall.sample_mut(now_ticks)
+                },
+            )
         } else {
             (false, None)
         };

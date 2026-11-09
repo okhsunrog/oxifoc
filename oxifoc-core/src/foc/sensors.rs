@@ -30,13 +30,6 @@ pub struct AngleSample {
     pub direction: Direction,
 }
 
-/// Control-path sample and the independent-speed freshness verdict.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ControlAngleSample {
-    pub sample: Option<AngleSample>,
-    pub stale: bool,
-}
-
 /// Platform-agnostic current sensor trait
 ///
 /// Implementers provide 3-phase current measurements in Amperes.
@@ -87,22 +80,6 @@ pub trait AngleSensor {
     /// the smoothed estimate. Telemetry/diagnostics keep using `sample`.
     fn sample_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
         self.sample(now_ticks)
-    }
-
-    /// Check freshness and sample in one sensor access. `omega_ref` is only
-    /// supplied when an independent observer is ready. A stale sample must
-    /// not advance smoothing state. Shared sensors can override this to
-    /// keep the verdict and sample coherent across capture interrupts.
-    fn sample_for_control(&mut self, now_ticks: u64, omega_ref: Option<f32>) -> ControlAngleSample {
-        let stale = omega_ref.is_some_and(|omega| self.is_stale(now_ticks, omega));
-        ControlAngleSample {
-            sample: if stale {
-                None
-            } else {
-                self.sample_mut(now_ticks)
-            },
-            stale,
-        }
     }
 
     /// Whether the sensor's data has implausibly stopped updating while an
