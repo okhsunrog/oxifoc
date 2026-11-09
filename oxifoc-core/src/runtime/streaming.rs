@@ -10,7 +10,7 @@
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use bbqueue::nicknames::Churrasco;
+use bbqueue::{nicknames::Churrasco, prod_cons::framed::FramedConsumer, traits::bbqhdl::BbqHandle};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use ergot::net_stack::NetStackHandle;
 
@@ -450,19 +450,7 @@ where
             }
             let batch = &mut pending.batch;
 
-            while !batch.is_full() {
-                match cons.read() {
-                    Ok(grant) => {
-                        if batch.push_bytes(&grant) {
-                            fast_telem_stats::READ_OK.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            fast_telem_stats::READ_BADLEN.fetch_add(1, Ordering::Relaxed);
-                        }
-                        grant.release();
-                    }
-                    Err(_) => break, // queue empty
-                }
-            }
+            drain_fast_batch(&cons, batch);
 
             #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
             let encoded_at = embassy_time::Instant::now().as_micros() as u32;
@@ -548,6 +536,34 @@ where
                 break;
             }
         }
+    }
+}
+
+fn drain_fast_batch<Q: BbqHandle>(
+    cons: &FramedConsumer<Q>,
+    batch: &mut crate::types::FastTelemetryBatchEncoder,
+) {
+    let mut read_ok = 0;
+    let mut read_badlen = 0;
+    while !batch.is_full()
+        && let Ok(grant) = cons.read()
+    {
+        if batch.push_bytes(&grant) {
+            read_ok += 1;
+        } else {
+            read_badlen += 1;
+        }
+        grant.release();
+    }
+
+    // Publish before returning to any break, yield or await in the task.
+    // The F405 reporter shares its executor, so it cannot observe a partial
+    // slice. ISR-side push/drop counters remain atomic for every sample.
+    if read_ok != 0 {
+        fast_telem_stats::READ_OK.fetch_add(read_ok, Ordering::Relaxed);
+    }
+    if read_badlen != 0 {
+        fast_telem_stats::READ_BADLEN.fetch_add(read_badlen, Ordering::Relaxed);
     }
 }
 
@@ -652,6 +668,139 @@ mod pending_tests {
             ..Default::default()
         }));
         assert_eq!(pending.batch.batch().samples().unwrap()[0].seq, 900);
+    }
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+    use ergot::{
+        exports::mutex::raw_impls::cs::CriticalSectionRawMutex as StackMutex,
+        interface_manager::{
+            Interface, InterfaceState, profiles::direct_edge::DirectEdge,
+            utils::framed_stream::Sink,
+        },
+    };
+    use fast_telem_stats::{READ_BADLEN, READ_OK};
+
+    struct QueuedInterface<'a>(core::marker::PhantomData<&'a ()>);
+
+    impl<'a> Interface for QueuedInterface<'a> {
+        type Sink = Sink<&'a Churrasco<1024>>;
+    }
+
+    #[test]
+    fn drain_flushes_partial_full_malformed_empty_and_retry_counts() {
+        let queue: Churrasco<4096> = Churrasco::new();
+        let prod = queue.framed_producer();
+        let cons = queue.framed_consumer();
+        let mut batch = crate::types::FastTelemetryBatchEncoder::new();
+        READ_OK.store(0, Ordering::Relaxed);
+        READ_BADLEN.store(0, Ordering::Relaxed);
+
+        let enqueue = |bytes: &[u8]| {
+            let mut grant = prod.grant(bytes.len() as u16).unwrap();
+            grant.copy_from_slice(bytes);
+            grant.commit(bytes.len() as u16);
+        };
+        let sample = |seq| FastTelemetry {
+            seq,
+            ..Default::default()
+        };
+
+        // Wrong-length grants must be released and reported alongside valid
+        // samples, including when the poll retains a partial batch.
+        enqueue(&[1, 2, 3]);
+        enqueue(bytemuck::bytes_of(&sample(100)));
+        enqueue(&[0; size_of::<FastTelemetry>() + 1]);
+        enqueue(bytemuck::bytes_of(&sample(101)));
+        drain_fast_batch(&cons, &mut batch);
+        assert_eq!(batch.len(), 2);
+        assert!(!batch.is_full());
+        // Simulate the same-executor reporter's window boundary. All reads
+        // are visible before this slice can sleep, with none deferred.
+        assert_eq!(READ_OK.swap(0, Ordering::Relaxed), 2);
+        assert_eq!(READ_BADLEN.swap(0, Ordering::Relaxed), 2);
+
+        let partial_bytes = batch.batch().data.clone();
+        drain_fast_batch(&cons, &mut batch);
+        assert_eq!(batch.batch().data, partial_bytes);
+        assert_eq!(READ_OK.load(Ordering::Relaxed), 0);
+        assert_eq!(READ_BADLEN.load(Ordering::Relaxed), 0);
+
+        // Complete the retained partial batch. The following sample stays
+        // queued while a full batch is pending, even across rejected sends.
+        for seq in 102..=100 + FAST_BATCH_SAMPLES as u16 {
+            enqueue(bytemuck::bytes_of(&sample(seq)));
+        }
+        drain_fast_batch(&cons, &mut batch);
+        assert!(batch.is_full());
+        assert_eq!(batch.len(), FAST_BATCH_SAMPLES);
+        assert_eq!(READ_OK.swap(0, Ordering::Relaxed), 22);
+        assert_eq!(READ_BADLEN.swap(0, Ordering::Relaxed), 0);
+        let encoded_bytes = batch.batch().data.clone();
+
+        // Fill the transport queue to reject the send, then free it for
+        // the retry. Re-entering the drain with retained bytes must neither
+        // consume the next grant nor count already encoded samples again.
+        let wire: Churrasco<1024> = Churrasco::new();
+        wire.framed_producer().grant(1022).unwrap().commit(1022);
+        let stack: ergot::NetStack<StackMutex, DirectEdge<QueuedInterface<'_>>> =
+            ergot::NetStack::new_with_profile(DirectEdge::new_controller(
+                Sink::new(wire.framed_producer(), 512),
+                InterfaceState::Active {
+                    net_id: 1,
+                    node_id: 1,
+                },
+            ));
+        assert!(
+            stack
+                .topics()
+                .broadcast::<FastTelemetryTopic>(batch.batch(), None)
+                .is_err()
+        );
+        drain_fast_batch(&cons, &mut batch);
+        assert_eq!(batch.batch().data, encoded_bytes);
+        assert_eq!(READ_OK.load(Ordering::Relaxed), 0);
+        assert_eq!(READ_BADLEN.load(Ordering::Relaxed), 0);
+        wire.framed_consumer().read().unwrap().release();
+        let receiver = stack
+            .topics()
+            .bounded_receiver::<FastTelemetryTopic, 1>(None);
+        let mut receiver = core::pin::pin!(receiver);
+        let mut receiver = receiver.as_mut().subscribe();
+        assert!(
+            stack
+                .topics()
+                .broadcast::<FastTelemetryTopic>(batch.batch(), None)
+                .is_ok()
+        );
+        let received = receiver.try_recv().unwrap().t;
+        wire.framed_consumer().read().unwrap().release();
+        assert_eq!(received.data, encoded_bytes);
+        let samples = received.samples().unwrap();
+        for (index, sample) in samples.iter().enumerate() {
+            assert_eq!(sample.seq, 100 + index as u16);
+        }
+        batch.clear();
+
+        drain_fast_batch(&cons, &mut batch);
+        assert_eq!(batch.batch().samples().unwrap()[0].seq, 124);
+        assert_eq!(READ_OK.swap(0, Ordering::Relaxed), 1);
+        assert_eq!(READ_BADLEN.swap(0, Ordering::Relaxed), 0);
+        batch.clear();
+        // An empty batch and a malformed-only slice both stop without a
+        // broadcast; their counters must still be flushed immediately.
+        drain_fast_batch(&cons, &mut batch);
+        assert!(batch.is_empty());
+        assert_eq!(READ_OK.load(Ordering::Relaxed), 0);
+        assert_eq!(READ_BADLEN.load(Ordering::Relaxed), 0);
+        enqueue(&[0]);
+        drain_fast_batch(&cons, &mut batch);
+        assert!(batch.is_empty());
+        assert_eq!(READ_OK.swap(0, Ordering::Relaxed), 0);
+        assert_eq!(READ_BADLEN.swap(0, Ordering::Relaxed), 1);
+        assert!(cons.read().is_err());
     }
 }
 
