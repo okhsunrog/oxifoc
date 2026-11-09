@@ -233,10 +233,9 @@ async fn main(spawner: Spawner) {
     let runtime_config = storage::CONFIG_LOADED.wait().await;
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
     critical_section::with(|cs| {
-        STATE
-            .borrow(cs)
-            .borrow_mut()
-            .load_board_calibration(&runtime_config);
+        let mut state = STATE.borrow(cs).borrow_mut();
+        state.load_board_calibration(&runtime_config);
+        state.load_hall_calibration(&runtime_config);
     });
     defmt::info!("Config loaded from flash");
     // Publish config revisions/persistence only after the boot load is complete.

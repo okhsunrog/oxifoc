@@ -15,9 +15,86 @@ fn measured_hall() -> HallSensor {
         HallTransitionGeometry::try_from_raw_parts(ENTRIES_DEG.map(f32::to_radians), next, centers)
             .unwrap();
     let mut hall = HallSensor::new(1_000_000);
-    hall.set_calibration_raw(centers);
-    hall.geometry = Some(geometry);
+    assert!(
+        hall.apply_calibration(&crate::foc::hall_calibration::HallCalibrationResult {
+            angles: centers,
+            valid: [false, true, true, true, true, true, true, false],
+            valid_count: 6,
+            geometry: Some(geometry),
+        })
+    );
     hall
+}
+
+#[test]
+fn prepared_geometry_validates_the_current_frame_and_legacy_replaces_it() {
+    let mut hall = measured_hall();
+    hall.update(3, 100);
+    let result = crate::foc::hall_calibration::HallCalibrationResult {
+        angles: CENTERS_DEG.map(f32::to_radians),
+        valid: [false, true, true, true, true, true, true, false],
+        valid_count: 6,
+        geometry: hall.geometry,
+    };
+    let mut inconsistent = result;
+    inconsistent.angles[3] = 180_f32.to_radians();
+    assert!(PreparedHallCalibration::from_result(&inconsistent).is_none());
+
+    let prepared = PreparedHallCalibration::from_result(&result).unwrap();
+    hall.geometry_resync = true;
+    hall.install_prepared_calibration(&prepared);
+    assert!(!hall.geometry_resync);
+    assert_eq!(
+        hall.current_sector_width.to_bits(),
+        result.geometry.unwrap().sector_width(3).unwrap().to_bits()
+    );
+
+    let mut legacy = result;
+    legacy.geometry = None;
+    assert!(hall.apply_calibration(&legacy));
+    assert!(hall.geometry.is_none());
+    assert_eq!(
+        hall.current_sector_width.to_bits(),
+        hall.angle_per_state.to_bits()
+    );
+}
+
+#[cfg(feature = "storage")]
+#[test]
+fn geometry_config_and_detection_install_the_same_reference() {
+    let mut detected = measured_hall();
+    detected.update(3, 100);
+    let result = crate::foc::hall_calibration::HallCalibrationResult {
+        angles: CENTERS_DEG.map(f32::to_radians),
+        valid: [false, true, true, true, true, true, true, false],
+        valid_count: 6,
+        geometry: detected.geometry,
+    };
+    let mut from_config = HallSensor::new(1_000_000);
+    from_config.update(3, 100);
+    let config = crate::storage::HallCalibrationConfig::from(&result);
+    from_config
+        .install_prepared_calibration(&PreparedHallCalibration::from_config(&config).unwrap());
+    assert_eq!(
+        from_config.current_sector_width.to_bits(),
+        detected.current_sector_width.to_bits()
+    );
+    for (state, ticks) in [(2, 8_100), (6, 12_100), (4, 21_100)] {
+        from_config.update(state, ticks);
+        detected.update(state, ticks);
+        let actual = from_config.sample_at(ticks + 50).unwrap();
+        let expected = detected.sample_at(ticks + 50).unwrap();
+        assert_eq!(actual.angle.to_bits(), expected.angle.to_bits());
+        assert_eq!(actual.omega.to_bits(), expected.omega.to_bits());
+    }
+    let legacy_config = crate::storage::HallCalibrationConfig {
+        geometry: None,
+        ..config
+    };
+    from_config.install_prepared_calibration(
+        &PreparedHallCalibration::from_config(&legacy_config).unwrap(),
+    );
+    assert!(from_config.geometry.is_none());
 }
 
 fn advance_to_measured_motion(hall: &mut HallSensor) {

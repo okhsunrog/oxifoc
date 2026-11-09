@@ -81,7 +81,10 @@ impl ModelConfigUpdate {
         match self {
             Self::MotorParams(value) => config.motor_params = Some(value.clone()),
             Self::VoltageFeedforward(value) => config.voltage_feedforward = Some(*value),
-            Self::HallCalibration(value) => config.hall_calibration = Some(value.clone()),
+            Self::HallCalibration(value) => {
+                config.hall_calibration = Some(value.clone());
+                config.hall_calibration_invalid = false;
+            }
             Self::Reset => *config = RuntimeConfig::default(),
         }
     }
@@ -305,13 +308,14 @@ impl ModelApplyGuard {
     }
 
     pub fn prepare_reset(
-        model: PreparedMotorModel,
+        mut model: PreparedMotorModel,
         config: &'static Mutex<RefCell<RuntimeConfig>>,
         revisions: &'static Mutex<RefCell<[u32; ConfigGroupId::COUNT]>>,
         persisted: &'static Mutex<RefCell<[Option<u32>; ConfigGroupId::COUNT]>>,
         cache: &'static Mutex<RefCell<ConfigActionCache>>,
         expected_revision: u32,
     ) -> Option<Self> {
+        model.reset_hall_reference();
         Self::prepare_inner(
             PreparedUpdate::Motor(model),
             ModelConfigUpdate::Reset,
@@ -436,6 +440,7 @@ pub(super) fn apply<P, C, Ph, S>(
                     let mut state = state.borrow(cs).borrow_mut();
                     state.board_calibration = crate::storage::BoardCalibrationConfig::IDENTITY;
                     state.board_calibration_valid = true;
+                    state.hall_calibration_valid = true;
                     if let Some(pole_pairs) = pending.prepared.pole_pairs() {
                         state.motor_pole_pairs = pole_pairs;
                     }
@@ -457,6 +462,9 @@ pub(super) fn apply<P, C, Ph, S>(
                     .borrow_mut()
                     .insert(pending.request, CachedConfigAck::Applied(revision));
                 let mut state = state.borrow(cs).borrow_mut();
+                if matches!(pending.update, ModelConfigUpdate::HallCalibration(_)) {
+                    state.hall_calibration_valid = true;
+                }
                 if let Some(source) = source {
                     state.phase_source = source;
                 }

@@ -21,6 +21,12 @@ pub struct PreparedMotorModel {
 }
 
 impl PreparedMotorModel {
+    pub(crate) fn reset_hall_reference(&mut self) {
+        if let Some(phase) = &mut self.phase {
+            phase.reset_hall_reference();
+        }
+    }
+
     pub fn from_config(config: &RuntimeConfig, vbus: f32, board_max_current_a: f32) -> Self {
         let controller =
             FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(config, vbus);

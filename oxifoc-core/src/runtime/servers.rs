@@ -346,7 +346,7 @@ fn flash_parts(value: crate::types::ConfigValue) -> (ConfigKey, ConfigPayload) {
         V::PiGains(v) => (ConfigKey::PiGains, ConfigPayload::PiGains(v)),
         V::HallTuning(v) => (ConfigKey::HallTuning, ConfigPayload::HallTuning(v)),
         V::HallCalibration(v) => (
-            ConfigKey::HallCalibration,
+            ConfigKey::HallCalibrationRecord,
             ConfigPayload::HallCalibration(v),
         ),
         V::DcOffsets(v) => (ConfigKey::DcOffsets, ConfigPayload::DcOffsets(v)),
@@ -464,8 +464,15 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             ConfigResponse::Snapshot(ConfigSnapshot {
                                 group,
                                 revision,
-                                valid: group != ConfigGroupId::BoardCalibration
-                                    || cfg.board_calibration_is_valid(),
+                                valid: match group {
+                                    ConfigGroupId::BoardCalibration => {
+                                        cfg.board_calibration_is_valid()
+                                    }
+                                    ConfigGroupId::HallCalibration => {
+                                        cfg.hall_calibration_is_valid()
+                                    }
+                                    _ => true,
+                                },
                                 persisted: persisted_revisions.borrow(cs).borrow()[group.index()]
                                     == Some(revision),
                                 value: config_value(&cfg, group),
@@ -743,7 +750,14 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 return ConfigResponse::Busy;
                             }
                             let value = critical_section::with(|cs| {
-                                config_value(&runtime_config.borrow(cs).borrow(), group)
+                                let config = runtime_config.borrow(cs).borrow();
+                                if group == ConfigGroupId::HallCalibration
+                                    && !config.hall_calibration_is_valid()
+                                {
+                                    None
+                                } else {
+                                    config_value(&config, group)
+                                }
                             });
                             let Some(value) = value else {
                                 return ConfigResponse::Invalid;

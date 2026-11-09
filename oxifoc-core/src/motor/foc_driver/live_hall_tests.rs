@@ -3,7 +3,7 @@ use crate::foc::hall_sensor::HallSensor;
 use crate::foc::sensors::AngleSensor;
 use crate::state::model::{CachedConfigAck, ConfigActionCache, ModelApplyGuard};
 use crate::state::{DriverCommand, MotorControlState, process_commands};
-use crate::storage::HallCalibrationConfig;
+use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{ConfigGroupId, ConfigResponse, ReqId};
 use core::cell::RefCell;
 use core::task::{Context, Poll, Waker};
@@ -30,26 +30,40 @@ impl crate::foc::fault::PlatformFault for TestFault {
     }
 }
 
+struct BootFlag(bool);
+impl BootFlag {
+    fn clear() -> Self {
+        Self(
+            crate::state::BOOT_CURRENT_OFFSET_PENDING
+                .swap(false, core::sync::atomic::Ordering::AcqRel),
+        )
+    }
+}
+impl Drop for BootFlag {
+    fn drop(&mut self) {
+        crate::state::BOOT_CURRENT_OFFSET_PENDING
+            .store(self.0, core::sync::atomic::Ordering::Release);
+    }
+}
+
 #[test]
 fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
     let _serial = cmd_channel_lock();
-    struct BootFlag(bool);
-    impl Drop for BootFlag {
-        fn drop(&mut self) {
-            crate::state::BOOT_CURRENT_OFFSET_PENDING
-                .store(self.0, core::sync::atomic::Ordering::Release);
-        }
-    }
-    let _boot = BootFlag(
-        crate::state::BOOT_CURRENT_OFFSET_PENDING.swap(false, core::sync::atomic::Ordering::AcqRel),
-    );
-    let config = Box::leak(Box::new(Mutex::new(RefCell::new(model_config()))));
+    let _boot = BootFlag::clear();
+    let mut initial = model_config();
+    initial.hall_calibration_invalid = true;
+    let config = Box::leak(Box::new(Mutex::new(RefCell::new(initial))));
     let revisions = Box::leak(Box::new(Mutex::new(RefCell::new(
         [0; ConfigGroupId::COUNT],
     ))));
     let cache = Box::leak(Box::new(Mutex::new(RefCell::new(ConfigActionCache::new()))));
     let state = Mutex::new(RefCell::new(MotorControlState::new()));
-    critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+    critical_section::with(|cs| {
+        let mut state = state.borrow(cs).borrow_mut();
+        state.set_link_active();
+        state.load_hall_calibration(&config.borrow(cs).borrow());
+        assert!(!state.hall_calibration_valid);
+    });
     let registry = crate::foc::fault::FaultRegistry::<TestFault>::new();
     let mut hall = HallSensor::new(1_000_000);
     hall.update(1, 0);
@@ -82,6 +96,12 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
     for angle in &mut calibration.angles[1..=6] {
         *angle += 0.4;
     }
+    calibration.geometry = Some(crate::storage::HallTransitionGeometryConfig {
+        entry_angles: calibration
+            .angles
+            .map(|angle| angle - core::f32::consts::TAU / 12.0),
+        next_states: [0, 3, 6, 2, 5, 1, 4, 0],
+    });
     let prepare = |id, expected| {
         ModelApplyGuard::prepare_hall(
             calibration.clone(),
@@ -122,6 +142,8 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
             config.borrow(cs).borrow().hall_calibration.as_ref(),
             Some(&calibration)
         );
+        assert!(!config.borrow(cs).borrow().hall_calibration_invalid);
+        assert!(state.borrow(cs).borrow().hall_calibration_valid);
         assert_eq!(
             revisions.borrow(cs).borrow()[ConfigGroupId::HallCalibration.index()],
             1
@@ -198,4 +220,167 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
     );
     let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::Stopped));
     process_commands(&state, &mut driver, &registry);
+
+    let persisted = Box::leak(Box::new(Mutex::new(RefCell::new(
+        [Some(0); ConfigGroupId::COUNT],
+    ))));
+    let reset = ModelApplyGuard::prepare_reset(
+        PreparedMotorModel::from_config(&RuntimeConfig::default(), 24.0, 3.0),
+        config,
+        revisions,
+        persisted,
+        cache,
+        0,
+    )
+    .unwrap();
+    let mut reset = Box::pin(reset.apply::<PendingTimer>());
+    assert!(reset.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        reset.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Reset)
+    );
+    let mut nominal = HallSensor::new(1_000_000);
+    nominal.update(1, 0);
+    assert_eq!(
+        driver.phase().hall().sample(50).unwrap().angle.to_bits(),
+        nominal.sample(50).unwrap().angle.to_bits()
+    );
+    assert_eq!(
+        driver.phase().get().angle.to_bits(),
+        nominal.sample(50).unwrap().angle.to_bits()
+    );
+    critical_section::with(|cs| {
+        assert!(config.borrow(cs).borrow().hall_calibration.is_none());
+        assert!(state.borrow(cs).borrow().hall_calibration_valid);
+    });
+}
+
+#[test]
+fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests() {
+    let _serial = cmd_channel_lock();
+    let _boot = BootFlag::clear();
+    let state = Mutex::new(RefCell::new(MotorControlState::new()));
+    critical_section::with(|cs| {
+        let mut state = state.borrow(cs).borrow_mut();
+        state.set_link_active();
+        state.load_hall_calibration(&RuntimeConfig::default());
+        assert!(
+            state.hall_calibration_valid,
+            "missing legacy config permits nominal geometry"
+        );
+        state.load_hall_calibration(&RuntimeConfig {
+            hall_calibration_invalid: true,
+            ..Default::default()
+        });
+        assert!(!state.hall_calibration_valid);
+    });
+    let registry = crate::foc::fault::FaultRegistry::<TestFault>::new();
+    let mut hall = HallSensor::new(1_000_000);
+    hall.update(1, 0);
+    let mut phase = PhaseManager::with_hall(hall);
+    phase.configure_observers_from_config(&model_config(), 24.0);
+    // Seed a high-speed cached frame to exercise Brake's regulated ramp gate.
+    phase.set_source(PhaseSource::OpenLoop).unwrap();
+    phase.set_open_loop_velocity(100.0);
+    phase.update(
+        &crate::foc::phase::PhaseInput {
+            dt: 0.00005,
+            ..Default::default()
+        },
+        50,
+    );
+    phase.set_source(PhaseSource::Hall).unwrap();
+    let mut driver = FocDriver::new(
+        FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+        MockPwm { duties: [0; 3] },
+        MockCurrentSensor {
+            currents: (0.0, 0.0, 0.0),
+        },
+        phase,
+        1.0 / 20_000.0,
+    );
+    for mode in [
+        ControlMode::CurrentControl {
+            iq_target: 0.1,
+            id_target: 0.0,
+        },
+        ControlMode::VelocityControl { target_vel: 10.0 },
+        ControlMode::PositionControl { target_pos: 1.0 },
+        ControlMode::Brake,
+    ] {
+        CMD_CHANNEL.try_send(DriverCommand::SetMode(mode)).unwrap();
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(driver.mode(), ControlMode::Stopped);
+        assert!(!driver.failsafe_active());
+    }
+    for mode in [
+        ControlMode::OpenLoop {
+            angle_rad: 0.0,
+            current: 0.1,
+            velocity_rad_s: 0.0,
+            pi_gains: None,
+        },
+        ControlMode::DirectVoltage {
+            vd: 0.01,
+            vq: 0.0,
+            angle_rad: 0.0,
+        },
+        ControlMode::Coast,
+        ControlMode::Stopped,
+    ] {
+        CMD_CHANNEL.try_send(DriverCommand::SetMode(mode)).unwrap();
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(driver.mode(), mode, "repair/neutral modes stay available");
+    }
+    for source in [PhaseSource::Manual, PhaseSource::Observer] {
+        CMD_CHANNEL
+            .try_send(DriverCommand::SetPhaseSource(source))
+            .unwrap();
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(driver.phase().source(), source);
+        CMD_CHANNEL
+            .try_send(DriverCommand::SetPhaseSource(PhaseSource::Hall))
+            .unwrap();
+        process_commands(&state, &mut driver, &registry);
+        assert_eq!(
+            driver.phase().source(),
+            source,
+            "invalid stored Hall cannot be selected"
+        );
+        CMD_CHANNEL
+            .try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
+                iq_target: 0.1,
+                id_target: 0.0,
+            }))
+            .unwrap();
+        process_commands(&state, &mut driver, &registry);
+        assert!(matches!(driver.mode(), ControlMode::CurrentControl { .. }));
+        CMD_CHANNEL
+            .try_send(DriverCommand::SetMode(ControlMode::Stopped))
+            .unwrap();
+        process_commands(&state, &mut driver, &registry);
+    }
+    driver
+        .phase_mut()
+        .set_source(PhaseSource::OpenLoop)
+        .unwrap();
+    driver.phase_mut().set_open_loop_velocity(0.0);
+    driver.phase_mut().update(
+        &crate::foc::phase::PhaseInput {
+            dt: 0.00005,
+            ..Default::default()
+        },
+        100,
+    );
+    driver.phase_mut().set_source(PhaseSource::Hall).unwrap();
+    CMD_CHANNEL
+        .try_send(DriverCommand::SetMode(ControlMode::Brake))
+        .unwrap();
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        driver.mode(),
+        ControlMode::Brake,
+        "standing short remains a safe operation"
+    );
 }

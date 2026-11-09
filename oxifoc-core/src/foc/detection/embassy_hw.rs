@@ -483,6 +483,9 @@ pub async fn calibrate_hall(
     if !crate::foc::hall_embassy::apply_detected_calibration(&result) {
         return Err(DetectionError::HardwareFault);
     }
+    // Only the successfully installed reference releases Hall-dependent drive.
+    #[cfg(feature = "storage")]
+    critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().hall_calibration_valid = true);
     Ok(result)
 }
 

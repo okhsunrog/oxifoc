@@ -97,21 +97,55 @@ pub const STALE_MIN_WINDOW_S: f32 = 0.000_3;
 pub const MAX_PLAUSIBLE_E_RAD_S: f32 = 30_000.0;
 
 /// Validated, normalized Hall reference, prepared outside the control ISR.
-pub struct PreparedHallCalibration(HallCalibration);
+pub struct PreparedHallCalibration {
+    calibration: HallCalibration,
+    geometry: Option<HallTransitionGeometry>,
+}
 
 impl PreparedHallCalibration {
+    pub(crate) fn nominal() -> Self {
+        Self {
+            calibration: HallCalibration::default(),
+            geometry: None,
+        }
+    }
+
     #[cfg(feature = "storage")]
     pub fn from_config(config: &crate::storage::HallCalibrationConfig) -> Option<Self> {
-        config
-            .is_calibrated()
-            .then(|| Self(HallCalibration::from_raw_table(config.angles, 0.0)))
+        if !config.is_calibrated() {
+            return None;
+        }
+        let geometry = match &config.geometry {
+            Some(geometry) => Some(geometry.validated(config.angles)?),
+            None => None,
+        };
+        Some(Self {
+            calibration: HallCalibration::from_raw_table(config.angles, 0.0),
+            geometry,
+        })
     }
 
     pub fn from_result(result: &super::hall_calibration::HallCalibrationResult) -> Option<Self> {
-        (result.is_valid()
+        if !(result.is_valid()
             && result.valid[1..=6].iter().all(|valid| *valid)
             && result.angles[1..=6].iter().all(|angle| angle.is_finite()))
-        .then(|| Self(HallCalibration::from_raw_table(result.angles, 0.0)))
+        {
+            return None;
+        }
+        // Results expose their centroid table publicly. Revalidate a measured
+        // geometry against the current table instead of trusting its old frame.
+        let geometry = match result.geometry {
+            Some(geometry) => Some(HallTransitionGeometry::try_from_raw_parts(
+                geometry.entry_angles(),
+                geometry.next_states(),
+                result.angles,
+            )?),
+            None => None,
+        };
+        Some(Self {
+            calibration: HallCalibration::from_raw_table(result.angles, 0.0),
+            geometry,
+        })
     }
 }
 
@@ -938,8 +972,14 @@ impl HallSensor {
         prepared: &PreparedHallCalibration,
     ) -> super::sensors::HallReferenceUpdate {
         let advance = self.calib.advance_rad;
-        self.calib = prepared.0;
+        self.calib = prepared.calibration;
         self.calib.advance_rad = advance;
+        self.geometry = prepared.geometry;
+        self.current_sector_width = self
+            .geometry
+            .and_then(|geometry| geometry.sector_width(self.valid_raw))
+            .unwrap_or(self.angle_per_state);
+        self.geometry_resync = false;
         self.angle = self.calib.angle_for_state(self.valid_raw);
         self.base_is_boundary = false;
         self.elec_velocity = 0.0;

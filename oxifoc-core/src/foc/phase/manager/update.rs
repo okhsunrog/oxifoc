@@ -70,6 +70,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 // ============================================================================
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H, E, S> {
+    fn requires_hall_reference(&self) -> bool {
+        self.source.requires_hall()
+    }
+
     fn apply_hall_calibration(
         &mut self,
         prepared: &crate::foc::hall_sensor::PreparedHallCalibration,
@@ -133,6 +137,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
 
     #[cfg(feature = "storage")]
     fn apply_motor_model(&mut self, model: &mut super::PreparedPhaseModel) -> Option<PhaseSource> {
+        // ResetAll owns both the default model and default Hall frame. A
+        // structurally absent sensor needs no reset; a present unsupported
+        // sensor must reject before any estimator/model state is changed.
+        if let Some(reference) = model.hall_reset()
+            && self.has_hall()
+            && !PhaseProvider::apply_hall_calibration(self, reference)
+        {
+            return None;
+        }
         Some(self.apply_prepared_model(model))
     }
 

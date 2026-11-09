@@ -395,6 +395,7 @@ mod tests {
             let stored = crate::storage::HallCalibrationConfig {
                 angles: calibration.angles,
                 valid: calibration.valid,
+                geometry: None,
             };
             let config = RuntimeConfig {
                 hall_calibration: Some(stored),

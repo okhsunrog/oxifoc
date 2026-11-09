@@ -314,6 +314,9 @@ pub struct MotorControlState {
     pub board_calibration: crate::storage::BoardCalibrationConfig,
     #[cfg(feature = "storage")]
     pub board_calibration_valid: bool,
+    /// Stored Hall reference validity; gates only Hall-dependent actuation.
+    #[cfg(feature = "storage")]
+    pub hall_calibration_valid: bool,
     /// Current motor state (Stopped/Running/Error)
     pub motor_state: MotorState,
     /// Current control mode
@@ -354,6 +357,8 @@ impl MotorControlState {
             board_calibration: crate::storage::BoardCalibrationConfig::IDENTITY,
             #[cfg(feature = "storage")]
             board_calibration_valid: true,
+            #[cfg(feature = "storage")]
+            hall_calibration_valid: true,
             motor_state: MotorState::Stopped,
             control_mode: ControlMode::Stopped,
             last_hall: None,
@@ -382,6 +387,14 @@ impl MotorControlState {
         } else {
             crate::storage::BoardCalibrationConfig::IDENTITY
         };
+    }
+
+    /// Load the stored Hall-reference interlock before control/command tasks.
+    /// Missing legacy configuration permits the nominal reference; corrupt or
+    /// invalid stored data requires a successful detection/config repair.
+    #[cfg(feature = "storage")]
+    pub fn load_hall_calibration(&mut self, config: &crate::storage::RuntimeConfig) {
+        self.hall_calibration_valid = config.hall_calibration_is_valid();
     }
 
     /// Called under the same critical section as the live config/revision
@@ -647,6 +660,14 @@ where
                 continue;
             }
             DriverCommand::SetPhaseSource(source) => {
+                #[cfg(feature = "storage")]
+                if source.requires_hall()
+                    && !critical_section::with(|cs| {
+                        state_mutex.borrow(cs).borrow().hall_calibration_valid
+                    })
+                {
+                    continue;
+                }
                 // The provider validates (sensor present, estimators
                 // configured). On success mirror the active source into the
                 // shared state so the host can read it back via telemetry —
@@ -772,6 +793,20 @@ where
 
             #[cfg(feature = "storage")]
             if mode != ControlMode::Stopped && !state.board_calibration_valid {
+                return MotorCommandOutcome::RejectedSafety;
+            }
+
+            #[cfg(feature = "storage")]
+            if !state.hall_calibration_valid
+                && foc.phase().requires_hall_reference()
+                && (matches!(
+                    mode,
+                    ControlMode::CurrentControl { .. }
+                        | ControlMode::VelocityControl { .. }
+                        | ControlMode::PositionControl { .. }
+                ) || mode == ControlMode::Brake
+                    && foc.phase().get().velocity.abs() > BRAKE_ENTRY_MAX_E_RAD_S)
+            {
                 return MotorCommandOutcome::RejectedSafety;
             }
 

@@ -156,10 +156,9 @@ async fn main() -> anyhow::Result<()> {
     }
     critical_section::with(|cs| {
         *RUNTIME_CONFIG.borrow(cs).borrow_mut() = loaded_config.clone();
-        STATE
-            .borrow(cs)
-            .borrow_mut()
-            .load_board_calibration(&loaded_config);
+        let mut state = STATE.borrow(cs).borrow_mut();
+        state.load_board_calibration(&loaded_config);
+        state.load_hall_calibration(&loaded_config);
     });
     tracing::info!("Config loaded from mock flash");
 

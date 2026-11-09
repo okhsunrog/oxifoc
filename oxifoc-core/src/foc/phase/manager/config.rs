@@ -12,6 +12,7 @@ use crate::storage::RuntimeConfig;
 /// Fully initialized estimator model. Construction (including filter setup)
 /// belongs to boot or the configuration task, never to the periodic FOC path.
 pub struct PreparedPhaseModel {
+    reset_hall: Option<crate::foc::hall_sensor::PreparedHallCalibration>,
     observer: Observer,
     #[cfg(feature = "hfi")]
     hfi: Option<HfiObserver>,
@@ -21,6 +22,7 @@ pub struct PreparedPhaseModel {
 impl PreparedPhaseModel {
     pub fn from_config(config: &RuntimeConfig, vbus: f32) -> Self {
         let mut prepared = Self {
+            reset_hall: None,
             observer: Observer::None,
             #[cfg(feature = "hfi")]
             hfi: None,
@@ -63,6 +65,14 @@ impl PreparedPhaseModel {
             let _ = vbus;
         }
         prepared
+    }
+
+    pub(crate) fn reset_hall_reference(&mut self) {
+        self.reset_hall = Some(crate::foc::hall_sensor::PreparedHallCalibration::nominal());
+    }
+
+    pub(crate) fn hall_reset(&self) -> Option<&crate::foc::hall_sensor::PreparedHallCalibration> {
+        self.reset_hall.as_ref()
     }
 }
 
