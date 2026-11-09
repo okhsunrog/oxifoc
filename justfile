@@ -12,7 +12,7 @@ mk5_features := "transport-usb,transport-uart,board-vesc6-mk5,task-priority"
 mk5_bench_features := mk5_features + ",bench-calibrated-clock,bench-clock-reference"
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
 mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
-mk5_profile_features := mk5_usb_metrics_features + ",bench-trace-excitation"
+mk5_profile_features := mk5_usb_metrics_features + ",bench-trace-excitation,isr-profiling"
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
@@ -146,11 +146,13 @@ flash-mk5-usb-metrics: build-mk5-usb-metrics
     probe-rs reset --chip STM32F405RGTx
 
 # Hall bring-up logging at 50 Hz, correlated with the 20-kHz raw ADC stream.
-build-mk5-hall:
+build-mk5-hall profiling="off" memory="sram":
+    @test {{ quote(profiling) }} = off -o {{ quote(profiling) }} = on
+    @test {{ quote(memory) }} = sram -o {{ quote(memory) }} = ccm
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ mk5_bench_features + ",bench-hall" }}
+        --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "on" { ",isr-profiling" } else { "" }) + (if memory == "ccm" { ",ccm" } else { "" })) }}
 
-flash-mk5-hall: build-mk5-hall
+flash-mk5-hall profiling="off" memory="sram": (build-mk5-hall profiling memory)
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
 
@@ -184,6 +186,12 @@ test-flux-mk5 directory resistance inductance pole_pairs:
 # Observe current bench firmware without reset or programming.
 monitor-mk5-bench:
     probe-rs attach --chip STM32F405RGTx {{ mk5_elf }}
+
+# Non-halting PC sampling. Run a separate current maneuver during this window.
+profile-mk5 output seconds="8":
+    probe-rs profile --chip STM32F405RGTx --duration {{ quote(seconds) }} \
+        --rtt-channel-mode no-block-skip {{ mk5_elf }} flat --line-info --limit 20000 pcsr \
+        > {{ quote(output) }} 2>&1
 
 # Same trace instrumentation for both placements; independent of motor PWM.
 build-mk5-profile memory="sram":
@@ -231,6 +239,24 @@ cli *ARGS:
 [positional-arguments]
 cli-usb *ARGS:
     @just cli --transport usb --wait-secs 8 --json "$@"
+
+# Short Hall-commutated current-control pilot; the motor must be secured.
+test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'just cli-usb stop >/dev/null' EXIT
+    just cli-usb source hall > {{ quote(capture + ".source.json") }}
+    RUST_LOG=warn,device=info,fast_rx=debug just cli-usb maneuver run \
+        {{ quote(maneuver) }} --out {{ quote(capture) }} \
+        > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
+
+# Motor model in SI units; explicit flash selection, RAM by default.
+set-motor-usb resistance ld lq flux pole_pairs storage="ram":
+    @test {{ quote(storage) }} = ram -o {{ quote(storage) }} = flash
+    @just cli-usb config set motor-params \
+        resistance_ohm={{ quote(resistance) }} inductance_d_h={{ quote(ld) }} \
+        inductance_q_h={{ quote(lq) }} flux_linkage_wb={{ quote(flux) }} \
+        pole_pairs={{ quote(pole_pairs) }} {{ if storage == "ram" { "--volatile" } else { "" } }}
 
 # USB recording with matching JSON result and host timing log beside the parquet.
 record-usb capture seconds="30" rate="20000" logs="warn,device=info,fast_rx=debug":

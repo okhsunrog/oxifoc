@@ -1,0 +1,13 @@
+{
+  "name": "mk5-hall-current-pilot",
+  "description": "Hall current control: short 0.6-A d-axis hold, stop, then 0.6-A q-axis torque pulse and coast. Select Hall first; keep the 3/6-A bench limits.",
+  "capture": { "fast_hz": 20000, "tail_s": 0.3 },
+  "terminal": "stop",
+  "timeline": [
+    { "t": 0.3, "cmd": { "start": { "iq": 0.0, "id": 0.6 } } },
+    { "t": 0.5, "cmd": { "stop": {} } },
+    { "t": 0.9, "cmd": { "start": { "iq": 0.6, "id": 0.0 } } },
+    { "t": 1.05, "cmd": { "coast": {} } },
+    { "t": 1.25, "cmd": { "stop": {} } }
+  ]
+}
