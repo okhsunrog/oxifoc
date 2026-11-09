@@ -1,7 +1,7 @@
 //! Shared motor-detection server with effectively-once dedup.
 //!
 //! Detection is the one non-idempotent action in the ICD: re-running a step
-//! re-energises the motor and (for Hall calibration) rewrites stored config. So
+//! re-energises the motor and (for Hall calibration) replaces the live config. So
 //! `DetectEndpoint` carries a [`ReqId`](crate::types::ReqId)
 //! (`Keyed<DetectRequest>`): the server caches the last `(id, response)` and a
 //! retry with the same id replays the cached response instead of measuring
@@ -9,7 +9,7 @@
 //!
 //! This module owns everything that used to be copy-pasted across the platform
 //! detect servers — the serve loop, the dedup, the safe-current formulas, the
-//! error mapping, the motor-stop bracketing, and persisting the Hall result —
+//! error mapping, motor-stop bracketing, and acknowledged Hall installation —
 //! so all platforms behave identically. Each platform supplies only a
 //! [`DetectionBackend`]: the raw measurements bound to its hardware (or to the
 //! virtual-motor simulation).
@@ -37,17 +37,22 @@ use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult}
 use crate::icd::DetectEndpoint;
 use crate::motor::ControlMode;
 use crate::motor::foc_driver::CurrentLimits;
-use crate::state::CMD_CHANNEL;
 use crate::state::DriverCommand;
+use crate::state::model::{CONFIG_COORDINATOR, ModelApplyGuard};
+use crate::state::{CMD_CHANNEL, DetectionActiveGuard};
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse, ReqId};
 
 /// The platform-specific half of detection: the raw measurements, bound to the
 /// hardware (or to the virtual-motor sim). Everything else — parameter
-/// computation, dedup, error mapping, config persistence — is handled by
+/// computation, dedup, error mapping, live config installation — is handled by
 /// [`detect_server`].
 #[allow(async_fn_in_trait)]
 pub trait DetectionBackend {
+    /// Wall-clock timer for the bounded ISR installation acknowledgement.
+    /// Simulation's instantaneous measurement clock is unsuitable here.
+    type Timer: crate::timer::Timer;
+
     /// Present DC bus voltage in volts (read from the platform ADC / sim).
     fn vbus(&self) -> f32;
 
@@ -67,7 +72,8 @@ pub trait DetectionBackend {
     /// Measure flux linkage (Wb) via open-loop spin.
     async fn measure_flux(&mut self, params: &FluxLinkageParams) -> Result<f32, DetectionError>;
 
-    /// Calibrate Hall sensors; the result is persisted by [`detect_server`].
+    /// Measure Hall sensors without installing the result. The server applies
+    /// it at an acknowledged control boundary and updates the shared revision.
     async fn calibrate_hall(
         &mut self,
         params: HallCalibrationParams,
@@ -120,6 +126,15 @@ pub async fn detect_server<NS, B>(
         };
         let id = msg.t.id;
 
+        // A Hall commit is durable in the ISR, including when its waiter was
+        // cancelled after claim. Replay it without re-energising the motor.
+        if let Some(response) = CONFIG_COORDINATOR.detected(id, msg.t.inner) {
+            let _ = responder
+                .clone()
+                .respond_owned::<DetectEndpoint>(&msg.hdr, &response);
+            continue;
+        }
+
         let resp = match &cache {
             // Hit: replay without re-running the (physical) measurement.
             Some((cached_id, cached_req, resp))
@@ -132,9 +147,6 @@ pub async fn detect_server<NS, B>(
                 // send().await, not try_send: the bracketing Stops must not
                 // be droppable on a full channel (the ISR drains every
                 // cycle, so this resolves within one FOC period).
-                CMD_CHANNEL
-                    .send(DriverCommand::SetMode(ControlMode::Stopped))
-                    .await;
                 // Suspend the link-loss failsafe while we drive: the host is
                 // blocked on our response and sends no liveness frames (see
                 // DETECTION_ACTIVE). RAII: the flag clears on EVERY exit path,
@@ -142,19 +154,27 @@ pub async fn detect_server<NS, B>(
                 // flag would leave the link-loss failsafe disabled forever.
                 // The command-staleness deadman still covers the measurement
                 // (long BENCH_STALENESS_TIMEOUT_US bound).
-                let _detection_guard = crate::state::DetectionActiveGuard::arm();
-                let resp = run_step(
-                    &mut backend,
-                    msg.t.inner,
-                    max_current_a,
-                    foc_freq_hz,
-                    runtime_config,
-                )
-                .await;
-                drop(_detection_guard);
-                CMD_CHANNEL
-                    .send(DriverCommand::SetMode(ControlMode::Stopped))
+                let resp = if let Some(detection_guard) = DetectionActiveGuard::try_arm() {
+                    CMD_CHANNEL
+                        .send(DriverCommand::SetMode(ControlMode::Stopped))
+                        .await;
+                    let resp = run_step(
+                        &mut backend,
+                        msg.t.inner,
+                        max_current_a,
+                        foc_freq_hz,
+                        runtime_config,
+                        &detection_guard,
+                        id,
+                    )
                     .await;
+                    CMD_CHANNEL
+                        .send(DriverCommand::SetMode(ControlMode::Stopped))
+                        .await;
+                    resp
+                } else {
+                    DetectResponse::Error(DetectError::Busy)
+                };
                 // Success-only cache: a transient error stays retryable.
                 if !matches!(resp, DetectResponse::Error(_)) {
                     cache = Some((id, msg.t.inner, resp));
@@ -199,6 +219,8 @@ async fn run_step<B: DetectionBackend>(
     max_current_a: f32,
     foc_freq_hz: f32,
     runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
+    detection: &DetectionActiveGuard,
+    request_id: ReqId,
 ) -> DetectResponse {
     if runtime_config.is_some_and(|config| {
         critical_section::with(|cs| !config.borrow(cs).borrow().board_calibration_is_valid())
@@ -344,6 +366,9 @@ async fn run_step<B: DetectionBackend>(
             max_power_loss_w,
             resistance_ohm,
         } => {
+            let Some(runtime_config) = runtime_config else {
+                return DetectResponse::Error(DetectError::MissingPrerequisite);
+            };
             // Non-positive means "use the default sweep current" by design,
             // but non-finite bits are still rejected.
             if !max_power_loss_w.is_finite() || !resistance_ohm.is_finite() {
@@ -363,16 +388,29 @@ async fn run_step<B: DetectionBackend>(
                     if !result.is_valid() || !calibration.is_calibrated() {
                         return DetectResponse::Error(DetectError::HardwareFault);
                     }
-                    // Persist in memory if the platform has a config store; the
-                    // host then writes it to flash via the config endpoint.
-                    if let Some(rc) = runtime_config {
-                        critical_section::with(|cs| {
-                            let mut config = rc.borrow(cs).borrow_mut();
-                            config.hall_calibration = Some(calibration);
-                            config.hall_calibration_invalid = false;
-                        });
+                    CMD_CHANNEL
+                        .send(DriverCommand::SetMode(ControlMode::Stopped))
+                        .await;
+                    let Some(pending) = ModelApplyGuard::prepare_detected_hall(
+                        calibration,
+                        runtime_config,
+                        &CONFIG_COORDINATOR,
+                        detection,
+                        request_id,
+                        req,
+                    ) else {
+                        return DetectResponse::Error(DetectError::Busy);
+                    };
+                    match pending.apply::<B::Timer>().await {
+                        crate::types::ConfigResponse::Applied { .. } => {
+                            DetectResponse::HallCalibrated
+                        }
+                        crate::types::ConfigResponse::Busy
+                        | crate::types::ConfigResponse::Conflict { .. } => {
+                            DetectResponse::Error(DetectError::Busy)
+                        }
+                        _ => DetectResponse::Error(DetectError::HardwareFault),
                     }
-                    DetectResponse::HallCalibrated
                 }
                 Err(e) => DetectResponse::Error(map_err(e)),
             }

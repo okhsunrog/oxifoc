@@ -21,6 +21,7 @@ pub struct PreparedMotorModel {
 }
 
 impl PreparedMotorModel {
+    #[cfg(any(feature = "runtime", test))]
     pub(crate) fn reset_hall_reference(&mut self) {
         if let Some(phase) = &mut self.phase {
             phase.reset_hall_reference();

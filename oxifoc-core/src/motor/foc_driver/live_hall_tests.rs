@@ -384,3 +384,165 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
         "standing short remains a safe operation"
     );
 }
+
+#[cfg(all(feature = "detection", feature = "delivery"))]
+#[test]
+fn detected_hall_ack_commits_actual_reference_revision_and_durable_detection_dedup() {
+    use crate::state::DetectionActiveGuard;
+    use crate::state::model::ConfigCoordinator;
+    use crate::types::{DetectRequest, DetectResponse};
+
+    let _serial = cmd_channel_lock();
+    let _boot = BootFlag::clear();
+    let coordinator = Box::leak(Box::new(ConfigCoordinator::new()));
+    let config = Box::leak(Box::new(Mutex::new(RefCell::new(RuntimeConfig {
+        hall_calibration: Some(HallCalibrationConfig::default()),
+        ..Default::default()
+    }))));
+    let state = Mutex::new(RefCell::new(MotorControlState::new()));
+    critical_section::with(|cs| {
+        state.borrow(cs).borrow_mut().set_link_active();
+        coordinator.persisted.borrow(cs).borrow_mut()[ConfigGroupId::HallCalibration.index()] =
+            Some(0);
+    });
+    let registry = crate::foc::fault::FaultRegistry::<TestFault>::new();
+    let mut hall = HallSensor::new(1_000_000);
+    hall.update(1, 0);
+    let mut driver = FocDriver::new(
+        FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+        MockPwm { duties: [0; 3] },
+        MockCurrentSensor {
+            currents: (0.0, 0.0, 0.0),
+        },
+        PhaseManager::with_hall(hall),
+        1.0 / 20_000.0,
+    );
+    let request = DetectRequest::CalibrateHall {
+        max_power_loss_w: 120.0,
+        resistance_ohm: 0.03,
+    };
+    let id = ReqId(201);
+    let mut calibration = HallCalibrationConfig::default();
+    for angle in &mut calibration.angles[1..=6] {
+        *angle += 0.7;
+    }
+    let prepare = |owner: &DetectionActiveGuard| {
+        ModelApplyGuard::prepare_detected_hall(
+            calibration.clone(),
+            config,
+            coordinator,
+            owner,
+            id,
+            request,
+        )
+        .unwrap()
+    };
+    let mut cx = Context::from_waker(Waker::noop());
+    let owner = DetectionActiveGuard::try_arm().unwrap();
+    assert!(DetectionActiveGuard::try_arm().is_none());
+    let old_authority = owner.apply_token();
+
+    // A regular config transaction cannot borrow the detector's maintenance
+    // ownership, even though it uses the same stopped installation machinery.
+    let ordinary = ModelApplyGuard::prepare_hall(
+        calibration.clone(),
+        config,
+        &coordinator.revisions,
+        &coordinator.actions,
+        id,
+        0,
+    )
+    .unwrap();
+    let mut ordinary = Box::pin(ordinary.apply::<PendingTimer>());
+    assert!(ordinary.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        ordinary.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Busy)
+    );
+    drop(ordinary);
+
+    let mut cancelled = Box::pin(prepare(&owner).apply::<PendingTimer>());
+    assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+    drop(cancelled);
+    process_commands(&state, &mut driver, &registry);
+    assert!(coordinator.detected(id, request).is_none());
+
+    // A queued generation loses its authority when the owning detector leaves.
+    let mut stale = Box::pin(prepare(&owner).apply::<PendingTimer>());
+    assert!(stale.as_mut().poll(&mut cx).is_pending());
+    drop(owner);
+    assert!(!old_authority.is_current());
+    assert!(
+        DetectionActiveGuard::try_arm().is_none(),
+        "a pending install excludes a new detector"
+    );
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        stale.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Busy)
+    );
+    drop(stale);
+    critical_section::with(|cs| {
+        assert_eq!(
+            coordinator.revisions.borrow(cs).borrow()[ConfigGroupId::HallCalibration.index()],
+            0
+        );
+        assert_eq!(
+            config.borrow(cs).borrow().hall_calibration.as_ref(),
+            Some(&HallCalibrationConfig::default())
+        );
+    });
+
+    let owner = DetectionActiveGuard::try_arm().unwrap();
+    assert!(
+        !old_authority.is_current(),
+        "a replacement owner cannot revive an old token"
+    );
+    let mut applied = Box::pin(prepare(&owner).apply::<PendingTimer>());
+    assert!(applied.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    // Lose the response waiter after actual installation. The retry must still
+    // return success without repeating physical calibration or changing RAM.
+    drop(applied);
+    assert!(matches!(
+        coordinator.detected(id, request),
+        Some(DetectResponse::HallCalibrated)
+    ));
+    assert!(
+        coordinator
+            .detected(
+                id,
+                DetectRequest::MeasureResistance {
+                    max_power_loss_w: 120.0
+                }
+            )
+            .is_none()
+    );
+    assert_eq!(
+        driver.phase().hall().sample(50).unwrap().angle.to_bits(),
+        calibration.angles[1].to_bits()
+    );
+    assert_eq!(
+        driver.phase().get().angle.to_bits(),
+        calibration.angles[1].to_bits()
+    );
+    critical_section::with(|cs| {
+        let revision =
+            coordinator.revisions.borrow(cs).borrow()[ConfigGroupId::HallCalibration.index()];
+        assert_eq!(revision, 1);
+        assert_ne!(
+            coordinator.persisted.borrow(cs).borrow()[ConfigGroupId::HallCalibration.index()],
+            Some(revision)
+        );
+        assert_eq!(
+            config.borrow(cs).borrow().hall_calibration.as_ref(),
+            Some(&calibration)
+        );
+        assert!(
+            coordinator.actions.borrow(cs).borrow().get(id).is_none(),
+            "detection ids do not enter config dedup"
+        );
+    });
+    drop(owner);
+}

@@ -35,7 +35,7 @@ use crate::motor::derating::DeratingConfig;
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::foc_driver::CurrentLimits;
 #[cfg(feature = "storage")]
-use crate::state::model::{CachedConfigAck, ConfigActionCache, ModelApplyGuard};
+use crate::state::model::{CONFIG_COORDINATOR, CachedConfigAck, ModelApplyGuard};
 use crate::state::{DriverCommand, DriverOperation, FlashPendingGuard};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
@@ -397,9 +397,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
     let server = endpoints.bounded_server::<ConfigEndpoint, N>(Some("config"));
     let server = pin!(server);
     let mut h = server.attach();
-    static REVISIONS: CriticalSectionMutex<RefCell<[u32; ConfigGroupId::COUNT]>> =
-        CriticalSectionMutex::new(RefCell::new([0; ConfigGroupId::COUNT]));
-    let revisions = &REVISIONS;
+    let revisions = &CONFIG_COORDINATOR.revisions;
     let mut initially_persisted = [None; ConfigGroupId::COUNT];
     if persist {
         let cfg = critical_section::with(|cs| runtime_config.borrow(cs).borrow().clone());
@@ -409,13 +407,9 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
             }
         }
     }
-    static PERSISTED_REVISIONS: CriticalSectionMutex<RefCell<[Option<u32>; ConfigGroupId::COUNT]>> =
-        CriticalSectionMutex::new(RefCell::new([None; ConfigGroupId::COUNT]));
-    let persisted_revisions = &PERSISTED_REVISIONS;
+    let persisted_revisions = &CONFIG_COORDINATOR.persisted;
     critical_section::with(|cs| *persisted_revisions.borrow(cs).borrow_mut() = initially_persisted);
-    static ACTION_CACHE: CriticalSectionMutex<RefCell<ConfigActionCache>> =
-        CriticalSectionMutex::new(RefCell::new(ConfigActionCache::new()));
-    let action_cache = &ACTION_CACHE;
+    let action_cache = &CONFIG_COORDINATOR.actions;
 
     loop {
         let _ = h

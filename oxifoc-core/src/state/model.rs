@@ -31,6 +31,12 @@ pub(crate) enum CachedConfigAck {
 pub(crate) struct ConfigActionCache {
     entries: [Option<(ReqId, CachedConfigAck)>; 4],
     next: usize,
+    #[cfg(all(feature = "detection", feature = "delivery"))]
+    detection: Option<(
+        ReqId,
+        crate::types::DetectRequest,
+        crate::types::DetectResponse,
+    )>,
 }
 
 #[cfg(feature = "storage")]
@@ -39,6 +45,8 @@ impl ConfigActionCache {
         Self {
             entries: [None; 4],
             next: 0,
+            #[cfg(all(feature = "detection", feature = "delivery"))]
+            detection: None,
         }
     }
 
@@ -53,6 +61,53 @@ impl ConfigActionCache {
         self.entries[self.next] = Some((id, ack));
         self.next = (self.next + 1) % self.entries.len();
     }
+}
+
+/// Shared metadata for every live configuration producer. The config endpoint
+/// and physical detection must advance the same revision before acknowledging.
+pub(crate) struct ConfigCoordinator {
+    pub revisions: Mutex<RefCell<[u32; ConfigGroupId::COUNT]>>,
+    pub persisted: Mutex<RefCell<[Option<u32>; ConfigGroupId::COUNT]>>,
+    pub actions: Mutex<RefCell<ConfigActionCache>>,
+}
+
+impl ConfigCoordinator {
+    pub const fn new() -> Self {
+        Self {
+            revisions: Mutex::new(RefCell::new([0; ConfigGroupId::COUNT])),
+            persisted: Mutex::new(RefCell::new([None; ConfigGroupId::COUNT])),
+            actions: Mutex::new(RefCell::new(ConfigActionCache::new())),
+        }
+    }
+
+    #[cfg(all(feature = "detection", feature = "delivery"))]
+    pub fn detected(
+        &self,
+        id: ReqId,
+        request: crate::types::DetectRequest,
+    ) -> Option<crate::types::DetectResponse> {
+        critical_section::with(|cs| {
+            self.actions
+                .borrow(cs)
+                .borrow()
+                .detection
+                .as_ref()
+                .and_then(|(cached_id, cached_request, response)| {
+                    (*cached_id == id && *cached_request == request).then_some(*response)
+                })
+        })
+    }
+}
+
+pub(crate) static CONFIG_COORDINATOR: ConfigCoordinator = ConfigCoordinator::new();
+
+enum CommitOrigin {
+    Config,
+    #[cfg(all(feature = "detection", feature = "delivery"))]
+    Detection {
+        authority: super::DetectionApplyToken,
+        request: crate::types::DetectRequest,
+    },
 }
 
 const EMPTY: u32 = 0;
@@ -126,6 +181,7 @@ struct Pending {
     request: ReqId,
     expected_revision: u32,
     response: Option<ConfigResponse>,
+    origin: CommitOrigin,
 }
 
 // Cortex-M4 has native 32-bit atomics, so tag state and generation together.
@@ -282,6 +338,7 @@ impl ModelApplyGuard {
             cache,
             request,
             expected_revision,
+            CommitOrigin::Config,
         )
     }
 
@@ -304,6 +361,37 @@ impl ModelApplyGuard {
             cache,
             request,
             expected_revision,
+            CommitOrigin::Config,
+        )
+    }
+
+    #[cfg(all(feature = "detection", feature = "delivery"))]
+    pub(crate) fn prepare_detected_hall(
+        value: HallCalibrationConfig,
+        config: &'static Mutex<RefCell<RuntimeConfig>>,
+        coordinator: &'static ConfigCoordinator,
+        detection: &super::DetectionActiveGuard,
+        request_id: ReqId,
+        request: crate::types::DetectRequest,
+    ) -> Option<Self> {
+        let authority = detection.apply_token();
+        if !authority.is_current() {
+            return None;
+        }
+        let expected_revision = critical_section::with(|cs| {
+            coordinator.revisions.borrow(cs).borrow()[ConfigGroupId::HallCalibration.index()]
+        });
+        let prepared = crate::foc::hall_sensor::PreparedHallCalibration::from_config(&value)?;
+        Self::prepare_inner(
+            PreparedUpdate::Hall(prepared),
+            ModelConfigUpdate::HallCalibration(value),
+            None,
+            config,
+            &coordinator.revisions,
+            &coordinator.actions,
+            request_id,
+            expected_revision,
+            CommitOrigin::Detection { authority, request },
         )
     }
 
@@ -325,6 +413,7 @@ impl ModelApplyGuard {
             cache,
             ReqId(0),
             expected_revision,
+            CommitOrigin::Config,
         )
     }
 
@@ -338,6 +427,7 @@ impl ModelApplyGuard {
         cache: &'static Mutex<RefCell<ConfigActionCache>>,
         request: ReqId,
         expected_revision: u32,
+        origin: CommitOrigin,
     ) -> Option<Self> {
         let generation = SLOT.reserve()?;
         SLOT.done.reset();
@@ -353,6 +443,7 @@ impl ModelApplyGuard {
                 request,
                 expected_revision,
                 response: None,
+                origin,
             }));
         };
         SLOT.ticket
@@ -419,9 +510,14 @@ pub(super) fn apply<P, C, Ph, S>(
     let group = pending.update.group();
     let current_revision =
         critical_section::with(|cs| pending.revisions.borrow(cs).borrow()[group.index()]);
+    let authorized = match &pending.origin {
+        CommitOrigin::Config => !super::DETECTION_ACTIVE.load(Ordering::Acquire),
+        #[cfg(all(feature = "detection", feature = "delivery"))]
+        CommitOrigin::Detection { authority, .. } => authority.is_current(),
+    };
     let response = if current_revision != pending.expected_revision {
         ConfigResponse::Conflict { current_revision }
-    } else if !allowed {
+    } else if !allowed || !authorized {
         ConfigResponse::Busy
     } else {
         let applied = match &mut pending.prepared {
@@ -456,11 +552,21 @@ pub(super) fn apply<P, C, Ph, S>(
                 }
                 let revision = current_revision.wrapping_add(1);
                 pending.revisions.borrow(cs).borrow_mut()[group.index()] = revision;
-                pending
-                    .cache
-                    .borrow(cs)
-                    .borrow_mut()
-                    .insert(pending.request, CachedConfigAck::Applied(revision));
+                match &pending.origin {
+                    CommitOrigin::Config => pending
+                        .cache
+                        .borrow(cs)
+                        .borrow_mut()
+                        .insert(pending.request, CachedConfigAck::Applied(revision)),
+                    #[cfg(all(feature = "detection", feature = "delivery"))]
+                    CommitOrigin::Detection { request, .. } => {
+                        pending.cache.borrow(cs).borrow_mut().detection = Some((
+                            pending.request,
+                            *request,
+                            crate::types::DetectResponse::HallCalibrated,
+                        ));
+                    }
+                }
                 let mut state = state.borrow(cs).borrow_mut();
                 if matches!(pending.update, ModelConfigUpdate::HallCalibration(_)) {
                     state.hall_calibration_valid = true;
@@ -519,6 +625,7 @@ mod tests {
             request: ReqId(1),
             expected_revision: 0,
             response: None,
+            origin: CommitOrigin::Config,
         }
     }
 

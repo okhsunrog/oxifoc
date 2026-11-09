@@ -467,7 +467,9 @@ pub async fn run_full_detection<S: SinCos>(
     sweep::run_full_detection::<_, EmbassyTimer, S>(&mut hw, params).await
 }
 
-/// Run Hall sensor calibration.
+/// Measure Hall calibration. The detection server owns its acknowledged
+/// stopped installation and configuration revision; measurement changes no
+/// live sensor reference.
 pub async fn calibrate_hall(
     params: HallCalibrationParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
@@ -479,14 +481,7 @@ pub async fn calibrate_hall(
 ) -> Result<HallCalibrationResult, DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     let reader = EmbassyHallReader::new(read_hall_fn);
-    let result = sweep::calibrate_hall::<_, EmbassyTimer, _>(&mut hw, &reader, params).await?;
-    if !crate::foc::hall_embassy::apply_detected_calibration(&result) {
-        return Err(DetectionError::HardwareFault);
-    }
-    // Only the successfully installed reference releases Hall-dependent drive.
-    #[cfg(feature = "storage")]
-    critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().hall_calibration_valid = true);
-    Ok(result)
+    sweep::calibrate_hall::<_, EmbassyTimer, _>(&mut hw, &reader, params).await
 }
 
 /// Calibrate Hall sensors with default parameters.

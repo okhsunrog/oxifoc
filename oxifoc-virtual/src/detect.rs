@@ -34,6 +34,8 @@ struct VirtualBackend {
 }
 
 impl DetectionBackend for VirtualBackend {
+    type Timer = crate::TokioTimer;
+
     fn vbus(&self) -> f32 {
         self.vbus
     }

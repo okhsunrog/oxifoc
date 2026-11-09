@@ -235,28 +235,74 @@ pub fn detection_cancelled() -> bool {
 }
 
 fn cancel_detection() {
-    if DETECTION_ACTIVE.load(Ordering::Acquire) {
-        DETECTION_CANCELLED.store(true, Ordering::Release);
-    }
+    critical_section::with(|_| {
+        if DETECTION_ACTIVE.load(Ordering::Acquire) {
+            DETECTION_CANCELLED.store(true, Ordering::Release);
+        }
+    });
 }
 
 /// RAII guard for [`DETECTION_ACTIVE`]: clears the flag on every exit path.
 /// Without it, any future `select`/timeout wrapper around the measurement
 /// future would strand the flag on cancellation and leave the link-loss
 /// failsafe disabled forever.
-pub struct DetectionActiveGuard(());
+pub struct DetectionActiveGuard {
+    generation: u32,
+}
+
+static DETECTION_GENERATION: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Private proof that the current detection owns its final stopped install.
+/// Tokens from a cancelled or replaced operation cannot authorize an ISR apply.
+#[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
+pub(crate) struct DetectionApplyToken(u32);
+
+#[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
+impl DetectionApplyToken {
+    pub(crate) fn is_current(&self) -> bool {
+        critical_section::with(|_| {
+            DETECTION_ACTIVE.load(Ordering::Acquire)
+                && !DETECTION_CANCELLED.load(Ordering::Acquire)
+                && DETECTION_GENERATION.load(Ordering::Acquire) == self.0
+        })
+    }
+}
 
 impl DetectionActiveGuard {
     pub fn arm() -> Self {
-        DETECTION_CANCELLED.store(false, Ordering::Release);
-        DETECTION_ACTIVE.store(true, Ordering::Relaxed);
-        Self(())
+        Self::try_arm().expect("one detection operation owns the device")
+    }
+
+    pub fn try_arm() -> Option<Self> {
+        critical_section::with(|_| {
+            if DETECTION_ACTIVE.load(Ordering::Acquire) {
+                return None;
+            }
+            #[cfg(feature = "storage")]
+            if model_apply_pending() {
+                return None;
+            }
+            let generation = DETECTION_GENERATION.load(Ordering::Relaxed).wrapping_add(1);
+            DETECTION_GENERATION.store(generation, Ordering::Release);
+            DETECTION_CANCELLED.store(false, Ordering::Release);
+            DETECTION_ACTIVE.store(true, Ordering::Release);
+            Some(Self { generation })
+        })
+    }
+
+    #[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
+    pub(crate) fn apply_token(&self) -> DetectionApplyToken {
+        DetectionApplyToken(self.generation)
     }
 }
 
 impl Drop for DetectionActiveGuard {
     fn drop(&mut self) {
-        DETECTION_ACTIVE.store(false, Ordering::Relaxed);
+        critical_section::with(|_| {
+            if DETECTION_GENERATION.load(Ordering::Acquire) == self.generation {
+                DETECTION_ACTIVE.store(false, Ordering::Release);
+            }
+        });
     }
 }
 
@@ -641,7 +687,6 @@ where
                         && !boot_current_offset_pending()
                         && !current_offset_request_pending()
                         && !FLASH_OP_PENDING.load(Ordering::Acquire)
-                        && !DETECTION_ACTIVE.load(Ordering::Acquire)
                         && !fault_registry.any_stopping()
                 });
                 model::apply(generation, foc, state_mutex, allowed);

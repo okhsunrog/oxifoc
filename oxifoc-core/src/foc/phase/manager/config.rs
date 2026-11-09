@@ -67,6 +67,7 @@ impl PreparedPhaseModel {
         prepared
     }
 
+    #[cfg(any(feature = "runtime", test))]
     pub(crate) fn reset_hall_reference(&mut self) {
         self.reset_hall = Some(crate::foc::hall_sensor::PreparedHallCalibration::nominal());
     }
