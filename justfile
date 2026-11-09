@@ -166,7 +166,7 @@ flash-mk5-hall profiling="off" memory="sram" transport="usb": (build-mk5-hall pr
 
 # Detect one parameter without applying motor parameters, recording every cycle.
 detect-mk5 step capture *ARGS:
-    RUST_LOG=warn,device=info,fast_rx=debug just cli-usb detect {{ quote(step) }} \
+    RUST_LOG=warn,device=info,fast_rx=debug just cli-usb --elf {{ mk5_elf }} detect {{ quote(step) }} \
         --record-hz 20000 --record {{ quote(capture) }} {{ ARGS }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
 
@@ -248,9 +248,9 @@ profile-usb-cpu-mk5 capture maneuver="maneuvers/mk5-hall-current-check.json":
     exit "$capture_status"
 
 # Arm a finite TIM5 trace before native L detection; export after automatic Stop.
-profile-l-mk5 capture symbols:
+profile-l-mk5 capture symbols resistance="0.031":
     uv run python scripts/bench_executor_trace.py arm --symbols {{ quote(symbols) }} --on-active --timer-hz 83917920
-    @just detect-l-usb {{ quote(capture) }} 0.031
+    @just detect-mk5 inductance {{ quote(capture) }} --resistance {{ quote(resistance) }}
     uv run python scripts/bench_executor_trace.py read --symbols {{ quote(symbols) }} --out {{ quote(capture + ".trace.bin") }} --timer-hz 83917920
 
 # Hardware: energizes the secured MK5 motor, records at 20 kHz, then tests Stop.
