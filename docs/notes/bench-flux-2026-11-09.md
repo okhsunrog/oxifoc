@@ -50,3 +50,13 @@ voltage-estimation bias is unresolved. Terminal ADC offsets and remaining
 speed dependence also need investigation before claiming calibrated accuracy;
 Hall closed-loop commutation is not qualified by these open-loop/coast runs.
 No motor parameters or increased current limits were saved.
+
+The initial Hall error was a startup-accounting bug: the first valid sector
+was compared against the constructor's logical sector 0 as if an edge had
+been skipped. A regression test reproduces it and covers all six starting
+sectors plus real skipped transitions. After the fix and verified flash,
+`hall-startup.parquet` retained 294301 consecutive samples with all six states,
+zero errors/overcaptures, and a valid live RAM calibration (not persisted).
+The subsequent 6000-ERPM coast run returned 3.207849 mWb with 120141
+consecutive samples and zero Hall errors/overcaptures; final status is Stopped
+with no faults. Core/Embassy tests: 503 passed, 2 ignored; strict Clippy passes.

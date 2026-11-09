@@ -575,8 +575,9 @@ impl HallSensor {
         // Detect direction based on state transitions
         let is_wrap_cw = prev_state == 5 && current_state == 0;
         let is_wrap_ccw = prev_state == 0 && current_state == 5;
-        if current_state.abs_diff(prev_state) > 1 && !is_wrap_cw && !is_wrap_ccw {
+        if prev_raw != 0 && current_state.abs_diff(prev_state) > 1 && !is_wrap_cw && !is_wrap_ccw {
             // Non-adjacent transition (not wraparound) => error
+            // The first valid sector seeds position; there was no prior edge.
             self.error_count += 1;
         }
 
@@ -1191,6 +1192,26 @@ mod tests {
         // All high (0b111)
         assert!(hall.update(7, 0).is_none());
         assert_eq!(hall.error_count(), 2);
+    }
+
+    #[test]
+    fn first_valid_hall_sector_is_an_initial_position_not_a_skipped_edge() {
+        for raw in 1..=6 {
+            let mut hall = HallSensor::new(1_000_000);
+            assert!(hall.update(raw, 100).is_some());
+            assert_eq!(hall.error_count(), 0, "initial raw sector {raw}");
+            assert_eq!(hall.direction(), Direction::Stopped);
+            assert_eq!(hall.elec_velocity, 0.0);
+
+            // Real skipped transitions remain errors after initialization.
+            let skipped = (1..=6)
+                .find(|next| {
+                    HALL_STATE_TABLE[*next as usize] == (HALL_STATE_TABLE[raw as usize] + 2) % 6
+                })
+                .unwrap();
+            hall.update(skipped, 1100);
+            assert_eq!(hall.error_count(), 1);
+        }
     }
 
     /// A connector-bounce edge pair (adjacent edges ticks apart) used to
