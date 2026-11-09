@@ -231,17 +231,64 @@ and all detection results remained unapplied. Configuration readback
 matched the initial model, Hall table, limits and voltage calibration;
 only the expected runtime current offsets changed at boot.
 
-Next scheduling investigation: `NetStack<CriticalSectionRawMutex>::send_ty`
-holds PRIMASK across router/local-socket traversal and frame serialization.
-It therefore masks P0 ADC too. Its duration has not been measured. HFI
-waveform generation is outside CS and its array transfers are already
+E2 measured `NetStack<CriticalSectionRawMutex>::send_ty`: its recorded
+PRIMASK-protected callback body reached 23.36 us across socket/router
+traversal and serialization; acquisition/release tails are not timed.
+In a matched finite trace, no ADC ran inside its 77 qualified lock bodies.
+The raw ADC entry phase from the preceding PWM peak had p99=24.57 us,
+maximum=27.43 us. These are phase snapshots after the ISR prologue, not
+absolute JEOC latency or a whole-run worst-case bound.
+
+F405 now selects an app-local BASEPRI P6 mutex through Ergot's existing
+`NetStack<R>` API. Thread tasks and the USART1/P6 USB executor are its only
+permitted callers; hardware USB/UART handlers only wake those tasks.
+ADC P0 and Hall P1 can preempt. A per-instance atomic prevents reentry;
+RAII releases it before restoring the inherited BASEPRI. Runtime checks
+reject unsupported contexts or priority grouping. The USB executor and
+mutex share one typed priority constant. Other global critical sections,
+Ergot itself and G474 are unchanged.
+
+With identical instrumentation, ADC preempted 45 of 79 qualified network
+lock bodies. Raw phase p99 fell to 5.13 us, maximum to 6.17 us; a repeat
+gave 5.08/6.20 us. Median remained 4.98 us. ADC append intervals changed
+from p99/max=69.59/72.45 us to 50.15/51.17 us. Each trace covers about
+44 ms. The longest new lock elapsed span was 144 us because ADC preempted
+it repeatedly; subtracting recorded ADC 8/9 spans leaves at most 29.74 us.
+That remainder still includes entry probes, untraced IRQs and trace work;
+release work after the end marker is excluded. It is not exclusive
+serialization time. The change removes long global masking, rather than
+making serialization faster.
+
+Both traced images passed all six boot mask/reentry checks on the board;
+SWD readback confirmed exact mask restoration. Trace builds lost samples
+and one baseline maneuver rejected a late command, then stopped safely.
+They qualify the finite timing observations only, not continuous waveform
+analysis. ADC trace probes now run only during the recording window.
+`build-mk5-netstack-trace [basepri|primask]` and
+`profile-netstack-mk5 CAPTURE [basepri|primask]` reproduce the comparison.
+HFI waveform generation is outside CS and its array transfers are already
 split into 8/16-byte pieces; no whole-packet CS copy was found.
+
+Minimal whole-ISR timing with the new policy measured 6206/6207 cycles in
+the steady hold, about 37.0 us versus the preceding 6185-cycle build.
+That capture lost four samples and is not a continuous waveform reference.
+Final qualification used the normal build without trace/ISR timing:
+438550 rows, zero gaps/losses, all 107 commands successful, terminal Stop,
+fault count zero, Hall errors/overcaptures zero, sampled dq peak 2.15 A.
+A middle hold window measured Id=0.60022 A, Iq=0.00026 A. R=30.160 mOhm
+and HFI Ld/Lq=19.547/28.130 uH were also recorded without any loss and
+remained unapplied. Model, Hall table, limits and board calibration matched
+the initial readback; only runtime DC offsets changed. The board is left
+Stopped on the normal image, with a matching ELF and no trace symbols.
 
 Artifacts, exact ELF hashes, logs and plots:
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-perf-2026-11-09/`.
 Useful entry points: `results.json`, `performance-stages.png`,
 `usb-cpu-timeline.png`, `pwm-latch.parquet.trace.bin.pwm.png`.
 P2 and U2 are lower priority than the MCU drain deficit.
+
+E2 artifacts, firmware hashes, boot witnesses and `netstack-comparison.png`:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-netstack-latency-2026-11-09/`.
 
 Only the integrator owns the physical board, flashing and captures. Pause
 concurrent builds during timing-sensitive runs. Keep the exact matching
