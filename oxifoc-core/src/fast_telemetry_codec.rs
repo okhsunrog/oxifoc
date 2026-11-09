@@ -1,6 +1,7 @@
 //! Lossless, independently decodable telemetry batches. Runs in the async
 //! stream task; the ADC ISR still writes its original 34-byte Pod frames.
 use super::{FAST_BATCH_BYTES, FAST_BATCH_SAMPLES, FastTelemetry, FastTelemetryBatch};
+use core::mem::MaybeUninit;
 
 const FRAME: usize = size_of::<FastTelemetry>();
 const MASK_BYTES: usize = FRAME.div_ceil(8);
@@ -11,9 +12,10 @@ const _: () = assert!(FRAME < 64);
 fn encode_delta(
     previous: &[u8; FRAME],
     frame: &[u8; FRAME],
-    encoded: &mut [u8; 1 + FRAME],
+    encoded: &mut [MaybeUninit<u8>; 1 + FRAME],
 ) -> Option<usize> {
     let (header, replacements) = encoded.split_at_mut(1 + MASK_BYTES);
+    let header = header.write_copy_of_slice(&[0; 1 + MASK_BYTES]);
     let mut count = 0;
     let (words, tail) = frame.as_chunks::<4>();
     let (previous_words, previous_tail) = previous.as_chunks::<4>();
@@ -24,7 +26,7 @@ fn encode_delta(
         while changed != 0 {
             let byte = changed.trailing_zeros() / 8;
             let shift = byte * 8;
-            *replacements.get_mut(count)? = (new >> shift) as u8;
+            replacements.get_mut(count)?.write((new >> shift) as u8);
             count += 1;
             mask |= 1 << byte;
             changed &= !(0xff << shift);
@@ -33,13 +35,45 @@ fn encode_delta(
     }
     for (offset, (&new, &old)) in tail.iter().zip(previous_tail).enumerate() {
         if new != old {
-            *replacements.get_mut(count)? = new;
+            replacements.get_mut(count)?.write(new);
             count += 1;
             let index = words.len() * 4 + offset;
             header[1 + index / 8] |= 1 << (index % 8);
         }
     }
     Some(1 + MASK_BYTES + count)
+}
+
+/// Write only into spare storage, then publish the initialized frame in one
+/// operation. A refused reservation leaves the payload unchanged.
+fn append_frame(
+    data: &mut heapless::Vec<u8, FAST_BATCH_BYTES>,
+    previous: Option<&[u8; FRAME]>,
+    frame: &[u8; FRAME],
+) -> bool {
+    let start = data.len();
+    let Some(encoded) = data.spare_capacity_mut().first_chunk_mut::<{ 1 + FRAME }>() else {
+        return false;
+    };
+    let delta_len = previous
+        .and_then(|previous| encode_delta(previous, frame, encoded))
+        .filter(|&len| len < 1 + FRAME);
+    let len = if let Some(len) = delta_len {
+        encoded[0].write(1);
+        len
+    } else {
+        encoded[0].write(0);
+        encoded[1..].write_copy_of_slice(frame);
+        encoded.len()
+    };
+    // SAFETY: the reservation above proves start + len <= capacity. For a
+    // delta, encode_delta initialized its complete header and each contiguous
+    // replacement byte through len. Full fallback overwrites all 1 + FRAME
+    // bytes, including any partially written delta. The old prefix is intact.
+    unsafe {
+        data.set_len(start + len);
+    }
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,25 +133,14 @@ impl FastTelemetryBatchEncoder {
         let Ok(frame) = <&[u8; FRAME]>::try_from(frame) else {
             return false;
         };
-        if self.is_full() {
+        if self.samples == FAST_BATCH_SAMPLES {
             return false;
         }
-        // This temporary always fits the reservation above; commit in one
-        // operation so a failed append cannot leave a partial encoded frame.
-        let mut encoded = [0u8; 1 + FRAME];
-        let delta_len = if self.samples == 0 {
-            None
-        } else {
-            encode_delta(&self.previous, frame, &mut encoded).filter(|&len| len < encoded.len())
-        };
-        let len = if let Some(len) = delta_len {
-            encoded[0] = 1;
-            len
-        } else {
-            encoded[1..].copy_from_slice(frame);
-            encoded.len()
-        };
-        if self.batch.data.extend_from_slice(&encoded[..len]).is_err() {
+        if !append_frame(
+            &mut self.batch.data,
+            (self.samples != 0).then_some(&self.previous),
+            frame,
+        ) {
             return false;
         }
         self.previous.copy_from_slice(frame);
@@ -187,6 +210,160 @@ mod tests {
     use super::*;
     use std::vec::Vec as StdVec;
 
+    // Deliberately bytewise wire oracle, independent of the optimized word
+    // comparisons and reserved-tail writes in the encoder.
+    fn reference_frame(previous: Option<&[u8; FRAME]>, frame: &[u8; FRAME]) -> StdVec<u8> {
+        let mut full = StdVec::from([0]);
+        full.extend_from_slice(frame);
+        let Some(previous) = previous else {
+            return full;
+        };
+        let mut mask = [0; MASK_BYTES];
+        let mut replacements = StdVec::new();
+        for (index, (&old, &new)) in previous.iter().zip(frame).enumerate() {
+            if old != new {
+                mask[index / 8] |= 1 << (index % 8);
+                replacements.push(new);
+            }
+        }
+        if MASK_BYTES + replacements.len() >= FRAME {
+            return full;
+        }
+        let mut delta = StdVec::from([1]);
+        delta.extend_from_slice(&mask);
+        delta.extend_from_slice(&replacements);
+        delta
+    }
+
+    fn random_byte(seed: &mut u32) -> u8 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 17;
+        *seed ^= *seed << 5;
+        *seed as u8
+    }
+
+    fn change_bytes(previous: &[u8; FRAME], count: usize, seed: &mut u32) -> [u8; FRAME] {
+        let mut offsets = core::array::from_fn::<_, FRAME, _>(|index| index);
+        for index in (1..FRAME).rev() {
+            offsets.swap(index, usize::from(random_byte(seed)) % (index + 1));
+        }
+        let mut frame = *previous;
+        for &offset in &offsets[..count] {
+            frame[offset] ^= random_byte(seed).max(1);
+        }
+        frame
+    }
+
+    #[test]
+    fn exact_wire_matches_bytewise_oracle_for_every_change_count_and_random_batches() {
+        let mut seed = 0xd53e82c1;
+        for changed in 0..=FRAME {
+            for _ in 0..64 {
+                let previous = core::array::from_fn(|_| random_byte(&mut seed));
+                let frame = change_bytes(&previous, changed, &mut seed);
+                let mut encoder = FastTelemetryBatchEncoder::new();
+                assert!(encoder.push_bytes(&previous));
+                assert!(encoder.push_bytes(&frame));
+                let mut expected = reference_frame(None, &previous);
+                expected.extend(reference_frame(Some(&previous), &frame));
+                assert_eq!(
+                    encoder.batch().data.as_slice(),
+                    expected,
+                    "changed={changed}"
+                );
+                assert_eq!(encoder.previous, frame);
+            }
+        }
+
+        let mut encoder = FastTelemetryBatchEncoder::new();
+        let mut expected = StdVec::new();
+        let mut previous = None;
+        let mut frame = core::array::from_fn(|_| random_byte(&mut seed));
+        for index in 0..2_000 {
+            if encoder.is_full() {
+                encoder.clear();
+                expected.clear();
+                previous = None;
+            }
+            let changed = usize::from(random_byte(&mut seed)) % (FRAME + 1);
+            frame = change_bytes(&frame, changed, &mut seed);
+            assert!(encoder.push_bytes(&frame));
+            expected.extend(reference_frame(previous.as_ref(), &frame));
+            assert_eq!(encoder.batch().data.as_slice(), expected, "frame={index}");
+            previous = Some(frame);
+        }
+    }
+
+    #[test]
+    fn reserved_tail_preserves_prefix_at_every_capacity_and_change_count() {
+        let previous = [0x5a; FRAME];
+        for used in 0..=FAST_BATCH_BYTES {
+            for changed in 0..=FRAME {
+                let mut data = heapless::Vec::new();
+                data.resize(used, 0xa5).unwrap();
+                let mut frame = previous;
+                frame[..changed].fill(0x3c);
+                let expected = reference_frame(Some(&previous), &frame);
+                let appended = append_frame(&mut data, Some(&previous), &frame);
+                let fits = used + 1 + FRAME <= FAST_BATCH_BYTES;
+                assert_eq!(appended, fits, "used={used}, changed={changed}");
+                assert!(data[..used].iter().all(|&byte| byte == 0xa5));
+                assert_eq!(&data[used..], if fits { &expected[..] } else { &[] });
+            }
+        }
+    }
+
+    #[test]
+    fn refused_push_preserves_payload_history_and_following_valid_frame() {
+        let mut encoder = FastTelemetryBatchEncoder::new();
+        let previous = [0x69; FRAME];
+        assert!(encoder.push_bytes(&previous));
+        for wrong_length in [0, FRAME - 1, FRAME + 1] {
+            let payload = encoder.batch().data.clone();
+            assert!(!encoder.push_bytes(&[0x5a; FRAME + 1][..wrong_length]));
+            assert_eq!(encoder.batch().data, payload);
+            assert_eq!(encoder.previous, previous);
+            assert_eq!(encoder.len(), 1);
+        }
+        let mut next = previous;
+        next[FRAME - 1] ^= 0xff;
+        assert!(encoder.push_bytes(&next));
+        let mut expected = reference_frame(None, &previous);
+        expected.extend(reference_frame(Some(&previous), &next));
+        assert_eq!(encoder.batch().data.as_slice(), expected);
+
+        // Exercise both limits independently: full frames exhaust byte
+        // capacity; identical frames reach the sample cap with room to spare.
+        for dense in [false, true] {
+            encoder.clear();
+            let mut frame = [0; FRAME];
+            while !encoder.is_full() {
+                if dense {
+                    for byte in &mut frame {
+                        *byte ^= 0xff;
+                    }
+                }
+                assert!(encoder.push_bytes(&frame));
+            }
+            let payload = encoder.batch().data.clone();
+            let history = encoder.previous;
+            let samples = encoder.len();
+            assert_eq!(samples == FAST_BATCH_SAMPLES, !dense);
+            // Even a zero-change delta must reserve a complete full frame.
+            assert!(!encoder.push_bytes(&frame));
+            assert!(!encoder.push_bytes(&[0; FRAME - 1]));
+            assert_eq!(encoder.batch().data, payload);
+            assert_eq!(encoder.previous, history);
+            assert_eq!(encoder.len(), samples);
+            encoder.clear();
+            assert!(encoder.push_bytes(&next));
+            assert_eq!(
+                encoder.batch().data.as_slice(),
+                reference_frame(None, &next)
+            );
+        }
+    }
+
     #[test]
     fn sparse_mask_matches_wire_bytes_across_32_bit_boundary() {
         let mut encoder = FastTelemetryBatchEncoder::new();
@@ -203,7 +380,7 @@ mod tests {
 
     #[test]
     fn delta_payload_switches_to_full_at_the_existing_size_boundary() {
-        for changed in [0, 1, 8, 16, 28, 29, FRAME] {
+        for changed in [0, 1, 8, 16, 28, 29, 30, FRAME] {
             let mut encoder = FastTelemetryBatchEncoder::new();
             let mut frame = [0; FRAME];
             assert!(encoder.push_bytes(&frame));
