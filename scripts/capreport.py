@@ -351,18 +351,29 @@ def plot_overview(df, md, segs, out, marks=None):
     import matplotlib.pyplot as plt
     t = df["t_s"].to_numpy()
     fig, ax = plt.subplots(4, 1, figsize=(11, 9), sharex=True)
-    iq = df["iq_a"].to_numpy()
-    ax[0].plot(t, iq, lw=0.6, label="iq"); ax[0].plot(t, df["id_a"], lw=0.5, label="id", alpha=0.7)
+    currents = {"iq": df["iq_a"].to_numpy(), "id": df["id_a"].to_numpy()}
+    ax[0].plot(t, currents["iq"], lw=0.6, label="iq"); ax[0].plot(t, currents["id"], lw=0.5, label="id", alpha=0.7)
     ax[0].set_ylabel("A"); ax[0].legend(loc="upper right", fontsize=8)
     # Robust y-limits: a single trip spike (±10 A) otherwise crushes the
     # 0.3-0.5 A drive detail into a flat line. The clipped-off true peak is
-    # annotated so the spike magnitude isn't hidden.
-    lo, hi = np.percentile(iq, [0.5, 99.5])
-    pad = 0.2 * max(hi - lo, 0.1)
-    if iq.min() < lo - pad or iq.max() > hi + pad:
-        ax[0].set_ylim(lo - pad, hi + pad)
-        ax[0].annotate(f"iq clipped: true range [{iq.min():.1f}, {iq.max():.1f}] A",
-                       (0.01, 0.04), xycoords="axes fraction", fontsize=7, color="tab:red")
+    # annotated so the spike magnitude isn't hidden. Both displayed currents
+    # must contribute their own range: an Id measurement plateau is not an
+    # Iq outlier and must remain visible on this shared axis.
+    finite_currents = {name: values[np.isfinite(values)] for name, values in currents.items()}
+    finite_currents = {name: values for name, values in finite_currents.items() if values.size}
+    if finite_currents:
+        ranges = [np.percentile(values, [0.5, 99.5]) for values in finite_currents.values()]
+        lo = min(bounds[0] for bounds in ranges)
+        hi = max(bounds[1] for bounds in ranges)
+        pad = 0.2 * max(hi - lo, 0.1)
+        clipped = [f"{name} clipped: true range [{values.min():.2f}, {values.max():.2f}] A"
+                   for name, values in finite_currents.items()
+                   if values.min() < lo - pad or values.max() > hi + pad]
+        if clipped:
+            ax[0].set_ylim(lo - pad, hi + pad)
+            ax[0].annotate("\n".join(clipped), (0.01, 0.04), xycoords="axes fraction",
+                           fontsize=7, color="tab:red",
+                           bbox=dict(facecolor="white", edgecolor="none", alpha=0.85, pad=2))
     ax[1].plot(t, df["erpm"], lw=0.6, color="tab:green"); ax[1].set_ylabel("erpm (active src)")
     vmag = np.hypot(df["vd_v"].to_numpy(), df["vq_v"].to_numpy())
     ax[2].plot(t, df["vq_v"], lw=0.6, label="vq")
