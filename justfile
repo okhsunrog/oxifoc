@@ -15,6 +15,7 @@ mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f4
 mk5_profile_features := mk5_usb_metrics_features + ",bench-trace-excitation,isr-profiling"
 mk5_usb_trace_features := mk5_bench_features + ",bench-hall,bench-executor-trace,isr-timing"
 mk5_pwm_trace_features := mk5_bench_features + ",bench-hall,bench-pwm-commit"
+mk5_netstack_trace_features := mk5_bench_features + ",bench-hall,bench-netstack-trace"
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
@@ -220,6 +221,25 @@ build-mk5-usb-cpu-trace:
 build-mk5-pwm-trace:
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_pwm_trace_features) }}
+
+# Network lock spans and ADC entry phase, without executor/PWM trace hooks.
+build-mk5-netstack-trace:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ quote(mk5_netstack_trace_features) }}
+
+profile-netstack-mk5 capture mask="primask" maneuver="maneuvers/mk5-hall-current-check.json":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    symbols={{ quote(capture + ".symbols") }}
+    rust-nm -n -S -C {{ mk5_elf }} > "$symbols"
+    uv run python scripts/bench_executor_trace.py arm --symbols "$symbols" --on-active --active-delay-ms 1200 --timer-hz 83917920
+    capture_status=0
+    just test-current-mk5 {{ quote(capture) }} {{ quote(maneuver) }} usb {{ mk5_elf }} || capture_status=$?
+    uv run python scripts/bench_executor_trace.py read --symbols "$symbols" --out {{ quote(capture + ".trace.bin") }} \
+        --timer-hz 83917920 --schema netstack-v1 --elf {{ mk5_elf }} --capture {{ quote(capture) }}
+    uv run python scripts/bench_netstack_analysis.py {{ quote(capture + ".trace.bin") }} --mask {{ quote(mask) }} \
+        --trim-to-complete-window --export-spans --out {{ quote(capture + ".trace.json") }}
+    exit "$capture_status"
 
 profile-pwm-l-mk5 capture resistance:
     #!/usr/bin/env bash
