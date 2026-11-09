@@ -850,7 +850,7 @@ where
                         | ControlMode::VelocityControl { .. }
                         | ControlMode::PositionControl { .. }
                 ) || mode == ControlMode::Brake
-                    && foc.phase().get().velocity.abs() > BRAKE_ENTRY_MAX_E_RAD_S)
+                    && foc.torque_speed().abs() > BRAKE_ENTRY_MAX_E_RAD_S)
             {
                 return MotorCommandOutcome::RejectedSafety;
             }
@@ -863,9 +863,7 @@ where
             // machinery as the failsafe but user-commanded, so it does not
             // set the re-arm latch. Falls back to rejecting when the current
             // sensor is uncalibrated (can't current-brake).
-            if mode == ControlMode::Brake
-                && foc.phase().get().velocity.abs() > BRAKE_ENTRY_MAX_E_RAD_S
-            {
+            if mode == ControlMode::Brake && foc.torque_speed().abs() > BRAKE_ENTRY_MAX_E_RAD_S {
                 if foc.enter_brake_ramp() {
                     #[cfg(feature = "defmt")]
                     defmt::info!("Brake at speed: ramping to standstill first");

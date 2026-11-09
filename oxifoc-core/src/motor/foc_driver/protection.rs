@@ -510,7 +510,7 @@ where
             ProtectionSample {
                 dt: self.dt,
                 vbus_v,
-                velocity: self.phase.get().velocity,
+                velocity: self.torque_speed(),
                 fet_temp_c_x10,
                 motor_temp_c_x10,
             },

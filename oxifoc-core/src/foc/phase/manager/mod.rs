@@ -19,10 +19,13 @@ mod update;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod rotor_velocity_tests;
+
 #[cfg(feature = "hfi")]
 use crate::foc::phase::observer::HfiObserver;
 use crate::foc::phase::observer::Observer;
-use crate::foc::phase::provider::PhaseOutput;
+use crate::foc::phase::provider::{PhaseOutput, RotorVelocityEstimate};
 use crate::foc::phase::source::PhaseSource;
 use crate::foc::phase::startup::SensorlessStartup;
 use crate::foc::sensors::AngleSensor;
@@ -249,6 +252,9 @@ where
     observer: Observer,
     #[cfg(feature = "hfi")]
     hfi: Option<HfiObserver<S>>,
+    /// A commutation-frame reseed is not a fresh physical observation.
+    #[cfg(feature = "hfi")]
+    hfi_velocity_observed: bool,
     // `S` (the HFI sin/cos backend) is only consumed by the `hfi` field; keep
     // the type parameter live when HFI is compiled out.
     #[cfg(not(feature = "hfi"))]
@@ -259,6 +265,7 @@ where
 
     // State
     output: PhaseOutput,
+    rotor_velocity: Option<RotorVelocityEstimate>,
     manual_angle: f32,
     open_loop_angle: f32,
     open_loop_velocity: f32,

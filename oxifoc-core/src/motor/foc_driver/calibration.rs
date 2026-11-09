@@ -35,7 +35,7 @@ where
             if !self.current_sensor.is_calibrated() {
                 return Err(CurrentOffsetError::RequiresExistingCalibration);
             }
-            let velocity = self.phase.get().velocity;
+            let velocity = self.torque_speed();
             if !velocity.is_finite() || velocity.abs() > CURRENT_OFFSET_STANDSTILL_MAX_E_RAD_S {
                 return Err(CurrentOffsetError::UnsafeWhileMoving);
             }
@@ -88,7 +88,7 @@ where
         // The alternative topology deliberately retains the previous
         // calibration so software current protection remains meaningful.
         if request.method == CurrentOffsetMethod::AllPhases50 {
-            let velocity = self.phase.get().velocity;
+            let velocity = self.torque_speed();
             let currents = self.current_sensor.read_currents();
             let limit = self.current_limits.overcurrent_threshold_a;
             let moving =

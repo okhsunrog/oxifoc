@@ -2,7 +2,7 @@
 
 use super::{CROSSOVER_HYSTERESIS, HFI_VOLTS_HYSTERESIS, PhaseFault, PhaseManager};
 use crate::foc::angle_difference;
-use crate::foc::phase::provider::PhaseOutput;
+use crate::foc::phase::provider::{PhaseOutput, RotorVelocityEstimate};
 use crate::foc::phase::source::PhaseSource;
 use crate::foc::sensors::AngleSample;
 use crate::foc::sensors::AngleSensor;
@@ -27,13 +27,26 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         None
     }
 
+    fn hfi_rotor_velocity(&self) -> Option<RotorVelocityEstimate> {
+        #[cfg(feature = "hfi")]
+        if let Some(hfi) = &self.hfi
+            && self.hfi_velocity_observed
+            && hfi.is_ready()
+        {
+            return RotorVelocityEstimate::new(hfi.velocity());
+        }
+        None
+    }
+
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     pub(super) fn compute_phase_with_fallback(
         &mut self,
         hall_sample: Option<PhaseOutput>,
+        hall_velocity: Option<RotorVelocityEstimate>,
         encoder_sample: Option<AngleSample>,
         dt: f32,
     ) -> PhaseOutput {
+        self.rotor_velocity = None;
         // A live hall sample retakes commutation from the recovery
         // override. Without this, one glitch-triggered override outlived
         // the glitch: nothing deactivated it when the SENSOR (rather than
@@ -47,6 +60,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             PhaseSource::Hall => {
                 // VESC-style: try Hall first, fall back to observer if Hall failed
                 if let Some(sample) = hall_sample {
+                    self.rotor_velocity = hall_velocity;
                     sample
                 } else {
                     // Hall failed - try observer fallback
@@ -54,7 +68,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 }
             }
 
-            PhaseSource::Encoder => sample_to_output(encoder_sample, &self.output),
+            PhaseSource::Encoder => {
+                self.rotor_velocity =
+                    encoder_sample.and_then(|s| RotorVelocityEstimate::new(s.omega));
+                sample_to_output(encoder_sample, &self.output)
+            }
 
             PhaseSource::Observer => {
                 // Pure sensorless: commutate from a converged observer; else
@@ -66,6 +84,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                     self.clear_fault(PhaseFault::ObserverNotReady);
                     match (self.observer.phase(), self.observer.velocity()) {
                         (Some(angle), Some(vel)) => {
+                            self.rotor_velocity = RotorVelocityEstimate::new(vel);
                             let raw = PhaseOutput {
                                 angle,
                                 velocity: vel,
@@ -104,6 +123,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 // gate: HFI is valid from standstill by design. The carrier
                 // reaches the motor via PhaseProvider::injection() →
                 // FocController::step_with_injection in FocDriver.
+                self.rotor_velocity = self.hfi_rotor_velocity();
                 self.hfi_output().unwrap_or(self.output)
             }
 
@@ -119,7 +139,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                     return self.try_observer_fallback().unwrap_or(self.output);
                 }
                 let sensor = hall_sample.unwrap_or(self.output);
-                self.blend_with_observer(sensor, blend_low, blend_high)
+                self.blend_with_observer(sensor, hall_velocity, blend_low, blend_high)
             }
 
             PhaseSource::EncoderToObserver {
@@ -127,7 +147,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 blend_high,
             } => {
                 let sensor = sample_to_output(encoder_sample, &self.output);
-                self.blend_with_observer(sensor, blend_low, blend_high)
+                let velocity = encoder_sample.and_then(|s| RotorVelocityEstimate::new(s.omega));
+                self.blend_with_observer(sensor, velocity, blend_low, blend_high)
             }
 
             // Both estimator slots run concurrently; the output blends from
@@ -154,6 +175,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                         self.seed_hfi_from_output();
                         hfi_out = self.output;
                     }
+                    self.rotor_velocity = self.hfi_rotor_velocity();
                     return hfi_out;
                 }
 
@@ -173,11 +195,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 }
 
                 match (self.observer.phase(), self.observer.velocity()) {
-                    (Some(obs_angle), Some(obs_velocity)) => PhaseOutput {
-                        angle: blend_angles(hfi_out.angle, obs_angle, blend),
-                        velocity: hfi_out.velocity * (1.0 - blend) + obs_velocity * blend,
-                    },
-                    _ => hfi_out,
+                    (Some(obs_angle), Some(obs_velocity)) => {
+                        self.rotor_velocity =
+                            blend_rotor_velocity(self.hfi_rotor_velocity(), obs_velocity, blend);
+                        PhaseOutput {
+                            angle: blend_angles(hfi_out.angle, obs_angle, blend),
+                            velocity: hfi_out.velocity * (1.0 - blend) + obs_velocity * blend,
+                        }
+                    }
+                    _ => {
+                        self.rotor_velocity = self.hfi_rotor_velocity();
+                        hfi_out
+                    }
                 }
             }
 
@@ -197,6 +226,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                         self.seed_hfi_from_output();
                         hfi_out = self.output;
                     }
+                    self.rotor_velocity = self.hfi_rotor_velocity();
                     return hfi_out;
                 }
 
@@ -211,11 +241,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 }
 
                 match (self.observer.phase(), self.observer.velocity()) {
-                    (Some(obs_angle), Some(obs_velocity)) => PhaseOutput {
-                        angle: blend_angles(hfi_out.angle, obs_angle, blend),
-                        velocity: hfi_out.velocity * (1.0 - blend) + obs_velocity * blend,
-                    },
-                    _ => hfi_out,
+                    (Some(obs_angle), Some(obs_velocity)) => {
+                        self.rotor_velocity =
+                            blend_rotor_velocity(self.hfi_rotor_velocity(), obs_velocity, blend);
+                        PhaseOutput {
+                            angle: blend_angles(hfi_out.angle, obs_angle, blend),
+                            velocity: hfi_out.velocity * (1.0 - blend) + obs_velocity * blend,
+                        }
+                    }
+                    _ => {
+                        self.rotor_velocity = self.hfi_rotor_velocity();
+                        hfi_out
+                    }
                 }
             }
 
@@ -235,8 +272,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 }
 
                 if self.crossover_latched {
+                    self.rotor_velocity = hall_velocity;
                     hall
                 } else {
+                    self.rotor_velocity = self.hfi_rotor_velocity();
                     self.hfi_output().unwrap_or(self.output)
                 }
             }
@@ -255,8 +294,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 }
 
                 if self.crossover_latched {
+                    self.rotor_velocity =
+                        encoder_sample.and_then(|s| RotorVelocityEstimate::new(s.omega));
                     enc
                 } else {
+                    self.rotor_velocity = self.hfi_rotor_velocity();
                     self.hfi_output().unwrap_or(self.output)
                 }
             }
@@ -279,6 +321,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// HFI is compiled out (the callers — Hfi* arms — are then unreachable).
     #[cfg(feature = "hfi")]
     fn seed_hfi_from_output(&mut self) {
+        self.hfi_velocity_observed = false;
         let out = self.output;
         if let Some(hfi) = &mut self.hfi {
             hfi.set_phase(out.angle);
@@ -293,12 +336,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     fn blend_with_observer(
         &mut self,
         sensor: PhaseOutput,
+        sensor_velocity: Option<RotorVelocityEstimate>,
         blend_low: f32,
         blend_high: f32,
     ) -> PhaseOutput {
         // An unconverged observer must not pull the output anywhere — the
         // sensor stays authoritative until the observer is actually locked.
         if !self.observer.is_ready() {
+            self.rotor_velocity = sensor_velocity;
             return sensor;
         }
 
@@ -315,22 +360,45 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // reference — a >90° disagreement means the observer locked onto the
         // inverted flux vector, and blending toward it collapses torque
         // mid-crossover. Reseed instead of blending.
-        if blend < 1.0
-            && let Some(obs_angle) = self.observer.phase()
-            && angle_difference(obs_angle, sensor.angle).abs() > core::f32::consts::FRAC_PI_2
-        {
+        let reseeded = blend < 1.0
+            && self.observer.phase().is_some_and(|obs_angle| {
+                angle_difference(obs_angle, sensor.angle).abs() > core::f32::consts::FRAC_PI_2
+            });
+        if reseeded {
             self.observer.seed(sensor.angle, sensor.velocity);
         }
 
         if let (Some(obs_angle), Some(obs_vel)) = (self.observer.phase(), self.observer.velocity())
         {
+            // Reseeding uses the commutation frame's speed. It is not a new
+            // physical observation; retain the sensor estimate for this cycle.
+            self.rotor_velocity = if reseeded {
+                sensor_velocity
+            } else {
+                blend_rotor_velocity(sensor_velocity, obs_vel, blend)
+            };
             PhaseOutput {
                 angle: blend_angles(sensor.angle, obs_angle, blend),
                 velocity: sensor.velocity * (1.0 - blend) + obs_vel * blend,
             }
         } else {
+            self.rotor_velocity = sensor_velocity;
             sensor
         }
+    }
+}
+
+fn blend_rotor_velocity(
+    sensor: Option<RotorVelocityEstimate>,
+    observer: f32,
+    blend: f32,
+) -> Option<RotorVelocityEstimate> {
+    if blend <= 0.0 {
+        sensor
+    } else if blend >= 1.0 {
+        RotorVelocityEstimate::new(observer)
+    } else {
+        RotorVelocityEstimate::new(sensor?.electrical_rad_s() * (1.0 - blend) + observer * blend)
     }
 }
 

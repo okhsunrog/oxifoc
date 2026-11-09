@@ -70,6 +70,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 // ============================================================================
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H, E, S> {
+    fn rotor_velocity(&self) -> Option<super::RotorVelocityEstimate> {
+        if self.startup.is_active() || self.open_loop_override.active {
+            None
+        } else {
+            self.rotor_velocity
+        }
+    }
+
     fn requires_hall_reference(&self) -> bool {
         self.source.requires_hall()
     }
@@ -106,6 +114,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         let Some(update) = self.hall.apply_prepared_hall_calibration(prepared) else {
             return false;
         };
+        self.rotor_velocity = None;
         self.hall_control_motion.reset();
         if let Some(sample) = update.sample {
             if self.hall_health == HallHealth::Ok
@@ -209,12 +218,19 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // one-period prediction. Use actual elapsed Hall-domain ticks for
         // that measurement; input.dt remains the prediction horizon (also
         // when Stopped calls us at dt * 4).
+        let mut hall_velocity = None;
         let hall_sample = if let Some(sample) = hall_sample {
+            let native_velocity = super::RotorVelocityEstimate::new(sample.sample.omega);
             self.hall_control_motion
                 .observe(sample, now_ticks, self.output.velocity)
-                .map(|sample| PhaseOutput {
-                    angle: wrap_angle(sample.angle + sample.velocity * input.dt),
-                    ..sample
+                .map(|sample| {
+                    // Capture only an accepted coherent observation; a missing
+                    // or nonfinite angle must not leave a usable speed behind.
+                    hall_velocity = native_velocity;
+                    PhaseOutput {
+                        angle: wrap_angle(sample.angle + sample.velocity * input.dt),
+                        ..sample
+                    }
                 })
         } else {
             self.hall_control_motion.unavailable();
@@ -298,6 +314,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     hfi.restart_demod();
                 }
                 hfi.update(&obs_input);
+                self.hfi_velocity_observed = true;
             }
             self.hfi_was_active = hfi_active;
         }
@@ -478,7 +495,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.update_open_loop_override(input.dt);
 
         // Compute output based on source (with potential fallback)
-        self.output = self.compute_phase_with_fallback(hall_sample, encoder_sample, input.dt);
+        self.output =
+            self.compute_phase_with_fallback(hall_sample, hall_velocity, encoder_sample, input.dt);
         crate::isr_prof::add(&crate::isr_prof::EST_OUT, prof_t1, crate::isr_prof::now());
     }
 

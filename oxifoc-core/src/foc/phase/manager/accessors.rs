@@ -14,6 +14,7 @@ use crate::foc::wrap_angle;
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Set the timebase for tick conversions
     pub fn set_ticks_per_sec(&mut self, ticks_per_sec: u64) {
+        self.rotor_velocity = None;
         self.ticks_per_sec = ticks_per_sec.max(1);
         self.hall_control_motion
             .set_ticks_per_sec(self.ticks_per_sec);
@@ -56,6 +57,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             self.hall_control_motion.source_changed();
         }
         self.source = source;
+        self.rotor_velocity = None;
         // Crossover memory belongs to the previous source's thresholds.
         self.crossover_latched = false;
         // The open-loop override likewise belongs to the source that armed
@@ -107,10 +109,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// internally. Sim/bench forensics: injecting a phase kick mid-drive
     /// (seed at `phase + Δ`) emulates one accumulated slip-kick.
     pub fn seed_observer(&mut self, angle: f32, velocity: f32) {
+        self.rotor_velocity = None;
         self.observer.seed(angle, velocity);
     }
 
     pub fn set_observer(&mut self, observer: Observer) {
+        self.rotor_velocity = None;
         self.observer = observer;
     }
 
@@ -121,12 +125,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
     /// Get mutable observer reference
     pub fn observer_mut(&mut self) -> &mut Observer {
+        self.rotor_velocity = None;
         &mut self.observer
     }
 
     /// Set the HFI estimator (dedicated low-speed slot)
     #[cfg(feature = "hfi")]
     pub fn set_hfi_observer(&mut self, hfi: HfiObserver<S>) {
+        self.rotor_velocity = None;
+        self.hfi_velocity_observed = false;
         self.hfi = Some(hfi);
     }
 
@@ -139,6 +146,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Get mutable HFI estimator reference
     #[cfg(feature = "hfi")]
     pub fn hfi_observer_mut(&mut self) -> Option<&mut HfiObserver<S>> {
+        self.rotor_velocity = None;
+        self.hfi_velocity_observed = false;
         self.hfi.as_mut()
     }
 

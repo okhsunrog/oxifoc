@@ -5,6 +5,7 @@ use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
 use crate::foc::fast_math::sqrtf;
 use crate::foc::phase::PhaseProvider;
+use crate::foc::phase::RotorVelocityEstimate;
 use crate::foc::pwm::PhasePwm;
 use crate::foc::pwm::PhaseState;
 use crate::foc::sensors::CurrentSensor;
@@ -40,7 +41,7 @@ where
         now_ticks: u64,
     ) -> Result<FocOutput, StepError> {
         let limit = self.current_limits.max_brake_a;
-        let omega = self.phase.get().velocity;
+        let omega = self.torque_speed();
         if let Some(iq) = self.park_iq
             && self.phase.angle_trustworthy()
         {
@@ -128,6 +129,8 @@ where
         dt: f32,
         now_ticks: u64,
     ) -> Result<FocOutput, StepError> {
+        // Position still unwraps the commutation angle. Separating velocity
+        // feedback does not remove frame corrections from that position estimate.
         let err = self.position_target.minus(self.position.position());
         let decel = self.velocity_loop.config().accel_limit;
         let omega_target = self.position_cfg.speed_for(err, decel);
@@ -157,7 +160,12 @@ where
             // Keep the loop bumpless for re-entry: reference parked at the
             // (unreliable, but best-known) measured velocity, integrator
             // cleared — no stale torque step when lock returns.
-            self.velocity_loop.reset(self.phase.get().velocity);
+            self.velocity_loop.reset(
+                self.phase
+                    .rotor_velocity()
+                    .map_or(0.0, RotorVelocityEstimate::electrical_rad_s),
+            );
+            self.velocity_feedback_available = false;
             return self.step_current_control(0.0, 0.0, dt, now_ticks);
         }
         // While the cold-start sequencer owns commutation, the PI must not
@@ -167,11 +175,27 @@ where
         // into the confirm probe). Hold the loop reset (bumpless engage at
         // handoff) and drive the startup at its proven capture current.
         if self.phase.is_starting() {
-            self.velocity_loop.reset(self.phase.get().velocity);
+            self.velocity_loop.reset(
+                self.phase
+                    .rotor_velocity()
+                    .map_or(0.0, RotorVelocityEstimate::electrical_rad_s),
+            );
+            self.velocity_feedback_available = false;
             let dir = if target_vel < 0.0 { -1.0 } else { 1.0 };
             return self.step_current_control(dir * STARTUP_MIN_DRIVE_A, 0.0, dt, now_ticks);
         }
-        let omega = self.phase.get().velocity;
+        let Some(velocity) = self.phase.rotor_velocity() else {
+            // A held/manual/startup commutation frame is not a rotor-speed
+            // measurement. Keep the integrator empty until one is available.
+            self.velocity_loop.reset(0.0);
+            self.velocity_feedback_available = false;
+            return self.step_current_control(0.0, 0.0, dt, now_ticks);
+        };
+        let omega = velocity.electrical_rad_s();
+        if !self.velocity_feedback_available {
+            self.velocity_loop.reset(omega);
+            self.velocity_feedback_available = true;
+        }
         // The derating speed ceiling also caps the cruise reference: the
         // current-side rolloff alone would leave the PI winding up against
         // an unreachable target.
@@ -200,8 +224,10 @@ where
         } else {
             f32::INFINITY
         };
-        let iq_min = self.grant_torque(0.0, -full, omega).1;
-        let iq_max = self.grant_torque(0.0, full, omega).1;
+        // The bounds and final current grant use the same speed policy.
+        let torque_speed = self.torque_speed();
+        let iq_min = self.grant_torque(0.0, -full, torque_speed).1;
+        let iq_max = self.grant_torque(0.0, full, torque_speed).1;
         let clip = self.controller.q_voltage_clip();
         let (iq_min, iq_max) = if clip > 0.0 {
             (
@@ -278,8 +304,7 @@ where
             0.0
         };
 
-        let (id_target, iq_target) =
-            self.grant_torque(id_target, iq_target, self.phase.get().velocity);
+        let (id_target, iq_target) = self.grant_torque(id_target, iq_target, self.torque_speed());
 
         // Get phase from provider: the previous update's prediction of the
         // rotor at THIS current sample (PhaseProvider timing contract). It

@@ -82,10 +82,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// selected source whenever it is still available. A partial model must
     /// clear the previous motor's estimators rather than silently retaining it.
     pub fn apply_prepared_model(&mut self, prepared: &mut PreparedPhaseModel) -> PhaseSource {
+        self.rotor_velocity = None;
         self.observer = core::mem::take(&mut prepared.observer);
         #[cfg(feature = "hfi")]
         {
             self.hfi = prepared.hfi.take().map(HfiObserver::with_sincos);
+            self.hfi_velocity_observed = false;
             self.hfi_was_active = false;
         }
         self.tracker = core::mem::take(&mut prepared.tracker);

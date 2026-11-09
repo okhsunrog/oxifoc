@@ -10,8 +10,26 @@ use crate::foc::hall_sensor::HallFaultKind;
 pub struct PhaseOutput {
     /// Electrical angle (radians, 0 to 2π)
     pub angle: f32,
-    /// Electrical velocity (rad/s)
+    /// Commutation-frame electrical velocity (rad/s), including frame tracking.
+    /// Use [`PhaseProvider::rotor_velocity`] for physical motion feedback.
     pub velocity: f32,
+}
+
+/// Estimated physical rotor velocity, distinct from commutation-frame corrections.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RotorVelocityEstimate(f32);
+
+impl RotorVelocityEstimate {
+    /// A finite electrical angular velocity in rad/s. Zero is a usable estimate.
+    pub fn new(electrical_rad_s: f32) -> Option<Self> {
+        electrical_rad_s
+            .is_finite()
+            .then_some(Self(electrical_rad_s))
+    }
+
+    pub fn electrical_rad_s(self) -> f32 {
+        self.0
+    }
 }
 
 /// Bridge ownership requested by the sensorless startup sequencer.
@@ -104,6 +122,14 @@ pub struct PhaseInput {
 /// current vector `ω·dt` off the q axis while the controller's own frame
 /// reports id = 0 (see `commutation_frame_tracks_rotor_at_sample_instant`).
 pub trait PhaseProvider {
+    /// Physical velocity from the selected sensor/estimator, before corrections
+    /// used only to move the commutation frame. `None` means unavailable, not
+    /// zero. Commanded manual/open-loop motion must not claim a measurement.
+    /// Simple physical providers must explicitly opt in; the default is unknown.
+    fn rotor_velocity(&self) -> Option<RotorVelocityEstimate> {
+        None
+    }
+
     /// Whether the selected commutation policy consumes the Hall reference.
     /// Used at command admission; manual/sensorless providers default to false.
     fn requires_hall_reference(&self) -> bool {

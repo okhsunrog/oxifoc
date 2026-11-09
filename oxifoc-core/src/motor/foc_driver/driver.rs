@@ -8,6 +8,7 @@ use crate::foc::controller::{Decoupling, FocController};
 use crate::foc::current_offset::CurrentOffsetCalibrator;
 use crate::foc::phase::PhaseInput;
 use crate::foc::phase::PhaseProvider;
+use crate::foc::phase::RotorVelocityEstimate;
 use crate::foc::phase_voltage::ObserverVoltage;
 use crate::foc::phase_voltage::PhaseVoltageSense;
 use crate::foc::phase_voltage::observer_voltage_source;
@@ -76,6 +77,7 @@ where
             failsafe_latched: false,
             ov_threshold_v: 0.0,
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
+            velocity_feedback_available: false,
             position: PositionTracker::default(),
             position_cfg: PositionLoopConfig::default(),
             position_target: Position::default(),
@@ -299,7 +301,9 @@ where
             ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. }
         ) && !velocity_loop_live
         {
-            let omega = self.phase.get().velocity;
+            let velocity = self.phase.rotor_velocity();
+            self.velocity_feedback_available = velocity.is_some();
+            let omega = velocity.map_or(0.0, RotorVelocityEstimate::electrical_rad_s);
             self.velocity_loop.reset(omega);
         }
         if let ControlMode::PositionControl { target_pos } = mode {
@@ -352,6 +356,17 @@ where
     /// Get current control mode
     pub fn mode(&self) -> ControlMode {
         self.mode
+    }
+
+    /// Speed used consistently by physical torque budgets and braking policy.
+    /// A native estimate takes precedence over commutation-frame corrections.
+    /// During open-loop/startup or sensor loss, preserve the existing frame-speed
+    /// fallback; this does not make it measured feedback for the outer PI.
+    pub(crate) fn torque_speed(&self) -> f32 {
+        match self.phase.rotor_velocity() {
+            Some(velocity) => velocity.electrical_rad_s(),
+            None => self.phase.get().velocity,
+        }
     }
 
     /// Bounded ISR excitation keeps the same deadtime-correction reference as

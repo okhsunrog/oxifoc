@@ -25,10 +25,13 @@ impl PhaseManager<NoSensor, NoSensor> {
             observer: Observer::None,
             #[cfg(feature = "hfi")]
             hfi: None,
+            #[cfg(feature = "hfi")]
+            hfi_velocity_observed: false,
             #[cfg(not(feature = "hfi"))]
             _sincos: core::marker::PhantomData,
             source: PhaseSource::Manual,
             output: PhaseOutput::default(),
+            rotor_velocity: None,
             manual_angle: 0.0,
             open_loop_angle: 0.0,
             open_loop_velocity: 0.0,
@@ -58,10 +61,13 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             observer: Observer::None,
             #[cfg(feature = "hfi")]
             hfi: None,
+            #[cfg(feature = "hfi")]
+            hfi_velocity_observed: false,
             #[cfg(not(feature = "hfi"))]
             _sincos: core::marker::PhantomData,
             source: PhaseSource::Hall,
             output: PhaseOutput::default(),
+            rotor_velocity: None,
             manual_angle: 0.0,
             open_loop_angle: 0.0,
             open_loop_velocity: 0.0,
@@ -89,10 +95,13 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             observer: self.observer,
             #[cfg(feature = "hfi")]
             hfi: self.hfi,
+            #[cfg(feature = "hfi")]
+            hfi_velocity_observed: self.hfi_velocity_observed,
             #[cfg(not(feature = "hfi"))]
             _sincos: core::marker::PhantomData,
             source: self.source,
             output: self.output,
+            rotor_velocity: self.rotor_velocity,
             manual_angle: self.manual_angle,
             open_loop_angle: self.open_loop_angle,
             open_loop_velocity: self.open_loop_velocity,
@@ -123,10 +132,13 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             observer: self.observer,
             #[cfg(feature = "hfi")]
             hfi: self.hfi.map(HfiObserver::with_sincos),
+            #[cfg(feature = "hfi")]
+            hfi_velocity_observed: self.hfi_velocity_observed,
             #[cfg(not(feature = "hfi"))]
             _sincos: core::marker::PhantomData,
             source: self.source,
             output: self.output,
+            rotor_velocity: self.rotor_velocity,
             manual_angle: self.manual_angle,
             open_loop_angle: self.open_loop_angle,
             open_loop_velocity: self.open_loop_velocity,
@@ -156,10 +168,13 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             observer: Observer::None,
             #[cfg(feature = "hfi")]
             hfi: None,
+            #[cfg(feature = "hfi")]
+            hfi_velocity_observed: false,
             #[cfg(not(feature = "hfi"))]
             _sincos: core::marker::PhantomData,
             source: PhaseSource::Encoder,
             output: PhaseOutput::default(),
+            rotor_velocity: None,
             manual_angle: 0.0,
             open_loop_angle: 0.0,
             open_loop_velocity: 0.0,

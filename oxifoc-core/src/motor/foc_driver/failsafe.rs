@@ -278,7 +278,7 @@ where
         dt: f32,
         now_ticks: u64,
     ) -> Result<FocOutput, StepError> {
-        let omega_e = self.phase.get().velocity;
+        let omega_e = self.torque_speed();
         let angle_trustworthy = self.phase.angle_trustworthy();
         let action = self.failsafe_ctrl.step(
             omega_e,

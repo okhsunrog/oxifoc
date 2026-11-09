@@ -66,12 +66,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         };
 
         if let Some(out) = ready_output {
+            self.rotor_velocity = super::RotorVelocityEstimate::new(out.velocity);
             self.clear_fault(PhaseFault::ObserverNotReady);
             if self.open_loop_override.active {
                 self.deactivate_open_loop_override();
             }
             Some(out)
         } else {
+            self.rotor_velocity = None;
             // Observer not ready - use open-loop override if available
             self.set_fault(PhaseFault::ObserverNotReady);
 
@@ -104,6 +106,7 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     pub fn set_hall_calibration(&mut self, table: [f32; 6]) {
         self.hall.set_calibration(table);
         self.hall_control_motion.reset();
+        self.rotor_velocity = None;
     }
 
     /// Apply Hall calibration result
@@ -111,6 +114,7 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         let applied = self.hall.apply_calibration(result);
         if applied {
             self.hall_control_motion.reset();
+            self.rotor_velocity = None;
         }
         applied
     }
@@ -132,6 +136,7 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         if changed {
             // A new commutation-frame offset is not rotor motion.
             self.hall_control_motion.reset();
+            self.rotor_velocity = None;
         }
     }
 

@@ -2,6 +2,8 @@ use super::*;
 #[cfg(all(feature = "storage", feature = "runtime"))]
 #[path = "live_hall_tests.rs"]
 mod live_hall_tests;
+#[path = "rotor_velocity_tests.rs"]
+mod rotor_velocity_tests;
 #[path = "scoped_pi_tests.rs"]
 mod scoped_pi_tests;
 #[path = "torque_grant_tests.rs"]
@@ -1288,6 +1290,10 @@ fn brake_speed_gated_and_survives_link_loss() {
         vel: f32,
     }
     impl PhaseProvider for MockPhase {
+        fn rotor_velocity(&self) -> Option<crate::foc::phase::RotorVelocityEstimate> {
+            crate::foc::phase::RotorVelocityEstimate::new(self.vel)
+        }
+
         fn get(&self) -> PhaseOutput {
             PhaseOutput {
                 angle: 0.0,
@@ -4074,6 +4080,10 @@ mod severity_gate {
         use core::sync::atomic::Ordering;
         struct SpinningPhase;
         impl PhaseProvider for SpinningPhase {
+            fn rotor_velocity(&self) -> Option<crate::foc::phase::RotorVelocityEstimate> {
+                crate::foc::phase::RotorVelocityEstimate::new(100.0)
+            }
+
             fn get(&self) -> PhaseOutput {
                 PhaseOutput {
                     angle: 0.0,

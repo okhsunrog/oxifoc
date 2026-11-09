@@ -250,6 +250,8 @@ where
     /// that current back through the current loop, so a second velocity PI
     /// cannot fight the cruise loop or wind up against the brake.
     velocity_loop: VelocityLoop,
+    /// A fresh physical speed is needed before resuming the outer integrator.
+    velocity_feedback_available: bool,
     /// The rotor's unwrapped electrical position, followed every cycle in
     /// every mode (the frame of `PositionControl` targets: 0 at boot).
     position: PositionTracker,
