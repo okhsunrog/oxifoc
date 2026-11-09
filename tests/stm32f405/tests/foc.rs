@@ -235,13 +235,34 @@ mod tests {
         oxifoc_core::foc::wrap_angle(angle)
     }
 
+    #[cold]
+    #[inline(never)]
+    fn wrap_remainder(angle: f32) -> f32 {
+        angle % core::f32::consts::TAU
+    }
+
+    #[inline(never)]
+    fn outlined_wrap_angle(angle: f32) -> f32 {
+        use core::f32::consts::TAU;
+        let mut a = angle;
+        if !(-TAU..2.0 * TAU).contains(&a) {
+            a = wrap_remainder(a);
+        }
+        if a < 0.0 {
+            a += TAU;
+        } else if a >= TAU {
+            a -= TAU;
+        }
+        a
+    }
+
     #[inline(never)]
     fn wrap_identity(angle: f32) -> f32 {
         angle
     }
 
     const WRAP_BATCH_CALLS: u32 = 64;
-    const WRAP_ROUNDS: u32 = 12;
+    const WRAP_ROUNDS: u32 = 24;
 
     #[inline(never)]
     fn measure_wrap_batch(function: fn(f32) -> f32, inputs: &[f32; 8]) -> u32 {
@@ -304,15 +325,25 @@ mod tests {
             wrap_identity as fn(f32) -> f32,
             previous_wrap_angle,
             shipping_wrap_angle,
+            outlined_wrap_angle,
         ]);
-        let orders = [
-            [0, 1, 2],
-            [2, 1, 0],
-            [1, 2, 0],
-            [0, 2, 1],
-            [2, 0, 1],
-            [1, 0, 2],
-        ];
+        // Validate the experimental fallback at the semantic boundaries too.
+        for angle in [
+            -0.0,
+            0.0,
+            -f32::from_bits(1),
+            -TAU,
+            TAU,
+            2.0 * TAU,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::NAN,
+        ] {
+            let expected = functions[1](core::hint::black_box(angle)).to_bits();
+            for function in &functions[2..] {
+                defmt::assert_eq!(function(core::hint::black_box(angle)).to_bits(), expected);
+            }
+        }
         let cases = [
             (
                 "ordinary positive",
@@ -357,11 +388,10 @@ mod tests {
         for (label, inputs) in cases {
             let inputs = core::hint::black_box(inputs);
             for &angle in &inputs {
-                defmt::assert_eq!(
-                    functions[1](core::hint::black_box(angle)).to_bits(),
-                    functions[2](core::hint::black_box(angle)).to_bits(),
-                    "old/shipping mismatch"
-                );
+                let expected = functions[1](core::hint::black_box(angle)).to_bits();
+                for function in &functions[2..] {
+                    defmt::assert_eq!(function(core::hint::black_box(angle)).to_bits(), expected);
+                }
             }
             // Warm each code/data path before collecting any samples.
             for function in functions {
@@ -369,11 +399,17 @@ mod tests {
                     core::hint::black_box(measure_wrap_batch(function, &inputs));
                 }
             }
-            let mut stats = [WrapCycles::new(); 3];
+            let mut stats = [WrapCycles::new(); 4];
             for round in 0..WRAP_ROUNDS {
-                // Every variant occupies every position equally; all six
-                // preceding/following orders repeat twice.
-                for index in orders[round as usize % orders.len()] {
+                // Mixed-radix selection visits all 24 permutations once,
+                // balancing positions and every preceding/following pair.
+                let mut available = [0, 1, 2, 3];
+                let mut permutation = round as usize;
+                for remaining in (1..=available.len()).rev() {
+                    let selected = permutation % remaining;
+                    permutation /= remaining;
+                    let index = available[selected];
+                    available[selected] = available[remaining - 1];
                     stats[index].record(measure_wrap_batch(functions[index], &inputs));
                 }
             }
@@ -381,9 +417,13 @@ mod tests {
             stats[0].report("identity");
             stats[1].report("old");
             stats[2].report("shipping");
+            stats[3].report("outlined cold");
             let delta = (stats[1].total as i64 - stats[2].total as i64) * 1_000
                 / i64::from(WRAP_ROUNDS * WRAP_BATCH_CALLS);
             defmt::info!("old minus shipping: {} milli-cycles/call", delta);
+            let delta = (stats[1].total as i64 - stats[3].total as i64) * 1_000
+                / i64::from(WRAP_ROUNDS * WRAP_BATCH_CALLS);
+            defmt::info!("old minus outlined cold: {} milli-cycles/call", delta);
         }
     }
 
