@@ -156,10 +156,10 @@ flash-mk5-usb-metrics: build-mk5-usb-metrics
 # Hall bring-up logging at 50 Hz, correlated with the 20-kHz raw ADC stream.
 build-mk5-hall profiling="off" memory="sram" transport="usb":
     @test {{ quote(profiling) }} = off -o {{ quote(profiling) }} = on -o {{ quote(profiling) }} = timing
-    @test {{ quote(memory) }} = sram -o {{ quote(memory) }} = ccm -o {{ quote(memory) }} = queue-ccm
+    @test {{ quote(memory) }} = sram -o {{ quote(memory) }} = ccm
     @test {{ quote(transport) }} = usb -o {{ quote(transport) }} = rtt
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "on" { ",isr-profiling" } else if profiling == "timing" { ",isr-timing" } else { "" }) + (if memory == "ccm" { ",ccm" } else if memory == "queue-ccm" { ",fast-telem-ccm" } else { "" }) + (if transport == "rtt" { ",transport-rtt" } else { "" })) }}
+        --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "on" { ",isr-profiling" } else if profiling == "timing" { ",isr-timing" } else { "" }) + (if memory == "ccm" { ",ccm" } else { "" }) + (if transport == "rtt" { ",transport-rtt" } else { "" })) }}
 
 flash-mk5-hall profiling="off" memory="sram" transport="usb": (build-mk5-hall profiling memory transport)
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}

@@ -133,11 +133,6 @@ pod = ["dep:bytemuck"]
 # Requires icd for endpoints and algorithms for control logic
 runtime = ["icd", "algorithms", "pod", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section", "dep:bbqueue"]
 
-# CPU-only telemetry queue placement experiment. A bare-metal ARM platform
-# enabling this must link and initialize .ccm.data before Rust statics are used.
-# Host/std queues retain ordinary placement.
-fast-telem-ccm = ["runtime"]
-
 # Virtual motor simulation for testing without hardware
 # Useful for host-side integration tests and GUI simulation mode
 virtual-motor = []

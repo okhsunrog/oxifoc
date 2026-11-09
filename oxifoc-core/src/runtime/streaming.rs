@@ -36,10 +36,6 @@ use crate::types::FastTelemetry;
 #[cfg(feature = "std")]
 pub static FAST_TELEM_Q: Churrasco<65536> = Churrasco::new();
 #[cfg(not(feature = "std"))]
-#[cfg_attr(
-    all(feature = "fast-telem-ccm", target_arch = "arm", target_os = "none"),
-    unsafe(link_section = ".ccm.data")
-)]
 pub static FAST_TELEM_Q: Churrasco<4096> = Churrasco::new();
 
 /// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
