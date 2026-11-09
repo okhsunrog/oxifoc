@@ -9,9 +9,10 @@ actual 20004.271990 Hz. No motor-detection result is applied or persisted.
 
 The previous OxiFOC 1–3 A tests qualified excitation, cancellation and capture.
 They were not matched to the VESC full wizard. The saved VESC R plateau is
-30.6806 A, not 3 A. Its L routine aims for the same current by increasing pulse
-duty; 50.8367 A is the calculated post-detection motor limit, not proof of that
-measurement current. VESC uses 5-kHz PWM/FOC during R/L; OxiFOC here uses
+30.6806 A, not 3 A. Its L routine receives approximately the same reference as
+an HFI delta-current goal and increases pulse duty; this does not establish the
+achieved L current. 50.8367 A is the calculated post-detection motor limit,
+not proof of measurement current. VESC uses 5-kHz PWM/FOC during R/L; OxiFOC here uses
 20-kHz PWM with rotating 5-kHz-carrier excitation. DC holding bias and pulse
 amplitude are also different operating conditions. Higher current improves
 signal/noise and can change incremental inductance through saturation; R can
@@ -227,3 +228,26 @@ In particular, raising OxiFOC's DC hold to 30.68 A does not duplicate the VESC
 L pulse-current condition. DC bias, pulse/ripple amplitude, carrier spectrum,
 voltage/current acquisition and averaging all matter. The different tones and
 packet rhythm are therefore expected; matching sound is not an accuracy test.
+
+## Qualification of the VESC L current
+
+The VESC table row must distinguish the R plateau from L excitation. The
+measured R-plateau current is 30.6806 A. The wizard passes its last current
+reference (approximately 30.7 A) to `measure_inductance_current`; its returned
+current statistic is a projected HFI current difference, not DC holding current.
+The achieved value of that internal statistic was not returned by the wizard.
+
+An offline check of the final stable L pulse train at 4.11-4.20 s in the saved
+`full-detection-01/raw.parquet` gives 450 contiguous native 5-kHz samples. From
+the three raw phase-current channels, amplitude-invariant Clarke alpha/beta
+current magnitude has RMS **9.602 A**, median **9.517 A** and maximum sampled
+value **12.564 A**. No clipping flags are set. These describe the recorded
+pulse-current samples; they do not bound peaks between samples or exactly
+replay the internal projected delta-current accumulator.
+
+Thus label the 19.556/30.796-uH VESC result as pulse excitation with an
+approximately 30.7-A delta-current target and the above sampled-current
+statistics. It must not be labeled as a verified 30.7-A DC-hold L measurement.
+The earlier 7-9% low-current OxiFOC/VESC difference compares reported values at
+different operating conditions and does not establish measurement accuracy.
+Evidence and input hash: `vesc-L-current-qualification.json` in the campaign root.
