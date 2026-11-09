@@ -269,17 +269,14 @@ async fn run_step<B: DetectionBackend>(
             if !pos(max_power_loss_w) || !pos(r) {
                 return DetectResponse::Error(DetectError::OutOfRange);
             }
-            let safe_current = sqrtf(max_power_loss_w / r / 1.5)
-                .min(max_current_a)
-                .max(0.5);
-            let max_bus_current = (backend.vbus() * 0.577 * 0.6) / r.max(0.001);
-            let hold_current = safe_current.min(max_bus_current).max(0.1);
-            let params = InductanceParams {
-                motor_size: MotorSize::Custom(max_power_loss_w),
-                resistance_ohm: r,
-                hold_current_a: hold_current,
-                vbus: backend.vbus(),
-                ..Default::default()
+            let params = match InductanceParams::commissioning(
+                MotorSize::Custom(max_power_loss_w),
+                r,
+                backend.vbus(),
+                max_current_a,
+            ) {
+                Ok(params) => params,
+                Err(error) => return DetectResponse::Error(map_err(error)),
             };
             match backend.measure_inductance(&params, foc_freq_hz).await {
                 Ok((ld, lq)) => DetectResponse::Inductance {

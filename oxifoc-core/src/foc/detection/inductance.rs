@@ -57,6 +57,9 @@ pub struct InductanceResult {
 
     /// Average current during measurement (for validation)
     pub avg_current: f32,
+
+    /// Mean window RMS residual relative to the current-change signal.
+    pub relative_error: f32,
 }
 
 /// Rotating HFI voltage injection generator (VESC-style).
@@ -212,6 +215,7 @@ pub struct InductanceMeasurement<S: SinCos = LibmSinCos> {
     quadrature_sum: f32,
     /// Accumulated Lq sum
     lq_sum: f32,
+    error_sum: f32,
     /// Accumulated current sum (for validation)
     current_sum: f32,
     /// Total sample count
@@ -251,6 +255,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
             saliency_sum: 0.0,
             quadrature_sum: 0.0,
             lq_sum: 0.0,
+            error_sum: 0.0,
             current_sum: 0.0,
             total_samples: 0,
             pwm_freq_hz,
@@ -321,6 +326,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
                 Ok(result) => {
                     self.ld_sum += result.ld;
                     self.lq_sum += result.lq;
+                    self.error_sum += result.relative_error;
                     self.saliency_sum += result.saliency;
                     self.quadrature_sum += result.quadrature;
                     self.cycles_completed += 1;
@@ -394,6 +400,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
         self.cycles_completed = 0;
         self.ld_sum = 0.0;
         self.lq_sum = 0.0;
+        self.error_sum = 0.0;
         self.saliency_sum = 0.0;
         self.quadrature_sum = 0.0;
         self.current_sum = 0.0;
@@ -477,6 +484,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
             l_avg,
             l_diff,
             avg_current,
+            relative_error: self.error_sum / n,
         })
     }
 }

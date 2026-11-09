@@ -83,6 +83,18 @@ retains the sign; tests cover negative, zero and positive residual bias.
 
 ## Live checks and temporary current settings
 
+The adaptive detector now separates nominal 2-A hold from a 0.5-A RMS AC
+target, reduced by thermal/bus/current budgets. Pilots refine the pipeline lag
+at increasing amplitudes and qualify the RL residual and repeatability; each
+ISR packet has a sampled total-current ceiling below the independent trip.
+With ceilings 3/4 A (trip 6 A unchanged), native Ld/Lq were 18.392/28.724 and
+18.419/28.285 uH at the same 2-A hold. Both ended Stopped, faults 0; limits
+were restored without persistence. Their 20-kHz recordings lost 277/295
+samples. A separate 10-s stopped recording lost 560 samples: complete USB
+capture remains unresolved, independently of HFI excitation. Raw captures,
+failed development runs and RTT logs are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-adaptive-inductance-2026-11-09/`.
+
 The first new-estimator pilot at 1.046 A returned 18.239/28.296 uH. It retained
 86094 samples with zero gaps/losses and final Stopped/faults 0. A second build
 with configurable current ceilings returned 18.919/29.329 uH, 88074 lossless

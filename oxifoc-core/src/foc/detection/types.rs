@@ -236,11 +236,18 @@ pub struct InductanceParams {
     /// HFI injection frequency in Hz
     pub hfi_frequency_hz: f32,
 
-    /// HFI injection voltage amplitude in Volts
+    /// Maximum live HFI injection voltage amplitude in Volts.
     pub hfi_voltage_v: f32,
 
     /// DC current to hold rotor in place (Amps)
     pub hold_current_a: f32,
+
+    /// Target RMS magnitude of the AC alpha-beta current, excluding DC hold.
+    pub hfi_current_a: f32,
+
+    /// Maximum sampled alpha-beta current magnitude, including the DC hold.
+    /// Enforced each ISR cycle during HFI packets, independently of the trip.
+    pub max_current_a: f32,
 
     /// Number of HFI cycles to measure
     pub num_cycles: u32,
@@ -250,7 +257,8 @@ pub struct InductanceParams {
 
     /// Previously measured phase resistance (Ohms).
     /// Used to compensate for the resistive voltage drop in the 1/L
-    /// calculation.  Set to 0.0 when unknown.
+    /// calculation. Offline replay permits 0; live HFI needs measured R to
+    /// limit its first probe before inductance is known.
     pub resistance_ohm: f32,
 
     /// DC bus voltage (Volts), 0.0 = unknown.
@@ -277,12 +285,55 @@ impl Default for InductanceParams {
             hfi_frequency_hz: 5000.0,
             hfi_voltage_v: 3.0,
             hold_current_a: 2.0,
+            hfi_current_a: 0.5,
+            max_current_a: 3.0,
             num_cycles: 100,
             settle_time_ms: 200,
             resistance_ohm: 0.0,
             vbus: 0.0,
             pipeline_lag: -1,
         }
+    }
+}
+
+impl InductanceParams {
+    /// Choose a small, repeatable holding bias independently of the R-test
+    /// current. Thermal, bus and current ceilings may only reduce that bias.
+    pub fn commissioning(
+        motor_size: MotorSize,
+        resistance_ohm: f32,
+        vbus: f32,
+        current_limit_a: f32,
+    ) -> Result<Self, DetectionError> {
+        let power = motor_size.max_power_loss_w();
+        if [resistance_ohm, vbus, current_limit_a, power]
+            .iter()
+            .any(|v| !v.is_finite() || *v <= 0.0)
+        {
+            return Err(DetectionError::OutOfRange);
+        }
+        let defaults = Self::default();
+        let max_current_a = current_limit_a.min(sqrtf(power / (1.5 * resistance_ohm)));
+        let hold_current_a = defaults
+            .hold_current_a
+            .min(sqrtf(power.min(1.0) / (1.5 * resistance_ohm)))
+            .min(max_current_a * (2.0 / 3.0))
+            .min(vbus * 0.577 * 0.6 / resistance_ohm);
+        let hfi_current_a = defaults
+            .hfi_current_a
+            .min((max_current_a - hold_current_a) * 0.5);
+        if hold_current_a < 0.05 || hfi_current_a < 0.01 {
+            return Err(DetectionError::OutOfRange);
+        }
+        Ok(Self {
+            motor_size,
+            resistance_ohm,
+            vbus,
+            hold_current_a,
+            hfi_current_a,
+            max_current_a,
+            ..defaults
+        })
     }
 }
 
@@ -443,6 +494,21 @@ pub struct DcOffsets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inductance_bias_is_independent_of_the_resistance_test_ceiling() {
+        let low = InductanceParams::commissioning(MotorSize::Medium, 0.031, 24.0, 3.0).unwrap();
+        let high = InductanceParams::commissioning(MotorSize::Medium, 0.031, 24.0, 30.7).unwrap();
+        assert_eq!(low.hold_current_a, 2.0);
+        assert_eq!(low.hold_current_a, high.hold_current_a);
+        assert_eq!(low.hfi_current_a, high.hfi_current_a);
+        let small = InductanceParams::commissioning(MotorSize::Mini, 8.0, 12.0, 0.5).unwrap();
+        assert!(1.5 * small.hold_current_a.powi(2) * small.resistance_ohm <= 1.001);
+        assert!(small.hold_current_a + 2.0 * small.hfi_current_a <= small.max_current_a);
+        for limit in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(InductanceParams::commissioning(MotorSize::Medium, 0.03, 24.0, limit).is_err());
+        }
+    }
 
     #[test]
     fn test_motor_size_power_loss() {

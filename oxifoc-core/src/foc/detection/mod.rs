@@ -664,12 +664,43 @@ mod integration_tests {
         }
     }
 
-    /// The |Z| magnitude cross-check must catch a mispaired demod: force a
-    /// WRONG pipeline lag (1) on a plant whose true depth is 2 — the
-    /// phase-sensitive demod corrupts silently, the latency-immune
-    /// magnitude does not, and the disagreement must surface as an error
-    /// (LowConfidence → the auto ladder would fall back to the pulse
-    /// method). The auto-probed run on the identical plant must succeed.
+    /// Fixed holding bias survives a changed ceiling; voltage-limited motors
+    /// may qualify below the target AC current using fit quality/repeatability.
+    #[test]
+    #[cfg(feature = "hfi-detect")]
+    fn adaptive_hfi_covers_low_inductance_and_voltage_limited_motors() {
+        use super::sweep::measure_inductance;
+        use super::types::MotorSize;
+        use super::virtual_harness::{VirtualHardware, VirtualTimer, block_on, with_sim};
+        use crate::foc::trig::LibmSinCos;
+        for (r, ld, lq) in [(0.031, 18e-6, 28e-6), (0.5, 0.5e-3, 0.5e-3)] {
+            let plant = MotorParams {
+                r,
+                ld,
+                lq,
+                j: 1e-3,
+                friction_b: 1e-3,
+                actuation_delay: 1.0,
+                substeps: 10,
+                ..MotorParams::default()
+            };
+            for limit in [3.0, 10.0] {
+                let params =
+                    InductanceParams::commissioning(MotorSize::Medium, r, 24.0, limit).unwrap();
+                let measured = with_sim(plant, 24.0, |hw| {
+                    block_on(measure_inductance::<
+                        VirtualHardware,
+                        VirtualTimer,
+                        LibmSinCos,
+                    >(hw, &params, 20_000.0))
+                })
+                .unwrap_or_else(|e| panic!("R={r}, L={ld}/{lq}, ceiling={limit}: {e:?}"));
+                assert!((measured.0 / ld - 1.0).abs() < 0.1, "Ld={}", measured.0);
+                assert!((measured.1 / lq - 1.0).abs() < 0.1, "Lq={}", measured.1);
+            }
+        }
+    }
+
     #[test]
     #[cfg(feature = "hfi-detect")]
     fn hfi_mispairing_caught_by_magnitude_cross_check() {
@@ -695,6 +726,7 @@ mod integration_tests {
                 let ip = InductanceParams {
                     resistance_ohm: plant.r,
                     hold_current_a: 8.0,
+                    max_current_a: 12.0,
                     vbus: VBUS,
                     pipeline_lag,
                     ..Default::default()

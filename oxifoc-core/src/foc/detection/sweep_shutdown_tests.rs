@@ -230,7 +230,7 @@ fn missing_holding_current_refuses_all_excitation_methods() {
 
 #[cfg(feature = "hfi-detect")]
 #[test]
-fn weak_main_response_cannot_inflate_hfi_voltage_beyond_the_seed_target() {
+fn weak_main_response_cannot_bypass_voltage_and_growth_limits() {
     // The short lag probe sees a 25-uH winding. Subsequent packets deliberately
     // have a 5-mH-looking response, reproducing the inflated interim estimate
     // that previously changed a 0.25-A target into the old 2-A ripple clamp.
@@ -238,6 +238,7 @@ fn weak_main_response_cannot_inflate_hfi_voltage_beyond_the_seed_target() {
         hold: CompensatedHold,
         bursts: usize,
         max_run_voltage: f32,
+        previous_amplitude: f32,
     }
     impl DetectionHardware for WeakResponse {
         async fn send_command(&self, mode: ControlMode) {
@@ -256,6 +257,10 @@ fn weak_main_response_cannot_inflate_hfi_voltage_beyond_the_seed_target() {
             let Waveform::RotatingHfi { amplitude, .. } = program.waveform else {
                 panic!("expected HFI only");
             };
+            if self.previous_amplitude > 0.0 {
+                assert!(amplitude <= self.previous_amplitude * 1.701);
+            }
+            self.previous_amplitude = amplitude;
             if self.bursts > 0 {
                 self.max_run_voltage = self.max_run_voltage.max(amplitude);
             }
@@ -292,6 +297,7 @@ fn weak_main_response_cannot_inflate_hfi_voltage_beyond_the_seed_target() {
         },
         bursts: 0,
         max_run_voltage: 0.0,
+        previous_amplitude: 0.0,
     };
     let params = InductanceParams {
         resistance_ohm: 0.03,
@@ -302,17 +308,17 @@ fn weak_main_response_cannot_inflate_hfi_voltage_beyond_the_seed_target() {
         let mut future = core::pin::pin!(measure_inductance::<_, ImmediateTimer, LibmSinCos>(
             &mut hw, &params, 20_000.0
         ));
-        assert!(
+        assert_eq!(
             future
                 .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop()))
-                .is_ready()
+                .poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Err(DetectionError::LowConfidence))
         );
     }
-    assert!(hw.bursts > 3, "exercise multiple main-pass packets");
-    assert!(hw.max_run_voltage > 0.06);
+    assert!(hw.bursts >= 3, "exercise the probe and pilot packets");
+    assert!(hw.max_run_voltage > 0.0);
     assert!(
-        hw.max_run_voltage < 0.3,
+        hw.max_run_voltage <= params.hfi_voltage_v,
         "inflated HFI voltage: {}",
         hw.max_run_voltage
     );

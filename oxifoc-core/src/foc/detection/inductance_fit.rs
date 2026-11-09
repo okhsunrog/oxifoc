@@ -14,6 +14,7 @@ pub(super) struct RlWindow {
     y: [f32; 2],
     xx: [f32; 3],
     yx: [f32; 4],
+    yy: f32,
 }
 
 pub(super) struct Fit {
@@ -21,6 +22,7 @@ pub(super) struct Fit {
     pub lq: f32,
     pub saliency: f32,
     pub quadrature: f32,
+    pub relative_error: f32,
 }
 
 impl RlWindow {
@@ -37,6 +39,7 @@ impl RlWindow {
         self.yx[1] += y[0] * x[1];
         self.yx[2] += y[1] * x[0];
         self.yx[3] += y[1] * x[1];
+        self.yy += y[0] * y[0] + y[1] * y[1];
     }
 
     pub fn finish(&self, resistance: f32, dt: f32) -> Result<Fit, DetectionError> {
@@ -65,6 +68,12 @@ impl RlWindow {
         let b01 = (h01 * g00 - h00 * g01) / determinant;
         let b10 = (h10 * g11 - h11 * g01) / determinant;
         let b11 = (h11 * g00 - h10 * g01) / determinant;
+        let energy = self.yy - (self.y[0] * self.y[0] + self.y[1] * self.y[1]) / n;
+        if !energy.is_finite() || energy <= 0.0 {
+            return Err(DetectionError::LowConfidence);
+        }
+        let explained = b00 * h00 + b01 * h01 + b10 * h10 + b11 * h11;
+        let relative_error = sqrtf(((energy - explained) / energy).max(0.0));
         // A stationary reciprocal RL model has symmetric B. Reject a gross
         // nonreciprocal response, e.g. wrong command/current pipeline pairing.
         if (b01 - b10).abs() > 0.5 * (b00 + b11).abs() {
@@ -108,6 +117,7 @@ impl RlWindow {
             lq,
             saliency,
             quadrature,
+            relative_error,
         })
     }
 }
@@ -115,6 +125,24 @@ impl RlWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unmodeled_current_changes_are_visible_in_fit_quality() {
+        let mut fit = RlWindow::default();
+        for k in 0..32 {
+            let t = k as f32 * core::f32::consts::TAU / 32.0;
+            let x = [libm::sinf(t), libm::cosf(t)];
+            fit.record(
+                x,
+                [
+                    1.8 * x[0] + 2.4 * libm::sinf(3.0 * t),
+                    1.3 * x[1] + 2.4 * libm::cosf(3.0 * t),
+                ],
+            );
+        }
+        let result = fit.finish(0.03, 50e-6).unwrap();
+        assert!(result.relative_error > 0.7);
+    }
 
     #[test]
     fn rejects_unexcited_axis_and_zero_response() {

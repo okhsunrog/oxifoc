@@ -188,6 +188,10 @@ pub async fn capture_model_voltage_burst<H: DetectionHardware, S: SinCos>(
         hw.wait_telemetry().await;
         hw.check_health()?;
         let (alpha, beta) = hw.current_sense_topology().clarke(hw.read_phase_currents());
+        if !program.current_in_budget(alpha, beta) {
+            hw.send_command(ControlMode::Stopped).await;
+            return Err(DetectionError::HardwareFault);
+        }
         capture.samples[index] = BurstSample {
             alpha,
             beta,
@@ -639,6 +643,7 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, T: Timer, S: SinCos>(
     hold_current: f32,
     dt: f32,
     resistance_ohm: f32,
+    max_current_a: Option<f32>,
 ) -> Result<(u32, f32), DetectionError> {
     use super::excitation::{MAX_BURST_SAMPLES, Waveform};
     let omega_c = injector.omega_hfi();
@@ -659,10 +664,17 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, T: Timer, S: SinCos>(
         vd_hold: voltage.vd,
         vq_hold: voltage.vq,
         hold_current,
+        max_current_a,
         angle: 0.0,
     };
     let capture = hw.capture_voltage_burst::<S>(program).await?;
     capture.validate(usize::from(program.samples))?;
+    if capture.samples[..capture.len]
+        .iter()
+        .any(|s| !program.current_in_budget(s.alpha, s.beta))
+    {
+        return Err(DetectionError::HardwareFault);
+    }
     let mut corr_q = [0.0f32; PIPELINE_LAG_MAX + 1];
     let mut corr_i = [0.0f32; PIPELINE_LAG_MAX + 1];
     for k in warmup..count {
@@ -727,6 +739,46 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, T: Timer, S: SinCos>(
 /// Each finite packet returns to the retained current PI hold in the ISR.
 /// The caller ramps down that current after collecting the final packet.
 #[cfg(feature = "hfi-detect")]
+#[derive(Default)]
+struct HfiResponse {
+    ac_energy: f32,
+    samples: usize,
+    peak: f32,
+}
+
+#[cfg(feature = "hfi-detect")]
+impl HfiResponse {
+    fn record(&mut self, capture: &BurstCapture, lag: usize) -> Result<(), DetectionError> {
+        for sample in &capture.samples[..capture.len] {
+            self.peak = self.peak.max(sqrtf(
+                sample.alpha * sample.alpha + sample.beta * sample.beta,
+            ));
+        }
+        // Remove the DC component independently in each spatial window. DC
+        // hold and packet-to-packet drift must not count as HFI excitation.
+        for window in capture.samples[lag..capture.len].chunks_exact(FFT_SIZE) {
+            let mut mean = [0.0; 2];
+            for (k, sample) in window.iter().enumerate() {
+                for (axis, value) in [sample.alpha, sample.beta].iter().enumerate() {
+                    let delta = value - mean[axis];
+                    mean[axis] += delta / (k + 1) as f32;
+                    self.ac_energy += delta * (value - mean[axis]);
+                }
+            }
+            self.samples += window.len();
+        }
+        if self.samples == 0 || !self.ac_energy.is_finite() {
+            return Err(DetectionError::LowConfidence);
+        }
+        Ok(())
+    }
+
+    fn rms(&self) -> f32 {
+        sqrtf((self.ac_energy / self.samples.max(1) as f32).max(0.0))
+    }
+}
+
+#[cfg(feature = "hfi-detect")]
 async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
     hw: &mut H,
     injector: &mut HfiInjector<S>,
@@ -734,10 +786,12 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
     hold: (HoldingVoltage, f32),
     dt: f32,
     lag: u32,
-) -> Result<(), DetectionError> {
+    max_current_a: f32,
+) -> Result<HfiResponse, DetectionError> {
     use super::excitation::Waveform;
     let (voltage, hold_current) = hold;
     let lag = lag as usize;
+    let mut response = HfiResponse::default();
     if !(1..=PIPELINE_LAG_MAX).contains(&lag) {
         return Err(DetectionError::OutOfRange);
     }
@@ -755,10 +809,18 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
             vd_hold: voltage.vd,
             vq_hold: voltage.vq,
             hold_current,
+            max_current_a: Some(max_current_a),
             angle: 0.0,
         };
         let capture = hw.capture_voltage_burst::<S>(program).await?;
         capture.validate(usize::from(program.samples))?;
+        if capture.samples[..capture.len]
+            .iter()
+            .any(|s| !program.current_in_budget(s.alpha, s.beta))
+        {
+            return Err(DetectionError::HardwareFault);
+        }
+        response.record(&capture, lag)?;
         let first = capture.samples[lag - 1];
         measurement.prime_currents(first.alpha, first.beta);
         for k in lag..capture.len {
@@ -772,13 +834,13 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
             }
         }
     }
-    Ok(())
+    Ok(response)
 }
 
 /// Target HFI ripple current as a fraction of the holding current — large
 /// enough to clear the ADC noise floor, small enough that the rotor stays
 /// firmly locked and the total current stays inside the thermal budget.
-#[cfg(feature = "hfi-detect")]
+#[cfg(all(feature = "hfi-detect", feature = "impedance-sweep"))]
 const HFI_RIPPLE_FRACTION: f32 = 0.25;
 
 /// Maximum modeled HFI ripple target (amps), not an instantaneous trip limit.
@@ -793,10 +855,9 @@ const HFI_PROBE_CURRENT_A: f32 = 2.0;
 /// Measure motor inductance using rotating HFI.
 ///
 /// Injects a rotating high-frequency voltage vector in α-β frame and
-/// analyzes the current response using FFT. Runs in two passes: a short
-/// current-limited probe scouts L, then the main pass solves
-/// the amplitude for a target ripple current (a fraction of the holding
-/// current), clamped to the bus-voltage headroom when `params.vbus` is set.
+/// identifies its discrete RL response. Bounded pilot packets adjust voltage
+/// from measured AC current, fit residual and repeatability. Holding bias and
+/// AC-current target are separate, with an ISR-enforced total-current budget.
 ///
 /// # Arguments
 /// * `hw` - Hardware abstraction implementation
@@ -826,6 +887,26 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     pwm_freq_hz: f32,
 ) -> Result<(f32, f32), DetectionError> {
     info!("Starting inductance measurement (rotating HFI)...");
+
+    if [
+        pwm_freq_hz,
+        params.resistance_ohm,
+        params.hold_current_a,
+        params.hfi_current_a,
+        params.max_current_a,
+        params.hfi_voltage_v,
+        params.hfi_frequency_hz,
+    ]
+    .iter()
+    .any(|v| !v.is_finite() || *v <= 0.0)
+        || params.hold_current_a >= params.max_current_a
+        || params.hfi_frequency_hz >= pwm_freq_hz * 0.5
+        || params.num_cycles == 0
+        || !params.vbus.is_finite()
+        || params.vbus < 0.0
+    {
+        return Err(DetectionError::OutOfRange);
+    }
 
     let dt = 1.0 / pwm_freq_hz;
 
@@ -861,7 +942,7 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     // distorts the injection waveform.
     let headroom = if params.vbus > 0.0 {
         ((params.vbus * 0.577 - sqrtf(voltage.vd * voltage.vd + voltage.vq * voltage.vq)) * 0.9)
-            .max(0.1)
+            .max(0.0)
     } else {
         f32::INFINITY
     };
@@ -876,12 +957,17 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     // caps the worst-case (low-L) probe current. The old fixed `hfi_voltage_v`
     // (3 V) instead drew tens of amps on a low-impedance outrunner and tripped
     // the bench PSU before the adaptive collection could re-scale.
-    let omega = params.hfi_frequency_hz * core::f32::consts::TAU;
-    let i_cap = HFI_PROBE_CURRENT_A * params.resistance_ohm;
+    let ac_budget = params.max_current_a - params.hold_current_a;
+    let i_target = params.hfi_current_a.min(ac_budget * 0.5);
+    let probe_current = HFI_PROBE_CURRENT_A.min(ac_budget * 0.5);
+    let i_cap = probe_current * params.resistance_ohm;
     let probe_v = i_cap.min(headroom).min(params.hfi_voltage_v);
+    if probe_v <= 0.0 {
+        return Err(DetectionError::LowConfidence);
+    }
     info!(
         "HFI injection (probe v={}V, vd_hold={}V, I_cap={}A)...",
-        probe_v, vd_hold, HFI_PROBE_CURRENT_A
+        probe_v, vd_hold, probe_current
     );
 
     let mut injector = HfiInjector::<S>::new(params.hfi_frequency_hz, probe_v, pwm_freq_hz);
@@ -891,40 +977,117 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     // (pairing rotations preserve the response norm) that guards the
     // phase-sensitive demod below — an override must not silently disable
     // that safety net. `pipeline_lag ≥ 1` overrides the lag value only.
-    let (probed_lag, l_probe) = probe_hfi_pipeline_lag::<H, T, S>(
+    let (probed_lag, _) = probe_hfi_pipeline_lag::<H, T, S>(
         hw,
         &mut injector,
         voltage,
         params.hold_current_a,
         dt,
         params.resistance_ohm,
+        Some(params.max_current_a),
     )
     .await?;
     injector.reset();
-    let lag = if params.pipeline_lag >= 1 {
+    let mut lag = if params.pipeline_lag >= 1 {
         params.pipeline_lag as u32
     } else {
         probed_lag
     };
 
-    // Size the main excitation from the phase-invariant probe, not the
-    // per-sample di/V estimator at the ADC noise floor. The latter can report
-    // a plausible but enormous interim L and inflate a 0.25-A ripple target
-    // to the former 2-A clamp. This is a modeled target, not a protection:
-    // finite-packet transients and inverter errors still use the real dq trip.
-    if !l_probe.is_finite() || l_probe <= 0.0 {
+    // Grow only by a bounded factor from the current-limited first probe.
+    // A noise-dominated impedance estimate must not size the next packet.
+    let voltage_limit = headroom.min(params.hfi_voltage_v);
+    let mut v_run = (probe_v * 1.7).min(voltage_limit);
+    let mut l_probe = 0.0;
+    let mut previous: Option<(f32, f32)> = None;
+    let mut qualified = false;
+    let mut qualified_rms = 0.0;
+    let pilot_params = InductanceParams {
+        num_cycles: 8,
+        ..*params
+    };
+    for attempt in 0..10 {
+        injector.set_amplitude(v_run);
+        // The initial millivolt probe can sit below the ADC noise floor.
+        // Refine the pairing and independent |Z| check at the actual amplitude.
+        let (refined_lag, refined_l) = probe_hfi_pipeline_lag::<H, T, S>(
+            hw,
+            &mut injector,
+            voltage,
+            params.hold_current_a,
+            dt,
+            params.resistance_ohm,
+            Some(params.max_current_a),
+        )
+        .await?;
+        if params.pipeline_lag < 1 {
+            lag = refined_lag;
+        }
+        l_probe = refined_l;
+        let mut pilot = InductanceMeasurement::<S>::new(&pilot_params, pwm_freq_hz);
+        let response = hfi_collect::<H, T, S>(
+            hw,
+            &mut injector,
+            &mut pilot,
+            (voltage, params.hold_current_a),
+            dt,
+            lag,
+            params.max_current_a,
+        )
+        .await?;
+        let rms = response.rms();
+        let result = pilot.finish();
+        info!(
+            "HFI pilot {}: {}V, AC rms={}A, peak={}A",
+            attempt, v_run, rms, response.peak
+        );
+        let mut quality_ok = false;
+        match result {
+            Ok(result) => {
+                debug!(
+                    "HFI pilot fit: Ld={}H, Lq={}H, residual={}",
+                    result.ld, result.lq, result.relative_error
+                );
+                // Preserve the independent magnitude cross-check. A gross
+                // model/probe disagreement must not request stronger pulses.
+                if rms >= i_target * 0.5
+                    && l_probe > 0.0
+                    && !(0.4..=2.5).contains(&(result.l_avg / l_probe))
+                {
+                    return Err(DetectionError::LowConfidence);
+                }
+                quality_ok = result.relative_error < 0.4;
+                let stable = previous.is_some_and(|(ld, lq)| {
+                    (result.ld / ld - 1.0).abs() < 0.15 && (result.lq / lq - 1.0).abs() < 0.15
+                });
+                let enough_current = (0.75..=1.25).contains(&(rms / i_target))
+                    || ((v_run >= voltage_limit * 0.99
+                        || response.peak >= params.hold_current_a + ac_budget * 0.6)
+                        && rms > 0.02
+                        && rms < i_target);
+                if quality_ok && stable && enough_current {
+                    qualified = true;
+                    qualified_rms = rms;
+                    break;
+                }
+                previous = quality_ok.then_some((result.ld, result.lq));
+            }
+            Err(DetectionError::LowConfidence | DetectionError::OutOfRange) => previous = None,
+            Err(error) => return Err(error),
+        }
+        let mut factor = clamp_f32(i_target / rms.max(1e-4), 0.5, 1.7);
+        if !quality_ok && factor < 1.3 && rms < i_target {
+            factor = 1.3;
+        }
+        // Limit the next packet using the measured peak excursion as well as
+        // RMS. This is prediction; the per-cycle budget remains authoritative.
+        factor = factor
+            .min(0.65 * ac_budget / (response.peak - params.hold_current_a).max(rms).max(1e-4));
+        v_run = (v_run * factor).min(voltage_limit);
+    }
+    if !qualified {
         return Err(DetectionError::LowConfidence);
     }
-    let z_probe = sqrtf(
-        params.resistance_ohm * params.resistance_ohm + (omega * l_probe) * (omega * l_probe),
-    )
-    .max(params.resistance_ohm);
-    let i_target = clamp_f32(
-        HFI_RIPPLE_FRACTION * params.hold_current_a,
-        0.05,
-        HFI_PROBE_CURRENT_A,
-    );
-    let v_run = clamp_f32(i_target * z_probe, probe_v, headroom);
     info!(
         "HFI run amplitude: {}V (target ripple={}A)",
         v_run, i_target
@@ -933,13 +1096,14 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
 
     let mut measurement = InductanceMeasurement::<S>::new(params, pwm_freq_hz);
     measurement.restart(v_run);
-    hfi_collect::<H, T, S>(
+    let response = hfi_collect::<H, T, S>(
         hw,
         &mut injector,
         &mut measurement,
         (voltage, params.hold_current_a),
         dt,
         lag,
+        params.max_current_a,
     )
     .await?;
 
@@ -951,6 +1115,17 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
 
     // Compute result
     let result = measurement.finish()?;
+    let enough_current = (0.7..=1.3).contains(&(response.rms() / qualified_rms));
+    if result.relative_error >= 0.4 || !enough_current {
+        return Err(DetectionError::LowConfidence);
+    }
+    info!(
+        "HFI accepted: hold={}A, AC rms={}A, peak={}A, residual={}",
+        params.hold_current_a,
+        response.rms(),
+        response.peak,
+        result.relative_error
+    );
 
     // Latency-immune cross-check: the demod L is phase-sensitive (a wrong
     // pairing corrupts it while looking plausible), the probe's |Z|
@@ -1027,6 +1202,7 @@ async fn pulse_once<H: DetectionHardware>(
         vd_hold: ax.vd_hold,
         vq_hold: ax.vq_hold,
         hold_current: ax.lock_current_a,
+        max_current_a: None,
         angle: ax.angle,
     };
     hw.send_command(program.hold_mode()).await;
@@ -1461,6 +1637,7 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
         params.hold_current_a,
         dt,
         params.resistance_ohm,
+        None,
     )
     .await?;
 
@@ -2050,19 +2227,12 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     // Step 2: Measure inductance (using measured R for compensation)
     info!("Step 2/4: Inductance measurement");
 
-    // Limit holding current to both the power-safe limit and what the
-    // bus can deliver (with 40% headroom for HFI/pulse voltage).
-    let r = result.params.resistance_ohm;
-    let max_bus_current = (params.vbus * 0.577 * 0.6) / r.max(0.001);
-    let hold_current = safe_current.min(max_bus_current).max(0.1);
-
-    let inductance_params = InductanceParams {
-        motor_size: params.motor_size,
-        resistance_ohm: r,
-        hold_current_a: hold_current,
-        vbus: params.vbus,
-        ..Default::default()
-    };
+    let inductance_params = InductanceParams::commissioning(
+        params.motor_size,
+        result.params.resistance_ohm,
+        params.vbus,
+        params.current_max,
+    )?;
     let (ld, lq) =
         measure_inductance_auto::<H, T, S>(hw, &inductance_params, params.pwm_freq_hz).await?;
 

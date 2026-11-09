@@ -34,6 +34,9 @@ pub struct VoltageBurst {
     pub vd_hold: f32,
     pub vq_hold: f32,
     pub hold_current: f32,
+    /// Optional sampled alpha-beta magnitude ceiling for this packet.
+    /// The driver's independent overcurrent protection remains active.
+    pub max_current_a: Option<f32>,
     pub angle: f32,
 }
 
@@ -46,6 +49,9 @@ impl VoltageBurst {
             || !self.hold_current.is_finite()
             || self.hold_current <= 0.0
             || !self.angle.is_finite()
+            || self
+                .max_current_a
+                .is_some_and(|limit| !limit.is_finite() || limit <= self.hold_current)
         {
             return false;
         }
@@ -72,6 +78,14 @@ impl VoltageBurst {
                     && usize::from(start) + usize::from(periods) < usize::from(self.samples)
             }
         }
+    }
+
+    pub fn current_in_budget(&self, alpha: f32, beta: f32) -> bool {
+        alpha.is_finite()
+            && beta.is_finite()
+            && self
+                .max_current_a
+                .is_none_or(|limit| alpha * alpha + beta * beta <= limit * limit)
     }
 
     pub fn injection<S: SinCos>(&self, index: usize) -> (f32, f32) {

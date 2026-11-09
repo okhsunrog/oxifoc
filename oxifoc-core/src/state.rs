@@ -1186,14 +1186,19 @@ where
         let Some(program) = ex.program else {
             return (false, false);
         };
+        let (alpha, beta) = board
+            .current_sense_topology
+            .clarke((telem.ia, telem.ib, telem.ic));
+        if !program.current_in_budget(alpha, beta) {
+            ex.abort(crate::foc::detection::DetectionError::HardwareFault);
+            cancel_detection();
+            return (true, true);
+        }
         if ex.index == usize::from(program.samples) {
             // The retained PI hold was actually stepped before completion.
             ex.outcome = Some(Ok(()));
             return (true, false);
         } else {
-            let (alpha, beta) = board
-                .current_sense_topology
-                .clarke((telem.ia, telem.ib, telem.ic));
             ex.samples[ex.index] = crate::foc::detection::excitation::BurstSample {
                 alpha,
                 beta,

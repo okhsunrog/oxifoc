@@ -3533,6 +3533,7 @@ mod severity_gate {
                 vd_hold: 0.03,
                 vq_hold: 0.0,
                 hold_current: 1.0,
+                max_current_a: None,
                 angle: 0.0,
             };
             h.driver.set_mode(program.hold_mode());
@@ -3554,6 +3555,41 @@ mod severity_gate {
                 let mut state = h.state.borrow(cs).borrow_mut();
                 state.last_adc.seq = state.last_adc.seq.wrapping_add(1);
             });
+        }
+
+        #[test]
+        fn packet_current_budget_stops_in_the_isr_without_async_service() {
+            let _serial = cmd_channel_lock();
+            let _detect = crate::state::DetectionActiveGuard::arm();
+            let mut h = running_harness();
+            arm(&mut h);
+            critical_section::with(|cs| {
+                h.state
+                    .borrow(cs)
+                    .borrow_mut()
+                    .excitation
+                    .program
+                    .as_mut()
+                    .unwrap()
+                    .max_current_a = Some(2.0);
+            });
+            h.driver.current_sensor_mut().currents = (2.5, -1.25, -1.25);
+            tick(&mut h, 50);
+            assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            critical_section::with(|cs| {
+                assert_eq!(
+                    h.state.borrow(cs).borrow().excitation.outcome,
+                    Some(Err(DetectionError::HardwareFault))
+                );
+            });
+            assert!(
+                !h.registry.any_stopping(),
+                "packet budget is separate from the board trip"
+            );
+            for i in 2..=10 {
+                tick(&mut h, i * 50);
+            }
+            assert_eq!(h.driver.mode(), ControlMode::Stopped);
         }
 
         #[test]
