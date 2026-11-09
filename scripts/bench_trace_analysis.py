@@ -61,7 +61,8 @@ def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
     # reversed prefix is still an error, not a reason to discard more data.
     ticks = [0]
     for index, event in enumerate(events):
-        if not 1 <= event.kind <= 13:
+        # Kind 14 carries PWM write metadata; validate its time but no IRQ span.
+        if not 1 <= event.kind <= 14:
             raise TraceError(f"record {index}: unknown/uninitialized kind {event.kind}")
         if not 0 <= event.timer_ticks <= 0xFFFFFFFF:
             raise TraceError(f"record {index}: timestamp is not u32")

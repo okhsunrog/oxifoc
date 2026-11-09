@@ -50,6 +50,18 @@ class UsbCpuTraceTests(unittest.TestCase):
         self.assertEqual(decode(bytes.fromhex("78563412 efbeadde 0a000000")),
                          [Event(0x12345678, 0xDEADBEEF, 10)])
 
+    def test_pwm_metadata_preserves_accounting_and_timestamp_validation(self):
+        report = analyze(events((0, 10, 0), (4, 8, 0), (6, 14, 0x81230234),
+                                (8, 9, 0), (12, 11, 0)), 100, export_intervals=True)
+        self.assertEqual(report["usb_excluding_adc_ticks"], 8)
+        self.assertEqual(report["intervals"]["usb_excluding_adc"], [[0, 4], [8, 12]])
+        for trim in (False, True):
+            with self.subTest(trim=trim), self.assertRaisesRegex(TraceError, "reordered"):
+                analyze(events((0, 10, 0), (4, 8, 0), (3, 14, 0x81230234),
+                               (8, 9, 0), (12, 11, 0)), 100, trim=trim)
+            with self.subTest(trim=trim), self.assertRaisesRegex(TraceError, "hidden enclosing"):
+                analyze(events((0, 14, 0x81230234), (12, 14, 0x23408123)), 100, trim=trim)
+
     def test_finite_capture_requires_explicit_trim_and_reports_coverage(self):
         trace = events(
             (0, 9, 0), (1, 6, 123), (2, 11, 0),

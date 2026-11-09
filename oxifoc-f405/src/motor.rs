@@ -77,6 +77,11 @@ impl<'d> MotorPwm<'d> {
         );
 
         let max_duty = pwm.get_max_duty();
+        #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
+        assert!(
+            max_duty < 0x8000,
+            "PWM trace requires a 15-bit TIM1 counter"
+        );
 
         // Calculate dead time from actual timer clock frequency
         let tim1_clock_hz = embassy_stm32::rcc::frequency::<peripherals::TIM1>().0;
@@ -126,12 +131,39 @@ impl<'d> MotorPwm<'d> {
 
     /// Emergency stop - disable all outputs
     pub fn emergency_stop(&mut self) {
-        self.pwm.set_duty(Channel::Ch1, 0);
-        self.pwm.set_duty(Channel::Ch2, 0);
-        self.pwm.set_duty(Channel::Ch3, 0);
+        self.trace_pwm_write(|this| {
+            this.pwm.set_duty(Channel::Ch1, 0);
+            this.pwm.set_duty(Channel::Ch2, 0);
+            this.pwm.set_duty(Channel::Ch3, 0);
+        });
         self.pwm.disable(Channel::Ch1);
         self.pwm.disable(Channel::Ch2);
         self.pwm.disable(Channel::Ch3);
+    }
+
+    /// Keep the existing write order; only the bench build observes the latch window.
+    #[inline(always)]
+    fn trace_pwm_write(&mut self, write: impl FnOnce(&mut Self)) {
+        #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
+        let before = Self::count_direction();
+        write(self);
+        #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
+        {
+            let after = Self::count_direction();
+            // Recording may mask IRQs, so it must follow all CCR writes.
+            crate::diagnostics::trace::record_pwm_write(before, after);
+        }
+    }
+
+    #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
+    #[inline(always)]
+    fn count_direction() -> u16 {
+        let tim = embassy_stm32::pac::TIM1;
+        let count = tim.cnt().read().cnt();
+        let down = tim.cr1().read().dir() == embassy_stm32::pac::timer::vals::Dir::Down;
+        // ARR < 32768 is checked at init. The two register reads can straddle
+        // a turn; the near-boundary count remains visible in the diagnostic.
+        count | (u16::from(down) << 15)
     }
 
     /// All phase-enable paths pass through this compile-time output inhibit.
@@ -163,9 +195,11 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         let duty_b = u32::from(duties[1]).min(self.duty_limit);
         let duty_c = u32::from(duties[2]).min(self.duty_limit);
 
-        self.pwm.set_duty(Channel::Ch1, duty_a);
-        self.pwm.set_duty(Channel::Ch2, duty_b);
-        self.pwm.set_duty(Channel::Ch3, duty_c);
+        self.trace_pwm_write(|this| {
+            this.pwm.set_duty(Channel::Ch1, duty_a);
+            this.pwm.set_duty(Channel::Ch2, duty_b);
+            this.pwm.set_duty(Channel::Ch3, duty_c);
+        });
     }
 
     fn disable(&mut self) {
@@ -178,9 +212,11 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         // (set_mode → pwm.enable()) would otherwise write duties into disabled
         // channels and the motor could never start in FOC modes.
         // Set duties to 0 before enabling channels to prevent a glitch.
-        self.pwm.set_duty(Channel::Ch1, 0);
-        self.pwm.set_duty(Channel::Ch2, 0);
-        self.pwm.set_duty(Channel::Ch3, 0);
+        self.trace_pwm_write(|this| {
+            this.pwm.set_duty(Channel::Ch1, 0);
+            this.pwm.set_duty(Channel::Ch2, 0);
+            this.pwm.set_duty(Channel::Ch3, 0);
+        });
         self.set_phase_enabled(Channel::Ch1, true);
         self.set_phase_enabled(Channel::Ch2, true);
         self.set_phase_enabled(Channel::Ch3, true);
@@ -190,21 +226,23 @@ impl<'d> PhasePwm for MotorPwm<'d> {
 
     fn set_phase_states(&mut self, states: [PhaseState; 3]) {
         const CHANNELS: [Channel; 3] = [Channel::Ch1, Channel::Ch2, Channel::Ch3];
-        for (state, &ch) in states.iter().zip(CHANNELS.iter()) {
-            match state {
-                PhaseState::Pwm(duty) => {
-                    self.set_phase_enabled(ch, true);
-                    self.pwm.set_duty(ch, u32::from(*duty).min(self.duty_limit));
-                }
-                PhaseState::Low => {
-                    self.set_phase_enabled(ch, true);
-                    self.pwm.set_duty(ch, 0);
-                }
-                PhaseState::Float => {
-                    self.pwm.set_duty(ch, 0);
-                    self.pwm.disable(ch);
+        self.trace_pwm_write(|this| {
+            for (state, &ch) in states.iter().zip(CHANNELS.iter()) {
+                match state {
+                    PhaseState::Pwm(duty) => {
+                        this.set_phase_enabled(ch, true);
+                        this.pwm.set_duty(ch, u32::from(*duty).min(this.duty_limit));
+                    }
+                    PhaseState::Low => {
+                        this.set_phase_enabled(ch, true);
+                        this.pwm.set_duty(ch, 0);
+                    }
+                    PhaseState::Float => {
+                        this.pwm.set_duty(ch, 0);
+                        this.pwm.disable(ch);
+                    }
                 }
             }
-        }
+        });
     }
 }

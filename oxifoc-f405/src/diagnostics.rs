@@ -67,20 +67,35 @@ pub async fn uart_clock_task(
     }
 }
 
-#[cfg(feature = "bench-executor-trace")]
+#[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
 pub mod trace {
     use core::sync::atomic::{AtomicU32, Ordering};
 
     // 8/9 already bracket ADC. These IRQ spans include preemption;
     // the offline analyzer unions nested USB spans and subtracts ADC.
+    #[cfg(feature = "bench-executor-trace")]
     pub const USB_EXECUTOR_BEGIN: u32 = 10;
+    #[cfg(feature = "bench-executor-trace")]
     pub const USB_EXECUTOR_END: u32 = 11;
+    #[cfg(feature = "bench-executor-trace")]
     const USB_IRQ_BEGIN: u32 = 12;
+    #[cfg(feature = "bench-executor-trace")]
     const USB_IRQ_END: u32 = 13;
+    const PWM_WRITE: u32 = 14;
 
+    /// Before in low 16 bits, after in high 16 bits; each packs CNT[14:0]
+    /// and DIR at bit 15. The caller records only after completing its writes.
+    #[inline]
+    pub fn record_pwm_write(before: u16, after: u16) {
+        record(PWM_WRITE, u32::from(before) | (u32::from(after) << 16));
+    }
+
+    #[cfg(feature = "bench-executor-trace")]
     pub struct UsbIrqBegin;
+    #[cfg(feature = "bench-executor-trace")]
     pub struct UsbIrqEnd;
 
+    #[cfg(feature = "bench-executor-trace")]
     impl embassy_stm32::interrupt::typelevel::Handler<embassy_stm32::interrupt::typelevel::OTG_FS>
         for UsbIrqBegin
     {
@@ -89,6 +104,7 @@ pub mod trace {
         }
     }
 
+    #[cfg(feature = "bench-executor-trace")]
     impl embassy_stm32::interrupt::typelevel::Handler<embassy_stm32::interrupt::typelevel::OTG_FS>
         for UsbIrqEnd
     {
@@ -179,6 +195,7 @@ pub mod trace {
     #[unsafe(no_mangle)]
     pub static BENCH_TASK_STATS_OVERFLOW: AtomicU32 = AtomicU32::new(0);
 
+    #[cfg(feature = "bench-executor-trace")]
     fn register_task(task: u32) {
         for slot in &BENCH_TASK_STATS {
             if slot.id.load(Ordering::Relaxed) == task
@@ -193,6 +210,7 @@ pub mod trace {
         BENCH_TASK_STATS_OVERFLOW.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(feature = "bench-executor-trace")]
     fn task_event(task: u32, kind: u32) {
         if BENCH_TASK_STATS_CONTROL.load(Ordering::Relaxed) != 2 {
             return;
@@ -321,28 +339,34 @@ pub mod trace {
 
     // Task IDs are resolved against this exact ELF's TaskStorage/POOL symbols.
     // Executor events carry executor IDs; task events carry task IDs.
+    #[cfg(feature = "bench-executor-trace")]
     #[unsafe(no_mangle)]
     fn _embassy_trace_poll_start(executor: u32) {
         record(1, executor);
     }
+    #[cfg(feature = "bench-executor-trace")]
     #[unsafe(no_mangle)]
     fn _embassy_trace_task_new(_executor: u32, task: u32) {
         register_task(task);
         record(2, task);
     }
+    #[cfg(feature = "bench-executor-trace")]
     #[unsafe(no_mangle)]
     fn _embassy_trace_task_end(_executor: u32, task: u32) {
         record(3, task);
     }
+    #[cfg(feature = "bench-executor-trace")]
     #[unsafe(no_mangle)]
     fn _embassy_trace_task_exec_begin(_executor: u32, task: u32) {
         task_event(task, 4);
         record(4, task);
     }
+    #[cfg(feature = "bench-executor-trace")]
     #[unsafe(no_mangle)]
     fn _embassy_trace_task_exec_end(_executor: u32, task: u32) {
         record(5, task);
     }
+    #[cfg(feature = "bench-executor-trace")]
     #[unsafe(no_mangle)]
     fn _embassy_trace_task_ready_begin(_executor: u32, task: u32) {
         #[cfg(feature = "bench-scheduler-deadline")]
@@ -350,6 +374,7 @@ pub mod trace {
         task_event(task, 6);
         record(6, task);
     }
+    #[cfg(feature = "bench-executor-trace")]
     #[unsafe(no_mangle)]
     fn _embassy_trace_executor_idle(executor: u32) {
         record(7, executor);

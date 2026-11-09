@@ -543,8 +543,11 @@ fn ADC() {
                 now_ticks,
                 protection_board,
             );
-            #[cfg(feature = "bench-executor-trace")]
-            let trace_active = if cfg!(feature = "bench-trace-excitation") {
+            #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
+            let trace_active = if cfg!(any(
+                feature = "bench-trace-excitation",
+                feature = "bench-pwm-commit"
+            )) {
                 matches!(
                     driver.mode(),
                     oxifoc_core::types::ControlMode::DirectVoltage { .. }
@@ -552,7 +555,7 @@ fn ADC() {
             } else {
                 !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped)
             };
-            #[cfg(feature = "bench-executor-trace")]
+            #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
             if trace_active {
                 crate::diagnostics::trace::trigger_active();
             } else {
