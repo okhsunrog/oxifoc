@@ -87,6 +87,24 @@ impl MotorPwmConfig {
     }
 }
 
+/// q-axis PWM modulation used to estimate supply current as `iq * mod_q`.
+/// Its only constructor reconstructs the final duty command, so a PI voltage
+/// in volts cannot accidentally be passed to the supply-current limiter.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct QAxisModulation(f32);
+
+impl QAxisModulation {
+    pub(crate) fn from_pwm(duties: [u16; 3], period: u16, sin: f32, cos: f32) -> Self {
+        let [a, b, c] = duties.map(f32::from);
+        let (alpha, beta) = super::transforms::clarke_three(a, b, c);
+        Self(1.5 * (cos * beta - sin * alpha) / f32::from(period.max(1)))
+    }
+
+    pub fn coefficient(self) -> f32 {
+        self.0
+    }
+}
+
 /// Calculate dead-time in timer ticks from nanoseconds
 ///
 /// # Arguments

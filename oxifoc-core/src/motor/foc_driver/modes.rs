@@ -334,7 +334,7 @@ where
         }
 
         // Track the q-axis modulation for the bus-limit clamp (next cycle).
-        self.update_bus_mod_q(out.vq, dt);
+        self.update_bus_mod_q(self.controller.bus_mod_q(), dt);
         self.last_iq_meas = out.iq;
 
         self.pwm.set_duties(out.duties);

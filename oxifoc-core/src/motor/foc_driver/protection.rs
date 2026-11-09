@@ -14,7 +14,7 @@ use crate::foc::fault::PlatformFault;
 #[cfg(feature = "runtime")]
 use crate::foc::fault::VOLTAGE_HYSTERESIS_MV;
 use crate::foc::phase::PhaseProvider;
-use crate::foc::pwm::PhasePwm;
+use crate::foc::pwm::{PhasePwm, QAxisModulation};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
 use crate::motor::derating::DeratingConfig;
@@ -468,14 +468,13 @@ where
         );
     }
 
-    /// Low-pass the q-axis modulation (`mod_q = 1.5·vq/vbus`, the duty
+    /// Low-pass the final PWM q-axis modulation (the duty
     /// factor in `i_bus ≈ iq·mod_q`). τ ≈ 2 ms — slow enough to ignore
     /// per-cycle voltage ripple, fast enough to track real speed changes.
-    pub(super) fn update_bus_mod_q(&mut self, vq: f32, dt: f32) {
+    pub(super) fn update_bus_mod_q(&mut self, mod_q: QAxisModulation, dt: f32) {
         const TAU_S: f32 = 0.002;
-        let mod_q = 1.5 * vq / self.vbus.max(0.5);
         let alpha = (dt / TAU_S).min(1.0);
-        self.bus_mod_q_filt += alpha * (mod_q - self.bus_mod_q_filt);
+        self.bus_mod_q_filt += alpha * (mod_q.coefficient() - self.bus_mod_q_filt);
     }
 
     /// The (id, iq) targets a torque request is granted this cycle. Every

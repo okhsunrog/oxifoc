@@ -9,7 +9,7 @@ use super::{
     constants::{FRAC_1_SQRT_3, SQRT_3_DIV_2},
     detection::pi_tuning::{self, DEFAULT_BANDWIDTH_RAD_S},
     pi_controller::PIController,
-    pwm::{Modulator, SvpwmModulator},
+    pwm::{Modulator, QAxisModulation, SvpwmModulator},
     transforms,
     trig::{LibmSinCos, SinCos},
 };
@@ -165,6 +165,9 @@ pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> 
     /// (+1 / −1, 0 = inside it): the side the q current cannot be pushed
     /// further. See [`Self::q_voltage_clip`].
     q_clip: f32,
+    /// q-axis modulation reconstructed from the final PWM duties, including
+    /// dead-time compensation and duty caps. Used for supply-current limits.
+    bus_mod_q: QAxisModulation,
     /// Modulator + SinCos phantom (both are ZSTs)
     _phantom: core::marker::PhantomData<(M, S)>,
 }
@@ -213,6 +216,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             actuation_advance: 0.0,
             decoupling: None,
             q_clip: 0.0,
+            bus_mod_q: QAxisModulation::default(),
             _phantom: core::marker::PhantomData,
         }
     }
@@ -276,6 +280,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             actuation_advance: 0.0,
             decoupling: None,
             q_clip: 0.0,
+            bus_mod_q: QAxisModulation::default(),
             _phantom: core::marker::PhantomData,
         }
     }
@@ -395,6 +400,13 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         }
         let shift = top - cap;
         duties.map(|d| d.saturating_sub(shift))
+    }
+
+    /// Supply-current coefficient `i_bus ~= iq * mod_q` for the final PWM
+    /// command. PI voltage before dead-time compensation can have the opposite
+    /// sign at small currents and must not decide whether torque regenerates.
+    pub fn bus_mod_q(&self) -> QAxisModulation {
+        self.bus_mod_q
     }
 
     /// Update the cached DC bus voltage.
@@ -551,6 +563,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     pub fn reset(&mut self) {
         self.id_pi.reset();
         self.iq_pi.reset();
+        self.bus_mod_q = QAxisModulation::default();
         self.q_clip = 0.0;
     }
 
@@ -617,7 +630,6 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             self.dead_time_current_inv_a,
         );
         let duties = self.duties_for(mod_a, mod_b, max_duty);
-
         FocOutput {
             angle_rad,
             vd,
@@ -782,6 +794,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             self.dead_time_current_inv_a,
         );
         let duties = self.duties_for(mod_a, mod_b, max_duty);
+        self.bus_mod_q = QAxisModulation::from_pwm(duties, max_duty, sin_theta, cos_theta);
 
         FocOutput {
             ia,

@@ -1527,6 +1527,71 @@ fn bus_limit_clamps_iq() {
     assert_eq!(driver.clamp_iq_for_bus(-30.0), -5.0);
 }
 
+#[test]
+fn bus_limit_uses_final_pwm_when_deadtime_compensation_reverses_pi_voltage_sign() {
+    use crate::foc::transforms;
+    use crate::foc::trig::{LibmSinCos, SinCos};
+
+    let mut driver = FocDriver::new(
+        FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+        MockPwm { duties: [0; 3] },
+        MockCurrentSensor {
+            currents: (0.0, 0.0, 0.0),
+        },
+        PhaseManager::sensorless(),
+        1.0 / 20_000.0,
+    );
+    driver.current_limits.bus_in_max_a = 1.0;
+    driver.current_limits.bus_regen_max_a = 0.0;
+    driver.controller.set_dead_time_comp_factor(0.02);
+    driver
+        .controller
+        .set_dead_time_comp_linear_region(1.0)
+        .unwrap();
+    for direction in [-1.0, 1.0] {
+        for degrees in (0..360).step_by(30) {
+            let angle = (degrees as f32).to_radians();
+            let (sin, cos) = LibmSinCos::sin_cos(angle);
+            let iq = 0.6 * direction;
+            let (alpha, beta) = transforms::inverse_park(0.0, iq, sin, cos);
+            let currents = transforms::inverse_clarke(alpha, beta);
+            driver.controller.reset();
+            let out = driver.controller.step_with_injection(
+                currents,
+                angle,
+                0.0,
+                0.0,
+                iq,
+                0.0,
+                -0.05 * direction,
+                10_000,
+                0.00005,
+            );
+            assert!(
+                out.vq * iq < 0.0,
+                "pre-compensation voltage looks regenerative"
+            );
+            let (ia, ib, ic) = currents;
+            let [a, b, c] = out.duties.map(f32::from);
+            let duty_current = (a * ia + b * ib + c * ic) / 10_000.0;
+            let mod_q = driver.controller.bus_mod_q();
+            assert!((mod_q.coefficient() * iq - duty_current).abs() < 1e-6);
+            assert!(duty_current > 0.0);
+            driver.update_bus_mod_q(mod_q, 0.002);
+            assert_eq!(
+                driver.clamp_iq_for_bus(iq),
+                iq,
+                "motoring must remain available"
+            );
+            assert_eq!(
+                driver.clamp_iq_for_bus(-iq),
+                0.0,
+                "regeneration must remain blocked"
+            );
+        }
+    }
+}
+
 /// Every mode that energizes the motor and can read currents must trip
 /// the measured-overcurrent protection. DirectVoltage has no PI loop to
 /// rein the current in, and six-step has no current loop at all — a
