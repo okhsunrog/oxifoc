@@ -672,6 +672,12 @@ pub async fn isr_stats_task() {
         let batches = ft::BCAST_OK.swap(0, Ordering::Relaxed);
         let payload_bytes = ft::BCAST_BYTES.swap(0, Ordering::Relaxed);
         let failed = ft::BCAST_FAILS.swap(0, Ordering::Relaxed);
+        let full = ft::BCAST_FULL.swap(0, Ordering::Relaxed);
+        let busy = ft::BCAST_BUSY.swap(0, Ordering::Relaxed);
+        let unrouted = ft::BCAST_UNROUTED.swap(0, Ordering::Relaxed);
+        let other = ft::BCAST_OTHER.swap(0, Ordering::Relaxed);
+        let drain_gap = ft::MAX_DRAIN_GAP_US.swap(0, Ordering::Relaxed);
+        let batch_cost = ft::MAX_BATCH_US.swap(0, Ordering::Relaxed);
         if pushed != 0 || dropped != 0 || read != 0 || failed != 0 {
             defmt::info!(
                 "telem/s: push={} drop={} read={} badlen={} batches={} failed={} payload_bytes={}",
@@ -682,6 +688,27 @@ pub async fn isr_stats_task() {
                 batches,
                 failed,
                 payload_bytes
+            );
+            defmt::info!(
+                "streamdiag/s: full={} busy={} unrouted={} other={} drain_gap_us={} batch_us={} encode_us={} broadcast_us={}",
+                full,
+                busy,
+                unrouted,
+                other,
+                drain_gap,
+                batch_cost,
+                ft::ENCODE_US.swap(0, Ordering::Relaxed),
+                ft::BROADCAST_US.swap(0, Ordering::Relaxed)
+            );
+        }
+        #[cfg(feature = "bench-usb-metrics")]
+        {
+            use crate::protocol::usb_metrics as um;
+            defmt::info!(
+                "usbdiag/s: writes={} max_write_ticks={} long={}",
+                um::WRITES.swap(0, Ordering::Relaxed),
+                um::MAX_WRITE_TICKS.swap(0, Ordering::Relaxed),
+                um::LONG_WRITES.swap(0, Ordering::Relaxed)
             );
         }
         // Hall diagnostics: raw pin state + edge/overcapture rates. A

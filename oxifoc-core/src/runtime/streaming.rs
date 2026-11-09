@@ -28,8 +28,8 @@ use crate::types::FastTelemetry;
 /// ~22 frames of 46 bytes (44 data + 2 header) fit in 1024 bytes.
 /// Churrasco = Inline + Atomic + Polling + Static reference.
 ///
-/// Firmware keeps the queue small (4 KB ≈ 110 enriched frames — embassy timer
-/// wakeups are microsecond-accurate, so the drain cadence holds). Host
+/// Firmware uses 4 KB (about 110 frames, 5.5 ms at 20 kHz). This absorbs
+/// short scheduling/transport pauses, not sustained overload. Host
 /// builds (virtual device, sims) get a deep queue: tokio sleep jitter
 /// reaches tens of milliseconds under load, which at 10–20 kHz overruns a
 /// 42-frame buffer and fakes telemetry loss the real device doesn't have.
@@ -97,6 +97,17 @@ pub mod fast_telem_stats {
     pub static READ_BADLEN: AtomicU32 = AtomicU32::new(0);
     /// Stream-task broadcasts that returned an error (e.g. interface queue full).
     pub static BCAST_FAILS: AtomicU32 = AtomicU32::new(0);
+    pub static BCAST_FULL: AtomicU32 = AtomicU32::new(0);
+    pub static BCAST_BUSY: AtomicU32 = AtomicU32::new(0);
+    /// Broadcast reported NoRoute. This also covers remote backpressure:
+    /// ergot folds a failed broadcast with no local recipient into NoRoute.
+    pub static BCAST_UNROUTED: AtomicU32 = AtomicU32::new(0);
+    pub static BCAST_OTHER: AtomicU32 = AtomicU32::new(0);
+    /// Wall-clock microseconds, including preemption; zero without Embassy profiling.
+    pub static MAX_DRAIN_GAP_US: AtomicU32 = AtomicU32::new(0);
+    pub static MAX_BATCH_US: AtomicU32 = AtomicU32::new(0);
+    pub static ENCODE_US: AtomicU32 = AtomicU32::new(0);
+    pub static BROADCAST_US: AtomicU32 = AtomicU32::new(0);
     /// Stream-task broadcasts accepted by the stack.
     pub static BCAST_OK: AtomicU32 = AtomicU32::new(0);
     /// Successfully broadcast encoded payload bytes (excluding wire headers).
@@ -382,6 +393,8 @@ where
 {
     let cons = FAST_TELEM_Q.framed_consumer();
     let mut pending = PendingFastBatch::new();
+    #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
+    let mut last_drain = None;
 
     #[cfg(feature = "log")]
     log::info!("fast_telemetry_stream: waiting for host to enable streaming");
@@ -391,6 +404,10 @@ where
 
         if period == 0 {
             pending.batch.clear();
+            #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
+            {
+                last_drain = None;
+            }
             // Enable may precede this wake by more than the embedded queue's
             // few milliseconds of buffering. Capture::start discards that
             // startup transient before collecting the experiment baseline.
@@ -425,6 +442,14 @@ where
         // encoder reserves worst-case full-frame space before reading a
         // grant, so incompressible input cannot discard a consumed sample.
         loop {
+            // The wall clock survives debugger detach, which may stop DWT.
+            #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
+            let batch_start = embassy_time::Instant::now().as_micros() as u32;
+            #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
+            if let Some(previous) = last_drain.replace(batch_start) {
+                fast_telem_stats::MAX_DRAIN_GAP_US
+                    .fetch_max(batch_start.wrapping_sub(previous), Ordering::Relaxed);
+            }
             let batch = &mut pending.batch;
 
             while !batch.is_full() {
@@ -457,10 +482,22 @@ where
             }
 
             let batch_full = batch.is_full();
+            #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
+            let encoded_at = embassy_time::Instant::now().as_micros() as u32;
             let _result = stack
                 .stack()
                 .topics()
                 .broadcast::<FastTelemetryTopic>(batch.batch(), None);
+            #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
+            {
+                let end = embassy_time::Instant::now().as_micros() as u32;
+                fast_telem_stats::MAX_BATCH_US
+                    .fetch_max(end.wrapping_sub(batch_start), Ordering::Relaxed);
+                fast_telem_stats::ENCODE_US
+                    .fetch_add(encoded_at.wrapping_sub(batch_start), Ordering::Relaxed);
+                fast_telem_stats::BROADCAST_US
+                    .fetch_add(end.wrapping_sub(encoded_at), Ordering::Relaxed);
+            }
 
             if _result.is_ok() {
                 fast_telem_stats::BCAST_OK.fetch_add(1, Ordering::Relaxed);
@@ -469,6 +506,16 @@ where
                 batch.clear();
             } else {
                 fast_telem_stats::BCAST_FAILS.fetch_add(1, Ordering::Relaxed);
+                use ergot::{interface_manager::InterfaceSendError, net_stack::NetStackSendError};
+                let counter = match &_result {
+                    Err(NetStackSendError::InterfaceSend(InterfaceSendError::InterfaceFull)) => {
+                        &fast_telem_stats::BCAST_FULL
+                    }
+                    Err(NetStackSendError::WouldDeadlock) => &fast_telem_stats::BCAST_BUSY,
+                    Err(NetStackSendError::NoRoute) => &fast_telem_stats::BCAST_UNROUTED,
+                    _ => &fast_telem_stats::BCAST_OTHER,
+                };
+                counter.fetch_add(1, Ordering::Relaxed);
             }
 
             #[cfg(feature = "log")]

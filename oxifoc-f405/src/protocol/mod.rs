@@ -1,6 +1,8 @@
 //! Protocol layer for ergot communication over USB + UART
 
 pub mod servers;
+#[cfg(feature = "bench-usb-metrics")]
+pub mod usb_metrics;
 
 use static_cell::StaticCell;
 

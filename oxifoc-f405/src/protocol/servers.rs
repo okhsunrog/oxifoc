@@ -59,7 +59,7 @@ async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
 /// Worker task for outgoing ergot data (USB framed)
 #[embassy_executor::task]
 async fn run_usb_tx(
-    mut ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
+    ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
     rx: FramedConsumer<&'static UsbQueue>,
 ) {
     #[cfg(feature = "bench-scheduler-deadline")]
@@ -68,7 +68,15 @@ async fn run_usb_tx(
     embassy_executor::Metadata::for_current_task()
         .await
         .set_priority(3);
-    usb_kit::tx_worker::<AppDriver, { USB_OUT_QUEUE_SIZE }, _>(
+    #[cfg(feature = "bench-usb-metrics")]
+    let mut ep_in = super::usb_metrics::MeasuredIn(ep_in);
+    #[cfg(not(feature = "bench-usb-metrics"))]
+    let mut ep_in = ep_in;
+    #[cfg(feature = "bench-usb-metrics")]
+    type TxDriver = super::usb_metrics::MeasuredDriver<AppDriver>;
+    #[cfg(not(feature = "bench-usb-metrics"))]
+    type TxDriver = AppDriver;
+    usb_kit::tx_worker::<TxDriver, { USB_OUT_QUEUE_SIZE }, _>(
         &mut ep_in,
         rx,
         usb_kit::DEFAULT_TIMEOUT_MS_PER_FRAME,

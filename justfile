@@ -9,6 +9,8 @@ target_test_crates := "tests/stm32g474 tests/stm32f405"
 core_test_features := "runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect,impedance-sweep"
 mk5_features := "transport-usb,transport-uart,board-vesc6-mk5,task-priority"
 mk5_bench_features := mk5_features + ",bench-calibrated-clock,bench-clock-reference"
+mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
+mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
@@ -121,9 +123,21 @@ build-mk5-bench:
         --features {{ mk5_bench_features }}
 
 # Build and flash the MK5 bench image; leaves the target running.
-flash-mk5-bench:
-    cd oxifoc-f405 && cargo run --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ mk5_bench_features }}
+flash-mk5-bench: build-mk5-bench
+    probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
+    probe-rs reset --chip STM32F405RGTx
+
+build-mk5-usb-metrics:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ mk5_usb_metrics_features }}
+
+flash-mk5-usb-metrics: build-mk5-usb-metrics
+    probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
+    probe-rs reset --chip STM32F405RGTx
+
+# Observe current bench firmware without reset or programming.
+monitor-mk5-bench:
+    probe-rs attach --chip STM32F405RGTx {{ mk5_elf }}
 
 # Hardware: energizes the secured MK5 motor, records at 20 kHz, then tests Stop.
 test-stop-mk5 capture:
@@ -155,6 +169,23 @@ cli *ARGS:
 [positional-arguments]
 cli-usb *ARGS:
     @just cli --transport usb --wait-secs 8 --json "$@"
+
+# USB recording with matching JSON result and host timing log beside the parquet.
+record-usb capture seconds="30" rate="20000" logs="warn,device=info,fast_rx=debug":
+    RUST_LOG={{ quote(logs) }} just cli-usb record --out {{ quote(capture) }} \
+        --seconds {{ quote(seconds) }} --fast-hz {{ quote(rate) }} \
+        > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
+
+# Also timestamp nusb frame handling and Linux URB submission/completion.
+record-usb-trace capture seconds="10" rate="20000":
+    @just record-usb {{ quote(capture) }} {{ quote(seconds) }} {{ quote(rate) }} \
+        "warn,device=info,fast_rx=debug,ergot::interface_manager::transports::nusb=trace,nusb::platform::linux_usbfs=debug"
+
+# Measure L without applying it; preserve native HFI samples at the default rate.
+detect-l-usb capture resistance rate="20000" logs="warn,device=info,fast_rx=debug":
+    RUST_LOG={{ quote(logs) }} just cli-usb detect inductance \
+        --resistance {{ quote(resistance) }} --record-hz {{ quote(rate) }} --record {{ quote(capture) }} \
+        > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
 
 # Run host GUI
 gui:

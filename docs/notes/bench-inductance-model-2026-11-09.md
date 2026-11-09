@@ -95,6 +95,20 @@ capture remains unresolved, independently of HFI excitation. Raw captures,
 failed development runs and RTT logs are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-adaptive-inductance-2026-11-09/`.
 
+USB follow-up: `80fb65b` replaces the encoder's two scans and variable u64
+shifts with one byte-mask pass, preserving wire bytes. Instrumented active
+20-kHz captures went from 2924/3662 missing samples to three complete L runs
+(76060/78084/78057 samples). One other repeat lost 387 during a USB pause;
+this is a separate remaining limit. A subsequent 60-s idle capture lost 147
+while an endpoint write waited 23.8 ms, with stream-task drain gaps only
+1.04 ms. Explicit host pauses of 5/15 ms were absorbed; 30 ms lost 215 samples.
+The pinned ergot nusb receiver queues four reads; increasing that reserve is
+proposed, not yet implemented. A 30-s 5-kHz control retained 150048 samples
+without gaps. TIM5 endpoint timing is opt-in (`bench-usb-metrics`); wall-clock
+drain/encode/broadcast counters survive DWT stopping on debugger detach.
+Captures, host logs, pause timings and the comparison plot are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-usb-stream-2026-11-09/`.
+
 The first new-estimator pilot at 1.046 A returned 18.239/28.296 uH. It retained
 86094 samples with zero gaps/losses and final Stopped/faults 0. A second build
 with configurable current ceilings returned 18.919/29.329 uH, 88074 lossless

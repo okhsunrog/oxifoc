@@ -840,6 +840,8 @@ fn spawn_fast_telemetry_subscriber<NS>(
             let mut samples_ok: u64 = 0;
             let mut dropped: u64 = 0;
             let mut last_report = Instant::now();
+            let timing = tracing::enabled!(target: "fast_rx", tracing::Level::DEBUG);
+            let mut previous_batch = Instant::now();
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -848,6 +850,13 @@ fn spawn_fast_telemetry_subscriber<NS>(
                             continue;
                         }
                         batches += 1;
+                        if timing {
+                            let gap_us = previous_batch.elapsed().as_micros();
+                            previous_batch = Instant::now();
+                            if gap_us > 2000 {
+                                tracing::debug!(target: "fast_rx", gap_us, "Fast subscriber pause");
+                            }
+                        }
                         let samples = match msg.t.samples() {
                             Ok(samples) => samples,
                             Err(error) => {

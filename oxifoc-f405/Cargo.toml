@@ -45,6 +45,8 @@ bench-trace-excitation = ["bench-executor-trace"]
 bench-clock-reference = []
 # A/B qualification only: keep all USB handlers on the thread executor.
 bench-usb-thread = []
+# Endpoint-write timing for streaming fault isolation, absent from normal builds.
+bench-usb-metrics = ["transport-usb", "bench-clock-reference"]
 # Compatibility alias for earlier benchmark commands.
 bench-scheduler-priority = ["task-priority"]
 # Bench EDF policy: fresh relative deadlines on actual ready/enqueue events.
