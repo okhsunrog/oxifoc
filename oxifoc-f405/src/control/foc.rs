@@ -11,11 +11,11 @@
 
 #![allow(dead_code)] // Public API not yet wired to protocol handlers
 
-use core::cell::{LazyCell, RefCell};
+use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
+use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::interrupt;
-use embassy_stm32::interrupt::typelevel::Interrupt;
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 
@@ -127,21 +127,24 @@ static DWT_GENERATION: AtomicU32 = AtomicU32::new(0);
 
 // ========== ADC Handles ==========
 
-/// One-time init-to-ISR handoff; the ADC IRQ takes the entire bundle once.
-/// The handles then live in its interrupt-local static until reset: dropping
-/// an InjectedAdc would disable its external trigger and JEOC interrupt.
-static ADC_HANDOFF: CriticalSectionMutex<RefCell<Option<AdcHandles>>> =
-    CriticalSectionMutex::new(RefCell::new(None));
-
-#[cold]
-fn take_adc_handles() -> AdcHandles {
-    ADC_HANDOFF.lock(|cell| {
-        defmt::unwrap!(
-            cell.borrow_mut().take(),
-            "ADC handles not installed before IRQ enable"
-        )
-    })
-}
+/// ADC1 injected handle: phase A current + board temperature
+pub static ADC1_INJECTED: CriticalSectionMutex<
+    RefCell<
+        Option<InjectedAdc<'static, embassy_stm32::pac::adc::Adc, embassy_stm32::mode::Blocking>>,
+    >,
+> = CriticalSectionMutex::new(RefCell::new(None));
+/// ADC2 injected handle: phase B current + motor temperature
+pub static ADC2_INJECTED: CriticalSectionMutex<
+    RefCell<
+        Option<InjectedAdc<'static, embassy_stm32::pac::adc::Adc, embassy_stm32::mode::Blocking>>,
+    >,
+> = CriticalSectionMutex::new(RefCell::new(None));
+/// ADC3 injected handle: phase C current + VBUS
+pub static ADC3_INJECTED: CriticalSectionMutex<
+    RefCell<
+        Option<InjectedAdc<'static, embassy_stm32::pac::adc::Adc, embassy_stm32::mode::Blocking>>,
+    >,
+> = CriticalSectionMutex::new(RefCell::new(None));
 
 // ========== FOC Control ==========
 
@@ -160,8 +163,6 @@ pub async fn init(
     adc_handles: AdcHandles,
     config: &RuntimeConfig,
 ) {
-    // Keep the shared ADC vector masked until all three handles are installed.
-    interrupt::typelevel::ADC::disable();
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
     let timing = motor_pwm.control_timing();
@@ -169,13 +170,10 @@ pub async fn init(
         (u64::from(CPU_HZ) * u64::from(timing.period_ticks) / u64::from(timing.clock_hz)) as u32;
     ISR_BUDGET_CYCLES.store(budget, Ordering::Relaxed);
 
-    // Publish one complete bundle before unmasking the ADC IRQ. No ADC handle
-    // is copied, replaced, or dropped during the ISR's one-time handoff.
-    ADC_HANDOFF.lock(|cell| {
-        let mut slot = cell.borrow_mut();
-        defmt::assert!(slot.is_none(), "ADC handles installed twice");
-        *slot = Some(adc_handles);
-    });
+    // Store ADC handles for ISR access (before enabling PWM triggers)
+    ADC1_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc1)));
+    ADC2_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc2)));
+    ADC3_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc3)));
     MOTOR_POLE_PAIRS.store(
         config.motor_params.as_ref().map_or(0, |m| m.pole_pairs),
         Ordering::Relaxed,
@@ -205,6 +203,7 @@ pub async fn init(
     // enabled (so the ISR cannot fire mid-setup); Peripherals::steal() only
     // touches NVIC priority registers nothing else owns at this point.
     unsafe {
+        use embassy_stm32::interrupt::typelevel::Interrupt;
         // DWT cycle counter for ISR-cost stats (ISR_CYC_* atomics).
         let mut cp = cortex_m::Peripherals::steal();
         cp.DCB.enable_trace();
@@ -399,11 +398,6 @@ fn isr_timing_now() -> u32 {
 #[interrupt]
 fn ADC() {
     static mut SEQ: u32 = 0;
-    // cortex-m-rt owns this mutable resource exclusively for the ADC vector.
-    // This highest-priority IRQ cannot reenter itself; init only touches the
-    // separate handoff slot while the vector is masked. LazyCell checks init
-    // once per entry, then all three HAL reads use the owned handles directly.
-    static mut ADCS: LazyCell<AdcHandles> = LazyCell::new(take_adc_handles);
 
     let isr_t0 = isr_timing_now();
     #[cfg(feature = "bench-executor-trace")]
@@ -438,12 +432,17 @@ fn ADC() {
     // constants are seconds, and consumers read the atomics. Same scheme
     // as the g431 ISR.
     let convert_temp = *SEQ & 127 == 0;
-    let adcs = LazyCell::force_mut(ADCS);
 
     // Read ADC1 injected data (phase A current + board temp)
-    let mut samples = [0; 3];
-    adcs.adc1.read_latest(&mut samples);
-    let [ia_raw, board_temp_raw, va_raw] = samples;
+    let (ia_raw, board_temp_raw, va_raw) = ADC1_INJECTED.lock(|cell| {
+        if let Some(injected) = cell.borrow_mut().as_mut() {
+            let mut samples = [0; 3];
+            injected.read_latest(&mut samples);
+            (samples[0], samples[1], samples[2])
+        } else {
+            (0, 0, 0)
+        }
+    });
     IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
     // Convert board temperature raw ADC to 0.1°C units
@@ -456,9 +455,15 @@ fn ADC() {
     };
 
     // Read ADC2 injected data (phase B current + motor temp)
-    let mut samples = [0; 3];
-    adcs.adc2.read_latest(&mut samples);
-    let [ib_raw, motor_temp_raw, vb_raw] = samples;
+    let (ib_raw, motor_temp_raw, vb_raw) = ADC2_INJECTED.lock(|cell| {
+        if let Some(injected) = cell.borrow_mut().as_mut() {
+            let mut samples = [0; 3];
+            injected.read_latest(&mut samples);
+            (samples[0], samples[1], samples[2])
+        } else {
+            (0, 0, 0)
+        }
+    });
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
 
     MOTOR_TEMP_RAW.store(motor_temp_raw, Ordering::Relaxed);
@@ -472,9 +477,15 @@ fn ADC() {
     };
 
     // Read ADC3 injected data (phase C current + VBUS)
-    let mut samples = [0; 3];
-    adcs.adc3.read_latest(&mut samples);
-    let [ic_raw, vbus_raw, vc_raw] = samples;
+    let (ic_raw, vbus_raw, vc_raw) = ADC3_INJECTED.lock(|cell| {
+        if let Some(injected) = cell.borrow_mut().as_mut() {
+            let mut samples = [0; 3];
+            injected.read_latest(&mut samples);
+            (samples[0], samples[1], samples[2])
+        } else {
+            (0, 0, 0)
+        }
+    });
     IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
 
     // Convert VBUS raw ADC to millivolts
