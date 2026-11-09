@@ -252,14 +252,19 @@ cli-rtt *ARGS:
     @just cli --transport rtt --chip STM32F405RGTx --elf {{ mk5_elf }} --wait-secs 8 --json "$@"
 
 # Short Hall-commutated current-control pilot; the motor must be secured.
-test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" transport="usb":
+test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" transport="usb" elf="":
     #!/usr/bin/env bash
     set -euo pipefail
     transport={{ quote(transport) }}
     test "$transport" = usb -o "$transport" = rtt
-    trap 'just "cli-$transport" stop >/dev/null' EXIT
-    just "cli-$transport" source hall > {{ quote(capture + ".source.json") }}
-    RUST_LOG=warn,device=info,fast_rx=debug,oxifoc_host_lib::transport::rtt=info just "cli-$transport" maneuver run \
+    cli=(just "cli-$transport")
+    elf={{ quote(elf) }}
+    if test -n "$elf"; then
+        cli=(just cli --transport "$transport" --chip STM32F405RGTx --elf "$elf" --wait-secs 8 --json)
+    fi
+    trap '"${cli[@]}" stop >/dev/null' EXIT
+    "${cli[@]}" source hall > {{ quote(capture + ".source.json") }}
+    RUST_LOG=warn,device=info,fast_rx=debug,oxifoc_host_lib::transport::rtt=info "${cli[@]}" maneuver run \
         {{ quote(maneuver) }} --out {{ quote(capture) }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
 
