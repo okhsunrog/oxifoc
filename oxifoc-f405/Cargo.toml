@@ -23,6 +23,8 @@ board-cf2 = []
 board-vesc6-mk5 = []
 # CPU-only FOC state in 64-KiB CCM. DMA buffers and the stack remain in SRAM.
 ccm = []
+# Move only the CPU-owned telemetry queue, retaining STATE/driver in SRAM.
+fast-telem-ccm = ["oxifoc-core/fast-telem-ccm"]
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
 transport-usb = []
 # UART on USART3 (PB10 TX / PB11 RX) for Cheap FOCer 2

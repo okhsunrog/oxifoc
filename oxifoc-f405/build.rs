@@ -12,7 +12,9 @@ fn main() {
 
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
-    if std::env::var_os("CARGO_FEATURE_CCM").is_some() {
+    if std::env::var_os("CARGO_FEATURE_CCM").is_some()
+        || std::env::var_os("CARGO_FEATURE_FAST_TELEM_CCM").is_some()
+    {
         std::fs::copy("ccm.x", std::path::Path::new(&out_dir).join("ccm.x")).unwrap();
         println!("cargo:rustc-link-arg-bins=-Tccm.x");
     }

@@ -43,7 +43,7 @@ unsafe fn USART1() {
 
 // Module declarations
 mod calibration;
-#[cfg(feature = "ccm")]
+#[cfg(any(feature = "ccm", feature = "fast-telem-ccm"))]
 mod ccm;
 mod config;
 mod control;
