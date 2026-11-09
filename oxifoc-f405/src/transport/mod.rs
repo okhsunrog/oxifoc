@@ -21,8 +21,6 @@ use ergot::toolkits::embassy_usb_v0_6 as usb_kit;
 use ergot::toolkits::embedded_io_async_v0_7 as io_kit;
 #[cfg(feature = "transport-rtt")]
 use ergot::transport::rtt::{RttReader, RttWriter};
-#[cfg(not(feature = "bench-netstack-trace"))]
-use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
@@ -30,7 +28,6 @@ use crate::config::{MAX_PACKET_SIZE, UART_BAUD, UART_RX_BUF_LEN, UART_TX_BUF_LEN
 use crate::config::{RTT_OUT_QUEUE_SIZE, UART_OUT_QUEUE_SIZE, USB_OUT_QUEUE_SIZE};
 use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 
-#[cfg(feature = "bench-netstack-trace")]
 mod stack_mutex;
 
 // ========== Multi-Interface Definition ==========
@@ -57,10 +54,7 @@ pub type Rng = rng::Rng<'static, peripherals::RNG>;
 /// Root router: 3 direct interfaces, 8 seed routes (nets leased to bridge
 /// routers downstream — e.g. the ESP32 BLE bridge's radio segment).
 pub type McRouter = Router<McInterface, Rng, 3, 8>;
-#[cfg(not(feature = "bench-netstack-trace"))]
-pub type Stack = NetStack<CriticalSectionRawMutex, McRouter>;
-#[cfg(feature = "bench-netstack-trace")]
-pub type Stack = NetStack<stack_mutex::TraceRawMutex, McRouter>;
+pub type Stack = NetStack<stack_mutex::StackRawMutex, McRouter>;
 
 pub type UsbQueue = usb_kit::Queue<USB_OUT_QUEUE_SIZE, AtomicCoord>;
 pub type UartQueue = io_kit::Queue<UART_OUT_QUEUE_SIZE, AtomicCoord>;
@@ -218,6 +212,8 @@ pub fn init_rtt(
 /// Initialize the ergot Router stack with hardware RNG.
 /// Returns a static reference for use by all tasks.
 pub fn init_stack(hw_rng: Rng) -> &'static Stack {
+    #[cfg(feature = "bench-netstack-trace")]
+    stack_mutex::self_test();
     let router = McRouter::new(hw_rng);
     let stack = NetStack::new_with_profile(router);
     STACK_CELL.init(stack)

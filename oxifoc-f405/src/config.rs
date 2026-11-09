@@ -7,6 +7,11 @@ use oxifoc_core::foc::pwm::MotorPwmConfig;
 use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
 use oxifoc_core::types::BoardCalib;
 
+/// USART1 USB executor and NetStack BASEPRI ceiling share one typed priority.
+/// ADC P0 and Hall P1 remain unmasked while network callbacks run.
+pub const USB_EXECUTOR_PRIORITY: embassy_stm32::interrupt::Priority =
+    embassy_stm32::interrupt::Priority::P6;
+
 static MEASURED_BOARD: OnceLock<PreparedBoardConfig> = OnceLock::new();
 /// Published once after TIM1 is configured, before control IRQs start. Protocol
 /// tasks may wait for it while boot calibration is still in progress.

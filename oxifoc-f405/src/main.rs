@@ -163,10 +163,10 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "transport-usb")]
     let usb_ident = {
         #[cfg(not(feature = "bench-usb-thread"))]
-        use embassy_stm32::interrupt::{InterruptExt, Priority};
+        use embassy_stm32::interrupt::InterruptExt;
         #[cfg(not(feature = "bench-usb-thread"))]
         let usb_spawner = {
-            interrupt::USART1.set_priority(Priority::P6);
+            interrupt::USART1.set_priority(config::USB_EXECUTOR_PRIORITY);
             USB_EXECUTOR.start(interrupt::USART1)
         };
         #[cfg(feature = "bench-usb-thread")]
