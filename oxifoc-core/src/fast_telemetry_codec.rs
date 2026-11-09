@@ -63,26 +63,27 @@ impl FastTelemetryBatchEncoder {
         if frame.len() != FRAME || self.is_full() {
             return false;
         }
-        let mut mask = 0u64;
-        for (i, (&new, &old)) in frame.iter().zip(&self.previous).enumerate() {
-            if new != old {
-                mask |= 1 << i;
-            }
-        }
-        let sparse = self.samples != 0 && MASK_BYTES + (mask.count_ones() as usize) < FRAME;
         // This temporary always fits the reservation above; commit in one
         // operation so a failed append cannot leave a partial encoded frame.
         let mut encoded = [0u8; 1 + FRAME];
-        let len = if sparse {
-            encoded[0] = 1;
-            encoded[1..1 + MASK_BYTES].copy_from_slice(&mask.to_le_bytes()[..MASK_BYTES]);
-            let mut pos = 1 + MASK_BYTES;
-            for (i, &byte) in frame.iter().enumerate() {
-                if mask & (1 << i) != 0 {
-                    encoded[pos] = byte;
+        let mut pos = 1 + MASK_BYTES;
+        if self.samples != 0 {
+            // Build the wire mask and replacements together. Variable u64
+            // shifts and a second scan are expensive on 32-bit controllers.
+            for (i, (&new, &old)) in frame.iter().zip(&self.previous).enumerate() {
+                if new != old {
+                    encoded[1 + i / 8] |= 1 << (i % 8);
+                    // Once a full frame is cheaper, no more delta work is needed.
+                    if pos == encoded.len() {
+                        break;
+                    }
+                    encoded[pos] = new;
                     pos += 1;
                 }
             }
+        }
+        let len = if self.samples != 0 && pos < encoded.len() {
+            encoded[0] = 1;
             pos
         } else {
             encoded[1..].copy_from_slice(frame);
@@ -157,6 +158,20 @@ impl FastTelemetryBatch {
 mod tests {
     use super::*;
     use std::vec::Vec as StdVec;
+
+    #[test]
+    fn sparse_mask_matches_wire_bytes_across_32_bit_boundary() {
+        let mut encoder = FastTelemetryBatchEncoder::new();
+        let mut frame = [0u8; FRAME];
+        assert!(encoder.push_bytes(&frame));
+        for (i, offset) in [0, 7, 8, 31, 32, 33].into_iter().enumerate() {
+            frame[offset] = i as u8 + 1;
+        }
+        assert!(encoder.push_bytes(&frame));
+        let mut expected = StdVec::from([0; 1 + FRAME]);
+        expected.extend_from_slice(&[1, 0x81, 0x01, 0, 0x80, 0x03, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(encoder.batch().data.as_slice(), expected.as_slice());
+    }
 
     #[test]
     fn arbitrary_bits_roundtrip_with_full_fallback_and_independent_batches() {
