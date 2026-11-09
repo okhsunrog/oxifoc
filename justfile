@@ -13,6 +13,7 @@ mk5_bench_features := mk5_features + ",bench-calibrated-clock,bench-clock-refere
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
 mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
 mk5_profile_features := mk5_usb_metrics_features + ",bench-trace-excitation,isr-profiling"
+mk5_usb_trace_features := mk5_bench_features + ",bench-hall,bench-executor-trace,isr-timing"
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
@@ -208,6 +209,24 @@ build-mk5-profile memory="sram":
 flash-mk5-profile memory="sram": (build-mk5-profile memory)
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
+
+# USB IRQ/executor spans and ADC boundaries; no nested DWT section profiling.
+build-mk5-usb-cpu-trace:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ quote(mk5_usb_trace_features) }}
+
+# Read the finite trace after Stop; preserve capture failure as an exit status.
+profile-usb-cpu-mk5 capture maneuver="maneuvers/mk5-hall-current-check.json":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    symbols={{ quote(capture + ".symbols") }}
+    rust-nm -n -S -C {{ mk5_elf }} > "$symbols"
+    uv run python scripts/bench_executor_trace.py arm --symbols "$symbols" --on-active --active-delay-ms 1200 --timer-hz 83917920
+    capture_status=0
+    just test-current-mk5 {{ quote(capture) }} {{ quote(maneuver) }} || capture_status=$?
+    uv run python scripts/bench_executor_trace.py read --symbols "$symbols" --out {{ quote(capture + ".trace.bin") }} --timer-hz 83917920
+    uv run python scripts/bench_trace_analysis.py {{ quote(capture + ".trace.bin") }} --trim-to-complete-window --export-intervals --out {{ quote(capture + ".trace.json") }}
+    exit "$capture_status"
 
 # Arm a finite TIM5 trace before native L detection; export after automatic Stop.
 profile-l-mk5 capture symbols:
