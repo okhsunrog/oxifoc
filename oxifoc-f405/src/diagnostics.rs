@@ -9,9 +9,11 @@ pub mod hall_edges;
 #[embassy_executor::task]
 pub async fn hall_task() {
     use core::sync::atomic::Ordering;
-    let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_millis(20));
     loop {
-        ticker.next().await;
+        // These are fresh observations, not a history buffer. If streaming
+        // delays this task, skip missed observations instead of logging a
+        // burst of nearly identical snapshots while catching up.
+        embassy_time::Timer::after_millis(20).await;
         let snapshot = critical_section::with(|cs| {
             let state = crate::STATE.borrow(cs).borrow();
             (state.last_adc.seq, state.last_hall, state.control_mode)
