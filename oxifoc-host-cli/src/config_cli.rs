@@ -87,7 +87,7 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
                 println!("        {field}: Some({struct_name} {{");
                 if let Some(obj) = v.as_object() {
                     for (k, val) in obj {
-                        println!("            {k}: {},", rust_literal(val));
+                        println!("            {k}: {},", rust_field_literal(group, k, val)?);
                     }
                 }
                 println!("        }}),");
@@ -119,7 +119,27 @@ fn rust_struct_name(group: oxifoc_core::types::ConfigGroupId) -> &'static str {
         G::Failsafe => "FailsafeConfigStored",
         G::Velocity => "VelocityConfigStored",
         G::Derating => "DeratingConfigStored",
+        G::VoltageFeedforward => "VoltageFeedforwardConfig",
     }
+}
+
+fn rust_field_literal(
+    group: oxifoc_core::types::ConfigGroupId,
+    field: &str,
+    value: &Value,
+) -> Result<String> {
+    use oxifoc_core::types::{ConfigGroupId, VoltageFeedforwardMode};
+    if group == ConfigGroupId::VoltageFeedforward && field == "mode" {
+        let mode = serde_json::from_value::<VoltageFeedforwardMode>(value.clone())?;
+        return Ok(match mode {
+            VoltageFeedforwardMode::Disabled => "VoltageFeedforwardMode::Disabled",
+            VoltageFeedforwardMode::CrossCoupling => "VoltageFeedforwardMode::CrossCoupling",
+            VoltageFeedforwardMode::BackEmf => "VoltageFeedforwardMode::BackEmf",
+            VoltageFeedforwardMode::Both => "VoltageFeedforwardMode::Both",
+        }
+        .into());
+    }
+    Ok(rust_literal(value))
 }
 
 /// Render a JSON value as a Rust literal for baked_config emission.
@@ -140,5 +160,44 @@ fn rust_literal(v: &Value) -> String {
             format!("[{}]", inner.join(", "))
         }
         other => format!("{other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxifoc_core::types::{ConfigGroupId, VoltageFeedforwardMode};
+
+    #[test]
+    fn baked_feedforward_modes_are_rust_variants_instead_of_json_strings() {
+        assert_eq!(
+            rust_struct_name(ConfigGroupId::VoltageFeedforward),
+            "VoltageFeedforwardConfig"
+        );
+        for mode in [
+            VoltageFeedforwardMode::Disabled,
+            VoltageFeedforwardMode::CrossCoupling,
+            VoltageFeedforwardMode::BackEmf,
+            VoltageFeedforwardMode::Both,
+        ] {
+            assert_eq!(
+                rust_field_literal(
+                    ConfigGroupId::VoltageFeedforward,
+                    "mode",
+                    &serde_json::to_value(mode).unwrap()
+                )
+                .unwrap(),
+                format!("VoltageFeedforwardMode::{mode:?}")
+            );
+        }
+        assert!(
+            rust_field_literal(
+                ConfigGroupId::VoltageFeedforward,
+                "mode",
+                &Value::String("enabled".into())
+            )
+            .is_err()
+        );
+        assert_eq!(rust_literal(&serde_json::json!([1.0, 2.0])), "[1.0, 2.0]");
     }
 }

@@ -21,7 +21,7 @@ use serde_json::Value;
 use crate::{CommandSender, HostCommand, config_channel};
 
 /// kebab-case CLI name ↔ group id, in protocol order.
-pub const GROUPS: [(&str, ConfigGroupId); 12] = [
+pub const GROUPS: [(&str, ConfigGroupId); ConfigGroupId::COUNT] = [
     ("motor-params", ConfigGroupId::MotorParams),
     ("hall-calibration", ConfigGroupId::HallCalibration),
     ("dc-offsets", ConfigGroupId::DcOffsets),
@@ -34,6 +34,7 @@ pub const GROUPS: [(&str, ConfigGroupId); 12] = [
     ("velocity", ConfigGroupId::Velocity),
     ("derating", ConfigGroupId::Derating),
     ("board-calibration", ConfigGroupId::BoardCalibration),
+    ("voltage-feedforward", ConfigGroupId::VoltageFeedforward),
 ];
 
 /// Parse a kebab-case group name into its id.
@@ -119,6 +120,7 @@ pub fn group_value(value: &ConfigValue) -> Option<Value> {
         ConfigValue::Failsafe(v) => serde_json::to_value(v).ok(),
         ConfigValue::Velocity(v) => serde_json::to_value(v).ok(),
         ConfigValue::Derating(v) => serde_json::to_value(v).ok(),
+        ConfigValue::VoltageFeedforward(v) => serde_json::to_value(v).ok(),
     }
 }
 
@@ -140,6 +142,7 @@ pub fn group_default_value(group: ConfigGroupId) -> Value {
         G::Failsafe => serde_json::to_value(st::FailsafeConfigStored::default()),
         G::Velocity => serde_json::to_value(st::VelocityConfigStored::default()),
         G::Derating => serde_json::to_value(st::DeratingConfigStored::default()),
+        G::VoltageFeedforward => serde_json::to_value(st::VoltageFeedforwardConfig::default()),
     };
     v.expect("stored-config structs always serialize")
 }
@@ -160,6 +163,7 @@ pub fn write_from_value(group: ConfigGroupId, v: Value) -> Result<ConfigWrite> {
         G::Failsafe => ConfigWrite::Failsafe(serde_json::from_value(v)?),
         G::Velocity => ConfigWrite::Velocity(serde_json::from_value(v)?),
         G::Derating => ConfigWrite::Derating(serde_json::from_value(v)?),
+        G::VoltageFeedforward => ConfigWrite::VoltageFeedforward(serde_json::from_value(v)?),
     })
 }
 
@@ -373,7 +377,82 @@ pub fn reset_all(cmd: &CommandSender) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxifoc_core::storage::{MotorParamsConfig, VelocityConfigStored};
+    use oxifoc_core::storage::{MotorParamsConfig, VelocityConfigStored, VoltageFeedforwardConfig};
+    use oxifoc_core::types::VoltageFeedforwardMode;
+
+    #[test]
+    fn voltage_feedforward_defaults_and_modes_use_the_typed_wire_schema() {
+        let group = ConfigGroupId::VoltageFeedforward;
+        let default = group_default_value(group);
+        assert_eq!(default, serde_json::json!({ "mode": "Disabled" }));
+        for mode in [
+            VoltageFeedforwardMode::Disabled,
+            VoltageFeedforwardMode::CrossCoupling,
+            VoltageFeedforwardMode::BackEmf,
+            VoltageFeedforwardMode::Both,
+        ] {
+            let config = VoltageFeedforwardConfig { mode };
+            let (json, write) =
+                patch_fields(group, default.clone(), &[format!("mode={mode:?}")]).unwrap();
+            assert_eq!(write, ConfigWrite::VoltageFeedforward(config));
+            assert_eq!(
+                group_value(&ConfigValue::VoltageFeedforward(config)),
+                Some(json)
+            );
+        }
+        assert!(patch_fields(group, default.clone(), &["mode=enabled".into()]).is_err());
+        assert!(patch_fields(group, default, &["enabled=true".into()]).is_err());
+    }
+
+    #[test]
+    fn volatile_feedforward_apply_uses_snapshot_revision_and_never_persists() {
+        let (cmd, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let backend = std::thread::spawn(move || {
+            let Some(HostCommand::ConfigRead(group, reply)) = requests.blocking_recv() else {
+                panic!("expected config snapshot request");
+            };
+            assert_eq!(group, ConfigGroupId::VoltageFeedforward);
+            reply
+                .send(Ok(ConfigResponse::Snapshot(ConfigSnapshot {
+                    group,
+                    revision: 7,
+                    persisted: false,
+                    valid: true,
+                    value: None,
+                })))
+                .unwrap();
+            let Some(HostCommand::ConfigApply(request, reply)) = requests.blocking_recv() else {
+                panic!("expected volatile config apply");
+            };
+            assert_eq!(request.inner.expected_revision, 7);
+            assert_eq!(
+                request.inner.write,
+                ConfigWrite::VoltageFeedforward(VoltageFeedforwardConfig {
+                    mode: VoltageFeedforwardMode::Both,
+                })
+            );
+            reply
+                .send(Ok(ConfigResponse::Applied {
+                    req_id: request.id,
+                    revision: 8,
+                }))
+                .unwrap();
+            assert!(
+                requests.blocking_recv().is_none(),
+                "volatile apply must not persist"
+            );
+        });
+        let (value, revision) = apply_fields(
+            &cmd,
+            ConfigGroupId::VoltageFeedforward,
+            &["mode=Both".into()],
+        )
+        .unwrap();
+        assert_eq!(value, serde_json::json!({ "mode": "Both" }));
+        assert_eq!(revision, 8);
+        drop(cmd);
+        backend.join().unwrap();
+    }
 
     #[test]
     fn field_patches_preserve_unmentioned_motor_and_velocity_values() {

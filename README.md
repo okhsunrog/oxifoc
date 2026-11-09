@@ -127,6 +127,12 @@ All platforms: 20 kHz center-aligned PWM, TIM1-triggered injected ADC, Hall poll
 
 **CLI** (`oxifoc-host-cli`) — Command-line monitor, motor control, detection.
 
+Voltage feedforward is disabled by default. With the motor stopped, use
+`just cli-usb config set voltage-feedforward mode=CrossCoupling --volatile`
+for a RAM-only change; modes are `Disabled`, `CrossCoupling`, `BackEmf`, and
+`Both`. `config get voltage-feedforward` reads the current policy. The generic
+`config set` behavior is unchanged: omitting `--volatile` requests persistence.
+
 **Virtual device** (`oxifoc-virtual`) — Simulated motor controller over TCP/UDP. Host tools connect exactly as to real hardware.
 
 Transports: Serial (UART VCP), RTT (probe-rs), TCP (virtual), UDP (virtual), USB (nusb).
