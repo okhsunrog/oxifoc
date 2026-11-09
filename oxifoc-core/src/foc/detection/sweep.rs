@@ -2380,7 +2380,9 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
 /// This is re-exported from hall_calibration for convenience.
 pub use crate::foc::hall_calibration::HallReader;
 
-use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult, HallCalibrator};
+use crate::foc::hall_calibration::{
+    HallCalibrationParams, HallCalibrationResult, HallCalibrator, HallSweepDirection,
+};
 
 /// Run Hall sensor calibration sweep.
 ///
@@ -2453,7 +2455,15 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
 
             // Read and record Hall state
             let hall_state = hall_reader.read_hall_state();
-            calibrator.record(angle_rad, hall_state);
+            calibrator.record_directed(
+                angle_rad,
+                hall_state,
+                if forward {
+                    HallSweepDirection::Positive
+                } else {
+                    HallSweepDirection::Negative
+                },
+            );
         }
     }
 
@@ -2474,12 +2484,16 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
     hw.send_command(ControlMode::Stopped).await;
     T::after_millis(100).await;
 
-    // TODO: Validate directional agreement and circular concentration too.
     // Step 4: Compute result
     info!("Computing calibration result...");
-    let result = calibrator
-        .finish()
-        .map_err(|_| DetectionError::LowConfidence)?;
+    let reverse_sweeps = params.sweep_count / 2;
+    let result = if reverse_sweeps > 0 {
+        calibrator.finish_bidirectional(forward_sweeps, reverse_sweeps)
+    } else {
+        // An explicitly unidirectional diagnostic has no transition geometry.
+        calibrator.finish()
+    }
+    .map_err(|_| DetectionError::LowConfidence)?;
 
     if result.is_valid() {
         info!("Hall calibration successful!");

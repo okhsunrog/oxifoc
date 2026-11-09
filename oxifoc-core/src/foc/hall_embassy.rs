@@ -314,6 +314,7 @@ mod tests {
         let mut proxy = HallAngleProxy::new();
         let epoch = proxy.sample_for_control(30_000).unwrap().reference_epoch;
         let mut calibration = HallCalibrationResult {
+            geometry: None,
             angles: [0.0; 8],
             valid: [false; 8],
             valid_count: 0,

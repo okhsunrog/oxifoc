@@ -58,7 +58,7 @@ impl HallReader for Reader {
         let angle = ANGLE.with(Cell::get);
         record(Event::HallRead(angle));
         // Six static 60-degree sectors; the rotor follows each command exactly.
-        ((angle * 360.0 / core::f32::consts::TAU).round() as u16 / 60 + 1) as u8
+        [1, 3, 2, 6, 4, 5][((angle * 360.0 / core::f32::consts::TAU).round() as usize / 60).min(5)]
     }
 }
 
@@ -105,10 +105,12 @@ fn hall_sweeps_group_directions_and_visit_successive_motor_arcs() {
                 Poll::Pending => panic!("recording backend unexpectedly yielded"),
             }
         };
-        if directions.is_empty() {
+        if directions.is_empty() || matches!(directions.len(), 2 | 3) {
             assert_eq!(result.unwrap_err(), DetectionError::LowConfidence);
         } else {
-            assert!(result.unwrap().is_valid());
+            let result = result.unwrap();
+            assert!(result.is_valid());
+            assert_eq!(result.geometry.is_some(), directions.len() >= 4);
         }
 
         let mut events =

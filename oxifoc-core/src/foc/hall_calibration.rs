@@ -37,6 +37,9 @@ use core::f32::consts::TAU;
 
 use super::hall_sensor::HALL_STATE_TABLE;
 
+mod geometry;
+pub use geometry::{HallSweepDirection, HallTransitionGeometry};
+
 /// Minimum samples per Hall state (like VESC's threshold of 30)
 pub const DEFAULT_MIN_SAMPLES: u32 = 30;
 
@@ -86,6 +89,7 @@ pub struct HallCalibrator {
     counts: [u32; 8],
     /// Minimum samples required per state for validity
     min_samples: u32,
+    transitions: geometry::DirectedTransitions,
 }
 
 impl Default for HallCalibrator {
@@ -107,6 +111,7 @@ impl HallCalibrator {
             cos_acc: [0.0; 8],
             counts: [0; 8],
             min_samples,
+            transitions: geometry::DirectedTransitions::default(),
         }
     }
 
@@ -126,11 +131,27 @@ impl HallCalibrator {
         self.counts[idx] += 1;
     }
 
+    /// Record a settled sample from a known one-degree directed sweep.
+    ///
+    /// Transition angles are bracketed by the previous and current command;
+    /// unordered callers may continue using `record` and centroid-only `finish`.
+    pub fn record_directed(
+        &mut self,
+        angle_rad: f32,
+        raw_hall_state: u8,
+        direction: HallSweepDirection,
+    ) {
+        self.record(angle_rad, raw_hall_state);
+        self.transitions
+            .record(angle_rad, raw_hall_state, direction);
+    }
+
     /// Reset the calibrator for a new calibration run
     pub fn reset(&mut self) {
         self.sin_acc = [0.0; 8];
         self.cos_acc = [0.0; 8];
         self.counts = [0; 8];
+        self.transitions = geometry::DirectedTransitions::default();
     }
 
     /// Get sample count for a specific Hall state
@@ -193,7 +214,22 @@ impl HallCalibrator {
             angles,
             valid,
             valid_count,
+            geometry: None,
         })
+    }
+
+    /// Finish a bidirectional sweep, requiring repeatable complete transition
+    /// coverage. The legacy centroids are preserved alongside the geometry.
+    pub fn finish_bidirectional(
+        self,
+        positive_sweeps: u8,
+        negative_sweeps: u8,
+    ) -> Result<HallCalibrationResult, CalibrationError> {
+        let transitions = self.transitions;
+        let mut result = self.finish()?;
+        result.geometry =
+            Some(transitions.finish(result.angles, positive_sweeps, negative_sweeps)?);
+        Ok(result)
     }
 }
 
@@ -208,6 +244,9 @@ pub struct HallCalibrationResult {
     pub valid: [bool; 8],
     /// Number of valid states detected (should be 6)
     pub valid_count: u8,
+    /// Validated measured transitions, when a bidirectional sweep supplied them.
+    /// Kept in RAM independently of the legacy centroid-only flash format.
+    pub geometry: Option<HallTransitionGeometry>,
 }
 
 impl HallCalibrationResult {
@@ -257,6 +296,9 @@ pub enum CalibrationError {
     },
     /// Wrong number of valid Hall states detected (expected 6)
     InvalidStateCount { found: u8 },
+    /// Transition coverage, repeatability, direction agreement or sector
+    /// topology did not support a measured boundary model.
+    InvalidTransitionGeometry,
 }
 
 #[cfg(test)]

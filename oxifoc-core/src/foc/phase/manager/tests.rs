@@ -583,6 +583,7 @@ fn successful_hall_calibration_resets_control_motion_but_rejected_calibration_do
     let before = phase.hall_control_motion.observe(sample, 50, 0.0).unwrap();
     assert!(before.velocity > 0.0);
     let mut calibration = HallCalibrationResult {
+        geometry: None,
         angles: [-1.0; 8],
         valid: [false; 8],
         valid_count: 0,
