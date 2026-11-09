@@ -5,7 +5,6 @@ use embassy_stm32::adc::{
 };
 use embassy_stm32::{
     Config as StmConfig, Peri, Peripherals,
-    gpio::{Level, Output, Speed},
     mode::Blocking,
     pac, peripherals,
     time::Hertz,
@@ -71,14 +70,41 @@ pub fn init_clock() -> Peripherals {
     p
 }
 
-/// Initialize green LED on PB0 (heartbeat)
-pub fn init_green_led(pb0: Peri<'static, peripherals::PB0>) -> Output<'static> {
-    Output::new(pb0, Level::High, Speed::Low)
-}
-
-/// Initialize red LED on PB1 (fault indicator)
-pub fn init_red_led(pb1: Peri<'static, peripherals::PB1>) -> Output<'static> {
-    Output::new(pb1, Level::High, Speed::Low)
+/// Active-high status LEDs, independent of motor PWM (TIM1) and Hall (TIM3).
+/// PB0/PB1 expose TIM8_CH2N/CH3N; invert the complementary outputs so CCR
+/// directly represents their illuminated duty, including zero = fully off.
+pub fn init_status_leds(
+    tim8: Peri<'static, peripherals::TIM8>,
+    pb0: Peri<'static, peripherals::PB0>,
+    pb1: Peri<'static, peripherals::PB1>,
+) -> embassy_stm32::timer::complementary_pwm::ComplementaryPwm<'static, peripherals::TIM8> {
+    use embassy_stm32::{
+        gpio::OutputType,
+        timer::{
+            Channel,
+            complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin},
+            low_level::{CountingMode, OutputPolarity},
+        },
+    };
+    let mut leds = ComplementaryPwm::new(
+        tim8,
+        None,
+        None,
+        None,
+        Some(ComplementaryPwmPin::new(pb0, OutputType::PushPull)),
+        None,
+        Some(ComplementaryPwmPin::new(pb1, OutputType::PushPull)),
+        None,
+        None,
+        Hertz(4_000),
+        CountingMode::EdgeAlignedUp,
+    );
+    for channel in [Channel::Ch2, Channel::Ch3] {
+        leds.set_complementary_polarity(channel, OutputPolarity::ActiveLow);
+        leds.set_duty(channel, 0);
+        leds.enable(channel);
+    }
+    leds
 }
 
 /// ADC handles for injected conversions

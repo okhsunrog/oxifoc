@@ -15,9 +15,8 @@ compile_error!("bench-clock-uart owns USART3; disable transport-uart");
 compile_error!("bench-calibrated-clock is an experiment for the measured MK5 device only");
 
 use embassy_executor::Spawner;
-use embassy_stm32::gpio::Output;
 use embassy_stm32::{bind_interrupts, exti, interrupt};
-use embassy_time::{Duration, Timer};
+use embassy_time::Duration;
 
 // Bind EXTI9_5 interrupt for nFAULT monitoring (PB7/EXTI7)
 bind_interrupts!(struct ExtiIrqs {
@@ -129,10 +128,8 @@ async fn main(spawner: Spawner) {
     defmt::warn!("BENCH BUILD: only leg A permitted; motor phase A must be disconnected");
 
     // ========== STEP 4: Initialize LEDs ==========
-    let green_led = hardware::peripherals::init_green_led(p.PB0);
-    let red_led = hardware::peripherals::init_red_led(p.PB1);
-    spawner.spawn(defmt::unwrap!(heartbeat(green_led)));
-    spawner.spawn(defmt::unwrap!(fault_led(red_led)));
+    let leds = hardware::peripherals::init_status_leds(p.TIM8, p.PB0, p.PB1);
+    spawner.spawn(defmt::unwrap!(status_leds(leds)));
 
     // ========== STEP 5: Split Hardware Resources ==========
     let r = split_resources!(p);
@@ -306,26 +303,22 @@ async fn main(spawner: Spawner) {
 
 // ========== Background Tasks ==========
 
-/// Blink green LED so we know the scheduler is alive
+/// Preserve the 50-ms heartbeat and fault indication, capped at 10% on duty.
 #[embassy_executor::task]
-async fn heartbeat(mut led: Output<'static>) {
+async fn status_leds(
+    mut leds: embassy_stm32::timer::complementary_pwm::ComplementaryPwm<
+        'static,
+        embassy_stm32::peripherals::TIM8,
+    >,
+) {
+    use embassy_stm32::timer::Channel;
+    let on = leds.get_max_duty() / 10;
+    let mut ticker = embassy_time::Ticker::every(Duration::from_millis(50));
+    let mut slot = 0;
     loop {
-        led.set_low();
-        Timer::after(Duration::from_millis(50)).await;
-        led.set_high();
-        Timer::after(Duration::from_millis(950)).await;
-    }
-}
-
-/// Red LED fault indicator — on when any fault is active
-#[embassy_executor::task]
-async fn fault_led(mut led: Output<'static>) {
-    loop {
-        if FAULT_REGISTRY.any() {
-            led.set_low();
-        } else {
-            led.set_high();
-        }
-        Timer::after(Duration::from_millis(100)).await;
+        leds.set_duty(Channel::Ch2, if slot == 0 { on } else { 0 });
+        leds.set_duty(Channel::Ch3, if FAULT_REGISTRY.any() { on } else { 0 });
+        ticker.next().await;
+        slot = (slot + 1) % 20;
     }
 }
