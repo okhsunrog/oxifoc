@@ -365,6 +365,38 @@ mod tests {
     }
 
     #[test]
+    fn dense_fallback_refreshes_complete_history_for_unaligned_sparse_successors() {
+        let mut seed = 0x716b_92cdu32;
+        for alignment in 0..4 {
+            for changes in FRAME - MASK_BYTES..=FRAME {
+                let base = core::array::from_fn(|_| random_byte(&mut seed));
+                let dense = change_bytes(&base, changes, &mut seed);
+                let mut sparse = dense;
+                sparse[0] ^= 0x5a;
+                sparse[FRAME - 2] ^= 0x81;
+                sparse[FRAME - 1] ^= 0xff;
+                let frames = [base, dense, sparse, sparse];
+                let mut encoder = FastTelemetryBatchEncoder::new();
+                let mut expected = StdVec::new();
+                let mut previous = None;
+                for frame in frames {
+                    let mut storage = [0; FRAME + 3];
+                    storage[alignment..alignment + FRAME].copy_from_slice(&frame);
+                    assert!(encoder.push_bytes(&storage[alignment..alignment + FRAME]));
+                    expected.extend(reference_frame(previous.as_ref(), &frame));
+                    assert_eq!(encoder.batch().data.as_slice(), expected);
+                    assert_eq!(encoder.previous, frame);
+                    previous = Some(frame);
+                }
+                let decoded = encoder.batch().samples().unwrap();
+                for (actual, expected) in decoded.iter().zip(frames) {
+                    assert_eq!(bytemuck::bytes_of(actual), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn sparse_mask_matches_wire_bytes_across_32_bit_boundary() {
         let mut encoder = FastTelemetryBatchEncoder::new();
         let mut frame = [0u8; FRAME];
