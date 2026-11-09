@@ -101,6 +101,11 @@ one update per 50 microseconds. Fault abort and stale/missing-sample rejection
 remain required before repeating the rejected L01 measurement. No L fix or
 live motor qualification is claimed here.
 
+The [subsequent live-detection study](bench-inductance-packets-2026-11-09.md)
+places bounded detection processing alongside telemetry at priority 1 and
+qualifies finite ADC-synchronized packets separately. Its results supersede
+the active-detection limitation above without changing the USB IRQ ownership.
+
 ## Source, artifacts and final state
 
 `task-priority` is an explicit runtime feature; `bench-scheduler-priority`

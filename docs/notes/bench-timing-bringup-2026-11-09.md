@@ -138,5 +138,9 @@ assume one async iteration equals one PWM period. The executor comparison is
 being completed first with physical outputs inhibited. Current-loop shutdown
 regression is tested, but L01 does not validate normal HFI shutdown on hardware.
 
+The [finite-packet follow-up](bench-inductance-packets-2026-11-09.md) records
+the subsequent fault/cancellation, synchronized excitation and live recording
+fixes. L01 remains rejected evidence; later fixes do not rehabilitate its L.
+
 Raw data, exact ELFs, RTT, configs and result JSONs for this section are under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-timing-bringup-2026-11-09/`.
