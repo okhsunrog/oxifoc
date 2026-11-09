@@ -4603,6 +4603,156 @@ impl HallRig {
     }
 }
 
+/// Current control under external mechanical drive, independent of the speed
+/// loop. Measured MK5 centroids use SYNTHETIC circular-midpoint boundaries;
+/// physical edge geometry is unmeasured. This is a regression, not a fitted
+/// motor/encoder model or a hardware current prediction.
+#[test]
+#[cfg(feature = "virtual-motor")]
+fn measured_hall_centroids_keep_forced_rotation_control_bounded() {
+    const CENTROIDS: [f32; 8] = [
+        0.0,
+        5.447_394_4,
+        1.542_231_4,
+        0.569_083_4,
+        4.041_985_5,
+        4.982_443,
+        2.607_323_6,
+        0.0,
+    ];
+    let raw_state = |angle| {
+        (1_u8..=6)
+            .min_by(|a, b| {
+                angle_difference(angle, CENTROIDS[usize::from(*a)])
+                    .abs()
+                    .total_cmp(&angle_difference(angle, CENTROIDS[usize::from(*b)]).abs())
+            })
+            .unwrap()
+    };
+    let min_sector = (1_usize..=6)
+        .flat_map(|a| (a + 1..=6).map(move |b| (a, b)))
+        .map(|(a, b)| angle_difference(CENTROIDS[a], CENTROIDS[b]).abs())
+        .fold(f32::INFINITY, f32::min);
+    let mut rig = HallRig::new(0.5, 2e-5);
+    let mut hall = HallSensor::new(1_000_000);
+    hall.set_calibration_raw(CENTROIDS);
+    rig.last_hall = raw_state(rig.out.angle_rad);
+    hall.update(rig.last_hall, 0).unwrap();
+    *rig.driver.phase_mut().hall_mut() = hall;
+    rig.driver.set_current_limits(CurrentLimits {
+        overcurrent_threshold_a: 6.0,
+        ..CurrentLimits::from_max_current(3.0)
+    });
+    let mut peak_current = 0.0_f32;
+    let mut max_control_step = 0.0_f32;
+    let mut max_raw_step = 0.0_f32;
+    let mut visited = [false; 8];
+    let mut crossover_directions = [false; 2];
+    let mut previous_control_angle = None;
+    let mut previous_raw_angle = None;
+    for direction in [1.0_f32, -1.0] {
+        rig.driver.set_mode(ControlMode::CurrentControl {
+            iq_target: direction * 0.6,
+            id_target: 0.0,
+        });
+        // Slow forward/backward, including both sides of 500 eRPM (52.36
+        // electrical rad/s), with real stationary intervals between signs.
+        for (from, to, steps) in [
+            (0.0, 80.0, 16_000),
+            (80.0, 80.0, 2_000),
+            (80.0, 0.0, 16_000),
+            (0.0, 0.0, 2_000),
+        ] {
+            for i in 0..steps {
+                let omega = direction * (from + (to - from) * i as f32 / steps as f32);
+                rig.step += 1;
+                let now = rig.step * HallRig::TICKS;
+                let sample = rig.out;
+                let raw = raw_state(sample.angle_rad);
+                visited[usize::from(raw)] = true;
+                if raw != rig.last_hall {
+                    let old = CENTROIDS[usize::from(rig.last_hall)];
+                    let boundary = old + angle_difference(CENTROIDS[usize::from(raw)], old) / 2.0;
+                    let travel = angle_difference(sample.angle_rad, rig.prev_angle);
+                    let fraction = clamp_f32(
+                        angle_difference(boundary, rig.prev_angle) / travel,
+                        0.0,
+                        1.0,
+                    );
+                    let captured = now - ((1.0 - fraction) * HallRig::TICKS as f32) as u64;
+                    rig.driver
+                        .phase_mut()
+                        .hall_mut()
+                        .update(raw, captured)
+                        .unwrap();
+                    rig.last_hall = raw;
+                }
+                rig.driver.current_sensor_mut().currents = (sample.ia, sample.ib, sample.ic);
+                // Negative control: the same trajectory really contains raw
+                // sector steps, rather than trivially observing no movement.
+                let raw_angle = rig.driver.phase().hall().sample_at(now).unwrap().angle;
+                if let Some(previous) = previous_raw_angle {
+                    max_raw_step = max_raw_step.max(angle_difference(raw_angle, previous).abs());
+                }
+                previous_raw_angle = Some(raw_angle);
+                let output = rig
+                    .driver
+                    .step(now)
+                    .expect("current loop must stay below its 6 A trip");
+                let control = rig.driver.phase().get();
+                assert!(
+                    [
+                        output.id,
+                        output.iq,
+                        output.v_alpha,
+                        output.v_beta,
+                        control.angle,
+                        control.velocity
+                    ]
+                    .iter()
+                    .all(|x| x.is_finite())
+                );
+                assert_eq!(rig.driver.phase().source(), PhaseSource::Hall);
+                assert!(!rig.driver.phase().is_open_loop_override_active());
+                let norm = libm::sqrtf(output.id * output.id + output.iq * output.iq);
+                peak_current = peak_current.max(norm);
+                if let Some(previous) = previous_control_angle {
+                    max_control_step =
+                        max_control_step.max(angle_difference(control.angle, previous).abs());
+                }
+                previous_control_angle = Some(control.angle);
+                if omega.abs() > 60.0
+                    && control.velocity * direction > 500.0 * core::f32::consts::TAU / 60.0
+                {
+                    crossover_directions[usize::from(direction < 0.0)] = true;
+                }
+                rig.prev_angle = sample.angle_rad;
+                rig.motor.set_velocity(omega); // external mechanical drive
+                rig.out = rig
+                    .motor
+                    .step(output.v_alpha, output.v_beta, 0.0, HallRig::DT);
+            }
+        }
+    }
+    assert!(
+        visited[1..7].iter().all(|seen| *seen),
+        "all six measured sectors must participate"
+    );
+    assert!(crossover_directions.iter().all(|seen| *seen));
+    assert!(
+        peak_current < 6.0,
+        "measured-vector trip remains unchanged: {peak_current}"
+    );
+    assert!(
+        max_control_step < min_sector / 2.0,
+        "one control period must not jump across half the narrowest sector: {max_control_step}"
+    );
+    assert!(
+        max_raw_step > min_sector / 2.0,
+        "negative control must include an unsmoothed sector jump: {max_raw_step}"
+    );
+}
+
 /// Position control moves the rotor 20 electrical turns and parks it
 /// there: no overshoot past a hall sector, standing still at the end.
 #[test]
