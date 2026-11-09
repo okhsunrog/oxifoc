@@ -72,7 +72,8 @@ impl DetectionHardware for EmbassyDetectionHardware {
     fn check_health(&self) -> Result<(), DetectionError> {
         critical_section::with(|cs| {
             let state = self.state_mutex.borrow(cs).borrow();
-            if state.motor_state == crate::types::MotorState::Error {
+            if state.motor_state == crate::types::MotorState::Error || state::detection_cancelled()
+            {
                 Err(DetectionError::HardwareFault)
             } else {
                 Ok(())
@@ -113,6 +114,26 @@ impl DetectionHardware for EmbassyDetectionHardware {
             state: self.state_mutex,
             armed: true,
         };
+        // Prepare finite voltages in thread mode. No trig, modulo or waveform
+        // calculation belongs in the 50-us control ISR. The reservation is
+        // visible but cannot execute until all entries are initialized.
+        for i in 0..usize::from(program.samples) {
+            let voltage = program.injection::<S>(i);
+            critical_section::with(|cs| {
+                self.state_mutex.borrow(cs).borrow_mut().excitation.voltages[i] = voltage;
+            });
+            if i % 32 == 31 {
+                embassy_time::Timer::after_micros(1).await;
+            }
+        }
+        self.check_health()?;
+        critical_section::with(|cs| {
+            self.state_mutex
+                .borrow(cs)
+                .borrow_mut()
+                .excitation
+                .preparing = false;
+        });
         let completion = poll_fn(|cx| {
             state::TELEM_WAKER.register(cx.waker());
             critical_section::with(|cs| {
@@ -134,6 +155,9 @@ impl DetectionHardware for EmbassyDetectionHardware {
                 capture.samples[i] = critical_section::with(|cs| {
                     self.state_mutex.borrow(cs).borrow().excitation.samples[i]
                 });
+                if i % 32 == 31 {
+                    embassy_time::Timer::after_micros(1).await;
+                }
             }
         }
         critical_section::with(|cs| {

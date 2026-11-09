@@ -3501,6 +3501,10 @@ mod severity_gate {
                 let mut state = h.state.borrow(cs).borrow_mut();
                 state.set_running(program.hold_mode());
                 state.excitation.arm(program).unwrap();
+                for i in 0..usize::from(program.samples) {
+                    state.excitation.voltages[i] = program.injection::<LibmSinCos>(i);
+                }
+                state.excitation.preparing = false;
             });
             program
         }
@@ -3550,8 +3554,8 @@ mod severity_gate {
         #[test]
         fn fault_or_missed_period_never_resumes_excitation() {
             let _serial = cmd_channel_lock();
-            let _detect = crate::state::DetectionActiveGuard::arm();
             for fault in [false, true] {
+                let _detect = crate::state::DetectionActiveGuard::arm();
                 let mut h = running_harness();
                 arm(&mut h);
                 tick(&mut h, 50);
@@ -3580,8 +3584,8 @@ mod severity_gate {
         #[test]
         fn cancelled_future_and_host_stop_both_cancel_the_packet() {
             let _serial = cmd_channel_lock();
-            let _detect = crate::state::DetectionActiveGuard::arm();
             for host_stop in [false, true] {
+                let _detect = crate::state::DetectionActiveGuard::arm();
                 let mut h = running_harness();
                 arm(&mut h);
                 tick(&mut h, 50);
@@ -3599,6 +3603,36 @@ mod severity_gate {
                 }
                 assert_eq!(h.driver.mode(), ControlMode::Stopped);
             }
+        }
+
+        #[test]
+        fn host_stop_between_packets_latches_until_detection_ends() {
+            let _serial = cmd_channel_lock();
+            let detect = crate::state::DetectionActiveGuard::arm();
+            let mut h = running_harness();
+            let program = arm(&mut h);
+            for i in 1..=13 {
+                tick(&mut h, i * 50);
+            }
+            assert_eq!(h.driver.mode(), program.hold_mode());
+            CMD_CHANNEL
+                .try_send(DriverCommand::Motor(crate::types::MotorRequest {
+                    source_session: 42,
+                    seq: 1,
+                    command: crate::types::MotorCommand::SetMode(ControlMode::Stopped),
+                }))
+                .unwrap();
+            tick(&mut h, 700);
+            assert!(crate::state::detection_cancelled());
+            // An already queued detector command cannot re-energise the motor.
+            CMD_CHANNEL
+                .try_send(DriverCommand::SetMode(program.hold_mode()))
+                .unwrap();
+            tick(&mut h, 750);
+            assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            drop(detect);
+            let _next = crate::state::DetectionActiveGuard::arm();
+            assert!(!crate::state::detection_cancelled());
         }
     }
 

@@ -374,10 +374,13 @@ async fn settled_hold_voltage<H: DetectionHardware, T: Timer>(
     hw.check_health()?;
     let computed = resistance_ohm * hold_current_a;
     match sample_vd_id::<H, T>(hw, 200, 1000).await {
-        Ok((avg_vd, avg_id)) => Ok(computed + (avg_vd - resistance_ohm * avg_id)),
-        Err(DetectionError::MotorNotResponding) => {
-            hw.check_health()?;
-            Ok(computed)
+        Ok((avg_vd, avg_id)) => {
+            // A saturated PI on an open or disabled bridge is not a holding
+            // voltage. Reject before allowing noise to seed HFI or a pulse.
+            if (avg_id - hold_current_a).abs() > (hold_current_a * 0.3).max(0.15) {
+                return Err(DetectionError::MotorNotResponding);
+            }
+            Ok(computed + (avg_vd - resistance_ohm * avg_id))
         }
         Err(e) => Err(e),
     }
@@ -631,7 +634,7 @@ const PULSE_MAX_PERIODS: f32 = (PIPELINE_LAG_MAX + 2) as f32;
 /// when the response was too weak to correlate (open motor — let the
 /// main measurement fail with its own diagnostics).
 #[cfg(feature = "hfi-detect")]
-async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
+async fn probe_hfi_pipeline_lag<H: DetectionHardware, T: Timer, S: SinCos>(
     hw: &mut H,
     injector: &mut HfiInjector<S>,
     vd_hold: f32,
@@ -673,6 +676,9 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
             let i_dir = sample.alpha * cos_t + sample.beta * sin_t;
             corr_q[d] += i_dir * (-cos_p);
             corr_i[d] += i_dir * sin_p;
+        }
+        if k % 8 == 7 {
+            T::after_micros(1).await;
         }
     }
 
@@ -727,7 +733,7 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, S: SinCos>(
 /// Each finite packet returns to the retained current PI hold in the ISR.
 /// The caller ramps down that current after collecting the final packet.
 #[cfg(feature = "hfi-detect")]
-async fn hfi_collect<H: DetectionHardware, S: SinCos>(
+async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
     hw: &mut H,
     injector: &mut HfiInjector<S>,
     measurement: &mut InductanceMeasurement<S>,
@@ -780,6 +786,9 @@ async fn hfi_collect<H: DetectionHardware, S: SinCos>(
             let (v_a, v_b) = program.injection::<S>(index);
             let angle = (index % FFT_SIZE) as f32 * core::f32::consts::TAU / FFT_SIZE as f32;
             measurement.record(sample.alpha, sample.beta, angle, v_a, v_b);
+            if index % FFT_SIZE == FFT_SIZE - 1 {
+                T::after_micros(1).await;
+            }
         }
     }
     Ok(())
@@ -903,7 +912,7 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     // (pairing rotations preserve the response norm) that guards the
     // phase-sensitive demod below — an override must not silently disable
     // that safety net. `pipeline_lag ≥ 1` overrides the lag value only.
-    let (probed_lag, l_probe) = probe_hfi_pipeline_lag::<H, S>(
+    let (probed_lag, l_probe) = probe_hfi_pipeline_lag::<H, T, S>(
         hw,
         &mut injector,
         vd_hold,
@@ -940,7 +949,7 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
 
     let mut measurement = InductanceMeasurement::<S>::new(params, pwm_freq_hz);
     measurement.restart(probe_v);
-    hfi_collect::<H, S>(
+    hfi_collect::<H, T, S>(
         hw,
         &mut injector,
         &mut measurement,
@@ -1456,7 +1465,7 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
         .max(0.2)
         .min(headroom);
     let mut injector = HfiInjector::<S>::new(params.hfi_frequency_hz, probe_v, pwm_freq_hz);
-    let (lag, l_seed) = probe_hfi_pipeline_lag::<H, S>(
+    let (lag, l_seed) = probe_hfi_pipeline_lag::<H, T, S>(
         hw,
         &mut injector,
         vd_hold,

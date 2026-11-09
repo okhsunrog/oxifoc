@@ -172,3 +172,51 @@ fn hfi_fault_timeout_or_missing_cycles_cannot_fall_back_or_report_success() {
         assert!(hw.hold.stopped.get());
     }
 }
+
+#[cfg(feature = "hfi-detect")]
+#[test]
+fn missing_holding_current_refuses_all_excitation_methods() {
+    struct OpenBridge {
+        stopped: Cell<bool>,
+    }
+    impl DetectionHardware for OpenBridge {
+        async fn send_command(&self, mode: ControlMode) {
+            self.stopped.set(mode == ControlMode::Stopped);
+        }
+        async fn wait_telemetry(&mut self) -> FocOutput {
+            FocOutput {
+                vd: 10.0,
+                ..FocOutput::empty()
+            }
+        }
+        fn read_phase_currents(&self) -> (f32, f32, f32) {
+            (0.0, 0.0, 0.0)
+        }
+        async fn capture_voltage_burst<S: SinCos>(
+            &mut self,
+            _: VoltageBurst,
+        ) -> Result<BurstCapture, DetectionError> {
+            panic!("no HFI/pulse is permitted without a measured DC hold")
+        }
+    }
+    let mut hw = OpenBridge {
+        stopped: Cell::new(true),
+    };
+    let params = InductanceParams {
+        resistance_ohm: 0.03,
+        hold_current_a: 1.2,
+        ..Default::default()
+    };
+    {
+        let mut future = core::pin::pin!(measure_inductance_auto::<_, ImmediateTimer, LibmSinCos>(
+            &mut hw, &params, 20_000.0
+        ));
+        assert_eq!(
+            future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Err(DetectionError::MotorNotResponding))
+        );
+    }
+    assert!(hw.stopped.get());
+}

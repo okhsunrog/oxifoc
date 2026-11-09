@@ -128,7 +128,7 @@ pub struct BurstCapture {
 #[cfg(feature = "runtime")]
 pub(crate) enum BurstAction {
     Stop,
-    Voltage(VoltageBurst, usize),
+    Voltage { vd: f32, vq: f32, angle: f32 },
     Hold(VoltageBurst),
 }
 
@@ -171,6 +171,8 @@ pub(crate) struct Excitation {
     pub outcome: Option<Result<(), DetectionError>>,
     pub cancelled: bool,
     pub index: usize,
+    pub preparing: bool,
+    pub voltages: [(f32, f32); MAX_BURST_SAMPLES],
     last_cycle: Option<u32>,
     last_tick: u32,
     first_tick: u32,
@@ -186,6 +188,8 @@ impl Excitation {
             outcome: None,
             cancelled: false,
             index: 0,
+            preparing: false,
+            voltages: [(0.0, 0.0); MAX_BURST_SAMPLES],
             last_cycle: None,
             last_tick: 0,
             first_tick: 0,
@@ -211,12 +215,13 @@ impl Excitation {
         self.outcome = None;
         self.cancelled = false;
         self.index = 0;
+        self.preparing = true;
         self.last_cycle = None;
         Ok(())
     }
 
     pub fn running(&self) -> bool {
-        self.program.is_some() && self.outcome.is_none()
+        self.program.is_some() && self.outcome.is_none() && !self.preparing
     }
 
     pub fn abort(&mut self, error: DetectionError) {

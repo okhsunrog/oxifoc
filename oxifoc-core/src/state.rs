@@ -177,6 +177,17 @@ pub static FLASH_OP_PENDING: AtomicBool = AtomicBool::new(false);
 /// comm failsafes despite this comment claiming otherwise. The instantaneous
 /// over-current check was never gated by it.
 pub static DETECTION_ACTIVE: AtomicBool = AtomicBool::new(false);
+static DETECTION_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+pub fn detection_cancelled() -> bool {
+    DETECTION_ACTIVE.load(Ordering::Acquire) && DETECTION_CANCELLED.load(Ordering::Acquire)
+}
+
+fn cancel_detection() {
+    if DETECTION_ACTIVE.load(Ordering::Acquire) {
+        DETECTION_CANCELLED.store(true, Ordering::Release);
+    }
+}
 
 /// RAII guard for [`DETECTION_ACTIVE`]: clears the flag on every exit path.
 /// Without it, any future `select`/timeout wrapper around the measurement
@@ -186,6 +197,7 @@ pub struct DetectionActiveGuard(());
 
 impl DetectionActiveGuard {
     pub fn arm() -> Self {
+        DETECTION_CANCELLED.store(false, Ordering::Release);
         DETECTION_ACTIVE.store(true, Ordering::Relaxed);
         Self(())
     }
@@ -516,6 +528,7 @@ where
             }
             DriverCommand::Motor(request) => match request.command {
                 MotorCommand::EmergencyStop => {
+                    cancel_detection();
                     foc.emergency_stop();
                     critical_section::with(|cs| {
                         state_mutex.borrow(cs).borrow_mut().set_stopped();
@@ -533,6 +546,9 @@ where
                         signal_motor_completion(request, outcome);
                         continue;
                     }
+                    // An authorized host override cancels the whole operation,
+                    // including PI holds between finite excitation packets.
+                    cancel_detection();
                     // Only an authorized, non-duplicate request affirms the
                     // deadman. Busy/stale traffic cannot keep old torque alive.
                     *saw_set_mode = true;
@@ -660,7 +676,9 @@ where
             // checkers). Warnings never block a start — the vehicle rides
             // through them by design.
             if mode != ControlMode::Stopped
-                && (state.motor_state == MotorState::Error || fault_registry.any_stopping())
+                && (state.motor_state == MotorState::Error
+                    || fault_registry.any_stopping()
+                    || detection_cancelled())
             {
                 return MotorCommandOutcome::RejectedSafety;
             }
@@ -904,6 +922,9 @@ where
     crate::isr_prof::add(&crate::isr_prof::CYCLE_CMD, prof_t0, prof_t1);
 
     driver.run_protection(fault_registry, board, vbus_v, fet_t, motor_t);
+    if fault_registry.any_stopping() {
+        cancel_detection();
+    }
 
     let prof_t2 = crate::isr_prof::now();
     crate::isr_prof::add(&crate::isr_prof::CYCLE_PROT, prof_t1, prof_t2);
@@ -1000,18 +1021,26 @@ where
                 || driver.failsafe_active()
                 || saw_set_mode
                 || !DETECTION_ACTIVE.load(Ordering::Relaxed)
+                || detection_cancelled()
                 || (ex.index == 0 && !starting_in_hold)
             {
                 ex.abort(DetectionError::HardwareFault);
+                cancel_detection();
                 return Some(BurstAction::Stop);
             }
             if let Err(e) = ex.check_timing(cycle, now_ticks as u32, driver.dt()) {
                 ex.abort(e);
+                cancel_detection();
                 return Some(BurstAction::Stop);
             }
             // Copy only a small program descriptor while IRQs are masked.
             Some(if ex.index < usize::from(program.samples) {
-                BurstAction::Voltage(program, ex.index)
+                let (vd, vq) = ex.voltages[ex.index];
+                BurstAction::Voltage {
+                    vd: program.vd_hold + vd,
+                    vq,
+                    angle: program.angle,
+                }
             } else {
                 BurstAction::Hold(program)
             })
@@ -1019,7 +1048,11 @@ where
         if let Some(action) = next {
             let next = match action {
                 BurstAction::Stop => ControlMode::Stopped,
-                BurstAction::Voltage(program, index) => program.command::<S>(index),
+                BurstAction::Voltage { vd, vq, angle } => ControlMode::DirectVoltage {
+                    vd,
+                    vq,
+                    angle_rad: angle,
+                },
                 BurstAction::Hold(program) => program.hold_mode(),
             };
             driver.set_mode(next);
@@ -1089,6 +1122,9 @@ where
         }
     };
 
+    if fault_registry.any_stopping() {
+        cancel_detection();
+    }
     #[cfg(feature = "detection")]
     let excitation_failed = critical_section::with(|cs| {
         let mut state = state_mutex.borrow(cs).borrow_mut();
@@ -1099,6 +1135,7 @@ where
         }
         let Some(telem) = result.filter(|_| !fault_registry.any_stopping()) else {
             ex.abort(crate::foc::detection::DetectionError::HardwareFault);
+            cancel_detection();
             return true;
         };
         let Some(program) = ex.program else {
