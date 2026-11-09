@@ -188,6 +188,9 @@ pub struct HallSensor {
     timebase: HallTimebase,
     /// Minimum eRPM for interpolation. Below this, use sector angle only.
     interp_min_erpm: f32,
+    /// The same configured minimum in rad/s, used by the angle rate limiter.
+    /// Keep the eRPM comparison separate to preserve its rounded boundary.
+    interp_min_rad_s: f32,
     /// Rate limit factor (1.5 = allow 50% overshoot, VESC default)
     rate_limit_factor: f32,
     /// Rate-limited angle (tracked across samples for smooth limiting)
@@ -345,6 +348,7 @@ impl HallSensor {
             error_count: 0,
             timebase: HallTimebase::new(ticks_per_sec),
             interp_min_erpm: DEFAULT_INTERP_MIN_ERPM,
+            interp_min_rad_s: DEFAULT_INTERP_MIN_ERPM * TAU / 60.0,
             rate_limit_factor: DEFAULT_RATE_LIMIT_FACTOR,
             rate_limited_angle: 0.0,
             last_sample_ticks: None,
@@ -365,6 +369,7 @@ impl HallSensor {
     /// slow direction reversals. Default: 500 eRPM (VESC default).
     pub fn set_interp_min_erpm(&mut self, erpm: f32) {
         self.interp_min_erpm = erpm.abs();
+        self.interp_min_rad_s = self.interp_min_erpm * TAU / 60.0;
     }
 
     /// Get minimum interpolation eRPM
@@ -954,9 +959,7 @@ impl HallSensor {
         // === RATE LIMITING (VESC-style) ===
         // Limit how fast angle can change per sample to prevent current spikes
         // max_step = max(|velocity|, min_vel_from_erpm) * dt * rate_limit_factor
-        // Convert interp_min_erpm to rad/s for this calculation
-        let min_vel_rad_s = self.interp_min_erpm * TAU / 60.0;
-        let effective_vel = velocity.abs().max(min_vel_rad_s);
+        let effective_vel = velocity.abs().max(self.interp_min_rad_s);
         let max_step = effective_vel * dt_sample * self.rate_limit_factor;
 
         // Calculate desired step from current rate-limited angle
@@ -1376,6 +1379,52 @@ mod tests {
                         expected.to_bits(),
                         "velocity={velocity:?}, age={age:?}, sector_time={sector_time:?}",
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interpolation_settings_preserve_threshold_neighbor_samples() {
+        for rate_limited in [false, true] {
+            for erpm in [
+                0.0,
+                -0.0,
+                1.0,
+                500.0,
+                -500.0,
+                f32::from_bits(1),
+                f32::MIN_POSITIVE,
+                f32::MAX,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NAN,
+            ] {
+                let threshold = erpm.abs() * TAU / 60.0;
+                for velocity in [
+                    threshold.next_down(),
+                    threshold,
+                    threshold.next_up(),
+                    -threshold.next_down(),
+                    -threshold,
+                    -threshold.next_up(),
+                ] {
+                    let mut actual = HallSensor::new(1_000_000);
+                    let mut expected = HallSensor::new(1_000_000);
+                    actual.update(1, 123);
+                    expected.update(1, 123);
+                    // Changing the setting after edges have arrived must
+                    // update the limiter cache without resetting live state.
+                    actual.set_interp_min_erpm(erpm);
+                    expected.set_interp_min_erpm(erpm);
+                    actual.set_electrical_velocity(velocity);
+                    expected.set_electrical_velocity(velocity);
+                    let sample = if rate_limited {
+                        actual.sample_at_mut(123)
+                    } else {
+                        actual.sample_at(123)
+                    };
+                    assert_same_sample(sample, reference_sample(&mut expected, 123, rate_limited));
                 }
             }
         }
