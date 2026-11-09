@@ -329,6 +329,21 @@ test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" transp
         {{ quote(maneuver) }} --out {{ quote(capture) }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
 
+# Flash an already-built MK5 image and qualify it with its exact decoder ELF.
+# The caller must exclude concurrent builds/hardware access for the whole run.
+bench-current-mk5 capture maneuver="maneuvers/mk5-hall-current-check.json":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git rev-parse HEAD > {{ quote(capture + ".commit") }}
+    sha256sum {{ mk5_elf }} > {{ quote(capture + ".elf.sha256") }}
+    probe-rs download --verify --connect-under-reset --chip STM32F405RGTx {{ mk5_elf }} \
+        > {{ quote(capture + ".flash.log") }} 2>&1
+    probe-rs reset --chip STM32F405RGTx >> {{ quote(capture + ".flash.log") }} 2>&1
+    capture_status=0
+    just test-current-mk5 {{ quote(capture) }} {{ quote(maneuver) }} usb {{ mk5_elf }} || capture_status=$?
+    just cli-usb status > {{ quote(capture + ".status.json") }}
+    exit "$capture_status"
+
 # Motor model in SI units; explicit flash selection, RAM by default.
 set-motor-usb resistance ld lq flux pole_pairs storage="ram":
     @test {{ quote(storage) }} = ram -o {{ quote(storage) }} = flash
