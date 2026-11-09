@@ -341,7 +341,7 @@ test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" transp
 
 # Flash an already-built MK5 image and qualify it with its exact decoder ELF.
 # The caller must exclude concurrent builds/hardware access for the whole run.
-bench-current-mk5 capture maneuver="maneuvers/mk5-hall-current-check.json":
+bench-current-mk5 capture maneuver="maneuvers/mk5-hall-hold-check.json":
     #!/usr/bin/env bash
     set -euo pipefail
     git rev-parse HEAD > {{ quote(capture + ".commit") }}
