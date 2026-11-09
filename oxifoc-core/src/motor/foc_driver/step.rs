@@ -33,7 +33,11 @@ where
         self.watchdog
             .note_cycle(now_ticks, self.mode, self.phase.is_starting());
         self.position.update(self.phase.get().angle);
-        let mut out = self.step_inner(now_ticks)?;
+        let result = self.step_inner(now_ticks);
+        if result.is_err() {
+            self.restore_current_pi_gains();
+        }
+        let mut out = result?;
         self.stamp_step_telemetry(&mut out);
         Ok(out)
     }

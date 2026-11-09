@@ -66,12 +66,7 @@ impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C
             .apply_motor_model(phase)
             .ok_or(MotorModelError::Unsupported)?;
         model.phase = None;
-        self.controller
-            .id_pi
-            .set_gains(model.gains.0, model.gains.1);
-        self.controller
-            .iq_pi
-            .set_gains(model.gains.0, model.gains.1);
+        self.set_current_pi_gains(model.gains.0, model.gains.1);
         self.controller.set_decoupling(model.decoupling);
         self.controller
             .set_voltage_feedforward_mode(model.voltage_feedforward_mode);

@@ -1,9 +1,10 @@
 //! Construction, mode entry, and the accessors platforms call every cycle.
 
 use super::{
-    ActuationModel, CommandWatchdog, ControlMode, CurrentLimits, FocDriver, ProtectionMonitor,
+    ActuationModel, CommandWatchdog, ControlMode, CurrentLimits, CurrentPiGains, FocDriver,
+    ProtectionMonitor,
 };
-use crate::foc::controller::FocController;
+use crate::foc::controller::{Decoupling, FocController};
 use crate::foc::current_offset::CurrentOffsetCalibrator;
 use crate::foc::phase::PhaseInput;
 use crate::foc::phase::PhaseProvider;
@@ -53,6 +54,7 @@ where
         }
         Self {
             controller,
+            temporary_pi_restore: None,
             pwm,
             current_sensor,
             phase,
@@ -235,8 +237,20 @@ where
         self.position.position()
     }
 
-    /// Set control mode
+    /// Set control mode.
+    ///
+    /// A temporary PI override belongs to the bench mode sequence, not an
+    /// async caller's future. Cancellation must still reach Stop or failsafe
+    /// to end that sequence and restore the working gains.
     pub fn set_mode(&mut self, mode: ControlMode) {
+        // Finite voltage packets return to an OpenLoop hold with no new
+        // override. Keep the temporary gains across that whole bench sequence.
+        if !matches!(
+            mode,
+            ControlMode::OpenLoop { .. } | ControlMode::DirectVoltage { .. }
+        ) {
+            self.restore_current_pi_gains();
+        }
         #[cfg(feature = "detection")]
         {
             self.detection_compensation_current = None;
@@ -292,12 +306,19 @@ where
             self.position_target = Position::from_rad(target_pos);
         }
 
-        // Apply PI gains override if provided (detection uses this)
+        // A sequence owns one saved baseline: subsequent steps may change the
+        // temporary gains, but must never replace the working gains to restore.
         if let ControlMode::OpenLoop {
             pi_gains: Some((kp, ki)),
             ..
         } = mode
         {
+            if self.temporary_pi_restore.is_none() {
+                self.temporary_pi_restore = Some(CurrentPiGains {
+                    d: self.controller.id_pi.gains(),
+                    q: self.controller.iq_pi.gains(),
+                });
+            }
             self.controller.id_pi.set_gains(kp, ki);
             self.controller.iq_pi.set_gains(kp, ki);
             self.controller.reset();
@@ -382,8 +403,37 @@ where
         &self.phase
     }
 
-    /// Get mutable reference to FOC controller (for tuning)
+    /// Set persistent d/q PI tuning, superseding any temporary bench override.
+    /// Ordinary tuning preserves PI state; leaving an override clears it.
+    pub fn set_current_pi_gains(&mut self, kp: f32, ki: f32) {
+        if self.temporary_pi_restore.take().is_some() {
+            self.controller.reset();
+        }
+        self.controller.id_pi.set_gains(kp, ki);
+        self.controller.iq_pi.set_gains(kp, ki);
+    }
+
+    /// Update model coefficients without changing current-loop tuning.
+    pub fn set_decoupling(&mut self, decoupling: Option<Decoupling>) {
+        self.controller.set_decoupling(decoupling);
+    }
+
+    /// End a temporary bench sequence without retaining its integrator state.
+    pub(super) fn restore_current_pi_gains(&mut self) {
+        if let Some(gains) = self.temporary_pi_restore.take() {
+            self.controller.id_pi.set_gains(gains.d.0, gains.d.1);
+            self.controller.iq_pi.set_gains(gains.q.0, gains.q.1);
+            self.controller.reset();
+        }
+    }
+
+    /// Get mutable controller access for explicit tuning.
+    ///
+    /// This ends and restores a temporary bench PI override before exposing
+    /// the controller: a later Stop must not roll back the caller's edits.
+    /// Read-only access through [`controller`](Self::controller) retains it.
     pub fn controller_mut(&mut self) -> &mut FocController<SvpwmModulator, S> {
+        self.restore_current_pi_gains();
         &mut self.controller
     }
 

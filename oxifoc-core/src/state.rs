@@ -639,12 +639,11 @@ where
                 continue;
             }
             DriverCommand::SetPiGains { kp, ki } => {
-                foc.controller_mut().id_pi.set_gains(kp, ki);
-                foc.controller_mut().iq_pi.set_gains(kp, ki);
+                foc.set_current_pi_gains(kp, ki);
                 continue;
             }
             DriverCommand::SetDecoupling(d) => {
-                foc.controller_mut().set_decoupling(Some(d));
+                foc.set_decoupling(Some(d));
                 continue;
             }
             DriverCommand::SetPhaseSource(source) => {

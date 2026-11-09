@@ -124,8 +124,9 @@ pub enum ControlMode {
         current: f32,
         /// Electrical velocity (rad/s) — 0 = lock, nonzero = spin
         velocity_rad_s: f32,
-        /// Optional PI gains override (kp, ki). Applied on mode entry.
-        /// Used by detection to set conservative gains when motor params are unknown.
+        /// Temporary PI gains (kp, ki) for detection. `None` retains the
+        /// current bench tuning through OpenLoop/DirectVoltage steps; leaving
+        /// that sequence restores the working d/q gains and clears PI state.
         pi_gains: Option<(f32, f32)>,
     },
     /// Direct voltage mode — apply dq voltages without PI control.

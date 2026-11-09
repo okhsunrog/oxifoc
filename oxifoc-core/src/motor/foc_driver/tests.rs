@@ -1,4 +1,6 @@
 use super::*;
+#[path = "scoped_pi_tests.rs"]
+mod scoped_pi_tests;
 #[cfg(feature = "virtual-motor")]
 use crate::foc::angle_difference;
 #[cfg(feature = "virtual-motor")]
@@ -788,6 +790,24 @@ fn process_commands_rejects_non_finite_payloads() {
             id_target: 0.0
         }
     );
+
+    // Permanent tuning through the real command path must supersede a bench
+    // override: the next Stop cannot restore the previous working gains.
+    driver.set_mode(ControlMode::OpenLoop {
+        angle_rad: 0.0,
+        current: 1.0,
+        velocity_rad_s: 0.0,
+        pi_gains: Some((0.01, 10.0)),
+    });
+    CMD_CHANNEL
+        .try_send(DriverCommand::SetPiGains { kp: 0.7, ki: 70.0 })
+        .unwrap();
+    CMD_CHANNEL
+        .try_send(DriverCommand::SetMode(ControlMode::Stopped))
+        .unwrap();
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(driver.controller().id_pi.gains(), (0.7, 70.0));
+    assert_eq!(driver.controller().iq_pi.gains(), (0.7, 70.0));
 }
 
 /// Motor start must be refused while a flash operation is in flight:

@@ -183,6 +183,8 @@ where
 {
     /// FOC controller
     controller: FocController<SvpwmModulator, S>,
+    /// Working d/q gains to restore after an open-loop detection sequence.
+    temporary_pi_restore: Option<CurrentPiGains>,
     /// PWM output
     pwm: P,
     /// Current sensor
@@ -287,4 +289,10 @@ where
     /// One-shot completion consumed by `run_foc_cycle`, which wakes the async
     /// requester without giving it ownership of PWM sequencing.
     current_offset_outcome: Option<Result<CurrentOffsetReport, CurrentOffsetError>>,
+}
+
+/// Save tuning, not the controller's integrators or other model state.
+struct CurrentPiGains {
+    d: (f32, f32),
+    q: (f32, f32),
 }

@@ -154,6 +154,9 @@ where
         if self.failsafe_ctrl.is_active() {
             return;
         }
+        // The recovery/brake current loop uses working tuning, even while
+        // the interrupted mode remains OpenLoop during the failsafe ramp.
+        self.restore_current_pi_gains();
         let policy = if self.current_sensor.is_calibrated() {
             policy
         } else {
