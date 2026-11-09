@@ -846,9 +846,6 @@ impl HallSensor {
         // collapse the decayed velocity to zero for the cycle.
         let dt = self.timebase.seconds(now_ticks.saturating_sub(t0));
 
-        // Current sector angle from calibration (direct raw state lookup)
-        let sector_angle = self.calib.angle_for_state(self.raw_state);
-
         // Decayed velocity: see decayed_velocity() — a stopping motor must
         // not keep reporting (and integrating) the last edge speed forever.
         let velocity = self.decayed_velocity(dt);
@@ -858,7 +855,7 @@ impl HallSensor {
             // Low speed: use sector angle directly, no interpolation
             // This prevents oscillation during direction reversals
             return Some(AngleSample {
-                angle: sector_angle,
+                angle: self.calib.angle_for_state(self.raw_state),
                 omega: velocity,
                 direction: self.direction,
             });
@@ -914,9 +911,6 @@ impl HallSensor {
         };
         self.last_sample_ticks = Some(now_ticks);
 
-        // Current sector angle from calibration (direct raw state lookup)
-        let sector_angle = self.calib.angle_for_state(self.raw_state);
-
         // Decayed velocity (see decayed_velocity()): also moves us to the
         // low-speed path once the edges stop coming.
         let velocity = self.decayed_velocity(dt_from_edge);
@@ -925,6 +919,7 @@ impl HallSensor {
         if Self::vel_to_erpm(velocity) < self.interp_min_erpm {
             // Low speed: use sector angle directly, no interpolation
             // This prevents oscillation during direction reversals
+            let sector_angle = self.calib.angle_for_state(self.raw_state);
             self.rate_limited_angle = sector_angle;
             return Some(AngleSample {
                 angle: sector_angle,
@@ -1196,6 +1191,132 @@ impl HallSensorTrait for HallSensor {
 mod tests {
     use super::*;
     use core::f32::consts::FRAC_PI_3;
+
+    // Keep the pre-optimization sampling equations as a differential oracle.
+    // Edge processing is exercised through the public API on both estimators.
+    fn reference_sample(
+        hall: &mut HallSensor,
+        now: u64,
+        rate_limited: bool,
+    ) -> Option<AngleSample> {
+        let t0 = hall.last_edge_ticks?;
+        if hall.in_glitch {
+            return None;
+        }
+        let age = hall.timebase.seconds(now.saturating_sub(t0));
+        let sector = hall.calib.angle_for_state(hall.raw_state);
+        let limit = hall.angle_per_state / age.max(1e-9);
+        let velocity = clamp_f32(hall.elec_velocity, -limit, limit);
+        let dt = if rate_limited {
+            let dt = hall.last_sample_ticks.map_or(age, |last| {
+                hall.timebase.seconds(now.wrapping_sub(last).max(1))
+            });
+            hall.last_sample_ticks = Some(now);
+            dt
+        } else {
+            0.0
+        };
+        let angle = if velocity.abs() * 60.0 / TAU < hall.interp_min_erpm {
+            if rate_limited {
+                hall.rate_limited_angle = sector;
+            }
+            sector
+        } else {
+            let target = wrap_angle(hall.angle + velocity * age);
+            if rate_limited {
+                let min_vel = hall.interp_min_erpm * TAU / 60.0;
+                let max_step = velocity.abs().max(min_vel) * dt * hall.rate_limit_factor;
+                let desired = angle_difference(target, hall.rate_limited_angle);
+                let actual = if desired.abs() <= max_step {
+                    desired
+                } else if desired > 0.0 {
+                    max_step
+                } else {
+                    -max_step
+                };
+                hall.rate_limited_angle = wrap_angle(hall.rate_limited_angle + actual);
+                hall.rate_limited_angle
+            } else {
+                target
+            }
+        };
+        Some(AngleSample {
+            angle,
+            omega: velocity,
+            direction: hall.direction,
+        })
+    }
+
+    fn assert_same_sample(actual: Option<AngleSample>, expected: Option<AngleSample>) {
+        match (actual, expected) {
+            (None, None) => {}
+            (Some(actual), Some(expected)) => {
+                assert_eq!(actual.direction, expected.direction);
+                for (actual, expected) in [
+                    (actual.angle, expected.angle),
+                    (actual.omega, expected.omega),
+                ] {
+                    if expected.is_nan() {
+                        assert!(actual.is_nan());
+                    } else {
+                        assert_eq!(actual.to_bits(), expected.to_bits());
+                    }
+                }
+            }
+            (actual, expected) => panic!("sample availability changed: {actual:?} vs {expected:?}"),
+        }
+    }
+
+    #[test]
+    fn sampling_matches_original_across_edges_and_live_configuration() {
+        let edges = [1, 3, 2, 6, 4, 5, 1, 0, 1, 3, 7, 2, 6, 2, 3, 1, 5, 4, 6];
+        for rate_limited in [false, true] {
+            for threshold in [0.0, 1.0, 500.0, -500.0, 1e6, f32::INFINITY, f32::NAN] {
+                let mut actual = HallSensor::new(1_000_000);
+                let mut expected = HallSensor::new(1_000_000);
+                actual.set_interp_min_erpm(threshold);
+                expected.set_interp_min_erpm(threshold);
+                for (i, raw) in edges.into_iter().enumerate() {
+                    if i == 5 {
+                        // Reversed wiring and asymmetric sectors; applying a new
+                        // calibration must not re-anchor the current live base.
+                        let table = [0.0, 5.4, 1.5, 0.6, 4.0, 5.0, 2.6, 0.0];
+                        actual.set_calibration_raw(table);
+                        expected.set_calibration_raw(table);
+                    }
+                    if i == 9 {
+                        actual.set_advance(-TAU * 1.25);
+                        expected.set_advance(-TAU * 1.25);
+                    }
+                    if i == 15 {
+                        let table = [0.1, 1.2, 2.3, 3.4, 4.5, 5.6];
+                        actual.set_calibration(table);
+                        expected.set_calibration(table);
+                    }
+                    let now = i as u64 * 12_347;
+                    actual.update(raw, now);
+                    expected.update(raw, now);
+                    for sample_time in [
+                        now.saturating_sub(1),
+                        now,
+                        now + 1,
+                        now + 999,
+                        now + 1_000_000,
+                    ] {
+                        let sample = if rate_limited {
+                            actual.sample_at_mut(sample_time)
+                        } else {
+                            actual.sample_at(sample_time)
+                        };
+                        assert_same_sample(
+                            sample,
+                            reference_sample(&mut expected, sample_time, rate_limited),
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn hall_timebase_preserves_wide_tick_conversion_and_zero_rate_fallback() {
