@@ -572,8 +572,11 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Use this for measurement modes (HFI inductance detection) and direct
     /// voltage control where PI interference is undesirable.
     ///
-    /// `i_alpha`/`i_beta` are the latest measured stator currents, used only
-    /// for the dead-time compensation phase signs. This matters precisely
+    /// `i_alpha`/`i_beta` select inverter dead-time correction only. Ordinary
+    /// DirectVoltage uses measured currents; bounded detection packets retain
+    /// the preceding PI reference to avoid introducing current feedback into
+    /// an open-loop voltage probe. Protection still uses measured current.
+    /// This matters precisely
     /// here: with no PI to absorb the distortion, an uncompensated
     /// DirectVoltage hold loses `t_dt·f_pwm·vbus` per phase — on a g431
     /// (800 ns) driving a 24 V bus that is 0.38 V, more than the entire

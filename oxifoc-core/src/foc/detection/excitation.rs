@@ -1,11 +1,12 @@
-//! Bounded voltage programs. Only waveform generation and paired current
-//! capture run in the control ISR; fitting/FFT stays on the async executor.
+//! Bounded voltage programs. Application and paired current capture run in
+//! the control ISR; waveform preparation and fitting/FFT run in thread mode.
 
 use super::types::DetectionError;
 use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
 
 pub const MAX_BURST_SAMPLES: usize = 256;
+#[cfg(any(feature = "hfi-detect", all(feature = "embassy", feature = "runtime")))]
 pub(crate) const PROCESS_CHUNK: usize = 8;
 
 #[cfg(feature = "runtime")]

@@ -464,7 +464,8 @@ where
         now_ticks: u64,
     ) -> Result<FocOutput, StepError> {
         let max_duty = self.pwm.max_duty();
-        // Latest measured currents feed the dead-time compensation signs;
+        // Outside bounded detection packets, latest measured currents feed
+        // the dead-time compensation signs;
         // without a PI loop the distortion is otherwise uncompensated and
         // eats the commanded voltage (see `apply_dq` docs). Uncalibrated
         // sensor → zeros → compensation self-cancels.

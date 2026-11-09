@@ -335,7 +335,7 @@ where
 
     /// Bounded ISR excitation keeps the same deadtime-correction reference as
     /// its preceding PI hold. Ordinary DirectVoltage retains measured signs.
-    #[cfg(feature = "detection")]
+    #[cfg(all(feature = "detection", any(feature = "runtime", test)))]
     pub(crate) fn set_detection_voltage(
         &mut self,
         vd: f32,
