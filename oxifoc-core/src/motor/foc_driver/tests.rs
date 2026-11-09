@@ -466,7 +466,7 @@ fn raw_phase_protection_survives_zero_sequence_rejection() {
     state.set_link_active();
     let state = Mutex::new(RefCell::new(state));
     let registry = FaultRegistry::<StandardFault>::new();
-    let board = BoardConfig {
+    let board = PreparedBoardConfig::new(BoardConfig {
         calib: Default::default(),
         current_sense_topology: CurrentSenseTopology::ThreeShunt,
         max_iq_target_a: 3.0,
@@ -476,7 +476,7 @@ fn raw_phase_protection_survives_zero_sequence_rejection() {
         max_fet_temp_c: 100.0,
         max_motor_temp_c: 0.0,
         phase_sense: None,
-    };
+    });
     // Pure common mode projects to zero, but each raw phase exceeds ABS.
     let mut driver = topology_driver(CurrentSenseTopology::ThreeShunt, (7.0, 7.0, 7.0));
     driver.set_mode(ControlMode::DirectVoltage {
@@ -3486,7 +3486,7 @@ mod severity_gate {
         }
     }
 
-    const BOARD: BoardConfig = BoardConfig {
+    const BOARD: PreparedBoardConfig = PreparedBoardConfig::new(BoardConfig {
         current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
         calib: crate::types::BoardCalib {
             shunt_ohms: 0.003,
@@ -3503,7 +3503,7 @@ mod severity_gate {
         max_fet_temp_c: 100.0,
         max_motor_temp_c: 120.0,
         phase_sense: None,
-    };
+    });
 
     struct Harness {
         state: CriticalSectionMutex<RefCell<MotorControlState>>,

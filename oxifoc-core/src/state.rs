@@ -12,7 +12,6 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_sync::waitqueue::AtomicWaker;
 
-use crate::foc::config::BoardConfig;
 use crate::foc::controller::{Decoupling, FocOutput};
 #[cfg(feature = "offset-diagnostics")]
 use crate::foc::current_offset::CurrentOffsetRequest;
@@ -26,7 +25,7 @@ use crate::foc::trig::SinCos;
 use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::derating::{DeratingConfig, DeratingScales};
 use crate::motor::failsafe::{BRAKE_ENTRY_MAX_E_RAD_S, FailsafeConfig};
-use crate::motor::foc_driver::{CurrentLimits, StepError};
+use crate::motor::foc_driver::{CurrentLimits, PreparedBoardConfig, StepError};
 use crate::motor::{ControlMode, FocDriver};
 use crate::types::{
     DriveOwnership, DriveSessionId, MotorCommand, MotorCommandOutcome, MotorRequest, MotorState,
@@ -849,7 +848,7 @@ pub fn run_foc_cycle<P, C, Ph, S, F>(
     driver: &mut FocDriver<P, C, Ph, S>,
     vbus_v: f32,
     now_ticks: u64,
-    board: &BoardConfig,
+    prepared_board: &PreparedBoardConfig,
 ) -> Option<FocOutput>
 where
     P: PhasePwm,
@@ -858,6 +857,7 @@ where
     S: SinCos,
     F: PlatformFault,
 {
+    let board = prepared_board.board();
     driver.set_vbus(vbus_v);
 
     let prof_t0 = crate::isr_prof::now();
@@ -965,7 +965,7 @@ where
     let prof_t1 = crate::isr_prof::now();
     crate::isr_prof::add(&crate::isr_prof::CYCLE_CMD, prof_t0, prof_t1);
 
-    driver.run_protection(fault_registry, board, vbus_v, fet_t, motor_t);
+    driver.run_protection(fault_registry, prepared_board, vbus_v, fet_t, motor_t);
     if fault_registry.any_stopping() {
         cancel_detection();
     }

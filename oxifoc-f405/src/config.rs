@@ -4,9 +4,10 @@ use embassy_stm32::rcc::{Pll, PllMul, PllPDiv, PllPreDiv, PllQDiv};
 use embassy_sync::once_lock::OnceLock;
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
+use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
 use oxifoc_core::types::BoardCalib;
 
-static MEASURED_BOARD: OnceLock<BoardConfig> = OnceLock::new();
+static MEASURED_BOARD: OnceLock<PreparedBoardConfig> = OnceLock::new();
 /// Published once after TIM1 is configured, before control IRQs start. Protocol
 /// tasks may wait for it while boot calibration is still in progress.
 pub static CONTROL_TIMING: OnceLock<oxifoc_core::types::ControlTiming> = OnceLock::new();
@@ -15,11 +16,20 @@ pub static CONTROL_TIMING: OnceLock<oxifoc_core::types::ControlTiming> = OnceLoc
 pub fn init_measured_board(adc_vref_mv: u32) {
     let mut board = BOARD;
     board.calib.adc_vref_mv = adc_vref_mv;
-    defmt::unwrap!(MEASURED_BOARD.init(board).map_err(|_| ()));
+    defmt::unwrap!(
+        MEASURED_BOARD
+            .init(PreparedBoardConfig::new(board))
+            .map_err(|_| ())
+    );
 }
 
 /// One immutable calibration shared by sensing, detection and the host handshake.
 pub fn measured_board() -> &'static BoardConfig {
+    prepared_board().board()
+}
+
+/// The same frozen calibration and precomputed voltage-protection constants.
+pub fn prepared_board() -> &'static PreparedBoardConfig {
     defmt::unwrap!(MEASURED_BOARD.try_get())
 }
 

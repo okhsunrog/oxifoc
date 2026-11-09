@@ -20,6 +20,8 @@ mod watchdog;
 mod tests;
 
 pub use crate::types::ControlMode;
+#[cfg(feature = "runtime")]
+pub use protection::PreparedBoardConfig;
 pub use protection::{CurrentLimits, OVERCURRENT_HEADROOM};
 
 use crate::foc::controller::FocController;

@@ -15,12 +15,15 @@ use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::NoSensor;
 use oxifoc_core::motor::{ControlMode, FocDriver};
+use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
 
 use crate::config::{BOARD, NTC, PWM_CONFIG};
 use crate::cordic::CordicSinCos;
 use crate::motor::MotorPwm;
 use crate::sensors::{G474CurrentSensor, G474CurrentSensorExt, HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
+
+const PREPARED_BOARD: PreparedBoardConfig = PreparedBoardConfig::new(BOARD);
 
 // ========== ADC Sample Storage (Global Atomics) ==========
 
@@ -244,7 +247,7 @@ fn ADC1_2() {
                 driver,
                 vbus_mv as f32 / 1000.0,
                 now_ticks,
-                &BOARD,
+                &PREPARED_BOARD,
             )
         })
     });

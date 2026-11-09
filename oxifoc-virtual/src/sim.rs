@@ -21,7 +21,7 @@ use oxifoc_core::foc::velocity::VelocityLoopConfig;
 use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::derating::DeratingConfig;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
-use oxifoc_core::motor::foc_driver::CurrentLimits;
+use oxifoc_core::motor::foc_driver::{CurrentLimits, PreparedBoardConfig};
 use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
 use oxifoc_core::state::{MotorControlState, run_foc_cycle};
 use oxifoc_core::storage::RuntimeConfig;
@@ -154,6 +154,7 @@ pub async fn foc_loop(
     driver.set_ov_threshold(board.max_vbus_mv as f32 / 1000.0);
     driver.set_velocity_config(VelocityLoopConfig::from_stored(config.velocity.as_ref()));
     driver.set_derating(DeratingConfig::from_stored(config.derating.as_ref()));
+    let prepared_board = PreparedBoardConfig::new(board);
 
     let mut seq = 0u32;
     let mut step = 0u64;
@@ -205,7 +206,7 @@ pub async fn foc_loop(
                 &mut driver,
                 measured_vbus,
                 now,
-                &board,
+                &prepared_board,
             )
             .unwrap_or_default();
             let hall = HallSnapshot {

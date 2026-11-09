@@ -80,7 +80,7 @@ where
             last_iq_meas: 0.0,
             park_iq: None,
             bus_mod_q_filt: 0.0,
-            protection: ProtectionMonitor::default(),
+            protection: ProtectionMonitor::new(dt),
             phase_voltage: None,
             vphase_raw: None,
             current_offset: CurrentOffsetCalibrator::new(),

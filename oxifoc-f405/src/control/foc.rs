@@ -39,7 +39,7 @@ use crate::hardware::peripherals::AdcHandles;
 use crate::safety::feed_watchdog;
 use crate::sensors::hall;
 
-use crate::config::{BOARD, CPU_HZ, NTC_BOARD, NTC_MOTOR, measured_board};
+use crate::config::{BOARD, CPU_HZ, NTC_BOARD, NTC_MOTOR, measured_board, prepared_board};
 use crate::motor::MotorPwm;
 use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
@@ -423,7 +423,8 @@ fn ADC() {
     if cfg!(feature = "isr-profiling") {
         ISR_LAST_START.store(isr_t0, Ordering::Relaxed);
     }
-    let board = measured_board();
+    let protection_board = prepared_board();
+    let board = protection_board.board();
 
     // NTC Beta-model conversion runs libm::logf + several float divides
     // (~200 cycles per sensor, two sensors here = ~5-7% of the cycle
@@ -540,7 +541,7 @@ fn ADC() {
                 driver,
                 vbus_mv as f32 / 1000.0,
                 now_ticks,
-                board,
+                protection_board,
             );
             #[cfg(feature = "bench-executor-trace")]
             let trace_active = if cfg!(feature = "bench-trace-excitation") {

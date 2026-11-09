@@ -262,8 +262,43 @@ impl CurrentLimits {
     }
 }
 
+/// Immutable board configuration and its voltage-protection constants.
+///
+/// Prepare once before entering the control loop. The source configuration
+/// is owned and exposed read-only, so changing a board requires preparing a
+/// new value rather than leaving derived thresholds behind.
+#[cfg(feature = "runtime")]
+#[derive(Clone, Debug)]
+pub struct PreparedBoardConfig {
+    board: BoardConfig,
+    max_vbus_v: f32,
+    min_vbus_v: f32,
+    trip_vs: f32,
+    integral_ceiling: f32,
+}
+
+#[cfg(feature = "runtime")]
+impl PreparedBoardConfig {
+    pub const fn new(board: BoardConfig) -> Self {
+        let max_vbus_v = board.max_vbus_mv as f32 / 1000.0;
+        let min_vbus_v = board.min_vbus_mv as f32 / 1000.0;
+        let trip_vs = 5e-5 * max_vbus_v;
+        let integral_ceiling = trip_vs * 4.0;
+        Self {
+            board,
+            max_vbus_v,
+            min_vbus_v,
+            trip_vs,
+            integral_ceiling,
+        }
+    }
+
+    pub const fn board(&self) -> &BoardConfig {
+        &self.board
+    }
+}
+
 /// Slow-sensor fault detection and derating, independent of PWM and modes.
-#[derive(Default)]
 pub(super) struct ProtectionMonitor {
     config: DeratingConfig,
     scales: DeratingScales,
@@ -273,6 +308,8 @@ pub(super) struct ProtectionMonitor {
     ov_integral_vs: f32,
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
     uv_integral_vs: f32,
+    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
+    voltage_decay: f32,
 }
 
 #[cfg(feature = "runtime")]
@@ -285,6 +322,17 @@ pub(super) struct ProtectionSample {
 }
 
 impl ProtectionMonitor {
+    pub(super) fn new(dt: f32) -> Self {
+        Self {
+            config: DeratingConfig::default(),
+            scales: DeratingScales::default(),
+            protection_tick: 0,
+            ov_integral_vs: 0.0,
+            uv_integral_vs: 0.0,
+            voltage_decay: 1.0 - (dt / 0.005).min(1.0),
+        }
+    }
+
     pub(super) fn configure(&mut self, config: DeratingConfig) {
         self.config = config;
     }
@@ -304,9 +352,10 @@ impl ProtectionMonitor {
     pub(super) fn update<F: PlatformFault>(
         &mut self,
         registry: &FaultRegistry<F>,
-        board: &BoardConfig,
+        prepared: &PreparedBoardConfig,
         sample: ProtectionSample,
     ) {
+        let board = prepared.board();
         // --- Voltage excursion integrals (every cycle) ---
         // Leaky-bucket trip: integrate the excursion, fire past `trip_vs`,
         // bleed it off in-range with τ≈5 ms. The integral is capped at a few
@@ -319,11 +368,11 @@ impl ProtectionMonitor {
         // linear ADC divider with no division, so NaN is not physically
         // reachable — mirrors the host-boundary "reject NaN" philosophy (the
         // ISR trusts its own sense path).
-        let max_v = board.max_vbus_mv as f32 / 1000.0;
-        let min_v = board.min_vbus_mv as f32 / 1000.0;
-        let trip_vs = 5e-5 * max_v;
-        let integral_ceiling = trip_vs * 4.0;
-        let decay = 1.0 - (sample.dt / 0.005).min(1.0);
+        let max_v = prepared.max_vbus_v;
+        let min_v = prepared.min_vbus_v;
+        let trip_vs = prepared.trip_vs;
+        let integral_ceiling = prepared.integral_ceiling;
+        let decay = self.voltage_decay;
         if sample.vbus_v > max_v {
             self.ov_integral_vs =
                 (self.ov_integral_vs + (sample.vbus_v - max_v) * sample.dt).min(integral_ceiling);
@@ -450,7 +499,7 @@ where
     pub fn run_protection<F: PlatformFault>(
         &mut self,
         registry: &FaultRegistry<F>,
-        board: &BoardConfig,
+        board: &PreparedBoardConfig,
         vbus_v: f32,
         fet_temp_c_x10: Option<i16>,
         motor_temp_c_x10: Option<i16>,
@@ -598,5 +647,281 @@ where
             (hi_bus / mod_q, lo_bus / mod_q)
         };
         clamp_f32(iq_target, lo_iq, hi_iq)
+    }
+}
+
+#[cfg(all(test, feature = "runtime"))]
+mod tests {
+    use super::*;
+    use crate::foc::config::NtcConfig;
+    use crate::foc::fault::StandardFault;
+
+    fn board(max_vbus_mv: u32, min_vbus_mv: u32) -> BoardConfig {
+        BoardConfig {
+            calib: Default::default(),
+            current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
+            max_iq_target_a: 10.0,
+            max_phase_current_a: 40.0,
+            max_vbus_mv,
+            min_vbus_mv,
+            max_fet_temp_c: 100.0,
+            max_motor_temp_c: 120.0,
+            phase_sense: None,
+        }
+    }
+
+    /// Original voltage algorithm, deliberately deriving constants on every
+    /// sample. Compare accumulated bits and fault edges, not just end states.
+    #[derive(Default)]
+    struct LegacyVoltage {
+        ov: f32,
+        uv: f32,
+        over_voltage: bool,
+        under_voltage: bool,
+    }
+
+    impl LegacyVoltage {
+        fn update(&mut self, board: &BoardConfig, dt: f32, vbus_v: f32) {
+            let max_v = board.max_vbus_mv as f32 / 1000.0;
+            let min_v = board.min_vbus_mv as f32 / 1000.0;
+            let trip_vs = 5e-5 * max_v;
+            let integral_ceiling = trip_vs * 4.0;
+            let decay = 1.0 - (dt / 0.005).min(1.0);
+            if vbus_v > max_v {
+                self.ov = (self.ov + (vbus_v - max_v) * dt).min(integral_ceiling);
+                if self.ov > trip_vs {
+                    self.over_voltage = true;
+                }
+            } else {
+                self.ov *= decay;
+            }
+            if vbus_v < min_v {
+                self.uv = (self.uv + (min_v - vbus_v) * dt).min(integral_ceiling);
+                if self.uv > trip_vs {
+                    self.under_voltage = true;
+                }
+            } else {
+                self.uv *= decay;
+                if vbus_v * 1000.0 > (board.min_vbus_mv + VOLTAGE_HYSTERESIS_MV) as f32 {
+                    self.under_voltage = false;
+                }
+            }
+        }
+    }
+
+    fn compare_sample(
+        monitor: &mut ProtectionMonitor,
+        registry: &FaultRegistry<StandardFault>,
+        legacy: &mut LegacyVoltage,
+        prepared: &PreparedBoardConfig,
+        dt: f32,
+        vbus_v: f32,
+    ) {
+        legacy.update(prepared.board(), dt, vbus_v);
+        monitor.update(
+            registry,
+            prepared,
+            ProtectionSample {
+                dt,
+                vbus_v,
+                velocity: 0.0,
+                fet_temp_c_x10: None,
+                motor_temp_c_x10: None,
+            },
+        );
+        assert_eq!(
+            monitor.ov_integral_vs.to_bits(),
+            legacy.ov.to_bits(),
+            "OV dt={dt} v={vbus_v}"
+        );
+        assert_eq!(
+            monitor.uv_integral_vs.to_bits(),
+            legacy.uv.to_bits(),
+            "UV dt={dt} v={vbus_v}"
+        );
+        assert_eq!(
+            registry.has_category(FaultCategory::OverVoltage),
+            legacy.over_voltage
+        );
+        assert_eq!(
+            registry.has_category(FaultCategory::UnderVoltage),
+            legacy.under_voltage
+        );
+    }
+
+    #[test]
+    fn prepared_voltage_matches_every_trip_cycle_decay_and_hysteresis_edge() {
+        for (max_mv, min_mv) in [(57_000, 8_000), (60_001, 12_001), (1_000, 0)] {
+            let prepared = PreparedBoardConfig::new(board(max_mv, min_mv));
+            for dt in [0.000025, 0.00005, 0.0001, 0.001, 0.005, 0.01] {
+                for over_voltage in [false, true] {
+                    let mut monitor = ProtectionMonitor::new(dt);
+                    let registry = FaultRegistry::new();
+                    let mut legacy = LegacyVoltage::default();
+                    let excursion = if over_voltage {
+                        max_mv as f32 / 1000.0 + 1.25
+                    } else {
+                        min_mv as f32 / 1000.0 - 0.75
+                    };
+                    let category = if over_voltage {
+                        FaultCategory::OverVoltage
+                    } else {
+                        FaultCategory::UnderVoltage
+                    };
+                    let mut actual_trip = None;
+                    let mut reference_trip = None;
+                    for cycle in 1..=1_000 {
+                        compare_sample(
+                            &mut monitor,
+                            &registry,
+                            &mut legacy,
+                            &prepared,
+                            dt,
+                            excursion,
+                        );
+                        if registry.has_category(category) {
+                            actual_trip.get_or_insert(cycle);
+                        }
+                        if if over_voltage {
+                            legacy.over_voltage
+                        } else {
+                            legacy.under_voltage
+                        } {
+                            reference_trip.get_or_insert(cycle);
+                        }
+                    }
+                    assert_eq!(actual_trip, reference_trip);
+                    assert!(actual_trip.is_some(), "the excursion must cross the budget");
+
+                    let clear_v = (min_mv + VOLTAGE_HYSTERESIS_MV) as f32 / 1000.0;
+                    let recovery = [
+                        min_mv as f32 / 1000.0,
+                        f32::from_bits(clear_v.to_bits() - 1),
+                        clear_v,
+                        f32::from_bits(clear_v.to_bits() + 1),
+                        f32::NAN,
+                        (max_mv as f32 + min_mv as f32) / 2000.0,
+                    ];
+                    for vbus in recovery.into_iter().cycle().take(300) {
+                        compare_sample(&mut monitor, &registry, &mut legacy, &prepared, dt, vbus);
+                    }
+                    if !over_voltage {
+                        assert!(!registry.has_category(FaultCategory::UnderVoltage));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn replacing_prepared_board_preserves_integrator_history_and_uses_new_thresholds() {
+        let dt = 0.00005;
+        let mut source = board(60_000, 8_000);
+        let first = PreparedBoardConfig::new(source);
+        let mut monitor = ProtectionMonitor::new(dt);
+        let registry = FaultRegistry::new();
+        let mut legacy = LegacyVoltage::default();
+        for _ in 0..100 {
+            compare_sample(&mut monitor, &registry, &mut legacy, &first, dt, 70.0);
+        }
+        let accumulated = monitor.ov_integral_vs;
+        source.max_vbus_mv = 20_001;
+        source.min_vbus_mv = 16_001;
+        let replacement = PreparedBoardConfig::new(source);
+        assert_eq!(first.board().max_vbus_mv, 60_000, "the source is owned");
+        registry.clear(FaultCategory::OverVoltage);
+        legacy.over_voltage = false;
+        compare_sample(&mut monitor, &registry, &mut legacy, &replacement, dt, 17.0);
+        assert_eq!(
+            monitor.ov_integral_vs.to_bits(),
+            (accumulated * (1.0 - dt / 0.005)).to_bits()
+        );
+        assert!(
+            monitor.ov_integral_vs > replacement.integral_ceiling,
+            "healthy samples decay history instead of resetting or clamping it"
+        );
+        compare_sample(&mut monitor, &registry, &mut legacy, &replacement, dt, 21.0);
+        assert!(registry.has_category(FaultCategory::OverVoltage));
+        for vbus in [0.0, 16.0, 16.5, 16.501, 17.0, f32::NAN] {
+            compare_sample(&mut monitor, &registry, &mut legacy, &replacement, dt, vbus);
+        }
+    }
+
+    #[test]
+    fn prepared_constants_keep_degenerate_board_and_timestep_arithmetic() {
+        for (max_mv, min_mv) in [(0, 0), (8_000, 12_000), (u32::MAX, 0)] {
+            let prepared = PreparedBoardConfig::new(board(max_mv, min_mv));
+            for dt in [0.0, -0.0, -0.001, f32::NAN, f32::INFINITY] {
+                let mut monitor = ProtectionMonitor::new(dt);
+                let registry = FaultRegistry::new();
+                let mut legacy = LegacyVoltage::default();
+                for vbus in [24.0, 0.0, -1.0, f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+                    compare_sample(&mut monitor, &registry, &mut legacy, &prepared, dt, vbus);
+                }
+            }
+        }
+        // The old UV hysteresis sum overflows only when its healthy branch
+        // executes. Preparation must not eagerly add it for malformed boards.
+        let prepared = PreparedBoardConfig::new(board(60_000, u32::MAX));
+        let mut monitor = ProtectionMonitor::new(0.00005);
+        let registry = FaultRegistry::new();
+        compare_sample(
+            &mut monitor,
+            &registry,
+            &mut LegacyVoltage::default(),
+            &prepared,
+            0.00005,
+            0.0,
+        );
+        assert!(registry.has_category(FaultCategory::UnderVoltage));
+    }
+
+    #[test]
+    fn prepared_board_keeps_temperature_sentinels_thresholds_and_derating_cadence() {
+        let readings = [
+            None,
+            Some(-300),
+            Some(1000),
+            Some(1001),
+            Some(1201),
+            Some(NtcConfig::INVALID_TEMP_C_X10),
+        ];
+        for (fet_limit, motor_limit) in [(100.0, 120.0), (0.0, -1.0), (f32::NAN, f32::INFINITY)] {
+            let mut source = board(60_000, 8_000);
+            source.max_fet_temp_c = fet_limit;
+            source.max_motor_temp_c = motor_limit;
+            let prepared = PreparedBoardConfig::new(source);
+            for fet in readings {
+                for motor in readings {
+                    let mut monitor = ProtectionMonitor::new(0.00005);
+                    let registry = FaultRegistry::<StandardFault>::new();
+                    for cycle in 1..=256 {
+                        monitor.update(
+                            &registry,
+                            &prepared,
+                            ProtectionSample {
+                                dt: 0.00005,
+                                vbus_v: 24.0,
+                                velocity: 0.0,
+                                fet_temp_c_x10: fet,
+                                motor_temp_c_x10: motor,
+                            },
+                        );
+                        if cycle < 256 {
+                            assert_eq!(monitor.scales, DeratingScales::IDENTITY);
+                        }
+                    }
+                    let fet_c = fet.map(|t| f32::from(t) / 10.0);
+                    let motor_c = motor.map(|t| f32::from(t) / 10.0);
+                    let expected_hot = fet_c.is_some_and(|t| fet_limit > 0.0 && t > fet_limit)
+                        || motor_c.is_some_and(|t| motor_limit > 0.0 && t > motor_limit);
+                    assert_eq!(registry.has_category(FaultCategory::OverTemp), expected_hot);
+                    assert_eq!(
+                        monitor.scales,
+                        DeratingConfig::default().compute(fet_c, motor_c, 24.0, 0.0)
+                    );
+                }
+            }
+        }
     }
 }
