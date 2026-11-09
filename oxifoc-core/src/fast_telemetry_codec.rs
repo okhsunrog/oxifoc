@@ -21,20 +21,15 @@ fn encode_delta(
     let (previous_words, previous_tail) = previous.as_chunks::<4>();
     for (index, (&new, &old)) in words.iter().zip(previous_words).enumerate() {
         let new = u32::from_le_bytes(new);
-        let changed = new ^ u32::from_le_bytes(old);
-        if changed == 0 {
-            continue;
-        }
+        let mut changed = new ^ u32::from_le_bytes(old);
         let mut mask = 0u8;
-        // Four fixed byte positions avoid rediscovering the next position
-        // with a variable shift and trailing-zero scan for every replacement.
-        for byte in 0..4 {
+        while changed != 0 {
+            let byte = changed.trailing_zeros() / 8;
             let shift = byte * 8;
-            if changed & (0xff << shift) != 0 {
-                replacements.get_mut(count)?.write((new >> shift) as u8);
-                count += 1;
-                mask |= 1 << byte;
-            }
+            replacements.get_mut(count)?.write((new >> shift) as u8);
+            count += 1;
+            mask |= 1 << byte;
+            changed &= !(0xff << shift);
         }
         header[1 + index / 2] |= mask << ((index % 2) * 4);
     }
@@ -257,93 +252,6 @@ mod tests {
             frame[offset] ^= random_byte(seed).max(1);
         }
         frame
-    }
-
-    // Frozen pre-change word/ctz implementation. Keep it independent of the
-    // fixed-position visit order so the differential check detects drift.
-    fn previous_delta(
-        previous: &[u8; FRAME],
-        frame: &[u8; FRAME],
-        encoded: &mut [MaybeUninit<u8>; 1 + FRAME],
-    ) -> Option<usize> {
-        let (header, replacements) = encoded.split_at_mut(1 + MASK_BYTES);
-        let header = header.write_copy_of_slice(&[0; 1 + MASK_BYTES]);
-        let mut count = 0;
-        let (words, tail) = frame.as_chunks::<4>();
-        let (previous_words, previous_tail) = previous.as_chunks::<4>();
-        for (index, (&new, &old)) in words.iter().zip(previous_words).enumerate() {
-            let new = u32::from_le_bytes(new);
-            let mut changed = new ^ u32::from_le_bytes(old);
-            let mut mask = 0u8;
-            while changed != 0 {
-                let byte = changed.trailing_zeros() / 8;
-                let shift = byte * 8;
-                replacements.get_mut(count)?.write((new >> shift) as u8);
-                count += 1;
-                mask |= 1 << byte;
-                changed &= !(0xff << shift);
-            }
-            header[1 + index / 2] |= mask << ((index % 2) * 4);
-        }
-        for (offset, (&new, &old)) in tail.iter().zip(previous_tail).enumerate() {
-            if new != old {
-                replacements.get_mut(count)?.write(new);
-                count += 1;
-                let index = words.len() * 4 + offset;
-                header[1 + index / 8] |= 1 << (index % 8);
-            }
-        }
-        Some(1 + MASK_BYTES + count)
-    }
-
-    fn assert_previous_delta_matches(previous: &[u8; FRAME], frame: &[u8; FRAME]) {
-        let mut old = [MaybeUninit::uninit(); 1 + FRAME];
-        let mut new = [MaybeUninit::uninit(); 1 + FRAME];
-        let old_len = previous_delta(previous, frame, &mut old);
-        let new_len = encode_delta(previous, frame, &mut new);
-        assert_eq!(new_len, old_len);
-        if let Some(len) = old_len {
-            for (old, new) in old.into_iter().zip(new).take(len) {
-                // SAFETY: successful encoders initialize the entire returned
-                // prefix. No unused spare bytes are read in either buffer.
-                assert_eq!(unsafe { old.assume_init() }, unsafe { new.assume_init() });
-            }
-        }
-    }
-
-    #[test]
-    fn fixed_byte_visits_match_frozen_encoder_for_all_lanes_and_change_counts() {
-        let mut seed = 0xc489_b70a;
-        for changed in 0..=FRAME {
-            for _ in 0..256 {
-                let previous = core::array::from_fn(|_| random_byte(&mut seed));
-                let frame = change_bytes(&previous, changed, &mut seed);
-                for alignment in 0..4 {
-                    let mut bytes = [0; FRAME + 3];
-                    bytes[alignment..alignment + FRAME].copy_from_slice(&frame);
-                    let frame = bytes[alignment..alignment + FRAME].try_into().unwrap();
-                    assert_previous_delta_matches(&previous, frame);
-                }
-            }
-        }
-        // Every four-byte lane mask, including unchanged words and bytes
-        // whose high bit alone changes, plus the final two-byte tail.
-        for base in [0x00, 0xff, 0x55] {
-            for word in 0..FRAME.div_ceil(4) {
-                for mask in 0_u8..16 {
-                    let previous = [base; FRAME];
-                    let mut frame = previous;
-                    for byte in 0..4 {
-                        if mask & (1 << byte) != 0
-                            && let Some(value) = frame.get_mut(word * 4 + byte)
-                        {
-                            *value ^= 0x80;
-                        }
-                    }
-                    assert_previous_delta_matches(&previous, &frame);
-                }
-            }
-        }
     }
 
     #[test]
