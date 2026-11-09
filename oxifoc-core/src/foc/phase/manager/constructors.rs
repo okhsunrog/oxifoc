@@ -1,6 +1,6 @@
 //! `PhaseManager` constructors and sensor-binding conversions.
 
-use super::{HallHealth, OpenLoopOverride, PhaseManager, PhaseTracker};
+use super::{HallControlMotion, HallHealth, OpenLoopOverride, PhaseManager, PhaseTracker};
 #[cfg(feature = "hfi")]
 use crate::foc::phase::observer::HfiObserver;
 use crate::foc::phase::observer::Observer;
@@ -33,6 +33,7 @@ impl PhaseManager<NoSensor, NoSensor> {
             open_loop_angle: 0.0,
             open_loop_velocity: 0.0,
             ticks_per_sec: 1_000_000,
+            hall_control_motion: HallControlMotion::default(),
             hall_health: HallHealth::NotPresent,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
@@ -65,6 +66,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             open_loop_angle: 0.0,
             open_loop_velocity: 0.0,
             ticks_per_sec: 1_000_000,
+            hall_control_motion: HallControlMotion::default(),
             hall_health: HallHealth::Ok,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),
@@ -95,6 +97,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             open_loop_angle: self.open_loop_angle,
             open_loop_velocity: self.open_loop_velocity,
             ticks_per_sec: self.ticks_per_sec,
+            hall_control_motion: self.hall_control_motion,
             hall_health: self.hall_health,
             open_loop_override: self.open_loop_override,
             startup: self.startup,
@@ -128,6 +131,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             open_loop_angle: self.open_loop_angle,
             open_loop_velocity: self.open_loop_velocity,
             ticks_per_sec: self.ticks_per_sec,
+            hall_control_motion: self.hall_control_motion,
             hall_health: self.hall_health,
             open_loop_override: self.open_loop_override,
             startup: self.startup,
@@ -160,6 +164,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             open_loop_angle: 0.0,
             open_loop_velocity: 0.0,
             ticks_per_sec: 1_000_000,
+            hall_control_motion: HallControlMotion::default(),
             hall_health: HallHealth::NotPresent,
             open_loop_override: OpenLoopOverride::default(),
             startup: SensorlessStartup::default(),

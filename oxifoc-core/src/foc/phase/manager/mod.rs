@@ -10,6 +10,7 @@ mod config;
 pub use config::PreparedPhaseModel;
 mod constructors;
 mod hall;
+mod hall_control_motion;
 mod open_loop;
 mod select;
 mod tracker;
@@ -28,6 +29,7 @@ use crate::foc::sensors::AngleSensor;
 use crate::foc::sensors::NoSensor;
 use crate::foc::trig::LibmSinCos;
 use crate::foc::trig::SinCos;
+use hall_control_motion::HallControlMotion;
 use heapless::Vec as HeaplessVec;
 
 /// Hysteresis band for the sharp HFI↔sensor crossovers (fraction of the
@@ -263,6 +265,9 @@ where
 
     // Timebase
     ticks_per_sec: u64,
+
+    // Hall edge/interpolation speed is deliberately not the control speed.
+    hall_control_motion: HallControlMotion,
 
     // Hall health tracking
     hall_health: HallHealth,

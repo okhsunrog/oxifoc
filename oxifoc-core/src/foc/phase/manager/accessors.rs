@@ -15,6 +15,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Set the timebase for tick conversions
     pub fn set_ticks_per_sec(&mut self, ticks_per_sec: u64) {
         self.ticks_per_sec = ticks_per_sec.max(1);
+        self.hall_control_motion
+            .set_ticks_per_sec(self.ticks_per_sec);
     }
 
     /// Get current phase source
@@ -50,6 +52,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             return Err(PhaseSourceError::HfiNotConfigured);
         }
 
+        if self.source.requires_hall() != source.requires_hall() {
+            self.hall_control_motion.source_changed();
+        }
         self.source = source;
         // Crossover memory belongs to the previous source's thresholds.
         self.crossover_latched = false;

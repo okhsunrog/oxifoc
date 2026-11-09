@@ -435,6 +435,184 @@ impl AngleSensor for MockHallSensor {
     fn reset_errors(&mut self) {}
 }
 
+fn establish_mock_hall_velocity(phase: &mut PhaseManager<MockHallSensor>, angle: f32, speed: f32) {
+    let input = PhaseInput {
+        dt: 0.00005,
+        ..Default::default()
+    };
+    for step in 0..=2000_u64 {
+        #[allow(clippy::cast_precision_loss)]
+        let position = wrap_angle(angle + speed * (step as f32 - 2000.0) * input.dt);
+        phase.hall_mut().set_reading(position, speed);
+        phase.update(&input, step * 50);
+    }
+    assert!((phase.get().velocity - speed).abs() < 0.1);
+}
+
+#[test]
+fn hall_control_speed_and_prediction_do_not_follow_raw_edge_speed_steps() {
+    let mut phase = PhaseManager::with_hall(MockHallSensor::new());
+    establish_mock_hall_velocity(&mut phase, 1.0, 100.0);
+    // Rebinding hardware / the trig backend must preserve motion history.
+    let mut phase = phase
+        .with_encoder(MockHallSensor::new())
+        .with_sincos::<LibmSinCos>();
+    assert!(phase.set_source(PhaseSource::Observer).is_err());
+    phase.set_source(PhaseSource::Hall).unwrap();
+    phase.hall_mut().set_reading(1.005, 600.0);
+    phase.update(
+        &PhaseInput {
+            dt: 0.00005,
+            ..Default::default()
+        },
+        100_050,
+    );
+    let output = phase.get();
+    assert!((output.velocity - 100.0).abs() < 0.1);
+    assert!(angle_difference(output.angle, 1.01).abs() < 0.00001);
+    assert_eq!(phase.hall().sample(100_050).unwrap().omega, 600.0);
+}
+
+#[test]
+fn hall_reentry_uses_current_manual_or_fallback_speed_without_differentiating_source_jump() {
+    let mut phase = PhaseManager::with_hall(MockHallSensor::new());
+    establish_mock_hall_velocity(&mut phase, 1.0, 100.0);
+    phase.hall_mut().set_valid(false);
+    let input = PhaseInput {
+        dt: 0.00005,
+        ..Default::default()
+    };
+    phase.update(&input, 100_050);
+    let fallback_speed = phase.get().velocity;
+    assert_eq!(fallback_speed, DEFAULT_OPENLOOP_MIN_VEL);
+    phase.hall_mut().set_valid(true);
+    phase.hall_mut().set_reading(3.0, 900.0);
+    phase.update(&input, 100_100);
+    assert_eq!(phase.get().velocity, fallback_speed);
+    assert!(!phase.is_open_loop_override_active());
+
+    phase.set_source(PhaseSource::Manual).unwrap();
+    phase.update(&input, 100_150);
+    assert_eq!(phase.get().velocity, 0.0);
+    phase.set_source(PhaseSource::Hall).unwrap();
+    phase.hall_mut().set_reading(5.0, 900.0);
+    phase.update(&input, 100_200);
+    assert_eq!(phase.get().velocity, 0.0);
+    assert!(angle_difference(phase.get().angle, 5.0).abs() < 0.00001);
+}
+
+#[test]
+fn hall_timebase_reset_is_cold_and_encoder_prediction_still_uses_encoder_speed() {
+    let mut phase = PhaseManager::with_hall(MockHallSensor::new());
+    establish_mock_hall_velocity(&mut phase, 1.0, 100.0);
+    phase.set_ticks_per_sec(2_000_000);
+    phase.hall_mut().set_reading(2.0, 100.0);
+    phase.update(
+        &PhaseInput {
+            dt: 0.00005,
+            ..Default::default()
+        },
+        200_100,
+    );
+    assert_eq!(phase.get().velocity, 0.0);
+    assert_eq!(phase.get().angle, 2.0);
+
+    let mut encoder = PhaseManager::with_encoder_only(MockHallSensor::new());
+    encoder.update(
+        &PhaseInput {
+            dt: 0.0002,
+            ..Default::default()
+        },
+        200,
+    );
+    assert_eq!(encoder.get().velocity, 100.0);
+    assert!((encoder.get().angle - 0.52).abs() < 0.00001);
+}
+
+#[cfg(feature = "hfi")]
+#[test]
+fn hfi_hall_crossover_uses_continuous_hall_speed_instead_of_raw_edge_speed() {
+    use crate::foc::phase::HfiObserver;
+    let mut phase = PhaseManager::with_hall(MockHallSensor::new());
+    establish_mock_hall_velocity(&mut phase, 1.0, 80.0);
+    phase.set_hfi_observer(HfiObserver::new(1000.0, 0.1));
+    phase
+        .set_source(PhaseSource::HfiToHall { switch_vel: 100.0 })
+        .unwrap();
+    let input = PhaseInput {
+        dt: 0.00005,
+        ..Default::default()
+    };
+    phase.hall_mut().set_reading(1.004, 600.0);
+    phase.update(&input, 100_050);
+    assert!(
+        !phase.crossover_latched,
+        "a raw speed jump must not hand off"
+    );
+    for step in 1..=500_u64 {
+        #[allow(clippy::cast_precision_loss)]
+        let angle = 1.004 + 200.0 * step as f32 * input.dt;
+        phase.hall_mut().set_reading(wrap_angle(angle), 600.0);
+        phase.update(&input, 100_050 + step * 50);
+    }
+    assert!(phase.crossover_latched);
+    assert!((phase.get().velocity - 200.0).abs() < 1.0);
+}
+
+#[test]
+fn successful_hall_calibration_resets_control_motion_but_rejected_calibration_does_not() {
+    use crate::foc::hall_calibration::HallCalibrationResult;
+    use crate::foc::hall_sensor::HallSensor;
+    let mut phase = PhaseManager::with_hall(HallSensor::new(1_000_000));
+    let sample = crate::foc::sensors::ControlAngleSample {
+        sample: AngleSample {
+            angle: 0.0,
+            omega: 100.0,
+            direction: Direction::Clockwise,
+        },
+        reference_epoch: 0,
+    };
+    phase.hall_control_motion.observe(sample, 0, 0.0);
+    let sample = crate::foc::sensors::ControlAngleSample {
+        sample: AngleSample {
+            angle: 0.005,
+            ..sample.sample
+        },
+        ..sample
+    };
+    let before = phase.hall_control_motion.observe(sample, 50, 0.0).unwrap();
+    assert!(before.velocity > 0.0);
+    let mut calibration = HallCalibrationResult {
+        angles: [-1.0; 8],
+        valid: [false; 8],
+        valid_count: 0,
+    };
+    assert!(!phase.apply_hall_calibration(&calibration));
+    let unchanged = phase.hall_control_motion.observe(sample, 50, 20.0).unwrap();
+    assert_eq!(unchanged.velocity, before.velocity);
+    phase.set_hall_calibration([0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    assert_eq!(
+        phase
+            .hall_control_motion
+            .observe(sample, 100, 20.0)
+            .unwrap()
+            .velocity,
+        0.0
+    );
+    calibration.angles = [-1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, -1.0];
+    calibration.valid = [false, true, true, true, true, true, true, false];
+    calibration.valid_count = 6;
+    assert!(phase.apply_hall_calibration(&calibration));
+    assert_eq!(
+        phase
+            .hall_control_motion
+            .observe(sample, 150, 20.0)
+            .unwrap()
+            .velocity,
+        0.0
+    );
+}
+
 #[test]
 fn test_hall_failure_triggers_fallback() {
     let mock_hall = MockHallSensor::new();
@@ -676,6 +854,7 @@ fn blend_reseeds_pi_flipped_observer_from_sensor() {
     let hall_angle = 1.0f32;
     mock_hall.set_reading(hall_angle, 400.0); // mid blend band
     let mut phase = PhaseManager::with_hall(mock_hall);
+    establish_mock_hall_velocity(&mut phase, hall_angle, 400.0);
 
     let mut observer = BackEmfObserver::new(0.1, 1e-4, 0.01);
     observer.force_phase(hall_angle + PI); // flipped
@@ -693,7 +872,7 @@ fn blend_reseeds_pi_flipped_observer_from_sensor() {
             dt: 0.001,
             ..Default::default()
         },
-        0,
+        100_050,
     );
 
     // The output predicts the next sample: hall extrapolated by ω·dt.
@@ -720,6 +899,7 @@ fn blend_ignores_unready_observer() {
     let hall_angle = 2.0f32;
     mock_hall.set_reading(hall_angle, 450.0); // mid blend band
     let mut phase = PhaseManager::with_hall(mock_hall);
+    establish_mock_hall_velocity(&mut phase, hall_angle, 450.0);
     phase.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 1e-4, 0.01)));
     phase
         .set_source(PhaseSource::HallToObserver {
@@ -733,7 +913,7 @@ fn blend_ignores_unready_observer() {
             dt: 0.001,
             ..Default::default()
         },
-        0,
+        100_050,
     );
 
     // The output predicts the next sample: hall extrapolated by ω·dt.
@@ -1734,10 +1914,19 @@ fn model_replacement_preserves_hardware_source_and_clears_partial_estimators() {
         ..RuntimeConfig::default()
     };
     let mut manager = PhaseManager::with_hall(MockHallSensor::new());
+    establish_mock_hall_velocity(&mut manager, 1.4, 25.0);
     manager.hall_mut().set_reading(1.4, 25.0);
     manager.configure_observers_from_config(&config, 24.0);
     assert_eq!(manager.source(), PhaseSource::Hall);
     assert_eq!(manager.hall().read_angle(), 1.4);
+    manager.set_source(PhaseSource::Manual).unwrap();
+    manager.set_source(PhaseSource::Hall).unwrap();
+    manager.update(&PhaseInput::default(), 100_050);
+    assert_eq!(
+        manager.get().velocity,
+        0.0,
+        "a new model resets Hall control motion"
+    );
     assert_eq!(manager.tracker.kp, 10_000.0);
     assert!((manager.tracker.kd - 240.0).abs() < 1e-4);
     #[cfg(feature = "hfi")]

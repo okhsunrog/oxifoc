@@ -103,11 +103,16 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Set Hall calibration table
     pub fn set_hall_calibration(&mut self, table: [f32; 6]) {
         self.hall.set_calibration(table);
+        self.hall_control_motion.reset();
     }
 
     /// Apply Hall calibration result
     pub fn apply_hall_calibration(&mut self, result: &HallCalibrationResult) -> bool {
-        self.hall.apply_calibration(result)
+        let applied = self.hall.apply_calibration(result);
+        if applied {
+            self.hall_control_motion.reset();
+        }
+        applied
     }
 
     /// Get raw Hall state (0-7)
@@ -122,7 +127,12 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
     /// Set Hall timing advance
     pub fn set_hall_advance(&mut self, advance_rad: f32) {
+        let changed = self.hall.advance() != advance_rad;
         self.hall.set_advance(advance_rad);
+        if changed {
+            // A new commutation-frame offset is not rotor motion.
+            self.hall_control_motion.reset();
+        }
     }
 
     /// Get Hall timing advance
@@ -130,7 +140,7 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         self.hall.advance()
     }
 
-    /// Get Hall electrical velocity
+    /// Get raw Hall edge/interpolation velocity (not the filtered control speed).
     pub fn hall_velocity(&self) -> f32 {
         self.hall.electrical_velocity()
     }

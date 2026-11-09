@@ -19,14 +19,22 @@ use core::cell::{Cell, RefCell};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
 use super::hall_sensor::{Direction, HallSensor};
-use super::sensors::{AngleSample, AngleSensor, HallSensorTrait, HallSnapshot};
+use super::sensors::{AngleSample, AngleSensor, ControlAngleSample, HallSensorTrait, HallSnapshot};
 
 // ========== Hall Estimator (shared state) ==========
 
 /// Hall estimator — the single source of truth for Hall sensor state.
 /// Accessed by the capture ISR (write via [`update_hall_edge`]) and telemetry tasks (read).
-static HALL_ESTIMATOR: CriticalSectionMutex<RefCell<Option<HallSensor>>> =
-    CriticalSectionMutex::new(RefCell::new(None));
+struct HallEstimatorState {
+    sensor: Option<HallSensor>,
+    reference_epoch: u32,
+}
+
+static HALL_ESTIMATOR: CriticalSectionMutex<RefCell<HallEstimatorState>> =
+    CriticalSectionMutex::new(RefCell::new(HallEstimatorState {
+        sensor: None,
+        reference_epoch: 0,
+    }));
 
 /// Platform tick source for "now" in the hall tick domain, registered at init.
 type TickSourceFn = fn() -> u64;
@@ -47,7 +55,9 @@ static TICK_SOURCE: CriticalSectionMutex<Cell<Option<TickSourceFn>>> =
 ///   (1 MHz on the current boards).
 pub fn init_estimator(timebase_ticks_per_sec: u64) {
     HALL_ESTIMATOR.lock(|est| {
-        est.replace(Some(HallSensor::new(timebase_ticks_per_sec)));
+        let mut state = est.borrow_mut();
+        state.sensor = Some(HallSensor::new(timebase_ticks_per_sec));
+        state.reference_epoch = state.reference_epoch.wrapping_add(1);
     });
 }
 
@@ -91,7 +101,7 @@ pub fn update_hall_edge(state: u8, ticks: u64) {
 
     if state != last {
         HALL_ESTIMATOR.lock(|est| {
-            if let Some(h) = est.borrow_mut().as_mut() {
+            if let Some(h) = est.borrow_mut().sensor.as_mut() {
                 let _ = h.update_sample(state, ticks);
             }
         });
@@ -108,7 +118,7 @@ pub fn update_hall_edge(state: u8, ticks: u64) {
 /// Get current Hall sensor snapshot (for telemetry, polled at low rate).
 pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
     HALL_ESTIMATOR.lock(|est| {
-        est.borrow().as_ref().and_then(|h| {
+        est.borrow().sensor.as_ref().and_then(|h| {
             h.sample_at(now_ticks).map(|sample| HallSnapshot {
                 angle_rad: sample.angle,
                 velocity_rad_s: sample.omega,
@@ -128,9 +138,15 @@ pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
 #[cfg(feature = "detection")]
 pub fn apply_detected_calibration(result: &super::hall_calibration::HallCalibrationResult) -> bool {
     HALL_ESTIMATOR.lock(|est| {
-        est.borrow_mut()
+        let mut state = est.borrow_mut();
+        let applied = state
+            .sensor
             .as_mut()
-            .is_some_and(|h| h.apply_calibration(result))
+            .is_some_and(|h| h.apply_calibration(result));
+        if applied {
+            state.reference_epoch = state.reference_epoch.wrapping_add(1);
+        }
+        applied
     })
 }
 
@@ -140,11 +156,14 @@ pub fn apply_detected_calibration(result: &super::hall_calibration::HallCalibrat
 #[cfg(feature = "storage")]
 pub fn apply_stored_config(config: &RuntimeConfig) {
     HALL_ESTIMATOR.lock(|est| {
-        if let Some(h) = est.borrow_mut().as_mut() {
+        let mut state = est.borrow_mut();
+        let mut changed = false;
+        if let Some(h) = state.sensor.as_mut() {
             if let Some(ref cal) = config.hall_calibration
                 && cal.is_calibrated()
             {
                 h.set_calibration_raw(cal.angles);
+                changed = true;
                 info!("Applied stored Hall calibration");
             }
             if let Some(ref tuning) = config.hall_tuning
@@ -152,8 +171,12 @@ pub fn apply_stored_config(config: &RuntimeConfig) {
             {
                 h.set_interp_min_erpm(tuning.interp_min_erpm);
                 h.set_rate_limit_factor(tuning.rate_limit_factor);
+                changed = true;
                 info!("Applied stored Hall tuning params");
             }
+        }
+        if changed {
+            state.reference_epoch = state.reference_epoch.wrapping_add(1);
         }
     });
 }
@@ -172,7 +195,12 @@ impl HallAngleProxy {
 
 impl AngleSensor for HallAngleProxy {
     fn sample(&self, now_ticks: u64) -> Option<AngleSample> {
-        HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(|h| h.sample_at(now_ticks)))
+        HALL_ESTIMATOR.lock(|est| {
+            est.borrow()
+                .sensor
+                .as_ref()
+                .and_then(|h| h.sample_at(now_ticks))
+        })
     }
 
     // The trait defaults would silently drop the estimator's stateful
@@ -183,14 +211,31 @@ impl AngleSensor for HallAngleProxy {
     fn sample_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
         HALL_ESTIMATOR.lock(|est| {
             est.borrow_mut()
+                .sensor
                 .as_mut()
                 .and_then(|h| h.sample_at_mut(now_ticks))
+        })
+    }
+
+    fn sample_for_control(&mut self, now_ticks: u64) -> Option<ControlAngleSample> {
+        HALL_ESTIMATOR.lock(|est| {
+            let mut state = est.borrow_mut();
+            let reference_epoch = state.reference_epoch;
+            state
+                .sensor
+                .as_mut()
+                .and_then(|h| h.sample_at_mut(now_ticks))
+                .map(|sample| ControlAngleSample {
+                    sample,
+                    reference_epoch,
+                })
         })
     }
 
     fn is_stale(&self, now_ticks: u64, omega_ref: f32) -> bool {
         HALL_ESTIMATOR.lock(|est| {
             est.borrow()
+                .sensor
                 .as_ref()
                 .is_some_and(|h| h.is_stale_at_speed(now_ticks, omega_ref))
         })
@@ -211,6 +256,7 @@ impl AngleSensor for HallAngleProxy {
     fn error_count(&self) -> u32 {
         HALL_ESTIMATOR.lock(|est| {
             est.borrow()
+                .sensor
                 .as_ref()
                 .map(HallSensor::error_count)
                 .unwrap_or(0)
@@ -219,7 +265,7 @@ impl AngleSensor for HallAngleProxy {
 
     fn reset_errors(&mut self) {
         HALL_ESTIMATOR.lock(|est| {
-            if let Some(h) = est.borrow_mut().as_mut() {
+            if let Some(h) = est.borrow_mut().sensor.as_mut() {
                 h.reset_errors();
             }
         });
@@ -228,12 +274,103 @@ impl AngleSensor for HallAngleProxy {
     /// Present once the platform created the estimator (`init_estimator`),
     /// i.e. the hall hardware is wired up — even before the first edge.
     fn is_present(&self) -> bool {
-        HALL_ESTIMATOR.lock(|est| est.borrow().is_some())
+        HALL_ESTIMATOR.lock(|est| est.borrow().sensor.is_some())
     }
 
     // The trait default (None) would hide the shared estimator's wire
     // verdicts from the fault bridge, same trap as sample_mut/is_stale.
     fn fault_kind(&self) -> Option<HallFaultKind> {
-        HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(HallSensor::fault_kind))
+        HALL_ESTIMATOR.lock(|est| {
+            est.borrow()
+                .sensor
+                .as_ref()
+                .and_then(HallSensor::fault_kind)
+        })
+    }
+}
+
+#[cfg(all(test, feature = "detection"))]
+mod tests {
+    use super::*;
+    use crate::foc::hall_calibration::HallCalibrationResult;
+    use crate::foc::hall_sensor::HALL_STATE_TABLE;
+    use crate::foc::phase::{PhaseInput, PhaseManager, PhaseProvider};
+
+    // This is the only host test that owns the shared estimator. Exercise the
+    // same live-apply API as embassy_hw::calibrate_hall, rather than a direct
+    // PhaseManager setter that hardware proxies never call.
+    #[test]
+    fn live_proxy_calibration_epochs_reset_control_motion_only_after_success() {
+        init_estimator(1_000_000);
+        update_hall_edge(1, 0);
+        let mut manager = PhaseManager::with_hall(HallAngleProxy::new());
+        let input = PhaseInput {
+            dt: 0.00005,
+            ..Default::default()
+        };
+        let sequence = [1, 3, 2, 6, 4, 5];
+        for step in 0..=600_u64 {
+            if step.is_multiple_of(100) {
+                let index = usize::try_from((step / 100) % 6).unwrap();
+                update_hall_edge(sequence[index], step * 50);
+            }
+            manager.update(&input, step * 50);
+        }
+        assert!(manager.get().velocity > 10.0);
+        let mut proxy = HallAngleProxy::new();
+        let epoch = proxy.sample_for_control(30_000).unwrap().reference_epoch;
+        let mut calibration = HallCalibrationResult {
+            angles: [0.0; 8],
+            valid: [false; 8],
+            valid_count: 0,
+        };
+        assert!(!apply_detected_calibration(&calibration));
+        assert_eq!(
+            proxy.sample_for_control(30_000).unwrap().reference_epoch,
+            epoch
+        );
+        manager.update(&input, 30_050);
+        assert!(
+            manager.get().velocity > 10.0,
+            "rejected calibration keeps motion history"
+        );
+
+        calibration.valid = [false, true, true, true, true, true, true, false];
+        calibration.valid_count = 6;
+        for (angle, logical) in calibration.angles[1..7]
+            .iter_mut()
+            .zip(&HALL_STATE_TABLE[1..7])
+        {
+            *angle = f32::from(*logical) * core::f32::consts::TAU / 6.0 + 0.3;
+        }
+        assert!(apply_detected_calibration(&calibration));
+        let frame = proxy.sample_for_control(30_100).unwrap();
+        assert_eq!(frame.reference_epoch, epoch.wrapping_add(1));
+        manager.update(&input, 30_100);
+        assert_eq!(
+            manager.get().velocity,
+            0.0,
+            "new table starts a fresh derivative"
+        );
+
+        // An epoch change while samples are unavailable must survive the
+        // fallback: the first recovered frame still cold-resets the filter.
+        update_hall_edge(7, 30_150);
+        assert!(apply_detected_calibration(&calibration));
+        manager.update(&input, 30_150);
+        assert!(proxy.sample_for_control(30_150).is_none());
+        update_hall_edge(1, 30_200);
+        manager.update(&input, 30_200);
+        assert_eq!(manager.get().velocity, 0.0);
+
+        HALL_ESTIMATOR.lock(|est| est.borrow_mut().reference_epoch = u32::MAX);
+        assert!(apply_detected_calibration(&calibration));
+        assert_eq!(proxy.sample_for_control(30_250).unwrap().reference_epoch, 0);
+        manager.update(&input, 30_250);
+        assert_eq!(
+            manager.get().velocity,
+            0.0,
+            "epoch rollover is a reference change too"
+        );
     }
 }

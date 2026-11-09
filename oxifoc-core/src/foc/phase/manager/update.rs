@@ -112,7 +112,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 if stale {
                     None
                 } else {
-                    self.hall.sample_mut(now_ticks)
+                    self.hall.sample_for_control(now_ticks)
                 },
             )
         } else {
@@ -131,7 +131,21 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             angle: wrap_angle(s.angle + s.omega * input.dt),
             ..s
         };
-        let hall_sample = hall_sample.map(predict);
+        // Differentiate the stateful, rate-limited Hall angle before the
+        // one-period prediction. Use actual elapsed Hall-domain ticks for
+        // that measurement; input.dt remains the prediction horizon (also
+        // when Stopped calls us at dt * 4).
+        let hall_sample = if let Some(sample) = hall_sample {
+            self.hall_control_motion
+                .observe(sample, now_ticks, self.output.velocity)
+                .map(|sample| PhaseOutput {
+                    angle: wrap_angle(sample.angle + sample.velocity * input.dt),
+                    ..sample
+                })
+        } else {
+            self.hall_control_motion.unavailable();
+            None
+        };
         let encoder_sample = encoder_sample.map(predict);
 
         // Hall health is only meaningful for sources that consume hall data:

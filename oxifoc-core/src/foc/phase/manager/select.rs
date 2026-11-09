@@ -30,7 +30,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     pub(super) fn compute_phase_with_fallback(
         &mut self,
-        hall_sample: Option<AngleSample>,
+        hall_sample: Option<PhaseOutput>,
         encoder_sample: Option<AngleSample>,
         dt: f32,
     ) -> PhaseOutput {
@@ -47,10 +47,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             PhaseSource::Hall => {
                 // VESC-style: try Hall first, fall back to observer if Hall failed
                 if let Some(sample) = hall_sample {
-                    PhaseOutput {
-                        angle: sample.angle,
-                        velocity: sample.omega,
-                    }
+                    sample
                 } else {
                     // Hall failed - try observer fallback
                     self.try_observer_fallback().unwrap_or(self.output)
@@ -121,7 +118,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 if hall_sample.is_none() {
                     return self.try_observer_fallback().unwrap_or(self.output);
                 }
-                let sensor = sample_to_output(hall_sample, &self.output);
+                let sensor = hall_sample.unwrap_or(self.output);
                 self.blend_with_observer(sensor, blend_low, blend_high)
             }
 
@@ -223,7 +220,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             }
 
             PhaseSource::HfiToHall { switch_vel } => {
-                let hall = sample_to_output(hall_sample, &self.output);
+                let hall = hall_sample.unwrap_or(self.output);
                 if self.crossover_latched {
                     // Drop back to HFI only below the hysteresis band or on
                     // hall failure.

@@ -30,6 +30,14 @@ pub struct AngleSample {
     pub direction: Direction,
 }
 
+/// A control sample and the angle-reference generation it belongs to.
+/// Raw angle/edge telemetry remains an [`AngleSample`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ControlAngleSample {
+    pub sample: AngleSample,
+    pub reference_epoch: u32,
+}
+
 /// Platform-agnostic current sensor trait
 ///
 /// Implementers provide 3-phase current measurements in Amperes.
@@ -80,6 +88,21 @@ pub trait AngleSensor {
     /// the smoothed estimate. Telemetry/diagnostics keep using `sample`.
     fn sample_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
         self.sample(now_ticks)
+    }
+
+    /// Stateful control sample with the reference epoch that produced it.
+    ///
+    /// A sensor whose calibration/reference changes outside its owner (for
+    /// example, a proxy over an interrupt-shared estimator) must return the
+    /// sample and epoch from one coherent snapshot. Increment the epoch on
+    /// a successful reference change so downstream derivatives discard the
+    /// old angle frame. Default epoch zero preserves existing implementors;
+    /// owner-managed calibration can keep explicitly resetting derived state.
+    fn sample_for_control(&mut self, now_ticks: u64) -> Option<ControlAngleSample> {
+        self.sample_mut(now_ticks).map(|sample| ControlAngleSample {
+            sample,
+            reference_epoch: 0,
+        })
     }
 
     /// Whether the sensor's data has implausibly stopped updating while an

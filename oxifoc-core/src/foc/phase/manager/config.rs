@@ -83,6 +83,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             // Manual is always available and does not consult unwired sensors.
             let _ = self.set_source(PhaseSource::Manual);
         }
+        self.hall_control_motion.reset();
         self.source
     }
 
