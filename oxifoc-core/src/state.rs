@@ -171,7 +171,9 @@ impl CycleNotification {
     }
 
     pub fn wake(&self) {
-        if self.waiting.swap(false, Ordering::AcqRel) {
+        // Only an idle hint: the subscriber rechecks its sequence after
+        // registering. The exchange still owns wake duty on the armed path.
+        if self.waiting.load(Ordering::Relaxed) && self.waiting.swap(false, Ordering::AcqRel) {
             self.waker.wake();
         }
     }
@@ -1357,19 +1359,49 @@ pub fn update_telemetry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, atomic::AtomicUsize};
+
+    struct Counter(AtomicUsize);
+    impl std::task::Wake for Counter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn publish_cycle(
+        notification: &CycleNotification,
+        state: &CriticalSectionMutex<RefCell<MotorControlState>>,
+        seq: u32,
+    ) {
+        let mut foc = FocOutput::empty();
+        foc.iq = seq as f32;
+        critical_section::with(|cs| {
+            let mut state = state.borrow(cs).borrow_mut();
+            state.update_adc(AdcSnapshot::new(0, 0, 0, 24_000, seq));
+            state.update_foc(foc);
+        });
+        notification.wake();
+    }
+
+    struct PublishOnWake {
+        notification: Arc<CycleNotification>,
+        state: Arc<CriticalSectionMutex<RefCell<MotorControlState>>>,
+    }
+
+    impl std::task::Wake for PublishOnWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            publish_cycle(&self.notification, &self.state, 1);
+        }
+    }
 
     #[test]
     fn completed_or_cancelled_cycle_wait_does_not_leave_adc_rate_wakeups() {
-        use std::sync::{Arc, atomic::AtomicUsize};
-        struct Counter(AtomicUsize);
-        impl std::task::Wake for Counter {
-            fn wake(self: Arc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-            fn wake_by_ref(self: &Arc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-        }
         let counter = Arc::new(Counter(AtomicUsize::new(0)));
         let waker = core::task::Waker::from(counter.clone());
         let notification = CycleNotification::new();
@@ -1385,6 +1417,97 @@ mod tests {
         notification.register(&waker);
         notification.wake();
         assert_eq!(counter.0.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn publication_at_registration_boundaries_is_observed_without_lingering_wakes() {
+        #[derive(Clone, Copy, Debug)]
+        enum Publication {
+            BeforeRegister,
+            DuringRegister,
+            AfterRegister,
+            AfterPending,
+        }
+        for point in [
+            Publication::BeforeRegister,
+            Publication::DuringRegister,
+            Publication::AfterRegister,
+            Publication::AfterPending,
+        ] {
+            let notification = Arc::new(CycleNotification::new());
+            let state = Arc::new(CriticalSectionMutex::new(RefCell::new(
+                MotorControlState::new(),
+            )));
+            let counter = Arc::new(Counter(AtomicUsize::new(0)));
+            let waker = core::task::Waker::from(counter.clone());
+            let previous_seq = critical_section::with(|cs| state.borrow(cs).borrow().last_adc.seq);
+            match point {
+                Publication::BeforeRegister => publish_cycle(&notification, &state, 1),
+                Publication::DuringRegister => {
+                    // AtomicWaker retains a cancelled registration. Replacing
+                    // it invokes this callback INSIDE register(), before the
+                    // new CycleNotification subscription has been armed.
+                    let publisher = core::task::Waker::from(Arc::new(PublishOnWake {
+                        notification: notification.clone(),
+                        state: state.clone(),
+                    }));
+                    notification.register(&publisher);
+                    notification.cancel();
+                }
+                _ => {}
+            }
+            notification.register(&waker);
+            match point {
+                Publication::AfterRegister => publish_cycle(&notification, &state, 1),
+                Publication::AfterPending => {
+                    assert_eq!(
+                        critical_section::with(|cs| state.borrow(cs).borrow().last_adc.seq),
+                        previous_seq
+                    );
+                    std::thread::scope(|scope| {
+                        scope.spawn(|| publish_cycle(&notification, &state, 1));
+                    });
+                }
+                _ => {}
+            }
+            // This is the consumer's register-before-sequence-recheck
+            // protocol: a missed notification is harmless only if the
+            // recheck observes the complete, matching publication.
+            critical_section::with(|cs| {
+                let state = state.borrow(cs).borrow();
+                assert_ne!(state.last_adc.seq, previous_seq, "{point:?}");
+                assert_eq!((state.last_adc.seq, state.last_foc.iq), (1, 1.0));
+            });
+            let expected_wakes = usize::from(matches!(
+                point,
+                Publication::AfterRegister | Publication::AfterPending
+            ));
+            assert_eq!(
+                counter.0.load(Ordering::Relaxed),
+                expected_wakes,
+                "{point:?}"
+            );
+            // Completion drops the subscription, including when publication
+            // happened during register() and left a newly armed flag behind.
+            notification.cancel();
+            for seq in 2..=100 {
+                publish_cycle(&notification, &state, seq);
+            }
+            assert_eq!(
+                counter.0.load(Ordering::Relaxed),
+                expected_wakes,
+                "{point:?}"
+            );
+
+            notification.register(&waker);
+            notification.cancel();
+            publish_cycle(&notification, &state, 101);
+            assert_eq!(
+                counter.0.load(Ordering::Relaxed),
+                expected_wakes,
+                "cancelled {point:?}"
+            );
+        }
     }
 
     #[cfg(feature = "storage")]
