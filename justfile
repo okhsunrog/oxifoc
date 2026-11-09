@@ -146,13 +146,14 @@ flash-mk5-usb-metrics: build-mk5-usb-metrics
     probe-rs reset --chip STM32F405RGTx
 
 # Hall bring-up logging at 50 Hz, correlated with the 20-kHz raw ADC stream.
-build-mk5-hall profiling="off" memory="sram":
-    @test {{ quote(profiling) }} = off -o {{ quote(profiling) }} = on
+build-mk5-hall profiling="off" memory="sram" transport="usb":
+    @test {{ quote(profiling) }} = off -o {{ quote(profiling) }} = on -o {{ quote(profiling) }} = timing
     @test {{ quote(memory) }} = sram -o {{ quote(memory) }} = ccm
+    @test {{ quote(transport) }} = usb -o {{ quote(transport) }} = rtt
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "on" { ",isr-profiling" } else { "" }) + (if memory == "ccm" { ",ccm" } else { "" })) }}
+        --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "on" { ",isr-profiling" } else if profiling == "timing" { ",isr-timing" } else { "" }) + (if memory == "ccm" { ",ccm" } else { "" }) + (if transport == "rtt" { ",transport-rtt" } else { "" })) }}
 
-flash-mk5-hall profiling="off" memory="sram": (build-mk5-hall profiling memory)
+flash-mk5-hall profiling="off" memory="sram" transport="usb": (build-mk5-hall profiling memory transport)
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
 
@@ -240,13 +241,20 @@ cli *ARGS:
 cli-usb *ARGS:
     @just cli --transport usb --wait-secs 8 --json "$@"
 
+# MK5 RTT transport; opening it resets the controller before the handshake.
+[positional-arguments]
+cli-rtt *ARGS:
+    @just cli --transport rtt --chip STM32F405RGTx --elf {{ mk5_elf }} --wait-secs 8 --json "$@"
+
 # Short Hall-commutated current-control pilot; the motor must be secured.
-test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json":
+test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" transport="usb":
     #!/usr/bin/env bash
     set -euo pipefail
-    trap 'just cli-usb stop >/dev/null' EXIT
-    just cli-usb source hall > {{ quote(capture + ".source.json") }}
-    RUST_LOG=warn,device=info,fast_rx=debug just cli-usb maneuver run \
+    transport={{ quote(transport) }}
+    test "$transport" = usb -o "$transport" = rtt
+    trap 'just "cli-$transport" stop >/dev/null' EXIT
+    just "cli-$transport" source hall > {{ quote(capture + ".source.json") }}
+    RUST_LOG=warn,device=info,fast_rx=debug,oxifoc_host_lib::transport::rtt=info just "cli-$transport" maneuver run \
         {{ quote(maneuver) }} --out {{ quote(capture) }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
 
