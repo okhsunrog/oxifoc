@@ -97,8 +97,10 @@ pub mod trace {
         }
     }
 
-    // 33 KiB of events + 1 KiB of whole-profile task statistics. Atomic fields
-    // allow nested IRQ writers without masking the ADC.
+    // 33 KiB of events + 1 KiB of whole-profile task statistics. A short CS
+    // serializes each timeline event, including its timestamp, so preemption
+    // cannot reorder slots. This bench-only instrumentation briefly delays ADC;
+    // its cost remains part of the measured workload.
     // SWD writes CONTROL=1 to request a finite capture after 100 ms. This
     // excludes attach/detach halts from its window. 2 means recording,
     // 3 means waiting, 4 means initializing, 0 means frozen. Read after frozen and
@@ -263,44 +265,58 @@ pub mod trace {
 
     #[inline]
     pub fn record(kind: u32, id: u32) {
-        let state = BENCH_TRACE_CONTROL.load(Ordering::Relaxed);
-        if state == 1
-            && BENCH_TRACE_CONTROL
-                .compare_exchange(1, 4, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-        {
-            START_TICKS.store(embassy_stm32::pac::TIM5.cnt().read(), Ordering::Relaxed);
-            DELAY_TICKS.store(crate::config::CPU_HZ / 20, Ordering::Relaxed);
-            BENCH_TRACE_CONTROL.store(3, Ordering::Relaxed);
-            return;
-        } else if state == 3 {
-            if embassy_stm32::pac::TIM5
-                .cnt()
-                .read()
-                .wrapping_sub(START_TICKS.load(Ordering::Relaxed))
-                < DELAY_TICKS.load(Ordering::Relaxed)
-                || BENCH_TRACE_CONTROL
-                    .compare_exchange(3, 4, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_err()
-            {
+        match BENCH_TRACE_CONTROL.load(Ordering::Relaxed) {
+            2 => {}
+            1 => {
+                if BENCH_TRACE_CONTROL
+                    .compare_exchange(1, 4, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    START_TICKS.store(embassy_stm32::pac::TIM5.cnt().read(), Ordering::Relaxed);
+                    DELAY_TICKS.store(crate::config::CPU_HZ / 20, Ordering::Relaxed);
+                    BENCH_TRACE_CONTROL.store(3, Ordering::Relaxed);
+                }
                 return;
             }
-            BENCH_TRACE_COUNT.store(0, Ordering::Relaxed);
-            BENCH_TRACE_CONTROL.store(2, Ordering::Relaxed);
-        } else if state != 2 {
-            return;
+            3 => {
+                if embassy_stm32::pac::TIM5
+                    .cnt()
+                    .read()
+                    .wrapping_sub(START_TICKS.load(Ordering::Relaxed))
+                    < DELAY_TICKS.load(Ordering::Relaxed)
+                    || BENCH_TRACE_CONTROL
+                        .compare_exchange(3, 4, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_err()
+                {
+                    return;
+                }
+                // State 4 owns initialization; nested hooks return without
+                // touching the buffer. Keep this work outside the append CS.
+                BENCH_TRACE_COUNT.store(0, Ordering::Relaxed);
+                BENCH_TRACE_CONTROL.store(2, Ordering::Relaxed);
+            }
+            _ => return,
         }
-        // probe-rs clears DEMCR.TRCENA on detach, freezing DWT.CYCCNT.
-        // TIM5 keeps running independently of that debugging state.
-        let ticks = embassy_stm32::pac::TIM5.cnt().read();
-        let index = BENCH_TRACE_COUNT.fetch_add(1, Ordering::Relaxed) as usize;
-        if let Some(event) = BENCH_TRACE_EVENTS.get(index) {
-            event.timer_ticks.store(ticks, Ordering::Relaxed);
-            event.id.store(id, Ordering::Relaxed);
-            event.kind.store(kind, Ordering::Relaxed);
-        } else {
-            BENCH_TRACE_CONTROL.store(0, Ordering::Relaxed);
-        }
+        critical_section::with(|_| {
+            // A higher-priority writer may have filled/frozen the trace after
+            // the fast-path load. Never append to that completed generation.
+            if BENCH_TRACE_CONTROL.load(Ordering::Relaxed) != 2 {
+                return;
+            }
+            // probe-rs can freeze DWT on detach; TIM5 remains independent.
+            // Timestamp, reservation and payload are one bounded operation.
+            let ticks = embassy_stm32::pac::TIM5.cnt().read();
+            let index = BENCH_TRACE_COUNT.load(Ordering::Relaxed);
+            // All active writers share this CS; no LDREX/STREX retry is needed.
+            BENCH_TRACE_COUNT.store(index.wrapping_add(1), Ordering::Relaxed);
+            if let Some(event) = BENCH_TRACE_EVENTS.get(index as usize) {
+                event.timer_ticks.store(ticks, Ordering::Relaxed);
+                event.id.store(id, Ordering::Relaxed);
+                event.kind.store(kind, Ordering::Relaxed);
+            } else {
+                BENCH_TRACE_CONTROL.store(0, Ordering::Relaxed);
+            }
+        });
     }
 
     // Task IDs are resolved against this exact ELF's TaskStorage/POOL symbols.
