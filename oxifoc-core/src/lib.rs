@@ -227,8 +227,7 @@ pub mod foc {
         let mut a = angle;
         // Keep exact 2*TAU cold: one subtraction would still leave TAU.
         if !(-TAU..2.0 * TAU).contains(&a) {
-            // Cold: arbitrary input far outside the incremental domain.
-            a %= TAU;
+            a = wrap_remainder(a);
         }
         if a < 0.0 {
             a += TAU;
@@ -236,6 +235,14 @@ pub mod foc {
             a -= TAU;
         }
         a
+    }
+
+    // Keep this out of line: LLVM otherwise speculates fmodf before the
+    // range check, charging every incremental update for the cold fallback.
+    #[cold]
+    #[inline(never)]
+    fn wrap_remainder(angle: f32) -> f32 {
+        angle % TAU
     }
 
     /// Compute signed angle difference (a - b), handling wraparound.
