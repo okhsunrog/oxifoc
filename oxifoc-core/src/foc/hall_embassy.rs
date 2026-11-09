@@ -19,7 +19,7 @@ use core::cell::{Cell, RefCell};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
 use super::hall_sensor::{Direction, HallSensor};
-use super::sensors::{AngleSample, AngleSensor, HallSensorTrait, HallSnapshot};
+use super::sensors::{AngleSample, AngleSensor, ControlAngleSample, HallSnapshot};
 
 // ========== Hall Estimator (shared state) ==========
 
@@ -107,18 +107,7 @@ pub fn update_hall_edge(state: u8, ticks: u64) {
 
 /// Get current Hall sensor snapshot (for telemetry, polled at low rate).
 pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
-    HALL_ESTIMATOR.lock(|est| {
-        est.borrow().as_ref().and_then(|h| {
-            h.sample_at(now_ticks).map(|sample| HallSnapshot {
-                angle_rad: sample.angle,
-                velocity_rad_s: sample.omega,
-                direction: sample.direction,
-                state: h.logical_state(),
-                error_count: h.error_count(),
-                edge_age_s: h.time_since_edge_s(now_ticks).unwrap_or(0.0),
-            })
-        })
-    })
+    HALL_ESTIMATOR.lock(|est| est.borrow().as_ref().and_then(|h| h.snapshot_at(now_ticks)))
 }
 
 // ========== Apply Stored Config at Boot ==========
@@ -185,6 +174,18 @@ impl AngleSensor for HallAngleProxy {
             est.borrow_mut()
                 .as_mut()
                 .and_then(|h| h.sample_at_mut(now_ticks))
+        })
+    }
+
+    fn sample_for_control(&mut self, now_ticks: u64, omega_ref: Option<f32>) -> ControlAngleSample {
+        HALL_ESTIMATOR.lock(|est| {
+            est.borrow_mut().as_mut().map_or(
+                ControlAngleSample {
+                    sample: None,
+                    stale: false,
+                },
+                |h| h.sample_for_control(now_ticks, omega_ref),
+            )
         })
     }
 

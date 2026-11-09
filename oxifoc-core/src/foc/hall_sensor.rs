@@ -10,9 +10,12 @@
 //! - **Explicit direction tracking**: Handles direction reversals cleanly
 //! - **Low-speed threshold**: Disables interpolation below configurable velocity
 
-use core::f32::consts::TAU;
+use core::{cell::Cell, f32::consts::TAU};
 
-use super::sensors::{AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait};
+use super::sensors::{
+    AngleSample, AngleSensor, ControlAngleSample, HallInterpolationInfo, HallSensorTrait,
+    HallSnapshot,
+};
 use super::{angle_difference, wrap_angle};
 use crate::foc::clamp_f32;
 
@@ -191,6 +194,9 @@ pub struct HallSensor {
     rate_limited_angle: f32,
     /// Last sample timestamp for rate limiting dt calculation
     last_sample_ticks: Option<u64>,
+    /// Present-time interpolation shared by telemetry and control. Every
+    /// mutation of its inputs invalidates it; limiter state is separate.
+    evaluation: Cell<Option<HallEvaluation>>,
 
     // === Wire-health observation window (see note_wire_activity) ===
     /// Per-bit transition counts within the current window (saturating)
@@ -208,6 +214,18 @@ pub struct HallSensor {
     /// Whether at least one state has been observed (the POR prev state
     /// must not feed the bit counters — see note_wire_activity)
     wire_primed: bool,
+}
+
+/// Prepared immutable state at exactly one caller timestamp. This belongs
+/// to one estimator revision: edges, calibration and interpolation tuning
+/// clear it before changing any input. Repeated timestamps still run the
+/// control limiter each time, preserving its existing per-call behavior.
+#[derive(Clone, Copy)]
+struct HallEvaluation {
+    now_ticks: u64,
+    edge_age_s: Option<f32>,
+    sample: Option<AngleSample>,
+    interpolated: bool,
 }
 
 /// Snapshot of the Hall estimator state after a valid edge.
@@ -344,6 +362,7 @@ impl HallSensor {
             rate_limit_factor: DEFAULT_RATE_LIMIT_FACTOR,
             rate_limited_angle: 0.0,
             last_sample_ticks: None,
+            evaluation: Cell::new(None),
             wire_bit_changes: [0; 3],
             wire_window_updates: 0,
             wire_window_invalids: 0,
@@ -360,6 +379,7 @@ impl HallSensor {
     /// Hall sector angle is used. This prevents oscillation during
     /// slow direction reversals. Default: 500 eRPM (VESC default).
     pub fn set_interp_min_erpm(&mut self, erpm: f32) {
+        self.evaluation.set(None);
         self.interp_min_erpm = erpm.abs();
     }
 
@@ -398,7 +418,11 @@ impl HallSensor {
     /// the observer's velocity lags a deceleration, and the hall's last
     /// edge speed is the better bound there. `omega_ref = 0` never trips.
     pub fn is_stale_at_speed(&self, now_ticks: u64, omega_ref: f32) -> bool {
-        let Some(dt_ticks) = self.time_since_edge(now_ticks) else {
+        self.is_stale_with_age(self.time_since_edge_s(now_ticks), omega_ref)
+    }
+
+    fn is_stale_with_age(&self, edge_age_s: Option<f32>, omega_ref: f32) -> bool {
+        let Some(dt_s) = edge_age_s else {
             // No edge ever seen: "no data yet", not "data stopped".
             return false;
         };
@@ -406,7 +430,6 @@ impl HallSensor {
         if vel < 1.0 {
             return false;
         }
-        let dt_s = self.timebase.seconds(dt_ticks);
         let expected_sector_s = self.angle_per_state / vel;
         dt_s > (expected_sector_s * STALE_SECTOR_MULTIPLE).max(STALE_MIN_WINDOW_S)
     }
@@ -546,6 +569,7 @@ impl HallSensor {
     /// * `Some(angle)` - Electrical angle at the edge in radians (0 to 2π)
     /// * `None` - Invalid Hall state (0 or 7)
     pub fn update(&mut self, raw_state: u8, t_ticks: u64) -> Option<f32> {
+        self.evaluation.set(None);
         // Previous raw state (for the boundary midpoint) before overwriting
         let prev_raw = self.raw_state;
         // Store raw state
@@ -796,6 +820,7 @@ impl HallSensor {
     /// This is the preferred method as it works with any Hall sensor wiring.
     /// Angles should be in [0, 2π). States 0 and 7 are invalid.
     pub fn set_calibration_raw(&mut self, raw_table: [f32; 8]) {
+        self.evaluation.set(None);
         self.calib = HallCalibration::from_raw_table(raw_table, self.calib.advance_rad);
     }
 
@@ -804,6 +829,7 @@ impl HallSensor {
     /// For backwards compatibility. Angles should be in [0, 2π) for the
     /// clockwise logical sequence 0→1→2→3→4→5.
     pub fn set_calibration(&mut self, table_rad: [f32; 6]) {
+        self.evaluation.set(None);
         self.calib = HallCalibration::from_logical_table(table_rad, self.calib.advance_rad);
     }
 
@@ -825,6 +851,7 @@ impl HallSensor {
 
     /// Set additional electrical advance (radians) applied to calibrated angles.
     pub fn set_advance(&mut self, advance_rad: f32) {
+        self.evaluation.set(None);
         self.calib.advance_rad = advance_rad;
     }
 
@@ -837,39 +864,55 @@ impl HallSensor {
     /// - Above threshold: linear interpolation from the last boundary, at
     ///   most one sector (see `decayed_velocity`)
     pub fn sample_at(&self, now_ticks: u64) -> Option<AngleSample> {
-        let t0 = self.last_edge_ticks?;
-        if self.in_glitch {
-            // Invalid state right now: no angle (the caller falls back).
-            return None;
+        self.evaluate(now_ticks).sample
+    }
+
+    /// Unsmoothed present-time telemetry, including the same edge age used
+    /// for interpolation and the control freshness check.
+    pub fn snapshot_at(&self, now_ticks: u64) -> Option<HallSnapshot> {
+        let evaluation = self.evaluate(now_ticks);
+        evaluation.sample.map(|sample| HallSnapshot {
+            angle_rad: sample.angle,
+            velocity_rad_s: sample.omega,
+            direction: sample.direction,
+            state: self.logical_state,
+            error_count: self.error_count,
+            edge_age_s: evaluation.edge_age_s.unwrap_or(0.0),
+        })
+    }
+
+    fn evaluate(&self, now_ticks: u64) -> HallEvaluation {
+        if let Some(evaluation) = self.evaluation.get()
+            && evaluation.now_ticks == now_ticks
+        {
+            return evaluation;
         }
-        // saturating: a wrapped "negative" dt as f32 would be ~2^64 and
-        // collapse the decayed velocity to zero for the cycle.
-        let dt = self.timebase.seconds(now_ticks.saturating_sub(t0));
-
-        // Current sector angle from calibration (direct raw state lookup)
-        let sector_angle = self.calib.angle_for_state(self.raw_state);
-
-        // Decayed velocity: see decayed_velocity() — a stopping motor must
-        // not keep reporting (and integrating) the last edge speed forever.
-        let velocity = self.decayed_velocity(dt);
-
-        // Check if velocity is below interpolation threshold (compare in eRPM)
-        if Self::vel_to_erpm(velocity) < self.interp_min_erpm {
-            // Low speed: use sector angle directly, no interpolation
-            // This prevents oscillation during direction reversals
-            return Some(AngleSample {
-                angle: sector_angle,
+        // Age remains available during an invalid-state glitch: freshness
+        // still refers to the last real edge, while the sample is None.
+        let edge_age_s = self.time_since_edge_s(now_ticks);
+        let mut interpolated = false;
+        let sample = edge_age_s.filter(|_| !self.in_glitch).map(|dt| {
+            let velocity = self.decayed_velocity(dt);
+            let low_speed = Self::vel_to_erpm(velocity) < self.interp_min_erpm;
+            interpolated = !low_speed;
+            AngleSample {
+                angle: if interpolated {
+                    wrap_angle(self.angle + velocity * dt)
+                } else {
+                    self.calib.angle_for_state(self.raw_state)
+                },
                 omega: velocity,
                 direction: self.direction,
-            });
-        }
-
-        // High speed: interpolate using velocity
-        Some(AngleSample {
-            angle: wrap_angle(self.angle + velocity * dt),
-            omega: velocity,
-            direction: self.direction,
-        })
+            }
+        });
+        let evaluation = HallEvaluation {
+            now_ticks,
+            edge_age_s,
+            sample,
+            interpolated,
+        };
+        self.evaluation.set(Some(evaluation));
+        evaluation
     }
 
     /// Velocity estimate bounded by the time already waited since the last
@@ -897,40 +940,28 @@ impl HallSensor {
     ///
     /// This version mutates internal state to track rate limiting across calls.
     pub fn sample_at_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
-        let t0 = self.last_edge_ticks?;
-        if self.in_glitch {
-            // Invalid state right now: no angle (the caller falls back).
-            return None;
-        }
-        // saturating: see sample_at().
-        let dt_from_edge = self.timebase.seconds(now_ticks.saturating_sub(t0));
+        self.limit_evaluation(self.evaluate(now_ticks))
+    }
+
+    fn limit_evaluation(&mut self, evaluation: HallEvaluation) -> Option<AngleSample> {
+        let sample = evaluation.sample?;
+        let now_ticks = evaluation.now_ticks;
 
         // Calculate dt since last sample for rate limiting
         let dt_sample = if let Some(last) = self.last_sample_ticks {
             let dt_ticks = now_ticks.wrapping_sub(last).max(1);
             self.timebase.seconds(dt_ticks)
         } else {
-            dt_from_edge
+            evaluation.edge_age_s.unwrap_or(0.0)
         };
         self.last_sample_ticks = Some(now_ticks);
 
-        // Current sector angle from calibration (direct raw state lookup)
-        let sector_angle = self.calib.angle_for_state(self.raw_state);
-
-        // Decayed velocity (see decayed_velocity()): also moves us to the
-        // low-speed path once the edges stop coming.
-        let velocity = self.decayed_velocity(dt_from_edge);
-
-        // Check if velocity is below interpolation threshold (compare in eRPM)
-        if Self::vel_to_erpm(velocity) < self.interp_min_erpm {
+        let velocity = sample.omega;
+        if !evaluation.interpolated {
             // Low speed: use sector angle directly, no interpolation
             // This prevents oscillation during direction reversals
-            self.rate_limited_angle = sector_angle;
-            return Some(AngleSample {
-                angle: sector_angle,
-                omega: velocity,
-                direction: self.direction,
-            });
+            self.rate_limited_angle = sample.angle;
+            return Some(sample);
         }
 
         // High speed: interpolate using velocity. The interpolation starts at
@@ -938,7 +969,7 @@ impl HallSensor {
         // decayed_velocity), so it stays within the sector. (VESC's soft
         // drift correction — 1% of the drift, only past 30° from the
         // centroid — moved the angle by at most ~0.6° here and was dropped.)
-        let target_angle = wrap_angle(self.angle + velocity * dt_from_edge);
+        let target_angle = sample.angle;
 
         // === RATE LIMITING (VESC-style) ===
         // Limit how fast angle can change per sample to prevent current spikes
@@ -967,8 +998,7 @@ impl HallSensor {
 
         Some(AngleSample {
             angle: self.rate_limited_angle,
-            omega: velocity,
-            direction: self.direction,
+            ..sample
         })
     }
 
@@ -1112,6 +1142,20 @@ impl AngleSensor for HallSensor {
         self.sample_at_mut(now_ticks)
     }
 
+    fn sample_for_control(&mut self, now_ticks: u64, omega_ref: Option<f32>) -> ControlAngleSample {
+        let evaluation = self.evaluate(now_ticks);
+        let stale =
+            omega_ref.is_some_and(|omega| self.is_stale_with_age(evaluation.edge_age_s, omega));
+        ControlAngleSample {
+            sample: if stale {
+                None
+            } else {
+                self.limit_evaluation(evaluation)
+            },
+            stale,
+        }
+    }
+
     fn is_stale(&self, now_ticks: u64, omega_ref: f32) -> bool {
         self.is_stale_at_speed(now_ticks, omega_ref)
     }
@@ -1191,6 +1235,9 @@ impl HallSensorTrait for HallSensor {
         }
     }
 }
+
+#[cfg(test)]
+mod replay_tests;
 
 #[cfg(test)]
 mod tests {
