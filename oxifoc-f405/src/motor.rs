@@ -326,7 +326,7 @@ impl<'d> MotorPwm<'d> {
 
     /// Emergency stop - disable all outputs
     pub fn emergency_stop(&mut self) {
-        self.trace_pwm_write(|this| {
+        self.write_pwm_preloads(|this| {
             this.pwm.set_duty(Channel::Ch1, 0);
             this.pwm.set_duty(Channel::Ch2, 0);
             this.pwm.set_duty(Channel::Ch3, 0);
@@ -336,16 +336,26 @@ impl<'d> MotorPwm<'d> {
         self.pwm.disable(Channel::Ch3);
     }
 
-    /// Keep the existing write order; only the bench build observes the latch window.
+    /// Keep CCR preloads coherent without stopping the counter. A batch that
+    /// spans a peak can hold the old vector for another full PWM period.
     #[inline(always)]
-    fn trace_pwm_write(&mut self, write: impl FnOnce(&mut Self)) {
+    fn write_pwm_preloads(&mut self, write: impl FnOnce(&mut Self)) {
         #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
         let before = Self::count_direction();
+        let tim = embassy_stm32::pac::TIM1;
+        let mut previous_udis = false;
+        tim.cr1().modify(|w| {
+            previous_udis = w.udis();
+            w.set_udis(true);
+        });
         write(self);
+        // Preserve the caller's update-disable state without restoring live
+        // counter/direction bits or generating an update event.
+        tim.cr1().modify(|w| w.set_udis(previous_udis));
         #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
         {
             let after = Self::count_direction();
-            // Recording may mask IRQs, so it must follow all CCR writes.
+            // Append only after restoring UDIS; tracing must not extend its window.
             crate::diagnostics::trace::record_pwm_write(before, after);
         }
     }
@@ -390,7 +400,7 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         let duty_b = u32::from(duties[1]).min(self.duty_limit);
         let duty_c = u32::from(duties[2]).min(self.duty_limit);
 
-        self.trace_pwm_write(|this| {
+        self.write_pwm_preloads(|this| {
             this.pwm.set_duty(Channel::Ch1, duty_a);
             this.pwm.set_duty(Channel::Ch2, duty_b);
             this.pwm.set_duty(Channel::Ch3, duty_c);
@@ -407,7 +417,7 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         // (set_mode → pwm.enable()) would otherwise write duties into disabled
         // channels and the motor could never start in FOC modes.
         // Set duties to 0 before enabling channels to prevent a glitch.
-        self.trace_pwm_write(|this| {
+        self.write_pwm_preloads(|this| {
             this.pwm.set_duty(Channel::Ch1, 0);
             this.pwm.set_duty(Channel::Ch2, 0);
             this.pwm.set_duty(Channel::Ch3, 0);
@@ -421,7 +431,7 @@ impl<'d> PhasePwm for MotorPwm<'d> {
 
     fn set_phase_states(&mut self, states: [PhaseState; 3]) {
         const CHANNELS: [Channel; 3] = [Channel::Ch1, Channel::Ch2, Channel::Ch3];
-        self.trace_pwm_write(|this| {
+        self.write_pwm_preloads(|this| {
             for (state, &ch) in states.iter().zip(CHANNELS.iter()) {
                 match state {
                     PhaseState::Pwm(duty) => {
