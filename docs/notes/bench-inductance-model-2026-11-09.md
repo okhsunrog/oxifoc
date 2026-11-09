@@ -102,8 +102,12 @@ shifts with one byte-mask pass, preserving wire bytes. Instrumented active
 this is a separate remaining limit. A subsequent 60-s idle capture lost 147
 while an endpoint write waited 23.8 ms, with stream-task drain gaps only
 1.04 ms. Explicit host pauses of 5/15 ms were absorbed; 30 ms lost 215 samples.
-The pinned ergot nusb receiver queues four reads; increasing that reserve is
-proposed, not yet implemented. A 30-s 5-kHz control retained 150048 samples
+The original ergot nusb receiver queued four reads. Fork commit `63b5707`
+(`fix/nusb-receive-headroom`, based on upstream `d7c1e83`) queues 32 instead.
+It passed explicit 5/15/30/50-ms host pauses at both 20 and 5 kHz without
+loss (360121/90024 samples), plus active native L detection (80076 samples).
+These bound the tested pause tolerance, not arbitrary host stalls.
+A prior 30-s 5-kHz control retained 150048 samples
 without gaps. TIM5 endpoint timing is opt-in (`bench-usb-metrics`); wall-clock
 drain/encode/broadcast counters survive DWT stopping on debugger detach.
 Captures, host logs, pause timings and the comparison plot are under

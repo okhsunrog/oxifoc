@@ -181,6 +181,11 @@ record-usb-trace capture seconds="10" rate="20000":
     @just record-usb {{ quote(capture) }} {{ quote(seconds) }} {{ quote(rate) }} \
         "warn,device=info,fast_rx=debug,ergot::interface_manager::transports::nusb=trace,nusb::platform::linux_usbfs=debug"
 
+# Linux idle-only qualification. Propagates capture loss as a failing exit status.
+test-usb-pause capture pauses_ms="5,15,30" rate="20000": build-cli
+    uv run python scripts/bench_usb_pause.py {{ quote(capture) }} \
+        --pauses-ms {{ quote(pauses_ms) }} --rate {{ quote(rate) }}
+
 # Measure L without applying it; preserve native HFI samples at the default rate.
 detect-l-usb capture resistance rate="20000" logs="warn,device=info,fast_rx=debug":
     RUST_LOG={{ quote(logs) }} just cli-usb detect inductance \
