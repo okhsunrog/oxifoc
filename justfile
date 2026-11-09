@@ -376,6 +376,12 @@ set-motor-usb resistance ld lq flux pole_pairs storage="ram":
         inductance_q_h={{ quote(lq) }} flux_linkage_wb={{ quote(flux) }} \
         pole_pairs={{ quote(pole_pairs) }} {{ if storage == "ram" { "--volatile" } else { "" } }}
 
+# Restore a measured raw-state Hall table after flashing; arrays use JSON syntax.
+set-hall-usb angles valid storage="ram":
+    @test {{ quote(storage) }} = ram -o {{ quote(storage) }} = flash
+    @just cli-usb config set hall-calibration angles={{ quote(angles) }} \
+        valid={{ quote(valid) }} {{ if storage == "ram" { "--volatile" } else { "" } }}
+
 # USB recording with matching JSON result and host timing log beside the parquet.
 record-usb capture seconds="30" rate="20000" logs="warn,device=info,fast_rx=debug":
     RUST_LOG={{ quote(logs) }} just cli-usb record --out {{ quote(capture) }} \
