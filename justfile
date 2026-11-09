@@ -341,16 +341,26 @@ test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" transp
 
 # Flash an already-built MK5 image and qualify it with its exact decoder ELF.
 # The caller must exclude concurrent builds/hardware access for the whole run.
-bench-current-mk5 capture maneuver="maneuvers/mk5-hall-hold-check.json":
+# Alternate ELFs require their source commit, rather than using this checkout's HEAD.
+bench-current-mk5 capture maneuver="maneuvers/mk5-hall-hold-check.json" elf=mk5_elf source_commit="":
     #!/usr/bin/env bash
     set -euo pipefail
-    git rev-parse HEAD > {{ quote(capture + ".commit") }}
-    sha256sum {{ mk5_elf }} > {{ quote(capture + ".elf.sha256") }}
-    probe-rs download --verify --connect-under-reset --chip STM32F405RGTx {{ mk5_elf }} \
+    elf={{ quote(elf) }}
+    source_commit={{ quote(source_commit) }}
+    if test -z "$source_commit"; then
+        if test "$elf" != {{ quote(mk5_elf) }}; then
+            echo 'Pass the source commit for an alternate ELF.' >&2
+            exit 2
+        fi
+        source_commit=$(git rev-parse HEAD)
+    fi
+    printf '%s\n' "$source_commit" > {{ quote(capture + ".commit") }}
+    sha256sum "$elf" > {{ quote(capture + ".elf.sha256") }}
+    probe-rs download --verify --connect-under-reset --chip STM32F405RGTx "$elf" \
         > {{ quote(capture + ".flash.log") }} 2>&1
     probe-rs reset --chip STM32F405RGTx >> {{ quote(capture + ".flash.log") }} 2>&1
     capture_status=0
-    just test-current-mk5 {{ quote(capture) }} {{ quote(maneuver) }} usb {{ mk5_elf }} || capture_status=$?
+    just test-current-mk5 {{ quote(capture) }} {{ quote(maneuver) }} usb "$elf" || capture_status=$?
     just cli-usb status > {{ quote(capture + ".status.json") }}
     exit "$capture_status"
 
