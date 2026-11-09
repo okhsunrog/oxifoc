@@ -297,10 +297,10 @@ build-remote:
 flash-remote:
     cd oxifoc-remote && cargo run --release
 
-# Run host CLI with arguments
+# Use the optimized host CLI for native-rate capture and device commands.
 [positional-arguments]
 cli *ARGS:
-    cargo run -p oxifoc-host-cli --locked -- "$@"
+    cargo run --release -p oxifoc-host-cli --locked -- "$@"
 
 # USB CLI with the bench connection options and JSON output.
 [positional-arguments]
