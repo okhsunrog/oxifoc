@@ -39,6 +39,8 @@ bench-no-phase-outputs = []
 bench-only-phase-a = []
 # RAM-only task/ADC timeline, armed and read over SWD after a capture.
 bench-executor-trace = ["embassy-executor/trace", "bench-clock-reference"]
+# Trigger the finite trace at the first voltage-excitation packet, after lock.
+bench-trace-excitation = ["bench-executor-trace"]
 # Compare an independent free-running APB timer, DWT and received USB SOFs.
 bench-clock-reference = []
 # A/B qualification only: keep all USB handlers on the thread executor.

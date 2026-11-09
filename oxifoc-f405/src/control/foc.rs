@@ -515,7 +515,16 @@ fn ADC() {
                 board,
             );
             #[cfg(feature = "bench-executor-trace")]
-            if !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped) {
+            let trace_active = if cfg!(feature = "bench-trace-excitation") {
+                matches!(
+                    driver.mode(),
+                    oxifoc_core::types::ControlMode::DirectVoltage { .. }
+                )
+            } else {
+                !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped)
+            };
+            #[cfg(feature = "bench-executor-trace")]
+            if trace_active {
                 crate::diagnostics::trace::trigger_active();
             } else {
                 crate::diagnostics::trace::trigger_stopped();
