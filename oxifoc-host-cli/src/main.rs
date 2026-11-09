@@ -494,6 +494,11 @@ enum ConfigAction {
         group: String,
         #[arg(required = true, help = "field=value pairs, e.g. max_iq_a=5.0")]
         fields: Vec<String>,
+        #[arg(
+            long,
+            help = "Apply in RAM without writing flash; reboot restores persisted values"
+        )]
+        volatile: bool,
     },
     /// Erase ALL stored config groups (factory reset; requires --yes)
     Reset {
@@ -868,9 +873,25 @@ fn main() -> Result<()> {
                     ),
                 );
             }
-            ConfigAction::Set { group, fields } => {
+            ConfigAction::Set {
+                group,
+                fields,
+                volatile,
+            } => {
                 let g = config_cli::parse_group(&group)?;
-                let (value, commit) = config_cli::set_fields(&runtime.cmd_tx, g, &fields)?;
+                let (value, commit) = if volatile {
+                    let (value, revision) =
+                        oxifoc_host_lib::ops::config::apply_fields(&runtime.cmd_tx, g, &fields)?;
+                    (
+                        value,
+                        oxifoc_host_lib::ops::config::ConfigCommit {
+                            revision,
+                            persisted: false,
+                        },
+                    )
+                } else {
+                    config_cli::set_fields(&runtime.cmd_tx, g, &fields)?
+                };
                 emit(
                     json,
                     json!({

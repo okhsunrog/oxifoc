@@ -36,6 +36,7 @@ use crate::foc::fast_math::sqrtf;
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use crate::icd::DetectEndpoint;
 use crate::motor::ControlMode;
+use crate::motor::foc_driver::CurrentLimits;
 use crate::state::CMD_CHANNEL;
 use crate::state::DriverCommand;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
@@ -84,7 +85,8 @@ pub trait DetectionBackend {
 /// Serve `DetectEndpoint` with effectively-once dedup, forever.
 ///
 /// `max_current_a` is the per-platform current ceiling fed into the safe-test-
-/// current formulas (pass e.g. `min(board.max_phase_current_a, 3.0)` to clamp).
+/// current formulas. Explicit configured driver/motor limits further bound it;
+/// absent explicit limits, detection retains a 3-A commissioning ceiling.
 /// `foc_freq_hz` is the PWM/FOC loop frequency (used by the inductance HFI).
 /// The Hall calibration result is written into `runtime_config` in memory; the
 /// host persists it to flash via the config endpoint.
@@ -203,6 +205,16 @@ async fn run_step<B: DetectionBackend>(
     }) {
         return DetectResponse::Error(DetectError::Unsafe);
     }
+    let ceiling = match runtime_config {
+        Some(config) => critical_section::with(|cs| {
+            configured_current_ceiling(max_current_a, Some(&config.borrow(cs).borrow()))
+        }),
+        None => configured_current_ceiling(max_current_a, None),
+    };
+    let max_current_a = match ceiling {
+        Ok(current) => current,
+        Err(error) => return DetectResponse::Error(error),
+    };
     match req {
         DetectRequest::MeasureResistance { max_power_loss_w } => {
             if !pos(max_power_loss_w) {
@@ -399,6 +411,41 @@ async fn run_step<B: DetectionBackend>(
     }
 }
 
+/// Share the driver's actual clamping rules instead of silently requesting a
+/// measurement current above configured limits. Raising the platform ceiling
+/// alone must not opt an unconfigured board into a high-current detection.
+fn configured_current_ceiling(
+    platform_max: f32,
+    config: Option<&RuntimeConfig>,
+) -> Result<f32, DetectError> {
+    if !platform_max.is_finite() || platform_max < 0.5 {
+        return Err(DetectError::Unsafe);
+    }
+    let Some((config, limits)) = config.and_then(|c| c.current_limits.as_ref().map(|l| (c, l)))
+    else {
+        return Ok(platform_max.min(3.0));
+    };
+    if !limits.is_coherent() {
+        return Err(DetectError::Unsafe);
+    }
+    let rating = config
+        .motor_params
+        .as_ref()
+        .and_then(crate::storage::MotorParamsConfig::rating_current_a)
+        .unwrap_or(0.0);
+    let live = CurrentLimits::from_config_clamped(limits, platform_max, rating);
+    let ceiling = if limits.max_iq_a > 0.0 {
+        live.max_current_a
+    } else {
+        live.max_current_a.min(3.0)
+    };
+    // Existing detection routines have a 0.5-A probe floor.
+    if !ceiling.is_finite() || ceiling < 0.5 {
+        return Err(DetectError::Unsafe);
+    }
+    Ok(ceiling)
+}
+
 #[cfg(feature = "offset-diagnostics")]
 fn map_current_offset_err(error: CurrentOffsetError) -> DetectError {
     match error {
@@ -428,6 +475,36 @@ fn map_err(e: DetectionError) -> DetectError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detection_ceiling_requires_explicit_limits_and_respects_driver_clamps() {
+        use crate::storage::{CurrentLimitsConfig, MotorParamsConfig};
+        let mut cfg = RuntimeConfig::default();
+        assert!(configured_current_ceiling(0.1, None).is_err());
+        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 3.0);
+        cfg.current_limits = Some(CurrentLimitsConfig {
+            max_iq_a: 30.7,
+            max_phase_current_a: 45.0,
+            ..Default::default()
+        });
+        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 30.7);
+        assert_eq!(
+            configured_current_ceiling(20.0, Some(&cfg)).unwrap(),
+            20.0 / crate::motor::foc_driver::OVERCURRENT_HEADROOM
+        );
+        cfg.motor_params = Some(MotorParamsConfig {
+            max_current_a: 12.0,
+            ..Default::default()
+        });
+        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 12.0);
+        cfg.current_limits.as_mut().unwrap().max_iq_a = 0.1;
+        assert!(matches!(
+            configured_current_ceiling(70.0, Some(&cfg)),
+            Err(DetectError::Unsafe)
+        ));
+        cfg.current_limits.as_mut().unwrap().max_iq_a = 0.0;
+        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 3.0);
+    }
 
     fn request_is_sane(req: &DetectRequest) -> bool {
         // Mirror of the per-arm guards in `run_step`, kept in one place so

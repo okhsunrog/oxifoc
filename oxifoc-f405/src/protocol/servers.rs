@@ -329,7 +329,7 @@ pub async fn detect_server(stack: &'static Stack) {
     oxifoc_core::runtime::detect_server(
         stack.endpoints(),
         F405Backend,
-        BOARD.max_phase_current_a.min(3.0),
+        BOARD.max_phase_current_a,
         crate::config::CONTROL_TIMING.get().await.frequency_hz(),
         Some(&RUNTIME_CONFIG),
     )

@@ -307,19 +307,29 @@ pub fn patch_fields(
     Ok((value, write))
 }
 
-/// `config set GROUP field=value ...` — read-modify-write.
+/// Volatile read-modify-write of a config group.
 ///
 /// Values are parsed as JSON (numbers, booleans, arrays); anything that
 /// fails to parse is taken as a string. Returns the resulting group JSON and
-/// whether its new revision was persisted.
+/// the new live revision; this function never requests flash persistence.
+pub fn apply_fields(
+    cmd: &CommandSender,
+    group: ConfigGroupId,
+    kvs: &[String],
+) -> Result<(Value, u32)> {
+    let (value, state) = current_value(cmd, group)?;
+    let (value, write) = patch_fields(group, value, kvs)?;
+    let revision = apply_write(cmd, state.revision, write)?;
+    Ok((value, revision))
+}
+
+/// Read-modify-write and persist. Use `apply_fields` for a temporary live test.
 pub fn set_fields(
     cmd: &CommandSender,
     group: ConfigGroupId,
     kvs: &[String],
 ) -> Result<(Value, ConfigCommit)> {
-    let (value, state) = current_value(cmd, group)?;
-    let (value, write) = patch_fields(group, value, kvs)?;
-    let revision = apply_write(cmd, state.revision, write)?;
+    let (value, revision) = apply_fields(cmd, group, kvs)?;
     let persisted = persist_group(cmd, group, revision)?;
     Ok((
         value,
