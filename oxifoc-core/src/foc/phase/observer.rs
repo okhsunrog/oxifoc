@@ -329,6 +329,66 @@ pub struct BackEmfObserver {
     /// trust gate consults `is_ready` several times per FOC cycle and
     /// this board's ISR budget has no room for a division per call).
     readiness_err: f32,
+    /// Coefficients for the most recent observer timestep. Torque samples
+    /// have an independent timestep and therefore an independent cache.
+    filter_coefficients: BackEmfFilterCoefficients,
+    torque_coefficient: TorqueFilterCoefficient,
+}
+
+#[derive(Clone, Debug)]
+struct BackEmfFilterCoefficients {
+    // Preserve signed-zero distinctions and reuse identical NaN timesteps.
+    dt_bits: u32,
+    velocity_magnitude: f32,
+    acceleration: f32,
+    phase_error: f32,
+    bemf: f32,
+}
+
+impl BackEmfFilterCoefficients {
+    const fn new() -> Self {
+        // These are the coefficients for +0.0, so the initial key is valid.
+        Self {
+            dt_bits: 0,
+            velocity_magnitude: 0.0,
+            acceleration: 0.0,
+            phase_error: 0.0,
+            bemf: 0.0,
+        }
+    }
+
+    fn refresh(&mut self, dt: f32) {
+        if self.dt_bits != dt.to_bits() {
+            self.velocity_magnitude = (dt / 0.05).min(1.0);
+            self.acceleration = (dt / ACCEL_LAG_FILTER_TAU_S).min(1.0);
+            self.phase_error = (dt / PHASE_ERR_FILTER_TAU_S).min(1.0);
+            self.bemf = (dt / BEMF_PROXY_TAU_S).min(1.0);
+            self.dt_bits = dt.to_bits();
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TorqueFilterCoefficient {
+    dt_bits: u32,
+    alpha: f32,
+}
+
+impl TorqueFilterCoefficient {
+    const fn new() -> Self {
+        Self {
+            dt_bits: 0,
+            alpha: 0.0,
+        }
+    }
+
+    fn for_dt(&mut self, dt: f32) -> f32 {
+        if self.dt_bits != dt.to_bits() {
+            self.alpha = (dt / 0.01).min(1.0);
+            self.dt_bits = dt.to_bits();
+        }
+        self.alpha
+    }
 }
 
 /// Minimum confidence (flux magnitude / λ) for [`BackEmfObserver::is_ready`].
@@ -509,6 +569,8 @@ impl BackEmfObserver {
             vel_pll_prev: 0.0,
             accel_filt: 0.0,
             readiness_err: core::f32::consts::PI,
+            filter_coefficients: BackEmfFilterCoefficients::new(),
+            torque_coefficient: TorqueFilterCoefficient::new(),
         }
     }
 
@@ -579,6 +641,7 @@ impl BackEmfObserver {
         if dt <= 0.0 {
             return;
         }
+        self.filter_coefficients.refresh(dt);
 
         // MXLEMMING flux integrator: x += (v − R·i)·dt − L·Δi
         //
@@ -695,7 +758,7 @@ impl BackEmfObserver {
             // trend and recoveries pass; a real deceleration moves the
             // filtered magnitude within ~2τ and the cap follows as
             // before.
-            let a_m = (dt / 0.05).min(1.0);
+            let a_m = self.filter_coefficients.velocity_magnitude;
             self.vel_mag_filt += a_m * (self.velocity_pll.abs() - self.vel_mag_filt);
             let step = (self.accel_floor + self.accel_per_amp * self.iq_abs_filt) * dt;
             if self.vel_mag_filt > self.vel_cap {
@@ -742,12 +805,12 @@ impl BackEmfObserver {
         // PLL-velocity slope (post-envelope — the lag the readiness check
         // must excuse is the lag of the velocity the PLL actually carries,
         // governor pull included). Feeds readiness_phase_err().
-        let a_a = (dt / ACCEL_LAG_FILTER_TAU_S).min(1.0);
+        let a_a = self.filter_coefficients.acceleration;
         self.accel_filt += a_a * ((self.velocity_pll - self.vel_pll_prev) / dt - self.accel_filt);
         self.vel_pll_prev = self.velocity_pll;
 
         // Track lock quality for is_ready(): low-passed |phase error|.
-        let alpha = (dt / PHASE_ERR_FILTER_TAU_S).min(1.0);
+        let alpha = self.filter_coefficients.phase_error;
         self.phase_err_filt += alpha * (phase_error.abs() - self.phase_err_filt);
 
         // External validity: does the terminal voltage actually contain the
@@ -776,7 +839,7 @@ impl BackEmfObserver {
         // 2-revolution
         // consecutive-corroboration requirement is what protects the grant.
         let e_q = (e_beta * self.x1 - e_alpha * self.x2) / flux_mag.max(0.1 * self.lambda);
-        let a_e = (dt / BEMF_PROXY_TAU_S).min(1.0);
+        let a_e = self.filter_coefficients.bemf;
         self.bemf_q_filt += a_e * (e_q - self.bemf_q_filt);
         // Corroborated while the signed ratio e_q/(λ·ω̂) sits in the real-
         // rotation window at an observable speed. Grant/revoke asymmetry
@@ -994,7 +1057,7 @@ impl BackEmfObserver {
     /// Feed the measured |iq| for the acceleration prior (driver, per
     /// cycle; low-passed internally).
     pub fn note_torque_current(&mut self, iq_abs: f32, dt: f32) {
-        let a = (dt / 0.01).min(1.0);
+        let a = self.torque_coefficient.for_dt(dt);
         self.iq_abs_filt += a * (iq_abs - self.iq_abs_filt);
     }
 
@@ -1519,6 +1582,235 @@ impl<S: SinCos> HfiObserver<S> {
 mod tests {
     use super::*;
     use crate::foc::angle_difference;
+
+    // Reference coefficients are the former per-update expressions. Loading
+    // them before update bypasses the cache while sharing unchanged dynamics.
+    fn update_uncached(obs: &mut BackEmfObserver, input: &ObserverInput) {
+        let dt = input.dt;
+        obs.filter_coefficients = BackEmfFilterCoefficients {
+            dt_bits: dt.to_bits(),
+            velocity_magnitude: (dt / 0.05).min(1.0),
+            acceleration: (dt / ACCEL_LAG_FILTER_TAU_S).min(1.0),
+            phase_error: (dt / PHASE_ERR_FILTER_TAU_S).min(1.0),
+            bemf: (dt / BEMF_PROXY_TAU_S).min(1.0),
+        };
+        obs.update(input);
+    }
+
+    fn note_torque_uncached(obs: &mut BackEmfObserver, iq_abs: f32, dt: f32) {
+        let a = (dt / 0.01).min(1.0);
+        obs.iq_abs_filt += a * (iq_abs - obs.iq_abs_filt);
+    }
+
+    fn assert_observer_bits(actual: &BackEmfObserver, expected: &BackEmfObserver) {
+        macro_rules! check_fields {
+            ($($field:ident),+ $(,)?) => {
+                $(assert_eq!(actual.$field.to_bits(), expected.$field.to_bits(), stringify!($field));)+
+            };
+        }
+        check_fields!(
+            x1,
+            x2,
+            i_alpha_last,
+            i_beta_last,
+            phase_pll,
+            velocity_pll,
+            r,
+            l,
+            l_delta,
+            accel_per_amp,
+            accel_floor,
+            iq_abs_filt,
+            vel_cap,
+            vel_mag_filt,
+            lambda,
+            lambda_gain,
+            lambda_min,
+            lambda_max,
+            centering_gain,
+            pll_kp,
+            pll_ki,
+            confidence,
+            phase_err_filt,
+            phase_raw_last,
+            bemf_q_filt,
+            valid_travel,
+            invalid_time,
+            lambda_learn_travel,
+            vel_pll_prev,
+            accel_filt,
+            readiness_err,
+        );
+        assert_eq!(actual.ready_latched, expected.ready_latched);
+        assert_eq!(actual.is_ready(), expected.is_ready());
+    }
+
+    #[test]
+    fn filter_coefficients_follow_actual_timestep_bits() {
+        let mut coefficients = BackEmfFilterCoefficients::new();
+        let mut torque = TorqueFilterCoefficient::new();
+        let mut intervals = [0.0; 24];
+        intervals[..12].copy_from_slice(&[
+            0.0,
+            -0.0,
+            f32::from_bits(1),
+            -f32::from_bits(1),
+            5e-5,
+            1e-4,
+            -1e-4,
+            f32::MAX,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::NAN,
+            f32::from_bits(0xffc0_1234),
+        ]);
+        for (boundary, chunk) in [0.01_f32, 0.02, 0.025, 0.05]
+            .into_iter()
+            .zip(intervals[12..].chunks_exact_mut(3))
+        {
+            chunk.copy_from_slice(&[
+                f32::from_bits(boundary.to_bits() - 1),
+                boundary,
+                f32::from_bits(boundary.to_bits() + 1),
+            ]);
+        }
+        for dt in intervals {
+            let dt = core::hint::black_box(dt);
+            for _ in 0..2 {
+                coefficients.refresh(dt);
+                assert_eq!(coefficients.dt_bits, dt.to_bits());
+                for (actual, expected) in [
+                    (coefficients.velocity_magnitude, (dt / 0.05).min(1.0)),
+                    (
+                        coefficients.acceleration,
+                        (dt / ACCEL_LAG_FILTER_TAU_S).min(1.0),
+                    ),
+                    (
+                        coefficients.phase_error,
+                        (dt / PHASE_ERR_FILTER_TAU_S).min(1.0),
+                    ),
+                    (coefficients.bemf, (dt / BEMF_PROXY_TAU_S).min(1.0)),
+                    (torque.for_dt(dt), (dt / 0.01).min(1.0)),
+                ] {
+                    assert_eq!(
+                        actual.to_bits(),
+                        expected.to_bits(),
+                        "dt bits {:#x}",
+                        dt.to_bits()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cached_observer_matches_uncached_trajectories() {
+        let (r, l, lambda) = (0.1, 50e-6, 0.005);
+        for alternating in [false, true] {
+            let mut cached = BackEmfObserver::new(r, l, lambda).with_lambda_tracking(5.0);
+            let mut reference = cached.clone();
+            let mut theta = 0.0;
+            let mut was_ready = false;
+            for step in 0..28_000 {
+                let dt = if alternating && step % 2 == 1 {
+                    1e-4
+                } else {
+                    5e-5
+                };
+                let omega = if step < 18_000 { 300.0 } else { -300.0 };
+                for obs in [&mut cached, &mut reference] {
+                    match step {
+                        6_000 => {
+                            obs.force_phase(theta);
+                            obs.set_velocity(omega);
+                            obs.set_accel_prior(500.0, 3400.0);
+                        }
+                        10_000 => {
+                            obs.reset();
+                            obs.set_accel_prior(0.0, 0.0);
+                        }
+                        14_000 => {
+                            obs.set_motor_params(r, l, lambda);
+                            obs.set_pll_gains(800.0, 16_000.0);
+                        }
+                        18_000 => {
+                            obs.force_phase(theta);
+                            obs.set_velocity(omega);
+                        }
+                        _ => {}
+                    }
+                }
+                // Torque updates intentionally use a different timestep.
+                let torque_dt = if step % 2 == 0 { 2.5e-5 } else { 2e-4 };
+                cached.note_torque_current(2.0, torque_dt);
+                note_torque_uncached(&mut reference, 2.0, torque_dt);
+                let theta_next = wrap_angle(theta + omega * dt);
+                let (ia, ib) = (-2.0 * libm::sinf(theta), 2.0 * libm::cosf(theta));
+                let (ia_next, ib_next) =
+                    (-2.0 * libm::sinf(theta_next), 2.0 * libm::cosf(theta_next));
+                let input = ObserverInput {
+                    v_alpha: if step >= 18_000 {
+                        0.0
+                    } else {
+                        r * ia + l * (ia_next - ia) / dt - omega * lambda * libm::sinf(theta)
+                    },
+                    v_beta: if step >= 18_000 {
+                        0.0
+                    } else {
+                        r * ib + l * (ib_next - ib) / dt + omega * lambda * libm::cosf(theta)
+                    },
+                    i_alpha: ia,
+                    i_beta: ib,
+                    dt,
+                };
+                cached.update(&input);
+                update_uncached(&mut reference, &input);
+                assert_observer_bits(&cached, &reference);
+                was_ready |= cached.is_ready();
+                theta = theta_next;
+            }
+            assert!(was_ready, "trajectory must exercise readiness");
+            assert!(!cached.is_ready(), "missing back-EMF must revoke readiness");
+        }
+    }
+
+    #[test]
+    fn cached_observer_matches_uncached_invalid_and_saturated_intervals() {
+        for dt in [
+            0.0,
+            -0.0,
+            -1e-4,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.01,
+            0.02,
+            0.025,
+            0.05,
+            0.1,
+            f32::MAX,
+        ] {
+            let mut cached = BackEmfObserver::new(0.1, 50e-6, 0.005);
+            cached.force_phase(1.0);
+            cached.set_velocity(300.0);
+            cached.set_accel_prior(500.0, 3400.0);
+            let mut reference = cached.clone();
+            for interval in [5e-5, 5e-5, dt, dt] {
+                cached.note_torque_current(2.0, interval);
+                note_torque_uncached(&mut reference, 2.0, interval);
+                let input = ObserverInput {
+                    v_alpha: 1.0,
+                    v_beta: -2.0,
+                    i_alpha: 0.3,
+                    i_beta: -0.2,
+                    dt: interval,
+                };
+                cached.update(&input);
+                update_uncached(&mut reference, &input);
+                assert_observer_bits(&cached, &reference);
+            }
+        }
+    }
 
     /// Drive the observer with ideal PMSM terminal quantities for `steps`
     /// cycles and return the final true flux angle.
