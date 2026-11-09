@@ -455,10 +455,12 @@ impl Default for MotorControlState {
 /// use oxifoc_core::define_platform_state;
 /// define_platform_state!(MyFault);
 /// ```
+/// Optional attributes apply only to STATE, for platform-specific memory placement.
 #[macro_export]
 macro_rules! define_platform_state {
-    ($fault_type:ty) => {
+    ($fault_type:ty $(, #[$state_attr:meta])*) => {
         /// Global motor state
+        $(#[$state_attr])*
         pub static STATE: ::critical_section::Mutex<
             ::core::cell::RefCell<$crate::state::MotorControlState>,
         > = ::critical_section::Mutex::new(::core::cell::RefCell::new(

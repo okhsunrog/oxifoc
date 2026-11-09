@@ -19,4 +19,5 @@ MEMORY
 
     /* RAM: 128KB (main SRAM, DMA-accessible) */
     RAM   : ORIGIN = 0x20000000, LENGTH = 128K
+    CCM   : ORIGIN = 0x10000000, LENGTH = 64K
 }

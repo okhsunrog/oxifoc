@@ -4,6 +4,7 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=memory.x");
+    println!("cargo:rerun-if-changed=ccm.x");
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     println!("cargo:rustc-link-search={out_dir}");
@@ -11,6 +12,10 @@ fn main() {
 
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
+    if std::env::var_os("CARGO_FEATURE_CCM").is_some() {
+        std::fs::copy("ccm.x", std::path::Path::new(&out_dir).join("ccm.x")).unwrap();
+        println!("cargo:rustc-link-arg-bins=-Tccm.x");
+    }
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
 
     // Parse FLASH region from memory.x and export firmware end offset for compile-time checks.

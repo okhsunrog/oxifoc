@@ -4,10 +4,7 @@ use embassy_stm32::adc::{
     Adc, AdcChannel, Exten, InjectedAdc, InjectedAdcTrigger, SampleTime, VrefInt,
 };
 use embassy_stm32::{
-    Config as StmConfig, Peri, Peripherals,
-    mode::Blocking,
-    pac, peripherals,
-    time::Hertz,
+    Config as StmConfig, Peri, Peripherals, mode::Blocking, pac, peripherals, time::Hertz,
 };
 
 /// Initialize the STM32F405 PLL from the external oscillator.

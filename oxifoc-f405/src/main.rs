@@ -39,6 +39,8 @@ unsafe fn USART1() {
 
 // Module declarations
 mod calibration;
+#[cfg(feature = "ccm")]
+mod ccm;
 mod config;
 mod control;
 pub mod fault;
@@ -65,7 +67,10 @@ use hardware::{AssignedResources, DrvResources, HallResources, MotorResources, U
 use motor::MotorPwm;
 
 // Define platform state with our fault type
-oxifoc_core::define_platform_state!(fault::F405Fault);
+oxifoc_core::define_platform_state!(
+    fault::F405Fault,
+    #[cfg_attr(feature = "ccm", unsafe(link_section = ".ccm.data"))]
+);
 
 /// Global runtime config — loaded from flash at boot, read by config_server for protocol access.
 pub static RUNTIME_CONFIG: critical_section::Mutex<

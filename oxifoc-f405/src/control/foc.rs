@@ -142,6 +142,7 @@ pub static ADC3_INJECTED: CriticalSectionMutex<
 /// FOC driver storage (mutated only inside the ADC ISR)
 type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor, FastSinCos>;
 type FocDriverType = FocDriver<MotorPwm<'static>, F405CurrentSensor, PhaseManagerType, FastSinCos>;
+#[cfg_attr(feature = "ccm", unsafe(link_section = ".ccm.data"))]
 static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 

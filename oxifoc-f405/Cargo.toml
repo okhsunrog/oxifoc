@@ -21,6 +21,8 @@ board-cf2 = []
 # shutdown latch PC5, current/phase filter enables PD2/PC13.
 # See docs/hw/vesc6-mk5.md.
 board-vesc6-mk5 = []
+# CPU-only FOC state in 64-KiB CCM. DMA buffers and the stack remain in SRAM.
+ccm = []
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
 transport-usb = []
 # UART on USART3 (PB10 TX / PB11 RX) for Cheap FOCer 2

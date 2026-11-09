@@ -11,6 +11,7 @@ mk5_features := "transport-usb,transport-uart,board-vesc6-mk5,task-priority"
 mk5_bench_features := mk5_features + ",bench-calibrated-clock,bench-clock-reference"
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
 mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
+mk5_profile_features := mk5_usb_metrics_features + ",bench-trace-excitation"
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
@@ -138,6 +139,22 @@ flash-mk5-usb-metrics: build-mk5-usb-metrics
 # Observe current bench firmware without reset or programming.
 monitor-mk5-bench:
     probe-rs attach --chip STM32F405RGTx {{ mk5_elf }}
+
+# Same trace instrumentation for both placements; independent of motor PWM.
+build-mk5-profile memory="sram":
+    @test {{ quote(memory) }} = sram -o {{ quote(memory) }} = ccm
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ quote(mk5_profile_features + if memory == "ccm" { ",ccm" } else { "" }) }}
+
+flash-mk5-profile memory="sram": (build-mk5-profile memory)
+    probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
+    probe-rs reset --chip STM32F405RGTx
+
+# Arm a finite TIM5 trace before native L detection; export after automatic Stop.
+profile-l-mk5 capture symbols:
+    uv run python scripts/bench_executor_trace.py arm --symbols {{ quote(symbols) }} --on-active --timer-hz 83917920
+    @just detect-l-usb {{ quote(capture) }} 0.031
+    uv run python scripts/bench_executor_trace.py read --symbols {{ quote(symbols) }} --out {{ quote(capture + ".trace.bin") }} --timer-hz 83917920
 
 # Hardware: energizes the secured MK5 motor, records at 20 kHz, then tests Stop.
 test-stop-mk5 capture:

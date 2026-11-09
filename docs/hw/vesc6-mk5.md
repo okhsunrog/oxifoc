@@ -44,7 +44,9 @@ Identical to Cheap FOCer 2 (both follow the VESC reference layout):
 - Halls: PC6/PC7/PC8
 - UART (COMM port): USART3 TX PB10 / RX PB11
 - USB FS: PA11/PA12
-- LEDs: PB0 green, PB1 red
+- LEDs: PB0 green, PB1 red, active high. OxiFOC uses TIM8_CH2N/CH3N
+  at 4 kHz with complementary polarity inverted, capped at 10% illuminated
+  duty. Green pulses for 50 ms each second; red lights only for a fault.
 - Servo/PPM: PB6 (TIM4_CH1)
 - CAN: PB8 RX / PB9 TX **[verify — hw.h default, not in hw_60_core.h]**
 
@@ -66,6 +68,21 @@ Different from CF2:
   while PWMing (`phase_sense.has_filters = true`). Drive high.
 - IMU: BMI160 on I2C, SDA PB2 / SCL PA15 — not used by oxifoc.
 - NRF51 (permanent, MK3+): UART on PC11/PC12, SWD on PB12/PA4 — not used.
+
+## Optional CCM placement
+
+F405 feature `ccm` moves only `STATE` and `FOC_DRIVER` (7488 bytes) to
+CPU-only CCM; code, DMA buffers and stack stay in their usual regions.
+An assembly `__pre_init` enables CCM and copies its initialized FLASH image.
+The linker section precedes `.data` so cortex-m-rt's `__edata` remains in
+SRAM; a linker assertion guards that startup boundary.
+
+`just flash-mk5-profile sram` / `ccm` select otherwise matching finite-trace
+builds. Three native 20-kHz L captures per placement were complete. In those
+roughly 36-ms windows, ADC ISR median was 32.198 us in SRAM versus 31.960 us
+in CCM (less than 1%); these are instrumented observations, not worst-case
+timing guarantees. CCM remains off in the normal MK5 recipes. Exact ELFs,
+traces and captures: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-ccm-2026-11-09/`.
 
 ## Analog scaling
 
