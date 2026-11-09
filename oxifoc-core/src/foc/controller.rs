@@ -5,7 +5,7 @@
 //! shared traits. The controller is intentionally minimal: it runs one
 //! current loop step and returns the computed PWM duties plus telemetry.
 
-use core::cell::Cell;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::{
     constants::{FRAC_1_SQRT_3, SQRT_3_DIV_2},
@@ -134,13 +134,46 @@ struct ModulationLimits {
     requested: f32,
     duty_fraction: f32,
     effective: f32,
-    pwm: Cell<PreparedPwmCap>,
+    pwm: PwmCapCache,
 }
 
 #[derive(Clone, Copy)]
 struct PreparedPwmCap {
     period: u16,
     cap: u16,
+}
+
+impl PreparedPwmCap {
+    fn pack(self) -> u32 {
+        u32::from(self.period) | (u32::from(self.cap) << 16)
+    }
+
+    fn unpack(value: u32) -> Self {
+        Self {
+            period: value as u16,
+            cap: (value >> 16) as u16,
+        }
+    }
+}
+
+/// Shared `apply_dq` calls may request different periods. One atomic word
+/// keeps the key and cap coherent without changing the controller's Sync
+/// contract. Configuration changes still require exclusive `&mut` access.
+struct PwmCapCache(AtomicU32);
+
+impl PwmCapCache {
+    const fn new() -> Self {
+        Self(AtomicU32::new(0))
+    }
+
+    #[inline]
+    fn get(&self) -> PreparedPwmCap {
+        PreparedPwmCap::unpack(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, prepared: PreparedPwmCap) {
+        self.0.store(prepared.pack(), Ordering::Relaxed);
+    }
 }
 
 impl ModulationLimits {
@@ -151,7 +184,7 @@ impl ModulationLimits {
             effective: requested.min(FRAC_1_SQRT_3),
             // Zero is a real, valid timer period: every allowed fraction
             // gives a zero cap, so no sentinel or validity flag is needed.
-            pwm: Cell::new(PreparedPwmCap { period: 0, cap: 0 }),
+            pwm: PwmCapCache::new(),
         }
     }
 
@@ -179,6 +212,8 @@ impl ModulationLimits {
         // including fractions obtained by dividing two integer timer counts.
         let cap = (self.duty_fraction * f32::from(period)) as u16;
         self.pwm.set(PreparedPwmCap { period, cap });
+        // A concurrent miss can replace the cache immediately. Return this
+        // call's result rather than reading back a possibly different period.
         cap
     }
 

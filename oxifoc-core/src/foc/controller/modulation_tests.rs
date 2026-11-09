@@ -196,6 +196,12 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
 type Controller = FocController<SvpwmModulator, FastSinCos>;
 
+const _: () = {
+    fn assert_send_sync<T: Send + Sync>() {}
+    let _ = assert_send_sync::<Controller>;
+    let _ = assert_send_sync::<FocController>;
+};
+
 fn assert_output(actual: FocOutput, expected: FocOutput) {
     let floats = |out: FocOutput| {
         [
@@ -428,4 +434,34 @@ fn differential_trajectories_keep_priority_antiwindup_duties_and_fresh_vbus() {
             legacy.legacy_apply_dq(id, iq, angle, currents.0, currents.1, period),
         );
     }
+}
+
+#[test]
+fn concurrent_shared_voltage_calls_keep_distinct_periods_coherent() {
+    let mut foc = Controller::new(24.0).with_modulation_limit(0.4);
+    foc.set_duty_cap(0.73);
+    foc.set_dead_time_comp_factor(0.016);
+    let periods = [0, 1, 2, 999, 4199, 8399, 32767, u16::MAX];
+    let barrier = std::sync::Barrier::new(periods.len());
+    std::thread::scope(|scope| {
+        for period in periods {
+            let foc = &foc;
+            let barrier = &barrier;
+            scope.spawn(move || {
+                barrier.wait();
+                for cycle in 0..10_000 {
+                    let angle = (cycle % 67) as f32 * 0.1;
+                    let (vd, vq) = if cycle % 2 == 0 {
+                        (30.0, -40.0)
+                    } else {
+                        (-40.0, 30.0)
+                    };
+                    assert_output(
+                        foc.apply_dq(vd, vq, angle, 2.0, -3.0, period),
+                        foc.legacy_apply_dq(vd, vq, angle, 2.0, -3.0, period),
+                    );
+                }
+            });
+        }
+    });
 }
