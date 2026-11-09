@@ -7,6 +7,7 @@ device_crates := "oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
 target_test_crates := "tests/stm32g474 tests/stm32f405"
 
 core_test_features := "runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect,impedance-sweep"
+core_embassy_features := core_test_features + ",embassy"
 mk5_features := "transport-usb,transport-uart,board-vesc6-mk5,task-priority"
 mk5_bench_features := mk5_features + ",bench-calibrated-clock,bench-clock-reference"
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
@@ -87,7 +88,10 @@ test-core *ARGS:
 # Exercise the shared hardware adapters as well as the platform-independent math.
 [positional-arguments]
 test-core-embassy *ARGS:
-    cargo test -p oxifoc-core --locked --lib --features {{ core_test_features + ",embassy" }} "$@"
+    cargo test -p oxifoc-core --locked --lib --features {{ core_embassy_features }} "$@"
+
+clippy-core-embassy:
+    cargo clippy -p oxifoc-core --all-targets --locked --features {{ core_embassy_features }} -- -D warnings
 
 # Strict lint checks for the same core feature set.
 clippy-core:
@@ -155,6 +159,27 @@ detect-mk5 step capture *ARGS:
     RUST_LOG=warn,device=info,fast_rx=debug just cli-usb detect {{ quote(step) }} \
         --record-hz 20000 --record {{ quote(capture) }} {{ ARGS }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
+
+detect-flux-mk5 capture resistance inductance pole_pairs erpm="6000":
+    @just detect-mk5 flux {{ quote(capture) }} --resistance {{ quote(resistance) }} \
+        --inductance {{ quote(inductance) }} --pole-pairs {{ quote(pole_pairs) }} \
+        --erpm {{ quote(erpm) }}
+
+# Energizes the secured MK5 motor: three speeds and a final repeat, all at 20 kHz.
+test-flux-mk5 directory resistance inductance pole_pairs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p {{ quote(directory) }}
+    trap 'just cli-usb stop >/dev/null' EXIT
+    run=0
+    for erpm in 4000 5000 6000 6000; do
+        run=$((run + 1))
+        capture={{ quote(directory) }}/flux-${run}-${erpm}.parquet
+        just detect-flux-mk5 "$capture" {{ quote(resistance) }} {{ quote(inductance) }} {{ quote(pole_pairs) }} "$erpm"
+        rg -q 'Spin-down flux linkage measurement complete' "$capture.host.log"
+        # A fresh mechanical start for each ramp; telemetry stays with its run.
+        sleep 2
+    done
 
 # Observe current bench firmware without reset or programming.
 monitor-mk5-bench:

@@ -32,7 +32,8 @@ use super::excitation::{BurstCapture, BurstSample, VoltageBurst};
 use core::future::Future;
 
 use super::flux_linkage::{
-    FluxLinkageMeasurement, MagnitudeFluxMeasurement, SpinDownFluxMeasurement,
+    CoastSample, FluxLinkageMeasurement, HallCoastMeasurement, MagnitudeFluxMeasurement,
+    SpinDownFluxMeasurement,
 };
 #[cfg(feature = "hfi-detect")]
 use super::inductance::{FFT_SIZE, HfiInjector, InductanceMeasurement, validate_inductance};
@@ -161,6 +162,24 @@ pub trait DetectionHardware {
     /// observer provides ωe.  Default returns zeros.
     fn read_coast_telemetry(&self) -> (f32, f32, f32) {
         (0.0, 0.0, 0.0)
+    }
+
+    /// Wait for fresh, coherent coast voltages and independent rotor speed.
+    /// Hardware backends can reject unavailable/invalid sensors explicitly.
+    fn wait_coast_sample(&mut self) -> impl Future<Output = Result<CoastSample, DetectionError>> {
+        async {
+            self.wait_telemetry().await;
+            let (v_alpha, v_beta, omega_e) = self.read_coast_telemetry();
+            Ok(CoastSample {
+                sequence: 0,
+                timestamp_us: 0,
+                v_alpha,
+                v_beta,
+                omega_e,
+                hall_sector: None,
+                hall_edge_age_s: 0.0,
+            })
+        }
     }
 
     /// Whether [`read_coast_telemetry`](Self::read_coast_telemetry) is
@@ -1824,6 +1843,7 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
     const CAPTURE_STEPS: u32 = 20;
     const CAPTURE_TIME_MS: u64 = 400;
     for i in 1..=CAPTURE_STEPS {
+        hw.check_health()?;
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0, // ignored: velocity mode
             current: params.current_a * i as f32 / CAPTURE_STEPS as f32,
@@ -1864,6 +1884,7 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
     let mut omega = CAPTURE_OMEGA_E;
 
     for i in 1..=ramp_steps {
+        hw.check_health()?;
         omega = CAPTURE_OMEGA_E + (omega_cap - CAPTURE_OMEGA_E) * i as f32 / ramp_steps as f32;
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0, // ignored: firmware integrates velocity
@@ -1905,16 +1926,41 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
     Ok(omega)
 }
 
+/// Let rotor hunting settle while reaffirming the unchanged setpoint. A long
+/// sleep alone can exceed the command-staleness deadman during detection.
+async fn settle_open_loop<H: DetectionHardware, T: Timer>(
+    hw: &mut H,
+    params: &FluxLinkageParams,
+    omega_e: f32,
+) -> Result<(), DetectionError> {
+    let mut remaining = params.settle_time_ms;
+    while remaining > 0 {
+        hw.check_health()?;
+        hw.send_command(ControlMode::OpenLoop {
+            angle_rad: 0.0,
+            current: params.current_a,
+            velocity_rad_s: omega_e,
+            pi_gains: None,
+        })
+        .await;
+        let step = remaining.min(100);
+        T::after_millis(u64::from(step)).await;
+        remaining -= step;
+    }
+    hw.check_health()
+}
+
 /// Ramp the open-loop velocity (and current) back to zero, then stop.
 async fn ramp_down_open_loop<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     current_a: f32,
     omega_e: f32,
     ramp_time_ms: u32,
-) {
+) -> Result<(), DetectionError> {
     let ramp_steps = 50u32;
     let step_ms = u64::from((ramp_time_ms / ramp_steps).max(1));
     for i in (0..ramp_steps).rev() {
+        hw.check_health()?;
         let progress = i as f32 / ramp_steps as f32;
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
@@ -1927,6 +1973,7 @@ async fn ramp_down_open_loop<H: DetectionHardware, T: Timer>(
     }
     hw.send_command(ControlMode::Stopped).await;
     T::after_millis(100).await;
+    Ok(())
 }
 
 /// Measure motor flux linkage via open-loop spinning (q-axis components).
@@ -1954,13 +2001,14 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
     let mut measurement = FluxLinkageMeasurement::from_params(params)?;
 
     let omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
-    T::after_millis(u64::from(params.settle_time_ms)).await;
+    settle_open_loop::<H, T>(hw, params, omega_e).await?;
 
     // The firmware integrates the angle at the FOC rate, so the actual
     // electrical speed IS the commanded one (synchronous machine; sync
     // loss is detected during the ramp).
     info!("Collecting flux linkage samples...");
     for i in 0..params.num_samples {
+        hw.check_health()?;
         // Re-affirm the hold setpoint periodically: this loop sends no
         // commands otherwise, and under a concurrent telemetry stream it
         // stretches past the bench deadman (BENCH_STALENESS_TIMEOUT_US) —
@@ -1980,7 +2028,7 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
         measurement.record(telem.vq, telem.iq, omega_e);
     }
 
-    ramp_down_open_loop::<H, T>(hw, params.current_a, omega_e, params.ramp_time_ms).await;
+    ramp_down_open_loop::<H, T>(hw, params.current_a, omega_e, params.ramp_time_ms).await?;
 
     let flux_linkage = measurement.finish()?;
     info!("Flux linkage measurement complete");
@@ -2017,10 +2065,11 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
     );
 
     let omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
-    T::after_millis(u64::from(params.settle_time_ms)).await;
+    settle_open_loop::<H, T>(hw, params, omega_e).await?;
 
     info!("Collecting flux linkage samples...");
     for i in 0..params.num_samples {
+        hw.check_health()?;
         // Deadman re-affirm — see the identical block in
         // `measure_flux_linkage` above.
         if i % 256 == 0 {
@@ -2037,7 +2086,7 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
         measurement.record(telem.vd, telem.vq, telem.id, telem.iq, omega_e);
     }
 
-    ramp_down_open_loop::<H, T>(hw, params.current_a, omega_e, params.ramp_time_ms).await;
+    ramp_down_open_loop::<H, T>(hw, params.current_a, omega_e, params.ramp_time_ms).await?;
 
     let flux = measurement.finish()?;
     info!("Back-EMF-vector flux linkage measurement complete");
@@ -2049,7 +2098,8 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
 /// Spins the motor to target speed, releases all FETs (coast), and
 /// measures the open-circuit back-EMF during deceleration.
 ///
-///   `λ = |V_bemf| / |ωe|`
+/// Hall-equipped hardware integrates `|V_bemf|` across three complete electrical
+/// turns, using captured edge timing. Legacy/model backends use `avg(|V|)/avg(|ω|)`.
 ///
 /// This method does **not** depend on resistance or inductance.
 ///
@@ -2063,10 +2113,10 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
     info!("Starting spin-down flux linkage measurement...");
 
     // ── Spin-up (shared open-loop ramp, firmware-integrated angle) ─────
-    let _omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
+    let omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
 
     // Hold at speed briefly to ensure steady state
-    T::after_millis(u64::from(params.settle_time_ms)).await;
+    settle_open_loop::<H, T>(hw, params, omega_e).await?;
 
     // ── Release: coast with all FETs off ───────────────────────────────
     hw.send_command(ControlMode::Coast).await;
@@ -2076,16 +2126,33 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
 
     // ── Sample back-EMF during coast-down ──────────────────────────────
     let mut measurement = SpinDownFluxMeasurement::from_params(params);
+    let mut hall_measurement = HallCoastMeasurement::default();
+    let mut using_hall = false;
 
     let max_coast_samples = 10_000u32; // safety limit
     for _ in 0..max_coast_samples {
-        hw.wait_telemetry().await; // advance one FOC cycle
+        hw.check_health()?;
         T::after_micros(500).await; // ~2 kHz effective sample rate
 
-        let (v_alpha, v_beta, omega_e) = hw.read_coast_telemetry();
-        let v_bemf = sqrtf(v_alpha * v_alpha + v_beta * v_beta);
+        let sample = hw.wait_coast_sample().await?;
+        let v_bemf = sample.magnitude();
+        if sample.hall_sector.is_some() {
+            using_hall = true;
+            if sample.omega_e.abs() < params.min_coast_omega_e {
+                break;
+            }
+            if let Some(lambda) = hall_measurement.record(sample)? {
+                info!("Flux coast turn: seq={} lambda={}", sample.sequence, lambda);
+            }
+            if hall_measurement.has_enough_samples() {
+                break;
+            }
+            continue;
+        } else if using_hall {
+            return Err(DetectionError::LowConfidence);
+        }
 
-        if !measurement.record(v_bemf, omega_e) {
+        if !measurement.record(v_bemf, sample.omega_e) {
             // omega below threshold — motor has slowed too much
             break;
         }
@@ -2098,7 +2165,11 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
     hw.send_command(ControlMode::Stopped).await;
     T::after_millis(100).await;
 
-    let flux = measurement.finish()?;
+    let flux = if using_hall {
+        hall_measurement.finish()?
+    } else {
+        measurement.finish()?
+    };
     info!("Spin-down flux linkage measurement complete");
     Ok(flux)
 }
@@ -2130,7 +2201,9 @@ pub async fn measure_flux_linkage_auto<H: DetectionHardware, T: Timer>(
         match measure_flux_linkage_spindown::<H, T>(hw, params).await {
             Err(DetectionError::InsufficientSamples) => {
                 // Motor can't coast (high friction / geared) — drive it.
-                info!("Spin-down failed (motor stopped too fast), falling back to driven method");
+                info!(
+                    "Coast window insufficient (rotation or voltage floor), falling back to driven method"
+                );
                 T::after_millis(500).await;
             }
             done => return done,

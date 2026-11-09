@@ -20,7 +20,7 @@ use crate::foc::detection::sweep::{
 };
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use crate::foc::phase_voltage::PhaseVoltageSense;
-use crate::foc::sensors::AdcSnapshot;
+use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::motor::ControlMode;
 use crate::state::{self, MotorControlState};
@@ -44,6 +44,7 @@ pub struct EmbassyDetectionHardware {
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
+    hall_errors_at_start: Option<u32>,
 }
 
 impl EmbassyDetectionHardware {
@@ -55,12 +56,20 @@ impl EmbassyDetectionHardware {
         ic: &'static AtomicU16,
         board: &'static BoardConfig,
     ) -> Self {
+        let hall_errors_at_start = critical_section::with(|cs| {
+            state_mutex
+                .borrow(cs)
+                .borrow()
+                .last_hall
+                .map(|h| h.error_count)
+        });
         Self {
             state_mutex,
             ia,
             ib,
             ic,
             board,
+            hall_errors_at_start,
         }
     }
 }
@@ -228,6 +237,57 @@ impl DetectionHardware for EmbassyDetectionHardware {
         let ic_raw = self.ic.load(Ordering::Relaxed);
         self.board.convert_raw_currents(ia_raw, ib_raw, ic_raw)
     }
+
+    fn supports_coast_telemetry(&self) -> bool {
+        self.board.phase_sense.is_some() && self.hall_errors_at_start.is_some()
+    }
+
+    async fn wait_coast_sample(
+        &mut self,
+    ) -> Result<super::flux_linkage::CoastSample, DetectionError> {
+        let (adc, _, hall, mode) = wait_next_snapshot(self.state_mutex).await;
+        let (v_alpha, v_beta, omega_e) =
+            coast_sample(self.board, adc, hall, mode, self.hall_errors_at_start)?;
+        let hall = hall.ok_or(DetectionError::LowConfidence)?;
+        Ok(super::flux_linkage::CoastSample {
+            sequence: adc.seq,
+            timestamp_us: embassy_time::Instant::now().as_micros(),
+            v_alpha,
+            v_beta,
+            omega_e,
+            hall_sector: Some(hall.state),
+            hall_edge_age_s: hall.edge_age_s,
+        })
+    }
+}
+
+fn coast_sample(
+    board: &BoardConfig,
+    adc: AdcSnapshot,
+    hall: Option<HallSnapshot>,
+    mode: ControlMode,
+    initial_errors: Option<u32>,
+) -> Result<(f32, f32, f32), DetectionError> {
+    if mode != ControlMode::Coast {
+        return Err(DetectionError::HardwareFault);
+    }
+    let sense = PhaseVoltageSense::from_board(board).ok_or(DetectionError::MissingPrerequisite)?;
+    let raw = adc.vphase.ok_or(DetectionError::HardwareFault)?;
+    if raw.iter().any(|&count| count > board.calib.adc_max_counts) {
+        return Err(DetectionError::HardwareFault);
+    }
+    let hall = hall.ok_or(DetectionError::LowConfidence)?;
+    if !hall.velocity_rad_s.is_finite() || Some(hall.error_count) != initial_errors {
+        return Err(DetectionError::LowConfidence);
+    }
+    let (alpha, beta) = sense.alpha_beta(raw);
+    // Avoid qualifying a flux estimate from quantization noise after the
+    // rotor slows. This floor scales with the board's ADC/divider, not motor size.
+    let voltage_floor = 10.0 * sense.volts_per_count();
+    if alpha * alpha + beta * beta < voltage_floor * voltage_floor {
+        return Err(DetectionError::InsufficientSamples);
+    }
+    Ok((alpha, beta, hall.velocity_rad_s))
 }
 
 async fn wait_next_telemetry(
@@ -266,6 +326,13 @@ fn resistance_sample(
 async fn wait_next_sample(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
 ) -> (AdcSnapshot, FocOutput) {
+    let (adc, foc, _, _) = wait_next_snapshot(state_mutex).await;
+    (adc, foc)
+}
+
+async fn wait_next_snapshot(
+    state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
+) -> (AdcSnapshot, FocOutput, Option<HallSnapshot>, ControlMode) {
     struct Subscription;
     impl Drop for Subscription {
         fn drop(&mut self) {
@@ -284,7 +351,12 @@ async fn wait_next_sample(
             if state.last_adc.seq != previous_seq {
                 // ADC sequence and FOC output are published in one critical
                 // section. Copy the matching output under the same guard.
-                Poll::Ready((state.last_adc, state.last_foc))
+                Poll::Ready((
+                    state.last_adc,
+                    state.last_foc,
+                    state.last_hall,
+                    state.control_mode,
+                ))
             } else {
                 Poll::Pending
             }
@@ -479,6 +551,92 @@ mod tests {
         assert!((sample.voltage_v - 0.115_470_05).abs() < 0.000001);
         assert_eq!(sample.current_a, 1.5);
         assert_eq!(sample.source, ResistanceVoltageSource::FilteredPhaseAdc);
+    }
+
+    #[test]
+    fn coast_uses_terminal_adc_and_independent_hall_speed_even_without_filters() {
+        let adc = AdcSnapshot::default().with_phase_voltages([1200, 900, 900]);
+        let hall = HallSnapshot {
+            velocity_rad_s: -123.0,
+            error_count: 4,
+            ..Default::default()
+        };
+        let (alpha, beta, omega) =
+            coast_sample(&board(false), adc, Some(hall), ControlMode::Coast, Some(4)).unwrap();
+        assert!((alpha - 0.2).abs() < 1e-6);
+        assert!(beta.abs() < 1e-6);
+        assert_eq!(omega, -123.0);
+    }
+
+    #[test]
+    fn coast_rejects_missing_or_faulted_sensors_and_an_energized_bridge() {
+        let adc = AdcSnapshot::default().with_phase_voltages([1200, 900, 900]);
+        let hall = HallSnapshot {
+            velocity_rad_s: 123.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            coast_sample(&board(true), adc, None, ControlMode::Coast, Some(0)),
+            Err(DetectionError::LowConfidence)
+        );
+        for bad in [
+            HallSnapshot {
+                error_count: 1,
+                ..hall
+            },
+            HallSnapshot {
+                velocity_rad_s: f32::NAN,
+                ..hall
+            },
+        ] {
+            assert_eq!(
+                coast_sample(&board(true), adc, Some(bad), ControlMode::Coast, Some(0)),
+                Err(DetectionError::LowConfidence)
+            );
+        }
+        assert_eq!(
+            coast_sample(&board(true), adc, Some(hall), ControlMode::Stopped, Some(0)),
+            Err(DetectionError::HardwareFault)
+        );
+        assert_eq!(
+            coast_sample(
+                &board(true),
+                AdcSnapshot::default(),
+                Some(hall),
+                ControlMode::Coast,
+                Some(0)
+            ),
+            Err(DetectionError::HardwareFault)
+        );
+    }
+
+    #[test]
+    fn coast_voltage_floor_scales_with_adc_resolution_and_rejects_noise() {
+        let hall = HallSnapshot {
+            velocity_rad_s: 123.0,
+            ..Default::default()
+        };
+        let adc = AdcSnapshot::default().with_phase_voltages([1200, 1199, 1201]);
+        assert_eq!(
+            coast_sample(&board(true), adc, Some(hall), ControlMode::Coast, Some(0)),
+            Err(DetectionError::InsufficientSamples)
+        );
+    }
+
+    #[test]
+    fn losing_hall_does_not_pair_a_stale_speed_with_a_new_adc_cycle() {
+        let state = CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        state::update_telemetry(
+            &state,
+            AdcSnapshot::default(),
+            Some(HallSnapshot {
+                velocity_rad_s: 100.0,
+                ..Default::default()
+            }),
+            FocOutput::empty(),
+        );
+        publish(&state, 2, 0.0);
+        critical_section::with(|cs| assert!(state.borrow(cs).borrow().last_hall.is_none()));
     }
 
     #[test]

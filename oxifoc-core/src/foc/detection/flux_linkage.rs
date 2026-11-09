@@ -42,6 +42,140 @@ const MAX_VALID_FLUX: f32 = 1.0; // 1 Wb
 /// Minimum angular velocity for valid measurement (rad/s)
 const MIN_VALID_OMEGA: f32 = 10.0; // ~95 eRPM
 
+/// One coherent undriven voltage sample. Hall sectors are optional for model
+/// backends; physical Hall-equipped boards also supply the captured edge age.
+#[derive(Clone, Copy, Debug)]
+pub struct CoastSample {
+    pub sequence: u32,
+    pub timestamp_us: u64,
+    pub v_alpha: f32,
+    pub v_beta: f32,
+    pub omega_e: f32,
+    pub hall_sector: Option<u8>,
+    pub hall_edge_age_s: f32,
+}
+
+impl CoastSample {
+    pub fn magnitude(&self) -> f32 {
+        sqrtf(self.v_alpha * self.v_alpha + self.v_beta * self.v_beta)
+    }
+}
+
+/// Integrate BEMF magnitude over complete Hall revolutions:
+/// `lambda = integral(|V_bemf| dt) / (2*pi*turns)`.
+/// Unlike pointwise V/omega this does not use a lagging sector-speed estimate
+/// during deceleration. Edge timestamps interpolate the integration boundaries.
+pub struct HallCoastMeasurement {
+    previous: Option<(CoastSample, f32)>,
+    integral: f32,
+    anchor: Option<(u8, f32)>,
+    steps: u8,
+    direction: i8,
+    samples: u32,
+    turns: u32,
+    lambda_sum: f32,
+    lambda_min: f32,
+    lambda_max: f32,
+}
+
+impl Default for HallCoastMeasurement {
+    fn default() -> Self {
+        Self {
+            previous: None,
+            integral: 0.0,
+            anchor: None,
+            steps: 0,
+            direction: 0,
+            samples: 0,
+            turns: 0,
+            lambda_sum: 0.0,
+            lambda_min: f32::INFINITY,
+            lambda_max: 0.0,
+        }
+    }
+}
+
+impl HallCoastMeasurement {
+    /// Three complete turns and at least 32 samples qualify the window.
+    pub fn has_enough_samples(&self) -> bool {
+        self.turns >= 3 && self.samples >= 32
+    }
+
+    pub fn record(&mut self, sample: CoastSample) -> Result<Option<f32>, DetectionError> {
+        let sector = sample
+            .hall_sector
+            .filter(|s| *s < 6)
+            .ok_or(DetectionError::LowConfidence)?;
+        let voltage = sample.magnitude();
+        if !voltage.is_finite()
+            || !sample.omega_e.is_finite()
+            || !sample.hall_edge_age_s.is_finite()
+            || sample.hall_edge_age_s < 0.0
+        {
+            return Err(DetectionError::LowConfidence);
+        }
+        self.samples += 1;
+        let Some((previous, previous_voltage)) = self.previous.replace((sample, voltage)) else {
+            return Ok(None);
+        };
+        let dt = sample
+            .timestamp_us
+            .checked_sub(previous.timestamp_us)
+            .filter(|dt| *dt > 0)
+            .ok_or(DetectionError::LowConfidence)? as f32
+            * 1e-6;
+        self.integral += 0.5 * (previous_voltage + voltage) * dt;
+        let previous_sector = previous.hall_sector.ok_or(DetectionError::LowConfidence)?;
+        if sector == previous_sector {
+            return Ok(None);
+        }
+        let step = (sector + 6 - previous_sector) % 6;
+        let direction = match step {
+            1 => 1,
+            5 => -1,
+            _ => return Err(DetectionError::LowConfidence),
+        };
+        if self.direction != 0 && direction != self.direction {
+            return Err(DetectionError::LowConfidence);
+        }
+        self.direction = direction;
+        let tail = sample.hall_edge_age_s.min(dt);
+        let edge_voltage = voltage + (previous_voltage - voltage) * tail / dt;
+        let at_edge = self.integral - 0.5 * (edge_voltage + voltage) * tail;
+        let Some((anchor_sector, anchor_integral)) = self.anchor else {
+            self.anchor = Some((sector, at_edge));
+            return Ok(None);
+        };
+        self.steps += 1;
+        if sector != anchor_sector {
+            return Ok(None);
+        }
+        if self.steps != 6 {
+            return Err(DetectionError::LowConfidence);
+        }
+        let lambda = (at_edge - anchor_integral) / core::f32::consts::TAU;
+        validate_flux_linkage(lambda)?;
+        self.turns += 1;
+        self.lambda_sum += lambda;
+        self.lambda_min = self.lambda_min.min(lambda);
+        self.lambda_max = self.lambda_max.max(lambda);
+        self.anchor = Some((sector, at_edge));
+        self.steps = 0;
+        Ok(Some(lambda))
+    }
+
+    pub fn finish(&self) -> Result<f32, DetectionError> {
+        if !self.has_enough_samples() {
+            return Err(DetectionError::InsufficientSamples);
+        }
+        let lambda = self.lambda_sum / self.turns as f32;
+        if (self.lambda_max - self.lambda_min) > 0.1 * lambda {
+            return Err(DetectionError::LowConfidence);
+        }
+        Ok(lambda)
+    }
+}
+
 /// Accumulator for flux linkage measurement samples.
 ///
 /// Collects steady-state voltage, current, and velocity samples
@@ -360,7 +494,7 @@ impl SpinDownFluxMeasurement {
     /// # Returns
     /// `true` if the sample was accepted, `false` if rejected.
     pub fn record(&mut self, v_bemf: f32, omega_e: f32) -> bool {
-        if omega_e.abs() < self.min_omega {
+        if !v_bemf.is_finite() || !omega_e.is_finite() || omega_e.abs() < self.min_omega {
             return false;
         }
         self.v_bemf_sum += v_bemf.abs();
@@ -669,6 +803,121 @@ mod tests {
             short.record(lambda * 100.0, 100.0 - k as f32);
         }
         assert_eq!(short.finish(), Err(DetectionError::InsufficientSamples));
+    }
+
+    #[test]
+    fn coast_nonfinite_samples_cannot_satisfy_the_collection_window() {
+        let mut measurement = SpinDownFluxMeasurement::new(2, 50.0);
+        for (voltage, omega) in [
+            (f32::NAN, 100.0),
+            (1.0, f32::NAN),
+            (f32::INFINITY, 100.0),
+            (1.0, f32::INFINITY),
+        ] {
+            assert!(!measurement.record(voltage, omega));
+        }
+        assert!(measurement.record(0.3, 100.0));
+        assert!(!measurement.has_enough_samples());
+        assert!(measurement.record(0.6, 200.0));
+        assert!((measurement.finish().unwrap() - 0.003).abs() < 1e-7);
+    }
+
+    fn coast_plant_sample(n: u32, time: f64, direction: f64, decel: f64) -> CoastSample {
+        let omega = 600.0 - decel * time;
+        let theta = 600.0 * time - 0.5 * decel * time * time;
+        let edge = (theta / (core::f64::consts::TAU / 6.0)).floor();
+        let edge_theta = edge * core::f64::consts::TAU / 6.0;
+        let edge_time = if decel == 0.0 {
+            edge_theta / 600.0
+        } else {
+            (600.0 - (360000.0 - 2.0 * decel * edge_theta).sqrt()) / decel
+        };
+        let sector = if direction > 0.0 {
+            edge as u8 % 6
+        } else {
+            (6 - edge as u8 % 6) % 6
+        };
+        CoastSample {
+            sequence: n,
+            timestamp_us: (time * 1e6).round() as u64,
+            v_alpha: (0.0032 * omega * (direction * theta).cos()) as f32,
+            v_beta: (0.0032 * omega * (direction * theta).sin()) as f32,
+            omega_e: (direction * omega) as f32,
+            hall_sector: Some(sector),
+            hall_edge_age_s: (time - edge_time) as f32,
+        }
+    }
+
+    #[test]
+    fn complete_coast_turns_measure_flux_during_fast_deceleration_both_directions() {
+        for direction in [-1.0, 1.0] {
+            for decel in [0.0, 3000.0] {
+                let mut measurement = HallCoastMeasurement::default();
+                let mut time = 0.0;
+                for n in 0..200 {
+                    let mut sample = coast_plant_sample(n, time, direction, decel);
+                    // Instantaneous Hall speed may lag badly during deceleration;
+                    // only captured sector boundaries establish total rotation.
+                    sample.omega_e = direction as f32 * 700.0;
+                    sample.v_alpha += 0.02;
+                    sample.v_beta -= 0.015;
+                    measurement.record(sample).unwrap();
+                    if measurement.has_enough_samples() {
+                        break;
+                    }
+                    time += if n % 3 == 0 { 0.00091 } else { 0.00053 };
+                }
+                let flux = measurement.finish().unwrap();
+                assert!(
+                    (flux - 0.0032).abs() / 0.0032 < 0.002,
+                    "{direction} {decel}: {flux}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn coast_turn_window_rejects_skipped_edges_nonfinite_data_and_nonmonotonic_time() {
+        for kind in 0..3 {
+            let mut measurement = HallCoastMeasurement::default();
+            let first = coast_plant_sample(0, 0.0, 1.0, 0.0);
+            measurement.record(first).unwrap();
+            let mut sample = coast_plant_sample(1, 0.0005, 1.0, 0.0);
+            if kind == 0 {
+                sample.hall_sector = Some(2);
+            }
+            if kind == 1 {
+                sample.timestamp_us = 0;
+            }
+            if kind == 2 {
+                sample.v_alpha = f32::NAN;
+            }
+            assert_eq!(
+                measurement.record(sample),
+                Err(DetectionError::LowConfidence)
+            );
+            assert_eq!(
+                measurement.finish(),
+                Err(DetectionError::InsufficientSamples)
+            );
+        }
+    }
+
+    #[test]
+    fn coast_turn_window_rejects_a_direction_reversal() {
+        let mut measurement = HallCoastMeasurement::default();
+        measurement
+            .record(coast_plant_sample(0, 0.0, 1.0, 0.0))
+            .unwrap();
+        measurement
+            .record(coast_plant_sample(1, 0.002, 1.0, 0.0))
+            .unwrap();
+        let mut reversed = coast_plant_sample(2, 0.004, 1.0, 0.0);
+        reversed.hall_sector = Some(0);
+        assert_eq!(
+            measurement.record(reversed),
+            Err(DetectionError::LowConfidence)
+        );
     }
 
     #[test]

@@ -1328,9 +1328,9 @@ pub fn update_telemetry(
     critical_section::with(|cs| {
         let mut state = state_mutex.borrow(cs).borrow_mut();
         state.update_adc(adc);
-        if let Some(h) = hall {
-            state.update_hall(h);
-        }
+        // None is a current unavailable/invalid reading, not permission to
+        // retain an old valid speed beside a fresh ADC snapshot.
+        state.last_hall = hall;
         state.update_foc(foc);
     });
 

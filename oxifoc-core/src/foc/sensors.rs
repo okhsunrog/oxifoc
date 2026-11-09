@@ -292,10 +292,12 @@ pub struct HallSnapshot {
     pub velocity_rad_s: f32,
     /// Current rotation direction
     pub direction: Direction,
-    /// Raw 3-bit Hall state (0-7)
+    /// Logical Hall sector (0-5); physical bit patterns are mapped by the reader.
     pub state: u8,
     /// Cumulative error count
     pub error_count: u32,
+    /// Time since the latest hardware-captured edge, in seconds.
+    pub edge_age_s: f32,
 }
 
 // ============================================================================

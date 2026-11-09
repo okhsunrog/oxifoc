@@ -14,3 +14,39 @@ the control/capture interrupts do not log.
 
 Raw captures, exact configuration and analysis are under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-flux-2026-11-09/`.
+
+## Native coast measurement
+
+The Embassy adapter now supplies coherent terminal-voltage ADC and Hall
+snapshots while the bridge is undriven. Previously the hardware backend did
+not supply coast telemetry, so detection used the driven method. A fixed
+500-sample coast window also outlasted this motor's useful coast interval.
+Instantaneous Hall sector speed lags during rapid deceleration; the new
+estimator integrates BEMF magnitude over three complete electrical turns,
+using captured Hall edges for the boundaries. Missing sensors, skipped or
+reversed sectors, poor turn consistency and the ADC noise floor reject the
+measurement. Driven fallback remains available when coast is too short.
+
+| Target ERPM | Native coast lambda, mWb | Difference from VESC |
+| --- | --- | --- |
+| 4000 | 3.093224 | -3.79% |
+| 5000 | 3.160818 | -1.69% |
+| 6000 | 3.190380 | -0.77% |
+| 6000 repeat | 3.173070 | -1.31% |
+
+Reference: VESC 7.00 full wizard readback, 3.215180 mWb, in
+`/home/okhsunrog/tmp_zfs/codex_tmp/vesc-bench-bringup/full-detection-01/comparison.json`.
+That wizard's waveform capture was incomplete; only its parameter readback
+is used here. No scale correction was fitted to that result.
+
+All four native runs completed without fallback, retaining 480641 consecutive
+samples at 20 kHz in `qualified/`. No new Hall errors or overcaptures occurred;
+the cumulative Hall error counter was already 1 before calibration. The
+largest sampled dq-current magnitude was 4.198 A (6-A trip). Final status:
+Stopped, fault count 0, bus 24.033 V, FET/motor temperatures 29.9/27.4 C.
+
+The older driven method returned 3.476–3.501 mWb at 2000–6000 ERPM. Its
+voltage-estimation bias is unresolved. Terminal ADC offsets and remaining
+speed dependence also need investigation before claiming calibrated accuracy;
+Hall closed-loop commutation is not qualified by these open-loop/coast runs.
+No motor parameters or increased current limits were saved.

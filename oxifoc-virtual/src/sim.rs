@@ -14,7 +14,9 @@ use oxifoc_core::foc::fault::{FaultRegistry, StandardFault};
 use oxifoc_core::foc::hall_sensor::{Direction, HallSensor};
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::pwm::SvpwmModulator;
-use oxifoc_core::foc::sensors::{AdcSnapshot, CurrentSensor, HallSnapshot, TempSensorId};
+use oxifoc_core::foc::sensors::{
+    AdcSnapshot, CurrentSensor, HallSensorTrait, HallSnapshot, TempSensorId,
+};
 use oxifoc_core::foc::velocity::VelocityLoopConfig;
 use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::derating::DeratingConfig;
@@ -216,8 +218,9 @@ pub async fn foc_loop(
                 } else {
                     Direction::Stopped
                 },
-                state: sample.hall_state,
+                state: driver.phase().hall().logical_state(),
                 error_count: 0,
+                edge_age_s: driver.phase().hall().time_since_edge(now).unwrap_or(0) as f32 * 1e-6,
             };
             publish_cycle_telemetry(state_mutex, adc, Some(hall), telem, params.pole_pairs, seq);
             previous_angle = sample.angle_rad;

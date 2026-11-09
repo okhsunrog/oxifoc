@@ -77,6 +77,11 @@ impl PhaseVoltageSense {
         self.has_filters
     }
 
+    /// Phase-terminal voltage represented by one ADC count.
+    pub fn volts_per_count(&self) -> f32 {
+        self.counts_to_volts(1, 0.0)
+    }
+
     /// Whether the undriven DC offsets have been calibrated.
     #[inline]
     pub fn is_calibrated(&self) -> bool {

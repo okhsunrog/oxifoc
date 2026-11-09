@@ -11,6 +11,82 @@ impl Timer for ImmediateTimer {
     async fn after_micros(_: u64) {}
 }
 
+#[test]
+fn flux_settle_keeps_command_deadman_fed_and_observes_hardware_health() {
+    std::thread_local! { static NOW_MS: Cell<u64> = const { Cell::new(0) }; }
+    struct Clock;
+    impl Timer for Clock {
+        async fn after_millis(ms: u64) {
+            NOW_MS.with(|t| t.set(t.get() + ms));
+        }
+        async fn after_micros(us: u64) {
+            Self::after_millis(us / 1000).await;
+        }
+    }
+    struct Hardware {
+        last_command: Cell<u64>,
+        failed: bool,
+    }
+    impl DetectionHardware for Hardware {
+        fn check_health(&self) -> Result<(), DetectionError> {
+            if self.failed || NOW_MS.with(|t| t.get() - self.last_command.get()) > 250 {
+                Err(DetectionError::HardwareFault)
+            } else {
+                Ok(())
+            }
+        }
+        async fn capture_voltage_burst<S: SinCos>(
+            &mut self,
+            _: VoltageBurst,
+        ) -> Result<BurstCapture, DetectionError> {
+            Err(DetectionError::MissingPrerequisite)
+        }
+        async fn send_command(&self, mode: ControlMode) {
+            assert_eq!(
+                mode,
+                ControlMode::OpenLoop {
+                    angle_rad: 0.0,
+                    current: 2.0,
+                    velocity_rad_s: 200.0,
+                    pi_gains: None
+                }
+            );
+            self.last_command.set(NOW_MS.with(Cell::get));
+        }
+        async fn wait_telemetry(&mut self) -> FocOutput {
+            FocOutput::empty()
+        }
+        fn read_phase_currents(&self) -> (f32, f32, f32) {
+            (0.0, 0.0, 0.0)
+        }
+    }
+    for failed in [false, true] {
+        NOW_MS.with(|t| t.set(0));
+        let mut hw = Hardware {
+            last_command: Cell::new(0),
+            failed,
+        };
+        let params = FluxLinkageParams {
+            settle_time_ms: 3000,
+            current_a: 2.0,
+            ..Default::default()
+        };
+        let mut future = core::pin::pin!(settle_open_loop::<_, Clock>(&mut hw, &params, 200.0));
+        let result = future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()));
+        assert_eq!(
+            result,
+            Poll::Ready(if failed {
+                Err(DetectionError::HardwareFault)
+            } else {
+                Ok(())
+            })
+        );
+        assert_eq!(NOW_MS.with(Cell::get), if failed { 0 } else { 3000 });
+    }
+}
+
 /// Steady-state winding with an effective positive voltage correction. The PI
 /// holds positive current using a negative command. Tiny diagnostic pulses are
 /// deliberately below the detection floor, exercising failure cleanup too.
