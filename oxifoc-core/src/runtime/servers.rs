@@ -284,6 +284,7 @@ fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
             counts_ok(v.phase_a) && counts_ok(v.phase_b) && counts_ok(v.phase_c)
         }
         ConfigWrite::PiGains(v) => v.is_sane(),
+        ConfigWrite::VoltageFeedforward(_) => true,
         ConfigWrite::MotorParams(v) => v.is_valid(),
         ConfigWrite::HallCalibration(v) => v.is_calibrated(),
         ConfigWrite::HallTuning(v) => v.is_sane(),
@@ -326,6 +327,7 @@ fn config_value(
         G::Failsafe => cfg.failsafe.clone().map(V::Failsafe),
         G::Velocity => cfg.velocity.clone().map(V::Velocity),
         G::Derating => cfg.derating.clone().map(V::Derating),
+        G::VoltageFeedforward => cfg.voltage_feedforward.map(V::VoltageFeedforward),
     }
 }
 
@@ -351,6 +353,10 @@ fn flash_parts(value: crate::types::ConfigValue) -> (ConfigKey, ConfigPayload) {
         V::Failsafe(v) => (ConfigKey::Failsafe, ConfigPayload::Failsafe(v)),
         V::Velocity(v) => (ConfigKey::Velocity, ConfigPayload::Velocity(v)),
         V::Derating(v) => (ConfigKey::Derating, ConfigPayload::Derating(v)),
+        V::VoltageFeedforward(v) => (
+            ConfigKey::VoltageFeedforward,
+            ConfigPayload::VoltageFeedforward(v),
+        ),
     }
 }
 
@@ -520,11 +526,24 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     }
                                 });
                             }
-                            if let ConfigWrite::MotorParams(value) = &write {
+                            let model_update = match &write {
+                                ConfigWrite::MotorParams(value) => {
+                                    Some(crate::state::model::ModelConfigUpdate::MotorParams(
+                                        value.clone(),
+                                    ))
+                                }
+                                ConfigWrite::VoltageFeedforward(value) => Some(
+                                    crate::state::model::ModelConfigUpdate::VoltageFeedforward(
+                                        *value,
+                                    ),
+                                ),
+                                _ => None,
+                            };
+                            if let Some(update) = model_update {
                                 let mut config = critical_section::with(|cs| {
                                     runtime_config.borrow(cs).borrow().clone()
                                 });
-                                config.motor_params = Some(value.clone());
+                                update.apply_to_config(&mut config);
                                 let vbus = critical_section::with(|cs| {
                                     state_mutex.borrow(cs).borrow().last_adc.vbus_mv as f32 / 1000.0
                                 });
@@ -536,7 +555,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     );
                                 let Some(guard) = ModelApplyGuard::prepare(
                                     model,
-                                    value.clone(),
+                                    update,
                                     runtime_config,
                                     revisions,
                                     action_cache,
@@ -555,6 +574,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     ConfigWrite::MotorParams(v) => {
                                         cfg.motor_params = Some(v.clone());
                                     }
+                                    ConfigWrite::VoltageFeedforward(_) => {} // handled by durable model apply
                                     ConfigWrite::CurrentLimits(v) => {
                                         cfg.current_limits = Some(v.clone());
                                     }
@@ -619,7 +639,8 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                         .send(DriverCommand::SetPiGains { kp: v.kp, ki: v.ki })
                                         .await;
                                 }
-                                ConfigWrite::MotorParams(_) => {
+                                ConfigWrite::MotorParams(_)
+                                | ConfigWrite::VoltageFeedforward(_) => {
                                     unreachable!("handled by coherent model transaction")
                                 }
                                 // Cruise velocity-loop tuning applies live.

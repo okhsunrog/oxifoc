@@ -357,6 +357,7 @@ fn configure_cycle(foc: Controller, cycle: usize) -> Controller {
         1 => -0.2,
         _ => f32::NAN,
     });
+    foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
     foc.set_decoupling(if cycle.is_multiple_of(3) {
         None
     } else {

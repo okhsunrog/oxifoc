@@ -7,6 +7,7 @@ use crate::foc::pwm::{PhasePwm, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::storage::RuntimeConfig;
+use crate::types::VoltageFeedforwardMode;
 
 /// Model construction can evaluate filter coefficients; installing this value
 /// only replaces prepared state and scalar settings. Keep it out of ISR queues.
@@ -14,6 +15,7 @@ pub struct PreparedMotorModel {
     phase: Option<PreparedPhaseModel>,
     gains: (f32, f32),
     decoupling: Option<Decoupling>,
+    voltage_feedforward_mode: VoltageFeedforwardMode,
     limits: CurrentLimits,
     pub pole_pairs: u8,
 }
@@ -27,6 +29,7 @@ impl PreparedMotorModel {
             phase: Some(PreparedPhaseModel::from_config(config, vbus)),
             gains: controller.id_pi.gains(),
             decoupling: controller.decoupling(),
+            voltage_feedforward_mode: controller.voltage_feedforward_mode(),
             limits: CurrentLimits::from_stored(
                 config.current_limits.as_ref(),
                 board_max_current_a,
@@ -70,6 +73,8 @@ impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C
             .iq_pi
             .set_gains(model.gains.0, model.gains.1);
         self.controller.set_decoupling(model.decoupling);
+        self.controller
+            .set_voltage_feedforward_mode(model.voltage_feedforward_mode);
         self.controller.reset();
         self.set_current_limits(model.limits);
         Ok(source)

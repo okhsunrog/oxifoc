@@ -19,6 +19,7 @@ use crate::foc::clamp_f32;
 use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "storage")]
 use crate::storage::MotorParamsConfig;
+use crate::types::VoltageFeedforwardMode;
 
 /// Output of a single FOC current-loop step
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -109,8 +110,8 @@ impl Decoupling {
             && self.resistance_ohm >= 0.0
     }
 
-    /// The model a stored motor-params group arms, at boot and on a live
-    /// write alike. Decoupling wants the FUNDAMENTAL Ld/Lq when detection
+    /// Electrical coefficients decoded from stored motor params, at boot and
+    /// on a live write alike. Decoupling wants the FUNDAMENTAL Ld/Lq when detection
     /// measured them (two-inductance rule: the AC plateau under-compensates
     /// the cross-coupling 4–5× on eddy-heavy motors — the bench 800 rad/s
     /// OC class); the AC values otherwise.
@@ -256,9 +257,9 @@ pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> 
     /// current Park displaces the regulated current vector off the q axis
     /// by the same amount (`id_true = −iq·sin(δ)`).
     actuation_advance: f32,
-    /// dq decoupling + back-EMF feedforward; None = plain PI (motor
-    /// parameters unknown, e.g. before detection)
+    /// Electrical model coefficients; availability does not enable feedforward.
     decoupling: Option<Decoupling>,
+    voltage_feedforward_mode: VoltageFeedforwardMode,
     /// Direction the last step's q voltage ran into the voltage limit
     /// (+1 / −1, 0 = inside it): the side the q current cannot be pushed
     /// further. See [`Self::q_voltage_clip`].
@@ -312,6 +313,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             dead_time_current_inv_a: 0.0,
             actuation_advance: 0.0,
             decoupling: None,
+            voltage_feedforward_mode: VoltageFeedforwardMode::Disabled,
             q_clip: 0.0,
             bus_mod_q: QAxisModulation::default(),
             _phantom: core::marker::PhantomData,
@@ -375,27 +377,34 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             dead_time_current_inv_a: 0.0,
             actuation_advance: 0.0,
             decoupling: None,
+            voltage_feedforward_mode: VoltageFeedforwardMode::Disabled,
             q_clip: 0.0,
             bus_mod_q: QAxisModulation::default(),
             _phantom: core::marker::PhantomData,
         }
     }
 
-    /// Enable (or disable with `None`) dq decoupling + back-EMF
-    /// feedforward. Invalid parameters (non-finite, non-positive
-    /// inductances) disable it — feedforward multiplies velocity straight
-    /// into output voltage, so garbage here is worse than none.
+    /// Set electrical model coefficients independently of feedforward policy.
+    /// Invalid parameters clear the model; no speed voltage can use it.
     pub fn set_decoupling(&mut self, decoupling: Option<Decoupling>) {
         self.decoupling = decoupling.filter(Decoupling::is_valid);
     }
 
-    /// Active decoupling parameters, if any.
+    /// Electrical model coefficients, even while feedforward is disabled.
     pub fn decoupling(&self) -> Option<Decoupling> {
         self.decoupling
     }
 
+    pub fn set_voltage_feedforward_mode(&mut self, mode: VoltageFeedforwardMode) {
+        self.voltage_feedforward_mode = mode;
+    }
+
+    pub fn voltage_feedforward_mode(&self) -> VoltageFeedforwardMode {
+        self.voltage_feedforward_mode
+    }
+
     /// Build a controller from the stored runtime config, the way every
-    /// board boots. Precedence: motor params arm the decoupling/observer
+    /// board boots. Precedence: motor params supply the electrical/observer
     /// model, but EXPLICIT stored PI gains override the params-derived
     /// (l_avg·bw) tuning when both are present — the fundamental Ld/Lq the
     /// pulse detection measures are the right inductances for the ω·L·i
@@ -405,7 +414,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// fundamental vs ~24 µH AC plateau).
     #[cfg(feature = "storage")]
     pub fn from_runtime_config(config: &crate::storage::RuntimeConfig, vbus: f32) -> Self {
-        if let Some(ref mp) = config.motor_params
+        let mut foc = if let Some(ref mp) = config.motor_params
             && mp.is_valid()
         {
             let l_avg = (mp.inductance_d_h + mp.inductance_q_h) / 2.0;
@@ -448,7 +457,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             foc
         } else {
             Self::new(vbus)
-        }
+        };
+        foc.set_voltage_feedforward_mode(config.voltage_feedforward.unwrap_or_default().mode);
+        foc
     }
 
     /// Override the modulation limit (volt space, fraction of `vbus`).
@@ -818,12 +829,17 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // at ω_e·Ts ≈ 0.09 regardless of how accurate the decoupling L was).
         // Reference-based terms are pure feedforward — identical in steady
         // state (i → i*), outside the loop dynamically.
-        let (vd_ff, vq_ff) = match self.decoupling {
-            Some(d) => (
+        let (vd_ff, vq_ff) = match (self.decoupling, self.voltage_feedforward_mode) {
+            (Some(d), VoltageFeedforwardMode::Both) => (
                 -vel_rad_s * d.lq_h * iq_target,
                 vel_rad_s * (d.ld_h * id_target + d.flux_linkage_wb),
             ),
-            None => (0.0, 0.0),
+            (Some(d), VoltageFeedforwardMode::CrossCoupling) => (
+                -vel_rad_s * d.lq_h * iq_target,
+                vel_rad_s * (d.ld_h * id_target),
+            ),
+            (Some(d), VoltageFeedforwardMode::BackEmf) => (0.0, vel_rad_s * d.flux_linkage_wb),
+            _ => (0.0, 0.0),
         };
 
         // Current controllers (dq frame) + feedforward + optional HFI injection
@@ -919,6 +935,44 @@ mod tests {
 
     const DT: f32 = 0.0001;
 
+    #[test]
+    fn explicit_feedforward_policy_selects_terms_without_discarding_model() {
+        let mut foc = FocController::<SvpwmModulator>::new(24.0);
+        foc.id_pi.set_gains(0.0, 0.0);
+        foc.iq_pi.set_gains(0.0, 0.0);
+        foc.set_decoupling(Some(Decoupling {
+            ld_h: 100e-6,
+            lq_h: 300e-6,
+            flux_linkage_wb: 0.02,
+            resistance_ohm: 0.1,
+        }));
+        assert_eq!(
+            foc.voltage_feedforward_mode(),
+            VoltageFeedforwardMode::Disabled
+        );
+        for (mode, vd, vq) in [
+            (VoltageFeedforwardMode::Disabled, 0.0, 0.0),
+            (VoltageFeedforwardMode::CrossCoupling, -0.12, 0.01),
+            (VoltageFeedforwardMode::BackEmf, 0.0, 4.0),
+            (VoltageFeedforwardMode::Both, -0.12, 4.01),
+        ] {
+            foc.set_voltage_feedforward_mode(mode);
+            let out =
+                foc.step_with_injection((0.0, 0.0, 0.0), 0.0, 200.0, 0.5, 2.0, 0.0, 0.0, 1000, DT);
+            assert!((out.vd - vd).abs() < 1e-6, "{mode:?}: vd {}", out.vd);
+            assert!((out.vq - vq).abs() < 1e-6, "{mode:?}: vq {}", out.vq);
+            assert_eq!(foc.decoupling().unwrap().resistance_ohm, 0.1);
+        }
+        foc.set_decoupling(None);
+        let out =
+            foc.step_with_injection((0.0, 0.0, 0.0), 0.0, 200.0, 0.5, 2.0, 0.0, 0.0, 1000, DT);
+        assert_eq!(
+            (out.vd, out.vq),
+            (0.0, 0.0),
+            "policy needs valid coefficients"
+        );
+    }
+
     /// Generate FOC controller tests for a given SinCos implementation.
     macro_rules! foc_controller_tests {
         ($mod_name:ident, $sincos:ty) => {
@@ -974,6 +1028,7 @@ mod tests {
                     let mut foc = FocController::<SvpwmModulator, $sincos>::new(24.0);
                     foc.id_pi.set_gains(0.0, 0.0);
                     foc.iq_pi.set_gains(0.0, 0.0);
+                    foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
                     foc.set_decoupling(Some(Decoupling {
                         ld_h: 100e-6,
                         lq_h: 300e-6,

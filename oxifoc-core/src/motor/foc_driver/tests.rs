@@ -43,6 +43,7 @@ fn grant_driver(
     scales: DeratingScales,
 ) -> FocDriver<MockPwm, MockCurrentSensor, PhaseManager<NoSensor, NoSensor>> {
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(Decoupling {
         ld_h: 22e-6,
         lq_h: 22e-6,
@@ -1991,6 +1992,7 @@ fn run_bench_spin_with_decoupling(
         (LD + LQ) / 2.0,
         12.0,
     );
+    foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(decoupling));
 
     let mut mgr = PhaseManager::sensorless();
@@ -2176,6 +2178,7 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
         cfg.controller_l,
         VBUS,
     );
+    foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(Decoupling {
         ld_h: 86e-6,
         lq_h: 129e-6,
@@ -2700,6 +2703,7 @@ fn trust_loss_mid_drive_restarts_cold_start() {
 
     let mut foc =
         FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(0.127, L_AVG, VBUS);
+    foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(Decoupling {
         ld_h: 86e-6,
         lq_h: 129e-6,
@@ -2837,6 +2841,7 @@ fn run_perfect_angle_spin(
         (86e-6 + 129e-6) / 2.0,
         12.0,
     );
+    foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(decoupling));
 
     let mut out = VirtualMotorOutput::default();
@@ -4503,6 +4508,7 @@ impl HallRig {
         let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
             params.r, params.ld, 24.0,
         );
+        foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
         foc.set_decoupling(Some(Decoupling {
             ld_h: params.ld,
             lq_h: params.lq,
@@ -5227,6 +5233,7 @@ fn flying_restart_catches_low_tau_motors() {
         motor.set_velocity(w0);
         let mut foc =
             FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(params.r, l_avg, vbus);
+        foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
         foc.set_decoupling(Some(Decoupling {
             ld_h: params.ld,
             lq_h: params.lq,
@@ -5502,6 +5509,10 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
         );
         assert_eq!(driver.controller().id_pi.gains(), (0.017, 29.0));
         assert_eq!(driver.controller().decoupling().unwrap().ld_h, 35e-6);
+        assert_eq!(
+            driver.controller().voltage_feedforward_mode(),
+            crate::types::VoltageFeedforwardMode::Disabled
+        );
         assert_eq!(driver.current_limits().max_current_a, 2.0);
         assert_eq!(
             driver.apply_motor_model(&mut prepared),
@@ -5543,6 +5554,45 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
     assert_eq!(live.controller().id_pi.gains(), (0.4, 40.0));
     assert!(live.controller().decoupling().is_none());
     assert!(!live.phase().observer().is_configured());
+}
+
+#[cfg(feature = "storage")]
+#[test]
+fn voltage_feedforward_policy_has_boot_live_parity_and_survives_model_replacement() {
+    use crate::storage::VoltageFeedforwardConfig;
+    use crate::types::VoltageFeedforwardMode;
+    for mode in [
+        VoltageFeedforwardMode::Disabled,
+        VoltageFeedforwardMode::CrossCoupling,
+        VoltageFeedforwardMode::BackEmf,
+        VoltageFeedforwardMode::Both,
+    ] {
+        let mut config = model_config();
+        config.voltage_feedforward = Some(VoltageFeedforwardConfig { mode });
+        let boot = FocController::<SvpwmModulator>::from_runtime_config(&config, 24.0);
+        let mut live = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
+        live.apply_motor_model(&mut PreparedMotorModel::from_config(&config, 24.0, 3.0))
+            .unwrap();
+        assert_eq!(boot.voltage_feedforward_mode(), mode);
+        assert_eq!(live.controller().voltage_feedforward_mode(), mode);
+        assert_eq!(live.controller().id_pi.gains(), boot.id_pi.gains());
+        assert_eq!(live.current_limits().max_current_a, 2.0);
+        assert_eq!(live.phase().observer().lambda(), Some(0.0032));
+        assert_eq!(
+            live.controller().decoupling().unwrap().flux_linkage_wb,
+            0.0032
+        );
+        config.motor_params.as_mut().unwrap().flux_linkage_wb = 0.004;
+        live.apply_motor_model(&mut PreparedMotorModel::from_config(&config, 24.0, 3.0))
+            .unwrap();
+        assert_eq!(live.controller().voltage_feedforward_mode(), mode);
+        assert_eq!(live.phase().observer().lambda(), Some(0.004));
+        config.motor_params = None;
+        live.apply_motor_model(&mut PreparedMotorModel::from_config(&config, 24.0, 3.0))
+            .unwrap();
+        assert_eq!(live.controller().voltage_feedforward_mode(), mode);
+        assert!(live.controller().decoupling().is_none());
+    }
 }
 
 #[cfg(all(feature = "storage", feature = "runtime"))]
@@ -5752,6 +5802,151 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
         );
     }
 
+    // Policy uses the same durable transaction but its own group revision.
+    use crate::state::model::ModelConfigUpdate;
+    use crate::storage::VoltageFeedforwardConfig;
+    use crate::types::VoltageFeedforwardMode;
+    let prepare_policy = |mode, id, expected| {
+        let value = VoltageFeedforwardConfig { mode };
+        let mut next = critical_section::with(|cs| config.borrow(cs).borrow().clone());
+        next.voltage_feedforward = Some(value);
+        ModelApplyGuard::prepare(
+            PreparedMotorModel::from_config(&next, 24.0, 3.0),
+            ModelConfigUpdate::VoltageFeedforward(value),
+            config,
+            revisions,
+            cache,
+            ReqId(id),
+            expected,
+        )
+        .unwrap()
+    };
+    let mut policy =
+        Box::pin(prepare_policy(VoltageFeedforwardMode::Both, 11, 0).apply::<PendingTimer>());
+    assert!(policy.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    drop(policy); // Completion commits even if the async caller disappears.
+    assert_eq!(
+        driver.controller().voltage_feedforward_mode(),
+        VoltageFeedforwardMode::Both
+    );
+    critical_section::with(|cs| {
+        assert_eq!(
+            config.borrow(cs).borrow().voltage_feedforward.unwrap().mode,
+            VoltageFeedforwardMode::Both
+        );
+        assert_eq!(
+            revisions.borrow(cs).borrow()[ConfigGroupId::VoltageFeedforward.index()],
+            1
+        );
+        assert_eq!(
+            revisions.borrow(cs).borrow()[ConfigGroupId::MotorParams.index()],
+            2
+        );
+        assert!(matches!(
+            cache.borrow(cs).borrow().get(ReqId(11)),
+            Some(CachedConfigAck::Applied(1))
+        ));
+        assert_eq!(config.borrow(cs).borrow().motor_params, next.motor_params);
+    });
+    assert_eq!(driver.current_limits().max_current_a, 2.0);
+    assert_eq!(driver.phase().observer().resistance(), Some(0.03));
+    // A subsequent electrical-model write retains the explicit policy.
+    let mut changed = critical_section::with(|cs| config.borrow(cs).borrow().clone());
+    changed.motor_params.as_mut().unwrap().resistance_ohm = 0.04;
+    let update = ModelApplyGuard::prepare(
+        PreparedMotorModel::from_config(&changed, 24.0, 3.0),
+        changed.motor_params.clone().unwrap(),
+        config,
+        revisions,
+        cache,
+        ReqId(16),
+        2,
+    )
+    .unwrap();
+    let mut update = Box::pin(update.apply::<PendingTimer>());
+    assert!(update.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        update.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Applied {
+            req_id: ReqId(16),
+            revision: 3
+        })
+    );
+    drop(update);
+    assert_eq!(
+        driver.controller().voltage_feedforward_mode(),
+        VoltageFeedforwardMode::Both
+    );
+    assert_eq!(
+        driver.controller().decoupling().unwrap().resistance_ohm,
+        0.04
+    );
+    assert_eq!(driver.phase().observer().resistance(), Some(0.04));
+    let mut cancelled_policy =
+        Box::pin(prepare_policy(VoltageFeedforwardMode::Disabled, 12, 1).apply::<PendingTimer>());
+    assert!(cancelled_policy.as_mut().poll(&mut cx).is_pending());
+    drop(cancelled_policy);
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        driver.controller().voltage_feedforward_mode(),
+        VoltageFeedforwardMode::Both
+    );
+    let mut conflict_policy =
+        Box::pin(prepare_policy(VoltageFeedforwardMode::Disabled, 13, 0).apply::<PendingTimer>());
+    assert!(conflict_policy.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        conflict_policy.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Conflict {
+            current_revision: 1
+        })
+    );
+    drop(conflict_policy);
+    driver.set_mode(ControlMode::DirectVoltage {
+        vd: 0.0,
+        vq: 0.0,
+        angle_rad: 0.0,
+    });
+    let mut busy_policy =
+        Box::pin(prepare_policy(VoltageFeedforwardMode::Disabled, 14, 1).apply::<PendingTimer>());
+    assert!(busy_policy.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        busy_policy.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Busy)
+    );
+    drop(busy_policy);
+    assert_eq!(
+        driver.controller().voltage_feedforward_mode(),
+        VoltageFeedforwardMode::Both
+    );
+    driver.set_mode(ControlMode::Stopped);
+    let mut off =
+        Box::pin(prepare_policy(VoltageFeedforwardMode::Disabled, 15, 1).apply::<PendingTimer>());
+    assert!(off.as_mut().poll(&mut cx).is_pending());
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(
+        off.as_mut().poll(&mut cx),
+        Poll::Ready(ConfigResponse::Applied {
+            req_id: ReqId(15),
+            revision: 2
+        })
+    );
+    drop(off);
+    assert_eq!(
+        driver.controller().voltage_feedforward_mode(),
+        VoltageFeedforwardMode::Disabled
+    );
+    assert_eq!(
+        driver.controller().decoupling().unwrap().flux_linkage_wb,
+        0.0032
+    );
+    assert_eq!(driver.phase().observer().lambda(), Some(0.0032));
+    assert_eq!(driver.phase().observer().resistance(), Some(0.04));
+    assert_eq!(driver.current_limits().max_current_a, 2.0);
+
     let persisted = Box::leak(Box::new(Mutex::new(RefCell::new(
         [Some(2); ConfigGroupId::COUNT],
     ))));
@@ -5761,7 +5956,7 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
         revisions,
         persisted,
         cache,
-        2,
+        3,
     )
     .unwrap();
     let mut reset = Box::pin(reset.apply::<PendingTimer>());
@@ -5773,8 +5968,13 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
     );
     drop(reset);
     assert!(!driver.phase().observer().is_configured());
+    assert_eq!(
+        driver.controller().voltage_feedforward_mode(),
+        VoltageFeedforwardMode::Disabled
+    );
     critical_section::with(|cs| {
         assert!(config.borrow(cs).borrow().motor_params.is_none());
+        assert!(config.borrow(cs).borrow().voltage_feedforward.is_none());
         assert_eq!(state.borrow(cs).borrow().motor_pole_pairs, 0);
         assert_eq!(revisions.borrow(cs).borrow()[0], 0);
         assert!(persisted.borrow(cs).borrow().iter().all(Option::is_none));

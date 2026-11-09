@@ -24,6 +24,18 @@ pub use crate::foc::hall_sensor::Direction;
 pub use crate::foc::current_offset::{CurrentOffsetMethod, CurrentOffsetReport};
 pub use crate::foc::fault::{FaultCategory, FaultInfo};
 
+/// Explicit voltage-model terms added to the current PI outputs.
+/// Model availability alone never enables feedforward.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum VoltageFeedforwardMode {
+    #[default]
+    Disabled,
+    CrossCoupling,
+    BackEmf,
+    Both,
+}
+
 // ============================================================================
 // Delivery / idempotency-key wire types
 // ============================================================================
@@ -951,7 +963,8 @@ mod config_types {
     use crate::storage::{
         BoardCalibrationConfig, CurrentLimitsConfig, DcOffsetsConfig, DeratingConfigStored,
         FailsafeConfigStored, HallCalibrationConfig, HallTuningConfig, MotorParamsConfig,
-        PiGainsConfig, PwmConfigStored, VelocityConfigStored, VoltageLimitsConfig,
+        PiGainsConfig, PwmConfigStored, VelocityConfigStored, VoltageFeedforwardConfig,
+        VoltageLimitsConfig,
     };
 
     use super::*;
@@ -987,10 +1000,11 @@ mod config_types {
         // postcard encodes the variant index — append only.
         Derating,
         BoardCalibration,
+        VoltageFeedforward,
     }
 
     impl ConfigGroupId {
-        pub const COUNT: usize = 12;
+        pub const COUNT: usize = 13;
         pub const ALL: [Self; Self::COUNT] = [
             Self::MotorParams,
             Self::HallCalibration,
@@ -1004,6 +1018,7 @@ mod config_types {
             Self::Velocity,
             Self::Derating,
             Self::BoardCalibration,
+            Self::VoltageFeedforward,
         ];
 
         pub const fn index(self) -> usize {
@@ -1020,6 +1035,7 @@ mod config_types {
                 Self::Velocity => 9,
                 Self::Derating => 10,
                 Self::BoardCalibration => 11,
+                Self::VoltageFeedforward => 12,
             }
         }
     }
@@ -1046,6 +1062,7 @@ mod config_types {
         /// Graduated derating ramps (thermal/voltage/speed)
         Derating(DeratingConfigStored),
         BoardCalibration(BoardCalibrationConfig),
+        VoltageFeedforward(VoltageFeedforwardConfig),
     }
 
     impl ConfigWrite {
@@ -1063,6 +1080,7 @@ mod config_types {
                 Self::Velocity(_) => ConfigGroupId::Velocity,
                 Self::Derating(_) => ConfigGroupId::Derating,
                 Self::BoardCalibration(_) => ConfigGroupId::BoardCalibration,
+                Self::VoltageFeedforward(_) => ConfigGroupId::VoltageFeedforward,
             }
         }
     }
@@ -1097,6 +1115,7 @@ mod config_types {
         Velocity(VelocityConfigStored),
         Derating(DeratingConfigStored),
         BoardCalibration(BoardCalibrationConfig),
+        VoltageFeedforward(VoltageFeedforwardConfig),
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]

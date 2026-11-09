@@ -9,6 +9,7 @@
 //! All value types implement [`PostcardValue`] via the marker trait,
 //! giving them automatic postcard serialization for sequential-storage.
 
+pub use crate::types::VoltageFeedforwardMode;
 use sequential_storage::map::{Key, PostcardValue, SerializationError};
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +58,8 @@ pub enum ConfigKey {
     Derating = 11,
     /// Per-device analog measurement corrections (versioned payload).
     BoardCalibration = 12,
+    /// Explicit current-loop voltage feedforward policy.
+    VoltageFeedforward = 13,
 }
 
 impl Key for ConfigKey {
@@ -85,6 +88,7 @@ impl Key for ConfigKey {
             10 => Self::Velocity,
             11 => Self::Derating,
             12 => Self::BoardCalibration,
+            13 => Self::VoltageFeedforward,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -620,6 +624,17 @@ impl Default for DeratingConfigStored {
 // Runtime Config Aggregate
 // ============================================================================
 
+/// Voltage-model activation is independent of measured motor parameters.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, postcard_schema::Schema,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct VoltageFeedforwardConfig {
+    pub mode: VoltageFeedforwardMode,
+}
+
+impl PostcardValue<'_> for VoltageFeedforwardConfig {}
+
 /// All stored configuration loaded at boot.
 ///
 /// Fields are `None` if not yet stored in flash (use board defaults).
@@ -639,6 +654,8 @@ pub struct RuntimeConfig {
     pub failsafe: Option<FailsafeConfigStored>,
     pub velocity: Option<VelocityConfigStored>,
     pub derating: Option<DeratingConfigStored>,
+    /// Missing records retain plain PI control.
+    pub voltage_feedforward: Option<VoltageFeedforwardConfig>,
 }
 
 impl RuntimeConfig {
@@ -677,6 +694,7 @@ pub enum ConfigPayload {
     Failsafe(FailsafeConfigStored),
     Velocity(VelocityConfigStored),
     Derating(DeratingConfigStored),
+    VoltageFeedforward(VoltageFeedforwardConfig),
 }
 
 // ============================================================================
@@ -749,6 +767,7 @@ where
                     ConfigPayload::Failsafe(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::Velocity(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::Derating(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::VoltageFeedforward(v) => storage.store_item(buf, &key, &v).await,
                 };
                 if result.is_err() {
                     #[cfg(feature = "defmt")]
@@ -802,6 +821,7 @@ where
     load!(failsafe, Failsafe);
     load!(velocity, Velocity);
     load!(derating, Derating);
+    load!(voltage_feedforward, VoltageFeedforward);
 
     match storage
         .fetch_item::<StoredBoardCalibration>(buf, &ConfigKey::BoardCalibration)
@@ -821,6 +841,59 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feedforward_policy_appends_storage_and_wire_ids_and_defaults_disabled() {
+        use crate::types::{ConfigGroupId, ConfigValue, ConfigWrite};
+        assert_eq!(
+            VoltageFeedforwardConfig::default().mode,
+            VoltageFeedforwardMode::Disabled
+        );
+        assert!(RuntimeConfig::default().voltage_feedforward.is_none());
+        let mut key = [0; 1];
+        ConfigKey::VoltageFeedforward
+            .serialize_into(&mut key)
+            .unwrap();
+        assert_eq!(key, [13]);
+        assert_eq!(
+            ConfigKey::deserialize_from(&key).unwrap().0,
+            ConfigKey::VoltageFeedforward
+        );
+        let mut buf = [0; 32];
+        for (index, group) in ConfigGroupId::ALL.into_iter().enumerate() {
+            assert_eq!(
+                postcard::to_slice(&group, &mut buf).unwrap(),
+                &[u8::try_from(index).unwrap()]
+            );
+            assert_eq!(group.index(), index);
+        }
+        for (tag, mode) in [
+            VoltageFeedforwardMode::Disabled,
+            VoltageFeedforwardMode::CrossCoupling,
+            VoltageFeedforwardMode::BackEmf,
+            VoltageFeedforwardMode::Both,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let value = VoltageFeedforwardConfig { mode };
+            let tag = u8::try_from(tag).unwrap();
+            assert_eq!(postcard::to_slice(&value, &mut buf).unwrap(), &[tag]);
+            assert_eq!(
+                postcard::from_bytes::<VoltageFeedforwardConfig>(&[tag]).unwrap(),
+                value
+            );
+            assert_eq!(
+                postcard::to_slice(&ConfigWrite::VoltageFeedforward(value), &mut buf).unwrap(),
+                &[12, tag]
+            );
+            assert_eq!(
+                postcard::to_slice(&ConfigValue::VoltageFeedforward(value), &mut buf).unwrap(),
+                &[12, tag]
+            );
+        }
+        assert!(postcard::from_bytes::<VoltageFeedforwardConfig>(&[4]).is_err());
+    }
 
     #[test]
     fn board_calibration_validation_and_absolute_scale() {
@@ -886,9 +959,14 @@ mod tests {
         let mut buf = [0; 128];
         let absent = ready(load_all(&mut storage, &mut buf));
         assert_eq!(absent.board_calibration, None);
+        assert_eq!(absent.voltage_feedforward, None);
         assert!(!absent.board_calibration_invalid);
         let limits = CurrentLimitsConfig::default();
         ready(storage.store_item(&mut buf, &ConfigKey::CurrentLimits, &limits)).unwrap();
+        let policy = VoltageFeedforwardConfig {
+            mode: VoltageFeedforwardMode::Both,
+        };
+        ready(storage.store_item(&mut buf, &ConfigKey::VoltageFeedforward, &policy)).unwrap();
         let value = BoardCalibrationConfig {
             vbus_gain: 1.009725,
         };
@@ -902,6 +980,7 @@ mod tests {
         assert_eq!(loaded.board_calibration, Some(value));
         assert!(!loaded.board_calibration_invalid);
         assert_eq!(loaded.current_limits, Some(limits.clone()));
+        assert_eq!(loaded.voltage_feedforward, Some(policy));
         // Unknown version is an error, not an absent record or an identity fallback.
         ready(storage.store_item(&mut buf, &ConfigKey::BoardCalibration, &99u8)).unwrap();
         let invalid = ready(load_all(&mut storage, &mut buf));
@@ -909,7 +988,9 @@ mod tests {
         assert!(invalid.board_calibration_invalid);
         assert_eq!(invalid.current_limits, Some(limits));
         ready(storage.erase_all()).unwrap();
-        assert!(!ready(load_all(&mut storage, &mut buf)).board_calibration_invalid);
+        let erased = ready(load_all(&mut storage, &mut buf));
+        assert!(!erased.board_calibration_invalid);
+        assert_eq!(erased.voltage_feedforward, None);
     }
 
     #[test]

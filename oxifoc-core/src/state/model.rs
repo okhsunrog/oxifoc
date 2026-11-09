@@ -9,7 +9,7 @@
 use super::{CMD_CHANNEL, DriverCommand};
 use crate::{
     motor::foc_driver::PreparedMotorModel,
-    storage::{MotorParamsConfig, RuntimeConfig},
+    storage::{MotorParamsConfig, RuntimeConfig, VoltageFeedforwardConfig},
     types::{ConfigGroupId, ConfigResponse, ReqId},
 };
 use core::{
@@ -63,10 +63,38 @@ const FINISHED: u32 = 4;
 const READING: u32 = 5;
 const APPLYING_CANCELLED: u32 = 6;
 
+pub(crate) enum ModelConfigUpdate {
+    MotorParams(MotorParamsConfig),
+    VoltageFeedforward(VoltageFeedforwardConfig),
+    Reset,
+}
+
+impl From<MotorParamsConfig> for ModelConfigUpdate {
+    fn from(value: MotorParamsConfig) -> Self {
+        Self::MotorParams(value)
+    }
+}
+
+impl ModelConfigUpdate {
+    pub(crate) fn apply_to_config(&self, config: &mut RuntimeConfig) {
+        match self {
+            Self::MotorParams(value) => config.motor_params = Some(value.clone()),
+            Self::VoltageFeedforward(value) => config.voltage_feedforward = Some(*value),
+            Self::Reset => *config = RuntimeConfig::default(),
+        }
+    }
+
+    fn group(&self) -> ConfigGroupId {
+        match self {
+            Self::MotorParams(_) | Self::Reset => ConfigGroupId::MotorParams,
+            Self::VoltageFeedforward(_) => ConfigGroupId::VoltageFeedforward,
+        }
+    }
+}
+
 struct Pending {
     model: PreparedMotorModel,
-    value: Option<MotorParamsConfig>,
-    reset: bool,
+    update: ModelConfigUpdate,
     persisted: Option<&'static Mutex<RefCell<[Option<u32>; ConfigGroupId::COUNT]>>>,
     config: &'static Mutex<RefCell<RuntimeConfig>>,
     revisions: &'static Mutex<RefCell<[u32; ConfigGroupId::COUNT]>>,
@@ -214,7 +242,7 @@ impl ModelApplyGuard {
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         model: PreparedMotorModel,
-        value: MotorParamsConfig,
+        value: impl Into<ModelConfigUpdate>,
         config: &'static Mutex<RefCell<RuntimeConfig>>,
         revisions: &'static Mutex<RefCell<[u32; ConfigGroupId::COUNT]>>,
         cache: &'static Mutex<RefCell<ConfigActionCache>>,
@@ -223,8 +251,7 @@ impl ModelApplyGuard {
     ) -> Option<Self> {
         Self::prepare_inner(
             model,
-            Some(value),
-            false,
+            value.into(),
             None,
             config,
             revisions,
@@ -244,8 +271,7 @@ impl ModelApplyGuard {
     ) -> Option<Self> {
         Self::prepare_inner(
             model,
-            None,
-            true,
+            ModelConfigUpdate::Reset,
             Some(persisted),
             config,
             revisions,
@@ -258,8 +284,7 @@ impl ModelApplyGuard {
     #[allow(clippy::too_many_arguments)]
     fn prepare_inner(
         model: PreparedMotorModel,
-        value: Option<MotorParamsConfig>,
-        reset: bool,
+        update: ModelConfigUpdate,
         persisted: Option<&'static Mutex<RefCell<[Option<u32>; ConfigGroupId::COUNT]>>>,
         config: &'static Mutex<RefCell<RuntimeConfig>>,
         revisions: &'static Mutex<RefCell<[u32; ConfigGroupId::COUNT]>>,
@@ -273,8 +298,7 @@ impl ModelApplyGuard {
         unsafe {
             SLOT.payload.get().write(MaybeUninit::new(Pending {
                 model,
-                value,
-                reset,
+                update,
                 persisted,
                 config,
                 revisions,
@@ -345,9 +369,9 @@ pub(super) fn apply<P, C, Ph, S>(
     }
     // SAFETY: Applying exclusively owns the payload until Finished is released.
     let pending = unsafe { &mut *SLOT.payload.get().cast::<Pending>() };
-    let current_revision = critical_section::with(|cs| {
-        pending.revisions.borrow(cs).borrow()[ConfigGroupId::MotorParams.index()]
-    });
+    let group = pending.update.group();
+    let current_revision =
+        critical_section::with(|cs| pending.revisions.borrow(cs).borrow()[group.index()]);
     let response = if current_revision != pending.expected_revision {
         ConfigResponse::Conflict { current_revision }
     } else if !allowed {
@@ -355,7 +379,7 @@ pub(super) fn apply<P, C, Ph, S>(
     } else {
         match foc.apply_motor_model(&mut pending.model) {
             Ok(source) => critical_section::with(|cs| {
-                if pending.reset {
+                if matches!(pending.update, ModelConfigUpdate::Reset) {
                     *pending.config.borrow(cs).borrow_mut() = RuntimeConfig::default();
                     *pending.revisions.borrow(cs).borrow_mut() = [0; ConfigGroupId::COUNT];
                     if let Some(persisted) = pending.persisted {
@@ -370,10 +394,12 @@ pub(super) fn apply<P, C, Ph, S>(
                     state.motor_model_generation = generation;
                     return ConfigResponse::Reset;
                 }
-                pending.config.borrow(cs).borrow_mut().motor_params = pending.value.clone();
+                {
+                    let mut config = pending.config.borrow(cs).borrow_mut();
+                    pending.update.apply_to_config(&mut config);
+                }
                 let revision = current_revision.wrapping_add(1);
-                pending.revisions.borrow(cs).borrow_mut()[ConfigGroupId::MotorParams.index()] =
-                    revision;
+                pending.revisions.borrow(cs).borrow_mut()[group.index()] = revision;
                 pending
                     .cache
                     .borrow(cs)
@@ -418,8 +444,7 @@ mod tests {
             Box::leak(Box::new(Mutex::new(RefCell::new(ConfigActionCache::new()))));
         move || Pending {
             model: PreparedMotorModel::from_config(&RuntimeConfig::default(), 24.0, 3.0),
-            value: None,
-            reset: false,
+            update: ModelConfigUpdate::MotorParams(MotorParamsConfig::default()),
             persisted: None,
             config,
             revisions,
