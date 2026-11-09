@@ -105,8 +105,13 @@ pub mod fast_telem_stats {
     pub static BCAST_OTHER: AtomicU32 = AtomicU32::new(0);
     /// Wall-clock microseconds, including preemption; zero without Embassy profiling.
     pub static MAX_DRAIN_GAP_US: AtomicU32 = AtomicU32::new(0);
+    /// Maximum wall time of one drain slice, through its optional broadcast.
+    /// Includes empty/partial slices, but excludes waits between coalesced polls.
     pub static MAX_BATCH_US: AtomicU32 = AtomicU32::new(0);
+    /// Wall time spent draining/encoding across all slices, including partial
+    /// and empty polls. Retained batches count only work done in the new slice.
     pub static ENCODE_US: AtomicU32 = AtomicU32::new(0);
+    /// Wall time spent in synchronous broadcast attempts, including failures.
     pub static BROADCAST_US: AtomicU32 = AtomicU32::new(0);
     /// Stream-task broadcasts accepted by the stack.
     pub static BCAST_OK: AtomicU32 = AtomicU32::new(0);
@@ -459,7 +464,12 @@ where
                 }
             }
 
+            #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
+            let encoded_at = embassy_time::Instant::now().as_micros() as u32;
+
             if batch.is_empty() {
+                #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
+                record_fast_slice_timing(batch_start, encoded_at, None);
                 break; // nothing left to send
             }
 
@@ -471,12 +481,12 @@ where
             if !batch.is_full()
                 && u64::from(sample_hz) * 20_000 >= FAST_BATCH_SAMPLES as u64 * 1_000_000
             {
+                #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
+                record_fast_slice_timing(batch_start, encoded_at, None);
                 break;
             }
 
             let batch_full = batch.is_full();
-            #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
-            let encoded_at = embassy_time::Instant::now().as_micros() as u32;
             let _result = stack
                 .stack()
                 .topics()
@@ -484,12 +494,7 @@ where
             #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
             {
                 let end = embassy_time::Instant::now().as_micros() as u32;
-                fast_telem_stats::MAX_BATCH_US
-                    .fetch_max(end.wrapping_sub(batch_start), Ordering::Relaxed);
-                fast_telem_stats::ENCODE_US
-                    .fetch_add(encoded_at.wrapping_sub(batch_start), Ordering::Relaxed);
-                fast_telem_stats::BROADCAST_US
-                    .fetch_add(end.wrapping_sub(encoded_at), Ordering::Relaxed);
+                record_fast_slice_timing(batch_start, encoded_at, Some(end));
             }
 
             if _result.is_ok() {
@@ -546,6 +551,20 @@ where
     }
 }
 
+// Exactly one call per slice: either a partial/empty exit or a completed
+// broadcast attempt. Timestamps are wall time, so ISR preemption is included.
+#[cfg(any(test, all(feature = "isr-profiling", feature = "embassy")))]
+fn record_fast_slice_timing(start: u32, encoded_at: u32, broadcast_end: Option<u32>) {
+    fast_telem_stats::ENCODE_US.fetch_add(encoded_at.wrapping_sub(start), Ordering::Relaxed);
+    if let Some(end) = broadcast_end {
+        fast_telem_stats::BROADCAST_US.fetch_add(end.wrapping_sub(encoded_at), Ordering::Relaxed);
+    }
+    fast_telem_stats::MAX_BATCH_US.fetch_max(
+        broadcast_end.unwrap_or(encoded_at).wrapping_sub(start),
+        Ordering::Relaxed,
+    );
+}
+
 struct PendingFastBatch {
     session: u32,
     batch: crate::types::FastTelemetryBatchEncoder,
@@ -570,6 +589,37 @@ impl PendingFastBatch {
 #[cfg(test)]
 mod pending_tests {
     use super::*;
+
+    #[test]
+    fn slice_timing_counts_partial_full_empty_and_retry_work_once() {
+        use fast_telem_stats::{BROADCAST_US, ENCODE_US, MAX_BATCH_US};
+        for counter in [&ENCODE_US, &BROADCAST_US, &MAX_BATCH_US] {
+            counter.store(0, Ordering::Relaxed);
+        }
+        // Retain a partial batch, then finish it in a later poll. The idle
+        // interval is neither encoding work nor part of a coalesced maximum.
+        record_fast_slice_timing(100, 130, None);
+        record_fast_slice_timing(1_000, 1_020, Some(1_027));
+        assert_eq!(ENCODE_US.load(Ordering::Relaxed), 50);
+        assert_eq!(BROADCAST_US.load(Ordering::Relaxed), 7);
+        assert_eq!(MAX_BATCH_US.load(Ordering::Relaxed), 30);
+
+        // An empty poll still costs time. A failed send and a later retry
+        // each count just their own drain and broadcast work, even though
+        // the encoded samples are retained between those attempts.
+        record_fast_slice_timing(2_000, 2_003, None);
+        record_fast_slice_timing(3_000, 3_008, Some(3_012));
+        record_fast_slice_timing(4_000, 4_002, Some(4_007));
+        assert_eq!(ENCODE_US.load(Ordering::Relaxed), 63);
+        assert_eq!(BROADCAST_US.load(Ordering::Relaxed), 16);
+        assert_eq!(MAX_BATCH_US.load(Ordering::Relaxed), 30);
+
+        // The microsecond clock is truncated to u32 on the device.
+        record_fast_slice_timing(u32::MAX - 4, 2, Some(6));
+        assert_eq!(ENCODE_US.load(Ordering::Relaxed), 70);
+        assert_eq!(BROADCAST_US.load(Ordering::Relaxed), 20);
+        assert_eq!(MAX_BATCH_US.load(Ordering::Relaxed), 30);
+    }
 
     #[test]
     fn pending_samples_survive_same_session_and_cannot_leak_after_restart() {
