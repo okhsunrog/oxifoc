@@ -71,6 +71,32 @@ pub async fn uart_clock_task(
 pub mod trace {
     use core::sync::atomic::{AtomicU32, Ordering};
 
+    // 8/9 already bracket ADC. These IRQ spans include preemption;
+    // the offline analyzer unions nested USB spans and subtracts ADC.
+    pub const USB_EXECUTOR_BEGIN: u32 = 10;
+    pub const USB_EXECUTOR_END: u32 = 11;
+    const USB_IRQ_BEGIN: u32 = 12;
+    const USB_IRQ_END: u32 = 13;
+
+    pub struct UsbIrqBegin;
+    pub struct UsbIrqEnd;
+
+    impl embassy_stm32::interrupt::typelevel::Handler<embassy_stm32::interrupt::typelevel::OTG_FS>
+        for UsbIrqBegin
+    {
+        unsafe fn on_interrupt() {
+            record(USB_IRQ_BEGIN, 0);
+        }
+    }
+
+    impl embassy_stm32::interrupt::typelevel::Handler<embassy_stm32::interrupt::typelevel::OTG_FS>
+        for UsbIrqEnd
+    {
+        unsafe fn on_interrupt() {
+            record(USB_IRQ_END, 0);
+        }
+    }
+
     // 33 KiB of events + 1 KiB of whole-profile task statistics. Atomic fields
     // allow nested IRQ writers without masking the ADC.
     // SWD writes CONTROL=1 to request a finite capture after 100 ms. This

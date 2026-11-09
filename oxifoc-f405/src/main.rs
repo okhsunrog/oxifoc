@@ -32,9 +32,13 @@ static USB_EXECUTOR: embassy_executor::InterruptExecutor =
 #[cfg(all(feature = "transport-usb", not(feature = "bench-usb-thread")))]
 #[embassy_stm32::interrupt]
 unsafe fn USART1() {
+    #[cfg(feature = "bench-executor-trace")]
+    diagnostics::trace::record(diagnostics::trace::USB_EXECUTOR_BEGIN, 0);
     // SAFETY: start() initializes the executor before enabling this vector;
     // this handler is its sole poller and USART1 hardware remains disabled.
     unsafe { USB_EXECUTOR.on_interrupt() };
+    #[cfg(feature = "bench-executor-trace")]
+    diagnostics::trace::record(diagnostics::trace::USB_EXECUTOR_END, 0);
 }
 
 // Module declarations

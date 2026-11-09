@@ -111,7 +111,12 @@ static UART_RX_BUF: StaticCell<[u8; UART_RX_BUF_LEN]> = StaticCell::new();
 // ========== Interrupt Bindings ==========
 
 bind_interrupts!(struct UsbIrqs {
-    OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
+    OTG_FS =>
+        #[cfg(feature = "bench-executor-trace")]
+        crate::diagnostics::trace::UsbIrqBegin,
+        usb::InterruptHandler<peripherals::USB_OTG_FS>,
+        #[cfg(feature = "bench-executor-trace")]
+        crate::diagnostics::trace::UsbIrqEnd;
 });
 
 bind_interrupts!(struct UsartIrqs {
