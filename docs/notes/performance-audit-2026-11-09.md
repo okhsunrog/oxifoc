@@ -366,6 +366,34 @@ ELF for decoding; do not rebuild it mid-capture. Compare one change at a
 time, then repeat the integrated image to detect interactions. Revert a
 measured regression rather than accumulating speculative optimizations.
 
+## Hall rotation follow-up
+
+Rotation exposed separate problems from the stationary timing benchmark:
+low-speed Hall angle steps, speed-dependent voltage feedforward enabled
+implicitly by installing motor parameters, uneven calibration centroids,
+and insufficient telemetry-drain time while the Hall estimate is moving.
+Angle slew now applies at every speed; a reference-epoch-aware derivative
+filters control velocity independently of raw edge diagnostics. Voltage
+feedforward is an explicit, independently stored policy, disabled by default
+(also disabled in the captured VESC 7.00 reference configuration).
+
+The Hall calibration now groups forward sweeps before reverse sweeps.
+With the configured 3-A ceiling it recorded 296358 native samples without
+loss: forward/reverse Id was 2.99999/2.99998 A, with about 0.081-A standard
+deviation. Adjacent centroids changed from 26.6–82.2 to 51.0–66.9 degrees.
+Both sweep order and calibration current changed; their effects are not
+isolated. The new table is RAM-only; `set-hall-usb` restores explicit JSON
+arrays after flashing and requires `flash` to persist them.
+
+The subsequent 1.2-A q-current staircase completed without a fault, but
+lost 148 samples at the MCU producer queue. Its observed peak was 3.713 A,
+compared with 5.886 A in an earlier run; motion differed and gaps prevent
+claiming either a continuous peak bound or a controlled A/B improvement.
+Native 20-kHz rotation capture remains an acceptance requirement.
+
+Artifacts, exact ELFs, provenance, plots and raw Hall-edge evidence:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-rotation-2026-11-09/`.
+
 ## Already used, rejected, or not yet justified
 
 - ART prefetch/instruction/data caches and scalar float32 FPU are enabled;
