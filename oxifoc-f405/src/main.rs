@@ -51,6 +51,7 @@ mod protocol;
 #[cfg(any(
     feature = "bench-executor-trace",
     feature = "bench-clock-reference",
+    feature = "bench-hall",
     feature = "bench-clock-uart"
 ))]
 mod diagnostics;
@@ -135,6 +136,8 @@ async fn main(spawner: Spawner) {
     // ========== STEP 4: Initialize LEDs ==========
     let leds = hardware::peripherals::init_status_leds(p.TIM8, p.PB0, p.PB1);
     spawner.spawn(defmt::unwrap!(status_leds(leds)));
+    #[cfg(feature = "bench-hall")]
+    spawner.spawn(defmt::unwrap!(diagnostics::hall_task()));
 
     // ========== STEP 5: Split Hardware Resources ==========
     let r = split_resources!(p);

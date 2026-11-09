@@ -407,7 +407,11 @@ pub async fn calibrate_hall(
 ) -> Result<HallCalibrationResult, DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     let reader = EmbassyHallReader::new(read_hall_fn);
-    sweep::calibrate_hall::<_, EmbassyTimer, _>(&mut hw, &reader, params).await
+    let result = sweep::calibrate_hall::<_, EmbassyTimer, _>(&mut hw, &reader, params).await?;
+    if !crate::foc::hall_embassy::apply_detected_calibration(&result) {
+        return Err(DetectionError::HardwareFault);
+    }
+    Ok(result)
 }
 
 /// Calibrate Hall sensors with default parameters.

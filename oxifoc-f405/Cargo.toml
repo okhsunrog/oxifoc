@@ -49,6 +49,8 @@ bench-clock-reference = []
 bench-usb-thread = []
 # Endpoint-write timing for streaming fault isolation, absent from normal builds.
 bench-usb-metrics = ["transport-usb", "bench-clock-reference"]
+# Low-rate, ADC-sequence-correlated Hall observations during motor bring-up.
+bench-hall = []
 # Compatibility alias for earlier benchmark commands.
 bench-scheduler-priority = ["task-priority"]
 # Bench EDF policy: fresh relative deadlines on actual ready/enqueue events.

@@ -1,5 +1,35 @@
 //! Default-off bench diagnostics. No per-event logging or USB traffic.
 
+/// Low-rate observations tied to the same ADC sequence as fast telemetry.
+/// No GPIO/USB logging is added to the control or Hall capture interrupts.
+#[cfg(feature = "bench-hall")]
+#[embassy_executor::task]
+pub async fn hall_task() {
+    use core::sync::atomic::Ordering;
+    let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_millis(20));
+    loop {
+        ticker.next().await;
+        let snapshot = critical_section::with(|cs| {
+            let state = crate::STATE.borrow(cs).borrow();
+            (state.last_adc.seq, state.last_hall, state.control_mode)
+        });
+        if let (seq, Some(hall), mode) = snapshot
+            && mode != oxifoc_core::motor::ControlMode::Stopped
+        {
+            defmt::info!(
+                "hall: seq={} raw={} logical={} angle={} omega={} errors={} over={}",
+                seq,
+                crate::sensors::hall::read_hall_state_raw(),
+                hall.state,
+                hall.angle_rad,
+                hall.velocity_rad_s,
+                hall.error_count,
+                crate::sensors::hall::OVERCAPTURES.load(Ordering::Relaxed),
+            );
+        }
+    }
+}
+
 #[cfg(feature = "bench-clock-uart")]
 embassy_stm32::bind_interrupts!(struct ClockUartIrqs {
     DMA1_STREAM3 => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::DMA1_CH3>;

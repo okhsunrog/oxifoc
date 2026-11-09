@@ -84,6 +84,11 @@ test:
 test-core *ARGS:
     cargo test -p oxifoc-core --locked --features {{ core_test_features }} "$@"
 
+# Exercise the shared hardware adapters as well as the platform-independent math.
+[positional-arguments]
+test-core-embassy *ARGS:
+    cargo test -p oxifoc-core --locked --lib --features {{ core_test_features + ",embassy" }} "$@"
+
 # Strict lint checks for the same core feature set.
 clippy-core:
     cargo clippy -p oxifoc-core --all-targets --locked --features {{ core_test_features }} -- -D warnings
@@ -135,6 +140,21 @@ build-mk5-usb-metrics:
 flash-mk5-usb-metrics: build-mk5-usb-metrics
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
+
+# Hall bring-up logging at 50 Hz, correlated with the 20-kHz raw ADC stream.
+build-mk5-hall:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ mk5_bench_features + ",bench-hall" }}
+
+flash-mk5-hall: build-mk5-hall
+    probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
+    probe-rs reset --chip STM32F405RGTx
+
+# Detect one parameter without applying motor parameters, recording every cycle.
+detect-mk5 step capture *ARGS:
+    RUST_LOG=warn,device=info,fast_rx=debug just cli-usb detect {{ quote(step) }} \
+        --record-hz 20000 --record {{ quote(capture) }} {{ ARGS }} \
+        > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
 
 # Observe current bench firmware without reset or programming.
 monitor-mk5-bench:

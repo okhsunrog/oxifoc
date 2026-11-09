@@ -122,6 +122,17 @@ pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
 
 // ========== Apply Stored Config at Boot ==========
 
+/// Apply a successful detection result to the live estimator without a reboot.
+/// This changes RAM only; persistence remains an explicit host operation.
+#[cfg(feature = "detection")]
+pub fn apply_detected_calibration(result: &super::hall_calibration::HallCalibrationResult) -> bool {
+    HALL_ESTIMATOR.lock(|est| {
+        est.borrow_mut()
+            .as_mut()
+            .is_some_and(|h| h.apply_calibration(result))
+    })
+}
+
 /// Apply stored Hall calibration and tuning parameters to the estimator.
 ///
 /// Must be called after [`init_estimator`]. Skips silently if no config is stored.
