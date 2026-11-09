@@ -18,9 +18,9 @@ use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm, PhaseState};
 /// Boot-only frozen UEV observations: CNT[14:0], DIR[15], UIF[16], CEN[17].
 #[cfg(feature = "bench-pwm-commit")]
 #[unsafe(no_mangle)]
-pub static BENCH_PWM_UPDATE_WITNESSES: [core::sync::atomic::AtomicU32; 3] =
-    [const { core::sync::atomic::AtomicU32::new(0) }; 3];
-/// Published as 1 only after all three phase witnesses pass.
+pub static BENCH_PWM_UPDATE_WITNESSES: [core::sync::atomic::AtomicU32; 6] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; 6];
+/// Published as 1 only after all six phase witnesses pass.
 #[cfg(feature = "bench-pwm-commit")]
 #[unsafe(no_mangle)]
 pub static BENCH_PWM_UPDATE_WITNESSES_READY: core::sync::atomic::AtomicU32 =
@@ -193,49 +193,125 @@ impl<'d> MotorPwm<'d> {
     fn verify_peak_updates(arr: u16) {
         use core::sync::atomic::Ordering;
         use embassy_stm32::pac::timer::vals::Dir;
-        use embassy_time::{Duration, Instant};
         let tim = embassy_stm32::pac::TIM1;
         BENCH_PWM_UPDATE_WITNESSES_READY.store(0, Ordering::Relaxed);
         Self::prepare_peak_updates();
         tim.cr1().modify(|w| w.set_opm(true));
-        for witness in 1..=3 {
+        for witness in 0..3 {
             tim.sr().write(|_| {});
             tim.cr1().modify(|w| w.set_cen(true));
-            let deadline = Instant::now() + Duration::from_millis(2);
-            while tim.cr1().read().cen() && Instant::now() < deadline {}
-            // OPM stops at the UEV itself, so polling/defmt latency cannot move
-            // this phase witness. CH4 and every phase output are still off;
-            // ADC external triggers were configured earlier but cannot fire.
-            let control = tim.cr1().read();
-            let count = tim.cnt().read().cnt();
-            let update = tim.sr().read().uif();
-            BENCH_PWM_UPDATE_WITNESSES[witness - 1].store(
-                u32::from(count)
-                    | (u32::from(control.dir() == Dir::Down) << 15)
-                    | (u32::from(update) << 16)
-                    | (u32::from(control.cen()) << 17),
-                Ordering::Relaxed,
-            );
-            defmt::info!(
-                "TIM1 peak UEV {}: CNT={} ARR={} down={} UIF={} CEN={} RCR={}",
-                witness,
-                count,
-                arr,
-                control.dir() == Dir::Down,
-                update,
-                control.cen(),
-                tim.rcr().read().rep()
-            );
-            defmt::assert!(
-                !control.cen()
-                    && update
-                    && control.dir() == Dir::Down
-                    && count >= arr.saturating_sub(2),
-                "TIM1 peak UEV phase verification failed"
-            );
+            Self::verify_peak_witness(witness, arr);
+        }
+
+        // Let the first valley decrement REP with UDIS=0, then arm UDIS in
+        // mid-up to suppress only a peak. Starting UDIS at the frozen peak
+        // would cover two extrema and could hide a frozen repetition counter.
+        tim.cr1().modify(|w| {
+            w.set_opm(false);
+            w.set_udis(false);
+        });
+        tim.sr().write(|_| {});
+        tim.cr1().modify(|w| w.set_cen(true));
+        let saw_valley = Self::wait_pwm_condition(|| tim.cr1().read().dir() == Dir::Up);
+        let middle_up = saw_valley
+            && Self::wait_pwm_condition(|| {
+                let up = tim.cr1().read().dir() == Dir::Up;
+                let count = tim.cnt().read().cnt();
+                up && (arr / 3..=arr / 2).contains(&count)
+            });
+        let (count, down, update, running) = Self::record_update_witness(3);
+        defmt::assert!(
+            saw_valley
+                && middle_up
+                && !down
+                && !update
+                && running
+                && (arr / 3..=arr / 2).contains(&count),
+            "TIM1 pre-suppression checkpoint failed"
+        );
+        tim.cr1().modify(|w| w.set_udis(true));
+        let saw_peak = Self::wait_pwm_condition(|| tim.cr1().read().dir() == Dir::Down);
+        let middle_down = saw_peak
+            && Self::wait_pwm_condition(|| {
+                let down = tim.cr1().read().dir() == Dir::Down;
+                let count = tim.cnt().read().cnt();
+                down && (arr / 3..=arr / 2).contains(&count)
+            });
+        // Preserve a failed checkpoint in slot 3 before asserting. No logging
+        // on the successful path between this phase check and releasing UDIS.
+        let (count, down, update, running) = Self::record_update_witness(3);
+        defmt::assert!(
+            saw_peak
+                && middle_down
+                && down
+                && !update
+                && running
+                && (arr / 3..=arr / 2).contains(&count),
+            "TIM1 suppressed UEV checkpoint failed"
+        );
+        tim.cr1().modify(|w| w.set_opm(true));
+        tim.cr1().modify(|w| w.set_udis(false));
+        Self::verify_peak_witness(3, arr);
+        for witness in 4..6 {
+            tim.sr().write(|_| {});
+            tim.cr1().modify(|w| w.set_cen(true));
+            Self::verify_peak_witness(witness, arr);
         }
         BENCH_PWM_UPDATE_WITNESSES_READY.store(1, Ordering::Release);
         // new() runs the exact normal prepare/start sequence after this test.
+    }
+
+    #[cfg(feature = "bench-pwm-commit")]
+    fn wait_pwm_condition(mut ready: impl FnMut() -> bool) -> bool {
+        use embassy_time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_millis(2);
+        while !ready() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[cfg(feature = "bench-pwm-commit")]
+    fn record_update_witness(witness: usize) -> (u16, bool, bool, bool) {
+        use core::sync::atomic::Ordering;
+        use embassy_stm32::pac::timer::vals::Dir;
+        let tim = embassy_stm32::pac::TIM1;
+        let down = tim.cr1().read().dir() == Dir::Down;
+        let count = tim.cnt().read().cnt();
+        let update = tim.sr().read().uif();
+        let running = tim.cr1().read().cen();
+        BENCH_PWM_UPDATE_WITNESSES[witness].store(
+            u32::from(count)
+                | (u32::from(down) << 15)
+                | (u32::from(update) << 16)
+                | (u32::from(running) << 17),
+            Ordering::Relaxed,
+        );
+        (count, down, update, running)
+    }
+
+    #[cfg(feature = "bench-pwm-commit")]
+    fn verify_peak_witness(witness: usize, arr: u16) {
+        let tim = embassy_stm32::pac::TIM1;
+        let stopped = Self::wait_pwm_condition(|| !tim.cr1().read().cen());
+        // OPM freezes the phase at UEV. CH4, MOE and every phase output are off.
+        let (count, down, update, running) = Self::record_update_witness(witness);
+        defmt::info!(
+            "TIM1 peak UEV {}: CNT={} ARR={} down={} UIF={} CEN={} RCR={}",
+            witness + 1,
+            count,
+            arr,
+            down,
+            update,
+            running,
+            tim.rcr().read().rep()
+        );
+        defmt::assert!(
+            stopped && !running && update && down && count >= arr.saturating_sub(2),
+            "TIM1 peak UEV phase verification failed"
+        );
     }
 
     /// Enable only the internal ADC trigger. Phase channels remain high-Z
