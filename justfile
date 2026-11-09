@@ -6,6 +6,10 @@ device_crates := "oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
 # On-target test crates (run on hardware; compiled here so they don't rot)
 target_test_crates := "tests/stm32g474 tests/stm32f405"
 
+core_test_features := "runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect,impedance-sweep"
+mk5_features := "transport-usb,transport-uart,board-vesc6-mk5,task-priority"
+mk5_bench_features := mk5_features + ",bench-calibrated-clock,bench-clock-reference"
+
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
     @just check-host
@@ -16,7 +20,7 @@ check-host:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "git-rev sync across lock files..."
-    python3 scripts/check-git-rev-sync.py
+    uv run --no-project python scripts/check-git-rev-sync.py
     echo "rustfmt (workspace)..."
     cargo fmt --check --all
     echo "clippy (workspace)..."
@@ -53,7 +57,7 @@ check-device:
     # The second F405 board must not rot. Keep board artifacts in separate
     # directories so no ELF path silently changes electrical meaning.
     echo "oxifoc-f405 (vesc6-mk5): build..."
-    (cd oxifoc-f405 && cargo build --release --quiet --target-dir target/vesc6-mk5 --no-default-features --features transport-usb,transport-uart,board-vesc6-mk5,task-priority 2>&1 | filter) || exit 1
+    (cd oxifoc-f405 && cargo build --release --quiet --target-dir target/vesc6-mk5 --no-default-features --features {{ mk5_features }} 2>&1 | filter) || exit 1
 
 # Format all code (workspace + device crates)
 fmt:
@@ -70,7 +74,20 @@ test:
     cargo test --workspace
     # HFI is behind features that are off by default; this pass runs the
     # `hfi`/`hfi-detect`-gated tests (g474/f405 config).
-    cargo test -p oxifoc-core --features runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect
+    @just test-core
+
+# Core algorithms, runtime and HFI detection, without the GUI workspace.
+[positional-arguments]
+test-core *ARGS:
+    cargo test -p oxifoc-core --locked --features {{ core_test_features }} "$@"
+
+# Strict lint checks for the same core feature set.
+clippy-core:
+    cargo clippy -p oxifoc-core --all-targets --locked --features {{ core_test_features }} -- -D warnings
+
+# Build the CLI before a recording session.
+build-cli:
+    cargo build -p oxifoc-host-cli --locked
 
 # Build STM32G474 firmware.
 build-g474:
@@ -91,12 +108,27 @@ flash-f405-cf2:
 # Build Flipsky Mini V6 MK5 firmware.
 build-f405-vesc6-mk5:
     cd oxifoc-f405 && cargo build --release --target-dir target/vesc6-mk5 --no-default-features \
-        --features transport-usb,transport-uart,board-vesc6-mk5,task-priority
+        --features {{ mk5_features }}
 
 # Build and flash Flipsky Mini V6 MK5 firmware.
 flash-f405-vesc6-mk5:
     cd oxifoc-f405 && cargo run --release --target-dir target/vesc6-mk5 --no-default-features \
-        --features transport-usb,transport-uart,board-vesc6-mk5,task-priority
+        --features {{ mk5_features }}
+
+# MK5 bench image with the UID-gated clock calibration and priority scheduler.
+build-mk5-bench:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ mk5_bench_features }}
+
+# Build and flash the MK5 bench image; leaves the target running.
+flash-mk5-bench:
+    cd oxifoc-f405 && cargo run --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ mk5_bench_features }}
+
+# Hardware: energizes the secured MK5 motor, records at 20 kHz, then tests Stop.
+test-stop-mk5 capture:
+    OXIFOC_HARDWARE_TEST=1 OXIFOC_HARDWARE_CAPTURE={{ quote(capture) }} \
+        cargo test -p oxifoc-host-cli --locked hardware_stop_cancels_inductance_at_20khz -- --ignored --nocapture
 
 # Build ESP32 bridge firmware.
 build-bridge:
@@ -115,8 +147,14 @@ flash-remote:
     cd oxifoc-remote && cargo run --release
 
 # Run host CLI with arguments
+[positional-arguments]
 cli *ARGS:
-    cargo run -p oxifoc-host-cli -- {{ ARGS }}
+    cargo run -p oxifoc-host-cli --locked -- "$@"
+
+# USB CLI with the bench connection options and JSON output.
+[positional-arguments]
+cli-usb *ARGS:
+    @just cli --transport usb --wait-secs 8 --json "$@"
 
 # Run host GUI
 gui:
@@ -149,7 +187,7 @@ size:
     measure oxifoc-g474 oxifoc-g474 memory.x target
     measure oxifoc-f405 oxifoc-f405-cf2 memory.x target/cf2
     measure oxifoc-f405 oxifoc-f405-vesc6-mk5 memory.x target/vesc6-mk5 --no-default-features \
-        --features transport-usb,transport-uart,board-vesc6-mk5,task-priority
+        --features {{ mk5_features }}
 
 # Clean all build artifacts
 clean:
