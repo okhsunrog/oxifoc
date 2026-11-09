@@ -862,13 +862,27 @@ where
 
     let prof_t0 = crate::isr_prof::now();
 
+    struct CycleInputs {
+        link_active: bool,
+        fet_t: Option<i16>,
+        motor_t: Option<i16>,
+        #[cfg(feature = "detection")]
+        excitation_present: bool,
+    }
+
     // One consolidated CS for everything this cycle needs from / mirrors
     // into the shared state (link flag, previous-cycle temperatures,
     // derating scales). These used to be four separate CS + RefCell
     // entries per cycle — pure lock overhead in the ISR. The derating
     // mirror is the PREVIOUS cycle's value (recomputed every 256 ticks
     // anyway; the slow-telemetry consumer cannot tell).
-    let (link_active, fet_t, motor_t) = critical_section::with(|cs| {
+    let CycleInputs {
+        link_active,
+        fet_t,
+        motor_t,
+        #[cfg(feature = "detection")]
+        excitation_present,
+    } = critical_section::with(|cs| {
         let mut st = state_mutex.borrow(cs).borrow_mut();
         #[cfg(feature = "storage")]
         if !st.board_calibration_valid
@@ -877,11 +891,16 @@ where
             fault_registry.set(fault);
         }
         st.derating = driver.derating();
-        (
-            st.link_active,
-            st.last_adc.fet_temp_c_x10(),
-            st.last_adc.motor_temp_c_x10(),
-        )
+        CycleInputs {
+            link_active: st.link_active,
+            fet_t: st.last_adc.fet_temp_c_x10(),
+            motor_t: st.last_adc.motor_temp_c_x10(),
+            // Admit a packet at the cycle boundary, including preparing,
+            // completed and cancelled reservations that still need cleanup.
+            // A packet installed later must wait for the next full cycle.
+            #[cfg(feature = "detection")]
+            excitation_present: st.excitation.program.is_some(),
+        }
     });
 
     let prev_mode = driver.mode();
@@ -1028,7 +1047,7 @@ where
     crate::isr_prof::add(&crate::isr_prof::CYCLE_CMD, prof_t2, prof_t3);
 
     #[cfg(feature = "detection")]
-    {
+    if excitation_present {
         use crate::foc::detection::DetectionError;
         use crate::foc::detection::excitation::BurstAction;
         let next = critical_section::with(|cs| {
@@ -1166,44 +1185,48 @@ where
         cancel_detection();
     }
     #[cfg(feature = "detection")]
-    let (excitation_done, excitation_failed) = critical_section::with(|cs| {
-        let mut state = state_mutex.borrow(cs).borrow_mut();
-        let cycle = state.last_adc.seq.wrapping_add(1);
-        let ex = &mut state.excitation;
-        if !ex.running() {
-            return (false, false);
-        }
-        let Some(telem) = result.filter(|_| !fault_registry.any_stopping()) else {
-            ex.abort(crate::foc::detection::DetectionError::HardwareFault);
-            cancel_detection();
-            return (true, true);
-        };
-        let Some(program) = ex.program else {
-            return (false, false);
-        };
-        let (alpha, beta) = board
-            .current_sense_topology
-            .clarke((telem.ia, telem.ib, telem.ic));
-        if !program.current_in_budget(alpha, beta) {
-            ex.abort(crate::foc::detection::DetectionError::HardwareFault);
-            cancel_detection();
-            return (true, true);
-        }
-        if ex.index == usize::from(program.samples) {
-            // The retained PI hold was actually stepped before completion.
-            ex.outcome = Some(Ok(()));
-            return (true, false);
-        } else {
-            ex.samples[ex.index] = crate::foc::detection::excitation::BurstSample {
-                alpha,
-                beta,
-                cycle,
-                tick_us: now_ticks as u32,
+    let (excitation_done, excitation_failed) = if excitation_present {
+        critical_section::with(|cs| {
+            let mut state = state_mutex.borrow(cs).borrow_mut();
+            let cycle = state.last_adc.seq.wrapping_add(1);
+            let ex = &mut state.excitation;
+            if !ex.running() {
+                return (false, false);
+            }
+            let Some(telem) = result.filter(|_| !fault_registry.any_stopping()) else {
+                ex.abort(crate::foc::detection::DetectionError::HardwareFault);
+                cancel_detection();
+                return (true, true);
             };
-            ex.index += 1;
-        }
+            let Some(program) = ex.program else {
+                return (false, false);
+            };
+            let (alpha, beta) = board
+                .current_sense_topology
+                .clarke((telem.ia, telem.ib, telem.ic));
+            if !program.current_in_budget(alpha, beta) {
+                ex.abort(crate::foc::detection::DetectionError::HardwareFault);
+                cancel_detection();
+                return (true, true);
+            }
+            if ex.index == usize::from(program.samples) {
+                // The retained PI hold was actually stepped before completion.
+                ex.outcome = Some(Ok(()));
+                return (true, false);
+            } else {
+                ex.samples[ex.index] = crate::foc::detection::excitation::BurstSample {
+                    alpha,
+                    beta,
+                    cycle,
+                    tick_us: now_ticks as u32,
+                };
+                ex.index += 1;
+            }
+            (false, false)
+        })
+    } else {
         (false, false)
-    });
+    };
     #[cfg(feature = "detection")]
     if excitation_done {
         crate::foc::detection::excitation::DONE_WAKER.wake();

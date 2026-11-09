@@ -3585,9 +3585,10 @@ mod severity_gate {
         use super::*;
         use crate::foc::detection::DetectionError;
         use crate::foc::detection::excitation::{VoltageBurst, Waveform};
+        use core::cell::Cell;
 
-        fn arm(h: &mut Harness) -> VoltageBurst {
-            let program = VoltageBurst {
+        fn program() -> VoltageBurst {
+            VoltageBurst {
                 waveform: Waveform::Pulse {
                     vd: 0.1,
                     vq: 0.0,
@@ -3600,10 +3601,15 @@ mod severity_gate {
                 hold_current: 1.0,
                 max_current_a: None,
                 angle: 0.0,
-            };
-            h.driver.set_mode(program.hold_mode());
+            }
+        }
+
+        fn install(
+            state: &CriticalSectionMutex<RefCell<MotorControlState>>,
+            program: VoltageBurst,
+        ) {
             critical_section::with(|cs| {
-                let mut state = h.state.borrow(cs).borrow_mut();
+                let mut state = state.borrow(cs).borrow_mut();
                 state.set_running(program.hold_mode());
                 state.excitation.arm(program).unwrap();
                 for i in 0..usize::from(program.samples) {
@@ -3611,7 +3617,41 @@ mod severity_gate {
                 }
                 state.excitation.preparing = false;
             });
+        }
+
+        fn arm(h: &mut Harness) -> VoltageBurst {
+            let program = program();
+            h.driver.set_mode(program.hold_mode());
+            install(&h.state, program);
             program
+        }
+
+        struct OnReadSensor<F> {
+            sensor: MockCurrentSensor,
+            on_read: F,
+        }
+
+        impl<F: Fn()> CurrentSensor for OnReadSensor<F> {
+            fn read_currents(&self) -> (f32, f32, f32) {
+                (self.on_read)();
+                self.sensor.read_currents()
+            }
+
+            fn read_raw(&self) -> (u16, u16, u16) {
+                self.sensor.read_raw()
+            }
+
+            fn is_calibrated(&self) -> bool {
+                self.sensor.is_calibrated()
+            }
+
+            fn get_offsets(&self) -> (f32, f32, f32) {
+                self.sensor.get_offsets()
+            }
+
+            fn set_offsets(&mut self, offsets: (f32, f32, f32)) {
+                self.sensor.set_offsets(offsets);
+            }
         }
 
         fn tick(h: &mut Harness, us: u64) {
@@ -3619,6 +3659,85 @@ mod severity_gate {
             critical_section::with(|cs| {
                 let mut state = h.state.borrow(cs).borrow_mut();
                 state.last_adc.seq = state.last_adc.seq.wrapping_add(1);
+            });
+        }
+
+        #[test]
+        fn packet_installed_during_step_starts_at_the_next_cycle_boundary() {
+            let _serial = cmd_channel_lock();
+            let _detect = crate::state::DetectionActiveGuard::arm();
+            let h = running_harness();
+            let program = program();
+            let pending = Cell::new(true);
+            let mut driver = FocDriver::new(
+                FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+                MockPwm { duties: [0; 3] },
+                OnReadSensor {
+                    sensor: MockCurrentSensor {
+                        currents: (0.0, 0.0, 0.0),
+                    },
+                    on_read: || {
+                        if pending.replace(false) {
+                            install(&h.state, program);
+                        }
+                    },
+                },
+                PhaseManager::sensorless(),
+                1.0 / 20_000.0,
+            );
+            driver.set_mode(program.hold_mode());
+
+            // Simulate a packet reservation arriving after the entry snapshot.
+            // This step applied the PI hold, so its current is not sample zero.
+            run_foc_cycle(&h.state, &h.registry, &mut driver, 24.0, 50, &BOARD);
+            assert!(!pending.get(), "the packet must have arrived during step");
+            assert_eq!(driver.mode(), program.hold_mode());
+            critical_section::with(|cs| {
+                let mut state = h.state.borrow(cs).borrow_mut();
+                assert_eq!(state.excitation.index, 0);
+                assert_eq!(state.excitation.outcome, None);
+                state.last_adc.seq = state.last_adc.seq.wrapping_add(1);
+            });
+
+            run_foc_cycle(&h.state, &h.registry, &mut driver, 24.0, 100, &BOARD);
+            assert_eq!(driver.mode(), program.command::<LibmSinCos>(0));
+            critical_section::with(|cs| {
+                let state = h.state.borrow(cs).borrow();
+                assert_eq!(state.excitation.index, 1);
+                assert_eq!(state.excitation.samples[0].tick_us, 100);
+                assert_eq!(state.excitation.samples[0].cycle, state.last_adc.seq + 1);
+            });
+        }
+
+        #[test]
+        fn preparing_packet_waits_and_cleans_up_after_detection_guard_drops() {
+            let _serial = cmd_channel_lock();
+            let detect = crate::state::DetectionActiveGuard::arm();
+            let mut h = running_harness();
+            let program = arm(&mut h);
+            critical_section::with(|cs| {
+                h.state.borrow(cs).borrow_mut().excitation.preparing = true;
+            });
+            tick(&mut h, 50);
+            assert_eq!(h.driver.mode(), program.hold_mode());
+            critical_section::with(|cs| {
+                let state = h.state.borrow(cs).borrow();
+                assert_eq!(state.excitation.index, 0);
+                assert_eq!(state.excitation.outcome, None);
+            });
+
+            // A cancelled preparation still owns a reservation even though
+            // neither DETECTION_ACTIVE nor Excitation::running() is true.
+            drop(detect);
+            critical_section::with(|cs| {
+                h.state.borrow(cs).borrow_mut().excitation.cancelled = true;
+            });
+            tick(&mut h, 100);
+            assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            critical_section::with(|cs| {
+                let state = h.state.borrow(cs).borrow();
+                assert!(state.excitation.program.is_none());
+                assert_eq!(state.excitation.index, 0);
             });
         }
 
@@ -3641,7 +3760,9 @@ mod severity_gate {
             h.driver.current_sensor_mut().currents = (2.5, -1.25, -1.25);
             tick(&mut h, 50);
             assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            assert!(crate::state::detection_cancelled());
             critical_section::with(|cs| {
+                assert_eq!(h.state.borrow(cs).borrow().excitation.index, 0);
                 assert_eq!(
                     h.state.borrow(cs).borrow().excitation.outcome,
                     Some(Err(DetectionError::HardwareFault))
@@ -3658,9 +3779,54 @@ mod severity_gate {
         }
 
         #[test]
-        fn pulse_ends_and_pi_hold_resumes_without_async_service() {
+        fn packet_accepts_the_exact_current_budget_before_aborting_the_next_sample() {
             let _serial = cmd_channel_lock();
             let _detect = crate::state::DetectionActiveGuard::arm();
+            let mut h = running_harness();
+            let program = arm(&mut h);
+            critical_section::with(|cs| {
+                h.state
+                    .borrow(cs)
+                    .borrow_mut()
+                    .excitation
+                    .program
+                    .as_mut()
+                    .unwrap()
+                    .max_current_a = Some(2.0);
+            });
+            h.driver.current_sensor_mut().currents = (2.0, -1.0, -1.0);
+            tick(&mut h, 50);
+            assert_eq!(h.driver.mode(), program.command::<LibmSinCos>(0));
+            critical_section::with(|cs| {
+                let state = h.state.borrow(cs).borrow();
+                assert_eq!(state.excitation.index, 1);
+                assert_eq!(state.excitation.outcome, None);
+                assert_eq!(state.excitation.samples[0].alpha, 2.0);
+            });
+
+            let over = f32::from_bits(2.0_f32.to_bits() + 1);
+            h.driver.current_sensor_mut().currents = (over, -over * 0.5, -over * 0.5);
+            tick(&mut h, 100);
+            assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            assert!(!h.registry.any_stopping());
+            critical_section::with(|cs| {
+                let state = h.state.borrow(cs).borrow();
+                assert_eq!(
+                    state.excitation.index, 1,
+                    "the over-budget sample is rejected"
+                );
+                assert_eq!(state.excitation.samples[0].tick_us, 50);
+                assert_eq!(
+                    state.excitation.outcome,
+                    Some(Err(DetectionError::HardwareFault))
+                );
+            });
+        }
+
+        #[test]
+        fn pulse_ends_and_pi_hold_resumes_without_async_service() {
+            let _serial = cmd_channel_lock();
+            let detect = crate::state::DetectionActiveGuard::arm();
             let mut h = running_harness();
             let program = arm(&mut h);
             for i in 0..=usize::from(program.samples) {
@@ -3689,6 +3855,27 @@ mod severity_gate {
                 tick(&mut h, i * 50);
             }
             assert_eq!(h.driver.mode(), program.hold_mode());
+            critical_section::with(|cs| {
+                let state = h.state.borrow(cs).borrow();
+                assert_eq!(state.excitation.index, usize::from(program.samples));
+                assert_eq!(state.excitation.outcome, Some(Ok(())));
+                assert_eq!(
+                    state.excitation.samples[usize::from(program.samples) - 1].tick_us,
+                    600
+                );
+            });
+
+            // A completed but unread packet also needs cancellation cleanup
+            // after the outer detection future has already been dropped.
+            drop(detect);
+            critical_section::with(|cs| {
+                h.state.borrow(cs).borrow_mut().excitation.cancelled = true;
+            });
+            tick(&mut h, 5_050);
+            assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            critical_section::with(|cs| {
+                assert!(h.state.borrow(cs).borrow().excitation.program.is_none());
+            });
         }
 
         #[test]
