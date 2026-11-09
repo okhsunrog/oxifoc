@@ -568,6 +568,21 @@ where
                 self.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
             );
         };
+        self.grant_dissipative_brake(id_target, iq_target, omega, brake, model)
+    }
+
+    // Keep the optional nonlinear solve out of the common torque grant: its
+    // register requirements otherwise spill into motoring and plain braking.
+    #[inline(never)]
+    fn grant_dissipative_brake(
+        &self,
+        id_target: f32,
+        iq_target: f32,
+        omega: f32,
+        brake: f32,
+        model: WindingModel,
+    ) -> (f32, f32) {
+        let limits = &self.current_limits;
         let lim = limits.max_brake_a * brake;
         let (id_target, iq) = limits.clamp_targets(id_target, clamp_f32(iq_target, -lim, lim));
         let budget = RegenBudget {

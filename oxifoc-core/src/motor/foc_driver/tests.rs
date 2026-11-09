@@ -4,6 +4,8 @@ use super::*;
 mod live_hall_tests;
 #[path = "scoped_pi_tests.rs"]
 mod scoped_pi_tests;
+#[path = "torque_grant_tests.rs"]
+mod torque_grant_tests;
 #[cfg(feature = "virtual-motor")]
 use crate::foc::angle_difference;
 #[cfg(feature = "virtual-motor")]
