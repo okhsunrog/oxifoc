@@ -6,6 +6,7 @@ use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
 
 pub const MAX_BURST_SAMPLES: usize = 256;
+pub(crate) const PROCESS_CHUNK: usize = 8;
 
 #[cfg(feature = "runtime")]
 pub(crate) static DONE_WAKER: embassy_sync::waitqueue::AtomicWaker =

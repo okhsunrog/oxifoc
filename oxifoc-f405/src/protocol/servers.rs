@@ -321,7 +321,7 @@ pub async fn detect_server(stack: &'static Stack) {
     #[cfg(feature = "task-priority")]
     embassy_executor::Metadata::for_current_task()
         .await
-        .set_priority(2);
+        .set_priority(1);
     oxifoc_core::runtime::detect_server(
         stack.endpoints(),
         F405Backend,

@@ -85,7 +85,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
         &mut self,
         program: super::excitation::VoltageBurst,
     ) -> Result<super::excitation::BurstCapture, DetectionError> {
-        use super::excitation::BurstCapture;
+        use super::excitation::{BurstCapture, PROCESS_CHUNK};
         use embassy_futures::select::{Either, select};
         self.check_health()?;
         // No references into the buffer escape a CS. Dropping the future
@@ -122,7 +122,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
             critical_section::with(|cs| {
                 self.state_mutex.borrow(cs).borrow_mut().excitation.voltages[i] = voltage;
             });
-            if i % 32 == 31 {
+            if i % PROCESS_CHUNK == PROCESS_CHUNK - 1 {
                 embassy_time::Timer::after_micros(100).await;
             }
         }
@@ -155,7 +155,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
                 capture.samples[i] = critical_section::with(|cs| {
                     self.state_mutex.borrow(cs).borrow().excitation.samples[i]
                 });
-                if i % 32 == 31 {
+                if i % PROCESS_CHUNK == PROCESS_CHUNK - 1 {
                     embassy_time::Timer::after_micros(100).await;
                 }
             }

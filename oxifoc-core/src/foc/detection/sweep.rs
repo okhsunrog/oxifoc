@@ -690,7 +690,7 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, T: Timer, S: SinCos>(
             corr_q[d] += i_dir * (-cos_p);
             corr_i[d] += i_dir * sin_p;
         }
-        if k % 8 == 7 {
+        if k % super::excitation::PROCESS_CHUNK == super::excitation::PROCESS_CHUNK - 1 {
             T::after_micros(100).await;
         }
     }
@@ -800,7 +800,7 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
             let (v_a, v_b) = program.injection::<S>(index);
             let angle = (index % FFT_SIZE) as f32 * core::f32::consts::TAU / FFT_SIZE as f32;
             measurement.record(sample.alpha, sample.beta, angle, v_a, v_b);
-            if index % FFT_SIZE == FFT_SIZE - 1 {
+            if index % super::excitation::PROCESS_CHUNK == super::excitation::PROCESS_CHUNK - 1 {
                 T::after_micros(100).await;
             }
         }
