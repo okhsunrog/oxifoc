@@ -73,7 +73,7 @@ pub const DEFAULT_RATE_LIMIT_FACTOR: f32 = 1.5;
 
 /// Sector-time multiple for staleness detection
 /// ([`HallSensor::is_stale_at_speed`]): with a reference speed an edge is
-/// expected every `angle_per_state / |ω|` seconds; this many sector times
+/// expected every `current_sector_width / |ω|` seconds; this many sector times
 /// with no edge means the sensor stopped reporting. Only consulted with
 /// INDEPENDENT evidence of rotation (the caller's `omega_ref`), which is
 /// what makes a tight window safe: past the sector end the interpolated
@@ -687,13 +687,20 @@ impl HallSensor {
         // Save previous direction before updating
         self.prev_direction = self.direction;
 
-        // Direction from the CALIBRATED angles of the two states, not from
-        // the nominal wiring order: half the ways to connect three hall
-        // wires reverse that order (the calibration table absorbs any
-        // wiring), which read every forward edge as backward — the second
-        // edge after boot then got its speed with the wrong sign. A single
-        // skipped state (±120°) still resolves correctly.
-        let new_direction = if self.calib.is_valid_state(prev_raw) {
+        // Measured geometry records commanded positive orientation explicitly.
+        // Even valid adjacent centroids can be >π apart in wide sectors, so
+        // their shortest difference must not override that topology. Legacy
+        // tables retain their calibrated-centroid direction calculation.
+        let new_direction = if let Some(geometry) = self.geometry.as_ref() {
+            let next = geometry.next_states();
+            if next[usize::from(prev_raw)] == raw_state {
+                Direction::Clockwise
+            } else if next[usize::from(raw_state)] == prev_raw {
+                Direction::CounterClockwise
+            } else {
+                self.direction
+            }
+        } else if self.calib.is_valid_state(prev_raw) {
             let step = angle_difference(
                 self.calib.angle_for_state(raw_state),
                 self.calib.angle_for_state(prev_raw),
@@ -718,11 +725,14 @@ impl HallSensor {
 
         self.direction = new_direction;
         self.logical_state = current_state;
-        if resuming_geometry {
+        if resuming_geometry
+            || (self.geometry.is_some() && self.velocity_hold_edges > 0 && self.direction_reversed)
+        {
             // The adjacent edge restores direction too. Keep the last trusted
             // speed magnitude, with that direction, until a full known sector
             // interval can replace it; never interpolate the new frame forward
-            // after a reverse recovery.
+            // after a reverse recovery, including a reverse edge hidden by an
+            // invalid-state glitch whose timing deliberately remains held.
             self.elec_velocity =
                 self.angle_step_signed(new_direction).signum() * self.elec_velocity.abs();
         }
@@ -1026,10 +1036,10 @@ impl HallSensor {
     /// If the motor were really still doing `|elec_velocity|`, an edge would
     /// have arrived within one sector time — so once `dt_from_edge` exceeds
     /// that, the estimate is `current_sector_width / dt_from_edge`,
-    /// which decays toward zero at standstill. VESC gets the same behavior by
-    /// dividing by `max(hall_dt_now, hall_dt_last)`, where `hall_dt_now`
-    /// keeps growing after the last edge (foc_math.c:645). Measured geometry
-    /// must use the current sector width here, even though edge speed came
+    /// which decays toward zero at standstill. VESC uses growing edge age in
+    /// its interpolation threshold, but integrates the last edge speed with
+    /// a centroid-relative correction instead (foc_math.c:645–659). Measured
+    /// geometry must use the current width here, even though edge speed came
     /// from the previous sector. Centroid-only tables keep the nominal60° cap.
     #[inline]
     fn decayed_velocity(&self, dt_from_edge: f32) -> f32 {

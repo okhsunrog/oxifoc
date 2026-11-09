@@ -232,3 +232,44 @@ fn invalid_state_glitch_uses_measured_current_width_and_keeps_trusted_speed() {
     hall.update(1, 31_000);
     assert!((hall.electrical_velocity() - speed).abs() < 0.001);
 }
+
+#[test]
+fn measured_topology_controls_direction_even_when_adjacent_centroids_are_far_apart() {
+    // Both170° sectors are valid; their centroids near opposite ends have a
+    // negative shortest-angle difference despite positive successor order.
+    let entries = [0_f32, 355.0, 170.0, 0.0, 345.0, 350.0, 340.0, 0.0].map(f32::to_radians);
+    let centers = [0_f32, 357.0, 339.0, 1.0, 347.0, 352.0, 342.0, 0.0].map(f32::to_radians);
+    let mut hall = measured_hall();
+    let next = hall.geometry.unwrap().next_states();
+    hall.set_calibration_raw(centers);
+    hall.geometry =
+        Some(HallTransitionGeometry::try_from_raw_parts(entries, next, centers).unwrap());
+    assert!(angle_difference(centers[2], centers[3]) < 0.0);
+    hall.update(3, 0);
+    hall.update(2, 17_000);
+    assert_eq!(hall.direction(), Direction::Clockwise);
+    hall.update(6, 34_000);
+    let expected = 170_f32.to_radians() / 0.017;
+    assert!((hall.electrical_velocity() - expected).abs() < 0.001);
+    hall.update(2, 35_000);
+    assert_eq!(hall.direction(), Direction::CounterClockwise);
+    assert!(hall.electrical_velocity() < 0.0);
+}
+
+#[test]
+fn reverse_edge_hidden_by_invalid_state_preserves_speed_magnitude_with_new_direction() {
+    let mut hall = measured_hall();
+    advance_to_measured_motion(&mut hall);
+    let speed = hall.electrical_velocity();
+    hall.update(0, 13_000);
+    hall.update(2, 13_200);
+    assert_eq!(hall.direction(), Direction::CounterClockwise);
+    assert_eq!(hall.electrical_velocity().to_bits(), (-speed).to_bits());
+    let sample = hall.sample_at(13_250).unwrap();
+    assert!(angle_difference(sample.angle, 110_f32.to_radians()) < 0.0);
+    assert_eq!(sample.omega.to_bits(), (-speed).to_bits());
+    hall.update(3, 17_200);
+    assert_eq!(hall.electrical_velocity().to_bits(), (-speed).to_bits());
+    hall.update(1, 25_200);
+    assert!((hall.electrical_velocity() + speed).abs() < 0.001);
+}
