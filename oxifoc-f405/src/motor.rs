@@ -54,6 +54,13 @@ impl<'d> MotorPwm<'d> {
         timing
     }
 
+    /// Nominal sample-to-actuation delay for the peak-only PWM preload latch.
+    /// The next peak is approximately one full period after the near-peak ADC
+    /// aperture; its small aperture/synchronization offset is not calibrated.
+    pub const fn actuation_delay_cycles(&self) -> f32 {
+        1.0
+    }
+
     /// Initialize TIM1 complementary PWM for Simple FOCer 2 board
     ///
     /// Phase mapping:

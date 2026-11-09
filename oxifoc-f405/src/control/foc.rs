@@ -285,6 +285,7 @@ pub async fn init(
     );
 
     // Use the same timer-derived period sent to the host and detection backend.
+    let actuation_delay_cycles = motor_pwm.actuation_delay_cycles();
     let mut foc_driver = FocDriver::new(
         foc_controller,
         motor_pwm,
@@ -292,6 +293,7 @@ pub async fn init(
         phase_manager,
         timing.dt_s(),
     );
+    foc_driver.set_actuation_delay(actuation_delay_cycles);
 
     // Current limits: stored config (clamped to the board ceiling) or board defaults
     foc_driver.set_current_limits(CurrentLimits::from_stored(
