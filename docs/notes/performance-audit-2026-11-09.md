@@ -391,6 +391,23 @@ compared with 5.886 A in an earlier run; motion differed and gaps prevent
 claiming either a continuous peak bound or a controlled A/B improvement.
 Native 20-kHz rotation capture remains an acceptance requirement.
 
+The first combined control/raw-Hall handoff was rejected and reverted.
+Two complete stationary 0.6-A Id windows in each exact timing ELF measured
+6281 cycles with the handoff versus 6241 without it, both lossless. Moving
+windows measured 6619 versus 6527 cycles, with different trajectories;
+these are supporting diagnostics, not a controlled moving A/B. Avoid
+assuming fewer calculations outweigh an owned snapshot's copying costs.
+
+Calibration PI overrides are now driver-owned and temporary across the
+OpenLoop/DirectVoltage sequence. Stop, ordinary control, faults and failsafe
+restore the prior d/q tuning; persistent tuning supersedes the override.
+Also distinguish a configuration readback from live Hall application:
+older images applied direct Hall config writes only at boot. The
+`scoped-pi-motion-timing` capture used the old live table despite a staged
+new table in RAM config, hit the 6-A trip, and is excluded from table A/Bs.
+The subsequent physical calibration and `actual-new-hall-motion-timing`
+used the actual new estimator table and completed without a fault.
+
 Artifacts, exact ELFs, provenance, plots and raw Hall-edge evidence:
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-rotation-2026-11-09/`.
 
