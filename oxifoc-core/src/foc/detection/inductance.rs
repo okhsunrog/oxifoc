@@ -1,35 +1,14 @@
-//! Motor inductance measurement using High-Frequency Injection (HFI).
+//! Stationary motor inductance measurement using rotating HFI.
 //!
-//! Measures d-axis and q-axis inductance (Ld, Lq) by injecting a rotating
-//! high-frequency voltage vector and analyzing the current response using FFT.
+//! A 32-sample window identifies the full two-axis discrete RL response from
+//! paired voltage increments and current changes. Constant command-voltage
+//! bias is fitted as an intercept. The zero-order-hold response is converted
+//! back to inductance, including finite R*dt/L rather than an Euler scale.
 //!
-//! # Algorithm (VESC-equivalent)
-//!
-//! 1. Lock rotor at a fixed electrical position with holding current
-//! 2. Inject rotating HFI voltage vector in alpha-beta (stator) frame
-//! 3. Measure differential current response (di = i_now - i_prev)
-//! 4. Store inverse inductance: 1/L = (ω × di) / V_inject
-//! 5. Apply FFT to extract frequency components:
-//!    - Bin 0 (DC): Average inverse inductance = (1/Ld + 1/Lq) / 2
-//!    - Bin 2 (2nd harmonic): Saliency = (1/Ld - 1/Lq) / 2
-//! 6. Calculate: Ld = 1/(offset + amplitude), Lq = 1/(offset - amplitude)
-//!
-//! # Theory
-//!
-//! For a rotating injection vector V = V_amp × e^(j×θ_inj) where θ_inj advances
-//! through 360° over FFT_SIZE samples, the current response depends on the
-//! inductance at each angle.
-//!
-//! For an IPM motor with saliency:
-//! - L(θ) = L_avg + L_diff × cos(2×θ)  (inductance varies with angle)
-//! - 1/L(θ) = 1/L_avg × (1 - (L_diff/L_avg) × cos(2×θ))  (approximately)
-//!
-//! The FFT of 1/L samples gives:
-//! - Bin 0: DC component = average of 1/L
-//! - Bin 2: 2nd harmonic = saliency information
-//!
-//! This allows measuring both Ld and Lq in a single sweep, and is robust
-//! to small rotor position errors.
+//! No sample is divided by a small carrier voltage or replaced by its neighbor.
+//! Principal inductances retain signed d/q labeling relative to the assumed
+//! rotor lock; off-axis response remains an alignment diagnostic. Absolute
+//! accuracy still depends on the applied-voltage model and current acquisition.
 
 use core::marker::PhantomData;
 
@@ -38,24 +17,20 @@ use crate::foc::trig::SinCos;
 
 use crate::foc::fast_math::sqrtf;
 use crate::foc::trig::LibmSinCos;
-use microfft::real::rfft_32;
+#[path = "inductance_fit.rs"]
+mod fit;
+use fit::RlWindow;
 
-/// Number of samples for FFT (must be power of 2)
+/// Identification-window length; historical FFT_SIZE name retained for callers.
 pub const FFT_SIZE: usize = 32;
 
-/// Number of HFI injection cycles per FFT window.
+/// Number of HFI injection cycles per identification window.
 /// With FFT_SIZE=32 and 1 cycle, the injection angle θ sweeps 0→2π.
 /// The inductance saliency L(θ) = L_avg + L_diff×cos(2θ) creates a 2nd harmonic,
 /// which appears at FFT bin 2.
 const HFI_CYCLES_PER_FFT: usize = 1;
 
-/// Scale factor applied to measured inductance.
-///
-/// Set to 1.0 (no scaling) — the measurement should report the true value.
-/// Downstream code (e.g. the flux observer) can apply its own stability
-/// margin if needed.  A previous value of 0.9 (from VESC) was compensating
-/// for systematic overestimation that has since been fixed by proper HFI
-/// carrier demodulation and resistance compensation.
+/// No empirical inductance scaling is applied to the identified response.
 const INDUCTANCE_SCALE_FACTOR: f32 = 1.0;
 
 /// Minimum valid inductance in Henries
@@ -100,7 +75,7 @@ pub struct HfiInjector<S: SinCos = LibmSinCos> {
     injection_angle: f32,
     /// Angle increment per sample (for rotating injection)
     angle_increment: f32,
-    /// Current sample index within FFT window
+    /// Current sample index within identification window
     sample_index: usize,
     _sincos: PhantomData<S>,
 }
@@ -164,7 +139,7 @@ impl<S: SinCos> HfiInjector<S> {
         (v_alpha, v_beta)
     }
 
-    /// Reset for a new FFT window.
+    /// Reset for a new identification window.
     pub fn reset(&mut self) {
         self.hfi_phase = 0.0;
         self.injection_angle = 0.0;
@@ -177,7 +152,7 @@ impl<S: SinCos> HfiInjector<S> {
         self.voltage_amplitude = voltage_amplitude;
     }
 
-    /// Get current sample index within FFT window.
+    /// Get current sample index within identification window.
     #[inline]
     pub fn sample_index(&self) -> usize {
         self.sample_index
@@ -209,34 +184,29 @@ impl<S: SinCos> HfiInjector<S> {
     }
 }
 
-/// VESC-style inductance measurement using rotating HFI and FFT.
+/// Streaming two-axis inductance identification under rotating HFI.
 ///
-/// Collects inverse inductance samples during rotating injection,
-/// then uses FFT to extract Ld and Lq from the frequency components.
-///
-/// The `record()` method accepts the injection voltage that caused the
-/// measured current change.  Dividing `di` by the actual instantaneous
-/// voltage (instead of the peak amplitude) cancels the HFI carrier
-/// modulation, producing clean `1/L(θ)` samples for the FFT.  When
-/// the phase resistance is known, it is subtracted from the voltage
-/// to remove the resistive contamination that would otherwise create
-/// false saliency in SPM motors.
+/// `record` receives the command paired with the measured current interval.
+/// Window moments fit `di = B*(u - R*i_previous) + constant`; the symmetric
+/// response's eigenvalues recover the principal inductances. `FFT_SIZE` is
+/// retained as the historical public name for the 32-sample window length.
 #[derive(Clone)]
 pub struct InductanceMeasurement<S: SinCos = LibmSinCos> {
-    /// FFT input buffer for inverse inductance samples (1/L)
-    samples: [f32; FFT_SIZE],
-    /// Current sample index within FFT window
+    /// Streaming two-axis response fit; no carrier division or filled samples.
+    window: RlWindow,
+    fit_error: Option<DetectionError>,
+    /// Current sample index within identification window
     sample_idx: usize,
     /// Previous current sample for differential calculation
     prev_i_alpha: f32,
     prev_i_beta: f32,
-    /// Number of complete FFT cycles collected
+    /// Number of complete identification windows collected
     cycles_completed: u32,
-    /// Target number of FFT cycles to average
+    /// Target number of identification windows to average
     target_cycles: u32,
     /// Accumulated Ld sum (for averaging across cycles)
     ld_sum: f32,
-    /// Accumulated signed saliency (1/Ld − 1/Lq)/2 per FFT window.
+    /// Accumulated signed saliency (1/Ld − 1/Lq)/2 per identification window.
     saliency_sum: f32,
     /// Accumulated quadrature (45°-off) saliency — alignment diagnostic.
     quadrature_sum: f32,
@@ -246,10 +216,8 @@ pub struct InductanceMeasurement<S: SinCos = LibmSinCos> {
     current_sum: f32,
     /// Total sample count
     total_samples: u32,
-    /// PWM/sampling frequency in Hz (used for 1/L calculation)
+    /// PWM/sampling frequency for the zero-order-hold response conversion.
     pwm_freq_hz: f32,
-    /// Injection voltage amplitude (used only as fallback/threshold)
-    voltage_amplitude: f32,
     /// Previously measured phase resistance (Ω) for compensation.
     /// Set to 0 when unknown.
     resistance_ohm: f32,
@@ -267,12 +235,13 @@ impl<S: SinCos> InductanceMeasurement<S> {
     /// * `params` - Measurement parameters
     /// * `pwm_freq_hz` - PWM frequency in Hz
     pub fn new(params: &InductanceParams, pwm_freq_hz: f32) -> Self {
-        // Each FFT cycle is FFT_SIZE samples
-        // num_cycles from params is how many FFT windows to average
+        // Each identification window is FFT_SIZE samples
+        // num_cycles from params is how many identification windows to average
         let target_cycles = params.num_cycles;
 
         Self {
-            samples: [0.0; FFT_SIZE],
+            window: RlWindow::default(),
+            fit_error: None,
             sample_idx: 0,
             prev_i_alpha: 0.0,
             prev_i_beta: 0.0,
@@ -285,7 +254,6 @@ impl<S: SinCos> InductanceMeasurement<S> {
             current_sum: 0.0,
             total_samples: 0,
             pwm_freq_hz,
-            voltage_amplitude: params.hfi_voltage_v,
             resistance_ohm: params.resistance_ohm,
             hold_current: params.hold_current_a,
             first_sample: true,
@@ -296,9 +264,8 @@ impl<S: SinCos> InductanceMeasurement<S> {
     /// Record a current sample together with the injection command that
     /// caused it.
     ///
-    /// The injection voltage is used to cancel the HFI carrier modulation
-    /// from the `1/L` samples, and — when phase resistance is known — to
-    /// subtract the resistive voltage drop.
+    /// The supplied voltage vector and previous current enter the discrete
+    /// RL response fit. No instantaneous carrier normalization is performed.
     ///
     /// PAIRING CONTRACT: the `di` evaluated by this call spans the interval
     /// between the previous `record` call and this one; the caller must
@@ -317,12 +284,12 @@ impl<S: SinCos> InductanceMeasurement<S> {
     /// * `v_inj_alpha`, `v_inj_beta` - that command's injection voltage (V)
     ///
     /// # Returns
-    /// `true` when a complete FFT window has been processed.
+    /// `true` when a complete identification window has been processed.
     pub fn record(
         &mut self,
         i_alpha: f32,
         i_beta: f32,
-        injection_angle: f32,
+        _injection_angle: f32,
         v_inj_alpha: f32,
         v_inj_beta: f32,
     ) -> bool {
@@ -337,45 +304,30 @@ impl<S: SinCos> InductanceMeasurement<S> {
             return false;
         }
 
-        // Differential current
-        let di_alpha = i_alpha - self.prev_i_alpha;
-        let di_beta = i_beta - self.prev_i_beta;
-
-        // Project di and the driving voltage onto its injection direction
-        let (sin_angle, cos_angle) = S::sin_cos(injection_angle);
-        let di_projected = di_alpha * cos_angle + di_beta * sin_angle;
-        let v_projected = v_inj_alpha * cos_angle + v_inj_beta * sin_angle;
-
-        // Resistance compensation: subtract R × i_AC from the voltage.
-        // The DC holding current does NOT contribute to di so it must be
-        // excluded.  At injection angle θ the DC hold projects as
-        // i_hold·cos(θ); the remainder is the AC ripple caused by HFI.
-        let i_projected = self.prev_i_alpha * cos_angle + self.prev_i_beta * sin_angle;
-        let i_hold_proj = self.hold_current * cos_angle;
-        let i_ac_proj = i_projected - i_hold_proj;
-        let v_inductive = v_projected - self.resistance_ohm * i_ac_proj;
-
-        // Clamp to avoid division by near-zero at carrier zero-crossings.
-        let min_v = self.voltage_amplitude * 0.1;
-        let inverse_l = if v_inductive.abs() > min_v {
-            (self.pwm_freq_hz * di_projected) / v_inductive
-        } else {
-            // Carrier near zero crossing — carry forward the last valid sample
-            if self.sample_idx > 0 {
-                self.samples[self.sample_idx - 1]
-            } else {
-                0.0
-            }
-        };
-
-        self.samples[self.sample_idx] = inverse_l;
+        let di = [i_alpha - self.prev_i_alpha, i_beta - self.prev_i_beta];
+        let x = [
+            v_inj_alpha - self.resistance_ohm * (self.prev_i_alpha - self.hold_current),
+            v_inj_beta - self.resistance_ohm * self.prev_i_beta,
+        ];
+        self.window.record(x, di);
         self.sample_idx += 1;
-
         self.prev_i_alpha = i_alpha;
         self.prev_i_beta = i_beta;
-
         if self.sample_idx >= FFT_SIZE {
-            self.process_fft_cycle();
+            match self
+                .window
+                .finish(self.resistance_ohm, 1.0 / self.pwm_freq_hz)
+            {
+                Ok(result) => {
+                    self.ld_sum += result.ld;
+                    self.lq_sum += result.lq;
+                    self.saliency_sum += result.saliency;
+                    self.quadrature_sum += result.quadrature;
+                    self.cycles_completed += 1;
+                }
+                Err(error) => self.fit_error = Some(error),
+            }
+            self.window = RlWindow::default();
             self.sample_idx = 0;
             true
         } else {
@@ -383,72 +335,10 @@ impl<S: SinCos> InductanceMeasurement<S> {
         }
     }
 
-    /// Process a complete FFT cycle and extract inductance.
-    fn process_fft_cycle(&mut self) {
-        // Copy samples for FFT (microfft works in-place)
-        let mut fft_input = self.samples;
-
-        // Perform real FFT
-        let spectrum = rfft_32(&mut fft_input);
-
-        // Extract frequency bins
-        // Bin 0: DC component = average of 1/L samples
-        let bin0_real = spectrum[0].re;
-
-        // Bin 2: 2nd harmonic = saliency information (inductance varies at
-        // 2× the injection angle). The injection sweeps exactly one
-        // electrical revolution per FFT window starting at the assumed
-        // d-axis, so for x[n] = m + Δ·cos(2θ_n − 2θ_err):
-        //   Re(bin2)·2/N = Δ·cos(2θ_err)  — the SIGNED saliency along the
-        //                                    assumed axes
-        //   Im(bin2)·2/N ∝ Δ·sin(2θ_err) — the quadrature component, ≈0
-        //                                    when the rotor lock is aligned
-        // Using the magnitude here (as before) would force Δ ≥ 0, hard-
-        // coding Ld ≤ Lq and silently accepting a 90°-off rotor lock
-        // (swapped d/q). The signed real part lets inverse saliency and a
-        // bad lock surface as Ld > Lq downstream.
-        let bin2_real = spectrum[2].re;
-        let bin2_imag = spectrum[2].im;
-
-        // Normalize by FFT size
-        // offset = average inverse inductance = (1/Ld + 1/Lq) / 2
-        let offset = bin0_real / FFT_SIZE as f32;
-
-        // Signed saliency in inverse inductance = (1/Ld - 1/Lq) / 2.
-        // Factor of 2 for single-sided spectrum.
-        let amplitude = bin2_real * 2.0 / FFT_SIZE as f32;
-        let quadrature = bin2_imag * 2.0 / FFT_SIZE as f32;
-
-        // Prevent division by zero
-        let offset = if offset.abs() < 1e-10 {
-            1e-10
-        } else {
-            offset.abs() // 1/L should always be positive
-        };
-
-        // Calculate Ld and Lq from offset and signed amplitude
-        // 1/Ld = offset + amplitude
-        // 1/Lq = offset - amplitude
-        let inv_ld = (offset + amplitude).max(1e-10);
-        let inv_lq = (offset - amplitude).max(1e-10);
-
-        let ld_est = 1.0 / inv_ld;
-        let lq_est = 1.0 / inv_lq;
-
-        // Accumulate for averaging
-        if ld_est.is_finite() && lq_est.is_finite() {
-            self.ld_sum += ld_est;
-            self.lq_sum += lq_est;
-            self.saliency_sum += amplitude;
-            self.quadrature_sum += quadrature;
-            self.cycles_completed += 1;
-        }
-    }
-
     /// Check if measurement is complete.
     #[inline]
     pub fn is_complete(&self) -> bool {
-        self.cycles_completed >= self.target_cycles
+        self.fit_error.is_some() || self.cycles_completed >= self.target_cycles
     }
 
     /// Get progress as percentage.
@@ -460,7 +350,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
         ((self.cycles_completed * 100) / self.target_cycles).min(100) as u8
     }
 
-    /// Get number of completed FFT cycles.
+    /// Get number of completed identification windows.
     #[inline]
     pub fn cycles_completed(&self) -> u32 {
         self.cycles_completed
@@ -471,11 +361,12 @@ impl<S: SinCos> InductanceMeasurement<S> {
     }
 
     /// Start another contiguous packet without mixing its DC hold interval
-    /// into a differential current sample or discarding completed FFT windows.
+    /// into a differential current sample or discarding completed identification windows.
     pub fn prime_currents(&mut self, alpha: f32, beta: f32) {
         self.prev_i_alpha = alpha;
         self.prev_i_beta = beta;
         self.sample_idx = 0;
+        self.window = RlWindow::default();
         self.first_sample = false;
     }
 
@@ -494,10 +385,12 @@ impl<S: SinCos> InductanceMeasurement<S> {
     /// Restart accumulation with a new injection amplitude, keeping the
     /// configuration (target cycles, R compensation, hold current).
     ///
-    /// The amplitude must be updated together with the sample state: it
-    /// feeds the carrier zero-crossing clamp (`0.1 × amplitude`).
-    pub fn restart(&mut self, voltage_amplitude: f32) {
+    /// The amplitude argument remains for compatibility; the fit uses the
+    /// supplied voltage vector directly, without an amplitude threshold.
+    pub fn restart(&mut self, _voltage_amplitude: f32) {
         self.sample_idx = 0;
+        self.window = RlWindow::default();
+        self.fit_error = None;
         self.cycles_completed = 0;
         self.ld_sum = 0.0;
         self.lq_sum = 0.0;
@@ -506,12 +399,11 @@ impl<S: SinCos> InductanceMeasurement<S> {
         self.current_sum = 0.0;
         self.total_samples = 0;
         self.first_sample = true;
-        self.voltage_amplitude = voltage_amplitude;
     }
 
     /// Whether the saliency axes look aligned with the rotor lock.
     ///
-    /// The quadrature (Im bin-2) component is the 45°-off saliency — near
+    /// The fitted off-diagonal response is the quadrature saliency — near
     /// zero for a well-locked rotor. When it dominates the in-phase part,
     /// the lock angle is far off d (≈45°+) and the Ld/Lq split is not
     /// trustworthy. Only meaningful for motors with measurable saliency:
@@ -535,6 +427,9 @@ impl<S: SinCos> InductanceMeasurement<S> {
 
     /// Finish measurement and return results.
     pub fn finish(self) -> Result<InductanceResult, DetectionError> {
+        if let Some(error) = self.fit_error {
+            return Err(error);
+        }
         if self.cycles_completed == 0 {
             return Err(DetectionError::InsufficientSamples);
         }
@@ -622,6 +517,71 @@ pub enum Axis {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_packet_plant_recovers_saliency_at_quarter_rate_and_other_carriers() {
+        let fs = 20_004.272;
+        let dt = 1.0 / fs;
+        let r = 0.030444;
+        for carrier in [1000.0, 2000.0, 3000.0, 5000.0] {
+            for (ld, lq) in [(18e-6, 28e-6), (28e-6, 18e-6), (25e-6, 25e-6)] {
+                for angle in [0.0, 0.2617994] {
+                    let params = InductanceParams {
+                        resistance_ohm: r,
+                        hold_current_a: 3.0,
+                        num_cycles: 8,
+                        hfi_frequency_hz: carrier,
+                        ..Default::default()
+                    };
+                    let mut measurement = InductanceMeasurement::<LibmSinCos>::new(&params, fs);
+                    let (sin, cos) = LibmSinCos::sin_cos(angle);
+                    let decay = [ld, lq].map(|l| libm::expf(-r * dt / l));
+                    let response = decay.map(|a| (1.0 - a) / r);
+                    // Two finite packets, with the commanded voltage held for
+                    // each complete interval. The state is not the estimator's
+                    // Euler update. Constant bias/current mismatch is allowed.
+                    for _ in 0..2 {
+                        let baseline = [3.07, -0.04];
+                        let mut current = baseline;
+                        measurement.prime_currents(current[0], current[1]);
+                        for k in 0..128 {
+                            let theta = k as f32 * core::f32::consts::TAU / 32.0;
+                            let phase = k as f32 * core::f32::consts::TAU * carrier / fs;
+                            let (s, c) = LibmSinCos::sin_cos(theta);
+                            let amplitude = 0.4 * libm::sinf(phase);
+                            let u = [amplitude * c, amplitude * s];
+                            let previous = [current[0] - baseline[0], current[1] - baseline[1]];
+                            let previous_dq = [
+                                cos * previous[0] + sin * previous[1],
+                                -sin * previous[0] + cos * previous[1],
+                            ];
+                            let voltage_dq = [cos * u[0] + sin * u[1], -sin * u[0] + cos * u[1]];
+                            let next_dq = [
+                                decay[0] * previous_dq[0] + response[0] * voltage_dq[0],
+                                decay[1] * previous_dq[1] + response[1] * voltage_dq[1],
+                            ];
+                            current = [
+                                baseline[0] + cos * next_dq[0] - sin * next_dq[1],
+                                baseline[1] + sin * next_dq[0] + cos * next_dq[1],
+                            ];
+                            measurement.record(current[0], current[1], theta, u[0], u[1]);
+                        }
+                    }
+                    let result = measurement.finish().unwrap();
+                    assert!(
+                        (result.ld / ld - 1.0).abs() < 0.001,
+                        "carrier={carrier}, ld={}",
+                        result.ld
+                    );
+                    assert!(
+                        (result.lq / lq - 1.0).abs() < 0.001,
+                        "carrier={carrier}, lq={}",
+                        result.lq
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_hfi_injector_rotation() {
