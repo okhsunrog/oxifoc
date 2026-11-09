@@ -370,8 +370,7 @@ async fn first_vbus_v() -> f32 {
 
 // ========== ADC Interrupt Handler ==========
 
-/// ADC interrupt: read all injected ADC samples and run FOC control.
-///
+/// Read the profiling clock; compile away when timing is disabled.
 #[inline(always)]
 fn isr_timing_now() -> u32 {
     #[cfg(feature = "isr-timing")]
@@ -384,6 +383,7 @@ fn isr_timing_now() -> u32 {
     }
 }
 
+/// Read all injected ADC samples and run FOC control.
 /// Triggered by ADC3 JEOC (end of injected conversion sequence).
 /// ADC1, ADC2, ADC3 all start conversion simultaneously on TIM1_CC4.
 #[interrupt]
