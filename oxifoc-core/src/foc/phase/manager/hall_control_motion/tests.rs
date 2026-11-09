@@ -1,4 +1,37 @@
 use super::*;
+
+#[test]
+fn magnitude_guard_matches_float_max_for_valid_inputs_and_any_stored_bits() {
+    let check = |raw: f32, applied: f32, stored: f32| {
+        assert!(raw.is_finite() && applied.is_finite());
+        assert_eq!(
+            max_speed_magnitude(raw, applied, stored).to_bits(),
+            raw.abs().max(applied.abs()).max(stored.abs()).to_bits()
+        );
+    };
+    let finite = [0.0, -0.0, 1e-38, -1e-38, 1.0, -100.0, f32::MAX, f32::MIN];
+    for raw in finite {
+        for applied in finite {
+            for stored in finite.into_iter().chain([
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NAN,
+                f32::from_bits(0xff80_0001),
+            ]) {
+                check(raw, applied, stored);
+            }
+        }
+    }
+    let mut bits = 0x9724_f61b_u32;
+    for _ in 0..100_000 {
+        bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let raw = f32::from_bits(bits);
+        let applied = f32::from_bits(bits.rotate_left(11));
+        if raw.is_finite() && applied.is_finite() {
+            check(raw, applied, f32::from_bits(bits.rotate_left(23)));
+        }
+    }
+}
 use crate::foc::hall_sensor::Direction;
 use crate::foc::sensors::AngleSample;
 use crate::foc::wrap_angle;

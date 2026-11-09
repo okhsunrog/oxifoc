@@ -11,6 +11,21 @@ use core::f32::consts::PI;
 // also applies when Stopped decimates phase updates or the loop rate changes.
 const VELOCITY_TAU_S: f32 = 0.00495;
 
+/// `raw` and `applied` have already passed the finite checks in `observe`.
+/// Positive float bit patterns are ordered like unsigned integers. Preserve
+/// `f32::max` ignoring a NaN stored state, and retain infinity for the guard.
+#[inline(always)]
+fn max_speed_magnitude(raw: f32, applied: f32, stored: f32) -> f32 {
+    let magnitude = |value: f32| value.to_bits() & 0x7fff_ffff;
+    let stored = magnitude(stored);
+    let stored = if stored > f32::INFINITY.to_bits() {
+        0
+    } else {
+        stored
+    };
+    f32::from_bits(magnitude(raw).max(magnitude(applied)).max(stored))
+}
+
 #[derive(Clone, Copy)]
 enum Baseline {
     /// Construction, model/calibration replacement or a new timebase.
@@ -112,12 +127,9 @@ impl HallControlMotion {
                     // reanchors without inventing an angular derivative.
                     if elapsed_ticks > 0 && elapsed_ticks <= u64::MAX / 2 {
                         let elapsed_s = u64_to_f32(elapsed_ticks) * self.seconds_per_tick;
-                        let possible_travel = sample
-                            .omega
-                            .abs()
-                            .max(applied_velocity.abs())
-                            .max(self.velocity.abs())
-                            * elapsed_s;
+                        let possible_travel =
+                            max_speed_magnitude(sample.omega, applied_velocity, self.velocity)
+                                * elapsed_s;
                         // A long observation gap or possible half-turn aliases a
                         // wrapped angle. Hold the applied speed and reanchor;
                         // never infer missing turns. This continuity guard is
