@@ -5,6 +5,8 @@
 //! shared traits. The controller is intentionally minimal: it runs one
 //! current loop step and returns the computed PWM duties plus telemetry.
 
+use core::cell::Cell;
+
 use super::{
     constants::{FRAC_1_SQRT_3, SQRT_3_DIV_2},
     detection::pi_tuning::{self, DEFAULT_BANDWIDTH_RAD_S},
@@ -126,6 +128,71 @@ impl Decoupling {
     }
 }
 
+/// Modulation settings own their derived limits. Bus voltage stays outside
+/// this configuration: the volt-space limit must follow every ADC sample.
+struct ModulationLimits {
+    requested: f32,
+    duty_fraction: f32,
+    effective: f32,
+    pwm: Cell<PreparedPwmCap>,
+}
+
+#[derive(Clone, Copy)]
+struct PreparedPwmCap {
+    period: u16,
+    cap: u16,
+}
+
+impl ModulationLimits {
+    fn new(requested: f32) -> Self {
+        Self {
+            requested,
+            duty_fraction: 1.0,
+            effective: requested.min(FRAC_1_SQRT_3),
+            // Zero is a real, valid timer period: every allowed fraction
+            // gives a zero cap, so no sentinel or validity flag is needed.
+            pwm: Cell::new(PreparedPwmCap { period: 0, cap: 0 }),
+        }
+    }
+
+    fn set_requested(&mut self, limit: f32) {
+        self.requested = clamp_f32(limit, 0.0, FRAC_1_SQRT_3);
+        self.refresh_effective();
+    }
+
+    fn set_duty_fraction(&mut self, fraction: f32) {
+        self.duty_fraction = if fraction.is_finite() {
+            clamp_f32(fraction, 0.5, 1.0)
+        } else {
+            1.0
+        };
+        self.refresh_effective();
+        self.prepare_pwm(self.pwm.get().period);
+    }
+
+    fn refresh_effective(&mut self) {
+        self.effective = self.requested.min(self.duty_fraction * FRAC_1_SQRT_3);
+    }
+
+    fn prepare_pwm(&self, period: u16) -> u16 {
+        // Preserve the original float product and truncating/saturating cast,
+        // including fractions obtained by dividing two integer timer counts.
+        let cap = (self.duty_fraction * f32::from(period)) as u16;
+        self.pwm.set(PreparedPwmCap { period, cap });
+        cap
+    }
+
+    #[inline]
+    fn pwm_cap(&self, period: u16) -> u16 {
+        let prepared = self.pwm.get();
+        if prepared.period == period {
+            prepared.cap
+        } else {
+            self.prepare_pwm(period)
+        }
+    }
+}
+
 /// Field-Oriented Controller (current loop)
 ///
 /// The controller is hardware-agnostic: it consumes measured currents and
@@ -139,12 +206,8 @@ pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> 
     pub iq_pi: PIController,
     /// DC bus voltage (Volts)
     vbus: f32,
-    /// Modulation limit as a fraction of `vbus` (volt space: |V| ≤
-    /// vbus × limit; linear SVPWM ends at 1/√3)
-    modulation_limit: f32,
-    /// Highest duty the PWM stage lets a high side hold, as a fraction of
-    /// the timer period (1.0 = no cap). See [`Self::set_duty_cap`].
-    duty_cap: f32,
+    /// Requested modulation and board duty cap, with coherent derived limits.
+    modulation: ModulationLimits,
     /// Dead time compensation factor = dead_time_s × pwm_freq_hz (0.0 = disabled)
     dead_time_comp: f32,
     /// Reciprocal of the per-phase linear transition current. Zero retains
@@ -209,8 +272,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             id_pi: PIController::new(0.4, 40.0),
             iq_pi: PIController::new(0.4, 40.0),
             vbus: vbus.max(Self::MIN_VBUS),
-            modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
-            duty_cap: 1.0,
+            modulation: ModulationLimits::new(Self::DEFAULT_MODULATION_LIMIT),
             dead_time_comp: 0.0,
             dead_time_current_inv_a: 0.0,
             actuation_advance: 0.0,
@@ -273,8 +335,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             id_pi: PIController::new(kp, ki),
             iq_pi: PIController::new(kp, ki),
             vbus,
-            modulation_limit: Self::DEFAULT_MODULATION_LIMIT,
-            duty_cap: 1.0,
+            modulation: ModulationLimits::new(Self::DEFAULT_MODULATION_LIMIT),
             dead_time_comp: 0.0,
             dead_time_current_inv_a: 0.0,
             actuation_advance: 0.0,
@@ -361,7 +422,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// the top leg). Anything above only let the phases clip while the
     /// circular limit never engaged, so the PI integrators wound up.
     pub fn with_modulation_limit(mut self, limit: f32) -> Self {
-        self.modulation_limit = clamp_f32(limit, 0.0, FRAC_1_SQRT_3);
+        self.modulation.set_requested(limit);
         self
     }
 
@@ -376,24 +437,20 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// departed from the command by up to 0.8 V at 24 V (PI, anti-windup,
     /// observer voltage and the bus-current estimate all saw the command).
     pub fn set_duty_cap(&mut self, fraction: f32) {
-        self.duty_cap = if fraction.is_finite() {
-            clamp_f32(fraction, 0.5, 1.0)
-        } else {
-            1.0
-        };
+        self.modulation.set_duty_fraction(fraction);
     }
 
     /// Circular voltage limit (V): the modulation limit, tightened to what
     /// the duty cap leaves (the SVPWM duty spread is `√3·|V|/vbus`).
     fn voltage_limit(&self) -> f32 {
-        self.vbus * self.modulation_limit.min(self.duty_cap * FRAC_1_SQRT_3)
+        self.vbus * self.modulation.effective
     }
 
     /// Modulate, then shift the common mode down if the top leg exceeds the
     /// duty cap (the voltage limit guarantees the spread fits under it).
     fn duties_for(&self, mod_a: f32, mod_b: f32, max_duty: u16) -> [u16; 3] {
         let duties = M::to_duties(mod_a, mod_b, max_duty);
-        let cap = (self.duty_cap * f32::from(max_duty)) as u16;
+        let cap = self.modulation.pwm_cap(max_duty);
         let top = duties[0].max(duties[1]).max(duties[2]);
         if top <= cap {
             return duties;
@@ -556,7 +613,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Modulation limit in volt space (fraction of vbus, 0..=1/√3). The
     /// effective limit also honors the duty cap — see `set_duty_cap`.
     pub fn modulation_limit(&self) -> f32 {
-        self.modulation_limit
+        self.modulation.requested
     }
 
     /// Reset both PI controller integrators.
@@ -816,6 +873,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         }
     }
 }
+
+#[cfg(test)]
+mod modulation_tests;
 
 #[cfg(test)]
 mod tests {
