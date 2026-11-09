@@ -79,6 +79,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.output
     }
 
+    fn take_hall_diagnostics(&mut self) -> Option<crate::foc::sensors::StampedHallSnapshot> {
+        self.hall_diagnostics.take()
+    }
+
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn update(&mut self, input: &PhaseInput, now_ticks: u64) {
         // Sample hardware sensors — only for sources that consume them. The
@@ -103,19 +107,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             // floor), against the observer's speed. Without that evidence
             // the rotor has stopped, and the hall's last sector is the
             // right angle to start from.
-            let stale = self.observer.is_ready()
-                && self
-                    .hall
-                    .is_stale(now_ticks, self.observer.velocity().unwrap_or(0.0));
-            (
-                stale,
-                if stale {
-                    None
-                } else {
-                    self.hall.sample_for_control(now_ticks)
-                },
-            )
+            let witness = self
+                .observer
+                .is_ready()
+                .then(|| self.observer.velocity().unwrap_or(0.0));
+            let observation = self.hall.observe_for_control(now_ticks, witness);
+            self.hall_diagnostics = observation.hall;
+            (observation.stale, observation.control)
         } else {
+            self.hall_diagnostics = None;
             (false, None)
         };
         let encoder_sample = if self.source.requires_encoder() {

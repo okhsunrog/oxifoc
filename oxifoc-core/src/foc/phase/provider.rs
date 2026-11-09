@@ -104,6 +104,16 @@ pub struct PhaseInput {
 /// current vector `ω·dt` off the q axis while the controller's own frame
 /// reports id = 0 (see `commutation_frame_tracks_rotor_at_sample_instant`).
 pub trait PhaseProvider {
+    /// Raw Hall observation made during a sensor-consuming update. Consumers
+    /// must require an exact timestamp match before reusing it. A stamped
+    /// missing snapshot is authoritative; outer `None` requires a fallback.
+    /// Take the owned observation once per cycle, including cycles that skip
+    /// an update. This prevents a repeated clock value from reusing an older
+    /// cycle's observation. The timestamp remains an additional guard.
+    fn take_hall_diagnostics(&mut self) -> Option<crate::foc::sensors::StampedHallSnapshot> {
+        None
+    }
+
     /// Install a prepared motor model. Providers without model support reject
     /// explicitly, so configuration cannot acknowledge a partial application.
     #[cfg(feature = "storage")]

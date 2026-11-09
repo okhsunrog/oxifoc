@@ -13,7 +13,8 @@
 use core::f32::consts::TAU;
 
 use super::sensors::{
-    AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait, HallSnapshot,
+    AngleSample, AngleSensor, ControlAngleSample, ControlObservation, HallInterpolationInfo,
+    HallSensorTrait, HallSnapshot, StampedHallSnapshot,
 };
 use super::{angle_difference, wrap_angle};
 use crate::foc::clamp_f32;
@@ -407,6 +408,15 @@ impl HallSensor {
             return false;
         }
         let dt_s = self.timebase.seconds(dt_ticks);
+        self.is_stale_after(dt_s, omega_ref)
+    }
+
+    #[inline]
+    fn is_stale_after(&self, dt_s: f32, omega_ref: f32) -> bool {
+        let vel = self.elec_velocity.abs().min(omega_ref.abs());
+        if vel < 1.0 {
+            return false;
+        }
         let expected_sector_s = self.angle_per_state / vel;
         dt_s > (expected_sector_s * STALE_SECTOR_MULTIPLE).max(STALE_MIN_WINDOW_S)
     }
@@ -925,14 +935,12 @@ impl HallSensor {
     ///
     /// This version mutates internal state to track rate limiting across calls.
     pub fn sample_at_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
-        let t0 = self.last_edge_ticks?;
-        if self.in_glitch {
-            // Invalid state right now: no angle (the caller falls back).
-            return None;
-        }
-        // saturating: see sample_at().
-        let dt_from_edge = self.timebase.seconds(now_ticks.saturating_sub(t0));
+        self.sample_with_edge_age_at(now_ticks)
+            .map(|(sample, _)| self.limit_sample_at(sample, now_ticks))
+    }
 
+    #[inline]
+    fn limit_sample_at(&mut self, sample: AngleSample, now_ticks: u64) -> AngleSample {
         // Calculate dt since last sample for rate limiting. A stale snapshot
         // must not wrap into a huge interval or move the clock watermark back.
         let initialized = self.last_sample_ticks.is_some();
@@ -945,25 +953,16 @@ impl HallSensor {
             0 // The first sample anchors directly, without a rate calculation.
         };
 
-        // Decayed velocity (see decayed_velocity()): also moves us to the
-        // low-speed path once the edges stop coming.
-        let velocity = self.decayed_velocity(dt_from_edge);
-
-        let target_angle = if Self::vel_to_erpm(velocity) < self.interp_min_erpm {
-            self.calib.angle_for_state(self.raw_state)
-        } else {
-            // The raw target starts at the boundary just crossed and advances
-            // at most one sector. The limiter may lag behind this target.
-            wrap_angle(self.angle + velocity * dt_from_edge)
-        };
+        let velocity = sample.omega;
+        let target_angle = sample.angle;
 
         if !initialized || !self.rate_limited_angle.is_finite() || !target_angle.is_finite() {
             self.rate_limited_angle = target_angle;
-            return Some(AngleSample {
+            return AngleSample {
                 angle: target_angle,
                 omega: velocity,
                 direction: self.direction,
-            });
+            };
         }
 
         // A settled centroid needs no slew calculation, but its timestamp must
@@ -972,11 +971,11 @@ impl HallSensor {
         if target_angle == self.rate_limited_angle && self.rate_limit_factor.is_finite() {
             // The normal zero-step addition also turns a -0 frame into +0.
             self.rate_limited_angle = target_angle + 0.0;
-            return Some(AngleSample {
+            return AngleSample {
                 angle: self.rate_limited_angle,
                 omega: velocity,
                 direction: self.direction,
-            });
+            };
         }
 
         // === RATE LIMITING (VESC-style) ===
@@ -1003,11 +1002,11 @@ impl HallSensor {
 
         self.rate_limited_angle = wrap_angle(self.rate_limited_angle + actual_step);
 
-        Some(AngleSample {
+        AngleSample {
             angle: self.rate_limited_angle,
             omega: velocity,
             direction: self.direction,
-        })
+        }
     }
 
     /// Electrical velocity estimate (rad/s) from last transition
@@ -1147,6 +1146,41 @@ impl AngleSensor for HallSensor {
         // discontinuities at hall edges, including centroid steps below the
         // interpolation threshold. The immutable sample_at() has no limiter state.
         self.sample_at_mut(now_ticks)
+    }
+
+    fn observe_for_control(
+        &mut self,
+        now_ticks: u64,
+        omega_ref: Option<f32>,
+    ) -> ControlObservation {
+        let raw = self.sample_with_edge_age_at(now_ticks);
+        let snapshot = raw.map(|(sample, edge_age_s)| HallSnapshot {
+            angle_rad: sample.angle,
+            velocity_rad_s: sample.omega,
+            direction: sample.direction,
+            state: self.logical_state,
+            error_count: self.error_count,
+            edge_age_s,
+        });
+        let stale = omega_ref.is_some_and(|omega| match raw {
+            Some((_, age)) => self.is_stale_after(age, omega),
+            None => self.is_stale_at_speed(now_ticks, omega),
+        });
+        ControlObservation {
+            control: if stale {
+                None
+            } else {
+                raw.map(|(sample, _)| ControlAngleSample {
+                    sample: self.limit_sample_at(sample, now_ticks),
+                    reference_epoch: 0,
+                })
+            },
+            hall: Some(StampedHallSnapshot {
+                now_ticks,
+                snapshot,
+            }),
+            stale,
+        }
     }
 
     fn is_stale(&self, now_ticks: u64, omega_ref: f32) -> bool {
@@ -1365,6 +1399,114 @@ mod tests {
                 }
             }
             (actual, expected) => panic!("sample availability changed: {actual:?} vs {expected:?}"),
+        }
+    }
+
+    #[test]
+    fn combined_observation_matches_separate_raw_stale_and_control_trajectories() {
+        let edges = [1, 3, 2, 6, 4, 5, 1, 7, 1, 3, 0, 2, 6, 2, 3, 1, 5, 4, 6];
+        for base in [0, u64::from(u32::MAX) - 200_000, 1 << 50] {
+            for witness in [
+                None,
+                Some(0.0),
+                Some(500.0),
+                Some(f32::NAN),
+                Some(f32::INFINITY),
+            ] {
+                let mut combined = HallSensor::new(1_000_000);
+                let mut separate = HallSensor::new(1_000_000);
+                assert!(
+                    combined
+                        .observe_for_control(base, witness)
+                        .hall
+                        .unwrap()
+                        .snapshot
+                        .is_none()
+                );
+                for (index, raw) in edges.into_iter().enumerate() {
+                    let edge = base + u64::try_from(index).unwrap() * 20_000;
+                    for hall in [&mut combined, &mut separate] {
+                        if index == 3 {
+                            hall.set_interp_min_erpm(0.0);
+                        }
+                        if index == 5 {
+                            hall.set_interp_min_erpm(500.0);
+                        }
+                        if index == 8 {
+                            hall.set_advance(f32::NAN);
+                        }
+                        if index == 9 {
+                            hall.set_advance(0.2);
+                        }
+                        if index == 12 {
+                            hall.set_rate_limit_factor(f32::INFINITY);
+                        }
+                        if index == 13 {
+                            hall.set_rate_limit_factor(1.5);
+                        }
+                        if index == 15 {
+                            hall.set_calibration_raw([
+                                0.0, 5.67, 1.59, 0.56, 3.84, 4.73, 2.70, 0.0,
+                            ]);
+                            hall.timebase = HallTimebase::new(84_000_000);
+                        }
+                        hall.update(raw, edge);
+                    }
+                    for offset in [0, 1, 50, 50, 49, 500, 30_000, 300_000] {
+                        let now = edge + offset;
+                        let raw = separate.snapshot_at(now);
+                        let stale =
+                            witness.is_some_and(|omega| separate.is_stale_at_speed(now, omega));
+                        let before = (
+                            combined.last_sample_ticks,
+                            combined.rate_limited_angle.to_bits(),
+                        );
+                        let expected = if stale {
+                            None
+                        } else {
+                            reference_smoothed_sample(&mut separate, now)
+                        };
+                        let actual = combined.observe_for_control(now, witness);
+                        assert_eq!(actual.stale, stale);
+                        let stamped = actual.hall.unwrap();
+                        assert_eq!(stamped.now_ticks, now);
+                        match (stamped.snapshot, raw) {
+                            (Some(a), Some(b)) => {
+                                assert_same_sample(
+                                    Some(AngleSample {
+                                        angle: a.angle_rad,
+                                        omega: a.velocity_rad_s,
+                                        direction: a.direction,
+                                    }),
+                                    Some(AngleSample {
+                                        angle: b.angle_rad,
+                                        omega: b.velocity_rad_s,
+                                        direction: b.direction,
+                                    }),
+                                );
+                                assert_eq!(
+                                    (a.state, a.error_count, a.edge_age_s.to_bits()),
+                                    (b.state, b.error_count, b.edge_age_s.to_bits())
+                                );
+                            }
+                            (None, None) => {}
+                            pair => panic!("raw availability changed: {pair:?}"),
+                        }
+                        assert_same_sample(actual.control.map(|s| s.sample), expected);
+                        assert_eq!(combined.last_sample_ticks, separate.last_sample_ticks);
+                        if stale {
+                            assert_eq!(
+                                (
+                                    combined.last_sample_ticks,
+                                    combined.rate_limited_angle.to_bits()
+                                ),
+                                before,
+                                "stale queries cannot advance limiter state"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
