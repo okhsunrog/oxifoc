@@ -6,13 +6,12 @@
 //! is fully readable/writable field-by-field, and `record` captures fast
 //! telemetry into parquet files with full provenance metadata.
 
-mod config_cli;
 mod detect;
 mod maneuver;
-mod record;
 mod watch;
 
 use oxifoc_core::types::MotorStatus;
+use oxifoc_host_cli::{config_cli, record};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 

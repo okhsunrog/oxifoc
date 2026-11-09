@@ -312,6 +312,16 @@ cli-usb *ARGS:
 cli-rtt *ARGS:
     @just cli --transport rtt --chip STM32F405RGTx --elf {{ mk5_elf }} --wait-secs 8 --json "$@"
 
+# Volatile model/source replacement while Stopped, continuously recording 20 kHz.
+[positional-arguments]
+test-live-model-mk5 capture elf=mk5_elf *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    capture=$1
+    elf=$2
+    shift 2
+    cargo run -p oxifoc-host-cli --locked --example live_model_apply -- --elf "$elf" --out "$capture" "$@"
+
 # Short Hall-commutated current-control pilot; the motor must be secured.
 test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" transport="usb" elf="":
     #!/usr/bin/env bash
