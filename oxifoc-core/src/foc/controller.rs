@@ -829,17 +829,23 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // at ω_e·Ts ≈ 0.09 regardless of how accurate the decoupling L was).
         // Reference-based terms are pure feedforward — identical in steady
         // state (i → i*), outside the loop dynamically.
-        let (vd_ff, vq_ff) = match (self.decoupling, self.voltage_feedforward_mode) {
-            (Some(d), VoltageFeedforwardMode::Both) => (
-                -vel_rad_s * d.lq_h * iq_target,
-                vel_rad_s * (d.ld_h * id_target + d.flux_linkage_wb),
-            ),
-            (Some(d), VoltageFeedforwardMode::CrossCoupling) => (
-                -vel_rad_s * d.lq_h * iq_target,
-                vel_rad_s * (d.ld_h * id_target),
-            ),
-            (Some(d), VoltageFeedforwardMode::BackEmf) => (0.0, vel_rad_s * d.flux_linkage_wb),
-            _ => (0.0, 0.0),
+        // Check policy before inspecting the model: disabled feedforward must
+        // not load coefficients merely because a valid model is retained.
+        let (vd_ff, vq_ff) = if self.voltage_feedforward_mode == VoltageFeedforwardMode::Disabled {
+            (0.0, 0.0)
+        } else {
+            match (self.decoupling, self.voltage_feedforward_mode) {
+                (Some(d), VoltageFeedforwardMode::Both) => (
+                    -vel_rad_s * d.lq_h * iq_target,
+                    vel_rad_s * (d.ld_h * id_target + d.flux_linkage_wb),
+                ),
+                (Some(d), VoltageFeedforwardMode::CrossCoupling) => (
+                    -vel_rad_s * d.lq_h * iq_target,
+                    vel_rad_s * (d.ld_h * id_target),
+                ),
+                (Some(d), VoltageFeedforwardMode::BackEmf) => (0.0, vel_rad_s * d.flux_linkage_wb),
+                _ => (0.0, 0.0),
+            }
         };
 
         // Current controllers (dq frame) + feedforward + optional HFI injection
@@ -971,6 +977,51 @@ mod tests {
             (0.0, 0.0),
             "policy needs valid coefficients"
         );
+    }
+
+    #[test]
+    fn feedforward_modes_preserve_nonfinite_velocity_semantics() {
+        for model_present in [false, true] {
+            for mode in [
+                VoltageFeedforwardMode::Disabled,
+                VoltageFeedforwardMode::CrossCoupling,
+                VoltageFeedforwardMode::BackEmf,
+                VoltageFeedforwardMode::Both,
+            ] {
+                let mut foc = FocController::<SvpwmModulator>::new(24.0);
+                foc.id_pi.set_gains(0.0, 0.0);
+                foc.iq_pi.set_gains(0.0, 0.0);
+                if model_present {
+                    foc.set_decoupling(Some(Decoupling {
+                        ld_h: 100e-6,
+                        lq_h: 300e-6,
+                        flux_linkage_wb: 0.02,
+                        resistance_ohm: 0.1,
+                    }));
+                }
+                foc.set_voltage_feedforward_mode(mode);
+                let out = foc.step_with_injection(
+                    (0.0, 0.0, 0.0),
+                    0.0,
+                    f32::NAN,
+                    0.5,
+                    2.0,
+                    0.0,
+                    0.0,
+                    1000,
+                    DT,
+                );
+                let active = model_present && mode != VoltageFeedforwardMode::Disabled;
+                assert_eq!(
+                    out.vd.is_nan(),
+                    active && mode != VoltageFeedforwardMode::BackEmf
+                );
+                assert_eq!(out.vq.is_nan(), active);
+                if !active {
+                    assert_eq!((out.vd, out.vq), (0.0, 0.0));
+                }
+            }
+        }
     }
 
     /// Generate FOC controller tests for a given SinCos implementation.
