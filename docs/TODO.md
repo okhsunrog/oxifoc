@@ -1366,6 +1366,11 @@ and the item above). Remaining:
 
 ## Size / performance
 
+Current MK5 work: [35-task performance audit](notes/performance-audit-2026-11-09.md)
+with source anchors, numerical/safety constraints, validation and parallel
+ownership. Its 2026-11-09 baseline supersedes older board-specific timings
+below for the current Hall/20-kHz capture investigation.
+
 Current numbers and rules — [flash-size.md](flash-size.md); benchmarks —
 [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
 
