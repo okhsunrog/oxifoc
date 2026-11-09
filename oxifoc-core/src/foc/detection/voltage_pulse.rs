@@ -64,7 +64,9 @@ impl VoltagePulseMeasurement {
     /// residual dead-time `V_dt`). `V_dt = hold_voltage_v − R·I_hold` is
     /// recovered here and removed from every pulse — see the type docs.
     pub fn new(params: &VoltagePulseParams, pwm_freq_hz: f32, hold_voltage_v: f32) -> Self {
-        let v_deadtime = (hold_voltage_v - params.resistance_ohm * params.hold_current_a).max(0.0);
+        // This is a signed command-side bias. Overcompensation can require a
+        // negative PI hold; clipping its residual to zero fails to cancel it.
+        let v_deadtime = hold_voltage_v - params.resistance_ohm * params.hold_current_a;
         Self {
             applied_voltage_v: hold_voltage_v + params.pulse_voltage_v,
             resistance_ohm: params.resistance_ohm,
@@ -244,5 +246,27 @@ mod tests {
             l * 1e6,
             l_actual * 1e6
         );
+    }
+
+    #[test]
+    fn signed_holding_bias_cancels_for_overcompensated_inverter() {
+        let r = 0.03;
+        let actual_l = 25e-6;
+        let dt = 50e-6;
+        for hold_voltage in [-0.13, 0.036, 0.24] {
+            let params = VoltagePulseParams {
+                pulse_voltage_v: 0.05,
+                resistance_ohm: r,
+                hold_current_a: 1.2,
+                num_pulses: 8,
+                ..Default::default()
+            };
+            let mut measurement = VoltagePulseMeasurement::new(&params, 20_000.0, hold_voltage);
+            let di = params.pulse_voltage_v * dt / (actual_l + r * dt * 0.5);
+            for _ in 0..params.num_pulses {
+                measurement.record_pulse(params.hold_current_a, params.hold_current_a + di);
+            }
+            assert!((measurement.finish().unwrap() / actual_l - 1.0).abs() < 1e-5);
+        }
     }
 }
