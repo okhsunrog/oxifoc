@@ -31,9 +31,8 @@ use super::constants::FRAC_1_SQRT_3;
 /// `Option::<PhaseVoltageSense>::None` and pays nothing.
 #[derive(Clone, Copy, Debug)]
 pub struct PhaseVoltageSense {
-    divider_ratio: f32,
-    adc_vref_mv: u32,
-    adc_max_counts: u16,
+    /// Immutable ADC/divider gain, folded at construction like current sensing.
+    volts_per_count: f32,
     has_filters: bool,
     /// Undriven zero-voltage ADC offsets per phase (counts).
     offsets: [f32; 3],
@@ -59,9 +58,8 @@ impl PhaseVoltageSense {
         has_filters: bool,
     ) -> Self {
         Self {
-            divider_ratio,
-            adc_vref_mv: calib.adc_vref_mv,
-            adc_max_counts: calib.adc_max_counts,
+            volts_per_count: (calib.adc_vref_mv as f32 / 1000.0) / f32::from(calib.adc_max_counts)
+                * divider_ratio,
             has_filters,
             // Resting terminal ≈ GND; the real per-channel bias comes from
             // undriven calibration. A uniform offset cancels in alpha_beta
@@ -79,7 +77,7 @@ impl PhaseVoltageSense {
 
     /// Phase-terminal voltage represented by one ADC count.
     pub fn volts_per_count(&self) -> f32 {
-        self.counts_to_volts(1, 0.0)
+        self.volts_per_count
     }
 
     /// Whether the undriven DC offsets have been calibrated.
@@ -144,8 +142,7 @@ impl PhaseVoltageSense {
     #[inline]
     fn counts_to_volts(&self, raw: u16, offset: f32) -> f32 {
         let delta = f32::from(raw) - offset;
-        let v_adc = delta * (self.adc_vref_mv as f32 / 1000.0) / f32::from(self.adc_max_counts);
-        v_adc * self.divider_ratio
+        delta * self.volts_per_count
     }
 }
 
@@ -229,6 +226,27 @@ mod tests {
         let [va, ..] = s.phase_voltages([4095, 0, 0]);
         let expected = 3.3 * (39.0 + 2.2) / 2.2;
         assert!((va - expected).abs() < 0.05, "va={va} expected={expected}");
+    }
+
+    #[test]
+    fn cached_phase_gain_matches_the_previous_formula_with_sub_count_error() {
+        for reference_mv in [3300, 3319] {
+            let mut config = board(Some(CF2_SENSE));
+            config.calib.adc_vref_mv = reference_mv;
+            let sense = PhaseVoltageSense::from_board(&config).unwrap();
+            let full_scale = reference_mv as f32 / 1000.0 * CF2_SENSE.divider_ratio;
+            for raw in 0..=config.calib.adc_max_counts {
+                for offset in [0.0, 0.25, 4.5] {
+                    let before = (f32::from(raw) - offset) * (reference_mv as f32 / 1000.0)
+                        / f32::from(config.calib.adc_max_counts)
+                        * CF2_SENSE.divider_ratio;
+                    assert!(
+                        (sense.counts_to_volts(raw, offset) - before).abs()
+                            <= 4.0 * f32::EPSILON * full_scale
+                    );
+                }
+            }
+        }
     }
 
     #[test]
