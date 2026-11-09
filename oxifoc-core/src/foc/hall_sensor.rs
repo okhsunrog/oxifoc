@@ -915,13 +915,13 @@ impl HallSensor {
         // Calculate dt since last sample for rate limiting. A stale snapshot
         // must not wrap into a huge interval or move the clock watermark back.
         let initialized = self.last_sample_ticks.is_some();
-        let dt_sample = if let Some(last) = self.last_sample_ticks {
+        let dt_sample_ticks = if let Some(last) = self.last_sample_ticks {
             let dt_ticks = now_ticks.saturating_sub(last).max(1);
             self.last_sample_ticks = Some(now_ticks.max(last));
-            self.timebase.seconds(dt_ticks)
+            dt_ticks
         } else {
             self.last_sample_ticks = Some(now_ticks);
-            dt_from_edge
+            0 // The first sample anchors directly, without a rate calculation.
         };
 
         // Decayed velocity (see decayed_velocity()): also moves us to the
@@ -945,9 +945,23 @@ impl HallSensor {
             });
         }
 
+        // A settled centroid needs no slew calculation, but its timestamp must
+        // still advance: the next Hall edge gets only one sample's allowance.
+        // Nonfinite factors retain the full arithmetic (0 * infinity is NaN).
+        if target_angle == self.rate_limited_angle && self.rate_limit_factor.is_finite() {
+            // The normal zero-step addition also turns a -0 frame into +0.
+            self.rate_limited_angle = target_angle + 0.0;
+            return Some(AngleSample {
+                angle: self.rate_limited_angle,
+                omega: velocity,
+                direction: self.direction,
+            });
+        }
+
         // === RATE LIMITING (VESC-style) ===
         // Limit how fast angle can change per sample to prevent current spikes
         // max_step = max(|velocity|, min_vel_from_erpm) * dt * rate_limit_factor
+        let dt_sample = self.timebase.seconds(dt_sample_ticks);
         let effective_vel = velocity.abs().max(self.interp_min_rad_s);
         let max_step = effective_vel * dt_sample * self.rate_limit_factor;
 
@@ -1217,6 +1231,49 @@ mod tests {
         };
         Some(AngleSample {
             angle,
+            omega: velocity,
+            direction: hall.direction,
+        })
+    }
+
+    // The all-speed limiter before its settled-target fast path. In particular,
+    // keep the eager dt conversion and IEEE arithmetic of a zero desired step.
+    fn reference_smoothed_sample(hall: &mut HallSensor, now: u64) -> Option<AngleSample> {
+        let t0 = hall.last_edge_ticks?;
+        if hall.in_glitch {
+            return None;
+        }
+        let age = hall.timebase.seconds(now.saturating_sub(t0));
+        let initialized = hall.last_sample_ticks.is_some();
+        let dt = if let Some(last) = hall.last_sample_ticks {
+            hall.last_sample_ticks = Some(now.max(last));
+            hall.timebase.seconds(now.saturating_sub(last).max(1))
+        } else {
+            hall.last_sample_ticks = Some(now);
+            age
+        };
+        let velocity = hall.decayed_velocity(age);
+        let target = if HallSensor::vel_to_erpm(velocity) < hall.interp_min_erpm {
+            hall.calib.angle_for_state(hall.raw_state)
+        } else {
+            wrap_angle(hall.angle + velocity * age)
+        };
+        if !initialized || !hall.rate_limited_angle.is_finite() || !target.is_finite() {
+            hall.rate_limited_angle = target;
+        } else {
+            let max_step = velocity.abs().max(hall.interp_min_rad_s) * dt * hall.rate_limit_factor;
+            let desired = angle_difference(target, hall.rate_limited_angle);
+            let step = if desired.abs() <= max_step {
+                desired
+            } else if desired > 0.0 {
+                max_step
+            } else {
+                -max_step
+            };
+            hall.rate_limited_angle = wrap_angle(hall.rate_limited_angle + step);
+        }
+        Some(AngleSample {
+            angle: hall.rate_limited_angle,
             omega: velocity,
             direction: hall.direction,
         })
@@ -1778,6 +1835,97 @@ mod tests {
                 let bound =
                     raw.omega.abs().max(hall.interp_min_rad_s) * 50e-6 * hall.rate_limit_factor;
                 assert!(angle_difference(sample.angle, before.angle).abs() <= bound + 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn settled_target_fast_path_preserves_full_limiter_trajectories() {
+        let edges = [1, 1, 3, 2, 6, 4, 5, 1, 0, 1, 3, 7, 2, 6, 2, 3, 1, 5, 4, 6];
+        for hz in [0, 1_000_000, u64::MAX] {
+            for threshold in [
+                0.0,
+                f32::from_bits(1),
+                500.0_f32.next_down(),
+                500.0,
+                500.0_f32.next_up(),
+                f32::INFINITY,
+                f32::NAN,
+            ] {
+                for factor in [
+                    0.0,
+                    1.5,
+                    f32::MAX,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::NAN,
+                ] {
+                    let mut actual = HallSensor::new(hz);
+                    let mut expected = HallSensor::new(hz);
+                    for hall in [&mut actual, &mut expected] {
+                        hall.set_interp_min_erpm(threshold);
+                        hall.set_rate_limit_factor(factor);
+                    }
+                    for (i, raw) in edges.into_iter().enumerate() {
+                        for hall in [&mut actual, &mut expected] {
+                            match i {
+                                5 => hall.set_calibration_raw([
+                                    0.0, 5.4473944, 1.5422314, 0.5690834, 4.0419855, 4.982443,
+                                    2.6073236, 0.0,
+                                ]),
+                                9 => hall.set_advance(-TAU * 1.25),
+                                11 => hall.set_advance(f32::NAN),
+                                13 => hall.set_advance(0.0),
+                                _ => {}
+                            }
+                            hall.update(raw, i as u64 * 12_347);
+                        }
+                        let now = i as u64 * 12_347;
+                        for time in [now.saturating_sub(1), now, now + 1, now + 50, now + 51] {
+                            assert_same_sample(
+                                actual.sample_at_mut(time),
+                                reference_smoothed_sample(&mut expected, time),
+                            );
+                            assert_eq!(actual.last_sample_ticks, expected.last_sample_ticks);
+                        }
+                    }
+                    // Both the short native conversion and a full-width idle
+                    // interval must leave exactly the same settled frame.
+                    for time in [1_000_000, u64::from(u32::MAX) + 1, u64::MAX] {
+                        assert_same_sample(
+                            actual.sample_at_mut(time),
+                            reference_smoothed_sample(&mut expected, time),
+                        );
+                        assert_eq!(actual.last_sample_ticks, expected.last_sample_ticks);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn equal_angles_keep_signed_zero_and_nonfinite_factor_arithmetic() {
+        for threshold in [0.0, 500.0, f32::INFINITY, f32::NAN] {
+            for factor in [0.0, 1.5, f32::INFINITY, f32::NAN] {
+                for negative_zero in [false, true] {
+                    let mut actual = HallSensor::new(1_000_000);
+                    let mut expected = HallSensor::new(1_000_000);
+                    for hall in [&mut actual, &mut expected] {
+                        let zero = if negative_zero { -0.0 } else { 0.0 };
+                        hall.set_calibration_raw([zero; 8]);
+                        hall.set_advance(zero);
+                        hall.set_interp_min_erpm(threshold);
+                        hall.set_rate_limit_factor(factor);
+                        hall.update(1, 0);
+                    }
+                    for time in [0, 0, 50, 49, 100, u64::MAX] {
+                        assert_same_sample(
+                            actual.sample_at_mut(time),
+                            reference_smoothed_sample(&mut expected, time),
+                        );
+                        assert_eq!(actual.last_sample_ticks, expected.last_sample_ticks);
+                    }
+                }
             }
         }
     }
