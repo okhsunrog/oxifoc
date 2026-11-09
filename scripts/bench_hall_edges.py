@@ -14,6 +14,7 @@ import subprocess
 CAPACITY = 128
 SIZES = {"BENCH_HALL_EDGES": CAPACITY * 16,
          "BENCH_HALL_EDGE_COUNT": 4, "BENCH_HALL_EDGE_DROPPED": 4}
+OPTIONAL_SIZES = {"BENCH_HALL_STREAM_LOSSES": 16}
 
 
 def decode(data, count):
@@ -43,12 +44,12 @@ def symbols_from(text):
     symbols = {}
     for line in text.splitlines():
         parts = line.split()
-        if len(parts) == 4 and parts[3] in SIZES and parts[2] in 'BbDd':
+        if len(parts) == 4 and parts[3] in SIZES | OPTIONAL_SIZES and parts[2] in 'BbDd':
             address, size = int(parts[0], 16), int(parts[1], 16)
-            if size != SIZES[parts[3]] or address % 4:
+            if size != (SIZES | OPTIONAL_SIZES)[parts[3]] or address % 4:
                 raise ValueError(f"incompatible symbol layout: {line}")
             symbols[parts[3]] = (address, size)
-    if symbols.keys() != SIZES.keys():
+    if not SIZES.keys() <= symbols.keys():
         raise ValueError("ELF is missing the bench-hall edge buffer symbols")
     return symbols
 
@@ -97,6 +98,13 @@ def main():
     data = read('BENCH_HALL_EDGES', '.edges.bin')
     after = scalar('BENCH_HALL_EDGE_COUNT', '.count-after.bin')
     dropped_after = scalar('BENCH_HALL_EDGE_DROPPED', '.dropped-after.bin')
+    stream_losses = None
+    if 'BENCH_HALL_STREAM_LOSSES' in symbols:
+        values = struct.unpack('<4I', read('BENCH_HALL_STREAM_LOSSES', '.stream-losses.bin'))
+        stream_losses = dict(zip(('stats_windows', 'producer_drops', 'malformed_frames',
+                                  'broadcast_failures'), values))
+        stream_losses['semantics'] = ('Wrapping cumulative totals independently latched at1Hz; '
+                                      'current partial window excluded; not an atomic group snapshot')
     if not 0 <= before <= after <= CAPACITY or dropped_after < dropped_before:
         raise RuntimeError('Hall counters reset or wrapped during export')
     if hashlib.sha256(elf.read_bytes()).hexdigest() != elf_sha256:
@@ -112,6 +120,7 @@ def main():
         capacity=CAPACITY, count_before=before, count_after=after,
         dropped_before=dropped_before, dropped_after=dropped_after,
         overcapture_records=sum(edge['overcapture'] for edge in edges),
+        stream_losses=stream_losses,
         limits='First published prefix only. Overcapture means unknown hardware edge loss; '
                'dropped counts buffer overflow. Residual coast can append during read.',
         edges=edges)

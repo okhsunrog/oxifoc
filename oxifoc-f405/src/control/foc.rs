@@ -835,6 +835,8 @@ pub async fn isr_stats_task() {
         let batches = ft::BCAST_OK.swap(0, Ordering::Relaxed);
         let payload_bytes = ft::BCAST_BYTES.swap(0, Ordering::Relaxed);
         let failed = ft::BCAST_FAILS.swap(0, Ordering::Relaxed);
+        #[cfg(feature = "bench-hall")]
+        crate::diagnostics::hall_edges::observe_stream_stats(dropped, badlen, failed);
         let full = ft::BCAST_FULL.swap(0, Ordering::Relaxed);
         let busy = ft::BCAST_BUSY.swap(0, Ordering::Relaxed);
         let unrouted = ft::BCAST_UNROUTED.swap(0, Ordering::Relaxed);
