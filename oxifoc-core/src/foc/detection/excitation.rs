@@ -7,6 +7,10 @@ use crate::motor::ControlMode;
 
 pub const MAX_BURST_SAMPLES: usize = 256;
 
+#[cfg(feature = "runtime")]
+pub(crate) static DONE_WAKER: embassy_sync::waitqueue::AtomicWaker =
+    embassy_sync::waitqueue::AtomicWaker::new();
+
 #[derive(Clone, Copy, Debug)]
 pub enum Waveform {
     RotatingHfi {
@@ -233,9 +237,12 @@ impl Excitation {
         self.program.is_some() && self.outcome.is_none() && !self.preparing
     }
 
-    pub fn abort(&mut self, error: DetectionError) {
+    pub fn abort(&mut self, error: DetectionError) -> bool {
         if self.running() {
             self.outcome = Some(Err(error));
+            true
+        } else {
+            false
         }
     }
 

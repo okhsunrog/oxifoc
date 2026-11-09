@@ -123,7 +123,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
                 self.state_mutex.borrow(cs).borrow_mut().excitation.voltages[i] = voltage;
             });
             if i % 32 == 31 {
-                embassy_time::Timer::after_micros(1).await;
+                embassy_time::Timer::after_micros(100).await;
             }
         }
         self.check_health()?;
@@ -135,7 +135,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
             state.excitation.preparing = false;
         });
         let completion = poll_fn(|cx| {
-            state::TELEM_WAKER.register(cx.waker());
+            super::excitation::DONE_WAKER.register(cx.waker());
             critical_section::with(|cs| {
                 match self.state_mutex.borrow(cs).borrow().excitation.outcome {
                     Some(outcome) => Poll::Ready(outcome),
@@ -156,7 +156,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
                     self.state_mutex.borrow(cs).borrow().excitation.samples[i]
                 });
                 if i % 32 == 31 {
-                    embassy_time::Timer::after_micros(1).await;
+                    embassy_time::Timer::after_micros(100).await;
                 }
             }
         }
@@ -266,6 +266,13 @@ fn resistance_sample(
 async fn wait_next_sample(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
 ) -> (AdcSnapshot, FocOutput) {
+    struct Subscription;
+    impl Drop for Subscription {
+        fn drop(&mut self) {
+            state::TELEM_WAKER.cancel();
+        }
+    }
+    let _subscription = Subscription;
     let previous_seq = critical_section::with(|cs| state_mutex.borrow(cs).borrow().last_adc.seq);
     poll_fn(|cx| {
         // Re-polling alone is not proof of a new FOC cycle: the enclosing task

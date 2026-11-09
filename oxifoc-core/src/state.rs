@@ -146,7 +146,37 @@ pub fn current_offset_request_pending() -> bool {
 /// Waker for FOC cycle completion — ISR wakes after `update_telemetry()`.
 /// Used by calibration/detection to synchronize with individual FOC cycles.
 /// The listener reads `last_foc` from the state mutex after waking.
-pub static TELEM_WAKER: AtomicWaker = AtomicWaker::new();
+pub static TELEM_WAKER: CycleNotification = CycleNotification::new();
+
+/// A single-cycle subscription, unlike AtomicWaker's persistent registration.
+pub struct CycleNotification {
+    waiting: AtomicBool,
+    waker: AtomicWaker,
+}
+
+impl CycleNotification {
+    const fn new() -> Self {
+        Self {
+            waiting: AtomicBool::new(false),
+            waker: AtomicWaker::new(),
+        }
+    }
+
+    pub fn register(&self, waker: &core::task::Waker) {
+        self.waker.register(waker);
+        self.waiting.store(true, Ordering::Release);
+    }
+
+    pub fn cancel(&self) {
+        self.waiting.store(false, Ordering::Release);
+    }
+
+    pub fn wake(&self) {
+        if self.waiting.swap(false, Ordering::AcqRel) {
+            self.waker.wake();
+        }
+    }
+}
 
 /// True while a flash operation is queued or running. Internal-flash erase
 /// stalls the whole chip (code executes from the same flash), so it must
@@ -945,13 +975,17 @@ where
     // report-only and never touch the motor.
     if fault_registry.any_kill() {
         #[cfg(feature = "detection")]
-        critical_section::with(|cs| {
+        let packet_aborted = critical_section::with(|cs| {
             state_mutex
                 .borrow(cs)
                 .borrow_mut()
                 .excitation
-                .abort(crate::foc::detection::DetectionError::HardwareFault);
+                .abort(crate::foc::detection::DetectionError::HardwareFault)
         });
+        #[cfg(feature = "detection")]
+        if packet_aborted {
+            crate::foc::detection::excitation::DONE_WAKER.wake();
+        }
         // Edge log: safe_off() latches Stopped, so this fires once per trip.
         if !matches!(driver.mode(), ControlMode::Stopped) {
             error!("KILL fault active: cutting gate drive");
@@ -1047,6 +1081,9 @@ where
             })
         });
         if let Some(action) = next {
+            if matches!(&action, BurstAction::Stop) {
+                crate::foc::detection::excitation::DONE_WAKER.wake();
+            }
             let voltage_packet = matches!(&action, BurstAction::Voltage { .. });
             let next = match action {
                 BurstAction::Stop => ControlMode::Stopped,
@@ -1134,24 +1171,25 @@ where
         cancel_detection();
     }
     #[cfg(feature = "detection")]
-    let excitation_failed = critical_section::with(|cs| {
+    let (excitation_done, excitation_failed) = critical_section::with(|cs| {
         let mut state = state_mutex.borrow(cs).borrow_mut();
         let cycle = state.last_adc.seq.wrapping_add(1);
         let ex = &mut state.excitation;
         if !ex.running() {
-            return false;
+            return (false, false);
         }
         let Some(telem) = result.filter(|_| !fault_registry.any_stopping()) else {
             ex.abort(crate::foc::detection::DetectionError::HardwareFault);
             cancel_detection();
-            return true;
+            return (true, true);
         };
         let Some(program) = ex.program else {
-            return false;
+            return (false, false);
         };
         if ex.index == usize::from(program.samples) {
             // The retained PI hold was actually stepped before completion.
             ex.outcome = Some(Ok(()));
+            return (true, false);
         } else {
             let (alpha, beta) = board
                 .current_sense_topology
@@ -1164,8 +1202,12 @@ where
             };
             ex.index += 1;
         }
-        false
+        (false, false)
     });
+    #[cfg(feature = "detection")]
+    if excitation_done {
+        crate::foc::detection::excitation::DONE_WAKER.wake();
+    }
     #[cfg(feature = "detection")]
     if excitation_failed {
         driver.safe_off();
@@ -1292,6 +1334,35 @@ pub fn update_telemetry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_or_cancelled_cycle_wait_does_not_leave_adc_rate_wakeups() {
+        use std::sync::{Arc, atomic::AtomicUsize};
+        struct Counter(AtomicUsize);
+        impl std::task::Wake for Counter {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let counter = Arc::new(Counter(AtomicUsize::new(0)));
+        let waker = core::task::Waker::from(counter.clone());
+        let notification = CycleNotification::new();
+        notification.register(&waker);
+        for _ in 0..100 {
+            notification.wake();
+        }
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        notification.register(&waker);
+        notification.cancel();
+        notification.wake();
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        notification.register(&waker);
+        notification.wake();
+        assert_eq!(counter.0.load(Ordering::Relaxed), 2);
+    }
 
     #[cfg(feature = "storage")]
     #[test]
