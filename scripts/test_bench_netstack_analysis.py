@@ -57,7 +57,8 @@ class NetstackTraceTests(unittest.TestCase):
         self.assertEqual([row["recorded_adc_overlap_ticks"] for row in rows], [10, 10])
         self.assertEqual([row["cpu_duration_ticks"] for row in rows], [30, 10])
         # Kind 17 at 25 precedes 8 at 27; these two probe ticks remain charged.
-        self.assertIn("snapshot and entry probe before 8", summary["cpu_scope"])
+        self.assertIn("ADC work before 8/after 9", summary["cpu_scope"])
+        self.assertIn("NetStack release after 16 is excluded", summary["cpu_scope"])
 
     def test_adc_and_lock_spans_can_overlap_without_sharing_one_stack(self):
         report = analyze(bounded(
