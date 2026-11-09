@@ -115,8 +115,7 @@ pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
                 direction: sample.direction,
                 state: h.logical_state(),
                 error_count: h.error_count(),
-                edge_age_s: h.time_since_edge(now_ticks).unwrap_or(0) as f32
-                    / h.ticks_per_sec() as f32,
+                edge_age_s: h.time_since_edge_s(now_ticks).unwrap_or(0.0),
             })
         })
     })

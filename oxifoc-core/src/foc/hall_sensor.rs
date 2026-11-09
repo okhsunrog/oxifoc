@@ -93,6 +93,36 @@ pub const STALE_MIN_WINDOW_S: f32 = 0.000_3;
 /// previous value instead of adopting them.
 pub const MAX_PLAUSIBLE_E_RAD_S: f32 = 30_000.0;
 
+/// One capture-clock rate and its floating-point representation. Keeping the
+/// conversion here avoids repeated software u64-to-f32 helpers on Cortex-M4.
+struct HallTimebase {
+    ticks_per_sec: core::num::NonZeroU64,
+    hz: f32,
+}
+
+impl HallTimebase {
+    fn new(ticks_per_sec: u64) -> Self {
+        let ticks_per_sec =
+            core::num::NonZeroU64::new(ticks_per_sec).unwrap_or(core::num::NonZeroU64::MIN);
+        Self {
+            ticks_per_sec,
+            hz: ticks_per_sec.get() as f32,
+        }
+    }
+
+    #[inline]
+    fn seconds(&self, ticks: u64) -> f32 {
+        // Inter-edge intervals normally fit in u32; this path uses the M4F's
+        // native conversion. Long stationary intervals retain full u64 range.
+        let ticks = if let Ok(short) = u32::try_from(ticks) {
+            short as f32
+        } else {
+            ticks as f32
+        };
+        ticks / self.hz
+    }
+}
+
 /// Platform-agnostic Hall sensor angle estimator
 ///
 /// Tracks Hall sensor state transitions to estimate electrical angle
@@ -152,7 +182,7 @@ pub struct HallSensor {
     /// Error counter for invalid states or transitions
     error_count: u32,
     /// Timebase (ticks per second)
-    ticks_per_sec: u64,
+    timebase: HallTimebase,
     /// Minimum eRPM for interpolation. Below this, use sector angle only.
     interp_min_erpm: f32,
     /// Rate limit factor (1.5 = allow 50% overshoot, VESC default)
@@ -309,7 +339,7 @@ impl HallSensor {
             glitch_start_ticks: 0,
             velocity_hold_edges: 0,
             error_count: 0,
-            ticks_per_sec: ticks_per_sec.max(1),
+            timebase: HallTimebase::new(ticks_per_sec),
             interp_min_erpm: DEFAULT_INTERP_MIN_ERPM,
             rate_limit_factor: DEFAULT_RATE_LIMIT_FACTOR,
             rate_limited_angle: 0.0,
@@ -376,7 +406,7 @@ impl HallSensor {
         if vel < 1.0 {
             return false;
         }
-        let dt_s = dt_ticks as f32 / self.ticks_per_sec as f32;
+        let dt_s = self.timebase.seconds(dt_ticks);
         let expected_sector_s = self.angle_per_state / vel;
         dt_s > (expected_sector_s * STALE_SECTOR_MULTIPLE).max(STALE_MIN_WINDOW_S)
     }
@@ -392,12 +422,18 @@ impl HallSensor {
             .map(|last| now_ticks.saturating_sub(last))
     }
 
+    /// Age of the last captured edge in seconds, in this sensor's clock domain.
+    pub fn time_since_edge_s(&self, now_ticks: u64) -> Option<f32> {
+        self.time_since_edge(now_ticks)
+            .map(|ticks| self.timebase.seconds(ticks))
+    }
+
     /// Get time since last Hall edge in microseconds.
     ///
     /// Returns `None` if no edge has been received yet.
     pub fn time_since_edge_us(&self, now_ticks: u64) -> Option<u32> {
         self.time_since_edge(now_ticks)
-            .map(|ticks| ((ticks * 1_000_000) / self.ticks_per_sec) as u32)
+            .map(|ticks| ((ticks * 1_000_000) / self.timebase.ticks_per_sec.get()) as u32)
     }
 
     /// Per-bit wire-break detector — accounting half (the verdict is taken
@@ -559,7 +595,7 @@ impl HallSensor {
                 let speed = self.elec_velocity.abs();
                 let t_cross = if speed > 1.0 {
                     let sector_s = self.angle_per_state / speed;
-                    last.saturating_add((sector_s * self.ticks_per_sec as f32) as u64)
+                    last.saturating_add((sector_s * self.timebase.hz) as u64)
                 } else {
                     t_ticks
                 };
@@ -644,7 +680,7 @@ impl HallSensor {
             self.velocity_hold_edges -= 1;
         } else if let Some(last_t) = self.last_edge_ticks {
             let dt_ticks = t_ticks.wrapping_sub(last_t).max(1);
-            let dt = dt_ticks as f32 / self.ticks_per_sec as f32;
+            let dt = self.timebase.seconds(dt_ticks);
 
             // Direction reversal: the rotor left the sector through the
             // boundary it entered by — no sector width was traversed, and
@@ -752,7 +788,7 @@ impl HallSensor {
 
     /// Get ticks per second
     pub fn ticks_per_sec(&self) -> u64 {
-        self.ticks_per_sec
+        self.timebase.ticks_per_sec.get()
     }
 
     /// Calibrate Hall table using raw-state angles (8-entry table).
@@ -808,7 +844,7 @@ impl HallSensor {
         }
         // saturating: a wrapped "negative" dt as f32 would be ~2^64 and
         // collapse the decayed velocity to zero for the cycle.
-        let dt = now_ticks.saturating_sub(t0) as f32 / self.ticks_per_sec as f32;
+        let dt = self.timebase.seconds(now_ticks.saturating_sub(t0));
 
         // Current sector angle from calibration (direct raw state lookup)
         let sector_angle = self.calib.angle_for_state(self.raw_state);
@@ -867,12 +903,12 @@ impl HallSensor {
             return None;
         }
         // saturating: see sample_at().
-        let dt_from_edge = now_ticks.saturating_sub(t0) as f32 / self.ticks_per_sec as f32;
+        let dt_from_edge = self.timebase.seconds(now_ticks.saturating_sub(t0));
 
         // Calculate dt since last sample for rate limiting
         let dt_sample = if let Some(last) = self.last_sample_ticks {
             let dt_ticks = now_ticks.wrapping_sub(last).max(1);
-            dt_ticks as f32 / self.ticks_per_sec as f32
+            self.timebase.seconds(dt_ticks)
         } else {
             dt_from_edge
         };
@@ -1139,7 +1175,7 @@ impl HallSensorTrait for HallSensor {
         let base_angle = self.angle;
         let (interpolation_offset, time_since_edge_us) = if let Some(t0) = self.last_edge_ticks {
             let dt_ticks = now_ticks.wrapping_sub(t0);
-            let dt_sec = dt_ticks as f32 / self.ticks_per_sec as f32;
+            let dt_sec = self.timebase.seconds(dt_ticks);
             let offset = self.elec_velocity * dt_sec;
             let time_us = (dt_sec * 1_000_000.0) as u32;
             (offset, time_us)
@@ -1160,6 +1196,24 @@ impl HallSensorTrait for HallSensor {
 mod tests {
     use super::*;
     use core::f32::consts::FRAC_PI_3;
+
+    #[test]
+    fn hall_timebase_preserves_wide_tick_conversion_and_zero_rate_fallback() {
+        for hz in [0, 1, 999_023, 1_000_000, u64::from(u32::MAX), u64::MAX] {
+            let timebase = HallTimebase::new(hz);
+            for ticks in [
+                0,
+                1,
+                65_535,
+                u64::from(u32::MAX),
+                u64::from(u32::MAX) + 1,
+                u64::MAX,
+            ] {
+                let previous = ticks as f32 / hz.max(1) as f32;
+                assert_eq!(timebase.seconds(ticks).to_bits(), previous.to_bits());
+            }
+        }
+    }
 
     #[test]
     fn test_hall_state_table() {
