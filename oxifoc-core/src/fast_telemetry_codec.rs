@@ -6,6 +6,42 @@ const FRAME: usize = size_of::<FastTelemetry>();
 const MASK_BYTES: usize = FRAME.div_ceil(8);
 const _: () = assert!(FRAME < 64);
 
+/// Compare native words, then visit only their changed bytes in wire order.
+/// The final partial word is handled bytewise, without an unaligned cast.
+fn encode_delta(
+    previous: &[u8; FRAME],
+    frame: &[u8; FRAME],
+    encoded: &mut [u8; 1 + FRAME],
+) -> Option<usize> {
+    let (header, replacements) = encoded.split_at_mut(1 + MASK_BYTES);
+    let mut count = 0;
+    let (words, tail) = frame.as_chunks::<4>();
+    let (previous_words, previous_tail) = previous.as_chunks::<4>();
+    for (index, (&new, &old)) in words.iter().zip(previous_words).enumerate() {
+        let new = u32::from_le_bytes(new);
+        let mut changed = new ^ u32::from_le_bytes(old);
+        let mut mask = 0u8;
+        while changed != 0 {
+            let byte = changed.trailing_zeros() / 8;
+            let shift = byte * 8;
+            *replacements.get_mut(count)? = (new >> shift) as u8;
+            count += 1;
+            mask |= 1 << byte;
+            changed &= !(0xff << shift);
+        }
+        header[1 + index / 2] |= mask << ((index % 2) * 4);
+    }
+    for (offset, (&new, &old)) in tail.iter().zip(previous_tail).enumerate() {
+        if new != old {
+            *replacements.get_mut(count)? = new;
+            count += 1;
+            let index = words.len() * 4 + offset;
+            header[1 + index / 8] |= 1 << (index % 8);
+        }
+    }
+    Some(1 + MASK_BYTES + count)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FastBatchDecodeError {
     Truncated,
@@ -60,31 +96,23 @@ impl FastTelemetryBatchEncoder {
 
     /// False leaves both the payload and encoder history unchanged.
     pub fn push_bytes(&mut self, frame: &[u8]) -> bool {
-        if frame.len() != FRAME || self.is_full() {
+        let Ok(frame) = <&[u8; FRAME]>::try_from(frame) else {
+            return false;
+        };
+        if self.is_full() {
             return false;
         }
         // This temporary always fits the reservation above; commit in one
         // operation so a failed append cannot leave a partial encoded frame.
         let mut encoded = [0u8; 1 + FRAME];
-        let mut pos = 1 + MASK_BYTES;
-        if self.samples != 0 {
-            // Build the wire mask and replacements together. Variable u64
-            // shifts and a second scan are expensive on 32-bit controllers.
-            for (i, (&new, &old)) in frame.iter().zip(&self.previous).enumerate() {
-                if new != old {
-                    encoded[1 + i / 8] |= 1 << (i % 8);
-                    // Once a full frame is cheaper, no more delta work is needed.
-                    if pos == encoded.len() {
-                        break;
-                    }
-                    encoded[pos] = new;
-                    pos += 1;
-                }
-            }
-        }
-        let len = if self.samples != 0 && pos < encoded.len() {
+        let delta_len = if self.samples == 0 {
+            None
+        } else {
+            encode_delta(&self.previous, frame, &mut encoded).filter(|&len| len < encoded.len())
+        };
+        let len = if let Some(len) = delta_len {
             encoded[0] = 1;
-            pos
+            len
         } else {
             encoded[1..].copy_from_slice(frame);
             encoded.len()
@@ -171,6 +199,28 @@ mod tests {
         let mut expected = StdVec::from([0; 1 + FRAME]);
         expected.extend_from_slice(&[1, 0x81, 0x01, 0, 0x80, 0x03, 1, 2, 3, 4, 5, 6]);
         assert_eq!(encoder.batch().data.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn delta_payload_switches_to_full_at_the_existing_size_boundary() {
+        for changed in [0, 1, 8, 16, 28, 29, FRAME] {
+            let mut encoder = FastTelemetryBatchEncoder::new();
+            let mut frame = [0; FRAME];
+            assert!(encoder.push_bytes(&frame));
+            frame[..changed].fill(0xa5);
+            assert!(encoder.push_bytes(&frame));
+            let second = &encoder.batch().data[1 + FRAME..];
+            let uses_delta = 1 + MASK_BYTES + changed < 1 + FRAME;
+            assert_eq!(second[0], u8::from(uses_delta));
+            let expected_len = if uses_delta {
+                1 + MASK_BYTES + changed
+            } else {
+                1 + FRAME
+            };
+            assert_eq!(second.len(), expected_len);
+            let decoded = encoder.batch().samples().unwrap();
+            assert_eq!(bytemuck::bytes_of(&decoded[1]), frame);
+        }
     }
 
     #[test]
