@@ -268,7 +268,6 @@ where
 
     // Hall edge/interpolation speed is deliberately not the control speed.
     hall_control_motion: HallControlMotion,
-    hall_diagnostics: Option<crate::foc::sensors::StampedHallSnapshot>,
 
     // Hall health tracking
     hall_health: HallHealth,

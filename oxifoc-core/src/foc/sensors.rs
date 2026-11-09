@@ -38,23 +38,6 @@ pub struct ControlAngleSample {
     pub reference_epoch: u32,
 }
 
-/// Raw Hall diagnostics captured before the stateful control-angle update.
-/// `snapshot: None` records a supported observation with no valid Hall sample.
-#[derive(Clone, Copy, Debug)]
-pub struct StampedHallSnapshot {
-    pub now_ticks: u64,
-    pub snapshot: Option<HallSnapshot>,
-}
-
-/// One coherent sensor observation. Missing `hall` means the sensor does not
-/// provide raw Hall diagnostics; it differs from a stamped missing sample.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ControlObservation {
-    pub control: Option<ControlAngleSample>,
-    pub hall: Option<StampedHallSnapshot>,
-    pub stale: bool,
-}
-
 /// Platform-agnostic current sensor trait
 ///
 /// Implementers provide 3-phase current measurements in Amperes.
@@ -120,26 +103,6 @@ pub trait AngleSensor {
             sample,
             reference_epoch: 0,
         })
-    }
-
-    /// Observe health, raw diagnostics and control angle together. `omega_ref`
-    /// is present only when an independent observer corroborates rotation.
-    /// A stale observation must not advance the stateful angle limiter.
-    fn observe_for_control(
-        &mut self,
-        now_ticks: u64,
-        omega_ref: Option<f32>,
-    ) -> ControlObservation {
-        let stale = omega_ref.is_some_and(|omega| self.is_stale(now_ticks, omega));
-        ControlObservation {
-            control: if stale {
-                None
-            } else {
-                self.sample_for_control(now_ticks)
-            },
-            hall: None,
-            stale,
-        }
     }
 
     /// Whether the sensor's data has implausibly stopped updating while an
@@ -765,49 +728,5 @@ impl AdcSnapshot {
     /// Get motor temperature (convenience method)
     pub fn motor_temp_c_x10(&self) -> Option<i16> {
         self.get_temp(TempSensorId::Motor)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_control_observation_preserves_custom_epoch_hook_and_stale_cadence() {
-        struct CustomSensor(u32);
-        impl AngleSensor for CustomSensor {
-            fn sample(&self, _: u64) -> Option<AngleSample> {
-                panic!("custom control hook must be used")
-            }
-            fn sample_for_control(&mut self, _: u64) -> Option<ControlAngleSample> {
-                self.0 += 1;
-                Some(ControlAngleSample {
-                    sample: AngleSample {
-                        angle: 1.0,
-                        omega: 2.0,
-                        direction: Direction::Clockwise,
-                    },
-                    reference_epoch: 7,
-                })
-            }
-            fn is_stale(&self, _: u64, _: f32) -> bool {
-                true
-            }
-            fn error_count(&self) -> u32 {
-                0
-            }
-            fn reset_errors(&mut self) {}
-        }
-        let mut sensor = CustomSensor(0);
-        let observation = sensor.observe_for_control(50, None);
-        assert!(!observation.stale);
-        assert_eq!(observation.control.unwrap().reference_epoch, 7);
-        assert!(observation.hall.is_none());
-        let stale = sensor.observe_for_control(100, Some(1.0));
-        assert!(stale.stale && stale.control.is_none() && stale.hall.is_none());
-        assert_eq!(
-            sensor.0, 1,
-            "stale observation must not call the mutable hook"
-        );
     }
 }

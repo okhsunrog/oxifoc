@@ -19,10 +19,7 @@ use core::cell::{Cell, RefCell};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
 use super::hall_sensor::{Direction, HallSensor};
-use super::sensors::{
-    AngleSample, AngleSensor, ControlAngleSample, ControlObservation, HallSnapshot,
-    StampedHallSnapshot,
-};
+use super::sensors::{AngleSample, AngleSensor, ControlAngleSample, HallSnapshot};
 
 // ========== Hall Estimator (shared state) ==========
 
@@ -229,31 +226,6 @@ impl AngleSensor for HallAngleProxy {
         })
     }
 
-    fn observe_for_control(
-        &mut self,
-        now_ticks: u64,
-        omega_ref: Option<f32>,
-    ) -> ControlObservation {
-        HALL_ESTIMATOR.lock(|est| {
-            let mut state = est.borrow_mut();
-            let reference_epoch = state.reference_epoch;
-            let mut observation = state.sensor.as_mut().map_or_else(
-                || ControlObservation {
-                    hall: Some(StampedHallSnapshot {
-                        now_ticks,
-                        snapshot: None,
-                    }),
-                    ..ControlObservation::default()
-                },
-                |sensor| sensor.observe_for_control(now_ticks, omega_ref),
-            );
-            if let Some(control) = observation.control.as_mut() {
-                control.reference_epoch = reference_epoch;
-            }
-            observation
-        })
-    }
-
     fn is_stale(&self, now_ticks: u64, omega_ref: f32) -> bool {
         HALL_ESTIMATOR.lock(|est| {
             est.borrow()
@@ -368,15 +340,7 @@ mod tests {
         assert!(apply_detected_calibration(&calibration));
         let frame = proxy.sample_for_control(30_100).unwrap();
         assert_eq!(frame.reference_epoch, epoch.wrapping_add(1));
-        let raw = get_snapshot(30_100).unwrap();
         manager.update(&input, 30_100);
-        let diagnostics = manager.take_hall_diagnostics().unwrap();
-        assert_eq!(diagnostics.now_ticks, 30_100);
-        assert_eq!(
-            diagnostics.snapshot.unwrap().angle_rad.to_bits(),
-            raw.angle_rad.to_bits(),
-            "live config boundary publishes the new coherent raw frame"
-        );
         assert_eq!(
             manager.get().velocity,
             0.0,
@@ -402,9 +366,5 @@ mod tests {
             0.0,
             "epoch rollover is a reference change too"
         );
-        HALL_ESTIMATOR.lock(|est| est.borrow_mut().sensor = None);
-        let unavailable = proxy.observe_for_control(30_300, Some(500.0));
-        assert!(unavailable.control.is_none());
-        assert!(unavailable.hall.unwrap().snapshot.is_none());
     }
 }

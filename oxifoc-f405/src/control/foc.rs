@@ -21,7 +21,6 @@ use embassy_time::{Duration, Timer};
 
 use oxifoc_core::foc::controller::FocController;
 use oxifoc_core::foc::current_offset::CurrentOffsetRequest;
-use oxifoc_core::foc::phase::PhaseProvider;
 use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
 use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, PwmSnapshot, TempSensorId};
 use oxifoc_core::foc::trig::FastSinCos;
@@ -562,70 +561,63 @@ fn ADC() {
         .with_temp(TempSensorId::Fet, board_temp_c_x10)
         .with_temp(TempSensorId::Motor, motor_temp_c_x10);
 
+    // Get Hall snapshot
+    let hall_snapshot = hall::get_snapshot(now_ticks);
+
     let prof_t2 = oxifoc_core::isr_prof::now();
 
     // Run FOC control loop (shared cycle logic in core)
     #[cfg(feature = "isr-timing")]
     let mut time_control_motion = false;
-    let (foc_telem, hall_observation) = FOC_DRIVER
-        .lock(|cell| {
-            cell.borrow_mut().as_mut().map(|driver| {
-                let output = run_foc_cycle(
-                    &STATE,
-                    &FAULT_REGISTRY,
-                    driver,
-                    vbus_mv as f32 / 1000.0,
-                    now_ticks,
-                    protection_board,
-                );
-                #[cfg(feature = "isr-timing")]
-                {
-                    use oxifoc_core::types::ControlMode;
-                    time_control_motion = matches!(
-                        driver.mode(),
-                        ControlMode::CurrentControl { .. } | ControlMode::VelocityControl { .. }
-                    ) && output
-                        .is_some_and(|sample| sample.velocity_rad_s != 0.0);
-                }
-                #[cfg(any(
-                    feature = "bench-executor-trace",
-                    feature = "bench-pwm-commit",
-                    feature = "bench-netstack-trace"
-                ))]
-                let trace_active = if !cfg!(feature = "bench-netstack-trace")
-                    && cfg!(any(
-                        feature = "bench-trace-excitation",
-                        feature = "bench-pwm-commit"
-                    )) {
-                    matches!(
-                        driver.mode(),
-                        oxifoc_core::types::ControlMode::DirectVoltage { .. }
-                    )
-                } else {
-                    !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped)
-                };
-                #[cfg(any(
-                    feature = "bench-executor-trace",
-                    feature = "bench-pwm-commit",
-                    feature = "bench-netstack-trace"
-                ))]
-                if trace_active {
-                    crate::diagnostics::trace::trigger_active();
-                } else {
-                    crate::diagnostics::trace::trigger_stopped();
-                }
-                (output, driver.phase_mut().take_hall_diagnostics())
-            })
+    let foc_telem = FOC_DRIVER.lock(|cell| {
+        cell.borrow_mut().as_mut().and_then(|driver| {
+            let output = run_foc_cycle(
+                &STATE,
+                &FAULT_REGISTRY,
+                driver,
+                vbus_mv as f32 / 1000.0,
+                now_ticks,
+                protection_board,
+            );
+            #[cfg(feature = "isr-timing")]
+            {
+                use oxifoc_core::types::ControlMode;
+                time_control_motion = matches!(
+                    driver.mode(),
+                    ControlMode::CurrentControl { .. } | ControlMode::VelocityControl { .. }
+                ) && output
+                    .is_some_and(|sample| sample.velocity_rad_s != 0.0);
+            }
+            #[cfg(any(
+                feature = "bench-executor-trace",
+                feature = "bench-pwm-commit",
+                feature = "bench-netstack-trace"
+            ))]
+            let trace_active = if !cfg!(feature = "bench-netstack-trace")
+                && cfg!(any(
+                    feature = "bench-trace-excitation",
+                    feature = "bench-pwm-commit"
+                )) {
+                matches!(
+                    driver.mode(),
+                    oxifoc_core::types::ControlMode::DirectVoltage { .. }
+                )
+            } else {
+                !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped)
+            };
+            #[cfg(any(
+                feature = "bench-executor-trace",
+                feature = "bench-pwm-commit",
+                feature = "bench-netstack-trace"
+            ))]
+            if trace_active {
+                crate::diagnostics::trace::trigger_active();
+            } else {
+                crate::diagnostics::trace::trigger_stopped();
+            }
+            output
         })
-        .unwrap_or_default();
-    // Hall-consuming updates observed raw diagnostics before advancing their
-    // limiter. Other sources and decimated Stopped/error cycles use the
-    // immutable snapshot without advancing control state. A stamped missing
-    // sample is authoritative and must not be re-read.
-    let hall_snapshot = match hall_observation.filter(|sample| sample.now_ticks == now_ticks) {
-        Some(observation) => observation.snapshot,
-        None => hall::get_snapshot(now_ticks),
-    };
+    });
 
     let prof_t3 = oxifoc_core::isr_prof::now();
 
