@@ -339,7 +339,7 @@ test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" transp
     fi
     trap '"${cli[@]}" stop >/dev/null' EXIT
     "${cli[@]}" source hall > {{ quote(capture + ".source.json") }}
-    RUST_LOG=warn,device=info,fast_rx=debug,oxifoc_host_lib::transport::rtt=info "${cli[@]}" maneuver run \
+    RUST_LOG="${RUST_LOG:-warn,device=info,fast_rx=debug,oxifoc_host_lib::transport::rtt=info}" "${cli[@]}" maneuver run \
         {{ quote(maneuver) }} --out {{ quote(capture) }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
 
