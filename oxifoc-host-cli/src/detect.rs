@@ -200,6 +200,7 @@ pub fn run_detect(
     // The capture is written BEFORE the detect outcome is propagated —
     // dissecting failures is the primary use case.
     let mut capture_summary = serde_json::Value::Null;
+    let mut capture_loss = None;
     if let (Some(mut c), Some(path)) = (cap.take(), record_out.as_ref()) {
         let _ = c.drain_until(runtime, Instant::now() + Duration::from_millis(200));
         let stream_stopped = c.stop(runtime);
@@ -215,6 +216,9 @@ pub fn run_detect(
             ("oxifoc.detect_outcome".to_string(), outcome),
         ];
         let summary = c.finish(path, &config_snapshot(&runtime.cmd_tx), &extra)?;
+        if summary.gaps != 0 || summary.samples_lost != 0 {
+            capture_loss = Some((summary.gaps, summary.samples_lost));
+        }
         if !json || detect_result.is_err() {
             eprintln!(
                 "capture: {} — {} rows at {} Hz, {} gap(s)",
@@ -232,6 +236,17 @@ pub fn run_detect(
     let resp = detect_result?;
     if let DetectResponse::Error(e) = resp {
         bail!("detection failed: {e:?}");
+    }
+    if let Some((gaps, lost)) = capture_loss {
+        emit(
+            json,
+            json!({"result": serde_json::to_value(resp)?, "applied": null,
+            "capture": capture_summary}),
+            format!("Detect result: {resp:?}; capture incomplete"),
+        );
+        bail!(
+            "detection capture has {gaps} sequence gaps ({lost} lost samples); result retained, not applied"
+        );
     }
 
     // Shared per-step apply (ops::detect): the CLI used to hand-roll a copy
@@ -251,4 +266,114 @@ pub fn run_detect(
         ),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod hardware_tests {
+    use super::*;
+    use oxifoc_core::types::{ControlMode, MotorState};
+    use oxifoc_host_lib::{CommandSender, HostConfig, TransportType, motor_channel, start_host};
+
+    fn stop(cmd: &CommandSender) -> Result<oxifoc_core::types::MotorStatus> {
+        let (tx, mut rx) = motor_channel();
+        cmd.send(HostCommand::MotorAck(ControlMode::Stopped, tx))?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(result) = rx.try_recv() {
+                return result;
+            }
+            if Instant::now() >= deadline {
+                bail!("Stop acknowledgement timed out");
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the secured MK5 bench motor, explicit opt-in, and a 20 kHz capture path"]
+    fn hardware_stop_cancels_inductance_at_20khz() -> Result<()> {
+        anyhow::ensure!(std::env::var("OXIFOC_HARDWARE_TEST").as_deref() == Ok("1"));
+        let out = std::env::var("OXIFOC_HARDWARE_CAPTURE")?;
+        let runtime = start_host(HostConfig {
+            transport: Some(TransportType::Usb),
+            fast_hz: Some(0),
+            stream_defmt: Some(false),
+            ..Default::default()
+        });
+        struct StopOnDrop(CommandSender);
+        impl Drop for StopOnDrop {
+            fn drop(&mut self) {
+                let _ = stop(&self.0);
+            }
+        }
+        let stop_guard = StopOnDrop(runtime.cmd_tx.clone());
+        let connected_by = Instant::now() + Duration::from_secs(8);
+        while !runtime.connected.load(std::sync::atomic::Ordering::Acquire) {
+            anyhow::ensure!(Instant::now() < connected_by, "USB did not connect");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        anyhow::ensure!(stop(&runtime.cmd_tx)?.fault_count == 0);
+        let (ack, stop_ms, error) = std::thread::scope(|scope| -> Result<_> {
+            let detect = scope.spawn(|| {
+                run_detect(
+                    &runtime,
+                    DetectStep::Inductance,
+                    0.05,
+                    Some(0.030444),
+                    None,
+                    None,
+                    700.0,
+                    OffsetMethodArg::PerPhase,
+                    1000,
+                    false,
+                    false,
+                    Some(out.clone()),
+                    Some(20000),
+                    true,
+                )
+            });
+            let running_by = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Ok(status) = runtime.slow_rx.recv_timeout(Duration::from_millis(20))
+                    && status.motor_state == MotorState::Running
+                {
+                    break;
+                }
+                if Instant::now() >= running_by {
+                    let _ = stop(&runtime.cmd_tx);
+                    bail!("detector did not enter its holding ramp");
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            let sent = Instant::now();
+            let ack = stop(&runtime.cmd_tx)?;
+            let elapsed = sent.elapsed().as_secs_f64() * 1000.0;
+            let result = detect
+                .join()
+                .map_err(|_| anyhow::anyhow!("detection thread panicked"))?;
+            let error =
+                result.expect_err("Stop must cancel the operation, not produce a measurement");
+            Ok((ack, elapsed, error.to_string()))
+        })?;
+        anyhow::ensure!(ack.state == MotorState::Stopped && ack.fault_count == 0);
+        anyhow::ensure!(error.contains("HardwareFault"), "{error}");
+        runtime.slow_rx.try_iter().for_each(drop);
+        let observe_until = Instant::now() + Duration::from_millis(750);
+        while Instant::now() < observe_until {
+            if let Ok(status) = runtime.slow_rx.recv_timeout(Duration::from_millis(50)) {
+                anyhow::ensure!(
+                    status.motor_state == MotorState::Stopped && status.fault_count == 0,
+                    "detection resumed after Stop: {status:?}"
+                );
+            }
+        }
+        println!(
+            "{}",
+            serde_json::json!({"stop_ack": ack, "stop_ms": stop_ms,
+            "detect_error": error, "capture": out})
+        );
+        drop(stop_guard);
+        runtime.shutdown();
+        Ok(())
+    }
 }
