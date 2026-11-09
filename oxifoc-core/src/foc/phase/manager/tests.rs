@@ -12,6 +12,107 @@ use crate::foc::wrap_angle;
 use crate::virtual_motor::VirtualMotorOutput;
 use core::f32::consts::TAU;
 
+#[cfg(feature = "storage")]
+#[test]
+fn hall_reference_reanchors_cached_hall_frame_and_preserves_other_sources() {
+    use crate::foc::hall_sensor::{HallSensor, PreparedHallCalibration};
+    use crate::foc::phase::{BackEmfObserver, Observer};
+    use crate::storage::HallCalibrationConfig;
+    let mut config = HallCalibrationConfig::default();
+    config.angles[1] = 1.1;
+    let prepared = PreparedHallCalibration::from_config(&config).unwrap();
+    for (source, hall_active) in [
+        (PhaseSource::Hall, true),
+        (PhaseSource::Manual, false),
+        (PhaseSource::Observer, false),
+        (
+            PhaseSource::HallToObserver {
+                blend_low: 100.0,
+                blend_high: 200.0,
+            },
+            true,
+        ),
+        (PhaseSource::HfiToHall { switch_vel: 100.0 }, false),
+    ] {
+        let mut hall = HallSensor::new(1_000_000);
+        hall.update(1, 0);
+        let mut manager = PhaseManager::with_hall(hall);
+        manager.source = source; // Exercise cached output independently of readiness admission.
+        let old = PhaseOutput {
+            angle: 2.0,
+            velocity: 3.0,
+        };
+        manager.output = old;
+        assert!(PhaseProvider::apply_hall_calibration(
+            &mut manager,
+            &prepared
+        ));
+        assert_eq!(manager.source, source);
+        assert_eq!(
+            manager.output,
+            if hall_active {
+                PhaseOutput {
+                    angle: 1.1,
+                    velocity: 0.0,
+                }
+            } else {
+                old
+            }
+        );
+    }
+    // A ready observer's fully selected frame remains independent; a partial
+    // Hall blend keeps its current weight without seeding/advancing the observer.
+    for speed in [150.0, 250.0] {
+        let mut hall = HallSensor::new(1_000_000);
+        hall.update(1, 0);
+        let mut manager = PhaseManager::with_hall(hall);
+        let mut observer = BackEmfObserver::new(0.1, 100e-6, 0.02);
+        observer.force_phase(2.0);
+        observer.set_velocity(speed);
+        manager.set_observer(Observer::BackEmf(observer));
+        let (sin, cos) = 2.0f32.sin_cos();
+        manager.update(
+            &PhaseInput {
+                v_alpha: -speed * 0.02 * sin,
+                v_beta: speed * 0.02 * cos,
+                dt: 0.00005,
+                ..Default::default()
+            },
+            50,
+        );
+        assert!(manager.observer.is_ready());
+        manager.source = PhaseSource::HallToObserver {
+            blend_low: 100.0,
+            blend_high: 200.0,
+        };
+        let old = PhaseOutput {
+            angle: 2.5,
+            velocity: speed,
+        };
+        manager.output = old;
+        let observer_before = (manager.observer.phase(), manager.observer.velocity());
+        let weight = compute_blend(observer_before.1.unwrap().abs(), 100.0, 200.0);
+        assert!(PhaseProvider::apply_hall_calibration(
+            &mut manager,
+            &prepared
+        ));
+        assert_eq!(
+            (manager.observer.phase(), manager.observer.velocity()),
+            observer_before
+        );
+        if weight == 1.0 {
+            assert_eq!(manager.output, old);
+        } else {
+            assert!(
+                (manager.output.angle - blend_angles(1.1, observer_before.0.unwrap(), weight))
+                    .abs()
+                    < 1e-5
+            );
+            assert!((manager.output.velocity - observer_before.1.unwrap() * weight).abs() < 1.0);
+        }
+    }
+}
+
 #[test]
 #[cfg(feature = "hfi")]
 fn ready_background_observer_does_not_certify_a_cold_hfi_angle() {

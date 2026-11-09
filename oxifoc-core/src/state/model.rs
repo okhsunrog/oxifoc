@@ -9,7 +9,7 @@
 use super::{CMD_CHANNEL, DriverCommand};
 use crate::{
     motor::foc_driver::PreparedMotorModel,
-    storage::{MotorParamsConfig, RuntimeConfig, VoltageFeedforwardConfig},
+    storage::{HallCalibrationConfig, MotorParamsConfig, RuntimeConfig, VoltageFeedforwardConfig},
     types::{ConfigGroupId, ConfigResponse, ReqId},
 };
 use core::{
@@ -66,6 +66,7 @@ const APPLYING_CANCELLED: u32 = 6;
 pub(crate) enum ModelConfigUpdate {
     MotorParams(MotorParamsConfig),
     VoltageFeedforward(VoltageFeedforwardConfig),
+    HallCalibration(HallCalibrationConfig),
     Reset,
 }
 
@@ -80,6 +81,7 @@ impl ModelConfigUpdate {
         match self {
             Self::MotorParams(value) => config.motor_params = Some(value.clone()),
             Self::VoltageFeedforward(value) => config.voltage_feedforward = Some(*value),
+            Self::HallCalibration(value) => config.hall_calibration = Some(value.clone()),
             Self::Reset => *config = RuntimeConfig::default(),
         }
     }
@@ -88,12 +90,31 @@ impl ModelConfigUpdate {
         match self {
             Self::MotorParams(_) | Self::Reset => ConfigGroupId::MotorParams,
             Self::VoltageFeedforward(_) => ConfigGroupId::VoltageFeedforward,
+            Self::HallCalibration(_) => ConfigGroupId::HallCalibration,
+        }
+    }
+}
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one static zero-copy slot owns prepared ISR state; no embedded allocator or extra payload move"
+)]
+enum PreparedUpdate {
+    Motor(PreparedMotorModel),
+    Hall(crate::foc::hall_sensor::PreparedHallCalibration),
+}
+
+impl PreparedUpdate {
+    fn pole_pairs(&self) -> Option<u8> {
+        match self {
+            Self::Motor(model) => Some(model.pole_pairs),
+            Self::Hall(_) => None,
         }
     }
 }
 
 struct Pending {
-    model: PreparedMotorModel,
+    prepared: PreparedUpdate,
     update: ModelConfigUpdate,
     persisted: Option<&'static Mutex<RefCell<[Option<u32>; ConfigGroupId::COUNT]>>>,
     config: &'static Mutex<RefCell<RuntimeConfig>>,
@@ -250,8 +271,30 @@ impl ModelApplyGuard {
         expected_revision: u32,
     ) -> Option<Self> {
         Self::prepare_inner(
-            model,
+            PreparedUpdate::Motor(model),
             value.into(),
+            None,
+            config,
+            revisions,
+            cache,
+            request,
+            expected_revision,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_hall(
+        value: HallCalibrationConfig,
+        config: &'static Mutex<RefCell<RuntimeConfig>>,
+        revisions: &'static Mutex<RefCell<[u32; ConfigGroupId::COUNT]>>,
+        cache: &'static Mutex<RefCell<ConfigActionCache>>,
+        request: ReqId,
+        expected_revision: u32,
+    ) -> Option<Self> {
+        let prepared = crate::foc::hall_sensor::PreparedHallCalibration::from_config(&value)?;
+        Self::prepare_inner(
+            PreparedUpdate::Hall(prepared),
+            ModelConfigUpdate::HallCalibration(value),
             None,
             config,
             revisions,
@@ -270,7 +313,7 @@ impl ModelApplyGuard {
         expected_revision: u32,
     ) -> Option<Self> {
         Self::prepare_inner(
-            model,
+            PreparedUpdate::Motor(model),
             ModelConfigUpdate::Reset,
             Some(persisted),
             config,
@@ -283,7 +326,7 @@ impl ModelApplyGuard {
 
     #[allow(clippy::too_many_arguments)]
     fn prepare_inner(
-        model: PreparedMotorModel,
+        prepared: PreparedUpdate,
         update: ModelConfigUpdate,
         persisted: Option<&'static Mutex<RefCell<[Option<u32>; ConfigGroupId::COUNT]>>>,
         config: &'static Mutex<RefCell<RuntimeConfig>>,
@@ -297,7 +340,7 @@ impl ModelApplyGuard {
         // SAFETY: Preparing exclusively owns the uninitialized slot.
         unsafe {
             SLOT.payload.get().write(MaybeUninit::new(Pending {
-                model,
+                prepared,
                 update,
                 persisted,
                 config,
@@ -377,7 +420,11 @@ pub(super) fn apply<P, C, Ph, S>(
     } else if !allowed {
         ConfigResponse::Busy
     } else {
-        match foc.apply_motor_model(&mut pending.model) {
+        let applied = match &mut pending.prepared {
+            PreparedUpdate::Motor(model) => foc.apply_motor_model(model).map(Some),
+            PreparedUpdate::Hall(prepared) => foc.apply_hall_calibration(prepared).map(|()| None),
+        };
+        match applied {
             Ok(source) => critical_section::with(|cs| {
                 if matches!(pending.update, ModelConfigUpdate::Reset) {
                     *pending.config.borrow(cs).borrow_mut() = RuntimeConfig::default();
@@ -389,8 +436,12 @@ pub(super) fn apply<P, C, Ph, S>(
                     let mut state = state.borrow(cs).borrow_mut();
                     state.board_calibration = crate::storage::BoardCalibrationConfig::IDENTITY;
                     state.board_calibration_valid = true;
-                    state.motor_pole_pairs = pending.model.pole_pairs;
-                    state.phase_source = source;
+                    if let Some(pole_pairs) = pending.prepared.pole_pairs() {
+                        state.motor_pole_pairs = pole_pairs;
+                    }
+                    if let Some(source) = source {
+                        state.phase_source = source;
+                    }
                     state.motor_model_generation = generation;
                     return ConfigResponse::Reset;
                 }
@@ -406,9 +457,13 @@ pub(super) fn apply<P, C, Ph, S>(
                     .borrow_mut()
                     .insert(pending.request, CachedConfigAck::Applied(revision));
                 let mut state = state.borrow(cs).borrow_mut();
-                state.phase_source = source;
-                state.motor_pole_pairs = pending.model.pole_pairs;
-                state.motor_model_generation = generation;
+                if let Some(source) = source {
+                    state.phase_source = source;
+                }
+                if let Some(pole_pairs) = pending.prepared.pole_pairs() {
+                    state.motor_pole_pairs = pole_pairs;
+                    state.motor_model_generation = generation;
+                }
                 ConfigResponse::Applied {
                     req_id: pending.request,
                     revision,
@@ -443,7 +498,11 @@ mod tests {
         let cache: &'static _ =
             Box::leak(Box::new(Mutex::new(RefCell::new(ConfigActionCache::new()))));
         move || Pending {
-            model: PreparedMotorModel::from_config(&RuntimeConfig::default(), 24.0, 3.0),
+            prepared: PreparedUpdate::Motor(PreparedMotorModel::from_config(
+                &RuntimeConfig::default(),
+                24.0,
+                3.0,
+            )),
             update: ModelConfigUpdate::MotorParams(MotorParamsConfig::default()),
             persisted: None,
             config,

@@ -18,7 +18,7 @@ use core::cell::{Cell, RefCell};
 
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
-use super::hall_sensor::{Direction, HallSensor};
+use super::hall_sensor::{Direction, HallSensor, PreparedHallCalibration};
 use super::sensors::{AngleSample, AngleSensor, ControlAngleSample, HallSnapshot};
 
 // ========== Hall Estimator (shared state) ==========
@@ -131,16 +131,21 @@ pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
 /// This changes RAM only; persistence remains an explicit host operation.
 #[cfg(feature = "detection")]
 pub fn apply_detected_calibration(result: &super::hall_calibration::HallCalibrationResult) -> bool {
+    let Some(prepared) = PreparedHallCalibration::from_result(result) else {
+        return false;
+    };
+    apply_prepared_calibration(&prepared).is_some()
+}
+
+fn apply_prepared_calibration(
+    prepared: &PreparedHallCalibration,
+) -> Option<super::sensors::HallReferenceUpdate> {
     HALL_ESTIMATOR.lock(|est| {
         let mut state = est.borrow_mut();
-        let applied = state
-            .sensor
-            .as_mut()
-            .is_some_and(|h| h.apply_calibration(result));
-        if applied {
-            state.reference_epoch = state.reference_epoch.wrapping_add(1);
-        }
-        applied
+        let sensor = state.sensor.as_mut()?;
+        let update = sensor.install_prepared_calibration(prepared);
+        state.reference_epoch = state.reference_epoch.wrapping_add(1);
+        Some(update)
     })
 }
 
@@ -149,14 +154,16 @@ pub fn apply_detected_calibration(result: &super::hall_calibration::HallCalibrat
 /// Must be called after [`init_estimator`]. Skips silently if no config is stored.
 #[cfg(feature = "storage")]
 pub fn apply_stored_config(config: &RuntimeConfig) {
+    let prepared = config
+        .hall_calibration
+        .as_ref()
+        .and_then(PreparedHallCalibration::from_config);
     HALL_ESTIMATOR.lock(|est| {
         let mut state = est.borrow_mut();
         let mut changed = false;
         if let Some(h) = state.sensor.as_mut() {
-            if let Some(ref cal) = config.hall_calibration
-                && cal.is_calibrated()
-            {
-                h.set_calibration_raw(cal.angles);
+            if let Some(prepared) = &prepared {
+                h.install_prepared_calibration(prepared);
                 changed = true;
                 info!("Applied stored Hall calibration");
             }
@@ -188,6 +195,13 @@ impl HallAngleProxy {
 }
 
 impl AngleSensor for HallAngleProxy {
+    fn apply_prepared_hall_calibration(
+        &mut self,
+        prepared: &PreparedHallCalibration,
+    ) -> Option<super::sensors::HallReferenceUpdate> {
+        apply_prepared_calibration(prepared)
+    }
+
     fn sample(&self, now_ticks: u64) -> Option<AngleSample> {
         HALL_ESTIMATOR.lock(|est| {
             est.borrow()
@@ -367,5 +381,40 @@ mod tests {
             0.0,
             "epoch rollover is a reference change too"
         );
+        let prepared = PreparedHallCalibration::from_result(&calibration).unwrap();
+        assert!(proxy.apply_prepared_hall_calibration(&prepared).is_some());
+        assert_eq!(proxy.sample_for_control(30_300).unwrap().reference_epoch, 1);
+        assert_eq!(proxy.sample(30_300).unwrap().omega, 0.0);
+        manager.update(&input, 30_300);
+        assert_eq!(manager.get().velocity, 0.0);
+        HALL_ESTIMATOR.lock(|est| est.borrow_mut().sensor = None);
+        assert!(proxy.apply_prepared_hall_calibration(&prepared).is_none());
+        assert_eq!(HALL_ESTIMATOR.lock(|est| est.borrow().reference_epoch), 1);
+        #[cfg(feature = "storage")]
+        {
+            let stored = crate::storage::HallCalibrationConfig {
+                angles: calibration.angles,
+                valid: calibration.valid,
+            };
+            let config = RuntimeConfig {
+                hall_calibration: Some(stored),
+                ..Default::default()
+            };
+            init_estimator(1_000_000);
+            apply_stored_config(&config);
+            update_hall_edge(3, 40_000);
+            let boot = proxy.sample(40_000).unwrap();
+            let prepared =
+                PreparedHallCalibration::from_config(config.hall_calibration.as_ref().unwrap())
+                    .unwrap();
+            assert!(proxy.apply_prepared_hall_calibration(&prepared).is_some());
+            let live = proxy.sample(40_000).unwrap();
+            assert_eq!(
+                boot.angle.to_bits(),
+                live.angle.to_bits(),
+                "boot and live share the same installed reference"
+            );
+            assert_eq!(live.omega, 0.0);
+        }
     }
 }

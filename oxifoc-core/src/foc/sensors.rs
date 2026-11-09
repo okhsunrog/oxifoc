@@ -38,6 +38,12 @@ pub struct ControlAngleSample {
     pub reference_epoch: u32,
 }
 
+/// Accepted Hall reference change, including its current valid sector when
+/// available. Outer `None` from the sensor apply hook means unsupported.
+pub struct HallReferenceUpdate {
+    pub sample: Option<AngleSample>,
+}
+
 /// Platform-agnostic current sensor trait
 ///
 /// Implementers provide 3-phase current measurements in Amperes.
@@ -75,6 +81,15 @@ pub trait CurrentSensor {
 ///
 /// Provides electrical angle for FOC Park/Clarke transforms.
 pub trait AngleSensor {
+    /// Install a prepared Hall reference. Unsupported sensors reject without
+    /// mutation; proxies publish the new reference epoch with control samples.
+    fn apply_prepared_hall_calibration(
+        &mut self,
+        _prepared: &super::hall_sensor::PreparedHallCalibration,
+    ) -> Option<HallReferenceUpdate> {
+        None
+    }
+
     /// Snapshot at the caller's notion of time (ticks are platform-defined).
     ///
     /// Returning `None` signals "no valid sample right now" so callers can

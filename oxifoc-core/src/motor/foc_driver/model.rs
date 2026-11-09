@@ -51,6 +51,21 @@ pub enum MotorModelError {
 }
 
 impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C, Ph, S> {
+    /// Replace only the Hall reference, keeping motor/controller tuning intact.
+    pub fn apply_hall_calibration(
+        &mut self,
+        prepared: &crate::foc::hall_sensor::PreparedHallCalibration,
+    ) -> Result<(), MotorModelError> {
+        if self.mode() != crate::motor::ControlMode::Stopped || self.current_offset_active() {
+            return Err(MotorModelError::Busy);
+        }
+        if self.phase.apply_hall_calibration(prepared) {
+            Ok(())
+        } else {
+            Err(MotorModelError::Unsupported)
+        }
+    }
+
     /// Install the complete model at a stopped control-cycle boundary. Hardware
     /// sensor state, voltage correction, PWM topology and source survive.
     pub fn apply_motor_model(

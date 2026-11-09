@@ -104,6 +104,14 @@ pub struct PhaseInput {
 /// current vector `ω·dt` off the q axis while the controller's own frame
 /// reports id = 0 (see `commutation_frame_tracks_rotor_at_sample_instant`).
 pub trait PhaseProvider {
+    /// Apply a prepared Hall reference; default providers explicitly reject.
+    fn apply_hall_calibration(
+        &mut self,
+        _prepared: &crate::foc::hall_sensor::PreparedHallCalibration,
+    ) -> bool {
+        false
+    }
+
     /// Install a prepared motor model. Providers without model support reject
     /// explicitly, so configuration cannot acknowledge a partial application.
     #[cfg(feature = "storage")]

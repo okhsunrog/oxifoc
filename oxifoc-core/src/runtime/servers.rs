@@ -526,6 +526,19 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     }
                                 });
                             }
+                            if let ConfigWrite::HallCalibration(value) = &write {
+                                let Some(guard) = ModelApplyGuard::prepare_hall(
+                                    value.clone(),
+                                    runtime_config,
+                                    revisions,
+                                    action_cache,
+                                    keyed.id,
+                                    current_revision,
+                                ) else {
+                                    return ConfigResponse::Busy;
+                                };
+                                return guard.apply::<T>().await;
+                            }
                             let model_update = match &write {
                                 ConfigWrite::MotorParams(value) => {
                                     Some(crate::state::model::ModelConfigUpdate::MotorParams(
@@ -640,7 +653,8 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                         .await;
                                 }
                                 ConfigWrite::MotorParams(_)
-                                | ConfigWrite::VoltageFeedforward(_) => {
+                                | ConfigWrite::VoltageFeedforward(_)
+                                | ConfigWrite::HallCalibration(_) => {
                                     unreachable!("handled by coherent model transaction")
                                 }
                                 // Cruise velocity-loop tuning applies live.
@@ -679,15 +693,11 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 // Deliberately no live-apply (exhaustive, no
                                 // catch-all — a new group must be classified
                                 // here or it will not compile):
-                                // - HallCalibration reaches the live sensor
-                                //   through the detect/apply flow; a config
-                                //   write takes effect at the next boot.
                                 // - HallTuning is consumed at hall-estimator
                                 //   construction (boot only).
                                 // - VoltageLimits/PwmConfig are rejected by
                                 //   write_is_acceptable and never get here.
-                                ConfigWrite::HallCalibration(_)
-                                | ConfigWrite::HallTuning(_)
+                                ConfigWrite::HallTuning(_)
                                 | ConfigWrite::VoltageLimits(_)
                                 | ConfigWrite::PwmConfig(_) => {}
                             }

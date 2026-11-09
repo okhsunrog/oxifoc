@@ -59,6 +59,10 @@ impl Default for HallControlMotion {
 }
 
 impl HallControlMotion {
+    pub(super) fn velocity(&self) -> f32 {
+        self.velocity
+    }
+
     pub(super) fn reset(&mut self) {
         self.baseline = Baseline::Cold;
         self.velocity = 0.0;

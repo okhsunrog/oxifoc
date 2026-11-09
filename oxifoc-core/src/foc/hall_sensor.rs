@@ -95,6 +95,25 @@ pub const STALE_MIN_WINDOW_S: f32 = 0.000_3;
 /// previous value instead of adopting them.
 pub const MAX_PLAUSIBLE_E_RAD_S: f32 = 30_000.0;
 
+/// Validated, normalized Hall reference, prepared outside the control ISR.
+pub struct PreparedHallCalibration(HallCalibration);
+
+impl PreparedHallCalibration {
+    #[cfg(feature = "storage")]
+    pub fn from_config(config: &crate::storage::HallCalibrationConfig) -> Option<Self> {
+        config
+            .is_calibrated()
+            .then(|| Self(HallCalibration::from_raw_table(config.angles, 0.0)))
+    }
+
+    pub fn from_result(result: &super::hall_calibration::HallCalibrationResult) -> Option<Self> {
+        (result.is_valid()
+            && result.valid[1..=6].iter().all(|valid| *valid)
+            && result.angles[1..=6].iter().all(|angle| angle.is_finite()))
+        .then(|| Self(HallCalibration::from_raw_table(result.angles, 0.0)))
+    }
+}
+
 /// One capture-clock rate and its floating-point representation. Keeping the
 /// conversion here avoids repeated software u64-to-f32 helpers on Cortex-M4.
 struct HallTimebase {
@@ -816,11 +835,38 @@ impl HallSensor {
         &mut self,
         result: &super::hall_calibration::HallCalibrationResult,
     ) -> bool {
-        if result.is_valid() {
-            self.set_calibration_raw(result.angles);
+        if let Some(prepared) = PreparedHallCalibration::from_result(result) {
+            self.install_prepared_calibration(&prepared);
             true
         } else {
             false
+        }
+    }
+
+    /// Reanchor the angle frame without inventing a physical edge. A parked
+    /// valid sector stays observable; speed resumes after two new boundaries.
+    pub fn install_prepared_calibration(
+        &mut self,
+        prepared: &PreparedHallCalibration,
+    ) -> super::sensors::HallReferenceUpdate {
+        let advance = self.calib.advance_rad;
+        self.calib = prepared.0;
+        self.calib.advance_rad = advance;
+        self.angle = self.calib.angle_for_state(self.valid_raw);
+        self.base_is_boundary = false;
+        self.elec_velocity = 0.0;
+        self.direction = Direction::Stopped;
+        self.prev_direction = Direction::Stopped;
+        self.direction_reversed = false;
+        self.velocity_hold_edges = 1;
+        self.last_sample_ticks = None;
+        self.rate_limited_angle = self.angle;
+        super::sensors::HallReferenceUpdate {
+            sample: (self.last_edge_ticks.is_some() && !self.in_glitch).then_some(AngleSample {
+                angle: self.angle,
+                omega: 0.0,
+                direction: Direction::Stopped,
+            }),
         }
     }
 
@@ -1138,6 +1184,13 @@ impl Default for HallCalibration {
 }
 
 impl AngleSensor for HallSensor {
+    fn apply_prepared_hall_calibration(
+        &mut self,
+        prepared: &PreparedHallCalibration,
+    ) -> Option<super::sensors::HallReferenceUpdate> {
+        Some(self.install_prepared_calibration(prepared))
+    }
+
     fn sample(&self, now_ticks: u64) -> Option<AngleSample> {
         self.sample_at(now_ticks)
     }
@@ -1231,6 +1284,89 @@ impl HallSensorTrait for HallSensor {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "storage")]
+    #[test]
+    fn prepared_reference_reanchors_raw_and_control_without_old_geometry() {
+        use super::*;
+        let mut hall = HallSensor::new(1_000_000);
+        hall.set_interp_min_erpm(0.0);
+        hall.set_advance(0.2);
+        hall.update(1, 1_000);
+        hall.update(3, 2_000);
+        hall.update(2, 3_000);
+        assert!(hall.sample_at_mut(3_050).unwrap().omega > 100.0);
+        let before = (
+            hall.raw_state,
+            hall.logical_state,
+            hall.last_edge_ticks,
+            hall.error_count,
+        );
+        let mut config = crate::storage::HallCalibrationConfig::default();
+        for angle in &mut config.angles[1..=6] {
+            *angle += 0.7;
+        }
+        let prepared = PreparedHallCalibration::from_config(&config).unwrap();
+        hall.install_prepared_calibration(&prepared);
+        assert_eq!(
+            (
+                hall.raw_state,
+                hall.logical_state,
+                hall.last_edge_ticks,
+                hall.error_count
+            ),
+            before
+        );
+        let expected = wrap_angle(config.angles[2] + 0.2);
+        for sample in [
+            hall.sample_at(3_100).unwrap(),
+            hall.sample_at_mut(3_100).unwrap(),
+        ] {
+            assert_eq!(sample.angle.to_bits(), expected.to_bits());
+            assert_eq!(sample.omega, 0.0);
+            assert_eq!(sample.direction, Direction::Stopped);
+        }
+        assert!(!hall.base_is_boundary);
+        hall.update(6, 4_000);
+        assert_eq!(
+            hall.electrical_velocity(),
+            0.0,
+            "old edge frame is not a speed baseline"
+        );
+        hall.update(4, 5_000);
+        assert!(
+            hall.electrical_velocity() > 100.0,
+            "two new boundaries restore measured speed"
+        );
+        hall.update(7, 5_100);
+        hall.install_prepared_calibration(&prepared);
+        assert!(
+            hall.sample_at(5_150).is_none(),
+            "reference apply cannot hide a wire glitch"
+        );
+        let mut accumulator = crate::foc::hall_calibration::HallCalibrator::new();
+        for state in 1..=6 {
+            for _ in 0..30 {
+                accumulator.record(config.angles[state], state as u8);
+            }
+        }
+        let mut forged = accumulator.finish().unwrap();
+        forged.valid[3] = false;
+        assert_eq!(forged.valid_count, 6);
+        assert!(
+            PreparedHallCalibration::from_result(&forged).is_none(),
+            "claimed count cannot override a missing physical state"
+        );
+        let mut invalid = config;
+        invalid.angles[3] = f32::NAN;
+        assert!(PreparedHallCalibration::from_config(&invalid).is_none());
+        let mut cold = HallSensor::new(1_000_000);
+        cold.install_prepared_calibration(&prepared);
+        assert!(
+            cold.sample_at(0).is_none(),
+            "reference apply must not fabricate an edge"
+        );
+    }
+
     use super::*;
     use core::f32::consts::FRAC_PI_3;
 

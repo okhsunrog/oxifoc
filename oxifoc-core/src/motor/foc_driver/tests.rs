@@ -1,4 +1,7 @@
 use super::*;
+#[cfg(all(feature = "storage", feature = "runtime"))]
+#[path = "live_hall_tests.rs"]
+mod live_hall_tests;
 #[path = "scoped_pi_tests.rs"]
 mod scoped_pi_tests;
 #[cfg(feature = "virtual-motor")]

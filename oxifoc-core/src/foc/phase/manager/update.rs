@@ -70,6 +70,67 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 // ============================================================================
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H, E, S> {
+    fn apply_hall_calibration(
+        &mut self,
+        prepared: &crate::foc::hall_sensor::PreparedHallCalibration,
+    ) -> bool {
+        // Only replace a cached frame to which Hall actually contributed.
+        // Pure observer/manual/HFI outputs and active fallbacks stay intact.
+        let observer_weight = match self.source {
+            PhaseSource::Hall => Some(0.0),
+            PhaseSource::HallToObserver {
+                blend_low,
+                blend_high,
+            } => {
+                let weight = if self.observer.is_ready() {
+                    super::select::compute_blend(
+                        self.hall_control_motion
+                            .velocity()
+                            .abs()
+                            .max(self.observer.velocity().unwrap_or(0.0).abs()),
+                        blend_low,
+                        blend_high,
+                    )
+                } else {
+                    0.0
+                };
+                (weight < 1.0).then_some(weight)
+            }
+            PhaseSource::HfiToHall { .. } if self.crossover_latched => Some(0.0),
+            _ => None,
+        };
+        let Some(update) = self.hall.apply_prepared_hall_calibration(prepared) else {
+            return false;
+        };
+        self.hall_control_motion.reset();
+        if let Some(sample) = update.sample {
+            if self.hall_health == HallHealth::Ok
+                && !self.open_loop_override.active
+                && let Some(weight) = observer_weight
+            {
+                // Preserve the applied hybrid weight, and the independent
+                // observer/HFI state. Normal updates own crossover/reseeding.
+                self.output = match (
+                    weight > 0.0,
+                    self.observer.phase(),
+                    self.observer.velocity(),
+                ) {
+                    (true, Some(angle), Some(velocity)) => PhaseOutput {
+                        angle: super::select::blend_angles(sample.angle, angle, weight),
+                        velocity: velocity * weight,
+                    },
+                    _ => PhaseOutput {
+                        angle: sample.angle,
+                        velocity: 0.0,
+                    },
+                };
+            }
+        } else if self.source.requires_hall() {
+            self.update_hall_health(false, false);
+        }
+        true
+    }
+
     #[cfg(feature = "storage")]
     fn apply_motor_model(&mut self, model: &mut super::PreparedPhaseModel) -> Option<PhaseSource> {
         Some(self.apply_prepared_model(model))
