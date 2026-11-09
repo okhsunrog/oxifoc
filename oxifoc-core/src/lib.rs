@@ -240,14 +240,16 @@ pub mod foc {
     /// Compute signed angle difference (a - b), handling wraparound.
     /// Result is in range (-π, π].
     ///
-    /// Same hot/cold split as [`wrap_angle`]: wrapped inputs give a raw
-    /// difference in (-2π, 2π), where one conditional ±2π lands in range —
+    /// Same hot/cold split as [`wrap_angle`]: a signed atan2 angle minus a
+    /// [0, 2π) PLL angle gives a difference in (-3π, 3π). One ±2π step
+    /// lands in range; both common angle conventions take this fast path —
     /// `libm::remainderf` (which cost ~1% of the ISR CPU) stays as the cold
     /// fallback for arbitrary inputs.
     #[inline]
     pub fn angle_difference(a: f32, b: f32) -> f32 {
         let mut diff = a - b;
-        if !(-TAU..=TAU).contains(&diff) {
+        let three_pi = TAU + core::f32::consts::PI;
+        if diff <= -three_pi || diff > three_pi || diff.is_nan() {
             // Cold: inputs weren't wrapped angles.
             diff = libm::remainderf(diff, TAU);
         }
@@ -257,6 +259,60 @@ pub mod foc {
             diff -= TAU;
         }
         diff
+    }
+
+    #[cfg(test)]
+    mod angle_tests {
+        use super::*;
+
+        fn previous_difference(a: f32, b: f32) -> f32 {
+            let mut diff = a - b;
+            if !(-TAU..=TAU).contains(&diff) {
+                diff = libm::remainderf(diff, TAU);
+            }
+            if diff <= -core::f32::consts::PI {
+                diff += TAU;
+            } else if diff > core::f32::consts::PI {
+                diff -= TAU;
+            }
+            diff
+        }
+
+        #[test]
+        fn signed_atan2_and_unsigned_pll_difference_preserve_bits() {
+            use core::f32::consts::PI;
+            for i in 0..=512 {
+                let signed = -PI + TAU * (i as f32 / 512.0);
+                for j in 0..=512 {
+                    let unsigned = TAU * (j as f32 / 512.0);
+                    assert_eq!(
+                        angle_difference(signed, unsigned).to_bits(),
+                        previous_difference(signed, unsigned).to_bits()
+                    );
+                }
+            }
+            for a in [
+                -f32::MAX,
+                -10.0 * TAU,
+                -3.0 * PI,
+                -PI,
+                0.0,
+                PI,
+                3.0 * PI,
+                10.0 * TAU,
+                f32::MAX,
+            ] {
+                for b in [-TAU, -PI, -0.0, 0.0, PI, TAU] {
+                    assert_eq!(
+                        angle_difference(a, b).to_bits(),
+                        previous_difference(a, b).to_bits()
+                    );
+                }
+            }
+            for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                assert!(angle_difference(value, 0.0).is_nan());
+            }
+        }
     }
 
     /// Board configuration and ADC utilities
