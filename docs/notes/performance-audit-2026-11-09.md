@@ -33,12 +33,11 @@ transport losses and command latency separately. Gapped captures cannot
 qualify continuous waveform analysis. Keep 20-kHz native samples and all
 independent protections. No target saving is assigned before measurement.
 
-Boot/live MotorParams setup currently differs: live writes do not configure
-all observers or the platform pole-pair mirror. Reboot after setting the
-model for comparisons. Fix that through one coherent setup path before
-using live writes in a benchmark harness. Derived-value caches should own
-their source configuration or be rebuilt through one validated constructor,
-so adding an optimization cannot leave stale coefficients behind.
+At the audit baseline, live MotorParams writes did not configure all
+observers or the platform pole-pair mirror. Boot and live writes now share
+the prepared-model installer qualified below. Derived-value caches should
+own their source configuration or be rebuilt through one validated
+constructor, so an optimization cannot leave stale coefficients behind.
 
 Priorities: **first** = strong, local redundancy worth measuring first;
 **next** = useful but smaller or more architectural; **experiment** = changes
@@ -126,7 +125,7 @@ The nusb paths abbreviated above are under
 
 ## Memory and build
 
-Current ELF: `.data` 8612 B, `.bss` 42452 B, nominal SRAM stack 80000 B
+Audit-baseline ELF: `.data` 8612 B, `.bss` 42452 B, nominal SRAM stack 80000 B
 (not a measured high-water mark), no CCM section. Stack relocation is not
 motivated by demonstrated pressure.
 
@@ -289,6 +288,77 @@ P2 and U2 are lower priority than the MCU drain deficit.
 
 E2 artifacts, firmware hashes, boot witnesses and `netstack-comparison.png`:
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-netstack-latency-2026-11-09/`.
+
+## Coherent model application and second candidate batch
+
+`PreparedMotorModel` constructs PI/limits, estimators and pole-pair state
+outside the ISR. Boot and live writes consume it through one stopped-only
+installer. A generation-tagged, single-flight mailbox handles cancellation
+and stale commands without copying the prepared payload into the command
+queue. Applied configuration/revision and telemetry pole pairs are committed
+before the acknowledgement. Partial models clear unavailable estimators and
+fall back to Manual; replacement restores them without rebooting.
+
+The hardware check exercises full/partial/full models, rejected unavailable
+sources and pole-pair replacement/restoration with PWM disabled throughout.
+Its timing build recorded 130776 samples without loss; the largest observed
+whole ISR was 6336 cycles, with zero overruns. This includes the apply work,
+not an isolated apply duration. Software checks cover races, cancellation,
+queued starts, reset and feature variants. The final host suite passed 537
+tests (two existing ignores); strict core/virtual/host-lib Clippy and both
+device release checks passed.
+
+Same model, Hall source, 0.6-A Id-only hold, minimal DWT instrumentation:
+
+| Variant | Mean ISR cycles | Recorded samples lost | Decision |
+| --- | ---: | ---: | --- |
+| Coherent-model baseline | 6309–6310 | 82 | Diagnostic timing reference |
+| H3: sink unused centroid work | 6273 | 0 | Keep |
+| H3 + H5: cache limiter minimum speed | 6251; repeat 6250 | 0 | Keep |
+| H3 + H4: cache sector decay duration | 6282 | 0 | Reject H4 |
+| H3 + H5 + O2: acceleration algebra | 6283 | 0 | Reject O2 |
+| H3 + H5 + B1: queue alone in CCM | 6290 | 0 | Reject B1 |
+
+H4 plus H5 measured 6247 cycles, only four below H5 alone; the extra cache
+was removed. Selected changes save about 60 cycles / 0.35 us (0.9%);
+these whole-image measurements include layout effects. Queue CCM startup
+and placement were verified (4116 B at 0x10000000, STATE/driver in SRAM),
+but the feature was removed after the regression. T2 was rejected before
+MCU integration: pinned-host ABBA medians regressed 8.3% for mixed and 9.4%
+for dense frames. Exact-wire/history tests across four alignments remain.
+
+Final detailed profiling measured 6738–6739 whole-ISR cycles: estimator
+update 1781 (observer included: 657), controller 1074, command glue 494,
+ADC 350, snapshot 501 and publication 586. Buckets overlap. Instrumentation
+lost 13341 samples; this capture qualifies timing only. The repeat with
+minimal timing measured 6250 cycles / 37.24 us and no overruns.
+
+Qualification then used the normal image without ISR timing/profiling:
+418159 native 20004.27-Hz samples, all 101 commands successful, zero gaps
+or lost samples, sampled dq peak 1.74 A. The middle hold averaged
+Id=0.59995 A, Iq=-0.00012 A; Hall errors/overcaptures were zero. Separate
+unapplied R=30.458 mOhm and HFI Ld/Lq=18.391/27.788 uH captures also had
+zero loss. The live-model check repeated successfully with 126648 samples,
+zero loss and exact configuration-value restoration. No flash writes were
+performed. The matching normal ELF remains installed, Stopped/Hall, fault
+count zero. Use `bench-current-mk5` for the already-built exact image and
+`test-live-model-mk5` for the model replacement check.
+
+Rotation is not qualified by the stationary benchmark. A velocity pilot
+before the model fix and a later q-current test both hit the unchanged
+6-A dq trip. Recorded bursts align with low-speed Hall centroid snaps and
+speed/feedforward steps: in one contiguous interval lambda*delta_omega
+predicts 0.585 V versus the observed 0.584-V q-voltage step. OxiFOC bypasses
+the angle limiter below the interpolation threshold and uses unfiltered Hall
+speed for feedforward; local VESC 7.00 limits angle at all speeds and filters
+its corrected speed. This identifies a bounded follow-up investigation,
+not proof of independently measured rotor speed or a reason to raise trips.
+Hall calibration entries are state centroids, not measured transition edges.
+
+This batch's captures, hashes, validation commands and plots are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-model-apply-perf-2026-11-09/`:
+`performance-final.png`, `final-hold.parquet.png`, `software-final/` and
+`hall-current-bursts-detail.png` are the useful entry points.
 
 Only the integrator owns the physical board, flashing and captures. Pause
 concurrent builds during timing-sensitive runs. Keep the exact matching
