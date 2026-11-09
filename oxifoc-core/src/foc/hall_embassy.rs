@@ -19,7 +19,7 @@ use core::cell::{Cell, RefCell};
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
 use super::hall_sensor::{Direction, HallSensor};
-use super::sensors::{AngleSample, AngleSensor, ControlAngleSample, HallSensorTrait, HallSnapshot};
+use super::sensors::{AngleSample, AngleSensor, ControlAngleSample, HallSnapshot};
 
 // ========== Hall Estimator (shared state) ==========
 
@@ -118,16 +118,10 @@ pub fn update_hall_edge(state: u8, ticks: u64) {
 /// Get current Hall sensor snapshot (for telemetry, polled at low rate).
 pub fn get_snapshot(now_ticks: u64) -> Option<HallSnapshot> {
     HALL_ESTIMATOR.lock(|est| {
-        est.borrow().sensor.as_ref().and_then(|h| {
-            h.sample_at(now_ticks).map(|sample| HallSnapshot {
-                angle_rad: sample.angle,
-                velocity_rad_s: sample.omega,
-                direction: sample.direction,
-                state: h.logical_state(),
-                error_count: h.error_count(),
-                edge_age_s: h.time_since_edge_s(now_ticks).unwrap_or(0.0),
-            })
-        })
+        est.borrow()
+            .sensor
+            .as_ref()
+            .and_then(|h| h.snapshot_at(now_ticks))
     })
 }
 

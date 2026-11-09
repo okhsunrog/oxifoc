@@ -12,7 +12,9 @@
 
 use core::f32::consts::TAU;
 
-use super::sensors::{AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait};
+use super::sensors::{
+    AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait, HallSnapshot,
+};
 use super::{angle_difference, wrap_angle};
 use crate::foc::clamp_f32;
 
@@ -836,6 +838,26 @@ impl HallSensor {
     /// - Above threshold: linear interpolation from the last boundary, at
     ///   most one sector (see `decayed_velocity`)
     pub fn sample_at(&self, now_ticks: u64) -> Option<AngleSample> {
+        self.sample_with_edge_age_at(now_ticks)
+            .map(|(sample, _)| sample)
+    }
+
+    /// Raw immutable telemetry snapshot, with the exact edge age used to
+    /// calculate its angle and velocity. This avoids a second time conversion.
+    pub fn snapshot_at(&self, now_ticks: u64) -> Option<HallSnapshot> {
+        self.sample_with_edge_age_at(now_ticks)
+            .map(|(sample, edge_age_s)| HallSnapshot {
+                angle_rad: sample.angle,
+                velocity_rad_s: sample.omega,
+                direction: sample.direction,
+                state: self.logical_state,
+                error_count: self.error_count,
+                edge_age_s,
+            })
+    }
+
+    #[inline]
+    fn sample_with_edge_age_at(&self, now_ticks: u64) -> Option<(AngleSample, f32)> {
         let t0 = self.last_edge_ticks?;
         if self.in_glitch {
             // Invalid state right now: no angle (the caller falls back).
@@ -853,19 +875,25 @@ impl HallSensor {
         if Self::vel_to_erpm(velocity) < self.interp_min_erpm {
             // Low speed: use sector angle directly, no interpolation
             // This prevents oscillation during direction reversals
-            return Some(AngleSample {
-                angle: self.calib.angle_for_state(self.raw_state),
-                omega: velocity,
-                direction: self.direction,
-            });
+            return Some((
+                AngleSample {
+                    angle: self.calib.angle_for_state(self.raw_state),
+                    omega: velocity,
+                    direction: self.direction,
+                },
+                dt,
+            ));
         }
 
         // High speed: interpolate using velocity
-        Some(AngleSample {
-            angle: wrap_angle(self.angle + velocity * dt),
-            omega: velocity,
-            direction: self.direction,
-        })
+        Some((
+            AngleSample {
+                angle: wrap_angle(self.angle + velocity * dt),
+                omega: velocity,
+                direction: self.direction,
+            },
+            dt,
+        ))
     }
 
     /// Velocity estimate bounded by the time already waited since the last
@@ -1205,6 +1233,54 @@ impl HallSensorTrait for HallSensor {
 mod tests {
     use super::*;
     use core::f32::consts::FRAC_PI_3;
+
+    fn assert_raw_snapshot_matches_separate_sample_and_age(hall: &HallSensor, now: u64) {
+        match (hall.snapshot_at(now), hall.sample_at(now)) {
+            (None, None) => {}
+            (Some(snapshot), Some(sample)) => {
+                assert_eq!(snapshot.angle_rad.to_bits(), sample.angle.to_bits());
+                assert_eq!(snapshot.velocity_rad_s.to_bits(), sample.omega.to_bits());
+                assert_eq!(snapshot.direction, sample.direction);
+                assert_eq!(snapshot.state, hall.logical_state());
+                assert_eq!(snapshot.error_count, hall.error_count());
+                assert_eq!(
+                    snapshot.edge_age_s.to_bits(),
+                    hall.time_since_edge_s(now).unwrap().to_bits()
+                );
+            }
+            pair => panic!("raw snapshot availability differs: {pair:?}"),
+        }
+    }
+
+    #[test]
+    fn raw_snapshot_reuses_same_edge_age_across_motion_glitches_and_clock_ranges() {
+        for ticks_per_sec in [1, 1_000_000, 170_000_000] {
+            let mut hall = HallSensor::new(ticks_per_sec);
+            let interval = (ticks_per_sec / 100).max(1);
+            assert_raw_snapshot_matches_separate_sample_and_age(&hall, 0);
+            let mut now = 0;
+            for raw in [1, 3, 2, 6, 4, 5, 1, 5, 4, 6, 2, 3, 1] {
+                hall.update(raw, now);
+                for observed in [
+                    now.saturating_sub(1),
+                    now,
+                    now + 1,
+                    now + interval / 2,
+                    now + 2 * interval,
+                    u64::MAX,
+                ] {
+                    assert_raw_snapshot_matches_separate_sample_and_age(&hall, observed);
+                }
+                now += interval;
+            }
+            hall.update(7, now);
+            assert!(hall.snapshot_at(now).is_none());
+            assert_raw_snapshot_matches_separate_sample_and_age(&hall, now + interval);
+            hall.update(1, now + interval);
+            assert_raw_snapshot_matches_separate_sample_and_age(&hall, now + interval);
+            assert!(hall.snapshot_at(now + interval).unwrap().error_count > 0);
+        }
+    }
 
     // Keep the pre-optimization raw sampling equations as a differential oracle.
     // Edge processing is exercised through the public API on both estimators.
