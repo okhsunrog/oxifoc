@@ -71,17 +71,30 @@ fn open_loop(angle_rad: f32, current: f32, pi_gains: Option<(f32, f32)>) -> Even
     })
 }
 
+fn poll_calibration(
+    reader: &impl HallReader,
+    params: HallCalibrationParams,
+) -> Poll<Result<HallCalibrationResult, DetectionError>> {
+    let mut hw = Hardware;
+    let mut future = core::pin::pin!(calibrate_hall::<_, RecordingTimer, _>(
+        &mut hw, reader, params
+    ));
+    future
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+}
+
 #[test]
 fn hall_sweeps_group_directions_and_visit_successive_motor_arcs() {
     let cases: [(&[bool], i32); 8] = [
         (&[], 0),
-        (&[true], 359),
-        (&[true, false], 359),
-        (&[true, true, false], 719),
-        (&[true, true, false, false], 719),
-        (&[true, true, true, false, false], 1079),
-        (&[true, true, true, false, false, false], 1079),
-        (&[true, true, true, true, false, false, false], 1439),
+        (&[true], 719),
+        (&[true, false], 719),
+        (&[true, true, false], 1079),
+        (&[true, true, false, false], 1079),
+        (&[true, true, true, false, false], 1439),
+        (&[true, true, true, false, false, false], 1439),
+        (&[true, true, true, true, false, false, false], 1799),
     ];
     assert_eq!(HallCalibrationParams::default().sweep_count, 6);
 
@@ -92,18 +105,8 @@ fn hall_sweeps_group_directions_and_visit_successive_motor_arcs() {
         };
         EVENTS.with(|events| events.borrow_mut().clear());
         ANGLE.with(|angle| angle.set(0.0));
-        let result = {
-            let mut hw = Hardware;
-            let mut future = core::pin::pin!(calibrate_hall::<_, RecordingTimer, _>(
-                &mut hw, &Reader, params
-            ));
-            match future
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop()))
-            {
-                Poll::Ready(result) => result,
-                Poll::Pending => panic!("recording backend unexpectedly yielded"),
-            }
+        let Poll::Ready(result) = poll_calibration(&Reader, params) else {
+            panic!("recording backend unexpectedly yielded");
         };
         if directions.is_empty() || matches!(directions.len(), 2 | 3) {
             assert_eq!(result.unwrap_err(), DetectionError::LowConfidence);
@@ -132,7 +135,14 @@ fn hall_sweeps_group_directions_and_visit_successive_motor_arcs() {
         let mut previous_degrees = 0i32;
         let mut unwrapped_degrees = 0;
         let mut maximum_degrees = 0;
-        for &forward in directions {
+        let mut physical_directions = Vec::new();
+        for (index, &forward) in directions.iter().enumerate() {
+            if index == 0 || directions[index - 1] != forward {
+                physical_directions.push(forward); // unmeasured settling turn
+            }
+            physical_directions.push(forward);
+        }
+        for forward in physical_directions {
             for step in 0..360 {
                 let degrees = if forward { step } else { 359 - step };
                 let angle = degrees as f32 * core::f32::consts::TAU / 360.0;
@@ -174,4 +184,70 @@ fn hall_sweeps_group_directions_and_visit_successive_motor_arcs() {
         assert_eq!(events.next(), Some(Event::Millis(100)));
         assert_eq!(events.next(), None);
     }
+}
+
+/// Simulate a directional tracking transient only during the first turn. An
+/// optional additional transient in a measured turn must still fail quality.
+struct SettlingReader {
+    reads: Cell<usize>,
+    measured_outlier: bool,
+}
+
+impl HallReader for SettlingReader {
+    fn read_hall_state(&self) -> u8 {
+        let index = self.reads.get();
+        self.reads.set(index + 1);
+        let turn = index / 360;
+        let positive = turn < 4;
+        let within_direction = turn % 4;
+        let transient = within_direction == 0 || (self.measured_outlier && turn == 2);
+        let lag = if transient { 30 } else { 0 } * if positive { 1 } else { -1 };
+        let angle = ANGLE.with(Cell::get);
+        let degrees = (angle * 360.0 / core::f32::consts::TAU).round() as i32;
+        let physical = (degrees - lag).rem_euclid(360) as usize;
+        [1, 3, 2, 6, 4, 5][physical / 60]
+    }
+}
+
+#[test]
+fn settling_turns_do_not_contaminate_measured_centroids_or_transition_geometry() {
+    let reader = SettlingReader {
+        reads: Cell::new(0),
+        measured_outlier: false,
+    };
+    EVENTS.with(|events| events.borrow_mut().clear());
+    ANGLE.with(|angle| angle.set(0.0));
+    let Poll::Ready(result) = poll_calibration(&reader, HallCalibrationParams::default()) else {
+        panic!("recording backend unexpectedly yielded");
+    };
+    let result = result.unwrap();
+    assert_eq!(reader.reads.get(), 8 * 360);
+    let geometry = result.geometry.unwrap();
+    for (index, raw) in [1, 3, 2, 6, 4, 5].into_iter().enumerate() {
+        let entry = index as f32 * core::f32::consts::TAU / 6.0;
+        let centroid = entry + core::f32::consts::TAU / 12.0;
+        let bin = core::f32::consts::TAU / 360.0;
+        assert!(
+            crate::foc::angle_difference(geometry.boundary_for_positive_entry(raw).unwrap(), entry,)
+                .abs() <= bin
+        );
+        assert!(
+            crate::foc::angle_difference(result.angles[usize::from(raw)], centroid).abs() <= bin
+        );
+    }
+}
+
+#[test]
+fn inconsistent_measured_turn_is_rejected_after_settling() {
+    let reader = SettlingReader {
+        reads: Cell::new(0),
+        measured_outlier: true,
+    };
+    EVENTS.with(|events| events.borrow_mut().clear());
+    ANGLE.with(|angle| angle.set(0.0));
+    assert!(matches!(
+        poll_calibration(&reader, HallCalibrationParams::default()),
+        Poll::Ready(Err(DetectionError::LowConfidence))
+    ));
+    assert_eq!(reader.reads.get(), 8 * 360);
 }

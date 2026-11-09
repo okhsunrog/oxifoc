@@ -2384,9 +2384,16 @@ use crate::foc::hall_calibration::{
     HallCalibrationParams, HallCalibrationResult, HallCalibrator, HallSweepDirection,
 };
 
+// Establish motion in each direction before collecting repeatability data.
+// Measured turns and all quality gates remain unchanged; native telemetry also
+// records these settling turns for distinguishing tracking from pole variation.
+const HALL_SETTLING_TURNS_PER_DIRECTION: u8 = 1;
+
 /// Run Hall sensor calibration sweep.
 ///
 /// Sweeps motor through electrical angles while recording Hall sensor states.
+/// Each used direction begins with one unmeasured settling turn, followed by
+/// its share of `params.sweep_count` measured turns.
 ///
 /// # Arguments
 /// * `hw` - Hardware abstraction implementation
@@ -2429,41 +2436,43 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
     // arcs, rather than repeatedly reversing over the same mechanical arc.
     let degrees_per_sweep = 360u32;
     let forward_sweeps = params.sweep_count.div_ceil(2);
+    let reverse_sweeps = params.sweep_count / 2;
 
-    for sweep in 0..params.sweep_count {
-        let forward = sweep < forward_sweeps;
-
-        for deg in 0..degrees_per_sweep {
-            let actual_deg = if forward {
-                deg
-            } else {
-                degrees_per_sweep - 1 - deg
-            };
-            let angle_rad = actual_deg as f32 * core::f32::consts::TAU / 360.0;
-
-            // Command motor to this angle
-            hw.send_command(ControlMode::OpenLoop {
-                angle_rad,
-                current: params.current_amps,
-                velocity_rad_s: 0.0,
-                pi_gains: None,
-            })
-            .await;
-
-            // Wait for rotor to settle
-            T::after_micros(u64::from(params.step_delay_us)).await;
-
-            // Read and record Hall state
-            let hall_state = hall_reader.read_hall_state();
-            calibrator.record_directed(
-                angle_rad,
-                hall_state,
-                if forward {
-                    HallSweepDirection::Positive
+    for (forward, measured_turns) in [(true, forward_sweeps), (false, reverse_sweeps)] {
+        if measured_turns == 0 {
+            continue;
+        }
+        for turn in 0..measured_turns + HALL_SETTLING_TURNS_PER_DIRECTION {
+            for deg in 0..degrees_per_sweep {
+                let actual_deg = if forward {
+                    deg
                 } else {
-                    HallSweepDirection::Negative
-                },
-            );
+                    degrees_per_sweep - 1 - deg
+                };
+                let angle_rad = actual_deg as f32 * core::f32::consts::TAU / 360.0;
+
+                hw.send_command(ControlMode::OpenLoop {
+                    angle_rad,
+                    current: params.current_amps,
+                    velocity_rad_s: 0.0,
+                    pi_gains: None,
+                })
+                .await;
+                T::after_micros(u64::from(params.step_delay_us)).await;
+
+                let hall_state = hall_reader.read_hall_state();
+                if turn >= HALL_SETTLING_TURNS_PER_DIRECTION {
+                    calibrator.record_directed(
+                        angle_rad,
+                        hall_state,
+                        if forward {
+                            HallSweepDirection::Positive
+                        } else {
+                            HallSweepDirection::Negative
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -2486,7 +2495,6 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
 
     // Step 4: Compute result
     info!("Computing calibration result...");
-    let reverse_sweeps = params.sweep_count / 2;
     let result = if reverse_sweeps > 0 {
         calibrator.finish_bidirectional(forward_sweeps, reverse_sweeps)
     } else {
