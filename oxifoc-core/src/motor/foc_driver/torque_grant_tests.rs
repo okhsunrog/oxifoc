@@ -3,14 +3,81 @@
 use super::*;
 use crate::foc::clamp_f32;
 use crate::foc::fast_math::sqrtf;
+use crate::foc::phase::{PhaseInput, PhaseOutput, RotorVelocityEstimate};
 use crate::motor::dissipation::{RegenBudget, WindingModel, dissipate_with_id};
 
 type GrantDriver = FocDriver<MockPwm, MockCurrentSensor, PhaseManager<NoSensor, NoSensor>>;
 
+struct StationaryRotor;
+
+impl PhaseProvider for StationaryRotor {
+    fn get(&self) -> PhaseOutput {
+        PhaseOutput {
+            angle: 0.0,
+            velocity: 0.0,
+        }
+    }
+
+    fn rotor_velocity(&self) -> Option<RotorVelocityEstimate> {
+        RotorVelocityEstimate::new(0.0)
+    }
+
+    fn update(&mut self, _: &PhaseInput, _: u64) {}
+}
+
+#[test]
+fn direct_and_reused_grants_keep_the_same_independent_current_trip() {
+    for mode in [
+        ControlMode::CurrentControl {
+            iq_target: 1.0,
+            id_target: 0.0,
+        },
+        ControlMode::VelocityControl { target_vel: 100.0 },
+    ] {
+        let mut driver = FocDriver::new(
+            FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+            MockPwm { duties: [0; 3] },
+            MockCurrentSensor {
+                currents: (7.0, -3.5, -3.5),
+            },
+            StationaryRotor,
+            1.0 / 20_000.0,
+        );
+        driver.set_current_limits(CurrentLimits::from_max_current(3.0));
+        driver.set_mode(mode);
+        assert_eq!(driver.step(50), Err(StepError::Overcurrent));
+        assert_eq!(driver.mode(), ControlMode::Stopped);
+    }
+}
+
+fn legacy_bus_clamp(driver: &GrantDriver, iq: f32) -> f32 {
+    let in_max = driver.current_limits.bus_in_max_a;
+    let regen_max = driver.current_limits.bus_regen_max_a;
+    if in_max < 0.0 && regen_max < 0.0 {
+        return iq;
+    }
+    let mod_q = driver.bus_mod_q_filt;
+    if mod_q.abs() < 1e-3 {
+        return iq;
+    }
+    let hi_bus = if in_max >= 0.0 { in_max } else { f32::INFINITY };
+    let lo_bus = if regen_max >= 0.0 {
+        -regen_max
+    } else {
+        f32::NEG_INFINITY
+    };
+    let (lo_iq, hi_iq) = if mod_q > 0.0 {
+        (lo_bus / mod_q, hi_bus / mod_q)
+    } else {
+        (hi_bus / mod_q, lo_bus / mod_q)
+    };
+    clamp_f32(iq, lo_iq, hi_iq)
+}
+
 fn legacy_grant(driver: &GrantDriver, id_target: f32, iq_target: f32, omega: f32) -> (f32, f32) {
     let limits = &driver.current_limits;
     if !limits.is_enabled() {
-        return (id_target, driver.clamp_iq_for_bus(iq_target));
+        return (id_target, legacy_bus_clamp(driver, iq_target));
     }
     if iq_target * omega >= 0.0 {
         let lim = limits.max_current_a
@@ -20,7 +87,7 @@ fn legacy_grant(driver: &GrantDriver, id_target: f32, iq_target: f32, omega: f32
                 .min(driver.derating_cfg().speed_cut(omega));
         return (
             id_target,
-            driver.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
+            legacy_bus_clamp(driver, clamp_f32(iq_target, -lim, lim)),
         );
     }
     let brake = driver.derating().brake;
@@ -39,7 +106,7 @@ fn legacy_grant(driver: &GrantDriver, id_target: f32, iq_target: f32, omega: f32
         let lim = limits.max_brake_a * brake.min(driver.derating().regen);
         return (
             id_target,
-            driver.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
+            legacy_bus_clamp(driver, clamp_f32(iq_target, -lim, lim)),
         );
     };
     let lim = limits.max_brake_a * brake;
@@ -64,20 +131,70 @@ fn legacy_grant(driver: &GrantDriver, id_target: f32, iq_target: f32, omega: f32
     ) {
         Some((id, iq)) if id * id > id_target * id_target => (id, iq),
         Some((_, iq)) => (id_target, iq),
-        None => (id_target, driver.clamp_iq_for_bus(iq)),
+        None => (id_target, legacy_bus_clamp(driver, iq)),
     }
 }
 
 fn check(driver: &GrantDriver, id: f32, iq: f32, omega: f32) -> (f32, f32) {
     let actual = driver.grant_torque(id, iq, omega);
+    let constraints = driver.torque_constraints(omega);
+    let constrained = driver.grant_torque_constrained(id, iq, &constraints);
     let expected = legacy_grant(driver, id, iq, omega);
-    for (actual, expected) in [(actual.0, expected.0), (actual.1, expected.1)] {
+    for (actual, expected) in [
+        (actual.0, expected.0),
+        (actual.1, expected.1),
+        (constrained.0, expected.0),
+        (constrained.1, expected.1),
+    ] {
         assert!(
             (actual.is_nan() && expected.is_nan()) || actual.to_bits() == expected.to_bits(),
             "id={id:?}, iq={iq:?}, omega={omega:?}: {actual:?} != {expected:?}"
         );
     }
     actual
+}
+
+#[test]
+fn local_constraints_keep_ieee_identity_and_refresh_each_cycle() {
+    assert_eq!(size_of::<protection::TorqueConstraints>(), 20);
+    let mut driver = grant_driver(
+        CurrentLimits::from_max_current(0.0),
+        DeratingScales::IDENTITY,
+    );
+    driver.bus_mod_q_filt = 0.5;
+    for iq in [
+        -0.0_f32,
+        0.0,
+        f32::NEG_INFINITY,
+        f32::INFINITY,
+        f32::from_bits(0x7fc0_1234),
+    ] {
+        let constraints = driver.torque_constraints(0.0);
+        assert_eq!(
+            driver
+                .grant_torque_constrained(0.0, iq, &constraints)
+                .1
+                .to_bits(),
+            iq.to_bits()
+        );
+    }
+    driver.set_current_limits(CurrentLimits {
+        bus_in_max_a: 1.0,
+        bus_regen_max_a: 0.0,
+        ..CurrentLimits::from_max_current(10.0)
+    });
+    for (modulation, speed) in [(0.25, 100.0), (-0.5, -100.0), (0.0, 0.0)] {
+        driver.bus_mod_q_filt = modulation;
+        let constraints = driver.torque_constraints(speed);
+        for iq in [-10.0, 10.0, 3.0] {
+            let actual = driver.grant_torque_constrained(0.0, iq, &constraints);
+            let expected = legacy_grant(&driver, 0.0, iq, speed);
+            assert_eq!(
+                (actual.0.to_bits(), actual.1.to_bits()),
+                (expected.0.to_bits(), expected.1.to_bits())
+            );
+        }
+    }
 }
 
 #[test]

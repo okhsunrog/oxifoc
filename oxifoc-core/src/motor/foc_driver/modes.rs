@@ -1,5 +1,6 @@
 //! One control cycle for each `ControlMode` arm.
 
+use super::protection::TorqueConstraints;
 use super::{ControlMode, FocDriver, STARTUP_MIN_DRIVE_A, StepError, VOLTAGE_LIMITED_IQ_MARGIN_A};
 use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
@@ -225,9 +226,9 @@ where
             f32::INFINITY
         };
         // The bounds and final current grant use the same speed policy.
-        let torque_speed = self.torque_speed();
-        let iq_min = self.grant_torque(0.0, -full, torque_speed).1;
-        let iq_max = self.grant_torque(0.0, full, torque_speed).1;
+        let constraints = self.torque_constraints(self.torque_speed());
+        let iq_min = self.grant_torque_constrained(0.0, -full, &constraints).1;
+        let iq_max = self.grant_torque_constrained(0.0, full, &constraints).1;
         let clip = self.controller.q_voltage_clip();
         let (iq_min, iq_max) = if clip > 0.0 {
             (
@@ -245,17 +246,35 @@ where
         let iq_target = self
             .velocity_loop
             .step_blocked(target_vel, omega, iq_min, iq_max, clip, dt);
-        self.step_current_control(iq_target, 0.0, dt, now_ticks)
+        self.step_current_control_with_constraints(
+            iq_target,
+            0.0,
+            dt,
+            now_ticks,
+            Some(&constraints),
+        )
     }
 
     /// Execute current control step
-    #[cfg_attr(feature = "isr-speed", optimize(speed))]
+    #[inline(always)]
     pub(super) fn step_current_control(
         &mut self,
         iq_target: f32,
         id_target: f32,
         dt: f32,
         now_ticks: u64,
+    ) -> Result<FocOutput, StepError> {
+        self.step_current_control_with_constraints(iq_target, id_target, dt, now_ticks, None)
+    }
+
+    #[cfg_attr(feature = "isr-speed", optimize(speed))]
+    fn step_current_control_with_constraints(
+        &mut self,
+        iq_target: f32,
+        id_target: f32,
+        dt: f32,
+        now_ticks: u64,
+        constraints: Option<&TorqueConstraints>,
     ) -> Result<FocOutput, StepError> {
         let prof_t0 = crate::isr_prof::now();
         // Check sensor calibration
@@ -304,7 +323,10 @@ where
             0.0
         };
 
-        let (id_target, iq_target) = self.grant_torque(id_target, iq_target, self.torque_speed());
+        let (id_target, iq_target) = match constraints {
+            Some(constraints) => self.grant_torque_constrained(id_target, iq_target, constraints),
+            None => self.grant_torque(id_target, iq_target, self.torque_speed()),
+        };
 
         // Get phase from provider: the previous update's prediction of the
         // rotor at THIS current sample (PhaseProvider timing contract). It

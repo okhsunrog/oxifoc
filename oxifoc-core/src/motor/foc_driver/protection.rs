@@ -25,6 +25,34 @@ use crate::motor::dissipation::dissipate_with_id;
 #[cfg(feature = "storage")]
 use crate::storage::CurrentLimitsConfig;
 
+struct BusIqBounds {
+    lo: f32,
+    hi: f32,
+}
+
+impl BusIqBounds {
+    const IDENTITY: Self = Self {
+        lo: f32::NEG_INFINITY,
+        hi: f32::INFINITY,
+    };
+
+    #[inline(always)]
+    fn clamp(&self, iq: f32) -> f32 {
+        clamp_f32(iq, self.lo, self.hi)
+    }
+}
+
+/// One cycle's velocity-loop authority and final torque-grant constraints.
+/// Construct after selecting physical torque speed and reuse only within that
+/// cycle, before protection/model/modulation state changes. The nonlinear
+/// dissipative brake remains request-dependent and is solved for each request.
+pub(super) struct TorqueConstraints {
+    bus: BusIqBounds,
+    omega: f32,
+    drive_limit: f32,
+    plain_brake_limit: f32,
+}
+
 /// Current limiting configuration for the FOC driver.
 ///
 /// Three layers of protection:
@@ -568,7 +596,65 @@ where
                 self.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
             );
         };
-        self.grant_dissipative_brake(id_target, iq_target, omega, brake, model)
+        self.grant_dissipative_brake(id_target, iq_target, omega, brake, model, None)
+    }
+
+    /// Prepare shared scalar bounds for the velocity PI's two authority probes
+    /// and its actual current request. Ordinary current control keeps the
+    /// direct grant path, without constructing this local value.
+    pub(super) fn torque_constraints(&self, omega: f32) -> TorqueConstraints {
+        let limits = &self.current_limits;
+        let (drive_limit, plain_brake_limit) = if limits.is_enabled() {
+            (
+                limits.max_current_a
+                    * self
+                        .derating()
+                        .drive
+                        .min(self.derating_cfg().speed_cut(omega)),
+                limits.max_brake_a * self.derating().brake.min(self.derating().regen),
+            )
+        } else {
+            (f32::INFINITY, f32::INFINITY)
+        };
+        TorqueConstraints {
+            bus: self.bus_iq_bounds().unwrap_or(BusIqBounds::IDENTITY),
+            omega,
+            drive_limit,
+            plain_brake_limit,
+        }
+    }
+
+    pub(super) fn grant_torque_constrained(
+        &self,
+        id_target: f32,
+        iq_target: f32,
+        constraints: &TorqueConstraints,
+    ) -> (f32, f32) {
+        if !self.current_limits.is_enabled() {
+            return (id_target, constraints.bus.clamp(iq_target));
+        }
+        if iq_target * constraints.omega >= 0.0 {
+            let lim = constraints.drive_limit;
+            return (
+                id_target,
+                constraints.bus.clamp(clamp_f32(iq_target, -lim, lim)),
+            );
+        }
+        let Some(model) = self.dissipation_model() else {
+            let lim = constraints.plain_brake_limit;
+            return (
+                id_target,
+                constraints.bus.clamp(clamp_f32(iq_target, -lim, lim)),
+            );
+        };
+        self.grant_dissipative_brake(
+            id_target,
+            iq_target,
+            constraints.omega,
+            self.derating().brake,
+            model,
+            Some(&constraints.bus),
+        )
     }
 
     // Keep the optional nonlinear solve out of the common torque grant: its
@@ -581,6 +667,7 @@ where
         omega: f32,
         brake: f32,
         model: WindingModel,
+        bus: Option<&BusIqBounds>,
     ) -> (f32, f32) {
         let limits = &self.current_limits;
         let lim = limits.max_brake_a * brake;
@@ -611,7 +698,13 @@ where
             Some((id, iq)) if id * id > id_target * id_target => (id, iq),
             Some((_, iq)) => (id_target, iq),
             // Plugging: the brake draws from the supply, nothing to shape.
-            None => (id_target, self.clamp_iq_for_bus(iq)),
+            None => (
+                id_target,
+                match bus {
+                    Some(bounds) => bounds.clamp(iq),
+                    None => self.clamp_iq_for_bus(iq),
+                },
+            ),
         }
     }
 
@@ -639,16 +732,24 @@ where
     /// regen zone (a lab PSU cannot absorb reverse current). The
     /// windings-short parking brake is unaffected — it never sees the bus.
     pub(super) fn clamp_iq_for_bus(&self, iq_target: f32) -> f32 {
+        match self.bus_iq_bounds() {
+            Some(bounds) => bounds.clamp(iq_target),
+            None => iq_target,
+        }
+    }
+
+    #[inline(always)]
+    fn bus_iq_bounds(&self) -> Option<BusIqBounds> {
         let in_max = self.current_limits.bus_in_max_a;
         let regen_max = self.current_limits.bus_regen_max_a;
         if in_max < 0.0 && regen_max < 0.0 {
-            return iq_target; // both unlimited (the default)
+            return None; // both unlimited (the default)
         }
         let mod_q = self.bus_mod_q_filt;
         // Near-zero modulation: bus current is negligible whatever iq is,
         // and dividing by it would explode. Same dead-band as VESC.
         if mod_q.abs() < 1e-3 {
-            return iq_target;
+            return None;
         }
         let hi_bus = if in_max >= 0.0 { in_max } else { f32::INFINITY };
         let lo_bus = if regen_max >= 0.0 {
@@ -661,7 +762,10 @@ where
         } else {
             (hi_bus / mod_q, lo_bus / mod_q)
         };
-        clamp_f32(iq_target, lo_iq, hi_iq)
+        Some(BusIqBounds {
+            lo: lo_iq,
+            hi: hi_iq,
+        })
     }
 }
 
