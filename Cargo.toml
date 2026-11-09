@@ -64,7 +64,7 @@ oxifoc-core = { path = "oxifoc-core" }
 # (oxifoc-g474/f405/bridge/remote), then refresh all Cargo.lock files.
 # Bench pin: fork branch fix/nusb-receive-headroom, based on upstream main.
 # Keep a fixed commit so capture provenance remains reproducible.
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "63b5707ef14208991ddf3bdb706dcdf7711a9302" }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "3c502f49814ac2ae25385b21fdbc9b964f86d877" }
 tokio = { version = "1.53", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

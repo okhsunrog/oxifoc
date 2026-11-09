@@ -47,7 +47,7 @@ mutex = "1.0.2"
 # Local dependencies
 # runtime feature includes icd (endpoints) and types (shared structs)
 oxifoc-core = { path = "../oxifoc-core", features = ["runtime", "defmt", "storage", "embassy", "cordic", "embassy-hal", "hfi", "hfi-detect", "isr-speed"] }
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "63b5707ef14208991ddf3bdb706dcdf7711a9302", default-features = false, features = [
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "3c502f49814ac2ae25385b21fdbc9b964f86d877", default-features = false, features = [
     "embassy-usb-v0_6",
     "embedded-io-async-v0_7",
     "nostd-seed-router",

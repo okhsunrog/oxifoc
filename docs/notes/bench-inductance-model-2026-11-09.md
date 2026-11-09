@@ -110,6 +110,15 @@ The final untraced SRAM bench image retained 2400768 consecutive native
 samples in a 120-s run; independent sequence inspection found no duplicates
 or non-unit steps.
 These bound the tested pause tolerance, not arbitrary host stalls.
+
+Follow-up pin `3c502f4` adds host-only `NusbTransportConfig` with a nonzero
+receive depth and a default of 32. The unchanged registration API and an
+explicit depth of 64 each retained 360120 native 20-kHz samples; depth 64
+also retained 90048 samples at 5 kHz. Each idle run included 5/15/30/50-ms
+host pauses, with no sequence gaps or duplicates. OxiFOC retains the default
+32; the temporary 64-request call, captures and `verification.json` are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/ergot-nusb-config-2026-11-09/`.
+
 A prior 30-s 5-kHz control retained 150048 samples
 without gaps. TIM5 endpoint timing is opt-in (`bench-usb-metrics`); wall-clock
 drain/encode/broadcast counters survive DWT stopping on debugger detach.
