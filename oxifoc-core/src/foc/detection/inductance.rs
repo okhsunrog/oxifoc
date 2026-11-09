@@ -481,8 +481,8 @@ impl<S: SinCos> InductanceMeasurement<S> {
 
     /// Interim average inductance ((Ld+Lq)/2) over the windows so far.
     ///
-    /// Used by the amplitude-adaptation pass of `measure_inductance` to
-    /// re-solve the injection voltage from a few scouting windows.
+    /// Diagnostic only: near the ADC noise floor this estimate can be badly
+    /// biased, so it must not size the next excitation's voltage.
     pub fn interim_l_avg(&self) -> Option<f32> {
         if self.cycles_completed == 0 {
             return None;

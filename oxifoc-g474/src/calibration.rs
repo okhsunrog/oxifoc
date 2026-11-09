@@ -4,6 +4,7 @@
 //! platform-specific ADC atomics and board config.
 
 #![allow(dead_code)]
+#![allow(clippy::large_futures, reason = "Detection wrappers retain fixed packet buffers in the static Embassy task; no heap is used")]
 
 use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};

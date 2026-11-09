@@ -317,6 +317,10 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
 /// "has no RUNTIME_CONFIG yet" silently discarded every calibration
 /// (found on the Flipsky bring-up, 2026-07-08).
 #[embassy_executor::task]
+#[allow(
+    clippy::large_futures,
+    reason = "Embassy statically allocates this task including the finite detection packet buffers"
+)]
 pub async fn detect_server(stack: &'static Stack) {
     #[cfg(feature = "task-priority")]
     embassy_executor::Metadata::for_current_task()

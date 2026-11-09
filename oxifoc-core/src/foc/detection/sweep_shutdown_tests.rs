@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "hfi-detect")]
+use crate::foc::detection::excitation::{BurstSample, Waveform};
 use crate::foc::trig::LibmSinCos;
 use core::cell::Cell;
 use core::task::{Context, Poll, Waker};
@@ -224,4 +226,95 @@ fn missing_holding_current_refuses_all_excitation_methods() {
         );
     }
     assert!(hw.stopped.get());
+}
+
+#[cfg(feature = "hfi-detect")]
+#[test]
+fn weak_main_response_cannot_inflate_hfi_voltage_beyond_the_seed_target() {
+    // The short lag probe sees a 25-uH winding. Subsequent packets deliberately
+    // have a 5-mH-looking response, reproducing the inflated interim estimate
+    // that previously changed a 0.25-A target into the old 2-A ripple clamp.
+    struct WeakResponse {
+        hold: CompensatedHold,
+        bursts: usize,
+        max_run_voltage: f32,
+    }
+    impl DetectionHardware for WeakResponse {
+        async fn send_command(&self, mode: ControlMode) {
+            self.hold.send_command(mode).await;
+        }
+        async fn wait_telemetry(&mut self) -> FocOutput {
+            self.hold.wait_telemetry().await
+        }
+        fn read_phase_currents(&self) -> (f32, f32, f32) {
+            self.hold.read_phase_currents()
+        }
+        async fn capture_voltage_burst<S: SinCos>(
+            &mut self,
+            program: VoltageBurst,
+        ) -> Result<BurstCapture, DetectionError> {
+            let Waveform::RotatingHfi { amplitude, .. } = program.waveform else {
+                panic!("expected HFI only");
+            };
+            if self.bursts > 0 {
+                self.max_run_voltage = self.max_run_voltage.max(amplitude);
+            }
+            let l = if self.bursts == 0 { 25e-6 } else { 5e-3 };
+            self.bursts += 1;
+            let mut capture = BurstCapture {
+                len: usize::from(program.samples),
+                ..Default::default()
+            };
+            let (mut alpha, mut beta) = (program.hold_current, 0.0);
+            for k in 0..capture.len {
+                if k >= 2 {
+                    let (va, vb) = program.injection::<S>(k - 2);
+                    alpha += va / (20_000.0 * l);
+                    beta += vb / (20_000.0 * l);
+                }
+                capture.samples[k] = BurstSample {
+                    alpha,
+                    beta,
+                    cycle: k as u32,
+                    tick_us: k as u32 * 50,
+                };
+            }
+            Ok(capture)
+        }
+    }
+    let mut hw = WeakResponse {
+        hold: CompensatedHold {
+            current: Cell::new(0.0),
+            vd: Cell::new(0.0),
+            peak: Cell::new(0.0),
+            stopped: Cell::new(true),
+            saw_negative_voltage: Cell::new(false),
+        },
+        bursts: 0,
+        max_run_voltage: 0.0,
+    };
+    let params = InductanceParams {
+        resistance_ohm: 0.03,
+        hold_current_a: 1.0,
+        ..Default::default()
+    };
+    {
+        let mut future = core::pin::pin!(measure_inductance::<_, ImmediateTimer, LibmSinCos>(
+            &mut hw, &params, 20_000.0
+        ));
+        assert!(
+            future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_ready()
+        );
+    }
+    assert!(hw.bursts > 3, "exercise multiple main-pass packets");
+    assert!(hw.max_run_voltage > 0.06);
+    assert!(
+        hw.max_run_voltage < 0.3,
+        "inflated HFI voltage: {}",
+        hw.max_run_voltage
+    );
+    assert!(hw.hold.stopped.get());
 }

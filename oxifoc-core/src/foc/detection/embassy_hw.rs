@@ -335,6 +335,10 @@ pub async fn measure_resistance(
 /// Measure motor inductance: rotating HFI with voltage-pulse fallback
 /// (see [`sweep::measure_inductance_auto`]) — high-resistance motors whose
 /// HFI ripple sinks below the ADC floor still get a result.
+#[allow(
+    clippy::large_futures,
+    reason = "Fixed packet buffers live in the enclosing statically allocated detection task"
+)]
 pub async fn measure_inductance<S: SinCos>(
     params: &InductanceParams,
     pwm_freq_hz: f32,
@@ -375,6 +379,10 @@ pub async fn measure_flux_linkage(
 }
 
 /// Run full motor parameter detection sequence.
+#[allow(
+    clippy::large_futures,
+    reason = "Fixed packet buffers live in the enclosing statically allocated detection task"
+)]
 pub async fn run_full_detection<S: SinCos>(
     params: DetectionParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,

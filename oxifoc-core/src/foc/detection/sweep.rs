@@ -594,20 +594,6 @@ mod resistance_tests;
 #[path = "sweep_shutdown_tests.rs"]
 mod shutdown_tests;
 
-/// Amplitude adaptation context for the HFI loop.
-#[cfg(feature = "hfi-detect")]
-struct HfiAdapt {
-    /// Carrier angular frequency (rad/s) for the |Z| solve.
-    omega: f32,
-    /// Phase resistance (Ω) for the |Z| solve.
-    r: f32,
-    /// Target ripple current (A).
-    i_target: f32,
-    /// Amplitude clamp range (V).
-    v_min: f32,
-    v_max: f32,
-}
-
 /// Maximum command→apply pipeline depth the probe scans for (FOC cycles).
 const PIPELINE_LAG_MAX: usize = 4;
 
@@ -738,11 +724,6 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, T: Timer, S: SinCos>(
 /// Run the HFI collection loop: rotating injection riding on `vd_hold`,
 /// recording into `measurement` until it reports complete.
 ///
-/// With `adapt` set, the first [`HFI_PROBE_CYCLES`] windows act as an
-/// amplitude scout: the interim L estimate solves `V = I_target · |Z|`,
-/// the injector amplitude is re-scaled and the accumulators restart, so
-/// only properly-scaled windows reach the final result.
-///
 /// Each finite packet returns to the retained current PI hold in the ISR.
 /// The caller ramps down that current after collecting the final packet.
 #[cfg(feature = "hfi-detect")]
@@ -752,7 +733,6 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
     measurement: &mut InductanceMeasurement<S>,
     hold: (HoldingVoltage, f32),
     dt: f32,
-    mut adapt: Option<HfiAdapt>,
     lag: u32,
 ) -> Result<(), DetectionError> {
     use super::excitation::Waveform;
@@ -763,19 +743,6 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
     }
     while !measurement.is_complete() {
         hw.check_health()?;
-        if measurement.cycles_completed() >= HFI_PROBE_CYCLES {
-            if let Some(l_avg) = measurement.interim_l_avg()
-                && let Some(a) = adapt.take()
-            {
-                let z = sqrtf(a.r * a.r + a.omega * l_avg * a.omega * l_avg);
-                let v_run = clamp_f32(a.i_target * z, a.v_min, a.v_max);
-                info!("HFI amplitude adapted: {}V", v_run);
-                injector.set_amplitude(v_run);
-                measurement.restart(v_run);
-            } else {
-                adapt = None;
-            }
-        }
         // Four FFT windows at most, with explicit pipeline priming. The ISR
         // restores the retained PI hold even if this task is never polled again.
         let windows = measurement.remaining_cycles().min(4) as usize;
@@ -808,18 +775,14 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
     Ok(())
 }
 
-/// Number of FFT windows for the amplitude-scouting probe phase.
-#[cfg(feature = "hfi-detect")]
-const HFI_PROBE_CYCLES: u32 = 8;
-
 /// Target HFI ripple current as a fraction of the holding current — large
 /// enough to clear the ADC noise floor, small enough that the rotor stays
 /// firmly locked and the total current stays inside the thermal budget.
 #[cfg(feature = "hfi-detect")]
 const HFI_RIPPLE_FRACTION: f32 = 0.25;
 
-/// Hard cap on the HFI injection current (amps) — both the lag/|Z| probe and
-/// the adaptive collection ripple. At the carrier frequency |Z| ≥ R, so the
+/// Maximum modeled HFI ripple target (amps), not an instantaneous trip limit.
+/// At the carrier frequency |Z| ≥ R, so the
 /// worst-case (low-inductance) ripple is `V/R`; capping the probe at `I·R`
 /// keeps even a near-short within budget. The fixed `hfi_voltage_v` (3 V) drew
 /// tens of amps on a low-impedance outrunner and tripped the bench PSU; the
@@ -831,7 +794,7 @@ const HFI_PROBE_CURRENT_A: f32 = 2.0;
 ///
 /// Injects a rotating high-frequency voltage vector in α-β frame and
 /// analyzes the current response using FFT. Runs in two passes: a short
-/// probe at `params.hfi_voltage_v` scouts L, then the main pass re-solves
+/// current-limited probe scouts L, then the main pass solves
 /// the amplitude for a target ripple current (a fraction of the holding
 /// current), clamped to the bus-voltage headroom when `params.vbus` is set.
 ///
@@ -944,34 +907,38 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
         probed_lag
     };
 
-    // Now |Z| is known from the safe probe, so the adaptive collection can scale
-    // up to the ripple target without overcurrent: the most it can command is
-    // `v_max`, drawing `v_max/|Z| ≈ HFI_PROBE_CURRENT_A` at any inductance.
+    // Size the main excitation from the phase-invariant probe, not the
+    // per-sample di/V estimator at the ADC noise floor. The latter can report
+    // a plausible but enormous interim L and inflate a 0.25-A ripple target
+    // to the former 2-A clamp. This is a modeled target, not a protection:
+    // finite-packet transients and inverter errors still use the real dq trip.
+    if !l_probe.is_finite() || l_probe <= 0.0 {
+        return Err(DetectionError::LowConfidence);
+    }
     let z_probe = sqrtf(
         params.resistance_ohm * params.resistance_ohm + (omega * l_probe) * (omega * l_probe),
     )
     .max(params.resistance_ohm);
-    let adapt = HfiAdapt {
-        omega,
-        r: params.resistance_ohm,
-        i_target: clamp_f32(
-            HFI_RIPPLE_FRACTION * params.hold_current_a,
-            0.05,
-            HFI_PROBE_CURRENT_A,
-        ),
-        v_min: probe_v,
-        v_max: clamp_f32(HFI_PROBE_CURRENT_A * z_probe, probe_v, headroom),
-    };
+    let i_target = clamp_f32(
+        HFI_RIPPLE_FRACTION * params.hold_current_a,
+        0.05,
+        HFI_PROBE_CURRENT_A,
+    );
+    let v_run = clamp_f32(i_target * z_probe, probe_v, headroom);
+    info!(
+        "HFI run amplitude: {}V (target ripple={}A)",
+        v_run, i_target
+    );
+    injector.set_amplitude(v_run);
 
     let mut measurement = InductanceMeasurement::<S>::new(params, pwm_freq_hz);
-    measurement.restart(probe_v);
+    measurement.restart(v_run);
     hfi_collect::<H, T, S>(
         hw,
         &mut injector,
         &mut measurement,
         (voltage, params.hold_current_a),
         dt,
-        Some(adapt),
         lag,
     )
     .await?;
