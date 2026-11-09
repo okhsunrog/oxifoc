@@ -107,6 +107,31 @@ pub static ISR_CYC_OVER: AtomicU32 = AtomicU32::new(0);
 static ISR_BUDGET_CYCLES: AtomicU32 = AtomicU32::new(0);
 /// Number of ADC ISR executions since last stats swap.
 pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
+// Split active current/velocity loops with a nonzero control-speed estimate
+// from stationary holds. This selects a computational path, not physical
+// rotation evidence. Bookkeeping follows the ISR end timestamp.
+#[cfg(feature = "isr-timing")]
+mod motion_timing {
+    use super::*;
+    static N: AtomicU32 = AtomicU32::new(0);
+    static SUM: AtomicU32 = AtomicU32::new(0);
+    static MAX: AtomicU32 = AtomicU32::new(0);
+
+    pub fn record(cycles: u32) {
+        N.fetch_add(1, Ordering::Relaxed);
+        SUM.fetch_add(cycles, Ordering::Relaxed);
+        MAX.fetch_max(cycles, Ordering::Relaxed);
+    }
+
+    // Called in the same existing stats CS as the whole-ISR counters.
+    pub fn take() -> (u32, u32, u32) {
+        (
+            N.swap(0, Ordering::Relaxed),
+            SUM.swap(0, Ordering::Relaxed),
+            MAX.swap(0, Ordering::Relaxed),
+        )
+    }
+}
 // Entry-to-entry timing is independent of the software FOC sequence counter.
 // Execution duration alone cannot expose an interrupt that started late or a
 // conversion whose interrupt was never serviced. These counters diagnose that
@@ -542,6 +567,8 @@ fn ADC() {
     let prof_t2 = oxifoc_core::isr_prof::now();
 
     // Run FOC control loop (shared cycle logic in core)
+    #[cfg(feature = "isr-timing")]
+    let mut time_control_motion = false;
     let foc_telem = FOC_DRIVER.lock(|cell| {
         cell.borrow_mut().as_mut().and_then(|driver| {
             let output = run_foc_cycle(
@@ -552,6 +579,15 @@ fn ADC() {
                 now_ticks,
                 protection_board,
             );
+            #[cfg(feature = "isr-timing")]
+            {
+                use oxifoc_core::types::ControlMode;
+                time_control_motion = matches!(
+                    driver.mode(),
+                    ControlMode::CurrentControl { .. } | ControlMode::VelocityControl { .. }
+                ) && output
+                    .is_some_and(|sample| sample.velocity_rad_s != 0.0);
+            }
             #[cfg(any(
                 feature = "bench-executor-trace",
                 feature = "bench-pwm-commit",
@@ -614,6 +650,10 @@ fn ADC() {
         crate::diagnostics::trace::record(9, 0);
     }
     let isr_end = isr_timing_now();
+    #[cfg(feature = "isr-timing")]
+    if time_control_motion {
+        motion_timing::record(isr_end.wrapping_sub(isr_t0));
+    }
     if cfg!(feature = "isr-timing") {
         ISR_CYC_SUM.fetch_add(isr_end.wrapping_sub(isr_t0), Ordering::Relaxed);
     }
@@ -677,6 +717,8 @@ struct IsrStatistics {
     cycles: u32,
     max_cycles: u32,
     overruns: u32,
+    #[cfg(feature = "isr-timing")]
+    motion: (u32, u32, u32),
     adc: u32,
     snapshot: u32,
     control: u32,
@@ -696,6 +738,8 @@ impl IsrStatistics {
                 cycles: ISR_CYC_SUM.swap(0, Ordering::Relaxed),
                 max_cycles: ISR_CYC_MAX.swap(0, Ordering::Relaxed),
                 overruns: ISR_CYC_OVER.swap(0, Ordering::Relaxed),
+                #[cfg(feature = "isr-timing")]
+                motion: motion_timing::take(),
                 adc: ISR_PROF_ADC.swap(0, Ordering::Relaxed),
                 snapshot: ISR_PROF_SNAP.swap(0, Ordering::Relaxed),
                 control: ISR_PROF_FOC.swap(0, Ordering::Relaxed),
@@ -782,6 +826,15 @@ pub async fn isr_stats_task() {
             continue;
         };
         let cyc_n = sample_count.get();
+        #[cfg(feature = "isr-timing")]
+        if stats.motion.0 != 0 {
+            defmt::info!(
+                "isr-motion/s: n={} avg={} max={}",
+                stats.motion.0,
+                stats.motion.1 / stats.motion.0,
+                stats.motion.2
+            );
+        }
         if cfg!(feature = "isr-timing")
             && let Some(elapsed_cycles) = elapsed_cycles
         {
