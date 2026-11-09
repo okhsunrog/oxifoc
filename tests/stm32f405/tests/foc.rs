@@ -7,6 +7,7 @@ use defmt_rtt as _;
 #[embedded_test::tests(executor = embassy_executor::Executor::new())]
 mod tests {
     use core::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
+    use core::mem::ManuallyDrop;
 
     use oxifoc_core::foc::{
         controller::FocController,
@@ -18,9 +19,15 @@ mod tests {
     const MAX_TRIG_ERR: f32 = 1e-5;
     const SYSCLK_HZ: u32 = 168_000_000;
 
-    struct TestState;
+    struct TestState {
+        // Keep the MK5 powered and its driver off until reset, including the
+        // harness epilogue: dropping Output would disconnect these pins.
+        _shutdown_latch: ManuallyDrop<embassy_stm32::gpio::Output<'static>>,
+        _gate_disable: ManuallyDrop<embassy_stm32::gpio::Output<'static>>,
+    }
 
     fn enable_dwt() {
+        // SAFETY: these are Cortex-M4 debug registers; init runs once per test.
         unsafe {
             let demcr = 0xE000_EDFC as *mut u32;
             core::ptr::write_volatile(demcr, core::ptr::read_volatile(demcr) | (1 << 24));
@@ -31,6 +38,7 @@ mod tests {
     }
 
     fn dwt_cycles() -> u32 {
+        // SAFETY: DWT CYCCNT is a readable Cortex-M4 register, enabled in init.
         unsafe { core::ptr::read_volatile(0xE000_1004 as *const u32) }
     }
 
@@ -58,9 +66,21 @@ mod tests {
         config.rcc.apb2_pre = APBPrescaler::Div2;
         config.rcc.sys = Sysclk::Pll1P;
 
-        let _dp = embassy_stm32::init(config);
+        let dp = embassy_stm32::init(config);
+        use embassy_stm32::gpio::{Level, Output, Speed};
+        let state = TestState {
+            _shutdown_latch: ManuallyDrop::new(Output::new(dp.PC5, Level::High, Speed::Low)),
+            _gate_disable: ManuallyDrop::new(Output::new(dp.PB5, Level::Low, Speed::Low)),
+        };
+        // Match shipping F405 flash acceleration after RCC sets wait states.
+        // TIM1 and all six phase PWM pins remain at their reset defaults.
+        embassy_stm32::pac::FLASH.acr().modify(|w| {
+            w.set_prften(true);
+            w.set_icen(true);
+            w.set_dcen(true);
+        });
         enable_dwt();
-        TestState
+        state
     }
 
     // ========== libm sin/cos accuracy ==========
@@ -191,6 +211,180 @@ mod tests {
             );
         }
         defmt::info!("SVPWM all sectors: PASS");
+    }
+
+    // ========== Benchmark: old/shipping angle wrapping, DWT cycles only ==========
+
+    #[inline(never)]
+    fn previous_wrap_angle(angle: f32) -> f32 {
+        use core::f32::consts::TAU;
+        let mut a = angle;
+        if !(-TAU..=TAU).contains(&a) {
+            a %= TAU;
+        }
+        if a < 0.0 {
+            a += TAU;
+        } else if a >= TAU {
+            a -= TAU;
+        }
+        a
+    }
+
+    #[inline(never)]
+    fn shipping_wrap_angle(angle: f32) -> f32 {
+        oxifoc_core::foc::wrap_angle(angle)
+    }
+
+    #[inline(never)]
+    fn wrap_identity(angle: f32) -> f32 {
+        angle
+    }
+
+    const WRAP_BATCH_CALLS: u32 = 64;
+    const WRAP_ROUNDS: u32 = 12;
+
+    #[inline(never)]
+    fn measure_wrap_batch(function: fn(f32) -> f32, inputs: &[f32; 8]) -> u32 {
+        let function = core::hint::black_box(function);
+        // Each bounded window covers 64 calls, with no logging or awaiting.
+        // Masking IRQs measures helper cost independently of the time driver.
+        cortex_m::interrupt::free(|_| {
+            let start = dwt_cycles();
+            for _ in 0..WRAP_BATCH_CALLS / 8 {
+                for &angle in inputs {
+                    core::hint::black_box(function(core::hint::black_box(angle)));
+                }
+            }
+            dwt_cycles().wrapping_sub(start)
+        })
+    }
+
+    #[derive(Clone, Copy)]
+    struct WrapCycles {
+        min: u32,
+        max: u32,
+        total: u64,
+    }
+
+    impl WrapCycles {
+        const fn new() -> Self {
+            Self {
+                min: u32::MAX,
+                max: 0,
+                total: 0,
+            }
+        }
+
+        fn record(&mut self, cycles: u32) {
+            // Far below the controller watchdog's three-second timeout;
+            // no watchdog is started by this test image.
+            defmt::assert!(cycles > 0 && cycles < 1_000_000, "unexpected batch length");
+            self.min = self.min.min(cycles);
+            self.max = self.max.max(cycles);
+            self.total += u64::from(cycles);
+        }
+
+        fn report(&self, label: &str) {
+            let mean = self.total * 1_000 / u64::from(WRAP_ROUNDS * WRAP_BATCH_CALLS);
+            defmt::info!(
+                "{}: mean={} milli-cycles/call, batch min={} max={} cycles",
+                label,
+                mean,
+                self.min,
+                self.max
+            );
+        }
+    }
+
+    #[test]
+    fn z_bench_wrap_angle(_state: TestState) {
+        use core::f32::consts::TAU;
+        // Opaque pointers keep one shared indirect-call loop for all variants.
+        let functions = core::hint::black_box([
+            wrap_identity as fn(f32) -> f32,
+            previous_wrap_angle,
+            shipping_wrap_angle,
+        ]);
+        let orders = [
+            [0, 1, 2],
+            [2, 1, 0],
+            [1, 2, 0],
+            [0, 2, 1],
+            [2, 0, 1],
+            [1, 0, 2],
+        ];
+        let cases = [
+            (
+                "ordinary positive",
+                [0.0, 0.001, 0.1, 1.0, PI, 5.0, TAU - 0.1, TAU - 1e-6],
+            ),
+            (
+                "positive crossing",
+                [
+                    TAU + 1e-6,
+                    TAU + 0.001,
+                    TAU + 0.1,
+                    TAU + 1.0,
+                    1.5 * TAU,
+                    TAU + 5.0,
+                    2.0 * TAU - 0.1,
+                    2.0 * TAU - 1e-6,
+                ],
+            ),
+            (
+                "negative crossing",
+                [-1e-6, -0.001, -0.1, -1.0, -PI, -5.0, -TAU + 1e-6, -TAU],
+            ),
+            (
+                "cold large",
+                [
+                    2.0 * TAU,
+                    -2.0 * TAU,
+                    100.0 * TAU,
+                    -100.0 * TAU,
+                    1e6,
+                    -1e6,
+                    f32::MAX,
+                    -f32::MAX,
+                ],
+            ),
+        ];
+        defmt::info!(
+            "wrap benchmark: ART on, {} calls/batch, {} rounds; includes equal call/loop overhead",
+            WRAP_BATCH_CALLS,
+            WRAP_ROUNDS
+        );
+        for (label, inputs) in cases {
+            let inputs = core::hint::black_box(inputs);
+            for &angle in &inputs {
+                defmt::assert_eq!(
+                    functions[1](core::hint::black_box(angle)).to_bits(),
+                    functions[2](core::hint::black_box(angle)).to_bits(),
+                    "old/shipping mismatch"
+                );
+            }
+            // Warm each code/data path before collecting any samples.
+            for function in functions {
+                for _ in 0..4 {
+                    core::hint::black_box(measure_wrap_batch(function, &inputs));
+                }
+            }
+            let mut stats = [WrapCycles::new(); 3];
+            for round in 0..WRAP_ROUNDS {
+                // Every variant occupies every position equally; all six
+                // preceding/following orders repeat twice.
+                for index in orders[round as usize % orders.len()] {
+                    stats[index].record(measure_wrap_batch(functions[index], &inputs));
+                }
+            }
+            defmt::info!("wrap input: {}", label);
+            stats[0].report("identity");
+            stats[1].report("old");
+            stats[2].report("shipping");
+            let delta = (stats[1].total as i64 - stats[2].total as i64) * 1_000
+                / i64::from(WRAP_ROUNDS * WRAP_BATCH_CALLS);
+            defmt::info!("old minus shipping: {} milli-cycles/call", delta);
+        }
     }
 
     // ========== Benchmark: full FOC step at 168MHz ==========

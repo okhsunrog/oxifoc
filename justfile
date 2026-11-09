@@ -97,6 +97,11 @@ clippy-core-embassy:
 clippy-core:
     cargo clippy -p oxifoc-core --all-targets --locked --features {{ core_test_features }} -- -D warnings
 
+# Flashes only the F405 wrap benchmark: MK5 power held, gate driver disabled.
+# Replaces the controller firmware; restore the intended firmware afterwards.
+bench-wrap-f405:
+    cd tests/stm32f405 && cargo test --release --locked --test foc -- z_bench_wrap_angle --nocapture
+
 # Build the CLI before a recording session.
 build-cli:
     cargo build -p oxifoc-host-cli --locked
