@@ -1,6 +1,7 @@
 //! Control velocity from the Hall commutation angle, separate from edge timing.
 
 use crate::foc::angle_difference;
+use crate::foc::fast_math::u64_to_f32;
 use crate::foc::phase::provider::PhaseOutput;
 use crate::foc::sensors::ControlAngleSample;
 use core::f32::consts::PI;
@@ -99,31 +100,38 @@ impl HallControlMotion {
             Baseline::Reenter => self.velocity = applied_velocity,
             Baseline::Tracking { angle, ticks } => {
                 let elapsed_ticks = now_ticks.wrapping_sub(ticks);
-                // A small wrapping delta is a genuine u64 wrap. A backwards
-                // timestamp appears in the opposite half of the counter and
-                // reanchors without inventing an angular derivative.
-                if elapsed_ticks > 0 && elapsed_ticks <= u64::MAX / 2 {
-                    #[allow(clippy::cast_precision_loss)]
-                    let elapsed_s = elapsed_ticks as f32 * self.seconds_per_tick;
-                    let possible_travel = sample
-                        .omega
-                        .abs()
-                        .max(applied_velocity.abs())
-                        .max(self.velocity.abs())
-                        * elapsed_s;
-                    // A long observation gap or possible half-turn aliases a
-                    // wrapped angle. Hold the applied speed and reanchor;
-                    // never infer missing turns. This continuity guard is
-                    // separate from the driver's deadline protection.
-                    if elapsed_s > 4.0 * VELOCITY_TAU_S || possible_travel >= PI {
+                // Exact zero derivative: both the filter and any gap/backward
+                // reanchor produce +0. Keep the ordinary path for signed zero
+                // or a nonzero applied source speed; no deadband is involved.
+                let exact_rest = sample.angle == angle
+                    && self.velocity.to_bits() == 0
+                    && applied_velocity.to_bits() == 0;
+                if !exact_rest {
+                    // A small wrapping delta is a genuine u64 wrap. A backwards
+                    // timestamp appears in the opposite half of the counter and
+                    // reanchors without inventing an angular derivative.
+                    if elapsed_ticks > 0 && elapsed_ticks <= u64::MAX / 2 {
+                        let elapsed_s = u64_to_f32(elapsed_ticks) * self.seconds_per_tick;
+                        let possible_travel = sample
+                            .omega
+                            .abs()
+                            .max(applied_velocity.abs())
+                            .max(self.velocity.abs())
+                            * elapsed_s;
+                        // A long observation gap or possible half-turn aliases a
+                        // wrapped angle. Hold the applied speed and reanchor;
+                        // never infer missing turns. This continuity guard is
+                        // separate from the driver's deadline protection.
+                        if elapsed_s > 4.0 * VELOCITY_TAU_S || possible_travel >= PI {
+                            self.velocity = applied_velocity;
+                        } else {
+                            let delta = angle_difference(sample.angle, angle);
+                            self.velocity = (VELOCITY_TAU_S * self.velocity + delta)
+                                / (VELOCITY_TAU_S + elapsed_s);
+                        }
+                    } else if elapsed_ticks != 0 {
                         self.velocity = applied_velocity;
-                    } else {
-                        let delta = angle_difference(sample.angle, angle);
-                        self.velocity =
-                            (VELOCITY_TAU_S * self.velocity + delta) / (VELOCITY_TAU_S + elapsed_s);
                     }
-                } else if elapsed_ticks != 0 {
-                    self.velocity = applied_velocity;
                 }
                 // Duplicate time: retain speed, but reanchor the angle so an
                 // untimeable change is not charged to the following interval.

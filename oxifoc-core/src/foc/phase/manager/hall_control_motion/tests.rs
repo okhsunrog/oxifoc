@@ -142,3 +142,32 @@ fn invalid_sensor_frames_do_not_poison_control_speed() {
         assert_eq!(observe(&mut motion, 2.0, 100.0, 100, 20.0), 20.0);
     }
 }
+
+#[test]
+fn exact_rest_keeps_time_history_and_does_not_override_nonzero_source_reentry() {
+    let mut motion = HallControlMotion::default();
+    observe(&mut motion, 1.0, 100.0, 0, 0.0);
+    for ticks in [50, 100, 50_000, 0, u64::MAX, 99] {
+        assert_eq!(observe(&mut motion, 1.0, 100.0, ticks, 0.0).to_bits(), 0);
+    }
+    let moving = observe(&mut motion, 1.005, 100.0, 149, 0.0);
+    assert!((moving - 1.0).abs() < 0.001);
+
+    motion.reset();
+    observe(&mut motion, 1.0, 400.0, 0, 0.0);
+    assert_eq!(observe(&mut motion, 1.0, 400.0, 10_000, 25.0), 25.0);
+
+    motion.reset();
+    observe(&mut motion, 1.0, 100.0, 0, 0.0);
+    let signed_zero = observe(&mut motion, 1.0, 100.0, 30_000, -0.0);
+    assert_eq!(signed_zero.to_bits(), (-0.0f32).to_bits());
+}
+
+#[test]
+fn high_rate_timebase_keeps_full_u64_elapsed_conversion() {
+    let mut motion = HallControlMotion::default();
+    motion.set_ticks_per_sec(1_000_000_000_000);
+    observe(&mut motion, 0.0, 100.0, 0, 0.0);
+    let speed = observe(&mut motion, 0.5, 100.0, 5_000_000_000, 0.0);
+    assert!((speed - 0.5 / (VELOCITY_TAU_S + 0.005)).abs() < 0.001);
+}

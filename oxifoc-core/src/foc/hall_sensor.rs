@@ -112,14 +112,7 @@ impl HallTimebase {
 
     #[inline]
     fn seconds(&self, ticks: u64) -> f32 {
-        // Inter-edge intervals normally fit in u32; this path uses the M4F's
-        // native conversion. Long stationary intervals retain full u64 range.
-        let ticks = if let Ok(short) = u32::try_from(ticks) {
-            short as f32
-        } else {
-            ticks as f32
-        };
-        ticks / self.hz
+        crate::foc::fast_math::u64_to_f32(ticks) / self.hz
     }
 }
 
