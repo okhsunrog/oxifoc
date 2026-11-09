@@ -436,7 +436,17 @@ pub const FAST_BATCH_WIRE_OVERHEAD: usize = 32;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct FastTelemetryBatch {
     /// Encoded frames, at most FAST_BATCH_SAMPLES, bounded by byte capacity.
+    #[serde(serialize_with = "serialize_telemetry_bytes")]
     pub data: Vec<u8, FAST_BATCH_BYTES>,
+}
+
+// Postcard encodes bytes and a u8 sequence identically, but the bytes API
+// lets its flavor copy the complete payload instead of serializing each byte.
+fn serialize_telemetry_bytes<S: serde::Serializer>(
+    bytes: &[u8],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_bytes(bytes)
 }
 
 impl FastTelemetryBatch {
@@ -1353,5 +1363,25 @@ mod tests {
         let decoded: FastTelemetryBatch = postcard::from_bytes(wire).unwrap();
         let out = decoded.samples().unwrap();
         assert_eq!(out, samples);
+    }
+
+    #[test]
+    fn byte_payload_keeps_the_existing_postcard_wire_format() {
+        #[derive(Serialize)]
+        struct SequencePayload<'a> {
+            data: &'a Vec<u8, FAST_BATCH_BYTES>,
+        }
+        for len in [0, 1, 127, 128, FAST_BATCH_BYTES] {
+            let data = (0..len).map(|i| i.wrapping_mul(73) as u8).collect();
+            let batch = FastTelemetryBatch { data };
+            let old = SequencePayload { data: &batch.data };
+            let mut old_buffer = [0; FAST_BATCH_BYTES + 8];
+            let mut new_buffer = [0; FAST_BATCH_BYTES + 8];
+            let expected = postcard::to_slice(&old, &mut old_buffer).unwrap();
+            let actual = postcard::to_slice(&batch, &mut new_buffer).unwrap();
+            assert_eq!(actual, expected);
+            let decoded: FastTelemetryBatch = postcard::from_bytes(actual).unwrap();
+            assert_eq!(decoded.data, batch.data);
+        }
     }
 }
