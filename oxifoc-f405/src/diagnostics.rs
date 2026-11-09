@@ -390,23 +390,29 @@ pub async fn clock_reference_task(
     loop {
         ticker.next().await;
         let frame = pac::USB_OTG_FS.dsts().read().fnsof() & 0x7ff;
-        let cycles = cortex_m::peripheral::DWT::cycle_count();
+        let Some(clock) = crate::control::foc::dwt_clock_sample() else {
+            previous = None;
+            totals = (0, 0, 0);
+            continue;
+        };
         let ticks = timer.get_counter();
         if frame != pac::USB_OTG_FS.dsts().read().fnsof() & 0x7ff {
             continue;
         }
-        if let Some((prev_frame, prev_cycles, prev_ticks)) = previous {
+        if let Some((prev_frame, prev_clock, prev_ticks)) = previous {
             let frames = frame.wrapping_sub(prev_frame) & 0x7ff;
-            let dc = cycles.wrapping_sub(prev_cycles);
             let dt = ticks.wrapping_sub(prev_ticks);
-            if (900..=1100).contains(&frames) && (70_000_000..=100_000_000).contains(&dt) {
+            if let Some(dc) = clock.elapsed_since(prev_clock)
+                && (900..=1100).contains(&frames)
+                && (70_000_000..=100_000_000).contains(&dt)
+            {
                 totals.0 += u64::from(frames);
-                totals.1 += u64::from(dc);
+                totals.1 += u64::from(dc.get());
                 totals.2 += u64::from(dt);
                 defmt::info!(
                     "clockref: frames={} dwt={} tim5={} total_frames={} total_dwt={} total_tim5={}",
                     frames,
-                    dc,
+                    dc.get(),
                     dt,
                     totals.0,
                     totals.1,
@@ -416,6 +422,6 @@ pub async fn clock_reference_task(
                 totals = (0, 0, 0);
             }
         }
-        previous = Some((frame, cycles, ticks));
+        previous = Some((frame, clock, ticks));
     }
 }

@@ -44,6 +44,10 @@ use crate::motor::MotorPwm;
 use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
 
+#[path = "profiling_window.rs"]
+pub(crate) mod profiling_window;
+use profiling_window::{DwtSample, DwtWindow};
+
 // ========== ADC Sample Storage (Global Atomics) ==========
 
 /// Latest phase current samples (from ADC1/ADC2/ADC3 injected sequences).
@@ -115,6 +119,11 @@ static ISR_INTERVAL_MAX: AtomicU32 = AtomicU32::new(0);
 static ISR_INTERVAL_N: AtomicU32 = AtomicU32::new(0);
 static ISR_INTERVAL_LONG: AtomicU32 = AtomicU32::new(0);
 static ISR_INTERVAL_SHORT: AtomicU32 = AtomicU32::new(0);
+// The stats CS resets this baseline when DWT was stopped by a debugger.
+// Relaxed loads/stores are the same plain word accesses as the ISR-local
+// value; only the stats task writes outside the ADC ISR, with IRQs masked.
+static ISR_LAST_START: AtomicU32 = AtomicU32::new(0);
+static DWT_GENERATION: AtomicU32 = AtomicU32::new(0);
 
 // ========== ADC Handles ==========
 
@@ -389,13 +398,17 @@ fn isr_timing_now() -> u32 {
 #[interrupt]
 fn ADC() {
     static mut SEQ: u32 = 0;
-    static mut LAST_START: u32 = 0;
 
     let isr_t0 = isr_timing_now();
     #[cfg(feature = "bench-executor-trace")]
     crate::diagnostics::trace::record(8, 0);
-    if cfg!(feature = "isr-profiling") && *LAST_START != 0 {
-        let interval = isr_t0.wrapping_sub(*LAST_START);
+    let last_start = if cfg!(feature = "isr-profiling") {
+        ISR_LAST_START.load(Ordering::Relaxed)
+    } else {
+        0
+    };
+    if cfg!(feature = "isr-profiling") && last_start != 0 {
+        let interval = isr_t0.wrapping_sub(last_start);
         ISR_INTERVAL_SUM.fetch_add(interval, Ordering::Relaxed);
         ISR_INTERVAL_MIN.fetch_min(interval, Ordering::Relaxed);
         ISR_INTERVAL_MAX.fetch_max(interval, Ordering::Relaxed);
@@ -408,7 +421,7 @@ fn ADC() {
         }
     }
     if cfg!(feature = "isr-profiling") {
-        *LAST_START = isr_t0;
+        ISR_LAST_START.store(isr_t0, Ordering::Relaxed);
     }
     let board = measured_board();
 
@@ -587,6 +600,47 @@ fn ADC() {
     }
 }
 
+fn dwt_sample() -> DwtSample {
+    DwtSample {
+        cycles: cortex_m::peripheral::DWT::cycle_count(),
+        generation: DWT_GENERATION.load(Ordering::Relaxed),
+    }
+}
+
+/// A clock reference must not bridge a frozen counter or a stats-task rearm.
+pub(crate) fn dwt_clock_sample() -> Option<DwtSample> {
+    critical_section::with(|_| {
+        // SAFETY: this short-lived handle only reads the DCB/DWT registers;
+        // no peripheral reference escapes and the stats writer uses this CS.
+        let cp = unsafe { cortex_m::Peripherals::steal() };
+        profiling_window::dwt_enabled(cp.DCB.demcr.read(), cp.DWT.ctrl.read()).then(dwt_sample)
+    })
+}
+
+/// Re-enable only missing enable bits. Never reset CYCCNT or other debug state.
+/// The same CS must then discard all platform/core counters and interval history.
+fn rearm_dwt(_cs: critical_section::CriticalSection<'_>) -> bool {
+    // SAFETY: the stats task is the sole runtime DCB/DWT writer, under the
+    // snapshot CS. This handle does not access any other core peripheral.
+    let cp = unsafe { cortex_m::Peripherals::steal() };
+    let demcr = cp.DCB.demcr.read();
+    let ctrl = cp.DWT.ctrl.read();
+    if profiling_window::dwt_enabled(demcr, ctrl) {
+        return false;
+    }
+    if demcr & profiling_window::TRACE_ENABLE == 0 {
+        // SAFETY: read-modify-write sets TRCENA and preserves all other bits.
+        unsafe { cp.DCB.demcr.modify(profiling_window::enable_trace) };
+    }
+    if ctrl & profiling_window::COUNTER_ENABLE == 0 {
+        // SAFETY: read-modify-write sets CYCCNTENA, preserving other DWT bits.
+        unsafe { cp.DWT.ctrl.modify(profiling_window::enable_counter) };
+    }
+    DWT_GENERATION.fetch_add(1, Ordering::Relaxed);
+    ISR_LAST_START.store(0, Ordering::Relaxed);
+    true
+}
+
 /// 1 Hz ISR-cost stats — same line format as the g431 so the bench-suite
 /// parser works unchanged: `isr/s: n= avg= max= over= load_pct=` plus the
 /// per-section and core-bucket breakdowns.
@@ -601,30 +655,35 @@ struct IsrStatistics {
     publish: u32,
     intervals: (u32, u32, u32, u32, u32, u32),
     core: oxifoc_core::isr_prof::Snapshot,
-    captured_at: u32,
+    clock: DwtSample,
+    rearmed: bool,
 }
 
 impl IsrStatistics {
     fn take() -> Self {
-        critical_section::with(|cs| Self {
-            samples: ISR_CYC_N.swap(0, Ordering::Relaxed),
-            cycles: ISR_CYC_SUM.swap(0, Ordering::Relaxed),
-            max_cycles: ISR_CYC_MAX.swap(0, Ordering::Relaxed),
-            overruns: ISR_CYC_OVER.swap(0, Ordering::Relaxed),
-            adc: ISR_PROF_ADC.swap(0, Ordering::Relaxed),
-            snapshot: ISR_PROF_SNAP.swap(0, Ordering::Relaxed),
-            control: ISR_PROF_FOC.swap(0, Ordering::Relaxed),
-            publish: ISR_PROF_PUB.swap(0, Ordering::Relaxed),
-            intervals: (
-                ISR_INTERVAL_N.swap(0, Ordering::Relaxed),
-                ISR_INTERVAL_SUM.swap(0, Ordering::Relaxed),
-                ISR_INTERVAL_MIN.swap(u32::MAX, Ordering::Relaxed),
-                ISR_INTERVAL_MAX.swap(0, Ordering::Relaxed),
-                ISR_INTERVAL_LONG.swap(0, Ordering::Relaxed),
-                ISR_INTERVAL_SHORT.swap(0, Ordering::Relaxed),
-            ),
-            core: oxifoc_core::isr_prof::Snapshot::take(cs),
-            captured_at: cortex_m::peripheral::DWT::cycle_count(),
+        critical_section::with(|cs| {
+            let rearmed = rearm_dwt(cs);
+            Self {
+                samples: ISR_CYC_N.swap(0, Ordering::Relaxed),
+                cycles: ISR_CYC_SUM.swap(0, Ordering::Relaxed),
+                max_cycles: ISR_CYC_MAX.swap(0, Ordering::Relaxed),
+                overruns: ISR_CYC_OVER.swap(0, Ordering::Relaxed),
+                adc: ISR_PROF_ADC.swap(0, Ordering::Relaxed),
+                snapshot: ISR_PROF_SNAP.swap(0, Ordering::Relaxed),
+                control: ISR_PROF_FOC.swap(0, Ordering::Relaxed),
+                publish: ISR_PROF_PUB.swap(0, Ordering::Relaxed),
+                intervals: (
+                    ISR_INTERVAL_N.swap(0, Ordering::Relaxed),
+                    ISR_INTERVAL_SUM.swap(0, Ordering::Relaxed),
+                    ISR_INTERVAL_MIN.swap(u32::MAX, Ordering::Relaxed),
+                    ISR_INTERVAL_MAX.swap(0, Ordering::Relaxed),
+                    ISR_INTERVAL_LONG.swap(0, Ordering::Relaxed),
+                    ISR_INTERVAL_SHORT.swap(0, Ordering::Relaxed),
+                ),
+                core: oxifoc_core::isr_prof::Snapshot::take(cs),
+                clock: dwt_sample(),
+                rearmed,
+            }
         })
     }
 }
@@ -639,52 +698,65 @@ pub async fn isr_stats_task() {
         .await
         .set_priority(2);
     let mut ticker = Ticker::every(Duration::from_secs(1));
-    let mut previous_capture = cortex_m::peripheral::DWT::cycle_count();
+    let mut timing_window = DwtWindow::default();
     #[cfg(feature = "transport-usb")]
     let mut usb_clock_previous = None;
     #[cfg(feature = "transport-usb")]
     let mut usb_clock_totals = (0u64, 0u64);
     loop {
         ticker.next().await;
+        let stats = IsrStatistics::take();
+        let elapsed_cycles = timing_window.observe(Some(stats.clock));
+        if stats.rearmed {
+            defmt::warn!("DWT restarted; discarded partial profiling window");
+            #[cfg(feature = "transport-usb")]
+            {
+                usb_clock_previous = None;
+                usb_clock_totals = (0, 0);
+            }
+        }
         #[cfg(feature = "transport-usb")]
         if crate::protocol::USB_IDENT.is_set() {
             // DSTS is read-only. SOF frame numbers come from the USB host,
             // providing a clock independent of TIM1/TIM2/DWT on this board.
             // FS frames have an 11-bit frame number, wrapping every 2048 ms.
             let frame = embassy_stm32::pac::USB_OTG_FS.dsts().read().fnsof() & 0x7ff;
-            let cycles = cortex_m::peripheral::DWT::cycle_count();
-            if let Some((previous_frame, previous_cycles)) = usb_clock_previous {
-                let frames = frame.wrapping_sub(previous_frame) & 0x7ff;
-                let elapsed = cycles.wrapping_sub(previous_cycles);
-                // Reject suspend/reset/long reporting gaps rather than infer
-                // missing wraps or fold them into the reference-clock fit.
-                if (900..=1100).contains(&frames)
-                    && (CPU_HZ * 4 / 5..=CPU_HZ * 6 / 5).contains(&elapsed)
-                {
-                    usb_clock_totals.0 += u64::from(frames);
-                    usb_clock_totals.1 += u64::from(elapsed);
-                    defmt::info!(
-                        "usbclk/s: frames={} cycles={} total_frames={} total_cycles={} avg_cycles_per_frame={}",
-                        frames,
-                        elapsed,
-                        usb_clock_totals.0,
-                        usb_clock_totals.1,
-                        usb_clock_totals.1 / usb_clock_totals.0,
-                    );
-                } else {
-                    usb_clock_totals = (0, 0);
+            if let Some(clock) = dwt_clock_sample() {
+                if let Some((previous_frame, previous_clock)) = usb_clock_previous {
+                    let frames = frame.wrapping_sub(previous_frame) & 0x7ff;
+                    // Reject suspend/reset/long reporting gaps rather than infer
+                    // missing wraps or fold them into the reference-clock fit.
+                    if let Some(elapsed) = clock.elapsed_since(previous_clock)
+                        && (900..=1100).contains(&frames)
+                        && (CPU_HZ * 4 / 5..=CPU_HZ * 6 / 5).contains(&elapsed.get())
+                    {
+                        usb_clock_totals.0 += u64::from(frames);
+                        usb_clock_totals.1 += u64::from(elapsed.get());
+                        defmt::info!(
+                            "usbclk/s: frames={} cycles={} total_frames={} total_cycles={} avg_cycles_per_frame={}",
+                            frames,
+                            elapsed.get(),
+                            usb_clock_totals.0,
+                            usb_clock_totals.1,
+                            usb_clock_totals.1 / usb_clock_totals.0,
+                        );
+                    } else {
+                        usb_clock_totals = (0, 0);
+                    }
                 }
+                usb_clock_previous = Some((frame, clock));
+            } else {
+                usb_clock_previous = None;
+                usb_clock_totals = (0, 0);
             }
-            usb_clock_previous = Some((frame, cycles));
         }
-        let stats = IsrStatistics::take();
-        let elapsed_cycles = stats.captured_at.wrapping_sub(previous_capture).max(1);
-        previous_capture = stats.captured_at;
         let Some(sample_count) = core::num::NonZeroU32::new(stats.samples) else {
             continue;
         };
         let cyc_n = sample_count.get();
-        if cfg!(feature = "isr-timing") {
+        if cfg!(feature = "isr-timing")
+            && let Some(elapsed_cycles) = elapsed_cycles
+        {
             let cyc_sum = stats.cycles;
             let cyc_max = stats.max_cycles;
             let adc = stats.adc / cyc_n;
@@ -698,7 +770,7 @@ pub async fn isr_stats_task() {
                 avg,
                 cyc_max,
                 stats.overruns,
-                u64::from(cyc_sum) * 100 / u64::from(elapsed_cycles),
+                u64::from(cyc_sum) * 100 / u64::from(elapsed_cycles.get()),
             );
             if cfg!(feature = "isr-profiling") {
                 defmt::info!(
@@ -724,7 +796,7 @@ pub async fn isr_stats_task() {
                     ISR_BUDGET_CYCLES.load(Ordering::Relaxed),
                 );
             }
-        } else {
+        } else if !cfg!(feature = "isr-timing") {
             defmt::info!("adc/s: n={} profiling=off", cyc_n);
         }
         use oxifoc_core::runtime::streaming::fast_telem_stats as ft;
@@ -803,7 +875,7 @@ pub async fn isr_stats_task() {
         // run_foc_cycle internals (core isr_prof buckets) — same lines as
         // the g431 protocol stats task.
         #[cfg(feature = "isr-profiling")]
-        {
+        if elapsed_cycles.is_some() {
             use oxifoc_core::isr_prof::Section as S;
             let average = |section| stats.core.average(section, sample_count);
             defmt::info!(
