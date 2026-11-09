@@ -179,13 +179,17 @@ Same persisted model, Hall source and 0.6-A Id hold, minimal timing:
 | A2 | 6264 | 0 / 0 |
 | O1 | 6193 | 0 / 0 |
 | C2 | 6144 | 0 / 0 |
+| Peak-only PWM + coherent CCR writes | 6185 | 0 / 0 |
 
 These cumulative measurements include layout effects; their differences
-are not independent per-function savings. The resulting mean is about
-36.6 us versus 39.7 us. T1 mainly frees foreground drain capacity, rather
-than reducing ISR time. A 20-second hold plus q-axis checks completed all
-107 maneuver commands with zero capture gaps/losses. A separate normal
-build without ISR timing also recorded 438148 rows without loss.
+are not independent per-function savings. The final mean is about 36.9 us
+versus 39.7 us (7.2% fewer cycles), including the coherent-write guard.
+T1 mainly frees foreground drain capacity, rather than reducing ISR time.
+The final build without ISR timing recorded 438171 rows at native
+20004.27 Hz: a 20-second hold plus q-axis checks, all 107 commands successful,
+zero gaps/losses, terminal Stop and fault count zero. The sampled dq peak
+was 1.93 A; a middle hold window measured Id=0.59975 A, Iq=0.00024 A.
+Hall errors/overcaptures were zero. This is a low-current bench workload.
 
 DWT can be disabled by debugger detach. The one-second reporter now
 re-enables its clock/counter without resetting it, discards the affected
@@ -218,10 +222,14 @@ One of 2816 diagnostic writes still crossed the peak itself. A second
 boot-only test armed UDIS after the valley, suppressed only the next peak,
 then released it mid-down. The following three OPM freezes all remained
 exactly at CNT=4195/down. Thus UDIS can protect the three CCR writes
-without moving this RCR=1 update phase. The ordinary build with that guard
-still needs its final L/current repeat. This guarantees coherent duties;
+without moving this RCR=1 update phase. The guard guarantees coherent duties;
 CCER topology/enable changes remain immediate, and late batches can retain
-the old vector for another period.
+the old vector for another period. The guard and configured actuation delay
+then passed the normal build's final tests: HFI Ld/Lq=19.59/28.48 uH and
+19.45/28.17 uH on repeat; R=30.72 mOhm. All three captures had zero loss,
+and all detection results remained unapplied. Configuration readback
+matched the initial model, Hall table, limits and voltage calibration;
+only the expected runtime current offsets changed at boot.
 
 Next scheduling investigation: `NetStack<CriticalSectionRawMutex>::send_ty`
 holds PRIMASK across router/local-socket traversal and frame serialization.
