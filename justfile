@@ -312,6 +312,10 @@ cli-usb *ARGS:
 cli-rtt *ARGS:
     @just cli --transport rtt --chip STM32F405RGTx --elf {{ mk5_elf }} --wait-secs 8 --json "$@"
 
+# Export immutable bench-hall edge evidence after Stop, without halt/reset.
+dump-hall-mk5 output elf=mk5_elf:
+    uv run python scripts/bench_hall_edges.py {{ quote(output) }} --elf {{ quote(elf) }}
+
 # Volatile model/source replacement while Stopped, continuously recording 20 kHz.
 [positional-arguments]
 test-live-model-mk5 capture elf=mk5_elf *ARGS:
