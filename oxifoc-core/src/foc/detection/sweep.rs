@@ -617,6 +617,10 @@ mod resistance_tests;
 #[path = "sweep_shutdown_tests.rs"]
 mod shutdown_tests;
 
+#[cfg(test)]
+#[path = "sweep_hall_tests.rs"]
+mod hall_tests;
+
 /// Maximum command→apply pipeline depth the probe scans for (FOC cycles).
 const PIPELINE_LAG_MAX: usize = 4;
 
@@ -2419,11 +2423,13 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
     // Hold at full current briefly to let rotor settle
     T::after_millis(200).await;
 
-    // Step 2: Perform sweeps
+    // Step 2: Group directions so successive turns visit different pole-pair
+    // arcs, rather than repeatedly reversing over the same mechanical arc.
     let degrees_per_sweep = 360u32;
+    let forward_sweeps = params.sweep_count.div_ceil(2);
 
     for sweep in 0..params.sweep_count {
-        let forward = sweep % 2 == 0;
+        let forward = sweep < forward_sweeps;
 
         for deg in 0..degrees_per_sweep {
             let actual_deg = if forward {
@@ -2468,6 +2474,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
     hw.send_command(ControlMode::Stopped).await;
     T::after_millis(100).await;
 
+    // TODO: Validate directional agreement and circular concentration too.
     // Step 4: Compute result
     info!("Computing calibration result...");
     let result = calibrator
