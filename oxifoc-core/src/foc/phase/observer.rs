@@ -805,9 +805,7 @@ impl BackEmfObserver {
         // PLL-velocity slope (post-envelope — the lag the readiness check
         // must excuse is the lag of the velocity the PLL actually carries,
         // governor pull included). Feeds readiness_phase_err().
-        let a_a = self.filter_coefficients.acceleration;
-        self.accel_filt += a_a * ((self.velocity_pll - self.vel_pll_prev) / dt - self.accel_filt);
-        self.vel_pll_prev = self.velocity_pll;
+        self.update_acceleration(dt);
 
         // Track lock quality for is_ready(): low-passed |phase error|.
         let alpha = self.filter_coefficients.phase_error;
@@ -934,6 +932,23 @@ impl BackEmfObserver {
     /// the current columns.
     pub fn readiness_phase_err(&self) -> f32 {
         self.readiness_err
+    }
+
+    #[inline]
+    fn update_acceleration(&mut self, dt: f32) {
+        let delta_velocity = self.velocity_pll - self.vel_pll_prev;
+        let alpha = self.filter_coefficients.acceleration;
+        let increment = if dt < ACCEL_LAG_FILTER_TAU_S {
+            // alpha = dt / tau here: cancel dt before differentiating,
+            // avoiding a variable division on the normal FOC timestep.
+            delta_velocity * (1.0 / ACCEL_LAG_FILTER_TAU_S) - alpha * self.accel_filt
+        } else {
+            // Once alpha saturates, the derivative must retain the actual
+            // timestep. This also preserves the previous NaN-dt behavior.
+            alpha * (delta_velocity / dt - self.accel_filt)
+        };
+        self.accel_filt += increment;
+        self.vel_pll_prev = self.velocity_pll;
     }
 
     /// Recompute the cached readiness error (end of every `update`, and
@@ -1600,6 +1615,181 @@ mod tests {
     fn note_torque_uncached(obs: &mut BackEmfObserver, iq_abs: f32, dt: f32) {
         let a = (dt / 0.01).min(1.0);
         obs.iq_abs_filt += a * (iq_abs - obs.iq_abs_filt);
+    }
+
+    // Replay the former acceleration expression after the shared dynamics.
+    // Only readiness consumes acceleration in this cycle, so restoring the
+    // previous Schmitt state before refreshing it gives an independent path
+    // without duplicating the flux integrator and validity implementation.
+    fn update_with_divided_acceleration(obs: &mut BackEmfObserver, input: &ObserverInput) {
+        let (previous_velocity, previous_accel, previous_ready) =
+            (obs.vel_pll_prev, obs.accel_filt, obs.ready_latched);
+        obs.update(input);
+        if input.dt <= 0.0 {
+            return;
+        }
+        let alpha = (input.dt / ACCEL_LAG_FILTER_TAU_S).min(1.0);
+        obs.accel_filt = previous_accel
+            + alpha * ((obs.velocity_pll - previous_velocity) / input.dt - previous_accel);
+        obs.refresh_readiness_err();
+        obs.ready_latched = previous_ready;
+        obs.ready_latched = obs.is_ready();
+    }
+
+    #[test]
+    fn acceleration_cancellation_matches_divided_trajectories() {
+        let (r, l, lambda) = (0.1, 50e-6, 0.005);
+        for alternating_dt in [false, true] {
+            let mut actual = BackEmfObserver::new(r, l, lambda).with_lambda_tracking(5.0);
+            let mut reference = actual.clone();
+            let mut theta = 0.0;
+            let mut was_ready = false;
+            let mut max_accel_error = 0.0_f32;
+            let mut max_readiness_error = 0.0_f32;
+            for step in 0..44_000 {
+                let dt = if alternating_dt && step % 2 == 1 {
+                    1e-4
+                } else {
+                    5e-5
+                };
+                let omega = match step {
+                    0..8_000 => 300.0,
+                    8_000..12_000 => 300.0 + (step - 8_000) as f32 * 0.05,
+                    12_000..16_000 => 500.0 - (step - 12_000) as f32 * 0.05,
+                    16_000..24_000 => 300.0,
+                    24_000..36_000 => -300.0,
+                    _ => 300.0,
+                };
+                for obs in [&mut actual, &mut reference] {
+                    match step {
+                        6_000 | 24_000 => {
+                            obs.force_phase(theta);
+                            obs.set_velocity(omega);
+                        }
+                        18_000 => obs.reset(),
+                        20_000 => obs.set_pll_gains(800.0, 16_000.0),
+                        _ => {}
+                    }
+                }
+                let theta_next = wrap_angle(theta + omega * dt);
+                let (ia, ib) = (-2.0 * libm::sinf(theta), 2.0 * libm::cosf(theta));
+                let (ia_next, ib_next) =
+                    (-2.0 * libm::sinf(theta_next), 2.0 * libm::cosf(theta_next));
+                let input = ObserverInput {
+                    v_alpha: if step >= 36_000 {
+                        0.0
+                    } else {
+                        r * ia + l * (ia_next - ia) / dt - omega * lambda * libm::sinf(theta)
+                    },
+                    v_beta: if step >= 36_000 {
+                        0.0
+                    } else {
+                        r * ib + l * (ib_next - ib) / dt + omega * lambda * libm::cosf(theta)
+                    },
+                    i_alpha: ia,
+                    i_beta: ib,
+                    dt,
+                };
+                actual.update(&input);
+                update_with_divided_acceleration(&mut reference, &input);
+                let accel_error = (actual.accel_filt - reference.accel_filt).abs();
+                max_accel_error = max_accel_error.max(accel_error);
+                max_readiness_error =
+                    max_readiness_error.max((actual.readiness_err - reference.readiness_err).abs());
+                assert!(
+                    accel_error <= 0.01 + 2e-6 * reference.accel_filt.abs(),
+                    "step {step}: acceleration error {accel_error}"
+                );
+                assert!(
+                    (actual.readiness_err - reference.readiness_err).abs() <= 2e-6,
+                    "step {step}: readiness error"
+                );
+                assert_eq!(actual.is_ready(), reference.is_ready(), "step {step}");
+                // Every other dynamic field remains bit-identical, including
+                // validity/lambda adaptation that depend on prior readiness.
+                let mut comparable = reference.clone();
+                comparable.accel_filt = actual.accel_filt;
+                comparable.readiness_err = actual.readiness_err;
+                assert_observer_bits(&actual, &comparable);
+                was_ready |= actual.is_ready();
+                theta = theta_next;
+            }
+            assert!(was_ready);
+            assert!(!actual.is_ready(), "lost back-EMF must revoke readiness");
+            std::println!(
+                "alternating_dt={alternating_dt}: max acceleration error {max_accel_error}, readiness error {max_readiness_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn acceleration_cancellation_respects_saturation_boundary() {
+        let tau = ACCEL_LAG_FILTER_TAU_S;
+        for dt in [
+            f32::from_bits(tau.to_bits() - 1),
+            tau,
+            f32::from_bits(tau.to_bits() + 1),
+            0.1,
+            f32::MAX,
+            f32::INFINITY,
+            f32::NAN,
+        ] {
+            for (old_velocity, velocity, acceleration) in
+                [(300.0, 301.0, 12.0), (301.0, -300.0, -12.0)]
+            {
+                let mut obs = BackEmfObserver::new(0.1, 50e-6, 0.005);
+                obs.filter_coefficients.refresh(dt);
+                obs.vel_pll_prev = old_velocity;
+                obs.velocity_pll = velocity;
+                obs.accel_filt = acceleration;
+                let expected = acceleration
+                    + (dt / tau).min(1.0) * ((velocity - old_velocity) / dt - acceleration);
+                obs.update_acceleration(dt);
+                if dt >= tau || dt.is_nan() {
+                    assert_eq!(obs.accel_filt.to_bits(), expected.to_bits());
+                } else {
+                    assert!((obs.accel_filt - expected).abs() <= 0.004);
+                }
+                assert_eq!(obs.vel_pll_prev, velocity);
+            }
+        }
+    }
+
+    #[test]
+    fn acceleration_rounding_is_bounded_at_readiness_thresholds() {
+        for dt in [5e-5, 1e-4, ACCEL_LAG_FILTER_TAU_S] {
+            for accel in [0.0, 100.0, 7700.0] {
+                let mut actual = BackEmfObserver::new(0.1, 50e-6, 0.005);
+                actual.confidence = 1.0;
+                actual.valid_travel = READY_MIN_VALID_REVS * TAU;
+                actual.velocity_pll = 300.02;
+                actual.vel_pll_prev = 300.0;
+                actual.accel_filt = accel;
+                actual.filter_coefficients.refresh(dt);
+                let mut reference = actual.clone();
+                reference.accel_filt += (dt / ACCEL_LAG_FILTER_TAU_S).min(1.0)
+                    * ((reference.velocity_pll - reference.vel_pll_prev) / dt
+                        - reference.accel_filt);
+                actual.update_acceleration(dt);
+                let lag =
+                    (reference.accel_filt.abs() / reference.pll_ki).min(ACCEL_LAG_COMP_MAX_RAD);
+                for (held, bound) in [
+                    (false, READY_MAX_PHASE_ERR_RAD),
+                    (true, READY_HOLD_MAX_PHASE_ERR_RAD),
+                ] {
+                    let center = (bound + lag).to_bits();
+                    for bits in center - 2..=center + 2 {
+                        for obs in [&mut actual, &mut reference] {
+                            obs.phase_err_filt = f32::from_bits(bits);
+                            obs.ready_latched = held;
+                            obs.refresh_readiness_err();
+                        }
+                        assert!((actual.readiness_err - reference.readiness_err).abs() <= 2e-6);
+                        assert_eq!(actual.is_ready(), reference.is_ready());
+                    }
+                }
+            }
+        }
     }
 
     fn assert_observer_bits(actual: &BackEmfObserver, expected: &BackEmfObserver) {
