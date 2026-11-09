@@ -225,7 +225,8 @@ pub mod foc {
     #[inline]
     pub fn wrap_angle(angle: f32) -> f32 {
         let mut a = angle;
-        if !(-TAU..=TAU).contains(&a) {
+        // Keep exact 2*TAU cold: one subtraction would still leave TAU.
+        if !(-TAU..2.0 * TAU).contains(&a) {
             // Cold: arbitrary input far outside the incremental domain.
             a %= TAU;
         }
@@ -264,6 +265,72 @@ pub mod foc {
     #[cfg(test)]
     mod angle_tests {
         use super::*;
+
+        fn previous_wrap(angle: f32) -> f32 {
+            let mut a = angle;
+            if !(-TAU..=TAU).contains(&a) {
+                a %= TAU;
+            }
+            if a < 0.0 {
+                a += TAU;
+            } else if a >= TAU {
+                a -= TAU;
+            }
+            a
+        }
+
+        fn assert_wrap_bits(angle: f32) {
+            assert_eq!(
+                wrap_angle(angle).to_bits(),
+                previous_wrap(angle).to_bits(),
+                "input bits: {:#010x}",
+                angle.to_bits()
+            );
+        }
+
+        #[test]
+        fn wrap_boundaries_and_cold_inputs_preserve_bits() {
+            for boundary in [-2.0 * TAU, -TAU, TAU, 2.0 * TAU] {
+                for bits in boundary.to_bits() - 8..=boundary.to_bits() + 8 {
+                    assert_wrap_bits(f32::from_bits(bits));
+                }
+            }
+            for angle in [
+                -f32::MAX,
+                -100.0 * TAU,
+                -f32::MIN_POSITIVE,
+                -f32::from_bits(1),
+                -0.0,
+                0.0,
+                f32::from_bits(1),
+                f32::MIN_POSITIVE,
+                100.0 * TAU,
+                f32::MAX,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NAN,
+                f32::from_bits(0xffc0_1234),
+                f32::from_bits(0x7f80_0001),
+            ] {
+                assert_wrap_bits(angle);
+            }
+
+            assert_eq!(wrap_angle(-0.0).to_bits(), (-0.0_f32).to_bits());
+            assert_eq!(wrap_angle(0.0).to_bits(), 0.0_f32.to_bits());
+            assert_eq!(wrap_angle(2.0 * TAU).to_bits(), 0.0_f32.to_bits());
+            // Preserve the existing rounding to TAU for tiny negative inputs.
+            assert_eq!(wrap_angle(-f32::from_bits(1)).to_bits(), TAU.to_bits());
+        }
+
+        #[test]
+        fn wrap_positive_crossing_exhaustive_preserves_bits() {
+            let start = TAU.to_bits();
+            let end = (2.0 * TAU).to_bits();
+            assert_eq!(end - start, 8_388_608);
+            for bits in start..end {
+                assert_wrap_bits(f32::from_bits(bits));
+            }
+        }
 
         fn previous_difference(a: f32, b: f32) -> f32 {
             let mut diff = a - b;
