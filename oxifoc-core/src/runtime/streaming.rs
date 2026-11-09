@@ -7,12 +7,13 @@
 //! Streaming is disabled by default — the host must send `TelemetryConfig`
 //! with a nonzero `fast_hz` to start.
 
-use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use bbqueue::{nicknames::Churrasco, prod_cons::framed::FramedConsumer, traits::bbqhdl::BbqHandle};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use ergot::net_stack::NetStackHandle;
+
+mod fast_queue;
+use fast_queue::FastTelemetryQueue;
 
 use crate::foc::controller::FocOutput;
 use crate::foc::fault::{FaultRegistry, PlatformFault};
@@ -23,20 +24,17 @@ use crate::state::{MotorControlState, update_telemetry};
 use crate::timer::Timer;
 use crate::types::FastTelemetry;
 
-/// Lock-free queue for ISR → async telemetry transfer.
+/// Typed, lock-free fixed-record queue for ISR → async telemetry transfer.
 ///
-/// ~22 frames of 46 bytes (44 data + 2 header) fit in 1024 bytes.
-/// Churrasco = Inline + Atomic + Polling + Static reference.
-///
-/// Firmware uses 4 KB (about 110 frames, 5.5 ms at 20 kHz). This absorbs
+/// Firmware uses 4 KB (about 120 frames, 6 ms at 20 kHz). This absorbs
 /// short scheduling/transport pauses, not sustained overload. Host
 /// builds (virtual device, sims) get a deep queue: tokio sleep jitter
 /// reaches tens of milliseconds under load, which at 10–20 kHz overruns a
-/// 42-frame buffer and fakes telemetry loss the real device doesn't have.
+/// firmware-sized buffer and fakes telemetry loss the real device doesn't have.
 #[cfg(feature = "std")]
-pub static FAST_TELEM_Q: Churrasco<65536> = Churrasco::new();
+static FAST_TELEM_Q: FastTelemetryQueue<65536> = FastTelemetryQueue::new();
 #[cfg(not(feature = "std"))]
-pub static FAST_TELEM_Q: Churrasco<4096> = Churrasco::new();
+static FAST_TELEM_Q: FastTelemetryQueue<4096> = FastTelemetryQueue::new();
 
 /// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
 /// 0 = streaming disabled. Set by `telemetry_config_server` when host
@@ -69,10 +67,7 @@ pub async fn set_fast_telemetry_period(period: u32) -> u32 {
     if actual == 0 {
         // The stream task holds no read grant outside the gate. Discard the
         // disabled session's pending samples so a later start cannot send them.
-        let cons = FAST_TELEM_Q.framed_consumer();
-        while let Ok(grant) = cons.read() {
-            grant.release();
-        }
+        FAST_TELEM_Q.discard();
     }
     actual
 }
@@ -93,7 +88,7 @@ pub mod fast_telem_stats {
     pub static PUSH_DROPS: AtomicU32 = AtomicU32::new(0);
     /// Stream-task frames read from the queue with the expected length.
     pub static READ_OK: AtomicU32 = AtomicU32::new(0);
-    /// Stream-task frames discarded for a wrong length.
+    /// Stream-task record-size errors (zero for the typed fixed-record queue).
     pub static READ_BADLEN: AtomicU32 = AtomicU32::new(0);
     /// Stream-task broadcasts that returned an error (e.g. interface queue full).
     pub static BCAST_FAILS: AtomicU32 = AtomicU32::new(0);
@@ -324,10 +319,7 @@ pub fn build_fast_telemetry(
 /// Called from ISR or sim loop after decimation check.
 /// If the queue is full, the sample is silently dropped (correct for real-time).
 pub fn push_fast_telemetry(telem: &FastTelemetry) {
-    let prod = FAST_TELEM_Q.framed_producer();
-    if let Ok(mut grant) = prod.grant(size_of::<FastTelemetry>() as u16) {
-        grant.copy_from_slice(bytemuck::bytes_of(telem));
-        grant.commit(size_of::<FastTelemetry>() as u16);
+    if FAST_TELEM_Q.push(telem).is_ok() {
         fast_telem_stats::PUSH_OK.fetch_add(1, Ordering::Relaxed);
     } else {
         fast_telem_stats::PUSH_DROPS.fetch_add(1, Ordering::Relaxed);
@@ -388,7 +380,6 @@ pub async fn fast_telemetry_stream<NS, T: Timer>(stack: NS, foc_freq_hz: u32)
 where
     NS: NetStackHandle + Clone,
 {
-    let cons = FAST_TELEM_Q.framed_consumer();
     let mut pending = PendingFastBatch::new();
     #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
     let mut last_drain = None;
@@ -449,7 +440,7 @@ where
             }
             let batch = &mut pending.batch;
 
-            drain_fast_batch(&cons, batch);
+            drain_fast_batch(&FAST_TELEM_Q, batch);
 
             #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
             let encoded_at = embassy_time::Instant::now().as_micros() as u32;
@@ -538,31 +529,17 @@ where
     }
 }
 
-fn drain_fast_batch<Q: BbqHandle>(
-    cons: &FramedConsumer<Q>,
+fn drain_fast_batch<const N: usize>(
+    queue: &FastTelemetryQueue<N>,
     batch: &mut crate::types::FastTelemetryBatchEncoder,
 ) {
-    let mut read_ok = 0;
-    let mut read_badlen = 0;
-    while !batch.is_full()
-        && let Ok(grant) = cons.read()
-    {
-        if batch.push_bytes(&grant) {
-            read_ok += 1;
-        } else {
-            read_badlen += 1;
-        }
-        grant.release();
-    }
+    let read_ok = queue.drain_into(batch);
 
     // Publish before returning to any break, yield or await in the task.
     // The F405 reporter shares its executor, so it cannot observe a partial
     // slice. ISR-side push/drop counters remain atomic for every sample.
     if read_ok != 0 {
         fast_telem_stats::READ_OK.fetch_add(read_ok, Ordering::Relaxed);
-    }
-    if read_badlen != 0 {
-        fast_telem_stats::READ_BADLEN.fetch_add(read_badlen, Ordering::Relaxed);
     }
 }
 
@@ -673,6 +650,7 @@ mod pending_tests {
 #[cfg(test)]
 mod drain_tests {
     use super::*;
+    use bbqueue::nicknames::Churrasco;
     use ergot::{
         exports::mutex::raw_impls::cs::CriticalSectionRawMutex as StackMutex,
         interface_manager::{
@@ -689,40 +667,31 @@ mod drain_tests {
     }
 
     #[test]
-    fn drain_flushes_partial_full_malformed_empty_and_retry_counts() {
-        let queue: Churrasco<4096> = Churrasco::new();
-        let prod = queue.framed_producer();
-        let cons = queue.framed_consumer();
+    fn drain_flushes_partial_full_empty_and_retry_counts() {
+        let queue = FastTelemetryQueue::<4096>::new();
         let mut batch = crate::types::FastTelemetryBatchEncoder::new();
         READ_OK.store(0, Ordering::Relaxed);
         READ_BADLEN.store(0, Ordering::Relaxed);
 
-        let enqueue = |bytes: &[u8]| {
-            let mut grant = prod.grant(bytes.len() as u16).unwrap();
-            grant.copy_from_slice(bytes);
-            grant.commit(bytes.len() as u16);
-        };
         let sample = |seq| FastTelemetry {
             seq,
             ..Default::default()
         };
 
-        // Wrong-length grants must be released and reported alongside valid
-        // samples, including when the poll retains a partial batch.
-        enqueue(&[1, 2, 3]);
-        enqueue(bytemuck::bytes_of(&sample(100)));
-        enqueue(&[0; size_of::<FastTelemetry>() + 1]);
-        enqueue(bytemuck::bytes_of(&sample(101)));
-        drain_fast_batch(&cons, &mut batch);
+        // Only complete typed samples can enter the queue. Record-size errors
+        // remain zero, including when the poll retains a partial batch.
+        queue.push(&sample(100)).unwrap();
+        queue.push(&sample(101)).unwrap();
+        drain_fast_batch(&queue, &mut batch);
         assert_eq!(batch.len(), 2);
         assert!(!batch.is_full());
         // Simulate the same-executor reporter's window boundary. All reads
         // are visible before this slice can sleep, with none deferred.
         assert_eq!(READ_OK.swap(0, Ordering::Relaxed), 2);
-        assert_eq!(READ_BADLEN.swap(0, Ordering::Relaxed), 2);
+        assert_eq!(READ_BADLEN.swap(0, Ordering::Relaxed), 0);
 
         let partial_bytes = batch.batch().data.clone();
-        drain_fast_batch(&cons, &mut batch);
+        drain_fast_batch(&queue, &mut batch);
         assert_eq!(batch.batch().data, partial_bytes);
         assert_eq!(READ_OK.load(Ordering::Relaxed), 0);
         assert_eq!(READ_BADLEN.load(Ordering::Relaxed), 0);
@@ -730,9 +699,9 @@ mod drain_tests {
         // Complete the retained partial batch. The following sample stays
         // queued while a full batch is pending, even across rejected sends.
         for seq in 102..=100 + FAST_BATCH_SAMPLES as u16 {
-            enqueue(bytemuck::bytes_of(&sample(seq)));
+            queue.push(&sample(seq)).unwrap();
         }
-        drain_fast_batch(&cons, &mut batch);
+        drain_fast_batch(&queue, &mut batch);
         assert!(batch.is_full());
         assert_eq!(batch.len(), FAST_BATCH_SAMPLES);
         assert_eq!(READ_OK.swap(0, Ordering::Relaxed), 22);
@@ -758,7 +727,7 @@ mod drain_tests {
                 .broadcast::<FastTelemetryTopic>(batch.batch(), None)
                 .is_err()
         );
-        drain_fast_batch(&cons, &mut batch);
+        drain_fast_batch(&queue, &mut batch);
         assert_eq!(batch.batch().data, encoded_bytes);
         assert_eq!(READ_OK.load(Ordering::Relaxed), 0);
         assert_eq!(READ_BADLEN.load(Ordering::Relaxed), 0);
@@ -783,23 +752,16 @@ mod drain_tests {
         }
         batch.clear();
 
-        drain_fast_batch(&cons, &mut batch);
+        drain_fast_batch(&queue, &mut batch);
         assert_eq!(batch.batch().samples().unwrap()[0].seq, 124);
         assert_eq!(READ_OK.swap(0, Ordering::Relaxed), 1);
         assert_eq!(READ_BADLEN.swap(0, Ordering::Relaxed), 0);
         batch.clear();
-        // An empty batch and a malformed-only slice both stop without a
-        // broadcast; their counters must still be flushed immediately.
-        drain_fast_batch(&cons, &mut batch);
+        // An empty slice stops without a broadcast or deferred counters.
+        drain_fast_batch(&queue, &mut batch);
         assert!(batch.is_empty());
         assert_eq!(READ_OK.load(Ordering::Relaxed), 0);
         assert_eq!(READ_BADLEN.load(Ordering::Relaxed), 0);
-        enqueue(&[0]);
-        drain_fast_batch(&cons, &mut batch);
-        assert!(batch.is_empty());
-        assert_eq!(READ_OK.swap(0, Ordering::Relaxed), 0);
-        assert_eq!(READ_BADLEN.swap(0, Ordering::Relaxed), 1);
-        assert!(cons.read().is_err());
     }
 }
 
@@ -816,10 +778,7 @@ mod stream_control_tests {
         let mut cx = Context::from_waker(Waker::noop());
         let gate = FAST_TELEM_GATE.try_lock().unwrap();
         FAST_TELEM_PERIOD.store(1, Ordering::Release);
-        let prod = FAST_TELEM_Q.framed_producer();
-        let mut grant = prod.grant(4).unwrap();
-        grant.copy_from_slice(&[1, 2, 3, 4]);
-        grant.commit(4);
+        FAST_TELEM_Q.push(&FastTelemetry::default()).unwrap();
 
         let mut stop = core::pin::pin!(set_fast_telemetry_period(0));
         assert!(stop.as_mut().poll(&mut cx).is_pending());
@@ -827,7 +786,10 @@ mod stream_control_tests {
         drop(gate);
         assert_eq!(stop.as_mut().poll(&mut cx), Poll::Ready(0));
         assert_eq!(FAST_TELEM_PERIOD.load(Ordering::Acquire), 0);
-        assert!(FAST_TELEM_Q.framed_consumer().read().is_err());
+        assert_eq!(
+            FAST_TELEM_Q.drain_into(&mut crate::types::FastTelemetryBatchEncoder::new()),
+            0
+        );
     }
 }
 
