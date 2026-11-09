@@ -167,6 +167,9 @@ pub struct HallSensor {
     last_edge_ticks: Option<u64>,
     /// Electrical velocity estimate (rad/s) from last edge
     elec_velocity: f32,
+    /// Nominal sector duration at `elec_velocity`, refreshed with each accepted
+    /// speed estimate so healthy samples need no velocity-limit division.
+    sector_time_s: f32,
     /// Last VALID raw state (1..=6): the sector the rotor was last seen in.
     /// Survives an invalid-state glitch. 0 before the first valid reading.
     valid_raw: u8,
@@ -334,6 +337,7 @@ impl HallSensor {
             direction_reversed: false,
             last_edge_ticks: None,
             elec_velocity: 0.0,
+            sector_time_s: f32::INFINITY,
             valid_raw: 0,
             in_glitch: false,
             glitch_start_ticks: 0,
@@ -710,7 +714,7 @@ impl HallSensor {
             // the previous estimate; the angle/timestamp update above
             // stands, and real edges re-converge the velocity immediately.
             if candidate.abs() <= MAX_PLAUSIBLE_E_RAD_S {
-                self.elec_velocity = candidate;
+                self.set_electrical_velocity(candidate);
             }
         }
 
@@ -881,8 +885,20 @@ impl HallSensor {
     /// the interpolation advance to at most one sector past the last edge.
     #[inline]
     fn decayed_velocity(&self, dt_from_edge: f32) -> f32 {
-        let vel_limit = self.angle_per_state / dt_from_edge.max(1e-9);
+        let age = dt_from_edge.max(1e-9);
+        // Strict comparison is deliberate: at the rounded sector-duration
+        // boundary, the original division may clamp by one ULP. Keep that
+        // division for equality, late edges and unordered values.
+        if age < self.sector_time_s {
+            return self.elec_velocity;
+        }
+        let vel_limit = self.angle_per_state / age;
         clamp_f32(self.elec_velocity, -vel_limit, vel_limit)
+    }
+
+    fn set_electrical_velocity(&mut self, velocity: f32) {
+        self.elec_velocity = velocity;
+        self.sector_time_s = self.angle_per_state / velocity.abs();
     }
 
     /// Interpolated sample at `now_ticks` with full VESC-style processing.
@@ -1313,6 +1329,53 @@ mod tests {
                             reference_sample(&mut expected, sample_time, rate_limited),
                         );
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn velocity_fast_path_preserves_the_rounded_decay_boundary() {
+        let mut hall = HallSensor::new(1_000_000);
+        let mut seed = 0x8492_8345_u32;
+        for i in 0..10_008 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let velocity = match i {
+                0 => 0.0,
+                1 => -0.0,
+                2 => f32::INFINITY,
+                3 => f32::NEG_INFINITY,
+                4 => f32::NAN,
+                5 => f32::MIN_POSITIVE,
+                6 => f32::from_bits(1),
+                7 => MAX_PLAUSIBLE_E_RAD_S,
+                _ => f32::from_bits(seed),
+            };
+            hall.set_electrical_velocity(velocity);
+            let sector_time = hall.sector_time_s;
+            for age in [
+                0.0,
+                -1.0,
+                1e-9,
+                sector_time.next_down(),
+                sector_time,
+                sector_time.next_up(),
+                1.0,
+                f32::MAX,
+                f32::INFINITY,
+                f32::NAN,
+            ] {
+                let limit = hall.angle_per_state / age.max(1e-9);
+                let expected = clamp_f32(velocity, -limit, limit);
+                let actual = hall.decayed_velocity(age);
+                if expected.is_nan() {
+                    assert!(actual.is_nan());
+                } else {
+                    assert_eq!(
+                        actual.to_bits(),
+                        expected.to_bits(),
+                        "velocity={velocity:?}, age={age:?}, sector_time={sector_time:?}",
+                    );
                 }
             }
         }
