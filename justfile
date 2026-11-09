@@ -223,13 +223,16 @@ build-mk5-pwm-trace:
         --features {{ quote(mk5_pwm_trace_features) }}
 
 # Network lock spans and ADC entry phase, without executor/PWM trace hooks.
-build-mk5-netstack-trace:
+build-mk5-netstack-trace mask="basepri":
+    @test {{ quote(mask) }} = basepri -o {{ quote(mask) }} = primask
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_netstack_trace_features) }}
+        --features {{ quote(mk5_netstack_trace_features + if mask == "primask" { ",bench-netstack-primask" } else { "" }) }}
 
-profile-netstack-mk5 capture mask="primask" maneuver="maneuvers/mk5-hall-current-check.json":
+profile-netstack-mk5 capture mask="basepri" maneuver="maneuvers/mk5-hall-current-check.json":
     #!/usr/bin/env bash
     set -euo pipefail
+    mask={{ quote(mask) }}
+    test "$mask" = basepri -o "$mask" = primask
     symbols={{ quote(capture + ".symbols") }}
     rust-nm -n -S -C {{ mk5_elf }} > "$symbols"
     uv run python scripts/bench_executor_trace.py arm --symbols "$symbols" --on-active --active-delay-ms 1200 --timer-hz 83917920
