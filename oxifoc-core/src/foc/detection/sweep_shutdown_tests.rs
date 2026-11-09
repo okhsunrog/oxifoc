@@ -48,6 +48,7 @@ impl DetectionHardware for CompensatedHold {
     async fn wait_telemetry(&mut self) -> FocOutput {
         FocOutput {
             vd: self.vd.get(),
+            vq: 0.15,
             id: self.current.get(),
             ..FocOutput::empty()
         }
@@ -126,8 +127,12 @@ fn hfi_fault_timeout_or_missing_cycles_cannot_fall_back_or_report_success() {
         }
         async fn capture_voltage_burst<S: SinCos>(
             &mut self,
-            _: VoltageBurst,
+            program: VoltageBurst,
         ) -> Result<BurstCapture, DetectionError> {
+            assert!(
+                (program.vq_hold - 0.15).abs() < 1e-5,
+                "preserve the q-axis holding bias"
+            );
             self.bursts += 1;
             Err(self.error)
         }

@@ -275,14 +275,6 @@ pub struct DetectionResult {
 /// sample loop would await a dead channel forever (the ISR is IWDG-covered,
 /// but on hosts/tests there is no watchdog at all). A silent control loop
 /// collects ~nothing by the deadline and still maps to `MotorNotResponding`.
-async fn sample_vd_id<H: DetectionHardware, T: Timer>(
-    hw: &mut H,
-    count: u32,
-    timeout_ms: u64,
-) -> Result<(f32, f32), DetectionError> {
-    sample_voltage_current::<H, T>(hw, count, timeout_ms, None).await
-}
-
 async fn sample_voltage_current<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     count: u32,
@@ -352,38 +344,58 @@ async fn sample_voltage_current<H: DetectionHardware, T: Timer>(
     Ok((vd, id))
 }
 
-/// Settled DirectVoltage holding voltage for `hold_current_a` at the
-/// current rotor lock.
-///
-/// Computed `R·I` plus the *measured* make-up voltage `avg_vd − R·avg_id`
-/// over a short telemetry window. With a converged PI this reduces to the
-/// averaged PI output; with a PI still converging (high-R motors on the
-/// soft detection gains) it degrades gracefully to `R·I`. In both cases it
-/// carries whatever voltage the bridge loses to uncompensated dead-time
-/// distortion — which the open-loop DirectVoltage hold must keep supplying
-/// or the hold collapses: a g431 loses `800 ns × f_pwm × vbus ≈ 0.38 V`,
-/// more than the entire `R·I` holding voltage of a low-resistance
-/// outrunner, and the avg-current open-circuit gate then (correctly)
-/// reports `MotorNotResponding`. A naked `R·I` reproduced exactly that on
-/// the simulated non-ideal plant.
+#[derive(Clone, Copy)]
+struct HoldingVoltage {
+    vd: f32,
+    vq: f32,
+}
+
+/// Capture both PI voltage components at a verified stationary current hold.
+/// Keeping the same inverter correction reference across the transition is
+/// separately enforced by the ISR packet driver.
 async fn settled_hold_voltage<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     resistance_ohm: f32,
     hold_current_a: f32,
-) -> Result<f32, DetectionError> {
-    hw.check_health()?;
-    let computed = resistance_ohm * hold_current_a;
-    match sample_vd_id::<H, T>(hw, 200, 1000).await {
-        Ok((avg_vd, avg_id)) => {
-            // A saturated PI on an open or disabled bridge is not a holding
-            // voltage. Reject before allowing noise to seed HFI or a pulse.
-            if (avg_id - hold_current_a).abs() > (hold_current_a * 0.3).max(0.15) {
-                return Err(DetectionError::MotorNotResponding);
+) -> Result<HoldingVoltage, DetectionError> {
+    use core::cell::Cell;
+    use embassy_futures::select::{Either, select};
+    let sums = Cell::new([0.0f32; 4]);
+    let count = Cell::new(0u32);
+    let collect = async {
+        for _ in 0..200 {
+            hw.check_health()?;
+            let output = hw.wait_telemetry().await;
+            hw.check_health()?;
+            let values = [output.vd, output.vq, output.id, output.iq];
+            if values.iter().any(|v| !v.is_finite()) {
+                return Err(DetectionError::HardwareFault);
             }
-            Ok(computed + (avg_vd - resistance_ohm * avg_id))
+            let mut sum = sums.get();
+            for (s, v) in sum.iter_mut().zip(values) {
+                *s += v;
+            }
+            sums.set(sum);
+            count.set(count.get() + 1);
         }
-        Err(e) => Err(e),
+        Ok(())
+    };
+    if let Either::First(result) = select(collect, T::after_millis(1000)).await {
+        result?;
     }
+    if count.get() < 64 {
+        return Err(DetectionError::Timeout);
+    }
+    let mean = sums.get().map(|v| v / count.get() as f32);
+    if (mean[2] - hold_current_a).abs() > (hold_current_a * 0.3).max(0.15)
+        || mean[3].abs() > (hold_current_a * 0.3).max(0.15)
+    {
+        return Err(DetectionError::MotorNotResponding);
+    }
+    Ok(HoldingVoltage {
+        vd: mean[0] + resistance_ohm * (hold_current_a - mean[2]),
+        vq: mean[1] - resistance_ohm * mean[3],
+    })
 }
 
 /// Re-enter the retained current PI loop before removing a stationary hold.
@@ -637,7 +649,7 @@ const PULSE_MAX_PERIODS: f32 = (PIPELINE_LAG_MAX + 2) as f32;
 async fn probe_hfi_pipeline_lag<H: DetectionHardware, T: Timer, S: SinCos>(
     hw: &mut H,
     injector: &mut HfiInjector<S>,
-    vd_hold: f32,
+    voltage: HoldingVoltage,
     hold_current: f32,
     dt: f32,
     resistance_ohm: f32,
@@ -658,7 +670,8 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, T: Timer, S: SinCos>(
             phase_step: omega_c * dt,
         },
         samples: count as u16,
-        vd_hold,
+        vd_hold: voltage.vd,
+        vq_hold: voltage.vq,
         hold_current,
         angle: 0.0,
     };
@@ -737,13 +750,13 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
     hw: &mut H,
     injector: &mut HfiInjector<S>,
     measurement: &mut InductanceMeasurement<S>,
-    hold: (f32, f32),
+    hold: (HoldingVoltage, f32),
     dt: f32,
     mut adapt: Option<HfiAdapt>,
     lag: u32,
 ) -> Result<(), DetectionError> {
     use super::excitation::Waveform;
-    let (vd_hold, hold_current) = hold;
+    let (voltage, hold_current) = hold;
     let lag = lag as usize;
     if !(1..=PIPELINE_LAG_MAX).contains(&lag) {
         return Err(DetectionError::OutOfRange);
@@ -772,7 +785,8 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
                 phase_step: injector.omega_hfi() * dt,
             },
             samples: (lag + windows * FFT_SIZE) as u16,
-            vd_hold,
+            vd_hold: voltage.vd,
+            vq_hold: voltage.vq,
             hold_current,
             angle: 0.0,
         };
@@ -875,14 +889,16 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     // PRE-modulation command, so configured dead-time comp (a duty-domain
     // adjustment) is not double-counted.
     T::after_millis(u64::from(params.settle_time_ms)).await;
-    let vd_hold =
+    let voltage =
         settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await?;
+    let vd_hold = voltage.vd;
 
     // Voltage headroom above the holding voltage (when vbus is known):
     // commanding beyond this saturates against the bus mid-carrier and
     // distorts the injection waveform.
     let headroom = if params.vbus > 0.0 {
-        ((params.vbus * 0.577 - vd_hold) * 0.9).max(0.1)
+        ((params.vbus * 0.577 - sqrtf(voltage.vd * voltage.vd + voltage.vq * voltage.vq)) * 0.9)
+            .max(0.1)
     } else {
         f32::INFINITY
     };
@@ -915,7 +931,7 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     let (probed_lag, l_probe) = probe_hfi_pipeline_lag::<H, T, S>(
         hw,
         &mut injector,
-        vd_hold,
+        voltage,
         params.hold_current_a,
         dt,
         params.resistance_ohm,
@@ -953,7 +969,7 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
         hw,
         &mut injector,
         &mut measurement,
-        (vd_hold, params.hold_current_a),
+        (voltage, params.hold_current_a),
         dt,
         Some(adapt),
         lag,
@@ -996,6 +1012,7 @@ struct LockedAxis {
     sin_a: f32,
     cos_a: f32,
     vd_hold: f32,
+    vq_hold: f32,
     hold_current_a: f32,
     lock_current_a: f32,
     /// Settle band around `hold_current_a` (kept above the ADC noise floor).
@@ -1041,6 +1058,7 @@ async fn pulse_once<H: DetectionHardware>(
         },
         samples: (2 * PIPELINE_LAG_MAX + 4) as u16,
         vd_hold: ax.vd_hold,
+        vq_hold: ax.vq_hold,
         hold_current: ax.lock_current_a,
         angle: ax.angle,
     };
@@ -1184,8 +1202,9 @@ async fn measure_inductance_pulse_inner<H: DetectionHardware, T: Timer, S: SinCo
         // Steady-state holding voltage (averaged; robust to a PI that is
         // still converging and to dead-time make-up — see
         // `settled_hold_voltage`).
-        let vd_hold =
+        let voltage =
             settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await?;
+        let vd_hold = voltage.vd;
 
         let (sin_a, cos_a) = S::sin_cos(angle);
         let mut ax = LockedAxis {
@@ -1193,6 +1212,7 @@ async fn measure_inductance_pulse_inner<H: DetectionHardware, T: Timer, S: SinCo
             sin_a,
             cos_a,
             vd_hold,
+            vq_hold: voltage.vq,
             hold_current_a: if q_axis { 0.0 } else { params.hold_current_a },
             lock_current_a: params.hold_current_a,
             // Settle band around i_hold (kept above the ADC noise floor).
@@ -1233,7 +1253,7 @@ async fn measure_inductance_pulse_inner<H: DetectionHardware, T: Timer, S: SinCo
         let mut meas = VoltagePulseMeasurement::new(
             &cal_params,
             pwm_freq_hz,
-            if q_axis { 0.0 } else { vd_hold },
+            if q_axis { voltage.vq } else { vd_hold },
         );
         // Residual dead-time the firmware's compensation did not cancel
         // (vd_hold − R·I_hold). Removed from the pulse so L is dead-time-immune;
@@ -1447,12 +1467,14 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
         T::after_millis(10).await;
     }
     T::after_millis(u64::from(params.settle_time_ms)).await;
-    let vd_hold =
+    let voltage =
         settled_hold_voltage::<H, T>(hw, params.resistance_ohm, params.hold_current_a).await?;
+    let vd_hold = voltage.vd;
 
     // Voltage headroom above the hold (so the injection never saturates the bus).
     let headroom = if params.vbus > 0.0 {
-        ((params.vbus * 0.577 - vd_hold) * 0.9).max(0.1)
+        ((params.vbus * 0.577 - sqrtf(voltage.vd * voltage.vd + voltage.vq * voltage.vq)) * 0.9)
+            .max(0.1)
     } else {
         f32::INFINITY
     };
@@ -1468,7 +1490,7 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
     let (lag, l_seed) = probe_hfi_pipeline_lag::<H, T, S>(
         hw,
         &mut injector,
-        vd_hold,
+        voltage,
         params.hold_current_a,
         dt,
         params.resistance_ohm,

@@ -1038,24 +1038,32 @@ where
                 let (vd, vq) = ex.voltages[ex.index];
                 BurstAction::Voltage {
                     vd: program.vd_hold + vd,
-                    vq,
+                    vq: program.vq_hold + vq,
                     angle: program.angle,
+                    compensation_current: ex.compensation_current,
                 }
             } else {
                 BurstAction::Hold(program)
             })
         });
         if let Some(action) = next {
+            let voltage_packet = matches!(&action, BurstAction::Voltage { .. });
             let next = match action {
                 BurstAction::Stop => ControlMode::Stopped,
-                BurstAction::Voltage { vd, vq, angle } => ControlMode::DirectVoltage {
+                BurstAction::Voltage {
                     vd,
                     vq,
-                    angle_rad: angle,
-                },
+                    angle,
+                    compensation_current,
+                } => {
+                    driver.set_detection_voltage(vd, vq, angle, compensation_current);
+                    driver.mode()
+                }
                 BurstAction::Hold(program) => program.hold_mode(),
             };
-            driver.set_mode(next);
+            if !voltage_packet {
+                driver.set_mode(next);
+            }
             critical_section::with(|cs| {
                 let mut state = state_mutex.borrow(cs).borrow_mut();
                 if next == ControlMode::Stopped {

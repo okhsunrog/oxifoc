@@ -61,6 +61,44 @@ fn grant_driver(
     driver
 }
 
+#[cfg(feature = "detection")]
+#[test]
+fn detection_freezes_only_inverter_correction_and_still_trips_on_real_current() {
+    let mut driver = grant_driver(
+        CurrentLimits::from_max_current(3.0),
+        DeratingScales::IDENTITY,
+    );
+    driver.controller.set_dead_time_comp_factor(0.0072);
+    driver
+        .controller
+        .set_dead_time_comp_linear_region(1.0)
+        .unwrap();
+    driver.current_limits.overcurrent_threshold_a = 6.0;
+    driver.current_sensor.currents = (1.0, -0.5, -0.5);
+    driver.set_detection_voltage(-0.1, 0.003, 0.0, (1.0, 0.0));
+    let first = driver.step(50).unwrap();
+    driver.current_sensor.currents = (0.2, -0.1, -0.1);
+    let second = driver.step(100).unwrap();
+    assert_eq!(
+        first.duties, second.duties,
+        "ripple/noise cannot modulate frozen correction"
+    );
+    assert!(
+        (second.id - 0.2).abs() < 1e-6,
+        "telemetry still measures actual current"
+    );
+    driver.set_mode(ControlMode::DirectVoltage {
+        vd: -0.1,
+        vq: 0.003,
+        angle_rad: 0.0,
+    });
+    assert!(driver.detection_compensation_current.is_none());
+    assert_ne!(driver.step(150).unwrap().duties, first.duties);
+    driver.set_detection_voltage(-0.1, 0.003, 0.0, (1.0, 0.0));
+    driver.current_sensor.currents = (7.0, -3.5, -3.5);
+    assert_eq!(driver.step(200), Err(StepError::Overcurrent));
+}
+
 #[test]
 fn grant_derates_drive_and_brake_by_direction() {
     let iq = |d: &FocDriver<_, _, _>, iq, omega| d.grant_torque(0.0, iq, omega).1;
@@ -3493,6 +3531,7 @@ mod severity_gate {
                 },
                 samples: 12,
                 vd_hold: 0.03,
+                vq_hold: 0.0,
                 hold_current: 1.0,
                 angle: 0.0,
             };

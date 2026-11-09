@@ -26,6 +26,7 @@ pub struct VoltageBurst {
     pub waveform: Waveform,
     pub samples: u16,
     pub vd_hold: f32,
+    pub vq_hold: f32,
     pub hold_current: f32,
     pub angle: f32,
 }
@@ -35,6 +36,7 @@ impl VoltageBurst {
         if self.samples == 0
             || usize::from(self.samples) > MAX_BURST_SAMPLES
             || !self.vd_hold.is_finite()
+            || !self.vq_hold.is_finite()
             || !self.hold_current.is_finite()
             || self.hold_current <= 0.0
             || !self.angle.is_finite()
@@ -96,7 +98,7 @@ impl VoltageBurst {
         let (vd, vq) = self.injection::<S>(index);
         ControlMode::DirectVoltage {
             vd: self.vd_hold + vd,
-            vq,
+            vq: self.vq_hold + vq,
             angle_rad: self.angle,
         }
     }
@@ -128,7 +130,12 @@ pub struct BurstCapture {
 #[cfg(feature = "runtime")]
 pub(crate) enum BurstAction {
     Stop,
-    Voltage { vd: f32, vq: f32, angle: f32 },
+    Voltage {
+        vd: f32,
+        vq: f32,
+        angle: f32,
+        compensation_current: (f32, f32),
+    },
     Hold(VoltageBurst),
 }
 
@@ -173,6 +180,7 @@ pub(crate) struct Excitation {
     pub index: usize,
     pub preparing: bool,
     pub voltages: [(f32, f32); MAX_BURST_SAMPLES],
+    pub compensation_current: (f32, f32),
     last_cycle: Option<u32>,
     last_tick: u32,
     first_tick: u32,
@@ -190,6 +198,7 @@ impl Excitation {
             index: 0,
             preparing: false,
             voltages: [(0.0, 0.0); MAX_BURST_SAMPLES],
+            compensation_current: (0.0, 0.0),
             last_cycle: None,
             last_tick: 0,
             first_tick: 0,

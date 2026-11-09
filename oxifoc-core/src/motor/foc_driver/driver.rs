@@ -57,6 +57,8 @@ where
             current_sensor,
             phase,
             mode: ControlMode::Stopped,
+            #[cfg(feature = "detection")]
+            detection_compensation_current: None,
             vbus,
             dt,
             current_limits: CurrentLimits::default(),
@@ -235,6 +237,10 @@ where
 
     /// Set control mode
     pub fn set_mode(&mut self, mode: ControlMode) {
+        #[cfg(feature = "detection")]
+        {
+            self.detection_compensation_current = None;
+        }
         // A motor-mode command supersedes maintenance. Cancellation floats
         // the bridge immediately; a non-Stopped mode is additionally rejected
         // by the command gate while maintenance is active.
@@ -325,6 +331,24 @@ where
     /// Get current control mode
     pub fn mode(&self) -> ControlMode {
         self.mode
+    }
+
+    /// Bounded ISR excitation keeps the same deadtime-correction reference as
+    /// its preceding PI hold. Ordinary DirectVoltage retains measured signs.
+    #[cfg(feature = "detection")]
+    pub(crate) fn set_detection_voltage(
+        &mut self,
+        vd: f32,
+        vq: f32,
+        angle: f32,
+        current: (f32, f32),
+    ) {
+        self.set_mode(ControlMode::DirectVoltage {
+            vd,
+            vq,
+            angle_rad: angle,
+        });
+        self.detection_compensation_current = Some(current);
     }
 
     /// Update bus voltage

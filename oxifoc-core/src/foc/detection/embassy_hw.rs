@@ -127,12 +127,12 @@ impl DetectionHardware for EmbassyDetectionHardware {
             }
         }
         self.check_health()?;
+        let (sin, cos) = S::sin_cos(program.angle);
         critical_section::with(|cs| {
-            self.state_mutex
-                .borrow(cs)
-                .borrow_mut()
-                .excitation
-                .preparing = false;
+            let mut state = self.state_mutex.borrow(cs).borrow_mut();
+            state.excitation.compensation_current =
+                (program.hold_current * cos, program.hold_current * sin);
+            state.excitation.preparing = false;
         });
         let completion = poll_fn(|cx| {
             state::TELEM_WAKER.register(cx.waker());

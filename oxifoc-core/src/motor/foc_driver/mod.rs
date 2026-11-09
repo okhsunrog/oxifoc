@@ -185,6 +185,10 @@ where
     phase: Phase,
     /// Current control mode
     mode: ControlMode,
+    /// Detection packets retain the PI reference used for inverter correction.
+    /// This never replaces the measured current used for telemetry/protection.
+    #[cfg(feature = "detection")]
+    detection_compensation_current: Option<(f32, f32)>,
     /// Bus voltage (V)
     vbus: f32,
     /// Control loop period in seconds (1/pwm_freq)

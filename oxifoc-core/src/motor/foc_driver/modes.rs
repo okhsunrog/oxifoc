@@ -477,9 +477,15 @@ where
             Some(c) => self.controller.current_sense_topology().clarke(c),
             None => (0.0, 0.0),
         };
-        let mut out = self
-            .controller
-            .apply_dq(vd, vq, angle_rad, i_alpha_m, i_beta_m, max_duty);
+        #[cfg(feature = "detection")]
+        let (i_comp_alpha, i_comp_beta) = self
+            .detection_compensation_current
+            .unwrap_or((i_alpha_m, i_beta_m));
+        #[cfg(not(feature = "detection"))]
+        let (i_comp_alpha, i_comp_beta) = (i_alpha_m, i_beta_m);
+        let mut out =
+            self.controller
+                .apply_dq(vd, vq, angle_rad, i_comp_alpha, i_comp_beta, max_duty);
 
         self.pwm.set_duties(out.duties);
 
