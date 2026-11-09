@@ -61,6 +61,90 @@ pub static OUT_TRK: AtomicU32 = AtomicU32::new(0);
 /// 87afa17, ~3× their arithmetic).
 pub static OBS_TAIL: AtomicU32 = AtomicU32::new(0);
 
+/// Named sections of one coherent profiling window. Nested sections (e.g.
+/// trigonometry inside control) are subsets, not additional execution time.
+#[cfg(feature = "runtime")]
+#[derive(Clone, Copy)]
+pub enum Section {
+    Command,
+    Protection,
+    Step,
+    Tail,
+    PwmOff,
+    StoppedPhase,
+    Gate,
+    Control,
+    Trig,
+    Post,
+    Estimator,
+    Observer,
+    Startup,
+    PhaseOutput,
+    CurrentRead,
+    PhaseTracker,
+    // Keep last: adding a section above this also grows Snapshot's array.
+    ObserverTail,
+}
+
+#[cfg(feature = "runtime")]
+pub struct Snapshot {
+    cycles: [u32; Section::ObserverTail as usize + 1],
+}
+
+#[cfg(feature = "runtime")]
+impl Snapshot {
+    /// The caller must capture its ISR invocation count and platform sections
+    /// in this SAME critical section. Logging afterwards cannot split a window.
+    pub fn take(_cs: critical_section::CriticalSection<'_>) -> Self {
+        let counters = [
+            &CYCLE_CMD,
+            &CYCLE_PROT,
+            &CYCLE_STEP,
+            &CYCLE_TAIL,
+            &STEP_PWMOFF,
+            &STEP_PHASE,
+            &STEP_GATE,
+            &STEP_CTRL,
+            &CTRL_TRIG,
+            &STEP_POST,
+            &STEP_EST,
+            &EST_OBS,
+            &EST_STARTUP,
+            &EST_OUT,
+            &GATE_CURR,
+            &OUT_TRK,
+            &OBS_TAIL,
+        ];
+        Self {
+            cycles: counters.map(|counter| counter.swap(0, core::sync::atomic::Ordering::Relaxed)),
+        }
+    }
+
+    pub fn average(&self, section: Section, samples: core::num::NonZeroU32) -> u32 {
+        self.cycles[section as usize] / samples.get()
+    }
+}
+
+#[cfg(all(test, feature = "runtime"))]
+mod tests {
+    use super::*;
+    use core::{num::NonZeroU32, sync::atomic::Ordering};
+
+    #[test]
+    fn snapshot_keeps_its_window_when_live_counters_advance() {
+        CYCLE_CMD.store(40, Ordering::Relaxed);
+        STEP_CTRL.store(100, Ordering::Relaxed);
+        let first = critical_section::with(Snapshot::take);
+        CYCLE_CMD.store(80, Ordering::Relaxed);
+        let second = critical_section::with(Snapshot::take);
+        let samples = NonZeroU32::new(4).unwrap();
+        assert_eq!(first.average(Section::Command, samples), 10);
+        assert_eq!(first.average(Section::Control, samples), 25);
+        assert_eq!(second.average(Section::Command, samples), 20);
+        assert_eq!(second.average(Section::Control, samples), 0);
+    }
+}
+
 /// Current DWT cycle count (0 when profiling is compiled out).
 #[inline(always)]
 pub fn now() -> u32 {

@@ -31,7 +31,9 @@ transport-uart = []
 # remaining tasks 0. Complements the default USB interrupt executor.
 task-priority = ["embassy-executor/scheduler-priority"]
 # Detailed per-section DWT profiling; keep out of normal control images.
-isr-profiling = ["oxifoc-core/isr-profiling"]
+isr-profiling = ["isr-timing", "oxifoc-core/isr-profiling"]
+# Two DWT reads per ISR, without nested section instrumentation.
+isr-timing = []
 # ergot over RTT channel 1 (defmt shares ch0). Diagnostic transport — high-rate
 # telemetry over the debug probe; adds a third interface alongside USB/UART.
 transport-rtt = ["ergot/rtt"]

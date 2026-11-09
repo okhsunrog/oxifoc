@@ -372,6 +372,18 @@ async fn first_vbus_v() -> f32 {
 
 /// ADC interrupt: read all injected ADC samples and run FOC control.
 ///
+#[inline(always)]
+fn isr_timing_now() -> u32 {
+    #[cfg(feature = "isr-timing")]
+    {
+        cortex_m::peripheral::DWT::cycle_count()
+    }
+    #[cfg(not(feature = "isr-timing"))]
+    {
+        0
+    }
+}
+
 /// Triggered by ADC3 JEOC (end of injected conversion sequence).
 /// ADC1, ADC2, ADC3 all start conversion simultaneously on TIM1_CC4.
 #[interrupt]
@@ -379,7 +391,7 @@ fn ADC() {
     static mut SEQ: u32 = 0;
     static mut LAST_START: u32 = 0;
 
-    let isr_t0 = oxifoc_core::isr_prof::now();
+    let isr_t0 = isr_timing_now();
     #[cfg(feature = "bench-executor-trace")]
     crate::diagnostics::trace::record(8, 0);
     if cfg!(feature = "isr-profiling") && *LAST_START != 0 {
@@ -560,10 +572,12 @@ fn ADC() {
 
     #[cfg(feature = "bench-executor-trace")]
     crate::diagnostics::trace::record(9, 0);
-    let isr_end = oxifoc_core::isr_prof::now();
-    oxifoc_core::isr_prof::add(&ISR_CYC_SUM, isr_t0, isr_end);
+    let isr_end = isr_timing_now();
+    if cfg!(feature = "isr-timing") {
+        ISR_CYC_SUM.fetch_add(isr_end.wrapping_sub(isr_t0), Ordering::Relaxed);
+    }
     ISR_CYC_N.fetch_add(1, Ordering::Relaxed);
-    if cfg!(feature = "isr-profiling") {
+    if cfg!(feature = "isr-timing") {
         let isr_dt = isr_end.wrapping_sub(isr_t0);
         ISR_CYC_MAX.fetch_max(isr_dt, Ordering::Relaxed);
         // An ISR that ate the whole PWM period leaves no thread time.
@@ -576,10 +590,56 @@ fn ADC() {
 /// 1 Hz ISR-cost stats — same line format as the g431 so the bench-suite
 /// parser works unchanged: `isr/s: n= avg= max= over= load_pct=` plus the
 /// per-section and core-bucket breakdowns.
+struct IsrStatistics {
+    samples: u32,
+    cycles: u32,
+    max_cycles: u32,
+    overruns: u32,
+    adc: u32,
+    snapshot: u32,
+    control: u32,
+    publish: u32,
+    intervals: (u32, u32, u32, u32, u32, u32),
+    core: oxifoc_core::isr_prof::Snapshot,
+    captured_at: u32,
+}
+
+impl IsrStatistics {
+    fn take() -> Self {
+        critical_section::with(|cs| Self {
+            samples: ISR_CYC_N.swap(0, Ordering::Relaxed),
+            cycles: ISR_CYC_SUM.swap(0, Ordering::Relaxed),
+            max_cycles: ISR_CYC_MAX.swap(0, Ordering::Relaxed),
+            overruns: ISR_CYC_OVER.swap(0, Ordering::Relaxed),
+            adc: ISR_PROF_ADC.swap(0, Ordering::Relaxed),
+            snapshot: ISR_PROF_SNAP.swap(0, Ordering::Relaxed),
+            control: ISR_PROF_FOC.swap(0, Ordering::Relaxed),
+            publish: ISR_PROF_PUB.swap(0, Ordering::Relaxed),
+            intervals: (
+                ISR_INTERVAL_N.swap(0, Ordering::Relaxed),
+                ISR_INTERVAL_SUM.swap(0, Ordering::Relaxed),
+                ISR_INTERVAL_MIN.swap(u32::MAX, Ordering::Relaxed),
+                ISR_INTERVAL_MAX.swap(0, Ordering::Relaxed),
+                ISR_INTERVAL_LONG.swap(0, Ordering::Relaxed),
+                ISR_INTERVAL_SHORT.swap(0, Ordering::Relaxed),
+            ),
+            core: oxifoc_core::isr_prof::Snapshot::take(cs),
+            captured_at: cortex_m::peripheral::DWT::cycle_count(),
+        })
+    }
+}
+
 #[embassy_executor::task]
 pub async fn isr_stats_task() {
     use embassy_time::Ticker;
+    // A perpetually backlogged stream yields between batches but stays ready.
+    // Profiling must run before that stream so windows do not span states.
+    #[cfg(all(feature = "isr-timing", feature = "task-priority"))]
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(2);
     let mut ticker = Ticker::every(Duration::from_secs(1));
+    let mut previous_capture = cortex_m::peripheral::DWT::cycle_count();
     #[cfg(feature = "transport-usb")]
     let mut usb_clock_previous = None;
     #[cfg(feature = "transport-usb")]
@@ -617,47 +677,41 @@ pub async fn isr_stats_task() {
             }
             usb_clock_previous = Some((frame, cycles));
         }
-        let cyc_n = ISR_CYC_N.swap(0, Ordering::Relaxed);
-        if cyc_n == 0 {
+        let stats = IsrStatistics::take();
+        let elapsed_cycles = stats.captured_at.wrapping_sub(previous_capture).max(1);
+        previous_capture = stats.captured_at;
+        let Some(sample_count) = core::num::NonZeroU32::new(stats.samples) else {
             continue;
-        }
-        if cfg!(feature = "isr-profiling") {
-            let cyc_sum = ISR_CYC_SUM.swap(0, Ordering::Relaxed);
-            let cyc_max = ISR_CYC_MAX.swap(0, Ordering::Relaxed);
-            let adc = ISR_PROF_ADC.swap(0, Ordering::Relaxed) / cyc_n;
-            let sn = ISR_PROF_SNAP.swap(0, Ordering::Relaxed) / cyc_n;
-            let fo = ISR_PROF_FOC.swap(0, Ordering::Relaxed) / cyc_n;
-            let pb = ISR_PROF_PUB.swap(0, Ordering::Relaxed) / cyc_n;
+        };
+        let cyc_n = sample_count.get();
+        if cfg!(feature = "isr-timing") {
+            let cyc_sum = stats.cycles;
+            let cyc_max = stats.max_cycles;
+            let adc = stats.adc / cyc_n;
+            let sn = stats.snapshot / cyc_n;
+            let fo = stats.control / cyc_n;
+            let pb = stats.publish / cyc_n;
             let avg = cyc_sum / cyc_n;
             defmt::info!(
                 "isr/s: n={} avg={} max={} over={} load_pct={}",
                 cyc_n,
                 avg,
                 cyc_max,
-                ISR_CYC_OVER.swap(0, Ordering::Relaxed),
-                cyc_sum / (CPU_HZ / 100), // cycles per 1% of a second
+                stats.overruns,
+                u64::from(cyc_sum) * 100 / u64::from(elapsed_cycles),
             );
-            defmt::info!(
-                "isrp/s: adc={} snap={} foc={} pub={} tail={}",
-                adc,
-                sn,
-                fo,
-                pb,
-                avg.saturating_sub(adc + sn + fo + pb)
-            );
-            // Swap the timing tuple atomically relative to the ADC IRQ so average
-            // and extrema describe one window. Logging stays outside the section.
+            if cfg!(feature = "isr-profiling") {
+                defmt::info!(
+                    "isrp/s: adc={} snap={} foc={} pub={} tail={}",
+                    adc,
+                    sn,
+                    fo,
+                    pb,
+                    avg.saturating_sub(adc + sn + fo + pb)
+                );
+            }
             let (interval_n, interval_sum, interval_min, interval_max, long, short) =
-                critical_section::with(|_| {
-                    (
-                        ISR_INTERVAL_N.swap(0, Ordering::Relaxed),
-                        ISR_INTERVAL_SUM.swap(0, Ordering::Relaxed),
-                        ISR_INTERVAL_MIN.swap(u32::MAX, Ordering::Relaxed),
-                        ISR_INTERVAL_MAX.swap(0, Ordering::Relaxed),
-                        ISR_INTERVAL_LONG.swap(0, Ordering::Relaxed),
-                        ISR_INTERVAL_SHORT.swap(0, Ordering::Relaxed),
-                    )
-                });
+                stats.intervals;
             if interval_n != 0 {
                 defmt::info!(
                     "isri/s: n={} avg={} min={} max={} long={} short={} expected={}",
@@ -750,32 +804,33 @@ pub async fn isr_stats_task() {
         // the g431 protocol stats task.
         #[cfg(feature = "isr-profiling")]
         {
-            use oxifoc_core::isr_prof as p;
+            use oxifoc_core::isr_prof::Section as S;
+            let average = |section| stats.core.average(section, sample_count);
             defmt::info!(
                 "isrc/s: cmd={} prot={} step={} ctail={} | stopped: pwmoff={} phase={}",
-                p::CYCLE_CMD.swap(0, Ordering::Relaxed) / cyc_n,
-                p::CYCLE_PROT.swap(0, Ordering::Relaxed) / cyc_n,
-                p::CYCLE_STEP.swap(0, Ordering::Relaxed) / cyc_n,
-                p::CYCLE_TAIL.swap(0, Ordering::Relaxed) / cyc_n,
-                p::STEP_PWMOFF.swap(0, Ordering::Relaxed) / cyc_n,
-                p::STEP_PHASE.swap(0, Ordering::Relaxed) / cyc_n,
+                average(S::Command),
+                average(S::Protection),
+                average(S::Step),
+                average(S::Tail),
+                average(S::PwmOff),
+                average(S::StoppedPhase),
             );
             defmt::info!(
                 "isrd/s: gate={} (curr={}) ctrl={} (trig={}) post={} est={}",
-                p::STEP_GATE.swap(0, Ordering::Relaxed) / cyc_n,
-                p::GATE_CURR.swap(0, Ordering::Relaxed) / cyc_n,
-                p::STEP_CTRL.swap(0, Ordering::Relaxed) / cyc_n,
-                p::CTRL_TRIG.swap(0, Ordering::Relaxed) / cyc_n,
-                p::STEP_POST.swap(0, Ordering::Relaxed) / cyc_n,
-                p::STEP_EST.swap(0, Ordering::Relaxed) / cyc_n,
+                average(S::Gate),
+                average(S::CurrentRead),
+                average(S::Control),
+                average(S::Trig),
+                average(S::Post),
+                average(S::Estimator),
             );
             defmt::info!(
                 "isre/s: obs={} (otail={}) startup={} out={} (trk={})",
-                p::EST_OBS.swap(0, Ordering::Relaxed) / cyc_n,
-                p::OBS_TAIL.swap(0, Ordering::Relaxed) / cyc_n,
-                p::EST_STARTUP.swap(0, Ordering::Relaxed) / cyc_n,
-                p::EST_OUT.swap(0, Ordering::Relaxed) / cyc_n,
-                p::OUT_TRK.swap(0, Ordering::Relaxed) / cyc_n,
+                average(S::Observer),
+                average(S::ObserverTail),
+                average(S::Startup),
+                average(S::PhaseOutput),
+                average(S::PhaseTracker),
             );
         }
     }

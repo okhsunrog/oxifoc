@@ -401,6 +401,13 @@ pub async fn defmt_forwarder(
     consumer: ergot::logging::defmt_sink::DefmtConsumer,
     stack: &'static Stack,
 ) {
+    // Profiling windows are useless if a backlogged stream starves delivery
+    // until the diagnostic ring has dropped the active-state measurements.
+    // This worker waits for new frames; it never polls an empty ring.
+    #[cfg(all(feature = "isr-timing", feature = "task-priority"))]
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(2);
     // (2026-07-08: defmt-over-USB works end-to-end. It was broken by TWO
     // stacked bugs, fixed the same day: ergot's defmt sink granted half
     // the ring per frame and could park its pointer in a geometric dead
