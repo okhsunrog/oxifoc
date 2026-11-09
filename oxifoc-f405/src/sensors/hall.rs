@@ -171,7 +171,11 @@ pub fn init_hall(
     // instead of the actual angle. A disconnected cable (pull-ups read
     // 0b111) surfaces immediately as an invalid state. Safe: the capture
     // interrupt is not unmasked yet.
-    update_hall_edge(read_hall_idr(), now_ticks());
+    let initial_state = read_hall_idr();
+    let initial_ticks = now_ticks();
+    update_hall_edge(initial_state, initial_ticks);
+    #[cfg(feature = "bench-hall")]
+    crate::diagnostics::hall_edges::record(initial_ticks, initial_state, false, true);
 
     #[expect(
         clippy::multiple_unsafe_ops_per_block,
@@ -240,7 +244,10 @@ fn TIM3() {
         EDGES.fetch_add(1, Ordering::Relaxed);
         let edge = scale_capture_ticks(ticks, TICK_FRACTION_Q32.load(Ordering::Relaxed))
             .saturating_sub(u64::from(FILTER_DELAY_TICKS.load(Ordering::Relaxed)));
-        update_hall_edge(read_hall_idr(), edge);
+        let state = read_hall_idr();
+        update_hall_edge(state, edge);
+        #[cfg(feature = "bench-hall")]
+        crate::diagnostics::hall_edges::record(edge, state, sr.ccof(0), false);
     } else if sr.uif() {
         TIMEBASE.overflow(|| clear_flags(true, false));
     }

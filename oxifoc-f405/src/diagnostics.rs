@@ -1,5 +1,8 @@
 //! Default-off bench diagnostics. No per-event logging or USB traffic.
 
+#[cfg(feature = "bench-hall")]
+pub mod hall_edges;
+
 /// Low-rate observations tied to the same ADC sequence as fast telemetry.
 /// No GPIO/USB logging is added to the control or Hall capture interrupts.
 #[cfg(feature = "bench-hall")]

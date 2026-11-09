@@ -514,6 +514,8 @@ fn ADC() {
 
     // Build ADC snapshot
     *SEQ = SEQ.wrapping_add(1);
+    #[cfg(feature = "bench-hall")]
+    crate::diagnostics::hall_edges::observe_adc(*SEQ);
     // Read the compare/preload registers BEFORE run_foc_cycle can program
     // the next vector. Do not pair ADC measurements with that next command.
     let tim = embassy_stm32::pac::TIM1;
