@@ -381,6 +381,46 @@ mod tests {
     use oxifoc_core::types::VoltageFeedforwardMode;
 
     #[test]
+    fn hall_json_preserves_complete_optional_geometry_and_accepts_legacy_omission() {
+        use oxifoc_core::storage::{HallCalibrationConfig, HallTransitionGeometryConfig};
+        let group = ConfigGroupId::HallCalibration;
+        let default = group_default_value(group);
+        assert!(default["geometry"].is_null());
+        let mut legacy = default.clone();
+        legacy.as_object_mut().unwrap().remove("geometry");
+        assert_eq!(
+            write_from_value(group, legacy).unwrap(),
+            ConfigWrite::HallCalibration(HallCalibrationConfig::default())
+        );
+        let tau = core::f32::consts::TAU;
+        let config = HallCalibrationConfig {
+            geometry: Some(HallTransitionGeometryConfig {
+                entry_angles: [
+                    0.0,
+                    0.0,
+                    tau / 3.0,
+                    tau / 6.0,
+                    2.0 * tau / 3.0,
+                    5.0 * tau / 6.0,
+                    tau / 2.0,
+                    0.0,
+                ],
+                next_states: [0, 3, 6, 2, 5, 1, 4, 0],
+            }),
+            ..Default::default()
+        };
+        assert!(config.is_calibrated());
+        let json = group_value(&ConfigValue::HallCalibration(config.clone())).unwrap();
+        assert_eq!(
+            write_from_value(group, json.clone()).unwrap(),
+            ConfigWrite::HallCalibration(config.clone())
+        );
+        let (_, write) =
+            patch_fields(group, default, &[format!("geometry={}", json["geometry"])]).unwrap();
+        assert_eq!(write, ConfigWrite::HallCalibration(config));
+    }
+
+    #[test]
     fn voltage_feedforward_defaults_and_modes_use_the_typed_wire_schema() {
         let group = ConfigGroupId::VoltageFeedforward;
         let default = group_default_value(group);

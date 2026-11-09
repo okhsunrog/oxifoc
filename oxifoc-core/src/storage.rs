@@ -36,7 +36,7 @@ pub type UncachedStorage<KEY> = sequential_storage::cache::Cache<
 pub enum ConfigKey {
     /// Motor electrical parameters (R, L, λ, pole pairs)
     MotorParams = 1,
-    /// Hall sensor calibration (sector angles)
+    /// Legacy Hall sector angles. Read-only migration source; new saves use 14.
     HallCalibration = 2,
     /// Current sensor DC offsets
     DcOffsets = 3,
@@ -60,6 +60,8 @@ pub enum ConfigKey {
     BoardCalibration = 12,
     /// Explicit current-loop voltage feedforward policy.
     VoltageFeedforward = 13,
+    /// Complete versioned Hall calibration, including optional edge geometry.
+    HallCalibrationRecord = 14,
 }
 
 impl Key for ConfigKey {
@@ -89,6 +91,7 @@ impl Key for ConfigKey {
             11 => Self::Derating,
             12 => Self::BoardCalibration,
             13 => Self::VoltageFeedforward,
+            14 => Self::HallCalibrationRecord,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -248,7 +251,38 @@ impl MotorParamsConfig {
     }
 }
 
-/// Hall sensor calibration data.
+/// Untrusted Hall geometry on the wire. Convert through the validated RAM
+/// constructor before installing it in an estimator.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct HallTransitionGeometryConfig {
+    pub entry_angles: [f32; 8],
+    pub next_states: [u8; 8],
+}
+
+impl HallTransitionGeometryConfig {
+    pub fn validated(
+        &self,
+        centroids: [f32; 8],
+    ) -> Option<crate::foc::hall_calibration::HallTransitionGeometry> {
+        crate::foc::hall_calibration::HallTransitionGeometry::try_from_raw_parts(
+            self.entry_angles,
+            self.next_states,
+            centroids,
+        )
+    }
+}
+
+impl From<&crate::foc::hall_calibration::HallTransitionGeometry> for HallTransitionGeometryConfig {
+    fn from(value: &crate::foc::hall_calibration::HallTransitionGeometry) -> Self {
+        Self {
+            entry_angles: value.entry_angles(),
+            next_states: value.next_states(),
+        }
+    }
+}
+
+/// One complete Hall calibration: centroids and the geometry measured with them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct HallCalibrationConfig {
@@ -256,9 +290,100 @@ pub struct HallCalibrationConfig {
     pub angles: [f32; 8],
     /// Validity flags for each Hall state
     pub valid: [bool; 8],
+    /// Omitted geometry retains the legacy midpoint approximation. JSON may
+    /// omit this field; flash migration uses explicit frozen layouts below.
+    #[serde(default)]
+    pub geometry: Option<HallTransitionGeometryConfig>,
 }
 
-impl PostcardValue<'_> for HallCalibrationConfig {}
+// These flash layouts are frozen. Evolving the public/wire config requires a
+// new record variant and explicit conversions, never adding fields to V1.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg(any(feature = "runtime", test))]
+struct LegacyHallCalibrationConfig {
+    angles: [f32; 8],
+    valid: [bool; 8],
+}
+#[cfg(any(feature = "runtime", test))]
+impl PostcardValue<'_> for LegacyHallCalibrationConfig {}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg(any(feature = "runtime", test))]
+enum HallCalibrationRecord {
+    V1(HallCalibrationV1),
+}
+#[cfg(any(feature = "runtime", test))]
+impl PostcardValue<'_> for HallCalibrationRecord {}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg(any(feature = "runtime", test))]
+struct HallCalibrationV1 {
+    angles: [f32; 8],
+    valid: [bool; 8],
+    geometry: Option<HallTransitionGeometryV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg(any(feature = "runtime", test))]
+struct HallTransitionGeometryV1 {
+    entry_angles: [f32; 8],
+    next_states: [u8; 8],
+}
+
+#[cfg(any(feature = "runtime", test))]
+impl From<HallCalibrationConfig> for HallCalibrationRecord {
+    fn from(value: HallCalibrationConfig) -> Self {
+        Self::V1(HallCalibrationV1 {
+            angles: value.angles,
+            valid: value.valid,
+            geometry: value.geometry.map(|g| HallTransitionGeometryV1 {
+                entry_angles: g.entry_angles,
+                next_states: g.next_states,
+            }),
+        })
+    }
+}
+
+#[cfg(any(feature = "runtime", test))]
+impl HallCalibrationRecord {
+    fn validated(self) -> Option<HallCalibrationConfig> {
+        let Self::V1(value) = self;
+        let config = HallCalibrationConfig {
+            angles: value.angles,
+            valid: value.valid,
+            geometry: value.geometry.map(|g| HallTransitionGeometryConfig {
+                entry_angles: g.entry_angles,
+                next_states: g.next_states,
+            }),
+        };
+        config.is_calibrated().then_some(config)
+    }
+}
+
+#[cfg(any(feature = "runtime", test))]
+impl LegacyHallCalibrationConfig {
+    fn validated(self) -> Option<HallCalibrationConfig> {
+        let config = HallCalibrationConfig {
+            angles: self.angles,
+            valid: self.valid,
+            geometry: None,
+        };
+        config.is_calibrated().then_some(config)
+    }
+}
+
+impl From<&crate::foc::hall_calibration::HallCalibrationResult> for HallCalibrationConfig {
+    fn from(result: &crate::foc::hall_calibration::HallCalibrationResult) -> Self {
+        Self {
+            angles: result.angles,
+            valid: result.valid,
+            geometry: result
+                .geometry
+                .as_ref()
+                .map(HallTransitionGeometryConfig::from),
+        }
+    }
+}
 
 impl Default for HallCalibrationConfig {
     fn default() -> Self {
@@ -275,6 +400,7 @@ impl Default for HallCalibrationConfig {
                 0.0,               // state 7 — invalid
             ],
             valid: [false, true, true, true, true, true, true, false],
+            geometry: None,
         }
     }
 }
@@ -287,6 +413,10 @@ impl HallCalibrationConfig {
             && !self.valid[7]
             && self.valid[1..=6].iter().all(|&valid| valid)
             && self.angles[1..=6].iter().all(|angle| angle.is_finite())
+            && self
+                .geometry
+                .as_ref()
+                .is_none_or(|geometry| geometry.validated(self.angles).is_some())
     }
 }
 
@@ -645,6 +775,9 @@ pub struct RuntimeConfig {
     pub board_calibration_invalid: bool,
     pub motor_params: Option<MotorParamsConfig>,
     pub hall_calibration: Option<HallCalibrationConfig>,
+    /// A present but unreadable/invalid Hall record cannot fall back to an
+    /// older calibration. Repair is a successful complete live Hall apply.
+    pub hall_calibration_invalid: bool,
     pub dc_offsets: Option<DcOffsetsConfig>,
     pub current_limits: Option<CurrentLimitsConfig>,
     pub voltage_limits: Option<VoltageLimitsConfig>,
@@ -661,6 +794,14 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     pub fn board_calibration_is_valid(&self) -> bool {
         !self.board_calibration_invalid && self.board_calibration.is_none_or(|v| v.is_sane())
+    }
+
+    pub fn hall_calibration_is_valid(&self) -> bool {
+        !self.hall_calibration_invalid
+            && self
+                .hall_calibration
+                .as_ref()
+                .is_none_or(HallCalibrationConfig::is_calibrated)
     }
 }
 
@@ -757,7 +898,15 @@ where
                             .await
                     }
                     ConfigPayload::MotorParams(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::HallCalibration(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::HallCalibration(v) => {
+                        storage
+                            .store_item(
+                                buf,
+                                &ConfigKey::HallCalibrationRecord,
+                                &HallCalibrationRecord::from(v),
+                            )
+                            .await
+                    }
                     ConfigPayload::DcOffsets(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::CurrentLimits(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::VoltageLimits(v) => storage.store_item(buf, &key, &v).await,
@@ -789,7 +938,8 @@ where
     }
 }
 
-/// Load all stored configs. Missing keys (or any read error) become None.
+/// Load stored configs. Safety-relevant calibration failures remain distinct
+/// from missing records and must be repaired before their control path runs.
 #[cfg(all(feature = "runtime", feature = "storage"))]
 async fn load_all<F>(
     storage: &mut sequential_storage::map::MapStorage<ConfigKey, F, UncachedStorage<ConfigKey>>,
@@ -811,7 +961,6 @@ where
     }
 
     load!(motor_params, MotorParams);
-    load!(hall_calibration, HallCalibration);
     load!(dc_offsets, DcOffsets);
     load!(current_limits, CurrentLimits);
     load!(voltage_limits, VoltageLimits);
@@ -822,6 +971,28 @@ where
     load!(velocity, Velocity);
     load!(derating, Derating);
     load!(voltage_feedforward, VoltageFeedforward);
+
+    match storage
+        .fetch_item::<HallCalibrationRecord>(buf, &ConfigKey::HallCalibrationRecord)
+        .await
+    {
+        Ok(Some(record)) => {
+            cfg.hall_calibration = record.validated();
+            cfg.hall_calibration_invalid = cfg.hall_calibration.is_none();
+        }
+        Ok(None) => match storage
+            .fetch_item::<LegacyHallCalibrationConfig>(buf, &ConfigKey::HallCalibration)
+            .await
+        {
+            Ok(None) => {}
+            Ok(Some(record)) => {
+                cfg.hall_calibration = record.validated();
+                cfg.hall_calibration_invalid = cfg.hall_calibration.is_none();
+            }
+            Err(_) => cfg.hall_calibration_invalid = true,
+        },
+        Err(_) => cfg.hall_calibration_invalid = true,
+    }
 
     match storage
         .fetch_item::<StoredBoardCalibration>(buf, &ConfigKey::BoardCalibration)
@@ -841,6 +1012,205 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn measured_hall_config() -> HallCalibrationConfig {
+        use core::f32::consts::TAU;
+        HallCalibrationConfig {
+            geometry: Some(HallTransitionGeometryConfig {
+                entry_angles: [
+                    0.0,
+                    0.0,
+                    TAU / 3.0,
+                    TAU / 6.0,
+                    2.0 * TAU / 3.0,
+                    5.0 * TAU / 6.0,
+                    TAU / 2.0,
+                    0.0,
+                ],
+                next_states: [0, 3, 6, 2, 5, 1, 4, 0],
+            }),
+            ..HallCalibrationConfig::default()
+        }
+    }
+
+    #[test]
+    fn hall_record_freezes_legacy_bytes_and_appends_versioned_storage_without_moving_wire_ids() {
+        use crate::types::{ConfigGroupId, ConfigValue, ConfigWrite};
+        let legacy = LegacyHallCalibrationConfig {
+            angles: [0.0; 8],
+            valid: [false, true, true, true, true, true, true, false],
+        };
+        let mut expected = [0u8; 40];
+        expected[33..39].fill(1);
+        let mut buf = [0; 128];
+        assert_eq!(postcard::to_slice(&legacy, &mut buf).unwrap(), expected);
+        let migrated = postcard::from_bytes::<LegacyHallCalibrationConfig>(&expected)
+            .unwrap()
+            .validated()
+            .unwrap();
+        assert!(migrated.geometry.is_none());
+        assert!(
+            postcard::from_bytes::<HallCalibrationConfig>(&expected).is_err(),
+            "legacy flash must use its explicit frozen decoder"
+        );
+        let record = HallCalibrationRecord::from(migrated.clone());
+        let mut versioned = [0u8; 42];
+        versioned[34..40].fill(1);
+        assert_eq!(postcard::to_slice(&record, &mut buf).unwrap(), versioned);
+        assert_eq!(
+            postcard::from_bytes::<HallCalibrationRecord>(&versioned)
+                .unwrap()
+                .validated(),
+            Some(migrated)
+        );
+        versioned[0] = 1;
+        assert!(postcard::from_bytes::<HallCalibrationRecord>(&versioned).is_err());
+        assert_eq!(
+            postcard::to_slice(&ConfigGroupId::HallCalibration, &mut buf).unwrap(),
+            &[1]
+        );
+        let config = measured_hall_config();
+        assert_eq!(
+            postcard::to_slice(&ConfigWrite::HallCalibration(config.clone()), &mut buf).unwrap()[0],
+            6
+        );
+        assert_eq!(
+            postcard::to_slice(&ConfigValue::HallCalibration(config.clone()), &mut buf).unwrap()[0],
+            6
+        );
+        let record = HallCalibrationRecord::from(config.clone());
+        let bytes = postcard::to_slice(&record, &mut buf).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<HallCalibrationRecord>(bytes)
+                .unwrap()
+                .validated(),
+            Some(config)
+        );
+        let mut key = [0];
+        ConfigKey::HallCalibration.serialize_into(&mut key).unwrap();
+        assert_eq!(key, [2]);
+        ConfigKey::HallCalibrationRecord
+            .serialize_into(&mut key)
+            .unwrap();
+        assert_eq!(key, [14]);
+    }
+
+    #[test]
+    fn hall_geometry_validation_includes_the_centroid_reference() {
+        let good = measured_hall_config();
+        assert!(good.is_calibrated());
+        let result = crate::foc::hall_calibration::HallCalibrationResult {
+            angles: good.angles,
+            valid: good.valid,
+            valid_count: 6,
+            geometry: good.geometry.as_ref().unwrap().validated(good.angles),
+        };
+        assert_eq!(
+            HallCalibrationConfig::from(&result),
+            good,
+            "a detection result must retain the complete geometry on the wire"
+        );
+        let mut bad = good.clone();
+        bad.geometry.as_mut().unwrap().next_states[1] = 1;
+        assert!(!bad.is_calibrated());
+        assert!(HallCalibrationRecord::from(bad).validated().is_none());
+        let mut bad = good.clone();
+        bad.geometry.as_mut().unwrap().entry_angles[1] = f32::NAN;
+        assert!(!bad.is_calibrated());
+        let mut bad = good;
+        bad.angles[1] = core::f32::consts::PI;
+        assert!(
+            !bad.is_calibrated(),
+            "a valid edge ring cannot belong to mismatched centroids"
+        );
+        assert!(
+            !RuntimeConfig {
+                hall_calibration: Some(bad),
+                ..Default::default()
+            }
+            .hall_calibration_is_valid()
+        );
+        assert!(
+            !RuntimeConfig {
+                hall_calibration_invalid: true,
+                ..Default::default()
+            }
+            .hall_calibration_is_valid()
+        );
+        assert!(RuntimeConfig::default().hall_calibration_is_valid());
+    }
+
+    #[cfg(feature = "runtime")]
+    #[test]
+    fn hall_flash_migrates_legacy_prefers_v1_and_never_falls_back_from_invalid_new_records() {
+        use sequential_storage::cache::Cache;
+        use sequential_storage::map::{MapConfig, MapStorage};
+        use sequential_storage::mock_flash::{MockFlashBase, WriteCountCheck};
+        fn ready<T>(future: impl Future<Output = T>) -> T {
+            let mut future = core::pin::pin!(future);
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            match future.as_mut().poll(&mut cx) {
+                core::task::Poll::Ready(v) => v,
+                core::task::Poll::Pending => panic!("mock flash unexpectedly yielded"),
+            }
+        }
+        type Flash = MockFlashBase<4, 4, 256>;
+        let mut storage = MapStorage::new(
+            Flash::new(WriteCountCheck::TwiceWithZero, None, true),
+            MapConfig::new(Flash::FULL_FLASH_RANGE),
+            Cache::new_uncached(),
+        );
+        let mut buf = [0; 128];
+        let absent = ready(load_all(&mut storage, &mut buf));
+        assert!(absent.hall_calibration.is_none() && absent.hall_calibration_is_valid());
+        let old = HallCalibrationConfig::default();
+        let legacy = LegacyHallCalibrationConfig {
+            angles: old.angles,
+            valid: old.valid,
+        };
+        ready(storage.store_item(&mut buf, &ConfigKey::HallCalibration, &legacy)).unwrap();
+        let loaded = ready(load_all(&mut storage, &mut buf));
+        assert_eq!(loaded.hall_calibration, Some(old));
+        assert!(loaded.hall_calibration_is_valid());
+        let new = measured_hall_config();
+        ready(storage.store_item(
+            &mut buf,
+            &ConfigKey::HallCalibrationRecord,
+            &HallCalibrationRecord::from(new.clone()),
+        ))
+        .unwrap();
+        assert_eq!(
+            ready(load_all(&mut storage, &mut buf)).hall_calibration,
+            Some(new.clone())
+        );
+        // A present unknown version shadows the still-valid legacy key.
+        ready(storage.store_item(&mut buf, &ConfigKey::HallCalibrationRecord, &99u8)).unwrap();
+        let invalid = ready(load_all(&mut storage, &mut buf));
+        assert!(invalid.hall_calibration.is_none() && invalid.hall_calibration_invalid);
+        // A decodable record with invalid geometry must fail the same way.
+        let mut bad = new;
+        bad.geometry.as_mut().unwrap().next_states[3] = 3;
+        ready(storage.store_item(
+            &mut buf,
+            &ConfigKey::HallCalibrationRecord,
+            &HallCalibrationRecord::from(bad),
+        ))
+        .unwrap();
+        let invalid = ready(load_all(&mut storage, &mut buf));
+        assert!(invalid.hall_calibration.is_none() && invalid.hall_calibration_invalid);
+        // A truncated V1 also cannot become a missing record.
+        ready(storage.store_item(&mut buf, &ConfigKey::HallCalibrationRecord, &0u8)).unwrap();
+        let invalid = ready(load_all(&mut storage, &mut buf));
+        assert!(invalid.hall_calibration.is_none() && invalid.hall_calibration_invalid);
+        ready(storage.erase_all()).unwrap();
+        let erased = ready(load_all(&mut storage, &mut buf));
+        assert!(erased.hall_calibration.is_none() && erased.hall_calibration_is_valid());
+        ready(storage.store_item(&mut buf, &ConfigKey::HallCalibration, &0u8)).unwrap();
+        let legacy_invalid = ready(load_all(&mut storage, &mut buf));
+        assert!(
+            legacy_invalid.hall_calibration.is_none() && legacy_invalid.hall_calibration_invalid
+        );
+    }
 
     #[test]
     fn feedforward_policy_appends_storage_and_wire_ids_and_defaults_disabled() {

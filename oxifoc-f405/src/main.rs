@@ -86,6 +86,7 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
         board_calibration_invalid: false,
         motor_params: None,
         hall_calibration: None,
+        hall_calibration_invalid: false,
         dc_offsets: None,
         current_limits: None,
         voltage_limits: None,

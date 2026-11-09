@@ -359,15 +359,17 @@ async fn run_step<B: DetectionBackend>(
             }
             match backend.calibrate_hall(params).await {
                 Ok(result) => {
+                    let calibration = HallCalibrationConfig::from(&result);
+                    if !result.is_valid() || !calibration.is_calibrated() {
+                        return DetectResponse::Error(DetectError::HardwareFault);
+                    }
                     // Persist in memory if the platform has a config store; the
                     // host then writes it to flash via the config endpoint.
                     if let Some(rc) = runtime_config {
                         critical_section::with(|cs| {
-                            rc.borrow(cs).borrow_mut().hall_calibration =
-                                Some(HallCalibrationConfig {
-                                    angles: result.angles,
-                                    valid: result.valid,
-                                });
+                            let mut config = rc.borrow(cs).borrow_mut();
+                            config.hall_calibration = Some(calibration);
+                            config.hall_calibration_invalid = false;
                         });
                     }
                     DetectResponse::HallCalibrated

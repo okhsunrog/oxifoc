@@ -96,6 +96,7 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
         }
     }
     println!("        board_calibration_invalid: false,");
+    println!("        hall_calibration_invalid: false,");
     println!("    }}");
     println!("}}");
     Ok(())
@@ -139,6 +140,21 @@ fn rust_field_literal(
         }
         .into());
     }
+    if group == ConfigGroupId::HallCalibration && field == "geometry" {
+        let geometry = serde_json::from_value::<
+            Option<oxifoc_core::storage::HallTransitionGeometryConfig>,
+        >(value.clone())?;
+        return geometry.map_or_else(
+            || Ok("None".into()),
+            |geometry| {
+                Ok(format!(
+                    "Some(HallTransitionGeometryConfig {{ entry_angles: {}, next_states: {} }})",
+                    rust_literal(&serde_json::to_value(geometry.entry_angles)?),
+                    rust_literal(&serde_json::to_value(geometry.next_states)?)
+                ))
+            },
+        );
+    }
     Ok(rust_literal(value))
 }
 
@@ -167,6 +183,31 @@ fn rust_literal(v: &Value) -> String {
 mod tests {
     use super::*;
     use oxifoc_core::types::{ConfigGroupId, VoltageFeedforwardMode};
+
+    #[test]
+    fn baked_hall_geometry_is_a_rust_optional_struct() {
+        let group = ConfigGroupId::HallCalibration;
+        assert_eq!(
+            rust_field_literal(group, "geometry", &Value::Null).unwrap(),
+            "None"
+        );
+        let json = serde_json::to_value(oxifoc_core::storage::HallTransitionGeometryConfig {
+            entry_angles: [0.0; 8],
+            next_states: [0; 8],
+        })
+        .unwrap();
+        assert_eq!(
+            rust_field_literal(group, "geometry", &json).unwrap(),
+            "Some(HallTransitionGeometryConfig { entry_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], next_states: [0, 0, 0, 0, 0, 0, 0, 0] })"
+        );
+        assert_eq!(
+            rust_field_literal(group, "valid", &serde_json::json!([false, true])).unwrap(),
+            "[false, true]"
+        );
+        assert!(
+            rust_field_literal(group, "geometry", &serde_json::json!({"next_states": []})).is_err()
+        );
+    }
 
     #[test]
     fn baked_feedforward_modes_are_rust_variants_instead_of_json_strings() {
