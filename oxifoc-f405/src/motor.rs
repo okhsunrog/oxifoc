@@ -15,6 +15,17 @@ use embassy_stm32::timer::simple_pwm::PwmPin;
 use crate::hardware::resources::MotorResources;
 use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm, PhaseState};
 
+/// Boot-only frozen UEV observations: CNT[14:0], DIR[15], UIF[16], CEN[17].
+#[cfg(feature = "bench-pwm-commit")]
+#[unsafe(no_mangle)]
+pub static BENCH_PWM_UPDATE_WITNESSES: [core::sync::atomic::AtomicU32; 3] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; 3];
+/// Published as 1 only after all three phase witnesses pass.
+#[cfg(feature = "bench-pwm-commit")]
+#[unsafe(no_mangle)]
+pub static BENCH_PWM_UPDATE_WITNESSES_READY: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
 /// Motor PWM controller using TIM1
 ///
 /// # Pin mapping (Simple FOCer 2 / VESC):
@@ -108,6 +119,14 @@ impl<'d> MotorPwm<'d> {
             .write(|w| w.set_ccr(trigger_point as u16));
         defmt::info!("TIM1 CH4 ADC trigger at {}", trigger_point);
 
+        #[cfg(feature = "bench-pwm-commit")]
+        Self::verify_peak_updates(max_duty as u16);
+        // The HAL constructor has already issued UG and started TIM1. Re-prime
+        // after CCR4 is ready, independent of that arbitrary initial phase.
+        Self::prepare_peak_updates();
+        embassy_stm32::pac::TIM1.bdtr().modify(|w| w.set_moe(true));
+        embassy_stm32::pac::TIM1.cr1().modify(|w| w.set_cen(true));
+
         // NOTE: Phase channels and CH4 are NOT enabled here.
         // Call enable_adc_trigger() after ADC handles are installed so the ISR
         // can process conversions when CH4 starts triggering.
@@ -117,6 +136,99 @@ impl<'d> MotorPwm<'d> {
             max_duty,
             duty_limit,
         }
+    }
+
+    /// One-time stopped setup: transfer CCR preloads only at the PWM peak.
+    /// Phase topology changes through CCER remain immediate.
+    fn prepare_peak_updates() {
+        use embassy_stm32::pac::timer::vals::{Cms, Dir, Urs};
+        let tim = embassy_stm32::pac::TIM1;
+        tim.cr1().modify(|w| {
+            w.set_cen(false);
+            w.set_opm(false);
+            w.set_udis(false);
+            w.set_urs(Urs::CounterOnly);
+        });
+        tim.ccer().modify(|w| {
+            for ch in 0..4 {
+                w.set_cce(ch, false);
+            }
+            for ch in 0..3 {
+                w.set_ccne(ch, false);
+            }
+        });
+        tim.bdtr().modify(|w| w.set_moe(false));
+        tim.dier().modify(|w| {
+            w.set_uie(false);
+            w.set_ude(false);
+        });
+        // DIR is read-only in center-aligned mode. RM0090 also disallows
+        // changing CMS and DIR together, so establish edge mode first.
+        tim.cr1().modify(|w| w.set_cms(Cms::EdgeAligned));
+        tim.cr1().modify(|w| w.set_dir(Dir::Up));
+        tim.cnt().write(|w| w.set_cnt(0));
+        for ch in 0..3 {
+            tim.ccr(ch).write(|w| w.set_ccr(0));
+        }
+        // UG loads PSC/ARR/CCR and internal REP=0 while stopped. RCR is itself
+        // preloaded: writing 1 AFTER UG lets the first natural peak UEV load it.
+        // Thereafter each valley only decrements REP; peaks transfer preloads.
+        tim.rcr().write(|w| w.set_rep(0));
+        tim.egr().write(|w| w.set_ug(true));
+        tim.cr1().modify(|w| w.set_cms(Cms::CenterAligned3));
+        tim.rcr().write(|w| w.set_rep(1));
+        // No UG after RCR=1: that would change the chosen UEV phase. URS=1
+        // excludes UG from UIF; clear stale compare/update flags before start.
+        tim.sr().write(|_| {});
+    }
+
+    #[cfg(feature = "bench-pwm-commit")]
+    fn verify_peak_updates(arr: u16) {
+        use core::sync::atomic::Ordering;
+        use embassy_stm32::pac::timer::vals::Dir;
+        use embassy_time::{Duration, Instant};
+        let tim = embassy_stm32::pac::TIM1;
+        BENCH_PWM_UPDATE_WITNESSES_READY.store(0, Ordering::Relaxed);
+        Self::prepare_peak_updates();
+        tim.cr1().modify(|w| w.set_opm(true));
+        for witness in 1..=3 {
+            tim.sr().write(|_| {});
+            tim.cr1().modify(|w| w.set_cen(true));
+            let deadline = Instant::now() + Duration::from_millis(2);
+            while tim.cr1().read().cen() && Instant::now() < deadline {}
+            // OPM stops at the UEV itself, so polling/defmt latency cannot move
+            // this phase witness. CH4 and every phase output are still off;
+            // ADC external triggers were configured earlier but cannot fire.
+            let control = tim.cr1().read();
+            let count = tim.cnt().read().cnt();
+            let update = tim.sr().read().uif();
+            BENCH_PWM_UPDATE_WITNESSES[witness - 1].store(
+                u32::from(count)
+                    | (u32::from(control.dir() == Dir::Down) << 15)
+                    | (u32::from(update) << 16)
+                    | (u32::from(control.cen()) << 17),
+                Ordering::Relaxed,
+            );
+            defmt::info!(
+                "TIM1 peak UEV {}: CNT={} ARR={} down={} UIF={} CEN={} RCR={}",
+                witness,
+                count,
+                arr,
+                control.dir() == Dir::Down,
+                update,
+                control.cen(),
+                tim.rcr().read().rep()
+            );
+            defmt::assert!(
+                !control.cen()
+                    && update
+                    && control.dir() == Dir::Down
+                    && count >= arr.saturating_sub(2),
+                "TIM1 peak UEV phase verification failed"
+            );
+        }
+        BENCH_PWM_UPDATE_WITNESSES_READY.store(1, Ordering::Release);
+        // new() runs the exact normal prepare/start sequence after this test.
     }
 
     /// Enable only the internal ADC trigger. Phase channels remain high-Z
