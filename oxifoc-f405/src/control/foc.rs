@@ -401,8 +401,24 @@ fn isr_timing_now() -> u32 {
 fn ADC() {
     static mut SEQ: u32 = 0;
 
+    #[cfg(feature = "bench-netstack-trace")]
+    {
+        // First MMIO observations in this IRQ, before DWT or trace appends.
+        // A turn between CR1 reads makes DIR/CNT phase reconstruction ambiguous.
+        let dir_before = embassy_stm32::pac::TIM1.cr1().read().dir()
+            == embassy_stm32::pac::timer::vals::Dir::Down;
+        let count = embassy_stm32::pac::TIM1.cnt().read().cnt();
+        let dir_after = embassy_stm32::pac::TIM1.cr1().read().dir()
+            == embassy_stm32::pac::timer::vals::Dir::Down;
+        let phase = u32::from(count)
+            | (u32::from(dir_after) << 16)
+            | (u32::from(dir_before != dir_after) << 17);
+        // Timestamp remains the serialized append time, while id is the
+        // earlier entry-phase snapshot: CNT[15:0], DIR16, transition17.
+        crate::diagnostics::trace::record(crate::diagnostics::trace::ADC_ENTRY_PHASE, phase);
+    }
     let isr_t0 = isr_timing_now();
-    #[cfg(feature = "bench-executor-trace")]
+    #[cfg(any(feature = "bench-executor-trace", feature = "bench-netstack-trace"))]
     crate::diagnostics::trace::record(8, 0);
     let last_start = if cfg!(feature = "isr-profiling") {
         ISR_LAST_START.load(Ordering::Relaxed)
@@ -545,11 +561,16 @@ fn ADC() {
                 now_ticks,
                 protection_board,
             );
-            #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
-            let trace_active = if cfg!(any(
-                feature = "bench-trace-excitation",
-                feature = "bench-pwm-commit"
-            )) {
+            #[cfg(any(
+                feature = "bench-executor-trace",
+                feature = "bench-pwm-commit",
+                feature = "bench-netstack-trace"
+            ))]
+            let trace_active = if !cfg!(feature = "bench-netstack-trace")
+                && cfg!(any(
+                    feature = "bench-trace-excitation",
+                    feature = "bench-pwm-commit"
+                )) {
                 matches!(
                     driver.mode(),
                     oxifoc_core::types::ControlMode::DirectVoltage { .. }
@@ -557,7 +578,11 @@ fn ADC() {
             } else {
                 !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped)
             };
-            #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
+            #[cfg(any(
+                feature = "bench-executor-trace",
+                feature = "bench-pwm-commit",
+                feature = "bench-netstack-trace"
+            ))]
             if trace_active {
                 crate::diagnostics::trace::trigger_active();
             } else {
@@ -589,7 +614,7 @@ fn ADC() {
     oxifoc_core::isr_prof::add(&ISR_PROF_FOC, prof_t2, prof_t3);
     oxifoc_core::isr_prof::add(&ISR_PROF_PUB, prof_t3, prof_t4);
 
-    #[cfg(feature = "bench-executor-trace")]
+    #[cfg(any(feature = "bench-executor-trace", feature = "bench-netstack-trace"))]
     crate::diagnostics::trace::record(9, 0);
     let isr_end = isr_timing_now();
     if cfg!(feature = "isr-timing") {

@@ -67,7 +67,11 @@ pub async fn uart_clock_task(
     }
 }
 
-#[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
+#[cfg(any(
+    feature = "bench-executor-trace",
+    feature = "bench-pwm-commit",
+    feature = "bench-netstack-trace"
+))]
 pub mod trace {
     use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -82,6 +86,12 @@ pub mod trace {
     #[cfg(feature = "bench-executor-trace")]
     const USB_IRQ_END: u32 = 13;
     const PWM_WRITE: u32 = 14;
+    #[cfg(feature = "bench-netstack-trace")]
+    pub const NETSTACK_LOCK_BEGIN: u32 = 15;
+    #[cfg(feature = "bench-netstack-trace")]
+    pub const NETSTACK_LOCK_END: u32 = 16;
+    #[cfg(feature = "bench-netstack-trace")]
+    pub const ADC_ENTRY_PHASE: u32 = 17;
 
     /// Before in low 16 bits, after in high 16 bits; each packs CNT[14:0]
     /// and DIR at bit 15. The caller records only after completing its writes.
