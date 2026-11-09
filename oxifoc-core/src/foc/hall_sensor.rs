@@ -12,6 +12,7 @@
 
 use core::f32::consts::TAU;
 
+use super::hall_calibration::HallTransitionGeometry;
 use super::sensors::{
     AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait, HallSnapshot,
 };
@@ -152,17 +153,21 @@ impl HallTimebase {
 pub struct HallSensor {
     /// Electrical angle increment per Hall state change (TAU / 6)
     angle_per_state: f32,
+    /// Optional measured boundary topology; legacy centroid-only tables retain
+    /// the nominal sector equations.
+    geometry: Option<HallTransitionGeometry>,
+    /// Width of the current valid sector, cached at accepted edges/configuration.
+    current_sector_width: f32,
     /// Calibration table: electrical angle (rad) for each logical Hall state (0-5)
     calib: HallCalibration,
     /// Interpolation base angle at the last Hall edge (radians, 0 to 2π).
     ///
-    /// Normally the SECTOR BOUNDARY just crossed (circular midpoint of the
-    /// adjacent calibrated centroids — at the instant of an edge the rotor
-    /// is on the boundary by definition); falls back to the new sector's
-    /// centroid when there is no usable previous sector (first edge after
-    /// boot/glitch, same-state re-read).
+    /// A measured transition boundary when available, otherwise the legacy
+    /// midpoint of adjacent centroids. Unequal sector widths cannot in general
+    /// be recovered from centroids alone. Falls back to the new centroid when
+    /// no usable previous sector establishes an edge.
     angle: f32,
-    /// Whether `angle` is a sector boundary (midpoint of two centroids).
+    /// Whether `angle` is a sector boundary rather than a boot centroid.
     /// Gates the measured-traversal velocity estimate: the distance
     /// between two boundaries is a real sector width; the distance from a
     /// centroid fallback to a boundary is not.
@@ -187,6 +192,9 @@ pub struct HallSensor {
     /// An invalid state (0/7) interrupted the edge stream since the last
     /// valid reading.
     in_glitch: bool,
+    /// A skipped measured transition has no trusted boundary timestamp. Wait
+    /// for an adjacent captured edge before publishing a frame again.
+    geometry_resync: bool,
     /// When that glitch began (ticks).
     glitch_start_ticks: u64,
     /// Upcoming edges whose timing is unusable for a speed estimate (the
@@ -341,6 +349,8 @@ impl HallSensor {
 
         Self {
             angle_per_state,
+            geometry: None,
+            current_sector_width: angle_per_state,
             calib: HallCalibration::default(),
             angle: 0.0,
             base_is_boundary: false,
@@ -353,6 +363,7 @@ impl HallSensor {
             elec_velocity: 0.0,
             valid_raw: 0,
             in_glitch: false,
+            geometry_resync: false,
             glitch_start_ticks: 0,
             velocity_hold_edges: 0,
             error_count: 0,
@@ -426,7 +437,7 @@ impl HallSensor {
             return false;
         }
         let dt_s = self.timebase.seconds(dt_ticks);
-        let expected_sector_s = self.angle_per_state / vel;
+        let expected_sector_s = self.current_sector_width / vel;
         dt_s > (expected_sector_s * STALE_SECTOR_MULTIPLE).max(STALE_MIN_WINDOW_S)
     }
 
@@ -600,7 +611,11 @@ impl HallSensor {
         let mut t_ticks = t_ticks;
         if core::mem::take(&mut self.in_glitch) {
             if raw_state == self.valid_raw {
-                return Some(self.angle);
+                return if self.geometry_resync {
+                    None
+                } else {
+                    Some(self.angle)
+                };
             }
             // The glitch hid an edge. The new sector is right, the time is
             // not: the rotor crossed the boundary somewhere inside the
@@ -613,7 +628,7 @@ impl HallSensor {
             if let Some(last) = self.last_edge_ticks {
                 let speed = self.elec_velocity.abs();
                 let t_cross = if speed > 1.0 {
-                    let sector_s = self.angle_per_state / speed;
+                    let sector_s = self.current_sector_width / speed;
                     last.saturating_add((sector_s * self.timebase.hz) as u64)
                 } else {
                     t_ticks
@@ -623,6 +638,39 @@ impl HallSensor {
             self.velocity_hold_edges = 2;
         }
         let prev_raw = self.valid_raw;
+        let resuming_geometry = self.geometry_resync;
+
+        if let Some(geometry) = self.geometry.as_ref() {
+            if prev_raw == raw_state {
+                // A same-state capture is not a new boundary or speed sample.
+                return if self.geometry_resync {
+                    None
+                } else {
+                    Some(self.angle)
+                };
+            }
+            if prev_raw != 0
+                && geometry
+                    .boundary_for_transition(prev_raw, raw_state)
+                    .is_none()
+            {
+                // A skipped transition does not identify a single crossed
+                // boundary. Preserve the trusted motion, but withhold samples
+                // until a real adjacent edge supplies a known anchor and time.
+                self.error_count += 1;
+                self.valid_raw = raw_state;
+                self.logical_state = HALL_STATE_TABLE[usize::from(raw_state)];
+                self.base_is_boundary = false;
+                self.geometry_resync = true;
+                return None;
+            }
+            if self.geometry_resync {
+                self.geometry_resync = false;
+                // This captured edge has a real timestamp; the next adjacent
+                // edge completes the first fully known new-frame interval.
+                self.velocity_hold_edges = 1;
+            }
+        }
 
         let prev_state = self.logical_state;
         let current_state = HALL_STATE_TABLE[raw_state as usize];
@@ -670,18 +718,19 @@ impl HallSensor {
 
         self.direction = new_direction;
         self.logical_state = current_state;
+        if resuming_geometry {
+            // The adjacent edge restores direction too. Keep the last trusted
+            // speed magnitude, with that direction, until a full known sector
+            // interval can replace it; never interpolate the new frame forward
+            // after a reverse recovery.
+            self.elec_velocity =
+                self.angle_step_signed(new_direction).signum() * self.elec_velocity.abs();
+        }
 
-        // Interpolation base: at the instant of an edge the rotor is — by
-        // definition — on the BOUNDARY between the old and new sectors, the
-        // circular midpoint of the two calibrated centroids (VESC
-        // foc_math.c:636; MESC stores the boundary in its hall table and
-        // PLLs against it). Anchoring at the new sector's CENTROID instead
-        // is a systematic half-sector (~30° electrical) lead for the whole
-        // sector: ≈13% torque loss + parasitic d-current. The centroid is
-        // the right fallback only when there is no usable previous sector
-        // (first edge after boot/glitch, same-state re-read) — and remains
-        // the right target for low-speed sampling (the control sample still
-        // slews toward it rather than jumping at each edge).
+        // An adjacent edge identifies its measured boundary. Legacy tables
+        // retain VESC's centroid-midpoint estimate; equal-looking centroids
+        // alone cannot identify alternating narrow/wide sectors. The centroid
+        // remains the low-speed/boot fallback, with control-angle rate limiting.
         let prev_base = self.angle;
         let prev_base_is_boundary = self.base_is_boundary;
         let centroid_new = self.calib.angle_for_state(raw_state);
@@ -689,8 +738,16 @@ impl HallSensor {
         let crossed_boundary =
             had_prev_edge && raw_state != prev_raw && self.calib.is_valid_state(prev_raw);
         let base = if crossed_boundary {
-            let centroid_prev = self.calib.angle_for_state(prev_raw);
-            wrap_angle(centroid_prev + angle_difference(centroid_new, centroid_prev) / 2.0)
+            if let Some(boundary) = self
+                .geometry
+                .as_ref()
+                .and_then(|g| g.boundary_for_transition(prev_raw, raw_state))
+            {
+                wrap_angle(boundary + self.calib.advance_rad)
+            } else {
+                let centroid_prev = self.calib.angle_for_state(prev_raw);
+                wrap_angle(centroid_prev + angle_difference(centroid_new, centroid_prev) / 2.0)
+            }
         } else {
             centroid_new
         };
@@ -711,9 +768,19 @@ impl HallSensor {
             // interval alone read a slow rotor rocking across a boundary
             // as hundreds of rad/s (5 ms → 209 rad/s at 5 rad/s) — a
             // velocity spike at every low-speed turnaround.
-            let candidate = if self.direction_reversed {
+            let candidate = if self.geometry.is_some() && !prev_base_is_boundary {
+                // Boot/configuration knows a sector centroid, not when its
+                // entry boundary was crossed. The next real interval is the
+                // first one that can measure a full sector's speed.
+                self.elec_velocity
+            } else if self.direction_reversed {
                 let angle_step = self.angle_step_signed(self.direction);
-                angle_step.signum() * self.elec_velocity.abs().min((angle_step / dt).abs())
+                let speed_bound = if self.geometry.is_some() {
+                    self.current_sector_width / dt
+                } else {
+                    (angle_step / dt).abs()
+                };
+                angle_step.signum() * self.elec_velocity.abs().min(speed_bound)
             } else if prev_base_is_boundary && crossed_boundary {
                 // Boundary-to-boundary distance is the MEASURED width of the
                 // sector just traversed (handles asymmetric Hall placement —
@@ -738,6 +805,11 @@ impl HallSensor {
         self.angle = base;
         self.base_is_boundary = crossed_boundary;
         self.valid_raw = raw_state;
+        self.current_sector_width = self
+            .geometry
+            .as_ref()
+            .and_then(|g| g.sector_width(raw_state))
+            .unwrap_or(self.angle_per_state);
 
         // Deliberately NOT snapping rate_limited_angle here: the edge is
         // where the up-to-60° discontinuity happens, i.e. exactly what the
@@ -817,6 +889,9 @@ impl HallSensor {
     /// Angles should be in [0, 2π). States 0 and 7 are invalid.
     pub fn set_calibration_raw(&mut self, raw_table: [f32; 8]) {
         self.calib = HallCalibration::from_raw_table(raw_table, self.calib.advance_rad);
+        self.geometry = None;
+        self.current_sector_width = self.angle_per_state;
+        self.geometry_resync = false;
     }
 
     /// Calibrate Hall table using logical-state angles (6-entry table).
@@ -825,6 +900,9 @@ impl HallSensor {
     /// clockwise logical sequence 0→1→2→3→4→5.
     pub fn set_calibration(&mut self, table_rad: [f32; 6]) {
         self.calib = HallCalibration::from_logical_table(table_rad, self.calib.advance_rad);
+        self.geometry = None;
+        self.current_sector_width = self.angle_per_state;
+        self.geometry_resync = false;
     }
 
     /// Apply calibration result from `HallCalibrator`
@@ -905,7 +983,7 @@ impl HallSensor {
     #[inline]
     fn sample_with_edge_age_at(&self, now_ticks: u64) -> Option<(AngleSample, f32)> {
         let t0 = self.last_edge_ticks?;
-        if self.in_glitch {
+        if self.in_glitch || self.geometry_resync {
             // Invalid state right now: no angle (the caller falls back).
             return None;
         }
@@ -947,14 +1025,15 @@ impl HallSensor {
     ///
     /// If the motor were really still doing `|elec_velocity|`, an edge would
     /// have arrived within one sector time — so once `dt_from_edge` exceeds
-    /// that, the only consistent estimate is `angle_per_state / dt_from_edge`,
+    /// that, the estimate is `current_sector_width / dt_from_edge`,
     /// which decays toward zero at standstill. VESC gets the same behavior by
     /// dividing by `max(hall_dt_now, hall_dt_last)`, where `hall_dt_now`
-    /// keeps growing after the last edge (foc_math.c:645). This also bounds
-    /// the interpolation advance to at most one sector past the last edge.
+    /// keeps growing after the last edge (foc_math.c:645). Measured geometry
+    /// must use the current sector width here, even though edge speed came
+    /// from the previous sector. Centroid-only tables keep the nominal60° cap.
     #[inline]
     fn decayed_velocity(&self, dt_from_edge: f32) -> f32 {
-        let vel_limit = self.angle_per_state / dt_from_edge.max(1e-9);
+        let vel_limit = self.current_sector_width / dt_from_edge.max(1e-9);
         clamp_f32(self.elec_velocity, -vel_limit, vel_limit)
     }
 
@@ -972,7 +1051,7 @@ impl HallSensor {
     /// This version mutates internal state to track rate limiting across calls.
     pub fn sample_at_mut(&mut self, now_ticks: u64) -> Option<AngleSample> {
         let t0 = self.last_edge_ticks?;
-        if self.in_glitch {
+        if self.in_glitch || self.geometry_resync {
             // Invalid state right now: no angle (the caller falls back).
             return None;
         }
@@ -1281,6 +1360,9 @@ impl HallSensorTrait for HallSensor {
         }
     }
 }
+
+#[cfg(test)]
+mod geometry_tests;
 
 #[cfg(test)]
 mod tests {

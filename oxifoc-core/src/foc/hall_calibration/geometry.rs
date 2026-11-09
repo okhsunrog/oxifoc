@@ -121,8 +121,8 @@ struct Moments {
     sin: [f32; 8],
     cos: [f32; 8],
     count: [u16; 8],
-    // All accepted edges must stay close to the first observation too. This
-    // bounds repeatability directly, rather than relying only on a mean.
+    // Track the observed range relative to the first edge, so the final mean
+    // can be checked against every extreme without retaining all observations.
     first: [f32; 8],
     min_delta: [f32; 8],
     max_delta: [f32; 8],
