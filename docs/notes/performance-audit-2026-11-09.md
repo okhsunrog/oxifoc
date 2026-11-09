@@ -3,8 +3,8 @@
 Scope: the F405 MK5 control ISR and its 20-kHz telemetry pipeline, including
 shared core algorithms, scheduling, device transports and host recording.
 Source baseline: `0a4d3d6`. This is an investigation backlog, not a claim
-that every candidate improves the shipping binary. No firmware changes or
-new device tests were made during this audit.
+that every candidate improves the shipping binary. The original audit was
+read-only; implementation and device measurements are recorded below.
 The inspected MK5 ELF SHA-256 is
 `5308b883af4df65a05ada8ef9ff004973d499ab3e7c5ec617a1d3b5fe2c678f3`.
 
@@ -158,6 +158,81 @@ integrator:
 The remaining IDs enter the same queue by priority. C2 follows C1 in the
 controller area; A2 and S2/S3 share state/driver interfaces and should be
 serialized; A3 precedes A4. B1 conflicts with telemetry storage changes.
+
+## First implementation batch
+
+Integrated: S1, S2, S3, M1, C1, C2, O1, A2, T1 and T4. T5 fixes profiling
+attribution only. Focused differential/concurrency tests and linked F405
+assembly checks accompany the changes. Two experiments were reverted:
+H1/H2 increased whole-ISR cost by 33 cycles after the wrap fix; A1 showed
+no whole-ISR gain (6149 versus 6144 cycles).
+
+Same persisted model, Hall source and 0.6-A Id hold, minimal timing:
+
+| Cumulative variant | Mean ISR cycles | Raw queue drops/s during hold |
+| --- | ---: | ---: |
+| Baseline | 6668 | 5299 / 5298 |
+| S1 + T4 + S2 + C1 | 6529 | 4129 / 4143 |
+| Cold wrap fallback, Hall cache removed | 6360 | 2525 / 2528 |
+| T1 | 6382 | 707 / 685 |
+| S3 | 6331 | 73 / 144 |
+| A2 | 6264 | 0 / 0 |
+| O1 | 6193 | 0 / 0 |
+| C2 | 6144 | 0 / 0 |
+
+These cumulative measurements include layout effects; their differences
+are not independent per-function savings. The resulting mean is about
+36.6 us versus 39.7 us. T1 mainly frees foreground drain capacity, rather
+than reducing ISR time. A 20-second hold plus q-axis checks completed all
+107 maneuver commands with zero capture gaps/losses. A separate normal
+build without ISR timing also recorded 438148 rows without loss.
+
+DWT can be disabled by debugger detach. The one-second reporter now
+re-enables its clock/counter without resetting it, discards the affected
+window and starts coherent timing again. A real SWD attach/detach during
+20-kHz recording verified recovery; zero-cycle windows are invalid data.
+
+E1 adds finite, bench-only USB IRQ/executor spans, validated in record
+order with incomplete edges explicitly excluded. One qualified 27.35-ms
+window measured USB spans minus ADC at 8.68%, ADC at about 75.3%. Other
+IRQs and trace overhead remain included; untraced time is not necessarily
+idle. This is an instrumented window, not an entire-run CPU average.
+The full trace build itself lost telemetry samples and cannot qualify
+continuous waveform analysis.
+
+Calibration qualification exposed a PWM timing dependency: the original
+binary accepted HFI Ld/Lq = 19.64/28.17 uH with the current persisted model;
+the optimized binary rejected HFI and fell back to implausible 5–7 uH.
+Those results were not applied. TIM1 readback confirmed RCR=0, so CCR
+preloads transfer at both turns. A minimal before/after-CCR trace recorded
+2548 down/down, 225 up/up and 43 down/up writes in 2816 events: duties can
+land on either side of the valley, including a transfer between CCR stores.
+Peak-only full-period updates (RCR=1, deliberately primed after UG) fixed
+the HFI result: 18.65/28.33 uH, 80086 recorded rows, zero gaps/losses.
+Three boot-only OPM freezes independently proved CNT=4195, DIR=down,
+UIF=1, CEN=0 at each permitted update. The F405 also explicitly configures
+the driver's nominal sample-to-actuation delay to one period, keeping
+observer voltage pairing and output-vector advance consistent with the
+timer. Near-peak ADC aperture offset is not a measured delay calibration.
+One of 2816 diagnostic writes still crossed the peak itself. A second
+boot-only test armed UDIS after the valley, suppressed only the next peak,
+then released it mid-down. The following three OPM freezes all remained
+exactly at CNT=4195/down. Thus UDIS can protect the three CCR writes
+without moving this RCR=1 update phase. The ordinary build with that guard
+still needs its final L/current repeat. This guarantees coherent duties;
+CCER topology/enable changes remain immediate, and late batches can retain
+the old vector for another period.
+
+Next scheduling investigation: `NetStack<CriticalSectionRawMutex>::send_ty`
+holds PRIMASK across router/local-socket traversal and frame serialization.
+It therefore masks P0 ADC too. Its duration has not been measured. HFI
+waveform generation is outside CS and its array transfers are already
+split into 8/16-byte pieces; no whole-packet CS copy was found.
+
+Artifacts, exact ELF hashes, logs and plots:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-perf-2026-11-09/`.
+Useful entry points: `results.json`, `performance-stages.png`,
+`usb-cpu-timeline.png`, `pwm-latch.parquet.trace.bin.pwm.png`.
 P2 and U2 are lower priority than the MCU drain deficit.
 
 Only the integrator owns the physical board, flashing and captures. Pause
