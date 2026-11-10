@@ -20,6 +20,7 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 from pathlib import Path
 import struct
 
@@ -49,6 +50,10 @@ IRQ_EVENTS = {
     22: ("uart", 5, False),
     23: ("fault", 4, True),
     24: ("fault", 4, False),
+    25: ("spi_rx", 6, True),
+    26: ("spi_rx", 6, False),
+    27: ("spi_tx", 6, True),
+    28: ("spi_tx", 6, False),
 }
 
 
@@ -70,7 +75,7 @@ def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
     ticks = [0]
     for index, event in enumerate(events):
         # Kind 14 carries PWM write metadata; validate its time but no IRQ span.
-        if not (1 <= event.kind <= 14 or 19 <= event.kind <= 24):
+        if not (1 <= event.kind <= 14 or 19 <= event.kind <= 28):
             raise TraceError(f"record {index}: unknown/uninitialized kind {event.kind}")
         if not 0 <= event.timer_ticks <= 0xFFFFFFFF:
             raise TraceError(f"record {index}: timestamp is not u32")
@@ -221,9 +226,100 @@ def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
     return report
 
 
+def analyze_task_cpu(events: list[Event], timer_hz: int) -> dict:
+    """Exclusive CPU, bounded by complete thread-executor batches.
+
+    Task polls include awaits' synchronous work only. Nested traced IRQs are
+    subtracted, including ADC; no DMA/USB wall-clock wait is charged as CPU.
+    The unclassified thread bucket contains executor and tracing overhead.
+    """
+    if timer_hz <= 0 or len(events) < 2:
+        raise TraceError("invalid timer or empty trace")
+    ticks = [0]
+    irq = []
+    prefix = 0
+    polls, idles = [], []
+    for i, event in enumerate(events):
+        if not (1 <= event.kind <= 14 or 19 <= event.kind <= 28):
+            raise TraceError("unknown event kind")
+        if i:
+            delta = (event.timer_ticks - events[i-1].timer_ticks) & 0xffffffff
+            if delta >= 0x80000000:
+                raise TraceError("reordered or ambiguous timer gap")
+            ticks.append(ticks[-1] + delta)
+        if event.kind in IRQ_EVENTS:
+            name, priority, begin = IRQ_EVENTS[event.kind]
+            if begin:
+                if irq and priority >= irq[-1][1]:
+                    raise TraceError("invalid IRQ nesting")
+                irq.append((name, priority, i))
+            elif not irq:
+                prefix = i + 1
+            elif irq.pop()[0] != name:
+                raise TraceError("mismatched IRQ end")
+        elif not irq and event.kind == 1:
+            polls.append((i, event.id))
+        elif not irq and event.kind == 7:
+            idles.append((i, event.id))
+    tail = irq[0][2] if irq else len(events)
+    candidates = [(i, executor) for i, executor in polls if prefix <= i < tail]
+    if not candidates:
+        raise TraceError("no complete thread executor boundary")
+    start, executor = candidates[0]
+    ends = [i for i, owner in idles if start < i < tail and owner == executor]
+    if not ends:
+        raise TraceError("no complete thread executor idle boundary")
+    end = ends[-1]
+    irq, tasks, totals = [], [], {}
+    idle = False
+    for i in range(start, end+1):
+        if i > start:
+            if irq and (irq[-1][0] != "usb_executor" or not tasks or tasks[-1][1] != len(irq)):
+                bucket = "irq:" + irq[-1][0]
+            elif tasks and tasks[-1][1] == len(irq):
+                bucket = f"task:0x{tasks[-1][0]:08x}"
+            elif irq:
+                bucket = "irq:" + irq[-1][0]
+            else:
+                bucket = "idle" if idle else "executor_other"
+            totals[bucket] = totals.get(bucket, 0) + ticks[i] - ticks[i-1]
+        event = events[i]
+        if event.kind in IRQ_EVENTS:
+            name, priority, begin = IRQ_EVENTS[event.kind]
+            if begin:
+                irq.append((name, priority))
+            elif not irq or irq.pop()[0] != name:
+                raise TraceError("invalid IRQ within qualified window")
+        elif event.kind == 4:
+            if tasks and tasks[-1][1] >= len(irq):
+                raise TraceError("overlapping task polls")
+            tasks.append((event.id, len(irq)))
+        elif event.kind == 5:
+            if not tasks or tasks.pop() != (event.id, len(irq)):
+                raise TraceError("mismatched task poll end")
+        elif not irq and event.id == executor:
+            if event.kind == 1:
+                idle = False
+            elif event.kind == 7:
+                if tasks:
+                    raise TraceError("executor idle inside a task poll")
+                idle = True
+    if irq or tasks:
+        raise TraceError("unclosed CPU context in qualified window")
+    duration = ticks[end] - ticks[start]
+    if duration <= 0 or sum(totals.values()) != duration:
+        raise TraceError("invalid CPU accounting window")
+    return {"window_ticks": duration, "window_ms": duration * 1000 / timer_hz,
+            "used_first_record": start, "used_last_record": end,
+            "coverage_fraction": duration / ticks[-1],
+            "cpu_ticks": totals, "cpu_percent": {k: v*100/duration for k,v in totals.items()},
+            "scope": "exclusive task polls and traced IRQs; instrumented finite window, not end-to-end latency"}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trace", type=Path)
+    parser.add_argument("--task-cpu", action="store_true", help="exclusive tasks and IRQs, including SPI without a USB executor")
     parser.add_argument("--timer-hz", type=int, help="TIM5 input clock if no JSON sidecar")
     parser.add_argument("--trim-to-complete-window", action="store_true")
     parser.add_argument("--export-intervals", action="store_true", help="include timeline intervals in JSON")
@@ -246,8 +342,26 @@ def main() -> None:
         timer_hz = args.timer_hz if args.timer_hz is not None else declared_hz
         if not isinstance(timer_hz, int):
             raise TraceError("provide --timer-hz or the capture JSON sidecar")
-        report = analyze(decode(data), timer_hz, trim=args.trim_to_complete_window,
-                         export_intervals=args.export_intervals, extend_idle_edges=args.extend_idle_edges)
+        if args.task_cpu:
+            report = analyze_task_cpu(decode(data), timer_hz)
+            # Task IDs point into their static Embassy pool. Resolve against
+            # the exact image's symbol listing, including pool header offsets.
+            symbols = metadata.get("symbols")
+            if symbols:
+                pools = []
+                for line in Path(symbols).read_text().splitlines():
+                    match = re.match(r"([0-9a-f]+) ([0-9a-f]+) [Bb] (.*::POOL)$", line)
+                    if match:
+                        addr, size, name = match.groups()
+                        pools.append((int(addr, 16), int(size, 16), name))
+                report["task_names"] = {
+                    key: next((name for addr, size, name in pools
+                               if addr <= int(key[5:], 16) < addr + size), "unresolved")
+                    for key in report["cpu_ticks"] if key.startswith("task:")
+                }
+        else:
+            report = analyze(decode(data), timer_hz, trim=args.trim_to_complete_window,
+                             export_intervals=args.export_intervals, extend_idle_edges=args.extend_idle_edges)
         report.update(trace=str(args.trace.resolve()), sha256=digest, symbols=metadata.get("symbols"))
         rendered = json.dumps(report, indent=2) + "\n"
         if args.out:

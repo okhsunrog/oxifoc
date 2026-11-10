@@ -70,7 +70,11 @@ else:
     }
     metadata['schema'] = a.schema
     if a.schema == 'finite-trace-v2':
-        metadata['other_irq_hooks'] = {'19/20': 'Hall TIM3 P1', '21/22': 'UART USART3 P5', '23/24': 'fault EXTI9_5 P4'}
+        metadata['other_irq_hooks'] = {
+            '19/20': 'Hall TIM3 P1', '21/22': 'UART USART3 P5',
+            '23/24': 'shared nFAULT / SPI READY EXTI9_5 P4',
+            '25/26': 'SPI RX DMA2 stream0 P6', '27/28': 'SPI TX DMA2 stream3 P6',
+        }
     if a.elf:
         metadata['elf'] = str(a.elf.resolve())
         metadata['elf_sha256'] = hashlib.sha256(a.elf.read_bytes()).hexdigest()

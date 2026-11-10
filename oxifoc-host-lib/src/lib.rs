@@ -563,11 +563,12 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
     }
 
     let transport_config = cfg.transport_config()?;
-    if cfg.fast_source().is_raw() && cfg.transport_type() != TransportType::Usb {
+    if matches!(cfg.fast_source(), FastSource::UsbRaw) && cfg.transport_type() != TransportType::Usb
+    {
         if let Some(raw) = &ctx.raw_telemetry {
-            raw.fail("raw telemetry requires USB command transport");
+            raw.fail("dedicated USB raw telemetry requires USB command transport");
         }
-        anyhow::bail!("raw telemetry requires USB command transport");
+        anyhow::bail!("dedicated USB raw telemetry requires USB command transport");
     }
 
     #[cfg(feature = "desktop")]

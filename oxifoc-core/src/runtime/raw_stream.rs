@@ -33,7 +33,11 @@ pub enum RawSinkError {
 /// after truncation. No queue or control mutex is held while this future runs.
 #[allow(async_fn_in_trait)]
 pub trait RawTelemetrySink {
-    async fn write_block(&mut self, bytes: &[u8]) -> Result<(), RawSinkError>;
+    async fn write_block(
+        &mut self,
+        destination: ergot::Address,
+        bytes: &[u8],
+    ) -> Result<(), RawSinkError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +55,7 @@ struct RawControl {
     fast_hz: u16,
     period: u32,
     phase: Phase,
+    owner: Option<ergot::Address>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
@@ -66,6 +71,7 @@ impl RawControl {
             fast_hz: 0,
             period: 0,
             phase: Phase::Idle,
+            owner: None,
         }
     }
     fn active(self) -> bool {
@@ -117,6 +123,7 @@ impl RawControl {
                     fast_hz,
                     period,
                     phase: Phase::Open,
+                    owner: None,
                 };
                 (RawTelemetryStatus::Armed, Action::Arm(period))
             }
@@ -145,14 +152,48 @@ impl RawControl {
     }
 }
 
+#[cfg(test)]
 async fn control_request(
     request: RawTelemetryRequest,
     foc_hz: u32,
     timing: ControlTiming,
 ) -> RawTelemetryAck {
+    control_request_from_peer(
+        request,
+        foc_hz,
+        timing,
+        ergot::Address {
+            network_id: 1,
+            node_id: 2,
+            port_id: 0,
+        },
+    )
+    .await
+}
+
+async fn control_request_from_peer(
+    request: RawTelemetryRequest,
+    foc_hz: u32,
+    timing: ControlTiming,
+    mut peer: ergot::Address,
+) -> RawTelemetryAck {
     let _gate = FAST_TELEM_GATE.lock().await;
     let mut control = CONTROL.lock().await;
+    // Endpoints allocate a fresh source port per call. Ownership belongs to
+    // the requesting node, not that transient reply port.
+    peer.port_id = 0;
+    let foreign = control.owner.is_some_and(|owner| owner != peer)
+        && !matches!(request, RawTelemetryRequest::Status)
+        && (control.active()
+            || match request {
+                RawTelemetryRequest::Arm { session, .. }
+                | RawTelemetryRequest::Stop { session } => session == control.session,
+                RawTelemetryRequest::Status => false,
+            });
     let (mut status, action) = critical_section::with(|_| {
+        if foreign {
+            return (RawTelemetryStatus::Busy, Action::None);
+        }
         let outcome = control.request(
             request,
             foc_hz,
@@ -165,6 +206,7 @@ async fn control_request(
         outcome
     });
     if let Action::Arm(period) = action {
+        control.owner = Some(peer);
         // Disabled producer + task gate give exclusive queue ownership. Do not
         // mask the FOC interrupt while discarding an old queue's whole prefix.
         FAST_TELEM_Q.discard();
@@ -214,7 +256,11 @@ pub async fn raw_telemetry_server<NS: NetStackHandle, const N: usize>(
     let mut handle = server.attach();
     loop {
         let _ = handle
-            .serve(|request: &RawTelemetryRequest| control_request(*request, foc_hz, timing))
+            .serve_full(
+                |message: &ergot::socket::HeaderMessage<RawTelemetryRequest>| {
+                    control_request_from_peer(message.t, foc_hz, timing, message.hdr.src)
+                },
+            )
             .await;
     }
 }
@@ -280,7 +326,12 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
         drop(gate);
         // A stop arriving during this await disables only the producer. It
         // cannot invalidate already accepted records or manufacture an END.
-        if sink.write_block(bytes).await.is_err() {
+        if let Some(destination) = control.owner {
+            if sink.write_block(destination, bytes).await.is_err() {
+                fail_session(session).await;
+                continue;
+            }
+        } else {
             fail_session(session).await;
             continue;
         }
@@ -439,7 +490,11 @@ mod tests {
         blocks: Arc<StdMutex<Vec<Vec<u8>>>>,
     }
     impl RawTelemetrySink for HeldSink {
-        async fn write_block(&mut self, bytes: &[u8]) -> Result<(), RawSinkError> {
+        async fn write_block(
+            &mut self,
+            _destination: ergot::Address,
+            bytes: &[u8],
+        ) -> Result<(), RawSinkError> {
             core::future::poll_fn(|_| {
                 if self.held.load(Ordering::Relaxed) {
                     Poll::Pending
@@ -644,5 +699,67 @@ mod tests {
         *CONTROL.try_lock().unwrap() = RawControl::new();
         FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);
         READY.store(false, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod routed_owner_tests {
+    use super::*;
+    #[test]
+    fn a_raw_session_follows_its_owner_node_across_endpoint_ports() {
+        let _guard = super::super::streaming::FAST_TELEM_TEST_LOCK
+            .lock()
+            .unwrap();
+        *CONTROL.try_lock().unwrap() = RawControl::new();
+        READY.store(true, Ordering::Release);
+        let timing = ControlTiming::from_hz(20_000);
+        let peer = ergot::Address {
+            network_id: 7,
+            node_id: 2,
+            port_id: 31,
+        };
+        let arm = RawTelemetryRequest::Arm {
+            session: 17,
+            previous_session: 0,
+            encoding: RawEncoding::Packed26,
+            fast_hz: 20_000,
+        };
+        let run = |request, peer| {
+            embassy_futures::block_on(control_request_from_peer(request, 20_000, timing, peer))
+        };
+        assert_eq!(run(arm, peer).status, RawTelemetryStatus::Armed);
+        assert_eq!(
+            CONTROL.try_lock().unwrap().owner,
+            Some(ergot::Address { port_id: 0, ..peer })
+        );
+        assert_eq!(
+            run(
+                arm,
+                ergot::Address {
+                    port_id: 32,
+                    ..peer
+                }
+            )
+            .status,
+            RawTelemetryStatus::Armed
+        );
+        let other = ergot::Address {
+            network_id: 8,
+            ..peer
+        };
+        assert_eq!(run(arm, other).status, RawTelemetryStatus::Busy);
+        assert_eq!(
+            run(RawTelemetryRequest::Stop { session: 17 }, other).status,
+            RawTelemetryStatus::Busy
+        );
+        assert_eq!(CONTROL.try_lock().unwrap().phase, Phase::Open);
+        assert_eq!(
+            run(RawTelemetryRequest::Stop { session: 17 }, peer).status,
+            RawTelemetryStatus::Stopping
+        );
+        *CONTROL.try_lock().unwrap() = RawControl::new();
+        FAST_TELEM_PERIOD.store(0, Ordering::Release);
+        FAST_TELEM_Q.discard();
+        READY.store(false, Ordering::Release);
     }
 }

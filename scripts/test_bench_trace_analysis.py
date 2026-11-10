@@ -176,5 +176,37 @@ class UsbCpuTraceTests(unittest.TestCase):
             decode(b"\0" * 13)
 
 
+class TaskCpuTests(unittest.TestCase):
+    def test_dma_wait_is_idle_and_adc_is_not_task_cpu(self):
+        from bench_trace_analysis import analyze_task_cpu
+        report = analyze_task_cpu(events(
+            (0,1,1),(1,4,10),(3,8,0),(6,9,0),(10,5,10),(11,7,1),
+            (20,25,0),(22,26,0),(30,1,1),(31,4,10),(35,5,10),(36,7,1)), 1000)
+        self.assertEqual(report['cpu_ticks']['task:0x0000000a'], 10)
+        self.assertEqual(report['cpu_ticks']['irq:adc'], 3)
+        self.assertEqual(report['cpu_ticks']['irq:spi_rx'], 2)
+        self.assertEqual(report['cpu_ticks']['idle'], 17)
+        self.assertEqual(sum(report['cpu_ticks'].values()),36)
+
+    def test_nested_usb_task_does_not_charge_the_preempted_thread(self):
+        from bench_trace_analysis import analyze_task_cpu
+        report = analyze_task_cpu(events(
+            (0,1,1),(1,4,10),(3,10,0),(4,4,20),(5,8,0),(8,9,0),
+            (10,5,20),(11,11,0),(14,5,10),(15,7,1)), 1000)
+        self.assertEqual(report['cpu_ticks']['task:0x0000000a'],5)
+        self.assertEqual(report['cpu_ticks']['task:0x00000014'],3)
+        self.assertEqual(report['cpu_ticks']['irq:usb_executor'],2)
+        self.assertEqual(report['cpu_ticks']['irq:adc'],3)
+
+    def test_rejects_incomplete_or_overlapping_task_polls(self):
+        from bench_trace_analysis import analyze_task_cpu
+        for trace in [events((0,1,1),(1,4,10),(2,7,1)),
+                      events((0,1,1),(1,4,10),(2,4,11),(3,5,11),(4,7,1)),
+                      events((0,4,10),(1,5,10)),
+                      events((3,1,1),(2,7,1))]:
+            with self.subTest(trace=trace), self.assertRaises(TraceError):
+                analyze_task_cpu(trace,1000)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -556,3 +556,35 @@ bench-mk5-spi-cs-request output: build-mk5-spi-cs-probe
 # No motor excitation: telemetry plus acknowledged Stop commands on one connection.
 bench-bridge-handshake port seconds="30" hz="20000":
     @cargo run --release --locked -p oxifoc-host-lib --example bridge_handshake -- {{quote(port)}} {{seconds}} {{hz}}
+
+# Fixed-format telemetry through a chosen link; legacy remains an explicit baseline.
+build-mk5-link-bench link="spi" source="ergot" detail="timing":
+    @test {{quote(link)}} = spi -o {{quote(link)}} = usb
+    @test {{quote(source)}} = ergot -o {{quote(source)}} = raw-ergot -o {{quote(source)}} = raw-usb -o {{quote(source)}} = raw-rtt
+    @test {{quote(detail)}} = timing -o {{quote(detail)}} = trace -o {{quote(detail)}} = codec
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote("board-vesc6-mk5,task-priority,bench-calibrated-clock,isr-timing,transport-" + link + (if source == "raw-ergot" { ",bench-raw-ergot" } else if source == "raw-usb" { ",bench-raw-usb" } else if source == "raw-rtt" { ",bench-raw-rtt" } else { "" }) + (if detail == "trace" { ",bench-executor-trace" } else if detail == "codec" { ",bench-raw-codec" } else { "" }))}}
+
+flash-mk5-link-bench link="spi" source="ergot" detail="timing": (build-mk5-link-bench link source detail)
+    probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
+    probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
+
+# Production command route through the C5; never select the ST-Link VCP.
+[positional-arguments]
+cli-bridge *ARGS:
+    @target/release/oxifoc-host-cli --transport usb-serial-jtag --serial-path /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00 --wait-secs 12 --json "$@"
+
+# Finite maneuver, full native-rate stream, terminal Stop on success or failure.
+test-bridge capture maneuver source="ergot-raw" encoding="packed26":
+    @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(source)}} {{quote(encoding)}}
+
+# USB is a temporary A/B reference; bridge is the production route.
+test-link link capture maneuver source="ergot-raw" encoding="packed26":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test {{quote(link)}} = bridge -o {{quote(link)}} = usb
+    cli=(target/release/oxifoc-host-cli --transport usb --wait-secs 12 --json)
+    if test {{quote(link)}} = bridge; then cli=(just cli-bridge); fi
+    trap '"${cli[@]}" stop >/dev/null' EXIT
+    export RUST_LOG="${RUST_LOG:-warn,device=info}"
+    "${cli[@]}" source hall > {{quote(capture + ".source.json")}}
+    "${cli[@]}" --fast-source {{quote(source)}} --fast-encoding {{quote(encoding)}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}

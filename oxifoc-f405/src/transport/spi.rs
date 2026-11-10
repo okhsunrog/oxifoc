@@ -18,8 +18,18 @@ use ergot::interface_manager::{
 use oxifoc_core::spi_link::{Builder, SLOT_BYTES, parse};
 
 bind_interrupts!(struct Irqs {
-    DMA2_STREAM0 => dma::InterruptHandler<DMA2_CH0>;
-    DMA2_STREAM3 => dma::InterruptHandler<DMA2_CH3>;
+    DMA2_STREAM0 =>
+        #[cfg(feature = "bench-executor-trace")]
+        crate::diagnostics::trace::SpiRxIrqBegin,
+        dma::InterruptHandler<DMA2_CH0>,
+        #[cfg(feature = "bench-executor-trace")]
+        crate::diagnostics::trace::SpiRxIrqEnd;
+    DMA2_STREAM3 =>
+        #[cfg(feature = "bench-executor-trace")]
+        crate::diagnostics::trace::SpiTxIrqBegin,
+        dma::InterruptHandler<DMA2_CH3>,
+        #[cfg(feature = "bench-executor-trace")]
+        crate::diagnostics::trace::SpiTxIrqEnd;
 });
 
 pub struct Resources {

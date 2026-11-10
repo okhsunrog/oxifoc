@@ -72,7 +72,7 @@ bench-only-phase-a = []
 # A/B qualification: disable command-voltage correction, retaining gate deadtime.
 bench-no-deadtime-comp = []
 # RAM-only task/ADC timeline, armed and read over SWD after a capture.
-bench-executor-trace = ["embassy-executor/trace", "bench-clock-reference"]
+bench-executor-trace = ["embassy-executor/trace"]
 # Observe CCR commit timing without any pre-commit ADC or executor trace hooks.
 bench-pwm-commit = ["bench-clock-reference"]
 # NetStack selected-policy callback spans and earliest ADC PWM phase, without executor hooks.
@@ -95,7 +95,7 @@ bench-hall-phase = ["bench-hall"]
 # The sinks are mutually exclusive and replace its fast-frame publisher.
 bench-raw-usb = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
 bench-raw-rtt = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
-bench-raw-ergot = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
+bench-raw-ergot = ["task-priority", "oxifoc-core/bench-raw-stream"]
 # Compatibility alias for earlier benchmark commands.
 bench-scheduler-priority = ["task-priority"]
 # Bench EDF policy: fresh relative deadlines on actual ready/enqueue events.

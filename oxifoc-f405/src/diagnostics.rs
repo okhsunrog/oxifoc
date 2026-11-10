@@ -126,6 +126,10 @@ pub mod trace {
     }
     #[cfg(feature = "bench-executor-trace")]
     irq_pair!(FaultIrqBegin, FaultIrqEnd, EXTI9_5, 23);
+    #[cfg(all(feature = "bench-executor-trace", feature = "transport-spi"))]
+    irq_pair!(SpiRxIrqBegin, SpiRxIrqEnd, DMA2_STREAM0, 25);
+    #[cfg(all(feature = "bench-executor-trace", feature = "transport-spi"))]
+    irq_pair!(SpiTxIrqBegin, SpiTxIrqEnd, DMA2_STREAM3, 27);
 
     // 33 KiB of events + 1 KiB of whole-profile task statistics. A short CS
     // serializes each timeline event, including its timestamp, so preemption
@@ -464,16 +468,29 @@ pub mod deadline {
 
 /// TIM5 runs freely from APB1's timer clock, including while the core sleeps.
 /// It has no outputs, IRQs, DMA, or relation to the PWM/ADC triggers.
+#[cfg(any(feature = "bench-clock-reference", feature = "bench-executor-trace"))]
+pub fn start_trace_clock(
+    tim: embassy_stm32::Peri<'static, embassy_stm32::peripherals::TIM5>,
+) -> &'static embassy_stm32::timer::low_level::Timer<'static, embassy_stm32::peripherals::TIM5> {
+    // Main finishes after spawning workers. Keep the owning driver alive so
+    // its Drop cannot gate TIM5's clock when main returns.
+    static CLOCK: static_cell::StaticCell<
+        embassy_stm32::timer::low_level::Timer<'static, embassy_stm32::peripherals::TIM5>,
+    > = static_cell::StaticCell::new();
+    let timer = CLOCK.init(embassy_stm32::timer::low_level::Timer::new(tim));
+    timer.set_max_compare_value(u32::MAX);
+    timer.start();
+    timer
+}
+
 #[cfg(feature = "bench-clock-reference")]
 #[embassy_executor::task]
 pub async fn clock_reference_task(
     tim: embassy_stm32::Peri<'static, embassy_stm32::peripherals::TIM5>,
 ) {
-    use embassy_stm32::{pac, timer::low_level::Timer};
+    use embassy_stm32::pac;
     use embassy_time::{Duration, Ticker};
-    let timer = Timer::new(tim);
-    timer.set_max_compare_value(u32::MAX);
-    timer.start();
+    let timer = start_trace_clock(tim);
     let mut ticker = Ticker::every(Duration::from_secs(1));
     let mut previous = None;
     let mut totals = (0u64, 0u64, 0u64);

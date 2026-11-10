@@ -1094,8 +1094,10 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
         cfg.udp_port = Some(port);
     }
 
-    if cfg.fast_source().is_raw() && cfg.transport_type() != TransportType::Usb {
-        bail!("raw --fast-source requires --transport usb for commands");
+    if matches!(cfg.fast_source(), oxifoc_host_lib::FastSource::UsbRaw)
+        && cfg.transport_type() != TransportType::Usb
+    {
+        bail!("usb-raw requires --transport usb for commands");
     }
     Ok(cfg)
 }

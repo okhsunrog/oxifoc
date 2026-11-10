@@ -9,36 +9,21 @@ const BLOCK_TIMEOUT: Duration = Duration::from_millis(250);
 #[cfg(feature = "bench-raw-ergot")]
 struct ErgotRawSink {
     stack: &'static super::Stack,
-    usb_ident: u8,
 }
 
 #[cfg(feature = "bench-raw-ergot")]
 impl RawTelemetrySink for ErgotRawSink {
-    async fn write_block(&mut self, bytes: &[u8]) -> Result<(), RawSinkError> {
-        use ergot::interface_manager::{InterfaceState, Profile};
+    async fn write_block(
+        &mut self,
+        destination: ergot::Address,
+        bytes: &[u8],
+    ) -> Result<(), RawSinkError> {
         use oxifoc_core::icd::{RawTelemetryBlockRef, RawTelemetryBlockRefTopic};
 
         with_timeout(BLOCK_TIMEOUT, async {
             loop {
-                // Unicast to this USB segment only. A broadcast can partially
-                // succeed on another interface, making retry ambiguous.
-                let network_id = self
-                    .stack
-                    .manage_profile(|router| {
-                        matches!(
-                            router.interface_state(self.usb_ident),
-                            Some(InterfaceState::Active { .. })
-                        )
-                        .then(|| router.net_id_of(self.usb_ident))
-                        .flatten()
-                        .filter(|id| *id != 0)
-                    })
-                    .ok_or(RawSinkError::Unavailable)?;
-                let destination = ergot::Address {
-                    network_id,
-                    node_id: ergot::interface_manager::profiles::direct_edge::EDGE_NODE_ID,
-                    port_id: 0,
-                };
+                // Route to the node which armed this session, including a host
+                // behind another router. Never retry a partially successful broadcast.
                 if self
                     .stack
                     .topics()
@@ -69,8 +54,7 @@ pub async fn ergot_task(stack: &'static super::Stack) {
     embassy_executor::Metadata::for_current_task()
         .await
         .set_priority(1);
-    let usb_ident = *crate::protocol::USB_IDENT.get().await;
-    let mut sink = ErgotRawSink { stack, usb_ident };
+    let mut sink = ErgotRawSink { stack };
     #[expect(
         clippy::large_futures,
         reason = "the fixed raw block belongs to this statically allocated Embassy task"
@@ -118,7 +102,11 @@ struct UsbRawSink(UsbIn);
 
 #[cfg(feature = "bench-raw-usb")]
 impl RawTelemetrySink for UsbRawSink {
-    async fn write_block(&mut self, bytes: &[u8]) -> Result<(), RawSinkError> {
+    async fn write_block(
+        &mut self,
+        _destination: ergot::Address,
+        bytes: &[u8],
+    ) -> Result<(), RawSinkError> {
         use embassy_usb::driver::EndpointIn;
 
         // The borrowed block and cursor survive every endpoint await. A failed prefix
@@ -181,7 +169,11 @@ struct RttRawSink(rtt_target::UpChannel);
 
 #[cfg(feature = "bench-raw-rtt")]
 impl RawTelemetrySink for RttRawSink {
-    async fn write_block(&mut self, bytes: &[u8]) -> Result<(), RawSinkError> {
+    async fn write_block(
+        &mut self,
+        _destination: ergot::Address,
+        bytes: &[u8],
+    ) -> Result<(), RawSinkError> {
         with_timeout(BLOCK_TIMEOUT, async {
             loop {
                 // A probe may overwrite RTT flags: enforce nonblocking whole-block
