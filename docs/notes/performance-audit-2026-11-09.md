@@ -489,7 +489,9 @@ Optional `bench-raw-usb` / `bench-raw-rtt` images retain USB Ergot commands
 and replace only the fast-data consumer. `just build-mk5-raw usb|rtt
 normal|timing` selects the image. `just record-raw-mk5 SOURCE ENCODING OUT`
 and `just test-raw-current-mk5 SOURCE ENCODING OUT MANEUVER` select the host
-path; SOURCE is `usb` or `rtt`, ENCODING is `raw34` or `packed26`.
+path; SOURCE is `usb`, `rtt`, or `ergot`, ENCODING is `raw34`, `packed26`,
+or `packed26-delta`. Ergot raw blocks use a borrowed byte slice; the old
+per-word telemetry topic remains available in standard images.
 The RTT reader uses public debug-port/MEM-AP APIs without creating a Session,
 then closes/detaches the owned probe normally. It validates the running M4/F405,
 exact ELF's channel2 descriptor and SRAM bounds, and uses aligned SWD reads.
@@ -543,3 +545,99 @@ The accepted normal Ergot image was restored, with full Hall geometry reapplied
 in RAM and reference model/limits/calibration read back equal. A final Stopped
 20-kHz Ergot capture had 80040 records and zero loss; final status was
 Stopped/Hall with zero faults. No calibration was written to flash.
+
+## VelocityControl and carrier qualification (2026-11-10)
+
+The preceding CurrentControl successes did **not** qualify VelocityControl.
+The original moving-velocity failure was reproduced with both legacy Ergot
+and direct USB. The outer velocity/position controller now runs on a 1-ms
+schedule; the current loop, command timeout and protections remain native
+20 kHz. Held output is invalidated on source/trust/mode transitions and
+limited again each native cycle. This fixed stationary streaming in tested
+normal images, but did not establish moving-velocity qualification.
+
+Artifacts, exact ELF/source hashes, failed prefixes, full tables and plots:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-velocity-stream-2026-11-10/`.
+Start with `benchmark-report.md`, `benchmark-carriers.csv`,
+`benchmark-final-summary.json` and the final-bytewise captures. All motor
+runs use native nominal 20 kHz (derived 20004.272 Hz), Hall commutation,
+the same measured model/geometry and 24-V supply. Limits remain Iq 3 A,
+dq trip 6 A, bus input 1 A and zero bus regeneration; no NVM writes.
+
+Stopped-only, ADC-owned DWT codec measurements use exact captured 64-record
+fixtures, 2 warmups and 8 measured blocks per fixture/encoding. Empty-bracket
+cost is subtracted; all 18 bytewise/word result rows were read from immutable
+published RAM after DONE and checked against surviving logs. Input loading,
+checksumming, reporting and transport I/O are outside the measured brackets.
+
+| Moving fixture, bytewise codec | CPU per record | Bytes per record, including block header |
+| --- | ---: | ---: |
+| Raw34 | 0.508 us | 34.5 |
+| Packed26 | 1.108 us | 26.5 |
+| Packed26 + delta | 3.840 us | 17.891 |
+
+Delta saves about 32.5% of this fixture's block bytes but adds 2.732 us per
+record, about 5.46% of one CPU at 20 kHz. These are finite microbenchmarks,
+not total pipeline cost or worst-case execution bounds. The optional word
+comparison candidate was rejected: its whole image was slower, including
+unchanged control cases, so code layout is a confounder. Wire checksums and
+byte counts match across both implementations. Packed26 is the preferred
+high-rate encoding; delta remains optional rather than being enabled by default.
+
+The real Ergot `framed_stream::Sink::send_ty` was also timed against a plain
+copy into the same kind of 2304-byte grant. Its observed Packed26 cost was
+8047 cycles per 64 records, about 48 us/block or 0.75 us/record, including
+the copy. The frame adds 18 bytes per block. This excludes routing, locks,
+real queue contention, waking tasks and USB service. Copy alignment changes
+the linked memcpy path substantially: arbitrary Ergot-minus-copy rows cannot
+be used as a universal protocol overhead. Exact destination offsets and
+disassembly are in `codec-framing-bench-v3.alignment.json`.
+
+The 16-attempt carrier matrix retains every aborted command-timeout prefix.
+Its word-codec candidate was subsequently rejected; the final bytewise
+normal-image rechecks are recorded separately in the report. Direct USB
+does not demonstrate a bypass advantage: it lost producer records with
+both codecs; moving its encoder to the thread executor did not cure this
+and was reverted. Ergot's raw encoder belongs on the thread executor:
+putting a self-waking encoder on the USB interrupt executor starved command
+handling. USB RX/TX remain on their interrupt executor.
+
+RTT Packed26 and RTT delta preserved all samples and all 28 commands in
+the normal and timing five-second-hold cases. An Ergot Packed26 attempt
+preserved its prefix but timed out at 17/28 commands, so it is a failed
+whole maneuver; earlier and final full normal-image passes remain separate
+evidence. Direct-USB losses originate at the device producer queue, with
+zero host drops. This is not evidence of USB wire corruption or proof that
+Ergot serialization is the bottleneck. Executor and queue/write architecture
+differ between carriers, so the matrix is not an isolated framework-cost test.
+
+Final bytewise/Packed26 normal-image rechecks, same five-second velocity hold:
+
+| Carrier | Saved records per attempt | Missing records | Commands | Largest ACK |
+| --- | ---: | ---: | --- | ---: |
+| Ergot USB, two attempts | 162220 / 162227 | 0 / 0 | 28/28 each | 10.494 ms |
+| Raw RTT, two attempts | 162189 / 162190 | 0 / 0 | 28/28 each | 2.168 ms |
+| Separate USB endpoint | 154333 | 7858 producer, 0 host | 28/28 | 2.276 ms |
+
+Ergot/RTT rechecks have matching END totals and no Hall warnings/faults.
+The RTT repeat uses the same image without reset. These are finite normal
+data/command successes; their FOC deadlines were not measured.
+
+All timing matrix images observed FOC overruns. RTT's active mean was about
+42 us per 50-us cycle, with sampled maxima about 73-78 us. Contiguous
+telemetry sequence numbers do not certify every hardware ADC deadline.
+Normal images were not instrumented for deadline acceptance. Hall speed
+also oscillates substantially, and some runs report the existing stale-edge
+warning; lossless transport is not stable velocity-control acceptance.
+
+For further control diagnosis, use RTT + Packed26 as the reference recorder
+and keep commands on Ergot USB. Do not adopt the separate USB endpoint as
+an assumed performance fix. Qualify FOC deadlines and speed tracking, then
+address shared USB queue fairness and copying with measured evidence.
+
+The standard normal image (no raw sink or CPU microbenchmark) was restored,
+SHA-256 `4f5396dcf7d7e1b48f2acea608e9323b53a587de5cd1e07f41f92b20bb1d4ef2`.
+Final Stopped verification captured 82032 native-rate records with zero loss.
+Readback matches reference Hall geometry, motor model, current limits and
+board calibration; fresh boot current offsets are intentionally excluded.
+Final state: Stopped/Hall, zero faults, 24.033 V. No calibration NVM writes.
