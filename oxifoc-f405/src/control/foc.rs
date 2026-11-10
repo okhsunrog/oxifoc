@@ -405,6 +405,9 @@ fn isr_timing_now() -> u32 {
 #[interrupt]
 fn ADC() {
     static mut SEQ: u32 = 0;
+    #[cfg(feature = "bench-raw-codec")]
+    static mut CODEC_BENCH: crate::diagnostics::codec_bench::Bench =
+        crate::diagnostics::codec_bench::Bench::new();
 
     #[cfg(feature = "bench-netstack-trace")]
     let trace_adc = crate::diagnostics::trace::is_recording();
@@ -569,6 +572,8 @@ fn ADC() {
     // Run FOC control loop (shared cycle logic in core)
     #[cfg(feature = "isr-timing")]
     let mut time_control_motion = false;
+    #[cfg(feature = "bench-raw-codec")]
+    let mut codec_bench_stopped = false;
     let foc_telem = FOC_DRIVER.lock(|cell| {
         cell.borrow_mut().as_mut().and_then(|driver| {
             let output = run_foc_cycle(
@@ -579,6 +584,11 @@ fn ADC() {
                 now_ticks,
                 protection_board,
             );
+            #[cfg(feature = "bench-raw-codec")]
+            {
+                codec_bench_stopped =
+                    matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped);
+            }
             #[cfg(feature = "isr-timing")]
             {
                 use oxifoc_core::types::ControlMode;
@@ -649,6 +659,12 @@ fn ADC() {
     if trace_adc {
         crate::diagnostics::trace::record(9, 0);
     }
+    #[cfg(feature = "bench-raw-codec")]
+    CODEC_BENCH.on_adc(
+        codec_bench_stopped,
+        enables,
+        DWT_GENERATION.load(Ordering::Relaxed),
+    );
     let isr_end = isr_timing_now();
     #[cfg(feature = "isr-timing")]
     if time_control_motion {

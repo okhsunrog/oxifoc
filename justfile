@@ -171,6 +171,11 @@ flash-mk5-hall profiling="off" memory="sram" transport="usb": (build-mk5-hall pr
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
 
+# Finite Stopped-only paired codec CPU experiment; this recipe never flashes.
+build-mk5-codec-bench:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ quote(mk5_bench_features + ",bench-raw-codec") }}
+
 # Raw session sink; Ergot USB remains the command and defmt path.
 build-mk5-raw sink="usb" profiling="normal":
     @test {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt -o {{ quote(sink) }} = ergot

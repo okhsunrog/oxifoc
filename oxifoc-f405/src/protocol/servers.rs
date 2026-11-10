@@ -489,6 +489,10 @@ pub fn spawn_servers(
     defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
 ) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
+    #[cfg(feature = "bench-raw-codec")]
+    spawner.spawn(defmt::unwrap!(crate::diagnostics::codec_bench::report_task(
+        stack
+    )));
     #[cfg(not(any(
         feature = "bench-raw-usb",
         feature = "bench-raw-rtt",

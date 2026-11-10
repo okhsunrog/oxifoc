@@ -34,6 +34,8 @@ task-priority = ["embassy-executor/scheduler-priority"]
 isr-profiling = ["isr-timing", "oxifoc-core/isr-profiling"]
 # Two DWT reads per ISR, without nested section instrumentation.
 isr-timing = []
+# Finite Stopped-only CPU comparison; no transport I/O inside timed regions.
+bench-raw-codec = ["transport-usb", "isr-timing", "bench-clock-reference"]
 # ergot over RTT channel 1 (defmt shares ch0). Diagnostic transport — high-rate
 # telemetry over the debug probe; adds a third interface alongside USB/UART.
 transport-rtt = ["ergot/rtt"]
