@@ -839,3 +839,27 @@ checks with PWM stopped produced OV/UV faults at deliberately crossed thresholds
 rejected 58 V, and verified persistence/reboot of the 8–26 V bench range.
 668 core tests and 11 doctests pass. Evidence and exact ELF:
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-voltage-brake-2026-11-10/`.
+
+Hall timeout now additionally requires independent observer angular travel
+since the captured edge, cancelling a constant observer phase offset. Inferred
+crossings after a glitch retain the conservative timeout until a real edge
+arrives. 685 core/Embassy tests pass, including cable dropout and glitch recovery;
+strict Clippy and the F405 build pass. Physical cable removal was not tested.
+Final `witness-fast-off.elf` runs at +40/-40 electrical rad/s retained
+82,230/82,173 native 20-kHz samples with no losses or Hall warnings. They still
+had 7/5 reverse Hall transitions: smooth velocity control is not qualified.
+An earlier reverse run lost 25 producer samples; a later clean run does not
+establish that intermittent loss is fixed. Command deadtime correction was
+disabled in these comparisons; hardware gate deadtime remained 360 ns.
+
+The matched 3-W dissipative-braking experiment is rejected: 18.60-A dq peak,
+7,817 producer losses and repeated Hall warnings, with 42–43-us mean FOC and
+peaks around 60 us. Its finite Hall buffer overflowed, so its full-run speed
+statistics are invalid. The algebraic solver fast path preserves power/current
+bounds in tests but is not a demonstrated cure for the runtime problem.
+Next isolate the large negative Id request and Hall-frame error during braking.
+Raw captures, configurations, exact images, plots and failed runs remain in the
+same artifact directory; `results.json` distinguishes incomplete recordings.
+Final flash configuration, verified after reset: drive 10 A, dq trip 30 A,
+bus draw 5 A, regen 0 A, brake ceiling 5 A, dissipation 0 W, VBUS 8–26 V.
+Controller left Stopped with no faults; motor model and Hall NVM were unchanged.

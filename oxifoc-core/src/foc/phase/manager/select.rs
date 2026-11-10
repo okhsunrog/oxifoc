@@ -384,6 +384,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 angle_difference(obs_angle, sensor.angle).abs() > core::f32::consts::FRAC_PI_2
             });
         if reseeded {
+            self.hall_motion_witness.reset();
             self.observer.seed(sensor.angle, sensor.velocity);
         }
         // Continuous blend evolution keeps its epoch. A readiness gate or a

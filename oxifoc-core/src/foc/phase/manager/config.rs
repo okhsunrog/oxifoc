@@ -97,6 +97,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             let _ = self.set_source(PhaseSource::Manual);
         }
         self.hall_control_motion.reset();
+        self.hall_motion_witness.reset();
         self.source
     }
 

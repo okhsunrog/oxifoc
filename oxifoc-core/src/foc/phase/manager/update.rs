@@ -128,6 +128,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.motion_reference_epoch.advance();
         self.rotor_velocity = None;
         self.hall_control_motion.reset();
+        self.hall_motion_witness.reset();
         if let Some(sample) = update.sample {
             if self.hall_health == HallHealth::Ok
                 && !self.open_loop_override.active
@@ -192,22 +193,33 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // profiling); everything downstream is already `requires_*`-gated
         // and treats `None` as "no sensor".
         let (hall_stale, hall_sample) = if self.source.requires_hall() {
-            // Edges alone cannot tell a rotor that coasted to a stop from a
-            // sensor that died at speed: the sensor's check compares the
-            // silence against the speed at the LAST edge, so every normal
-            // stop "went stale" a few sector-times later — the override took
-            // commutation, the angle turned untrustworthy and the drive
-            // forced iq to zero, so the motor could not restart until
-            // turned by hand. Declare it stale only when the back-EMF
-            // observer independently sees the rotor still turning
-            // (is_ready requires corroborated back-EMF above its speed
-            // floor), against the observer's speed. Without that evidence
-            // the rotor has stopped, and the hall's last sector is the
-            // right angle to start from.
-            let stale = self.observer.is_ready()
-                && self
-                    .hall
-                    .is_stale(now_ticks, self.observer.velocity().unwrap_or(0.0));
+            let observer = self
+                .observer
+                .is_ready()
+                .then(|| {
+                    self.observer
+                        .phase()
+                        .zip(self.observer.velocity())
+                        .map(|(angle, velocity)| PhaseOutput { angle, velocity })
+                })
+                .flatten();
+            let stale = if let Some(observer) = observer {
+                match self.hall.hall_edge_observation() {
+                    Some(edge) => self
+                        .hall_motion_witness
+                        .observe(edge, Some(observer), now_ticks),
+                    None => {
+                        self.hall_motion_witness.reset();
+                        // Preserve the health hook for custom sensor adapters.
+                        self.hall.is_stale(now_ticks, observer.velocity)
+                    }
+                }
+            } else {
+                self.hall_motion_witness.reset();
+                false
+            };
+            // A rejected observation must not advance the stateful angle
+            // limiter: recovery starts from the last accepted Hall frame.
             (
                 stale,
                 if stale {
@@ -217,6 +229,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 },
             )
         } else {
+            self.hall_motion_witness.reset();
             (false, None)
         };
         let encoder_sample = if self.source.requires_encoder() {

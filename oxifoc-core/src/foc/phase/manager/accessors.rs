@@ -17,6 +17,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         self.motion_reference_epoch.advance();
         self.rotor_velocity = None;
         self.ticks_per_sec = ticks_per_sec.max(1);
+        self.hall_motion_witness
+            .set_ticks_per_sec(self.ticks_per_sec);
         self.hall_control_motion
             .set_ticks_per_sec(self.ticks_per_sec);
     }
@@ -56,6 +58,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
         if self.source.requires_hall() != source.requires_hall() {
             self.hall_control_motion.source_changed();
+            self.hall_motion_witness.reset();
         }
         self.source = source;
         self.motion_reference_epoch.advance();
@@ -113,12 +116,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     pub fn seed_observer(&mut self, angle: f32, velocity: f32) {
         self.motion_reference_epoch.advance();
         self.rotor_velocity = None;
+        self.hall_motion_witness.reset();
         self.observer.seed(angle, velocity);
     }
 
     pub fn set_observer(&mut self, observer: Observer) {
         self.motion_reference_epoch.advance();
         self.rotor_velocity = None;
+        self.hall_motion_witness.reset();
         self.observer = observer;
     }
 
@@ -131,6 +136,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     pub fn observer_mut(&mut self) -> &mut Observer {
         self.motion_reference_epoch.advance();
         self.rotor_velocity = None;
+        self.hall_motion_witness.reset();
         &mut self.observer
     }
 

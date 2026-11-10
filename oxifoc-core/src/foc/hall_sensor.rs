@@ -219,6 +219,7 @@ pub struct HallSensor {
     direction_reversed: bool,
     /// Last edge timestamp (ticks of a caller-provided clock)
     last_edge_ticks: Option<u64>,
+    last_edge_timing: super::sensors::HallEdgeTiming,
     /// Electrical velocity estimate (rad/s) from last edge
     elec_velocity: f32,
     /// Last VALID raw state (1..=6): the sector the rotor was last seen in.
@@ -395,6 +396,7 @@ impl HallSensor {
             prev_direction: Direction::Stopped,
             direction_reversed: false,
             last_edge_ticks: None,
+            last_edge_timing: super::sensors::HallEdgeTiming::Captured,
             elec_velocity: 0.0,
             valid_raw: 0,
             in_glitch: false,
@@ -644,6 +646,7 @@ impl HallSensor {
 
         // Back from a glitch in the SAME sector: no edge happened.
         let mut t_ticks = t_ticks;
+        let mut edge_timing = super::sensors::HallEdgeTiming::Captured;
         if core::mem::take(&mut self.in_glitch) {
             if raw_state == self.valid_raw {
                 return if self.geometry_resync {
@@ -671,6 +674,7 @@ impl HallSensor {
                 t_ticks = t_cross.clamp(self.glitch_start_ticks, t_ticks);
             }
             self.velocity_hold_edges = 2;
+            edge_timing = super::sensors::HallEdgeTiming::Reconstructed;
         }
         let prev_raw = self.valid_raw;
         let resuming_geometry = self.geometry_resync;
@@ -847,6 +851,7 @@ impl HallSensor {
         }
 
         self.last_edge_ticks = Some(t_ticks);
+        self.last_edge_timing = edge_timing;
         self.angle = base;
         self.base_is_boundary = crossed_boundary;
         self.valid_raw = raw_state;
@@ -1330,6 +1335,17 @@ impl AngleSensor for HallSensor {
         // discontinuities at hall edges, including centroid steps below the
         // interpolation threshold. The immutable sample_at() has no limiter state.
         self.sample_at_mut(now_ticks)
+    }
+
+    fn hall_edge_observation(&self) -> Option<super::sensors::HallEdgeObservation> {
+        self.last_edge_ticks
+            .map(|ticks| super::sensors::HallEdgeObservation {
+                reference_epoch: 0,
+                ticks,
+                timing: self.last_edge_timing,
+                sector_width_rad: self.current_sector_width,
+                velocity_rad_s: self.elec_velocity,
+            })
     }
 
     fn is_stale(&self, now_ticks: u64, omega_ref: f32) -> bool {

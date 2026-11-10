@@ -249,6 +249,15 @@ impl AngleSensor for HallAngleProxy {
         })
     }
 
+    fn hall_edge_observation(&self) -> Option<super::sensors::HallEdgeObservation> {
+        HALL_ESTIMATOR.lock(|est| {
+            let state = est.borrow();
+            let mut edge = state.sensor.as_ref()?.hall_edge_observation()?;
+            edge.reference_epoch = state.reference_epoch;
+            Some(edge)
+        })
+    }
+
     fn read_angle(&self) -> f32 {
         self.sample(hall_now_ticks())
             .map(|s| s.angle)

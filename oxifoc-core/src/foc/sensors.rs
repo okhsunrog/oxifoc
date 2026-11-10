@@ -38,6 +38,24 @@ pub struct ControlAngleSample {
     pub reference_epoch: u32,
 }
 
+/// Edge identity and calibrated distance to the next boundary. A Hall centroid
+/// or interpolated angle is not a physical edge and must not advance `ticks`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HallEdgeObservation {
+    pub reference_epoch: u32,
+    pub ticks: u64,
+    pub timing: HallEdgeTiming,
+    pub sector_width_rad: f32,
+    pub velocity_rad_s: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HallEdgeTiming {
+    Captured,
+    /// A glitch hid the transition; its crossing time was inferred later.
+    Reconstructed,
+}
+
 /// Accepted Hall reference change, including its current valid sector when
 /// available. Outer `None` from the sensor apply hook means unsupported.
 pub struct HallReferenceUpdate {
@@ -128,6 +146,14 @@ pub trait AngleSensor {
     /// stale — absolute encoders and mocks have no notion of edge timing.
     fn is_stale(&self, _now_ticks: u64, _omega_ref: f32) -> bool {
         false
+    }
+
+    /// Physical Hall edge and its calibration generation from one snapshot.
+    /// Read before `sample_for_control`: a rejected stale sample must not
+    /// advance the stateful commutation-angle limiter. Other sensors use
+    /// their existing `is_stale` hook instead.
+    fn hall_edge_observation(&self) -> Option<HallEdgeObservation> {
+        None
     }
 
     /// Read electrical angle in radians (0..2π). Default uses `sample`.

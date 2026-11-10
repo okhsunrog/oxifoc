@@ -107,6 +107,7 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         self.hall.set_calibration(table);
         self.motion_reference_epoch.advance();
         self.hall_control_motion.reset();
+        self.hall_motion_witness.reset();
         self.rotor_velocity = None;
     }
 
@@ -116,6 +117,7 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         if applied {
             self.motion_reference_epoch.advance();
             self.hall_control_motion.reset();
+            self.hall_motion_witness.reset();
             self.rotor_velocity = None;
         }
         applied
@@ -139,6 +141,7 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             // A new commutation-frame offset is not rotor motion.
             self.motion_reference_epoch.advance();
             self.hall_control_motion.reset();
+            self.hall_motion_witness.reset();
             self.rotor_velocity = None;
         }
     }

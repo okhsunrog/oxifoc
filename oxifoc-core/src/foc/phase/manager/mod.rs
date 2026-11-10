@@ -11,6 +11,7 @@ pub use config::PreparedPhaseModel;
 mod constructors;
 mod hall;
 mod hall_control_motion;
+mod hall_motion_witness;
 mod open_loop;
 mod select;
 mod tracker;
@@ -33,6 +34,7 @@ use crate::foc::sensors::NoSensor;
 use crate::foc::trig::LibmSinCos;
 use crate::foc::trig::SinCos;
 use hall_control_motion::HallControlMotion;
+use hall_motion_witness::HallMotionWitness;
 use heapless::Vec as HeaplessVec;
 
 /// Hysteresis band for the sharp HFI↔sensor crossovers (fraction of the
@@ -277,6 +279,7 @@ where
 
     // Hall edge/interpolation speed is deliberately not the control speed.
     hall_control_motion: HallControlMotion,
+    hall_motion_witness: HallMotionWitness,
 
     // Hall health tracking
     hall_health: HallHealth,
