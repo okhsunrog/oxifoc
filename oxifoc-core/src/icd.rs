@@ -70,6 +70,53 @@ impl ergot::traits::Topic for FastTelemetryTopic {
         ergot::traits::Key::for_path::<FastTelemetryBatch>("telemetry/fast");
 }
 
+/// One complete raw-session block, including its versioned header or END.
+/// This topic changes only the carrier; its bytes use the same parser as the
+/// dedicated USB and RTT sinks.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, postcard_schema::Schema)]
+pub struct RawTelemetryBlock {
+    #[serde(serialize_with = "serialize_raw_block_bytes")]
+    pub data: heapless::Vec<u8, { crate::raw_telemetry::RAW_MAX_BLOCK_BYTES }>,
+}
+
+fn serialize_raw_block_bytes<S: serde::Serializer>(
+    bytes: &[u8],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_bytes(bytes)
+}
+
+/// Borrowed sender representation: serialization copies directly into Ergot's
+/// framed queue without first copying the block into a second owned buffer.
+#[derive(serde::Serialize)]
+pub struct RawTelemetryBlockRef<'a> {
+    #[serde(serialize_with = "serialize_raw_block_bytes")]
+    pub data: &'a [u8],
+}
+
+impl postcard_schema::Schema for RawTelemetryBlockRef<'_> {
+    const SCHEMA: &'static postcard_schema::schema::NamedType = RawTelemetryBlock::SCHEMA;
+}
+
+ergot::topic!(
+    RawTelemetryBlockTopic,
+    RawTelemetryBlock,
+    "telemetry/raw_block"
+);
+
+pub struct RawTelemetryBlockRefTopic<'a>(core::marker::PhantomData<&'a ()>);
+
+impl<'a> ergot::traits::Topic for RawTelemetryBlockRefTopic<'a> {
+    type Message = RawTelemetryBlockRef<'a>;
+    const PATH: &'static str = <RawTelemetryBlockTopic as ergot::traits::Topic>::PATH;
+    const TOPIC_KEY: ergot::traits::Key =
+        <RawTelemetryBlockTopic as ergot::traits::Topic>::TOPIC_KEY;
+}
+
+#[cfg(all(test, feature = "pod"))]
+#[path = "icd_raw_tests.rs"]
+mod raw_block_tests;
+
 // Slow telemetry endpoint (host polls device)
 // Host periodically requests system health data (~10Hz).
 // Serves as both telemetry and heartbeat for device-side liveness tracking.

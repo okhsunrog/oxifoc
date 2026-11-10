@@ -16,7 +16,11 @@ use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::detection::types::{FluxLinkageParams, InductanceParams, ResistanceParams};
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::foc::trig::FastSinCos;
-#[cfg(not(any(feature = "bench-raw-usb", feature = "bench-raw-rtt")))]
+#[cfg(not(any(
+    feature = "bench-raw-usb",
+    feature = "bench-raw-rtt",
+    feature = "bench-raw-ergot"
+)))]
 use oxifoc_core::runtime::streaming::fast_telemetry_stream;
 use oxifoc_core::runtime::streaming::fault_topic_stream;
 use oxifoc_core::runtime::{DetectionBackend, run_all_servers_with_config};
@@ -428,7 +432,11 @@ pub async fn defmt_forwarder(
 }
 
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
-#[cfg(not(any(feature = "bench-raw-usb", feature = "bench-raw-rtt")))]
+#[cfg(not(any(
+    feature = "bench-raw-usb",
+    feature = "bench-raw-rtt",
+    feature = "bench-raw-ergot"
+)))]
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
     #[cfg(feature = "bench-scheduler-deadline")]
@@ -443,7 +451,11 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
 
 /// Bench session control stays on Ergot while its sole queue consumer owns the
 /// selected raw sink. Normal images do not expose this endpoint server.
-#[cfg(any(feature = "bench-raw-usb", feature = "bench-raw-rtt"))]
+#[cfg(any(
+    feature = "bench-raw-usb",
+    feature = "bench-raw-rtt",
+    feature = "bench-raw-ergot"
+))]
 #[embassy_executor::task]
 async fn raw_telemetry_server_task(stack: &'static Stack) {
     #[cfg(feature = "task-priority")]
@@ -477,12 +489,24 @@ pub fn spawn_servers(
     defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
 ) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
-    #[cfg(not(any(feature = "bench-raw-usb", feature = "bench-raw-rtt")))]
+    #[cfg(not(any(
+        feature = "bench-raw-usb",
+        feature = "bench-raw-rtt",
+        feature = "bench-raw-ergot"
+    )))]
     spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
-    #[cfg(any(feature = "bench-raw-usb", feature = "bench-raw-rtt"))]
+    #[cfg(any(
+        feature = "bench-raw-usb",
+        feature = "bench-raw-rtt",
+        feature = "bench-raw-ergot"
+    ))]
     spawner.spawn(defmt::unwrap!(raw_telemetry_server_task(stack)));
     #[cfg(feature = "bench-raw-rtt")]
     spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::rtt_task()));
+    #[cfg(feature = "bench-raw-ergot")]
+    spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::ergot_task(
+        stack
+    )));
     spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
     spawner.spawn(defmt::unwrap!(detect_server(stack)));

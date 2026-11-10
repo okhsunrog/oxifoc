@@ -11,6 +11,7 @@ pub enum FastSource {
     Ergot,
     UsbRaw,
     RttRaw,
+    ErgotRaw,
 }
 
 impl FastSource {
@@ -196,7 +197,7 @@ mod tests {
         let default = HostConfig::default();
         assert_eq!(default.fast_source(), FastSource::Ergot);
         assert_eq!(default.transport_type(), TransportType::default());
-        for source in ["usb-raw", "rtt-raw"] {
+        for source in ["usb-raw", "rtt-raw", "ergot-raw"] {
             let cfg: HostConfig =
                 toml::from_str(&format!("fast_source='{source}'\nfast_encoding='Packed26'"))
                     .unwrap();

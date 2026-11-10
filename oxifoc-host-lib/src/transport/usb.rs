@@ -6,6 +6,7 @@
 //! each (re)connection re-discovers the device and registers it onto the
 //! stack (only succeeds while the interface is Down, i.e. after a teardown).
 
+use crate::FastSource;
 use crate::raw_telemetry::{RawIngress, RawTelemetryState};
 use anyhow::{Context, Result, anyhow, bail};
 use ergot::interface_manager::InterfaceState;
@@ -22,6 +23,15 @@ use tracing::info;
 
 const MTU: u16 = 512;
 const OUT_BUFFER_SIZE: usize = 4096;
+const RAW_MTU: u16 = 2304;
+// Both explicit raw USB carriers queue 32 requests of this size. This is the
+// receive request size, not the device's 64-byte endpoint max packet size.
+const RAW_READ_BYTES: u16 = 4096;
+const RAW_OUT_BUFFER_SIZE: usize = 8192;
+
+fn rx_request_bytes(source: FastSource) -> u16 {
+    if source.is_raw() { RAW_READ_BYTES } else { MTU }
+}
 
 pub(crate) struct RawUsbConnection {
     cancel: CancellationToken,
@@ -74,9 +84,18 @@ impl UsbIdentity {
 }
 
 pub fn new_stack() -> (EdgeStack, StdQueue) {
-    let queue = ergot::interface_manager::utils::std::new_std_queue(OUT_BUFFER_SIZE);
+    new_stack_for(FastSource::Ergot)
+}
+
+pub(crate) fn new_stack_for(source: FastSource) -> (EdgeStack, StdQueue) {
+    let (capacity, mtu) = if source.is_raw() {
+        (RAW_OUT_BUFFER_SIZE, RAW_MTU)
+    } else {
+        (OUT_BUFFER_SIZE, MTU)
+    };
+    let queue = ergot::interface_manager::utils::std::new_std_queue(capacity);
     let stack = EdgeStack::new_with_profile(DirectEdge::new_target(
-        framed_stream::Sink::new_from_handle(queue.clone(), MTU),
+        framed_stream::Sink::new_from_handle(queue.clone(), mtu),
     ));
     (stack, queue)
 }
@@ -86,6 +105,23 @@ pub async fn register(
     queue: &StdQueue,
     state_notify: Option<Arc<ergot::toolkits::tokio_stream::WaitQueue>>,
     selected_identity: &mut Option<UsbIdentity>,
+) -> Result<()> {
+    register_for(
+        stack,
+        queue,
+        state_notify,
+        selected_identity,
+        FastSource::Ergot,
+    )
+    .await
+}
+
+pub(crate) async fn register_for(
+    stack: &EdgeStack,
+    queue: &StdQueue,
+    state_notify: Option<Arc<ergot::toolkits::tokio_stream::WaitQueue>>,
+    selected_identity: &mut Option<UsbIdentity>,
+    source: FastSource,
 ) -> Result<()> {
     info!("Searching for ergot USB devices...");
 
@@ -135,7 +171,7 @@ pub async fn register(
             net_id: 0,
             node_id: EDGE_NODE_ID,
         },
-        MTU,
+        rx_request_bytes(source),
         state_notify,
     )
     .await
@@ -239,7 +275,7 @@ pub(crate) async fn register_raw(
         *selected_identity = Some(identity);
     }
     let mut reads = data.bulk_in_queue(0x82);
-    const READ_BYTES: usize = 4096;
+    const READ_BYTES: usize = RAW_READ_BYTES as usize;
     for _ in 0..32 {
         reads.submit(RequestBuffer::new(READ_BYTES));
     }
@@ -280,7 +316,7 @@ pub(crate) async fn register_raw(
             net_id: 0,
             node_id: EDGE_NODE_ID,
         },
-        MTU,
+        RAW_READ_BYTES,
         state_notify,
     )
     .await

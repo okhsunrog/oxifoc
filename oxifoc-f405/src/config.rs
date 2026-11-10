@@ -217,7 +217,15 @@ const _: () = assert!(CLOCK_PROFILE.usb_hz() <= 48_120_000);
 // ============================================================================
 
 /// Size of outgoing packet queue for ergot over USB (framed)
-pub const USB_OUT_QUEUE_SIZE: usize = 4096;
+pub const USB_OUT_QUEUE_SIZE: usize = if cfg!(any(
+    feature = "bench-raw-usb",
+    feature = "bench-raw-rtt",
+    feature = "bench-raw-ergot"
+)) {
+    8192
+} else {
+    4096
+};
 
 /// Size of outgoing packet queue for ergot over UART (COBS stream)
 pub const UART_OUT_QUEUE_SIZE: usize = 4096;
@@ -226,7 +234,22 @@ pub const UART_OUT_QUEUE_SIZE: usize = 4096;
 pub const RTT_OUT_QUEUE_SIZE: usize = 4096;
 
 /// Maximum packet size for ergot framing
-pub const MAX_PACKET_SIZE: usize = 512;
+pub const MAX_PACKET_SIZE: usize = if cfg!(any(
+    feature = "bench-raw-usb",
+    feature = "bench-raw-rtt",
+    feature = "bench-raw-ergot"
+)) {
+    2304
+} else {
+    512
+};
+
+#[cfg(any(
+    feature = "bench-raw-usb",
+    feature = "bench-raw-rtt",
+    feature = "bench-raw-ergot"
+))]
+const _: () = assert!(MAX_PACKET_SIZE >= oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES + 30);
 
 // This value is also every interface's TX MTU: a full fast-telemetry batch
 // plus wire overhead must fit or full batches silently fail to broadcast.

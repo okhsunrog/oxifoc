@@ -46,6 +46,7 @@ pub struct RawCaptureReport {
     pub blocks_received: u64,
     pub raw34_blocks: u64,
     pub packed26_blocks: u64,
+    pub packed26_delta_blocks: u64,
     pub fallback_blocks: u64,
     pub end_total_records: Option<u64>,
     pub ended: bool,
@@ -222,6 +223,7 @@ impl RawTelemetryState {
                 blocks_received: 0,
                 raw34_blocks: 0,
                 packed26_blocks: 0,
+                packed26_delta_blocks: 0,
                 fallback_blocks: 0,
                 end_total_records: None,
                 ended: false,
@@ -335,8 +337,10 @@ impl RawTelemetryState {
                 );
             }
             if header.encoding != capture.report.encoding
-                && !(capture.report.encoding == RawEncoding::Packed26
-                    && header.encoding == RawEncoding::Raw34
+                && !(matches!(
+                    capture.report.encoding,
+                    RawEncoding::Packed26 | RawEncoding::Packed26Delta
+                ) && header.encoding == RawEncoding::Raw34
                     && header.is_fallback())
             {
                 bail!("unexpected raw encoding");
@@ -367,6 +371,7 @@ impl RawTelemetryState {
                 match header.encoding {
                     RawEncoding::Raw34 => capture.report.raw34_blocks += 1,
                     RawEncoding::Packed26 => capture.report.packed26_blocks += 1,
+                    RawEncoding::Packed26Delta => capture.report.packed26_delta_blocks += 1,
                 }
                 capture.report.fallback_blocks += u64::from(header.is_fallback());
                 capture.report.records_received += block.samples.len() as u64;
@@ -583,6 +588,47 @@ pub(crate) struct RawIngress {
     prefix_len: usize,
 }
 
+/// The Ergot carrier preserves block bytes and feeds the same strict session
+/// parser. A missing topic frame is an index/END failure, never a silent skip.
+pub(crate) fn spawn_ergot_subscriber<NS>(
+    stack: &NS,
+    state: Arc<RawTelemetryState>,
+    cancel: tokio_util::sync::CancellationToken,
+) where
+    NS: ergot::net_stack::NetStackHandle + Clone + Send + Sync + 'static,
+    NS::Mutex: Send + Sync,
+    NS::Profile: Send,
+    NS::Target: Send,
+{
+    let stack = stack.clone();
+    tokio::spawn(async move {
+        use oxifoc_core::icd::RawTelemetryBlockTopic;
+        let ns = stack.stack();
+        // 32 blocks bound the additional decoded-message queue. USB itself
+        // has the same 32×4096-byte receive requests as the direct raw path.
+        let receiver = ns
+            .topics()
+            .heap_bounded_receiver::<RawTelemetryBlockTopic>(32, Some("raw_fast"));
+        let mut receiver = core::pin::pin!(receiver);
+        let mut handle = receiver.as_mut().subscribe_unicast();
+        let mut ingress = RawIngress::new(state.clone());
+        state.reader_ready();
+        let mut ticker = tokio::time::interval(Duration::from_millis(100));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            let result = tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = ticker.tick() => state.check(),
+                block = handle.recv() => ingress.push(&block.t.data),
+            };
+            if let Err(error) = result {
+                state.connection_lost(error);
+                break;
+            }
+        }
+    });
+}
+
 impl RawIngress {
     pub(crate) fn new(state: Arc<RawTelemetryState>) -> Self {
         Self {
@@ -666,6 +712,80 @@ mod tests {
     use super::*;
     use crossbeam_channel::{Receiver, bounded};
     use oxifoc_core::raw_telemetry::RawBlockEncoder;
+
+    #[tokio::test]
+    async fn ergot_carrier_preserves_blocks_end_and_missing_block_failure() {
+        use oxifoc_core::icd::{RawTelemetryBlock, RawTelemetryBlockTopic};
+        for encoding in [
+            RawEncoding::Raw34,
+            RawEncoding::Packed26,
+            RawEncoding::Packed26Delta,
+        ] {
+            for missing in [false, true] {
+                let stack = ergot::toolkits::null::new_arc_null_stack();
+                let (tx, rx) = bounded(64);
+                let state = RawTelemetryState::new(FastSource::ErgotRaw, encoding, tx);
+                let cancel = tokio_util::sync::CancellationToken::new();
+                spawn_ergot_subscriber(&stack, state.clone(), cancel.clone());
+                state.wait_ready().await.unwrap();
+                let session = state.arm().unwrap();
+                let samples: Vec<_> = (0..64)
+                    .map(|seq| FastTelemetry {
+                        seq,
+                        ia: 2048 + seq,
+                        ib: 2048 - seq,
+                        ic: 2048,
+                        vphase_adc: [1800, 1900, 2000],
+                        pwm_ccr: [1000, 2000, 3000],
+                        pwm_arr: 4195,
+                        ..FastTelemetry::default()
+                    })
+                    .collect();
+                for bytes in [
+                    data(session.wrapping_sub(1), 0, encoding, &samples, 0),
+                    data(session, 0, encoding, &samples, 0),
+                    end(session, if missing { 2 } else { 1 }, encoding, 64, 0),
+                ] {
+                    let mut block = RawTelemetryBlock {
+                        data: Default::default(),
+                    };
+                    block.data.extend_from_slice(&bytes).unwrap();
+                    stack
+                        .topics()
+                        .unicast::<RawTelemetryBlockTopic>(
+                            ergot::Address {
+                                network_id: 0,
+                                node_id: 0,
+                                port_id: 0,
+                            },
+                            &block,
+                        )
+                        .unwrap();
+                }
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    loop {
+                        let report = state.report().unwrap();
+                        if report.ended || report.error.is_some() {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                cancel.cancel();
+                let report = state.report().unwrap();
+                assert_eq!(rx.try_iter().collect::<Vec<_>>(), samples);
+                if missing {
+                    assert!(report.error.as_deref().unwrap().contains("block index 2"));
+                    assert!(!report.ended);
+                } else {
+                    report.validate_export(session, 64).unwrap();
+                    assert_eq!(report.source, FastSource::ErgotRaw);
+                }
+            }
+        }
+    }
 
     fn ready(
         capacity: usize,

@@ -30,15 +30,27 @@ use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 
 mod stack_mutex;
 
-#[cfg(all(feature = "bench-raw-usb", feature = "bench-raw-rtt"))]
+#[cfg(any(
+    all(feature = "bench-raw-usb", feature = "bench-raw-rtt"),
+    all(feature = "bench-raw-usb", feature = "bench-raw-ergot"),
+    all(feature = "bench-raw-rtt", feature = "bench-raw-ergot")
+))]
 compile_error!("select only one raw telemetry sink");
 #[cfg(all(
-    any(feature = "bench-raw-usb", feature = "bench-raw-rtt"),
+    any(
+        feature = "bench-raw-usb",
+        feature = "bench-raw-rtt",
+        feature = "bench-raw-ergot"
+    ),
     feature = "transport-rtt"
 ))]
 compile_error!("raw telemetry benchmarks use Ergot USB control, not transport-rtt");
 
-#[cfg(any(feature = "bench-raw-usb", feature = "bench-raw-rtt"))]
+#[cfg(any(
+    feature = "bench-raw-usb",
+    feature = "bench-raw-rtt",
+    feature = "bench-raw-ergot"
+))]
 pub mod raw_fast;
 
 // ========== Multi-Interface Definition ==========

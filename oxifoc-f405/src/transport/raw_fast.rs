@@ -1,10 +1,85 @@
-//! Bench sinks for the raw session stream. Neither sink runs in the ADC ISR.
+//! Bench sinks for the raw session stream. No sink runs in the ADC ISR.
 
 use embassy_time::{Duration, with_timeout};
 use oxifoc_core::runtime::raw_stream::{RawSinkError, RawTelemetrySink};
 
 /// Bound a disconnected or unconsumed block without ever holding the producer gate.
 const BLOCK_TIMEOUT: Duration = Duration::from_millis(250);
+
+#[cfg(feature = "bench-raw-ergot")]
+struct ErgotRawSink {
+    stack: &'static super::Stack,
+    usb_ident: u8,
+}
+
+#[cfg(feature = "bench-raw-ergot")]
+impl RawTelemetrySink for ErgotRawSink {
+    async fn write_block(&mut self, bytes: &[u8]) -> Result<(), RawSinkError> {
+        use ergot::interface_manager::{InterfaceState, Profile};
+        use oxifoc_core::icd::{RawTelemetryBlockRef, RawTelemetryBlockRefTopic};
+
+        with_timeout(BLOCK_TIMEOUT, async {
+            loop {
+                // Unicast to this USB segment only. A broadcast can partially
+                // succeed on another interface, making retry ambiguous.
+                let network_id = self
+                    .stack
+                    .manage_profile(|router| {
+                        matches!(
+                            router.interface_state(self.usb_ident),
+                            Some(InterfaceState::Active { .. })
+                        )
+                        .then(|| router.net_id_of(self.usb_ident))
+                        .flatten()
+                        .filter(|id| *id != 0)
+                    })
+                    .ok_or(RawSinkError::Unavailable)?;
+                let destination = ergot::Address {
+                    network_id,
+                    node_id: ergot::interface_manager::profiles::direct_edge::EDGE_NODE_ID,
+                    port_id: 0,
+                };
+                if self
+                    .stack
+                    .topics()
+                    .unicast_borrowed::<RawTelemetryBlockRefTopic<'_>>(
+                        destination,
+                        &RawTelemetryBlockRef { data: bytes },
+                    )
+                    .is_ok()
+                {
+                    // Queue acceptance, not host receipt: the host still
+                    // requires the matching END and exact record totals.
+                    return Ok(());
+                }
+                embassy_time::Timer::after_micros(100).await;
+            }
+        })
+        .await
+        .map_err(|_| RawSinkError::Unavailable)?
+    }
+}
+
+/// Encode in thread mode alongside the command servers. A queued Ergot send
+/// can complete immediately; its self-waking stream must not keep an interrupt
+/// executor runnable and starve those servers. USB RX/TX stay on their executor.
+#[cfg(feature = "bench-raw-ergot")]
+#[embassy_executor::task]
+pub async fn ergot_task(stack: &'static super::Stack) {
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(1);
+    let usb_ident = *crate::protocol::USB_IDENT.get().await;
+    let mut sink = ErgotRawSink { stack, usb_ident };
+    #[expect(
+        clippy::large_futures,
+        reason = "the fixed raw block belongs to this statically allocated Embassy task"
+    )]
+    oxifoc_core::runtime::raw_stream::raw_telemetry_stream::<_, oxifoc_core::timer::EmbassyTimer>(
+        &mut sink,
+    )
+    .await;
+}
 
 #[cfg(feature = "bench-raw-usb")]
 type UsbIn = <super::AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn;

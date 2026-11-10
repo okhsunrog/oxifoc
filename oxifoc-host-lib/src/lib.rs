@@ -639,11 +639,12 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
         }
         TransportConfig::Usb => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
-            let (stack, queue) = transport::usb::new_stack();
+            let (stack, queue) = transport::usb::new_stack_for(cfg.fast_source());
             let register_fn = {
                 let stack = stack.clone();
                 let notify = state_notify.clone();
                 let mut selected_identity = None;
+                let fast_source = cfg.fast_source();
                 let raw = ctx
                     .raw_telemetry
                     .clone()
@@ -675,11 +676,12 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
                             }
                         }
                     } else {
-                        transport::usb::register(
+                        transport::usb::register_for(
                             &stack,
                             &queue,
                             Some(notify.clone()),
                             &mut selected_identity,
+                            fast_source,
                         )
                         .await
                     }
@@ -745,6 +747,10 @@ where
             ctx.connected.clone(),
             ctx.cancel.clone(),
         );
+    } else if let Some(raw) = &ctx.raw_telemetry
+        && raw.source() == FastSource::ErgotRaw
+    {
+        raw_telemetry::spawn_ergot_subscriber(stack, raw.clone(), ctx.cancel.clone());
     }
     spawn_fault_topic_subscriber(
         stack,

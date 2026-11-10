@@ -171,9 +171,9 @@ flash-mk5-hall profiling="off" memory="sram" transport="usb": (build-mk5-hall pr
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
 
-# Dedicated raw telemetry sink; Ergot USB remains the command and defmt path.
+# Raw session sink; Ergot USB remains the command and defmt path.
 build-mk5-raw sink="usb" profiling="normal":
-    @test {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt
+    @test {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt -o {{ quote(sink) }} = ergot
     @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + if profiling == "timing" { ",isr-timing" } else { "" }) }}

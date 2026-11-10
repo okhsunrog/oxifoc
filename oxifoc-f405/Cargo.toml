@@ -62,9 +62,10 @@ bench-usb-metrics = ["transport-usb", "bench-clock-reference"]
 # Low-rate, ADC-sequence-correlated Hall observations during motor bring-up.
 bench-hall = []
 # Bench-only raw telemetry sinks; control stays on the ordinary Ergot USB interface.
-# The two sinks are mutually exclusive and replace its fast-frame publisher.
+# The sinks are mutually exclusive and replace its fast-frame publisher.
 bench-raw-usb = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
 bench-raw-rtt = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
+bench-raw-ergot = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
 # Compatibility alias for earlier benchmark commands.
 bench-scheduler-priority = ["task-priority"]
 # Bench EDF policy: fresh relative deadlines on actual ready/enqueue events.

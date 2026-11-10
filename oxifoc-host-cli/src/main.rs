@@ -105,11 +105,13 @@ enum FastSourceArg {
     Ergot,
     UsbRaw,
     RttRaw,
+    ErgotRaw,
 }
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum FastEncodingArg {
     Raw34,
     Packed26,
+    Packed26Delta,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -196,10 +198,10 @@ struct Cli {
     /// Transport type (serial or rtt). If not specified, uses config file.
     #[arg(short, long, value_enum)]
     transport: Option<Transport>,
-    /// Fast data source. Raw modes keep USB for commands; default: ergot.
+    /// Fast data source. Raw modes use USB commands; default: legacy ergot delta.
     #[arg(long, value_enum, global = true)]
     fast_source: Option<FastSourceArg>,
-    /// Raw block encoding; default: raw34. Packed26 falls back explicitly.
+    /// Raw block encoding; default: raw34. Packed encodings fall back explicitly.
     #[arg(long, value_enum, global = true)]
     fast_encoding: Option<FastEncodingArg>,
 
@@ -994,12 +996,16 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
             FastSourceArg::Ergot => oxifoc_host_lib::FastSource::Ergot,
             FastSourceArg::UsbRaw => oxifoc_host_lib::FastSource::UsbRaw,
             FastSourceArg::RttRaw => oxifoc_host_lib::FastSource::RttRaw,
+            FastSourceArg::ErgotRaw => oxifoc_host_lib::FastSource::ErgotRaw,
         });
     }
     if let Some(encoding) = cli.fast_encoding {
         cfg.fast_encoding = Some(match encoding {
             FastEncodingArg::Raw34 => oxifoc_core::raw_telemetry::RawEncoding::Raw34,
             FastEncodingArg::Packed26 => oxifoc_core::raw_telemetry::RawEncoding::Packed26,
+            FastEncodingArg::Packed26Delta => {
+                oxifoc_core::raw_telemetry::RawEncoding::Packed26Delta
+            }
         });
     }
 
@@ -1086,7 +1092,7 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
     }
 
     if cfg.fast_source().is_raw() && cfg.transport_type() != TransportType::Usb {
-        bail!("--fast-source usb-raw/rtt-raw requires --transport usb for commands");
+        bail!("raw --fast-source requires --transport usb for commands");
     }
     Ok(cfg)
 }
@@ -1172,7 +1178,7 @@ mod tests {
         let default = super::Cli::try_parse_from(["oxifoc", "status"]).unwrap();
         assert!(default.fast_source.is_none());
         assert!(default.fast_encoding.is_none());
-        for source in ["usb-raw", "rtt-raw"] {
+        for source in ["usb-raw", "rtt-raw", "ergot-raw"] {
             let cli = super::Cli::try_parse_from([
                 "oxifoc",
                 "--fast-source",
@@ -1191,6 +1197,19 @@ mod tests {
         assert!(
             super::Cli::try_parse_from(["oxifoc", "--fast-encoding", "lossy", "status"]).is_err()
         );
+        let cli = super::Cli::try_parse_from([
+            "oxifoc",
+            "--fast-source",
+            "ergot-raw",
+            "--fast-encoding",
+            "packed26-delta",
+            "status",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.fast_encoding,
+            Some(super::FastEncodingArg::Packed26Delta)
+        ));
     }
 
     /// Enforcer: the clap mirror covers every shared phase-source kind in
