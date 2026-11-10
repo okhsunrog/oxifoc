@@ -57,6 +57,10 @@ pub static GATE_CURR: AtomicU32 = AtomicU32::new(0);
 pub static OUT_TRK: AtomicU32 = AtomicU32::new(0);
 /// Due-only outer velocity update, including both torque-authority probes.
 pub static VELOCITY_REQUEST: AtomicU32 = AtomicU32::new(0);
+/// PhaseManager sensor sampling, Hall health and prediction before estimators.
+pub static EST_SENSE: AtomicU32 = AtomicU32::new(0);
+/// Applied-voltage selection/conversion before PhaseManager::update.
+pub static EST_VOLTAGE: AtomicU32 = AtomicU32::new(0);
 /// `BackEmfObserver::update`: the readiness tail (velocity-slope filter,
 /// cached lag-compensated error, Schmitt latch). Subset of [`EST_OBS`] —
 /// isolates the 2026-07-07 readiness additions (+280 cy A/B against
@@ -85,6 +89,8 @@ pub enum Section {
     CurrentRead,
     PhaseTracker,
     VelocityRequest,
+    SensorSampling,
+    PhaseVoltage,
     // Keep last: adding a section above this also grows Snapshot's array.
     ObserverTail,
 }
@@ -115,6 +121,8 @@ impl Snapshot {
             &GATE_CURR,
             &OUT_TRK,
             &VELOCITY_REQUEST,
+            &EST_SENSE,
+            &EST_VOLTAGE,
             &OBS_TAIL,
         ]
     }
@@ -200,6 +208,30 @@ pub fn add(sum: &AtomicU32, t0: u32, t1: u32) {
     #[cfg(feature = "isr-profiling")]
     sum.fetch_add(t1.wrapping_sub(t0), Ordering::Relaxed);
     #[cfg(not(feature = "isr-profiling"))]
+    {
+        let _ = (sum, t0, t1);
+    }
+}
+
+/// Selected phase/outer-loop group, allowing native-rate live attribution
+/// without enabling all nested ISR markers simultaneously.
+#[inline(always)]
+pub fn phase_now() -> u32 {
+    #[cfg(any(feature = "isr-profiling", feature = "isr-profile-phase"))]
+    {
+        cortex_m::peripheral::DWT::cycle_count()
+    }
+    #[cfg(not(any(feature = "isr-profiling", feature = "isr-profile-phase")))]
+    {
+        0
+    }
+}
+
+#[inline(always)]
+pub fn phase_add(sum: &AtomicU32, t0: u32, t1: u32) {
+    #[cfg(any(feature = "isr-profiling", feature = "isr-profile-phase"))]
+    sum.fetch_add(t1.wrapping_sub(t0), core::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(any(feature = "isr-profiling", feature = "isr-profile-phase")))]
     {
         let _ = (sum, t0, t1);
     }

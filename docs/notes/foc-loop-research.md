@@ -5,11 +5,10 @@
 Updated: 2026-11-11. Baseline commit: `3ee9089`.
 Goal: shorten the real F405 FOC/ADC path at 20 kHz, including worst observed
 cycles and PWM-update timing, while preserving protections and native telemetry.
-Current stage: rotating baseline and measurement-method audit complete. Quiet
-baseline is the reference for optimization. No algorithm optimization accepted.
-Next: attribute estimator front-end and velocity wrapper costs, and measure PWM
-commit phase before claiming that a long body missed the actuation deadline.
-Normal production firmware restored; Stopped, fault_count=0.
+Current stage: selective phase/velocity RAM profiling qualified on hold/+40/+120
+with native telemetry. Candidate next: reuse the edge age already computed by
+HallSensor::sample_at_mut inside sample_for_control; no persistent cache.
+No algorithm optimization accepted yet. Normal image restored after each suite.
 
 Artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-research-2026-11-11/`.
 Use this one living note for progress; add conclusions/evidence and next actions,
@@ -173,3 +172,35 @@ Recovery image used here: the known normal ELF in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-overclock-2026-11-10/current-light-repeat/recovery.elf`.
 `just flash-mk5-spi` rebuilds/restores the current normal image. Do not overwrite
 artifact directories or promote a detailed/gapped run into baseline acceptance.
+
+
+### Selective profiling without reporting I/O
+
+`fine-sections` and `sections-ram` retain the failed full-instrumentation +40
+attempts: command ACKs and the stream overloaded even after removing log I/O.
+Emergency Stop and restore succeeded. These are measurement-load failures,
+not accepted performance runs. Do not keep rerunning the full-mark image live.
+
+Added a selected phase group instead: 2 front-end markers per cycle and the
+existing due-only velocity-request marker. A one-shot RAM window is published
+only after >1.1 active seconds; this excludes the mixed entry/Stopped window.
+The host rearms/export while Stopped. No per-window text I/O. `phase-selective`
+passed hold/+40/+120, all native captures lossless, zero faults.
+
+| Case | Sensor/front-end cycles | Voltage preparation cycles | Velocity-request cycles averaged per native cycle |
+|---|---:|---:|---:|
+| Hold | 801 | 48 | 0 |
+| +40 | 983 | 48 | 37 |
+| +120 | 1159 | 48 | 37 |
+
+The outer velocity request is about 740 cycles per scheduled evaluation if
+using the nominal 20:1 ratio, not 37 cycles per evaluation. More granularity
+is now affordable without enabling every nested marker. Full core tests:
+698 unit tests and 11 doctests passed after the counter additions.
+
+Next local candidate is the duplicated edge-age conversion within
+`HallSensor::sample_for_control`: `sample_at_mut` already computes the same
+saturated edge delta/time conversion. Return that age alongside the sample,
+like the existing immutable helper, and keep the external sampling API.
+This does not merge raw telemetry with the rate-limited control sample (the
+previous rejected H1/H2 experiment), and introduces no invalidatable cache.

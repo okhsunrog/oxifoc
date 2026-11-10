@@ -160,6 +160,8 @@ defmt = ["dep:defmt", "heapless/defmt"]
 # FocDriver::step) — device-only (reads the Cortex-M DWT directly). ~30
 # cycles of overhead per ISR; the platform stats task reports the sums.
 isr-profiling = ["dep:cortex-m"]
+# Only phase front-end/voltage and outer velocity request: bounded live profiling.
+isr-profile-phase = ["dep:cortex-m"]
 
 # log crate support for std logging
 log = ["dep:log"]

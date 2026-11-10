@@ -611,9 +611,9 @@ bench-mk5-foc output recovery detail="minimal" repeats="3" cases="hold,current,v
 
 # Current production transport and model; diagnostics differ only by section marks.
 build-mk5-foc-profile detail="minimal" logging="timing":
-    @test {{quote(detail)}} = minimal -o {{quote(detail)}} = sections
+    @test {{quote(detail)}} = minimal -o {{quote(detail)}} = sections -o {{quote(detail)}} = sections-ram -o {{quote(detail)}} = phase-ram
     @test {{quote(logging)}} = timing -o {{quote(logging)}} = quiet
-    cd oxifoc-f405 && DEFMT_LOG={{quote(if logging == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-foc-distribution" + if detail == "sections" { ",isr-profiling" } else { "" })}}
+    cd oxifoc-f405 && DEFMT_LOG={{quote(if logging == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-foc-distribution" + if detail == "sections" { ",isr-profiling" } else if detail == "sections-ram" { ",bench-foc-sections-ram,isr-profiling" } else if detail == "phase-ram" { ",bench-foc-phase-ram" } else { "" })}}
 
 flash-mk5-foc-profile detail="minimal" logging="timing": (build-mk5-foc-profile detail logging)
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}

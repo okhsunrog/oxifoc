@@ -8,12 +8,43 @@ pub const BIN_CYCLES: u32 = 64;
 // body max, gap max, over-budget count, epoch changes, first/last/worst seq,
 // body cycle sum low/high, initial DWT epoch, budget cycles.
 pub const HEADER: usize = 16;
-// 0 disabled, 1 arm request (handled while inactive), 2 armed/recording, 3 frozen.
+// 0 disabled, 1 arm request (handled while inactive), 2 armed, 4 active, 3 frozen.
 #[unsafe(no_mangle)]
 pub static FOC_DISTRIBUTION_CONTROL: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub static FOC_DISTRIBUTION_DATA: [AtomicU32; HEADER + 2 * BINS] =
     [const { AtomicU32::new(0) }; HEADER + 2 * BINS];
+
+static ACTIVE_START: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "bench-foc-sections-ram")]
+#[unsafe(no_mangle)]
+pub static FOC_SECTIONS_READY: AtomicU32 = AtomicU32::new(0);
+// schema, CPU Hz, samples, body mean/max/over, ADC, snapshot, FOC, publish,
+// command, protection, step, tail, gate, control, trig, post, estimator,
+// observer, startup, output, sensors, voltage prep, velocity request.
+#[cfg(feature = "bench-foc-sections-ram")]
+#[unsafe(no_mangle)]
+pub static FOC_SECTIONS_DATA: [AtomicU32; 25] = [const { AtomicU32::new(0) }; 25];
+
+/// Called only by the reporting task, whose window is one second. Require
+/// more than a full active second to exclude the entry/mixed-state window.
+#[cfg(feature = "bench-foc-sections-ram")]
+pub fn needs_sections(now: u32) -> bool {
+    FOC_DISTRIBUTION_CONTROL.load(Ordering::Acquire) == 4
+        && FOC_SECTIONS_READY.load(Ordering::Relaxed) == 0
+        && now.wrapping_sub(ACTIVE_START.load(Ordering::Relaxed))
+            > crate::config::CPU_HZ + crate::config::CPU_HZ / 10
+}
+
+/// Host rearms READY only while Stopped, after the reporting task has returned
+/// to the executor. Until then this frozen window is never overwritten.
+#[cfg(feature = "bench-foc-sections-ram")]
+pub fn publish_sections(words: [u32; 25]) {
+    for (dst, src) in FOC_SECTIONS_DATA.iter().zip(words) {
+        dst.store(src, Ordering::Relaxed);
+    }
+    FOC_SECTIONS_READY.store(1, Ordering::Release);
+}
 
 pub struct Recorder {
     active: bool,
@@ -54,7 +85,7 @@ impl Recorder {
             FOC_DISTRIBUTION_CONTROL.store(2, Ordering::Release);
             return;
         }
-        if control != 2 {
+        if control != 2 && control != 4 {
             return;
         }
         if !active {
@@ -77,6 +108,8 @@ impl Recorder {
             self.active = true;
             self.header[9] = seq;
             self.header[14] = generation;
+            ACTIVE_START.store(start, Ordering::Relaxed);
+            FOC_DISTRIBUTION_CONTROL.store(4, Ordering::Release);
         }
         self.header[3] += 1;
         self.header[10] = seq;

@@ -174,6 +174,7 @@ where
         dt: f32,
         now_ticks: u64,
     ) {
+        let voltage_start = crate::isr_prof::phase_now();
         let bridge_driven = !self.mode.is_high_z();
         let (v_alpha, v_beta) =
             match observer_voltage_source(self.phase_voltage.as_ref(), bridge_driven) {
@@ -185,6 +186,11 @@ where
                 },
                 ObserverVoltage::Commanded => self.applied_voltage(),
             };
+        crate::isr_prof::phase_add(
+            &crate::isr_prof::EST_VOLTAGE,
+            voltage_start,
+            crate::isr_prof::phase_now(),
+        );
         self.phase.update(
             &PhaseInput {
                 v_alpha,

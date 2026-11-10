@@ -914,6 +914,46 @@ pub async fn isr_stats_task() {
             continue;
         };
         let cyc_n = sample_count.get();
+        #[cfg(feature = "bench-foc-sections-ram")]
+        {
+            use crate::diagnostics::foc_distribution as distribution;
+            use oxifoc_core::isr_prof::Section as S;
+            if distribution::needs_sections(cortex_m::peripheral::DWT::cycle_count()) {
+                let a = |section| stats.core.average(section, sample_count);
+                distribution::publish_sections([
+                    1,
+                    CPU_HZ,
+                    cyc_n,
+                    stats.cycles / cyc_n,
+                    stats.max_cycles,
+                    stats.overruns,
+                    stats.adc / cyc_n,
+                    stats.snapshot / cyc_n,
+                    stats.control / cyc_n,
+                    stats.publish / cyc_n,
+                    a(S::Command),
+                    a(S::Protection),
+                    a(S::Step),
+                    a(S::Tail),
+                    a(S::Gate),
+                    a(S::Control),
+                    a(S::Trig),
+                    a(S::Post),
+                    a(S::Estimator),
+                    a(S::Observer),
+                    a(S::Startup),
+                    a(S::PhaseOutput),
+                    a(S::SensorSampling),
+                    a(S::PhaseVoltage),
+                    a(S::VelocityRequest),
+                ]);
+            }
+            // Timing counters were already consumed coherently. Avoid all
+            // reporter text I/O during this diagnostic, including through RTT.
+            if cfg!(feature = "bench-foc-sections-ram") {
+                continue;
+            }
+        }
         #[cfg(feature = "isr-timing")]
         if stats.motion.0 != 0 {
             defmt::info!(
@@ -1074,6 +1114,12 @@ pub async fn isr_stats_task() {
                 average(S::Startup),
                 average(S::PhaseOutput),
                 average(S::PhaseTracker),
+            );
+            defmt::info!(
+                "isrh/s: sense={} voltage={} velocity_request={} ",
+                average(S::SensorSampling),
+                average(S::PhaseVoltage),
+                average(S::VelocityRequest)
             );
         }
     }

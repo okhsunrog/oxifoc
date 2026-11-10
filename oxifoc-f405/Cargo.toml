@@ -58,6 +58,9 @@ isr-profiling = ["isr-timing", "oxifoc-core/isr-profiling"]
 isr-timing = []
 # Finite active-body/entry-gap histograms, exported after Stop over SWD.
 bench-foc-distribution = ["isr-timing"]
+# One complete steady active section window in RAM; no periodic reporter I/O.
+bench-foc-sections-ram = ["bench-foc-distribution"]
+bench-foc-phase-ram = ["bench-foc-sections-ram", "oxifoc-core/isr-profile-phase"]
 # Exhaustive host-table/MCU temperature-model agreement before PWM setup.
 bench-ntc-check = []
 # Finite ADC-owned records of the first and longest over-budget cycles.

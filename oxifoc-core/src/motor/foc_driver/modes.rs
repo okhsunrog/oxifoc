@@ -212,7 +212,7 @@ where
     // current path. Only this due-only helper sees the elapsed outer-loop dt.
     #[inline(never)]
     fn update_velocity_request(&mut self, target: Option<f32>, omega: f32, dt: f32) {
-        let profile_start = crate::isr_prof::now();
+        let profile_start = crate::isr_prof::phase_now();
         let target_vel = self.velocity_target(target);
         let (tracking, mut blockage, mut voltage_clip) = self.velocity_schedule.take_feedback();
         self.velocity_loop.track_grant(tracking);
@@ -266,10 +266,10 @@ where
         if !self.velocity_schedule.set_request(iq_target) {
             self.invalidate_velocity();
         }
-        crate::isr_prof::add(
+        crate::isr_prof::phase_add(
             &crate::isr_prof::VELOCITY_REQUEST,
             profile_start,
-            crate::isr_prof::now(),
+            crate::isr_prof::phase_now(),
         );
     }
 

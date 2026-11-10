@@ -44,7 +44,7 @@ def diagnostic_loss_only(log):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--detail", choices=["minimal", "sections"], default="minimal")
+    parser.add_argument("--detail", choices=["minimal", "sections", "sections-ram", "phase-ram"], default="minimal")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--recovery-elf", type=Path, required=True)
     parser.add_argument("--logging", choices=["timing", "quiet"], default="timing")
@@ -52,6 +52,8 @@ def main():
     args = parser.parse_args()
     cases = args.cases.split(",")
     assert len(cases) == len(set(cases)) and set(cases) <= {"hold", "current", "velocity40", "velocity120"}
+    if args.detail.endswith("-ram") and "current" in cases:
+        parser.error("RAM section export requires >1.1 seconds active; omit the short current pulse")
     assert 1 <= args.repeats <= 5
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = dict(detail=args.detail, logging=args.logging, runs=[])
@@ -77,6 +79,8 @@ def main():
                 name = f"{case}-{repeat}"
                 status = json.loads(probe.run(["just", "cli-bridge", "status"]).stdout)
                 assert status["motor_state"] == "Stopped" and status["fault_count"] == 0
+                if args.detail in ["sections-ram", "phase-ram"]:
+                    probe.run(probe.device("write", "b32", hex(symbols["FOC_SECTIONS_READY"]), "0"))
                 probe.run(probe.device("write", "b32", hex(control), "1"))
                 time.sleep(.1)
                 assert probe.read(control)[0] == 2, "recorder not armed"
@@ -105,7 +109,7 @@ def main():
                     # Detailed marks can overload the producer. Retain this as
                     # failed recording evidence while still exporting timing.
                     # Other operational errors continue to abort the experiment.
-                    assert args.detail == "sections" and capture.is_file()
+                    assert args.detail in ["sections", "sections-ram", "phase-ram"] and capture.is_file()
                     capture_error = capture.with_suffix(".parquet.log").read_text()
                     assert diagnostic_loss_only(capture_error), "non-recording operational failure"
                     row["lossless"] = False
@@ -115,6 +119,9 @@ def main():
                 assert status["motor_state"] == "Stopped" and status["fault_count"] == 0
                 assert probe.read(control)[0] == 3, "recorder did not freeze"
                 row["distribution"] = decode(probe.read(data, 528))
+                if args.detail in ["sections-ram", "phase-ram"]:
+                    assert probe.read(symbols["FOC_SECTIONS_READY"])[0] == 1
+                    row["sections"] = probe.read(symbols["FOC_SECTIONS_DATA"], 25)
                 row["status"] = status
                 (args.output/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
                 d = row["distribution"]

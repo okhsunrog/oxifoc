@@ -177,6 +177,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
 
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn update(&mut self, input: &PhaseInput, now_ticks: u64) {
+        let sensor_start = crate::isr_prof::phase_now();
         let previous_hall_health = self.hall_health;
         let previous_crossover = self.crossover_latched;
         let observer_was_ready = matches!(
@@ -309,6 +310,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             i_beta: input.i_beta,
             dt: input.dt,
         };
+        crate::isr_prof::phase_add(
+            &crate::isr_prof::EST_SENSE,
+            sensor_start,
+            crate::isr_prof::phase_now(),
+        );
         let prof_t0 = crate::isr_prof::now();
         self.observer.update(&obs_input);
         crate::isr_prof::add(&crate::isr_prof::EST_OBS, prof_t0, crate::isr_prof::now());
