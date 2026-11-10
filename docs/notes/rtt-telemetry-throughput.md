@@ -273,3 +273,67 @@ oxifoc-host-cli --transport rtt --probe <V3> --chip STM32G474RETx \
 
 Env overrides (host RTT worker): `OXIFOC_SWD_KHZ` (default 24000),
 `OXIFOC_RTT_IDLE_US` (default 0 = busy-spin), `OXIFOC_RTT_DEFMT_EVERY` (default 64).
+
+## Production SPI bridge qualification, 2026-11-10
+
+The F405 default and `just flash-mk5-spi` now select MK5, SPI, priority scheduling
+and session-bound Ergot telemetry. Controller USB, Ergot/RTT and dedicated raw
+carriers are absent from that image. RTT channel 0 remains for defmt. The path is
+STM32 → Ergot/SPI → C5 → Ergot/USB Serial JTAG → host.
+
+Production accepts only **Packed28**: Packed26's fields plus an independent Hall
+angle in two bytes. FOC angle is unchanged. Hall encoding 0 means unavailable;
+1..65535 cover a turn (about 0.0055°/step). The canonical RAM frame is 36 bytes;
+seq/stride/ARR are shared in the 32-byte block header. ICD version is 10. Old raw
+codecs retain archive/benchmark support and cannot silently discard valid Hall
+data. Optional exact Hall-edge IRQ captures remain diagnostic-only; ADC-rate
+angles do not preserve microsecond edge timestamps.
+
+The earlier paired MCU benchmark measured Packed26 at 185.9 cycles/record and
+moving Packed26Delta at 644.5: delta added about 5.5% CPU at 20 kHz. Full-width
+36-byte streaming exceeds the standalone C5 USB Serial JTAG benchmark's roughly
+0.66 MB/s ceiling. Packed28 needs about 570 kB/s including block headers, before
+Ergot/COBS overhead. Fixed packing is the selected CPU/bandwidth tradeoff.
+
+Normal-image results, configured native rate 20004.272 Hz, unchanged 24 V/5.5 A
+bench supply and 10 A target / 30 A phase / 5 A bus / zero regen limits:
+
+| Workload | Rows | Lost / host / producer drops | Commands | Maximum ACK |
+| --- | ---: | --- | ---: | ---: |
+| Current hold and short q-axis ramp | 98,667 | 0 / 0 / 0 | 22/22 | 10.32 ms |
+| Velocity +40 electrical rad/s, 15-second hold | 362,760 | 0 / 0 / 0 | 78/78 | 12.74 ms |
+| Velocity +20/+40/+80 steps | 132,657 | 0 / 0 / 0 | 20/20 | 11.94 ms |
+| Velocity −20/−40/−80 steps | 132,656 | 0 / 0 / 0 | 20/20 | 13.10 ms |
+
+All four captures have matching END/received/delivered/saved totals, only Packed28
+blocks and successful terminal Stop. Four cold STM32/C5 reconnects returned
+Stopped/zero faults in 0.28–1.10 s. A resolved HardwareInfo request error now
+restarts discovery instead of retrying an address whose route has disappeared.
+
+Earlier same-profile Packed26 comparisons retained negative results: direct
+Ergot/USB moving tests lost 881 and 349 producer samples; the dedicated USB
+endpoint lost 8117. Ergot/SPI passed the moving repeats. These are complete-path
+comparisons, including different driver/executor placement.
+
+Exclusive finite TIM5 traces subtract ADC preemption and exclude DMA waits.
+With the final C5 and Packed28, two qualified moving windows measured ADC ISR
+85.4–85.8%, packing/Ergot publication 7.1–7.3%, SPI task/IRQ/READY about 4.3%, and
+idle 1.9–2.1%. Earlier Packed26 USB driver/executor measurements were 9.6–11.4%,
+versus SPI about 4–5%. These short instrumented windows are not WCET bounds.
+Minimal DWT timing without executor trace measured moving ISR means around
+6906–6947 cycles (41.1–41.4 µs), with rare overruns up to 9123 cycles (54.4 µs).
+Transport integrity does not qualify ADC deadlines or smooth velocity control:
+current/frame-speed pulsations and FOC/Hall angle disagreement remain visible.
+
+A separate forwarding loss was reproduced with the motor Stopped: pausing the
+host for 200 ms caused 50 C5 USB admission failures, while SPI CRC/length counters
+stayed zero. The C5 USB queue is now 128 KiB instead of 32 KiB (about 200 ms of
+traffic plus framing margin), and USB TX releases completed 512-byte prefixes
+instead of pinning a large grant across its entire write. The same injected
+pause then passed END/count/continuity checks with zero admission/CRC errors.
+This is a finite jitter budget, not unlimited buffering. No STM32 SRAM was added.
+
+Artifacts, including failures, exact trace ELFs/symbols, Parquet, plots and JSON:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-c5-spi-2026-11-10/`.
+Repeat with `just test-bridge CAPTURE MANEUVER` and, after flashing its matching
+trace image, `just profile-link-mk5 bridge OUTPUT MANEUVER`.

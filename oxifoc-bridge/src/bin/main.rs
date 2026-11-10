@@ -37,12 +37,11 @@ async fn main(spawner: Spawner) -> ! {
     let stack = STACK.init(NetStack::new_with_profile(router));
     let usb_ident = stack
         .manage_profile(|p| {
-            p.register_interface_pending(BridgeSink::Usb(cobs_stream::Sink::new(
-                transport::USB_OUTQ.stream_producer(),
-                MTU,
+            p.register_interface_pending(BridgeSink::Usb(transport::usb::UsbSink::new(
+                cobs_stream::Sink::new(transport::USB_OUTQ.stream_producer(), MTU),
             )))
         })
-        .unwrap();
+        .expect("USB interface slot must be available at startup");
     spawner.spawn(
         transport::spi::pump(
             stack,
@@ -57,12 +56,13 @@ async fn main(spawner: Spawner) -> ! {
             },
             epoch,
         )
-        .unwrap(),
+        .expect("SPI pump task is spawned once"),
     );
     let (rx, tx) = UsbSerialJtag::new(p.USB_DEVICE).into_async().split();
-    spawner.spawn(transport::usb::rx(stack, rx, usb_ident).unwrap());
-    spawner.spawn(transport::usb::tx(tx).unwrap());
-    spawner.spawn(transport::usb::routes(stack, usb_ident).unwrap());
+    spawner.spawn(transport::usb::rx(stack, rx, usb_ident).expect("USB RX task is spawned once"));
+    spawner.spawn(transport::usb::tx(tx).expect("USB TX task is spawned once"));
+    spawner
+        .spawn(transport::usb::routes(stack, usb_ident).expect("USB route task is spawned once"));
     #[cfg(feature = "ble")]
     {
         esp_alloc::heap_allocator!(size: 65536);
@@ -73,8 +73,11 @@ async fn main(spawner: Spawner) -> ! {
                     transport::BLE_MTU,
                 )))
             })
-            .unwrap();
-        spawner.spawn(oxifoc_bridge::ble_runtime::run(stack, p.BT, ble_ident).unwrap());
+            .expect("BLE interface slot must be available at startup");
+        spawner.spawn(
+            oxifoc_bridge::ble_runtime::run(stack, p.BT, ble_ident)
+                .expect("BLE task is spawned once"),
+        );
     }
     defmt::info!("OxiFOC C5: SPI DMA upstream, USB Serial/JTAG downstream");
     loop {

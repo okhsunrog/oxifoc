@@ -1,6 +1,6 @@
 {
   "name": "mk5-hall-current-check",
-  "description": "Sustained 0.6-A d-axis current with fresh setpoints for the deadman, followed by a short q-axis ramp to 1.2 A. Hall source, secured unloaded MK5 motor, 3/6-A limits.",
+  "description": "Sustained 0.6-A d-axis current with fresh setpoints for the deadman, followed by a short q-axis ramp to 1.2 A. Hall source, secured unloaded MK5 motor; uses the device's stored current limits.",
   "capture": { "fast_hz": 20000, "tail_s": 0.4 },
   "terminal": "stop",
   "timeline": [

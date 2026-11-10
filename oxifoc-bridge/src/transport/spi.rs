@@ -29,6 +29,14 @@ pub struct Resources {
 pub static SPI_LINK_SLOTS: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub static SPI_LINK_ERRORS: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+pub static SPI_RX_LENGTH_ERRORS: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+pub static SPI_RX_CRC_ERRORS: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+pub static SPI_RX_HEADER_ERRORS: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+pub static SPI_LAST_RX_LEN: AtomicU32 = AtomicU32::new(0);
 pub static PEER_GENERATION: AtomicU32 = AtomicU32::new(0);
 fn checksum(bytes: &[u8]) -> u32 {
     !esp_hal::rom::crc::crc32_be(0, bytes)
@@ -83,9 +91,8 @@ pub async fn pump(stack: &'static Stack, r: Resources, epoch: u32) {
         }
         rx.set_length(SLOT_BYTES);
         prepare_tx(&mut tx, seq);
-        let transfer = match spi.transfer(SLOT_BYTES, rx, SLOT_BYTES, tx) {
-            Ok(t) => t,
-            Err(_) => defmt::panic!("SPI DMA arm failed"),
+        let Ok(transfer) = spi.transfer(SLOT_BYTES, rx, SLOT_BYTES, tx) else {
+            defmt::panic!("SPI DMA arm failed");
         };
         ready.set_high();
         // Independent buffers allow routing the previous slot while this DMA
@@ -132,6 +139,8 @@ fn process_slot(
     rx: &mut DmaRxBuf,
 ) {
     if rx.number_of_received_bytes() != SLOT_BYTES {
+        SPI_RX_LENGTH_ERRORS.fetch_add(1, Ordering::Relaxed);
+        SPI_LAST_RX_LEN.store(rx.number_of_received_bytes() as u32, Ordering::Relaxed);
         SPI_LINK_ERRORS.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -152,7 +161,12 @@ fn process_slot(
                 }
             }
         }
-        Err(_) => {
+        Err(error) => {
+            if error == oxifoc_core::spi_link::Error::Checksum {
+                SPI_RX_CRC_ERRORS.fetch_add(1, Ordering::Relaxed);
+            } else {
+                SPI_RX_HEADER_ERRORS.fetch_add(1, Ordering::Relaxed);
+            }
             SPI_LINK_ERRORS.fetch_add(1, Ordering::Relaxed);
         }
     }
