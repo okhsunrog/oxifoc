@@ -182,15 +182,15 @@ build-mk5-codec-bench:
         --features {{ quote(mk5_bench_features + ",bench-raw-codec") }}
 
 # Raw sink: timing adds its 1-Hz report; hall-phase adds finite RAM events;
-# hall-timing enables both for a synchronized control/timing diagnosis.
+# hall-timing enables both; hall-outliers also records section costs of slow cycles.
 # Ergot USB remains the command and defmt path; use build-mk5-hall for Hall text logs.
 # compensation=off disables only command correction, retaining hardware gate deadtime.
 build-mk5-raw sink="usb" profiling="normal" compensation="on":
     @test {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt -o {{ quote(sink) }} = ergot
-    @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing -o {{ quote(profiling) }} = hall-phase -o {{ quote(profiling) }} = hall-timing
+    @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing -o {{ quote(profiling) }} = hall-phase -o {{ quote(profiling) }} = hall-timing -o {{ quote(profiling) }} = hall-outliers
     @test {{ quote(compensation) }} = on -o {{ quote(compensation) }} = off
-    cd oxifoc-f405 && DEFMT_LOG={{ quote(if profiling == "timing" { "warn,oxifoc_f405::control::foc=info" } else if profiling == "hall-timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + (if profiling == "timing" { ",isr-timing" } else if profiling == "hall-phase" { ",bench-hall-phase" } else if profiling == "hall-timing" { ",bench-hall-phase,isr-timing" } else { "" }) + (if compensation == "off" { ",bench-no-deadtime-comp" } else { "" })) }}
+    cd oxifoc-f405 && DEFMT_LOG={{ quote(if profiling == "timing" { "warn,oxifoc_f405::control::foc=info" } else if profiling == "hall-timing" { "warn,oxifoc_f405::control::foc=info" } else if profiling == "hall-outliers" { "warn,oxifoc_f405::control::foc=info" } else { "warn" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + (if profiling == "timing" { ",isr-timing" } else if profiling == "hall-phase" { ",bench-hall-phase" } else if profiling == "hall-timing" { ",bench-hall-phase,isr-timing" } else if profiling == "hall-outliers" { ",bench-hall-phase,isr-timing,bench-cycle-outliers" } else { "" }) + (if compensation == "off" { ",bench-no-deadtime-comp" } else { "" })) }}
 
 # Detect one parameter without applying motor parameters, recording every cycle.
 detect-mk5 step capture *ARGS:

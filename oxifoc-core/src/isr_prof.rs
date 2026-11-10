@@ -55,6 +55,8 @@ pub static GATE_CURR: AtomicU32 = AtomicU32::new(0);
 /// ~1 000 cy in ANY drive state while the tracker body is ~200
 /// instructions — find where the other ~700 live).
 pub static OUT_TRK: AtomicU32 = AtomicU32::new(0);
+/// Due-only outer velocity update, including both torque-authority probes.
+pub static VELOCITY_REQUEST: AtomicU32 = AtomicU32::new(0);
 /// `BackEmfObserver::update`: the readiness tail (velocity-slope filter,
 /// cached lag-compensated error, Schmitt latch). Subset of [`EST_OBS`] —
 /// isolates the 2026-07-07 readiness additions (+280 cy A/B against
@@ -82,6 +84,7 @@ pub enum Section {
     PhaseOutput,
     CurrentRead,
     PhaseTracker,
+    VelocityRequest,
     // Keep last: adding a section above this also grows Snapshot's array.
     ObserverTail,
 }
@@ -111,6 +114,7 @@ impl Snapshot {
             &EST_OUT,
             &GATE_CURR,
             &OUT_TRK,
+            &VELOCITY_REQUEST,
             &OBS_TAIL,
         ]
     }
@@ -163,6 +167,7 @@ mod tests {
         assert_eq!(CYCLE_CMD.load(Ordering::Relaxed), 8);
         CYCLE_CMD.store(40, Ordering::Relaxed);
         STEP_CTRL.store(100, Ordering::Relaxed);
+        VELOCITY_REQUEST.store(12, Ordering::Relaxed);
         let first = critical_section::with(Snapshot::take);
         CYCLE_CMD.store(80, Ordering::Relaxed);
         let second = critical_section::with(Snapshot::take);
@@ -171,6 +176,8 @@ mod tests {
         assert_eq!(first.average(Section::Control, samples), 25);
         assert_eq!(second.average(Section::Command, samples), 20);
         assert_eq!(second.average(Section::Control, samples), 0);
+        assert_eq!(first.average(Section::VelocityRequest, samples), 3);
+        assert_eq!(second.average(Section::VelocityRequest, samples), 0);
     }
 }
 

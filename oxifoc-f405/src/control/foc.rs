@@ -315,7 +315,8 @@ pub async fn init(
     // Failsafe: command-staleness deadman + reaction policy from stored config
     // (or board defaults); the OV trip feeds the regen-brake derate.
     foc_driver.set_failsafe(FailsafeConfig::from_stored(config.failsafe.as_ref()));
-    foc_driver.configure_voltage_protection(&BOARD, config.voltage_limits.as_ref())
+    foc_driver
+        .configure_voltage_protection(&BOARD, config.voltage_limits.as_ref())
         .expect("stored voltage limits must fit the board");
 
     // Cruise velocity-loop tuning from stored config (or soft defaults).
@@ -598,6 +599,14 @@ fn ADC() {
             HALL_PHASE.observe(*SEQ, driver.phase(), hall_snapshot);
             #[cfg(feature = "bench-hall-phase")]
             HALL_PHASE.observe_velocity(*SEQ, || driver.velocity_control_snapshot());
+            #[cfg(feature = "bench-hall-phase")]
+            HALL_PHASE.observe_faults(*SEQ, || {
+                use oxifoc_core::foc::phase::PhaseProvider;
+                driver
+                    .phase()
+                    .rotor_velocity()
+                    .map_or(f32::NAN, |v| v.electrical_rad_s())
+            });
             #[cfg(feature = "bench-raw-codec")]
             {
                 codec_bench_stopped =

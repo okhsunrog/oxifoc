@@ -907,3 +907,19 @@ against net boundary travel from +6.51/-6.95/+1.98/+6.64 rad/s to
 4.18/2.44-A dq peaks), without faults; producer losses are 404/392 samples.
 These runs establish neither smooth regulation nor streaming acceptance.
 Artifacts: `motion-*` in the existing `oxifoc-voltage-brake-2026-11-10` directory.
+
+`just build-mk5-raw ergot hall-outliers off` now retains Hall evidence alongside
+section costs, including the due-only velocity update. In `motion-profile-1`,
+the eight longest instrumented ADC bodies were 55.6–58.9 µs: velocity work
+4.35–7.86 µs, estimator work 11.34–12.84 µs, current controller 4.67–4.78 µs.
+Seven of these eight also processed expensive command/gate work or combined
+scheduled work with braking. Detailed profiling adds overhead and lost 26,393
+producer samples; it is not representative streaming acceptance.
+
+Bench Hall images also retain 16 fault-generation/category/speed snapshots,
+exported by `dump-hall-mk5`. A stopped-only temporary thermal-derating test
+verified both Warning/Derating and its subsequent clear, with exact config
+restoration. This closes the evidence gap where the host saw a changed registry
+generation but no remaining active fault. The older `motion-forward120-2` run
+had that gap (generation 2, startup feedback 190 rad/s versus a 180-rad/s
+rolloff); speed derating is inferred there, not a captured fault-category fact.

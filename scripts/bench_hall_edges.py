@@ -20,7 +20,8 @@ OPTIONAL_SIZES = {"BENCH_HALL_STREAM_LOSSES": 16,
                   "BENCH_HALL_PHASE_EVENTS": 64 * 14 * 4,
                   "BENCH_HALL_PHASE_COUNT": 4,
                   "BENCH_VELOCITY_SAMPLES": 128 * 8 * 4,
-                  "BENCH_VELOCITY_COUNT": 4}
+                  "BENCH_VELOCITY_COUNT": 4,
+                  "BENCH_FAULT_EVENTS": 16 * 4 * 4, "BENCH_FAULT_COUNT": 4}
 
 
 def decode(data, count):
@@ -149,6 +150,19 @@ def main():
             names += ('granted_id_a',)
         velocity_samples = [dict(zip(names, (v if math.isfinite(v) else None for v in row)))
                             for row in struct.iter_unpack(f'<I{words - 1}f', values[:count * words * 4])]
+    fault_events = None
+    if 'BENCH_FAULT_EVENTS' in symbols:
+        count = scalar('BENCH_FAULT_COUNT', '.fault-count.bin')
+        if count > 16:
+            raise RuntimeError('invalid fault-event prefix')
+        values = read('BENCH_FAULT_EVENTS', '.fault-events.bin')
+        categories = ('None', 'OverCurrent', 'OverVoltage', 'UnderVoltage', 'OverTemp',
+                      'DriverFault', 'HallError', 'Stall', 'CalibrationFault',
+                      'CommTimeout', 'Derating')
+        fault_events = [dict(adc_sequence=seq, generation=gen, mask=mask,
+                             categories=[name for bit, name in enumerate(categories) if mask & (1 << bit)],
+                             rotor_velocity=velocity if math.isfinite(velocity) else None)
+                        for seq, gen, mask, velocity in struct.iter_unpack('<3If', values[:count * 16])]
     result = dict(
         schema='bench-hall-edges', version=1, elf=str(elf),
         elf_sha256=elf_sha256,
@@ -162,6 +176,7 @@ def main():
         stream_losses=stream_losses,
         phase_events=phase_events,
         velocity_samples=velocity_samples,
+        fault_events=fault_events,
         limits='First published prefix only. Overcapture means unknown hardware edge loss; '
                'dropped counts buffer overflow. Residual coast can append during read.',
         edges=edges)

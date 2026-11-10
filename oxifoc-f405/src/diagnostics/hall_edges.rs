@@ -33,11 +33,22 @@ pub static BENCH_VELOCITY_SAMPLES: [[AtomicU32; 8]; 128] =
 #[unsafe(no_mangle)]
 pub static BENCH_VELOCITY_COUNT: AtomicU32 = AtomicU32::new(0);
 
+// Finite registry changes survive a warning that clears before the host polls.
+// Fields: ADC sequence, generation, active category bitmask, rotor speed bits.
+#[cfg(feature = "bench-hall-phase")]
+#[unsafe(no_mangle)]
+pub static BENCH_FAULT_EVENTS: [[AtomicU32; 4]; 16] =
+    [const { [const { AtomicU32::new(0) }; 4] }; 16];
+#[cfg(feature = "bench-hall-phase")]
+#[unsafe(no_mangle)]
+pub static BENCH_FAULT_COUNT: AtomicU32 = AtomicU32::new(0);
+
 #[cfg(feature = "bench-hall-phase")]
 pub struct PhaseRecorder {
     previous_health: Option<oxifoc_core::foc::phase::HallHealth>,
     previous_angle: f32,
     last_velocity_sequence: u32,
+    fault_generation: u32,
 }
 
 #[cfg(feature = "bench-hall-phase")]
@@ -47,7 +58,35 @@ impl PhaseRecorder {
             previous_health: None,
             previous_angle: 0.0,
             last_velocity_sequence: 0,
+            fault_generation: 0,
         }
+    }
+
+    pub fn observe_faults(&mut self, sequence: u32, speed: impl FnOnce() -> f32) {
+        use oxifoc_core::foc::fault::PlatformFault;
+        let registry = &crate::FAULT_REGISTRY;
+        let generation = registry.generation();
+        if generation == self.fault_generation {
+            return;
+        }
+        self.fault_generation = generation;
+        let index = BENCH_FAULT_COUNT.load(Ordering::Relaxed) as usize;
+        let Some(slot) = BENCH_FAULT_EVENTS.get(index) else {
+            return;
+        };
+        // ADC owns execution here; no lower-priority registry writer can
+        // intervene. No strings, allocation or transport in the snapshot.
+        let mask = registry
+            .snapshot()
+            .iter()
+            .fold(0_u32, |mask, fault| mask | (1 << fault.category() as u32));
+        for (word, value) in slot
+            .iter()
+            .zip([sequence, generation, mask, speed().to_bits()])
+        {
+            word.store(value, Ordering::Relaxed);
+        }
+        BENCH_FAULT_COUNT.store(index as u32 + 1, Ordering::Release);
     }
 
     /// Native ADC sequence spacing gives ~40 Hz at the nominal 20 kHz loop.
