@@ -42,8 +42,10 @@ impl SinCos for LibmSinCos {
 
 /// Fast sin/cos using a degree-7 odd minimax polynomial.
 ///
-/// Max error 7.2e-7 (f32 evaluation over the whole circle), ~16-20 cycles
-/// per call on Cortex-M4F. Zero memory footprint (no lookup tables).
+/// Absolute error below 2e-6 over [-2π, 4π], including f32 range reduction.
+/// Sine and cosine share the reduction; larger angles use the cold fallback.
+/// No lookup tables are needed. Whole-call timing includes range reduction
+/// and depends on the linked code, beyond the polynomial's arithmetic cost.
 ///
 /// The coefficients are a minimax (Lawson/IRLS) fit over [0, π/2]. The
 /// previous set was essentially the Taylor series under a "minimax" label:
@@ -61,7 +63,7 @@ pub struct FastSinCos;
 ///
 /// Coefficients minimize the maximum absolute error over [0, π/2]
 /// (7.2e-7 in f32 evaluation).
-/// Cost: 4 multiplies + 3 adds in Horner form (~16-20 cycles on M4F).
+/// Cost: 5 multiplies + 3 adds, excluding range reduction and call overhead.
 #[inline(always)]
 fn sin_poly(x: f32) -> f32 {
     // Degree-7 minimax coefficients for sin(x) on [0, π/2]

@@ -35,8 +35,14 @@ fn generate_ntc_tables(out_dir: &str) {
     use temperature_config::{ADC_MAX_COUNTS, NTC_BOARD, NTC_MOTOR};
     println!("cargo:rerun-if-changed=src/sensors/temperature_config.rs");
     let mut tables = String::new();
+    writeln!(tables, "const NTC_ADC_MAX_COUNTS: u16 = {ADC_MAX_COUNTS};").unwrap();
     for (name, config) in [("BOARD_NTC", NTC_BOARD), ("MOTOR_NTC", NTC_MOTOR)] {
-        writeln!(tables, "static {name}: [i16; 4096] = [").unwrap();
+        writeln!(
+            tables,
+            "static {name}: [i16; {}] = [",
+            usize::from(ADC_MAX_COUNTS) + 1
+        )
+        .unwrap();
         for raw in 0..=ADC_MAX_COUNTS {
             write!(
                 tables,

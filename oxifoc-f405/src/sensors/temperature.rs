@@ -7,7 +7,7 @@ use oxifoc_core::foc::config::NtcConfig;
 
 include!(concat!(env!("OUT_DIR"), "/ntc_tables.rs"));
 
-const _: () = assert!(crate::config::BOARD.calib.adc_max_counts == 4095);
+const _: () = assert!(crate::config::BOARD.calib.adc_max_counts == NTC_ADC_MAX_COUNTS);
 
 #[inline]
 pub fn board_c_x10(raw: u16) -> i16 {
@@ -43,7 +43,10 @@ pub fn verify_on_target() {
     }
     defmt::assert_eq!(board_c_x10(u16::MAX), NtcConfig::INVALID_TEMP_C_X10);
     defmt::assert_eq!(motor_c_x10(u16::MAX), NtcConfig::INVALID_TEMP_C_X10);
-    NTC_CHECK_COUNT.store(8194, core::sync::atomic::Ordering::Release);
+    NTC_CHECK_COUNT.store(
+        2 * (u32::from(ADC_MAX_COUNTS) + 1) + 2,
+        core::sync::atomic::Ordering::Release,
+    );
 }
 
 #[cfg(feature = "bench-ntc-check")]
