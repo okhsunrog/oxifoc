@@ -1,4 +1,4 @@
-//! C5 bridge: framed SPI upstream, USB Serial/JTAG and optional BLE downstream.
+//! C5 bridge: root router with SPI, USB Serial/JTAG and optional BLE segments.
 use ergot::{
     NetStack,
     exports::bbqueue::traits::coordination::cas::AtomicCoord,
@@ -42,3 +42,14 @@ pub static USB_OUTQ: UsbQueue = kit::Queue::new();
 pub static BLE_OUTQ: BleQueue = kit::Queue::new();
 pub static STATE_NOTIFY: ergot::exports::maitake_sync::WaitQueue =
     ergot::exports::maitake_sync::WaitQueue::new();
+
+/// C5 owns all directly attached segments. No upstream seed leases are needed.
+#[embassy_executor::task]
+pub async fn root_services(stack: &'static Stack) {
+    embassy_futures::join::join3(
+        stack.services().seed_router_request_handler::<2>(),
+        stack.services().ping_handler::<2>(),
+        stack.services().socket_query_handler::<2>(),
+    )
+    .await;
+}

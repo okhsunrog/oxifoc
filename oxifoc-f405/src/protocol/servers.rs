@@ -193,31 +193,67 @@ pub async fn protocol_servers(stack: &'static Stack) {
     .await;
 }
 
-/// Ergot well-known services for downstream bridges and host discovery.
-///
-/// The seed-router handler answers net-id assignment/refresh/release requests
-/// (the BLE bridge leases a net for its radio segment here — without it a
-/// bridge's pending downstream never gets a routable net). The ping handler
-/// is the bridge's upstream-discovery bootstrap: the bridge pings the root
-/// link-local, and the *reply* is the first frame addressed to the bridge,
-/// which is what its edge processor learns the upstream net_id from. The
-/// socket-query handler answers the host's connect-time address resolution
-/// (SocketQuery by endpoint key) so a host behind a bridge can find this
-/// controller instead of assuming its peer is the controller.
+/// Discovery and liveness are needed by both standalone routers and SPI leaves.
 #[embassy_executor::task]
-pub async fn seed_router_task(stack: &'static Stack) {
-    embassy_futures::join::join3(
-        stack.services().seed_router_request_handler::<2>(),
+pub async fn network_services_task(stack: &'static Stack) {
+    let discovery = embassy_futures::join::join(
         stack.services().ping_handler::<2>(),
         stack.services().socket_query_handler::<2>(),
+    );
+    #[cfg(not(feature = "transport-spi"))]
+    embassy_futures::join::join(
+        discovery,
+        stack.services().seed_router_request_handler::<2>(),
     )
     .await;
+    #[cfg(feature = "transport-spi")]
+    embassy_futures::join::join(discovery, edge_liveness(stack)).await;
+}
+
+/// Bootstrap our address from the root's reply, and exercise the link even
+/// without telemetry. Valid SPI slots alone are not application liveness.
+#[cfg(feature = "transport-spi")]
+async fn edge_liveness(stack: &'static Stack) {
+    use embassy_time::{Duration, Timer, with_timeout};
+    use ergot::{Address, well_known::ErgotPingEndpoint};
+    let mut seq = 0u32;
+    loop {
+        use ergot::interface_manager::{InterfaceState, Profile};
+        // Down/Inactive cannot send. Re-enter link-local discovery without
+        // declaring a confirmed connection to the motor's link gate.
+        stack.manage_profile(|p| {
+            if matches!(
+                p.interface_state(()),
+                Some(InterfaceState::Down | InterfaceState::Inactive)
+            ) {
+                let _ = p.set_interface_state((), InterfaceState::edge_link_local());
+            }
+        });
+        seq = seq.wrapping_add(1);
+        let _ = with_timeout(
+            Duration::from_millis(750),
+            stack.endpoints().request::<ErgotPingEndpoint>(
+                Address {
+                    network_id: 0,
+                    node_id: ergot::interface_manager::profiles::direct_edge::CENTRAL_NODE_ID,
+                    port_id: 0,
+                },
+                &seq,
+                None,
+            ),
+        )
+        .await;
+        Timer::after_millis(500).await;
+    }
 }
 
 /// State monitor — watches interface state transitions and reacts to disconnect.
 /// Stops motor and disables telemetry when ALL interfaces go down.
 #[embassy_executor::task]
-pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) {
+pub async fn state_monitor(
+    stack: &'static Stack,
+    idents: heapless::Vec<crate::transport::InterfaceIdent, 3>,
+) {
     use crate::transport::STATE_NOTIFY;
     use ergot::interface_manager::{InterfaceState, Profile};
     use oxifoc_core::runtime::streaming::set_fast_telemetry_period;
@@ -230,13 +266,11 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
                 .wait_for_value(|| {
                     let any_active = idents.iter().any(|&id| {
                         stack.manage_profile(|im| {
-                            matches!(
-                                im.interface_state(id),
-                                Some(
-                                    InterfaceState::Active { .. }
-                                        | InterfaceState::ActiveLocal { .. }
-                                )
-                            )
+                            let state = im.interface_state(id);
+                            #[cfg(feature = "transport-spi")]
+                            { matches!(state, Some(InterfaceState::Active { net_id, .. }) if net_id != 0) }
+                            #[cfg(not(feature = "transport-spi"))]
+                            { matches!(state, Some(InterfaceState::Active { .. } | InterfaceState::ActiveLocal { .. })) }
                         })
                     });
                     (any_active != any_was_active).then_some(any_active)
@@ -430,7 +464,7 @@ pub async fn fault_topic_task(stack: &'static Stack) {
 pub fn spawn_servers(
     spawner: &Spawner,
     stack: &'static Stack,
-    idents: &heapless::Vec<u8, 3>,
+    idents: &heapless::Vec<crate::transport::InterfaceIdent, 3>,
     defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
 ) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
@@ -459,7 +493,7 @@ pub fn spawn_servers(
     spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
     spawner.spawn(defmt::unwrap!(detect_server(stack)));
-    spawner.spawn(defmt::unwrap!(seed_router_task(stack)));
+    spawner.spawn(defmt::unwrap!(network_services_task(stack)));
     spawner.spawn(defmt::unwrap!(defmt_forwarder(defmt_consumer, stack)));
 }
 

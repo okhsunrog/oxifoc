@@ -1,12 +1,11 @@
-//! MK5 Ergot/SPI transport and explicitly enabled diagnostic USB/RTT interfaces.
-//! The SPI-only router uses the SPI sink directly, with one interface slot.
+//! MK5 SPI DirectEdge and standalone diagnostic USB/RTT router profiles.
 //! defmt diagnostics retain a separate RTT channel (read via probe-rs).
 
+#[cfg(feature = "transport-usb")]
+use embassy_stm32::Peri;
 use embassy_stm32::rng;
 #[cfg(feature = "transport-usb")]
 use embassy_stm32::usb;
-#[cfg(feature = "transport-usb")]
-use embassy_stm32::Peri;
 use embassy_stm32::{bind_interrupts, peripherals};
 use ergot::NetStack;
 use ergot::exports::bbqueue::traits::coordination::cas::AtomicCoord;
@@ -17,6 +16,9 @@ use ergot::interface_manager::LivenessConfig;
 use ergot::interface_manager::interface_impls::embassy_usb::EmbassyInterface;
 #[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
 use ergot::interface_manager::interface_impls::embedded_io::IoInterface;
+#[cfg(feature = "transport-spi")]
+use ergot::interface_manager::profiles::direct_edge::DirectEdge;
+#[cfg(not(feature = "transport-spi"))]
 use ergot::interface_manager::profiles::router::Router;
 #[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
 use ergot::interface_manager::profiles::router::RouterFrameProcessor;
@@ -65,6 +67,14 @@ compile_error!("raw telemetry benchmarks use Ergot USB control, not transport-rt
 ))]
 pub mod raw_fast;
 
+// A leaf has exactly one upstream. USB/RTT remain standalone diagnostic
+// builds, rather than accidentally introducing a second root on the SPI link.
+#[cfg(all(
+    feature = "transport-spi",
+    any(feature = "transport-usb", feature = "transport-rtt")
+))]
+compile_error!("SPI DirectEdge cannot be combined with diagnostic USB/RTT routing");
+
 // ========== Multi-Interface Definition ==========
 #[cfg(feature = "transport-usb")]
 type UsbQ = &'static UsbQueue;
@@ -97,18 +107,23 @@ ergot::multi_interface! {
     }
 }
 // No tagged multi-interface dispatch or dormant RTT interface in SPI-only
-// firmware. The router's sink type is the SPI framed queue itself.
+// firmware. The leaf's sink is the SPI framed queue itself.
 #[cfg(not(any(feature = "transport-usb", feature = "transport-rtt")))]
 pub type McInterface = SpiInterface;
 
 // ========== Type Aliases ==========
 
 pub type Rng = rng::Rng<'static, peripherals::RNG>;
-/// One SPI slot plus explicitly enabled diagnostic transports; eight seed routes.
+/// Standalone diagnostic router capacity. Production SPI is a single leaf.
+#[cfg(not(feature = "transport-spi"))]
 const INTERFACES: usize =
     1 + cfg!(feature = "transport-usb") as usize + cfg!(feature = "transport-rtt") as usize;
-pub type McRouter = Router<McInterface, Rng, INTERFACES, 8>;
-pub type Stack = NetStack<stack_mutex::StackRawMutex, McRouter>;
+#[cfg(not(feature = "transport-spi"))]
+pub type McProfile = Router<McInterface, Rng, INTERFACES, 8>;
+#[cfg(feature = "transport-spi")]
+pub type McProfile = DirectEdge<McInterface>;
+pub type InterfaceIdent = <McProfile as ergot::interface_manager::Profile>::InterfaceIdent;
+pub type Stack = NetStack<stack_mutex::StackRawMutex, McProfile>;
 
 #[cfg(feature = "transport-usb")]
 pub type UsbQueue = usb_kit::Queue<USB_OUT_QUEUE_SIZE, AtomicCoord>;
@@ -134,7 +149,7 @@ pub type RttRxWorker = ergot::interface_manager::transports::eio::RxWorker<
 
 // ========== Static Storage ==========
 
-/// Stack cell — initialized at runtime because Router needs RNG
+/// Static ownership for the selected network profile.
 static STACK_CELL: StaticCell<Stack> = StaticCell::new();
 
 /// Output queues (one per interface)
@@ -268,12 +283,22 @@ pub fn init_rtt(
     )
 }
 
-/// Initialize the ergot Router stack with hardware RNG.
+/// Initialize a SPI leaf, or a standalone diagnostic router.
 /// Returns a static reference for use by all tasks.
 pub fn init_stack(hw_rng: Rng) -> &'static Stack {
     #[cfg(feature = "bench-netstack-trace")]
     stack_mutex::self_test();
-    let router = McRouter::new(hw_rng);
+    #[cfg(not(feature = "transport-spi"))]
+    let router = McProfile::new(hw_rng);
+    #[cfg(feature = "transport-spi")]
+    let router = {
+        // RNG is only needed to choose this boot's SPI epoch, before init_stack.
+        drop(hw_rng);
+        McProfile::new_target(framed_stream::Sink::new(
+            SPI_OUTQ.framed_producer(),
+            crate::config::MAX_PACKET_SIZE as u16,
+        ))
+    };
     let stack = NetStack::new_with_profile(router);
     STACK_CELL.init(stack)
 }

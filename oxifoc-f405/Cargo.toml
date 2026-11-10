@@ -45,7 +45,7 @@ bench-spi-cs-request = ["bench-bridge-spi"]
 # CPU-only FOC state in 64-KiB CCM. DMA buffers and the stack remain in SRAM.
 ccm = []
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
-transport-usb = ["dep:embassy-usb", "ergot/embassy-usb-v0_6"]
+transport-usb = ["dep:embassy-usb", "ergot/embassy-usb-v0_6", "ergot/nostd-seed-router"]
 transport-spi = ["oxifoc-core/spi-link"]
 # Cooperative task classes: USB workers 3, protocol 2, telemetry/detection 1,
 # remaining tasks 0. Complements the default USB interrupt executor.
@@ -64,7 +64,7 @@ bench-observer-logging = ["oxifoc-core/observer-logging"]
 bench-raw-codec = ["transport-usb", "isr-timing", "bench-clock-reference"]
 # ergot over RTT channel 1 (defmt shares ch0). Diagnostic transport — high-rate
 # telemetry over the debug probe; adds a diagnostic interface alongside USB.
-transport-rtt = ["ergot/rtt"]
+transport-rtt = ["ergot/rtt", "ergot/nostd-seed-router"]
 # Bench CPU/transport qualification: calculate active FOC but never enable
 # phase outputs. Default-off; do not use for motor measurements.
 bench-no-phase-outputs = []
@@ -147,7 +147,6 @@ postcard = { version = "1.1", features = ["use-defmt"] }
 oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy", "embassy-hal", "delivery", "hfi", "hfi-detect", "isr-speed"] }
 ergot = { git = "https://github.com/okhsunrog/ergot", rev = "3c502f49814ac2ae25385b21fdbc9b964f86d877", default-features = false, features = [
     "embedded-io-async-v0_7",
-    "nostd-seed-router",
     "embassy-time",
     "disable-cache-padding",
     "defmt-sink-rtt",

@@ -1,6 +1,4 @@
 //! A single task owns SPI1 and both DMA directions; FOC never touches the bus.
-#[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
-use super::McSink;
 use super::{SPI_OUTQ, STATE_NOTIFY, Stack};
 use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_stm32::{
@@ -15,7 +13,7 @@ use embassy_stm32::{
 };
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use ergot::interface_manager::{
-    FrameProcessor, Profile, profiles::router::RouterFrameProcessor, utils::framed_stream,
+    FrameProcessor, InterfaceState, Profile, profiles::direct_edge::EdgeFrameProcessor,
 };
 use oxifoc_core::spi_link::{Builder, SLOT_BYTES, parse};
 
@@ -52,22 +50,8 @@ pub static SPI_LINK_SLOTS: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub static SPI_LINK_ERRORS: AtomicU32 = AtomicU32::new(0);
 
-pub fn init(
-    spawner: embassy_executor::Spawner,
-    stack: &'static Stack,
-    r: Resources,
-    epoch: u32,
-) -> u8 {
-    let sink = framed_stream::Sink::new(
-        SPI_OUTQ.framed_producer(),
-        crate::config::MAX_PACKET_SIZE as u16,
-    );
-    #[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
-    let sink = McSink::Spi(sink);
-    let ident = defmt::unwrap!(stack.manage_profile(|p| p.register_interface(sink)));
-    let net = defmt::unwrap!(stack.manage_profile(|p| p.net_id_of(ident)));
-    spawner.spawn(defmt::unwrap!(pump(stack, r, ident, net, epoch)));
-    ident
+pub fn init(spawner: embassy_executor::Spawner, stack: &'static Stack, r: Resources, epoch: u32) {
+    spawner.spawn(defmt::unwrap!(pump(stack, r, epoch)));
 }
 
 fn checksum(crc: &mut Crc<'_>, bytes: &[u8]) -> u32 {
@@ -79,7 +63,7 @@ fn checksum(crc: &mut Crc<'_>, bytes: &[u8]) -> u32 {
 }
 
 #[embassy_executor::task]
-async fn pump(stack: &'static Stack, r: Resources, ident: u8, net: u16, epoch: u32) {
+async fn pump(stack: &'static Stack, r: Resources, epoch: u32) {
     use embassy_stm32::interrupt::{InterruptExt, Priority};
     embassy_stm32::interrupt::DMA2_STREAM0.set_priority(Priority::P6);
     embassy_stm32::interrupt::DMA2_STREAM3.set_priority(Priority::P6);
@@ -93,7 +77,7 @@ async fn pump(stack: &'static Stack, r: Resources, ident: u8, net: u16, epoch: u
     let mut tx = [0; SLOT_BYTES];
     let mut rx = [0; SLOT_BYTES];
     let consumer = SPI_OUTQ.framed_consumer();
-    let mut processor = RouterFrameProcessor::new(net);
+    let mut processor = EdgeFrameProcessor::new();
     let mut seq = 0;
     let mut peer_epoch = None;
     let mut last_rx = Instant::now();
@@ -110,11 +94,9 @@ async fn pump(stack: &'static Stack, r: Resources, ident: u8, net: u16, epoch: u
             .await;
         }
         if last_rx.elapsed() > Duration::from_secs(2) {
-            let _ = stack.manage_profile(|p| {
-                p.set_interface_state(ident, ergot::interface_manager::InterfaceState::Inactive)
-            });
+            let _ = stack.manage_profile(|p| p.set_interface_state((), InterfaceState::Inactive));
             STATE_NOTIFY.wake_all();
-            <RouterFrameProcessor as FrameProcessor<&'static Stack>>::reset(&mut processor);
+            <EdgeFrameProcessor as FrameProcessor<&'static Stack>>::reset(&mut processor);
             last_rx = Instant::now();
         }
         if consumer.read().is_err() && ready.is_low() {
@@ -166,11 +148,17 @@ async fn pump(stack: &'static Stack, r: Resources, ident: u8, net: u16, epoch: u
             Ok(slot) => {
                 last_rx = Instant::now();
                 if peer_epoch != Some(slot.epoch) {
-                    <RouterFrameProcessor as FrameProcessor<&'static Stack>>::reset(&mut processor);
+                    // A new root boot may assign a different segment. Do not
+                    // carry the previous root's sticky address into this epoch.
+                    processor = EdgeFrameProcessor::new();
+                    let _ = stack.manage_profile(|p| {
+                        p.set_interface_state((), InterfaceState::edge_link_local())
+                    });
+                    STATE_NOTIFY.wake_all();
                     peer_epoch = Some(slot.epoch);
                 }
                 for frame in slot.frames() {
-                    if processor.process_frame(frame, &stack, ident) {
+                    if processor.process_frame(frame, &stack, ()) {
                         STATE_NOTIFY.wake_all();
                     }
                 }

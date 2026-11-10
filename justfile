@@ -45,11 +45,10 @@ bench-mk5-bridge-spi output c5_project="/home/okhsunrog/code/rust/c5-hello-world
 bench-usb-serial-jtag port fps="625" bytes="832" seconds="30":
     cargo run --release --locked -p oxifoc-host-lib --features transport-bench --example usb_serial_jtag_bench -- {{quote(port)}} {{fps}} {{bytes}} {{seconds}}
 
-build-mk5-spi usb="off":
-    @test {{quote(usb)}} = on -o {{quote(usb)}} = off
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features + ",bench-calibrated-clock" + if usb == "on" { ",transport-usb" } else { "" })}} --bin oxifoc-f405
+build-mk5-spi:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features + ",bench-calibrated-clock")}} --bin oxifoc-f405
 
-flash-mk5-spi usb="off": (build-mk5-spi usb)
+flash-mk5-spi: build-mk5-spi
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
     probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
 

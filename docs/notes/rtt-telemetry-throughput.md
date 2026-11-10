@@ -337,3 +337,33 @@ Artifacts, including failures, exact trace ELFs/symbols, Parquet, plots and JSON
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-c5-spi-2026-11-10/`.
 Repeat with `just test-bridge CAPTURE MANEUVER` and, after flashing its matching
 trace image, `just profile-link-mk5 bridge OUTPUT MANEUVER`.
+
+
+### STM32 leaf / C5 root qualification (2026-11-10)
+
+STM32 now uses `DirectEdge`; C5 assigns its SPI/USB/BLE segments as the root.
+The same normal MK5 build settings reduced STM32 flash from 427,700 to
+379,408 bytes (48,292 saved), and `.data + .bss + .uninit` from 65,412 to
+64,004 bytes (1,408 saved). These exclude ELF debug sections and stack usage.
+
+Four complete normal-firmware current/velocity captures at 20 kHz delivered
+726,689 Packed28 records, with 140/140 commands Applied, no faults, no sample
+or block loss, and matching END totals. Three resets of each MCU reconnected
+in 0.284–0.691 s. A deliberately delayed SPI startup (3 s) also
+reconnected after a host retry. The first current capture did fail at block 945/946; afterward
+C5 reported one SPI CRC error and zero USB admission errors. That failed
+capture is retained and is not evidence of lossless transport. The later
+successful repeats do not resolve the cause of that isolated CRC failure.
+
+Instrumented moving windows still showed roughly 85–86% ADC/FOC CPU;
+no significant CPU improvement is established. Some later maneuvers, including the full profiling runs,
+aborted on host command schedule deadlines during concurrent host load;
+these are failed qualifications, not successful repeats. The final normal
+image still completed a lossless 83,532-record stream with END after its
+5-ms host schedule guard aborted a late current step; C5 CRC/admission
+counters remained zero. Control pulsations
+remain visible in the normal captures; moving routing does not fix them.
+BLE was build-checked, not exercised over radio.
+
+Evidence: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-edge-2026-11-10/`
+(`sizes.json`, `captures.json`, `resets.json`, trace manifests and Parquet).

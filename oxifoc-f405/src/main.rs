@@ -132,7 +132,7 @@ async fn main(spawner: Spawner) {
         interrupt::TIM2.set_priority(Priority::P6); // embassy time driver
     }
 
-    // ========== STEP 2: Initialize RNG + Ergot Router Stack ==========
+    // ========== STEP 2: Initialize boot epoch + Ergot profile ==========
     // Stack first (no defmt), then the RTT/defmt sink so an ergot-over-RTT
     // interface (transport-rtt) can register on it in one rtt_init!.
     let mut rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
@@ -197,7 +197,7 @@ async fn main(spawner: Spawner) {
         *protocol::USB_IDENT.get().await
     };
     #[cfg(feature = "transport-spi")]
-    let spi_ident = transport::spi::init(
+    transport::spi::init(
         spawner,
         stack,
         transport::spi::Resources {
@@ -216,9 +216,9 @@ async fn main(spawner: Spawner) {
     );
 
     // Collect the idents of every registered interface for the state monitor.
-    let mut idents: heapless::Vec<u8, 3> = heapless::Vec::new();
+    let mut idents: heapless::Vec<transport::InterfaceIdent, 3> = heapless::Vec::new();
     #[cfg(feature = "transport-spi")]
-    let _ = idents.push(spi_ident);
+    let _ = idents.push(());
     #[cfg(feature = "transport-rtt")]
     let _ = idents.push(rtt_ident);
     #[cfg(feature = "transport-usb")]

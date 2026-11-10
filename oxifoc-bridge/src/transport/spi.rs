@@ -4,8 +4,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_futures::select::select;
 use embassy_time::Timer;
 use ergot::interface_manager::{
-    FrameProcessor, InterfaceState, Profile,
-    profiles::{direct_edge::EdgeFrameProcessor, router::UPSTREAM_IDENT},
+    FrameProcessor, InterfaceState, Profile, profiles::router::RouterFrameProcessor,
 };
 use esp_hal::{
     dma::{DmaRxBuf, DmaTxBuf},
@@ -37,13 +36,12 @@ pub static SPI_RX_CRC_ERRORS: AtomicU32 = AtomicU32::new(0);
 pub static SPI_RX_HEADER_ERRORS: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub static SPI_LAST_RX_LEN: AtomicU32 = AtomicU32::new(0);
-pub static PEER_GENERATION: AtomicU32 = AtomicU32::new(0);
 fn checksum(bytes: &[u8]) -> u32 {
     !esp_hal::rom::crc::crc32_be(0, bytes)
 }
 
 #[embassy_executor::task]
-pub async fn pump(stack: &'static Stack, r: Resources, epoch: u32) {
+pub async fn pump(stack: &'static Stack, ident: u8, r: Resources, epoch: u32) {
     defmt::assert_eq!(checksum(b"123456789"), 0x0376_e6e7);
     let mut ready = Output::new(r.ready, Level::Low, OutputConfig::default());
     let mut cs = Input::new(r.cs, InputConfig::default());
@@ -70,18 +68,18 @@ pub async fn pump(stack: &'static Stack, r: Resources, epoch: u32) {
         }
         builder.finish(checksum);
     };
-    let mut processor = EdgeFrameProcessor::new();
+    #[cfg(feature = "bench-delayed-upstream")]
+    Timer::after_secs(3).await;
+    let net = defmt::unwrap!(stack.manage_profile(|p| p.net_id_of(ident)));
+    let mut processor = RouterFrameProcessor::new(net);
     let mut pending = false;
     let mut seq = 0u32;
     let mut peer_epoch = None;
-    let _ = stack.manage_profile(|p| {
-        p.set_interface_state(UPSTREAM_IDENT, InterfaceState::edge_link_local())
-    });
     loop {
         // Idle processing can generate replies. Do it before waiting for work,
         // otherwise a request which needs a reply could deadlock the transport.
         if pending && cs.is_high() && consumer.read().is_err() {
-            process_slot(stack, &mut processor, &mut peer_epoch, &mut spare_rx);
+            process_slot(stack, ident, &mut processor, &mut peer_epoch, &mut spare_rx);
             pending = false;
         }
         // Dropping a read grant keeps it queued. The losing wait is cancel-safe;
@@ -98,7 +96,7 @@ pub async fn pump(stack: &'static Stack, r: Resources, epoch: u32) {
         // Independent buffers allow routing the previous slot while this DMA
         // runs. Do not touch buffers owned by the transfer.
         if pending {
-            process_slot(stack, &mut processor, &mut peer_epoch, &mut spare_rx);
+            process_slot(stack, ident, &mut processor, &mut peer_epoch, &mut spare_rx);
         }
         // Never cancel/drop an armed slave transfer: the master may reboot.
         while !transfer.is_done() {
@@ -134,7 +132,8 @@ pub async fn pump(stack: &'static Stack, r: Resources, epoch: u32) {
 
 fn process_slot(
     stack: &'static Stack,
-    processor: &mut EdgeFrameProcessor,
+    ident: u8,
+    processor: &mut RouterFrameProcessor,
     peer_epoch: &mut Option<u32>,
     rx: &mut DmaRxBuf,
 ) {
@@ -147,16 +146,14 @@ fn process_slot(
     match parse(&mut rx.as_mut_slice()[..SLOT_BYTES], checksum) {
         Ok(slot) => {
             if *peer_epoch != Some(slot.epoch) {
-                <EdgeFrameProcessor as FrameProcessor<&'static Stack>>::reset(processor);
+                <RouterFrameProcessor as FrameProcessor<&'static Stack>>::reset(processor);
                 *peer_epoch = Some(slot.epoch);
-                PEER_GENERATION.fetch_add(1, Ordering::Release);
-                let _ = stack.manage_profile(|p| {
-                    p.set_interface_state(UPSTREAM_IDENT, InterfaceState::edge_link_local())
-                });
+                let _ = stack
+                    .manage_profile(|p| p.set_interface_state(ident, InterfaceState::Inactive));
                 STATE_NOTIFY.wake_all();
             }
             for frame in slot.frames() {
-                if processor.process_frame(frame, &stack, UPSTREAM_IDENT) {
+                if processor.process_frame(frame, &stack, ident) {
                     STATE_NOTIFY.wake_all();
                 }
             }

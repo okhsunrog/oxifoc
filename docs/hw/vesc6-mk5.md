@@ -134,19 +134,25 @@ lost. C5 only arms a new transaction for queued TX or asserted CS; STM32 waits
 on its queue/EXTI rather than clocking empty probes. The double RX/TX buffer
 pairs permit routing the previous slot while another transfer is armed, but
 idle RX processing must run before sleeping because it can generate replies.
-Peer epochs reset upstream discovery and downstream seed leases after reboot.
+STM32 is an Ergot `DirectEdge`; C5 is the root `Router`, with independently
+assigned SPI, USB and optional BLE segments. SPI hardware roles stay STM32
+master / C5 slave. STM32 periodically pings its link-local root to bootstrap
+its address; a nonzero discovered network is required by its link gate.
+A changed C5 epoch discards the old edge address. No downstream seed leases
+are required on C5; root seed/ping/discovery services live there.
 
 `just bench-bridge-handshake PORT SECONDS HZ` checks 20-Hz acknowledged Stop
 commands simultaneously with 0/5000/20000-Hz legacy Ergot streaming. It never
 energizes the motor. The 150-ms stream-enable interval is reported separately
 from steady-state gaps, using the device's acknowledged decimation factor.
 
-`just build-mk5-spi` / `just flash-mk5-spi` default to STM32 USB disabled;
-pass `on` explicitly for USB diagnostics. High-level embassy-usb, its Ergot
+`just build-mk5-spi` / `just flash-mk5-spi` exclude STM32 USB.
+Use `just build-mk5-link-bench usb` for a standalone USB diagnostic image;
+SPI DirectEdge and diagnostic USB/RTT routing cannot be combined. High-level embassy-usb, its Ergot
 adapter, USB task/executor/queues and RX storage are excluded in the SPI build.
 The C5 bridge keeps GPIO26 low for the Waveshare onboard antenna.
 
-With STM32 USB off, the stopped-motor qualification received 600,216 samples
+Before the DirectEdge migration, the stopped-motor qualification received 600,216 samples
 at 20,004 Hz over 30 s with no sequence gaps and 600/600 concurrent Stop ACKs
 (maximum 8.454 ms). The 5-kHz and disabled-stream checks each passed 200/200
 commands; 5 kHz received 50,016 samples without gaps. These use legacy Ergot

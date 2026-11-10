@@ -28,16 +28,19 @@ async fn main(spawner: Spawner) -> ! {
     esp_rtos::start(timer.timer0, p.FROM_CPU_INTR0);
     let rng = esp_hal::rng::Rng::new();
     let epoch = rng.random();
-    let upstream = BridgeSink::Spi(framed_stream::Sink::new(
+    let spi_sink = BridgeSink::Spi(framed_stream::Sink::new(
         transport::SPI_OUTQ.framed_producer(),
         MTU,
     ));
-    let router = ergot::interface_manager::profiles::router::Router::new_bridge(rng, upstream);
+    let router = ergot::interface_manager::profiles::router::Router::new(rng);
     static STACK: static_cell::StaticCell<transport::Stack> = static_cell::StaticCell::new();
     let stack = STACK.init(NetStack::new_with_profile(router));
+    let spi_ident = stack
+        .manage_profile(|p| p.register_interface(spi_sink))
+        .expect("SPI interface slot must be available at startup");
     let usb_ident = stack
         .manage_profile(|p| {
-            p.register_interface_pending(BridgeSink::Usb(transport::usb::UsbSink::new(
+            p.register_interface(BridgeSink::Usb(transport::usb::UsbSink::new(
                 cobs_stream::Sink::new(transport::USB_OUTQ.stream_producer(), MTU),
             )))
         })
@@ -45,6 +48,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(
         transport::spi::pump(
             stack,
+            spi_ident,
             transport::spi::Resources {
                 bus: p.SPI2,
                 sck: p.GPIO6,
@@ -61,14 +65,13 @@ async fn main(spawner: Spawner) -> ! {
     let (rx, tx) = UsbSerialJtag::new(p.USB_DEVICE).into_async().split();
     spawner.spawn(transport::usb::rx(stack, rx, usb_ident).expect("USB RX task is spawned once"));
     spawner.spawn(transport::usb::tx(tx).expect("USB TX task is spawned once"));
-    spawner
-        .spawn(transport::usb::routes(stack, usb_ident).expect("USB route task is spawned once"));
+    spawner.spawn(transport::root_services(stack).expect("USB route task is spawned once"));
     #[cfg(feature = "ble")]
     {
         esp_alloc::heap_allocator!(size: 65536);
         let ble_ident = stack
             .manage_profile(|p| {
-                p.register_interface_pending(BridgeSink::Ble(framed_stream::Sink::new(
+                p.register_interface(BridgeSink::Ble(framed_stream::Sink::new(
                     transport::BLE_OUTQ.framed_producer(),
                     transport::BLE_MTU,
                 )))
@@ -79,7 +82,7 @@ async fn main(spawner: Spawner) -> ! {
                 .expect("BLE task is spawned once"),
         );
     }
-    defmt::info!("OxiFOC C5: SPI DMA upstream, USB Serial/JTAG downstream");
+    defmt::info!("OxiFOC C5: root router: SPI DMA controller, USB Serial/JTAG host");
     loop {
         Timer::after_secs(60).await;
     }
