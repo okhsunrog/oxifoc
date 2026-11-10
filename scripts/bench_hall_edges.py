@@ -72,6 +72,7 @@ def main():
     parser.add_argument('--elf', type=Path, required=True, help='Exact running firmware ELF')
     parser.add_argument('--probe', default='0483:3754:002300203234511537333934')
     parser.add_argument('--cli', type=Path, help='Already built host CLI; avoids rebuilding for the status check')
+    parser.add_argument('--bridge', action='store_true', help='Use the C5 SPI bridge instead of controller USB')
     args = parser.parse_args()
     out, elf = args.output.resolve(), args.elf.resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -82,8 +83,10 @@ def main():
     Path(str(out) + '.symbols').write_text(listing)
     command = ([str(args.cli.resolve()), '--transport', 'usb', '--wait-secs', '8', '--json']
                if args.cli else ['just', 'cli-usb'])
+    if args.bridge:
+        command = ['just', 'cli-bridge']
     status = json.loads(subprocess.check_output(
-        [*command, '--elf', str(elf), 'status'], cwd=repo, text=True))
+        ([*command, 'status'] if args.bridge else [*command, '--elf', str(elf), 'status']), cwd=repo, text=True))
     Path(str(out) + '.status.json').write_text(json.dumps(status, indent=2) + '\n')
     if status['control_mode'] != 'Stopped' or status['motor_state'] not in ('Stopped', 'Error'):
         raise RuntimeError('Hall export requires Stopped control mode and Stopped/Error state')

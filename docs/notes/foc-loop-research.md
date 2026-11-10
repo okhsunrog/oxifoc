@@ -332,3 +332,43 @@ Final `deadline-qualified` corrects driven-only ambiguity attribution.
 Harness now exports frozen diagnostics even after failed runs, then aborts and
 restores. Seven host decoder tests and two standalone recorder/session tests
 pass. No control/model/limit or normal runtime changes in this step.
+
+
+### Low-speed SPI baseline and calibration (2026-11-11)
+
+Finite `bench-mk5-motion` recipes use the production SPI/Packed28 publisher,
+no ISR timing/profiling or attached RTT monitor. Keep full native 20-kHz data,
+512 actual Hall edges and 128 velocity/authority snapshots at 20 Hz. Read SWD
+only Stopped; clear counters before each capture. Export faults before testing
+fault_count, then abort/recover on any failure. NVM is untouched.
+
+Important configuration difference: persisted Hall has centroids only
+(`geometry=null`), unlike the older volatile geometry experiments. Persisted
+`velocity=null` means defaults kp=0.01, ki=0.2, accel=500, not the older
+0.05/0.05 tests. Do not compare those historical experiments as identical setups.
+
+`motion-baseline`: two repeats each +40, -40, 120→40, 4.8-s active windows.
+All six command maneuvers returned success and raw streams had zero drops.
+The last transition had fault_count=1 after Stop; category was not exported
+because the initial harness checked fault_count too early. Preserve that gap;
+no claim of a clean sixth run. Fixed export ordering before the next matrix.
++40: 12/9 reverse edges, nominal-boundary net speed 39.63/42.96 rad/s,
+dq peaks 2.38/5.07 A. -40: no reverse edges, -40.11/-40.45 average speed,
+but PI feedback still pulses. Last average is not instantaneous speed evidence.
+
+`motion-fresh-hall`: recalibrate in RAM at 5 A (power class computed from stored
+R), no --apply/persistence. 342,869 calibration records, zero loss. All six
+comparison runs complete/lossless, no faults. +40: reverse edges 5/2,
+net 37.05/39.86 rad/s, dq peaks 2.13/2.01 A. -40: 1/0 reverse edges,
+net -40.60/-39.84. Both centroids and geometry changed, so do not attribute the
+whole improvement to geometry alone. Regulation still oscillates.
+
+Plots/raw summaries: each matrix's `analysis.png` and `analysis.json`; Hall
+boundary counts use nominal 60° steps for robust net-travel comparison, with
+200-ms windows explicitly quantized. PI feedback and actual current authority
+are plotted separately. Stopped FOC/Hall angle differences are not rotor error.
+
+Next `motion-interp100` replays the exact fresh Hall config in RAM, changes
+only interpolation threshold 500→100 eRPM, leaves PI/model/limits untouched.
+This tests the centroid/interpolation switching policy near the +40 target
+(~382 eRPM). Keep all rejected trials, recover the normal image after each suite.

@@ -654,3 +654,17 @@ test-link link capture maneuver source="ergot-raw" encoding="packed28":
 # Matching bench-executor-trace firmware must already be flashed.
 profile-link-mk5 link output maneuver="maneuvers/mk5-hall-current-check.json" repeats="3":
     uv run --no-project python -B scripts/bench_link_profile.py {{quote(link)}} {{quote(maneuver)}} {{quote(output)}} --repeats {{repeats}}
+
+# Native telemetry plus finite Hall/velocity evidence, without per-cycle timing marks.
+build-mk5-motion:
+    cd oxifoc-f405 && DEFMT_LOG=warn cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-hall-phase")}}
+
+flash-mk5-motion: build-mk5-motion
+    probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
+    probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
+
+dump-hall-bridge output elf=mk5_elf:
+    uv run --no-project python -B scripts/bench_hall_edges.py {{quote(output)}} --elf {{quote(elf)}} --bridge
+
+bench-mk5-motion output recovery repeats="2" hall_current="0" interp="default" hall_config="stored":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-current {{quote(hall_current)}} {{if interp == "default" { "" } else { "--interp-min-erpm " + quote(interp) }}} {{if hall_config == "stored" { "" } else { "--hall-config " + quote(hall_config) }}}

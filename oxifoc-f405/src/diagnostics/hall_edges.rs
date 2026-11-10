@@ -96,7 +96,7 @@ impl PhaseRecorder {
         sequence: u32,
         snapshot: impl FnOnce() -> Option<oxifoc_core::motor::foc_driver::VelocityControlSnapshot>,
     ) {
-        if sequence.wrapping_sub(self.last_velocity_sequence) < 500 {
+        if sequence.wrapping_sub(self.last_velocity_sequence) < 1000 {
             return;
         }
         self.last_velocity_sequence = sequence;
