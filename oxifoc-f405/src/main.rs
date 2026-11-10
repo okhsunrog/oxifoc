@@ -59,6 +59,7 @@ mod protocol;
     feature = "bench-executor-trace",
     feature = "bench-clock-reference",
     feature = "bench-overclock",
+    feature = "bench-foc-distribution",
     feature = "bench-hall"
 ))]
 mod diagnostics;

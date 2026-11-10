@@ -1,5 +1,8 @@
 //! Default-off bench diagnostics. No per-event logging or USB traffic.
 
+#[cfg(feature = "bench-foc-distribution")]
+pub mod foc_distribution;
+
 #[cfg(feature = "bench-overclock")]
 pub mod clock_stress;
 

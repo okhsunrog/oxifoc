@@ -592,6 +592,33 @@ bench-mk5-spi-cs-request output: build-mk5-spi-cs-probe
 bench-bridge-handshake port seconds="30" hz="20000":
     @cargo run --release --locked -p oxifoc-host-lib --example bridge_handshake -- {{quote(port)}} {{seconds}} {{hz}}
 
+# PCSR sampling uses the probe; no concurrent RTT attach during this maneuver.
+bench-mk5-foc-pc output maneuver="maneuvers/foc-profile-velocity40.json":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p {{quote(output)}}
+    trap 'just cli-bridge stop >/dev/null 2>&1' EXIT
+    probe-rs profile --chip STM32F405RGTx --probe {{mk5_probe}} --duration 8 --rtt-channel-mode no-block-skip {{mk5_elf}} flat --line-info --limit 20000 pcsr > {{quote(output + "/pc.txt")}} 2>&1 &
+    profiler=$!
+    sleep 1
+    status=0
+    just test-bridge {{quote(output + "/capture.parquet")}} {{quote(maneuver)}} > {{quote(output + "/capture.driver.log")}} 2>&1 || status=$?
+    wait "$profiler" || status=$?
+    exit "$status"
+
+bench-mk5-foc output recovery detail="minimal" repeats="3" cases="hold,current,velocity40,velocity120" logging="timing":
+    uv run --no-project python -B scripts/bench_foc_profile.py {{quote(output)}} --detail {{quote(detail)}} --repeats {{repeats}} --cases {{quote(cases)}} --logging {{quote(logging)}} --recovery-elf {{quote(recovery)}}
+
+# Current production transport and model; diagnostics differ only by section marks.
+build-mk5-foc-profile detail="minimal" logging="timing":
+    @test {{quote(detail)}} = minimal -o {{quote(detail)}} = sections
+    @test {{quote(logging)}} = timing -o {{quote(logging)}} = quiet
+    cd oxifoc-f405 && DEFMT_LOG={{quote(if logging == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-foc-distribution" + if detail == "sections" { ",isr-profiling" } else { "" })}}
+
+flash-mk5-foc-profile detail="minimal" logging="timing": (build-mk5-foc-profile detail logging)
+    probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
+    probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
+
 # Fixed-format telemetry through a chosen link; legacy remains an explicit baseline.
 build-mk5-link-bench link="spi" source="ergot" detail="timing":
     @test {{quote(link)}} = spi -o {{quote(link)}} = usb

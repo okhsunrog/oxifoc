@@ -408,6 +408,9 @@ fn isr_timing_now() -> u32 {
 #[cfg_attr(feature = "ram-foc", unsafe(link_section = ".data.ram_foc"))]
 fn ADC() {
     static mut SEQ: u32 = 0;
+    #[cfg(feature = "bench-foc-distribution")]
+    static mut DISTRIBUTION: crate::diagnostics::foc_distribution::Recorder =
+        crate::diagnostics::foc_distribution::Recorder::new();
     #[cfg(feature = "bench-cycle-outliers")]
     static mut CYCLE_OUTLIERS: crate::diagnostics::cycle_outliers::Recorder =
         crate::diagnostics::cycle_outliers::Recorder::new();
@@ -580,7 +583,7 @@ fn ADC() {
     // Run FOC control loop (shared cycle logic in core)
     #[cfg(feature = "isr-timing")]
     let mut time_control_motion = false;
-    #[cfg(feature = "bench-cycle-outliers")]
+    #[cfg(any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"))]
     let mut outlier_active = false;
     #[cfg(feature = "bench-cycle-outliers")]
     let mut outlier_velocity = 0.0_f32;
@@ -613,14 +616,17 @@ fn ADC() {
                 codec_bench_stopped =
                     matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped);
             }
-            #[cfg(feature = "bench-cycle-outliers")]
+            #[cfg(any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"))]
             {
                 outlier_active = matches!(
                     driver.mode(),
                     oxifoc_core::types::ControlMode::CurrentControl { .. }
                         | oxifoc_core::types::ControlMode::VelocityControl { .. }
                 );
-                outlier_velocity = output.map_or(0.0, |sample| sample.velocity_rad_s);
+                #[cfg(feature = "bench-cycle-outliers")]
+                {
+                    outlier_velocity = output.map_or(0.0, |sample| sample.velocity_rad_s);
+                }
             }
             #[cfg(feature = "isr-timing")]
             {
@@ -719,6 +725,15 @@ fn ADC() {
         );
     }
     let isr_end = isr_timing_now();
+    #[cfg(feature = "bench-foc-distribution")]
+    DISTRIBUTION.observe(
+        outlier_active,
+        *SEQ,
+        isr_t0,
+        DWT_GENERATION.load(Ordering::Relaxed),
+        isr_end.wrapping_sub(isr_t0),
+        ISR_BUDGET_CYCLES.load(Ordering::Relaxed),
+    );
     #[cfg(feature = "isr-timing")]
     if time_control_motion {
         motion_timing::record(isr_end.wrapping_sub(isr_t0));

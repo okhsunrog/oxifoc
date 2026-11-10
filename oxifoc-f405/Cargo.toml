@@ -56,6 +56,8 @@ task-priority = ["embassy-executor/scheduler-priority"]
 isr-profiling = ["isr-timing", "oxifoc-core/isr-profiling"]
 # Two DWT reads per ISR, without nested section instrumentation.
 isr-timing = []
+# Finite active-body/entry-gap histograms, exported after Stop over SWD.
+bench-foc-distribution = ["isr-timing"]
 # Exhaustive host-table/MCU temperature-model agreement before PWM setup.
 bench-ntc-check = []
 # Finite ADC-owned records of the first and longest over-budget cycles.
