@@ -115,8 +115,43 @@ fn fast_sin(angle: f32) -> f32 {
 impl SinCos for FastSinCos {
     #[inline(always)]
     fn sin_cos(angle: f32) -> (f32, f32) {
-        (fast_sin(angle), fast_sin(angle + FRAC_PI_2))
+        if !(-TAU..=TAU + TAU).contains(&angle) {
+            return sin_cos_unbounded(angle);
+        }
+        // Share range reduction and quadrant selection. Both components use
+        // the same polynomial over [0, pi/2], with complementary arguments.
+        let mut x = angle;
+        if x < 0.0 {
+            x += TAU;
+        } else if x >= TAU {
+            x -= TAU;
+        }
+        let sin_negative = x >= PI;
+        if sin_negative {
+            x -= PI;
+        }
+        let cos_negative = x >= FRAC_PI_2;
+        if cos_negative {
+            x = PI - x;
+        }
+        let sin = sin_poly(x);
+        let cos = sin_poly(FRAC_PI_2 - x);
+        (
+            if sin_negative { -sin } else { sin },
+            if sin_negative != cos_negative {
+                -cos
+            } else {
+                cos
+            },
+        )
     }
+}
+
+// Retain the existing large-angle and nonfinite behavior off the FOC path.
+#[cold]
+#[inline(never)]
+fn sin_cos_unbounded(angle: f32) -> (f32, f32) {
+    (fast_sin(angle), fast_sin(angle + FRAC_PI_2))
 }
 
 // ============================================================================
@@ -329,6 +364,31 @@ mod tests {
     // Minimax polynomial error 7.2e-7 plus range-reduction rounding. (Was
     // 2e-4 — sized to the old Taylor-like coefficients, not their doc.)
     const FAST_TOL: f32 = 2e-6;
+
+    #[test]
+    fn shared_reduction_preserves_foc_accuracy_and_cold_behavior() {
+        for step in 0..=300_000 {
+            let angle = -TAU + (3.0 * TAU) * (step as f32 / 300_000.0);
+            let (s, c) = FastSinCos::sin_cos(angle);
+            assert!((s - ref_sin(angle)).abs() < FAST_TOL, "sin at {angle}");
+            assert!((c - ref_cos(angle)).abs() < FAST_TOL, "cos at {angle}");
+        }
+        for angle in [
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::NAN,
+            -1e30,
+            -1000.0,
+            1000.0,
+            1e30,
+        ] {
+            let actual = FastSinCos::sin_cos(angle);
+            let expected = (fast_sin(angle), fast_sin(angle + FRAC_PI_2));
+            for (a, e) in [(actual.0, expected.0), (actual.1, expected.1)] {
+                assert!(a.to_bits() == e.to_bits() || (a.is_nan() && e.is_nan()));
+            }
+        }
+    }
 
     #[test]
     fn fast_sin_cos_zero() {
