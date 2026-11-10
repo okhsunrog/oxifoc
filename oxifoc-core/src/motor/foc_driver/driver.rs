@@ -233,7 +233,10 @@ where
         Some(super::VelocityControlSnapshot {
             target_rad_s: target_vel,
             reference_rad_s: self.velocity_loop.reference_rad_s(),
-            feedback_rad_s: self.phase.rotor_velocity().map(|v| v.electrical_rad_s()),
+            feedback_rad_s: self
+                .phase
+                .rotor_velocity()
+                .map(RotorVelocityEstimate::electrical_rad_s),
             requested_iq_a: self.velocity_schedule.requested_iq(),
             granted_iq_a: self.last_granted_iq,
             measured_iq_a: self.last_iq_meas,

@@ -814,3 +814,20 @@ remain diagnostic targets; stable velocity control is not established.
 Both firmware variants build. Restored compensation-on firmware and original
 runtime configuration, Stopped; no NVM writes. Report and inspected plots:
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-ab-2026-11-10/report.md`.
+
+### Velocity PI with unavailable braking (2026-11-10)
+
+Finite RAM snapshots exposed positive current requests during overspeed:
+full back-calculation at a zero braking limit manufactured integral to cancel
+the negative P term. With Kp=0.05/Ki=0.05 and a 40-erad/s target, the old code
+reached 1942 erad/s feedback and a 25.4-A measured d-current peak. Its 128-edge
+diagnostic prefix overflowed; full-run speed statistics from that prefix are invalid.
+`ClampedPI` now uses conditional integration and bounds stored authority;
+the current-loop PI remains unchanged. A regression fails before and passes
+after; 665 core tests and 11 doctests pass, strict core Clippy passes.
+The same gains after the fix gave 5.74-erad/s full-revolution speed RMSE,
+4.05-A dq peak and no faults, but reverse edges and ripple remain. A new
+200-erad/s safety ceiling starts derating at 180; sampled feedback stayed below
+101 in that run. This is not qualification of smooth velocity control.
+Captures, exact ELFs and Hall replay: `oxifoc-hall-motion-2026-11-10` under
+`/home/okhsunrog/tmp_zfs/codex_tmp/`. All captures so far have complete USB records.

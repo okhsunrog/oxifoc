@@ -8,7 +8,7 @@
 //!   voltage clamping handles saturation.
 //!
 //! - [`ClampedPI`] — self-contained PI with rectangular output limits and
-//!   internal back-calculation anti-windup. For standalone use (velocity
+//!   conditional integration and bounded integral state. For standalone use (velocity
 //!   loops, thermal controllers, etc.).
 //!
 //! The two types exist to prevent dual anti-windup: if a PI controller
@@ -142,8 +142,8 @@ impl PIController {
 
 /// PI Controller with internal rectangular clamping and anti-windup
 ///
-/// Wraps [`PIController`] and adds output limits with back-calculation
-/// anti-windup. Use this for standalone control loops (velocity, thermal, etc.)
+/// Wraps [`PIController`] and adds output limits with conditional integration.
+/// Use this for standalone control loops (velocity, thermal, etc.)
 /// where there is no external saturation logic.
 ///
 /// # Example
@@ -187,6 +187,7 @@ impl ClampedPI {
     /// # Returns
     /// Controller output clamped to `[min, max]`
     pub fn update(&mut self, setpoint: f32, measurement: f32, dt: f32) -> f32 {
+        let integral_before = self.pi.integral;
         let raw = self.pi.update(setpoint, measurement, dt);
         let min = if self.min.is_nan() {
             f32::NEG_INFINITY
@@ -199,14 +200,24 @@ impl ClampedPI {
             self.max
         };
         let (min, max) = if min <= max { (min, max) } else { (max, min) };
-        let clamped = clamp_f32(raw, min, max);
-
-        // Back-calculation anti-windup
-        if raw != clamped {
-            self.pi.apply_anti_windup(clamped - raw);
+        // Do not integrate further into a saturated output. In particular,
+        // clipping a negative P term at a zero braking limit must not CREATE
+        // positive integral to cancel it: declining overspeed then requests
+        // motoring torque while the rotor is still above its target.
+        let delta = self.pi.integral - integral_before;
+        if (raw > max && delta > 0.0) || (raw < min && delta < 0.0) {
+            self.pi.integral = integral_before;
         }
-
-        clamped
+        // A shrinking actuator budget must also shed already stored authority.
+        // Pure P control never stores state, including with nonzero limits.
+        if self.pi.ki != 0.0 {
+            self.pi.integral = clamp_f32(self.pi.integral, min, max);
+        }
+        clamp_f32(
+            self.pi.kp * (setpoint - measurement) + self.pi.integral,
+            min,
+            max,
+        )
     }
 
     /// Update output limits
@@ -247,6 +258,34 @@ mod tests {
 
     const EPSILON: f32 = 0.001;
     const DT: f32 = 0.0001; // 10kHz control loop
+
+    #[test]
+    fn unavailable_braking_does_not_create_motoring_integral() {
+        for direction in [-1.0, 1.0] {
+            let (min, max) = if direction > 0.0 {
+                (0.0, 3.0)
+            } else {
+                (-3.0, 0.0)
+            };
+            let mut pi = ClampedPI::new(0.01, 0.2, min, max);
+            // The load coasts faster than the request. Smaller overspeed is
+            // still overspeed, not a request to accelerate back to its peak.
+            for speed in [80.0, 60.0, 70.0, 50.0, 45.0, 40.0] {
+                let output = pi.update(direction * 40.0, direction * speed, 0.001);
+                assert_eq!(output, 0.0, "speed={speed}, integral={}", pi.get_integral());
+            }
+            assert_eq!(pi.get_integral(), 0.0);
+        }
+    }
+
+    #[test]
+    fn shrinking_authority_removes_unreachable_integral() {
+        let mut pi = ClampedPI::new(0.01, 0.2, -3.0, 3.0);
+        pi.preload(2.0);
+        pi.set_limits(0.0, 0.5);
+        assert_eq!(pi.update(40.0, 40.0, 0.001), 0.5);
+        assert!(pi.get_integral() <= 0.5);
+    }
 
     #[test]
     fn proportional_only_saturation_does_not_store_a_bias() {

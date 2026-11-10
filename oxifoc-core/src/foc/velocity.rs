@@ -187,7 +187,7 @@ impl VelocityLoopConfig {
 /// Velocity loop: ω_target → slew-limited ω_ref → PI(ω_ref − ω_meas) → iq.
 ///
 /// The PI output is clamped to the caller-supplied current limit each cycle
-/// with back-calculation anti-windup ([`ClampedPI`]), so saturating into the
+/// with conditional-integration anti-windup ([`ClampedPI`]), so saturating into the
 /// limit (steep hill, step target) doesn't wind the integrator up.
 #[derive(Debug)]
 pub struct VelocityLoop {
@@ -486,8 +486,8 @@ mod tests {
         assert!(max_iq <= 10.0 + 1e-3, "iq must respect the limit: {max_iq}");
         // After the long saturated stretch, the integrator must not have
         // wound up: retargeting to the current velocity must not overshoot
-        // the limit-relaxed response wildly. (Back-calculation keeps the
-        // integral pinned near the limit.)
+        // the limit-relaxed response wildly. Conditional integration prevents
+        // accumulating further into saturation.
         assert!(vl.last_iq() <= 10.0 + 1e-3);
     }
 
