@@ -187,17 +187,21 @@ where
             resolution = resolve_device_addr(&stack, RESOLVE_TIMEOUT) => resolution,
             _ = cancel.cancelled() => break,
         };
-        let resolved = match resolution {
+        let (resolved, handshake_attempts) = match resolution {
             AddrResolution::Resolved(addr) => {
                 info!(
                     "Controller resolved at net={} node={}",
                     addr.network_id, addr.node_id
                 );
-                addr
+                (addr, 10)
             }
             AddrResolution::NoAnswer => {
-                info!("No socket-query answer; using the link-local peer");
-                LINK_LOCAL_PEER
+                // A direct legacy peer can still answer this probe. Through a
+                // bridge it is the router, not the controller; do not spend the
+                // full handshake retry budget on that unverified address while
+                // upstream discovery/seed assignment is still settling.
+                info!("No socket-query answer; probing the link-local peer once");
+                (LINK_LOCAL_PEER, 1)
             }
             AddrResolution::Ambiguous(n) => {
                 tracing::error!(
@@ -213,7 +217,7 @@ where
         // HardwareInfo handshake on each (re)connection
         let handshake = tokio::select! {
             outcome = hardware_info_handshake(
-                &stack, &info_tx, &mut expected_device_uuid, resolved,
+                &stack, &info_tx, &mut expected_device_uuid, resolved, handshake_attempts,
             ) => outcome,
             _ = cancel.cancelled() => break,
         };
@@ -571,13 +575,14 @@ async fn hardware_info_handshake<NS>(
     info_tx: &Sender<HardwareInfo>,
     expected_device_uuid: &mut Option<String>,
     device_addr: Address,
+    attempts: u32,
 ) -> HandshakeOutcome
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
     let ns = stack.stack();
     let mut backoff = Duration::from_millis(100);
-    for attempt in 1..=10u32 {
+    for attempt in 1..=attempts {
         let fut =
             ns.endpoints()
                 .request::<HardwareInfoEndpoint>(device_addr, &(), Some("hardware_info"));
@@ -635,8 +640,10 @@ where
                 tracing::warn!("HardwareInfo attempt {} timed out", attempt);
             }
         }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(2));
+        if attempt < attempts {
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(Duration::from_secs(2));
+        }
     }
     tracing::warn!("Device info not received after retries; giving up — caller will reconnect");
     HandshakeOutcome::RetryableFailure
