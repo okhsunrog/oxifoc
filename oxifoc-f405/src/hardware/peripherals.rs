@@ -36,19 +36,14 @@ pub fn init_clock() -> Peripherals {
 
     let p = embassy_stm32::init(config);
 
-    // Catch future bus-divider edits that invalidate cycle budgets or the UART
-    // reference model. HAL truncates each bus division independently.
+    // Catch future bus-divider edits that invalidate cycle budgets.
+    // HAL truncates each bus division independently.
     defmt::assert!(
         embassy_stm32::rcc::frequency::<peripherals::TIM1>()
             .0
             .abs_diff(crate::config::CPU_HZ)
             <= 2
     );
-    defmt::assert_eq!(
-        embassy_stm32::rcc::frequency::<peripherals::USART3>().0,
-        crate::config::CPU_HZ / 4
-    );
-
     // ART accelerator: embassy's F4 RCC init WRITES flash ACR with only the
     // latency field (rcc/f247.rs), and the F405 reset value is all-zero —
     // so prefetch, I-cache and D-cache are all OFF at 5 wait states /

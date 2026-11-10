@@ -1,6 +1,6 @@
 //! Resource assignment — one `assign_resources!` block per supported board.
 //!
-//! Both boards follow the VESC reference layout, so motor/hall/uart blocks
+//! Both boards follow the VESC reference layout, so motor/hall blocks
 //! are identical; only the DRV8301 bus wiring (and MK5's extra board-control
 //! pins) differ. See docs/hw/cheap-focer2-notes.md and docs/hw/vesc6-mk5.md.
 
@@ -33,11 +33,6 @@ assign_resources! {
         pc7: PC7,   // Hall sensor 2
         pc8: PC8,   // Hall sensor 3
     }
-    uart: UartResources {
-        usart3: USART3,
-        pb10: PB10,  // USART3 TX
-        pb11: PB11,  // USART3 RX
-    }
 }
 
 #[cfg(feature = "board-vesc6-mk5")]
@@ -66,11 +61,6 @@ assign_resources! {
         pc6: PC6,   // Hall sensor 1
         pc7: PC7,   // Hall sensor 2
         pc8: PC8,   // Hall sensor 3
-    }
-    uart: UartResources {
-        usart3: USART3,
-        pb10: PB10,  // USART3 TX
-        pb11: PB11,  // USART3 RX
     }
     board_ctrl: BoardCtrlResources {
         pc5: PC5,   // Shutdown latch — hold high or the button powers us off

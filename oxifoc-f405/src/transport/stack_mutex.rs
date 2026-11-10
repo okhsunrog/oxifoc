@@ -24,7 +24,7 @@ pub(super) type StackRawMutex = TraceRawMutex<PolicyRawMutex>;
 pub(super) type StackRawMutex = PolicyRawMutex;
 
 /// Only thread tasks and the USART1 USB executor may call NetStack. OTG_FS
-/// and USART3 hardware handlers just wake tasks; ADC/Hall/fault logging queues
+/// hardware handlers just wake tasks; ADC/Hall/fault logging queues
 /// frames for later forwarding. Wakers/serializers must not poll tasks inline.
 pub struct CeilingRawMutex {
     taken: AtomicBool,

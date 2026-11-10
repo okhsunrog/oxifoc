@@ -202,7 +202,7 @@ pub async fn init(
     // stay high-Z until the calibration state machine selects one.
     // Order: install ADC handles → enable interrupt → enable PWM triggers.
     // ADC at priority 0 (highest) — the FOC loop is the actuator's most
-    // time-critical ISR; comms ISRs (USB/UART) must never preempt or
+    // time-critical ISR; comms ISRs (USB) must never preempt or
     // jitter it (mirrors the G431 setup; main.rs demotes every other
     // vector below the control ISRs for exactly this reason).
     //

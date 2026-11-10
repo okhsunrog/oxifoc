@@ -18,7 +18,7 @@ test = false
 bench = false
 
 [features]
-default = ["transport-usb", "transport-uart", "board-cf2"]
+default = ["transport-usb", "board-cf2"]
 # Exactly one board feature must be enabled (compile_error in main.rs).
 # Cheap FOCer 2 / Simple FOCer 2: DRV8301 on hardware SPI3, low-side shunts,
 # amp gain 10 V/V.
@@ -28,14 +28,13 @@ board-cf2 = []
 # shutdown latch PC5, current/phase filter enables PD2/PC13.
 # See docs/hw/vesc6-mk5.md.
 board-vesc6-mk5 = []
-# Standalone connector continuity probe: no FOC, gate disabled, input-only pins.
+# Standalone connector continuity probe: no FOC, gate disabled.
 bench-bridge-pins = []
+bench-bridge-pins-rx = ["bench-bridge-pins"]
 # CPU-only FOC state in 64-KiB CCM. DMA buffers and the stack remain in SRAM.
 ccm = []
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
 transport-usb = []
-# UART on USART3 (PB10 TX / PB11 RX) for Cheap FOCer 2
-transport-uart = []
 # Cooperative task classes: USB workers 3, protocol 2, telemetry/detection 1,
 # remaining tasks 0. Complements the default USB interrupt executor.
 task-priority = ["embassy-executor/scheduler-priority"]
@@ -52,7 +51,7 @@ bench-observer-logging = ["oxifoc-core/observer-logging"]
 # Finite Stopped-only CPU comparison; no transport I/O inside timed regions.
 bench-raw-codec = ["transport-usb", "isr-timing", "bench-clock-reference"]
 # ergot over RTT channel 1 (defmt shares ch0). Diagnostic transport — high-rate
-# telemetry over the debug probe; adds a third interface alongside USB/UART.
+# telemetry over the debug probe; adds a diagnostic interface alongside USB.
 transport-rtt = ["ergot/rtt"]
 # Bench CPU/transport qualification: calculate active FOC but never enable
 # phase outputs. Default-off; do not use for motor measurements.
@@ -91,8 +90,6 @@ bench-raw-ergot = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stre
 bench-scheduler-priority = ["task-priority"]
 # Bench EDF policy: fresh relative deadlines on actual ready/enqueue events.
 bench-scheduler-deadline = ["embassy-executor/scheduler-deadline", "bench-executor-trace"]
-# USART3/PB10 sends DMA bursts of 0x55 for an independent scope reference.
-bench-clock-uart = ["bench-no-phase-outputs", "bench-clock-reference"]
 # Temporary calibration for UUID 2B002C001047343031363330 only; never a board default.
 bench-calibrated-clock = []
 # Observer-internals fast-frame mapping (erpm<-PLL, vd<-frame gap,
@@ -121,7 +118,6 @@ heapless = { version = "0.9.3", default-features = false, features = ["defmt"] }
 mutex = "1.0.2"
 static_cell = "2.1"
 assign-resources = "0.5.0"
-embedded-io-async = { version = "0.7", features = ["defmt"] }
 
 # Gate driver
 drv8301-dd = { version = "0.3.0", features = ["defmt"] }

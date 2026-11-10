@@ -26,7 +26,7 @@ map is identical).
 - Motor/power wires 12 AWG; 67×39×18.7 mm with heatsink
 
 Firmware target: `oxifoc-f405` with `--no-default-features
---features transport-usb,transport-uart,board-vesc6-mk5,task-priority`.
+--features transport-usb,board-vesc6-mk5,task-priority`.
 The MK5 build/flash recipes select cooperative task priorities together with
 the USB interrupt executor, following the [on-device comparison](../notes/bench-usb-priority-2026-11-09.md).
 Other F405 board defaults are unchanged; omit `task-priority` for queue A/B tests.
@@ -42,7 +42,10 @@ Identical to Cheap FOCer 2 (both follow the VESC reference layout):
 - Temps: PA3 board NTC (10k/10k, β3380), PC4 motor NTC (10k pull-up, low-side)
 - Phase voltage: SENS1 PA0, SENS2 PA1, SENS3 PA2 (IN0/1/2), divider = VBUS divider
 - Halls: PC6/PC7/PC8
-- UART (COMM port): USART3 TX PB10 / RX PB11
+- COMM TX/SCL: **PA7 and PB10 share `TX_SCL_MOSI`**. SPI1 MOSI uses PA7 AF5;
+  PB10 must remain high impedance. F405 firmware no longer initializes USART3.
+- COMM ADC1/ADC2: SPI1 SCK PA5 AF5 / MISO PA6 AF5.
+- COMM RX/SDA: PB11 (`RX_SDA_NSS`), available as GPIO chip select for SPI master.
 - USB FS: PA11/PA12
 - LEDs: PB0 green, PB1 red, active high. OxiFOC uses TIM8_CH2N/CH3N
   at 4 kHz with complementary polarity inverted, capped at 10% illuminated
@@ -68,6 +71,32 @@ Different from CF2:
   while PWMing (`phase_sense.has_filters = true`). Drive high.
 - IMU: BMI160 on I2C, SDA PB2 / SCL PA15 — not used by oxifoc.
 - NRF51 (permanent, MK3+): UART on PC11/PC12, SWD on PB12/PA4 — not used.
+
+## C5 bridge wiring and continuity check
+
+The [official schematic](https://vesc-project.com/sites/default/files/Benjamin%20Posts/VESC_6_mk5.pdf)
+shows PA7 (pin 23) and PB10 (pin 29) on the same net on MCU sheet 3;
+the main sheet connects it to COMM pin 6.
+
+| COMM / controller | STM32 | ESP32-C5 |
+|---|---|---|
+| TX/SCL, pin 6 | PA7, PB10 Hi-Z | GPIO8 |
+| ADC1, pin 4 | PA5 | GPIO6 |
+| ADC2, pin 7 | PA6 | GPIO9 |
+| RX/SDA, pin 5 | PB11 | GPIO10 |
+| SERVO signal | PB6 | GPIO0 |
+
+2026-11-10 continuity checks: PA7 output was read correctly through PB10;
+C5 received the SCK/MISO/CS/IRQ patterns. GPIO8 remained low during PA7
+transmission. In reverse, GPIO8 output readback passed all 40 levels locally,
+but neither PA7 nor PB10 observed transitions. Check the TX/SCL-to-GPIO8 wire
+before qualifying SPI DMA.
+
+The finite probes keep the gate driver and all phase outputs disabled:
+`just build-mk5-bridge-pins` drives connector patterns while C5 `pin_probe`
+only reads. `just build-mk5-bridge-pins-rx` leaves STM32 connector pins as
+inputs for C5 `pin_drive`. C5 sources and its build/run recipes live in
+`/home/okhsunrog/code/rust/c5-hello-world`.
 
 ## Optional CCM placement
 

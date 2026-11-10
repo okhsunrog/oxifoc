@@ -1,10 +1,8 @@
 //! Multi-interface transport layer for ergot communication
 //!
-//! Supports USB bulk endpoints and UART (USART3) simultaneously.
-//! The device runs as a Router with both interfaces registered.
+//! Supports USB bulk endpoints and an optional diagnostic RTT interface.
+//! The device runs as a Router with the selected interfaces registered.
 //! defmt logs go over a separate RTT channel (read via probe-rs).
-
-pub use oxifoc_core::runtime::io::*;
 
 use embassy_stm32::rng;
 use embassy_stm32::usb;
@@ -16,7 +14,9 @@ use ergot::interface_manager::LivenessConfig;
 use ergot::interface_manager::interface_impls::embassy_usb::EmbassyInterface;
 use ergot::interface_manager::interface_impls::embedded_io::IoInterface;
 use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
-use ergot::interface_manager::utils::{cobs_stream, framed_stream};
+#[cfg(feature = "transport-rtt")]
+use ergot::interface_manager::utils::cobs_stream;
+use ergot::interface_manager::utils::framed_stream;
 use ergot::toolkits::embassy_usb_v0_6 as usb_kit;
 use ergot::toolkits::embedded_io_async_v0_7 as io_kit;
 #[cfg(feature = "transport-rtt")]
@@ -24,8 +24,9 @@ use ergot::transport::rtt::{RttReader, RttWriter};
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
-use crate::config::{MAX_PACKET_SIZE, UART_BAUD, UART_RX_BUF_LEN, UART_TX_BUF_LEN};
-use crate::config::{RTT_OUT_QUEUE_SIZE, UART_OUT_QUEUE_SIZE, USB_OUT_QUEUE_SIZE};
+use crate::config::MAX_PACKET_SIZE;
+use crate::config::{RTT_OUT_QUEUE_SIZE, USB_OUT_QUEUE_SIZE};
+#[cfg(feature = "transport-rtt")]
 use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 
 mod stack_mutex;
@@ -54,19 +55,12 @@ compile_error!("raw telemetry benchmarks use Ergot USB control, not transport-rt
 pub mod raw_fast;
 
 // ========== Multi-Interface Definition ==========
-//
-// All three sink variants are always compiled (the RTT sink is the same
-// `IoInterface` family as UART); only init / registration / workers are gated
-// per `transport-*` feature. The Router has capacity for all three.
-
 type UsbQ = &'static UsbQueue;
-type UartQ = &'static UartQueue;
 type RttQ = &'static RttQueue;
 
 ergot::multi_interface! {
     pub enum McSink for McInterface {
         Usb(EmbassyInterface<UsbQ>),
-        Uart(IoInterface<UartQ>),
         Rtt(IoInterface<RttQ>),
     }
 }
@@ -74,13 +68,12 @@ ergot::multi_interface! {
 // ========== Type Aliases ==========
 
 pub type Rng = rng::Rng<'static, peripherals::RNG>;
-/// Root router: 3 direct interfaces, 8 seed routes (nets leased to bridge
-/// routers downstream — e.g. the ESP32 BLE bridge's radio segment).
+/// Root router: USB and optional RTT, one reserved bridge slot, 8 seed routes
+/// for downstream routers.
 pub type McRouter = Router<McInterface, Rng, 3, 8>;
 pub type Stack = NetStack<stack_mutex::StackRawMutex, McRouter>;
 
 pub type UsbQueue = usb_kit::Queue<USB_OUT_QUEUE_SIZE, AtomicCoord>;
-pub type UartQueue = io_kit::Queue<UART_OUT_QUEUE_SIZE, AtomicCoord>;
 pub type RttQueue = io_kit::Queue<RTT_OUT_QUEUE_SIZE, AtomicCoord>;
 
 pub type AppDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
@@ -89,11 +82,6 @@ pub type AppDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 pub type UsbRxWorker = ergot::interface_manager::transports::eusb_0_6::RxWorker<
     &'static Stack,
     AppDriver,
-    RouterFrameProcessor,
->;
-pub type UartRxWorker = ergot::interface_manager::transports::eio::RxWorker<
-    &'static Stack,
-    UartReader,
     RouterFrameProcessor,
 >;
 #[cfg(feature = "transport-rtt")]
@@ -110,7 +98,6 @@ static STACK_CELL: StaticCell<Stack> = StaticCell::new();
 
 /// Output queues (one per interface)
 pub static USB_OUTQ: UsbQueue = usb_kit::Queue::new();
-pub static UART_OUTQ: UartQueue = io_kit::Queue::new();
 #[cfg(feature = "transport-rtt")]
 pub static RTT_OUTQ: RttQueue = io_kit::Queue::new();
 
@@ -128,10 +115,6 @@ static RTT_ERGOT_DOWN: StaticCell<rtt_target::DownChannel> = StaticCell::new();
 static USB_STORAGE: usb_kit::WireStorage<256, 256, 64, 256> = usb_kit::WireStorage::new();
 static EP_OUT_BUF: StaticCell<[u8; 256]> = StaticCell::new();
 
-// UART buffers
-static UART_TX_BUF: StaticCell<[u8; UART_TX_BUF_LEN]> = StaticCell::new();
-static UART_RX_BUF: StaticCell<[u8; UART_RX_BUF_LEN]> = StaticCell::new();
-
 // ========== Interrupt Bindings ==========
 
 bind_interrupts!(struct UsbIrqs {
@@ -141,15 +124,6 @@ bind_interrupts!(struct UsbIrqs {
         usb::InterruptHandler<peripherals::USB_OTG_FS>,
         #[cfg(feature = "bench-executor-trace")]
         crate::diagnostics::trace::UsbIrqEnd;
-});
-
-bind_interrupts!(struct UsartIrqs {
-    USART3 =>
-        #[cfg(feature = "bench-executor-trace")]
-        crate::diagnostics::trace::UartIrqBegin,
-        embassy_stm32::usart::BufferedInterruptHandler<peripherals::USART3>,
-        #[cfg(feature = "bench-executor-trace")]
-        crate::diagnostics::trace::UartIrqEnd;
 });
 
 bind_interrupts!(pub struct RngIrqs {
@@ -335,71 +309,5 @@ pub fn init_usb(
             raw_ep_in,
         },
         usb_ident,
-    )
-}
-
-/// UART transport handles
-pub struct UartTransport {
-    pub rx_worker: UartRxWorker,
-    pub tx: UartWriter,
-}
-
-/// Initialize UART transport on USART3 and register it on the Router.
-/// Returns the UART transport handles and the assigned interface ident.
-pub fn init_uart(
-    stack: &'static Stack,
-    usart3: Peri<'static, peripherals::USART3>,
-    pb10: Peri<'static, peripherals::PB10>,
-    pb11: Peri<'static, peripherals::PB11>,
-) -> (UartTransport, u8) {
-    use embassy_stm32::usart::{Config as UartConfig, Parity, StopBits};
-
-    let mut uart_cfg = UartConfig::default();
-    uart_cfg.baudrate = UART_BAUD;
-    uart_cfg.parity = Parity::ParityNone;
-    uart_cfg.stop_bits = StopBits::STOP1;
-
-    let tx_buf = UART_TX_BUF.init([0u8; UART_TX_BUF_LEN]);
-    let rx_buf = UART_RX_BUF.init([0u8; UART_RX_BUF_LEN]);
-
-    // BufferedUart::new(usart, rx_pin, tx_pin, ...) — PB11 is RX, PB10 is TX
-    let uart = defmt::unwrap!(
-        embassy_stm32::usart::BufferedUart::new(
-            usart3, pb11, pb10, tx_buf, rx_buf, UsartIrqs, uart_cfg,
-        ),
-        "USART3 init failed"
-    );
-
-    let (uart_tx, uart_rx) = uart.split();
-
-    // Register UART interface on Router
-    let uart_sink = McSink::Uart(cobs_stream::Sink::new(
-        UART_OUTQ.stream_producer(),
-        MAX_PACKET_SIZE as u16,
-    ));
-    let uart_ident = defmt::unwrap!(
-        stack.manage_profile(|router| router.register_interface(uart_sink)),
-        "UART interface registration failed"
-    );
-
-    let rx_worker = UartRxWorker::new(
-        stack,
-        UartReader::new(uart_rx),
-        RouterFrameProcessor::new(defmt::unwrap!(
-            stack.manage_profile(|router| router.net_id_of(uart_ident))
-        )),
-        uart_ident,
-    )
-    .with_liveness(LivenessConfig {
-        timeout_ms: LIVENESS_TIMEOUT_MS,
-    })
-    .with_state_notify(&STATE_NOTIFY);
-
-    (
-        UartTransport {
-            rx_worker,
-            tx: UartWriter::new(uart_tx),
-        },
-        uart_ident,
     )
 }

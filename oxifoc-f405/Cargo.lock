@@ -1700,7 +1700,6 @@ dependencies = [
  "embassy-usb 0.6.0",
  "embedded-hal 1.0.0",
  "embedded-hal-bus",
- "embedded-io-async 0.7.0",
  "embedded-storage-async",
  "ergot",
  "heapless 0.9.3",

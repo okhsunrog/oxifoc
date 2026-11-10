@@ -185,7 +185,6 @@ pub const CLOCK_PROFILE: ClockProfile = ClockProfile {
     },
 };
 pub const HSE_HZ: u32 = CLOCK_PROFILE.hse_hz;
-pub const PLL_N: u32 = CLOCK_PROFILE.pll.mul.to_bits() as u32;
 /// Core clock after PLL init — MUST match hardware/peripherals.rs.
 /// Single source for all cycle-based timing: the ISR cycle budget,
 /// busy-wait delays (DRV8301 tWAKE, bit-bang SPI), load percentages.
@@ -208,9 +207,6 @@ pub const USB_OUT_QUEUE_SIZE: usize = if cfg!(any(
 } else {
     4096
 };
-
-/// Size of outgoing packet queue for ergot over UART (COBS stream)
-pub const UART_OUT_QUEUE_SIZE: usize = 4096;
 
 /// Size of outgoing packet queue for ergot over RTT (COBS stream)
 pub const RTT_OUT_QUEUE_SIZE: usize = 4096;
@@ -239,12 +235,3 @@ const _: () = assert!(
     MAX_PACKET_SIZE
         >= oxifoc_core::types::FAST_BATCH_BYTES + oxifoc_core::types::FAST_BATCH_WIRE_OVERHEAD
 );
-
-/// UART baud rate for USART3 (Cheap FOCer 2 external connector)
-pub const UART_BAUD: u32 = 921_600;
-
-/// UART TX buffer size
-pub const UART_TX_BUF_LEN: usize = 2048;
-
-/// UART RX buffer size
-pub const UART_RX_BUF_LEN: usize = 512;

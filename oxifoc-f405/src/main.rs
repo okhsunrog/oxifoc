@@ -9,8 +9,6 @@ compile_error!("board-cf2 and board-vesc6-mk5 are mutually exclusive");
 compile_error!("bench-only-phase-a and bench-no-phase-outputs are mutually exclusive");
 #[cfg(all(feature = "bench-clock-reference", not(feature = "transport-usb")))]
 compile_error!("bench-clock-reference requires transport-usb for the SOF reference");
-#[cfg(all(feature = "bench-clock-uart", feature = "transport-uart"))]
-compile_error!("bench-clock-uart owns USART3; disable transport-uart");
 #[cfg(all(feature = "bench-calibrated-clock", not(feature = "board-vesc6-mk5")))]
 compile_error!("bench-calibrated-clock is an experiment for the measured MK5 device only");
 
@@ -28,7 +26,7 @@ bind_interrupts!(struct ExtiIrqs {
         diagnostics::trace::FaultIrqEnd;
 });
 
-// USART1 is unused (external UART is USART3). Reserve its vector for USB
+// USART1 hardware is unused. Reserve its vector for USB
 // work below ADC, Hall and USB hardware IRQs, above thread-mode batching.
 #[cfg(all(feature = "transport-usb", not(feature = "bench-usb-thread")))]
 static USB_EXECUTOR: embassy_executor::InterruptExecutor =
@@ -60,8 +58,7 @@ mod protocol;
 #[cfg(any(
     feature = "bench-executor-trace",
     feature = "bench-clock-reference",
-    feature = "bench-hall",
-    feature = "bench-clock-uart"
+    feature = "bench-hall"
 ))]
 mod diagnostics;
 mod safety;
@@ -73,7 +70,7 @@ mod transport;
 #[allow(unused_imports)]
 use hardware::BoardCtrlResources;
 #[allow(unused_imports)]
-use hardware::{AssignedResources, DrvResources, HallResources, MotorResources, UartResources};
+use hardware::{AssignedResources, DrvResources, HallResources, MotorResources};
 use motor::MotorPwm;
 
 // Define platform state with our fault type
@@ -109,19 +106,21 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
 async fn main(spawner: Spawner) {
     // ========== STEP 1: Initialize Clock ==========
     let p = hardware::peripherals::init_clock();
+    // MK5 ties PB10 to PA7/MOSI. Never drive the shared net from USART3.
+    let _comm_tx = embassy_stm32::gpio::Input::new(p.PB10, embassy_stm32::gpio::Pull::None);
+    let _comm_rx = embassy_stm32::gpio::Input::new(p.PB11, embassy_stm32::gpio::Pull::None);
     #[cfg(feature = "bench-clock-reference")]
     spawner.spawn(defmt::unwrap!(diagnostics::clock_reference_task(p.TIM5)));
 
     // Comms/housekeeping IRQs sit BELOW the control ISRs. The FOC ADC ISR
     // runs at 0 and the hall capture (TIM3) at 1, but every other vector
     // ships at the reset default 0: an in-flight handler at the SAME level
-    // cannot be preempted, so a USB/UART/RNG/EXTI/time-driver handler
+    // cannot be preempted, so a USB/RNG/EXTI/time-driver handler
     // delayed ADC entry by its full duration. Demoting them lets the FOC
     // ISR preempt immediately.
     {
         use embassy_stm32::interrupt::{InterruptExt, Priority};
         interrupt::OTG_FS.set_priority(Priority::P5); // USB transport
-        interrupt::USART3.set_priority(Priority::P5); // UART transport
         interrupt::EXTI9_5.set_priority(Priority::P4); // DRV8301 nFAULT
         interrupt::RNG.set_priority(Priority::P6);
         interrupt::TIM2.set_priority(Priority::P6); // embassy time driver
@@ -169,7 +168,7 @@ async fn main(spawner: Spawner) {
     )
     .await;
 
-    // ========== STEP 6: Initialize USB + UART transports ==========
+    // ========== STEP 6: Initialize USB transport ==========
     #[cfg(feature = "transport-usb")]
     let usb_ident = {
         #[cfg(not(feature = "bench-usb-thread"))]
@@ -189,22 +188,10 @@ async fn main(spawner: Spawner) {
         )));
         *protocol::USB_IDENT.get().await
     };
-    #[cfg(feature = "transport-uart")]
-    let (uart_transport, uart_ident) =
-        transport::init_uart(stack, r.uart.usart3, r.uart.pb10, r.uart.pb11);
-    #[cfg(feature = "bench-clock-uart")]
-    spawner.spawn(defmt::unwrap!(diagnostics::uart_clock_task(
-        r.uart.usart3,
-        r.uart.pb10,
-        p.DMA1_CH3
-    )));
-
     // Collect the idents of every registered interface for the state monitor.
     let mut idents: heapless::Vec<u8, 3> = heapless::Vec::new();
     #[cfg(feature = "transport-rtt")]
     let _ = idents.push(rtt_ident);
-    #[cfg(feature = "transport-uart")]
-    let _ = idents.push(uart_ident);
     #[cfg(feature = "transport-usb")]
     let _ = idents.push(usb_ident);
 
@@ -220,20 +207,6 @@ async fn main(spawner: Spawner) {
             rtt_transport.tx
         )));
     }
-    #[cfg(feature = "transport-uart")]
-    {
-        spawner.spawn(defmt::unwrap!(protocol::servers::run_uart_rx(
-            uart_transport.rx_worker,
-            protocol::UART_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-            protocol::UART_SCRATCH_BUF.init_with(|| [0u8; 64]),
-        )));
-        spawner.spawn(defmt::unwrap!(protocol::servers::run_uart_tx(
-            uart_transport.tx,
-            stack,
-            uart_ident
-        )));
-    }
-
     // ========== STEP 8: Initialize Persistent Storage ==========
     let flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH);
     let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
@@ -303,13 +276,13 @@ async fn main(spawner: Spawner) {
     defmt::info!(
         "F405 board=CF2: PWM PA8/PA9/PA10 + PB13/14/15, DRV8301 EN_GATE=PB5, nFAULT=PB7, \
          SPI3 CS/SCK/MISO/MOSI=PC9/PC10/PC11/PC12, halls=PC6/7/8, ADC currents PC0-2, VBUS PC3, \
-         USART3 TX=PB10 RX=PB11"
+         COMM pins reserved for bridge"
     );
     #[cfg(feature = "board-vesc6-mk5")]
     defmt::info!(
         "F405 board=VESC6_MK5: PWM PA8/PA9/PA10 + PB13/14/15, DRV8301 EN_GATE=PB5, nFAULT=PB7, \
          bit-bang SPI CS/SCK/MISO/MOSI=PC9/PC10/PB3/PB4, halls=PC6/7/8, ADC currents PC0-2 \
-         (phase shunts), VBUS PC3, USART3 TX=PB10 RX=PB11, latch PC5, filters PD2/PC13"
+         (phase shunts), VBUS PC3, COMM pins reserved for bridge, latch PC5, filters PD2/PC13"
     );
     let board = config::measured_board();
     defmt::info!(

@@ -115,8 +115,8 @@ Roles are determined by topology, not firmware — disconnect two controllers an
 
 | Board | MCU | Current Sensing | Communication | Gate Driver |
 |-------|-----|-----------------|---------------|-------------|
-| Cheap FOCer 2 | STM32F405RG | DRV8301 (10 V/V) | USB + UART | DRV8301 SPI |
-| Flipsky VESC 6 MK5 | STM32F405RG | DRV8301 (20 V/V) | USB + UART | DRV8301 SPI |
+| Cheap FOCer 2 | STM32F405RG | DRV8301 (10 V/V) | USB, optional RTT | DRV8301 SPI |
+| Flipsky VESC 6 MK5 | STM32F405RG | DRV8301 (20 V/V) | USB, optional RTT; SPI bridge in bring-up | DRV8301 SPI |
 | NUCLEO-G474RE + IHM08M1 | STM32G474RE | External op-amps | USB + LPUART | L6398 |
 
 All platforms: 20 kHz center-aligned PWM, TIM1-triggered injected ADC, Hall polling via TIM6 (5 us, 7-read majority voting), persistent config in internal flash (`sequential-storage` + `postcard`).

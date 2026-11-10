@@ -41,43 +41,6 @@ pub async fn hall_task() {
     }
 }
 
-#[cfg(feature = "bench-clock-uart")]
-embassy_stm32::bind_interrupts!(struct ClockUartIrqs {
-    DMA1_STREAM3 => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::DMA1_CH3>;
-});
-
-/// Hardware clocks every bit; CPU/USB scheduling can only insert inter-burst gaps.
-#[cfg(feature = "bench-clock-uart")]
-#[embassy_executor::task]
-pub async fn uart_clock_task(
-    usart: embassy_stm32::Peri<'static, embassy_stm32::peripherals::USART3>,
-    tx: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PB10>,
-    dma: embassy_stm32::Peri<'static, embassy_stm32::peripherals::DMA1_CH3>,
-) {
-    use embassy_stm32::{
-        interrupt::{InterruptExt, Priority},
-        usart::{Config, UartTx},
-    };
-    embassy_stm32::interrupt::DMA1_STREAM3.set_priority(Priority::P6);
-    let mut config = Config::default();
-    config.baudrate = 100_000;
-    let mut uart = defmt::unwrap!(UartTx::new(usart, tx, dma, ClockUartIrqs, config));
-    defmt::info!(
-        "uartclk: baud=100000 pclk={} brr={} hse={} pll_n={}",
-        embassy_stm32::rcc::frequency::<embassy_stm32::peripherals::USART3>().0,
-        embassy_stm32::pac::USART3.brr().read().0,
-        crate::config::HSE_HZ,
-        crate::config::PLL_N
-    );
-    static PATTERN: [u8; 4096] = [0x55; 4096];
-    loop {
-        if uart.write(&PATTERN).await.is_err() {
-            defmt::error!("UART clock DMA write failed");
-        }
-        embassy_time::Timer::after_millis(20).await;
-    }
-}
-
 #[cfg(any(
     feature = "bench-executor-trace",
     feature = "bench-pwm-commit",
@@ -161,8 +124,6 @@ pub mod trace {
             }
         };
     }
-    #[cfg(feature = "bench-executor-trace")]
-    irq_pair!(UartIrqBegin, UartIrqEnd, USART3, 21);
     #[cfg(feature = "bench-executor-trace")]
     irq_pair!(FaultIrqBegin, FaultIrqEnd, EXTI9_5, 23);
 

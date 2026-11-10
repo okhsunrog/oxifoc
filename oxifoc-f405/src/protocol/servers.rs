@@ -1,13 +1,12 @@
 //! Ergot protocol servers and I/O worker tasks
 
 use embassy_executor::Spawner;
-use embedded_io_async::Write;
 use ergot::{
     exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as usb_kit,
 };
 use heapless::String;
 
-use crate::transport::{AppDriver, Stack, UartRxWorker, UartWriter, UsbQueue, UsbRxWorker};
+use crate::transport::{AppDriver, Stack, UsbQueue, UsbRxWorker};
 use crate::{FAULT_REGISTRY, STATE};
 use core::sync::atomic::Ordering;
 use oxifoc_core::types::HardwareInfo;
@@ -30,11 +29,8 @@ use crate::RUNTIME_CONFIG;
 use crate::calibration::{
     calibrate_hall_ez, measure_flux_linkage_ez, measure_inductance_ez, measure_resistance_ez,
 };
-use crate::config::{
-    BOARD, MAX_PACKET_SIZE, PWM_CONFIG, UART_BAUD, USB_OUT_QUEUE_SIZE, measured_board,
-};
+use crate::config::{BOARD, MAX_PACKET_SIZE, PWM_CONFIG, USB_OUT_QUEUE_SIZE, measured_board};
 use crate::control::foc::VBUS_MV;
-use crate::transport::UART_OUTQ;
 
 // ========== Worker Tasks ==========
 
@@ -120,65 +116,6 @@ pub async fn usb_io_task(
     spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::usb_task(
         transport.raw_ep_in
     )));
-}
-
-/// Worker task for incoming ergot data (UART)
-#[embassy_executor::task]
-pub async fn run_uart_rx(
-    mut rcvr: UartRxWorker,
-    recv_buf: &'static mut [u8],
-    scratch_buf: &'static mut [u8],
-) {
-    use ergot::interface_manager::InterfaceState;
-    loop {
-        let _ = rcvr
-            .run(InterfaceState::Inactive, recv_buf, scratch_buf)
-            .await;
-    }
-}
-
-/// Maximum COBS-encoded frame size
-const MAX_WIRE_BYTES: usize = MAX_PACKET_SIZE + MAX_PACKET_SIZE / 254 + 1;
-
-/// Time to transmit one max-sized frame at the configured baud rate.
-/// 10 bits per byte (8N1). 3x safety margin for interrupt latency.
-const TX_TIMEOUT_US: u64 = (MAX_WIRE_BYTES as u64 * 10 * 1_000_000) / (UART_BAUD as u64) * 3;
-
-/// Worker task for outgoing ergot data (UART COBS stream)
-///
-/// When the interface is not Active, frames are discarded without writing to UART.
-#[embassy_executor::task]
-pub async fn run_uart_tx(mut tx: UartWriter, stack: &'static Stack, uart_ident: u8) {
-    use ergot::interface_manager::{InterfaceState, Profile};
-
-    let consumer = UART_OUTQ.stream_consumer();
-    loop {
-        let grant = consumer.wait_read().await;
-        let len = grant.len();
-
-        let is_active = stack.manage_profile(|im| {
-            matches!(
-                im.interface_state(uart_ident),
-                Some(InterfaceState::Active { .. })
-            )
-        });
-
-        if is_active {
-            let mut remaining = &grant[..];
-            while !remaining.is_empty() {
-                match embassy_time::with_timeout(
-                    embassy_time::Duration::from_micros(TX_TIMEOUT_US),
-                    tx.write(remaining),
-                )
-                .await
-                {
-                    Ok(Ok(n)) => remaining = &remaining[n..],
-                    _ => break,
-                }
-            }
-        }
-        grant.release(len);
-    }
 }
 
 // ========== Protocol Servers ==========

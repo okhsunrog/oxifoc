@@ -19,18 +19,22 @@ bench-probe-read *ARGS:
 replay-hall *ARGS:
     cargo run --release --locked -p oxifoc-host-lib --example replay_hall -- "$@"
 
-mk5_features := "transport-usb,transport-uart,board-vesc6-mk5,task-priority"
+mk5_features := "transport-usb,board-vesc6-mk5,task-priority"
 mk5_bench_features := mk5_features + ",bench-calibrated-clock,bench-clock-reference"
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
 mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
+mk5_probe := "0483:3754:002300203234511537333934"
 mk5_profile_features := mk5_usb_metrics_features + ",bench-trace-excitation,isr-profiling"
 mk5_usb_trace_features := mk5_bench_features + ",bench-hall,bench-executor-trace,isr-timing"
 mk5_pwm_trace_features := mk5_bench_features + ",bench-hall,bench-pwm-commit"
 mk5_netstack_trace_features := mk5_bench_features + ",bench-hall,bench-netstack-trace"
 
-# Input-only connector probe; flashing is deliberately a separate action.
+# Finite connector probe; flashing is deliberately a separate action.
 build-mk5-bridge-pins:
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features board-vesc6-mk5,bench-bridge-pins --bin bridge-pin-probe
+
+build-mk5-bridge-pins-rx:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features board-vesc6-mk5,bench-bridge-pins-rx --bin bridge-pin-probe
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
@@ -157,8 +161,8 @@ build-mk5-bench:
 
 # Build and flash the MK5 bench image; leaves the target running.
 flash-mk5-bench: build-mk5-bench
-    probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
-    probe-rs reset --chip STM32F405RGTx
+    probe-rs download --verify --chip STM32F405RGTx --probe {{ mk5_probe }} {{ mk5_elf }}
+    probe-rs reset --chip STM32F405RGTx --probe {{ mk5_probe }}
 
 build-mk5-usb-metrics:
     cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
