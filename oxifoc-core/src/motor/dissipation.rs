@@ -104,7 +104,12 @@ pub(super) fn dissipate_with_id(
     let k = omega.abs() * model.saliency_h;
     let i_sq = i_max * i_max;
     let d_min = id.abs().min(i_max);
-    let q = iq.abs().min(sqrtf((i_sq - d_min * d_min).max(0.0)));
+    let q_cap = if d_min == 0.0 {
+        i_max
+    } else {
+        sqrtf((i_sq - d_min * d_min).max(0.0))
+    };
+    let q = iq.abs().min(q_cap);
     let p0 = charge_w(w, k, r, q, d_min);
     if p0 <= 0.0 || p0.is_nan() {
         return None;
@@ -115,6 +120,17 @@ pub(super) fn dissipate_with_id(
     }
     let a = allow / 1.5;
     let d_max = id_max.max(d_min).min(i_max);
+
+    // Most low-speed braking requests fit both budgets. If the high-d
+    // endpoint is feasible, the requested q is already maximal; finding
+    // other feasible q intervals cannot improve it. Solve only the d root.
+    // The concave charge curve starts above `allow` at d_min, so this
+    // crossing lies inside [d_min, d_max]. Keep the full search for requests
+    // which actually reach a heat/current-circle boundary.
+    if q * q + d_max * d_max <= i_sq && charge_w(w, k, r, q, d_max) <= allow {
+        let d = required_d(q, w, k, r, a);
+        return Some((-d, iq.signum() * q));
+    }
     let boundary = sqrtf((i_sq - d_max * d_max).max(0.0));
 
     // For fixed q, charging power is concave in d. Its minimum over
@@ -162,12 +178,17 @@ pub(super) fn dissipate_with_id(
     let d = if charge_w(w, k, r, q, d_min) <= allow {
         d_min
     } else {
-        // Positive root of R d² - k q d - (w q - R q² - a) = 0.
-        let b = k * q;
-        let need = (w - r * q) * q - a;
-        (b + sqrtf((b * b + 4.0 * r * need).max(0.0))) / (2.0 * r)
+        required_d(q, w, k, r, a)
     };
     Some((-d, iq.signum() * q))
+}
+
+/// Positive crossing of R d² - k q d - (w q - R q² - a) = 0.
+#[inline]
+fn required_d(q: f32, w: f32, k: f32, r: f32, a: f32) -> f32 {
+    let b = k * q;
+    let need = (w - r * q) * q - a;
+    (b + sqrtf((b * b + 4.0 * r * need).max(0.0))) / (2.0 * r)
 }
 
 #[cfg(test)]
@@ -195,6 +216,32 @@ mod tests {
         frac: 0.0,
         max_w: f32::INFINITY,
     };
+
+    #[test]
+    fn low_speed_braking_keeps_the_requested_torque_with_minimal_heat() {
+        let model = WindingModel {
+            r_ohm: 0.03086,
+            flux_wb: 0.00319,
+            saliency_h: 9.26e-6,
+        };
+        for omega in [-120.0f32, -40.0, 40.0, 120.0] {
+            for q in [0.1, 0.5, 1.0] {
+                let request = -omega.signum() * q;
+                let (id, iq) = dissipate(request, omega, &model, &NONE, 8.0, 10.0).unwrap();
+                assert_eq!(iq, request);
+                assert!(id >= -8.0 && id < 0.0);
+                assert!(id * id + iq * iq <= 100.0);
+                // Independent steady-state dq power, with Lq - Ld as above.
+                let power = |d: f32| {
+                    let vd = model.r_ohm * d - omega * 27.56e-6 * iq;
+                    let vq = model.r_ohm * iq + omega * (18.30e-6 * d + model.flux_wb);
+                    -1.5 * (vd * d + vq * iq)
+                };
+                assert!(power(id).abs() < 1e-5);
+                assert!(power(id * 0.99) > 0.0, "less heat would charge the supply");
+            }
+        }
+    }
 
     #[test]
     fn current_circle_keeps_the_upper_feasible_interval() {
