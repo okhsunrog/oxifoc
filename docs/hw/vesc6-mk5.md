@@ -116,6 +116,16 @@ or production transport recovery. Both ends know each test's length in advance.
 Raw logs and per-run JSON are under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-c5-spi-2026-11-10/qualified/`.
 
+The separate `just bench-mk5-spi-cs-request OUTPUT_DIR` test alternates master
+requests (CS low before C5 arms DMA, with 0/50/500-us preparation delays) and
+slave requests (DMA/READY before CS). Three runs passed 31,200 full-duplex
+transactions with no byte, length or DMA errors at the same rates and lengths.
+Thus arming C5 while CS is already low works on this board, provided STM32
+waits for READY before generating SCLK. This is an electrical handshake test,
+not yet the production idle/wakeup or reset-recovery protocol. Results are in
+the sibling `cs-request/` artifact directory. Restore both production images
+after this finite, motor-inhibited test.
+
 ## Optional CCM placement
 
 F405 feature `ccm` moves only `STATE` and `FOC_DRIVER` (7488 bytes) to

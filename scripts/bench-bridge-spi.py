@@ -31,10 +31,11 @@ def main():
     parser.add_argument("--c5-project", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--cs-request", action="store_true")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     c5_elf = args.c5_project / "target/riscv32imac-unknown-none-elf/release/spi_probe"
-    command("just", "build-spi-probe", cwd=args.c5_project)
+    command("just", "build-spi-cs-probe" if args.cs_request else "build-spi-probe", cwd=args.c5_project)
     symbols = {}
     for line in command("nm", str(STM_ELF), capture_output=True, text=True).stdout.splitlines():
         fields = line.split()
@@ -77,7 +78,7 @@ def main():
             hz, length, frames, errors, hal_errors, elapsed, dma_us, bad = words[case * 8:case * 8 + 8]
             if state != 3 or frames != (10000 if case == 25 else 16) or errors or hal_errors or bad:
                 raise RuntimeError(f"STM32 probe failed: run={run + 1} case={case} state={state}")
-            rows.append(dict(case=case, hz=hz, length=length, frames=frames, errors=errors,
+            rows.append(dict(case=case, cs_request=args.cs_request, hz=hz, length=length, frames=frames, errors=errors,
                              elapsed_us=elapsed, dma_us=dma_us, includes_startup_wait=(case == 0),
                              payload_Bps=length * frames * 1e6 / elapsed if case else None))
         c5_rows = re.findall(

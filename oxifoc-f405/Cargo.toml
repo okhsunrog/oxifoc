@@ -39,6 +39,7 @@ board-vesc6-mk5 = []
 bench-bridge-pins = []
 bench-bridge-pins-rx = ["bench-bridge-pins"]
 bench-bridge-spi = []
+bench-spi-cs-request = ["bench-bridge-spi"]
 # CPU-only FOC state in 64-KiB CCM. DMA buffers and the stack remain in SRAM.
 ccm = []
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.

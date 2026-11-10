@@ -104,6 +104,8 @@ async fn main(_spawner: Spawner) {
     let mut tx = [0u8; 512];
     let mut rx = [0u8; 512];
     let mut seq = 0;
+    #[cfg(feature = "bench-spi-cs-request")]
+    Timer::after_secs(3).await;
     for case in 0..26 {
         let hz = [328_125, 1_312_500, 5_250_000, 10_500_000, 21_000_000][(case / 5).min(4)];
         let len = if case == 25 {
@@ -128,6 +130,12 @@ async fn main(_spawner: Spawner) {
             }
             rx.fill(0xee);
             SPI_BENCH_STATE.store(1, Ordering::Release);
+            // Even slots: master requests by asserting CS before the slave arms.
+            // Odd slots: slave initiates by arming DMA and asserting READY first.
+            #[cfg(feature = "bench-spi-cs-request")]
+            if seq % 2 == 0 {
+                cs.set_low();
+            }
             if !wait_level(&ready, true, if seq == 0 { 60 } else { 5 }).await {
                 SPI_BENCH_STATE.store(4, Ordering::Release);
                 park().await;

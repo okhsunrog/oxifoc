@@ -533,3 +533,10 @@ size:
 clean:
     cargo clean
     for crate in {{ device_crates }} {{ target_test_crates }}; do (cd "$crate" && cargo clean); done
+
+# Finite motor-inhibited test: alternate CS-before-DMA and slave-ready-first.
+build-mk5-spi-cs-probe:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features board-vesc6-mk5,bench-spi-cs-request --bin bridge-spi-probe
+
+bench-mk5-spi-cs-request output: build-mk5-spi-cs-probe
+    uv run --no-project python scripts/bench-bridge-spi.py --cs-request --output {{quote(output)}} --c5-project /home/okhsunrog/code/rust/c5-hello-world
