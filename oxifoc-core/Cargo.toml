@@ -90,6 +90,9 @@ isr-speed = []
 # vd <- instantaneous PLL error). Wire format unchanged — the capture just
 # has to be read with the mapping in mind. Debug builds only.
 obs-debug-telem = []
+# Opt-in observer text logging from the control ISR. Can exceed its deadline;
+# production images should consume telemetry instead.
+observer-logging = []
 
 # Runtime HFI sensorless observer (carrier injection + synchronous demod for
 # low/zero-speed commutation on salient motors). Independent of `hfi-detect`

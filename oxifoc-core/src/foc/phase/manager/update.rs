@@ -22,6 +22,13 @@ use crate::foc::transforms::park;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
 
+/// Diagnostic-only reproduction switch, changed while Stopped by the bench.
+/// Compiled out together with periodic observer logging in normal images.
+#[cfg(feature = "observer-logging")]
+#[unsafe(no_mangle)]
+pub static OBSERVER_LOG_ENABLED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(true);
+
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Whether HFI runs this cycle: carrier injection AND the demod update
     /// — always as a pair (a demod without carrier measures silence, a
@@ -293,20 +300,17 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.observer.update(&obs_input);
         crate::isr_prof::add(&crate::isr_prof::EST_OBS, prof_t0, crate::isr_prof::now());
 
-        // ~2.4 Hz observer-internals trace while the estimate is in motion
-        // (decimated; one atomic RMW per cycle). The estimator sessions keep
-        // needing exactly this: the fast frame only carries the ACTIVE
-        // source's angle/velocity, so a diverging observer riding behind an
-        // open-loop source (startup hold, OpenLoop bench drives) was
-        // invisible — the 2026-07-06 hold-ratchet (observer 219→756 rad/s
-        // at a constant 180 rad/s hold) could only be inferred from confirm
-        // probe logs.
+        // Optional ~2.4 Hz observer text diagnostic. Logging from the ADC
+        // handler can exceed its deadline even at this low average rate;
+        // normal images use telemetry and compile this entire block out.
+        #[cfg(feature = "observer-logging")]
         {
             // Plain field, not an atomic: this runs only in the ISR, and a
             // static AtomicU32 here was a per-cycle LDREX/STREX pair (PC
             // sampling, tier-3 shave).
             self.obs_trace_ticks = self.obs_trace_ticks.wrapping_add(1);
             if self.obs_trace_ticks.is_multiple_of(8192)
+                && OBSERVER_LOG_ENABLED.load(core::sync::atomic::Ordering::Relaxed)
                 && let Some(vel) = self.observer.velocity()
                 && vel.abs() > 20.0
             {

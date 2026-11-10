@@ -312,6 +312,7 @@ where
     // Decimation counters for the ~2.4 Hz ISR traces (observer internals /
     // startup-hold convergence). Plain fields — ISR-only state; statics
     // were per-cycle LDREX/STREX atomics (tier-3 PC sampling).
+    #[cfg(feature = "observer-logging")]
     obs_trace_ticks: u32,
     hold_trace_ticks: u32,
 
