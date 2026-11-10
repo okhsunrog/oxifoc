@@ -405,6 +405,7 @@ fn isr_timing_now() -> u32 {
 /// Triggered by ADC3 JEOC (end of injected conversion sequence).
 /// ADC1, ADC2, ADC3 all start conversion simultaneously on TIM1_CC4.
 #[interrupt]
+#[cfg_attr(feature = "ram-foc", unsafe(link_section = ".data.ram_foc"))]
 fn ADC() {
     static mut SEQ: u32 = 0;
     #[cfg(feature = "bench-cycle-outliers")]

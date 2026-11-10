@@ -84,6 +84,8 @@ detection = ["algorithms", "dep:embassy-futures"]
 # ISR into cross-calls and memcpy'd struct returns (tier-3 PC sampling,
 # 2026-07-07). Device crates enable this; host builds don't need it.
 isr-speed = []
+# Embedded-only SRAM placement; cortex-m-rt copies .data.ram_foc at startup.
+ram-foc = []
 
 # Bench estimator forensics: repurpose three fast-frame columns with
 # observer internals (velocity/erpm <- PLL omega-hat, angle <- phase_pll,

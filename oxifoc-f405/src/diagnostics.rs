@@ -1,5 +1,8 @@
 //! Default-off bench diagnostics. No per-event logging or USB traffic.
 
+#[cfg(feature = "bench-overclock")]
+pub mod clock_stress;
+
 #[cfg(feature = "bench-raw-codec")]
 pub mod codec_bench;
 

@@ -1,6 +1,6 @@
 //! Configuration constants for oxifoc-f405 (per-board `BOARD` const below)
 
-use embassy_stm32::rcc::{Pll, PllMul, PllPDiv, PllPreDiv, PllQDiv};
+use embassy_stm32::rcc::{APBPrescaler, Pll, PllMul, PllPDiv, PllPreDiv, PllQDiv};
 use embassy_sync::once_lock::OnceLock;
 use oxifoc_core::foc::config::{BoardConfig, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
@@ -146,6 +146,8 @@ pub const DEAD_TIME_COMP_LINEAR_CURRENT_A: f32 = 1.0;
 pub struct ClockProfile {
     pub hse_hz: u32,
     pub pll: Pll,
+    pub apb1_pre: APBPrescaler,
+    pub apb2_pre: APBPrescaler,
 }
 
 impl ClockProfile {
@@ -159,10 +161,38 @@ impl ClockProfile {
         self.vco_hz() / (2 * (self.pll.divp.expect("system PLLP required").to_bits() as u32 + 1))
     }
 
-    const fn usb_hz(&self) -> u32 {
-        self.vco_hz() / self.pll.divq.expect("USB PLLQ required").to_bits() as u32
+    const fn clk48_hz(&self) -> u32 {
+        self.vco_hz() / self.pll.divq.expect("PLLQ required").to_bits() as u32
+    }
+
+    const fn apb_hz(&self, pre: APBPrescaler) -> u32 {
+        let bits = pre.to_bits();
+        let divisor = if bits < 4 { 1 } else { 1 << (bits - 3) };
+        self.sys_hz() / divisor
+    }
+
+    pub const fn tim1_hz(&self) -> u32 {
+        let pclk = self.apb_hz(self.apb2_pre);
+        if self.apb2_pre.to_bits() < 4 {
+            pclk
+        } else {
+            pclk * 2
+        }
     }
 }
+
+#[cfg(feature = "bench-overclock")]
+const BENCH_PLL_N: u16 = include!(concat!(env!("OUT_DIR"), "/bench_pll_n.rs"));
+const REDUCED_APB: bool = {
+    #[cfg(feature = "bench-overclock")]
+    {
+        BENCH_PLL_N > 169
+    }
+    #[cfg(not(feature = "bench-overclock"))]
+    {
+        false
+    }
+};
 
 /// Default board clock, or the UUID-guarded bench estimate; never persisted in
 /// runtime calibration. RCC must be configured before that storage is loaded.
@@ -174,14 +204,42 @@ pub const CLOCK_PROFILE: ClockProfile = ClockProfile {
     },
     pll: Pll {
         prediv: PllPreDiv::Div4,
-        mul: if cfg!(feature = "bench-calibrated-clock") {
-            PllMul::Mul169
-        } else {
-            PllMul::Mul168
+        mul: {
+            #[cfg(feature = "bench-overclock")]
+            {
+                PllMul::from_bits(BENCH_PLL_N)
+            }
+            #[cfg(not(feature = "bench-overclock"))]
+            if cfg!(feature = "bench-calibrated-clock") {
+                PllMul::Mul169
+            } else {
+                PllMul::Mul168
+            }
         },
         divp: Some(PllPDiv::Div2),
-        divq: Some(PllQDiv::Div7),
+        divq: Some({
+            #[cfg(feature = "bench-overclock")]
+            {
+                PllQDiv::from_bits(
+                    ((7_944_893 / 4 * BENCH_PLL_N as u32).div_ceil(48_000_000)) as u8,
+                )
+            }
+            #[cfg(not(feature = "bench-overclock"))]
+            {
+                PllQDiv::Div7
+            }
+        }),
         divr: None,
+    },
+    apb1_pre: if REDUCED_APB {
+        APBPrescaler::Div8
+    } else {
+        APBPrescaler::Div4
+    },
+    apb2_pre: if REDUCED_APB {
+        APBPrescaler::Div4
+    } else {
+        APBPrescaler::Div2
     },
 };
 pub const HSE_HZ: u32 = CLOCK_PROFILE.hse_hz;
@@ -189,9 +247,19 @@ pub const HSE_HZ: u32 = CLOCK_PROFILE.hse_hz;
 /// Single source for all cycle-based timing: the ISR cycle budget,
 /// busy-wait delays (DRV8301 tWAKE, bit-bang SPI), load percentages.
 pub const CPU_HZ: u32 = CLOCK_PROFILE.sys_hz();
-const _: () = assert!(CPU_HZ <= 168_000_000);
-const _: () = assert!(CLOCK_PROFILE.usb_hz() >= 47_880_000);
-const _: () = assert!(CLOCK_PROFILE.usb_hz() <= 48_120_000);
+const _: () = assert!(
+    CPU_HZ
+        <= if cfg!(feature = "bench-overclock") {
+            260_000_000
+        } else {
+            168_000_000
+        }
+);
+#[cfg(not(feature = "bench-overclock"))]
+const _: () = assert!(CLOCK_PROFILE.clk48_hz() >= 47_880_000);
+const _: () = assert!(CLOCK_PROFILE.clk48_hz() <= 48_120_000);
+const _: () = assert!(CLOCK_PROFILE.apb_hz(CLOCK_PROFILE.apb1_pre) <= 42_000_000);
+const _: () = assert!(CLOCK_PROFILE.apb_hz(CLOCK_PROFILE.apb2_pre) <= 84_000_000);
 
 // ============================================================================
 // Protocol Configuration

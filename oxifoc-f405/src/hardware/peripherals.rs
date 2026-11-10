@@ -28,8 +28,8 @@ pub fn init_clock() -> Peripherals {
         config.rcc.pll_src = PllSource::Hse;
         config.rcc.pll = Some(crate::config::CLOCK_PROFILE.pll);
         config.rcc.ahb_pre = AHBPrescaler::Div1;
-        config.rcc.apb1_pre = APBPrescaler::Div4;
-        config.rcc.apb2_pre = APBPrescaler::Div2;
+        config.rcc.apb1_pre = crate::config::CLOCK_PROFILE.apb1_pre;
+        config.rcc.apb2_pre = crate::config::CLOCK_PROFILE.apb2_pre;
         config.rcc.sys = Sysclk::Pll1P;
         config.rcc.mux.clk48sel = mux::Clk48sel::Pll1Q;
     }
@@ -41,7 +41,7 @@ pub fn init_clock() -> Peripherals {
     defmt::assert!(
         embassy_stm32::rcc::frequency::<peripherals::TIM1>()
             .0
-            .abs_diff(crate::config::CPU_HZ)
+            .abs_diff(crate::config::CLOCK_PROFILE.tim1_hz())
             <= 2
     );
     // ART accelerator: embassy's F4 RCC init WRITES flash ACR with only the

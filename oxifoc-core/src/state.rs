@@ -968,6 +968,10 @@ where
 // Faults are raised via `PlatformFault::from_category` /
 // `from_hall_kind` — no per-category value parameters.
 #[cfg_attr(feature = "isr-speed", optimize(speed))]
+#[cfg_attr(
+    all(feature = "ram-foc", target_arch = "arm", target_os = "none"),
+    unsafe(link_section = ".data.ram_foc")
+)]
 pub fn run_foc_cycle<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &FaultRegistry<F>,

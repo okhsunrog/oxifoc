@@ -10,6 +10,26 @@ fn main() {
     println!("cargo:rerun-if-changed=ccm.x");
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
+    println!("cargo:rerun-if-env-changed=OXIFOC_BENCH_CPU_MHZ");
+    let requested = std::env::var("OXIFOC_BENCH_CPU_MHZ").ok();
+    let overclock = std::env::var_os("CARGO_FEATURE_BENCH_OVERCLOCK").is_some();
+    assert!(
+        overclock || requested.is_none(),
+        "CPU override requires bench-overclock"
+    );
+    let mhz: u32 = requested.as_deref().unwrap_or("168").parse().unwrap();
+    assert!(
+        [168, 180, 192, 204, 216, 228, 240, 252, 260].contains(&mhz),
+        "unsupported bench clock step"
+    );
+    // Round down. Above 240 MHz the private bench HAL explicitly clamps
+    // FLASH latency at WS7; those steps also overclock flash access itself.
+    let multiplier = mhz * 1_000_000 * 8 / 7_944_893;
+    std::fs::write(
+        std::path::Path::new(&out_dir).join("bench_pll_n.rs"),
+        multiplier.to_string(),
+    )
+    .unwrap();
     generate_ntc_tables(&out_dir);
     println!("cargo:rustc-link-search={out_dir}");
     std::fs::copy("memory.x", std::path::Path::new(&out_dir).join("memory.x")).unwrap();

@@ -161,6 +161,10 @@ where
     ///   released-motor observer).
     #[allow(clippy::too_many_arguments)] // per-cycle scalars, same as the step fns
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
+    #[cfg_attr(
+        all(feature = "ram-foc", target_arch = "arm", target_os = "none"),
+        unsafe(link_section = ".data.ram_foc")
+    )]
     pub(super) fn update_phase_with_applied_voltage(
         &mut self,
         v_alpha_new: f32,

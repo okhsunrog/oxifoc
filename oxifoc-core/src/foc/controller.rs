@@ -795,6 +795,10 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// The `vd` and `vq` fields include the injected voltages.
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
+    #[cfg_attr(
+        all(feature = "ram-foc", target_arch = "arm", target_os = "none"),
+        unsafe(link_section = ".data.ram_foc")
+    )]
     pub fn step_with_injection(
         &mut self,
         currents: (f32, f32, f32),

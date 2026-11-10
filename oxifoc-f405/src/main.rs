@@ -58,9 +58,12 @@ mod protocol;
 #[cfg(any(
     feature = "bench-executor-trace",
     feature = "bench-clock-reference",
+    feature = "bench-overclock",
     feature = "bench-hall"
 ))]
 mod diagnostics;
+#[cfg(all(feature = "bench-overclock", not(feature = "transport-spi")))]
+compile_error!("clock qualification requires the SPI-only MK5 transport");
 mod safety;
 mod sensors;
 mod storage;
@@ -300,6 +303,8 @@ async fn main(spawner: Spawner) {
 
     // 1 Hz ISR-cost stats (same isr/s line format as the g431).
     spawner.spawn(defmt::unwrap!(control::foc::isr_stats_task()));
+    #[cfg(feature = "bench-overclock")]
+    spawner.spawn(defmt::unwrap!(diagnostics::clock_stress::run()));
 
     #[cfg(feature = "board-cf2")]
     defmt::info!(

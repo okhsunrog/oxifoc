@@ -44,6 +44,8 @@ bench-bridge-spi = []
 bench-spi-cs-request = ["bench-bridge-spi"]
 # CPU-only FOC state in 64-KiB CCM. DMA buffers and the stack remain in SRAM.
 ccm = []
+# A/B placement of the ADC handler and major FOC callees in initialized SRAM.
+ram-foc = ["oxifoc-core/ram-foc"]
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
 transport-usb = ["dep:embassy-usb", "ergot/embassy-usb-v0_6", "ergot/nostd-seed-router"]
 transport-spi = ["oxifoc-core/spi-link"]
@@ -68,6 +70,10 @@ transport-rtt = ["ergot/rtt", "ergot/nostd-seed-router"]
 # Bench CPU/transport qualification: calculate active FOC but never enable
 # phase outputs. Default-off; do not use for motor measurements.
 bench-no-phase-outputs = []
+# Device-specific, motor-inhibited clock qualification; never a production default.
+bench-overclock = ["bench-calibrated-clock", "bench-no-phase-outputs", "isr-timing", "embassy-stm32/unchecked-overclocking"]
+# Keep sparse integrity/temperature checks, without saturating spare CPU.
+bench-overclock-light = ["bench-overclock"]
 # Frequency measurement with motor phase A disconnected: permit only leg A.
 # Use DirectVoltage=0 for 50% PWM; Stop and faults still disable everything.
 bench-only-phase-a = []
