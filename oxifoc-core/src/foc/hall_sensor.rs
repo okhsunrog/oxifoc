@@ -10,7 +10,10 @@
 //! - **Explicit direction tracking**: Handles direction reversals cleanly
 //! - **Low-speed threshold**: Disables interpolation below configurable velocity
 
+mod rotor_motion;
+
 use core::f32::consts::TAU;
+use rotor_motion::RotorMotion;
 
 use super::hall_calibration::HallTransitionGeometry;
 use super::sensors::{
@@ -155,6 +158,7 @@ impl PreparedHallCalibration {
 struct HallTimebase {
     ticks_per_sec: core::num::NonZeroU64,
     hz: f32,
+    seconds_per_tick: f32,
 }
 
 impl HallTimebase {
@@ -164,6 +168,7 @@ impl HallTimebase {
         Self {
             ticks_per_sec,
             hz: ticks_per_sec.get() as f32,
+            seconds_per_tick: 1.0 / ticks_per_sec.get() as f32,
         }
     }
 
@@ -222,6 +227,8 @@ pub struct HallSensor {
     last_edge_timing: super::sensors::HallEdgeTiming,
     /// Electrical velocity estimate (rad/s) from last edge
     elec_velocity: f32,
+    /// Travel-consistent speed for the outer loop, separate from edge prediction.
+    rotor_motion: RotorMotion,
     /// Last VALID raw state (1..=6): the sector the rotor was last seen in.
     /// Survives an invalid-state glitch. 0 before the first valid reading.
     valid_raw: u8,
@@ -398,6 +405,7 @@ impl HallSensor {
             last_edge_ticks: None,
             last_edge_timing: super::sensors::HallEdgeTiming::Captured,
             elec_velocity: 0.0,
+            rotor_motion: RotorMotion::default(),
             valid_raw: 0,
             in_glitch: false,
             geometry_resync: false,
@@ -701,6 +709,7 @@ impl HallSensor {
                 self.logical_state = HALL_STATE_TABLE[usize::from(raw_state)];
                 self.base_is_boundary = false;
                 self.geometry_resync = true;
+                self.rotor_motion.reset();
                 return None;
             }
             if self.geometry_resync {
@@ -850,6 +859,15 @@ impl HallSensor {
             }
         }
 
+        if crossed_boundary {
+            self.rotor_motion
+                .cross_boundary(wrap_angle(base - self.calib.advance_rad));
+        } else {
+            // Boot/reference centroids and skipped edges carry no measured
+            // displacement. Start a new physical baseline at the first boundary.
+            self.rotor_motion.reset();
+        }
+
         self.last_edge_ticks = Some(t_ticks);
         self.last_edge_timing = edge_timing;
         self.angle = base;
@@ -942,6 +960,7 @@ impl HallSensor {
         self.geometry = None;
         self.current_sector_width = self.angle_per_state;
         self.geometry_resync = false;
+        self.rotor_motion.reset();
     }
 
     /// Calibrate Hall table using logical-state angles (6-entry table).
@@ -953,6 +972,7 @@ impl HallSensor {
         self.geometry = None;
         self.current_sector_width = self.angle_per_state;
         self.geometry_resync = false;
+        self.rotor_motion.reset();
     }
 
     /// Apply calibration result from `HallCalibrator`
@@ -989,6 +1009,7 @@ impl HallSensor {
         self.angle = self.calib.angle_for_state(self.valid_raw);
         self.base_is_boundary = false;
         self.elec_velocity = 0.0;
+        self.rotor_motion.reset();
         self.direction = Direction::Stopped;
         self.prev_direction = Direction::Stopped;
         self.direction_reversed = false;
@@ -1337,6 +1358,29 @@ impl AngleSensor for HallSensor {
         self.sample_at_mut(now_ticks)
     }
 
+    fn sample_for_control(&mut self, now_ticks: u64) -> Option<super::sensors::ControlAngleSample> {
+        let mut sample = self.sample_at_mut(now_ticks)?;
+        let age = self.time_since_edge_s(now_ticks)?;
+        // This prediction is always measured from a physical boundary, even
+        // when the commutation frame uses a low-speed centroid. Its offset is
+        // bounded to the current sector; it stops advancing without new edges.
+        let offset = if self.base_is_boundary {
+            sample.omega * age
+        } else {
+            0.0
+        };
+        sample.omega = self.rotor_motion.sample(
+            now_ticks,
+            self.timebase.seconds_per_tick,
+            offset,
+            sample.omega,
+        );
+        Some(super::sensors::ControlAngleSample {
+            sample,
+            reference_epoch: 0,
+        })
+    }
+
     fn hall_edge_observation(&self) -> Option<super::sensors::HallEdgeObservation> {
         self.last_edge_ticks
             .map(|ticks| super::sensors::HallEdgeObservation {
@@ -1430,6 +1474,9 @@ impl HallSensorTrait for HallSensor {
 
 #[cfg(test)]
 mod geometry_tests;
+
+#[cfg(test)]
+mod rotor_motion_tests;
 
 #[cfg(test)]
 mod tests {

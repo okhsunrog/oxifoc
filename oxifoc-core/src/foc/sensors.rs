@@ -31,7 +31,9 @@ pub struct AngleSample {
 }
 
 /// A control sample and the angle-reference generation it belongs to.
-/// Raw angle/edge telemetry remains an [`AngleSample`].
+/// `sample.omega` estimates physical rotor motion, not the derivative of a
+/// corrected commutation frame. Hall control samples account for boundary
+/// travel; raw angle/edge telemetry remains an [`AngleSample`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControlAngleSample {
     pub sample: AngleSample,

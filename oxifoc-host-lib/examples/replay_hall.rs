@@ -82,13 +82,15 @@ fn main() -> Result<()> {
             hall.update(edge.raw_state, edge.ticks);
             next += 1;
         }
-        if let (Some(raw), Some(smoothed)) = (hall.sample_at(ticks), hall.sample_at_mut(ticks)) {
+        if let (Some(raw), Some(smoothed)) = (hall.sample_at(ticks), hall.sample_for_control(ticks))
+        {
             serde_json::to_writer(
                 &mut output,
                 &serde_json::json!({
                     "ticks": ticks, "state": capture.edges[next - 1].raw_state,
-                    "angle": smoothed.angle, "raw_angle": raw.angle, "omega": smoothed.omega,
-                    "interpolating": smoothed.omega.abs() * 60.0 / core::f32::consts::TAU >= hall.interp_min_erpm(),
+                    "angle": smoothed.sample.angle, "raw_angle": raw.angle, "omega": smoothed.sample.omega,
+                    "edge_omega": raw.omega,
+                    "interpolating": raw.omega.abs() * 60.0 / core::f32::consts::TAU >= hall.interp_min_erpm(),
                 }),
             )?;
             writeln!(output)?;

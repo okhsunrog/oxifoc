@@ -889,3 +889,21 @@ same artifact directory; `results.json` distinguishes incomplete recordings.
 Final flash configuration, verified after reset: drive 10 A, dq trip 30 A,
 bus draw 5 A, regen 0 A, brake ceiling 5 A, dissipation 0 W, VBUS 8–26 V.
 Controller left Stopped with no faults; motor model and Hall NVM were unchanged.
+
+### Hall travel-consistent speed (2026-11-10)
+
+Control samples now differentiate bounded physical boundary travel with a
+20-ms filter; raw edge speed and the commutation-angle limiter remain separate.
+Captured displacement is accumulated before sampling, including zero net travel
+at a same-boundary reversal. This removes the unbounded integral of the previous
+`sector_width / edge_age` stop estimate. Six trajectory/regression tests cover
+stops, asymmetric rocking, unequal sectors, both directions and missed sample
+cadence; all 692 core/Embassy tests and strict Clippy pass.
+
+Replaying four complete earlier captures changes the mean-speed disagreement
+against net boundary travel from +6.51/-6.95/+1.98/+6.64 rad/s to
++0.14/+0.52/+0.10/-0.67. Finite-window filter lag remains. First hardware runs at
+40 rad/s with PI 0.05/0.05 and 0.01/0.2 still oscillate (13/5 reverse edges,
+4.18/2.44-A dq peaks), without faults; producer losses are 404/392 samples.
+These runs establish neither smooth regulation nor streaming acceptance.
+Artifacts: `motion-*` in the existing `oxifoc-voltage-brake-2026-11-10` directory.

@@ -225,6 +225,8 @@ impl AngleSensor for HallAngleProxy {
         })
     }
 
+    // Keep physical travel, the stateful angle and its epoch coherent under
+    // one lock. Delegating to sample_at_mut would lose the travel estimator.
     fn sample_for_control(&mut self, now_ticks: u64) -> Option<ControlAngleSample> {
         HALL_ESTIMATOR.lock(|est| {
             let mut state = est.borrow_mut();
@@ -232,10 +234,10 @@ impl AngleSensor for HallAngleProxy {
             state
                 .sensor
                 .as_mut()
-                .and_then(|h| h.sample_at_mut(now_ticks))
-                .map(|sample| ControlAngleSample {
-                    sample,
-                    reference_epoch,
+                .and_then(|h| h.sample_for_control(now_ticks))
+                .map(|mut observation| {
+                    observation.reference_epoch = reference_epoch;
+                    observation
                 })
         })
     }
