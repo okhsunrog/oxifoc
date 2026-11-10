@@ -80,17 +80,16 @@ the main sheet connects it to COMM pin 6.
 
 | COMM / controller | STM32 | ESP32-C5 |
 |---|---|---|
-| TX/SCL, pin 6 | PA7, PB10 Hi-Z | GPIO8 |
+| TX/SCL, pin 6 | PA7, PB10 Hi-Z | GPIO7 |
 | ADC1, pin 4 | PA5 | GPIO6 |
 | ADC2, pin 7 | PA6 | GPIO9 |
 | RX/SDA, pin 5 | PB11 | GPIO10 |
 | SERVO signal | PB6 | GPIO0 |
 
-2026-11-10 continuity checks: PA7 output was read correctly through PB10;
-C5 received the SCK/MISO/CS/IRQ patterns. GPIO8 remained low during PA7
-transmission. In reverse, GPIO8 output readback passed all 40 levels locally,
-but neither PA7 nor PB10 observed transitions. Check the TX/SCL-to-GPIO8 wire
-before qualifying SPI DMA.
+The actual TX/SCL wire is connected to **GPIO7**, as confirmed by the owner.
+Initial tests used GPIO8 and therefore did not test that wire. Repeating the
+STM32-to-C5 test with GPIO7 received all 32 five-bit connector codewords;
+PA7 output also read correctly through PB10.
 
 The finite probes keep the gate driver and all phase outputs disabled:
 `just build-mk5-bridge-pins` drives connector patterns while C5 `pin_probe`
