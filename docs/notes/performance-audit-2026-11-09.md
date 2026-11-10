@@ -912,8 +912,8 @@ Artifacts: `motion-*` in the existing `oxifoc-voltage-brake-2026-11-10` director
 section costs, including the due-only velocity update. In `motion-profile-1`,
 the eight longest instrumented ADC bodies were 55.6–58.9 µs: velocity work
 4.35–7.86 µs, estimator work 11.34–12.84 µs, current controller 4.67–4.78 µs.
-Seven of these eight also processed expensive command/gate work or combined
-scheduled work with braking. Detailed profiling adds overhead and lost 26,393
+All eight coincide with the outer velocity update; six also have expensive
+command processing. Detailed profiling adds overhead and lost 26,393
 producer samples; it is not representative streaming acceptance.
 
 Bench Hall images also retain 16 fault-generation/category/speed snapshots,
@@ -923,3 +923,23 @@ restoration. This closes the evidence gap where the host saw a changed registry
 generation but no remaining active fault. The older `motion-forward120-2` run
 had that gap (generation 2, startup feedback 190 rad/s versus a 180-rad/s
 rolloff); speed derating is inferred there, not a captured fault-category fact.
+
+The completed matrix repeats +40, -40, +120, -120 and 120→40 electrical rad/s
+three times each. Net Hall-boundary speeds over the settled windows are
+23.84–24.97, -26.37–-25.98, 119.64–120.12 and -120.06–-119.63 rad/s;
+the step's low-speed segment averages 37.82–40.71 but still oscillates.
+Every ±40 run has 11–13 reverse transitions. Removing dissipative Id in two
+matched ±40 checks still gives 11/8 reversals and 4.00/3.85-A dq peaks:
+braking Id alone does not explain the remaining low-speed problem.
+
+The matrix received 1,169,105 native samples but lost 39,675 at the producer
+(320–7,090 per run), with zero reported host drops and 234/234 commands
+acknowledged. Minimal timing reports 41.4–43.0-µs moving means and
+53.2–58.4-µs maxima; the 50-µs deadline remains unqualified. The first eight
+runs use `motion-off.elf`; the remaining seven add the fault recorder in
+`motion-events.elf`. On reverse120 #3 it directly captures speed Derating
+at -185.04 rad/s and clearing at -175.55. Forward120 #2 remains the older
+unclassified transient, not a clean run. Full Hall traces, exact images,
+loss metadata and visually inspected matrix/coast/profile plots are retained
+in `motion-suite-results.json`, `motion-suite.png`, `motion-coast-*.png` and
+`motion-profile.png` under the same artifact directory. No NVM writes.
