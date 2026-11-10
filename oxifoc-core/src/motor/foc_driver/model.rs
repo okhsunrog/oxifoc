@@ -67,6 +67,7 @@ impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C
             return Err(MotorModelError::Busy);
         }
         if self.phase.apply_hall_calibration(prepared) {
+            self.invalidate_velocity();
             Ok(())
         } else {
             Err(MotorModelError::Unsupported)
@@ -94,6 +95,7 @@ impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C
             .set_voltage_feedforward_mode(model.voltage_feedforward_mode);
         self.controller.reset();
         self.set_current_limits(model.limits);
+        self.invalidate_velocity();
         Ok(source)
     }
 }

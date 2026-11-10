@@ -266,6 +266,8 @@ where
     // State
     output: PhaseOutput,
     rotor_velocity: Option<RotorVelocityEstimate>,
+    motion_reference_epoch: super::MotionReferenceEpoch,
+    hall_reference_epoch: Option<u32>,
     manual_angle: f32,
     open_loop_angle: f32,
     open_loop_velocity: f32,

@@ -19,6 +19,16 @@ pub struct PhaseOutput {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RotorVelocityEstimate(f32);
 
+/// Generation of the physical-motion reference, independent of ordinary samples.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MotionReferenceEpoch(u32);
+
+impl MotionReferenceEpoch {
+    pub fn advance(&mut self) {
+        self.0 = self.0.wrapping_add(1);
+    }
+}
+
 impl RotorVelocityEstimate {
     /// A finite electrical angular velocity in rad/s. Zero is a usable estimate.
     pub fn new(electrical_rad_s: f32) -> Option<Self> {
@@ -122,6 +132,13 @@ pub struct PhaseInput {
 /// current vector `ω·dt` off the q axis while the controller's own frame
 /// reports id = 0 (see `commutation_frame_tracks_rotor_at_sample_instant`).
 pub trait PhaseProvider {
+    /// Increment on accepted reference/source/model changes or discontinuous
+    /// fallback changes. Ordinary sensor edges and continuous blending retain
+    /// their epoch. Immutable simple providers may keep the default generation.
+    fn motion_reference_epoch(&self) -> MotionReferenceEpoch {
+        MotionReferenceEpoch::default()
+    }
+
     /// Physical velocity from the selected sensor/estimator, before corrections
     /// used only to move the commutation frame. `None` means unavailable, not
     /// zero. Commanded manual/open-loop motion must not claim a measurement.

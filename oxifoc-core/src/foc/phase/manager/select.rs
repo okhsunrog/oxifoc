@@ -45,6 +45,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         hall_velocity: Option<RotorVelocityEstimate>,
         encoder_sample: Option<AngleSample>,
         dt: f32,
+        observer_was_ready: bool,
     ) -> PhaseOutput {
         self.rotor_velocity = None;
         // A live hall sample retakes commutation from the recovery
@@ -139,7 +140,13 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                     return self.try_observer_fallback().unwrap_or(self.output);
                 }
                 let sensor = hall_sample.unwrap_or(self.output);
-                self.blend_with_observer(sensor, hall_velocity, blend_low, blend_high)
+                self.blend_with_observer(
+                    sensor,
+                    hall_velocity,
+                    blend_low,
+                    blend_high,
+                    observer_was_ready,
+                )
             }
 
             PhaseSource::EncoderToObserver {
@@ -148,7 +155,13 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             } => {
                 let sensor = sample_to_output(encoder_sample, &self.output);
                 let velocity = encoder_sample.and_then(|s| RotorVelocityEstimate::new(s.omega));
-                self.blend_with_observer(sensor, velocity, blend_low, blend_high)
+                self.blend_with_observer(
+                    sensor,
+                    velocity,
+                    blend_low,
+                    blend_high,
+                    observer_was_ready,
+                )
             }
 
             // Both estimator slots run concurrently; the output blends from
@@ -339,10 +352,16 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         sensor_velocity: Option<RotorVelocityEstimate>,
         blend_low: f32,
         blend_high: f32,
+        observer_was_ready: bool,
     ) -> PhaseOutput {
         // An unconverged observer must not pull the output anywhere — the
         // sensor stays authoritative until the observer is actually locked.
         if !self.observer.is_ready() {
+            // Loss of a previously usable estimator is a reference/trust
+            // boundary, even if its last blend weight happened to be zero.
+            if observer_was_ready {
+                self.motion_reference_epoch.advance();
+            }
             self.rotor_velocity = sensor_velocity;
             return sensor;
         }
@@ -366,6 +385,13 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             });
         if reseeded {
             self.observer.seed(sensor.angle, sensor.velocity);
+        }
+        // Continuous blend evolution keeps its epoch. A readiness gate or a
+        // phase reseed can instead introduce/remove an existing contribution
+        // discontinuously; a held outer-loop request must not span that event.
+        // Readiness gained at zero weight still leaves the sensor untouched.
+        if blend > 0.0 && (!observer_was_ready || reseeded) {
+            self.motion_reference_epoch.advance();
         }
 
         if let (Some(obs_angle), Some(obs_vel)) = (self.observer.phase(), self.observer.velocity())

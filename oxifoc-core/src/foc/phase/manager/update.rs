@@ -70,6 +70,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 // ============================================================================
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H, E, S> {
+    fn motion_reference_epoch(&self) -> super::super::MotionReferenceEpoch {
+        self.motion_reference_epoch
+    }
+
     fn rotor_velocity(&self) -> Option<super::RotorVelocityEstimate> {
         if self.startup.is_active() || self.open_loop_override.active {
             None
@@ -114,6 +118,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         let Some(update) = self.hall.apply_prepared_hall_calibration(prepared) else {
             return false;
         };
+        self.motion_reference_epoch.advance();
         self.rotor_velocity = None;
         self.hall_control_motion.reset();
         if let Some(sample) = update.sample {
@@ -164,6 +169,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
 
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn update(&mut self, input: &PhaseInput, now_ticks: u64) {
+        let previous_hall_health = self.hall_health;
+        let previous_crossover = self.crossover_latched;
+        let observer_was_ready = matches!(
+            self.source,
+            PhaseSource::HallToObserver { .. } | PhaseSource::EncoderToObserver { .. }
+        ) && self.observer.is_ready();
         // Sample hardware sensors — only for sources that consume them. The
         // stateful path matters for hall: it carries the rate limiter that
         // smooths sector-edge discontinuities. A stale hall (edges stopped
@@ -220,6 +231,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // when Stopped calls us at dt * 4).
         let mut hall_velocity = None;
         let hall_sample = if let Some(sample) = hall_sample {
+            if self.hall_reference_epoch != Some(sample.reference_epoch) {
+                self.hall_reference_epoch = Some(sample.reference_epoch);
+                self.motion_reference_epoch.advance();
+            }
             let native_velocity = super::RotorVelocityEstimate::new(sample.sample.omega);
             self.hall_control_motion
                 .observe(sample, now_ticks, self.output.velocity)
@@ -495,8 +510,24 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.update_open_loop_override(input.dt);
 
         // Compute output based on source (with potential fallback)
-        self.output =
-            self.compute_phase_with_fallback(hall_sample, hall_velocity, encoder_sample, input.dt);
+        self.output = self.compute_phase_with_fallback(
+            hall_sample,
+            hall_velocity,
+            encoder_sample,
+            input.dt,
+            observer_was_ready,
+        );
+        let hall_reference_active = matches!(
+            self.source,
+            PhaseSource::Hall | PhaseSource::HallToObserver { .. }
+        ) || (matches!(self.source, PhaseSource::HfiToHall { .. })
+            && self.crossover_latched);
+        if (hall_reference_active
+            && (self.hall_health == HallHealth::Ok) != (previous_hall_health == HallHealth::Ok))
+            || self.crossover_latched != previous_crossover
+        {
+            self.motion_reference_epoch.advance();
+        }
         crate::isr_prof::add(&crate::isr_prof::EST_OUT, prof_t1, crate::isr_prof::now());
     }
 

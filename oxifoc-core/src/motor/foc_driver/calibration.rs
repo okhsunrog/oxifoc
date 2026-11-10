@@ -41,6 +41,7 @@ where
             }
         }
         self.current_offset.start(request)?;
+        self.invalidate_velocity();
         self.current_offset_outcome = None;
         // Establish the safe topology synchronously. The first calibration
         // step will select its measurement topology and begin the settle wait.

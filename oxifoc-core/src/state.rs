@@ -717,7 +717,7 @@ where
                 // configured). On success mirror the active source into the
                 // shared state so the host can read it back via telemetry —
                 // an invalid request simply leaves the source unchanged.
-                if foc.phase_mut().request_source(source) {
+                if foc.request_phase_source(source) {
                     critical_section::with(|cs| {
                         state_mutex.borrow(cs).borrow_mut().phase_source = source;
                     });

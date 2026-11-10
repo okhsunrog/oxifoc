@@ -341,6 +341,97 @@ fn ready_observer_fallback_publishes_its_own_velocity_but_startup_does_not() {
     assert_eq!(rotor_speed(&manager), None);
 }
 
+#[test]
+fn motion_epoch_changes_on_hall_hybrid_fallback_but_not_ordinary_samples() {
+    for source in [
+        PhaseSource::Hall,
+        PhaseSource::HallToObserver {
+            blend_low: 250.0,
+            blend_high: 350.0,
+        },
+    ] {
+        let mut manager = PhaseManager::with_hall(VelocitySensor::new());
+        let input = prime_observer(&mut manager);
+        manager.set_source(source).unwrap();
+        manager.hall_mut().set(0.4, 80.0);
+        manager.update(&input, 50);
+        let hall_epoch = manager.motion_reference_epoch();
+        manager.hall_mut().set(0.5, 80.0);
+        manager.update(&input, 100);
+        assert_eq!(manager.motion_reference_epoch(), hall_epoch);
+        manager.hall_mut().sample = None;
+        manager.update(&input, 150);
+        let fallback_epoch = manager.motion_reference_epoch();
+        assert_ne!(fallback_epoch, hall_epoch);
+        assert!(manager.rotor_velocity().is_some());
+        manager.update(&input, 200);
+        assert_eq!(manager.motion_reference_epoch(), fallback_epoch);
+        manager.hall_mut().set(0.6, 80.0);
+        manager.update(&input, 250);
+        assert_ne!(manager.motion_reference_epoch(), fallback_epoch);
+    }
+}
+
+#[test]
+fn hybrid_observer_readiness_and_active_reseed_are_reference_boundaries() {
+    use crate::foc::phase::{BackEmfObserver, Observer};
+    for (blend_low, blend_high, contributes) in [(250.0, 350.0, false), (10.0, 50.0, true)] {
+        let mut manager = PhaseManager::with_hall(VelocitySensor::new());
+        update_hall(&mut manager, 0, 0.8, 200.0);
+        let mut observer = BackEmfObserver::new(0.1, 100e-6, 0.02);
+        observer.force_phase(0.8);
+        // A coherent seed just below the speed gate becomes ready in the
+        // real observer update, rather than importing readiness by a setter.
+        observer.set_velocity(crate::foc::phase::observer::READY_MIN_VELOCITY.next_down());
+        manager.set_observer(Observer::BackEmf(observer));
+        manager
+            .set_source(PhaseSource::HallToObserver {
+                blend_low,
+                blend_high,
+            })
+            .unwrap();
+        assert!(!manager.observer.is_ready());
+        let before = manager.motion_reference_epoch();
+        let (sin, cos) = 0.8_f32.sin_cos();
+        manager.update(
+            &PhaseInput {
+                v_alpha: -4.0 * sin,
+                v_beta: 4.0 * cos,
+                ..input()
+            },
+            50,
+        );
+        assert!(manager.observer.is_ready());
+        assert_eq!(manager.motion_reference_epoch() != before, contributes);
+
+        let before = manager.motion_reference_epoch();
+        manager.compute_phase_with_fallback(
+            Some(PhaseOutput {
+                angle: 0.8 + core::f32::consts::PI,
+                velocity: 30.0,
+            }),
+            RotorVelocityEstimate::new(30.0),
+            None,
+            input().dt,
+            true,
+        );
+        assert_eq!(manager.motion_reference_epoch() != before, contributes);
+
+        // Removing a previously ready estimator is deliberately conservative,
+        // even at zero weight; it is a health boundary, not smooth blending.
+        manager.observer.reset();
+        let before = manager.motion_reference_epoch();
+        manager.compute_phase_with_fallback(
+            Some(PhaseOutput::default()),
+            RotorVelocityEstimate::new(0.0),
+            None,
+            input().dt,
+            true,
+        );
+        assert_ne!(manager.motion_reference_epoch(), before);
+    }
+}
+
 #[cfg(feature = "hfi")]
 #[test]
 fn downward_hfi_reseed_does_not_publish_copied_frame_velocity() {
@@ -384,6 +475,7 @@ fn downward_hfi_reseed_does_not_publish_copied_frame_velocity() {
         RotorVelocityEstimate::new(10.0),
         None,
         input().dt,
+        false,
     );
     assert!(!manager.crossover_latched);
     assert_eq!(out.velocity, 123.0); // The commutation handoff is unchanged.

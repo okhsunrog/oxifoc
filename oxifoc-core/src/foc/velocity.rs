@@ -29,6 +29,36 @@ use crate::storage::VelocityConfigStored;
 /// to come back to the rotor.
 const HOLD_LEAD_S: f32 = 0.1;
 
+/// Directions in which the actuator was blocked during a controller interval.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct VelocityBlockage(u8);
+
+impl VelocityBlockage {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+
+    pub(crate) fn positive(self) -> bool {
+        self.0 & 1 != 0
+    }
+
+    pub(crate) fn negative(self) -> bool {
+        self.0 & 2 != 0
+    }
+
+    pub(crate) fn note_clip(&mut self, clip: f32) {
+        if clip > 0.0 {
+            self.0 |= 1;
+        } else if clip < 0.0 {
+            self.0 |= 2;
+        }
+    }
+
+    fn blocks(self, movement: f32) -> bool {
+        (movement > 0.0 && self.0 & 1 != 0) || (movement < 0.0 && self.0 & 2 != 0)
+    }
+}
+
 /// Slew-rate limiter: a value that moves toward a target at a bounded rate.
 ///
 /// Used as the velocity-reference ramp (accel/decel limit). `rate <= 0` or
@@ -222,6 +252,13 @@ impl VelocityLoop {
         self.last_iq
     }
 
+    /// Account for the previous interval's granted-minus-requested current.
+    pub(crate) fn track_grant(&mut self, correction: f32) {
+        if correction.is_finite() {
+            self.pi.track_output(correction);
+        }
+    }
+
     /// One cycle. `iq_limit` is the current-limit magnitude (A); `<= 0` or
     /// non-finite means unlimited (mirrors `CurrentLimits` semantics — the
     /// downstream `clamp_targets` is still the real ceiling).
@@ -262,6 +299,20 @@ impl VelocityLoop {
         blocked: f32,
         dt: f32,
     ) -> f32 {
+        let mut blockage = VelocityBlockage::default();
+        blockage.note_clip(blocked);
+        self.step_with_blockage(omega_target, omega_meas, iq_min, iq_max, blockage, dt)
+    }
+
+    pub(crate) fn step_with_blockage(
+        &mut self,
+        omega_target: f32,
+        omega_meas: f32,
+        iq_min: f32,
+        iq_max: f32,
+        blockage: VelocityBlockage,
+        dt: f32,
+    ) -> f32 {
         let ref_prev = self.ramp.value();
         let mut omega_ref = self.ramp.step(omega_target, dt);
         // With the actuator at its limit in the direction the reference is
@@ -272,8 +323,9 @@ impl VelocityLoop {
         // lower command took effect (sim: told to slow down from a target
         // past top speed, the motor held top speed for 6 s).
         let moved = omega_ref - ref_prev;
-        let stuck = (moved > 0.0 && (blocked > 0.0 || self.saturated > 0.0))
-            || (moved < 0.0 && (blocked < 0.0 || self.saturated < 0.0));
+        let stuck = blockage.blocks(moved)
+            || (moved > 0.0 && self.saturated > 0.0)
+            || (moved < 0.0 && self.saturated < 0.0);
         if self.cfg.accel_limit > 0.0 && stuck {
             let lead = self.cfg.accel_limit * HOLD_LEAD_S;
             omega_ref = if moved > 0.0 {
@@ -315,6 +367,40 @@ mod tests {
     use super::*;
 
     const DT: f32 = 1.0 / 20_000.0;
+
+    #[test]
+    fn interval_tracking_charges_the_integrator_but_not_a_proportional_loop() {
+        for ki in [0.0, 1.0] {
+            let mut loop_ = VelocityLoop::new(VelocityLoopConfig {
+                kp: 1.0,
+                ki,
+                accel_limit: 0.0,
+                accel_ff: 0.0,
+            });
+            assert_eq!(loop_.step_clamped(2.0, 0.0, -3.0, 3.0, 0.0), 2.0);
+            loop_.track_grant(-1.0);
+            assert_eq!(loop_.step_clamped(2.0, 0.0, -3.0, 3.0, 0.0), 2.0 - ki);
+        }
+    }
+
+    #[test]
+    fn both_blocked_directions_limit_reference_lead() {
+        let mut blocked = VelocityBlockage::default();
+        blocked.note_clip(1.0);
+        blocked.note_clip(-1.0);
+        for sign in [-1.0, 1.0] {
+            let mut loop_ = VelocityLoop::new(VelocityLoopConfig {
+                kp: 1.0,
+                ki: 0.0,
+                accel_limit: 10.0,
+                accel_ff: 0.0,
+            });
+            assert_eq!(
+                loop_.step_with_blockage(sign * 100.0, 0.0, -100.0, 100.0, blocked, 1.0),
+                sign
+            );
+        }
+    }
 
     #[test]
     fn slew_limiter_bounds_rate() {

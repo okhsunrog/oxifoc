@@ -4,6 +4,8 @@ use super::*;
 mod live_hall_tests;
 #[path = "rotor_velocity_tests.rs"]
 mod rotor_velocity_tests;
+#[path = "scheduled_velocity_tests.rs"]
+mod scheduled_velocity_tests;
 #[path = "scoped_pi_tests.rs"]
 mod scoped_pi_tests;
 #[path = "torque_grant_tests.rs"]

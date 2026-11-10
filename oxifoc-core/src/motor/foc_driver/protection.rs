@@ -485,6 +485,7 @@ where
     /// Apply derating configuration (boot / live config write).
     pub fn set_derating(&mut self, cfg: DeratingConfig) {
         self.protection.configure(cfg);
+        self.velocity_schedule.clear_request();
     }
 
     /// Current derating configuration.

@@ -18,6 +18,7 @@ mod modes;
 pub use model::{MotorModelError, PreparedMotorModel};
 mod protection;
 mod step;
+mod velocity_schedule;
 mod watchdog;
 
 #[cfg(test)]
@@ -45,6 +46,7 @@ use crate::foc::trig::SinCos;
 use crate::foc::velocity::VelocityLoop;
 use actuation::ActuationModel;
 use protection::ProtectionMonitor;
+use velocity_schedule::VelocitySchedule;
 use watchdog::CommandWatchdog;
 
 use crate::motor::failsafe::FailsafeConfig;
@@ -252,6 +254,10 @@ where
     velocity_loop: VelocityLoop,
     /// A fresh physical speed is needed before resuming the outer integrator.
     velocity_feedback_available: bool,
+    /// Native-rate sample-and-hold around the scheduled cruise controller.
+    velocity_schedule: VelocitySchedule,
+    /// Last final q-current grant, after all target/trust/torque clamps.
+    last_granted_iq: f32,
     /// The rotor's unwrapped electrical position, followed every cycle in
     /// every mode (the frame of `PositionControl` targets: 0 at boot).
     position: PositionTracker,

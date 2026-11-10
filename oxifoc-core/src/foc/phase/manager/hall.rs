@@ -105,6 +105,7 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Set Hall calibration table
     pub fn set_hall_calibration(&mut self, table: [f32; 6]) {
         self.hall.set_calibration(table);
+        self.motion_reference_epoch.advance();
         self.hall_control_motion.reset();
         self.rotor_velocity = None;
     }
@@ -113,6 +114,7 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     pub fn apply_hall_calibration(&mut self, result: &HallCalibrationResult) -> bool {
         let applied = self.hall.apply_calibration(result);
         if applied {
+            self.motion_reference_epoch.advance();
             self.hall_control_motion.reset();
             self.rotor_velocity = None;
         }
@@ -135,6 +137,7 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         self.hall.set_advance(advance_rad);
         if changed {
             // A new commutation-frame offset is not rotor motion.
+            self.motion_reference_epoch.advance();
             self.hall_control_motion.reset();
             self.rotor_velocity = None;
         }

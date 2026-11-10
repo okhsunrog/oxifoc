@@ -215,6 +215,11 @@ impl ClampedPI {
         self.max = max;
     }
 
+    /// Track an external actuator's output residual once per controller step.
+    pub(crate) fn track_output(&mut self, correction: f32) {
+        self.pi.apply_anti_windup(correction);
+    }
+
     /// Reset the integral term to zero
     pub fn reset(&mut self) {
         self.pi.reset();

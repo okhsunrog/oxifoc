@@ -1,18 +1,22 @@
 //! One control cycle for each `ControlMode` arm.
 
-use super::protection::TorqueConstraints;
 use super::{ControlMode, FocDriver, STARTUP_MIN_DRIVE_A, StepError, VOLTAGE_LIMITED_IQ_MARGIN_A};
 use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
 use crate::foc::fast_math::sqrtf;
 use crate::foc::phase::PhaseProvider;
-use crate::foc::phase::RotorVelocityEstimate;
 use crate::foc::pwm::PhasePwm;
 use crate::foc::pwm::PhaseState;
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::transforms::park;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
+
+#[derive(Clone, Copy)]
+enum CurrentFeedback {
+    Ignore,
+    Cruise,
+}
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
@@ -130,73 +134,87 @@ where
         dt: f32,
         now_ticks: u64,
     ) -> Result<FocOutput, StepError> {
-        // Position still unwraps the commutation angle. Separating velocity
-        // feedback does not remove frame corrections from that position estimate.
-        let err = self.position_target.minus(self.position.position());
-        let decel = self.velocity_loop.config().accel_limit;
-        let omega_target = self.position_cfg.speed_for(err, decel);
-        self.step_velocity_control(omega_target, dt, now_ticks)
+        self.step_scheduled_velocity(None, dt, now_ticks)
     }
 
-    /// Execute one velocity-control cycle: the cruise loop turns the ω
-    /// target into an iq command (slew-limited reference + clamped PI, see
-    /// [`crate::foc::velocity`]), routed through the normal current loop so
-    /// the current-limit clamp and overcurrent trip still apply.
+    /// Execute one native current step, evaluating cruise once per 1 ms grid
+    /// period without replaying missed updates.
     pub(super) fn step_velocity_control(
         &mut self,
         target_vel: f32,
         dt: f32,
         now_ticks: u64,
     ) -> Result<FocOutput, StepError> {
-        // Velocity needs a usable estimate; a source that can't track (e.g.
-        // a back-EMF observer below its speed floor) makes the loop
-        // integrate garbage. Degrade to zero torque while staying in the
-        // mode instead of hard-stopping: a sensorless cruise that dips
-        // below the floor coasts, and resumes by itself once motion (push,
-        // downhill) brings the observer back into lock — an Err here would
-        // kick the driver to Stopped and require a fresh host command.
-        // Hall/encoder sources are always trustworthy, so a sensored ride
-        // never takes this branch.
+        self.step_scheduled_velocity(Some(target_vel), dt, now_ticks)
+    }
+
+    fn velocity_target(&self, target: Option<f32>) -> f32 {
+        target.unwrap_or_else(|| {
+            let error = self.position_target.minus(self.position.position());
+            self.position_cfg
+                .speed_for(error, self.velocity_loop.config().accel_limit)
+        })
+    }
+
+    fn step_scheduled_velocity(
+        &mut self,
+        target: Option<f32>,
+        dt: f32,
+        now_ticks: u64,
+    ) -> Result<FocOutput, StepError> {
+        // These gates remain native-rate. A held cruise request must never
+        // outlive a usable physical speed or the commutation owner's trust.
         if !self.phase.angle_trustworthy() {
-            // Keep the loop bumpless for re-entry: reference parked at the
-            // (unreliable, but best-known) measured velocity, integrator
-            // cleared — no stale torque step when lock returns.
-            self.velocity_loop.reset(
-                self.phase
-                    .rotor_velocity()
-                    .map_or(0.0, RotorVelocityEstimate::electrical_rad_s),
-            );
-            self.velocity_feedback_available = false;
+            self.invalidate_velocity();
             return self.step_current_control(0.0, 0.0, dt, now_ticks);
         }
-        // While the cold-start sequencer owns commutation, the PI must not
-        // run: the rotor sits below the cruise target for the whole ramp
-        // and the integrator banks amps of torque command against the I/f
-        // frame (bench 2026-07-07, velmode-1: |i| = 6.6 A by handoff → OC
-        // into the confirm probe). Hold the loop reset (bumpless engage at
-        // handoff) and drive the startup at its proven capture current.
         if self.phase.is_starting() {
-            self.velocity_loop.reset(
-                self.phase
-                    .rotor_velocity()
-                    .map_or(0.0, RotorVelocityEstimate::electrical_rad_s),
-            );
-            self.velocity_feedback_available = false;
-            let dir = if target_vel < 0.0 { -1.0 } else { 1.0 };
-            return self.step_current_control(dir * STARTUP_MIN_DRIVE_A, 0.0, dt, now_ticks);
+            self.invalidate_velocity();
+            let direction = if self.velocity_target(target) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            return self.step_current_control(direction * STARTUP_MIN_DRIVE_A, 0.0, dt, now_ticks);
         }
         let Some(velocity) = self.phase.rotor_velocity() else {
-            // A held/manual/startup commutation frame is not a rotor-speed
-            // measurement. Keep the integrator empty until one is available.
-            self.velocity_loop.reset(0.0);
-            self.velocity_feedback_available = false;
+            self.invalidate_velocity();
             return self.step_current_control(0.0, 0.0, dt, now_ticks);
         };
         let omega = velocity.electrical_rad_s();
-        if !self.velocity_feedback_available {
+        let epoch = self.phase.motion_reference_epoch();
+        if !self.velocity_feedback_available || !self.velocity_schedule.matches_epoch(epoch) {
             self.velocity_loop.reset(omega);
+            self.velocity_schedule.rearm(epoch);
             self.velocity_feedback_available = true;
         }
+        match self.velocity_schedule.begin_cycle(now_ticks) {
+            super::velocity_schedule::VelocityTick::Hold => {}
+            super::velocity_schedule::VelocityTick::Update { dt } => {
+                self.update_velocity_request(target, omega, dt);
+            }
+            super::velocity_schedule::VelocityTick::Reanchor => {
+                self.velocity_loop.reset(omega);
+                self.velocity_schedule.rearm(epoch);
+            }
+        }
+        let requested = self.velocity_schedule.requested_iq();
+        self.step_current_control_with_feedback(
+            requested,
+            0.0,
+            dt,
+            now_ticks,
+            CurrentFeedback::Cruise,
+        )
+    }
+
+    // Keep authority, position P, slew and PI register pressure off the held
+    // current path. Only this due-only helper sees the elapsed outer-loop dt.
+    #[inline(never)]
+    fn update_velocity_request(&mut self, target: Option<f32>, omega: f32, dt: f32) {
+        let target_vel = self.velocity_target(target);
+        let (tracking, mut blockage, mut voltage_clip) = self.velocity_schedule.take_feedback();
+        self.velocity_loop.track_grant(tracking);
         // The derating speed ceiling also caps the cruise reference: the
         // current-side rolloff alone would leave the PI winding up against
         // an unreachable target.
@@ -229,30 +247,24 @@ where
         let constraints = self.torque_constraints(self.torque_speed());
         let iq_min = self.grant_torque_constrained(0.0, -full, &constraints).1;
         let iq_max = self.grant_torque_constrained(0.0, full, &constraints).1;
-        let clip = self.controller.q_voltage_clip();
-        let (iq_min, iq_max) = if clip > 0.0 {
-            (
-                iq_min,
-                iq_max.min(self.last_iq_meas.max(0.0) + VOLTAGE_LIMITED_IQ_MARGIN_A),
-            )
-        } else if clip < 0.0 {
-            (
-                iq_min.max(self.last_iq_meas.min(0.0) - VOLTAGE_LIMITED_IQ_MARGIN_A),
-                iq_max,
-            )
+        voltage_clip.note_clip(self.controller.q_voltage_clip());
+        blockage.merge(voltage_clip);
+        let iq_max = if voltage_clip.positive() {
+            iq_max.min(self.last_iq_meas.max(0.0) + VOLTAGE_LIMITED_IQ_MARGIN_A)
         } else {
-            (iq_min, iq_max)
+            iq_max
+        };
+        let iq_min = if voltage_clip.negative() {
+            iq_min.max(self.last_iq_meas.min(0.0) - VOLTAGE_LIMITED_IQ_MARGIN_A)
+        } else {
+            iq_min
         };
         let iq_target = self
             .velocity_loop
-            .step_blocked(target_vel, omega, iq_min, iq_max, clip, dt);
-        self.step_current_control_with_constraints(
-            iq_target,
-            0.0,
-            dt,
-            now_ticks,
-            Some(&constraints),
-        )
+            .step_with_blockage(target_vel, omega, iq_min, iq_max, blockage, dt);
+        if !self.velocity_schedule.set_request(iq_target) {
+            self.invalidate_velocity();
+        }
     }
 
     /// Execute current control step
@@ -264,17 +276,23 @@ where
         dt: f32,
         now_ticks: u64,
     ) -> Result<FocOutput, StepError> {
-        self.step_current_control_with_constraints(iq_target, id_target, dt, now_ticks, None)
+        self.step_current_control_with_feedback(
+            iq_target,
+            id_target,
+            dt,
+            now_ticks,
+            CurrentFeedback::Ignore,
+        )
     }
 
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
-    fn step_current_control_with_constraints(
+    fn step_current_control_with_feedback(
         &mut self,
         iq_target: f32,
         id_target: f32,
         dt: f32,
         now_ticks: u64,
-        constraints: Option<&TorqueConstraints>,
+        feedback: CurrentFeedback,
     ) -> Result<FocOutput, StepError> {
         let prof_t0 = crate::isr_prof::now();
         // Check sensor calibration
@@ -323,10 +341,9 @@ where
             0.0
         };
 
-        let (id_target, iq_target) = match constraints {
-            Some(constraints) => self.grant_torque_constrained(id_target, iq_target, constraints),
-            None => self.grant_torque(id_target, iq_target, self.torque_speed()),
-        };
+        let (id_target, iq_target) = self.grant_torque(id_target, iq_target, self.torque_speed());
+
+        self.last_granted_iq = iq_target;
 
         // Get phase from provider: the previous update's prediction of the
         // rotor at THIS current sample (PhaseProvider timing contract). It
@@ -404,6 +421,19 @@ where
             now_ticks,
         );
         crate::isr_prof::add(&crate::isr_prof::STEP_EST, prof_t3, crate::isr_prof::now());
+
+        // Only the scheduled cruise caller owns this interval. Independent
+        // current/failsafe steps must not charge an old cruise request. The
+        // held request cannot change during this owned native call; reading
+        // it here avoids retaining a whole telemetry return in the wrapper.
+        // Every error exits above and the driver invalidates the interval.
+        if matches!(feedback, CurrentFeedback::Cruise) {
+            self.velocity_schedule.record_delivery(
+                self.velocity_schedule.requested_iq(),
+                self.last_granted_iq,
+                self.controller.q_voltage_clip(),
+            );
+        }
 
         Ok(out)
     }

@@ -20,7 +20,9 @@ where
     /// Uses the stored dt (set via `with_dt()` or defaulting to 20kHz).
     ///
     /// # Arguments
-    /// * `now_ticks` - Monotonic ticks for phase sampling (sensor-defined timebase)
+    /// * `now_ticks` - Monotonic microseconds, also used by the phase provider.
+    ///   Hardware capture clocks must be normalized to this domain before
+    ///   calling the driver (as required by its command watchdog as well).
     ///
     /// # Returns
     /// * `Ok(FocOutput)` - Control telemetry on success
@@ -36,6 +38,8 @@ where
         let result = self.step_inner(now_ticks);
         if result.is_err() {
             self.restore_current_pi_gains();
+            self.invalidate_velocity();
+            self.last_granted_iq = 0.0;
         }
         let mut out = result?;
         self.stamp_step_telemetry(&mut out);

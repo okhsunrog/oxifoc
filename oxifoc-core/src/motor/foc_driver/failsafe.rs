@@ -167,19 +167,22 @@ where
         if !matches!(policy, FailsafePolicy::Coast) {
             self.ensure_bridge_enabled();
         }
-        // Bumpless: seed the ramp from the q-current currently commanded
-        // (the velocity loop's last PI output is what the current loop was
-        // just driven with). Not OpenLoop's `current`: it is applied along
+        // Bumpless: seed cruise takeover from its latest final q-current
+        // grant, rather than an outer PI request the inner limits refused.
+        // Not OpenLoop's `current`: it is applied along
         // the open-loop angle, not the rotor's q axis — seeding it would
         // turn a load-angle-dependent current into full q torque in the
         // estimate's frame, sign included. Zero is the honest seed there.
         let current_iq = match self.mode {
             ControlMode::CurrentControl { iq_target, .. } => iq_target,
-            ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. } => {
-                self.velocity_loop.last_iq()
+            ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. }
+                if self.velocity_feedback_available =>
+            {
+                self.last_granted_iq
             }
             _ => 0.0,
         };
+        self.invalidate_velocity();
         // Bound the seed: mode payloads are finite-checked at the command
         // boundary but not clamped, and the failsafe slews from the seed at
         // a fixed rate — an absurd value must not stretch its hand-over

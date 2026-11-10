@@ -78,6 +78,8 @@ where
             ov_threshold_v: 0.0,
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
             velocity_feedback_available: false,
+            velocity_schedule: Default::default(),
+            last_granted_iq: 0.0,
             position: PositionTracker::default(),
             position_cfg: PositionLoopConfig::default(),
             position_target: Position::default(),
@@ -200,6 +202,7 @@ where
     /// Set current limits.
     pub fn set_current_limits(&mut self, limits: CurrentLimits) {
         self.current_limits = limits;
+        self.velocity_schedule.clear_request();
     }
 
     /// Get current limits.
@@ -212,7 +215,10 @@ where
     /// (ramp/integrator) is preserved, so retuning mid-ride is bumpy only
     /// to the extent the gains differ.
     pub fn set_velocity_config(&mut self, cfg: VelocityLoopConfig) {
-        self.velocity_loop.set_config(cfg);
+        if cfg.is_sane() {
+            self.velocity_loop.set_config(cfg);
+            self.velocity_schedule.clear_request();
+        }
     }
 
     /// Active velocity-loop tuning.
@@ -225,6 +231,7 @@ where
     pub fn set_position_config(&mut self, cfg: PositionLoopConfig) {
         if cfg.is_sane() {
             self.position_cfg = cfg;
+            self.velocity_schedule.clear_request();
         }
     }
 
@@ -276,6 +283,29 @@ where
             ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. }
         ) && !self.failsafe_ctrl.is_active();
         self.failsafe_ctrl.reset();
+        if !matches!(
+            mode,
+            ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. }
+        ) {
+            self.invalidate_velocity();
+            self.last_granted_iq = 0.0;
+        } else {
+            match (self.mode, mode) {
+                (
+                    ControlMode::VelocityControl { target_vel: old },
+                    ControlMode::VelocityControl { target_vel: new },
+                ) if new == 0.0 || old * new < 0.0 => self.velocity_schedule.clear_request(),
+                (
+                    ControlMode::PositionControl { target_pos: old },
+                    ControlMode::PositionControl { target_pos: new },
+                ) if old != new => self.velocity_schedule.clear_request(),
+                (ControlMode::VelocityControl { .. }, ControlMode::PositionControl { .. })
+                | (ControlMode::PositionControl { .. }, ControlMode::VelocityControl { .. }) => {
+                    self.velocity_schedule.clear_request();
+                }
+                _ => {}
+            }
+        }
 
         // Re-enable the outputs for any mode that drives the bridge through
         // duties. Coast/Stopped/calibration float or disable the channels,
@@ -305,6 +335,8 @@ where
             self.velocity_feedback_available = velocity.is_some();
             let omega = velocity.map_or(0.0, RotorVelocityEstimate::electrical_rad_s);
             self.velocity_loop.reset(omega);
+            self.velocity_schedule
+                .rearm(self.phase.motion_reference_epoch());
         }
         if let ControlMode::PositionControl { target_pos } = mode {
             self.position_target = Position::from_rad(target_pos);
@@ -418,6 +450,16 @@ where
         &self.phase
     }
 
+    /// Change a source through its validated hook and discard old cruise
+    /// output only on success, including for custom phase providers.
+    pub fn request_phase_source(&mut self, source: crate::foc::phase::PhaseSource) -> bool {
+        if !self.phase.request_source(source) {
+            return false;
+        }
+        self.invalidate_velocity();
+        true
+    }
+
     /// Set persistent d/q PI tuning, superseding any temporary bench override.
     /// Ordinary tuning preserves PI state; leaving an override clears it.
     pub fn set_current_pi_gains(&mut self, kp: f32, ki: f32) {
@@ -431,6 +473,14 @@ where
     /// Update model coefficients without changing current-loop tuning.
     pub fn set_decoupling(&mut self, decoupling: Option<Decoupling>) {
         self.controller.set_decoupling(decoupling);
+        self.velocity_schedule.clear_request();
+    }
+
+    /// Drop cruise state without moving its rate-limiting deadline.
+    pub(super) fn invalidate_velocity(&mut self) {
+        self.velocity_loop.reset(0.0);
+        self.velocity_feedback_available = false;
+        self.velocity_schedule.invalidate();
     }
 
     /// End a temporary bench sequence without retaining its integrator state.
