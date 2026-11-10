@@ -2,6 +2,8 @@
 
 pub mod current;
 pub mod hall;
+pub mod temperature;
+pub mod temperature_config;
 
 pub use current::{F405CurrentSensor, F405CurrentSensorExt};
 #[allow(unused_imports)] // Public API not yet wired to protocol handlers

@@ -143,7 +143,7 @@ flash-f405-vesc6-mk5:
 
 # MK5 bench image with the UID-gated clock calibration and priority scheduler.
 build-mk5-bench:
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ mk5_bench_features }}
 
 # Build and flash the MK5 bench image; leaves the target running.
@@ -152,7 +152,7 @@ flash-mk5-bench: build-mk5-bench
     probe-rs reset --chip STM32F405RGTx
 
 build-mk5-usb-metrics:
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ mk5_usb_metrics_features }}
 
 flash-mk5-usb-metrics: build-mk5-usb-metrics
@@ -164,7 +164,7 @@ build-mk5-hall profiling="off" memory="sram" transport="usb":
     @test {{ quote(profiling) }} = off -o {{ quote(profiling) }} = on -o {{ quote(profiling) }} = timing
     @test {{ quote(memory) }} = sram -o {{ quote(memory) }} = ccm
     @test {{ quote(transport) }} = usb -o {{ quote(transport) }} = rtt
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "on" { ",isr-profiling" } else if profiling == "timing" { ",isr-timing" } else { "" }) + (if memory == "ccm" { ",ccm" } else { "" }) + (if transport == "rtt" { ",transport-rtt" } else { "" })) }}
 
 flash-mk5-hall profiling="off" memory="sram" transport="usb": (build-mk5-hall profiling memory transport)
@@ -173,14 +173,14 @@ flash-mk5-hall profiling="off" memory="sram" transport="usb": (build-mk5-hall pr
 
 # Finite Stopped-only paired codec CPU experiment; this recipe never flashes.
 build-mk5-codec-bench:
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_bench_features + ",bench-raw-codec") }}
 
 # Raw session sink; Ergot USB remains the command and defmt path.
 build-mk5-raw sink="usb" profiling="normal":
     @test {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt -o {{ quote(sink) }} = ergot
     @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + if profiling == "timing" { ",isr-timing" } else { "" }) }}
 
 # Detect one parameter without applying motor parameters, recording every cycle.
@@ -223,7 +223,7 @@ profile-mk5 output seconds="8":
 # Same trace instrumentation for both placements; independent of motor PWM.
 build-mk5-profile memory="sram":
     @test {{ quote(memory) }} = sram -o {{ quote(memory) }} = ccm
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_profile_features + if memory == "ccm" { ",ccm" } else { "" }) }}
 
 flash-mk5-profile memory="sram": (build-mk5-profile memory)
@@ -232,16 +232,22 @@ flash-mk5-profile memory="sram": (build-mk5-profile memory)
 
 # USB IRQ/executor spans and ADC boundaries; no nested DWT section profiling.
 build-mk5-usb-cpu-trace:
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_usb_trace_features) }}
 
 # Same velocity workload: minimal timing, section outliers, or finite CPU trace.
-build-mk5-runtime-profile sink="ergot" detail="timing" observer_log="off":
+build-mk5-runtime-profile sink="ergot" detail="timing" observer_log="off" logging="timing":
     @test {{ quote(sink) }} = ergot -o {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt
     @test {{ quote(detail) }} = timing -o {{ quote(detail) }} = outliers -o {{ quote(detail) }} = trace
     @test {{ quote(observer_log) }} = off -o {{ quote(observer_log) }} = on
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    @test {{ quote(logging) }} = timing -o {{ quote(logging) }} = verbose -o {{ quote(logging) }} = quiet
+    cd oxifoc-f405 && DEFMT_LOG={{ quote((if logging == "verbose" { "debug" } else if logging == "quiet" { "warn" } else { "warn,oxifoc_f405::control::foc=info" }) + if observer_log == "on" { ",oxifoc_core::foc::phase::manager::update=info" } else { "" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + ",isr-timing" + (if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "trace" { ",bench-executor-trace" } else { "" }) + if observer_log == "on" { ",bench-observer-logging" } else { "" }) }}
+
+# Exhaustive temperature conversion check before PWM initialization.
+build-mk5-thermal-check:
+    cd oxifoc-f405 && DEFMT_LOG=warn,oxifoc_f405::control::foc=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-rtt,isr-timing,bench-ntc-check") }}
 
 # Explicit motor excitation, no fast stream; same secured +40 erad/s CPU control.
 test-velocity-no-stream-mk5 elf:
@@ -249,13 +255,13 @@ test-velocity-no-stream-mk5 elf:
 
 # Minimal CCR timing probe; no trace work before the PWM writes.
 build-mk5-pwm-trace:
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_pwm_trace_features) }}
 
 # Network lock spans and ADC entry phase, without executor/PWM trace hooks.
 build-mk5-netstack-trace mask="basepri":
     @test {{ quote(mask) }} = basepri -o {{ quote(mask) }} = primask
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_netstack_trace_features + if mask == "primask" { ",bench-netstack-primask" } else { "" }) }}
 
 profile-netstack-mk5 capture mask="basepri" maneuver="maneuvers/mk5-hall-current-check.json":

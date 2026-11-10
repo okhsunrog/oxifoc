@@ -139,6 +139,9 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "transport-rtt")]
     let (defmt_consumer, rtt_transport, rtt_ident) = transport::init_rtt(stack);
 
+    #[cfg(feature = "bench-ntc-check")]
+    sensors::temperature::verify_on_target();
+
     #[cfg(feature = "bench-no-phase-outputs")]
     defmt::warn!("BENCH BUILD: all phase outputs inhibited; FOC/ADC/transport remain active");
     #[cfg(feature = "bench-only-phase-a")]

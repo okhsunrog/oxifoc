@@ -34,6 +34,8 @@ task-priority = ["embassy-executor/scheduler-priority"]
 isr-profiling = ["isr-timing", "oxifoc-core/isr-profiling"]
 # Two DWT reads per ISR, without nested section instrumentation.
 isr-timing = []
+# Exhaustive host-table/MCU temperature-model agreement before PWM setup.
+bench-ntc-check = []
 # Finite ADC-owned records of the first and longest over-budget cycles.
 bench-cycle-outliers = ["isr-profiling", "bench-clock-reference"]
 # A/B reproduction of the former periodic observer log inside ADC.
@@ -191,3 +193,6 @@ unimplemented = "warn"
 get_unwrap = "warn"
 unwrap_in_result = "warn"
 panic_in_result_fn = "warn"
+
+[build-dependencies]
+oxifoc-core = { version = "0.1.0", path = "../oxifoc-core", default-features = false, features = ["algorithms"] }

@@ -36,9 +36,9 @@ use oxifoc_core::storage::RuntimeConfig;
 
 use crate::hardware::peripherals::AdcHandles;
 use crate::safety::feed_watchdog;
-use crate::sensors::hall;
+use crate::sensors::{hall, temperature};
 
-use crate::config::{BOARD, CPU_HZ, NTC_BOARD, NTC_MOTOR, measured_board, prepared_board};
+use crate::config::{BOARD, CPU_HZ, measured_board, prepared_board};
 use crate::motor::MotorPwm;
 use crate::sensors::{F405CurrentSensor, F405CurrentSensorExt, hall::HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
@@ -466,11 +466,8 @@ fn ADC() {
     let protection_board = prepared_board();
     let board = protection_board.board();
 
-    // NTC Beta-model conversion runs libm::logf + several float divides
-    // (~200 cycles per sensor, two sensors here = ~5-7% of the cycle
-    // budget) — decimate to every 128th cycle (156 Hz); the thermal time
-    // constants are seconds, and consumers read the atomics. Same scheme
-    // as the g431 ISR.
+    // Preserve the 128-cycle thermal sampling cadence. Exact flash lookups
+    // replace the two Beta-model logarithms that previously spiked this cycle.
     let convert_temp = *SEQ & 127 == 0;
 
     // Read ADC1 injected data (phase A current + board temp)
@@ -487,7 +484,7 @@ fn ADC() {
 
     // Convert board temperature raw ADC to 0.1°C units
     let board_temp_c_x10 = if convert_temp {
-        let t = NTC_BOARD.temp_c_x10_from_adc(board_temp_raw, board.calib.adc_max_counts);
+        let t = temperature::board_c_x10(board_temp_raw);
         BOARD_TEMP_C_X10.store(t, Ordering::Relaxed);
         t
     } else {
@@ -509,7 +506,7 @@ fn ADC() {
     MOTOR_TEMP_RAW.store(motor_temp_raw, Ordering::Relaxed);
     // Convert motor temperature raw ADC to 0.1°C units
     let motor_temp_c_x10 = if convert_temp {
-        let t = NTC_MOTOR.temp_c_x10_from_adc(motor_temp_raw, board.calib.adc_max_counts);
+        let t = temperature::motor_c_x10(motor_temp_raw);
         MOTOR_TEMP_C_X10.store(t, Ordering::Relaxed);
         t
     } else {

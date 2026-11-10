@@ -2,11 +2,15 @@
 // failure mode, so the firmware panic-policy lints don't apply here.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::string_slice)]
 
+#[path = "src/sensors/temperature_config.rs"]
+mod temperature_config;
+
 fn main() {
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-changed=ccm.x");
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
+    generate_ntc_tables(&out_dir);
     println!("cargo:rustc-link-search={out_dir}");
     std::fs::copy("memory.x", std::path::Path::new(&out_dir).join("memory.x")).unwrap();
 
@@ -24,6 +28,26 @@ fn main() {
     let (origin, length) = parse_flash_region(&memory_x);
     let firmware_end_offset = origin - 0x0800_0000 + length;
     println!("cargo:rustc-env=FIRMWARE_END_OFFSET={firmware_end_offset}");
+}
+
+fn generate_ntc_tables(out_dir: &str) {
+    use std::fmt::Write;
+    use temperature_config::{ADC_MAX_COUNTS, NTC_BOARD, NTC_MOTOR};
+    println!("cargo:rerun-if-changed=src/sensors/temperature_config.rs");
+    let mut tables = String::new();
+    for (name, config) in [("BOARD_NTC", NTC_BOARD), ("MOTOR_NTC", NTC_MOTOR)] {
+        writeln!(tables, "static {name}: [i16; 4096] = [").unwrap();
+        for raw in 0..=ADC_MAX_COUNTS {
+            write!(
+                tables,
+                "{},",
+                config.temp_c_x10_from_adc(raw, ADC_MAX_COUNTS)
+            )
+            .unwrap();
+        }
+        writeln!(tables, "]; ").unwrap();
+    }
+    std::fs::write(std::path::Path::new(out_dir).join("ntc_tables.rs"), tables).unwrap();
 }
 
 /// Extract FLASH ORIGIN and LENGTH from memory.x

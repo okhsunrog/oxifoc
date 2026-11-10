@@ -13,5 +13,6 @@ runner = ["bash", "../scripts/probe_run_f405.sh"]
 rustflags = ["-C", "target-feature=+vfp2,-fp64"]
 
 [env]
-# Default to chatty defmt logs while bringup
-DEFMT_LOG = "debug"
+# Keep text diagnostics out of the normal control workload. Bench recipes
+# explicitly enable the reporting modules they need.
+DEFMT_LOG = "warn"

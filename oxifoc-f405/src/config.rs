@@ -2,7 +2,7 @@
 
 use embassy_stm32::rcc::{Pll, PllMul, PllPDiv, PllPreDiv, PllQDiv};
 use embassy_sync::once_lock::OnceLock;
-use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology, PhaseSense};
+use oxifoc_core::foc::config::{BoardConfig, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
 use oxifoc_core::types::BoardCalib;
@@ -113,28 +113,6 @@ pub const BOARD: BoardConfig = BoardConfig {
         divider_ratio: (39.0 + 2.2) / 2.2,
         has_filters: true,
     }),
-};
-
-/// On-board PCB/FET NTC thermistor configuration (PA3, ADC123_IN3)
-/// High-side 10k NTC with 10k pull-down resistor
-/// From VESC: NTC_RES(adc_val) = (4095.0 * 10000.0) / adc_val - 10000.0
-pub const NTC_BOARD: NtcConfig = NtcConfig {
-    r_fixed_ohm: 10_000.0,
-    r0_ohm: 10_000.0,
-    beta: 3380.0,
-    t0_k: 273.15 + 25.0,
-    topology: NtcTopology::HighSide,
-};
-
-/// Motor temperature NTC configuration (PC4, ADC12_IN14)
-/// Low-side 10k NTC with 10k pull-up resistor (external motor thermistor)
-/// From VESC: NTC_RES_MOTOR(adc_val) = 10000.0 / ((4095.0 / adc_val) - 1.0)
-pub const NTC_MOTOR: NtcConfig = NtcConfig {
-    r_fixed_ohm: 10_000.0,
-    r0_ohm: 10_000.0,
-    beta: 3380.0, // Default, typically configured per motor
-    t0_k: 273.15 + 25.0,
-    topology: NtcTopology::LowSide,
 };
 
 // ============================================================================
