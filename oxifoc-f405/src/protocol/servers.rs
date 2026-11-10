@@ -1,12 +1,15 @@
 //! Ergot protocol servers and I/O worker tasks
 
 use embassy_executor::Spawner;
+#[cfg(feature = "transport-usb")]
 use ergot::{
     exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as usb_kit,
 };
 use heapless::String;
 
-use crate::transport::{AppDriver, Stack, UsbQueue, UsbRxWorker};
+use crate::transport::Stack;
+#[cfg(feature = "transport-usb")]
+use crate::transport::{AppDriver, UsbQueue, UsbRxWorker};
 use crate::{FAULT_REGISTRY, STATE};
 use core::sync::atomic::Ordering;
 use oxifoc_core::types::HardwareInfo;
@@ -29,12 +32,15 @@ use crate::RUNTIME_CONFIG;
 use crate::calibration::{
     calibrate_hall_ez, measure_flux_linkage_ez, measure_inductance_ez, measure_resistance_ez,
 };
-use crate::config::{BOARD, MAX_PACKET_SIZE, PWM_CONFIG, USB_OUT_QUEUE_SIZE, measured_board};
+use crate::config::{BOARD, PWM_CONFIG, measured_board};
+#[cfg(feature = "transport-usb")]
+use crate::config::{MAX_PACKET_SIZE, USB_OUT_QUEUE_SIZE};
 use crate::control::foc::VBUS_MV;
 
 // ========== Worker Tasks ==========
 
 /// USB device task — runs USB state machine
+#[cfg(feature = "transport-usb")]
 #[embassy_executor::task]
 async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
     #[cfg(feature = "bench-scheduler-deadline")]
@@ -47,6 +53,7 @@ async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
 }
 
 /// Worker task for incoming ergot data (USB)
+#[cfg(feature = "transport-usb")]
 #[embassy_executor::task]
 async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
     #[cfg(feature = "bench-scheduler-deadline")]
@@ -59,6 +66,7 @@ async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
 }
 
 /// Worker task for outgoing ergot data (USB framed)
+#[cfg(feature = "transport-usb")]
 #[embassy_executor::task]
 async fn run_usb_tx(
     ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,

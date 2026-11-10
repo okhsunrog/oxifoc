@@ -5,18 +5,21 @@
 //! defmt logs go over a separate RTT channel (read via probe-rs).
 
 use embassy_stm32::rng;
+#[cfg(feature = "transport-usb")]
 use embassy_stm32::usb;
 use embassy_stm32::{Peri, bind_interrupts, peripherals};
 use ergot::NetStack;
 use ergot::exports::bbqueue::traits::coordination::cas::AtomicCoord;
 use ergot::exports::maitake_sync::WaitQueue;
 use ergot::interface_manager::LivenessConfig;
+#[cfg(feature = "transport-usb")]
 use ergot::interface_manager::interface_impls::embassy_usb::EmbassyInterface;
 use ergot::interface_manager::interface_impls::embedded_io::IoInterface;
 use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
 #[cfg(feature = "transport-rtt")]
 use ergot::interface_manager::utils::cobs_stream;
 use ergot::interface_manager::utils::framed_stream;
+#[cfg(feature = "transport-usb")]
 use ergot::toolkits::embassy_usb_v0_6 as usb_kit;
 use ergot::toolkits::embedded_io_async_v0_7 as io_kit;
 #[cfg(feature = "transport-rtt")]
@@ -25,7 +28,9 @@ use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 use crate::config::MAX_PACKET_SIZE;
-use crate::config::{RTT_OUT_QUEUE_SIZE, USB_OUT_QUEUE_SIZE};
+use crate::config::RTT_OUT_QUEUE_SIZE;
+#[cfg(feature = "transport-usb")]
+use crate::config::USB_OUT_QUEUE_SIZE;
 #[cfg(feature = "transport-rtt")]
 use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 
@@ -55,12 +60,32 @@ compile_error!("raw telemetry benchmarks use Ergot USB control, not transport-rt
 pub mod raw_fast;
 
 // ========== Multi-Interface Definition ==========
+#[cfg(feature = "transport-usb")]
 type UsbQ = &'static UsbQueue;
 type RttQ = &'static RttQueue;
 
+#[cfg(feature = "transport-spi")]
+pub mod spi;
+pub type SpiQueue = io_kit::Queue<16384, AtomicCoord>;
+pub struct SpiInterface;
+impl ergot::interface_manager::Interface for SpiInterface {
+    type Sink = framed_stream::Sink<&'static SpiQueue>;
+}
+#[cfg(feature = "transport-spi")]
+pub static SPI_OUTQ: SpiQueue = io_kit::Queue::new();
+
+#[cfg(feature = "transport-usb")]
 ergot::multi_interface! {
     pub enum McSink for McInterface {
         Usb(EmbassyInterface<UsbQ>),
+        Spi(SpiInterface),
+        Rtt(IoInterface<RttQ>),
+    }
+}
+#[cfg(not(feature = "transport-usb"))]
+ergot::multi_interface! {
+    pub enum McSink for McInterface {
+        Spi(SpiInterface),
         Rtt(IoInterface<RttQ>),
     }
 }
@@ -73,12 +98,15 @@ pub type Rng = rng::Rng<'static, peripherals::RNG>;
 pub type McRouter = Router<McInterface, Rng, 3, 8>;
 pub type Stack = NetStack<stack_mutex::StackRawMutex, McRouter>;
 
+#[cfg(feature = "transport-usb")]
 pub type UsbQueue = usb_kit::Queue<USB_OUT_QUEUE_SIZE, AtomicCoord>;
 pub type RttQueue = io_kit::Queue<RTT_OUT_QUEUE_SIZE, AtomicCoord>;
 
+#[cfg(feature = "transport-usb")]
 pub type AppDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
 // RxWorker types — generic over FrameProcessor
+#[cfg(feature = "transport-usb")]
 pub type UsbRxWorker = ergot::interface_manager::transports::eusb_0_6::RxWorker<
     &'static Stack,
     AppDriver,
@@ -97,6 +125,7 @@ pub type RttRxWorker = ergot::interface_manager::transports::eio::RxWorker<
 static STACK_CELL: StaticCell<Stack> = StaticCell::new();
 
 /// Output queues (one per interface)
+#[cfg(feature = "transport-usb")]
 pub static USB_OUTQ: UsbQueue = usb_kit::Queue::new();
 #[cfg(feature = "transport-rtt")]
 pub static RTT_OUTQ: RttQueue = io_kit::Queue::new();
@@ -112,11 +141,14 @@ static RTT_ERGOT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 static RTT_ERGOT_DOWN: StaticCell<rtt_target::DownChannel> = StaticCell::new();
 
 // USB wire storage and EP buffer
+#[cfg(feature = "transport-usb")]
 static USB_STORAGE: usb_kit::WireStorage<256, 256, 64, 256> = usb_kit::WireStorage::new();
+#[cfg(feature = "transport-usb")]
 static EP_OUT_BUF: StaticCell<[u8; 256]> = StaticCell::new();
 
 // ========== Interrupt Bindings ==========
 
+#[cfg(feature = "transport-usb")]
 bind_interrupts!(struct UsbIrqs {
     OTG_FS =>
         #[cfg(feature = "bench-executor-trace")]
@@ -234,6 +266,7 @@ pub fn init_stack(hw_rng: Rng) -> &'static Stack {
 }
 
 /// USB transport handles
+#[cfg(feature = "transport-usb")]
 pub struct UsbTransport {
     pub usb_dev: embassy_usb::UsbDevice<'static, AppDriver>,
     pub ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
@@ -244,6 +277,7 @@ pub struct UsbTransport {
 
 /// Initialize USB transport and register it on the Router.
 /// Returns the USB transport handles and the assigned interface ident.
+#[cfg(feature = "transport-usb")]
 pub fn init_usb(
     stack: &'static Stack,
     usb_otg_fs: Peri<'static, peripherals::USB_OTG_FS>,

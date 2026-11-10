@@ -43,7 +43,8 @@ bench-spi-cs-request = ["bench-bridge-spi"]
 # CPU-only FOC state in 64-KiB CCM. DMA buffers and the stack remain in SRAM.
 ccm = []
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
-transport-usb = []
+transport-usb = ["dep:embassy-usb", "ergot/embassy-usb-v0_6"]
+transport-spi = ["oxifoc-core/spi-link"]
 # Cooperative task classes: USB workers 3, protocol 2, telemetry/detection 1,
 # remaining tasks 0. Complements the default USB interrupt executor.
 task-priority = ["embassy-executor/scheduler-priority"]
@@ -113,7 +114,7 @@ embassy-futures = { version = "0.1.2", features = ["defmt"], git = "https://gith
 embassy-stm32 = { version = "0.6.0", features = ["stm32f405rg", "time-driver-tim2", "unstable-pac", "exti", "defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
 embassy-sync = { version = "0.8.0", features = ["defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
 embassy-time = { version = "0.5.1", features = ["tick-hz-32_768", "defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
-embassy-usb = { version = "0.6.0", features = ["defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
+embassy-usb = { version = "0.6.0", features = ["defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93", optional = true }
 
 cortex-m = { version = "0.7.8", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "0.7.6"
@@ -141,7 +142,6 @@ postcard = { version = "1.1", features = ["use-defmt"] }
 # Local crates
 oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy", "embassy-hal", "delivery", "hfi", "hfi-detect", "isr-speed"] }
 ergot = { git = "https://github.com/okhsunrog/ergot", rev = "3c502f49814ac2ae25385b21fdbc9b964f86d877", default-features = false, features = [
-    "embassy-usb-v0_6",
     "embedded-io-async-v0_7",
     "nostd-seed-router",
     "embassy-time",

@@ -42,6 +42,17 @@ build-mk5-bridge-spi:
 bench-mk5-bridge-spi output c5_project="/home/okhsunrog/code/rust/c5-hello-world": build-mk5-bridge-spi
     uv run --no-project python scripts/bench-bridge-spi.py --output {{quote(output)}} --c5-project {{quote(c5_project)}}
 
+bench-usb-serial-jtag port fps="625" bytes="832" seconds="30":
+    cargo run --release --locked -p oxifoc-host-lib --features transport-bench --example usb_serial_jtag_bench -- {{quote(port)}} {{fps}} {{bytes}} {{seconds}}
+
+build-mk5-spi usb="off":
+    @test {{quote(usb)}} = on -o {{quote(usb)}} = off
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote("transport-spi,board-vesc6-mk5,task-priority,bench-calibrated-clock" + if usb == "on" { ",transport-usb" } else { "" })}} --bin oxifoc-f405
+
+flash-mk5-spi usb="off": (build-mk5-spi usb)
+    probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
+    probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
+
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
     @just check-host
@@ -341,12 +352,13 @@ test-stop-mk5 capture:
         cargo test -p oxifoc-host-cli --locked hardware_stop_cancels_inductance_at_20khz -- --ignored --nocapture
 
 # Build ESP32 bridge firmware.
-build-bridge:
-    cd oxifoc-bridge && cargo build --release
+build-bridge features="":
+    cd oxifoc-bridge && cargo build --release --features {{quote(features)}}
 
-# Build and flash ESP32 bridge firmware.
-flash-bridge:
-    cd oxifoc-bridge && cargo run --release
+# Build and flash the C5 bridge without claiming the STM32 debug probe.
+flash-bridge features="": (build-bridge features)
+    probe-rs download --verify --chip esp32c5 --probe 303a:1001:3C:DC:75:8A:FF:10 oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge
+    probe-rs reset --chip esp32c5 --probe 303a:1001:3C:DC:75:8A:FF:10
 
 # Build ESP32 remote firmware.
 build-remote:
@@ -541,5 +553,6 @@ build-mk5-spi-cs-probe:
 bench-mk5-spi-cs-request output: build-mk5-spi-cs-probe
     uv run --no-project python scripts/bench-bridge-spi.py --cs-request --output {{quote(output)}} --c5-project /home/okhsunrog/code/rust/c5-hello-world
 
-bench-usb-serial-jtag port fps="625" bytes="832" seconds="30":
-    cargo run --release --locked -p oxifoc-host-lib --features transport-bench --example usb_serial_jtag_bench -- {{quote(port)}} {{fps}} {{bytes}} {{seconds}}
+# No motor excitation: telemetry plus acknowledged Stop commands on one connection.
+bench-bridge-handshake port seconds="30" hz="20000":
+    @cargo run --release --locked -p oxifoc-host-lib --example bridge_handshake -- {{quote(port)}} {{seconds}} {{hz}}

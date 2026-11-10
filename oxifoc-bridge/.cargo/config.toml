@@ -1,5 +1,5 @@
 [target.riscv32imac-unknown-none-elf]
-runner = "probe-rs run --chip=esp32c6 --preverify --always-print-stacktrace --no-location"
+runner = "probe-rs run --chip=esp32c5 --preverify --always-print-stacktrace --no-location"
 
 [env]
 DEFMT_LOG = "info"

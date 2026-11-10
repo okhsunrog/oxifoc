@@ -108,6 +108,7 @@ async fn main(spawner: Spawner) {
     let p = hardware::peripherals::init_clock();
     // MK5 ties PB10 to PA7/MOSI. Never drive the shared net from USART3.
     let _comm_tx = embassy_stm32::gpio::Input::new(p.PB10, embassy_stm32::gpio::Pull::None);
+    #[cfg(not(feature = "transport-spi"))]
     let _comm_rx = embassy_stm32::gpio::Input::new(p.PB11, embassy_stm32::gpio::Pull::None);
     #[cfg(feature = "bench-clock-reference")]
     spawner.spawn(defmt::unwrap!(diagnostics::clock_reference_task(p.TIM5)));
@@ -129,7 +130,9 @@ async fn main(spawner: Spawner) {
     // ========== STEP 2: Initialize RNG + Ergot Router Stack ==========
     // Stack first (no defmt), then the RTT/defmt sink so an ergot-over-RTT
     // interface (transport-rtt) can register on it in one rtt_init!.
-    let rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
+    let mut rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
+    #[cfg(feature = "transport-spi")]
+    let spi_epoch = rng.next_u32();
     let stack = transport::init_stack(rng);
 
     // ========== STEP 3: Initialize defmt logging (RTT + network) ==========
@@ -188,8 +191,29 @@ async fn main(spawner: Spawner) {
         )));
         *protocol::USB_IDENT.get().await
     };
+    #[cfg(feature = "transport-spi")]
+    let spi_ident = transport::spi::init(
+        spawner,
+        stack,
+        transport::spi::Resources {
+            bus: p.SPI1,
+            sck: p.PA5,
+            mosi: p.PA7,
+            miso: p.PA6,
+            cs: p.PB11,
+            ready: p.PB6,
+            ready_exti: p.EXTI6,
+            tx: p.DMA2_CH3,
+            rx: p.DMA2_CH0,
+            crc: p.CRC,
+        },
+        spi_epoch,
+    );
+
     // Collect the idents of every registered interface for the state monitor.
     let mut idents: heapless::Vec<u8, 3> = heapless::Vec::new();
+    #[cfg(feature = "transport-spi")]
+    let _ = idents.push(spi_ident);
     #[cfg(feature = "transport-rtt")]
     let _ = idents.push(rtt_ident);
     #[cfg(feature = "transport-usb")]
