@@ -129,7 +129,9 @@ fn run(
     let mut rtt = Rtt::attach_region(&mut core, &ScanRegion::Exact(rtt_address))
         .context("attach exact live RTT control block")?;
     let channel = rtt
-        .up_channel(RAW_CHANNEL)
+        .up_channels()
+        .iter_mut()
+        .find(|channel| channel.number() == RAW_CHANNEL)
         .context("firmware has no RTT raw channel 2")?;
     if channel.name() != Some(RAW_NAME) {
         bail!("RTT channel 2 is not {RAW_NAME:?}");
