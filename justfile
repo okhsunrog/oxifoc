@@ -178,11 +178,13 @@ build-mk5-codec-bench:
 
 # Raw sink: normal keeps warnings; timing adds its 1-Hz report; hall-phase adds finite RAM events.
 # Ergot USB remains the command and defmt path; use build-mk5-hall for Hall text logs.
-build-mk5-raw sink="usb" profiling="normal":
+# compensation=off disables only command correction, retaining hardware gate deadtime.
+build-mk5-raw sink="usb" profiling="normal" compensation="on":
     @test {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt -o {{ quote(sink) }} = ergot
     @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing -o {{ quote(profiling) }} = hall-phase
+    @test {{ quote(compensation) }} = on -o {{ quote(compensation) }} = off
     cd oxifoc-f405 && DEFMT_LOG={{ quote(if profiling == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + if profiling == "timing" { ",isr-timing" } else if profiling == "hall-phase" { ",bench-hall-phase" } else { "" }) }}
+        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + (if profiling == "timing" { ",isr-timing" } else if profiling == "hall-phase" { ",bench-hall-phase" } else { "" }) + (if compensation == "off" { ",bench-no-deadtime-comp" } else { "" })) }}
 
 # Detect one parameter without applying motor parameters, recording every cycle.
 detect-mk5 step capture *ARGS:

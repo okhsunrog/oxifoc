@@ -791,3 +791,26 @@ Original Hall table, model, limits and board calibration were restored and
 read back; Stopped, zero faults, no NVM writes. Velocity stability remains
 unqualified. Detailed results, source comparison and plots:
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-repeat-2026-11-10/report.md`.
+
+### Command deadtime correction A/B (2026-11-10)
+
+`just build-mk5-raw ergot normal on|off` selects command correction independently
+of the unchanged 360-ns gate deadtime. Four matched 17-A Hall sweeps, repeated
+in reverse order, confirmed the sharp sixfold current disturbance comes from
+command correction in this regime. Forward Iq RMS was 0.230–0.231 A with
+normal PI/correction, 0.099 A without correction, 1.024 A with soft VESC-wizard
+PI/correction, and 0.165 A with soft PI/no correction. Both repeats closely
+agree. Normal PI/no correction also passed native Hall calibration at 17 A.
+
+This is not acceptance of globally disabling correction. At +40 electrical
+rad/s, new Hall geometry barely improved velocity RMSE (11.70 to 11.49 rad/s);
+disabling correction increased it to 21.77 rad/s and reported a Hall-staleness
+warning. The batch stopped before its planned repeat. No guard was weakened.
+All twelve captures (3,375,368 records) were lossless, including the failed
+velocity run. Every plotted Hall edge was retained in the short velocity tests.
+The centroid/interpolation transition around 500 eRPM and Hall/observer health
+remain diagnostic targets; stable velocity control is not established.
+
+Both firmware variants build. Restored compensation-on firmware and original
+runtime configuration, Stopped; no NVM writes. Report and inspected plots:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-ab-2026-11-10/report.md`.

@@ -130,7 +130,11 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(3
 // Start with the old amplitude, but blend through a provisional 1 A per-phase
 // region to avoid a full voltage step at the first tiny current reference.
 // This is a bench setting, not a measured calibration of the inverter.
-pub const DEAD_TIME_COMP_NS: u32 = 360;
+pub const DEAD_TIME_COMP_NS: u32 = if cfg!(feature = "bench-no-deadtime-comp") {
+    0
+} else {
+    360
+};
 pub const DEAD_TIME_COMP_LINEAR_CURRENT_A: f32 = 1.0;
 
 // ============================================================================

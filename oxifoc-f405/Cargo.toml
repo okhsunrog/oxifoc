@@ -51,6 +51,8 @@ bench-no-phase-outputs = []
 # Frequency measurement with motor phase A disconnected: permit only leg A.
 # Use DirectVoltage=0 for 50% PWM; Stop and faults still disable everything.
 bench-only-phase-a = []
+# A/B qualification: disable command-voltage correction, retaining gate deadtime.
+bench-no-deadtime-comp = []
 # RAM-only task/ADC timeline, armed and read over SWD after a capture.
 bench-executor-trace = ["embassy-executor/trace", "bench-clock-reference"]
 # Observe CCR commit timing without any pre-commit ADC or executor trace hooks.
