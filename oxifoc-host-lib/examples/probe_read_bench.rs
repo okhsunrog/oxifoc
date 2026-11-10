@@ -205,7 +205,7 @@ mod bench {
                     .filter(|section| {
                         section.size() >= args.block as u64 && section.address().is_multiple_of(4)
                     })
-                    .max_by_key(|section| section.size())
+                    .max_by_key(ObjectSection::size)
                     .map(|section| section.address())
             })
             .context("no static SRAM slice large enough; provide --address")?;
