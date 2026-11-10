@@ -25,7 +25,9 @@ test = false
 bench = false
 
 [features]
-default = ["transport-usb", "board-cf2"]
+# Current controller: MK5 with the C5 SPI bridge and fixed telemetry.
+# CF2 and diagnostic transports require an explicit feature selection.
+default = ["transport-spi", "board-vesc6-mk5", "fast-telemetry"]
 # Exactly one board feature must be enabled (compile_error in main.rs).
 # Cheap FOCer 2 / Simple FOCer 2: DRV8301 on hardware SPI3, low-side shunts,
 # amp gain 10 V/V.

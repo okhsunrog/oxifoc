@@ -5,16 +5,21 @@
 use embassy_stm32::rng;
 #[cfg(feature = "transport-usb")]
 use embassy_stm32::usb;
-use embassy_stm32::{Peri, bind_interrupts, peripherals};
+#[cfg(feature = "transport-usb")]
+use embassy_stm32::Peri;
+use embassy_stm32::{bind_interrupts, peripherals};
 use ergot::NetStack;
 use ergot::exports::bbqueue::traits::coordination::cas::AtomicCoord;
 use ergot::exports::maitake_sync::WaitQueue;
+#[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
 use ergot::interface_manager::LivenessConfig;
 #[cfg(feature = "transport-usb")]
 use ergot::interface_manager::interface_impls::embassy_usb::EmbassyInterface;
 #[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
 use ergot::interface_manager::interface_impls::embedded_io::IoInterface;
-use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
+use ergot::interface_manager::profiles::router::Router;
+#[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
+use ergot::interface_manager::profiles::router::RouterFrameProcessor;
 #[cfg(feature = "transport-rtt")]
 use ergot::interface_manager::utils::cobs_stream;
 use ergot::interface_manager::utils::framed_stream;
@@ -26,6 +31,7 @@ use ergot::transport::rtt::{RttReader, RttWriter};
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
+#[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
 use crate::config::MAX_PACKET_SIZE;
 #[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
 use crate::config::RTT_OUT_QUEUE_SIZE;

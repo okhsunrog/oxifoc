@@ -198,6 +198,7 @@ const _: () = assert!(CLOCK_PROFILE.usb_hz() <= 48_120_000);
 // ============================================================================
 
 /// Size of outgoing packet queue for ergot over USB (framed)
+#[cfg(feature = "transport-usb")]
 pub const USB_OUT_QUEUE_SIZE: usize = if cfg!(any(
     feature = "bench-raw-usb",
     feature = "bench-raw-rtt",
@@ -209,6 +210,7 @@ pub const USB_OUT_QUEUE_SIZE: usize = if cfg!(any(
 };
 
 /// Size of outgoing packet queue for ergot over RTT (COBS stream)
+#[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
 pub const RTT_OUT_QUEUE_SIZE: usize = 4096;
 
 /// Maximum packet size for ergot framing
