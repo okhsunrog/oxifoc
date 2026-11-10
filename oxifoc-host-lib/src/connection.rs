@@ -635,6 +635,10 @@ where
             }
             Ok(Err(e)) => {
                 tracing::warn!("HardwareInfo attempt {} failed: {:?}", attempt, e);
+                // The resolved path can disappear while a parent router
+                // restarts. Reopen the interface and rediscover the route;
+                // retrying its old address cannot restore local addressing.
+                return HandshakeOutcome::RetryableFailure;
             }
             Err(_) => {
                 tracing::warn!("HardwareInfo attempt {} timed out", attempt);

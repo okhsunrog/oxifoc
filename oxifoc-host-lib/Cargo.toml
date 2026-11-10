@@ -47,3 +47,7 @@ workspace = true
 [[example]]
 name = "velocity_cpu_control"
 required-features = ["desktop"]
+
+[[example]]
+name = "usb_serial_jtag_bench"
+required-features = ["desktop", "transport-bench"]

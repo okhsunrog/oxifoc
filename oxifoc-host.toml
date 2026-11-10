@@ -1,23 +1,11 @@
-# oxifoc-host configuration (TOML), loaded from the CURRENT DIRECTORY.
-#
-# NOTE: `chip`/`elf` here silently apply to every CLI run from the repo root —
-# on another board that pins the WRONG RTT control-block address and the
-# link never routes (NoRouteToDest). Working on another board: pass
-# --chip/--elf explicitly (they override this file) or edit these two lines.
-
-# Optional: select a specific probe (VID:PID[:SERIAL])
-# probe = "0483:374b:0668FF555567894967074721"
-
-# Optional: explicit chip name (otherwise auto-detect)
+# MK5 + C5 bench profile, loaded from the current directory.
+# The STM32 ELF supplies its defmt decoding table.
 chip = "STM32F405RGTx"
-
-# Optional: path to device ELF for defmt decoding AND the RTT `_SEGGER_RTT`
-# pin (relative to the cwd the CLI runs from!)
 elf = "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
 
-# Serial transport (ST-LINK VCP -> USART2)
-serial_path = "/dev/ttyACM0"
-serial_baud = 921600
+# Current MK5 bench: commands and fixed telemetry through the C5 bridge.
+transport = "usb-serial-jtag"
+serial_path = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00"
 
 # Toggle streaming
 stream_defmt = true
