@@ -439,3 +439,31 @@ Artifacts, exact ELFs, provenance, plots and raw Hall-edge evidence:
   or hot-code relocation is justified by the current measurements. F405
   CCM is for CPU data, not DMA buffers or executable code; see ST
   [RM0090, system architecture / D-bus](https://www.st.com/resource/en/reference_manual/dm00031020.pdf).
+
+## ST-Link V3 read throughput (2026-11-10)
+
+`just bench-probe-read --elf PATH` measures ordinary, non-halting SWD
+attachment with adjacent idle/read/idle phases. It reads existing SRAM with
+aligned `read_32`; it does not reset/run/halt the target or write test data.
+The installed probe negotiates USB High Speed. With probe-rs 0.32, requested
+4/12/24-MHz SWD selects actual 3.3/8/24 MHz. Sustained 4-KiB reads delivered
+283/477/639 kB/s respectively; 24 MHz with 6-KiB blocks reached 645 kB/s.
+These are raw SRAM results, before RTT cursor/protocol overhead. The current
+34-byte record requires 680 kB/s at nominal 20 kHz, exceeding this measured
+path. A different backend or protocol optimization would require remeasurement.
+
+CurrentControl with zero Id/Iq, concurrent native-20-kHz USB recording and
+24-MHz/6-KiB SWD reads produced 361889 samples without gaps or loss; all 86
+commands and terminal Stop succeeded. Same-session idle/read ISR means were
+6328/6328.5 cycles (about 37.70 us); the read-phase observed maximum was
+7987 cycles (47.59 us), with no 50-us budget overruns. This is not a WCET proof.
+TIM5 was not debug-frozen; bracketed TIM5/ADC-sequence and TIM5/DWT checks
+resolved no aggregate deficit, but endpoint uncertainty still allows about
+11.4 samples over the 3-s read phase. Gap-free telemetry alone cannot prove
+that every hardware ADC trigger was serviced. Existing Ergot-over-RTT
+connection resets/halts during setup; this benchmark intentionally bypasses it.
+
+Exact ELFs, case JSON, timing logs, capture and summary plot are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-stlink-read-2026-11-10/`.
+The normal image was restored, Stopped/Hall with zero faults, and the complete
+measured Hall reference reapplied in RAM. No calibration was persisted.
