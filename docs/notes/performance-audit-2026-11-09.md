@@ -706,3 +706,46 @@ Normal and observer-logging core configurations passed 661 unit tests and
 trace/outlier/logger-switch symbols. Final Stopped capture: 82032 records,
 zero loss; Stopped/Hall, fault_count=0, 24.090 V. Motor model, Hall geometry,
 current limits and board calibration read back equal; no calibration NVM writes.
+
+## Further ADC optimization (2026-11-10)
+
+Kept three measured changes: shared FastSinCos range reduction, a four-entry
+actuation-voltage ring with prepared delay weights, and exact flash NTC tables
+at the original sampling cadence. The tables add 16 KiB flash, no table RAM;
+8194 MCU comparisons with the original conversion passed before PWM startup.
+Normal builds retain warnings and compile periodic info/debug diagnostics out.
+Full core validation: 663 tests and 11 doctests passed; strict Clippy passed.
+
+Same +40 electrical rad/s velocity maneuver, native 20004.27 Hz, Packed26,
+unchanged model/Hall geometry/limits, minimal timing:
+
+| Image | Mean moving ISR | Observed moving maximum | Capture |
+| --- | ---: | ---: | --- |
+| Original, two runs | 41.77–42.05 us | 54.71 us | no loss; repeat retained a Hall warning |
+| Optimized RTT, two runs | 39.36–39.37 us | 51.72–51.95 us | 162188 / 162194 records, no loss |
+| Optimized Ergot USB | 39.42 us | 52.18 us | 162231 records, no loss |
+| Optimized Ergot USB, no timing | unmeasured | unmeasured | 162229 records, no loss |
+
+All four final runs acknowledged 28/28 commands and ended Stopped with zero
+faults. Maximum ACK latency was 1.66 ms RTT and 4.84 ms USB. The approximately
+6% mean improvement is repeatable; rare deadline overruns remain. These body
+times exclude the final statistics tail and do not establish a WCET bound.
+Detailed profiling itself lost 221 samples, so its section attribution is
+diagnostic evidence, not capture acceptance. Remaining peaks include command
+work; none of that diagnostic window's thermal cycles overran.
+
+Executable SRAM and additional observer/phase/command outlining did not help
+and were reverted. The actual speed-control assessment remains separate from
+the derivative of the commutation angle carried in fast telemetry.
+The final Stopped-only Hall export retained 127 real edges, all forward, with
+no invalid transitions or hardware overcaptures. Rolling electrical-revolution
+speed after 1 s ranged 26.99–66.06 rad/s (median 37.73) for the 40-rad/s target.
+This confirms remaining regulation variation independently of the displayed
+commutation derivative. The 128-entry diagnostic prefix omitted 54 later edges;
+the full-rate USB capture remained lossless.
+
+Report, exact images/patches, all failed attempts and visually checked plots:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-adc-opt-2026-11-10/optimization-report.md`.
+Final board image uses `just build-mk5-raw ergot normal`, with the calibrated
+clock and priority scheduler; it is Stopped, without detailed profiling or
+periodic text diagnostics. No NVM configuration writes were made.
