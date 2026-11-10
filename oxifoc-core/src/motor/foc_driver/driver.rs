@@ -75,7 +75,6 @@ where
             failsafe_cfg: FailsafeConfig::default(),
             failsafe_ctrl: FailsafeController::new(),
             failsafe_latched: false,
-            ov_threshold_v: 0.0,
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
             velocity_feedback_available: false,
             velocity_schedule: Default::default(),

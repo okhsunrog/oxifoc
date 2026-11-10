@@ -2,7 +2,7 @@
 
 use super::FocDriver;
 use crate::foc::clamp_f32;
-#[cfg(feature = "runtime")]
+#[cfg(any(feature = "storage", feature = "runtime"))]
 use crate::foc::config::BoardConfig;
 use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "runtime")]
@@ -299,25 +299,109 @@ impl CurrentLimits {
 #[derive(Clone, Debug)]
 pub struct PreparedBoardConfig {
     board: BoardConfig,
+    voltage: PreparedVoltageLimits,
+}
+
+/// Voltage thresholds and excursion constants are replaced as one value.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(any(feature = "storage", feature = "runtime")), allow(dead_code))]
+pub struct PreparedVoltageLimits {
+    min_mv: u32,
+    max_mv: u32,
     max_vbus_v: f32,
     min_vbus_v: f32,
     trip_vs: f32,
     integral_ceiling: f32,
 }
 
-#[cfg(feature = "runtime")]
-impl PreparedBoardConfig {
-    pub const fn new(board: BoardConfig) -> Self {
-        let max_vbus_v = board.max_vbus_mv as f32 / 1000.0;
-        let min_vbus_v = board.min_vbus_mv as f32 / 1000.0;
+#[cfg(feature = "storage")]
+impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C, Ph, S> {
+    /// Boot and live writes share the same validation and installation path.
+    /// Invalid stored thresholds abort initialization before the bridge starts.
+    pub fn configure_voltage_protection(
+        &mut self,
+        board: &BoardConfig,
+        stored: Option<&crate::storage::VoltageLimitsConfig>,
+    ) -> Result<(), super::MotorModelError> {
+        if self.mode() != crate::motor::ControlMode::Stopped || self.current_offset_active() {
+            return Err(super::MotorModelError::Busy);
+        }
+        let bounds = PreparedVoltageLimits::from_bounds(board.min_vbus_mv, board.max_vbus_mv);
+        let voltage = match stored {
+            Some(value) => {
+                let prepared = PreparedVoltageLimits::from_config(value)
+                    .filter(|v| v.fits(bounds))
+                    .ok_or(super::MotorModelError::Invalid)?;
+                Some(prepared)
+            }
+            None => None,
+        };
+        self.protection.board_voltage = Some(bounds);
+        self.protection.voltage = voltage;
+        Ok(())
+    }
+
+    pub fn apply_voltage_limits(
+        &mut self,
+        prepared: PreparedVoltageLimits,
+    ) -> Result<(), super::MotorModelError> {
+        if self.mode() != crate::motor::ControlMode::Stopped || self.current_offset_active() {
+            return Err(super::MotorModelError::Busy);
+        }
+        let bounds = self
+            .protection
+            .board_voltage
+            .ok_or(super::MotorModelError::Unsupported)?;
+        if !prepared.fits(bounds) {
+            return Err(super::MotorModelError::Invalid);
+        }
+        // Preserve accumulated excursions and latched faults: configuration
+        // is not a way to acknowledge or erase an existing voltage fault.
+        self.protection.voltage = Some(prepared);
+        Ok(())
+    }
+
+    pub(crate) fn reset_voltage_limits(&mut self) {
+        self.protection.voltage = None;
+    }
+}
+
+impl PreparedVoltageLimits {
+    #[cfg(any(feature = "storage", feature = "runtime"))]
+    const fn from_bounds(min_mv: u32, max_mv: u32) -> Self {
+        let max_vbus_v = max_mv as f32 / 1000.0;
+        let min_vbus_v = min_mv as f32 / 1000.0;
         let trip_vs = 5e-5 * max_vbus_v;
         let integral_ceiling = trip_vs * 4.0;
         Self {
-            board,
+            min_mv,
+            max_mv,
             max_vbus_v,
             min_vbus_v,
             trip_vs,
             integral_ceiling,
+        }
+    }
+
+    #[cfg(feature = "storage")]
+    pub fn from_config(config: &crate::storage::VoltageLimitsConfig) -> Option<Self> {
+        config
+            .is_sane()
+            .then(|| Self::from_bounds(config.min_vbus_mv, config.max_vbus_mv))
+    }
+
+    #[cfg(feature = "storage")]
+    fn fits(self, board: Self) -> bool {
+        self.min_mv >= board.min_mv && self.max_mv <= board.max_mv
+    }
+}
+
+#[cfg(feature = "runtime")]
+impl PreparedBoardConfig {
+    pub const fn new(board: BoardConfig) -> Self {
+        Self {
+            voltage: PreparedVoltageLimits::from_bounds(board.min_vbus_mv, board.max_vbus_mv),
+            board,
         }
     }
 
@@ -328,6 +412,8 @@ impl PreparedBoardConfig {
 
 /// Slow-sensor fault detection and derating, independent of PWM and modes.
 pub(super) struct ProtectionMonitor {
+    board_voltage: Option<PreparedVoltageLimits>,
+    voltage: Option<PreparedVoltageLimits>,
     config: DeratingConfig,
     scales: DeratingScales,
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
@@ -350,8 +436,16 @@ pub(super) struct ProtectionSample {
 }
 
 impl ProtectionMonitor {
+    pub(super) fn overvoltage_threshold(&self) -> f32 {
+        self.voltage
+            .or(self.board_voltage)
+            .map_or(0.0, |v| v.max_vbus_v)
+    }
+
     pub(super) fn new(dt: f32) -> Self {
         Self {
+            board_voltage: None,
+            voltage: None,
             config: DeratingConfig::default(),
             scales: DeratingScales::default(),
             protection_tick: 0,
@@ -396,10 +490,11 @@ impl ProtectionMonitor {
         // linear ADC divider with no division, so NaN is not physically
         // reachable — mirrors the host-boundary "reject NaN" philosophy (the
         // ISR trusts its own sense path).
-        let max_v = prepared.max_vbus_v;
-        let min_v = prepared.min_vbus_v;
-        let trip_vs = prepared.trip_vs;
-        let integral_ceiling = prepared.integral_ceiling;
+        let voltage = self.voltage.unwrap_or(prepared.voltage);
+        let max_v = voltage.max_vbus_v;
+        let min_v = voltage.min_vbus_v;
+        let trip_vs = voltage.trip_vs;
+        let integral_ceiling = voltage.integral_ceiling;
         let decay = self.voltage_decay;
         if sample.vbus_v > max_v {
             self.ov_integral_vs =
@@ -431,7 +526,7 @@ impl ProtectionMonitor {
             }
         } else {
             self.uv_integral_vs *= decay;
-            if sample.vbus_v * 1000.0 > (board.min_vbus_mv + VOLTAGE_HYSTERESIS_MV) as f32
+            if sample.vbus_v * 1000.0 > voltage.min_mv.saturating_add(VOLTAGE_HYSTERESIS_MV) as f32
                 && registry.has_category(FaultCategory::UnderVoltage)
             {
                 registry.clear(FaultCategory::UnderVoltage);
@@ -533,6 +628,11 @@ where
         fet_temp_c_x10: Option<i16>,
         motor_temp_c_x10: Option<i16>,
     ) {
+        // Platforms initialize this at boot. Keep the storage-free runtime
+        // usable too, without copying the constants on every ADC interrupt.
+        if self.protection.board_voltage.is_none() {
+            self.protection.board_voltage = Some(board.voltage);
+        }
         self.protection.update(
             registry,
             board,
@@ -957,7 +1057,7 @@ mod tests {
             (accumulated * (1.0 - dt / 0.005)).to_bits()
         );
         assert!(
-            monitor.ov_integral_vs > replacement.integral_ceiling,
+            monitor.ov_integral_vs > replacement.voltage.integral_ceiling,
             "healthy samples decay history instead of resetting or clamping it"
         );
         compare_sample(&mut monitor, &registry, &mut legacy, &replacement, dt, 21.0);

@@ -315,7 +315,8 @@ pub async fn init(
     // Failsafe: command-staleness deadman + reaction policy from stored config
     // (or board defaults); the OV trip feeds the regen-brake derate.
     foc_driver.set_failsafe(FailsafeConfig::from_stored(config.failsafe.as_ref()));
-    foc_driver.set_ov_threshold(BOARD.max_vbus_mv as f32 / 1000.0);
+    foc_driver.configure_voltage_protection(&BOARD, config.voltage_limits.as_ref())
+        .expect("stored voltage limits must fit the board");
 
     // Cruise velocity-loop tuning from stored config (or soft defaults).
     foc_driver.set_velocity_config(VelocityLoopConfig::from_stored(config.velocity.as_ref()));

@@ -52,6 +52,7 @@ impl PreparedMotorModel {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MotorModelError {
+    Invalid,
     Busy,
     Unsupported,
     Consumed,

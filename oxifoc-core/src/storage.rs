@@ -525,6 +525,12 @@ pub struct VoltageLimitsConfig {
 
 impl PostcardValue<'_> for VoltageLimitsConfig {}
 
+impl VoltageLimitsConfig {
+    pub fn is_sane(&self) -> bool {
+        self.min_vbus_mv > 0 && self.min_vbus_mv < self.max_vbus_mv
+    }
+}
+
 impl Default for VoltageLimitsConfig {
     fn default() -> Self {
         Self {

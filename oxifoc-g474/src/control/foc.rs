@@ -107,7 +107,8 @@ pub async fn init(
     foc_driver.set_failsafe(oxifoc_core::motor::failsafe::FailsafeConfig::from_stored(
         config.failsafe.as_ref(),
     ));
-    foc_driver.set_ov_threshold(BOARD.max_vbus_mv as f32 / 1000.0);
+    foc_driver.configure_voltage_protection(&BOARD, config.voltage_limits.as_ref())
+        .expect("stored voltage limits must fit the board");
 
     // Cruise velocity-loop tuning from stored config (or soft defaults).
     foc_driver.set_velocity_config(oxifoc_core::foc::velocity::VelocityLoopConfig::from_stored(

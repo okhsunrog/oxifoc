@@ -430,6 +430,20 @@ bench-current-mk5 capture maneuver="maneuvers/mk5-hall-hold-check.json" elf=mk5_
     just cli-usb status > {{ quote(capture + ".status.json") }}
     exit "$capture_status"
 
+# Voltage protection in millivolts; applies while stopped, RAM by default.
+set-voltage-limits-usb minimum_mv maximum_mv storage="ram":
+    @test {{ quote(storage) }} = ram -o {{ quote(storage) }} = flash
+    @just cli-usb config set voltage-limits min_vbus_mv={{ quote(minimum_mv) }} \
+        max_vbus_mv={{ quote(maximum_mv) }} {{ if storage == "ram" { "--volatile" } else { "" } }}
+
+# All six current/power limits are explicit: A, A, A, A, A, W.
+set-current-limits-usb drive trip bus regen brake heat storage="ram":
+    @test {{ quote(storage) }} = ram -o {{ quote(storage) }} = flash
+    @just cli-usb config set current-limits max_iq_a={{ quote(drive) }} \
+        max_phase_current_a={{ quote(trip) }} bus_in_max_a={{ quote(bus) }} \
+        bus_regen_max_a={{ quote(regen) }} max_brake_a={{ quote(brake) }} \
+        max_dissipation_w={{ quote(heat) }} {{ if storage == "ram" { "--volatile" } else { "" } }}
+
 # Motor model in SI units; explicit flash selection, RAM by default.
 set-motor-usb resistance ld lq flux pole_pairs storage="ram":
     @test {{ quote(storage) }} = ram -o {{ quote(storage) }} = flash

@@ -153,7 +153,9 @@ pub async fn foc_loop(
         state.phase_source = source;
     });
     driver.set_failsafe(FailsafeConfig::from_stored(config.failsafe.as_ref()));
-    driver.set_ov_threshold(board.max_vbus_mv as f32 / 1000.0);
+    driver
+        .configure_voltage_protection(&board, config.voltage_limits.as_ref())
+        .expect("stored voltage limits must fit the board");
     driver.set_velocity_config(VelocityLoopConfig::from_stored(config.velocity.as_ref()));
     driver.set_derating(DeratingConfig::from_stored(config.derating.as_ref()));
     let prepared_board = PreparedBoardConfig::new(board);

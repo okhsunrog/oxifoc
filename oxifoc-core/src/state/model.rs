@@ -119,6 +119,7 @@ const READING: u32 = 5;
 const APPLYING_CANCELLED: u32 = 6;
 
 pub(crate) enum ModelConfigUpdate {
+    VoltageLimits(crate::storage::VoltageLimitsConfig),
     MotorParams(MotorParamsConfig),
     VoltageFeedforward(VoltageFeedforwardConfig),
     HallCalibration(HallCalibrationConfig),
@@ -134,6 +135,7 @@ impl From<MotorParamsConfig> for ModelConfigUpdate {
 impl ModelConfigUpdate {
     pub(crate) fn apply_to_config(&self, config: &mut RuntimeConfig) {
         match self {
+            Self::VoltageLimits(value) => config.voltage_limits = Some(value.clone()),
             Self::MotorParams(value) => config.motor_params = Some(value.clone()),
             Self::VoltageFeedforward(value) => config.voltage_feedforward = Some(*value),
             Self::HallCalibration(value) => {
@@ -146,6 +148,7 @@ impl ModelConfigUpdate {
 
     fn group(&self) -> ConfigGroupId {
         match self {
+            Self::VoltageLimits(_) => ConfigGroupId::VoltageLimits,
             Self::MotorParams(_) | Self::Reset => ConfigGroupId::MotorParams,
             Self::VoltageFeedforward(_) => ConfigGroupId::VoltageFeedforward,
             Self::HallCalibration(_) => ConfigGroupId::HallCalibration,
@@ -158,6 +161,7 @@ impl ModelConfigUpdate {
     reason = "one static zero-copy slot owns prepared ISR state; no embedded allocator or extra payload move"
 )]
 enum PreparedUpdate {
+    VoltageLimits(crate::motor::foc_driver::PreparedVoltageLimits),
     Motor(PreparedMotorModel),
     Hall(crate::foc::hall_sensor::PreparedHallCalibration),
 }
@@ -166,7 +170,7 @@ impl PreparedUpdate {
     fn pole_pairs(&self) -> Option<u8> {
         match self {
             Self::Motor(model) => Some(model.pole_pairs),
-            Self::Hall(_) => None,
+            Self::Hall(_) | Self::VoltageLimits(_) => None,
         }
     }
 }
@@ -319,6 +323,27 @@ pub(crate) struct ModelApplyGuard {
 }
 
 impl ModelApplyGuard {
+    pub fn prepare_voltage_limits(
+        value: crate::storage::VoltageLimitsConfig,
+        config: &'static Mutex<RefCell<RuntimeConfig>>,
+        coordinator: &'static ConfigCoordinator,
+        request: ReqId,
+        expected_revision: u32,
+    ) -> Option<Self> {
+        let prepared = crate::motor::foc_driver::PreparedVoltageLimits::from_config(&value)?;
+        Self::prepare_inner(
+            PreparedUpdate::VoltageLimits(prepared),
+            ModelConfigUpdate::VoltageLimits(value),
+            None,
+            config,
+            &coordinator.revisions,
+            &coordinator.actions,
+            request,
+            expected_revision,
+            CommitOrigin::Config,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         model: PreparedMotorModel,
@@ -521,12 +546,16 @@ pub(super) fn apply<P, C, Ph, S>(
         ConfigResponse::Busy
     } else {
         let applied = match &mut pending.prepared {
+            PreparedUpdate::VoltageLimits(prepared) => {
+                foc.apply_voltage_limits(*prepared).map(|()| None)
+            }
             PreparedUpdate::Motor(model) => foc.apply_motor_model(model).map(Some),
             PreparedUpdate::Hall(prepared) => foc.apply_hall_calibration(prepared).map(|()| None),
         };
         match applied {
             Ok(source) => critical_section::with(|cs| {
                 if matches!(pending.update, ModelConfigUpdate::Reset) {
+                    foc.reset_voltage_limits();
                     *pending.config.borrow(cs).borrow_mut() = RuntimeConfig::default();
                     *pending.revisions.borrow(cs).borrow_mut() = [0; ConfigGroupId::COUNT];
                     if let Some(persisted) = pending.persisted {
@@ -583,7 +612,10 @@ pub(super) fn apply<P, C, Ph, S>(
                     revision,
                 }
             }),
-            Err(crate::motor::foc_driver::MotorModelError::Consumed) => ConfigResponse::Invalid,
+            Err(
+                crate::motor::foc_driver::MotorModelError::Consumed
+                | crate::motor::foc_driver::MotorModelError::Invalid,
+            ) => ConfigResponse::Invalid,
             Err(crate::motor::foc_driver::MotorModelError::Busy) => ConfigResponse::Busy,
             Err(crate::motor::foc_driver::MotorModelError::Unsupported) => {
                 ConfigResponse::Unsupported

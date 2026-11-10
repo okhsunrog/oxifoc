@@ -831,3 +831,11 @@ The same gains after the fix gave 5.74-erad/s full-revolution speed RMSE,
 101 in that run. This is not qualification of smooth velocity control.
 Captures, exact ELFs and Hall replay: `oxifoc-hall-motion-2026-11-10` under
 `/home/okhsunrog/tmp_zfs/codex_tmp/`. All captures so far have complete USB records.
+
+Voltage limits now install through the stopped ISR transaction, with the same
+prepared thresholds used by fault integration, UV recovery and failsafe braking.
+Boot uses that validation path; writes cannot exceed the board range. Hardware
+checks with PWM stopped produced OV/UV faults at deliberately crossed thresholds,
+rejected 58 V, and verified persistence/reboot of the 8–26 V bench range.
+668 core tests and 11 doctests pass. Evidence and exact ELF:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-voltage-brake-2026-11-10/`.

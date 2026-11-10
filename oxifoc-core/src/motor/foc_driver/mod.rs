@@ -27,7 +27,7 @@ mod tests;
 pub use crate::types::ControlMode;
 #[cfg(feature = "runtime")]
 pub use protection::PreparedBoardConfig;
-pub use protection::{CurrentLimits, OVERCURRENT_HEADROOM};
+pub use protection::{CurrentLimits, OVERCURRENT_HEADROOM, PreparedVoltageLimits};
 
 use crate::foc::controller::FocController;
 use crate::foc::current_offset::CurrentOffsetCalibrator;
@@ -251,9 +251,6 @@ where
     /// first, so a reconnecting host replaying a stale setpoint can't
     /// relaunch the board. Cleared by `set_mode` applying a safe mode.
     failsafe_latched: bool,
-    /// Over-voltage trip (V) for the proactive regen-brake derate (0 = off,
-    /// rely on the OV fault backstop). Set from the board config at boot.
-    ov_threshold_v: f32,
     /// Cruise velocity loop for `ControlMode::VelocityControl`, and the
     /// inner loop of `PositionControl`: slew-limited ω reference + clamped
     /// PI → iq, routed through the normal current loop. Host-tunable

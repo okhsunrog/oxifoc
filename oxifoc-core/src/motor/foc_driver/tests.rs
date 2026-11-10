@@ -10,6 +10,9 @@ mod scheduled_velocity_tests;
 mod scoped_pi_tests;
 #[path = "torque_grant_tests.rs"]
 mod torque_grant_tests;
+#[cfg(all(feature = "storage", feature = "runtime"))]
+#[path = "voltage_limits_tests.rs"]
+mod voltage_limits_tests;
 #[cfg(feature = "virtual-motor")]
 use crate::foc::angle_difference;
 #[cfg(feature = "virtual-motor")]

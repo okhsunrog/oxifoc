@@ -267,8 +267,8 @@ pub async fn fault_server<NS, F, const N: usize>(
 /// - HallCalibration: only physical states 1-6 may be marked valid and their
 ///   angles must be finite; otherwise Hall commutation can ingest NaN or boot
 ///   with an incomplete table.
-/// - VoltageLimits/PwmConfig: nothing consumes these groups (the UV/OV
-///   thresholds and the PWM frequency are compile-time BoardConfig) —
+/// - VoltageLimits: ordered, positive; the ISR also verifies board bounds.
+/// - PwmConfig: nothing consumes this group (frequency is compile-time) —
 ///   accepting the write would persist a silent no-op in exactly the
 ///   protection domain. Rejected until a consumer exists; reads of
 ///   previously-stored values still work.
@@ -288,7 +288,8 @@ fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
         ConfigWrite::MotorParams(v) => v.is_valid(),
         ConfigWrite::HallCalibration(v) => v.is_calibrated(),
         ConfigWrite::HallTuning(v) => v.is_sane(),
-        ConfigWrite::VoltageLimits(_) | ConfigWrite::PwmConfig(_) => false,
+        ConfigWrite::VoltageLimits(value) => value.is_sane(),
+        ConfigWrite::PwmConfig(_) => false,
         // No boundary invariant beyond is_sane() at the ISR gate; listed
         // explicitly (no catch-all) so a new group cannot compile without
         // being classified here — an unclassified group would fail OPEN.
@@ -540,6 +541,18 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 };
                                 return guard.apply::<T>().await;
                             }
+                            if let ConfigWrite::VoltageLimits(value) = &write {
+                                let Some(guard) = ModelApplyGuard::prepare_voltage_limits(
+                                    value.clone(),
+                                    runtime_config,
+                                    &CONFIG_COORDINATOR,
+                                    keyed.id,
+                                    current_revision,
+                                ) else {
+                                    return ConfigResponse::Busy;
+                                };
+                                return guard.apply::<T>().await;
+                            }
                             let model_update = match &write {
                                 ConfigWrite::MotorParams(value) => {
                                     Some(crate::state::model::ModelConfigUpdate::MotorParams(
@@ -592,8 +605,8 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     ConfigWrite::CurrentLimits(v) => {
                                         cfg.current_limits = Some(v.clone());
                                     }
-                                    ConfigWrite::VoltageLimits(v) => {
-                                        cfg.voltage_limits = Some(v.clone());
+                                    ConfigWrite::VoltageLimits(_) => {
+                                        unreachable!("handled by durable voltage apply");
                                     }
                                     ConfigWrite::PwmConfig(v) => cfg.pwm_config = Some(v.clone()),
                                     ConfigWrite::PiGains(v) => cfg.pi_gains = Some(v.clone()),
@@ -655,6 +668,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 }
                                 ConfigWrite::MotorParams(_)
                                 | ConfigWrite::VoltageFeedforward(_)
+                                | ConfigWrite::VoltageLimits(_)
                                 | ConfigWrite::HallCalibration(_) => {
                                     unreachable!("handled by coherent model transaction")
                                 }
@@ -696,11 +710,9 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 // here or it will not compile):
                                 // - HallTuning is consumed at hall-estimator
                                 //   construction (boot only).
-                                // - VoltageLimits/PwmConfig are rejected by
+                                // - PwmConfig is rejected by
                                 //   write_is_acceptable and never get here.
-                                ConfigWrite::HallTuning(_)
-                                | ConfigWrite::VoltageLimits(_)
-                                | ConfigWrite::PwmConfig(_) => {}
+                                ConfigWrite::HallTuning(_) | ConfigWrite::PwmConfig(_) => {}
                             }
                             let revision = current_revision.wrapping_add(1);
                             critical_section::with(|cs| {

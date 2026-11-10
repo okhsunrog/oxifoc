@@ -217,7 +217,8 @@ pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigWri
              overcurrent trip needs headroom above full throttle); derating: every \
              enabled ramp well-formed (temp/regen end > start, battery cut start > \
              end, accel_dec and speed_start_frac in 0..=1); board-calibration: \
-             vbus_gain must be finite and within 0.95..=1.05"
+             vbus_gain must be finite and within 0.95..=1.05; voltage-limits: \
+             0 < min_vbus_mv < max_vbus_mv, within board limits; PWM config is unsupported"
         ),
         ConfigResponse::Conflict { current_revision } => bail!(
             "config changed concurrently (expected revision {expected_revision}, current {current_revision}); re-read and retry"

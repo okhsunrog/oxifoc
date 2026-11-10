@@ -34,17 +34,6 @@ where
         self.failsafe_cfg
     }
 
-    /// Set the over-voltage trip (V) used for the proactive regen-brake
-    /// derate (0 = off → rely on the OV fault backstop). From the board
-    /// config at boot.
-    pub fn set_ov_threshold(&mut self, volts: f32) {
-        self.ov_threshold_v = if volts.is_finite() && volts > 0.0 {
-            volts
-        } else {
-            0.0
-        };
-    }
-
     /// Stamp a fresh setpoint arrival (called from the ISR when a `SetMode`
     /// is drained). The deadman's "positive affirmation".
     pub fn note_command_tick(&mut self, now_ticks: u64) {
@@ -289,7 +278,7 @@ where
             &self.failsafe_cfg,
             self.current_limits.max_brake_a,
             self.vbus,
-            self.ov_threshold_v,
+            self.protection.overvoltage_threshold(),
             angle_trustworthy,
         );
         match action {
