@@ -40,6 +40,7 @@ where
             self.restore_current_pi_gains();
             self.invalidate_velocity();
             self.last_granted_iq = 0.0;
+            self.last_granted_id = 0.0;
         }
         let mut out = result?;
         self.stamp_step_telemetry(&mut out);

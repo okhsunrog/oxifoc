@@ -344,6 +344,7 @@ where
         let (id_target, iq_target) = self.grant_torque(id_target, iq_target, self.torque_speed());
 
         self.last_granted_iq = iq_target;
+        self.last_granted_id = id_target;
 
         // Get phase from provider: the previous update's prediction of the
         // rotor at THIS current sample (PhaseProvider timing contract). It

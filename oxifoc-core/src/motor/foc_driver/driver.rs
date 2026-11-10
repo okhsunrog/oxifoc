@@ -79,6 +79,7 @@ where
             velocity_feedback_available: false,
             velocity_schedule: Default::default(),
             last_granted_iq: 0.0,
+            last_granted_id: 0.0,
             position: PositionTracker::default(),
             position_cfg: PositionLoopConfig::default(),
             position_target: Position::default(),
@@ -238,6 +239,7 @@ where
                 .map(RotorVelocityEstimate::electrical_rad_s),
             requested_iq_a: self.velocity_schedule.requested_iq(),
             granted_iq_a: self.last_granted_iq,
+            granted_id_a: self.last_granted_id,
             measured_iq_a: self.last_iq_meas,
         })
     }
@@ -305,6 +307,7 @@ where
         ) {
             self.invalidate_velocity();
             self.last_granted_iq = 0.0;
+            self.last_granted_id = 0.0;
         } else {
             match (self.mode, mode) {
                 (

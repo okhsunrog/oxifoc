@@ -25,8 +25,8 @@ pub static BENCH_HALL_PHASE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(feature = "bench-hall-phase")]
 #[unsafe(no_mangle)]
-pub static BENCH_VELOCITY_SAMPLES: [[AtomicU32; 7]; 128] =
-    [const { [const { AtomicU32::new(0) }; 7] }; 128];
+pub static BENCH_VELOCITY_SAMPLES: [[AtomicU32; 8]; 128] =
+    [const { [const { AtomicU32::new(0) }; 8] }; 128];
 #[cfg(feature = "bench-hall-phase")]
 #[unsafe(no_mangle)]
 pub static BENCH_VELOCITY_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -74,6 +74,7 @@ impl PhaseRecorder {
             sample.requested_iq_a.to_bits(),
             sample.granted_iq_a.to_bits(),
             sample.measured_iq_a.to_bits(),
+            sample.granted_id_a.to_bits(),
         ];
         for (word, value) in slot.iter().zip(values) {
             word.store(value, Ordering::Relaxed);

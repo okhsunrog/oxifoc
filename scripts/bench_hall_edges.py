@@ -19,7 +19,7 @@ SIZES = {"BENCH_HALL_EDGES": CAPACITY * 16,
 OPTIONAL_SIZES = {"BENCH_HALL_STREAM_LOSSES": 16,
                   "BENCH_HALL_PHASE_EVENTS": 64 * 14 * 4,
                   "BENCH_HALL_PHASE_COUNT": 4,
-                  "BENCH_VELOCITY_SAMPLES": 128 * 7 * 4,
+                  "BENCH_VELOCITY_SAMPLES": 128 * 8 * 4,
                   "BENCH_VELOCITY_COUNT": 4}
 
 
@@ -52,7 +52,10 @@ def symbols_from(text):
         parts = line.split()
         if len(parts) == 4 and parts[3] in SIZES | OPTIONAL_SIZES and parts[2] in 'BbDd':
             address, size = int(parts[0], 16), int(parts[1], 16)
-            if size != (SIZES | OPTIONAL_SIZES)[parts[3]] or address % 4:
+            sizes = {(SIZES | OPTIONAL_SIZES)[parts[3]]}
+            if parts[3] == 'BENCH_VELOCITY_SAMPLES':
+                sizes.add(128 * 7 * 4)  # older exact-ELF captures lack Id
+            if size not in sizes or address % 4:
                 raise ValueError(f"incompatible symbol layout: {line}")
             symbols[parts[3]] = (address, size)
     if not SIZES.keys() <= symbols.keys():
@@ -138,8 +141,11 @@ def main():
         values = read('BENCH_VELOCITY_SAMPLES', '.velocity-samples.bin')
         names = ('adc_sequence', 'target_rad_s', 'reference_rad_s', 'feedback_rad_s',
                  'requested_iq_a', 'granted_iq_a', 'measured_iq_a')
+        words = symbols['BENCH_VELOCITY_SAMPLES'][1] // (128 * 4)
+        if words == 8:
+            names += ('granted_id_a',)
         velocity_samples = [dict(zip(names, (v if math.isfinite(v) else None for v in row)))
-                            for row in struct.iter_unpack('<I6f', values[:count * 28])]
+                            for row in struct.iter_unpack(f'<I{words - 1}f', values[:count * words * 4])]
     result = dict(
         schema='bench-hall-edges', version=1, elf=str(elf),
         elf_sha256=elf_sha256,

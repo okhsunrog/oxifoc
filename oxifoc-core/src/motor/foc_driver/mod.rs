@@ -101,6 +101,8 @@ pub struct VelocityControlSnapshot {
     pub feedback_rad_s: Option<f32>,
     pub requested_iq_a: f32,
     pub granted_iq_a: f32,
+    /// Final d-axis request, including winding-loss braking.
+    pub granted_id_a: f32,
     pub measured_iq_a: f32,
 }
 
@@ -267,6 +269,7 @@ where
     velocity_schedule: VelocitySchedule,
     /// Last final q-current grant, after all target/trust/torque clamps.
     last_granted_iq: f32,
+    last_granted_id: f32,
     /// The rotor's unwrapped electrical position, followed every cycle in
     /// every mode (the frame of `PositionControl` targets: 0 at boot).
     position: PositionTracker,
