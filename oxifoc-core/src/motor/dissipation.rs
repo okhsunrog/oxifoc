@@ -229,7 +229,7 @@ mod tests {
                 let request = -omega.signum() * q;
                 let (id, iq) = dissipate(request, omega, &model, &NONE, 8.0, 10.0).unwrap();
                 assert_eq!(iq, request);
-                assert!(id >= -8.0 && id < 0.0);
+                assert!((-8.0..0.0).contains(&id));
                 assert!(id * id + iq * iq <= 100.0);
                 // Independent steady-state dq power, with Lq - Ld as above.
                 let power = |d: f32| {
