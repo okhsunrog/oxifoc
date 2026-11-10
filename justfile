@@ -36,6 +36,12 @@ build-mk5-bridge-pins:
 build-mk5-bridge-pins-rx:
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features board-vesc6-mk5,bench-bridge-pins-rx --bin bridge-pin-probe
 
+build-mk5-bridge-spi:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features board-vesc6-mk5,bench-bridge-spi --bin bridge-spi-probe
+
+bench-mk5-bridge-spi output c5_project="/home/okhsunrog/code/rust/c5-hello-world": build-mk5-bridge-spi
+    uv run --no-project python scripts/bench-bridge-spi.py --output {{quote(output)}} --c5-project {{quote(c5_project)}}
+
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
     @just check-host

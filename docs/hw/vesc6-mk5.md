@@ -97,6 +97,25 @@ only reads. `just build-mk5-bridge-pins-rx` leaves STM32 connector pins as
 inputs for C5 `pin_drive`. C5 sources and its build/run recipes live in
 `/home/okhsunrog/code/rust/c5-hello-world`.
 
+SPI DMA qualification uses `just bench-mk5-bridge-spi OUTPUT_DIR`. The standalone
+STM32 master uses SPI1 (DMA2 streams 3 TX / 0 RX); C5 uses SPI2 with DMA_CH0,
+mode 0, GPIO0 ready. PB10 remains Hi-Z, the gate driver and phase outputs stay
+disabled, and persistent configuration is untouched. The master's HSI PLL
+provides nominal SPI rates of 0.328125 / 1.3125 / 5.25 / 10.5 / 21 MHz,
+independently of the board HSE calibration.
+
+Three complete runs passed both directions: 31,200 full-duplex transactions,
+15,594,480 bytes per direction, no byte, length or DMA errors. Each run tests
+8/64/137/256/512-byte CS transactions at every rate, then 10,000 consecutive
+512-byte frames at 21 MHz. The latter sustained 0.850–0.855 MB/s **per direction
+simultaneously**, including the intentional 200-us ready-low delay, buffer
+preparation and byte verification. No padding was required for the tested
+137-byte transfers. This qualifies the quiet electrical/DMA path, not FOC
+coexistence, Wi-Fi forwarding, arbitrary-length receive buffers, cancellation
+or production transport recovery. Both ends know each test's length in advance.
+Raw logs and per-run JSON are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-c5-spi-2026-11-10/qualified/`.
+
 ## Optional CCM placement
 
 F405 feature `ccm` moves only `STATE` and `FOC_DRIVER` (7488 bytes) to
