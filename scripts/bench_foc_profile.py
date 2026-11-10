@@ -36,6 +36,18 @@ def decode(words):
         body=quantiles(body), entry_gap=quantiles(gap), raw_words=words)
 
 
+def decode_deadline(words, timer_hz):
+    assert len(words) == 11 and words[0] == 1 and words[1] > 1000
+    assert timer_hz > 0
+    margin = words[2] if words[2] < 2**31 else words[2] - 2**32
+    return dict(raw_words=words, writes=words[1],
+        min_margin_us=margin*1e6/timer_hz,
+        max_entry_to_commit_us=words[3]*1e6/timer_hz,
+        entry_phase_us=[x*1e6/timer_hz for x in words[4:6]],
+        late_writes=words[6], ambiguous_entries=words[7],
+        worst_seq=words[8], outside_adc=words[9], still_masked=words[10])
+
+
 def host_cadence_bounds(events, cycles):
     # Applied ACKs bracket the MCU mode transitions in the host's independent
     # monotonic clock. No DWT frequency/HSE estimate is used in this bound.
@@ -55,7 +67,7 @@ def diagnostic_loss_only(log):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--detail", choices=["minimal", "sections", "sections-ram", "phase-ram"], default="minimal")
+    parser.add_argument("--detail", choices=["minimal", "sections", "sections-ram", "phase-ram", "deadline"], default="minimal")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--recovery-elf", type=Path, required=True)
     parser.add_argument("--logging", choices=["timing", "quiet"], default="timing")
@@ -84,6 +96,13 @@ def main():
         control, data = [symbols[x] for x in ["FOC_DISTRIBUTION_CONTROL", "FOC_DISTRIBUTION_DATA"]]
         manifest["peripherals"] = f405_timing.snapshot()
         manifest["clocks"] = manifest["peripherals"]["clocks"]
+        if args.detail == "deadline":
+            tim5 = probe.read(0x40000c00, 12)
+            cfgr = manifest["clocks"]["rcc"][2]
+            clock = manifest["clocks"]["apb1_hz"] * (1 if (cfgr >> 10) & 7 < 4 else 2)
+            assert tim5[0] & 1 and tim5[10] == 0 and tim5[11] == 0xffffffff
+            assert abs(2 * clock - manifest["clocks"]["tim1_hz"]) <= 2
+            manifest["deadline_clock"] = dict(tim5_hz=clock, registers=tim5)
         for case in cases:
             maneuver = Path("maneuvers") / f"foc-profile-{case}.json"
             for repeat in range(args.repeats):
@@ -137,6 +156,9 @@ def main():
                 if args.detail in ["sections-ram", "phase-ram"]:
                     assert probe.read(symbols["FOC_SECTIONS_READY"])[0] == 1
                     row["sections"] = probe.read(symbols["FOC_SECTIONS_DATA"], 25)
+                if args.detail == "deadline":
+                    words = probe.read(symbols["PWM_DEADLINE_DATA"], 11)
+                    row["pwm_deadline"] = decode_deadline(words, manifest["clocks"]["tim1_hz"])
                 row["status"] = status
                 (args.output/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
                 d = row["distribution"]

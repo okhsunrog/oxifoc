@@ -9,6 +9,17 @@ class DistributionTests(unittest.TestCase):
         body[1], gap[131] = 2000, 1999
         return h+body+gap
 
+    def test_pwm_deadline_preserves_negative_signed_margin(self):
+        words = [1, 2000, 2**32-168, 8400, 840, 1008, 3, 0, 123, 0, 0]
+        d = bench.decode_deadline(words, 168000000)
+        self.assertEqual(d['min_margin_us'], -1)
+        self.assertEqual(d['max_entry_to_commit_us'], 50)
+        self.assertEqual(d['entry_phase_us'], [5, 6])
+        self.assertEqual(d['late_writes'], 3)
+        self.assertEqual(d['worst_seq'], 123)
+        with self.assertRaises(AssertionError):
+            bench.decode_deadline([1, 0]+words[2:], 168000000)
+
     def test_irq_cadence_uses_host_ack_bounds(self):
         events = [dict(i=0, cmd={"velocity": {}}, t_sent=.3, t_acked=.31),
                   dict(i=1, cmd={"stop": {}}, t_sent=5.1, t_acked=5.11)]

@@ -78,6 +78,8 @@ impl Recorder {
         let control = FOC_DISTRIBUTION_CONTROL.load(Ordering::Relaxed);
         if control == 1 && !active {
             *self = Self::new();
+            #[cfg(feature = "bench-foc-deadline")]
+            super::pwm_deadline::reset();
             self.header[0] = 1; // schema
             self.header[1] = crate::config::CPU_HZ;
             self.header[2] = BIN_CYCLES;

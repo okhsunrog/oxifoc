@@ -1,5 +1,8 @@
 //! Default-off bench diagnostics. No per-event logging or USB traffic.
 
+#[cfg(feature = "bench-foc-deadline")]
+pub mod pwm_deadline;
+
 #[cfg(feature = "bench-foc-distribution")]
 pub mod foc_distribution;
 
@@ -474,7 +477,11 @@ pub mod deadline {
 
 /// TIM5 runs freely from APB1's timer clock, including while the core sleeps.
 /// It has no outputs, IRQs, DMA, or relation to the PWM/ADC triggers.
-#[cfg(any(feature = "bench-clock-reference", feature = "bench-executor-trace"))]
+#[cfg(any(
+    feature = "bench-clock-reference",
+    feature = "bench-executor-trace",
+    feature = "bench-foc-deadline"
+))]
 pub fn start_trace_clock(
     tim: embassy_stm32::Peri<'static, embassy_stm32::peripherals::TIM5>,
 ) -> &'static embassy_stm32::timer::low_level::Timer<'static, embassy_stm32::peripherals::TIM5> {

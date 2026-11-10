@@ -5,11 +5,14 @@
 Updated: 2026-11-11. Baseline commit: `3ee9089`.
 Goal: shorten the real F405 FOC/ADC path at 20 kHz, including worst observed
 cycles and PWM-update timing, while preserving protections and native telemetry.
-Current stage: both edge-age reuse variants and both cruise-context variants
-rejected; original Hall and driver algorithms restored. Diagnostics/independent
-cadence checks are retained. Next: measure actual PWM preload-commit deadlines;
-body >50 µs alone is not proof of a late actuation update. Normal image restored.
-No algorithm optimization accepted in this iteration.
+Current stage: rejected all four local algorithm candidates; original Hall/driver
+algorithms retained. Full-rate PWM-deadline instrumentation qualified hold and
++40 electrical rad/s, but overloaded +120 (7 producer drops, ACK timeout).
+Three minimally instrumented +120 controls remain lossless. Do not claim
+high-speed PWM deadline qualification from the failed diagnostic recording.
+Next: reduce measurement overhead before qualifying the +120 actuation deadline;
+then choose an optimization from measured costs. No algorithm speedup accepted.
+Normal image is restored by each finite suite's cleanup.
 
 Artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-research-2026-11-11/`.
 Use this one living note for progress; add conclusions/evidence and next actions,
@@ -199,12 +202,6 @@ using the nominal 20:1 ratio, not 37 cycles per evaluation. More granularity
 is now affordable without enabling every nested marker. Full core tests:
 696 unit tests passed (2 ignored), plus 11 doctests after the counter additions.
 
-Next local candidate is the duplicated edge-age conversion within
-`HallSensor::sample_for_control`: `sample_at_mut` already computes the same
-saturated edge delta/time conversion. Return that age alongside the sample,
-like the existing immutable helper, and keep the external sampling API.
-This does not merge raw telemetry with the rate-limited control sample (the
-previous rejected H1/H2 experiment), and introduces no invalidatable cache.
 
 
 ### Independent IRQ-cadence cross-check
@@ -219,7 +216,7 @@ profile runs check this automatically, alongside register readback. Previous
 overclock figures remain RCC/HSE-derived; no new scope measurement is claimed.
 
 
-### Local candidates, acceptance still pending
+### Rejected local candidates
 
 `phase-baseline-repeat` uses the exact same ELF SHA as `phase-selective`
 (`c0ec8558...`). Two further repeats: hold 37.395–37.397 µs, +40
@@ -240,12 +237,6 @@ same return-value fusion without a new explanation of the ABI/code-generation
 cost. The runtime context is preserved in `modes-enum-context.rs` and
 `cruise-context/`; standard core tests passed.
 
-Next variant specializes the direct and cruise contexts by type. Direct is
-zero-sized; cruise consumes a non-Copy proof of this native cycle's existing
-trust/startup/physical-speed checks. Startup scale, calibration, all current
-and bus grants, trip checks and the 1-kHz PI cadence remain unchanged. This
-removes duplicate queries without weakening a guard or holding authorization
-across cycles. Measure the entire loop and the direct path before accepting.
 
 
 Static cruise-context screening (`cruise-static`): hold 38.496 µs, +40
@@ -261,3 +252,58 @@ The next useful qualification is actuation timing: PWM is written before the
 estimator/publication tail. Measure end-of-CCR writes against the next actual
 TIM1 peak, plus the UDIS interval. This distinguishes a long ISR body from a
 missed PWM update and provides a concrete deadline/headroom target.
+
+
+### Actual PWM commit deadline (2026-11-11)
+
+Default-off `bench-foc-deadline` uses a free-running TIM5 (PSC=0), TIM1
+counter/direction at ADC entry, and a timestamp after CCR writes and observed
+UDIS restoration. RCC checks the TIM1:TIM5 2:1 ratio. Timestamping before the
+entry-phase reads makes the computed next-peak margin a conservative estimate.
+Counters freeze on Stop; no per-cycle logs or SWD reads during excitation.
+This measures driven commits, including the final Stop write, separately from
+the whole ISR body. It does not change the control algorithm or normal image.
+
+`pwm-deadline-v2`, three repeats per completed mode, native Packed28/20 kHz:
+
+| Workload | Minimum margin across repeats, µs | Largest whole body, µs | Late commits |
+|---|---:|---:|---:|
+| Hold Id=0.6 A | 13.918–15.217 | 47.326 | 0 |
+| Velocity target +40 electrical rad/s | 9.843–10.558 | 54.720 | 0 |
+
+576,340 driven writes qualified, 688,086 captured records, zero ambiguous
+phase samples, masked commits or out-of-ADC writes. All six captures complete,
+lossless and all commands acknowledged; independent host-time cadence bounds
+agree with the ~20.004-kHz TIM1/ADC rate. Worst observed margin is not a WCET
+proof or a qualification of every speed/load. Whole-body >50 µs can occur
+*after* the PWM commit; those overruns alone do not demonstrate late actuation.
+The diagnostic itself adds cost (hold body ~37.859 µs versus ~37.24–37.40 baseline).
+
+The first +120 diagnostic run failed at a command ACK deadline (200 ms) and
+lost 7 producer records; host drops=0. Finite test stopped, recovery image
+restored, fault_count=0. Retain the incomplete Parquet and error metadata;
+no frozen deadline result was exported, so high-speed timing remains unknown.
+`deadline-control`: three +120 minimal-instrumentation controls, all lossless,
+body means 42.861–42.885 µs, maxima 54.613–55.048 µs. This is consistent with measurement
+load contributing to the failed diagnostic workload; host scheduling delays
+remain another possible contributor. It does not prove exact causality or
+qualify velocity tracking. Native current/angle plots were inspected.
+
+Evidence: `pwm-deadline-v2/manifest.json`, `deadline-control/manifest.json`,
+`pwm-deadline.png`, `pwm-deadline-failed120.png` under the artifact root.
+The new source module is retained alongside the exact ELF because the initial
+source.patch was captured before the new file was added to the index.
+
+
+`pwm-deadline-current-repeat`: direct Iq steps 0.3/0.6/0.9 A, one complete
+lossless capture, 20,023 driven writes, minimum margin 15.539 µs, no late,
+ambiguous, masked or out-of-ADC commits. Body mean 39.116 µs, maximum
+47.701 µs. Actual TIM5 readback: running, PSC=0, ARR=0xffffffff;
+83.917920 MHz from RCC, versus TIM1 167.835843 MHz (integer rounding).
+The preceding `pwm-deadline-current` attempt aborted before its second step:
+host affirm gaps 93/151 ms and a late-command refusal. That partial stream
+itself was complete and lossless; preserve it as a failed maneuver, not a
+successful current test. The repeat changed no parameters or deadlines.
+Final recovery: Stopped, fault_count=0, bus 24.053 V, FET 29.5 °C,
+motor 28.7 °C. Six histogram/decoder tests and four peripheral-contract tests
+pass. Production transport, model/calibration, limits and PWM target unchanged.

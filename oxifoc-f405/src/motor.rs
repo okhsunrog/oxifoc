@@ -352,6 +352,8 @@ impl<'d> MotorPwm<'d> {
         // Preserve the caller's update-disable state without restoring live
         // counter/direction bits or generating an update event.
         tim.cr1().modify(|w| w.set_udis(previous_udis));
+        #[cfg(feature = "bench-foc-deadline")]
+        crate::diagnostics::pwm_deadline::committed();
         #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
         {
             let after = Self::count_direction();

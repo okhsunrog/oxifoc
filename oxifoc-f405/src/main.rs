@@ -114,13 +114,23 @@ async fn main(spawner: Spawner) {
     let _comm_tx = embassy_stm32::gpio::Input::new(p.PB10, embassy_stm32::gpio::Pull::None);
     #[cfg(not(feature = "transport-spi"))]
     let _comm_rx = embassy_stm32::gpio::Input::new(p.PB11, embassy_stm32::gpio::Pull::None);
-    #[cfg(feature = "bench-clock-reference")]
+    #[cfg(all(feature = "bench-clock-reference", not(feature = "bench-foc-deadline")))]
     spawner.spawn(defmt::unwrap!(diagnostics::clock_reference_task(p.TIM5)));
-    #[cfg(all(
-        feature = "bench-executor-trace",
-        not(feature = "bench-clock-reference")
+    #[cfg(any(
+        all(
+            feature = "bench-executor-trace",
+            not(feature = "bench-clock-reference")
+        ),
+        feature = "bench-foc-deadline"
     ))]
     let _trace_clock = diagnostics::start_trace_clock(p.TIM5);
+    #[cfg(feature = "bench-foc-deadline")]
+    defmt::assert!(
+        embassy_stm32::rcc::frequency::<embassy_stm32::peripherals::TIM1>()
+            .0
+            .abs_diff(2 * embassy_stm32::rcc::frequency::<embassy_stm32::peripherals::TIM5>().0)
+            <= 2
+    );
 
     // Comms/housekeeping IRQs sit BELOW the control ISRs. The FOC ADC ISR
     // runs at 0 and the hall capture (TIM3) at 1, but every other vector

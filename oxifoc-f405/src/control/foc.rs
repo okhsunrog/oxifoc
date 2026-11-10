@@ -439,6 +439,8 @@ fn ADC() {
         // earlier entry-phase snapshot: CNT[15:0], DIR16, transition17.
         crate::diagnostics::trace::record(crate::diagnostics::trace::ADC_ENTRY_PHASE, phase);
     }
+    #[cfg(feature = "bench-foc-deadline")]
+    crate::diagnostics::pwm_deadline::begin(SEQ.wrapping_add(1));
     let isr_t0 = isr_timing_now();
     #[cfg(feature = "bench-cycle-outliers")]
     let core_before = oxifoc_core::isr_prof::Snapshot::observe();
@@ -750,6 +752,8 @@ fn ADC() {
             ISR_CYC_OVER.fetch_add(1, Ordering::Relaxed);
         }
     }
+    #[cfg(feature = "bench-foc-deadline")]
+    crate::diagnostics::pwm_deadline::end();
     // Include timing/statistics bookkeeping in the traced ADC context;
     // ending earlier would charge that higher-priority work to USB.
     #[cfg(feature = "bench-executor-trace")]
