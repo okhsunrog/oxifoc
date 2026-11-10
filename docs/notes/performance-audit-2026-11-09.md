@@ -858,6 +858,22 @@ peaks around 60 us. Its finite Hall buffer overflowed, so its full-run speed
 statistics are invalid. The algebraic solver fast path preserves power/current
 bounds in tests but is not a demonstrated cure for the runtime problem.
 Next isolate the large negative Id request and Hall-frame error during braking.
+
+The follow-up isolated Id polarity with zero requested Iq: the +2 A staircase
+produced no Hall transitions, while the otherwise identical negative staircase
+produced 14, including reversals. Both 20 kHz captures were complete. The heat
+allocator now defaults to aligning positive Id and preserves an explicitly
+requested d-axis direction; the magnitude/power solve is separate. A physical
+Hall-plant regression reproduces restoring versus destabilizing behaviour.
+All 686 Embassy-enabled core tests and strict Clippy pass.
+
+With the same 40 rad/s profile, 3 W heat budget and PI 0.05/0.05, the old sign
+gave a 17.91 A dq peak and 6507 producer drops. The final implementation's
+forward/reverse peaks were 4.09/4.63 A, with no Hall warning generations, but
+43/36 producer drops and remaining speed pulsation. This fixes a contributor,
+not smooth-speed or lossless-stream qualification. Evidence remains in the
+same artifact directory (`id-sign-results.json`, `results.json`, exact ELFs,
+20 kHz Parquet, stopped Hall exports and plots). NVM dissipation stays off.
 Raw captures, configurations, exact images, plots and failed runs remain in the
 same artifact directory; `results.json` distinguishes incomplete recordings.
 Final flash configuration, verified after reset: drive 10 A, dq trip 30 A,

@@ -158,7 +158,7 @@ fn grant_derates_drive_and_brake_by_direction() {
 
 /// A full pack (regen derate at 0) on a 5065 at 400 el rad/s: without
 /// dissipation the brake is cut to nothing; with it the brake keeps
-/// its torque and a negative d current burns the regen.
+/// its torque and an aligning d current burns the regen.
 #[test]
 fn a_full_pack_brake_burns_what_it_cannot_charge() {
     let full_pack = DeratingScales {
@@ -178,7 +178,7 @@ fn a_full_pack_brake_burns_what_it_cannot_charge() {
     assert_eq!(iq, -10.0);
     // 1.5·R·(id² + iq²) = 1.5·ω·λ·|iq|: id² = (1.168·10 − 3.6)/0.036
     // — 12.1 W of the 100 W budget.
-    assert!((id + 14.98).abs() < 0.05, "id {id}");
+    assert!((id - 14.98).abs() < 0.05, "id {id}");
     // Motoring and plugging are left alone.
     assert_eq!(on.grant_torque(0.0, 10.0, 400.0), (0.0, 10.0));
     assert_eq!(on.grant_torque(0.0, -10.0, 50.0), (0.0, -10.0));
@@ -214,7 +214,7 @@ fn a_no_regen_supply_brakes_by_dissipation() {
     );
     let (id, iq) = d.grant_torque(0.0, -10.0, 400.0);
     assert_eq!(iq, -10.0);
-    assert!((id + 14.98).abs() < 0.05, "id {id}");
+    assert!((id - 14.98).abs() < 0.05, "id {id}");
 }
 
 struct MockPwm {
@@ -4889,6 +4889,46 @@ fn full_pack_descent_holds_its_cruise_by_dissipation() {
     let (omega, charge_w) = descent(50.0);
     assert!((omega - 800.0).abs() < 30.0, "ω {omega}");
     assert!(charge_w.abs() < 2.0, "mean charge {charge_w} W");
+}
+
+/// Isolate the heat vector from velocity feedback and braking Iq. Within a
+/// Hall sector its polarity must restore a small rotor/frame displacement,
+/// rather than amplify it into transitions to adjacent sectors.
+#[test]
+#[cfg(feature = "virtual-motor")]
+fn dissipative_heat_aligns_a_displaced_rotor_with_coarse_hall_feedback() {
+    let grant = grant_driver(
+        CurrentLimits {
+            bus_regen_max_a: 0.0,
+            max_dissipation_w: 3.0,
+            ..CurrentLimits::from_max_current(10.0)
+        },
+        DeratingScales::IDENTITY,
+    );
+    let (heat_id, _) = grant.grant_torque(0.0, -1.0, 40.0);
+    let displacement = |id_target| {
+        let mut rig = HallRig::new(0.5, 2e-5);
+        rig.motor.set_angle(0.15);
+        rig.out = rig.motor.step_coast(0.0, HallRig::DT);
+        rig.prev_angle = rig.out.angle_rad;
+        rig.driver.set_mode(ControlMode::CurrentControl {
+            iq_target: 0.0,
+            id_target,
+        });
+        let mut peak = 0.0f32;
+        for _ in 0..6_000 {
+            let (actual, _) = rig.step();
+            peak = peak.max(angle_difference(actual.angle_rad, 0.0).abs());
+        }
+        (peak, angle_difference(rig.out.angle_rad, 0.0).abs())
+    };
+    let (peak, final_error) = displacement(heat_id);
+    assert!(peak < 0.2 && final_error < 0.1, "({peak}, {final_error})");
+    let (opposite_peak, _) = displacement(-heat_id);
+    assert!(
+        opposite_peak > 0.5,
+        "counterexample must cross a Hall boundary"
+    );
 }
 
 /// The parking brake entered at 1500 el rad/s on a 5065: the plain

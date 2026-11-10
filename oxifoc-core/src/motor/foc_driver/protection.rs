@@ -794,10 +794,9 @@ where
             id_max,
             limits.max_current_a,
         ) {
-            // The solve includes the caller's existing |id|. Preserve its
-            // sign unless additional negative d current is required.
-            Some((id, iq)) if id * id > id_target * id_target => (id, iq),
-            Some((_, iq)) => (id_target, iq),
+            // The solver preserves an explicit d-axis direction and uses
+            // aligning current when it introduces a new heat request.
+            Some(grant) => grant,
             // Plugging: the brake draws from the supply, nothing to shape.
             None => (
                 id_target,

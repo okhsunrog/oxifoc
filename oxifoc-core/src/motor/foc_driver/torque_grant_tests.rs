@@ -244,7 +244,7 @@ fn outlining_brake_solve_preserves_all_torque_grant_branches() {
                         for omega in [-400.0, -50.0, -0.0, 0.0, 50.0, 400.0] {
                             for iq in values {
                                 let (id, granted) = check(&driver, 0.0, iq, omega);
-                                burned |= id < 0.0;
+                                burned |= id > 0.0;
                                 brake_reduced |=
                                     iq.is_finite() && iq * omega < 0.0 && granted.abs() < iq.abs();
                                 plugging |= heat > 0.0

@@ -20,8 +20,13 @@
 //! capacity is small on low-resistance motors: `1.5·R·I²` ≈ 50 W at 30 A,
 //! 190 W at 60 A on a 5065 (R 36 mΩ).
 //!
-//! id is negative (flux-weakening direction): it lowers the q voltage the
-//! brake needs instead of raising it.
+//! Additional heat uses positive id unless the caller already requests
+//! negative id. With a coarse angle estimate (for example Hall sectors),
+//! positive id produces a restoring alignment torque; negative id can
+//! amplify angle error and rock the rotor. Flux weakening must therefore
+//! be an explicit d-axis request, not a side effect of asking for heat.
+//! The power bound uses |id| and covers either polarity. It is a steady-state
+//! winding model, not proof of zero regeneration during tracking transients.
 //!
 //! The balance runs on the configured R and λ, not on a measurement. A
 //! motor warmer than at detection has a higher R and burns more than
@@ -73,7 +78,7 @@ fn quadratic_ceiling(ceiling: f32, w: f32, r: f32, c: f32) -> f32 {
 ///
 /// Returns `Some((id, iq))` when the brake regenerates: `iq` keeps its
 /// sign, is at most the request in magnitude and as large as `id_max` /
-/// `i_max` allow while the charge stays within `budget`; `id <= 0` burns
+/// `i_max` allow while the charge stays within `budget`; `id >= 0` burns
 /// the surplus. `None` when the brake does not charge the supply at this
 /// speed (plugging — it draws), so there is nothing to shape.
 pub fn dissipate(
@@ -87,7 +92,8 @@ pub fn dissipate(
     dissipate_with_id(0.0, iq, omega, model, budget, id_max, i_max)
 }
 
-/// As [`dissipate`], retaining the caller's existing d-current magnitude.
+/// As [`dissipate`], retaining the caller's existing d-current direction and
+/// minimum magnitude. A zero request selects the aligning (positive) direction.
 /// Its current-circle share and reluctance power must be included BEFORE
 /// solving; clipping iq afterwards can move it into an infeasible interval.
 pub(super) fn dissipate_with_id(
@@ -99,11 +105,26 @@ pub(super) fn dissipate_with_id(
     id_max: f32,
     i_max: f32,
 ) -> Option<(f32, f32)> {
+    let (d, q) = dissipate_magnitude(id.abs(), iq, omega, model, budget, id_max, i_max)?;
+    Some((if id < 0.0 { -d } else { d }, q))
+}
+
+/// Solve the polarity-independent power bound. Keep the choice of magnetic
+/// alignment outside the scalar heat/current-circle calculation.
+fn dissipate_magnitude(
+    id_abs: f32,
+    iq: f32,
+    omega: f32,
+    model: &WindingModel,
+    budget: &RegenBudget,
+    id_max: f32,
+    i_max: f32,
+) -> Option<(f32, f32)> {
     let r = model.r_ohm;
     let w = omega.abs() * model.flux_wb;
     let k = omega.abs() * model.saliency_h;
     let i_sq = i_max * i_max;
-    let d_min = id.abs().min(i_max);
+    let d_min = id_abs.min(i_max);
     let q_cap = if d_min == 0.0 {
         i_max
     } else {
@@ -116,7 +137,7 @@ pub(super) fn dissipate_with_id(
     }
     let allow = (budget.frac * p0).min(budget.max_w).max(0.0);
     if p0 <= allow {
-        return Some((-d_min, iq.signum() * q));
+        return Some((d_min, iq.signum() * q));
     }
     let a = allow / 1.5;
     let d_max = id_max.max(d_min).min(i_max);
@@ -128,8 +149,8 @@ pub(super) fn dissipate_with_id(
     // crossing lies inside [d_min, d_max]. Keep the full search for requests
     // which actually reach a heat/current-circle boundary.
     if q * q + d_max * d_max <= i_sq && charge_w(w, k, r, q, d_max) <= allow {
-        let d = required_d(q, w, k, r, a);
-        return Some((-d, iq.signum() * q));
+        let d = required_d(q, w, k, r, a).max(d_min);
+        return Some((d, iq.signum() * q));
     }
     let boundary = sqrtf((i_sq - d_max * d_max).max(0.0));
 
@@ -178,9 +199,9 @@ pub(super) fn dissipate_with_id(
     let d = if charge_w(w, k, r, q, d_min) <= allow {
         d_min
     } else {
-        required_d(q, w, k, r, a)
+        required_d(q, w, k, r, a).max(d_min)
     };
-    Some((-d, iq.signum() * q))
+    Some((d, iq.signum() * q))
 }
 
 /// Positive crossing of R d² - k q d - (w q - R q² - a) = 0.
@@ -229,7 +250,7 @@ mod tests {
                 let request = -omega.signum() * q;
                 let (id, iq) = dissipate(request, omega, &model, &NONE, 8.0, 10.0).unwrap();
                 assert_eq!(iq, request);
-                assert!((-8.0..0.0).contains(&id));
+                assert!((0.0..8.0).contains(&id));
                 assert!(id * id + iq * iq <= 100.0);
                 // Independent steady-state dq power, with Lq - Ld as above.
                 let power = |d: f32| {
@@ -237,8 +258,18 @@ mod tests {
                     let vq = model.r_ohm * iq + omega * (18.30e-6 * d + model.flux_wb);
                     -1.5 * (vd * d + vq * iq)
                 };
-                assert!(power(id).abs() < 1e-5);
-                assert!(power(id * 0.99) > 0.0, "less heat would charge the supply");
+                assert!(power(id) <= 1e-5);
+                // The absolute-saliency bound is deliberately conservative for
+                // positive Id; its crossing must still use minimal heat.
+                assert!(
+                    charge_w(
+                        omega.abs() * model.flux_wb,
+                        omega.abs() * model.saliency_h,
+                        model.r_ohm,
+                        q,
+                        id * 0.99
+                    ) > 0.0
+                );
             }
         }
     }
@@ -286,9 +317,14 @@ mod tests {
             saliency_h: 200e-6,
             ..M5065
         };
-        for id in [-25.0f32, -10.0, 10.0, 25.0] {
+        for id in [-25.0f32, -10.0, -0.5, 0.5, 10.0, 25.0] {
             let (d, q) = dissipate_with_id(id, -30.0, 400.0, &model, &NONE, 5.0, 30.0).unwrap();
             assert!(d.abs() >= id.abs());
+            assert_eq!(
+                d.signum(),
+                id.signum(),
+                "heat must not reverse an explicit d-axis request"
+            );
             assert!(d * d + q * q <= 900.02);
             assert!(
                 charge_w(
@@ -371,7 +407,7 @@ mod tests {
         let (id, iq) = dissipate(-10.0, 400.0, &M5065, &NONE, 30.0, 30.0).unwrap();
         assert_eq!(iq, -10.0);
         assert!(
-            id < 0.0 && id * id + iq * iq <= 900.0 + 1e-3,
+            id > 0.0 && id * id + iq * iq <= 900.0 + 1e-3,
             "({id}, {iq})"
         );
         assert!(
@@ -379,7 +415,7 @@ mod tests {
             "{}",
             charge(400.0, (id, iq))
         );
-        // Reverse rotation: same magnitudes, iq keeps its sign, id < 0.
+        // Reverse rotation: same magnitudes, iq keeps its sign, id > 0.
         let (id_r, iq_r) = dissipate(10.0, -400.0, &M5065, &NONE, 30.0, 30.0).unwrap();
         assert_eq!(iq_r, 10.0);
         assert!((id_r - id).abs() < 1e-4);
@@ -406,7 +442,7 @@ mod tests {
     fn the_dissipation_cap_binds_before_the_circle() {
         let omega = 1500.0;
         let (id, iq) = dissipate(-15.0, omega, &M5065, &NONE, 20.0, 30.0).unwrap();
-        assert!((id + 20.0).abs() < 1e-3, "id {id}");
+        assert!((id - 20.0).abs() < 1e-3, "id {id}");
         assert!(
             charge(omega, (id, iq)).abs() < 0.2,
             "{}",
