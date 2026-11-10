@@ -9,7 +9,7 @@ target_test_crates := "tests/stm32g474 tests/stm32f405"
 core_test_features := "runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect,impedance-sweep"
 core_embassy_features := core_test_features + ",embassy"
 
-# Reads SRAM through one ordinary SWD attach; never resets/halts/runs the core.
+# SRAM read-phase benchmark. probe-rs Session setup/cleanup briefly halt/run.
 [positional-arguments]
 bench-probe-read *ARGS:
     cargo run --release --locked -p oxifoc-host-lib --example probe_read_bench -- "$@"

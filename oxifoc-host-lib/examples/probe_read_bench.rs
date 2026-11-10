@@ -1,4 +1,7 @@
-//! Read-only SRAM throughput and target-progress benchmark. Never resets/runs/halts.
+//! SRAM read-phase throughput and target-progress benchmark.
+//!
+//! The measured loop only reads. probe-rs Session setup/cleanup briefly halt/run
+//! the core to clear hardware breakpoints; this is not a non-halting lifecycle.
 
 #[cfg(not(feature = "desktop"))]
 fn main() {
@@ -25,7 +28,7 @@ mod bench {
     };
 
     const RAM: std::ops::Range<u64> = 0x2000_0000..0x2002_0000;
-    const HELP: &str = "probe_read_bench --elf PATH [--speed-khz 24000] [--block-bytes 4096] [--seconds 3] [--idle-seconds 1] [--warmup-seconds 2] [--probe VID:PID:SERIAL] [--chip STM32F405RGTx] [--address 0x...] [--seq-address 0x...]\nReads only; one attached session runs idle-before, read-load, idle-after. No reset/halt/run.";
+    const HELP: &str = "probe_read_bench --elf PATH [--speed-khz 24000] [--block-bytes 4096] [--seconds 3] [--idle-seconds 1] [--warmup-seconds 2] [--probe VID:PID:SERIAL] [--chip STM32F405RGTx] [--address 0x...] [--seq-address 0x...]\nOne session runs idle-before, read-load, idle-after. The measured loop reads only; probe-rs Session setup/cleanup briefly halt/run. Use with the bridge stopped.";
 
     struct Args {
         elf: PathBuf,
