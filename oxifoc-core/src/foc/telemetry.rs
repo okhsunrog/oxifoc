@@ -1,6 +1,6 @@
 //! Fast-telemetry fixed-point codec + shared raw→engineering enrichment.
 //!
-//! The compact 34-byte [`FastTelemetry`] frame ships raw ADC counts and
+//! The compact 36-byte [`FastTelemetry`] frame ships raw ADC counts and
 //! fixed-point scalars; the host reconstructs engineering units with the **same
 //! `oxifoc-core` code** the firmware uses, so the two cannot desync:
 //!
@@ -19,7 +19,22 @@ use core::f32::consts::TAU;
 use crate::foc::current_sense::ShuntCurrentSense;
 use crate::foc::transforms::park;
 use crate::types::CurrentSenseTopology;
-use crate::types::{BoardCalib, FastTelemetry};
+use crate::types::{BoardCalib, FastTelemetry, HallAngle};
+
+impl HallAngle {
+    pub fn from_radians(angle: Option<f32>) -> Self {
+        let Some(angle) = angle.filter(|a| a.is_finite()) else {
+            return Self::default();
+        };
+        let normalized = super::wrap_angle(angle);
+        Self::from_encoded(1 + ((normalized * (65535.0 / TAU)) as u16).min(65534))
+    }
+
+    pub fn radians(self) -> Option<f32> {
+        let value = self.encoded();
+        (value != 0).then(|| (value - 1) as f32 * (TAU / 65535.0))
+    }
+}
 
 /// Linear fixed-point codec: a single LSB value (physical units per quantum)
 /// defines both directions, so encode and decode cannot drift apart.
@@ -157,6 +172,7 @@ impl FastTelemetry {
             vd: self.vd_v(),
             vq: self.vq_v(),
             angle_rad,
+            hall_angle_rad: self.hall_angle.radians(),
             mech_rpm,
             erpm: mech_rpm * f32::from(ctx.pole_pairs),
             seq: self.seq,
@@ -243,6 +259,7 @@ pub struct RichSample {
     pub vq: f32,
     /// Electrical angle (rad).
     pub angle_rad: f32,
+    pub hall_angle_rad: Option<f32>,
     /// Mechanical speed (RPM) and electrical RPM (= mech · pole_pairs).
     pub mech_rpm: f32,
     pub erpm: f32,
@@ -261,6 +278,50 @@ pub struct RichSample {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hall_angle_has_explicit_absence_and_bounded_modular_error() {
+        use crate::types::HallAngle;
+        use core::f32::consts::TAU;
+        for value in [None, Some(f32::NAN), Some(f32::INFINITY)] {
+            assert_eq!(HallAngle::from_radians(value).radians(), None);
+        }
+        let lsb = TAU / 65535.0;
+        for i in -65535..131070 {
+            let angle = i as f32 * lsb;
+            let restored = HallAngle::from_radians(Some(angle)).radians().unwrap();
+            let error = super::super::wrap_angle(restored - angle + TAU / 2.0) - TAU / 2.0;
+            assert!(error.abs() <= lsb * 1.03, "{angle} -> {restored}: {error}");
+        }
+    }
+
+    #[cfg(feature = "runtime")]
+    #[test]
+    fn fast_frame_keeps_hall_angle_independent_of_commutation_angle() {
+        use crate::{
+            foc::{
+                controller::FocOutput,
+                sensors::{AdcSnapshot, HallSnapshot},
+            },
+            runtime::streaming::build_fast_telemetry,
+        };
+        let foc = FocOutput {
+            angle_rad: 1.0,
+            ..Default::default()
+        };
+        let hall = HallSnapshot {
+            angle_rad: 2.5,
+            ..Default::default()
+        };
+        let frame = build_fast_telemetry(&AdcSnapshot::empty(), &foc, Some(hall), 7, 0);
+        assert!((frame.angle_rad() - 1.0).abs() < 0.0001);
+        assert!((frame.hall_angle.radians().unwrap() - 2.5).abs() < 0.0001);
+        assert_eq!(
+            build_fast_telemetry(&AdcSnapshot::empty(), &foc, None, 7, 1)
+                .hall_angle
+                .radians(),
+            None
+        );
+    }
     use super::*;
 
     // A representative board calibration (B-G431B-ESC1-ish, generic values).
@@ -339,14 +400,19 @@ mod tests {
             duties: [2000, 2050, 2200], // The NEXT command, distinct from the ADC cycle.
             ..Default::default()
         };
-        let frame = crate::runtime::streaming::build_fast_telemetry(&adc, &foc, 7, 55);
+        let frame = crate::runtime::streaming::build_fast_telemetry(&adc, &foc, None, 7, 55);
         assert_eq!(frame.vphase_adc, [800, 900, 1000]);
         assert_eq!(frame.pwm_ccr, [1900, 2000, 2100]);
         assert_ne!(frame.pwm_ccr, foc.duties);
         assert_eq!(frame.pwm_arr, 4200);
         assert_eq!(frame.pwm_enables, 0x7f);
-        let unavailable =
-            crate::runtime::streaming::build_fast_telemetry(&AdcSnapshot::empty(), &foc, 7, 56);
+        let unavailable = crate::runtime::streaming::build_fast_telemetry(
+            &AdcSnapshot::empty(),
+            &foc,
+            None,
+            7,
+            56,
+        );
         assert_eq!(unavailable.vphase_adc, [u16::MAX; 3]);
         assert_eq!(unavailable.pwm_arr, 0);
     }

@@ -114,6 +114,7 @@ enum FastEncodingArg {
     Raw34,
     Packed26,
     Packed26Delta,
+    Packed28,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -1005,6 +1006,7 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
         cfg.fast_encoding = Some(match encoding {
             FastEncodingArg::Raw34 => oxifoc_core::raw_telemetry::RawEncoding::Raw34,
             FastEncodingArg::Packed26 => oxifoc_core::raw_telemetry::RawEncoding::Packed26,
+            FastEncodingArg::Packed28 => oxifoc_core::raw_telemetry::RawEncoding::Packed28,
             FastEncodingArg::Packed26Delta => {
                 oxifoc_core::raw_telemetry::RawEncoding::Packed26Delta
             }

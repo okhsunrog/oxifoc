@@ -1,4 +1,4 @@
-//! Exclusive bench consumer. The ISR and canonical 34-byte queue stay unchanged.
+//! Exclusive session-bound consumer of the canonical fixed-record ISR queue.
 //! A stop ACK disables the producer; only the session-bound END proves drain.
 
 use super::streaming::{
@@ -67,7 +67,7 @@ impl RawControl {
     const fn new() -> Self {
         Self {
             session: 0,
-            encoding: RawEncoding::Raw34,
+            encoding: RawEncoding::Packed28,
             fast_hz: 0,
             period: 0,
             phase: Phase::Idle,
@@ -100,6 +100,11 @@ impl RawControl {
                 encoding,
                 fast_hz,
             } => {
+                if !cfg!(any(test, feature = "diagnostic-telemetry-codecs"))
+                    && encoding != RawEncoding::Packed28
+                {
+                    return (RawTelemetryStatus::Invalid, Action::None);
+                }
                 if session == 0 || fast_hz == 0 || foc_hz == 0 {
                     return (RawTelemetryStatus::Invalid, Action::None);
                 }
@@ -316,6 +321,13 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
             continue;
         }
         let count = encoder.len();
+        if refused && count == 0 {
+            // An unrepresentable first sample cannot be drained by retrying
+            // empty blocks. Fail explicitly; keep the control loop running.
+            drop(gate);
+            fail_session(session).await;
+            continue;
+        }
         let end = count == 0 && closing;
         let drops = PRODUCER_DROPS.load(Ordering::Acquire);
         let bytes = if end {

@@ -5,7 +5,7 @@ use bbqueue::{nicknames::Churrasco, traits::coordination::WriteGrantError};
 use crate::types::{FastTelemetry, FastTelemetryBatchEncoder};
 
 const FRAME_BYTES: usize = size_of::<FastTelemetry>();
-const _: () = assert!(FRAME_BYTES == 34);
+const _: () = assert!(FRAME_BYTES == 36);
 
 pub(in crate::runtime) struct FastTelemetryQueue<const N: usize> {
     queue: Churrasco<N>,
@@ -58,7 +58,7 @@ impl<const N: usize> FastTelemetryQueue<N> {
 
     /// Bounded synchronous raw-block construction. A refused record remains at
     /// the head; no borrowed queue storage survives an I/O await.
-    #[cfg(feature = "bench-raw-stream")]
+    #[cfg(feature = "fast-telemetry")]
     pub(in crate::runtime) fn drain_raw(
         &self,
         mut accept: impl FnMut(&FastTelemetry) -> bool,
@@ -109,7 +109,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "bench-raw-stream")]
+    #[cfg(feature = "fast-telemetry")]
     #[test]
     fn raw_refusal_retains_whole_record_suffix_across_ring_wrap() {
         let queue = FastTelemetryQueue::<{ FRAME_BYTES * 3 + 7 }>::new();

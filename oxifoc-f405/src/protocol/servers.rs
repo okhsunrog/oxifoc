@@ -21,7 +21,7 @@ use oxifoc_core::foc::trig::FastSinCos;
 #[cfg(not(any(
     feature = "bench-raw-usb",
     feature = "bench-raw-rtt",
-    feature = "bench-raw-ergot"
+    feature = "fast-telemetry"
 )))]
 use oxifoc_core::runtime::streaming::fast_telemetry_stream;
 use oxifoc_core::runtime::streaming::fault_topic_stream;
@@ -380,7 +380,7 @@ pub async fn defmt_forwarder(
 #[cfg(not(any(
     feature = "bench-raw-usb",
     feature = "bench-raw-rtt",
-    feature = "bench-raw-ergot"
+    feature = "fast-telemetry"
 )))]
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
@@ -394,12 +394,12 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
     fast_telemetry_stream::<_, EmbassyTimer>(stack, hz).await;
 }
 
-/// Bench session control stays on Ergot while its sole queue consumer owns the
-/// selected raw sink. Normal images do not expose this endpoint server.
+/// Session control stays on Ergot while the sole consumer owns the fast queue.
+/// Normal MK5 images use the same routed Ergot/SPI path for control and data.
 #[cfg(any(
     feature = "bench-raw-usb",
     feature = "bench-raw-rtt",
-    feature = "bench-raw-ergot"
+    feature = "fast-telemetry"
 ))]
 #[embassy_executor::task]
 async fn raw_telemetry_server_task(stack: &'static Stack) {
@@ -441,18 +441,18 @@ pub fn spawn_servers(
     #[cfg(not(any(
         feature = "bench-raw-usb",
         feature = "bench-raw-rtt",
-        feature = "bench-raw-ergot"
+        feature = "fast-telemetry"
     )))]
     spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
     #[cfg(any(
         feature = "bench-raw-usb",
         feature = "bench-raw-rtt",
-        feature = "bench-raw-ergot"
+        feature = "fast-telemetry"
     ))]
     spawner.spawn(defmt::unwrap!(raw_telemetry_server_task(stack)));
     #[cfg(feature = "bench-raw-rtt")]
     spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::rtt_task()));
-    #[cfg(feature = "bench-raw-ergot")]
+    #[cfg(feature = "fast-telemetry")]
     spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::ergot_task(
         stack
     )));

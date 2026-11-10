@@ -138,9 +138,12 @@ pod = ["dep:bytemuck"]
 # Requires icd for endpoints and algorithms for control logic
 runtime = ["icd", "algorithms", "pod", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section", "dep:bbqueue"]
 
-# Exclusive raw bench consumer of the existing ISR queue; ordinary Ergot fast
-# telemetry remains the default in normal images.
-bench-raw-stream = ["runtime"]
+# Session-bound fixed-block consumer of the ISR queue. Replaces the legacy
+# broadcast publisher; production sessions accept only fixed Packed28.
+fast-telemetry = ["runtime"]
+# Historical codec/carrier comparisons only. Production accepts Packed28.
+diagnostic-telemetry-codecs = []
+bench-raw-stream = ["fast-telemetry", "diagnostic-telemetry-codecs"]
 
 # Virtual motor simulation for testing without hardware
 # Useful for host-side integration tests and GUI simulation mode

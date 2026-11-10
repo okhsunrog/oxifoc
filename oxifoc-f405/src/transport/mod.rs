@@ -1,8 +1,6 @@
-//! Multi-interface transport layer for ergot communication
-//!
-//! Supports USB bulk endpoints and an optional diagnostic RTT interface.
-//! The device runs as a Router with the selected interfaces registered.
-//! defmt logs go over a separate RTT channel (read via probe-rs).
+//! MK5 Ergot/SPI transport and explicitly enabled diagnostic USB/RTT interfaces.
+//! The SPI-only router uses the SPI sink directly, with one interface slot.
+//! defmt diagnostics retain a separate RTT channel (read via probe-rs).
 
 use embassy_stm32::rng;
 #[cfg(feature = "transport-usb")]
@@ -14,6 +12,7 @@ use ergot::exports::maitake_sync::WaitQueue;
 use ergot::interface_manager::LivenessConfig;
 #[cfg(feature = "transport-usb")]
 use ergot::interface_manager::interface_impls::embassy_usb::EmbassyInterface;
+#[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
 use ergot::interface_manager::interface_impls::embedded_io::IoInterface;
 use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
 #[cfg(feature = "transport-rtt")]
@@ -28,6 +27,7 @@ use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 use crate::config::MAX_PACKET_SIZE;
+#[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
 use crate::config::RTT_OUT_QUEUE_SIZE;
 #[cfg(feature = "transport-usb")]
 use crate::config::USB_OUT_QUEUE_SIZE;
@@ -38,15 +38,15 @@ mod stack_mutex;
 
 #[cfg(any(
     all(feature = "bench-raw-usb", feature = "bench-raw-rtt"),
-    all(feature = "bench-raw-usb", feature = "bench-raw-ergot"),
-    all(feature = "bench-raw-rtt", feature = "bench-raw-ergot")
+    all(feature = "bench-raw-usb", feature = "fast-telemetry"),
+    all(feature = "bench-raw-rtt", feature = "fast-telemetry")
 ))]
 compile_error!("select only one raw telemetry sink");
 #[cfg(all(
     any(
         feature = "bench-raw-usb",
         feature = "bench-raw-rtt",
-        feature = "bench-raw-ergot"
+        feature = "fast-telemetry"
     ),
     feature = "transport-rtt"
 ))]
@@ -55,13 +55,14 @@ compile_error!("raw telemetry benchmarks use Ergot USB control, not transport-rt
 #[cfg(any(
     feature = "bench-raw-usb",
     feature = "bench-raw-rtt",
-    feature = "bench-raw-ergot"
+    feature = "fast-telemetry"
 ))]
 pub mod raw_fast;
 
 // ========== Multi-Interface Definition ==========
 #[cfg(feature = "transport-usb")]
 type UsbQ = &'static UsbQueue;
+#[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
 type RttQ = &'static RttQueue;
 
 #[cfg(feature = "transport-spi")]
@@ -82,24 +83,30 @@ ergot::multi_interface! {
         Rtt(IoInterface<RttQ>),
     }
 }
-#[cfg(not(feature = "transport-usb"))]
+#[cfg(all(not(feature = "transport-usb"), feature = "transport-rtt"))]
 ergot::multi_interface! {
     pub enum McSink for McInterface {
         Spi(SpiInterface),
         Rtt(IoInterface<RttQ>),
     }
 }
+// No tagged multi-interface dispatch or dormant RTT interface in SPI-only
+// firmware. The router's sink type is the SPI framed queue itself.
+#[cfg(not(any(feature = "transport-usb", feature = "transport-rtt")))]
+pub type McInterface = SpiInterface;
 
 // ========== Type Aliases ==========
 
 pub type Rng = rng::Rng<'static, peripherals::RNG>;
-/// Root router: USB and optional RTT, one reserved bridge slot, 8 seed routes
-/// for downstream routers.
-pub type McRouter = Router<McInterface, Rng, 3, 8>;
+/// One SPI slot plus explicitly enabled diagnostic transports; eight seed routes.
+const INTERFACES: usize =
+    1 + cfg!(feature = "transport-usb") as usize + cfg!(feature = "transport-rtt") as usize;
+pub type McRouter = Router<McInterface, Rng, INTERFACES, 8>;
 pub type Stack = NetStack<stack_mutex::StackRawMutex, McRouter>;
 
 #[cfg(feature = "transport-usb")]
 pub type UsbQueue = usb_kit::Queue<USB_OUT_QUEUE_SIZE, AtomicCoord>;
+#[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
 pub type RttQueue = io_kit::Queue<RTT_OUT_QUEUE_SIZE, AtomicCoord>;
 
 #[cfg(feature = "transport-usb")]

@@ -66,6 +66,61 @@ fn packed26_retains_every_scalar_bit_full_ccr_absence_and_sequence_wrap() {
     }
 }
 #[test]
+fn packed28_preserves_every_hall_code_and_other_fields_across_sequence_wrap() {
+    let mut encoder = RawBlockEncoder::new();
+    let mut seed = 0x7213e5b;
+    for block in 0..1024_u32 {
+        encoder.begin(19, block, RawEncoding::Packed28, 3);
+        let expected: Vec<_> = (0..64_u16)
+            .map(|i| {
+                let mut f = valid(&mut seed, 65530_u16.wrapping_add(i.wrapping_mul(3)));
+                f.hall_angle =
+                    crate::types::HallAngle::from_encoded((block * 64 + u32::from(i)) as u16);
+                if i % 7 == 0 {
+                    f.vphase_adc = [u16::MAX; 3];
+                }
+                f
+            })
+            .collect();
+        for f in &expected {
+            assert!(encoder.push(f));
+        }
+        let bytes = encoder.finish(0);
+        assert_eq!(bytes.len(), 32 + 64 * 28);
+        let decoded = decode_raw_block(bytes).unwrap();
+        assert_eq!(decoded.samples.as_slice(), expected);
+        assert_eq!(decoded.header.encoding, RawEncoding::Packed28);
+        assert!(!decoded.header.is_fallback());
+    }
+}
+
+#[test]
+fn fixed_codec_never_changes_format_or_silently_discards_hall() {
+    let sample = FastTelemetry {
+        hall_angle: crate::types::HallAngle::from_encoded(65535),
+        ..Default::default()
+    };
+    let mut encoder = RawBlockEncoder::new();
+    for encoding in [
+        RawEncoding::Raw34,
+        RawEncoding::Packed26,
+        RawEncoding::Packed26Delta,
+    ] {
+        encoder.begin(1, 0, encoding, 1);
+        assert!(!encoder.push(&sample));
+        assert!(encoder.is_empty());
+    }
+    encoder.begin(1, 0, RawEncoding::Packed28, 1);
+    assert!(!encoder.push(&FastTelemetry { ia: 4096, ..sample }));
+    assert!(encoder.is_empty());
+    assert!(encoder.push(&sample));
+    assert_eq!(
+        decode_raw_block(encoder.finish(0)).unwrap().samples[0],
+        sample
+    );
+}
+
+#[test]
 fn fallback_is_explicit_and_retains_invalid_adc_mixed_sentinels_and_reserved_enables() {
     let base = FastTelemetry {
         vphase_adc: [0, 4095, 2000],
@@ -302,6 +357,7 @@ fn packed_delta_handles_exact_minimum_and_worst_case_without_expanding_storage()
         ic: 4095,
         vbus: 65535,
         angle: 65535,
+        hall_angle: Default::default(),
         vd: -1,
         vq: -1,
         rpm: -1,
@@ -477,6 +533,7 @@ fn existing_tags_keep_their_exact_header_and_payload_bytes() {
         ic: 0x789,
         vbus: 0xabcd,
         angle: 0x1234,
+        hall_angle: Default::default(),
         vd: -2,
         vq: 32767,
         rpm: -32768,

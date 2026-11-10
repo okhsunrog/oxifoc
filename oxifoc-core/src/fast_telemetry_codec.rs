@@ -1,5 +1,5 @@
 //! Lossless, independently decodable telemetry batches. Runs in the async
-//! stream task; the ADC ISR still writes its original 34-byte Pod frames.
+//! stream task; the ADC ISR writes fixed-size Pod frames.
 use super::{FAST_BATCH_BYTES, FAST_BATCH_SAMPLES, FastTelemetry, FastTelemetryBatch};
 use core::mem::MaybeUninit;
 

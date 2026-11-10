@@ -6,12 +6,12 @@ use oxifoc_core::runtime::raw_stream::{RawSinkError, RawTelemetrySink};
 /// Bound a disconnected or unconsumed block without ever holding the producer gate.
 const BLOCK_TIMEOUT: Duration = Duration::from_millis(250);
 
-#[cfg(feature = "bench-raw-ergot")]
+#[cfg(feature = "fast-telemetry")]
 struct ErgotRawSink {
     stack: &'static super::Stack,
 }
 
-#[cfg(feature = "bench-raw-ergot")]
+#[cfg(feature = "fast-telemetry")]
 impl RawTelemetrySink for ErgotRawSink {
     async fn write_block(
         &mut self,
@@ -48,7 +48,7 @@ impl RawTelemetrySink for ErgotRawSink {
 /// Encode in thread mode alongside the command servers. A queued Ergot send
 /// can complete immediately; its self-waking stream must not keep an interrupt
 /// executor runnable and starve those servers. USB RX/TX stay on their executor.
-#[cfg(feature = "bench-raw-ergot")]
+#[cfg(feature = "fast-telemetry")]
 #[embassy_executor::task]
 pub async fn ergot_task(stack: &'static super::Stack) {
     embassy_executor::Metadata::for_current_task()

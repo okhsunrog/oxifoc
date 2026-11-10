@@ -19,8 +19,8 @@ bench-probe-read *ARGS:
 replay-hall *ARGS:
     cargo run --release --locked -p oxifoc-host-lib --example replay_hall -- "$@"
 
-mk5_features := "transport-usb,board-vesc6-mk5,task-priority"
-mk5_bench_features := mk5_features + ",bench-calibrated-clock,bench-clock-reference"
+mk5_features := "transport-spi,board-vesc6-mk5,task-priority,fast-telemetry"
+mk5_bench_features := "transport-usb,board-vesc6-mk5,task-priority,bench-calibrated-clock,bench-clock-reference"
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
 mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
 mk5_probe := "0483:3754:002300203234511537333934"
@@ -47,7 +47,7 @@ bench-usb-serial-jtag port fps="625" bytes="832" seconds="30":
 
 build-mk5-spi usb="off":
     @test {{quote(usb)}} = on -o {{quote(usb)}} = off
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote("transport-spi,board-vesc6-mk5,task-priority,bench-calibrated-clock" + if usb == "on" { ",transport-usb" } else { "" })}} --bin oxifoc-f405
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features + ",bench-calibrated-clock" + if usb == "on" { ",transport-usb" } else { "" })}} --bin oxifoc-f405
 
 flash-mk5-spi usb="off": (build-mk5-spi usb)
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
@@ -560,9 +560,9 @@ bench-bridge-handshake port seconds="30" hz="20000":
 # Fixed-format telemetry through a chosen link; legacy remains an explicit baseline.
 build-mk5-link-bench link="spi" source="ergot" detail="timing":
     @test {{quote(link)}} = spi -o {{quote(link)}} = usb
-    @test {{quote(source)}} = ergot -o {{quote(source)}} = raw-ergot -o {{quote(source)}} = raw-usb -o {{quote(source)}} = raw-rtt
+    @test {{quote(source)}} = ergot -o {{quote(source)}} = legacy-ergot -o {{quote(source)}} = raw-ergot -o {{quote(source)}} = raw-usb -o {{quote(source)}} = raw-rtt
     @test {{quote(detail)}} = timing -o {{quote(detail)}} = trace -o {{quote(detail)}} = codec
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote("board-vesc6-mk5,task-priority,bench-calibrated-clock,isr-timing,transport-" + link + (if source == "raw-ergot" { ",bench-raw-ergot" } else if source == "raw-usb" { ",bench-raw-usb" } else if source == "raw-rtt" { ",bench-raw-rtt" } else { "" }) + (if detail == "trace" { ",bench-executor-trace" } else if detail == "codec" { ",bench-raw-codec" } else { "" }))}}
+    cd oxifoc-f405 && DEFMT_LOG={{quote(if detail == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote("board-vesc6-mk5,task-priority,bench-calibrated-clock,isr-timing,transport-" + link + (if source == "ergot" { ",fast-telemetry" } else if source == "raw-ergot" { ",bench-raw-ergot" } else if source == "raw-usb" { ",bench-raw-usb" } else if source == "raw-rtt" { ",bench-raw-rtt" } else { "" }) + (if detail == "trace" { ",bench-executor-trace" } else if detail == "codec" { ",bench-raw-codec" } else { "" }))}}
 
 flash-mk5-link-bench link="spi" source="ergot" detail="timing": (build-mk5-link-bench link source detail)
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
@@ -571,20 +571,24 @@ flash-mk5-link-bench link="spi" source="ergot" detail="timing": (build-mk5-link-
 # Production command route through the C5; never select the ST-Link VCP.
 [positional-arguments]
 cli-bridge *ARGS:
-    @target/release/oxifoc-host-cli --transport usb-serial-jtag --serial-path /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00 --wait-secs 12 --json "$@"
+    @target/release/oxifoc-host-cli --transport usb-serial-jtag --serial-path /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00 --elf {{mk5_elf}} --wait-secs 12 --json "$@"
 
 # Finite maneuver, full native-rate stream, terminal Stop on success or failure.
-test-bridge capture maneuver source="ergot-raw" encoding="packed26":
+test-bridge capture maneuver source="ergot-raw" encoding="packed28":
     @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(source)}} {{quote(encoding)}}
 
 # USB is a temporary A/B reference; bridge is the production route.
-test-link link capture maneuver source="ergot-raw" encoding="packed26":
+test-link link capture maneuver source="ergot-raw" encoding="packed28":
     #!/usr/bin/env bash
     set -euo pipefail
     test {{quote(link)}} = bridge -o {{quote(link)}} = usb
-    cli=(target/release/oxifoc-host-cli --transport usb --wait-secs 12 --json)
+    cli=(target/release/oxifoc-host-cli --transport usb --elf {{mk5_elf}} --wait-secs 12 --json)
     if test {{quote(link)}} = bridge; then cli=(just cli-bridge); fi
     trap '"${cli[@]}" stop >/dev/null' EXIT
-    export RUST_LOG="${RUST_LOG:-warn,device=info}"
+    export RUST_LOG="${RUST_LOG:-warn},device=info"
     "${cli[@]}" source hall > {{quote(capture + ".source.json")}}
     "${cli[@]}" --fast-source {{quote(source)}} --fast-encoding {{quote(encoding)}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}
+
+# Matching bench-executor-trace firmware must already be flashed.
+profile-link-mk5 link output maneuver="maneuvers/mk5-hall-current-check.json" repeats="3":
+    uv run --no-project python -B scripts/bench_link_profile.py {{quote(link)}} {{quote(maneuver)}} {{quote(output)}} --repeats {{repeats}}

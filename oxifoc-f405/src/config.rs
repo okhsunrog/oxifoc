@@ -201,7 +201,7 @@ const _: () = assert!(CLOCK_PROFILE.usb_hz() <= 48_120_000);
 pub const USB_OUT_QUEUE_SIZE: usize = if cfg!(any(
     feature = "bench-raw-usb",
     feature = "bench-raw-rtt",
-    feature = "bench-raw-ergot"
+    feature = "fast-telemetry"
 )) {
     8192
 } else {
@@ -215,7 +215,7 @@ pub const RTT_OUT_QUEUE_SIZE: usize = 4096;
 pub const MAX_PACKET_SIZE: usize = if cfg!(any(
     feature = "bench-raw-usb",
     feature = "bench-raw-rtt",
-    feature = "bench-raw-ergot"
+    feature = "fast-telemetry"
 )) {
     2304
 } else {
@@ -225,7 +225,7 @@ pub const MAX_PACKET_SIZE: usize = if cfg!(any(
 #[cfg(any(
     feature = "bench-raw-usb",
     feature = "bench-raw-rtt",
-    feature = "bench-raw-ergot"
+    feature = "fast-telemetry"
 ))]
 const _: () = assert!(MAX_PACKET_SIZE >= oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES + 30);
 

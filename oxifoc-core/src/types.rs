@@ -373,10 +373,10 @@ pub struct MotorStatus {
 /// `−(ia+ib)`) so a per-phase current-sense fault stays visible in the raw
 /// data. Frame/field rationale: docs/notes/rtt-telemetry-throughput.md §6.
 ///
-/// `#[repr(C)]`, 17×u16/i16 = **34 bytes**, align 2, no padding → `Pod` clean.
-/// The in-memory layout IS the wire layout: batches ship the little-endian
-/// Pod bytes losslessly (see [`FastTelemetryBatch`]), so this struct doubles as
-/// the wire contract — reorder/resize fields only together with the host.
+/// `#[repr(C)]`, 18×u16/i16 = **36 bytes**, align 2, no padding → `Pod` clean.
+/// This is the canonical RAM frame and the legacy Pod-batch layout.
+/// Production Packed28 explicitly packs its fields and shares seq/stride/ARR
+/// within each block. Change this contract together with the host and ICD.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -394,6 +394,9 @@ pub struct FastTelemetry {
     pub vbus: u16,
     /// Electrical angle, full-scale `u16` (0..2π). Needed host-side for Park.
     pub angle: u16,
+    /// Independent Hall electrical angle; zero encoding means unavailable.
+    #[serde(default)]
+    pub hall_angle: HallAngle,
     /// D-axis commanded voltage (PI output, before PWM compensation) in
     /// **2 mV** units (i16 → ±65 V).
     /// Not reconstructable from currents (depends on PI integrator state).
@@ -424,6 +427,24 @@ pub struct FastTelemetry {
     pub pwm_enables: u16,
 }
 
+/// Hall angle with explicit absence in two bytes. Zero is unavailable;
+/// 1..=65535 cover one electrical turn, about 0.0055° per step.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "pod", derive(bytemuck::Pod, bytemuck::Zeroable))]
+pub struct HallAngle(u16);
+
+impl HallAngle {
+    pub const fn from_encoded(value: u16) -> Self {
+        Self(value)
+    }
+
+    pub const fn encoded(self) -> u16 {
+        self.0
+    }
+}
+
 /// Maximum samples in a losslessly encoded batch. The independent byte cap
 /// below can stop the encoder earlier for incompressible input; neither
 /// sample values nor compression ratio can make a batch exceed the MTU.
@@ -440,7 +461,7 @@ pub const FAST_BATCH_WIRE_OVERHEAD: usize = 32;
 /// Batch of fast telemetry samples for efficient network transmission.
 ///
 /// ICD v8 lossless byte-delta encoding. Each batch starts independently with
-/// a full 34-byte Pod frame (tag 0). Following frames are either full frames
+/// a full Pod frame (tag 0). Following frames are either full frames
 /// or sparse replacements (tag 1, five-byte little-endian changed-byte mask,
 /// then changed bytes in offset order). No state crosses a batch boundary.
 /// Arbitrary frames fall back to full encoding; payload capacity always fits
@@ -604,7 +625,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 9;
+pub const ICD_PROTO_VERSION: u16 = 10;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -1355,6 +1376,7 @@ mod tests {
                 ic: 3,
                 vbus: 6000,
                 angle: (i as u16).wrapping_mul(2048),
+                hall_angle: HallAngle::from_encoded(1000 + i as u16),
                 vd: -1200,
                 vq: 32000,
                 rpm: -15000,
@@ -1367,7 +1389,7 @@ mod tests {
             .collect();
 
         let mut batch = FastTelemetryBatchEncoder::new();
-        assert_eq!(size_of::<FastTelemetry>(), 34);
+        assert_eq!(size_of::<FastTelemetry>(), 36);
         const { assert!(FAST_BATCH_BYTES + FAST_BATCH_WIRE_OVERHEAD <= 512) };
         for s in &samples {
             assert!(batch.push(s));

@@ -46,6 +46,7 @@ pub struct RawCaptureReport {
     pub blocks_received: u64,
     pub raw34_blocks: u64,
     pub packed26_blocks: u64,
+    pub packed28_blocks: u64,
     pub packed26_delta_blocks: u64,
     pub fallback_blocks: u64,
     pub end_total_records: Option<u64>,
@@ -223,6 +224,7 @@ impl RawTelemetryState {
                 blocks_received: 0,
                 raw34_blocks: 0,
                 packed26_blocks: 0,
+                packed28_blocks: 0,
                 packed26_delta_blocks: 0,
                 fallback_blocks: 0,
                 end_total_records: None,
@@ -371,6 +373,7 @@ impl RawTelemetryState {
                 match header.encoding {
                     RawEncoding::Raw34 => capture.report.raw34_blocks += 1,
                     RawEncoding::Packed26 => capture.report.packed26_blocks += 1,
+                    RawEncoding::Packed28 => capture.report.packed28_blocks += 1,
                     RawEncoding::Packed26Delta => capture.report.packed26_delta_blocks += 1,
                 }
                 capture.report.fallback_blocks += u64::from(header.is_fallback());
@@ -720,6 +723,7 @@ mod tests {
             RawEncoding::Raw34,
             RawEncoding::Packed26,
             RawEncoding::Packed26Delta,
+            RawEncoding::Packed28,
         ] {
             for missing in [false, true] {
                 let stack = ergot::toolkits::null::new_arc_null_stack();

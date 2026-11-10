@@ -137,12 +137,18 @@ impl HostConfig {
     }
 
     pub fn fast_source(&self) -> FastSource {
-        self.fast_source.unwrap_or_default()
+        self.fast_source.unwrap_or_else(|| {
+            if self.transport == Some(TransportType::UsbSerialJtag) {
+                FastSource::ErgotRaw
+            } else {
+                FastSource::default()
+            }
+        })
     }
 
     pub fn fast_encoding(&self) -> oxifoc_core::raw_telemetry::RawEncoding {
         self.fast_encoding
-            .unwrap_or(oxifoc_core::raw_telemetry::RawEncoding::Raw34)
+            .unwrap_or(oxifoc_core::raw_telemetry::RawEncoding::Packed28)
     }
 
     pub fn transport_config(&self) -> Result<TransportConfig> {
@@ -207,6 +213,15 @@ mod tests {
     fn raw_sources_select_usb_commands_without_changing_legacy_defaults() {
         let default = HostConfig::default();
         assert_eq!(default.fast_source(), FastSource::Ergot);
+        let bridge = HostConfig {
+            transport: Some(TransportType::UsbSerialJtag),
+            ..Default::default()
+        };
+        assert_eq!(bridge.fast_source(), FastSource::ErgotRaw);
+        assert_eq!(
+            bridge.fast_encoding(),
+            oxifoc_core::raw_telemetry::RawEncoding::Packed28
+        );
         assert_eq!(default.transport_type(), TransportType::default());
         for source in ["usb-raw", "rtt-raw", "ergot-raw"] {
             let cfg: HostConfig =

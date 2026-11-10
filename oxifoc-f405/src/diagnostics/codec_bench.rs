@@ -95,6 +95,7 @@ fn fixture(case: usize, index: usize) -> FastTelemetry {
         ic: word(2),
         vbus: word(3),
         angle: word(4),
+        hall_angle: Default::default(),
         vd: word(5) as i16,
         vq: word(6) as i16,
         rpm: word(7) as i16,

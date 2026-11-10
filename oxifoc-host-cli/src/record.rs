@@ -64,6 +64,7 @@ const SCHEMA: &str = "message oxifoc_telemetry {
     required double v_beta_measured_v;
     required double vd_measured_v;
     required double vq_measured_v;
+    required double hall_angle_rad;
 }";
 
 #[derive(serde::Serialize)]
@@ -537,6 +538,7 @@ fn write_parquet(
     let vd_v = eng(|r| r.vd);
     let vq_v = eng(|r| r.vq);
     let angle_rad = eng(|r| r.angle_rad);
+    let hall_angle_rad = eng(|r| r.hall_angle_rad.unwrap_or(f32::NAN));
     let mech_rpm = eng(|r| r.mech_rpm);
     let erpm = eng(|r| r.erpm);
     let i_sum_a = eng(|r| r.i_sum.unwrap_or(f32::NAN));
@@ -608,6 +610,10 @@ fn write_parquet(
             28..=31 => {
                 col.typed::<DoubleType>()
                     .write_batch(&measured_abd[col_idx - 28], None, None)?;
+            }
+            32 => {
+                col.typed::<DoubleType>()
+                    .write_batch(&hall_angle_rad, None, None)?;
             }
             _ => bail!("schema/column mismatch"),
         }

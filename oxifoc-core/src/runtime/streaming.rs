@@ -44,7 +44,7 @@ pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
 // Serializes configuration with task-side broadcasts, without blocking the
 // FOC interrupt. A stop ACK must follow every previously accepted batch.
 pub(super) static FAST_TELEM_GATE: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
-#[cfg(all(test, feature = "bench-raw-stream"))]
+#[cfg(all(test, feature = "fast-telemetry"))]
 pub(super) static FAST_TELEM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 // Invalidates task-held samples as well as the ISR queue on stop/restart.
 // The task may miss an intermediate period=0 if a new session starts promptly.
@@ -58,7 +58,7 @@ static FAST_TELEM_SESSION: AtomicU32 = AtomicU32::new(0);
 pub async fn set_fast_telemetry_period(period: u32) -> u32 {
     // A bench image has exactly one raw consumer. Ordinary telemetry requests
     // cannot arm a queue with no Ergot consumer, or stop a raw capture.
-    if cfg!(feature = "bench-raw-stream") {
+    if cfg!(feature = "fast-telemetry") {
         return 0;
     }
     let _gate = FAST_TELEM_GATE.lock().await;
@@ -268,7 +268,7 @@ pub fn publish_cycle_telemetry(
         .fetch_add(1, Ordering::Relaxed)
         .is_multiple_of(period)
     {
-        let telem = build_fast_telemetry(&adc, &foc, pole_pairs, seq);
+        let telem = build_fast_telemetry(&adc, &foc, hall, pole_pairs, seq);
         push_fast_telemetry(&telem);
     }
 }
@@ -285,6 +285,7 @@ pub use crate::types::FAST_BATCH_SAMPLES;
 pub fn build_fast_telemetry(
     adc: &AdcSnapshot,
     foc: &FocOutput,
+    hall: Option<HallSnapshot>,
     pole_pairs: u8,
     seq: u32,
 ) -> FastTelemetry {
@@ -310,6 +311,7 @@ pub fn build_fast_telemetry(
         ic: adc.ic,
         vbus: FastTelemetry::pack_vbus(adc.vbus_mv as f32 / 1000.0),
         angle: FastTelemetry::pack_angle(foc.angle_rad),
+        hall_angle: crate::types::HallAngle::from_radians(hall.map(|h| h.angle_rad)),
         vd: FastTelemetry::pack_volt(foc.vd),
         vq: FastTelemetry::pack_volt(foc.vq),
         rpm: FastTelemetry::pack_rpm(mech_rpm),
@@ -330,7 +332,7 @@ pub fn push_fast_telemetry(telem: &FastTelemetry) {
         fast_telem_stats::PUSH_OK.fetch_add(1, Ordering::Relaxed);
     } else {
         fast_telem_stats::PUSH_DROPS.fetch_add(1, Ordering::Relaxed);
-        #[cfg(feature = "bench-raw-stream")]
+        #[cfg(feature = "fast-telemetry")]
         super::raw_stream::PRODUCER_DROPS.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -391,7 +393,7 @@ where
 {
     // Defensive guard against accidentally spawning both consumers in a bench
     // image. The normal image compiles this branch away.
-    if cfg!(feature = "bench-raw-stream") {
+    if cfg!(feature = "fast-telemetry") {
         core::future::pending::<()>().await;
     }
     let mut pending = PendingFastBatch::new();
@@ -682,7 +684,7 @@ mod drain_tests {
 
     #[test]
     fn drain_flushes_partial_full_empty_and_retry_counts() {
-        #[cfg(feature = "bench-raw-stream")]
+        #[cfg(feature = "fast-telemetry")]
         let _guard = FAST_TELEM_TEST_LOCK.lock().unwrap();
         let queue = FastTelemetryQueue::<4096>::new();
         let mut batch = crate::types::FastTelemetryBatchEncoder::new();
@@ -781,7 +783,7 @@ mod drain_tests {
     }
 }
 
-#[cfg(all(test, not(feature = "bench-raw-stream")))]
+#[cfg(all(test, not(feature = "fast-telemetry")))]
 mod stream_control_tests {
     use super::*;
     use core::{

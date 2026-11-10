@@ -1,5 +1,7 @@
 //! A single task owns SPI1 and both DMA directions; FOC never touches the bus.
-use super::{McSink, SPI_OUTQ, STATE_NOTIFY, Stack};
+#[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
+use super::McSink;
+use super::{SPI_OUTQ, STATE_NOTIFY, Stack};
 use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_stm32::{
     Peri, bind_interrupts,
@@ -56,10 +58,12 @@ pub fn init(
     r: Resources,
     epoch: u32,
 ) -> u8 {
-    let sink = McSink::Spi(framed_stream::Sink::new(
+    let sink = framed_stream::Sink::new(
         SPI_OUTQ.framed_producer(),
         crate::config::MAX_PACKET_SIZE as u16,
-    ));
+    );
+    #[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
+    let sink = McSink::Spi(sink);
     let ident = defmt::unwrap!(stack.manage_profile(|p| p.register_interface(sink)));
     let net = defmt::unwrap!(stack.manage_profile(|p| p.net_id_of(ident)));
     spawner.spawn(defmt::unwrap!(pump(stack, r, ident, net, epoch)));

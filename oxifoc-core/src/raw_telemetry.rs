@@ -1,4 +1,7 @@
-//! Versioned, independently decoded raw diagnostic blocks. All packing is lossless.
+//! Versioned, independently decoded telemetry blocks. All packing is lossless.
+//! Production tag3 is fixed Packed28: tag1's 26 bytes plus a two-byte Hall angle
+//! with explicit absence. Tags0..2 retain their historical decoding contract;
+//! they reject new samples containing Hall rather than silently discarding it.
 //!
 //! The 32-byte header contains magic/version/encoding/flags/count (8 bytes),
 //! session (u64), block index and cumulative producer drops (u32 each), then
@@ -30,12 +33,15 @@ pub enum RawEncoding {
     Packed26,
     /// Independent 26-byte seed, then tagged full frames or byte replacements.
     Packed26Delta,
+    /// Fixed production layout: Packed26 followed by an independent Hall angle.
+    Packed28,
 }
 impl RawEncoding {
     const fn bytes(self) -> usize {
         match self {
             Self::Raw34 => 34,
             Self::Packed26 | Self::Packed26Delta => 26,
+            Self::Packed28 => 28,
         }
     }
 }
@@ -114,6 +120,7 @@ impl RawBlockHeader {
             0 => RawEncoding::Raw34,
             1 => RawEncoding::Packed26,
             2 => RawEncoding::Packed26Delta,
+            3 => RawEncoding::Packed28,
             _ => return Err(RawDecodeError::Header),
         };
         let flags = b[6];
@@ -172,6 +179,7 @@ impl RawBlockHeader {
             RawEncoding::Raw34 => 0,
             RawEncoding::Packed26 => 1,
             RawEncoding::Packed26Delta => 2,
+            RawEncoding::Packed28 => 3,
         };
         b[6] = self.flags;
         b[7] = self.count;
@@ -227,6 +235,7 @@ fn frame(w: [u16; 17]) -> FastTelemetry {
         ic: w[2],
         vbus: w[3],
         angle: w[4],
+        hall_angle: crate::types::HallAngle::default(),
         vd: w[5] as i16,
         vq: w[6] as i16,
         rpm: w[7] as i16,
@@ -359,6 +368,13 @@ impl RawBlockEncoder {
         if self.is_full() || self.header.is_end() {
             return false;
         }
+        // Historical formats cannot represent Hall. Never silently drop it,
+        // and never fall back from the production format to a different codec.
+        if (self.requested != RawEncoding::Packed28 && f.hall_angle.encoded() != 0)
+            || (self.requested == RawEncoding::Packed28 && !packable(f))
+        {
+            return false;
+        }
         if self.is_empty() {
             self.header.first_seq = f.seq;
             self.header.pwm_arr = f.pwm_arr;
@@ -415,6 +431,9 @@ impl RawBlockEncoder {
             let out = &mut self.bytes[at..at + length];
             if packed {
                 pack26(f, out);
+                if self.header.encoding == RawEncoding::Packed28 {
+                    out[26..28].copy_from_slice(&f.hall_angle.encoded().to_le_bytes());
+                }
             } else {
                 for (i, value) in words(f).iter().enumerate() {
                     out[i * 2..i * 2 + 2].copy_from_slice(&value.to_le_bytes());
@@ -512,7 +531,7 @@ pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError>
         .chunks_exact(header.encoding.bytes())
         .enumerate()
     {
-        let sample = if header.encoding == RawEncoding::Raw34 {
+        let mut sample = if header.encoding == RawEncoding::Raw34 {
             let mut w = [0; 17];
             for (i, value) in w.iter_mut().enumerate() {
                 *value = read16(b, i * 2);
@@ -521,6 +540,9 @@ pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError>
         } else {
             unpack26(b, header, index)
         };
+        if header.encoding == RawEncoding::Packed28 {
+            sample.hall_angle = crate::types::HallAngle::from_encoded(read16(b, 26));
+        }
         samples.push(sample).map_err(|_| RawDecodeError::Length)?;
     }
     Ok(DecodedRawBlock { header, samples })
