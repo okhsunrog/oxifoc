@@ -3,6 +3,9 @@
 #[cfg(feature = "bench-raw-codec")]
 pub mod codec_bench;
 
+#[cfg(feature = "bench-cycle-outliers")]
+pub mod cycle_outliers;
+
 #[cfg(feature = "bench-hall")]
 pub mod hall_edges;
 
@@ -130,6 +133,38 @@ pub mod trace {
             record(USB_IRQ_END, 0);
         }
     }
+
+    // Other IRQs that can preempt the P6 USB executor must not be charged
+    // to USB. TIM2/RNG are also P6 and cannot preempt it.
+    #[cfg(feature = "bench-executor-trace")]
+    macro_rules! irq_pair {
+        ($begin:ident, $end:ident, $irq:ident, $kind:literal) => {
+            pub struct $begin;
+            pub struct $end;
+            impl
+                embassy_stm32::interrupt::typelevel::Handler<
+                    embassy_stm32::interrupt::typelevel::$irq,
+                > for $begin
+            {
+                unsafe fn on_interrupt() {
+                    record($kind, 0);
+                }
+            }
+            impl
+                embassy_stm32::interrupt::typelevel::Handler<
+                    embassy_stm32::interrupt::typelevel::$irq,
+                > for $end
+            {
+                unsafe fn on_interrupt() {
+                    record($kind + 1, 0);
+                }
+            }
+        };
+    }
+    #[cfg(feature = "bench-executor-trace")]
+    irq_pair!(UartIrqBegin, UartIrqEnd, USART3, 21);
+    #[cfg(feature = "bench-executor-trace")]
+    irq_pair!(FaultIrqBegin, FaultIrqEnd, EXTI9_5, 23);
 
     // 33 KiB of events + 1 KiB of whole-profile task statistics. A short CS
     // serializes each timeline event, including its timestamp, so preemption

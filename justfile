@@ -235,6 +235,18 @@ build-mk5-usb-cpu-trace:
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_usb_trace_features) }}
 
+# Same velocity workload: minimal timing, section outliers, or finite CPU trace.
+build-mk5-runtime-profile sink="ergot" detail="timing" observer_log="off":
+    @test {{ quote(sink) }} = ergot -o {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt
+    @test {{ quote(detail) }} = timing -o {{ quote(detail) }} = outliers -o {{ quote(detail) }} = trace
+    @test {{ quote(observer_log) }} = off -o {{ quote(observer_log) }} = on
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + ",isr-timing" + (if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "trace" { ",bench-executor-trace" } else { "" }) + if observer_log == "on" { ",bench-observer-logging" } else { "" }) }}
+
+# Explicit motor excitation, no fast stream; same secured +40 erad/s CPU control.
+test-velocity-no-stream-mk5 elf:
+    cargo run --release --locked -p oxifoc-host-lib --example velocity_cpu_control -- --run {{ quote(elf) }}
+
 # Minimal CCR timing probe; no trace work before the PWM writes.
 build-mk5-pwm-trace:
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \

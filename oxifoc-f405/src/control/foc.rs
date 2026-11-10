@@ -405,6 +405,9 @@ fn isr_timing_now() -> u32 {
 #[interrupt]
 fn ADC() {
     static mut SEQ: u32 = 0;
+    #[cfg(feature = "bench-cycle-outliers")]
+    static mut CYCLE_OUTLIERS: crate::diagnostics::cycle_outliers::Recorder =
+        crate::diagnostics::cycle_outliers::Recorder::new();
     #[cfg(feature = "bench-raw-codec")]
     static mut CODEC_BENCH: crate::diagnostics::codec_bench::Bench =
         crate::diagnostics::codec_bench::Bench::new();
@@ -428,6 +431,8 @@ fn ADC() {
         crate::diagnostics::trace::record(crate::diagnostics::trace::ADC_ENTRY_PHASE, phase);
     }
     let isr_t0 = isr_timing_now();
+    #[cfg(feature = "bench-cycle-outliers")]
+    let core_before = oxifoc_core::isr_prof::Snapshot::observe();
     #[cfg(feature = "bench-executor-trace")]
     crate::diagnostics::trace::record(8, 0);
     #[cfg(all(
@@ -572,6 +577,10 @@ fn ADC() {
     // Run FOC control loop (shared cycle logic in core)
     #[cfg(feature = "isr-timing")]
     let mut time_control_motion = false;
+    #[cfg(feature = "bench-cycle-outliers")]
+    let mut outlier_active = false;
+    #[cfg(feature = "bench-cycle-outliers")]
+    let mut outlier_velocity = 0.0_f32;
     #[cfg(feature = "bench-raw-codec")]
     let mut codec_bench_stopped = false;
     let foc_telem = FOC_DRIVER.lock(|cell| {
@@ -588,6 +597,15 @@ fn ADC() {
             {
                 codec_bench_stopped =
                     matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped);
+            }
+            #[cfg(feature = "bench-cycle-outliers")]
+            {
+                outlier_active = matches!(
+                    driver.mode(),
+                    oxifoc_core::types::ControlMode::CurrentControl { .. }
+                        | oxifoc_core::types::ControlMode::VelocityControl { .. }
+                );
+                outlier_velocity = output.map_or(0.0, |sample| sample.velocity_rad_s);
             }
             #[cfg(feature = "isr-timing")]
             {
@@ -650,8 +668,6 @@ fn ADC() {
     oxifoc_core::isr_prof::add(&ISR_PROF_FOC, prof_t2, prof_t3);
     oxifoc_core::isr_prof::add(&ISR_PROF_PUB, prof_t3, prof_t4);
 
-    #[cfg(feature = "bench-executor-trace")]
-    crate::diagnostics::trace::record(9, 0);
     #[cfg(all(
         feature = "bench-netstack-trace",
         not(feature = "bench-executor-trace")
@@ -665,6 +681,28 @@ fn ADC() {
         enables,
         DWT_GENERATION.load(Ordering::Relaxed),
     );
+    #[cfg(feature = "bench-cycle-outliers")]
+    {
+        let core_after = oxifoc_core::isr_prof::Snapshot::observe();
+        let body_end = isr_timing_now();
+        CYCLE_OUTLIERS.observe(
+            outlier_active,
+            *SEQ,
+            isr_t0,
+            DWT_GENERATION.load(Ordering::Relaxed),
+            body_end.wrapping_sub(isr_t0),
+            ISR_BUDGET_CYCLES.load(Ordering::Relaxed),
+            u32::from(convert_temp) | (u32::from(time_control_motion) << 1),
+            outlier_velocity.to_bits(),
+            [
+                prof_t1.wrapping_sub(isr_t0),
+                prof_t2.wrapping_sub(prof_t1),
+                prof_t3.wrapping_sub(prof_t2),
+                prof_t4.wrapping_sub(prof_t3),
+            ],
+            core_after.increments_since(&core_before),
+        );
+    }
     let isr_end = isr_timing_now();
     #[cfg(feature = "isr-timing")]
     if time_control_motion {
@@ -682,6 +720,10 @@ fn ADC() {
             ISR_CYC_OVER.fetch_add(1, Ordering::Relaxed);
         }
     }
+    // Include timing/statistics bookkeeping in the traced ADC context;
+    // ending earlier would charge that higher-priority work to USB.
+    #[cfg(feature = "bench-executor-trace")]
+    crate::diagnostics::trace::record(9, 0);
 }
 
 fn dwt_sample() -> DwtSample {

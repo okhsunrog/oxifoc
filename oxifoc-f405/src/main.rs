@@ -20,7 +20,12 @@ use embassy_time::Duration;
 
 // Bind EXTI9_5 interrupt for nFAULT monitoring (PB7/EXTI7)
 bind_interrupts!(struct ExtiIrqs {
-    EXTI9_5 => exti::InterruptHandler<interrupt::typelevel::EXTI9_5>;
+    EXTI9_5 =>
+        #[cfg(feature = "bench-executor-trace")]
+        diagnostics::trace::FaultIrqBegin,
+        exti::InterruptHandler<interrupt::typelevel::EXTI9_5>,
+        #[cfg(feature = "bench-executor-trace")]
+        diagnostics::trace::FaultIrqEnd;
 });
 
 // USART1 is unused (external UART is USART3). Reserve its vector for USB

@@ -641,3 +641,68 @@ Final Stopped verification captured 82032 native-rate records with zero loss.
 Readback matches reference Hall geometry, motor model, current limits and
 board calibration; fresh boot current offsets are intentionally excluded.
 Final state: Stopped/Hall, zero faults, 24.033 V. No calibration NVM writes.
+
+## Runtime CPU attribution and observer-log spikes (2026-11-10)
+
+The sink-only microbenchmark above is not full USB cost. Current moving
+VelocityControl traces now include Hall/UART/fault preemption as well as ADC,
+OTG_FS and the USB executor. ADC end markers follow statistics bookkeeping.
+The analyzer can retain validated closed prefix/tail frames and idle gaps
+around a complete lowest-priority IRQ witness, avoiding sparse-USB busy-poll
+bias. Original strict/trim behavior remains the default.
+
+Native 20 kHz, +40 electrical rad/s, Packed26, unchanged model/geometry and
+protections. Full report, exact images/patches/symbols, every failed attempt,
+CSV/JSON and plots:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-runtime-cpu-2026-11-10/runtime-report.md`.
+
+| Instrumented finite windows | ADC/FOC | USB IRQ/executor, excluding traced preemption | Raw encoder/sink task |
+| --- | ---: | ---: | ---: |
+| No stream, Ergot image | 82.7-82.9% | 0.11-0.37% | 0.76% idle task |
+| Packed26 over Ergot USB | 87.4-87.6% | 7.44-8.19% | 3.55-4.55% |
+| No stream, RTT image | 85.1% | 0.21% | 0.73% idle task |
+| Packed26 over RTT | 88.6-89.7% | 0.41-0.49% | 5.82-5.98% |
+
+These seven windows span 20-33 ms each, with trace overhead. Thread task
+times exclude traced IRQs; untraced TIM2/RNG and hooks may remain included.
+Other/unattributed time is not a measured idle budget. Different images and
+rotor trajectories prevent assigning cross-image ADC differences to SWD
+contention. Minimal-timing RTT motion averaged 41.78 us with a 54.52-us
+observed maximum; trace percentages must not be added to that separate build
+as an exact production CPU accounting.
+
+The longest original ADC records repeated modulo 8192. The observer's periodic
+`info!` executed inside ADC and added roughly 5000 cycles outside its ordinary
+observer/startup/output buckets. Same-ELF A/B, changing only the diagnostic
+switch while Stopped, recorded three logs versus zero, with maximum ADC body
+74.69 versus 55.56 us. Mean body time barely changed. The normal image now
+compiles that text log and its counter out; opt-in `observer-logging` and
+`bench-observer-logging` retain reproduction. No estimator equations changed.
+
+Detailed complete active windows attributed about 12.14 us to phase estimation
+(observer subset about 3.97 us), 6.82 us to the current controller, 2.49 us
+to ADC/conversions, 2.51 us to snapshot/Hall preparation and 3.74 us to
+publication. These nested diagnostic sections cannot all be added together.
+Remaining maxima include more expensive command handling and thermal cycles.
+Removing the logger does not establish the 50-us deadline or stable speed.
+
+Ergot USB still exhibited ACK starvation and producer losses in profiling
+builds. RTT's minimal-timing capture preserved 162178 records and all 28 ACKs;
+other instrumented attempts retained Hall warnings or sample losses as failures.
+No warning/protection/command deadline was weakened. A SPI bridge could offload
+material USB work, but cannot repair independent ADC overruns; improve the ISR
+and queue/command admission before adding hardware.
+
+`just build-mk5-runtime-profile SINK timing|outliers|trace` owns feature flags.
+An optional final `on` enables observer-log reproduction. The no-stream
+control uses `just test-velocity-no-stream-mk5 ELF`, explicitly energizing the
+secured motor while leaving the native control rate unchanged. Results in
+the report separate capture status, ACK successes, warnings and whole-stage
+acceptance. SWD setup/export occurs only while Stopped, outside active windows.
+
+Normal and observer-logging core configurations passed 661 unit tests and
+11 doctests; strict core/host-example Clippy, two outlier-harness tests and
+16 CPU analyzer tests passed. The standard normal image was restored without
+trace/outlier/logger-switch symbols. Final Stopped capture: 82032 records,
+zero loss; Stopped/Hall, fault_count=0, 24.090 V. Motor model, Hall geometry,
+current limits and board calibration read back equal; no calibration NVM writes.

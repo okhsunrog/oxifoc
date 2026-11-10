@@ -7,7 +7,7 @@
 //! the shared code cost nothing on host builds.
 
 use core::sync::atomic::AtomicU32;
-#[cfg(feature = "isr-profiling")]
+#[cfg(any(feature = "isr-profiling", feature = "runtime"))]
 use core::sync::atomic::Ordering;
 
 /// `run_foc_cycle`: command drain + deadman/link/fault gates.
@@ -93,10 +93,8 @@ pub struct Snapshot {
 
 #[cfg(feature = "runtime")]
 impl Snapshot {
-    /// The caller must capture its ISR invocation count and platform sections
-    /// in this SAME critical section. Logging afterwards cannot split a window.
-    pub fn take(_cs: critical_section::CriticalSection<'_>) -> Self {
-        let counters = [
+    fn counters() -> [&'static AtomicU32; Section::ObserverTail as usize + 1] {
+        [
             &CYCLE_CMD,
             &CYCLE_PROT,
             &CYCLE_STEP,
@@ -114,9 +112,29 @@ impl Snapshot {
             &GATE_CURR,
             &OUT_TRK,
             &OBS_TAIL,
-        ];
+        ]
+    }
+
+    /// Non-destructive observation for an ISR-owned before/after pair.
+    /// The caller must exclude both other writers and the reporting reset
+    /// between observations. On the single-core target this is true within
+    /// one highest-priority ADC handler; this is not a cross-task snapshot.
+    pub fn observe() -> Self {
         Self {
-            cycles: counters.map(|counter| counter.swap(0, core::sync::atomic::Ordering::Relaxed)),
+            cycles: Self::counters().map(|counter| counter.load(Ordering::Relaxed)),
+        }
+    }
+
+    /// Per-section increments, including counters that wrapped once.
+    pub fn increments_since(&self, earlier: &Self) -> [u32; Section::ObserverTail as usize + 1] {
+        core::array::from_fn(|i| self.cycles[i].wrapping_sub(earlier.cycles[i]))
+    }
+
+    /// The caller must capture its ISR invocation count and platform sections
+    /// in this SAME critical section. Logging afterwards cannot split a window.
+    pub fn take(_cs: critical_section::CriticalSection<'_>) -> Self {
+        Self {
+            cycles: Self::counters().map(|counter| counter.swap(0, Ordering::Relaxed)),
         }
     }
 
@@ -132,6 +150,17 @@ mod tests {
 
     #[test]
     fn snapshot_keeps_its_window_when_live_counters_advance() {
+        // Only this test writes the global counters; observation arithmetic
+        // below uses local snapshots so parallel tests cannot interfere.
+        CYCLE_CMD.store(u32::MAX - 3, Ordering::Relaxed);
+        let before = Snapshot::observe();
+        CYCLE_CMD.store(8, Ordering::Relaxed);
+        let after = Snapshot::observe();
+        assert_eq!(
+            after.increments_since(&before)[Section::Command as usize],
+            12
+        );
+        assert_eq!(CYCLE_CMD.load(Ordering::Relaxed), 8);
         CYCLE_CMD.store(40, Ordering::Relaxed);
         STEP_CTRL.store(100, Ordering::Relaxed);
         let first = critical_section::with(Snapshot::take);

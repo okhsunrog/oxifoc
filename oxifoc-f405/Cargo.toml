@@ -34,6 +34,8 @@ task-priority = ["embassy-executor/scheduler-priority"]
 isr-profiling = ["isr-timing", "oxifoc-core/isr-profiling"]
 # Two DWT reads per ISR, without nested section instrumentation.
 isr-timing = []
+# Finite ADC-owned records of the first and longest over-budget cycles.
+bench-cycle-outliers = ["isr-profiling", "bench-clock-reference"]
 # A/B reproduction of the former periodic observer log inside ADC.
 bench-observer-logging = ["oxifoc-core/observer-logging"]
 # Finite Stopped-only CPU comparison; no transport I/O inside timed regions.

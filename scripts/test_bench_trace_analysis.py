@@ -10,6 +10,44 @@ def events(*rows):
 
 
 class UsbCpuTraceTests(unittest.TestCase):
+    def test_sparse_usb_keeps_validated_idle_and_adc_edges(self):
+        report = analyze(events((0, 8, 0), (10, 9, 0), (20, 10, 0),
+                                (30, 11, 0), (40, 8, 0), (50, 9, 0),
+                                (60, 7, 1)), 100, trim=True, extend_idle_edges=True)
+        self.assertEqual(report['window_ticks'], 60)
+        self.assertEqual(report['adc_union_ticks'], 20)
+        self.assertEqual(report['usb_exclusive_ticks'], 10)
+
+    def test_extended_edges_still_discard_unknown_parent_and_open_tail(self):
+        report = analyze(events((0, 8, 0), (5, 9, 0), (10, 11, 0),
+                                (20, 8, 0), (25, 9, 0), (30, 10, 0),
+                                (40, 11, 0), (50, 7, 1), (60, 10, 0),
+                                (70, 8, 0), (80, 9, 0)), 100,
+                         trim=True, extend_idle_edges=True)
+        self.assertEqual(report['used_first_record'], 3)
+        self.assertEqual(report['used_last_record'], 7)
+        self.assertEqual(report['window_ticks'], 30)
+        self.assertEqual(report['adc_union_ticks'], 5)
+        self.assertEqual(report['usb_exclusive_ticks'], 10)
+
+    def test_other_irq_preemption_is_not_usb_cpu(self):
+        report = analyze(events(
+            (0, 10, 0), (10, 19, 0), (15, 8, 0), (25, 9, 0),
+            (30, 20, 0), (40, 21, 0), (50, 22, 0),
+            (60, 23, 0), (70, 24, 0), (100, 11, 0),
+        ), 100)
+        self.assertEqual(report['usb_inclusive_ticks'], 100)
+        self.assertEqual(report['adc_union_ticks'], 10)
+        self.assertEqual(report['usb_excluding_adc_ticks'], 90)
+        self.assertEqual(report['other_irq_preempting_usb_ticks'], 30)
+        self.assertEqual(report['usb_exclusive_ticks'], 60)
+
+    def test_unrelated_hall_is_not_a_usb_span(self):
+        report = analyze(events((0, 10, 0), (10, 11, 0),
+                                (20, 19, 0), (30, 20, 0),
+                                (40, 10, 0), (50, 11, 0)), 100)
+        self.assertEqual(report['usb_exclusive_ticks'], 20)
+
     def test_nested_usb_union_excludes_adc_once(self):
         report = analyze(events(
             (0, 10, 0), (10, 12, 0), (20, 8, 0), (40, 9, 0),

@@ -144,7 +144,12 @@ bind_interrupts!(struct UsbIrqs {
 });
 
 bind_interrupts!(struct UsartIrqs {
-    USART3 => embassy_stm32::usart::BufferedInterruptHandler<peripherals::USART3>;
+    USART3 =>
+        #[cfg(feature = "bench-executor-trace")]
+        crate::diagnostics::trace::UartIrqBegin,
+        embassy_stm32::usart::BufferedInterruptHandler<peripherals::USART3>,
+        #[cfg(feature = "bench-executor-trace")]
+        crate::diagnostics::trace::UartIrqEnd;
 });
 
 bind_interrupts!(pub struct RngIrqs {

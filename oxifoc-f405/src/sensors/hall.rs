@@ -229,6 +229,8 @@ pub fn read_hall_state_raw() -> u8 {
 /// timestamp and feed the estimator.
 #[interrupt]
 fn TIM3() {
+    #[cfg(feature = "bench-executor-trace")]
+    crate::diagnostics::trace::record(19, 0);
     let regs = pac::TIM3;
     let sr = regs.sr().read();
 
@@ -251,4 +253,6 @@ fn TIM3() {
     } else if sr.uif() {
         TIMEBASE.overflow(|| clear_flags(true, false));
     }
+    #[cfg(feature = "bench-executor-trace")]
+    crate::diagnostics::trace::record(20, 0);
 }

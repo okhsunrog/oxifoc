@@ -22,7 +22,7 @@ p.add_argument('--active-delay-ms', type=float, default=0, help='Delay from acti
 p.add_argument('--timer-hz', type=int, required=True, help='Actual declared TIM5 input clock, PSC=0')
 p.add_argument('--elf', type=Path, help='Exact firmware ELF, hashed into the read sidecar')
 p.add_argument('--capture', help='Matching telemetry recording artifact')
-p.add_argument('--schema', choices=['finite-trace-v1', 'netstack-v1'], default='finite-trace-v1')
+p.add_argument('--schema', choices=['finite-trace-v1', 'finite-trace-v2', 'netstack-v1'], default='finite-trace-v1')
 p.add_argument('--probe', default='0483:3754:002300203234511537333934')
 a = p.parse_args()
 if a.timer_hz <= 0 or a.active_delay_ms < 0:
@@ -69,6 +69,8 @@ else:
         'state':0,'scope':'finite instrumented window; poll time includes IRQ preemption',
     }
     metadata['schema'] = a.schema
+    if a.schema == 'finite-trace-v2':
+        metadata['other_irq_hooks'] = {'19/20': 'Hall TIM3 P1', '21/22': 'UART USART3 P5', '23/24': 'fault EXTI9_5 P4'}
     if a.elf:
         metadata['elf'] = str(a.elf.resolve())
         metadata['elf_sha256'] = hashlib.sha256(a.elf.read_bytes()).hexdigest()

@@ -42,3 +42,7 @@ nusb = "0.1"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "velocity_cpu_control"
+required-features = ["desktop"]

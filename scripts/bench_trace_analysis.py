@@ -1,4 +1,4 @@
-"""Measure traced USB IRQ CPU time, excluding only nested ADC time.
+"""Measure traced USB IRQ/executor CPU and exclude traced preemption.
 
 Run offline with `uv run --no-project python scripts/bench_trace_analysis.py TRACE`.
 TRACE is the binary exported by bench_executor_trace.py; its JSON sidecar supplies
@@ -8,8 +8,10 @@ can instead explicitly discard their incomplete edges with
 Add `--export-intervals` to include the qualified USB/ADC timeline in JSON.
 Qualified windows require complete USART1 executor frames at both boundaries;
 ADC/OTG-only captures cannot rule out an unobserved enclosing executor span.
+With --extend-idle-edges a complete USART1 frame is instead an internal
+witness: all validated closed prefix/tail frames and gaps are retained.
 
-Other IRQs are untraced and remain charged to an enclosing USB interval. Trace
+V2 captures also trace Hall/UART/fault; legacy captures lack these hooks. Trace
 hook overhead is included. TIM5 gaps must be shorter than half a counter period;
 records are never sorted to hide preemption during trace-slot reservation.
 """
@@ -41,6 +43,12 @@ IRQ_EVENTS = {
     11: ("usb_executor", 6, False),
     12: ("usb_irq", 5, True),
     13: ("usb_irq", 5, False),
+    19: ("hall", 1, True),
+    20: ("hall", 1, False),
+    21: ("uart", 5, True),
+    22: ("uart", 5, False),
+    23: ("fault", 4, True),
+    24: ("fault", 4, False),
 }
 
 
@@ -51,7 +59,7 @@ def decode(data: bytes) -> list[Event]:
 
 
 def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
-            export_intervals: bool = False) -> dict:
+            export_intervals: bool = False, extend_idle_edges: bool = False) -> dict:
     if timer_hz <= 0:
         raise TraceError("timer frequency must be positive")
     if len(events) < 2:
@@ -62,7 +70,7 @@ def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
     ticks = [0]
     for index, event in enumerate(events):
         # Kind 14 carries PWM write metadata; validate its time but no IRQ span.
-        if not 1 <= event.kind <= 14:
+        if not (1 <= event.kind <= 14 or 19 <= event.kind <= 24):
             raise TraceError(f"record {index}: unknown/uninitialized kind {event.kind}")
         if not 0 <= event.timer_ticks <= 0xFFFFFFFF:
             raise TraceError(f"record {index}: timestamp is not u32")
@@ -111,6 +119,13 @@ def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
     # could lie inside an executor with both boundaries unobserved; that case
     # must be rejected. Higher-priority closed frames alone are insufficient.
     start, end = qualified[0][0], qualified[-1][1]
+    if extend_idle_edges:
+        # The complete lowest-priority frame proves that every hidden IRQ
+        # parent from the prefix must already have emitted its end. All such
+        # unmatched ends advanced prefix_cut during full validation above.
+        # Keep closed frames/idle gaps up to the first unfinished tail parent;
+        # otherwise sparse USB traffic biases CPU towards a single busy poll.
+        start, end = prefix_cut, tail_cut - 1
     window_ticks = ticks[end] - ticks[start]
     if window_ticks <= 0:
         raise TraceError("complete window has zero duration")
@@ -118,6 +133,7 @@ def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
     totals = {key: 0 for key in (
         "usb_inclusive_ticks", "adc_preempting_usb_ticks", "usb_excluding_adc_ticks",
         "usb_executor_only_excluding_adc_ticks", "usb_irq_excluding_adc_ticks",
+        "usb_exclusive_ticks", "other_irq_preempting_usb_ticks", "adc_union_ticks",
     )}
     active = []
     previous = ticks[start]
@@ -136,9 +152,10 @@ def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
     for index in range(start, end + 1):
         event = events[index]
         delta = ticks[index] - previous
-        usb = [name for name in active if name != "adc"]
+        usb = [name for name in active if name in ("usb_executor", "usb_irq")]
         if "adc" in active:
             span("adc_union", previous, ticks[index])
+            totals["adc_union_ticks"] += delta
         if usb:
             span("usb_union", previous, ticks[index])
             totals["usb_inclusive_ticks"] += delta
@@ -150,6 +167,10 @@ def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
                 totals["usb_excluding_adc_ticks"] += delta
                 bucket = "usb_irq" if usb[-1] == "usb_irq" else "usb_executor_only"
                 totals[f"{bucket}_excluding_adc_ticks"] += delta
+                if any(name in ("hall", "uart", "fault") for name in active):
+                    totals["other_irq_preempting_usb_ticks"] += delta
+                else:
+                    totals["usb_exclusive_ticks"] += delta
         if event.kind in IRQ_EVENTS:
             context, _, begin = IRQ_EVENTS[event.kind]
             if begin:
@@ -171,8 +192,10 @@ def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
             "start_ticks": ticks[start], "end_ticks": ticks[end],
             "start_timer_raw": events[start].timer_ticks,
             "end_timer_raw": events[end].timer_ticks,
-            "boundary_witness": "complete lowest-priority tracked IRQ: USART1 USB executor (P6)",
+            "boundary_witness": "complete lowest-priority tracked IRQ: USART1 USB executor (P6)" +
+                ("; validated closed prefix/tail retained" if extend_idle_edges else ""),
         },
+        "extended_idle_edges": extend_idle_edges,
         "discarded_prefix_records": start,
         "discarded_tail_records": len(events) - end - 1,
         "discarded_prefix_ticks": ticks[start],
@@ -183,8 +206,11 @@ def analyze(events: list[Event], timer_hz: int, *, trim: bool = False,
         "complete_usb_frames": usb_frames,
         **totals,
         "usb_excluding_adc_fraction": totals["usb_excluding_adc_ticks"] / window_ticks,
-        "scope": "union of USART1 executor and OTG_FS spans, excluding ADC only; "
-                 "other untraced IRQs and trace overhead remain included",
+        "usb_exclusive_fraction": totals["usb_exclusive_ticks"] / window_ticks,
+        "adc_fraction": totals["adc_union_ticks"] / window_ticks,
+        "scope": "USB union excludes ADC/Hall/UART/fault in usb_exclusive; "
+                 "legacy usb_excluding_adc excludes ADC only. Other untraced IRQs "
+                 "and trace overhead remain included; old captures may lack other IRQ hooks.",
     }
     if export_intervals:
         report["interval_time_origin"] = {
@@ -201,6 +227,7 @@ def main() -> None:
     parser.add_argument("--timer-hz", type=int, help="TIM5 input clock if no JSON sidecar")
     parser.add_argument("--trim-to-complete-window", action="store_true")
     parser.add_argument("--export-intervals", action="store_true", help="include timeline intervals in JSON")
+    parser.add_argument("--extend-idle-edges", action="store_true", help="include validated edges outside the USB boundary witness")
     parser.add_argument("--out", type=Path, help="write JSON here instead of stdout")
     args = parser.parse_args()
     try:
@@ -220,7 +247,7 @@ def main() -> None:
         if not isinstance(timer_hz, int):
             raise TraceError("provide --timer-hz or the capture JSON sidecar")
         report = analyze(decode(data), timer_hz, trim=args.trim_to_complete_window,
-                         export_intervals=args.export_intervals)
+                         export_intervals=args.export_intervals, extend_idle_edges=args.extend_idle_edges)
         report.update(trace=str(args.trace.resolve()), sha256=digest, symbols=metadata.get("symbols"))
         rendered = json.dumps(report, indent=2) + "\n"
         if args.out:
