@@ -874,6 +874,16 @@ forward/reverse peaks were 4.09/4.63 A, with no Hall warning generations, but
 not smooth-speed or lossless-stream qualification. Evidence remains in the
 same artifact directory (`id-sign-results.json`, `results.json`, exact ELFs,
 20 kHz Parquet, stopped Hall exports and plots). NVM dissipation stays off.
+
+The 0.01/0.2 PI and a 100-eRPM interpolation floor did not resolve the 40-rad/s
+pulsation. At -120 rad/s, the full Hall trace had no reversals and a -125.62
+rad/s median revolution speed, but 49 producer samples were lost. The 120→40
+step reintroduced slow-speed pulsation (2.09 A peak, 323 lost samples, no Hall
+warnings). The bench edge buffer is now 512 entries to retain these runs;
+the exporter also accepts the older 128-entry and seven-word velocity layouts.
+Offline replay (`hall-speed-audit.json`) shows that the current edge-speed
+estimate does not integrate to observed net boundary travel during rocking;
+do not equate a low-pass of that signal with independent rotor-speed evidence.
 Raw captures, configurations, exact images, plots and failed runs remain in the
 same artifact directory; `results.json` distinguishes incomplete recordings.
 Final flash configuration, verified after reset: drive 10 A, dq trip 30 A,

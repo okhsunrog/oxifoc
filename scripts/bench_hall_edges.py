@@ -13,7 +13,7 @@ from pathlib import Path
 import struct
 import subprocess
 
-CAPACITY = 128
+CAPACITY = 512
 SIZES = {"BENCH_HALL_EDGES": CAPACITY * 16,
          "BENCH_HALL_EDGE_COUNT": 4, "BENCH_HALL_EDGE_DROPPED": 4}
 OPTIONAL_SIZES = {"BENCH_HALL_STREAM_LOSSES": 16,
@@ -38,7 +38,7 @@ def decode(data, count):
         ...
     ValueError: invalid Hall buffer prefix
     """
-    if not 0 <= count <= CAPACITY or len(data) < count * 16:
+    if not 0 <= count <= len(data) // 16:
         raise ValueError("invalid Hall buffer prefix")
     return [dict(ticks=lo | (hi << 32), adc_sequence=seq, raw_state=flags & 7,
                  overcapture=bool(flags & 0x100), boot_seed=bool(flags & 0x200),
@@ -53,6 +53,8 @@ def symbols_from(text):
         if len(parts) == 4 and parts[3] in SIZES | OPTIONAL_SIZES and parts[2] in 'BbDd':
             address, size = int(parts[0], 16), int(parts[1], 16)
             sizes = {(SIZES | OPTIONAL_SIZES)[parts[3]]}
+            if parts[3] == 'BENCH_HALL_EDGES':
+                sizes.add(128 * 16)
             if parts[3] == 'BENCH_VELOCITY_SAMPLES':
                 sizes.add(128 * 7 * 4)  # older exact-ELF captures lack Id
             if size not in sizes or address % 4:
@@ -117,7 +119,8 @@ def main():
                                   'broadcast_failures'), values))
         stream_losses['semantics'] = ('Wrapping cumulative totals independently latched at1Hz; '
                                       'current partial window excluded; not an atomic group snapshot')
-    if not 0 <= before <= after <= CAPACITY or dropped_after < dropped_before:
+    capacity = symbols['BENCH_HALL_EDGES'][1] // 16
+    if not 0 <= before <= after <= capacity or dropped_after < dropped_before:
         raise RuntimeError('Hall counters reset or wrapped during export')
     if hashlib.sha256(elf.read_bytes()).hexdigest() != elf_sha256:
         raise RuntimeError('ELF changed during export')
@@ -153,7 +156,7 @@ def main():
         status=status, tick_hz=1_000_000, tick_width_bits=64,
         time_domain='logical, delay-corrected Hall capture ticks',
         adc_sequence_semantics='latest observed ADC sequence, raw u32; not exact edge cycle',
-        capacity=CAPACITY, count_before=before, count_after=after,
+        capacity=capacity, count_before=before, count_after=after,
         dropped_before=dropped_before, dropped_after=dropped_after,
         overcapture_records=sum(edge['overcapture'] for edge in edges),
         stream_losses=stream_losses,

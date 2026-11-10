@@ -6,7 +6,9 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-const CAPACITY: usize = 128;
+// Covers a short 120 electrical rad/s velocity/braking capture, including
+// coast. These CPU-only records cost 8 KiB in bench images only.
+const CAPACITY: usize = 512;
 static ADC_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 // ADC-owned, finite evidence of Hall/observer handoffs. No text formatting or
