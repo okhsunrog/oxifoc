@@ -5,10 +5,11 @@
 Updated: 2026-11-11. Baseline commit: `3ee9089`.
 Goal: shorten the real F405 FOC/ADC path at 20 kHz, including worst observed
 cycles and PWM-update timing, while preserving protections and native telemetry.
-Current stage: selective phase/velocity RAM profiling qualified on hold/+40/+120
-with native telemetry. Candidate next: reuse the edge age already computed by
-HallSensor::sample_at_mut inside sample_for_control; no persistent cache.
-No algorithm optimization accepted yet. Normal image restored after each suite.
+Current stage: both edge-age reuse variants and both cruise-context variants
+rejected; original Hall and driver algorithms restored. Diagnostics/independent
+cadence checks are retained. Next: measure actual PWM preload-commit deadlines;
+body >50 µs alone is not proof of a late actuation update. Normal image restored.
+No algorithm optimization accepted in this iteration.
 
 Artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-research-2026-11-11/`.
 Use this one living note for progress; add conclusions/evidence and next actions,
@@ -196,7 +197,7 @@ passed hold/+40/+120, all native captures lossless, zero faults.
 The outer velocity request is about 740 cycles per scheduled evaluation if
 using the nominal 20:1 ratio, not 37 cycles per evaluation. More granularity
 is now affordable without enabling every nested marker. Full core tests:
-698 unit tests and 11 doctests passed after the counter additions.
+696 unit tests passed (2 ignored), plus 11 doctests after the counter additions.
 
 Next local candidate is the duplicated edge-age conversion within
 `HallSensor::sample_for_control`: `sample_at_mut` already computes the same
@@ -204,3 +205,59 @@ saturated edge delta/time conversion. Return that age alongside the sample,
 like the existing immutable helper, and keep the external sampling API.
 This does not merge raw telemetry with the rate-limited control sample (the
 previous rejected H1/H2 experiment), and introduces no invalidatable cache.
+
+
+### Independent IRQ-cadence cross-check
+
+Applied-command ACK timestamps bracket the first active and final Stop/Coast
+transitions in host monotonic time. The histogram's active ISR count divided
+by these duration bounds does not use HSE, DWT scaling or firmware `t_s`.
+Every successful baseline agrees with the TIM1-derived ~20.004 kHz. For the
+4.8-s holds, typical host-only bounds are ~19.97–20.05 kHz (transport latency
+limits precision); they exclude a doubled or CPU-scaled cadence. Future
+profile runs check this automatically, alongside register readback. Previous
+overclock figures remain RCC/HSE-derived; no new scope measurement is claimed.
+
+
+### Local candidates, acceptance still pending
+
+`phase-baseline-repeat` uses the exact same ELF SHA as `phase-selective`
+(`c0ec8558...`). Two further repeats: hold 37.395–37.397 µs, +40
+41.272–41.274 µs, +120 42.543–42.552 µs. All captures lossless. Slight
+trajectory/state variation exists even with an identical ELF; keep that scale
+in mind when judging sub-microsecond results.
+
+| Candidate | Hold mean µs | +40 mean µs | +120 mean µs | Decision |
+|---|---:|---:|---:|---|
+| Edge age returned with sample, 3 repeats | 37.089–37.091 | 41.171–41.250 | 42.620–42.656 | Reject: high-speed regression |
+| Same with private helper forced inline, screening | 37.205 | 41.211 | 42.627 | Reject: high-speed regression |
+| Runtime cruise-context proof, 3 repeats | 37.536–37.537 | 41.086–41.127 | 42.446–42.453 | Not accepted: direct-current regression |
+
+All these captures were native-rate and lossless, no faults. Edge-age sources,
+patches and tests are preserved in `hall-age-candidate/`, `hall-age-inline/`
+and `hall-age-tests.log`; original Hall source is restored. Do not repeat the
+same return-value fusion without a new explanation of the ABI/code-generation
+cost. The runtime context is preserved in `modes-enum-context.rs` and
+`cruise-context/`; standard core tests passed.
+
+Next variant specializes the direct and cruise contexts by type. Direct is
+zero-sized; cruise consumes a non-Copy proof of this native cycle's existing
+trust/startup/physical-speed checks. Startup scale, calibration, all current
+and bus grants, trip checks and the 1-kHz PI cadence remain unchanged. This
+removes duplicate queries without weakening a guard or holding authorization
+across cycles. Measure the entire loop and the direct path before accepting.
+
+
+Static cruise-context screening (`cruise-static`): hold 38.496 µs, +40
+40.805 µs, +120 42.039 µs. Faster velocity at the cost of a ~1.10-µs
+regression in direct current; reject the whole family for this iteration.
+All screening captures lossless, no faults. Source retained in
+`modes-static-context.rs`; standard unit/doctests passed before hardware.
+Original `modes.rs` is restored. Do not keep these refactors solely because
+the types look cleaner: their measured whole-workload tradeoff did not meet
+acceptance. No pure-software speedup is claimed from these candidates.
+
+The next useful qualification is actuation timing: PWM is written before the
+estimator/publication tail. Measure end-of-CCR writes against the next actual
+TIM1 peak, plus the UDIS interval. This distinguishes a long ISR body from a
+missed PWM update and provides a concrete deadline/headroom target.

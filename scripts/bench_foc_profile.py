@@ -36,6 +36,17 @@ def decode(words):
         body=quantiles(body), entry_gap=quantiles(gap), raw_words=words)
 
 
+def host_cadence_bounds(events, cycles):
+    # Applied ACKs bracket the MCU mode transitions in the host's independent
+    # monotonic clock. No DWT frequency/HSE estimate is used in this bound.
+    start = next(e for e in events if set(e["cmd"]) & {"start", "velocity"})
+    end = next(e for e in events if e["i"] > start["i"] and set(e["cmd"]) & {"coast", "stop"})
+    shortest = end["t_sent"] - start["t_acked"]
+    longest = end["t_acked"] - start["t_sent"]
+    assert 0 < shortest <= longest
+    return [cycles / longest, cycles / shortest]
+
+
 def diagnostic_loss_only(log):
     # Match the complete operational-error map, excluding ACK/terminal failures.
     return re.search(r'operational errors: \{"stream_stop": String\("raw capture failed: raw capture lost samples: producer=\d+, host=\d+"\)\}', log) is not None
@@ -119,6 +130,10 @@ def main():
                 assert status["motor_state"] == "Stopped" and status["fault_count"] == 0
                 assert probe.read(control)[0] == 3, "recorder did not freeze"
                 row["distribution"] = decode(probe.read(data, 528))
+                if row["lossless"]:
+                    bounds = host_cadence_bounds(report["events"], row["distribution"]["n"])
+                    assert bounds[0] <= manifest["clocks"]["pwm_hz"] <= bounds[1], "host-time IRQ cadence disagrees with TIM1"
+                    row["host_cadence_bounds_hz"] = bounds
                 if args.detail in ["sections-ram", "phase-ram"]:
                     assert probe.read(symbols["FOC_SECTIONS_READY"])[0] == 1
                     row["sections"] = probe.read(symbols["FOC_SECTIONS_DATA"], 25)

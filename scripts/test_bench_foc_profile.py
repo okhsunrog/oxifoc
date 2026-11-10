@@ -9,6 +9,14 @@ class DistributionTests(unittest.TestCase):
         body[1], gap[131] = 2000, 1999
         return h+body+gap
 
+    def test_irq_cadence_uses_host_ack_bounds(self):
+        events = [dict(i=0, cmd={"velocity": {}}, t_sent=.3, t_acked=.31),
+                  dict(i=1, cmd={"stop": {}}, t_sent=5.1, t_acked=5.11)]
+        lo, hi = bench.host_cadence_bounds(events, 96000)
+        self.assertLess(lo, 20000)
+        self.assertGreater(hi, 20000)
+        self.assertLess(hi, 20100)
+
     def test_recording_loss_is_not_an_ack_failure(self):
         error = 'operational errors: {"stream_stop": String("raw capture failed: raw capture lost samples: producer=26, host=0")}'
         self.assertTrue(bench.diagnostic_loss_only(error))
