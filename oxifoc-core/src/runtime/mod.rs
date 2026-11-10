@@ -20,6 +20,9 @@
 pub mod servers;
 pub mod streaming;
 
+#[cfg(feature = "bench-raw-stream")]
+pub mod raw_stream;
+
 /// Shared motor-detection server with effectively-once dedup.
 ///
 /// Requires `delivery` (for the dedup combinator) and `storage` (to persist

@@ -30,6 +30,17 @@ use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 
 mod stack_mutex;
 
+#[cfg(all(feature = "bench-raw-usb", feature = "bench-raw-rtt"))]
+compile_error!("select only one raw telemetry sink");
+#[cfg(all(
+    any(feature = "bench-raw-usb", feature = "bench-raw-rtt"),
+    feature = "transport-rtt"
+))]
+compile_error!("raw telemetry benchmarks use Ergot USB control, not transport-rtt");
+
+#[cfg(any(feature = "bench-raw-usb", feature = "bench-raw-rtt"))]
+pub mod raw_fast;
+
 // ========== Multi-Interface Definition ==========
 //
 // All three sink variants are always compiled (the RTT sink is the same
@@ -136,11 +147,23 @@ bind_interrupts!(pub struct RngIrqs {
 #[cfg(not(feature = "transport-rtt"))]
 pub fn init_defmt() -> ergot::logging::defmt_sink::DefmtConsumer {
     use ergot::logging::defmt_sink;
+    #[cfg(not(feature = "bench-raw-rtt"))]
     let channels = rtt_init! {
         up: {
             0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
         }
     };
+    #[cfg(feature = "bench-raw-rtt")]
+    let channels = rtt_init! {
+        up: {
+            0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
+            // Preserve the channel numbering used by the normal RTT transport.
+            1: { }
+            2: { size: 16384, mode: NoBlockSkip, name: "raw-fast" }
+        }
+    };
+    #[cfg(feature = "bench-raw-rtt")]
+    raw_fast::init_rtt(channels.up.2);
     let defmt_up = RTT_DEFMT_UP.init(channels.up.0);
     defmt_sink::init_network_and_rtt(defmt_up)
 }
@@ -224,6 +247,8 @@ pub struct UsbTransport {
     pub usb_dev: embassy_usb::UsbDevice<'static, AppDriver>,
     pub ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
     pub rx_worker: UsbRxWorker,
+    #[cfg(feature = "bench-raw-usb")]
+    pub raw_ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
 }
 
 /// Initialize USB transport and register it on the Router.
@@ -253,7 +278,15 @@ pub fn init_usb(
         usb_dev_cfg.serial_number = Some("vesc6-mk5");
     }
 
+    #[cfg(not(feature = "bench-raw-usb"))]
     let (usb_dev, ep_in, ep_out) = USB_STORAGE.init_ergot(driver, usb_dev_cfg);
+    #[cfg(feature = "bench-raw-usb")]
+    let (usb_dev, ep_in, ep_out, raw_ep_in) = {
+        // Keep Ergot's interface, identity string and Microsoft descriptors intact.
+        let (mut builder, ep_in, ep_out) = USB_STORAGE.init_without_build(driver, usb_dev_cfg);
+        let raw_ep_in = raw_fast::add_usb_interface(&mut builder);
+        (builder.build(), ep_in, ep_out, raw_ep_in)
+    };
 
     // Register USB interface on Router
     let usb_sink = McSink::Usb(framed_stream::Sink::new(
@@ -281,6 +314,8 @@ pub fn init_usb(
             usb_dev,
             ep_in,
             rx_worker,
+            #[cfg(feature = "bench-raw-usb")]
+            raw_ep_in,
         },
         usb_ident,
     )

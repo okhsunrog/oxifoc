@@ -153,6 +153,9 @@ macro_rules! clear_rc_w0 {
 /// - Device info and events
 pub mod types;
 
+/// Independent raw diagnostic blocks, shared by the optional bench sinks.
+pub mod raw_telemetry;
+
 /// Interface Control Document with ergot endpoints (requires `icd` feature)
 ///
 /// Defines the communication protocol between host and device:

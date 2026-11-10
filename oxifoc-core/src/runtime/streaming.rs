@@ -32,9 +32,9 @@ use crate::types::FastTelemetry;
 /// reaches tens of milliseconds under load, which at 10–20 kHz overruns a
 /// firmware-sized buffer and fakes telemetry loss the real device doesn't have.
 #[cfg(feature = "std")]
-static FAST_TELEM_Q: FastTelemetryQueue<65536> = FastTelemetryQueue::new();
+pub(super) static FAST_TELEM_Q: FastTelemetryQueue<65536> = FastTelemetryQueue::new();
 #[cfg(not(feature = "std"))]
-static FAST_TELEM_Q: FastTelemetryQueue<4096> = FastTelemetryQueue::new();
+pub(super) static FAST_TELEM_Q: FastTelemetryQueue<4096> = FastTelemetryQueue::new();
 
 /// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
 /// 0 = streaming disabled. Set by `telemetry_config_server` when host
@@ -43,7 +43,9 @@ pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
 
 // Serializes configuration with task-side broadcasts, without blocking the
 // FOC interrupt. A stop ACK must follow every previously accepted batch.
-static FAST_TELEM_GATE: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
+pub(super) static FAST_TELEM_GATE: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
+#[cfg(all(test, feature = "bench-raw-stream"))]
+pub(super) static FAST_TELEM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 // Invalidates task-held samples as well as the ISR queue on stop/restart.
 // The task may miss an intermediate period=0 if a new session starts promptly.
 static FAST_TELEM_SESSION: AtomicU32 = AtomicU32::new(0);
@@ -54,6 +56,11 @@ static FAST_TELEM_SESSION: AtomicU32 = AtomicU32::new(0);
 /// pending samples before returning. Nonzero changes are refused during flash
 /// maintenance. The FOC producer never waits on the task-side gate.
 pub async fn set_fast_telemetry_period(period: u32) -> u32 {
+    // A bench image has exactly one raw consumer. Ordinary telemetry requests
+    // cannot arm a queue with no Ergot consumer, or stop a raw capture.
+    if cfg!(feature = "bench-raw-stream") {
+        return 0;
+    }
     let _gate = FAST_TELEM_GATE.lock().await;
     let actual = critical_section::with(|_| {
         if crate::state::FLASH_OP_PENDING.load(Ordering::SeqCst) && period != 0 {
@@ -75,7 +82,7 @@ pub async fn set_fast_telemetry_period(period: u32) -> u32 {
 /// Decimation counter for the raw diagnostic stream: emit one sample every
 /// `period`-th FOC cycle. The raw-ADC frame is unfiltered (the host does any
 /// anti-alias/decimation), so a plain modulo counter replaces the old CIC.
-static FAST_DECIM_CTR: AtomicU32 = AtomicU32::new(0);
+pub(super) static FAST_DECIM_CTR: AtomicU32 = AtomicU32::new(0);
 
 /// Diagnostic counters for the fast-telemetry pipeline. Each loss point
 /// increments its counter; a board task can report + reset them (e.g. a 1 Hz
@@ -323,6 +330,8 @@ pub fn push_fast_telemetry(telem: &FastTelemetry) {
         fast_telem_stats::PUSH_OK.fetch_add(1, Ordering::Relaxed);
     } else {
         fast_telem_stats::PUSH_DROPS.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "bench-raw-stream")]
+        super::raw_stream::PRODUCER_DROPS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -380,6 +389,11 @@ pub async fn fast_telemetry_stream<NS, T: Timer>(stack: NS, foc_freq_hz: u32)
 where
     NS: NetStackHandle + Clone,
 {
+    // Defensive guard against accidentally spawning both consumers in a bench
+    // image. The normal image compiles this branch away.
+    if cfg!(feature = "bench-raw-stream") {
+        core::future::pending::<()>().await;
+    }
     let mut pending = PendingFastBatch::new();
     #[cfg(all(feature = "isr-profiling", feature = "embassy"))]
     let mut last_drain = None;
@@ -668,6 +682,8 @@ mod drain_tests {
 
     #[test]
     fn drain_flushes_partial_full_empty_and_retry_counts() {
+        #[cfg(feature = "bench-raw-stream")]
+        let _guard = FAST_TELEM_TEST_LOCK.lock().unwrap();
         let queue = FastTelemetryQueue::<4096>::new();
         let mut batch = crate::types::FastTelemetryBatchEncoder::new();
         READ_OK.store(0, Ordering::Relaxed);
@@ -765,7 +781,7 @@ mod drain_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "bench-raw-stream")))]
 mod stream_control_tests {
     use super::*;
     use core::{

@@ -16,7 +16,9 @@ use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::detection::types::{FluxLinkageParams, InductanceParams, ResistanceParams};
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::foc::trig::FastSinCos;
-use oxifoc_core::runtime::streaming::{fast_telemetry_stream, fault_topic_stream};
+#[cfg(not(any(feature = "bench-raw-usb", feature = "bench-raw-rtt")))]
+use oxifoc_core::runtime::streaming::fast_telemetry_stream;
+use oxifoc_core::runtime::streaming::fault_topic_stream;
 use oxifoc_core::runtime::{DetectionBackend, run_all_servers_with_config};
 use oxifoc_core::timer::EmbassyTimer;
 
@@ -85,8 +87,8 @@ async fn run_usb_tx(
     .await;
 }
 
-/// Build non-Send USB handlers on their owning executor. All three tasks
-/// share one priority, so bulk I/O cannot preempt a control-side endpoint wake.
+/// Build non-Send USB handlers on their owning executor. Ergot I/O has higher
+/// priority than the optional raw telemetry endpoint.
 #[cfg(feature = "transport-usb")]
 #[embassy_executor::task]
 pub async fn usb_io_task(
@@ -109,6 +111,10 @@ pub async fn usb_io_task(
     spawner.spawn(defmt::unwrap!(run_usb_tx(
         transport.ep_in,
         crate::transport::USB_OUTQ.framed_consumer()
+    )));
+    #[cfg(feature = "bench-raw-usb")]
+    spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::usb_task(
+        transport.raw_ep_in
     )));
 }
 
@@ -422,6 +428,7 @@ pub async fn defmt_forwarder(
 }
 
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
+#[cfg(not(any(feature = "bench-raw-usb", feature = "bench-raw-rtt")))]
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
     #[cfg(feature = "bench-scheduler-deadline")]
@@ -432,6 +439,24 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
         .set_priority(1);
     let hz = crate::config::CONTROL_TIMING.get().await.frequency_hz() as u32;
     fast_telemetry_stream::<_, EmbassyTimer>(stack, hz).await;
+}
+
+/// Bench session control stays on Ergot while its sole queue consumer owns the
+/// selected raw sink. Normal images do not expose this endpoint server.
+#[cfg(any(feature = "bench-raw-usb", feature = "bench-raw-rtt"))]
+#[embassy_executor::task]
+async fn raw_telemetry_server_task(stack: &'static Stack) {
+    #[cfg(feature = "task-priority")]
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(2);
+    let timing = *crate::config::CONTROL_TIMING.get().await;
+    oxifoc_core::runtime::raw_stream::raw_telemetry_server::<_, 2>(
+        stack.endpoints(),
+        timing.frequency_hz() as u32,
+        timing,
+    )
+    .await;
 }
 
 /// Fault topic publisher — pushes the full fault snapshot on every
@@ -452,7 +477,12 @@ pub fn spawn_servers(
     defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
 ) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
+    #[cfg(not(any(feature = "bench-raw-usb", feature = "bench-raw-rtt")))]
     spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
+    #[cfg(any(feature = "bench-raw-usb", feature = "bench-raw-rtt"))]
+    spawner.spawn(defmt::unwrap!(raw_telemetry_server_task(stack)));
+    #[cfg(feature = "bench-raw-rtt")]
+    spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::rtt_task()));
     spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
     spawner.spawn(defmt::unwrap!(detect_server(stack)));

@@ -133,6 +133,10 @@ pod = ["dep:bytemuck"]
 # Requires icd for endpoints and algorithms for control logic
 runtime = ["icd", "algorithms", "pod", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section", "dep:bbqueue"]
 
+# Exclusive raw bench consumer of the existing ISR queue; ordinary Ergot fast
+# telemetry remains the default in normal images.
+bench-raw-stream = ["runtime"]
+
 # Virtual motor simulation for testing without hardware
 # Useful for host-side integration tests and GUI simulation mode
 virtual-motor = []

@@ -7,7 +7,7 @@ use crate::types::{FastTelemetry, FastTelemetryBatchEncoder};
 const FRAME_BYTES: usize = size_of::<FastTelemetry>();
 const _: () = assert!(FRAME_BYTES == 34);
 
-pub(super) struct FastTelemetryQueue<const N: usize> {
+pub(in crate::runtime) struct FastTelemetryQueue<const N: usize> {
     queue: Churrasco<N>,
 }
 
@@ -20,7 +20,7 @@ impl<const N: usize> FastTelemetryQueue<N> {
 
     /// One nonblocking reservation; the producer never publishes a partial
     /// record. An unusable ring tail is handled by bbqueue's exact-grant API.
-    pub(super) fn push(&self, sample: &FastTelemetry) -> Result<(), WriteGrantError> {
+    pub(in crate::runtime) fn push(&self, sample: &FastTelemetry) -> Result<(), WriteGrantError> {
         let mut grant = self.queue.stream_producer().grant_exact(FRAME_BYTES)?;
         grant.copy_from_slice(bytemuck::bytes_of(sample));
         grant.commit(FRAME_BYTES);
@@ -56,8 +56,38 @@ impl<const N: usize> FastTelemetryQueue<N> {
         accepted
     }
 
+    /// Bounded synchronous raw-block construction. A refused record remains at
+    /// the head; no borrowed queue storage survives an I/O await.
+    #[cfg(feature = "bench-raw-stream")]
+    pub(in crate::runtime) fn drain_raw(
+        &self,
+        mut accept: impl FnMut(&FastTelemetry) -> bool,
+    ) -> u32 {
+        let consumer = self.queue.stream_consumer();
+        let mut accepted = 0;
+        while accepted < crate::raw_telemetry::RAW_MAX_RECORDS as u32
+            && let Ok(grant) = consumer.read()
+        {
+            let mut records = 0;
+            for bytes in grant.chunks_exact(FRAME_BYTES) {
+                if accepted + records >= crate::raw_telemetry::RAW_MAX_RECORDS as u32
+                    || !accept(&bytemuck::pod_read_unaligned(bytes))
+                {
+                    break;
+                }
+                records += 1;
+            }
+            grant.release(records as usize * FRAME_BYTES);
+            accepted += records;
+            if records == 0 {
+                break;
+            }
+        }
+        accepted
+    }
+
     /// Called under the stream/session gate after disabling the producer.
-    pub(super) fn discard(&self) {
+    pub(in crate::runtime) fn discard(&self) {
         let consumer = self.queue.stream_consumer();
         while let Ok(grant) = consumer.read() {
             let bytes = grant.len();
@@ -77,6 +107,36 @@ mod tests {
             seq,
             ..Default::default()
         }
+    }
+
+    #[cfg(feature = "bench-raw-stream")]
+    #[test]
+    fn raw_refusal_retains_whole_record_suffix_across_ring_wrap() {
+        let queue = FastTelemetryQueue::<{ FRAME_BYTES * 3 + 7 }>::new();
+        for seq in 1..=3 {
+            queue.push(&sample(seq)).unwrap();
+        }
+        let mut seen = Vec::new();
+        assert_eq!(
+            queue.drain_raw(|f| {
+                if f.seq == 3 {
+                    return false;
+                }
+                seen.push(f.seq);
+                true
+            }),
+            2
+        );
+        queue.push(&sample(4)).unwrap();
+        assert_eq!(
+            queue.drain_raw(|f| {
+                seen.push(f.seq);
+                true
+            }),
+            2
+        );
+        assert_eq!(seen, [1, 2, 3, 4]);
+        assert_eq!(queue.drain_raw(|_| panic!("queue empty")), 0);
     }
 
     #[test]
