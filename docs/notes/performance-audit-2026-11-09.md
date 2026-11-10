@@ -442,9 +442,13 @@ Artifacts, exact ELFs, provenance, plots and raw Hall-edge evidence:
 
 ## ST-Link V3 read throughput (2026-11-10)
 
-`just bench-probe-read --elf PATH` measures ordinary, non-halting SWD
-attachment with adjacent idle/read/idle phases. It reads existing SRAM with
-aligned `read_32`; it does not reset/run/halt the target or write test data.
+`just bench-probe-read --elf PATH` measures adjacent idle/read/idle phases
+within a probe-rs Session. The measured loop reads existing SRAM with aligned
+`read_32` and does not write test data. A later audit found that Session setup
+and Drop both clear hardware breakpoints through a temporary halt/run. The
+read-phase throughput/progress results below exclude that lifecycle cost;
+they do not establish non-halting attachment or cleanup. Use this legacy
+Session-based benchmark only with the bridge stopped.
 The installed probe negotiates USB High Speed. With probe-rs 0.32, requested
 4/12/24-MHz SWD selects actual 3.3/8/24 MHz. Sustained 4-KiB reads delivered
 283/477/639 kB/s respectively; 24 MHz with 6-KiB blocks reached 645 kB/s.
@@ -461,9 +465,81 @@ TIM5 was not debug-frozen; bracketed TIM5/ADC-sequence and TIM5/DWT checks
 resolved no aggregate deficit, but endpoint uncertainty still allows about
 11.4 samples over the 3-s read phase. Gap-free telemetry alone cannot prove
 that every hardware ADC trigger was serviced. Existing Ergot-over-RTT
-connection resets/halts during setup; this benchmark intentionally bypasses it.
+connection resets/halts during setup; the benchmark bypasses that transport,
+but did not bypass the underlying Session breakpoint-cleanup halt.
 
 Exact ELFs, case JSON, timing logs, capture and summary plot are under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-stlink-read-2026-11-10/`.
 The normal image was restored, Stopped/Hall with zero faults, and the complete
 measured Hall reference reapplied in RAM. No calibration was persisted.
+
+A follow-up USBmon trace (64-byte headers only, no USB payload recorded)
+measured 9.33 ms waiting for each 6144-byte data response out of 9.56 ms per
+read. OUT commands and status responses each took about 20 us; host gaps
+averaged 43 us. Reusing nusb endpoints in an isolated probe-rs copy did not
+improve throughput: two uncached/cached pairs averaged 636.2/636.0 kB/s.
+That experimental patch is not included in the project. The 6144-byte native
+limit also matches [OpenOCD's ST-Link internal buffer limit](https://github.com/openocd-org/openocd/blob/master/src/jtag/drivers/stlink_usb.c#L74-L100);
+larger caller buffers merely split into more commands. These observations
+bound host-side overhead, without identifying the probe's internal bottleneck.
+
+## Dedicated raw telemetry experiment (2026-11-10)
+
+Optional `bench-raw-usb` / `bench-raw-rtt` images retain USB Ergot commands
+and replace only the fast-data consumer. `just build-mk5-raw usb|rtt
+normal|timing` selects the image. `just record-raw-mk5 SOURCE ENCODING OUT`
+and `just test-raw-current-mk5 SOURCE ENCODING OUT MANEUVER` select the host
+path; SOURCE is `usb` or `rtt`, ENCODING is `raw34` or `packed26`.
+The RTT reader uses public debug-port/MEM-AP APIs without creating a Session,
+then closes/detaches the owned probe normally. It validates the running M4/F405,
+exact ELF's channel2 descriptor and SRAM bounds, and uses aligned SWD reads.
+This avoids Session's hidden breakpoint-cleanup halt at both attach and Drop.
+USB uses a separate interface1/EP2 IN, keeping
+the Ergot interface0 unchanged. F405's existing FS peripheral still uses CPU
+FIFO writes; this does not add USB DMA.
+
+Both transports use the same lossless codec: 64 records and a 32-byte block
+header. Packed26 retains all six 12-bit ADC readings, existing scalar
+quantization and full CCR values; sequence stride and ARR move into the
+header. Out-of-range input explicitly falls back to Raw34. At nominal 20 kHz
+this requires 530/690 kB/s including full-block headers, respectively.
+Arm/Stop/Status have fenced session tokens; END certifies record totals.
+Stop disables the producer before I/O completes. Captures reject missing END,
+block/count gaps, device/host drops and disconnects; recovery starts a new
+explicit session. There is one queue consumer and no transport I/O in ADC ISR.
+
+Experiment artifacts and exact binaries:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-raw-stream-2026-11-10/`.
+
+Native-rate HIL results (actual 20004.272 Hz, unchanged motor model/limits):
+
+| Path | CurrentControl, zero reference | Moving current staircase |
+| --- | --- | --- |
+| USB Packed26, normal | 362257 records / 86 commands | 80156 records / 20 commands |
+| RTT Packed26, MEM-AP, normal | 362257 records / 86 commands | 80165 records / 20 commands |
+| RTT Packed26, MEM-AP, timing | 362257 records / 86 commands | 80160 records / 20 commands |
+
+These runs consumed matching END totals, had zero producer/host drops or seq
+gaps, and acknowledged terminal Stop. Both transports recovered a fresh
+lossless capture after forcibly terminating their reader, without MCU reset.
+The direct RTT Current0 timing run observed a 6369-cycle interior ISR mean,
+8028-cycle maximum (47.83 us) and zero overruns; its largest timeline ACK was
+1.843 ms. Its captured DWT/TIM5 windows, including post-detach USB monitoring,
+showed no halt deficit. These sampled maxima are not WCET guarantees.
+Raw34 remained insufficient: USB CurrentControl lost 6538 samples in the
+normal image (6909 with timing); RTT lost 6153 even while Stopped. The latter
+is a sustained throughput deficit, not a buffer-size remedy. Packed26 kept
+the existing 16-KiB RTT ring; measured reader statistics are in the host logs.
+
+Earlier failures are retained: an old Session-based RTT run lost 546 samples
+after about 14 seconds; its initial loss remains unattributed. Its subsequent
+roughly 39-ms CPU deficit indicated by USB-SOF/DWT and ADC counts agrees with
+the now-removed Session cleanup halt; no TIM5 window was retained for that event.
+Separate USB runs missed the host maneuver's 5-ms scheduling tolerance while
+retaining complete telemetry; their maneuver results remain failed. Successful
+repeats do not erase these failures or establish a general desktop latency bound.
+
+The accepted normal Ergot image was restored, with full Hall geometry reapplied
+in RAM and reference model/limits/calibration read back equal. A final Stopped
+20-kHz Ergot capture had 80040 records and zero loss; final status was
+Stopped/Hall with zero faults. No calibration was written to flash.
