@@ -4924,6 +4924,7 @@ dependencies = [
  "defmt-parser",
  "ergot",
  "futures",
+ "nusb 0.1.14",
  "object 0.40.0",
  "oxifoc-core",
  "probe-rs",

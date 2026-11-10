@@ -78,6 +78,9 @@ pub struct RecordSummary {
     pub gaps: usize,
     /// Total samples missing across all gaps.
     pub samples_lost: u64,
+    pub fast_source: oxifoc_host_lib::FastSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_telemetry: Option<oxifoc_host_lib::raw_telemetry::RawCaptureReport>,
 }
 
 /// Latest hardware info the backend has seen (handshake), if any.
@@ -104,6 +107,8 @@ pub struct Capture {
     /// Host-side raw→engineering context (device `BoardCalib` + `dc_offsets` +
     /// `pole_pairs`). `None` only when no handshake info was available.
     pub enrich: Option<EnrichCtx>,
+    pub raw_telemetry: Option<Arc<oxifoc_host_lib::raw_telemetry::RawTelemetryState>>,
+    pub raw_session: Option<u64>,
 }
 
 impl Capture {
@@ -127,6 +132,9 @@ impl Capture {
         // old poll of `runtime.fast_hz` accepted any nonzero value, so a
         // rate already active before the capture produced a silently wrong
         // decimation_m (and with it a wrong time axis and loss accounting).
+        if runtime.raw_telemetry.is_some() {
+            while runtime.fast_rx.try_recv().is_ok() {}
+        }
         let ack = oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, fast_hz)?;
         let fast_hz_actual = ack.actual_fast_hz;
         if fast_hz_actual == 0
@@ -154,8 +162,21 @@ impl Capture {
         // task wakes) produces a guaranteed gap at the head of the stream.
         // Let it pass, then drain everything stale so the capture starts on
         // steady-state data only.
-        std::thread::sleep(Duration::from_millis(150));
-        while runtime.fast_rx.try_recv().is_ok() {}
+        let samples = if let Some(raw) = &runtime.raw_telemetry {
+            // The raw arm owns a freshly cleared device queue and token. Keep
+            // its prefix: sleeping here needlessly fills the finite host FIFO.
+            raw.check()?;
+            runtime.fast_rx.try_iter().collect()
+        } else {
+            std::thread::sleep(Duration::from_millis(150));
+            while runtime.fast_rx.try_recv().is_ok() {}
+            Vec::new()
+        };
+        let raw_session = runtime
+            .raw_telemetry
+            .as_ref()
+            .and_then(|raw| raw.report())
+            .map(|report| report.session);
 
         Ok(Self {
             board_calibration,
@@ -164,15 +185,20 @@ impl Capture {
             fast_hz_requested: fast_hz,
             fast_hz_actual,
             decimation_m,
-            samples: Vec::new(),
+            samples,
             started: Instant::now(),
             enrich,
+            raw_telemetry: runtime.raw_telemetry.clone(),
+            raw_session,
         })
     }
 
     /// Collect samples until `deadline` (host clock).
     pub fn drain_until(&mut self, runtime: &HostRuntime, deadline: Instant) -> Result<()> {
         while Instant::now() < deadline {
+            if let Some(raw) = &self.raw_telemetry {
+                raw.check()?;
+            }
             let left = deadline.saturating_duration_since(Instant::now());
             let timeout = left.min(Duration::from_millis(100));
             match runtime.fast_rx.recv_timeout(timeout) {
@@ -192,8 +218,44 @@ impl Capture {
     }
 
     /// Disable streaming and wait for the device's acknowledgement.
-    pub fn stop(&self, runtime: &HostRuntime) -> Result<()> {
+    pub fn stop(&mut self, runtime: &HostRuntime) -> Result<()> {
+        if let Some(raw) = &self.raw_telemetry
+            && raw.report().map(|report| report.session) != self.raw_session
+        {
+            bail!("raw capture session changed before Stop");
+        }
         oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, 0)?;
+        if let Some(raw) = &self.raw_telemetry {
+            let session = self
+                .raw_session
+                .context("raw capture has no owned session")?;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                while let Ok(sample) = runtime.fast_rx.try_recv() {
+                    self.samples.push(sample);
+                }
+                let report = raw
+                    .report()
+                    .context("raw capture disappeared while draining")?;
+                if report.session != session
+                    || report.error.is_some()
+                    || report.ended
+                    || Instant::now() >= deadline
+                {
+                    raw.wait_end_for(session, Duration::ZERO)?;
+                    // END publication follows the final FIFO send.
+                    while let Ok(sample) = runtime.fast_rx.try_recv() {
+                        self.samples.push(sample);
+                    }
+                    break;
+                }
+                match runtime.fast_rx.recv_timeout(Duration::from_millis(5)) {
+                    Ok(sample) => self.samples.push(sample),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
         Ok(())
     }
 
@@ -250,6 +312,20 @@ impl Capture {
             obj.insert("board-calibration".to_string(), active);
         }
         let mut metadata = extra_meta.to_vec();
+        let raw_report = self.raw_telemetry.as_ref().and_then(|raw| raw.report());
+        let fast_source = raw_report
+            .as_ref()
+            .map_or(oxifoc_host_lib::FastSource::Ergot, |raw| raw.source);
+        metadata.push((
+            "oxifoc.fast_source".into(),
+            serde_json::to_string(&fast_source)?,
+        ));
+        if let Some(raw) = &raw_report {
+            metadata.push(("oxifoc.raw_telemetry".into(), serde_json::to_string(raw)?));
+        }
+        if let Some(session) = self.raw_session {
+            metadata.push(("oxifoc.raw_session".into(), session.to_string()));
+        }
         metadata.push((
             "oxifoc.board_calibration".to_string(),
             serde_json::to_string(&self.board_calibration)?,
@@ -268,6 +344,15 @@ impl Capture {
             samples_lost,
             &metadata,
         )?;
+        // Preserve failed captures as diagnostic artifacts, but never report
+        // success from a prefix whose producer END/totals were not consumed.
+        if let Some(raw) = &self.raw_telemetry {
+            let session = self
+                .raw_session
+                .context("raw capture has no owned session")?;
+            raw.wait_end_for(session, Duration::ZERO)?
+                .validate_export(session, self.samples.len())?;
+        }
         Ok(RecordSummary {
             path: out_path.to_string(),
             rows: self.samples.len(),
@@ -279,6 +364,8 @@ impl Capture {
             duration_s: self.started.elapsed().as_secs_f64(),
             gaps,
             samples_lost,
+            fast_source,
+            raw_telemetry: raw_report,
         })
     }
 }
@@ -732,6 +819,8 @@ mod tests {
             ],
             started: Instant::now(),
             enrich: None,
+            raw_telemetry: None,
+            raw_session: None,
         };
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)

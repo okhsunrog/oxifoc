@@ -1,7 +1,23 @@
 use crate::transport::{TransportConfig, TransportType};
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{env, fs, path::PathBuf};
+
+/// Fast samples may bypass the command transport on explicitly selected bench builds.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FastSource {
+    #[default]
+    Ergot,
+    UsbRaw,
+    RttRaw,
+}
+
+impl FastSource {
+    pub fn is_raw(self) -> bool {
+        self != Self::Ergot
+    }
+}
 
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct HostConfig {
@@ -45,6 +61,8 @@ pub struct HostConfig {
     /// Desired fast telemetry rate in Hz (default 1000).
     /// Set to 0 to disable fast telemetry streaming.
     pub fast_hz: Option<u16>,
+    pub fast_source: Option<FastSource>,
+    pub fast_encoding: Option<oxifoc_core::raw_telemetry::RawEncoding>,
 }
 
 /// Controls how the host handles transport disconnection/failure.
@@ -108,7 +126,22 @@ impl HostConfig {
     }
 
     pub fn transport_type(&self) -> TransportType {
-        self.transport.clone().unwrap_or_default()
+        self.transport.clone().unwrap_or_else(|| {
+            if self.fast_source().is_raw() {
+                TransportType::Usb
+            } else {
+                TransportType::default()
+            }
+        })
+    }
+
+    pub fn fast_source(&self) -> FastSource {
+        self.fast_source.unwrap_or_default()
+    }
+
+    pub fn fast_encoding(&self) -> oxifoc_core::raw_telemetry::RawEncoding {
+        self.fast_encoding
+            .unwrap_or(oxifoc_core::raw_telemetry::RawEncoding::Raw34)
     }
 
     pub fn transport_config(&self) -> Result<TransportConfig> {
@@ -157,6 +190,24 @@ impl HostConfig {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn raw_sources_select_usb_commands_without_changing_legacy_defaults() {
+        let default = HostConfig::default();
+        assert_eq!(default.fast_source(), FastSource::Ergot);
+        assert_eq!(default.transport_type(), TransportType::default());
+        for source in ["usb-raw", "rtt-raw"] {
+            let cfg: HostConfig =
+                toml::from_str(&format!("fast_source='{source}'\nfast_encoding='Packed26'"))
+                    .unwrap();
+            assert!(cfg.fast_source().is_raw());
+            assert_eq!(cfg.transport_type(), TransportType::Usb);
+            assert_eq!(
+                cfg.fast_encoding(),
+                oxifoc_core::raw_telemetry::RawEncoding::Packed26
+            );
+        }
+    }
 
     fn temp_config_path(name: &str) -> PathBuf {
         let nonce = SystemTime::now()

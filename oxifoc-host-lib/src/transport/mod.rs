@@ -11,6 +11,8 @@ pub mod ble;
 #[cfg(feature = "desktop")]
 pub mod rtt;
 #[cfg(feature = "desktop")]
+pub(crate) mod rtt_raw;
+#[cfg(feature = "desktop")]
 pub mod serial;
 pub mod tcp;
 pub mod udp;

@@ -490,6 +490,8 @@ mod tests {
 
     fn test_capture() -> Capture {
         Capture {
+            raw_telemetry: None,
+            raw_session: None,
             board_calibration: ConfigSnapshot {
                 group: ConfigGroupId::BoardCalibration,
                 revision: 0,

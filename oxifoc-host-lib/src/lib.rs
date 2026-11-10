@@ -2,6 +2,7 @@ pub mod config;
 mod connection;
 pub mod discovery;
 pub mod ops;
+pub mod raw_telemetry;
 pub mod transport;
 
 #[cfg(test)]
@@ -48,7 +49,7 @@ use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-pub use config::{HostConfig, ReconnectPolicy};
+pub use config::{FastSource, HostConfig, ReconnectPolicy};
 pub use discovery::{BleDeviceInfo, scan_ble_devices, scan_ble_devices_blocking};
 #[cfg(feature = "desktop")]
 pub use discovery::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
@@ -299,6 +300,8 @@ pub struct HostRuntime {
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
     pub fast_hz: Arc<AtomicU16>,
+    /// Raw capture integrity, absent for the ordinary Ergot subscriber.
+    pub raw_telemetry: Option<Arc<raw_telemetry::RawTelemetryState>>,
     device_addr: Arc<AtomicU32>,
     cancel_token: CancellationToken,
     /// Backend thread handle — joined (bounded) on shutdown so the process
@@ -441,6 +444,7 @@ struct BackendCtx {
     /// before `connected` is published.
     device_addr: Arc<AtomicU32>,
     cancel: CancellationToken,
+    raw_telemetry: Option<Arc<raw_telemetry::RawTelemetryState>>,
 }
 
 /// Ordered, loss-aware handoff from protocol tasks to synchronous consumers.
@@ -499,6 +503,13 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let fast_hz = Arc::new(AtomicU16::new(0));
     let device_addr = Arc::new(AtomicU32::new(pack_addr(LINK_LOCAL_PEER)));
     let cancel_token = CancellationToken::new();
+    let raw_telemetry = cfg.fast_source().is_raw().then(|| {
+        raw_telemetry::RawTelemetryState::new(
+            cfg.fast_source(),
+            cfg.fast_encoding(),
+            fast_tx.clone(),
+        )
+    });
 
     let ctx = BackendCtx {
         fast_tx,
@@ -511,11 +522,16 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         requested_fast_hz: Arc::new(AtomicU16::new(cfg.fast_hz())),
         device_addr: device_addr.clone(),
         cancel: cancel_token.clone(),
+        raw_telemetry: raw_telemetry.clone(),
     };
 
+    let backend_error = raw_telemetry.clone();
     let backend_thread = thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create tokio runtime");
         if let Err(e) = rt.block_on(backend_main(cfg, ctx)) {
+            if let Some(raw) = backend_error {
+                raw.fail(&e);
+            }
             error!("backend_main error: {:?}", e);
         }
     });
@@ -528,6 +544,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         cmd_tx,
         connected,
         fast_hz,
+        raw_telemetry,
         device_addr,
         cancel_token,
         backend_thread: std::sync::Mutex::new(Some(backend_thread)),
@@ -546,6 +563,27 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
     }
 
     let transport_config = cfg.transport_config()?;
+    if cfg.fast_source().is_raw() && cfg.transport_type() != TransportType::Usb {
+        if let Some(raw) = &ctx.raw_telemetry {
+            raw.fail("raw telemetry requires USB command transport");
+        }
+        anyhow::bail!("raw telemetry requires USB command transport");
+    }
+
+    #[cfg(feature = "desktop")]
+    let _raw_rtt = if cfg.fast_source() == FastSource::RttRaw {
+        Some(transport::rtt_raw::spawn(
+            &cfg,
+            ctx.raw_telemetry.clone().unwrap(),
+            ctx.cancel.clone(),
+        )?)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "desktop"))]
+    if cfg.fast_source() == FastSource::RttRaw {
+        anyhow::bail!("rtt-raw requires the desktop host feature");
+    }
 
     match transport_config {
         TransportConfig::Tcp { host, port } => {
@@ -606,14 +644,45 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
                 let stack = stack.clone();
                 let notify = state_notify.clone();
                 let mut selected_identity = None;
+                let raw = ctx
+                    .raw_telemetry
+                    .clone()
+                    .filter(|raw| raw.source() == FastSource::UsbRaw);
+                let cancel = ctx.cancel.clone();
+                let mut raw_connection: Option<transport::usb::RawUsbConnection> = None;
                 async move || {
-                    transport::usb::register(
-                        &stack,
-                        &queue,
-                        Some(notify.clone()),
-                        &mut selected_identity,
-                    )
-                    .await
+                    if let Some(previous) = raw_connection.take() {
+                        previous.shutdown().await;
+                    }
+                    if let Some(raw) = &raw {
+                        match transport::usb::register_raw(
+                            &stack,
+                            &queue,
+                            Some(notify.clone()),
+                            &mut selected_identity,
+                            raw.clone(),
+                            cancel.clone(),
+                        )
+                        .await
+                        {
+                            Ok(connection) => {
+                                raw_connection = Some(connection);
+                                Ok(())
+                            }
+                            Err(error) => {
+                                raw.fail(&error);
+                                Err(error)
+                            }
+                        }
+                    } else {
+                        transport::usb::register(
+                            &stack,
+                            &queue,
+                            Some(notify.clone()),
+                            &mut selected_identity,
+                        )
+                        .await
+                    }
                 }
             };
             Box::pin(run_framed_with_reconnect(
@@ -669,12 +738,14 @@ where
     NS::Profile: Send,
     NS::Target: Send + Sync,
 {
-    spawn_fast_telemetry_subscriber(
-        stack,
-        ctx.fast_tx,
-        ctx.connected.clone(),
-        ctx.cancel.clone(),
-    );
+    if ctx.raw_telemetry.is_none() {
+        spawn_fast_telemetry_subscriber(
+            stack,
+            ctx.fast_tx,
+            ctx.connected.clone(),
+            ctx.cancel.clone(),
+        );
+    }
     spawn_fault_topic_subscriber(
         stack,
         ctx.fault_sink.clone(),
@@ -718,6 +789,7 @@ where
         let connected = ctx.connected.clone();
         let cancel = ctx.cancel.clone();
         let mut cmd_rx = ctx.cmd_rx;
+        let raw_telemetry = ctx.raw_telemetry;
         async move {
             let drive_session = new_drive_session();
             let mut motor_seq = 0u32;
@@ -750,6 +822,7 @@ where
                             &mut active_setpoint,
                             drive_session,
                             &mut motor_seq,
+                            raw_telemetry.as_ref(),
                         ).await;
                     }
                     _ = ticker.tick() => {
@@ -1100,6 +1173,7 @@ async fn handle_command<NS>(
     active_setpoint: &mut Option<ControlMode>,
     drive_session: u64,
     motor_seq: &mut u32,
+    raw: Option<&Arc<raw_telemetry::RawTelemetryState>>,
 ) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
@@ -1229,6 +1303,21 @@ async fn handle_command<NS>(
             }
         }
         HostCommand::SetTelemetryConfig(cfg, reply) => {
+            if let Some(raw) = raw {
+                // Only the control exchange is awaited here. END is consumed
+                // by the raw reader and awaited by Capture on its own thread.
+                // Motor Stop never waits for raw I/O to drain.
+                let result = raw_telemetry::configure(ns, raw, cfg.fast_hz, device_addr).await;
+                fast_hz_flag.store(
+                    result.as_ref().map_or(0, |ack| ack.actual_fast_hz),
+                    Ordering::Relaxed,
+                );
+                requested_fast_hz.store(0, Ordering::Relaxed); // no capture auto-resume
+                if let Some(reply) = reply {
+                    let _ = reply.send(result);
+                }
+                return;
+            }
             tracing::info!("Setting telemetry config: {:?}", cfg);
             // Remember the *requested* rate as the reconnect intent — the
             // reconnect path re-applies it instead of the static config

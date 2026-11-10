@@ -301,7 +301,7 @@ fn main() -> Result<()> {
             ))
         })
         .collect::<serde_json::Map<_, _>>();
-    let cap = Capture::start(&runtime, 20_000)?;
+    let mut cap = Capture::start(&runtime, 20_000)?;
     if cap.decimation_m != 1 {
         cap.stop(&runtime)?;
         bail!("device did not enable native-rate telemetry");

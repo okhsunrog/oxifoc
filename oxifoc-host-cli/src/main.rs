@@ -100,6 +100,18 @@ enum Transport {
     Ble,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum FastSourceArg {
+    Ergot,
+    UsbRaw,
+    RttRaw,
+}
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum FastEncodingArg {
+    Raw34,
+    Packed26,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum DetectStep {
     /// Measure phase-to-neutral resistance
@@ -184,6 +196,12 @@ struct Cli {
     /// Transport type (serial or rtt). If not specified, uses config file.
     #[arg(short, long, value_enum)]
     transport: Option<Transport>,
+    /// Fast data source. Raw modes keep USB for commands; default: ergot.
+    #[arg(long, value_enum, global = true)]
+    fast_source: Option<FastSourceArg>,
+    /// Raw block encoding; default: raw34. Packed26 falls back explicitly.
+    #[arg(long, value_enum, global = true)]
+    fast_encoding: Option<FastEncodingArg>,
 
     /// Serial port path (e.g., /dev/ttyACM0). Required for serial transport if not in config.
     #[arg(long)]
@@ -575,10 +593,19 @@ fn main() -> Result<()> {
 
     let wait = Duration::from_secs(cli.wait_secs);
     if cli.wait_secs > 0 && !runtime.wait_for_connection(wait) {
+        if let Some(raw) = &runtime.raw_telemetry {
+            raw.check()?;
+        }
         bail!(
             "device did not complete the protocol/identity handshake within {}s",
             cli.wait_secs,
         );
+    }
+    if runtime.raw_telemetry.is_some()
+        && let Command::Monitor { fast_hz, .. } = &cli.command
+        && *fast_hz > 0
+    {
+        oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, *fast_hz)?;
     }
 
     match cli.command {
@@ -962,6 +989,19 @@ fn main() -> Result<()> {
 fn build_config(cli: &Cli) -> Result<HostConfig> {
     // Start with defaults from config file
     let mut cfg = HostConfig::load_default()?.unwrap_or_default();
+    if let Some(source) = cli.fast_source {
+        cfg.fast_source = Some(match source {
+            FastSourceArg::Ergot => oxifoc_host_lib::FastSource::Ergot,
+            FastSourceArg::UsbRaw => oxifoc_host_lib::FastSource::UsbRaw,
+            FastSourceArg::RttRaw => oxifoc_host_lib::FastSource::RttRaw,
+        });
+    }
+    if let Some(encoding) = cli.fast_encoding {
+        cfg.fast_encoding = Some(match encoding {
+            FastEncodingArg::Raw34 => oxifoc_core::raw_telemetry::RawEncoding::Raw34,
+            FastEncodingArg::Packed26 => oxifoc_core::raw_telemetry::RawEncoding::Packed26,
+        });
+    }
 
     // Override with CLI arguments
     if let Some(transport) = cli.transport {
@@ -1045,6 +1085,9 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
         cfg.udp_port = Some(port);
     }
 
+    if cfg.fast_source().is_raw() && cfg.transport_type() != TransportType::Usb {
+        bail!("--fast-source usb-raw/rtt-raw requires --transport usb for commands");
+    }
     Ok(cfg)
 }
 
@@ -1119,10 +1162,36 @@ fn list_devices(json: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use clap::ValueEnum;
+    use clap::{Parser, ValueEnum};
     use oxifoc_host_lib::ops::phase::PhaseSourceKind;
 
     use super::SourceArg;
+
+    #[test]
+    fn raw_capture_flags_are_explicit_and_legacy_default_is_retained() {
+        let default = super::Cli::try_parse_from(["oxifoc", "status"]).unwrap();
+        assert!(default.fast_source.is_none());
+        assert!(default.fast_encoding.is_none());
+        for source in ["usb-raw", "rtt-raw"] {
+            let cli = super::Cli::try_parse_from([
+                "oxifoc",
+                "--fast-source",
+                source,
+                "--fast-encoding",
+                "packed26",
+                "status",
+            ])
+            .unwrap();
+            assert!(cli.fast_source.is_some());
+            assert!(matches!(
+                cli.fast_encoding,
+                Some(super::FastEncodingArg::Packed26)
+            ));
+        }
+        assert!(
+            super::Cli::try_parse_from(["oxifoc", "--fast-encoding", "lossy", "status"]).is_err()
+        );
+    }
 
     /// Enforcer: the clap mirror covers every shared phase-source kind in
     /// selector order — a kind added to ops::phase without a CLI arm fails

@@ -38,6 +38,7 @@ futures = "0.3.34"
 bluest = { git = "https://github.com/okhsunrog/bluest", rev = "9cb9dbcad63d7d2ffe18a20f87b7ffe1cb670537", features = ["unstable"] }
 serde_json = "1.0.151"
 object = { version = "0.40.0", default-features = false, features = ["read"] }
+nusb = "0.1"
 
 [lints]
 workspace = true

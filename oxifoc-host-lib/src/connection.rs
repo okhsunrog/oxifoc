@@ -113,6 +113,7 @@ where
     let cancel = ctx.cancel.clone();
     let info_tx = ctx.info_tx.clone();
     let fault_sink = ctx.fault_sink.clone();
+    let raw = ctx.raw_telemetry.clone();
 
     // Protocol tasks are spawned once — they operate on the stack, not the
     // per-connection interface.
@@ -253,11 +254,25 @@ where
             }
         }
 
-        let configured = tokio::select! {
-            result = enable_fast_telemetry(
-                &stack, requested_fast_hz.load(Ordering::Relaxed), &fast_hz_flag, resolved,
-            ) => result,
-            _ = cancel.cancelled() => break,
+        let configured = if let Some(raw) = &raw {
+            // A reconnect establishes control only. A failed capture's cookie
+            // and requested rate are never resumed by a new connection.
+            let setup = raw_telemetry::prepare_connection(&stack, raw, resolved);
+            match tokio::select! { result = setup => result, _ = cancel.cancelled() => break } {
+                Ok(_) => true,
+                Err(error) => {
+                    raw.fail(&error);
+                    tracing::error!("raw setup failed: {error:#}");
+                    false
+                }
+            }
+        } else {
+            tokio::select! {
+                result = enable_fast_telemetry(
+                    &stack, requested_fast_hz.load(Ordering::Relaxed), &fast_hz_flag, resolved,
+                ) => result,
+                _ = cancel.cancelled() => break,
+            }
         };
         if !configured {
             verified_peer = None;
@@ -297,6 +312,9 @@ where
             // Cancelled
             break;
         }
+        if let Some(raw) = &raw {
+            raw.control_lost();
+        }
         verified_peer = None;
 
         if !may_retry(policy, &mut connect_attempts) {
@@ -327,6 +345,9 @@ where
     // that runtime teardown could discard. Never target an unverified peer.
     if let Some(peer) = verified_peer {
         let stop = async {
+            if let Some(raw) = &raw {
+                return raw_telemetry::configure(&stack, raw, 0, peer).await;
+            }
             let client = stack.clone().reliable::<TokioTimer>();
             client
                 .at_least_once::<TelemetryConfigEndpoint>(
@@ -336,6 +357,7 @@ where
                     &SETPOINT_POLICY,
                 )
                 .await
+                .map_err(|error| anyhow!("{error:?}"))
         };
         match tokio::time::timeout(Duration::from_millis(500), stop).await {
             Ok(Ok(ack)) if ack.actual_fast_hz == 0 => {

@@ -171,6 +171,13 @@ flash-mk5-hall profiling="off" memory="sram" transport="usb": (build-mk5-hall pr
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
 
+# Dedicated raw telemetry sink; Ergot USB remains the command and defmt path.
+build-mk5-raw sink="usb" profiling="normal":
+    @test {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt
+    @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + if profiling == "timing" { ",isr-timing" } else { "" }) }}
+
 # Detect one parameter without applying motor parameters, recording every cycle.
 detect-mk5 step capture *ARGS:
     RUST_LOG=warn,device=info,fast_rx=debug just cli-usb --elf {{ mk5_elf }} detect {{ quote(step) }} \
@@ -312,6 +319,24 @@ cli *ARGS:
 [positional-arguments]
 cli-usb *ARGS:
     @just cli --transport usb --wait-secs 8 --json "$@"
+
+# Raw data over a dedicated channel; commands still use the USB Ergot interface.
+record-raw-mk5 source encoding output seconds="4" hz="20000" elf=mk5_elf:
+    @test {{ quote(source) }} = usb -o {{ quote(source) }} = rtt
+    @test {{ quote(encoding) }} = raw34 -o {{ quote(encoding) }} = packed26
+    just cli --transport usb --fast-source {{ quote(source + "-raw") }} \
+        --fast-encoding {{ quote(encoding) }} --chip STM32F405RGTx --elf {{ quote(elf) }} \
+        --wait-secs 8 --json record --out {{ quote(output) }} --seconds {{ quote(seconds) }} --fast-hz {{ quote(hz) }}
+
+# Use the same native-rate maneuver/capture path for both raw transports.
+test-raw-current-mk5 source encoding capture maneuver elf=mk5_elf:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'just cli-usb stop >/dev/null' EXIT
+    RUST_LOG="${RUST_LOG:-warn,device=info}" just cli --transport usb \
+        --fast-source {{ quote(source + "-raw") }} --fast-encoding {{ quote(encoding) }} \
+        --chip STM32F405RGTx --elf {{ quote(elf) }} --wait-secs 8 --json \
+        maneuver run {{ quote(maneuver) }} --out {{ quote(capture) }}
 
 # MK5 RTT transport; opening it resets the controller before the handshake.
 [positional-arguments]
