@@ -14,6 +14,11 @@ core_embassy_features := core_test_features + ",embassy"
 bench-probe-read *ARGS:
     cargo run --release --locked -p oxifoc-host-lib --example probe_read_bench -- "$@"
 
+# Offline Hall estimation from a stopped capture; no motor or observer simulation.
+[positional-arguments]
+replay-hall *ARGS:
+    cargo run --release --locked -p oxifoc-host-lib --example replay_hall -- "$@"
+
 mk5_features := "transport-usb,transport-uart,board-vesc6-mk5,task-priority"
 mk5_bench_features := mk5_features + ",bench-calibrated-clock,bench-clock-reference"
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"

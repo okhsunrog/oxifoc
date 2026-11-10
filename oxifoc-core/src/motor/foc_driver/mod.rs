@@ -92,6 +92,18 @@ pub const STARTUP_STALENESS_TIMEOUT_US: u64 = 700_000;
 /// brief validity wobble at speed re-locks instead of restarting.
 pub const SENSORLESS_RESTART_AFTER_S: f32 = 0.5;
 
+/// Read-only snapshot of the active velocity controller. Acquiring it performs
+/// no control update; platforms decide when and how to record it.
+#[derive(Clone, Copy, Debug)]
+pub struct VelocityControlSnapshot {
+    pub target_rad_s: f32,
+    pub reference_rad_s: f32,
+    pub feedback_rad_s: Option<f32>,
+    pub requested_iq_a: f32,
+    pub granted_iq_a: f32,
+    pub measured_iq_a: f32,
+}
+
 /// Maximum measured electrical speed accepted by the all-phases-at-50%
 /// diagnostic. The operator acknowledgement remains mandatory because a
 /// sensorless estimator cannot prove that an unenergised rotor is stationary.

@@ -595,6 +595,8 @@ fn ADC() {
             );
             #[cfg(feature = "bench-hall-phase")]
             HALL_PHASE.observe(*SEQ, driver.phase(), hall_snapshot);
+            #[cfg(feature = "bench-hall-phase")]
+            HALL_PHASE.observe_velocity(*SEQ, || driver.velocity_control_snapshot());
             #[cfg(feature = "bench-raw-codec")]
             {
                 codec_bench_stopped =

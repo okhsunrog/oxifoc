@@ -24,9 +24,18 @@ pub static BENCH_HALL_PHASE_EVENTS: [[AtomicU32; PHASE_WORDS]; PHASE_CAPACITY] =
 pub static BENCH_HALL_PHASE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(feature = "bench-hall-phase")]
+#[unsafe(no_mangle)]
+pub static BENCH_VELOCITY_SAMPLES: [[AtomicU32; 7]; 128] =
+    [const { [const { AtomicU32::new(0) }; 7] }; 128];
+#[cfg(feature = "bench-hall-phase")]
+#[unsafe(no_mangle)]
+pub static BENCH_VELOCITY_COUNT: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(feature = "bench-hall-phase")]
 pub struct PhaseRecorder {
     previous_health: Option<oxifoc_core::foc::phase::HallHealth>,
     previous_angle: f32,
+    last_velocity_sequence: u32,
 }
 
 #[cfg(feature = "bench-hall-phase")]
@@ -35,7 +44,41 @@ impl PhaseRecorder {
         Self {
             previous_health: None,
             previous_angle: 0.0,
+            last_velocity_sequence: 0,
         }
+    }
+
+    /// Native ADC sequence spacing gives ~40 Hz at the nominal 20 kHz loop.
+    /// The finite prefix covers a short maneuver; no transport or formatting.
+    pub fn observe_velocity(
+        &mut self,
+        sequence: u32,
+        snapshot: impl FnOnce() -> Option<oxifoc_core::motor::foc_driver::VelocityControlSnapshot>,
+    ) {
+        if sequence.wrapping_sub(self.last_velocity_sequence) < 500 {
+            return;
+        }
+        self.last_velocity_sequence = sequence;
+        let index = BENCH_VELOCITY_COUNT.load(Ordering::Relaxed) as usize;
+        let Some(slot) = BENCH_VELOCITY_SAMPLES.get(index) else {
+            return;
+        };
+        let Some(sample) = snapshot() else {
+            return;
+        };
+        let values = [
+            sequence,
+            sample.target_rad_s.to_bits(),
+            sample.reference_rad_s.to_bits(),
+            sample.feedback_rad_s.unwrap_or(f32::NAN).to_bits(),
+            sample.requested_iq_a.to_bits(),
+            sample.granted_iq_a.to_bits(),
+            sample.measured_iq_a.to_bits(),
+        ];
+        for (word, value) in slot.iter().zip(values) {
+            word.store(value, Ordering::Relaxed);
+        }
+        BENCH_VELOCITY_COUNT.store(index as u32 + 1, Ordering::Release);
     }
 
     pub fn observe<

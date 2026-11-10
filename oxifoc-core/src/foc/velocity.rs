@@ -252,6 +252,11 @@ impl VelocityLoop {
         self.last_iq
     }
 
+    /// Slew-limited speed reference currently presented to the PI.
+    pub fn reference_rad_s(&self) -> f32 {
+        self.ramp.value()
+    }
+
     /// Account for the previous interval's granted-minus-requested current.
     pub(crate) fn track_grant(&mut self, correction: f32) {
         if correction.is_finite() {

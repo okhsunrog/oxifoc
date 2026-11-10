@@ -18,7 +18,9 @@ SIZES = {"BENCH_HALL_EDGES": CAPACITY * 16,
          "BENCH_HALL_EDGE_COUNT": 4, "BENCH_HALL_EDGE_DROPPED": 4}
 OPTIONAL_SIZES = {"BENCH_HALL_STREAM_LOSSES": 16,
                   "BENCH_HALL_PHASE_EVENTS": 64 * 14 * 4,
-                  "BENCH_HALL_PHASE_COUNT": 4}
+                  "BENCH_HALL_PHASE_COUNT": 4,
+                  "BENCH_VELOCITY_SAMPLES": 128 * 7 * 4,
+                  "BENCH_VELOCITY_COUNT": 4}
 
 
 def decode(data, count):
@@ -128,6 +130,16 @@ def main():
                  'hall_angle', 'hall_velocity', 'hall_edge_age_s', 'bemf_q', 'valid_travel')
         phase_events = [dict(zip(names, (v if math.isfinite(v) else None for v in values))) for values in
                         struct.iter_unpack('<3I11f', phase_data[:count * 56])]
+    velocity_samples = None
+    if 'BENCH_VELOCITY_SAMPLES' in symbols:
+        count = scalar('BENCH_VELOCITY_COUNT', '.velocity-count.bin')
+        if count > 128:
+            raise RuntimeError('invalid velocity-sample prefix')
+        values = read('BENCH_VELOCITY_SAMPLES', '.velocity-samples.bin')
+        names = ('adc_sequence', 'target_rad_s', 'reference_rad_s', 'feedback_rad_s',
+                 'requested_iq_a', 'granted_iq_a', 'measured_iq_a')
+        velocity_samples = [dict(zip(names, (v if math.isfinite(v) else None for v in row)))
+                            for row in struct.iter_unpack('<I6f', values[:count * 28])]
     result = dict(
         schema='bench-hall-edges', version=1, elf=str(elf),
         elf_sha256=elf_sha256,
@@ -140,6 +152,7 @@ def main():
         overcapture_records=sum(edge['overcapture'] for edge in edges),
         stream_losses=stream_losses,
         phase_events=phase_events,
+        velocity_samples=velocity_samples,
         limits='First published prefix only. Overcapture means unknown hardware edge loss; '
                'dropped counts buffer overflow. Residual coast can append during read.',
         edges=edges)
