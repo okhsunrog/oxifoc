@@ -765,3 +765,29 @@ Observer phase was already about 0.85 rad ahead of Hall re-entry, so it cannot
 yet serve as an independent position witness in this regime. The candidate
 was removed from the working tree; its patch and all failed evidence remain
 under `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-speed-2026-11-10/`.
+
+### Hall repeatability and sweep current (2026-11-10)
+
+Nine runs captured 4,246,674 native-rate Packed26 records through Ergot with
+zero producer/host loss, sequence gaps or Hall overcaptures. At 3 A and
+1 degree/5 ms, all three native calibrations failed LowConfidence: one boundary
+varied by 17 degrees across turns. At 10 A it varied by at most 4 degrees;
+three native 17-A calibrations passed with worst ranges of 2–3 degrees and
+averaged boundaries repeatable within 0.67 degrees between runs. These are
+electrical-angle repeatability figures, not absolute accuracy. Slower 10-ms
+diagnostic sweeps also passed offline checks; the 17-A case covered all seven
+electrical turns per mechanical revolution in each direction.
+
+The high-current runs used a temporary 30-A dq trip, with observed peak
+17.477 A. The historical 6-A bench trip is not a board/motor rating. Local
+VESC 7.00 wizard source selects Hall current as detected motor limit / 3,
+about 17 A for the user's 50.93-A result; its PI gains are 0.0005/1 versus
+0.01/10 in these sweeps. Sixfold Iq disturbances near phase-current zero
+crossings repeat at 1.666/3.289 Hz in slow/fast sweeps. PWM-command deadtime
+compensation and PI tuning are candidates for the reported pulsating sound;
+no synchronized audio or causal A/B has established its source yet.
+
+Original Hall table, model, limits and board calibration were restored and
+read back; Stopped, zero faults, no NVM writes. Velocity stability remains
+unqualified. Detailed results, source comparison and plots:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-repeat-2026-11-10/report.md`.
