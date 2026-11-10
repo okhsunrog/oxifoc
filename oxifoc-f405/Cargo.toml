@@ -10,6 +10,13 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "bridge-pin-probe"
+path = "src/bin/bridge_pin_probe.rs"
+required-features = ["bench-bridge-pins", "board-vesc6-mk5"]
+test = false
+bench = false
+
 [features]
 default = ["transport-usb", "transport-uart", "board-cf2"]
 # Exactly one board feature must be enabled (compile_error in main.rs).
@@ -21,6 +28,8 @@ board-cf2 = []
 # shutdown latch PC5, current/phase filter enables PD2/PC13.
 # See docs/hw/vesc6-mk5.md.
 board-vesc6-mk5 = []
+# Standalone connector continuity probe: no FOC, gate disabled, input-only pins.
+bench-bridge-pins = []
 # CPU-only FOC state in 64-KiB CCM. DMA buffers and the stack remain in SRAM.
 ccm = []
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.

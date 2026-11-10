@@ -28,6 +28,10 @@ mk5_usb_trace_features := mk5_bench_features + ",bench-hall,bench-executor-trace
 mk5_pwm_trace_features := mk5_bench_features + ",bench-hall,bench-pwm-commit"
 mk5_netstack_trace_features := mk5_bench_features + ",bench-hall,bench-netstack-trace"
 
+# Input-only connector probe; flashing is deliberately a separate action.
+build-mk5-bridge-pins:
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features board-vesc6-mk5,bench-bridge-pins --bin bridge-pin-probe
+
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
     @just check-host
