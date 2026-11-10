@@ -8,6 +8,12 @@ target_test_crates := "tests/stm32g474 tests/stm32f405"
 
 core_test_features := "runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect,impedance-sweep"
 core_embassy_features := core_test_features + ",embassy"
+
+# Reads SRAM through one ordinary SWD attach; never resets/halts/runs the core.
+[positional-arguments]
+bench-probe-read *ARGS:
+    cargo run --release --locked -p oxifoc-host-lib --example probe_read_bench -- "$@"
+
 mk5_features := "transport-usb,transport-uart,board-vesc6-mk5,task-priority"
 mk5_bench_features := mk5_features + ",bench-calibrated-clock,bench-clock-reference"
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
