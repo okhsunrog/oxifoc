@@ -9,6 +9,90 @@ use core::sync::atomic::{AtomicU32, Ordering};
 const CAPACITY: usize = 128;
 static ADC_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
+// ADC-owned, finite evidence of Hall/observer handoffs. No text formatting or
+// transport work in the control interrupt; exported only after Stop.
+#[cfg(feature = "bench-hall-phase")]
+const PHASE_CAPACITY: usize = 64;
+#[cfg(feature = "bench-hall-phase")]
+const PHASE_WORDS: usize = 14;
+#[cfg(feature = "bench-hall-phase")]
+#[unsafe(no_mangle)]
+pub static BENCH_HALL_PHASE_EVENTS: [[AtomicU32; PHASE_WORDS]; PHASE_CAPACITY] =
+    [const { [const { AtomicU32::new(0) }; PHASE_WORDS] }; PHASE_CAPACITY];
+#[cfg(feature = "bench-hall-phase")]
+#[unsafe(no_mangle)]
+pub static BENCH_HALL_PHASE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(feature = "bench-hall-phase")]
+pub struct PhaseRecorder {
+    previous_health: Option<oxifoc_core::foc::phase::HallHealth>,
+    previous_angle: f32,
+}
+
+#[cfg(feature = "bench-hall-phase")]
+impl PhaseRecorder {
+    pub const fn new() -> Self {
+        Self {
+            previous_health: None,
+            previous_angle: 0.0,
+        }
+    }
+
+    pub fn observe<
+        H: oxifoc_core::foc::sensors::AngleSensor,
+        E: oxifoc_core::foc::sensors::AngleSensor,
+        S: oxifoc_core::foc::trig::SinCos,
+    >(
+        &mut self,
+        sequence: u32,
+        phase: &oxifoc_core::foc::phase::PhaseManager<H, E, S>,
+        hall: Option<oxifoc_core::foc::sensors::HallSnapshot>,
+    ) {
+        use oxifoc_core::foc::phase::{HallHealth, PhaseProvider};
+        let health = phase.hall_health();
+        let output = phase.get();
+        let previous_angle = self.previous_angle;
+        self.previous_angle = output.angle;
+        if self.previous_health.replace(health) == Some(health) {
+            return;
+        }
+        let index = BENCH_HALL_PHASE_COUNT.load(Ordering::Relaxed) as usize;
+        let Some(slot) = BENCH_HALL_PHASE_EVENTS.get(index) else {
+            return;
+        };
+        let health_code = match health {
+            HallHealth::Ok => 0,
+            HallHealth::Stale => 1,
+            HallHealth::Invalid => 2,
+            HallHealth::NotPresent => 3,
+        };
+        let observer = phase
+            .debug_observer()
+            .unwrap_or((f32::NAN, f32::NAN, f32::NAN, f32::NAN));
+        let validity = phase.observer().validity().unwrap_or((f32::NAN, f32::NAN));
+        let values = [
+            sequence,
+            health_code,
+            u32::from(phase.angle_trustworthy()),
+            previous_angle.to_bits(),
+            output.angle.to_bits(),
+            output.velocity.to_bits(),
+            observer.0.to_bits(),
+            observer.2.to_bits(),
+            observer.3.to_bits(),
+            hall.map_or(f32::NAN, |h| h.angle_rad).to_bits(),
+            hall.map_or(f32::NAN, |h| h.velocity_rad_s).to_bits(),
+            hall.map_or(f32::NAN, |h| h.edge_age_s).to_bits(),
+            validity.0.to_bits(),
+            validity.1.to_bits(),
+        ];
+        for (word, value) in slot.iter().zip(values) {
+            word.store(value, Ordering::Relaxed);
+        }
+        BENCH_HALL_PHASE_COUNT.store(index as u32 + 1, Ordering::Release);
+    }
+}
+
 #[repr(C)]
 pub struct Edge {
     ticks_lo: AtomicU32,

@@ -176,13 +176,13 @@ build-mk5-codec-bench:
     cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_bench_features + ",bench-raw-codec") }}
 
-# Raw session sink; normal captures keep only warnings. Timing adds its 1-Hz report.
+# Raw sink: normal keeps warnings; timing adds its 1-Hz report; hall-phase adds finite RAM events.
 # Ergot USB remains the command and defmt path; use build-mk5-hall for Hall text logs.
 build-mk5-raw sink="usb" profiling="normal":
     @test {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt -o {{ quote(sink) }} = ergot
-    @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing
+    @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing -o {{ quote(profiling) }} = hall-phase
     cd oxifoc-f405 && DEFMT_LOG={{ quote(if profiling == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + if profiling == "timing" { ",isr-timing" } else { "" }) }}
+        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + if profiling == "timing" { ",isr-timing" } else if profiling == "hall-phase" { ",bench-hall-phase" } else { "" }) }}
 
 # Detect one parameter without applying motor parameters, recording every cycle.
 detect-mk5 step capture *ARGS:
@@ -367,9 +367,9 @@ test-raw-current-mk5 source encoding capture maneuver elf=mk5_elf:
 cli-rtt *ARGS:
     @just cli --transport rtt --chip STM32F405RGTx --elf {{ mk5_elf }} --wait-secs 8 --json "$@"
 
-# Export immutable bench-hall edge evidence after Stop, without halt/reset.
-dump-hall-mk5 output elf=mk5_elf:
-    uv run python scripts/bench_hall_edges.py {{ quote(output) }} --elf {{ quote(elf) }}
+# Export bench-hall evidence after Stop; probe attach may briefly halt, but does not reset.
+dump-hall-mk5 output elf=mk5_elf cli="":
+    uv run python scripts/bench_hall_edges.py {{ quote(output) }} --elf {{ quote(elf) }} {{ if cli == "" { "" } else { "--cli " + quote(cli) } }}
 
 # Volatile model/source replacement while Stopped, continuously recording 20 kHz.
 [positional-arguments]

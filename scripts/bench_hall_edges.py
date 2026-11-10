@@ -1,11 +1,13 @@
 """Export the first bench-hall edges over SWD after the bridge has stopped.
 
-Uses the exact firmware ELF and USB status; never halts, resets or writes RAM.
+Uses the exact firmware ELF and USB status. Probe attach may briefly halt the
+CPU, so export is restricted to Stopped. Does not reset or write RAM.
 The published prefix is immutable even if residual coast appends more edges.
 """
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import struct
@@ -14,7 +16,9 @@ import subprocess
 CAPACITY = 128
 SIZES = {"BENCH_HALL_EDGES": CAPACITY * 16,
          "BENCH_HALL_EDGE_COUNT": 4, "BENCH_HALL_EDGE_DROPPED": 4}
-OPTIONAL_SIZES = {"BENCH_HALL_STREAM_LOSSES": 16}
+OPTIONAL_SIZES = {"BENCH_HALL_STREAM_LOSSES": 16,
+                  "BENCH_HALL_PHASE_EVENTS": 64 * 14 * 4,
+                  "BENCH_HALL_PHASE_COUNT": 4}
 
 
 def decode(data, count):
@@ -59,6 +63,7 @@ def main():
     parser.add_argument('output', type=Path, help='JSON output; binary sidecars use this prefix')
     parser.add_argument('--elf', type=Path, required=True, help='Exact running firmware ELF')
     parser.add_argument('--probe', default='0483:3754:002300203234511537333934')
+    parser.add_argument('--cli', type=Path, help='Already built host CLI; avoids rebuilding for the status check')
     args = parser.parse_args()
     out, elf = args.output.resolve(), args.elf.resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -67,8 +72,10 @@ def main():
     listing = subprocess.check_output(['rust-nm', '-n', '-S', '-C', str(elf)], text=True)
     symbols = symbols_from(listing)
     Path(str(out) + '.symbols').write_text(listing)
+    command = ([str(args.cli.resolve()), '--transport', 'usb', '--wait-secs', '8', '--json']
+               if args.cli else ['just', 'cli-usb'])
     status = json.loads(subprocess.check_output(
-        ['just', 'cli-usb', '--elf', str(elf), 'status'], cwd=repo, text=True))
+        [*command, '--elf', str(elf), 'status'], cwd=repo, text=True))
     Path(str(out) + '.status.json').write_text(json.dumps(status, indent=2) + '\n')
     if status['control_mode'] != 'Stopped' or status['motor_state'] not in ('Stopped', 'Error'):
         raise RuntimeError('Hall export requires Stopped control mode and Stopped/Error state')
@@ -110,6 +117,17 @@ def main():
     if hashlib.sha256(elf.read_bytes()).hexdigest() != elf_sha256:
         raise RuntimeError('ELF changed during export')
     edges = decode(data, before)
+    phase_events = None
+    if 'BENCH_HALL_PHASE_EVENTS' in symbols:
+        count = scalar('BENCH_HALL_PHASE_COUNT', '.phase-count.bin')
+        if count > 64:
+            raise RuntimeError('invalid phase-event prefix')
+        phase_data = read('BENCH_HALL_PHASE_EVENTS', '.phase-events.bin')
+        names = ('adc_sequence', 'health', 'trusted', 'previous_angle', 'angle',
+                 'velocity', 'observer_angle', 'observer_velocity', 'observer_error',
+                 'hall_angle', 'hall_velocity', 'hall_edge_age_s', 'bemf_q', 'valid_travel')
+        phase_events = [dict(zip(names, (v if math.isfinite(v) else None for v in values))) for values in
+                        struct.iter_unpack('<3I11f', phase_data[:count * 56])]
     result = dict(
         schema='bench-hall-edges', version=1, elf=str(elf),
         elf_sha256=elf_sha256,
@@ -121,6 +139,7 @@ def main():
         dropped_before=dropped_before, dropped_after=dropped_after,
         overcapture_records=sum(edge['overcapture'] for edge in edges),
         stream_losses=stream_losses,
+        phase_events=phase_events,
         limits='First published prefix only. Overcapture means unknown hardware edge loss; '
                'dropped counts buffer overflow. Residual coast can append during read.',
         edges=edges)

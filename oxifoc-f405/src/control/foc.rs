@@ -408,6 +408,9 @@ fn ADC() {
     #[cfg(feature = "bench-cycle-outliers")]
     static mut CYCLE_OUTLIERS: crate::diagnostics::cycle_outliers::Recorder =
         crate::diagnostics::cycle_outliers::Recorder::new();
+    #[cfg(feature = "bench-hall-phase")]
+    static mut HALL_PHASE: crate::diagnostics::hall_edges::PhaseRecorder =
+        crate::diagnostics::hall_edges::PhaseRecorder::new();
     #[cfg(feature = "bench-raw-codec")]
     static mut CODEC_BENCH: crate::diagnostics::codec_bench::Bench =
         crate::diagnostics::codec_bench::Bench::new();
@@ -590,6 +593,8 @@ fn ADC() {
                 now_ticks,
                 protection_board,
             );
+            #[cfg(feature = "bench-hall-phase")]
+            HALL_PHASE.observe(*SEQ, driver.phase(), hall_snapshot);
             #[cfg(feature = "bench-raw-codec")]
             {
                 codec_bench_stopped =

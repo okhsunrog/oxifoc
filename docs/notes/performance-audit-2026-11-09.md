@@ -749,3 +749,19 @@ Report, exact images/patches, all failed attempts and visually checked plots:
 Final board image uses `just build-mk5-raw ergot normal`, with the calibrated
 clock and priority scheduler; it is Stopped, without detailed profiling or
 periodic text diagnostics. No NVM configuration writes were made.
+
+### Hall handoff diagnostic follow-up (2026-11-10)
+
+Finite RAM events now capture Hall-health changes, commutation/observer angles,
+edge age and observer validity. Opt in with `just build-mk5-raw ergot hall-phase`;
+normal builds exclude its 3.5 KiB buffer and ADC work. Export only after Stop:
+`just dump-hall-mk5 output.json exact.elf [prebuilt-cli]`. Probe attach can halt
+briefly; this is not a live, nonintrusive export. Both feature modes build, and
+the decoder was exercised against device captures and its doctests.
+
+The proposed measured-sector/observer-angle stale guard was **not accepted**:
+`guarded-soft` still reported a Hall warning and lost three producer samples.
+Observer phase was already about 0.85 rad ahead of Hall re-entry, so it cannot
+yet serve as an independent position witness in this regime. The candidate
+was removed from the working tree; its patch and all failed evidence remain
+under `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-speed-2026-11-10/`.

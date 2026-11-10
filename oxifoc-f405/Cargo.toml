@@ -69,6 +69,8 @@ bench-usb-thread = []
 bench-usb-metrics = ["transport-usb", "bench-clock-reference"]
 # Low-rate, ADC-sequence-correlated Hall observations during motor bring-up.
 bench-hall = []
+# Finite ADC-side Hall/observer handoff evidence; opt in separately from edges.
+bench-hall-phase = ["bench-hall"]
 # Bench-only raw telemetry sinks; control stays on the ordinary Ergot USB interface.
 # The sinks are mutually exclusive and replace its fast-frame publisher.
 bench-raw-usb = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
