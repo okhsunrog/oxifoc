@@ -20,6 +20,15 @@ class DistributionTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             bench.decode_deadline([1, 0]+words[2:], 168000000)
 
+    def test_minimal_deadline_does_not_invent_unmeasured_fields(self):
+        d = bench.decode_deadline([3, 2000, 1680, 0, 0, 0, 0, 0, 145, 0, 0], 168000000)
+        self.assertEqual(d['min_margin_us'], 10)
+        self.assertIsNone(d['max_entry_to_commit_us'])
+        self.assertIsNone(d['entry_phase_us'])
+        self.assertIsNone(d['worst_seq'])
+        self.assertIsNone(d['outside_adc'])
+        self.assertEqual(d['worst_write_ordinal'], 145)
+
     def test_irq_cadence_uses_host_ack_bounds(self):
         events = [dict(i=0, cmd={"velocity": {}}, t_sent=.3, t_acked=.31),
                   dict(i=1, cmd={"stop": {}}, t_sent=5.1, t_acked=5.11)]

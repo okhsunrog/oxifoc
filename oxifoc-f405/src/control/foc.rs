@@ -408,7 +408,10 @@ fn isr_timing_now() -> u32 {
 #[cfg_attr(feature = "ram-foc", unsafe(link_section = ".data.ram_foc"))]
 fn ADC() {
     static mut SEQ: u32 = 0;
-    #[cfg(feature = "bench-foc-distribution")]
+    #[cfg(all(
+        feature = "bench-foc-distribution",
+        not(feature = "bench-foc-deadline")
+    ))]
     static mut DISTRIBUTION: crate::diagnostics::foc_distribution::Recorder =
         crate::diagnostics::foc_distribution::Recorder::new();
     #[cfg(feature = "bench-cycle-outliers")]
@@ -440,7 +443,7 @@ fn ADC() {
         crate::diagnostics::trace::record(crate::diagnostics::trace::ADC_ENTRY_PHASE, phase);
     }
     #[cfg(feature = "bench-foc-deadline")]
-    crate::diagnostics::pwm_deadline::begin(SEQ.wrapping_add(1));
+    crate::diagnostics::pwm_deadline::begin();
     let isr_t0 = isr_timing_now();
     #[cfg(feature = "bench-cycle-outliers")]
     let core_before = oxifoc_core::isr_prof::Snapshot::observe();
@@ -727,7 +730,12 @@ fn ADC() {
         );
     }
     let isr_end = isr_timing_now();
-    #[cfg(feature = "bench-foc-distribution")]
+    #[cfg(feature = "bench-foc-deadline")]
+    crate::diagnostics::foc_distribution::observe_deadline_session(outlier_active);
+    #[cfg(all(
+        feature = "bench-foc-distribution",
+        not(feature = "bench-foc-deadline")
+    ))]
     DISTRIBUTION.observe(
         outlier_active,
         *SEQ,

@@ -37,15 +37,17 @@ def decode(words):
 
 
 def decode_deadline(words, timer_hz):
-    assert len(words) == 11 and words[0] == 1 and words[1] > 1000
+    assert len(words) == 11 and words[0] in [1, 2, 3] and words[1] > 1000
     assert timer_hz > 0
     margin = words[2] if words[2] < 2**31 else words[2] - 2**32
-    return dict(raw_words=words, writes=words[1],
+    return dict(raw_words=words, schema=words[0], writes=words[1],
         min_margin_us=margin*1e6/timer_hz,
-        max_entry_to_commit_us=words[3]*1e6/timer_hz,
-        entry_phase_us=[x*1e6/timer_hz for x in words[4:6]],
+        max_entry_to_commit_us=words[3]*1e6/timer_hz if words[0] < 3 else None,
+        entry_phase_us=[x*1e6/timer_hz for x in words[4:6]] if words[0] < 3 else None,
         late_writes=words[6], ambiguous_entries=words[7],
-        worst_seq=words[8], outside_adc=words[9], still_masked=words[10])
+        worst_seq=words[8] if words[0] == 1 else None,
+        worst_write_ordinal=words[8] if words[0] == 3 else None,
+        outside_adc=words[9] if words[0] == 1 else None, still_masked=words[10])
 
 
 def host_cadence_bounds(events, cycles):
@@ -93,7 +95,8 @@ def main():
         nm = probe.run(["rust-nm", "--defined-only", str(image)]).stdout
         (args.output/"symbols.txt").write_text(nm)
         symbols = {line.split()[-1]: int(line.split()[0],16) for line in nm.splitlines() if len(line.split()) >= 3}
-        control, data = [symbols[x] for x in ["FOC_DISTRIBUTION_CONTROL", "FOC_DISTRIBUTION_DATA"]]
+        control = symbols["FOC_DISTRIBUTION_CONTROL"]
+        data = symbols.get("FOC_DISTRIBUTION_DATA")
         manifest["peripherals"] = f405_timing.snapshot()
         manifest["clocks"] = manifest["peripherals"]["clocks"]
         if args.detail == "deadline":
@@ -114,6 +117,8 @@ def main():
                 probe.run(probe.device("write", "b32", hex(control), "1"))
                 time.sleep(.1)
                 assert probe.read(control)[0] == 2, "recorder not armed"
+                if args.detail == "deadline":
+                    assert probe.read(symbols["PWM_DEADLINE_DATA"], 2) == [3, 0], "deadline counters not reset"
                 capture = args.output / f"{name}.parquet"
                 with (args.output/f"{name}.rtt.log").open("w") as log:
                     logger = subprocess.Popen(probe.device("attach", str(image.resolve())), stdout=log, stderr=subprocess.STDOUT)
@@ -139,17 +144,18 @@ def main():
                     # Detailed marks can overload the producer. Retain this as
                     # failed recording evidence while still exporting timing.
                     # Other operational errors continue to abort the experiment.
-                    assert args.detail in ["sections", "sections-ram", "phase-ram"] and capture.is_file()
+                    assert capture.is_file()
                     capture_error = capture.with_suffix(".parquet.log").read_text()
-                    assert diagnostic_loss_only(capture_error), "non-recording operational failure"
+
                     row["lossless"] = False
                     row["capture_error"] = capture_error
                     row["ack_verification"] = "read oxifoc.events from saved Parquet metadata"
                 status = json.loads(probe.run(["just", "cli-bridge", "status"]).stdout)
                 assert status["motor_state"] == "Stopped" and status["fault_count"] == 0
                 assert probe.read(control)[0] == 3, "recorder did not freeze"
-                row["distribution"] = decode(probe.read(data, 528))
-                if row["lossless"]:
+                if args.detail != "deadline":
+                    row["distribution"] = decode(probe.read(data, 528))
+                if row["lossless"] and args.detail != "deadline":
                     bounds = host_cadence_bounds(report["events"], row["distribution"]["n"])
                     assert bounds[0] <= manifest["clocks"]["pwm_hz"] <= bounds[1], "host-time IRQ cadence disagrees with TIM1"
                     row["host_cadence_bounds_hz"] = bounds
@@ -161,8 +167,9 @@ def main():
                     row["pwm_deadline"] = decode_deadline(words, manifest["clocks"]["tim1_hz"])
                 row["status"] = status
                 (args.output/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
-                d = row["distribution"]
-                print(json.dumps(dict(name=name, mean_us=d["mean_us"], max_us=d["max_us"], over=d["over_budget"], lossless=row["lossless"])), flush=True)
+                print(json.dumps(dict(name=name, lossless=row["lossless"], timing=row.get("distribution", row.get("pwm_deadline")))), flush=True)
+                if result.returncode and not (args.detail in ["sections", "sections-ram", "phase-ram"] and diagnostic_loss_only(capture_error)):
+                    raise RuntimeError("maneuver failed; frozen diagnostics exported before recovery")
                 time.sleep(1)
     finally:
         if logger is not None:

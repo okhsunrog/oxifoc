@@ -5,14 +5,11 @@
 Updated: 2026-11-11. Baseline commit: `3ee9089`.
 Goal: shorten the real F405 FOC/ADC path at 20 kHz, including worst observed
 cycles and PWM-update timing, while preserving protections and native telemetry.
-Current stage: rejected all four local algorithm candidates; original Hall/driver
-algorithms retained. Full-rate PWM-deadline instrumentation qualified hold and
-+40 electrical rad/s, but overloaded +120 (7 producer drops, ACK timeout).
-Three minimally instrumented +120 controls remain lossless. Do not claim
-high-speed PWM deadline qualification from the failed diagnostic recording.
-Next: reduce measurement overhead before qualifying the +120 actuation deadline;
-then choose an optimization from measured costs. No algorithm speedup accepted.
-Normal image is restored by each finite suite's cleanup.
+Current stage: +120 electrical rad/s PWM deadline now qualified in three
+complete native-rate captures: zero late/ambiguous driven commits, minimum
+margin 8.866 µs. Normal image restored. Next: low-speed regulation comparisons
+with finite Hall edges + 20-Hz velocity/authority snapshots over the SPI bridge.
+No new control-algorithm speedup accepted; clock remains the normal 168 profile.
 
 Artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-research-2026-11-11/`.
 Use this one living note for progress; add conclusions/evidence and next actions,
@@ -307,3 +304,31 @@ successful current test. The repeat changed no parameters or deadlines.
 Final recovery: Stopped, fault_count=0, bus 24.053 V, FET 29.5 °C,
 motor 28.7 °C. Six histogram/decoder tests and four peripheral-contract tests
 pass. Production transport, model/calibration, limits and PWM target unchanged.
+
+
+### PWM +120 closure (2026-11-11)
+
+New artifact root: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-pwm-motion-2026-11-11/`.
+`deadline-qualified`: three independent +120 runs, same 24-V setup and persisted
+configuration, native Packed28 capture. Minima 8.866 / 10.915 / 10.594 µs;
+288,321 driven writes, no late commits, ambiguous driven phases or masked
+updates. Every capture complete/lossless, all ACKs successful, no faults.
+TIM1/ADC contract and TIM5 PSC/ARR/clock ratio checked before excitation.
+This qualifies these bounded workloads, not worst-case timing at all loads.
+
+Schema 3 retains only driven-write count/minimum margin/late count; histograms
+are disabled in deadline images. It timestamps before entry-phase reads and
+after observing UDIS clear, with downward timer rounding. Unknown entry phases
+are counted only if a driven commit occurs. No sampled/extrapolated cycles.
+Detailed timing fields and outside-ADC accounting are explicitly unavailable.
+The arm consumer resets counters before publishing Armed: a host request can
+arrive after the entry hook. Host additionally verifies zero count on every arm.
+
+Rejected attempts retained: ADC-owned local aggregation overloaded +120;
+minimal witness plus full histograms lost 4 records despite positive deadlines.
+`deadline-only-repeat` exposed a late-arm reset race (third count accumulated);
+`deadline-final` corrected that race but included an inactive ambiguous entry.
+Final `deadline-qualified` corrects driven-only ambiguity attribution.
+Harness now exports frozen diagnostics even after failed runs, then aborts and
+restores. Seven host decoder tests and two standalone recorder/session tests
+pass. No control/model/limit or normal runtime changes in this step.

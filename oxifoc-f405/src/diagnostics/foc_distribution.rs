@@ -78,8 +78,6 @@ impl Recorder {
         let control = FOC_DISTRIBUTION_CONTROL.load(Ordering::Relaxed);
         if control == 1 && !active {
             *self = Self::new();
-            #[cfg(feature = "bench-foc-deadline")]
-            super::pwm_deadline::reset();
             self.header[0] = 1; // schema
             self.header[1] = crate::config::CPU_HZ;
             self.header[2] = BIN_CYCLES;
@@ -166,4 +164,21 @@ mod tests {
         assert_eq!(r.header[3], 0);
         assert_eq!(r.sum, 0);
     }
+}
+
+/// Minimal arm/active/freeze session for deadline-only images: no histograms.
+#[cfg(feature = "bench-foc-deadline")]
+#[inline(always)]
+pub fn observe_deadline_session(active: bool) {
+    let state = FOC_DISTRIBUTION_CONTROL.load(Ordering::Relaxed);
+    let next = match (state, active) {
+        (1, false) => {
+            super::pwm_deadline::reset();
+            2
+        }
+        (2, true) => 4,
+        (4, false) => 3,
+        _ => return,
+    };
+    FOC_DISTRIBUTION_CONTROL.store(next, Ordering::Release);
 }
