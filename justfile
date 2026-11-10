@@ -176,11 +176,12 @@ build-mk5-codec-bench:
     cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_bench_features + ",bench-raw-codec") }}
 
-# Raw session sink; Ergot USB remains the command and defmt path.
+# Raw session sink; normal captures keep only warnings. Timing adds its 1-Hz report.
+# Ergot USB remains the command and defmt path; use build-mk5-hall for Hall text logs.
 build-mk5-raw sink="usb" profiling="normal":
     @test {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt -o {{ quote(sink) }} = ergot
     @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing
-    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+    cd oxifoc-f405 && DEFMT_LOG={{ quote(if profiling == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + if profiling == "timing" { ",isr-timing" } else { "" }) }}
 
 # Detect one parameter without applying motor parameters, recording every cycle.
