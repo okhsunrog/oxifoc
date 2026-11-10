@@ -117,6 +117,8 @@ impedance-sweep = ["hfi-detect"]
 
 # Interface Control Document - ergot endpoints and wire types
 icd = ["dep:ergot"]
+transport-bench = ["icd"]
+spi-link = []
 
 # Delivery semantics — typed at-most/at-least/effectively-once ladder over ergot.
 # Contract + pure retry policy + server-side dedup. The client driver is generic

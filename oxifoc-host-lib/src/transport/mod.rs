@@ -29,6 +29,10 @@ pub enum TransportType {
     #[cfg_attr(feature = "desktop", default)]
     #[cfg(feature = "desktop")]
     Serial,
+    /// Espressif built-in USB Serial/JTAG (COBS stream, USB speed independent of baud).
+    #[cfg(feature = "desktop")]
+    #[serde(rename = "usb-serial-jtag")]
+    UsbSerialJtag,
     /// RTT via debug probe (probe-rs)
     #[cfg(feature = "desktop")]
     Rtt,

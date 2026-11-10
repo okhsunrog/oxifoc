@@ -540,3 +540,6 @@ build-mk5-spi-cs-probe:
 
 bench-mk5-spi-cs-request output: build-mk5-spi-cs-probe
     uv run --no-project python scripts/bench-bridge-spi.py --cs-request --output {{quote(output)}} --c5-project /home/okhsunrog/code/rust/c5-hello-world
+
+bench-usb-serial-jtag port fps="625" bytes="832" seconds="30":
+    cargo run --release --locked -p oxifoc-host-lib --features transport-bench --example usb_serial_jtag_bench -- {{quote(port)}} {{fps}} {{bytes}} {{seconds}}

@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 default = ["desktop"]
+transport-bench = ["oxifoc-core/transport-bench"]
 desktop = [
     "dep:probe-rs",
     "dep:tokio-serial",

@@ -113,6 +113,22 @@ pub fn list_serial_ports() -> Vec<SerialPortInfo> {
     }
 }
 
+/// Select only Espressif's built-in USB Serial/JTAG, never an arbitrary ttyACM.
+#[cfg(feature = "desktop")]
+pub fn usb_serial_jtag_port(ports: &[SerialPortInfo]) -> anyhow::Result<String> {
+    let mut matching = ports
+        .iter()
+        .filter(|p| p.vid == Some(0x303a) && p.pid == Some(0x1001));
+    let first = matching.next().ok_or_else(|| {
+        anyhow::anyhow!("No Espressif USB Serial/JTAG port found; specify --serial-path")
+    })?;
+    anyhow::ensure!(
+        matching.next().is_none(),
+        "Multiple USB Serial/JTAG ports found; specify --serial-path"
+    );
+    Ok(first.path.clone())
+}
+
 #[cfg(feature = "desktop")]
 /// List all available debug probes (for RTT transport).
 ///
@@ -246,6 +262,24 @@ async fn scan_ble_devices_inner(scan_duration: Duration) -> anyhow::Result<Vec<B
 #[cfg(all(test, feature = "desktop"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usb_serial_jtag_selection_rejects_other_adapters_and_ambiguity() {
+        let port = |path: &str, vid, pid| SerialPortInfo {
+            path: path.into(),
+            vid: Some(vid),
+            pid: Some(pid),
+            serial_number: None,
+            manufacturer: None,
+            product: None,
+        };
+        let stlink = port("stlink", 0x0483, 0x3754);
+        let c5 = port("c5", 0x303a, 0x1001);
+        assert!(usb_serial_jtag_port(&[]).is_err());
+        assert!(usb_serial_jtag_port(&[stlink.clone()]).is_err());
+        assert_eq!(usb_serial_jtag_port(&[stlink, c5.clone()]).unwrap(), "c5");
+        assert!(usb_serial_jtag_port(&[c5, port("second", 0x303a, 0x1001)]).is_err());
+    }
 
     #[test]
     fn test_list_serial_ports() {

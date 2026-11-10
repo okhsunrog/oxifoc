@@ -1,4 +1,4 @@
-//! Serial (UART) transport implementation.
+//! Serial COBS transport for UART adapters and Espressif USB Serial/JTAG.
 //!
 //! In serial mode, defmt frames are forwarded over the ergot network,
 //! so there's no separate defmt reader.

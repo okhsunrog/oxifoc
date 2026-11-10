@@ -91,6 +91,8 @@ pub(crate) fn emit(json_mode: bool, value: serde_json::Value, human: String) {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Transport {
     Serial,
+    /// Espressif USB Serial/JTAG; auto-selects the port when exactly one is present.
+    UsbSerialJtag,
     Rtt,
     Tcp,
     Udp,
@@ -1013,6 +1015,7 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
     if let Some(transport) = cli.transport {
         cfg.transport = Some(match transport {
             Transport::Serial => TransportType::Serial,
+            Transport::UsbSerialJtag => TransportType::UsbSerialJtag,
             Transport::Rtt => TransportType::Rtt,
             Transport::Tcp => TransportType::Tcp,
             Transport::Udp => TransportType::Udp,

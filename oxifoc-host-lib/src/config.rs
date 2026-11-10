@@ -153,6 +153,17 @@ impl HostConfig {
                 baud: self.serial_baud(),
             }),
             #[cfg(feature = "desktop")]
+            TransportType::UsbSerialJtag => Ok(TransportConfig::Serial {
+                path: match &self.serial_path {
+                    Some(path) => path.clone(),
+                    None => crate::discovery::usb_serial_jtag_port(
+                        &crate::discovery::list_serial_ports(),
+                    )?,
+                },
+                // USB Serial/JTAG ignores UART line coding; this is not its bit rate.
+                baud: self.serial_baud(),
+            }),
+            #[cfg(feature = "desktop")]
             TransportType::Rtt => {
                 let chip = self.chip.clone().ok_or_else(|| {
                     anyhow::anyhow!("RTT transport requires 'chip' to be specified in config")

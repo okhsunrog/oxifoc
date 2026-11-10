@@ -155,6 +155,10 @@ pub mod types;
 
 /// Independent raw diagnostic blocks, shared by the optional bench sinks.
 pub mod raw_telemetry;
+#[cfg(feature = "spi-link")]
+pub mod spi_link;
+#[cfg(feature = "transport-bench")]
+pub mod transport_bench;
 
 /// Interface Control Document with ergot endpoints (requires `icd` feature)
 ///
