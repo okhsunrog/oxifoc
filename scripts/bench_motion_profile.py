@@ -15,11 +15,17 @@ def main():
     parser.add_argument("--recovery-elf", required=True, type=Path)
     parser.add_argument("--repeats", default=2, type=int)
     parser.add_argument("--hall-current", type=float, default=0, help="Recalibrate Hall in RAM at this current; 0 keeps persisted calibration")
+    parser.add_argument("--speed-ceiling", type=float, help="Volatile bench speed ceiling, electrical rad/s")
+    parser.add_argument("--cases", default="velocity40,velocity-negative40,velocity120-to40")
+    parser.add_argument("--velocity-ki", type=float, help="Volatile speed PI integral gain; other gains unchanged")
     parser.add_argument("--hall-config", type=Path, help="Replay only Hall calibration from a saved config dump, in RAM")
     parser.add_argument("--interp-min-erpm", type=float, help="Volatile Hall interpolation threshold")
     args = parser.parse_args()
     assert 0 <= args.hall_current <= 10
     assert not (args.hall_current and args.hall_config), "choose measured or replayed Hall calibration"
+    cases = args.cases.split(",")
+    assert len(cases) == len(set(cases))
+    assert cases and set(cases) <= {"velocity40", "velocity-negative40", "velocity120-to40", "velocity40-to-iq03", "velocity40-to-iq06", "velocity40-to-iq045"}
     assert 1 <= args.repeats <= 3
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = dict(runs=[])
@@ -47,10 +53,14 @@ def main():
             probe.run(["just", "cli-bridge", "config", "set", "hall-calibration", *[key+"="+json.dumps(value, separators=(",", ":")) for key,value in hall.items()], "--volatile"])
         if args.interp_min_erpm is not None:
             probe.run(["just", "cli-bridge", "config", "set", "hall-tuning", f"interp_min_erpm={args.interp_min_erpm}", "--volatile"])
+        if args.speed_ceiling is not None:
+            probe.run(["just", "cli-bridge", "config", "set", "derating", f"max_speed_erad_s={args.speed_ceiling}", "speed_start_frac=0.9", "--volatile"])
+        if args.velocity_ki is not None:
+            probe.run(["just", "cli-bridge", "config", "set", "velocity", f"ki={args.velocity_ki}", "--volatile"])
         (args.output/"config-before.json").write_text(probe.run(["just", "cli-bridge", "config", "dump"]).stdout)
         listing = probe.run(["rust-nm", "--defined-only", str(image)]).stdout
         symbols = {line.split()[-1]: int(line.split()[0],16) for line in listing.splitlines() if len(line.split()) >= 3}
-        for case in ["velocity40", "velocity-negative40", "velocity120-to40"]:
+        for case in cases:
             for repeat in range(args.repeats):
                 name = f"{case}-{repeat}"
                 status = json.loads(probe.run(["just", "cli-bridge", "status"]).stdout)
@@ -66,7 +76,7 @@ def main():
                 # Stop before any SWD export, including on a failed capture.
                 probe.run(["just", "cli-bridge", "stop"])
                 row["status"] = json.loads(probe.run(["just", "cli-bridge", "status"]).stdout)
-                assert row["status"]["motor_state"] == "Stopped"
+                assert row["status"]["control_mode"] == "Stopped" and row["status"]["motor_state"] in ["Stopped", "Error"]
                 probe.run(["just", "dump-hall-bridge", str(args.output/f"{name}.hall.json"), str(image)], timeout=60)
                 if result.returncode == 0:
                     report = json.loads(capture.with_suffix(".parquet.json").read_text())

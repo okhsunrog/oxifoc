@@ -668,3 +668,12 @@ dump-hall-bridge output elf=mk5_elf:
 
 bench-mk5-motion output recovery repeats="2" hall_current="0" interp="default" hall_config="stored":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-current {{quote(hall_current)}} {{if interp == "default" { "" } else { "--interp-min-erpm " + quote(interp) }}} {{if hall_config == "stored" { "" } else { "--hall-config " + quote(hall_config) }}}
+
+# Isolate integral action with the exact measured Hall table and default P gain.
+bench-mk5-motion-soft output recovery hall_config repeats="2":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --velocity-ki 0.02
+
+
+# Hold torque after the same spin-up to separate speed PI from commutation ripple.
+bench-mk5-torque-isolation output recovery hall_config repeats="2" cases="velocity40-to-iq03,velocity40-to-iq06":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --cases {{quote(cases)}} --speed-ceiling 200

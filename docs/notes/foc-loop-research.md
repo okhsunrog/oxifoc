@@ -5,11 +5,14 @@
 Updated: 2026-11-11. Baseline commit: `3ee9089`.
 Goal: shorten the real F405 FOC/ADC path at 20 kHz, including worst observed
 cycles and PWM-update timing, while preserving protections and native telemetry.
-Current stage: +120 electrical rad/s PWM deadline now qualified in three
-complete native-rate captures: zero late/ambiguous driven commits, minimum
-margin 8.866 µs. Normal image restored. Next: low-speed regulation comparisons
-with finite Hall edges + 20-Hz velocity/authority snapshots over the SPI bridge.
-No new control-algorithm speedup accepted; clock remains the normal 168 profile.
+Current stage: +120 PWM closure passed (three native-rate runs, minimum
+8.866 µs, zero late/ambiguous driven commits). Low-speed calibration/PI and
+constant-torque isolation matrices completed. Main remaining work is velocity
+feedback/startup dynamics, not an established transport failure. Softer Ki
+improves moving behaviour but delays startup and overshoots; no final control
+fix/default change accepted. Known normal image/config restored, Stopped.
+Next: separate the no-new-Hall-edge startup from settled speed regulation;
+use the existing replay and constant-torque evidence before changing algorithms.
 
 Artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-research-2026-11-11/`.
 Use this one living note for progress; add conclusions/evidence and next actions,
@@ -372,3 +375,85 @@ Next `motion-interp100` replays the exact fresh Hall config in RAM, changes
 only interpolation threshold 500→100 eRPM, leaves PI/model/limits untouched.
 This tests the centroid/interpolation switching policy near the +40 target
 (~382 eRPM). Keep all rejected trials, recover the normal image after each suite.
+
+
+### Low-speed isolation conclusions (2026-11-11)
+
+`motion-interp100`, same exact fresh Hall table as `motion-fresh-hall`:
+6 complete/lossless runs, no hard faults. +40 reverse edges 0/3; mixed benefit,
+not a standalone cure. `motion-soft-ki` changes only ki=0.2→0.02, kp=0.01,
+interpolation=500 unchanged: 6 complete/lossless runs. Forward and both 120→40
+runs have no reverse edges, but rest-to-40 initially has no new Hall edges
+while Iq ramps to ~1.5 A over ~1.4 s, followed by ~100-rad/s feedback overshoot.
+Current is actually delivered; ordinary saturation anti-windup cannot alone
+identify unknown motion within a Hall sector. Do not promote this tuning as a
+complete startup/regulation fix. Repeated setpoints do not reset the PI state
+(driver source inspected).
+
+`motion-hall10`: 10-A RAM-only Hall recalibration, complete native capture,
+then 6 clean/lossless regulation captures. Boundaries differ from the 5-A table
+by at most 4.83°, centroids at most 2.60°. +40 reverse edges 0/5; no consistent
+cure from stronger alignment. All limits/PI otherwise unchanged.
+
+The plotting analysis now uses measured switching boundaries where available,
+including zero displacement at a same-boundary reversal. Legacy centroids use
+inferred midpoint boundaries. Earlier nominal-60° net speeds above are coarse
+historical summaries; updated `analysis.json` identifies the position source.
+200-ms interval averages are not instantaneous shaft speed or encoder evidence.
+Stopped FOC-versus-Hall differences are excluded from active frame metrics.
+
+Native 20-kHz replay through the actual Rust Hall estimator (`replay-hall`)
+for `motion-soft-ki/velocity40-0` matches 20-Hz MCU snapshots with 0.01344-rad/s
+RMS error in the moving window. Hall-to-ADC alignment residual <=62.9 µs.
+Replay and measured Iq share strong ~6–7-Hz modulation in that window; low-rate
+snapshots must not be used alone for spectral claims. Native current PSD in
+120→40 captures also retains Hall-frequency/harmonic components at the higher
+speed. These observations support speed-linked feedback/commutation effects,
+not proof that all intra-sector speed ripple is fictitious. Evidence:
+`replay-alias-check.png/json`, `speed-frequency-check.json` under the new root.
+
+Constant-torque isolation uses the same 10-A Hall table, default speed PI
+only for spin-up, then CurrentControl at t=1.7 s. The initial longer 0.6-A
+attempt overflowed the finite Hall prefix (not the main telemetry stream);
+another ended at a host late-command refusal. Keep those failed artifacts.
+Final `torque-isolation-bounded` + `torque-midpoint` shorten the plateau to
+1.4 s, add explicit volatile speed rolloff 180→200 electrical rad/s and
+capture 6 complete/lossless runs with no Hall-prefix drops. The normal
+persisted speed limit is OFF (`derating=null`), not the 200-rad/s setting from
+older RAM experiments. Do not silently assume old volatile settings survived.
+
+At 0.3 A the motor loses Hall crossings; 0.6 A accelerates to speed derating.
+Its later torque is clipped: only pre-derating data can represent fixed Iq.
+At 0.45 A mean measured Iq is 0.44698/0.44527 A, RMS tracking error about
+0.141/0.146 A, no post-switch reverse transitions in either repeat. Net
+boundary speeds ~51.6/59.8 rad/s drift as expected without speed feedback.
+The large speed/torque relaxation pattern is substantially reduced with the
+speed PI removed, while current/angle ripple remains. Do not claim a perfect
+current loop or a complete velocity-control fix. Expected Derating warning
+and clear generations in the 0.6-A runs were captured, no hard fault.
+Visually inspected `torque-isolation.png` and all comparison grids.
+
+Four calibration/tuning matrices plus the six bounded torque captures contain
+30 complete native-rate records / 3,200,414 samples, zero producer/host drops.
+Earlier failed diagnostics/baseline fault are excluded from that success count.
+All trials retain exact ELFs, source patches, configuration, raw Parquet,
+command events and finite Hall evidence. No experimental calibration/gain was
+persisted. Final full config equals initial config except automatic DC offsets;
+Stopped/fault_count=0, 24.033 V, FET 29.6 °C, motor 28.8 °C.
+
+Next code work should address (1) startup with no fresh Hall crossings and
+subsequent PI handover, and (2) speed-dependent Hall feedback ripple with
+explicit observability/latency bounds. Test startup and settled regulation
+separately; do not mask the tradeoff with a single average-speed number.
+Keep clock=168 profile, 20-kHz current/PWM and 1-kHz outer PI for this work.
+
+
+Startup defect identified after inspecting the rare 6.725-A event at t=0.3159 s
+in `torque-isolation-bounded/velocity40-to-iq06-1`: pre-start Hall angle had no
+new crossings in the preceding 200 ms. Current dq excursion spans multiple
+ADC samples. Stopped disables PWM but retains current PI integrators; Coast
+resets them. `ensure_bridge_enabled` currently re-enables without clearing
+that voltage memory. Next: regression for off→on with/without an intervening
+Stopped/Coast cycle; reset PI in the common rearm path and preserve ordinary
+running retarget state. This is a specific restart defect, not yet an accepted
+explanation of all moving speed ripple.
