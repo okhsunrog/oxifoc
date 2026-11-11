@@ -27,6 +27,7 @@ pub enum Rejection {
     Busy,
     NotRunning,
     InvalidRequest,
+    ConditionsChanged,
 }
 
 #[derive(
@@ -54,6 +55,7 @@ pub enum Request {
     Open {
         expected: SessionId,
         client: super::ReqId,
+        plan: Option<super::commissioning::CommissioningPlan>,
     },
     Start {
         id: OperationId,
@@ -123,4 +125,28 @@ impl Measurement {
             MeasureCurrentOffsets { .. } => true,
         }
     }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct HallTransitionGeometryConfig {
+    pub entry_angles: [f32; 8],
+    pub next_states: [u8; 8],
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct HallCalibrationConfig {
+    /// Electrical angle (radians) for each raw Hall state (0-7)
+    pub angles: [f32; 8],
+    /// Validity flags for each Hall state
+    pub valid: [bool; 8],
+    /// Omitted geometry retains the legacy midpoint approximation. JSON may
+    /// omit this field; flash migration uses explicit frozen layouts below.
+    #[serde(default)]
+    pub geometry: Option<HallTransitionGeometryConfig>,
 }

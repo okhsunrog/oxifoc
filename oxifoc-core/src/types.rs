@@ -625,7 +625,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 14;
+pub const ICD_PROTO_VERSION: u16 = 15;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -969,9 +969,8 @@ pub enum DetectResponse {
         /// Motor Kv (RPM/V)
         kv_rpm_per_v: f32,
     },
-    /// Hall calibration succeeded.
-    /// Read calibration angles via config endpoint (HallCalibration group).
-    HallCalibrated,
+    /// Candidate only; installation requires an explicit configuration write.
+    HallCalibrated(measurement::HallCalibrationConfig),
     /// Raw current-sensor offset measurement.
     CurrentOffsets(CurrentOffsetReport),
     /// Step failed.
@@ -1463,5 +1462,6 @@ mod tests {
     }
 }
 
+pub mod commissioning;
 /// Session-scoped motor measurement commands.
 pub mod measurement;

@@ -25,17 +25,15 @@ use crate::foc::detection::types::{
 };
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use crate::icd::DetectEndpoint;
-use crate::motor::ControlMode;
 use crate::motor::foc_driver::{PowerSourceLimits, PreparedCommissioning};
-use crate::state::DriverCommand;
-use crate::state::model::{CONFIG_COORDINATOR, ModelApplyGuard};
-use crate::state::{CMD_CHANNEL, DetectionActiveGuard};
+use crate::state::DetectionActiveGuard;
+use crate::state::model::CONFIG_COORDINATOR;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
-use crate::types::{DetectError, DetectRequest, DetectResponse, ReqId};
+use crate::types::{DetectError, DetectRequest, DetectResponse};
 
 /// The platform-specific half of detection: the raw measurements, bound to the
 /// hardware (or to the virtual-motor sim). Everything else — parameter
-/// computation, dedup, error mapping, live config installation — is handled by
+/// computation, dedup, error mapping, candidate validation — is handled by
 /// [`detect_server`].
 #[allow(async_fn_in_trait)]
 pub trait DetectionBackend {
@@ -62,8 +60,7 @@ pub trait DetectionBackend {
     /// Measure flux linkage (Wb) via open-loop spin.
     async fn measure_flux(&mut self, params: &FluxLinkageParams) -> Result<f32, DetectionError>;
 
-    /// Measure Hall sensors without installing the result. The server applies
-    /// it at an acknowledged control boundary and updates the shared revision.
+    /// Measure Hall sensors without installing the result.
     async fn calibrate_hall(
         &mut self,
         params: HallCalibrationParams,
@@ -84,8 +81,7 @@ pub trait DetectionBackend {
 /// current formulas. Inverter protection and an optional diagnostic ceiling
 /// further bound it. Finite source limits must be configured explicitly.
 /// `foc_freq_hz` is the PWM/FOC loop frequency (used by the inductance HFI).
-/// The Hall calibration result is written into `runtime_config` in memory; the
-/// host persists it to flash via the config endpoint.
+/// Hall calibration returns candidate data without changing the installed setup.
 pub async fn detect_server<NS, B>(
     endpoints: Endpoints<NS>,
     mut backend: B,
@@ -109,7 +105,7 @@ pub async fn detect_server<NS, B>(
         let Ok(msg) = h.recv_manual().await else {
             continue;
         };
-        let dispatch = session.handle(msg.t);
+        let dispatch = session.handle_with_revisions(msg.t, config_revisions());
         let _ = endpoints
             .clone()
             .respond_owned::<DetectEndpoint>(&msg.hdr, &dispatch.reply);
@@ -120,12 +116,7 @@ pub async fn detect_server<NS, B>(
             session.finish(measurement.id, Outcome::Failed(DetectError::Busy));
             continue;
         };
-        // IDs are unique within this boot; config's ISR acknowledgement cache
-        // is volatile too. Session checking happens before this internal key.
-        let key = ReqId(
-            (u64::from(measurement.id.session.generation) << 32)
-                | u64::from(measurement.id.sequence),
-        );
+        let plan = session.plan();
         let operation = async {
             let result = match select(
                 run_step(
@@ -135,7 +126,7 @@ pub async fn detect_server<NS, B>(
                     foc_freq_hz,
                     runtime_config,
                     &guard,
-                    key,
+                    plan,
                 ),
                 <B::Timer as crate::timer::Timer>::after_millis(65_000),
             )
@@ -175,7 +166,7 @@ pub async fn detect_server<NS, B>(
                     break;
                 }
                 Either::Second(Ok(msg)) => {
-                    let dispatch = session.handle(msg.t);
+                    let dispatch = session.handle_with_revisions(msg.t, config_revisions());
                     if dispatch.cancel_active {
                         guard.cancel();
                     }
@@ -223,7 +214,7 @@ async fn run_step<B: DetectionBackend>(
     foc_freq_hz: f32,
     runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
     detection: &DetectionActiveGuard,
-    request_id: ReqId,
+    plan: Option<crate::types::commissioning::CommissioningPlan>,
 ) -> DetectResponse {
     if runtime_config.is_some_and(|config| {
         critical_section::with(|cs| !config.borrow(cs).borrow().board_calibration_is_valid())
@@ -231,16 +222,7 @@ async fn run_step<B: DetectionBackend>(
         return DetectResponse::Error(DetectError::Unsafe);
     }
     if matches!(req, DetectRequest::MeasureCurrentOffsets { .. }) {
-        return measure_step(
-            backend,
-            req,
-            max_current_a,
-            foc_freq_hz,
-            runtime_config,
-            detection,
-            request_id,
-        )
-        .await;
+        return measure_step(backend, req, max_current_a, foc_freq_hz).await;
     }
     let prepared = match runtime_config {
         Some(config) => critical_section::with(|cs| {
@@ -248,6 +230,7 @@ async fn run_step<B: DetectionBackend>(
                 max_current_a,
                 Some(&config.borrow(cs).borrow()),
                 req.current_limit_a(),
+                plan.map(|p| p.source),
             )
         }),
         None => Err(DetectError::Unsafe),
@@ -259,16 +242,7 @@ async fn run_step<B: DetectionBackend>(
     if !detection.begin::<B::Timer>(prepared).await {
         return DetectResponse::Error(DetectError::Busy);
     }
-    let result = measure_step(
-        backend,
-        req,
-        prepared.current_ceiling_a(),
-        foc_freq_hz,
-        runtime_config,
-        detection,
-        request_id,
-    )
-    .await;
+    let result = measure_step(backend, req, prepared.current_ceiling_a(), foc_freq_hz).await;
     let limited = crate::state::detection_source_limited();
     if !detection.end::<B::Timer>().await {
         return DetectResponse::Error(DetectError::HardwareFault);
@@ -291,9 +265,6 @@ async fn measure_step<B: DetectionBackend>(
     req: DetectRequest,
     max_current_a: f32,
     foc_freq_hz: f32,
-    runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
-    detection: &DetectionActiveGuard,
-    request_id: ReqId,
 ) -> DetectResponse {
     match req {
         DetectRequest::MeasureResistance {
@@ -431,9 +402,6 @@ async fn measure_step<B: DetectionBackend>(
             resistance_ohm,
             ..
         } => {
-            let Some(runtime_config) = runtime_config else {
-                return DetectResponse::Error(DetectError::MissingPrerequisite);
-            };
             let currents = match DetectionCurrents::new(
                 max_power_loss_w,
                 resistance_ohm,
@@ -453,28 +421,7 @@ async fn measure_step<B: DetectionBackend>(
                     if !result.is_valid() || !calibration.is_calibrated() {
                         return DetectResponse::Error(DetectError::HardwareFault);
                     }
-                    CMD_CHANNEL
-                        .send(DriverCommand::SetMode(ControlMode::Stopped))
-                        .await;
-                    let Some(pending) = ModelApplyGuard::prepare_detected_hall(
-                        calibration,
-                        runtime_config,
-                        &CONFIG_COORDINATOR,
-                        detection,
-                        request_id,
-                    ) else {
-                        return DetectResponse::Error(DetectError::Busy);
-                    };
-                    match pending.apply::<B::Timer>().await {
-                        crate::types::ConfigResponse::Applied { .. } => {
-                            DetectResponse::HallCalibrated
-                        }
-                        crate::types::ConfigResponse::Busy
-                        | crate::types::ConfigResponse::Conflict { .. } => {
-                            DetectResponse::Error(DetectError::Busy)
-                        }
-                        _ => DetectResponse::Error(DetectError::HardwareFault),
-                    }
+                    DetectResponse::HallCalibrated(calibration)
                 }
                 Err(e) => DetectResponse::Error(map_err(e)),
             }
@@ -514,26 +461,35 @@ async fn measure_step<B: DetectionBackend>(
 
 /// Prepare from inverter and source constraints only. The installed motor's
 /// thermal rating and ride-current settings have no authority over detection.
-/// Legacy endpoints require explicitly configured finite source limits until
-/// the wizard carries the source selection in its session request.
+/// Wizard sessions supply confirmed limits; individual diagnostics retain the
+/// explicit finite source limits configured on the device.
 fn prepare_commissioning(
     platform_max: f32,
     config: Option<&RuntimeConfig>,
     test_ceiling_a: Option<f32>,
+    source: Option<crate::types::commissioning::SourceLimits>,
 ) -> Result<PreparedCommissioning, DetectError> {
-    let limits = config
-        .and_then(|c| c.current_limits.as_ref())
+    let limits = config.and_then(|c| c.current_limits.as_ref());
+    let source = source
+        .or_else(|| {
+            limits.map(|limits| crate::types::commissioning::SourceLimits {
+                input_a: limits.bus_in_max_a,
+                regen_a: limits.bus_regen_max_a,
+            })
+        })
         .ok_or(DetectError::Unsafe)?;
-    let source = PowerSourceLimits::new(limits.bus_in_max_a, limits.bus_regen_max_a)
-        .map_err(|_| DetectError::Unsafe)?;
-    // Zero is the legacy "use board protection" value; reject negative/NaN.
-    if !limits.max_phase_current_a.is_finite() || limits.max_phase_current_a < 0.0 {
+    let source =
+        PowerSourceLimits::new(source.input_a, source.regen_a).map_err(|_| DetectError::Unsafe)?;
+    // A fresh board has no user override. Its independent platform trip still
+    // applies; an explicitly stored stricter protection always survives.
+    let configured_trip = limits.map_or(0.0, |limits| limits.max_phase_current_a);
+    if !configured_trip.is_finite() || configured_trip < 0.0 {
         return Err(DetectError::Unsafe);
     }
-    let trip = if limits.max_phase_current_a == 0.0 {
+    let trip = if configured_trip == 0.0 {
         platform_max
     } else {
-        limits.max_phase_current_a
+        configured_trip
     };
     let prepared = PreparedCommissioning::new(platform_max, trip, source, test_ceiling_a)
         .map_err(|_| DetectError::Unsafe)?;
@@ -577,7 +533,7 @@ mod tests {
     fn commissioning_uses_inverter_and_source_without_old_motor_limits() {
         use crate::storage::{CurrentLimitsConfig, MotorParamsConfig};
         let mut cfg = RuntimeConfig::default();
-        assert!(prepare_commissioning(70.0, None, None).is_err());
+        assert!(prepare_commissioning(70.0, None, None, None).is_err());
         cfg.current_limits = Some(CurrentLimitsConfig {
             max_iq_a: 3.0,
             max_phase_current_a: 30.0,
@@ -590,20 +546,36 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            prepare_commissioning(70.0, Some(&cfg), None)
+            prepare_commissioning(70.0, Some(&cfg), None, None)
                 .unwrap()
                 .current_ceiling_a(),
             30.0 / crate::motor::foc_driver::OVERCURRENT_HEADROOM
         );
         assert_eq!(
-            prepare_commissioning(70.0, Some(&cfg), Some(4.0))
+            prepare_commissioning(70.0, Some(&cfg), Some(4.0), None)
                 .unwrap()
                 .current_ceiling_a(),
             4.0
         );
-        assert!(prepare_commissioning(70.0, Some(&cfg), Some(f32::NAN)).is_err());
+        assert!(prepare_commissioning(70.0, Some(&cfg), Some(f32::NAN), None).is_err());
         cfg.current_limits.as_mut().unwrap().bus_regen_max_a = -1.0;
-        assert!(prepare_commissioning(70.0, Some(&cfg), None).is_err());
+        assert!(prepare_commissioning(70.0, Some(&cfg), None, None).is_err());
+        let confirmed = crate::types::commissioning::SourceLimits {
+            input_a: 5.0,
+            regen_a: 0.0,
+        };
+        assert_eq!(
+            prepare_commissioning(70.0, Some(&cfg), None, Some(confirmed))
+                .unwrap()
+                .current_ceiling_a(),
+            30.0 / crate::motor::foc_driver::OVERCURRENT_HEADROOM
+        );
+        assert_eq!(
+            prepare_commissioning(70.0, Some(&RuntimeConfig::default()), None, Some(confirmed))
+                .unwrap()
+                .current_ceiling_a(),
+            70.0 / crate::motor::foc_driver::OVERCURRENT_HEADROOM
+        );
     }
 
     fn request_is_sane(req: &DetectRequest) -> bool {
@@ -701,4 +673,8 @@ mod tests {
             ));
         }
     }
+}
+
+fn config_revisions() -> [u32; crate::types::ConfigGroupId::COUNT] {
+    critical_section::with(|cs| *CONFIG_COORDINATOR.revisions.borrow(cs).borrow())
 }

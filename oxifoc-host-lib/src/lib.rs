@@ -317,27 +317,63 @@ pub fn new_detection(
     cmd: &CommandSender,
     request: DetectRequest,
 ) -> Result<oxifoc_core::types::measurement::Measurement> {
-    use oxifoc_core::types::measurement::{Measurement, OperationId, Reply, Request};
-    let Reply::Session(expected) = measurement_request(cmd, Request::Inspect)? else {
-        anyhow::bail!("device did not return measurement session");
-    };
-    let reply = measurement_request(
-        cmd,
-        Request::Open {
-            expected,
-            client: next_detect_id(),
-        },
-    )?;
-    let Reply::Session(session) = reply else {
-        anyhow::bail!("session open: {reply:?}")
-    };
-    Ok(Measurement {
-        id: OperationId {
-            session,
-            sequence: 1,
-        },
-        request,
-    })
+    let mut session = DetectionSession::open(cmd, None)?;
+    session.measurement(request)
+}
+
+/// One device-issued session; advancing a stage allocates an identity once.
+/// Keep the returned Measurement to retry or cancel an uncertain outcome.
+pub struct DetectionSession {
+    id: oxifoc_core::types::measurement::SessionId,
+    sequence: u32,
+}
+impl DetectionSession {
+    pub fn open(
+        cmd: &CommandSender,
+        plan: Option<oxifoc_core::types::commissioning::CommissioningPlan>,
+    ) -> Result<Self> {
+        use oxifoc_core::types::measurement::{Reply, Request};
+        anyhow::ensure!(
+            plan.is_none_or(|p| p.is_valid()),
+            "invalid commissioning plan"
+        );
+        let Reply::Session(expected) = measurement_request(cmd, Request::Inspect)? else {
+            anyhow::bail!("device did not return measurement session");
+        };
+        let reply = measurement_request(
+            cmd,
+            Request::Open {
+                expected,
+                client: next_detect_id(),
+                plan,
+            },
+        )?;
+        let Reply::Session(id) = reply else {
+            anyhow::bail!("session open: {reply:?}")
+        };
+        Ok(Self { id, sequence: 0 })
+    }
+
+    pub fn id(&self) -> oxifoc_core::types::measurement::SessionId {
+        self.id
+    }
+
+    pub fn measurement(
+        &mut self,
+        request: DetectRequest,
+    ) -> Result<oxifoc_core::types::measurement::Measurement> {
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .context("measurement sequence exhausted")?;
+        Ok(oxifoc_core::types::measurement::Measurement {
+            id: oxifoc_core::types::measurement::OperationId {
+                session: self.id,
+                sequence: self.sequence,
+            },
+            request,
+        })
+    }
 }
 
 pub struct HostRuntime {

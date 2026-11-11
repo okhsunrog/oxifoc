@@ -303,7 +303,11 @@ export component App inherits Window {
     in property <string> detect-ki: "";
     in property <bool> detect-running;
     in property <bool> detect-cancellable;
-    in-out property <bool> detect-review;
+    in-out property <int> detect-page;
+    private property <bool> detect-review: root.detect-page == 2;
+    in-out property <string> detect-source-input;
+    in-out property <string> detect-source-regen;
+    callback detect-source-continue();
     in-out property <bool> detect-advanced;
     in-out property <bool> detect-hall: true;
     in-out property <int> detect-pole-pairs: 7;
@@ -1103,7 +1107,24 @@ export component App inherits Window {
                 spacing: 8px;
 
                 // Motor preset + pole pairs (moved here from top level)
-                if !root.detect-review : VerticalLayout {
+                Text { text: "Motor setup · " + (root.detect-page == 0 ? "1 / 3 · Power source" : root.detect-page == 1 ? "2 / 3 · Motor" : "3 / 3 · Detection and review"); font-size: 18px; font-weight: 600; }
+                if root.detect-page == 0 : VerticalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    Text { text: "Confirm the limits of the connected power source."; }
+                    GridLayout {
+                        spacing: 8px;
+                        Row { Text { text: "Input current limit (A)"; } LineEdit { text <=> root.detect-source-input; placeholder-text: "Required"; } }
+                        Row { Text { text: "Regenerative current limit (A)"; } LineEdit { text <=> root.detect-source-regen; placeholder-text: "Required"; } }
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        Button { text: "No regeneration (0 A)"; clicked => { root.detect-source-regen = "0"; } }
+                        Button { text: "Continue"; enabled: root.is-connected; primary: true; clicked => { root.detect-source-continue(); } }
+                    }
+                    Text { text: root.detect-status; wrap: word-wrap; }
+                }
+                if root.detect-page == 1 : VerticalLayout {
                     spacing: 6px;
                     alignment: start;
                     Text { text: "Choose the closest motor class"; font-weight: 600; }
@@ -1121,12 +1142,13 @@ export component App inherits Window {
                     }
                     HorizontalLayout {
                         alignment: start;
-                        Button { text: "Next"; enabled: root.selected-preset >= 0; clicked => { root.detect-review = true; } }
+                        Button { text: "Power source"; clicked => { root.detect-page = 0; } }
+                        Button { text: "Next"; enabled: root.selected-preset >= 0; clicked => { root.detect-page = 2; } }
                     }
                 }
 
                 if root.detect-review : Text {
-                    text: root.preset-names[root.selected-preset];
+                    text: root.preset-names[root.selected-preset] + " · Input " + root.detect-source-input + " A · Regeneration " + root.detect-source-regen + " A";
                     font-weight: 600;
                 }
                 if root.detect-review : CheckBox {
@@ -1168,7 +1190,7 @@ export component App inherits Window {
                     spacing: 8px;
                     alignment: start;
 
-                    Button { text: "Back"; enabled: !root.detect-running; clicked => { root.detect-review = false; } }
+                    Button { text: "Back"; enabled: !root.detect-running; clicked => { root.detect-page = 1; } }
                     Button { text: "Start Detection"; primary: true; enabled: root.is-connected && !root.detect-running; clicked => { root.detect-start(); } }
                     if root.detect-cancellable : Button { text: "Stop"; clicked => { root.detect-cancel(); } }
                     if root.detect-resistance != "" : Button { text: "Save to Controller"; enabled: root.is-connected && !root.detect-running; clicked => { root.detect-apply(); } }

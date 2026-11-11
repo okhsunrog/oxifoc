@@ -444,8 +444,18 @@ enum Command {
     Detect {
         #[arg(value_enum)]
         step: DetectStep,
-        #[arg(long, required_if_eq("step", "all"), value_parser = clap::builder::PossibleValuesParser::new(oxifoc_host_lib::ops::detect::PRESETS.iter().map(|p| p.id)))]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(oxifoc_host_lib::ops::detect::PRESETS.iter().map(|p| p.id)))]
         motor_class: Option<String>,
+        #[arg(
+            long,
+            help = "Confirmed DC source input current limit (A); required for non-interactive all"
+        )]
+        input_current_a: Option<f32>,
+        #[arg(
+            long,
+            help = "Confirmed DC source regeneration limit (A); use 0 for no regeneration"
+        )]
+        regen_current_a: Option<f32>,
         #[arg(long, help = "Enable manual excitation limits")]
         advanced: bool,
         #[arg(
@@ -1022,6 +1032,8 @@ fn main() -> Result<()> {
         Command::Detect {
             step,
             motor_class,
+            input_current_a,
+            regen_current_a,
             advanced: _,
             current_limit_a,
             sensorless,
@@ -1036,6 +1048,11 @@ fn main() -> Result<()> {
             record,
             record_hz,
         } => {
+            let motor_class = if matches!(step, DetectStep::All) {
+                Some(detect::select_motor_class(motor_class)?)
+            } else {
+                motor_class
+            };
             let preset = oxifoc_host_lib::ops::detect::PRESETS
                 .iter()
                 .find(|p| p.id == motor_class.as_deref().unwrap_or("medium-outrunner"))
@@ -1045,6 +1062,14 @@ fn main() -> Result<()> {
             plan.flux_target_erpm = erpm.unwrap_or(plan.flux_target_erpm);
             plan.current_limit_a = current_limit_a;
             plan.calibrate_hall = !sensorless;
+            if matches!(step, DetectStep::All) {
+                plan.source = Some(detect::confirm_source(input_current_a, regen_current_a)?);
+            } else {
+                anyhow::ensure!(
+                    input_current_a.is_none() && regen_current_a.is_none(),
+                    "source selection is for detect all; individual diagnostics use configured source limits"
+                );
+            }
             detect::run_detect(
                 &runtime,
                 step,

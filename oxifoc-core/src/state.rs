@@ -317,22 +317,6 @@ impl DetectionCommandToken {
     }
 }
 
-/// Private proof that the current detection owns its final stopped install.
-/// Tokens from a cancelled or replaced operation cannot authorize an ISR apply.
-#[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
-pub(crate) struct DetectionApplyToken(u32);
-
-#[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
-impl DetectionApplyToken {
-    pub(crate) fn is_current(&self) -> bool {
-        critical_section::with(|_| {
-            DETECTION_ACTIVE.load(Ordering::Acquire)
-                && !DETECTION_CANCELLED.load(Ordering::Acquire)
-                && DETECTION_GENERATION.load(Ordering::Acquire) == self.0
-        })
-    }
-}
-
 impl DetectionActiveGuard {
     /// Revoke only this generation; ISR cleanup rejects its queued work.
     pub(crate) fn cancel(&self) {
@@ -412,11 +396,6 @@ impl DetectionActiveGuard {
             DETECTION_ACTIVE.store(true, Ordering::Release);
             Some(Self { generation })
         })
-    }
-
-    #[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
-    pub(crate) fn apply_token(&self) -> DetectionApplyToken {
-        DetectionApplyToken(self.generation)
     }
 }
 

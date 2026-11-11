@@ -5,9 +5,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use oxifoc_core::types::ControlMode;
+use oxifoc_core::types::measurement::{OperationId, Request};
+use oxifoc_host_lib::CommandSender;
 use oxifoc_host_lib::ops::detect::{self, DetectionOutcome, DetectionPlan, PRESETS};
-use oxifoc_host_lib::{CommandSender, HostCommand};
 use slint::{ComponentHandle, SharedString};
 
 use super::{App, SharedRuntime, parse_field};
@@ -17,7 +17,24 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
         None::<(CommandSender, DetectionPlan, DetectionOutcome)>,
     ));
     let cancelled = Arc::new(AtomicBool::new(false));
+    let active = Arc::new(Mutex::new(None::<(CommandSender, OperationId)>));
 
+    {
+        let weak = app.as_weak();
+        let result = result.clone();
+        app.on_detect_source_continue(move || {
+            let app = weak.unwrap();
+            match source_limits(&app) {
+                Ok(_) => {
+                    *result.lock().unwrap() = None;
+                    app.set_detect_resistance("".into());
+                    app.set_detect_status("".into());
+                    app.set_detect_page(1);
+                }
+                Err(e) => app.set_detect_status(format!("{e:#}").into()),
+            }
+        });
+    }
     {
         let weak = app.as_weak();
         app.on_preset_changed(move |name| {
@@ -39,6 +56,7 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
         let weak = app.as_weak();
         let result = result.clone();
         let cancelled = cancelled.clone();
+        let active = active.clone();
         app.on_detect_start(move || {
             let app = weak.unwrap();
             if app.get_detect_running() {
@@ -52,6 +70,13 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
                 return;
             };
             let mut plan = DetectionPlan::from(preset);
+            plan.source = match source_limits(&app) {
+                Ok(source) => Some(source),
+                Err(e) => {
+                    app.set_detect_status(format!("{e:#}").into());
+                    return;
+                }
+            };
             plan.calibrate_hall = app.get_detect_hall();
             if app.get_detect_advanced() {
                 let mut error = None;
@@ -69,7 +94,11 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
             }
 
             *result.lock().unwrap() = None;
-            cancelled.store(false, Ordering::Release);
+            {
+                let mut operation = active.lock().unwrap();
+                cancelled.store(false, Ordering::Release);
+                *operation = None;
+            }
             app.set_detect_resistance(SharedString::default());
             app.set_detect_running(true);
             app.set_detect_cancellable(true);
@@ -77,15 +106,20 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
             let weak = weak.clone();
             let result = result.clone();
             let cancelled = cancelled.clone();
+            let active = active.clone();
             std::thread::spawn(move || {
                 let measured = detect::run_sequence(&cmd, plan, |stage, request| {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(std::io::Error::other("detection cancelled").into());
+                    {
+                        let mut operation = active.lock().unwrap();
+                        if cancelled.load(Ordering::Acquire) {
+                            return Err(std::io::Error::other("detection cancelled").into());
+                        }
+                        *operation = Some((cmd.clone(), request.id));
                     }
                     let _ = weak.upgrade_in_event_loop(move |app| {
                         app.set_detect_status(format!("Measuring {stage}").into());
                     });
-                    detect::run_step(&cmd, request)
+                    detect::run_measurement(&cmd, request)
                 });
                 let _ = weak.upgrade_in_event_loop(move |app| {
                     app.set_detect_running(false);
@@ -107,11 +141,16 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
     }
 
     {
-        let rt = runtime.clone();
         app.on_detect_cancel(move || {
-            cancelled.store(true, Ordering::Release);
-            if let Some(device) = rt.lock().unwrap().as_ref() {
-                let _ = device.cmd_tx.send(HostCommand::Motor(ControlMode::Stopped));
+            let operation = {
+                let operation = active.lock().unwrap();
+                cancelled.store(true, Ordering::Release);
+                operation.clone()
+            };
+            if let Some((cmd, id)) = operation {
+                std::thread::spawn(move || {
+                    let _ = oxifoc_host_lib::measurement_request(&cmd, Request::Cancel { id });
+                });
             }
         });
     }
@@ -170,4 +209,23 @@ fn show_result(app: &App, plan: DetectionPlan, out: DetectionOutcome) {
         }
         .into(),
     );
+}
+
+fn source_limits(app: &App) -> Result<oxifoc_core::types::commissioning::SourceLimits, String> {
+    let source = oxifoc_core::types::commissioning::SourceLimits {
+        input_a: app
+            .get_detect_source_input()
+            .trim()
+            .parse()
+            .map_err(|_| "Enter input current limit (A)")?,
+        regen_a: app
+            .get_detect_source_regen()
+            .trim()
+            .parse()
+            .map_err(|_| "Enter regenerative current limit (A), or select No regeneration")?,
+    };
+    if !source.is_valid() {
+        return Err("Input current must be positive; regenerative current must be nonnegative. Both must be finite.".into());
+    }
+    Ok(source)
 }

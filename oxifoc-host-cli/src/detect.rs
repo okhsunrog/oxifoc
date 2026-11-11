@@ -199,7 +199,7 @@ fn run_all(
     let outcome = detect::run_sequence(&runtime.cmd_tx, plan, |stage, request| {
         eprintln!("Detection: {stage}");
         let file = directory.map(|dir| dir.join(format!("{stage}.parquet")));
-        let (response, capture) = measure(
+        let (response, capture) = measure_operation(
             runtime,
             request,
             file.as_ref().map(|p| p.to_string_lossy()).as_deref(),
@@ -223,7 +223,7 @@ fn run_all(
     let (kp, ki) = detect::suggested_pi_gains(outcome.resistance_ohm, outcome.l_avg());
     emit(
         json,
-        json!({"result": outcome, "kp": kp, "ki": ki, "applied": apply, "captures": captures}),
+        json!({"plan": plan, "result": outcome, "kp": kp, "ki": ki, "applied": apply, "captures": captures}),
         format!("{outcome:?}\nCurrent PI: Kp={kp:.5}, Ki={ki:.4}"),
     );
     Ok(())
@@ -237,6 +237,16 @@ fn measure(
     hardware: &mut Option<HardwareInfo>,
 ) -> Result<(DetectResponse, serde_json::Value)> {
     let operation = oxifoc_host_lib::new_detection(&runtime.cmd_tx, req)?;
+    measure_operation(runtime, operation, record_out, record_hz, hardware)
+}
+
+fn measure_operation(
+    runtime: &HostRuntime,
+    operation: oxifoc_core::types::measurement::Measurement,
+    record_out: Option<&str>,
+    record_hz: Option<u16>,
+    hardware: &mut Option<HardwareInfo>,
+) -> Result<(DetectResponse, serde_json::Value)> {
     eprintln!(
         "Measurement: boot={} session={} sequence={}",
         operation.id.session.boot, operation.id.session.generation, operation.id.sequence
@@ -307,7 +317,7 @@ fn measure(
             ),
             (
                 "oxifoc.detect_request".to_string(),
-                serde_json::to_string(&req).unwrap_or_default(),
+                serde_json::to_string(&operation.request).unwrap_or_default(),
             ),
             ("oxifoc.detect_outcome".to_string(), outcome),
         ];
@@ -583,4 +593,52 @@ mod hardware_tests {
         runtime.shutdown();
         Ok(())
     }
+}
+
+fn prompt(label: &str) -> Result<String> {
+    use std::io::{IsTerminal, Write};
+    anyhow::ensure!(
+        std::io::stdin().is_terminal(),
+        "{label}: supply an explicit command-line option in non-interactive mode"
+    );
+    eprint!("{label}: ");
+    std::io::stderr().flush()?;
+    let mut value = String::new();
+    anyhow::ensure!(std::io::stdin().read_line(&mut value)? > 0, "input closed");
+    Ok(value.trim().to_owned())
+}
+
+pub fn select_motor_class(value: Option<String>) -> Result<String> {
+    if let Some(value) = value {
+        return Ok(value);
+    }
+    eprintln!("Motor class:");
+    for preset in detect::PRESETS {
+        eprintln!("  {} — {}", preset.id, preset.name);
+    }
+    prompt("Motor class (--motor-class)")
+}
+
+pub fn confirm_source(
+    input: Option<f32>,
+    regen: Option<f32>,
+) -> Result<oxifoc_core::types::commissioning::SourceLimits> {
+    let input_a = match input {
+        Some(v) => v,
+        None => prompt("Input current limit (A), --input-current-a")?
+            .parse()
+            .context("invalid input current")?,
+    };
+    let regen_a = match regen {
+        Some(v) => v,
+        None => prompt("Regenerative current limit (A), 0 = no regeneration, --regen-current-a")?
+            .parse()
+            .context("invalid regenerative current")?,
+    };
+    let source = oxifoc_core::types::commissioning::SourceLimits { input_a, regen_a };
+    anyhow::ensure!(
+        source.is_valid(),
+        "input current must be positive and regenerative current nonnegative; both must be finite"
+    );
+    Ok(source)
 }

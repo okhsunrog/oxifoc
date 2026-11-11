@@ -253,12 +253,7 @@ impl MotorParamsConfig {
 
 /// Untrusted Hall geometry on the wire. Convert through the validated RAM
 /// constructor before installing it in an estimator.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct HallTransitionGeometryConfig {
-    pub entry_angles: [f32; 8],
-    pub next_states: [u8; 8],
-}
+pub use crate::types::measurement::HallTransitionGeometryConfig;
 
 impl HallTransitionGeometryConfig {
     pub fn validated(
@@ -283,18 +278,7 @@ impl From<&crate::foc::hall_calibration::HallTransitionGeometry> for HallTransit
 }
 
 /// One complete Hall calibration: centroids and the geometry measured with them.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct HallCalibrationConfig {
-    /// Electrical angle (radians) for each raw Hall state (0-7)
-    pub angles: [f32; 8],
-    /// Validity flags for each Hall state
-    pub valid: [bool; 8],
-    /// Omitted geometry retains the legacy midpoint approximation. JSON may
-    /// omit this field; flash migration uses explicit frozen layouts below.
-    #[serde(default)]
-    pub geometry: Option<HallTransitionGeometryConfig>,
-}
+pub use crate::types::measurement::HallCalibrationConfig;
 
 // These flash layouts are frozen. Evolving the public/wire config requires a
 // new record variant and explicit conversions, never adding fields to V1.

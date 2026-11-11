@@ -1,7 +1,7 @@
 # Motor setup wizard and commissioning architecture
 
-Status: wizard/session design; temporary per-step envelope implemented and
-bench-tested (2026-11-11). The wizard requires explicit DC source limits before it
+Status: immutable session plan and non-mutating full detection implemented and
+bench-tested (2026-11-11); aggregate Save is still pending. The wizard requires explicit DC source limits before it
 can energize a motor. Commissioning uses a temporary device-owned control
 session. A successful session produces a motor model and a proposed drive
 limit for review.
@@ -172,9 +172,9 @@ Artifacts and plots:
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-commissioning-20261111/`.
 Regression: `just test-stop-bridge <capture.parquet> <measured_R_ohm>`.
 
-Still pending: full firmware-owned sequence/candidate/atomic Save and both
-wizard clients. Legacy detection currently consumes explicitly configured
-finite source limits, not a freshly confirmed source step. The virtual
+At that milestone, explicit session plans and atomic Save were still pending.
+Individual diagnostic commands consume configured finite source limits.
+Full wizard sessions now carry confirmed source limits (see protocol 15 below). The virtual
 backend runs a separate measurement simulation and does not yet exercise
 this ISR envelope; unit tests of the driver are not end-to-end simulation
 acceptance. External DC-current comparison, disconnect coverage and ISR
@@ -240,3 +240,49 @@ checks and the MK5 release build passed.
    input, explicit zero, reconfiguration of a saved source, sensorless
    installation after a Hall motor, and full H5055 detection with lossless
    20 kHz capture before enabling the normal wizard path.
+
+### Immutable commissioning plan (implemented, protocol 15)
+
+The motor preset catalog lives in core. Full detection opens one session with
+`CommissioningPlan`: typed class, explicit DC source limits, pole pairs, flux
+speed, Hall selection and optional diagnostic current ceiling. The device
+rejects changed conditions under the same Open key and changed stage conditions.
+Any configuration revision change prevents admission of the next stage; retained
+terminal results remain replayable. Individual diagnostic sessions remain
+available and use configured source limits. R/L/flux/Hall sequencing stays in
+host-lib; each stage receives its preallocated operation identity.
+
+Hall returns the complete candidate table and edge geometry. Its former privileged
+installation token/path was removed. Measurement cannot alter the live table,
+revision, motor model or stored source limits. GUI cancellation addresses the
+current operation, including a cancel-before-Start race. CLI and GUI require
+explicit source input for full detection; the GUI has a dedicated source page.
+Non-interactive example: `detect all --motor-class medium-outrunner
+--input-current-a 5 --regen-current-a 0 --record <new-directory>`.
+
+MK5/H5055: one session, operations 1–4, source 5/0 A, class Medium Outrunner,
+no manual phase-current ceiling. R 63.386 mΩ; Ld/Lq 31.091/50.514 µH;
+flux 3.970 mWb; Kv 198.38; valid Hall geometry returned. Peaks of measured dq
+current: R 16.30 A, L 11.37 A, flux 16.34 A, Hall 12.25 A. All 653,492 samples
+at 20,004.27 Hz arrived without gaps or producer/host drops; sequence validation
+accounts for the 16-bit wrap. The full config dumps before/after are identical,
+including Hall data and revision. Final Stopped, faults 0, FET 32.1 °C.
+No Apply or Persist was sent. The waveform and source-page previews were viewed.
+
+Artifacts: `oxifoc-operation-contracts-20261111/wizard-session*`,
+`wizard-config-{before,after}.json`, `wizard-analysis.json`, `wizard-source.png`
+under `/home/okhsunrog/tmp_zfs/codex_tmp/`. Core: 720 passed, 2 ignored;
+minimal core and CLI/GUI/virtual checks pass; 41 host-lib tests pass; MK5 release flashed and verified.
+Addressed cancellation/retry regression adds 22,414 lossless records; terminal
+cancellation observed in 30.29 ms. A fresh configuration can use explicit session
+source limits without first persisting legacy CurrentLimits; board protection
+still bounds excitation. After flashing the final build and resetting, old-boot
+Start/Status/Cancel were rejected again without energizing the motor.
+
+Next required boundary: replace legacy multi-group `apply_sequence` with a
+coherent `DriveSetup` Save, including the confirmed source, explicit feedback
+selection and derived effective current limit. The existing Save path still
+writes separate motor/Hall groups and is **not** the new atomic wizard Save.
+Do not qualify the final wizard as complete or perform a setup Save on the bench
+until migration, partial-write recovery and exact-revision acknowledgements
+are covered. Then finish the run/review/save UI and CLI workflow.

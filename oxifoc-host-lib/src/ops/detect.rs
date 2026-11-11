@@ -13,6 +13,8 @@ use anyhow::{Context, Result, bail};
 use oxifoc_core::foc::detection::pi_tuning::{DEFAULT_BANDWIDTH_RAD_S, calculate_current_gains};
 use oxifoc_core::foc::detection::resistance::calculate_max_current;
 use oxifoc_core::foc::detection::types::MotorSize;
+use oxifoc_core::types::commissioning::{CommissioningPlan, MotorClass, SourceLimits};
+use oxifoc_core::types::measurement::{HallCalibrationConfig, Measurement, SessionId};
 use oxifoc_core::types::{
     ConfigGroupId, ControlMode, CurrentOffsetMethod, CurrentOffsetReport, DetectRequest,
     DetectResponse, MotorState,
@@ -26,10 +28,12 @@ mod presets;
 pub use presets::{MotorPreset, PRESETS};
 
 /// Resolved profile used throughout a commissioning run and its later apply.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct DetectionPlan {
     pub pole_pairs: u8,
     pub max_power_loss_w: f32,
+    pub motor_class: MotorClass,
+    pub source: Option<SourceLimits>,
     pub flux_target_erpm: f32,
     pub current_limit_a: Option<f32>,
     pub calibrate_hall: bool,
@@ -40,6 +44,8 @@ impl From<&MotorPreset> for DetectionPlan {
         Self {
             pole_pairs: preset.pole_pairs,
             max_power_loss_w: preset.max_power_loss_w,
+            motor_class: preset.class,
+            source: None,
             // VESC's lower open-loop ERPM is for subsequent riding startup.
             flux_target_erpm: preset.sensorless_erpm,
             current_limit_a: None,
@@ -63,7 +69,8 @@ pub struct DetectionOutcome {
     pub kv_rpm_per_v: f32,
     /// Whether Hall calibration was requested and succeeded.
     pub hall_ok: bool,
-    hall_revision: Option<u32>,
+    pub hall: Option<HallCalibrationConfig>,
+    pub session: Option<SessionId>,
 }
 
 impl DetectionOutcome {
@@ -99,8 +106,12 @@ pub fn rating_from_loss(resistance_ohm: f32, max_power_loss_w: f32) -> f32 {
 
 /// Run one detection step and wait for the device's response (blocking).
 pub fn run_step(cmd: &CommandSender, req: DetectRequest) -> Result<DetectResponse> {
+    run_measurement(cmd, crate::new_detection(cmd, req)?)
+}
+
+pub fn run_measurement(cmd: &CommandSender, measurement: Measurement) -> Result<DetectResponse> {
     let (tx, rx) = detect_channel();
-    cmd.send(HostCommand::Detect(crate::new_detection(cmd, req)?, tx))
+    cmd.send(HostCommand::Detect(measurement, tx))
         .context("send detect command")?;
     rx.blocking_recv()
         .context("backend dropped the detect command")?
@@ -199,7 +210,7 @@ pub fn apply_current_offsets(cmd: &CommandSender, report: &CurrentOffsetReport) 
 pub fn run_sequence(
     cmd: &CommandSender,
     plan: DetectionPlan,
-    mut measure: impl FnMut(&'static str, DetectRequest) -> Result<DetectResponse>,
+    mut measure: impl FnMut(&'static str, Measurement) -> Result<DetectResponse>,
 ) -> Result<DetectionOutcome> {
     let DetectionPlan {
         pole_pairs,
@@ -207,6 +218,8 @@ pub fn run_sequence(
         flux_target_erpm,
         current_limit_a,
         calibrate_hall,
+        motor_class,
+        source,
     } = plan;
     anyhow::ensure!(
         pole_pairs > 0
@@ -218,7 +231,24 @@ pub fn run_sequence(
         "invalid detection profile or override"
     );
     preflight(cmd)?;
-    let mut out = DetectionOutcome::default();
+    anyhow::ensure!(
+        max_power_loss_w == motor_class.preset().max_power_loss_w,
+        "motor class does not match excitation profile"
+    );
+    let confirmed = CommissioningPlan {
+        source: source.context("confirm input and regenerative current limits before detection")?,
+        motor_class,
+        pole_pairs,
+        flux_target_erpm,
+        current_limit_a,
+        calibrate_hall,
+    };
+    let mut session = crate::DetectionSession::open(cmd, Some(confirmed))?;
+    let mut out = DetectionOutcome {
+        session: Some(session.id()),
+        ..Default::default()
+    };
+    let mut measure = |stage, request| measure(stage, session.measurement(request)?);
 
     // Step 1: resistance.
     match measure(
@@ -285,14 +315,10 @@ pub fn run_sequence(
                 resistance_ohm: out.resistance_ohm,
             },
         )? {
-            DetectResponse::HallCalibrated => {
-                let (_, state) = config::current_value(cmd, ConfigGroupId::HallCalibration)?;
-                anyhow::ensure!(
-                    state.present && state.valid,
-                    "new Hall calibration is unavailable"
-                );
+            DetectResponse::HallCalibrated(hall) => {
+                anyhow::ensure!(hall.is_calibrated(), "invalid Hall candidate");
                 out.hall_ok = true;
-                out.hall_revision = Some(state.revision);
+                out.hall = Some(hall);
             }
             DetectResponse::Error(e) => bail!("Hall: {e:?}"),
             other => bail!("Hall: unexpected response {other:?}"),
@@ -313,19 +339,9 @@ pub fn apply_sequence(
         plan.calibrate_hall == outcome.hall_ok,
         "detection result is incomplete"
     );
-    if let Some(revision) = outcome.hall_revision {
-        let (_, state) = config::current_value(cmd, ConfigGroupId::HallCalibration)?;
-        anyhow::ensure!(
-            state.present && state.valid && state.revision == revision,
-            "Hall calibration changed since detection"
-        );
-    }
     apply_motor_params(cmd, outcome, plan.pole_pairs, plan.max_power_loss_w)?;
-    if let Some(revision) = outcome.hall_revision {
-        anyhow::ensure!(
-            config::persist_group(cmd, ConfigGroupId::HallCalibration, revision)?,
-            "Hall calibration persistence is unsupported"
-        );
+    if let Some(hall) = outcome.hall {
+        apply_step(cmd, &DetectResponse::HallCalibrated(hall))?;
     }
     Ok(())
 }
@@ -338,8 +354,8 @@ pub fn apply_sequence(
 /// - measured motor params patch the `motor-params` group field-by-field;
 ///   a new resistance also recomputes the thermal current rating from the
 ///   stored dissipation class (rating = √(P/R/1.5) tracks R);
-/// - hall calibration reads the device's in-RAM result back and writes it —
-///   persisting is the host's job (device comment in runtime/detect.rs);
+/// - Hall calibration applies and persists the returned candidate; measurement
+///   itself never changes the installed table;
 /// - current offsets persist through [`apply_current_offsets`].
 pub fn apply_step(cmd: &CommandSender, resp: &DetectResponse) -> Result<serde_json::Value> {
     match resp {
@@ -351,10 +367,11 @@ pub fn apply_step(cmd: &CommandSender, resp: &DetectResponse) -> Result<serde_js
                 "phase_c": report.offsets[2],
             }))
         }
-        DetectResponse::HallCalibrated => {
-            let (hall, state) = config::current_value(cmd, ConfigGroupId::HallCalibration)?;
+        DetectResponse::HallCalibrated(calibration) => {
+            let (_, state) = config::current_value(cmd, ConfigGroupId::HallCalibration)?;
+            let hall = serde_json::to_value(calibration)?;
             let write = config::write_from_value(ConfigGroupId::HallCalibration, hall.clone())
-                .context("hall calibration read-back no longer deserializes")?;
+                .context("Hall candidate no longer deserializes")?;
             let revision = config::apply_write(cmd, state.revision, write)?;
             config::persist_group(cmd, ConfigGroupId::HallCalibration, revision)?;
             Ok(hall)
