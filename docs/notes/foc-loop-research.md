@@ -5,14 +5,14 @@
 Updated: 2026-11-11. Baseline commit: `3ee9089`.
 Goal: shorten the real F405 FOC/ADC path at 20 kHz, including worst observed
 cycles and PWM-update timing, while preserving protections and native telemetry.
-Current stage: +120 PWM closure passed (three native-rate runs, minimum
-8.866 µs, zero late/ambiguous driven commits). Low-speed calibration/PI and
-constant-torque isolation matrices completed. Main remaining work is velocity
-feedback/startup dynamics, not an established transport failure. Softer Ki
-improves moving behaviour but delays startup and overshoots; no final control
-fix/default change accepted. Known normal image/config restored, Stopped.
-Next: separate the no-new-Hall-edge startup from settled speed regulation;
-use the existing replay and constant-torque evidence before changing algorithms.
+Current stage: PWM +120 closure passed before and after the rearm fix.
+Accepted fix: discard stale current PI voltage when re-enabling a bridge that
+was off; ordinary running retargets preserve state. Hardware restart peaks
+4.79/5.27 A → 0.77/0.91 A. All six post-fix velocity captures lossless; steady
+Hall/speed ripple remains, especially a 120→40 transition. Next isolate the
+missing braking authority (regen=0, dissipation=0) with a bounded low-power
+RAM-only dissipative-braking comparison. Clock/current/outer-loop rates stay
+168 profile / 20 kHz / 1 kHz. All earlier experimental tuning remains volatile.
 
 Artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-research-2026-11-11/`.
 Use this one living note for progress; add conclusions/evidence and next actions,
@@ -457,3 +457,38 @@ that voltage memory. Next: regression for off→on with/without an intervening
 Stopped/Coast cycle; reset PI in the common rearm path and preserve ordinary
 running retarget state. This is a specific restart defect, not yet an accepted
 explanation of all moving speed ripple.
+
+
+### Accepted bridge rearm fix (2026-11-11)
+
+A regression fails before the change: Stopped→CurrentControl retains a seeded
+current PI voltage, including Stop→Start with no intervening control cycle.
+`ensure_bridge_enabled` now resets the current controller before enabling the
+outputs after off/Stopped/Coast. Continuous running retargets do not reset it;
+that invariant is part of the same test. No per-cycle native work was added.
+
+Matched `rearm-before` / `rearm-after`: +120 spin, Stop 2 s, rearm Iq=0.3 A,
+two repeats each, all native captures complete/lossless and ACKs successful.
+Peak dq in first 50 ms: 4.791/5.267 A → 0.772/0.911 A. Initial Vq:
+0.360/0.392 V → 0.006/0.006 V. Exact PWM-enable edges align the comparison;
+host ACK sequence snapshots are not used as physical application timestamps.
+`rearm-before-after.png/json` contains the visually checked transient evidence.
+The fix is in the common bridge lifecycle, not a special velocity-mode patch.
+
+Full core/Embassy suite: 697 passed, 2 ignored, 11 doctests passed. Strict
+core/Embassy Clippy passes after an equivalent infallible Hall-angle conversion
+cleanup; its three focused codec tests also pass. Device release/hardware pass.
+`motion-rearm-fixed`: 6 complete/lossless captures, no faults; both ±40 repeats
+have zero reverse transitions, net speeds +40.03/+41.33 and -40.11/-40.57.
+One 120→40 repeat still has five reverse crossings; this is not a complete
+moving-regulation fix. The other has none. PI defaults remain 0.01/0.2.
+
+`deadline-rearm-fixed`: three +120 runs after the code change, all complete and
+lossless, zero late/ambiguous/masked driven commits. Minimum margins
+9.938 / 10.725 / 10.498 µs. The accepted source therefore preserves the
+observed 20-kHz actuation deadline in this workload. Do not label the margin
+change itself an optimization gain (layout/trajectory vary).
+
+Use the forthcoming normal fixed build in the new artifact root as recovery
+for later experiments; the old `current-light-repeat/recovery.elf` lacks this
+rearm fix and is only a historical A/B reference.

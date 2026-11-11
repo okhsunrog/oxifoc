@@ -32,7 +32,7 @@ impl HallAngle {
 
     pub fn radians(self) -> Option<f32> {
         let value = self.encoded();
-        (value != 0).then(|| (value - 1) as f32 * (TAU / 65535.0))
+        (value != 0).then(|| f32::from(value - 1) * (TAU / 65535.0))
     }
 }
 

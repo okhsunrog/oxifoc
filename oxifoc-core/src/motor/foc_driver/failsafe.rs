@@ -130,6 +130,10 @@ where
     /// (Stopped disables, Coast/calibration float every phase).
     pub(super) fn ensure_bridge_enabled(&mut self) {
         if self.pwm_off || matches!(self.mode, ControlMode::Stopped | ControlMode::Coast) {
+            // The bridge was not following the controller during this gap.
+            // Its old voltage integral is no longer an actuator bias: discard
+            // it before rearming. Running retargets retain continuous PI state.
+            self.controller.reset();
             self.pwm.enable();
             self.pwm_off = false;
         }

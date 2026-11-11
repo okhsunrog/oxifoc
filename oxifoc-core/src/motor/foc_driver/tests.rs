@@ -269,6 +269,63 @@ impl PhasePwm for GatedPwm {
     }
 }
 
+/// Off→on breaks the current controller's actuator continuity. Stale voltage
+/// integral must not kick the next start, including Stop→Start between cycles.
+#[test]
+fn bridge_rearm_discards_old_current_pi_but_running_retargets_preserve_it() {
+    for off in [ControlMode::Stopped, ControlMode::Coast] {
+        for step_while_off in [false, true] {
+            let mut driver = FocDriver::new(
+                FocController::<SvpwmModulator>::new(24.0),
+                GatedPwm {
+                    enabled: false,
+                    applied: [0; 3],
+                },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                PhaseManager::sensorless(),
+                1.0 / 20_000.0,
+            );
+            driver.phase_mut().set_manual_angle(0.0);
+            driver.phase_mut().set_source(PhaseSource::Manual).unwrap();
+            let drive = ControlMode::CurrentControl {
+                iq_target: 1.0,
+                id_target: 0.0,
+            };
+            driver.set_mode(drive);
+            driver.controller_mut().id_pi.preload(0.5);
+            driver.controller_mut().iq_pi.preload(0.75);
+            driver.set_mode(off);
+            if step_while_off {
+                driver.step(1_000).unwrap();
+            }
+            driver.set_mode(drive);
+            assert_eq!(
+                driver.controller().id_pi.get_integral(),
+                0.0,
+                "{off:?}, stepped={step_while_off}"
+            );
+            assert_eq!(
+                driver.controller().iq_pi.get_integral(),
+                0.0,
+                "{off:?}, stepped={step_while_off}"
+            );
+            assert!(driver.pwm().enabled);
+
+            // A normal command update with continuous actuation must retain PI.
+            driver.controller_mut().id_pi.preload(0.5);
+            driver.controller_mut().iq_pi.preload(0.75);
+            driver.set_mode(ControlMode::CurrentControl {
+                iq_target: 0.5,
+                id_target: 0.0,
+            });
+            assert_eq!(driver.controller().id_pi.get_integral(), 0.5);
+            assert_eq!(driver.controller().iq_pi.get_integral(), 0.75);
+        }
+    }
+}
+
 /// Every mode that drives the bridge through duties must re-enable it,
 /// whatever left it off — not only Stopped. Coast → CurrentControl used
 /// to write duties into the floated (disabled) bridge forever.

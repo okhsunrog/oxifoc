@@ -25,7 +25,7 @@ def main():
     assert not (args.hall_current and args.hall_config), "choose measured or replayed Hall calibration"
     cases = args.cases.split(",")
     assert len(cases) == len(set(cases))
-    assert cases and set(cases) <= {"velocity40", "velocity-negative40", "velocity120-to40", "velocity40-to-iq03", "velocity40-to-iq06", "velocity40-to-iq045"}
+    assert cases and set(cases) <= {"velocity40", "velocity-negative40", "velocity120-to40", "velocity40-to-iq03", "velocity40-to-iq06", "velocity40-to-iq045", "rearm-current"}
     assert 1 <= args.repeats <= 3
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = dict(runs=[])

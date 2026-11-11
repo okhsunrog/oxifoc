@@ -677,3 +677,7 @@ bench-mk5-motion-soft output recovery hall_config repeats="2":
 # Hold torque after the same spin-up to separate speed PI from commutation ripple.
 bench-mk5-torque-isolation output recovery hall_config repeats="2" cases="velocity40-to-iq03,velocity40-to-iq06":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --cases {{quote(cases)}} --speed-ceiling 200
+
+# Compare current PI continuity across a real off interval and a small rearm.
+bench-mk5-rearm output recovery hall_config repeats="2":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --cases rearm-current --speed-ceiling 200
