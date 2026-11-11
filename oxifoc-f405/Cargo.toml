@@ -27,7 +27,7 @@ bench = false
 [features]
 # Current controller: MK5 with the C5 SPI bridge and fixed telemetry.
 # CF2 and diagnostic transports require an explicit feature selection.
-default = ["transport-spi", "board-vesc6-mk5", "fast-telemetry"]
+default = ["transport-spi", "board-vesc6-mk5", "ccm-telemetry"]
 # Exactly one board feature must be enabled (compile_error in main.rs).
 # Cheap FOCer 2 / Simple FOCer 2: DRV8301 on hardware SPI3, low-side shunts,
 # amp gain 10 V/V.
@@ -44,6 +44,8 @@ bench-bridge-spi = []
 bench-spi-cs-request = ["bench-bridge-spi"]
 # CPU-only FOC state in 64-KiB CCM. DMA buffers and the stack remain in SRAM.
 ccm = []
+# 48-KiB CPU-owned telemetry queue in zero-initialized CCM.
+ccm-telemetry = ["fast-telemetry", "oxifoc-core/ccm-telemetry"]
 # A/B placement of the ADC handler and major FOC callees in initialized SRAM.
 ram-foc = ["oxifoc-core/ram-foc"]
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.

@@ -759,3 +759,15 @@ were zero SPI errors and one Hall stale-edge warning after deceleration.
 The previous 4 KiB firmware was restored and verified stopped with zero
 active faults. Artifacts are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11-48k-ccm/`.
+
+MK5 SPI releases now keep the 48 KiB queue in `.ccm_bss` (`NOLOAD`).
+Startup enables CCM and clears it in place. The previous initialized CCM
+sections still use their copy path. The queue occupies 49,172 bytes at
+`0x10000000` with zero load bytes, reducing the measured flash load from
+436,116 to 386,960 bytes. Main static SRAM remained at 62,608 bytes.
+A marker written inside the stopped queue was cleared by a warm reset.
+Three full 320→40 runs recorded 512,013 samples at 20 kHz without loss,
+with nine timeline ACKs, three terminal Stops, maximum ACK 30.8 ms, and
+zero faults or SPI errors. The new release is installed and stopped in
+Hall mode. Artifacts are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-ccm-bss-2026-11-11/`.

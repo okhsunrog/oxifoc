@@ -1,4 +1,4 @@
-//! Initialize the CCM load image before any Rust code can access its statics.
+//! Copy CCM initialized data and clear CCM BSS before Rust accesses either.
 //! Use assembly: cortex-m-rt calls __pre_init before ordinary RAM/FPU init.
 //! Only CPU-owned data is placed here; no code, DMA buffers or stack.
 
@@ -24,6 +24,15 @@ core::arch::global_asm!(
     "str r3, [r1], #4",
     "b 2b",
     "3:",
+    "ldr r0, =__sccmbss",
+    "ldr r1, =__eccmbss",
+    "movs r2, #0",
+    "4:",
+    "cmp r0, r1",
+    "bhs 5f",
+    "str r2, [r0], #4",
+    "b 4b",
+    "5:",
     "bx lr",
     ".size __pre_init, . - __pre_init",
 );

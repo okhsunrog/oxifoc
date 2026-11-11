@@ -26,15 +26,18 @@ use crate::types::FastTelemetry;
 
 /// Typed, lock-free fixed-record queue for ISR → async telemetry transfer.
 ///
-/// Firmware uses 4 KB (about 120 frames, 6 ms at 20 kHz). This absorbs
-/// short scheduling/transport pauses, not sustained overload. Host
-/// builds (virtual device, sims) get a deep queue: tokio sleep jitter
-/// reaches tens of milliseconds under load, which at 10–20 kHz overruns a
-/// firmware-sized buffer and fakes telemetry loss the real device doesn't have.
+/// Queue capacity absorbs scheduling and transport pauses. Host builds have
+/// a deeper queue to tolerate the host scheduler's jitter.
 #[cfg(feature = "std")]
 pub(super) static FAST_TELEM_Q: FastTelemetryQueue<65536> = FastTelemetryQueue::new();
-#[cfg(not(feature = "std"))]
+#[cfg(not(any(feature = "std", feature = "ccm-telemetry")))]
 pub(super) static FAST_TELEM_Q: FastTelemetryQueue<4096> = FastTelemetryQueue::new();
+
+// Churrasco starts with a zeroed backing buffer, zero indices and no active
+// grants. F405 startup clears this section before either queue owner runs.
+#[cfg(all(not(feature = "std"), feature = "ccm-telemetry"))]
+#[unsafe(link_section = ".ccm.bss.fast_telemetry")]
+pub(super) static FAST_TELEM_Q: FastTelemetryQueue<{ 48 * 1024 }> = FastTelemetryQueue::new();
 
 /// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
 /// 0 = streaming disabled. Set by `telemetry_config_server` when host

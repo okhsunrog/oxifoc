@@ -144,6 +144,8 @@ runtime = ["icd", "algorithms", "pod", "dep:embassy-sync", "dep:embassy-futures"
 # Session-bound fixed-block consumer of the ISR queue. Replaces the legacy
 # broadcast publisher; production sessions accept only fixed Packed28.
 fast-telemetry = ["runtime"]
+# F405 startup clears the queue's CCM BSS before enabling the ADC.
+ccm-telemetry = ["fast-telemetry"]
 # Historical codec/carrier comparisons only. Production accepts Packed28.
 diagnostic-telemetry-codecs = []
 bench-raw-stream = ["fast-telemetry", "diagnostic-telemetry-codecs"]
