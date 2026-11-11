@@ -389,9 +389,13 @@ test-stop-mk5 capture resistance:
     OXIFOC_HARDWARE_TEST=1 OXIFOC_HARDWARE_CAPTURE={{ quote(capture) }} OXIFOC_HARDWARE_RESISTANCE={{quote(resistance)}} \
         cargo test -p oxifoc-host-cli --locked hardware_stop_cancels_inductance_at_20khz -- --ignored --nocapture
 
-# Same cancellation regression through the C5, with native Packed28 telemetry.
+# Addressed cancellation, duplicate/retired requests, native Packed28 through C5.
 test-stop-bridge capture resistance:
     OXIFOC_HARDWARE_SERIAL=/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00 just test-stop-mk5 {{quote(capture)}} {{quote(resistance)}}
+
+# After a device reset, verify the saved operation cannot be revived.
+test-replay-bridge capture resistance request:
+    OXIFOC_HARDWARE_REPLAY={{quote(request)}} just test-stop-bridge {{quote(capture)}} {{quote(resistance)}}
 
 # Build ESP32 bridge firmware.
 build-bridge features="":

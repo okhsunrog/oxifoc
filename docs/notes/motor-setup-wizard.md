@@ -78,16 +78,13 @@ flowchart LR
     Active["Any energized stage"] -->|Stop / fault / timeout| Stopped
 ```
 
-The device owns the entire sequence, from an acknowledged Start through the
-final Stop. GUI and CLI render the same stage and result messages. A
-keyed Start returns the existing session on retry. An acknowledged Stop
-invalidates the session's authority to enqueue excitation, including any
-armed HFI packet. A device-side deadline and loss of the host session
-terminate excitation. Reconnection reads status or a completed result.
-A new explicit Start is required to energize again.
+The host library owns R → L → flux → Hall ordering; CLI and GUI share it.
+The device owns each measurement's authority, temporary constraints, bounded
+execution and cleanup. `detect all` composes the same individual commands;
+it does not require an autonomous sequence on the MCU. Reconnection can
+query the retained operation without resubmitting a new measurement.
 
-Reuse the existing actuation ownership and stopped-install paths. Extend
-the scope of the existing detection guard to the whole session. Feed a
+Reuse the existing actuation ownership and stopped-install paths. Bind each admitted operation to the existing detection guard. Feed a
 temporary commissioning envelope to the current and voltage actuation paths.
 The envelope combines the inverter protection, confirmed source limits,
 class-derived excitation and the optional diagnostic cap. It excludes the
@@ -183,33 +180,60 @@ this ISR envelope; unit tests of the driver are not end-to-end simulation
 acceptance. External DC-current comparison, disconnect coverage and ISR
 timing qualification remain necessary.
 
-### Remaining sequence
+### Operation contract (implemented, protocol 14)
 
-Operation contract work (protocol 13): the legacy endpoint now retains failed
-responses and rejects changed payloads under the same key. Host commands carry
-their key before entering transport dispatch. This is still a one-result cache;
-it does not protect retired keys after eviction or reboot.
+The session state machine is now the only admission/replay owner behind
+`DetectEndpoint`. `Inspect` reads identity; `Open` uses expected-session CAS
+plus a client key. Repeating Open returns the same session; another client's
+key cannot borrow that acknowledgement. F405 boot IDs use 64 hardware-RNG bits
+(collision probability is nonzero, not a persistent exactly-once journal).
+Start/Status/Cancel carry boot/session/sequence identity. Terminal outcomes
+include failures and cancellation. Older sequence numbers remain retired even
+when their result has been replaced. Reset invalidates the old boot identity.
+A changed payload under an existing key is rejected. Non-finite wire input is
+rejected before admission. Sequence/session counters cannot wrap.
 
-`runtime/detect/operations.rs` is the tested, allocation-free session state
-machine for the next protocol integration: sequential operation IDs, terminal
-success/failure/cancellation, cancellation tombstones before Start, explicit
-cleanup before acknowledging active cancellation, and rejection of retired IDs.
-It is not yet wired to the endpoint. Device-issued boot/session identities,
-status/cancel endpoints and binding to the ISR generation remain to implement.
+Status/cancel are serviced during measurement. Cancel revokes the matching
+ISR generation immediately, replies Cancelling, and becomes terminal Cancelled
+only after acknowledged cleanup. A cancellation received before Start closes
+that sequence without energizing. An obsolete cancellation cannot affect a
+new operation. Each operation has a 65-second device deadline. Transport timeout
+is reported as outcome unknown; it does not implicitly start another operation.
+Opening a replacement session requires the current operation to be terminal.
 
-Hardware regression on protocol 13: `test-stop-bridge` now cancels L, replays
-the same request twice, then changes its payload under the same key. Both
-replays returned the original failure; the changed payload returned KeyConflict.
-Stop acknowledgement 10.41 ms; replay observations about 10.1 ms (10-ms host
-polling). Capture: 20,560 Packed28 records at 20,004.27 Hz, zero gaps/drops,
-one contiguous PWM-enabled interval and no re-excitation after Stop. Artifacts:
+Host `new_detection` prepares an identity without starting the motor. Retain
+that Measurement for retries. The existing high-level Detect API waits through
+Running/Cancelling; `measurement_request` exposes the protocol for other clients.
+CLI prints IDs at start and stores them in Parquet metadata. Recovery commands:
+`measurement inspect`, `measurement status <boot> <session> <sequence>`, and
+`measurement cancel <boot> <session> <sequence>` (poll until terminal).
+Ordinary `detect all` and individual steps use this protocol automatically.
+
+MK5 regression: addressed cancellation during L, duplicate and conflicting
+requests, cancellation before Start, result retirement and session replacement.
+22,994 Packed28 samples at 20,004.27 Hz with zero gaps/drops; one PWM-enabled
+interval only. Terminal cancellation was observed after 61.67 ms, including host
+polling and cleanup (not an ISR stop-latency measurement). After reset, old
+Start/Status/Cancel were all rejected with WrongSession. Artifacts:
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-operation-contracts-20261111/`.
+Regression recipes: `test-stop-bridge`, then after reset `test-replay-bridge`
+with the generated `.request.json` file.
+
+Final-build repeat: 22,418 lossless records; terminal cancellation observed in
+29.96 ms. Old-boot rejection passed again after reset. Ordinary release-CLI
+`detect all` then completed R/L/flux/Hall with 650,627 native-rate records and
+zero gaps, producer drops or host drops. R 63.283 mΩ, Ld/Lq 32.142/50.980 µH,
+flux 4.003 mWb, Kv 196.75, Hall valid. No flash Save; final state Stopped,
+fault_count 0. Core validation: 718 passed, 2 ignored. Host CLI/GUI/virtual
+checks and the MK5 release build passed.
+
+### Remaining wizard work
 
 1. Add the typed source limits and temporary device envelope. Prove
    enforcement in current, voltage packet, and spin/coast paths. Exercise
    Stop, disconnect, low source ceilings and zero regen in simulation and on
    the MK5 with an independent DC current reference.
-2. Move orchestration and result review into the device session. Add
+2. Keep orchestration in host-lib; collect a side-effect-free candidate, including Hall. Add
    stopped atomic Save and legacy readback. Verify that an old drive limit
    cannot change a new motor's run and that inverter protection still can.
 3. Bind one host workflow to the Slint wizard and CLI. Test missing source

@@ -31,12 +31,6 @@ pub(crate) enum CachedConfigAck {
 pub(crate) struct ConfigActionCache {
     entries: [Option<(ReqId, CachedConfigAck)>; 4],
     next: usize,
-    #[cfg(all(feature = "detection", feature = "delivery"))]
-    detection: Option<(
-        ReqId,
-        crate::types::DetectRequest,
-        crate::types::DetectResponse,
-    )>,
 }
 
 #[cfg(feature = "storage")]
@@ -45,8 +39,6 @@ impl ConfigActionCache {
         Self {
             entries: [None; 4],
             next: 0,
-            #[cfg(all(feature = "detection", feature = "delivery"))]
-            detection: None,
         }
     }
 
@@ -79,32 +71,6 @@ impl ConfigCoordinator {
             actions: Mutex::new(RefCell::new(ConfigActionCache::new())),
         }
     }
-
-    #[cfg(all(feature = "detection", feature = "delivery"))]
-    pub fn detected(
-        &self,
-        id: ReqId,
-        request: crate::types::DetectRequest,
-    ) -> Option<crate::types::DetectResponse> {
-        critical_section::with(|cs| {
-            self.actions
-                .borrow(cs)
-                .borrow()
-                .detection
-                .as_ref()
-                .and_then(|(cached_id, cached_request, response)| {
-                    (*cached_id == id).then(|| {
-                        if *cached_request == request {
-                            *response
-                        } else {
-                            crate::types::DetectResponse::Error(
-                                crate::types::DetectError::KeyConflict,
-                            )
-                        }
-                    })
-                })
-        })
-    }
 }
 
 pub(crate) static CONFIG_COORDINATOR: ConfigCoordinator = ConfigCoordinator::new();
@@ -114,7 +80,6 @@ enum CommitOrigin {
     #[cfg(all(feature = "detection", feature = "delivery"))]
     Detection {
         authority: super::DetectionApplyToken,
-        request: crate::types::DetectRequest,
     },
 }
 
@@ -405,7 +370,6 @@ impl ModelApplyGuard {
         coordinator: &'static ConfigCoordinator,
         detection: &super::DetectionActiveGuard,
         request_id: ReqId,
-        request: crate::types::DetectRequest,
     ) -> Option<Self> {
         let authority = detection.apply_token();
         if !authority.is_current() {
@@ -424,7 +388,7 @@ impl ModelApplyGuard {
             &coordinator.actions,
             request_id,
             expected_revision,
-            CommitOrigin::Detection { authority, request },
+            CommitOrigin::Detection { authority },
         )
     }
 
@@ -596,13 +560,7 @@ pub(super) fn apply<P, C, Ph, S>(
                         .borrow_mut()
                         .insert(pending.request, CachedConfigAck::Applied(revision)),
                     #[cfg(all(feature = "detection", feature = "delivery"))]
-                    CommitOrigin::Detection { request, .. } => {
-                        pending.cache.borrow(cs).borrow_mut().detection = Some((
-                            pending.request,
-                            *request,
-                            crate::types::DetectResponse::HallCalibrated,
-                        ));
-                    }
+                    CommitOrigin::Detection { .. } => {}
                 }
                 let mut state = state.borrow(cs).borrow_mut();
                 if matches!(pending.update, ModelConfigUpdate::HallCalibration(_)) {

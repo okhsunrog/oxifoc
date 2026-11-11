@@ -318,7 +318,7 @@ pub async fn state_monitor(
     clippy::large_futures,
     reason = "Embassy statically allocates this task including the finite detection packet buffers"
 )]
-pub async fn detect_server(stack: &'static Stack) {
+pub async fn detect_server(stack: &'static Stack, boot_epoch: u64) {
     #[cfg(feature = "task-priority")]
     embassy_executor::Metadata::for_current_task()
         .await
@@ -326,6 +326,7 @@ pub async fn detect_server(stack: &'static Stack) {
     oxifoc_core::runtime::detect_server(
         stack.endpoints(),
         F405Backend,
+        boot_epoch,
         BOARD.max_phase_current_a,
         crate::config::CONTROL_TIMING.get().await.frequency_hz(),
         Some(&RUNTIME_CONFIG),
@@ -477,6 +478,7 @@ pub fn spawn_servers(
     stack: &'static Stack,
     idents: &heapless::Vec<crate::transport::InterfaceIdent, 3>,
     defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
+    detection_boot: u64,
 ) {
     spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
     #[cfg(feature = "bench-raw-codec")]
@@ -503,7 +505,7 @@ pub fn spawn_servers(
     )));
     spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
-    spawner.spawn(defmt::unwrap!(detect_server(stack)));
+    spawner.spawn(defmt::unwrap!(detect_server(stack, detection_boot)));
     spawner.spawn(defmt::unwrap!(network_services_task(stack)));
     spawner.spawn(defmt::unwrap!(defmt_forwarder(defmt_consumer, stack)));
 }

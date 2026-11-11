@@ -146,6 +146,7 @@ pub async fn detect_server<NS: NetStackHandle>(
             vbus,
             params: motor_params,
         },
+        rand::random::<u64>(),
         max_current_a,
         foc_freq_hz as f32,
         Some(&crate::RUNTIME_CONFIG),

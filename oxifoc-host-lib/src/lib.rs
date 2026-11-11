@@ -96,8 +96,8 @@ const SETPOINT_POLICY: RetryPolicy = RetryPolicy {
     max_backoff_ms: 400,
     attempt_timeout_ms: 600,
 };
-/// Effectively-once budget for motor detection: one ~60 s attempt, plus room
-/// for a single retry whose (cached) response returns near-instantly.
+/// Overall host wait budget for a measurement. Start/status/cancel use short
+/// SETPOINT_POLICY transport attempts; the device owns a 65-second deadline.
 /// Public so front-ends derive their own wait deadlines from it instead of
 /// hardcoding a second number that can drift.
 pub const DETECT_POLICY: RetryPolicy = RetryPolicy {
@@ -280,7 +280,14 @@ pub enum HostCommand {
     /// Erase every stored config group (factory reset).
     ConfigResetAll(ConfigResponseSender),
     /// Identity belongs to the logical operation, not to a transport attempt.
-    Detect(Keyed<DetectRequest>, DetectResponseSender),
+    Detect(
+        oxifoc_core::types::measurement::Measurement,
+        DetectResponseSender,
+    ),
+    Measurement(
+        oxifoc_core::types::measurement::Request,
+        tokio::sync::oneshot::Sender<Result<oxifoc_core::types::measurement::Reply>>,
+    ),
     /// Query or clear device faults (`FaultEndpoint`).
     Fault(FaultRequest, FaultResponseSender),
 }
@@ -293,8 +300,44 @@ pub type CommandSender = tokio::sync::mpsc::UnboundedSender<HostCommand>;
 
 /// Allocate once for a new measurement. Retain this request when retrying an
 /// uncertain outcome; allocating a fresh key explicitly requests a new run.
-pub fn new_detection(request: DetectRequest) -> Keyed<DetectRequest> {
-    Keyed::new(next_detect_id(), request)
+pub fn measurement_request(
+    cmd: &CommandSender,
+    request: oxifoc_core::types::measurement::Request,
+) -> Result<oxifoc_core::types::measurement::Reply> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    cmd.send(HostCommand::Measurement(request, tx))
+        .map_err(|_| anyhow::anyhow!("backend closed"))?;
+    rx.blocking_recv()
+        .map_err(|_| anyhow::anyhow!("measurement reply lost"))?
+}
+
+/// Open a fresh device-issued session. A retry of an uncertain measurement
+/// must retain the returned object instead of calling this function again.
+pub fn new_detection(
+    cmd: &CommandSender,
+    request: DetectRequest,
+) -> Result<oxifoc_core::types::measurement::Measurement> {
+    use oxifoc_core::types::measurement::{Measurement, OperationId, Reply, Request};
+    let Reply::Session(expected) = measurement_request(cmd, Request::Inspect)? else {
+        anyhow::bail!("device did not return measurement session");
+    };
+    let reply = measurement_request(
+        cmd,
+        Request::Open {
+            expected,
+            client: next_detect_id(),
+        },
+    )?;
+    let Reply::Session(session) = reply else {
+        anyhow::bail!("session open: {reply:?}")
+    };
+    Ok(Measurement {
+        id: OperationId {
+            session,
+            sequence: 1,
+        },
+        request,
+    })
 }
 
 pub struct HostRuntime {
@@ -1049,6 +1092,9 @@ fn reject_unverified_command(cmd: HostCommand) {
         | HostCommand::ConfigResetAll(reply) => {
             let _ = reply.send(Err(error()));
         }
+        HostCommand::Measurement(_, reply) => {
+            let _ = reply.send(Err(error()));
+        }
         HostCommand::Detect(_, reply) => {
             let _ = reply.send(Err(error()));
         }
@@ -1429,26 +1475,68 @@ async fn handle_command<NS>(
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }
+        HostCommand::Measurement(req, reply_tx) => {
+            let result = client
+                .effectively_once::<DetectEndpoint>(
+                    device_addr,
+                    &req,
+                    Some("detect"),
+                    &SETPOINT_POLICY,
+                )
+                .await;
+            let _ = reply_tx.send(result.map_err(|e| anyhow::anyhow!("{e:?}")));
+        }
         HostCommand::Detect(req, reply_tx) => {
-            tracing::info!("Starting motor detection: {:?}", req);
-            // Detection runs up to ~60 s — spawn it off the command task so
-            // a queued Stop (and the deadman affirmations) are not stuck
-            // behind it. The device refuses to start detection with the
-            // motor running, so the lost strict ordering is harmless.
             let client = ns.clone().reliable::<TokioTimer>();
             tokio::spawn(async move {
-                // Effectively-once: a stable id across retries. If the (slow)
-                // response is lost, a retry returns the device's cached
-                // result instead of re-running characterization.
-                let res = client
-                    .effectively_once::<DetectEndpoint>(
-                        device_addr,
-                        &req,
-                        Some("detect"),
-                        &DETECT_POLICY,
-                    )
-                    .await;
-                let result = res.map_err(|e| anyhow::anyhow!("{e:?}"));
+                use oxifoc_core::types::measurement::{Outcome, Rejection, Reply, Request, State};
+                let result = async {
+                    let deadline = tokio::time::Instant::now()
+                        + Duration::from_millis(DETECT_POLICY.deadline_ms);
+                    let mut request = Request::Start {
+                        id: req.id,
+                        request: req.request,
+                    };
+                    loop {
+                        let reply = client
+                            .effectively_once::<DetectEndpoint>(
+                                device_addr,
+                                &request,
+                                Some("detect"),
+                                &SETPOINT_POLICY,
+                            )
+                            .await
+                            .map_err(|e| {
+                                anyhow::anyhow!("measurement {:?}: {e:?}; outcome unknown", req.id)
+                            })?;
+                        match reply {
+                            Reply::Operation(State::Finished(outcome)) => {
+                                return Ok(match outcome {
+                                    Outcome::Completed(v) => v,
+                                    Outcome::Failed(e) => DetectResponse::Error(e),
+                                    Outcome::Cancelled => DetectResponse::Error(
+                                        oxifoc_core::types::DetectError::Cancelled,
+                                    ),
+                                });
+                            }
+                            Reply::Operation(_) => {}
+                            Reply::Rejected(Rejection::KeyConflict) => {
+                                return Ok(DetectResponse::Error(
+                                    oxifoc_core::types::DetectError::KeyConflict,
+                                ));
+                            }
+                            other => anyhow::bail!("measurement {:?}: {other:?}", req.id),
+                        }
+                        anyhow::ensure!(
+                            tokio::time::Instant::now() < deadline,
+                            "measurement {:?} wait timed out; outcome unknown",
+                            req.id
+                        );
+                        request = Request::Status { id: req.id };
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                }
+                .await;
                 let _ = reply_tx.send(result);
             });
         }

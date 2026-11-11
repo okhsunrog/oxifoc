@@ -236,6 +236,11 @@ fn measure(
     record_hz: Option<u16>,
     hardware: &mut Option<HardwareInfo>,
 ) -> Result<(DetectResponse, serde_json::Value)> {
+    let operation = oxifoc_host_lib::new_detection(&runtime.cmd_tx, req)?;
+    eprintln!(
+        "Measurement: boot={} session={} sequence={}",
+        operation.id.session.boot, operation.id.session.generation, operation.id.sequence
+    );
     // Raw-rate capture around the whole step by default (M=1 preserves the HFI
     // carrier and pulse edges; plain sample dropping can alias them).
     // `--record-hz` overrides
@@ -263,7 +268,7 @@ fn measure(
     let (tx, mut rx) = oxifoc_host_lib::detect_channel();
     runtime
         .cmd_tx
-        .send(HostCommand::Detect(oxifoc_host_lib::new_detection(req), tx))
+        .send(HostCommand::Detect(operation.clone(), tx))
         .context("send detect command")?;
     // The detect oneshot is async; poll it (no tokio runtime on this
     // thread). The deadline derives from the backend's own retry budget
@@ -296,6 +301,10 @@ fn measure(
             Err(e) => serde_json::Value::String(format!("error: {e:#}")).to_string(),
         };
         let extra = vec![
+            (
+                "oxifoc.measurement".to_string(),
+                serde_json::to_string(&operation)?,
+            ),
             (
                 "oxifoc.detect_request".to_string(),
                 serde_json::to_string(&req).unwrap_or_default(),
@@ -385,11 +394,38 @@ mod hardware_tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         anyhow::ensure!(stop(&runtime.cmd_tx)?.fault_count == 0);
-        let request = oxifoc_host_lib::new_detection(DetectRequest::MeasureInductance {
-            max_power_loss_w: DetectionPlan::from(&detect::PRESETS[2]).max_power_loss_w,
-            current_limit_a: None,
-            resistance_ohm: resistance,
-        });
+        use oxifoc_core::types::measurement::{
+            Measurement, Outcome, Rejection, Reply, Request, State,
+        };
+        let control = |request| oxifoc_host_lib::measurement_request(&runtime.cmd_tx, request);
+        if let Ok(path) = std::env::var("OXIFOC_HARDWARE_REPLAY") {
+            let old: Measurement = serde_json::from_slice(&std::fs::read(path)?)?;
+            for request in [
+                Request::Status { id: old.id },
+                Request::Cancel { id: old.id },
+                Request::Start {
+                    id: old.id,
+                    request: old.request,
+                },
+            ] {
+                anyhow::ensure!(matches!(
+                    control(request)?,
+                    Reply::Rejected(Rejection::WrongSession)
+                ));
+            }
+            println!("old boot: Status, Cancel and Start rejected");
+            drop(stop_guard);
+            runtime.shutdown();
+            return Ok(());
+        }
+        let request = oxifoc_host_lib::new_detection(
+            &runtime.cmd_tx,
+            DetectRequest::MeasureInductance {
+                max_power_loss_w: DetectionPlan::from(&detect::PRESETS[2]).max_power_loss_w,
+                current_limit_a: None,
+                resistance_ohm: resistance,
+            },
+        )?;
         let mut capture = record::Capture::start(&runtime, 20000)?;
         let (tx, mut rx) = oxifoc_host_lib::detect_channel();
         runtime
@@ -412,8 +448,11 @@ mod hardware_tests {
         }
         capture.drain_until(&runtime, Instant::now() + Duration::from_millis(100))?;
         let sent = Instant::now();
-        let ack = stop(&runtime.cmd_tx)?;
-        let stop_ms = sent.elapsed().as_secs_f64() * 1000.0;
+        let cancel_ack = control(Request::Cancel { id: request.id })?;
+        anyhow::ensure!(matches!(
+            cancel_ack,
+            Reply::Operation(State::Cancelling | State::Finished(Outcome::Cancelled))
+        ));
         let finish_by = Instant::now() + Duration::from_secs(4);
         let original = loop {
             if let Ok(result) = rx.try_recv() {
@@ -424,8 +463,10 @@ mod hardware_tests {
         };
         anyhow::ensure!(matches!(
             original,
-            DetectResponse::Error(oxifoc_core::types::DetectError::HardwareFault)
+            DetectResponse::Error(oxifoc_core::types::DetectError::Cancelled)
         ));
+        let stop_ms = sent.elapsed().as_secs_f64() * 1000.0;
+        let ack = stop(&runtime.cmd_tx)?;
         anyhow::ensure!(ack.state == MotorState::Stopped && ack.fault_count == 0);
         runtime.slow_rx.try_iter().for_each(drop);
         // Model a lost terminal reply: resend the EXACT key and payload.
@@ -434,7 +475,7 @@ mod hardware_tests {
         for changed in [false, false, true] {
             let mut repeated = request.clone();
             if changed {
-                repeated.inner = DetectRequest::MeasureResistance {
+                repeated.request = DetectRequest::MeasureResistance {
                     max_power_loss_w: 120.0,
                     current_limit_a: None,
                 };
@@ -464,7 +505,7 @@ mod hardware_tests {
                     (changed, response),
                     (
                         false,
-                        DetectResponse::Error(oxifoc_core::types::DetectError::HardwareFault)
+                        DetectResponse::Error(oxifoc_core::types::DetectError::Cancelled)
                     ) | (
                         true,
                         DetectResponse::Error(oxifoc_core::types::DetectError::KeyConflict)
@@ -473,6 +514,46 @@ mod hardware_tests {
                 "unexpected replay: {response:?}"
             );
         }
+        // Cancel-before-start reserves a tombstone, and retires the first result.
+        let next = oxifoc_core::types::measurement::OperationId {
+            sequence: 2,
+            ..request.id
+        };
+        anyhow::ensure!(matches!(
+            control(Request::Cancel { id: next })?,
+            Reply::Operation(State::Finished(Outcome::Cancelled))
+        ));
+        anyhow::ensure!(matches!(
+            control(Request::Start {
+                id: next,
+                request: request.request
+            })?,
+            Reply::Operation(State::Finished(Outcome::Cancelled))
+        ));
+        for old in [
+            Request::Status { id: request.id },
+            Request::Cancel { id: request.id },
+            Request::Start {
+                id: request.id,
+                request: request.request,
+            },
+        ] {
+            anyhow::ensure!(matches!(
+                control(old)?,
+                Reply::Rejected(Rejection::ResultExpired)
+            ));
+        }
+        // A new session retires every old operation, including its cancellation.
+        let replacement = oxifoc_host_lib::new_detection(&runtime.cmd_tx, request.request)?;
+        anyhow::ensure!(replacement.id.session != request.id.session);
+        anyhow::ensure!(matches!(
+            control(Request::Cancel { id: next })?,
+            Reply::Rejected(Rejection::WrongSession)
+        ));
+        std::fs::write(
+            format!("{out}.request.json"),
+            serde_json::to_vec(&replacement)?,
+        )?;
         capture.drain_until(&runtime, Instant::now() + Duration::from_millis(750))?;
         for status in runtime.slow_rx.try_iter() {
             anyhow::ensure!(status.motor_state == MotorState::Stopped && status.fault_count == 0);

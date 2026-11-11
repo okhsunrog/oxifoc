@@ -152,6 +152,7 @@ async fn main(spawner: Spawner) {
     let mut rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
     #[cfg(feature = "transport-spi")]
     let spi_epoch = rng.next_u32();
+    let detection_boot = (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32());
     let stack = transport::init_stack(rng);
 
     // ========== STEP 3: Initialize defmt logging (RTT + network) ==========
@@ -263,7 +264,7 @@ async fn main(spawner: Spawner) {
     });
     defmt::info!("Config loaded from flash");
     // Publish config revisions/persistence only after the boot load is complete.
-    protocol::servers::spawn_servers(&spawner, stack, &idents, defmt_consumer);
+    protocol::servers::spawn_servers(&spawner, stack, &idents, defmt_consumer, detection_boot);
 
     // ========== STEP 9: Initialize DRV8301 Gate Driver ==========
     let (drv_config, nfault) = hardware::drv8301::init_bus(r.drv, ExtiIrqs);

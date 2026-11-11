@@ -100,7 +100,7 @@ pub fn rating_from_loss(resistance_ohm: f32, max_power_loss_w: f32) -> f32 {
 /// Run one detection step and wait for the device's response (blocking).
 pub fn run_step(cmd: &CommandSender, req: DetectRequest) -> Result<DetectResponse> {
     let (tx, rx) = detect_channel();
-    cmd.send(HostCommand::Detect(crate::new_detection(req), tx))
+    cmd.send(HostCommand::Detect(crate::new_detection(cmd, req)?, tx))
         .context("send detect command")?;
     rx.blocking_recv()
         .context("backend dropped the detect command")?

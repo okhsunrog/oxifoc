@@ -5,41 +5,7 @@
 //! identity must include a non-repeating boot epoch; this module does not mint
 //! identities or claim persistence across reboots.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SessionId {
-    pub boot: u64,
-    pub generation: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OperationId {
-    pub session: SessionId,
-    pub sequence: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Rejection {
-    WrongSession,
-    ResultExpired,
-    OutOfOrder,
-    KeyConflict,
-    Busy,
-    NotRunning,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Outcome<T, E> {
-    Completed(T),
-    Failed(E),
-    Cancelled,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum State<T, E> {
-    Running,
-    Cancelling,
-    Finished(Outcome<T, E>),
-}
+pub use crate::types::measurement::{OperationId, Outcome, Rejection, SessionId, State};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Admission<T, E> {

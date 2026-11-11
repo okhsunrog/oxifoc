@@ -86,9 +86,10 @@ where
 
     /// Retry with a stable request id; the server deduplicates on it, so the
     /// effect happens at most once even though delivery is at-least-once.
-    /// Requires a [`Deduplicated`] command (whose request is a
-    /// [`super::Keyed`] payload). Build the `Keyed` request with a stable id
-    /// once — the driver re-sends the *same* payload on every retry.
+    /// Requires a [`Deduplicated`] command with stable identity in its request:
+    /// a [`super::Keyed`] payload or session/operation IDs. Construct it once;
+    /// the driver re-sends the *same* payload on every retry. Identity lifetime
+    /// and retirement are part of the endpoint's server contract.
     pub async fn effectively_once<E>(
         &self,
         dst: Address,

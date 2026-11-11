@@ -117,6 +117,24 @@ enum FastEncodingArg {
     Packed28,
 }
 
+#[derive(Debug, clap::Subcommand)]
+enum MeasurementAction {
+    /// Read the current device boot/session identity.
+    Inspect,
+    /// Read a retained operation outcome without starting a measurement.
+    Status {
+        boot: u64,
+        session: u32,
+        sequence: u32,
+    },
+    /// Request cancellation of this operation only; inspect status until terminal.
+    Cancel {
+        boot: u64,
+        session: u32,
+        sequence: u32,
+    },
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum DetectStep {
     /// Run R, L, flux and Hall using a motor-class profile
@@ -265,6 +283,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect or cancel a session-scoped measurement (IDs are printed at start).
+    Measurement {
+        #[command(subcommand)]
+        action: MeasurementAction,
+    },
     /// List available devices (serial ports and debug probes)
     List,
     /// Show device hardware info from the handshake
@@ -962,6 +985,40 @@ fn main() -> Result<()> {
                 );
             }
         },
+        Command::Measurement { action } => {
+            use oxifoc_core::types::measurement::{OperationId, Request, SessionId};
+            let request = match action {
+                MeasurementAction::Inspect => Request::Inspect,
+                MeasurementAction::Status {
+                    boot,
+                    session,
+                    sequence,
+                } => Request::Status {
+                    id: OperationId {
+                        session: SessionId {
+                            boot,
+                            generation: session,
+                        },
+                        sequence,
+                    },
+                },
+                MeasurementAction::Cancel {
+                    boot,
+                    session,
+                    sequence,
+                } => Request::Cancel {
+                    id: OperationId {
+                        session: SessionId {
+                            boot,
+                            generation: session,
+                        },
+                        sequence,
+                    },
+                },
+            };
+            let reply = oxifoc_host_lib::measurement_request(&runtime.cmd_tx, request)?;
+            emit(json, serde_json::to_value(&reply)?, format!("{reply:?}"));
+        }
         Command::Detect {
             step,
             motor_class,

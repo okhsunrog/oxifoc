@@ -387,10 +387,9 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
 
 #[cfg(all(feature = "detection", feature = "delivery"))]
 #[test]
-fn detected_hall_ack_commits_actual_reference_revision_and_durable_detection_dedup() {
+fn detected_hall_ack_commits_actual_reference_and_revision() {
     use crate::state::DetectionActiveGuard;
     use crate::state::model::ConfigCoordinator;
-    use crate::types::{DetectRequest, DetectResponse};
 
     let _serial = cmd_channel_lock();
     let _boot = BootFlag::clear();
@@ -417,26 +416,15 @@ fn detected_hall_ack_commits_actual_reference_revision_and_durable_detection_ded
         PhaseManager::with_hall(hall),
         1.0 / 20_000.0,
     );
-    let request = DetectRequest::CalibrateHall {
-        max_power_loss_w: 120.0,
-        current_limit_a: None,
-        resistance_ohm: 0.03,
-    };
+
     let id = ReqId(201);
     let mut calibration = HallCalibrationConfig::default();
     for angle in &mut calibration.angles[1..=6] {
         *angle += 0.7;
     }
     let prepare = |owner: &DetectionActiveGuard| {
-        ModelApplyGuard::prepare_detected_hall(
-            calibration.clone(),
-            config,
-            coordinator,
-            owner,
-            id,
-            request,
-        )
-        .unwrap()
+        ModelApplyGuard::prepare_detected_hall(calibration.clone(), config, coordinator, owner, id)
+            .unwrap()
     };
     let mut cx = Context::from_waker(Waker::noop());
     let owner = DetectionActiveGuard::try_arm().unwrap();
@@ -467,7 +455,6 @@ fn detected_hall_ack_commits_actual_reference_revision_and_durable_detection_ded
     assert!(cancelled.as_mut().poll(&mut cx).is_pending());
     drop(cancelled);
     process_commands(&state, &mut driver, &registry);
-    assert!(coordinator.detected(id, request).is_none());
 
     // A queued generation loses its authority when the owning detector leaves.
     let mut stale = Box::pin(prepare(&owner).apply::<PendingTimer>());
@@ -503,25 +490,8 @@ fn detected_hall_ack_commits_actual_reference_revision_and_durable_detection_ded
     let mut applied = Box::pin(prepare(&owner).apply::<PendingTimer>());
     assert!(applied.as_mut().poll(&mut cx).is_pending());
     process_commands(&state, &mut driver, &registry);
-    // Lose the response waiter after actual installation. The retry must still
-    // return success without repeating physical calibration or changing RAM.
+    // Dropping a waiter after installation cannot roll back the live revision.
     drop(applied);
-    assert!(matches!(
-        coordinator.detected(id, request),
-        Some(DetectResponse::HallCalibrated)
-    ));
-    assert!(matches!(
-        coordinator.detected(
-            id,
-            DetectRequest::MeasureResistance {
-                max_power_loss_w: 120.0,
-                current_limit_a: None,
-            }
-        ),
-        Some(DetectResponse::Error(
-            crate::types::DetectError::KeyConflict
-        ))
-    ));
     assert_eq!(
         driver.phase().hall().sample(50).unwrap().angle.to_bits(),
         calibration.angles[1].to_bits()

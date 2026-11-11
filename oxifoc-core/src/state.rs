@@ -334,6 +334,15 @@ impl DetectionApplyToken {
 }
 
 impl DetectionActiveGuard {
+    /// Revoke only this generation; ISR cleanup rejects its queued work.
+    pub(crate) fn cancel(&self) {
+        critical_section::with(|_| {
+            if DETECTION_GENERATION.load(Ordering::Acquire) == self.generation {
+                DETECTION_CANCELLED.store(true, Ordering::Release);
+            }
+        });
+    }
+
     pub(crate) fn command_token(&self) -> DetectionCommandToken {
         DetectionCommandToken(self.generation)
     }

@@ -24,7 +24,7 @@
 //! | `SlowTelemetryEndpoint` | `()` | `SlowTelemetry` | System health poll (~10 Hz, doubles as heartbeat) |
 //! | `TelemetryConfigEndpoint` | `TelemetryConfig` | `TelemetryConfigAck` | Configure streaming rates |
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
-//! | `DetectEndpoint` | `Keyed<DetectRequest>` | `DetectResponse` | Motor detection |
+//! | `DetectEndpoint` | `MeasurementRequest` | `MeasurementReply` | Motor detection |
 //! | `PhaseSourceEndpoint` | `PhaseSource` | `PhaseSourceAck` | Angle source selection |
 //! | `ConfigEndpoint` | `ConfigRequest` | `ConfigResponse` | Revisioned config apply/persist (`storage` feature) |
 
@@ -176,18 +176,12 @@ endpoint!(
 // Fault management endpoint (host → device)
 endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
 
-// Motor detection endpoint (host → device).
-//
-// Detection is a non-idempotent ACTION, so its request carries a `ReqId`
-// (`Keyed<DetectRequest>`): the device deduplicates on it (see
-// `oxifoc_core::runtime::detect`), making it safely retryable as
-// effectively-once. Classified `Deduplicated` below. The `endpoint!` macro
-// takes a single type token, hence the alias.
-pub type KeyedDetectRequest = Keyed<DetectRequest>;
+// Session-scoped actions: retries preserve CAS session or operation identity.
+pub use crate::types::measurement::{Reply as MeasurementReply, Request as MeasurementRequest};
 endpoint!(
     DetectEndpoint,
-    KeyedDetectRequest,
-    DetectResponse,
+    MeasurementRequest,
+    MeasurementReply,
     "cmd/detect"
 );
 
@@ -213,7 +207,7 @@ endpoint!(ConfigEndpoint, ConfigRequest, ConfigResponse, "cmd/config");
 // Every command declares where it sits on the delivery ladder. Almost all
 // endpoints are idempotent by construction — reads and absolute setpoints —
 // so the host may `at_least_once` them (retry on timeout is safe). The one
-// action, `DetectEndpoint`, is `Deduplicated`: its whole request is keyed.
+// action, `DetectEndpoint`, is `Deduplicated`: session CAS and operation IDs make retries safe.
 // `ConfigEndpoint` remains retry-idempotent at the endpoint boundary because
 // its action variants embed stable keys and replay cached responses; Read and
 // ResetAll are naturally idempotent.

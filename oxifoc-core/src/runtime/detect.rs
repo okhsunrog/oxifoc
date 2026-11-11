@@ -1,26 +1,15 @@
-//! Shared motor-detection server with effectively-once dedup.
+//! Session-scoped motor measurements with bounded replay state.
 //!
-//! Detection is the one non-idempotent action in the ICD: re-running a step
-//! re-energises the motor and (for Hall calibration) replaces the live config. So
-//! `DetectEndpoint` carries a [`ReqId`](crate::types::ReqId)
-//! (`Keyed<DetectRequest>`): the server caches the last `(id, response)` and a
-//! retry with the same id replays the cached response instead of measuring
-//! again — effectively-once.
-//!
-//! This module owns everything that used to be copy-pasted across the platform
-//! detect servers — the serve loop, the dedup, the safe-current formulas, the
-//! error mapping, motor-stop bracketing, and acknowledged Hall installation —
-//! so all platforms behave identically. Each platform supplies only a
-//! [`DetectionBackend`]: the raw measurements bound to its hardware (or to the
-//! virtual-motor simulation).
-//!
-//! The loop is driven with `recv_manual` + `respond_owned` (owned request in,
-//! owned response out) and contains no generic closures, so the future stays
-//! `Send` and the virtual platform can spawn it on a multi-threaded runtime.
+//! The task services status/cancel/retry requests while a measurement future
+//! runs. Admission is owned by `session`, independent of actuator execution.
+//! Terminal outcomes are published only after ISR cleanup. Session IDs include
+//! a platform-provided random boot epoch; retired identities never re-energize.
+//! Hosts retain orchestration of R/L/flux/Hall and may run each stage separately.
 
 use core::cell::RefCell;
 
 pub mod operations;
+mod session;
 
 use critical_section::Mutex as CriticalSectionMutex;
 use ergot::net_stack::NetStackHandle;
@@ -100,6 +89,7 @@ pub trait DetectionBackend {
 pub async fn detect_server<NS, B>(
     endpoints: Endpoints<NS>,
     mut backend: B,
+    boot_epoch: u64,
     max_current_a: f32,
     foc_freq_hz: f32,
     runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
@@ -107,94 +97,98 @@ pub async fn detect_server<NS, B>(
     NS: NetStackHandle + Clone,
     B: DetectionBackend,
 {
-    // A separate handle for sending responses (`respond_owned` consumes it).
-    let responder = endpoints.clone();
-    let server = endpoints.bounded_server::<DetectEndpoint, 2>(Some("detect"));
+    use crate::types::measurement::Outcome;
+    use embassy_futures::select::{Either, select};
+    let mut session = session::Session::new(boot_epoch);
+    let server = endpoints
+        .clone()
+        .bounded_server::<DetectEndpoint, 4>(Some("detect"));
     let server = core::pin::pin!(server);
     let mut h = server.attach();
-
-    // Legacy endpoint retains one terminal response, including failures.
-    // Reusing its id with changed parameters is a protocol error, never a new
-    // measurement. Session-scoped retirement is implemented in `operations`;
-    // this legacy cache alone does NOT cover eviction or a device reboot.
-    let mut cache: Option<(ReqId, DetectRequest, DetectResponse)> = None;
-
     loop {
-        // Owned request + header — nothing borrowed across the measurement await.
         let Ok(msg) = h.recv_manual().await else {
             continue;
         };
-        let id = msg.t.id;
-
-        // A Hall commit is durable in the ISR, including when its waiter was
-        // cancelled after claim. Replay it without re-energising the motor.
-        if let Some(response) = CONFIG_COORDINATOR.detected(id, msg.t.inner) {
-            let _ = responder
-                .clone()
-                .respond_owned::<DetectEndpoint>(&msg.hdr, &response);
+        let dispatch = session.handle(msg.t);
+        let _ = endpoints
+            .clone()
+            .respond_owned::<DetectEndpoint>(&msg.hdr, &dispatch.reply);
+        let Some(measurement) = dispatch.start else {
             continue;
-        }
-
-        let resp = match &cache {
-            // Hit: replay without re-running the (physical) measurement.
-            Some((cached_id, cached_req, resp)) if *cached_id == id => {
-                replay_detection(*cached_req, msg.t.inner, *resp)
+        };
+        let Some(guard) = DetectionActiveGuard::try_arm() else {
+            session.finish(measurement.id, Outcome::Failed(DetectError::Busy));
+            continue;
+        };
+        // IDs are unique within this boot; config's ISR acknowledgement cache
+        // is volatile too. Session checking happens before this internal key.
+        let key = ReqId(
+            (u64::from(measurement.id.session.generation) << 32)
+                | u64::from(measurement.id.sequence),
+        );
+        let operation = async {
+            let result = match select(
+                run_step(
+                    &mut backend,
+                    measurement.request,
+                    max_current_a,
+                    foc_freq_hz,
+                    runtime_config,
+                    &guard,
+                    key,
+                ),
+                <B::Timer as crate::timer::Timer>::after_millis(65_000),
+            )
+            .await
+            {
+                Either::First(result) => result,
+                Either::Second(()) => {
+                    guard.cancel();
+                    DetectResponse::Error(DetectError::Timeout)
+                }
+            };
+            // Do not publish a terminal outcome before ISR cleanup. If the ISR
+            // is unavailable, retain ownership; the hardware watchdog remains
+            // responsible for a hung controller.
+            while !guard.end::<B::Timer>().await {
+                guard.cancel();
             }
-            // Miss: stop the motor, measure, leave the motor stopped, cache.
-            _ => {
-                // send().await, not try_send: the bracketing Stops must not
-                // be droppable on a full channel (the ISR drains every
-                // cycle, so this resolves within one FOC period).
-                // Suspend the link-loss failsafe while we drive: the host is
-                // blocked on our response and sends no liveness frames (see
-                // DETECTION_ACTIVE). RAII: the flag clears on EVERY exit path,
-                // including a future cancellation of this future — a stranded
-                // flag would leave the link-loss failsafe disabled forever.
-                // The command-staleness deadman still covers the measurement
-                // (long BENCH_STALENESS_TIMEOUT_US bound).
-                let resp = if let Some(detection_guard) = DetectionActiveGuard::try_arm() {
-                    CMD_CHANNEL
-                        .send(DriverCommand::SetMode(ControlMode::Stopped))
-                        .await;
-                    let resp = run_step(
-                        &mut backend,
-                        msg.t.inner,
-                        max_current_a,
-                        foc_freq_hz,
-                        runtime_config,
-                        &detection_guard,
-                        id,
-                    )
-                    .await;
-                    CMD_CHANNEL
-                        .send(DriverCommand::SetMode(ControlMode::Stopped))
-                        .await;
-                    resp
-                } else {
-                    DetectResponse::Error(DetectError::Busy)
-                };
-                // A lost failure reply must not repeat physical excitation.
-                // A deliberate retry (including Busy) uses a fresh request id.
-                cache = Some((id, msg.t.inner, resp));
-                resp
+            if crate::state::detection_cancelled()
+                && !matches!(
+                    result,
+                    DetectResponse::Error(DetectError::SourceLimited | DetectError::Timeout)
+                )
+            {
+                Outcome::Cancelled
+            } else {
+                match result {
+                    DetectResponse::Error(e) => Outcome::Failed(e),
+                    value => Outcome::Completed(value),
+                }
             }
         };
-
-        let _ = responder
-            .clone()
-            .respond_owned::<DetectEndpoint>(&msg.hdr, &resp);
-    }
-}
-
-pub(crate) fn replay_detection(
-    original: DetectRequest,
-    repeated: DetectRequest,
-    response: DetectResponse,
-) -> DetectResponse {
-    if original == repeated {
-        response
-    } else {
-        DetectResponse::Error(DetectError::KeyConflict)
+        let mut operation = core::pin::pin!(operation);
+        loop {
+            match select(operation.as_mut(), h.recv_manual()).await {
+                Either::First(outcome) => {
+                    session.finish(measurement.id, outcome);
+                    break;
+                }
+                Either::Second(Ok(msg)) => {
+                    let dispatch = session.handle(msg.t);
+                    if dispatch.cancel_active {
+                        guard.cancel();
+                    }
+                    // The ledger never admits another operation while cleanup
+                    // is outstanding. Replies remain available during a sweep.
+                    debug_assert!(dispatch.start.is_none());
+                    let _ = endpoints
+                        .clone()
+                        .respond_owned::<DetectEndpoint>(&msg.hdr, &dispatch.reply);
+                }
+                Either::Second(Err(_)) => {}
+            }
+        }
     }
 }
 
@@ -468,7 +462,6 @@ async fn measure_step<B: DetectionBackend>(
                         &CONFIG_COORDINATOR,
                         detection,
                         request_id,
-                        req,
                     ) else {
                         return DetectResponse::Error(DetectError::Busy);
                     };
@@ -579,27 +572,6 @@ fn map_err(e: DetectionError) -> DetectError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn repeated_failure_is_final_and_changed_payload_is_rejected() {
-        let request = DetectRequest::MeasureResistance {
-            max_power_loss_w: 120.0,
-            current_limit_a: None,
-        };
-        let response = DetectResponse::Error(DetectError::SourceLimited);
-        assert!(matches!(
-            replay_detection(request, request, response),
-            DetectResponse::Error(DetectError::SourceLimited)
-        ));
-        let changed = DetectRequest::MeasureResistance {
-            max_power_loss_w: 60.0,
-            current_limit_a: None,
-        };
-        assert!(matches!(
-            replay_detection(request, changed, response),
-            DetectResponse::Error(DetectError::KeyConflict)
-        ));
-    }
 
     #[test]
     fn commissioning_uses_inverter_and_source_without_old_motor_limits() {
