@@ -625,7 +625,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 10;
+pub const ICD_PROTO_VERSION: u16 = 11;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -874,11 +874,15 @@ pub enum DetectRequest {
     MeasureResistance {
         /// Max power dissipation during test (W). Controls safe test current.
         max_power_loss_w: f32,
+        /// Advanced override, further limiting excitation in amps.
+        current_limit_a: Option<f32>,
     },
     /// Measure d/q-axis inductance via HFI.
     MeasureInductance {
         /// Max power dissipation during test (W).
         max_power_loss_w: f32,
+        /// Advanced override, further limiting peak DC + AC current.
+        current_limit_a: Option<f32>,
         /// Previously measured resistance (Ω). GUI provides this.
         resistance_ohm: f32,
     },
@@ -886,6 +890,8 @@ pub enum DetectRequest {
     MeasureFlux {
         /// Max power dissipation during test (W).
         max_power_loss_w: f32,
+        /// Advanced override, further limiting spin-up current.
+        current_limit_a: Option<f32>,
         /// Previously measured resistance (Ω). GUI provides this.
         resistance_ohm: f32,
         /// Previously measured average inductance (H), 0.0 = unknown.
@@ -904,6 +910,8 @@ pub enum DetectRequest {
     CalibrateHall {
         /// Max power dissipation during the sweep (W).
         max_power_loss_w: f32,
+        /// Advanced override, further limiting the alignment current.
+        current_limit_a: Option<f32>,
         /// Previously measured resistance (Ω). GUI/CLI provides this.
         resistance_ohm: f32,
     },
@@ -915,6 +923,27 @@ pub enum DetectRequest {
         /// Required acknowledgement for the all-phases-at-50% topology.
         stationary_confirmed: bool,
     },
+}
+
+impl DetectRequest {
+    /// Current cap requested for the measurement, in addition to active limits.
+    pub fn current_limit_a(self) -> Option<f32> {
+        match self {
+            Self::MeasureResistance {
+                current_limit_a, ..
+            }
+            | Self::MeasureInductance {
+                current_limit_a, ..
+            }
+            | Self::MeasureFlux {
+                current_limit_a, ..
+            }
+            | Self::CalibrateHall {
+                current_limit_a, ..
+            } => current_limit_a,
+            Self::MeasureCurrentOffsets { .. } => None,
+        }
+    }
 }
 
 /// Motor detection response — matches the request step.

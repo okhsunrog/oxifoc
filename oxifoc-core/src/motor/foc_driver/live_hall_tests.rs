@@ -419,6 +419,7 @@ fn detected_hall_ack_commits_actual_reference_revision_and_durable_detection_ded
     );
     let request = DetectRequest::CalibrateHall {
         max_power_loss_w: 120.0,
+        current_limit_a: None,
         resistance_ohm: 0.03,
     };
     let id = ReqId(201);
@@ -514,7 +515,8 @@ fn detected_hall_ack_commits_actual_reference_revision_and_durable_detection_ded
             .detected(
                 id,
                 DetectRequest::MeasureResistance {
-                    max_power_loss_w: 120.0
+                    max_power_loss_w: 120.0,
+                    current_limit_a: None,
                 }
             )
             .is_none()

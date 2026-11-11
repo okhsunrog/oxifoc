@@ -664,8 +664,8 @@ mod integration_tests {
         }
     }
 
-    /// Fixed holding bias survives a changed ceiling; voltage-limited motors
-    /// may qualify below the target AC current using fit quality/repeatability.
+    /// Voltage-limited motors may qualify below the target AC current using
+    /// fit quality and repeatability, including at different current ceilings.
     #[test]
     #[cfg(feature = "hfi-detect")]
     fn adaptive_hfi_covers_low_inductance_and_voltage_limited_motors() {

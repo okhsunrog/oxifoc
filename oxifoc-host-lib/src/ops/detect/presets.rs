@@ -2,6 +2,7 @@
 ///
 /// Values match VESC Tool's FOC detection dialog presets.
 pub struct MotorPreset {
+    pub id: &'static str,
     pub name: &'static str,
     /// Number of magnetic pole pairs (poles / 2)
     pub pole_pairs: u8,
@@ -15,6 +16,7 @@ pub struct MotorPreset {
 
 pub static PRESETS: &[MotorPreset] = &[
     MotorPreset {
+        id: "mini-outrunner",
         name: "Mini Outrunner (~75g)",
         pole_pairs: 7,
         max_power_loss_w: 20.0,
@@ -22,6 +24,7 @@ pub static PRESETS: &[MotorPreset] = &[
         sensorless_erpm: 4000.0,
     },
     MotorPreset {
+        id: "small-outrunner",
         name: "Small Outrunner (~200g)",
         pole_pairs: 7,
         max_power_loss_w: 50.0,
@@ -29,6 +32,7 @@ pub static PRESETS: &[MotorPreset] = &[
         sensorless_erpm: 4000.0,
     },
     MotorPreset {
+        id: "medium-outrunner",
         name: "Medium Outrunner (~750g)",
         pole_pairs: 7,
         max_power_loss_w: 120.0,
@@ -36,6 +40,7 @@ pub static PRESETS: &[MotorPreset] = &[
         sensorless_erpm: 4000.0,
     },
     MotorPreset {
+        id: "large-outrunner",
         name: "Large Outrunner (~2kg)",
         pole_pairs: 7,
         max_power_loss_w: 400.0,
@@ -43,6 +48,7 @@ pub static PRESETS: &[MotorPreset] = &[
         sensorless_erpm: 4000.0,
     },
     MotorPreset {
+        id: "small-inrunner",
         name: "Small Inrunner (~200g)",
         pole_pairs: 1,
         max_power_loss_w: 50.0,
@@ -50,6 +56,7 @@ pub static PRESETS: &[MotorPreset] = &[
         sensorless_erpm: 4000.0,
     },
     MotorPreset {
+        id: "medium-inrunner",
         name: "Medium Inrunner (~750g)",
         pole_pairs: 2,
         max_power_loss_w: 140.0,
@@ -57,6 +64,7 @@ pub static PRESETS: &[MotorPreset] = &[
         sensorless_erpm: 4000.0,
     },
     MotorPreset {
+        id: "large-inrunner",
         name: "Large Inrunner (~2kg)",
         pole_pairs: 2,
         max_power_loss_w: 400.0,
@@ -64,6 +72,7 @@ pub static PRESETS: &[MotorPreset] = &[
         sensorless_erpm: 4000.0,
     },
     MotorPreset {
+        id: "hub",
         name: "E-Bike DD Hub Motor",
         pole_pairs: 23,
         max_power_loss_w: 150.0,
@@ -71,6 +80,7 @@ pub static PRESETS: &[MotorPreset] = &[
         sensorless_erpm: 2000.0,
     },
     MotorPreset {
+        id: "small-edf",
         name: "EDF Inrunner Small (~200g)",
         pole_pairs: 3,
         max_power_loss_w: 110.0,
@@ -78,10 +88,3 @@ pub static PRESETS: &[MotorPreset] = &[
         sensorless_erpm: 4000.0,
     },
 ];
-
-/// Preset names for UI ComboBox, including "Custom" as last entry
-pub fn preset_names() -> Vec<&'static str> {
-    let mut names: Vec<&str> = PRESETS.iter().map(|p| p.name).collect();
-    names.push("Custom");
-    names
-}

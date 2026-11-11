@@ -27,7 +27,7 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--recovery-elf", required=True, type=Path)
     parser.add_argument("--repeats", default=2, type=int)
-    parser.add_argument("--hall-current", type=float, default=0, help="Recalibrate Hall in RAM at this current; 0 keeps persisted calibration")
+    parser.add_argument("--hall-current", type=float, default=0, help="Recalibrate Hall in RAM with this current ceiling; 0 keeps persisted calibration")
     parser.add_argument("--brake-power-w", type=float, help="Volatile dissipative braking budget; regen limit unchanged")
     parser.add_argument("--speed-ceiling", type=float, help="Volatile bench speed ceiling, electrical rad/s")
     parser.add_argument("--cases", default="velocity40,velocity-negative40,velocity120-to40")
@@ -69,10 +69,13 @@ def main():
         config = probe.run(["just", "cli-bridge", "config", "dump"]).stdout
         (args.output/"config-persisted.json").write_text(config)
         if args.hall_current:
-            resistance = json.loads(config)["motor-params"]["resistance_ohm"]
-            power = 1.5 * resistance * args.hall_current**2
             with (args.output/"hall-calibration.driver.log").open("w") as log:
-                subprocess.run(["just", "cli-bridge", "detect", "hall", "--max-power-w", str(power), "--record", str(args.output/"hall-calibration.parquet"), "--record-hz", "20000"], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=45)
+                subprocess.run(
+                    ["just", "cli-bridge", "detect", "hall", "--motor-class", "medium-outrunner",
+                     "--advanced", "--current-limit-a", str(args.hall_current),
+                     "--record", str(args.output/"hall-calibration.parquet"), "--record-hz", "20000"],
+                    stdout=log, stderr=subprocess.STDOUT, check=True, timeout=45,
+                )
         if args.hall_config:
             hall = json.loads(args.hall_config.read_text())["hall-calibration"]
             assert hall["geometry"] is not None

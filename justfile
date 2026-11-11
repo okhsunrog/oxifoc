@@ -360,7 +360,7 @@ profile-pwm-l-mk5 capture resistance:
     uv run python scripts/bench_executor_trace.py arm --symbols "$symbols" --on-active --timer-hz 83917920
     capture_status=0
     RUST_LOG=warn,device=info,fast_rx=debug just cli-usb --elf {{ mk5_elf }} detect inductance \
-        --resistance {{ quote(resistance) }} --max-power-w 10 --record-hz 20000 --record {{ quote(capture) }} \
+        --resistance {{ quote(resistance) }} --motor-class medium-outrunner --advanced --current-limit-a 3 --record-hz 20000 --record {{ quote(capture) }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }} || capture_status=$?
     uv run python scripts/bench_executor_trace.py read --symbols "$symbols" --out {{ quote(capture + ".trace.bin") }} --timer-hz 83917920
     exit "$capture_status"
@@ -637,6 +637,11 @@ flash-mk5-link-bench link="spi" source="ergot" detail="timing": (build-mk5-link-
 [positional-arguments]
 cli-bridge *ARGS:
     @target/release/oxifoc-host-cli --transport usb-serial-jtag --serial-path /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00 --elf {{mk5_elf}} --wait-secs 12 --json "$@"
+
+# Full motor commissioning, one native-rate Parquet capture per stage.
+[positional-arguments]
+detect-bridge output motor_class *ARGS:
+    @shift 2 && just cli-bridge --fast-source ergot-raw --fast-encoding packed28 detect all --motor-class {{quote(motor_class)}} --record {{quote(output)}} "$@"
 
 # Finite maneuver, full native-rate stream, terminal Stop on success or failure.
 test-bridge capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off" phase_source="hall":

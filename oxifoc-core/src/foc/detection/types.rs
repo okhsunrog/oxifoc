@@ -68,6 +68,52 @@ impl MotorSize {
     }
 }
 
+/// Test currents use the thermal budget as a scale, independently of the
+/// application's drive limits. The caller supplies the active current ceiling.
+#[derive(Clone, Copy, Debug)]
+pub struct DetectionCurrents {
+    pub resistance_a: f32,
+    pub inductance_bias_a: f32,
+    pub inductance_rms_a: f32,
+    pub inductance_peak_a: f32,
+    pub flux_a: f32,
+    pub hall_a: f32,
+}
+
+impl DetectionCurrents {
+    pub fn new(
+        power_loss_w: f32,
+        resistance_ohm: f32,
+        vbus: f32,
+        ceiling_a: f32,
+    ) -> Result<Self, DetectionError> {
+        if [power_loss_w, resistance_ohm, vbus, ceiling_a]
+            .iter()
+            .any(|v| !v.is_finite() || *v <= 0.0)
+        {
+            return Err(DetectionError::OutOfRange);
+        }
+        let thermal_a = sqrtf(power_loss_w / (1.5 * resistance_ohm));
+        let dc_ceiling_a = ceiling_a.min(vbus * 0.577 * 0.85 / resistance_ohm);
+        // VESC stops raising its R/L test current when copper loss reaches P/5.
+        let resistance_a = (thermal_a * sqrtf(0.2)).min(dc_ceiling_a);
+        // HFI uses a biased, rotating AC vector. Split the R/L current scale
+        // between the DC bias and AC RMS target, leaving room for AC peaks.
+        let inductance_peak_a = thermal_a.min(ceiling_a);
+        let inductance_bias_a = 0.4 * resistance_a;
+        let inductance_rms_a =
+            (0.16 * resistance_a).min(0.5 * (inductance_peak_a - inductance_bias_a));
+        Ok(Self {
+            resistance_a,
+            inductance_bias_a,
+            inductance_rms_a,
+            inductance_peak_a,
+            flux_a: (thermal_a / 2.5).min(dc_ceiling_a),
+            hall_a: (thermal_a / 3.0).min(dc_ceiling_a),
+        })
+    }
+}
+
 /// Detected motor electrical parameters.
 ///
 /// Contains all parameters that can be measured during motor detection:
@@ -297,31 +343,21 @@ impl Default for InductanceParams {
 }
 
 impl InductanceParams {
-    /// Choose a small, repeatable holding bias independently of the R-test
-    /// current. Thermal, bus and current ceilings may only reduce that bias.
+    /// Derive separate DC alignment and AC excitation from the motor class.
     pub fn commissioning(
         motor_size: MotorSize,
         resistance_ohm: f32,
         vbus: f32,
         current_limit_a: f32,
     ) -> Result<Self, DetectionError> {
-        let power = motor_size.max_power_loss_w();
-        if [resistance_ohm, vbus, current_limit_a, power]
-            .iter()
-            .any(|v| !v.is_finite() || *v <= 0.0)
-        {
-            return Err(DetectionError::OutOfRange);
-        }
-        let defaults = Self::default();
-        let max_current_a = current_limit_a.min(sqrtf(power / (1.5 * resistance_ohm)));
-        let hold_current_a = defaults
-            .hold_current_a
-            .min(sqrtf(power.min(1.0) / (1.5 * resistance_ohm)))
-            .min(max_current_a * (2.0 / 3.0))
-            .min(vbus * 0.577 * 0.6 / resistance_ohm);
-        let hfi_current_a = defaults
-            .hfi_current_a
-            .min((max_current_a - hold_current_a) * 0.5);
+        let currents = DetectionCurrents::new(
+            motor_size.max_power_loss_w(),
+            resistance_ohm,
+            vbus,
+            current_limit_a,
+        )?;
+        let hold_current_a = currents.inductance_bias_a;
+        let hfi_current_a = currents.inductance_rms_a;
         if hold_current_a < 0.05 || hfi_current_a < 0.01 {
             return Err(DetectionError::OutOfRange);
         }
@@ -331,8 +367,9 @@ impl InductanceParams {
             vbus,
             hold_current_a,
             hfi_current_a,
-            max_current_a,
-            ..defaults
+            max_current_a: currents.inductance_peak_a,
+            hfi_voltage_v: vbus * 0.4,
+            ..Self::default()
         })
     }
 }
@@ -496,14 +533,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inductance_bias_is_independent_of_the_resistance_test_ceiling() {
+    fn detection_profile_scales_with_class_and_respects_the_active_ceiling() {
         let low = InductanceParams::commissioning(MotorSize::Medium, 0.031, 24.0, 3.0).unwrap();
         let high = InductanceParams::commissioning(MotorSize::Medium, 0.031, 24.0, 30.7).unwrap();
-        assert_eq!(low.hold_current_a, 2.0);
-        assert_eq!(low.hold_current_a, high.hold_current_a);
-        assert_eq!(low.hfi_current_a, high.hfi_current_a);
+        assert!(low.hold_current_a < high.hold_current_a);
+        assert!(low.hfi_current_a < high.hfi_current_a);
+        let mini = DetectionCurrents::new(20.0, 0.0624, 24.0, 20.0).unwrap();
+        let medium = DetectionCurrents::new(120.0, 0.0624, 24.0, 20.0).unwrap();
+        assert!(medium.resistance_a > mini.resistance_a);
+        assert!(medium.flux_a > mini.flux_a && medium.hall_a > mini.hall_a);
+        assert!((1.5 * 0.0624 * medium.resistance_a.powi(2) - 24.0).abs() < 0.01);
+        assert!(medium.inductance_bias_a + 2.0 * medium.inductance_rms_a <= 20.0);
+        let capped = DetectionCurrents::new(120.0, 0.0624, 24.0, 6.0).unwrap();
+        assert_eq!(capped.resistance_a, 6.0);
+        assert_eq!(capped.hall_a, 6.0);
         let small = InductanceParams::commissioning(MotorSize::Mini, 8.0, 12.0, 0.5).unwrap();
-        assert!(1.5 * small.hold_current_a.powi(2) * small.resistance_ohm <= 1.001);
+        assert!(small.hold_current_a < 0.5);
         assert!(small.hold_current_a + 2.0 * small.hfi_current_a <= small.max_current_a);
         for limit in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             assert!(InductanceParams::commissioning(MotorSize::Medium, 0.03, 24.0, limit).is_err());

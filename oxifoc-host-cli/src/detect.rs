@@ -1,9 +1,11 @@
 //! `detect` subcommand: on-device motor detection orchestration.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use oxifoc_core::types::{ConfigGroupId, DetectRequest};
+use oxifoc_core::types::{ConfigGroupId, DetectRequest, DetectResponse, HardwareInfo};
+use oxifoc_host_lib::ops::detect::{self, DetectionPlan};
 use oxifoc_host_lib::{HostCommand, HostRuntime};
 use serde_json::json;
 
@@ -27,11 +29,9 @@ fn f32_field(v: &serde_json::Value, key: &str) -> f32 {
 pub fn run_detect(
     runtime: &HostRuntime,
     step: DetectStep,
-    max_power_w: f32,
+    plan: DetectionPlan,
     resistance: Option<f32>,
     inductance: Option<f32>,
-    pole_pairs: Option<u8>,
-    erpm: f32,
     offset_method: OffsetMethodArg,
     samples: u16,
     stationary: bool,
@@ -40,7 +40,13 @@ pub fn run_detect(
     record_hz: Option<u16>,
     json: bool,
 ) -> Result<()> {
-    use oxifoc_core::types::DetectResponse;
+    if matches!(step, DetectStep::All) {
+        anyhow::ensure!(
+            resistance.is_none() && inductance.is_none(),
+            "full detection measures its own resistance and inductance"
+        );
+        return run_all(runtime, plan, record_out.as_deref(), record_hz, apply, json);
+    }
 
     if matches!(step, DetectStep::OffsetsCompare) {
         if apply {
@@ -49,11 +55,7 @@ pub fn run_detect(
         if record_out.is_some() {
             bail!("--record is not supported for the three-step offset comparison");
         }
-        let reports = oxifoc_host_lib::ops::detect::compare_current_offsets(
-            &runtime.cmd_tx,
-            samples,
-            stationary,
-        )?;
+        let reports = detect::compare_current_offsets(&runtime.cmd_tx, samples, stationary)?;
         let delta = |a: usize, b: usize| {
             [
                 reports[b].offsets[0] - reports[a].offsets[0],
@@ -91,16 +93,18 @@ pub fn run_detect(
     let l = inductance.unwrap_or_else(|| {
         (f32_field(&stored, "inductance_d_h") + f32_field(&stored, "inductance_q_h")) / 2.0
     });
-    let pp = pole_pairs.unwrap_or_else(|| {
-        stored
-            .get("pole_pairs")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u8
-    });
+    let DetectionPlan {
+        pole_pairs: pp,
+        max_power_loss_w,
+        flux_target_erpm,
+        current_limit_a,
+        ..
+    } = plan;
 
     let req = match step {
         DetectStep::Resistance => DetectRequest::MeasureResistance {
-            max_power_loss_w: max_power_w,
+            max_power_loss_w,
+            current_limit_a,
         },
         DetectStep::Inductance => {
             if r <= 0.0 {
@@ -109,7 +113,8 @@ pub fn run_detect(
                 );
             }
             DetectRequest::MeasureInductance {
-                max_power_loss_w: max_power_w,
+                max_power_loss_w,
+                current_limit_a,
                 resistance_ohm: r,
             }
         }
@@ -121,11 +126,12 @@ pub fn run_detect(
                 );
             }
             DetectRequest::MeasureFlux {
-                max_power_loss_w: max_power_w,
+                max_power_loss_w,
+                current_limit_a,
                 resistance_ohm: r,
                 inductance_h: l,
                 pole_pairs: pp,
-                openloop_erpm: erpm,
+                openloop_erpm: flux_target_erpm,
             }
         }
         DetectStep::Hall => {
@@ -137,7 +143,8 @@ pub fn run_detect(
                 );
             }
             DetectRequest::CalibrateHall {
-                max_power_loss_w: max_power_w,
+                max_power_loss_w,
+                current_limit_a,
                 resistance_ohm: r,
             }
         }
@@ -152,20 +159,100 @@ pub fn run_detect(
                 stationary_confirmed: stationary,
             }
         }
-        DetectStep::OffsetsCompare => unreachable!(),
+        DetectStep::All | DetectStep::OffsetsCompare => unreachable!(),
     };
 
     if !json {
         println!("Detection started: {req:?}");
     }
+    let (resp, capture) = measure(runtime, req, record_out.as_deref(), record_hz, &mut None)?;
+    let applied = if apply {
+        detect::apply_step(&runtime.cmd_tx, &resp)?
+    } else {
+        serde_json::Value::Null
+    };
+    emit(
+        json,
+        json!({"result": resp, "applied": applied, "capture": capture}),
+        format!(
+            "Detect result: {resp:?}{}",
+            if apply { " (applied)" } else { "" }
+        ),
+    );
+    Ok(())
+}
 
+fn run_all(
+    runtime: &HostRuntime,
+    plan: DetectionPlan,
+    record_out: Option<&str>,
+    record_hz: Option<u16>,
+    apply: bool,
+    json: bool,
+) -> Result<()> {
+    let directory = record_out.map(Path::new);
+    if let Some(directory) = directory {
+        std::fs::create_dir(directory).context("create new detection capture directory")?;
+    }
+    let mut captures = serde_json::Map::new();
+    let mut hardware = None;
+    let outcome = detect::run_sequence(&runtime.cmd_tx, plan, |stage, request| {
+        eprintln!("Detection: {stage}");
+        let file = directory.map(|dir| dir.join(format!("{stage}.parquet")));
+        let (response, capture) = measure(
+            runtime,
+            request,
+            file.as_ref().map(|p| p.to_string_lossy()).as_deref(),
+            record_hz,
+            &mut hardware,
+        )
+        .with_context(|| format!("detect {stage}"))?;
+        if let Some(dir) = directory {
+            let result = json!({"result": response, "capture": capture});
+            std::fs::write(
+                dir.join(format!("{stage}.json")),
+                serde_json::to_vec_pretty(&result)?,
+            )?;
+        }
+        captures.insert(stage.into(), capture);
+        Ok(response)
+    })?;
+    if apply {
+        detect::apply_sequence(&runtime.cmd_tx, &outcome, plan)?;
+    }
+    let (kp, ki) = detect::suggested_pi_gains(outcome.resistance_ohm, outcome.l_avg());
+    emit(
+        json,
+        json!({"result": outcome, "kp": kp, "ki": ki, "applied": apply, "captures": captures}),
+        format!("{outcome:?}\nCurrent PI: Kp={kp:.5}, Ki={ki:.4}"),
+    );
+    Ok(())
+}
+
+fn measure(
+    runtime: &HostRuntime,
+    req: DetectRequest,
+    record_out: Option<&str>,
+    record_hz: Option<u16>,
+    hardware: &mut Option<HardwareInfo>,
+) -> Result<(DetectResponse, serde_json::Value)> {
     // Raw-rate capture around the whole step by default (M=1 preserves the HFI
     // carrier and pulse edges; plain sample dropping can alias them).
     // `--record-hz` overrides
     // for steps where a loss-free decimated capture beats a lossy raw one.
     let mut cap = match &record_out {
         Some(_) => {
-            let hw = record::latest_hw_info(runtime)
+            if let Some(info) = record::latest_hw_info(runtime) {
+                anyhow::ensure!(
+                    hardware
+                        .as_ref()
+                        .is_none_or(|previous| previous.uuid == info.uuid),
+                    "controller changed during detection"
+                );
+                *hardware = Some(info);
+            }
+            let hw = hardware
+                .clone()
                 .context("hardware handshake unavailable for detection recording")?;
             let rate = record_hz.unwrap_or_else(|| hw.foc_freq_hz.min(u32::from(u16::MAX)) as u16);
             Some(record::Capture::start_with_hw(runtime, rate, hw)?)
@@ -219,7 +306,7 @@ pub fn run_detect(
         if summary.gaps != 0 || summary.samples_lost != 0 {
             capture_loss = Some((summary.gaps, summary.samples_lost));
         }
-        if !json || detect_result.is_err() {
+        if detect_result.is_err() {
             eprintln!(
                 "capture: {} — {} rows at {} Hz, {} gap(s)",
                 summary.path, summary.rows, summary.fast_hz_actual, summary.gaps
@@ -238,34 +325,11 @@ pub fn run_detect(
         bail!("detection failed: {e:?}");
     }
     if let Some((gaps, lost)) = capture_loss {
-        emit(
-            json,
-            json!({"result": serde_json::to_value(resp)?, "applied": null,
-            "capture": capture_summary}),
-            format!("Detect result: {resp:?}; capture incomplete"),
-        );
         bail!(
-            "detection capture has {gaps} sequence gaps ({lost} lost samples); result retained, not applied"
+            "detection capture has {gaps} sequence gaps ({lost} lost samples); {resp:?} retained in capture metadata"
         );
     }
-
-    // Shared per-step apply (ops::detect): the CLI used to hand-roll a copy
-    // that skipped the rating recompute and could drift from the GUI path.
-    let applied = if apply {
-        oxifoc_host_lib::ops::detect::apply_step(&runtime.cmd_tx, &resp)?
-    } else {
-        serde_json::Value::Null
-    };
-
-    emit(
-        json,
-        json!({"result": serde_json::to_value(resp)?, "applied": applied, "capture": capture_summary}),
-        format!(
-            "Detect result: {resp:?}{}",
-            if apply { " (applied)" } else { "" }
-        ),
-    );
-    Ok(())
+    Ok((resp, capture_summary))
 }
 
 #[cfg(test)]
@@ -318,11 +382,12 @@ mod hardware_tests {
                 run_detect(
                     &runtime,
                     DetectStep::Inductance,
-                    0.05,
+                    DetectionPlan {
+                        max_power_loss_w: 0.05,
+                        ..DetectionPlan::from(&detect::PRESETS[2])
+                    },
                     Some(0.030444),
                     None,
-                    None,
-                    700.0,
                     OffsetMethodArg::PerPhase,
                     1000,
                     false,

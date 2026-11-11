@@ -1,134 +1,173 @@
-//! Detection UI integration.
+//! Motor commissioning UI.
+
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
+use oxifoc_core::types::ControlMode;
+use oxifoc_host_lib::ops::detect::{self, DetectionOutcome, DetectionPlan, PRESETS};
+use oxifoc_host_lib::{CommandSender, HostCommand};
+use slint::{ComponentHandle, SharedString};
 
 use super::{App, SharedRuntime, parse_field};
-use oxifoc_host_lib::ops;
-use slint::ComponentHandle;
-use slint::SharedString;
-use std::thread;
 
-pub(super) fn bind(app: &App, runtime: &SharedRuntime) {
-    // ── Detect start ─────────────────────────────────────────────────────────
+pub fn bind(app: &App, runtime: &SharedRuntime) {
+    let result = Arc::new(Mutex::new(
+        None::<(CommandSender, DetectionPlan, DetectionOutcome)>,
+    ));
+    let cancelled = Arc::new(AtomicBool::new(false));
+
+    {
+        let weak = app.as_weak();
+        app.on_preset_changed(move |name| {
+            if let Some(app) = weak.upgrade()
+                && let Some(preset) = PRESETS.iter().find(|p| p.name == name.as_str())
+            {
+                let plan = DetectionPlan::from(preset);
+                app.set_detect_pole_pairs(i32::from(plan.pole_pairs));
+                app.set_detect_flux_erpm(plan.flux_target_erpm.to_string().into());
+                app.set_detect_current_limit(SharedString::default());
+                app.set_detect_resistance(SharedString::default());
+                app.set_detect_status(SharedString::default());
+            }
+        });
+    }
+
     {
         let rt = runtime.clone();
         let weak = app.as_weak();
+        let result = result.clone();
+        let cancelled = cancelled.clone();
         app.on_detect_start(move || {
-            let guard = rt.lock().unwrap();
-            let Some(ref runtime) = *guard else {
-                return;
-            };
-            let weak = weak.clone();
             let app = weak.unwrap();
-
-            let pole_pairs = app.get_pole_pairs().max(1) as u8;
-            let mut parse_err: Option<String> = None;
-            let max_loss: f32 =
-                parse_field("max power loss", &app.get_detect_max_loss(), &mut parse_err);
-            let openloop_erpm: f32 = parse_field(
-                "open-loop ERPM",
-                &app.get_detect_openloop_erpm(),
-                &mut parse_err,
-            );
-            if let Some(msg) = parse_err {
-                app.set_detect_status(SharedString::from(msg));
+            if app.get_detect_running() {
                 return;
             }
+            let Some(cmd) = rt.lock().unwrap().as_ref().map(|r| r.cmd_tx.clone()) else {
+                app.set_detect_status("Connect a controller first".into());
+                return;
+            };
+            let Some(preset) = PRESETS.get(app.get_selected_preset() as usize) else {
+                return;
+            };
+            let mut plan = DetectionPlan::from(preset);
+            plan.calibrate_hall = app.get_detect_hall();
+            if app.get_detect_advanced() {
+                let mut error = None;
+                plan.pole_pairs = app.get_detect_pole_pairs() as u8;
+                plan.flux_target_erpm =
+                    parse_field("flux spin ERPM", &app.get_detect_flux_erpm(), &mut error);
+                let limit = app.get_detect_current_limit();
+                if !limit.trim().is_empty() {
+                    plan.current_limit_a = Some(parse_field("current ceiling", &limit, &mut error));
+                }
+                if let Some(error) = error {
+                    app.set_detect_status(error.into());
+                    return;
+                }
+            }
 
-            // Full R → L → flux → hall sequence via the shared op (same code
-            // path the CLI uses). Runs on a cloned command sender, NOT under
-            // the runtime mutex, so Stop/Coast stay responsive during the
-            // ~minute-long detection.
-            let cmd_tx = runtime.cmd_tx.clone();
-            app.set_detect_status(SharedString::from("Running..."));
-
-            thread::spawn(move || {
-                let result =
-                    ops::detect::run_sequence(&cmd_tx, pole_pairs, max_loss, openloop_erpm);
-                let _ = weak.upgrade_in_event_loop(move |app| match result {
-                    Ok(out) => {
-                        app.set_detect_resistance(SharedString::from(format!(
-                            "{:.4}",
-                            out.resistance_ohm
-                        )));
-                        app.set_detect_inductance_d(SharedString::from(format!(
-                            "{:.6}",
-                            out.inductance_d_h
-                        )));
-                        app.set_detect_inductance_q(SharedString::from(format!(
-                            "{:.6}",
-                            out.inductance_q_h
-                        )));
-                        app.set_detect_flux_linkage(SharedString::from(format!(
-                            "{:.6}",
-                            out.flux_linkage_wb
-                        )));
-                        app.set_detect_kv(SharedString::from(format!("{:.1}", out.kv_rpm_per_v)));
-                        // The gains the device WILL compute from these params on
-                        // a write (display only — apply does not write them).
-                        let (kp, ki) =
-                            ops::detect::suggested_pi_gains(out.resistance_ohm, out.l_avg());
-                        app.set_detect_kp(SharedString::from(format!("{kp:.4}")));
-                        app.set_detect_ki(SharedString::from(format!("{ki:.2}")));
-                        app.set_detect_status(SharedString::from(if out.hall_ok {
-                            "OK (with Hall)"
-                        } else {
-                            "OK (no Hall)"
-                        }));
+            *result.lock().unwrap() = None;
+            cancelled.store(false, Ordering::Release);
+            app.set_detect_resistance(SharedString::default());
+            app.set_detect_running(true);
+            app.set_detect_cancellable(true);
+            app.set_detect_status("Checking controller".into());
+            let weak = weak.clone();
+            let result = result.clone();
+            let cancelled = cancelled.clone();
+            std::thread::spawn(move || {
+                let measured = detect::run_sequence(&cmd, plan, |stage, request| {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(std::io::Error::other("detection cancelled").into());
                     }
-                    Err(e) => {
-                        tracing::error!("Detection failed: {e:#}");
-                        app.set_detect_status(SharedString::from(format!("Error: {e}")));
+                    let _ = weak.upgrade_in_event_loop(move |app| {
+                        app.set_detect_status(format!("Measuring {stage}").into());
+                    });
+                    detect::run_step(&cmd, request)
+                });
+                let _ = weak.upgrade_in_event_loop(move |app| {
+                    app.set_detect_running(false);
+                    app.set_detect_cancellable(false);
+                    if cancelled.load(Ordering::Acquire) {
+                        app.set_detect_status("Cancelled".into());
+                        return;
+                    }
+                    match measured {
+                        Ok(out) => {
+                            *result.lock().unwrap() = Some((cmd, plan, out));
+                            show_result(&app, plan, out);
+                        }
+                        Err(error) => app.set_detect_status(format!("{error:#}").into()),
                     }
                 });
             });
         });
     }
 
-    // ── Detect apply to config ──────────────────────────────────────────────
-    // Writes the measured motor params (+ thermal current rating) via the
-    // shared op. PI gains are NOT written — the device retunes the current
-    // loop from the motor params on write (single source of truth).
     {
         let rt = runtime.clone();
-        let weak = app.as_weak();
-        app.on_detect_apply(move || {
-            let cmd_tx = {
-                let guard = rt.lock().unwrap();
-                let Some(ref runtime) = *guard else {
-                    return;
-                };
-                runtime.cmd_tx.clone()
-            };
-            let weak = weak.clone();
-            let app = weak.unwrap();
-
-            let mut parse_err: Option<String> = None;
-            let err = &mut parse_err;
-            let outcome = ops::detect::DetectionOutcome {
-                resistance_ohm: parse_field("resistance", &app.get_detect_resistance(), err),
-                inductance_d_h: parse_field("inductance d", &app.get_detect_inductance_d(), err),
-                inductance_q_h: parse_field("inductance q", &app.get_detect_inductance_q(), err),
-                flux_linkage_wb: parse_field("flux linkage", &app.get_detect_flux_linkage(), err),
-                kv_rpm_per_v: 0.0,
-                hall_ok: false,
-            };
-            let pole_pairs = app.get_pole_pairs().max(1) as u8;
-            let max_loss: f32 = parse_field("max power loss", &app.get_detect_max_loss(), err);
-            if let Some(msg) = parse_err {
-                app.set_detect_status(SharedString::from(msg));
-                return;
+        app.on_detect_cancel(move || {
+            cancelled.store(true, Ordering::Release);
+            if let Some(device) = rt.lock().unwrap().as_ref() {
+                let _ = device.cmd_tx.send(HostCommand::Motor(ControlMode::Stopped));
             }
+        });
+    }
 
-            thread::spawn(move || {
-                let result =
-                    ops::detect::apply_motor_params(&cmd_tx, &outcome, pole_pairs, max_loss);
-                let _ = weak.upgrade_in_event_loop(move |app| {
-                    let status = match result {
-                        Ok(()) => "Applied to config".to_string(),
-                        Err(e) => format!("Failed to apply: {e}"),
-                    };
-                    app.set_detect_status(SharedString::from(status));
+    let rt = runtime.clone();
+    let weak = app.as_weak();
+    app.on_detect_apply(move || {
+        let app = weak.unwrap();
+        if app.get_detect_running() {
+            return;
+        }
+        let Some((cmd, plan, out)) = result.lock().unwrap().clone() else {
+            return;
+        };
+        if !rt
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|r| r.cmd_tx.same_channel(&cmd))
+        {
+            app.set_detect_status("Controller changed. Run detection again.".into());
+            return;
+        }
+        app.set_detect_running(true);
+        app.set_detect_status("Saving configuration".into());
+        let weak = weak.clone();
+        std::thread::spawn(move || {
+            let saved = detect::apply_sequence(&cmd, &out, plan);
+            let _ = weak.upgrade_in_event_loop(move |app| {
+                app.set_detect_running(false);
+                app.set_detect_status(match saved {
+                    Ok(()) => "Saved to controller".into(),
+                    Err(error) => format!("Save failed: {error:#}").into(),
                 });
             });
         });
-    }
+    });
+}
+
+fn show_result(app: &App, plan: DetectionPlan, out: DetectionOutcome) {
+    app.set_detect_resistance(format!("{:.2}", out.resistance_ohm * 1e3).into());
+    app.set_detect_inductance_d(format!("{:.2}", out.inductance_d_h * 1e6).into());
+    app.set_detect_inductance_q(format!("{:.2}", out.inductance_q_h * 1e6).into());
+    app.set_detect_flux_linkage(format!("{:.3}", out.flux_linkage_wb * 1e3).into());
+    app.set_detect_kv(format!("{:.1}", out.kv_rpm_per_v).into());
+    let rating = detect::rating_from_loss(out.resistance_ohm, plan.max_power_loss_w);
+    app.set_detect_max_current(format!("{rating:.1}").into());
+    let (kp, ki) = detect::suggested_pi_gains(out.resistance_ohm, out.l_avg());
+    app.set_detect_kp(format!("{kp:.4}").into());
+    app.set_detect_ki(format!("{ki:.2}").into());
+    app.set_detect_status(
+        if out.hall_ok {
+            "Ready to save · Hall calibrated"
+        } else {
+            "Ready to save · Sensorless"
+        }
+        .into(),
+    );
 }

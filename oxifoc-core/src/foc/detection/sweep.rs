@@ -39,8 +39,8 @@ use super::flux_linkage::{
 use super::inductance::{FFT_SIZE, HfiInjector, InductanceMeasurement, validate_inductance};
 use super::pi_tuning::{calculate_foc_gains, estimate_bandwidth};
 use super::types::{
-    DetectionError, FluxLinkageParams, InductanceParams, MotorParams, MotorSize, ResistanceParams,
-    VoltagePulseParams,
+    DetectionCurrents, DetectionError, FluxLinkageParams, InductanceParams, MotorParams, MotorSize,
+    ResistanceParams, VoltagePulseParams,
 };
 use super::voltage_pulse::VoltagePulseMeasurement;
 use crate::foc::clamp_f32;
@@ -2279,22 +2279,21 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     };
     T::after_millis(200).await;
 
-    // Safe current: I = sqrt(max_power_loss / R / 1.5), capped to the
-    // hardware limit AND to what the bus can actually drive through R —
-    // the thermal formula alone asks a high-R motor for more voltage than
-    // the bus has (a 20 W gimbal at 8 Ω on 12 V needs 10.3 V of the 6.9 V
-    // available), the PI saturates short of the setpoint and the settle
-    // check aborts the measurement.
-    let max_bus_current = (params.vbus * 0.577 * 0.85) / r_probe.max(0.001);
-    let safe_current = sqrtf(params.max_power_loss_w / r_probe / 1.5)
-        .min(params.current_max)
-        .min(max_bus_current)
-        .max(probe_current);
+    let motor_size = MotorSize::Custom(params.max_power_loss_w);
+    let currents = DetectionCurrents::new(
+        params.max_power_loss_w,
+        r_probe,
+        params.vbus,
+        params.current_max,
+    )?;
+    if currents.resistance_a < 0.5 {
+        return Err(DetectionError::OutOfRange);
+    }
     info!("Safe test current found");
 
     let resistance_params = ResistanceParams {
-        motor_size: params.motor_size,
-        current_max: safe_current,
+        motor_size,
+        current_max: currents.resistance_a,
         ..Default::default()
     };
     result.params.resistance_ohm = measure_resistance::<H, T>(hw, &resistance_params).await?;
@@ -2305,7 +2304,7 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     info!("Step 2/4: Inductance measurement");
 
     let inductance_params = InductanceParams::commissioning(
-        params.motor_size,
+        motor_size,
         result.params.resistance_ohm,
         params.vbus,
         params.current_max,
@@ -2333,7 +2332,13 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
         resistance_ohm: result.params.resistance_ohm,
         pole_pairs: params.pole_pairs,
         spin_rpm,
-        current_a: safe_current.min(2.0), // cap to safe level
+        current_a: DetectionCurrents::new(
+            params.max_power_loss_w,
+            result.params.resistance_ohm,
+            params.vbus,
+            params.current_max,
+        )?
+        .flux_a,
         inductance_h: result.params.inductance_avg_h,
         // Ramp until the phase voltage reaches ~20% of vbus (VESC spins its
         // flux wizard to duty 0.3 ≈ the same), so back-EMF dominates R·I.
@@ -2345,7 +2350,7 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     result.params.calculate_kv();
 
     // Calculate max current (needed below for the gain voltage limit)
-    result.params.calculate_max_current(params.motor_size);
+    result.params.calculate_max_current(motor_size);
 
     // Step 4: Calculate PI gains
     info!("Step 4/4: PI auto-tuning");
@@ -2418,6 +2423,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
     let det_gains = Some((DETECTION_PI_KP, DETECTION_PI_KI));
 
     for i in 1..=ramp_steps {
+        hw.check_health()?;
         let current = params.current_amps * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,
@@ -2444,6 +2450,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
         }
         for turn in 0..measured_turns + HALL_SETTLING_TURNS_PER_DIRECTION {
             for deg in 0..degrees_per_sweep {
+                hw.check_health()?;
                 let actual_deg = if forward {
                     deg
                 } else {
@@ -2478,6 +2485,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
 
     // Step 3: Ramp down and stop
     for i in (0..ramp_steps).rev() {
+        hw.check_health()?;
         let current = params.current_amps * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
             angle_rad: 0.0,

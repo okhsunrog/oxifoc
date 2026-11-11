@@ -55,10 +55,23 @@ graph LR
     R["<b>Resistance</b><br/>2-point differential<br/>R = ΔV/ΔI (MESC-style)"] --> L["<b>Inductance</b><br/>Rotating HFI + FFT<br/>Separates Ld/Lq via 2nd harmonic"]
     L --> F["<b>Flux Linkage</b><br/>Spin-down back-EMF<br/>Driven fallback: e⃗ = V⃗ − R·i⃗ − jωL·i⃗"]
     F --> PI["<b>PI Auto-tune</b><br/>Kp = L·ω_bw<br/>Ki = R·ω_bw"]
-    R --> Hall["<b>Hall Calibration</b><br/>Electrical revolution sweep<br/>State→angle mapping"]
+    F --> Hall["<b>Hall Calibration</b><br/>Bidirectional electrical sweep<br/>State→angle and transition geometry"]
 ```
 
 Each step uses conservative PI gains (`DETECTION_PI_KP/KI`) delivered via `ControlMode::OpenLoop { pi_gains }`. Detection accuracy validated against 10 simulated motors (`detection_report` example).
+
+Select a motor class before running detection. The class sets a copper-loss
+budget. A low-current probe estimates resistance so the final R step can
+target one fifth of that budget. L uses separate DC alignment and adaptive AC
+excitation. Flux spin-up and Hall use fractions of the thermal current
+estimate. The controller applies the configured current ceilings to every
+stage. The Advanced current ceiling can lower excitation for diagnostics.
+
+On the MK5 bench, `just detect-bridge CAPTURE_DIR medium-outrunner` runs the
+whole sequence and captures each stage at the native FOC rate. Review the
+result before saving the motor model and Hall calibration. For a diagnostic
+comparison, add `--advanced --current-limit-a 6`. Motors without Hall sensors
+can run with `--sensorless`.
 
 ### Virtual Motor
 

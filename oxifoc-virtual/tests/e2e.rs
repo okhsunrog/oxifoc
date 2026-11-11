@@ -247,6 +247,7 @@ fn run_e2e(transport: TransportType) {
         .send(HostCommand::Detect(
             DetectRequest::MeasureResistance {
                 max_power_loss_w: 8.0,
+                current_limit_a: None,
             },
             tx,
         ))

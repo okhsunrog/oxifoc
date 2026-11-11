@@ -237,7 +237,7 @@ export component App inherits Window {
 
     // ── Motor presets ──
     in property <[string]> preset-names;
-    in-out property <int> selected-preset: 0;
+    in-out property <int> selected-preset: -1;
     callback preset-changed(string);
 
     // ── Config editor ──
@@ -301,10 +301,16 @@ export component App inherits Window {
     in property <string> detect-max-current: "";
     in property <string> detect-kp: "";
     in property <string> detect-ki: "";
-    in-out property <string> detect-max-loss: "120";
-    in-out property <string> detect-openloop-erpm: "700";
-    in-out property <string> detect-sensorless-erpm: "4000";
+    in property <bool> detect-running;
+    in property <bool> detect-cancellable;
+    in-out property <bool> detect-review;
+    in-out property <bool> detect-advanced;
+    in-out property <bool> detect-hall: true;
+    in-out property <int> detect-pole-pairs: 7;
+    in-out property <string> detect-flux-erpm;
+    in-out property <string> detect-current-limit;
     callback detect-start();
+    callback detect-cancel();
     callback detect-apply();
 
     // ── Callbacks ──
@@ -712,18 +718,21 @@ export component App inherits Window {
                             horizontal-alignment: right; vertical-alignment: center; font-weight: 600; }
                         Button { text: root.motor-command-pending && !root.motor-running ? "..." : "Start";
                             primary: !root.motor-running;
-                            enabled: root.is-connected && !root.motor-running && !root.motor-command-pending;
+                            enabled: root.is-connected && !root.motor-running && !root.motor-command-pending && !root.detect-running;
                             clicked => { root.motor-start(); } }
                         Button { text: "STOP"; primary: root.motor-running; enabled: root.is-connected;
-                            clicked => { root.motor-stop(); } }
+                            clicked => {
+                                if root.detect-cancellable { root.detect-cancel(); }
+                                else { root.motor-stop(); }
+                            } }
                     }
                     HorizontalLayout {
                         spacing: 8px;
                         Text { text: "Id"; width: 36px; vertical-alignment: center; }
                         LineEdit { text <=> root.id-target-text; min-width: 64px; horizontal-alignment: right; }
                         Rectangle { horizontal-stretch: 1; }
-                        Button { text: "Coast"; enabled: root.is-connected; clicked => { root.motor-coast(); } }
-                        Button { text: "Brake"; enabled: root.is-connected; clicked => { root.motor-brake(); } }
+                        Button { text: "Coast"; enabled: root.is-connected && !root.detect-running; clicked => { root.motor-coast(); } }
+                        Button { text: "Brake"; enabled: root.is-connected && !root.detect-running; clicked => { root.motor-brake(); } }
                     }
                     if root.motor-status != "" : Text {
                         text: root.motor-status; font-size: 11px; wrap: word-wrap;
@@ -1094,38 +1103,75 @@ export component App inherits Window {
                 spacing: 8px;
 
                 // Motor preset + pole pairs (moved here from top level)
-                HorizontalLayout {
-                    spacing: 8px;
+                if !root.detect-review : VerticalLayout {
+                    spacing: 6px;
                     alignment: start;
-
-                    Text { text: "Motor:"; vertical-alignment: center; }
-                    ComboBox {
-                        model: root.preset-names;
-                        current-index <=> root.selected-preset;
-                        selected(idx) => { root.preset-changed(idx); }
-                        min-width: 200px;
+                    Text { text: "Choose the closest motor class"; font-weight: 600; }
+                    for name[index] in root.preset-names : HorizontalLayout {
+                        alignment: start;
+                        Button {
+                            text: name;
+                            min-width: 230px;
+                            primary: root.selected-preset == index;
+                            clicked => {
+                                root.selected-preset = index;
+                                root.preset-changed(name);
+                            }
+                        }
                     }
-                    Text { text: "Pole pairs:"; vertical-alignment: center; }
-                    SpinBox { minimum: 1; maximum: 50; value <=> root.pole-pairs; min-width: 80px; }
+                    HorizontalLayout {
+                        alignment: start;
+                        Button { text: "Next"; enabled: root.selected-preset >= 0; clicked => { root.detect-review = true; } }
+                    }
                 }
 
-                GridLayout {
+                if root.detect-review : Text {
+                    text: root.preset-names[root.selected-preset];
+                    font-weight: 600;
+                }
+                if root.detect-review : CheckBox {
+                    text: "Calibrate Hall";
+                    checked <=> root.detect-hall;
+                    enabled: !root.detect-running;
+                }
+                if root.detect-review : CheckBox {
+                    text: "Override (Advanced)";
+                    checked <=> root.detect-advanced;
+                    enabled: !root.detect-running;
+                    toggled => {
+                        if !self.checked {
+                            root.preset-changed(root.preset-names[root.selected-preset]);
+                        }
+                    }
+                }
+
+                if root.detect-review && !root.detect-advanced : Text {
+                    text: "\{root.detect-pole-pairs} pole pairs · \{root.detect-flux-erpm} eRPM flux target";
+                }
+
+                if root.detect-review && root.detect-advanced : GridLayout {
                     spacing: 6px;
                     Row {
-                        Text { text: "Max power loss (W):"; } LineEdit { text <=> root.detect-max-loss; min-width: 100px; }
-                        Text { text: "Open-loop ERPM:"; } LineEdit { text <=> root.detect-openloop-erpm; min-width: 100px; }
+                        Text { text: "Flux spin target (eRPM)"; } LineEdit { text <=> root.detect-flux-erpm; enabled: !root.detect-running; min-width: 100px; }
+                        Text { text: "Current ceiling (A)"; } LineEdit { text <=> root.detect-current-limit; placeholder-text: "Automatic"; enabled: !root.detect-running; min-width: 100px; }
                     }
                     Row {
-                        Text { text: "Sensorless ERPM:"; } LineEdit { text <=> root.detect-sensorless-erpm; min-width: 100px; }
+                        Text { text: "Pole pairs"; } SpinBox { minimum: 1; maximum: 50; value <=> root.detect-pole-pairs; enabled: !root.detect-running; min-width: 80px; }
                     }
                 }
 
-                HorizontalLayout {
+                if root.detect-review && root.detect-resistance == "" : Text {
+                    text: "Detection spins the motor. Secure it and keep the rotor clear.";
+                }
+
+                if root.detect-review : HorizontalLayout {
                     spacing: 8px;
                     alignment: start;
 
-                    Button { text: "Start Detection"; primary: true; clicked => { root.detect-start(); } }
-                    if root.detect-resistance != "" : Button { text: "Apply to Config"; clicked => { root.detect-apply(); } }
+                    Button { text: "Back"; enabled: !root.detect-running; clicked => { root.detect-review = false; } }
+                    Button { text: "Start Detection"; primary: true; enabled: root.is-connected && !root.detect-running; clicked => { root.detect-start(); } }
+                    if root.detect-cancellable : Button { text: "Stop"; clicked => { root.detect-cancel(); } }
+                    if root.detect-resistance != "" : Button { text: "Save to Controller"; enabled: root.is-connected && !root.detect-running; clicked => { root.detect-apply(); } }
                     Rectangle { horizontal-stretch: 1; }
                     if root.detect-status != "" : Text {
                         text: root.detect-status;
@@ -1137,23 +1183,23 @@ export component App inherits Window {
                     }
                 }
 
-                if root.detect-resistance != "" : Rectangle {
+                if root.detect-review && root.detect-resistance != "" : Rectangle {
                     background: Palette.alternate-background;
                     border-radius: 4px;
                     GridLayout {
                         padding: 10px;
                         spacing: 6px;
                         Row {
-                            Text { text: "Resistance (Ω):"; } Text { text: root.detect-resistance; font-weight: 600; }
-                            Text { text: "Inductance D (H):"; } Text { text: root.detect-inductance-d; font-weight: 600; }
+                            Text { text: "Resistance (mΩ)"; } Text { text: root.detect-resistance; font-weight: 600; }
+                            Text { text: "Ld (µH)"; } Text { text: root.detect-inductance-d; font-weight: 600; }
                         }
                         Row {
-                            Text { text: "Inductance Q (H):"; } Text { text: root.detect-inductance-q; font-weight: 600; }
-                            Text { text: "Flux linkage (Wb):"; } Text { text: root.detect-flux-linkage; font-weight: 600; }
+                            Text { text: "Lq (µH)"; } Text { text: root.detect-inductance-q; font-weight: 600; }
+                            Text { text: "Flux linkage (mWb)"; } Text { text: root.detect-flux-linkage; font-weight: 600; }
                         }
                         Row {
                             Text { text: "Kv (RPM/V):"; } Text { text: root.detect-kv; font-weight: 600; }
-                            Text { text: "Max current (A):"; } Text { text: root.detect-max-current; font-weight: 600; }
+                            Text { text: "Estimated thermal rating (A)"; } Text { text: root.detect-max-current; font-weight: 600; }
                         }
                         Row {
                             Text { text: "Kp:"; } Text { text: root.detect-kp; font-weight: 600; }

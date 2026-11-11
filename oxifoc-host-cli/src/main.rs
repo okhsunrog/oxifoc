@@ -119,6 +119,8 @@ enum FastEncodingArg {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum DetectStep {
+    /// Run R, L, flux and Hall using a motor-class profile
+    All,
     /// Measure phase-to-neutral resistance
     Resistance,
     /// Measure d/q inductance (HFI with pulse fallback; needs R)
@@ -419,24 +421,26 @@ enum Command {
     Detect {
         #[arg(value_enum)]
         step: DetectStep,
+        #[arg(long, required_if_eq("step", "all"), value_parser = clap::builder::PossibleValuesParser::new(oxifoc_host_lib::ops::detect::PRESETS.iter().map(|p| p.id)))]
+        motor_class: Option<String>,
+        #[arg(long, help = "Enable manual excitation limits")]
+        advanced: bool,
         #[arg(
             long,
-            default_value_t = 10.0,
-            help = "Max power dissipation during the test (W)"
+            requires = "advanced",
+            help = "Lower the detection current ceiling (A)"
         )]
-        max_power_w: f32,
+        current_limit_a: Option<f32>,
+        #[arg(long, help = "Skip Hall calibration in the full sequence")]
+        sensorless: bool,
         #[arg(long, help = "Resistance (Ω); default: stored motor-params")]
         resistance: Option<f32>,
         #[arg(long, help = "Avg inductance (H); default: stored motor-params")]
         inductance: Option<f32>,
-        #[arg(long, help = "Pole pairs; default: stored motor-params")]
+        #[arg(long, help = "Override the motor class pole-pair count")]
         pole_pairs: Option<u8>,
-        #[arg(
-            long,
-            default_value_t = 700.0,
-            help = "Open-loop ERPM for flux spin-up"
-        )]
-        erpm: f32,
+        #[arg(long, help = "Override the flux spin target (electrical RPM)")]
+        erpm: Option<f32>,
         #[arg(long, value_enum, default_value_t = OffsetMethodArg::PerPhase)]
         offset_method: OffsetMethodArg,
         #[arg(
@@ -453,8 +457,8 @@ enum Command {
         stationary: bool,
         #[arg(
             long,
-            help = "Record raw fast telemetry during the step into a parquet \
-                    file (M=1 preserves HFI and pulse edges; decimation can \
+            help = "Record fast telemetry into one parquet file, or a directory for 'all' \
+                    (M=1 preserves HFI and pulse edges; decimation can \
                     alias them). Written on failure too. NOTE: \
                     the virtual device runs detection in a private sim that \
                     this capture cannot see; meaningful on hardware."
@@ -960,7 +964,10 @@ fn main() -> Result<()> {
         },
         Command::Detect {
             step,
-            max_power_w,
+            motor_class,
+            advanced: _,
+            current_limit_a,
+            sensorless,
             resistance,
             inductance,
             pole_pairs,
@@ -972,14 +979,21 @@ fn main() -> Result<()> {
             record,
             record_hz,
         } => {
+            let preset = oxifoc_host_lib::ops::detect::PRESETS
+                .iter()
+                .find(|p| p.id == motor_class.as_deref().unwrap_or("medium-outrunner"))
+                .context("unknown motor class")?;
+            let mut plan = oxifoc_host_lib::ops::detect::DetectionPlan::from(preset);
+            plan.pole_pairs = pole_pairs.unwrap_or(plan.pole_pairs);
+            plan.flux_target_erpm = erpm.unwrap_or(plan.flux_target_erpm);
+            plan.current_limit_a = current_limit_a;
+            plan.calibrate_hall = !sensorless;
             detect::run_detect(
                 &runtime,
                 step,
-                max_power_w,
+                plan,
                 resistance,
                 inductance,
-                pole_pairs,
-                erpm,
                 offset_method,
                 samples,
                 stationary,

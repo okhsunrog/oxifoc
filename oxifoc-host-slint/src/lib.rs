@@ -14,7 +14,6 @@ mod detection;
 mod faults;
 mod logging;
 mod motor;
-mod presets;
 
 use faults::apply_faults;
 use logging::UiLogLayer;
@@ -149,33 +148,12 @@ pub fn main() {
 
     // ── Motor presets ─────────────────────────────────────────────────────────
     {
-        let names: Vec<SharedString> = presets::preset_names()
-            .into_iter()
-            .map(SharedString::from)
+        let names: Vec<SharedString> = ops::detect::PRESETS
+            .iter()
+            .map(|preset| SharedString::from(preset.name))
             .collect();
         let model = ModelRc::new(VecModel::from(names));
         app.set_preset_names(model);
-        // Default to first preset's pole pairs
-        app.set_pole_pairs(i32::from(presets::PRESETS[0].pole_pairs));
-    }
-    {
-        let weak = app.as_weak();
-        app.on_preset_changed(move |name| {
-            if let Some(app) = weak.upgrade()
-                && let Some(preset) = presets::PRESETS.iter().find(|p| p.name == name.as_str())
-            {
-                app.set_pole_pairs(i32::from(preset.pole_pairs));
-                app.set_detect_max_loss(SharedString::from(format!("{}", preset.max_power_loss_w)));
-                app.set_detect_openloop_erpm(SharedString::from(format!(
-                    "{}",
-                    preset.openloop_erpm
-                )));
-                app.set_detect_sensorless_erpm(SharedString::from(format!(
-                    "{}",
-                    preset.sensorless_erpm
-                )));
-            }
-        });
     }
 
     // ── Shared state ──────────────────────────────────────────────────────────

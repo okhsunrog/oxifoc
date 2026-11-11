@@ -14,15 +14,42 @@ use oxifoc_core::foc::detection::pi_tuning::{DEFAULT_BANDWIDTH_RAD_S, calculate_
 use oxifoc_core::foc::detection::resistance::calculate_max_current;
 use oxifoc_core::foc::detection::types::MotorSize;
 use oxifoc_core::types::{
-    ConfigGroupId, CurrentOffsetMethod, CurrentOffsetReport, DetectRequest, DetectResponse,
+    ConfigGroupId, ControlMode, CurrentOffsetMethod, CurrentOffsetReport, DetectRequest,
+    DetectResponse, MotorState,
 };
 use serde_json::json;
 
 use super::config;
-use crate::{CommandSender, HostCommand, detect_channel};
+use crate::{CommandSender, HostCommand, detect_channel, motor_channel};
+
+mod presets;
+pub use presets::{MotorPreset, PRESETS};
+
+/// Resolved profile used throughout a commissioning run and its later apply.
+#[derive(Clone, Copy, Debug)]
+pub struct DetectionPlan {
+    pub pole_pairs: u8,
+    pub max_power_loss_w: f32,
+    pub flux_target_erpm: f32,
+    pub current_limit_a: Option<f32>,
+    pub calibrate_hall: bool,
+}
+
+impl From<&MotorPreset> for DetectionPlan {
+    fn from(preset: &MotorPreset) -> Self {
+        Self {
+            pole_pairs: preset.pole_pairs,
+            max_power_loss_w: preset.max_power_loss_w,
+            // VESC's lower open-loop ERPM is for subsequent riding startup.
+            flux_target_erpm: preset.sensorless_erpm,
+            current_limit_a: None,
+            calibrate_hall: true,
+        }
+    }
+}
 
 /// Collected results of a full detection sequence.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct DetectionOutcome {
     /// Phase resistance (Ω).
     pub resistance_ohm: f32,
@@ -34,8 +61,9 @@ pub struct DetectionOutcome {
     pub flux_linkage_wb: f32,
     /// Motor velocity constant (RPM/V).
     pub kv_rpm_per_v: f32,
-    /// Whether Hall calibration succeeded (false = no hall / failed; non-fatal).
+    /// Whether Hall calibration was requested and succeeded.
     pub hall_ok: bool,
+    hall_revision: Option<u32>,
 }
 
 impl DetectionOutcome {
@@ -77,6 +105,25 @@ pub fn run_step(cmd: &CommandSender, req: DetectRequest) -> Result<DetectRespons
     rx.blocking_recv()
         .context("backend dropped the detect command")?
         .context("detection failed")
+}
+
+/// Require acknowledged Stop and a healthy controller before a wizard run.
+pub fn preflight(cmd: &CommandSender) -> Result<()> {
+    let (tx, rx) = motor_channel();
+    cmd.send(HostCommand::MotorAck(ControlMode::Stopped, tx))
+        .context("send Stop before detection")?;
+    let status = rx.blocking_recv().context("Stop acknowledgement lost")??;
+    anyhow::ensure!(
+        status.state == MotorState::Stopped && status.mode == ControlMode::Stopped,
+        "controller did not acknowledge Stop: {status:?}"
+    );
+    let faults = super::fault::query(cmd)?;
+    anyhow::ensure!(
+        faults.total == 0,
+        "active faults before detection: {:?}",
+        faults.faults
+    );
+    Ok(())
 }
 
 /// Run one non-mutating current-offset diagnostic.
@@ -148,30 +195,50 @@ pub fn apply_current_offsets(cmd: &CommandSender, report: &CurrentOffsetReport) 
     Ok(())
 }
 
-/// Run the full R → L → flux → hall sequence and collect the results.
-///
-/// R/L/flux failures abort with an error; a Hall-calibration failure is
-/// non-fatal (motor may have no hall sensors) and leaves `hall_ok = false`.
+/// Run the same steps for both front-ends, allowing the CLI to record each one.
 pub fn run_sequence(
     cmd: &CommandSender,
-    pole_pairs: u8,
-    max_power_loss_w: f32,
-    openloop_erpm: f32,
+    plan: DetectionPlan,
+    mut measure: impl FnMut(&'static str, DetectRequest) -> Result<DetectResponse>,
 ) -> Result<DetectionOutcome> {
+    let DetectionPlan {
+        pole_pairs,
+        max_power_loss_w,
+        flux_target_erpm,
+        current_limit_a,
+        calibrate_hall,
+    } = plan;
+    anyhow::ensure!(
+        pole_pairs > 0
+            && max_power_loss_w.is_finite()
+            && max_power_loss_w > 0.0
+            && flux_target_erpm.is_finite()
+            && flux_target_erpm > 0.0
+            && current_limit_a.is_none_or(|a| a.is_finite() && a >= 0.5),
+        "invalid detection profile or override"
+    );
+    preflight(cmd)?;
     let mut out = DetectionOutcome::default();
 
     // Step 1: resistance.
-    match run_step(cmd, DetectRequest::MeasureResistance { max_power_loss_w })? {
+    match measure(
+        "resistance",
+        DetectRequest::MeasureResistance {
+            max_power_loss_w,
+            current_limit_a,
+        },
+    )? {
         DetectResponse::Resistance { resistance_ohm } => out.resistance_ohm = resistance_ohm,
         DetectResponse::Error(e) => bail!("R: {e:?}"),
         other => bail!("R: unexpected response {other:?}"),
     }
 
     // Step 2: inductance (needs R).
-    match run_step(
-        cmd,
+    match measure(
+        "inductance",
         DetectRequest::MeasureInductance {
             max_power_loss_w,
+            current_limit_a,
             resistance_ohm: out.resistance_ohm,
         },
     )? {
@@ -187,14 +254,15 @@ pub fn run_sequence(
     }
 
     // Step 3: flux linkage (needs R, L, pole pairs).
-    match run_step(
-        cmd,
+    match measure(
+        "flux",
         DetectRequest::MeasureFlux {
             max_power_loss_w,
+            current_limit_a,
             resistance_ohm: out.resistance_ohm,
             inductance_h: out.l_avg(),
             pole_pairs,
-            openloop_erpm,
+            openloop_erpm: flux_target_erpm,
         },
     )? {
         DetectResponse::FluxLinkage {
@@ -208,19 +276,58 @@ pub fn run_sequence(
         other => bail!("Flux: unexpected response {other:?}"),
     }
 
-    // Step 4: hall calibration (best-effort). Sweep current derives from
-    // the same power class as the other steps (device-side √(P/R/1.5)).
-    if let Ok(DetectResponse::HallCalibrated) = run_step(
-        cmd,
-        DetectRequest::CalibrateHall {
-            max_power_loss_w,
-            resistance_ohm: out.resistance_ohm,
-        },
-    ) {
-        out.hall_ok = true;
+    if calibrate_hall {
+        match measure(
+            "hall",
+            DetectRequest::CalibrateHall {
+                max_power_loss_w,
+                current_limit_a,
+                resistance_ohm: out.resistance_ohm,
+            },
+        )? {
+            DetectResponse::HallCalibrated => {
+                let (_, state) = config::current_value(cmd, ConfigGroupId::HallCalibration)?;
+                anyhow::ensure!(
+                    state.present && state.valid,
+                    "new Hall calibration is unavailable"
+                );
+                out.hall_ok = true;
+                out.hall_revision = Some(state.revision);
+            }
+            DetectResponse::Error(e) => bail!("Hall: {e:?}"),
+            other => bail!("Hall: unexpected response {other:?}"),
+        }
     }
 
+    preflight(cmd)?;
     Ok(out)
+}
+
+/// Save the reviewed motor model and the exact Hall result from this run.
+pub fn apply_sequence(
+    cmd: &CommandSender,
+    outcome: &DetectionOutcome,
+    plan: DetectionPlan,
+) -> Result<()> {
+    anyhow::ensure!(
+        plan.calibrate_hall == outcome.hall_ok,
+        "detection result is incomplete"
+    );
+    if let Some(revision) = outcome.hall_revision {
+        let (_, state) = config::current_value(cmd, ConfigGroupId::HallCalibration)?;
+        anyhow::ensure!(
+            state.present && state.valid && state.revision == revision,
+            "Hall calibration changed since detection"
+        );
+    }
+    apply_motor_params(cmd, outcome, plan.pole_pairs, plan.max_power_loss_w)?;
+    if let Some(revision) = outcome.hall_revision {
+        anyhow::ensure!(
+            config::persist_group(cmd, ConfigGroupId::HallCalibration, revision)?,
+            "Hall calibration persistence is unsupported"
+        );
+    }
+    Ok(())
 }
 
 /// Apply a SINGLE detection step's result into config, patching only what
@@ -311,6 +418,10 @@ pub fn apply_motor_params(
     obj.insert("resistance_ohm".into(), json!(outcome.resistance_ohm));
     obj.insert("inductance_d_h".into(), json!(outcome.inductance_d_h));
     obj.insert("inductance_q_h".into(), json!(outcome.inductance_q_h));
+    // A new motor model cannot inherit a low-frequency estimate from an
+    // earlier motor. This sequence only measured the HFI inductances.
+    obj.insert("ld_fundamental_h".into(), json!(0.0));
+    obj.insert("lq_fundamental_h".into(), json!(0.0));
     obj.insert("flux_linkage_wb".into(), json!(outcome.flux_linkage_wb));
     obj.insert("pole_pairs".into(), json!(pole_pairs));
     obj.insert(
@@ -322,6 +433,9 @@ pub fn apply_motor_params(
     let write = config::write_from_value(ConfigGroupId::MotorParams, value)
         .context("patched motor-params no longer deserializes")?;
     let revision = config::apply_write(cmd, state.revision, write)?;
-    config::persist_group(cmd, ConfigGroupId::MotorParams, revision)?;
+    anyhow::ensure!(
+        config::persist_group(cmd, ConfigGroupId::MotorParams, revision)?,
+        "motor parameter persistence is unsupported"
+    );
     Ok(())
 }

@@ -24,15 +24,14 @@ use critical_section::Mutex as CriticalSectionMutex;
 use ergot::net_stack::NetStackHandle;
 use ergot::net_stack::endpoints::Endpoints;
 
-use crate::foc::clamp_f32;
 #[cfg(feature = "offset-diagnostics")]
 use crate::foc::current_offset::{
     CurrentOffsetError, CurrentOffsetMethod, CurrentOffsetReport, CurrentOffsetRequest,
 };
 use crate::foc::detection::types::{
-    DetectionError, FluxLinkageParams, InductanceParams, MotorSize, ResistanceParams,
+    DetectionCurrents, DetectionError, FluxLinkageParams, InductanceParams, MotorSize,
+    ResistanceParams,
 };
-use crate::foc::fast_math::sqrtf;
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use crate::icd::DetectEndpoint;
 use crate::motor::ControlMode;
@@ -233,12 +232,20 @@ async fn run_step<B: DetectionBackend>(
         }),
         None => configured_current_ceiling(max_current_a, None),
     };
-    let max_current_a = match ceiling {
+    let mut max_current_a = match ceiling {
         Ok(current) => current,
         Err(error) => return DetectResponse::Error(error),
     };
+    if let Some(limit) = req.current_limit_a() {
+        if !limit.is_finite() || limit < 0.5 {
+            return DetectResponse::Error(DetectError::OutOfRange);
+        }
+        max_current_a = max_current_a.min(limit);
+    }
     match req {
-        DetectRequest::MeasureResistance { max_power_loss_w } => {
+        DetectRequest::MeasureResistance {
+            max_power_loss_w, ..
+        } => {
             if !pos(max_power_loss_w) {
                 return DetectResponse::Error(DetectError::OutOfRange);
             }
@@ -258,18 +265,19 @@ async fn run_step<B: DetectionBackend>(
                         Ok(r) => r,
                         Err(e) => return DetectResponse::Error(e),
                     };
-                    // Clamp by the bus too: the thermal formula alone asks a
-                    // high-R motor for more voltage than the bus has, the PI
-                    // saturates short of the setpoint and the settle check
-                    // aborts the measurement (same clamp as run_full_detection).
-                    let max_bus_current = (backend.vbus() * 0.577 * 0.85) / r_probe.max(0.001);
-                    let safe_current = sqrtf(max_power_loss_w / r_probe / 1.5)
-                        .min(max_current_a)
-                        .min(max_bus_current)
-                        .max(probe_current);
+                    let currents = match DetectionCurrents::new(
+                        max_power_loss_w,
+                        r_probe,
+                        backend.vbus(),
+                        max_current_a,
+                    ) {
+                        Ok(currents) if currents.resistance_a >= 0.5 => currents,
+                        Ok(_) => return DetectResponse::Error(DetectError::OutOfRange),
+                        Err(error) => return DetectResponse::Error(map_err(error)),
+                    };
                     let params = ResistanceParams {
                         motor_size: MotorSize::Custom(max_power_loss_w),
-                        current_max: safe_current,
+                        current_max: currents.resistance_a,
                         ..Default::default()
                     };
                     match backend.measure_resistance(&params).await {
@@ -287,6 +295,7 @@ async fn run_step<B: DetectionBackend>(
         DetectRequest::MeasureInductance {
             max_power_loss_w,
             resistance_ohm: r,
+            ..
         } => {
             if !pos(max_power_loss_w) || !pos(r) {
                 return DetectResponse::Error(DetectError::OutOfRange);
@@ -315,6 +324,7 @@ async fn run_step<B: DetectionBackend>(
             inductance_h,
             pole_pairs,
             openloop_erpm,
+            ..
         } => {
             // pole_pairs = 0 would turn openloop_erpm into an infinite
             // spin target via the erpm/pole_pairs division below.
@@ -326,10 +336,11 @@ async fn run_step<B: DetectionBackend>(
             {
                 return DetectResponse::Error(DetectError::OutOfRange);
             }
-            let safe_current = sqrtf(max_power_loss_w / r / 1.5)
-                .min(max_current_a)
-                .min((backend.vbus() * 0.577 * 0.85) / r.max(0.001))
-                .max(0.5);
+            let currents =
+                match DetectionCurrents::new(max_power_loss_w, r, backend.vbus(), max_current_a) {
+                    Ok(currents) => currents,
+                    Err(error) => return DetectResponse::Error(map_err(error)),
+                };
             let spin_rpm = openloop_erpm / f32::from(pole_pairs);
             let params = FluxLinkageParams {
                 motor_size: MotorSize::Custom(max_power_loss_w),
@@ -337,7 +348,7 @@ async fn run_step<B: DetectionBackend>(
                 inductance_h,
                 pole_pairs,
                 spin_rpm,
-                current_a: safe_current.min(2.0),
+                current_a: currents.flux_a,
                 // Ramp until back-EMF dominates R·I (VESC's duty-0.3 idea);
                 // spin_rpm above remains the hard speed cap.
                 v_target: 0.2 * backend.vbus(),
@@ -365,23 +376,24 @@ async fn run_step<B: DetectionBackend>(
         DetectRequest::CalibrateHall {
             max_power_loss_w,
             resistance_ohm,
+            ..
         } => {
             let Some(runtime_config) = runtime_config else {
                 return DetectResponse::Error(DetectError::MissingPrerequisite);
             };
-            // Non-positive means "use the default sweep current" by design,
-            // but non-finite bits are still rejected.
-            if !max_power_loss_w.is_finite() || !resistance_ohm.is_finite() {
-                return DetectResponse::Error(DetectError::OutOfRange);
-            }
-            // Sweep current from the power class, same formula as the other
-            // steps (√(P/R/1.5)), capped by the platform ceiling. Falls back
-            // to the conservative default when R is unknown.
-            let mut params = HallCalibrationParams::default();
-            if resistance_ohm > 0.0 && max_power_loss_w > 0.0 {
-                let i = sqrtf(max_power_loss_w / resistance_ohm / 1.5);
-                params.current_amps = clamp_f32(i, params.current_amps, max_current_a);
-            }
+            let currents = match DetectionCurrents::new(
+                max_power_loss_w,
+                resistance_ohm,
+                backend.vbus(),
+                max_current_a,
+            ) {
+                Ok(currents) => currents,
+                Err(error) => return DetectResponse::Error(map_err(error)),
+            };
+            let params = HallCalibrationParams {
+                current_amps: currents.hall_a,
+                ..Default::default()
+            };
             match backend.calibrate_hall(params).await {
                 Ok(result) => {
                     let calibration = HallCalibrationConfig::from(&result);
@@ -458,23 +470,21 @@ fn configured_current_ceiling(
     if !platform_max.is_finite() || platform_max < 0.5 {
         return Err(DetectError::Unsafe);
     }
-    let Some((config, limits)) = config.and_then(|c| c.current_limits.as_ref().map(|l| (c, l)))
-    else {
-        return Ok(platform_max.min(3.0));
-    };
+    let defaults = crate::storage::CurrentLimitsConfig::default();
+    let configured = config.and_then(|c| c.current_limits.as_ref());
+    let limits = configured.unwrap_or(&defaults);
     if !limits.is_coherent() {
         return Err(DetectError::Unsafe);
     }
     let rating = config
-        .motor_params
-        .as_ref()
+        .and_then(|c| c.motor_params.as_ref())
         .and_then(crate::storage::MotorParamsConfig::rating_current_a)
         .unwrap_or(0.0);
     let live = CurrentLimits::from_config_clamped(limits, platform_max, rating);
     let ceiling = if limits.max_iq_a > 0.0 {
         live.max_current_a
     } else {
-        live.max_current_a.min(3.0)
+        live.max_current_a.min(defaults.max_iq_a)
     };
     // Existing detection routines have a 0.5-A probe floor.
     if !ceiling.is_finite() || ceiling < 0.5 {
@@ -518,7 +528,7 @@ mod tests {
         use crate::storage::{CurrentLimitsConfig, MotorParamsConfig};
         let mut cfg = RuntimeConfig::default();
         assert!(configured_current_ceiling(0.1, None).is_err());
-        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 3.0);
+        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 10.0);
         cfg.current_limits = Some(CurrentLimitsConfig {
             max_iq_a: 30.7,
             max_phase_current_a: 45.0,
@@ -540,17 +550,20 @@ mod tests {
             Err(DetectError::Unsafe)
         ));
         cfg.current_limits.as_mut().unwrap().max_iq_a = 0.0;
-        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 3.0);
+        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 10.0);
     }
 
     fn request_is_sane(req: &DetectRequest) -> bool {
         // Mirror of the per-arm guards in `run_step`, kept in one place so
         // the boundary rules stay unit-testable without an async backend.
         match *req {
-            DetectRequest::MeasureResistance { max_power_loss_w } => pos(max_power_loss_w),
+            DetectRequest::MeasureResistance {
+                max_power_loss_w, ..
+            } => pos(max_power_loss_w),
             DetectRequest::MeasureInductance {
                 max_power_loss_w,
                 resistance_ohm,
+                ..
             } => pos(max_power_loss_w) && pos(resistance_ohm),
             DetectRequest::MeasureFlux {
                 max_power_loss_w,
@@ -558,6 +571,7 @@ mod tests {
                 inductance_h,
                 pole_pairs,
                 openloop_erpm,
+                ..
             } => {
                 pos(max_power_loss_w)
                     && pos(resistance_ohm)
@@ -568,7 +582,8 @@ mod tests {
             DetectRequest::CalibrateHall {
                 max_power_loss_w,
                 resistance_ohm,
-            } => max_power_loss_w.is_finite() && resistance_ohm.is_finite(),
+                ..
+            } => pos(max_power_loss_w) && pos(resistance_ohm),
             DetectRequest::MeasureCurrentOffsets { .. } => true,
         }
     }
@@ -577,21 +592,26 @@ mod tests {
     fn detect_requests_reject_nan_and_degenerate_payloads() {
         // NaN power: sqrtf(NaN).min(max) would SELECT the platform maximum.
         assert!(!request_is_sane(&DetectRequest::MeasureResistance {
+            current_limit_a: None,
             max_power_loss_w: f32::NAN,
         }));
         assert!(!request_is_sane(&DetectRequest::MeasureResistance {
+            current_limit_a: None,
             max_power_loss_w: 0.0,
         }));
         assert!(request_is_sane(&DetectRequest::MeasureResistance {
+            current_limit_a: None,
             max_power_loss_w: 25.0,
         }));
         // Zero resistance divides the bus-current clamp.
         assert!(!request_is_sane(&DetectRequest::MeasureInductance {
+            current_limit_a: None,
             max_power_loss_w: 25.0,
             resistance_ohm: 0.0,
         }));
         // pole_pairs = 0 turns openloop_erpm into an infinite spin target.
         assert!(!request_is_sane(&DetectRequest::MeasureFlux {
+            current_limit_a: None,
             max_power_loss_w: 25.0,
             resistance_ohm: 0.03,
             inductance_h: 10e-6,
@@ -599,19 +619,20 @@ mod tests {
             openloop_erpm: 3000.0,
         }));
         assert!(request_is_sane(&DetectRequest::MeasureFlux {
+            current_limit_a: None,
             max_power_loss_w: 25.0,
             resistance_ohm: 0.03,
             inductance_h: 10e-6,
             pole_pairs: 7,
             openloop_erpm: 3000.0,
         }));
-        // CalibrateHall: non-positive means "use defaults" by design, but
-        // non-finite bits are still rejected.
-        assert!(request_is_sane(&DetectRequest::CalibrateHall {
+        assert!(!request_is_sane(&DetectRequest::CalibrateHall {
+            current_limit_a: None,
             max_power_loss_w: 0.0,
             resistance_ohm: 0.0,
         }));
         assert!(!request_is_sane(&DetectRequest::CalibrateHall {
+            current_limit_a: None,
             max_power_loss_w: f32::NAN,
             resistance_ohm: 0.0,
         }));
