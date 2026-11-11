@@ -16,6 +16,7 @@ mod model;
 mod modes;
 #[cfg(feature = "storage")]
 pub use model::{MotorModelError, PreparedMotorModel};
+mod limits;
 mod protection;
 mod step;
 mod velocity_schedule;
@@ -25,9 +26,10 @@ mod watchdog;
 mod tests;
 
 pub use crate::types::ControlMode;
+pub use limits::{CurrentLimits, InvalidSourceLimits, OVERCURRENT_HEADROOM, PowerSourceLimits};
 #[cfg(feature = "runtime")]
 pub use protection::PreparedBoardConfig;
-pub use protection::{CurrentLimits, OVERCURRENT_HEADROOM, PreparedVoltageLimits};
+pub use protection::PreparedVoltageLimits;
 
 use crate::foc::controller::FocController;
 use crate::foc::current_offset::CurrentOffsetCalibrator;
