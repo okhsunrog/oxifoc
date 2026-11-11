@@ -726,3 +726,13 @@ A preliminary 4 KiB run had one unclassified fault entry after the
 deceleration, all ACKs and 1,828 producer drops. It is kept as `pilot-4k`.
 The default remains 4 KiB. The previous bench firmware was restored,
 stopped in Hall mode with zero active faults.
+
+The 32 KiB follow-up used the same release settings, measured Hall geometry
+and maneuver. Losses were 35 / 182 / 146 samples, all between 6.48 and
+6.74 s during the return to Hall. Median loss was 79% lower than at 16 KiB.
+All nine timeline commands and three terminal Stops were acknowledged, with
+a maximum timeline ACK of 21.7 ms. SPI errors, host drops, local ACK send
+failures and active faults were zero. The 32 KiB image used 93.2 KiB of main
+SRAM for static data, leaving 34.8 KiB for stack and margin. Default capacity
+and the restored bench firmware remain unchanged. Artifacts are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11-32k/`.
