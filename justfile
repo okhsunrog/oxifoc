@@ -681,3 +681,7 @@ bench-mk5-torque-isolation output recovery hall_config repeats="2" cases="veloci
 # Compare current PI continuity across a real off interval and a small rearm.
 bench-mk5-rearm output recovery hall_config repeats="2":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --cases rearm-current --speed-ceiling 200
+
+# Small heat budget with no battery regeneration, fixed Hall table and PI defaults.
+bench-mk5-motion-brake output recovery hall_config repeats="1" cases="velocity40":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --cases {{quote(cases)}} --brake-power-w 0.3 --speed-ceiling 200

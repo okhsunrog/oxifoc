@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--recovery-elf", required=True, type=Path)
     parser.add_argument("--repeats", default=2, type=int)
     parser.add_argument("--hall-current", type=float, default=0, help="Recalibrate Hall in RAM at this current; 0 keeps persisted calibration")
+    parser.add_argument("--brake-power-w", type=float, help="Volatile dissipative braking budget; regen limit unchanged")
     parser.add_argument("--speed-ceiling", type=float, help="Volatile bench speed ceiling, electrical rad/s")
     parser.add_argument("--cases", default="velocity40,velocity-negative40,velocity120-to40")
     parser.add_argument("--velocity-ki", type=float, help="Volatile speed PI integral gain; other gains unchanged")
@@ -53,6 +54,8 @@ def main():
             probe.run(["just", "cli-bridge", "config", "set", "hall-calibration", *[key+"="+json.dumps(value, separators=(",", ":")) for key,value in hall.items()], "--volatile"])
         if args.interp_min_erpm is not None:
             probe.run(["just", "cli-bridge", "config", "set", "hall-tuning", f"interp_min_erpm={args.interp_min_erpm}", "--volatile"])
+        if args.brake_power_w is not None:
+            probe.run(["just", "cli-bridge", "config", "set", "current-limits", f"max_dissipation_w={args.brake_power_w}", "--volatile"])
         if args.speed_ceiling is not None:
             probe.run(["just", "cli-bridge", "config", "set", "derating", f"max_speed_erad_s={args.speed_ceiling}", "speed_start_frac=0.9", "--volatile"])
         if args.velocity_ki is not None:

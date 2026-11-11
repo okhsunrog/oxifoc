@@ -9,12 +9,15 @@ Current stage: PWM +120 closure passed before and after the rearm fix.
 Accepted fix: discard stale current PI voltage when re-enabling a bridge that
 was off; ordinary running retargets preserve state. Hardware restart peaks
 4.79/5.27 A → 0.77/0.91 A. All six post-fix velocity captures lossless; steady
-Hall/speed ripple remains, especially a 120→40 transition. Next isolate the
-missing braking authority (regen=0, dissipation=0) with a bounded low-power
-RAM-only dissipative-braking comparison. Clock/current/outer-loop rates stay
+Hall/speed ripple remains, especially a 120→40 transition. Small-power dissipative-braking pilot was rejected: it worsened rocking.
+Next focus is the Hall feedback/velocity handover on speed reduction. Clock/current/outer-loop rates stay
 168 profile / 20 kHz / 1 kHz. All earlier experimental tuning remains volatile.
 
 Artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-research-2026-11-11/`.
+
+Latest artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-pwm-motion-2026-11-11/`.
+Recovery for future tests: `normal-fixed.elf` in that latest root, source fix
+`44a9790`. Do not silently restore the old pre-fix recovery image.
 Use this one living note for progress; add conclusions/evidence and next actions,
 not transcripts of questions. Do not repeat completed A/Bs without a reason.
 
@@ -492,3 +495,22 @@ change itself an optimization gain (layout/trajectory vary).
 Use the forthcoming normal fixed build in the new artifact root as recovery
 for later experiments; the old `current-light-repeat/recovery.elf` lacks this
 rearm fix and is only a historical A/B reference.
+
+
+### Rejected small dissipative-braking pilot
+
+`brake-pilot`: source fix 44a9790, exact 10-A Hall table, default PI, regen=0,
+RAM-only max_dissipation_w=0.3, speed rolloff 180→200. One native capture,
+114,680 records, complete/lossless, no fault generations. Granted Iq reaches
+-0.234 A and positive Id 1.550 A: braking authority was actually exercised.
++40 has 7 reverse edges, net 36.81 rad/s, dq peak 3.486 A. This is worse than
+the matched no-dissipation trials; reject rather than qualify a larger matrix.
+The experiment does not establish the exact cause: coarse Hall angle plus
+additional Id torque sensitivity is a plausible contributor, not measured
+true rotor angle. No speed/thermal/current defaults were changed permanently.
+
+Normal fixed SPI firmware was built and flashed, source fix 44a9790, before
+this pilot; its exact build artifact is `normal-fixed.elf/json` in the latest
+root and was the pilot's automatic recovery. Use that recovery going forward.
+Final rebuild/flash aligns the default target ELF with the running normal
+image (a bench ELF left in the target directory is not its defmt decoder).
