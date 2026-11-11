@@ -120,11 +120,13 @@ impl DetectionHardware for EmbassyDetectionHardware {
             }
         }
         critical_section::with(|cs| {
-            self.state_mutex
-                .borrow(cs)
-                .borrow_mut()
-                .excitation
-                .arm(program)
+            if !self.authority.is_some_and(|token| token.is_current()) {
+                return Err(DetectionError::HardwareFault);
+            }
+            let mut state = self.state_mutex.borrow(cs).borrow_mut();
+            state.excitation.arm(program)?;
+            state.excitation.authority = self.authority;
+            Ok(())
         })?;
         let mut guard = Guard {
             state: self.state_mutex,

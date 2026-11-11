@@ -358,8 +358,16 @@ mod hardware_tests {
     fn hardware_stop_cancels_inductance_at_20khz() -> Result<()> {
         anyhow::ensure!(std::env::var("OXIFOC_HARDWARE_TEST").as_deref() == Ok("1"));
         let out = std::env::var("OXIFOC_HARDWARE_CAPTURE")?;
+        let serial_path = std::env::var("OXIFOC_HARDWARE_SERIAL").ok();
+        let resistance = std::env::var("OXIFOC_HARDWARE_RESISTANCE")?.parse::<f32>()?;
+        anyhow::ensure!(resistance.is_finite() && resistance > 0.0);
         let runtime = start_host(HostConfig {
-            transport: Some(TransportType::Usb),
+            transport: Some(if serial_path.is_some() {
+                TransportType::UsbSerialJtag
+            } else {
+                TransportType::Usb
+            }),
+            serial_path,
             fast_hz: Some(0),
             stream_defmt: Some(false),
             ..Default::default()
@@ -382,11 +390,8 @@ mod hardware_tests {
                 run_detect(
                     &runtime,
                     DetectStep::Inductance,
-                    DetectionPlan {
-                        max_power_loss_w: 0.05,
-                        ..DetectionPlan::from(&detect::PRESETS[2])
-                    },
-                    Some(0.030444),
+                    DetectionPlan::from(&detect::PRESETS[2]),
+                    Some(resistance),
                     None,
                     OffsetMethodArg::PerPhase,
                     1000,

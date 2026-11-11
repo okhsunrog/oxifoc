@@ -37,12 +37,33 @@ where
         self.position.update(self.phase.get().angle);
         let result = self.step_inner(now_ticks);
         if result.is_err() {
+            self.end_commissioning();
             self.restore_current_pi_gains();
             self.invalidate_velocity();
             self.last_granted_iq = 0.0;
             self.last_granted_id = 0.0;
         }
         let mut out = result?;
+        if let Some(context) = self.commissioning.as_mut() {
+            if matches!(
+                self.mode,
+                ControlMode::OpenLoop { .. } | ControlMode::DirectVoltage { .. }
+            ) {
+                if !context.source_allows(out.i_alpha, out.i_beta) {
+                    self.safe_off();
+                    return Err(StepError::SourceLimit);
+                }
+                let [a, b, c] = out.duties.map(i32::from);
+                let period = f32::from(self.pwm.max_duty().max(1));
+                // 1.5 * Clarke(duty): Ibus = m_alpha*Ialpha + m_beta*Ibeta.
+                context.modulation.record_command(
+                    0.5 * (2 * a - b - c) as f32 / period,
+                    crate::foc::constants::SQRT_3_DIV_2 * (b - c) as f32 / period,
+                );
+            } else {
+                context.modulation.record_command(0.0, 0.0);
+            }
+        }
         self.stamp_step_telemetry(&mut out);
         Ok(out)
     }

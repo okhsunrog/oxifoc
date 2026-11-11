@@ -65,6 +65,7 @@ where
             vbus,
             dt,
             current_limits: CurrentLimits::default(),
+            commissioning: None,
             open_loop_angle: 0.0,
             actuation: ActuationModel::default(),
             watchdog: CommandWatchdog::default(),
@@ -136,6 +137,9 @@ where
     /// ran up to a period early.
     pub fn set_actuation_delay(&mut self, cycles: f32) {
         self.actuation.set_delay(cycles);
+        if let Some(context) = self.commissioning.as_mut() {
+            context.modulation.set_delay(cycles);
+        }
     }
 
     /// Output-vector advance for the configured actuation delay.
@@ -215,6 +219,7 @@ where
 
     /// Set current limits.
     pub fn set_current_limits(&mut self, limits: CurrentLimits) {
+        self.end_commissioning();
         self.current_limits = limits;
         self.velocity_schedule.clear_request();
     }
@@ -300,6 +305,18 @@ where
     /// async caller's future. Cancellation must still reach Stop or failsafe
     /// to end that sequence and restore the working gains.
     pub fn set_mode(&mut self, mode: ControlMode) {
+        if self.commissioning.is_some()
+            && !matches!(
+                mode,
+                ControlMode::Stopped
+                    | ControlMode::Coast
+                    | ControlMode::OpenLoop { .. }
+                    | ControlMode::DirectVoltage { .. }
+            )
+        {
+            self.end_commissioning();
+            return;
+        }
         // Finite voltage packets return to an OpenLoop hold with no new
         // override. Keep the temporary gains across that whole bench sequence.
         if !matches!(

@@ -35,7 +35,7 @@ use crate::foc::detection::types::{
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use crate::icd::DetectEndpoint;
 use crate::motor::ControlMode;
-use crate::motor::foc_driver::CurrentLimits;
+use crate::motor::foc_driver::{PowerSourceLimits, PreparedCommissioning};
 use crate::state::DriverCommand;
 use crate::state::model::{CONFIG_COORDINATOR, ModelApplyGuard};
 use crate::state::{CMD_CHANNEL, DetectionActiveGuard};
@@ -90,8 +90,8 @@ pub trait DetectionBackend {
 /// Serve `DetectEndpoint` with effectively-once dedup, forever.
 ///
 /// `max_current_a` is the per-platform current ceiling fed into the safe-test-
-/// current formulas. Explicit configured driver/motor limits further bound it;
-/// absent explicit limits, detection retains a 3-A commissioning ceiling.
+/// current formulas. Inverter protection and an optional diagnostic ceiling
+/// further bound it. Finite source limits must be configured explicitly.
 /// `foc_freq_hz` is the PWM/FOC loop frequency (used by the inductance HFI).
 /// The Hall calibration result is written into `runtime_config` in memory; the
 /// host persists it to flash via the config endpoint.
@@ -226,22 +226,71 @@ async fn run_step<B: DetectionBackend>(
     }) {
         return DetectResponse::Error(DetectError::Unsafe);
     }
-    let ceiling = match runtime_config {
+    if matches!(req, DetectRequest::MeasureCurrentOffsets { .. }) {
+        return measure_step(
+            backend,
+            req,
+            max_current_a,
+            foc_freq_hz,
+            runtime_config,
+            detection,
+            request_id,
+        )
+        .await;
+    }
+    let prepared = match runtime_config {
         Some(config) => critical_section::with(|cs| {
-            configured_current_ceiling(max_current_a, Some(&config.borrow(cs).borrow()))
+            prepare_commissioning(
+                max_current_a,
+                Some(&config.borrow(cs).borrow()),
+                req.current_limit_a(),
+            )
         }),
-        None => configured_current_ceiling(max_current_a, None),
+        None => Err(DetectError::Unsafe),
     };
-    let mut max_current_a = match ceiling {
-        Ok(current) => current,
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
         Err(error) => return DetectResponse::Error(error),
     };
-    if let Some(limit) = req.current_limit_a() {
-        if !limit.is_finite() || limit < 0.5 {
-            return DetectResponse::Error(DetectError::OutOfRange);
-        }
-        max_current_a = max_current_a.min(limit);
+    if !detection.begin::<B::Timer>(prepared).await {
+        return DetectResponse::Error(DetectError::Busy);
     }
+    let result = measure_step(
+        backend,
+        req,
+        prepared.current_ceiling_a(),
+        foc_freq_hz,
+        runtime_config,
+        detection,
+        request_id,
+    )
+    .await;
+    let limited = crate::state::detection_source_limited();
+    if !detection.end::<B::Timer>().await {
+        return DetectResponse::Error(DetectError::HardwareFault);
+    }
+    if limited {
+        DetectResponse::Error(DetectError::SourceLimited)
+    } else if crate::state::detection_cancelled() {
+        DetectResponse::Error(DetectError::HardwareFault)
+    } else if matches!(result, DetectResponse::Error(_))
+        && crate::state::detection_source_constrained()
+    {
+        DetectResponse::Error(DetectError::SourceLimited)
+    } else {
+        result
+    }
+}
+
+async fn measure_step<B: DetectionBackend>(
+    backend: &mut B,
+    req: DetectRequest,
+    max_current_a: f32,
+    foc_freq_hz: f32,
+    runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
+    detection: &DetectionActiveGuard,
+    request_id: ReqId,
+) -> DetectResponse {
     match req {
         DetectRequest::MeasureResistance {
             max_power_loss_w, ..
@@ -460,37 +509,35 @@ async fn run_step<B: DetectionBackend>(
     }
 }
 
-/// Share the driver's actual clamping rules instead of silently requesting a
-/// measurement current above configured limits. Raising the platform ceiling
-/// alone must not opt an unconfigured board into a high-current detection.
-fn configured_current_ceiling(
+/// Prepare from inverter and source constraints only. The installed motor's
+/// thermal rating and ride-current settings have no authority over detection.
+/// Legacy endpoints require explicitly configured finite source limits until
+/// the wizard carries the source selection in its session request.
+fn prepare_commissioning(
     platform_max: f32,
     config: Option<&RuntimeConfig>,
-) -> Result<f32, DetectError> {
-    if !platform_max.is_finite() || platform_max < 0.5 {
+    test_ceiling_a: Option<f32>,
+) -> Result<PreparedCommissioning, DetectError> {
+    let limits = config
+        .and_then(|c| c.current_limits.as_ref())
+        .ok_or(DetectError::Unsafe)?;
+    let source = PowerSourceLimits::new(limits.bus_in_max_a, limits.bus_regen_max_a)
+        .map_err(|_| DetectError::Unsafe)?;
+    // Zero is the legacy "use board protection" value; reject negative/NaN.
+    if !limits.max_phase_current_a.is_finite() || limits.max_phase_current_a < 0.0 {
         return Err(DetectError::Unsafe);
     }
-    let defaults = crate::storage::CurrentLimitsConfig::default();
-    let configured = config.and_then(|c| c.current_limits.as_ref());
-    let limits = configured.unwrap_or(&defaults);
-    if !limits.is_coherent() {
-        return Err(DetectError::Unsafe);
-    }
-    let rating = config
-        .and_then(|c| c.motor_params.as_ref())
-        .and_then(crate::storage::MotorParamsConfig::rating_current_a)
-        .unwrap_or(0.0);
-    let live = CurrentLimits::from_config_clamped(limits, platform_max, rating);
-    let ceiling = if limits.max_iq_a > 0.0 {
-        live.max_current_a
+    let trip = if limits.max_phase_current_a == 0.0 {
+        platform_max
     } else {
-        live.max_current_a.min(defaults.max_iq_a)
+        limits.max_phase_current_a
     };
-    // Existing detection routines have a 0.5-A probe floor.
-    if !ceiling.is_finite() || ceiling < 0.5 {
-        return Err(DetectError::Unsafe);
+    let prepared = PreparedCommissioning::new(platform_max, trip, source, test_ceiling_a)
+        .map_err(|_| DetectError::Unsafe)?;
+    if prepared.current_ceiling_a() < 0.5 {
+        return Err(DetectError::OutOfRange);
     }
-    Ok(ceiling)
+    Ok(prepared)
 }
 
 #[cfg(feature = "offset-diagnostics")]
@@ -524,33 +571,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detection_ceiling_requires_explicit_limits_and_respects_driver_clamps() {
+    fn commissioning_uses_inverter_and_source_without_old_motor_limits() {
         use crate::storage::{CurrentLimitsConfig, MotorParamsConfig};
         let mut cfg = RuntimeConfig::default();
-        assert!(configured_current_ceiling(0.1, None).is_err());
-        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 10.0);
+        assert!(prepare_commissioning(70.0, None, None).is_err());
         cfg.current_limits = Some(CurrentLimitsConfig {
-            max_iq_a: 30.7,
-            max_phase_current_a: 45.0,
+            max_iq_a: 3.0,
+            max_phase_current_a: 30.0,
+            bus_in_max_a: 5.0,
+            bus_regen_max_a: 0.0,
             ..Default::default()
         });
-        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 30.7);
-        assert_eq!(
-            configured_current_ceiling(20.0, Some(&cfg)).unwrap(),
-            20.0 / crate::motor::foc_driver::OVERCURRENT_HEADROOM
-        );
         cfg.motor_params = Some(MotorParamsConfig {
-            max_current_a: 12.0,
+            max_current_a: 2.0,
             ..Default::default()
         });
-        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 12.0);
-        cfg.current_limits.as_mut().unwrap().max_iq_a = 0.1;
-        assert!(matches!(
-            configured_current_ceiling(70.0, Some(&cfg)),
-            Err(DetectError::Unsafe)
-        ));
-        cfg.current_limits.as_mut().unwrap().max_iq_a = 0.0;
-        assert_eq!(configured_current_ceiling(70.0, Some(&cfg)).unwrap(), 10.0);
+        assert_eq!(
+            prepare_commissioning(70.0, Some(&cfg), None)
+                .unwrap()
+                .current_ceiling_a(),
+            30.0 / crate::motor::foc_driver::OVERCURRENT_HEADROOM
+        );
+        assert_eq!(
+            prepare_commissioning(70.0, Some(&cfg), Some(4.0))
+                .unwrap()
+                .current_ceiling_a(),
+            4.0
+        );
+        assert!(prepare_commissioning(70.0, Some(&cfg), Some(f32::NAN)).is_err());
+        cfg.current_limits.as_mut().unwrap().bus_regen_max_a = -1.0;
+        assert!(prepare_commissioning(70.0, Some(&cfg), None).is_err());
     }
 
     fn request_is_sane(req: &DetectRequest) -> bool {

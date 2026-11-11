@@ -194,6 +194,7 @@ impl BurstCapture {
 #[cfg(feature = "runtime")]
 #[derive(Clone, Debug)]
 pub(crate) struct Excitation {
+    pub authority: Option<crate::state::DetectionCommandToken>,
     pub program: Option<VoltageBurst>,
     pub outcome: Option<Result<(), DetectionError>>,
     pub cancelled: bool,
@@ -212,6 +213,7 @@ pub(crate) struct Excitation {
 impl Excitation {
     pub const fn new() -> Self {
         Self {
+            authority: None,
             program: None,
             outcome: None,
             cancelled: false,
@@ -241,6 +243,7 @@ impl Excitation {
             return Err(DetectionError::OutOfRange);
         }
         self.program = Some(program);
+        self.authority = None;
         self.outcome = None;
         self.cancelled = false;
         self.index = 0;

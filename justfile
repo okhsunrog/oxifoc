@@ -385,9 +385,13 @@ profile-l-mk5 capture symbols resistance="0.031":
     uv run python scripts/bench_executor_trace.py read --symbols {{ quote(symbols) }} --out {{ quote(capture + ".trace.bin") }} --timer-hz 83917920
 
 # Hardware: energizes the secured MK5 motor, records at 20 kHz, then tests Stop.
-test-stop-mk5 capture:
-    OXIFOC_HARDWARE_TEST=1 OXIFOC_HARDWARE_CAPTURE={{ quote(capture) }} \
+test-stop-mk5 capture resistance:
+    OXIFOC_HARDWARE_TEST=1 OXIFOC_HARDWARE_CAPTURE={{ quote(capture) }} OXIFOC_HARDWARE_RESISTANCE={{quote(resistance)}} \
         cargo test -p oxifoc-host-cli --locked hardware_stop_cancels_inductance_at_20khz -- --ignored --nocapture
+
+# Same cancellation regression through the C5, with native Packed28 telemetry.
+test-stop-bridge capture resistance:
+    OXIFOC_HARDWARE_SERIAL=/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00 just test-stop-mk5 {{quote(capture)}} {{quote(resistance)}}
 
 # Build ESP32 bridge firmware.
 build-bridge features="":

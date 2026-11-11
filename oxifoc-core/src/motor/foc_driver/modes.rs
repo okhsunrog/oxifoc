@@ -563,6 +563,9 @@ where
         };
 
         // Read currents and run FOC controller with commanded angle.
+        let current = self.commissioning.as_mut().map_or(current, |context| {
+            context.constrain_current::<S>(angle, current, velocity_rad_s != 0.0)
+        });
         // When stationary (velocity=0): current on d-axis to lock rotor (resistance measurement).
         // When spinning (velocity≠0): current on q-axis to produce torque.
         let (id_target, iq_target) = if velocity_rad_s == 0.0 {

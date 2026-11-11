@@ -47,6 +47,13 @@ use crate::types::{
 /// that way.
 #[derive(Clone, Copy, Debug)]
 pub enum DriverCommand {
+    BeginCommissioning {
+        token: DetectionCommandToken,
+        prepared: crate::motor::foc_driver::PreparedCommissioning,
+    },
+    EndCommissioning {
+        token: DetectionCommandToken,
+    },
     /// Device-side excitation belongs to one detection generation.
     DetectionMode {
         token: DetectionCommandToken,
@@ -59,7 +66,10 @@ pub enum DriverCommand {
     /// Apply current limits (already clamped to the board ceiling)
     SetCurrentLimits(CurrentLimits),
     /// Apply current-loop PI gains (post-detection tune, config write)
-    SetPiGains { kp: f32, ki: f32 },
+    SetPiGains {
+        kp: f32,
+        ki: f32,
+    },
     /// Apply dq-decoupling/back-EMF feedforward params (post-detection)
     SetDecoupling(Decoupling),
     /// Small token referencing the single-flight prepared-model mailbox.
@@ -87,6 +97,7 @@ impl DriverCommand {
     /// the control loop.
     pub fn is_sane(&self) -> bool {
         match *self {
+            Self::BeginCommissioning { .. } | Self::EndCommissioning { .. } => true,
             Self::DetectionMode { mode, .. } => mode.is_finite(),
             Self::SetMode(mode) => mode.is_finite(),
             Self::Motor(request) => request.command.is_finite(),
@@ -115,6 +126,30 @@ impl DriverCommand {
 
 /// Command channel - servers send DriverCommands here, ISR receives them
 pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, DriverCommand, 8> = Channel::new();
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommissioningTransition {
+    Begin,
+    End,
+}
+
+struct CommissioningAck {
+    generation: u32,
+    transition: CommissioningTransition,
+    accepted: bool,
+}
+
+static COMMISSIONING_DONE: Signal<CriticalSectionRawMutex, CommissioningAck> = Signal::new();
+static DETECTION_SOURCE_LIMITED: AtomicBool = AtomicBool::new(false);
+static DETECTION_SOURCE_CONSTRAINED: AtomicBool = AtomicBool::new(false);
+
+pub fn detection_source_constrained() -> bool {
+    DETECTION_SOURCE_CONSTRAINED.load(Ordering::Acquire)
+}
+
+pub fn detection_source_limited() -> bool {
+    DETECTION_SOURCE_LIMITED.load(Ordering::Acquire)
+}
 
 /// Completion of the single serialized protocol motor request. The motor
 /// server resets this before enqueue; `Signal` retains an ISR completion that
@@ -299,6 +334,54 @@ impl DetectionApplyToken {
 }
 
 impl DetectionActiveGuard {
+    pub(crate) fn command_token(&self) -> DetectionCommandToken {
+        DetectionCommandToken(self.generation)
+    }
+
+    pub(crate) async fn begin<T: crate::timer::Timer>(
+        &self,
+        prepared: crate::motor::foc_driver::PreparedCommissioning,
+    ) -> bool {
+        self.change_context::<T>(Some(prepared)).await
+    }
+
+    pub(crate) async fn end<T: crate::timer::Timer>(&self) -> bool {
+        self.change_context::<T>(None).await
+    }
+
+    async fn change_context<T: crate::timer::Timer>(
+        &self,
+        prepared: Option<crate::motor::foc_driver::PreparedCommissioning>,
+    ) -> bool {
+        use embassy_futures::select::{Either, select};
+        let transition = if prepared.is_some() {
+            CommissioningTransition::Begin
+        } else {
+            CommissioningTransition::End
+        };
+        let command = match prepared {
+            Some(prepared) => DriverCommand::BeginCommissioning {
+                token: self.command_token(),
+                prepared,
+            },
+            None => DriverCommand::EndCommissioning {
+                token: self.command_token(),
+            },
+        };
+        let operation = async {
+            CMD_CHANNEL.send(command).await;
+            loop {
+                let ack = COMMISSIONING_DONE.wait().await;
+                if ack.generation == self.generation && ack.transition == transition {
+                    return ack.accepted;
+                }
+            }
+        };
+        match select(operation, T::after_millis(500)).await {
+            Either::First(accepted) => accepted,
+            Either::Second(()) => false,
+        }
+    }
     pub fn arm() -> Self {
         Self::try_arm().expect("one detection operation owns the device")
     }
@@ -315,6 +398,8 @@ impl DetectionActiveGuard {
             let generation = DETECTION_GENERATION.load(Ordering::Relaxed).wrapping_add(1);
             DETECTION_GENERATION.store(generation, Ordering::Release);
             DETECTION_CANCELLED.store(false, Ordering::Release);
+            DETECTION_SOURCE_LIMITED.store(false, Ordering::Release);
+            DETECTION_SOURCE_CONSTRAINED.store(false, Ordering::Release);
             DETECTION_ACTIVE.store(true, Ordering::Release);
             Some(Self { generation })
         })
@@ -653,6 +738,12 @@ where
     F: PlatformFault,
 {
     // Process all pending commands
+    if let Some(generation) = foc.commissioning_generation()
+        && !DetectionCommandToken(generation).is_current()
+    {
+        foc.end_commissioning();
+        critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
+    }
     while let Ok(cmd) = CMD_CHANNEL.try_receive() {
         let detection_authority = match cmd {
             DriverCommand::DetectionMode { token, .. } => Some(token),
@@ -671,7 +762,58 @@ where
             }
             continue;
         }
+        // A concurrent configuration update ends the temporary operating
+        // context before touching its restoration baseline. It cannot silently
+        // change the conditions of an in-progress measurement.
+        if foc.commissioning_generation().is_some()
+            && matches!(
+                cmd,
+                DriverCommand::SetCurrentLimits(_)
+                    | DriverCommand::SetPiGains { .. }
+                    | DriverCommand::SetDecoupling(_)
+                    | DriverCommand::SetPhaseSource(_)
+                    | DriverCommand::SetFailsafe(_)
+                    | DriverCommand::SetVelocityConfig(_)
+                    | DriverCommand::SetDerating(_)
+                    | DriverCommand::SetCurrentOffsets(_)
+            )
+        {
+            cancel_detection();
+            foc.end_commissioning();
+            critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
+        }
         let mode = match cmd {
+            DriverCommand::BeginCommissioning { token, prepared } => {
+                let accepted = critical_section::with(|cs| {
+                    let state = state_mutex.borrow(cs).borrow();
+                    token.is_current()
+                        && state.motor_state == MotorState::Stopped
+                        && !fault_registry.any_stopping()
+                        && !BOOT_CURRENT_OFFSET_PENDING.load(Ordering::Acquire)
+                        && !current_offset_request_pending()
+                        && !FLASH_OP_PENDING.load(Ordering::Acquire)
+                        && !model_apply_pending()
+                        && foc.begin_commissioning(token.0, prepared).is_ok()
+                });
+                COMMISSIONING_DONE.signal(CommissioningAck {
+                    generation: token.0,
+                    transition: CommissioningTransition::Begin,
+                    accepted,
+                });
+                continue;
+            }
+            DriverCommand::EndCommissioning { token } => {
+                if foc.commissioning_generation() == Some(token.0) {
+                    foc.end_commissioning();
+                    critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
+                }
+                COMMISSIONING_DONE.signal(CommissioningAck {
+                    generation: token.0,
+                    transition: CommissioningTransition::End,
+                    accepted: true,
+                });
+                continue;
+            }
             DriverCommand::DetectionMode { token, mode } => {
                 if !token.is_current() {
                     continue;
@@ -692,6 +834,7 @@ where
             DriverCommand::Motor(request) => match request.command {
                 MotorCommand::EmergencyStop => {
                     cancel_detection();
+                    foc.end_commissioning();
                     foc.emergency_stop();
                     critical_section::with(|cs| {
                         state_mutex.borrow(cs).borrow_mut().set_stopped();
@@ -712,6 +855,7 @@ where
                     // An authorized host override cancels the whole operation,
                     // including PI holds between finite excitation packets.
                     cancel_detection();
+                    foc.end_commissioning();
                     // Only an authorized, non-duplicate request affirms the
                     // deadman. Busy/stale traffic cannot keep old torque alive.
                     *saw_set_mode = true;
@@ -1146,6 +1290,7 @@ where
     driver.run_protection(fault_registry, prepared_board, vbus_v, fet_t, motor_t);
     if fault_registry.any_stopping() {
         cancel_detection();
+        driver.end_commissioning();
     }
 
     let prof_t2 = crate::isr_prof::now();
@@ -1247,6 +1392,7 @@ where
                 || driver.failsafe_active()
                 || saw_set_mode
                 || !DETECTION_ACTIVE.load(Ordering::Relaxed)
+                || ex.authority.is_some_and(|token| !token.is_current())
                 || detection_cancelled()
                 || (ex.index == 0 && !starting_in_hold)
             {
@@ -1306,6 +1452,9 @@ where
 
     let was_failsafe = driver.failsafe_active();
     let step_result = driver.step(now_ticks);
+    if driver.commissioning_source_constrained() {
+        DETECTION_SOURCE_CONSTRAINED.store(true, Ordering::Release);
+    }
     publish_current_offset_outcome(state_mutex, driver);
     let prof_t4 = crate::isr_prof::now();
     crate::isr_prof::add(&crate::isr_prof::CYCLE_STEP, prof_t3, prof_t4);
@@ -1332,6 +1481,11 @@ where
             Some(telem)
         }
         Err(_e) => {
+            if matches!(_e, StepError::SourceLimit) {
+                DETECTION_SOURCE_LIMITED.store(true, Ordering::Release);
+                cancel_detection();
+                driver.end_commissioning();
+            }
             #[cfg(feature = "defmt")]
             defmt::error!("FOC step error: {}", _e);
             if matches!(_e, StepError::Overcurrent) {

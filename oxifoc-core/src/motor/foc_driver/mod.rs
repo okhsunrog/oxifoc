@@ -8,6 +8,8 @@
 //! Platform code provides the trait implementations and calls [`FocDriver::step`].
 
 mod actuation;
+mod commissioning;
+pub use commissioning::{CommissioningError, PreparedCommissioning};
 mod calibration;
 mod driver;
 mod failsafe;
@@ -149,6 +151,8 @@ pub enum StepError {
     /// [`CurrentLimits::overcurrent_threshold_a`]; PWM was disabled and the
     /// mode forced to Stopped before returning.
     Overcurrent,
+    /// Commissioning exceeded the signed inverter-input current envelope.
+    SourceLimit,
 }
 
 /// Default actuation delay (PWM periods), see
@@ -233,6 +237,7 @@ where
     dt: f32,
     /// Current limiting configuration
     current_limits: CurrentLimits,
+    commissioning: Option<commissioning::CommissioningContext>,
     /// Accumulated angle for open-loop velocity mode
     open_loop_angle: f32,
     /// Applied-voltage history and output-vector timing compensation.

@@ -46,6 +46,10 @@ impl Default for ActuationModel {
 }
 
 impl ActuationModel {
+    pub(super) fn delay_cycles(&self) -> f32 {
+        self.delay.whole as f32 + self.delay.older_weight
+    }
+
     pub(super) fn set_delay(&mut self, cycles: f32) {
         if cycles.is_finite() {
             self.delay = PreparedDelay::new(cycles);

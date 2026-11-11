@@ -144,6 +144,12 @@ where
     /// sensor isn't calibrated — the brake needs the current loop, which
     /// refuses to run uncalibrated.
     fn arm_failsafe_with(&mut self, policy: FailsafePolicy, terminal: FailsafeTerminal) {
+        // A detection abort must not start a ride-mode braking manoeuvre
+        // using the old motor model or its source settings.
+        if self.commissioning.is_some() {
+            self.end_commissioning();
+            return;
+        }
         if self.failsafe_ctrl.is_active() {
             return;
         }
@@ -222,6 +228,7 @@ where
     /// energized. This cuts the gate drive immediately. `disable()` runs
     /// last so it wins over any phase re-enable inside `set_mode`.
     pub fn safe_off(&mut self) {
+        self.restore_commissioning_limits();
         self.cancel_current_offset_calibration();
         self.set_mode(ControlMode::Stopped);
         self.pwm.disable();

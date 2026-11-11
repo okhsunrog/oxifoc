@@ -1,4 +1,6 @@
 use super::*;
+#[path = "commissioning_tests.rs"]
+mod commissioning_tests;
 #[cfg(all(feature = "storage", feature = "runtime"))]
 #[path = "live_hall_tests.rs"]
 mod live_hall_tests;
@@ -4097,6 +4099,81 @@ mod severity_gate {
             assert_eq!(h.driver.mode(), ControlMode::Stopped);
             let next_token = crate::state::DetectionCommandToken::capture().unwrap();
             assert!(next_token.is_current());
+        }
+
+        #[test]
+        fn commissioning_context_is_applied_by_isr_and_revoked_on_guard_drop() {
+            use core::sync::atomic::Ordering;
+            let _serial = cmd_channel_lock();
+            struct BootFlag(bool);
+            impl Drop for BootFlag {
+                fn drop(&mut self) {
+                    crate::state::BOOT_CURRENT_OFFSET_PENDING.store(self.0, Ordering::Release);
+                }
+            }
+            let _boot =
+                BootFlag(crate::state::BOOT_CURRENT_OFFSET_PENDING.swap(false, Ordering::AcqRel));
+            let mut h = running_harness();
+            CMD_CHANNEL
+                .try_send(DriverCommand::SetMode(ControlMode::Stopped))
+                .unwrap();
+            tick(&mut h, 50);
+            let original = *h.driver.current_limits();
+            let detection = crate::state::DetectionActiveGuard::arm();
+            let token = crate::state::DetectionCommandToken::capture().unwrap();
+            let prepared = PreparedCommissioning::new(
+                40.0,
+                30.0,
+                PowerSourceLimits::new(5.0, 0.0).unwrap(),
+                None,
+            )
+            .unwrap();
+            CMD_CHANNEL
+                .try_send(DriverCommand::BeginCommissioning { token, prepared })
+                .unwrap();
+            tick(&mut h, 100);
+            assert!(h.driver.commissioning_generation().is_some());
+            assert_eq!(
+                h.driver.current_limits().max_current_a,
+                prepared.current_ceiling_a()
+            );
+            CMD_CHANNEL
+                .try_send(DriverCommand::DetectionMode {
+                    token,
+                    mode: program().hold_mode(),
+                })
+                .unwrap();
+            tick(&mut h, 150);
+            assert!(matches!(h.driver.mode(), ControlMode::OpenLoop { .. }));
+            drop(detection); // No async cleanup command: the next ISR owns cleanup.
+            tick(&mut h, 200);
+            assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            assert_eq!(h.driver.commissioning_generation(), None);
+            assert_eq!(
+                h.driver.current_limits().max_current_a,
+                original.max_current_a
+            );
+            let _next = crate::state::DetectionActiveGuard::arm();
+            let next = crate::state::DetectionCommandToken::capture().unwrap();
+            CMD_CHANNEL
+                .try_send(DriverCommand::BeginCommissioning {
+                    token: next,
+                    prepared,
+                })
+                .unwrap();
+            tick(&mut h, 250);
+            let generation = h.driver.commissioning_generation();
+            assert!(generation.is_some());
+            CMD_CHANNEL
+                .try_send(DriverCommand::EndCommissioning { token })
+                .unwrap();
+            tick(&mut h, 300);
+            assert_eq!(h.driver.commissioning_generation(), generation);
+            CMD_CHANNEL
+                .try_send(DriverCommand::EndCommissioning { token: next })
+                .unwrap();
+            tick(&mut h, 350);
+            assert_eq!(h.driver.commissioning_generation(), None);
         }
     }
 
