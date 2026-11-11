@@ -10,13 +10,17 @@ Accepted fix: discard stale current PI voltage when re-enabling a bridge that
 was off; ordinary running retargets preserve state. Hardware restart peaks
 4.79/5.27 A → 0.77/0.91 A. All six post-fix velocity captures lossless; steady
 Hall/speed ripple remains, especially a 120→40 transition. Small-power dissipative-braking pilot was rejected: it worsened rocking.
-Next focus is the Hall feedback/velocity handover on speed reduction. Clock/current/outer-loop rates stay
+Latest speed sweep: ±20 can rock/stall; +80/+160 and ±320 settle much more
+smoothly. Lower Ki improves 40 and 120→40 but substantially slows startup;
+interpolation threshold=0 does not cure 20. Next add native 1-kHz velocity PI
+diagnostics over Ergot/SPI (user approved), then resolve low-speed behavior.
+Clock/current/outer-loop rates stay
 168 profile / 20 kHz / 1 kHz. All earlier experimental tuning remains volatile.
 
 Artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-research-2026-11-11/`.
 
-Latest artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-pwm-motion-2026-11-11/`.
-Recovery for future tests: `normal-fixed.elf` in that latest root, source fix
+Latest artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-low-speed-2026-11-11/`.
+Recovery for future tests: `normal-fixed.elf` in the previous pwm-motion root, source fix
 `44a9790`. Do not silently restore the old pre-fix recovery image.
 Use this one living note for progress; add conclusions/evidence and next actions,
 not transcripts of questions. Do not repeat completed A/Bs without a reason.
@@ -514,3 +518,52 @@ this pilot; its exact build artifact is `normal-fixed.elf/json` in the latest
 root and was the pilot's automatic recovery. Use that recovery going forward.
 Final rebuild/flash aligns the default target ELF with the running normal
 image (a bench ELF left in the target directory is not its defmt decoder).
+
+### Speed dependence and tuning, 2026-11-11
+
+New low-speed root above contains exact ELFs, configurations, native Packed28
+Parquet, command events and complete finite Hall prefixes. Added just recipes
+for long settling, RAM-only gains, speed sweep, and interpolation comparison;
+new harness runs also retain the exact executed maneuver JSON. No NVM changes.
+
+Long +40/-40/120→40, two repeats per case and tuning: default Kp/Ki=.01/.2
+has 17 reverse Hall transitions across six runs; .01/.02 has zero; .015/.05
+has four. In the 120→40 repeats: 4/4 → 0/0 → 2/1 respectively. Mean late
+speeds remain near 40, but smoothing gains is a tradeoff: observed first full
+electrical turn at ±40 takes .25–.37 s by default versus 1.10–1.44 s with
+Ki=.02. Do not replace universal defaults based only on this unloaded motor.
+`comparison.png/json` includes all repeats; plotted native Iq uses 5-ms means,
+not the aliased 20-Hz bench snapshots. Actual Rust 20-kHz Hall replay matches
+MCU velocity snapshots (RMS .017/.008 rad/s for two transition examples).
+
+Speed sweep, default and soft Ki, two repeats each: +20,+80,+160,+320,-20,-320
+electrical rad/s (7 pole pairs: ±320 is ±437 mechanical RPM). Durations shorten
+at higher speeds to retain every Hall edge; ±320 has only ~0.8 s of late data,
+so this is not long-duration qualification. +80 late net 79.91–80.04, +160
+159.55–159.95, ±320 magnitudes 316.69–320.08. Default +80 200-ms Hall-travel
+P5/P95 about 79–81.2, +160 about 159.3–160.6. At ±20 there is pronounced
+rocking/stick-slip; one default +20 run has 64 reverse edges and zero net late
+boundary travel. Soft Ki also fails to regulate 20 consistently. This is a
+low-speed problem, not inability to run velocity control at every speed.
+`speed-sweep.png/json` records currents, speed windows, voltage and all repeats.
+
+Threshold=0 RAM pilot repeated at +20/+40/+80, two each: +20 still 29/8
+reverse crossings and net 11.23/19.23; +40 2/0 and net 40.33/40.21; +80
+0/0 and ~79.99. This changes both interpolation gating AND the commutation
+slew floor (currently coupled to the threshold), not a pure interpolation A/B.
+Reject zero threshold as a general fix; keep 500 eRPM default for now.
+
+48 successful captures total 5,448,833 samples, no producer/host loss and no
+controller faults. Separately retain THREE aborted attempts: `speed-default`
++80 and `interp0` +20 hit the host's 5-ms timeline-lateness refusal; samples
+were preserved losslessly but the maneuvers are incomplete. `speed-soft` +160
+also overflowed the host raw FIFO by 64 samples, with late affirm warnings and
+subsequent NoRoute errors. No hardware fault; this is a real host reliability
+limitation, not hidden in the successful count. Repeats succeeded. Parallel
+analysis was disabled after the first failure, so it does not explain all three.
+Do not silently loosen schedule tolerances or call the whole batch lossless.
+
+User approved next: optional native 1-kHz velocity debug with PI input/reference,
+requested/granted Iq, integral, clipping reason, raw Hall state/edge age, exact
+FOC sequence. Main 20-kHz Packed28 remains; same Ergot/SPI transport. Measure
+CPU/wire overhead and preserve correlated session/END/loss semantics.

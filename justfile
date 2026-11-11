@@ -673,6 +673,18 @@ bench-mk5-motion output recovery repeats="2" hall_current="0" interp="default" h
 bench-mk5-motion-soft output recovery hall_config repeats="2":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --velocity-ki 0.02
 
+# Matched long startup/settling runs; gains and Hall table remain RAM-only.
+bench-mk5-motion-gains output recovery hall_config kp="0.01" ki="0.2" repeats="2":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --velocity-kp {{quote(kp)}} --velocity-ki {{quote(ki)}} --cases velocity40-long,velocity-negative40-long,velocity120-to40-long
+
+# Durations shorten at higher speed so the complete Hall edge history fits.
+bench-mk5-speed-sweep output recovery hall_config ki="0.2" repeats="2" cases="velocity20-sweep,velocity80-sweep,velocity160-sweep,velocity320-sweep,velocitynegative20-sweep,velocitynegative320-sweep":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --velocity-kp 0.01 --velocity-ki {{quote(ki)}} --cases {{quote(cases)}}
+
+# Isolate low-speed commutation from the independent physical speed estimate.
+bench-mk5-low-speed-interp output recovery hall_config interp="0" repeats="2":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --interp-min-erpm {{quote(interp)}} --cases velocity20-sweep,velocity40-long,velocity80-sweep
+
 
 # Hold torque after the same spin-up to separate speed PI from commutation ripple.
 bench-mk5-torque-isolation output recovery hall_config repeats="2" cases="velocity40-to-iq03,velocity40-to-iq06":

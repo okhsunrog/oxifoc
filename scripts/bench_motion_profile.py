@@ -8,6 +8,18 @@ import time
 import bench_overclock as probe
 import f405_timing
 
+MOTION_CASES = {
+    "velocity40", "velocity-negative40", "velocity120-to40",
+    "velocity40-long", "velocity-negative40-long", "velocity120-to40-long",
+    "velocity40-to-iq03", "velocity40-to-iq06", "velocity40-to-iq045",
+    "rearm-current",
+}
+SWEEP_CASES = {
+    f"velocity{sign}{speed}-sweep"
+    for sign, speeds in (("", (20, 80, 160, 320)), ("negative", (20, 320)))
+    for speed in speeds
+}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -19,6 +31,7 @@ def main():
     parser.add_argument("--speed-ceiling", type=float, help="Volatile bench speed ceiling, electrical rad/s")
     parser.add_argument("--cases", default="velocity40,velocity-negative40,velocity120-to40")
     parser.add_argument("--velocity-ki", type=float, help="Volatile speed PI integral gain; other gains unchanged")
+    parser.add_argument("--velocity-kp", type=float, help="Volatile speed PI proportional gain")
     parser.add_argument("--hall-config", type=Path, help="Replay only Hall calibration from a saved config dump, in RAM")
     parser.add_argument("--interp-min-erpm", type=float, help="Volatile Hall interpolation threshold")
     args = parser.parse_args()
@@ -26,7 +39,7 @@ def main():
     assert not (args.hall_current and args.hall_config), "choose measured or replayed Hall calibration"
     cases = args.cases.split(",")
     assert len(cases) == len(set(cases))
-    assert cases and set(cases) <= {"velocity40", "velocity-negative40", "velocity120-to40", "velocity40-to-iq03", "velocity40-to-iq06", "velocity40-to-iq045", "rearm-current"}
+    assert cases and set(cases) <= MOTION_CASES | SWEEP_CASES
     assert 1 <= args.repeats <= 3
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = dict(runs=[])
@@ -58,12 +71,15 @@ def main():
             probe.run(["just", "cli-bridge", "config", "set", "current-limits", f"max_dissipation_w={args.brake_power_w}", "--volatile"])
         if args.speed_ceiling is not None:
             probe.run(["just", "cli-bridge", "config", "set", "derating", f"max_speed_erad_s={args.speed_ceiling}", "speed_start_frac=0.9", "--volatile"])
-        if args.velocity_ki is not None:
-            probe.run(["just", "cli-bridge", "config", "set", "velocity", f"ki={args.velocity_ki}", "--volatile"])
+        gains = [f"{key}={value}" for key, value in [("kp", args.velocity_kp), ("ki", args.velocity_ki)] if value is not None]
+        if gains:
+            probe.run(["just", "cli-bridge", "config", "set", "velocity", *gains, "--volatile"])
         (args.output/"config-before.json").write_text(probe.run(["just", "cli-bridge", "config", "dump"]).stdout)
         listing = probe.run(["rust-nm", "--defined-only", str(image)]).stdout
         symbols = {line.split()[-1]: int(line.split()[0],16) for line in listing.splitlines() if len(line.split()) >= 3}
         for case in cases:
+            maneuver = args.output/f"{case}.maneuver.json"
+            maneuver.write_bytes(Path(f"maneuvers/foc-profile-{case}.json").read_bytes())
             for repeat in range(args.repeats):
                 name = f"{case}-{repeat}"
                 status = json.loads(probe.run(["just", "cli-bridge", "status"]).stdout)
@@ -72,7 +88,7 @@ def main():
                 for symbol in ["BENCH_HALL_EDGE_COUNT", "BENCH_HALL_EDGE_DROPPED", "BENCH_HALL_PHASE_COUNT", "BENCH_VELOCITY_COUNT", "BENCH_FAULT_COUNT"]:
                     probe.run(probe.device("write", "b32", hex(symbols[symbol]), "0"))
                 capture = args.output/f"{name}.parquet"
-                result = subprocess.run(["just", "test-bridge", str(capture), f"maneuvers/foc-profile-{case}.json"], capture_output=True, text=True, timeout=35)
+                result = subprocess.run(["just", "test-bridge", str(capture), str(maneuver)], capture_output=True, text=True, timeout=35)
                 (args.output/f"{name}.driver.log").write_text(result.stdout+result.stderr)
                 row = dict(name=name, exit=result.returncode)
                 manifest["runs"].append(row)
