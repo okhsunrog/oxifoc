@@ -736,3 +736,15 @@ failures and active faults were zero. The 32 KiB image used 93.2 KiB of main
 SRAM for static data, leaving 34.8 KiB for stack and margin. Default capacity
 and the restored bench firmware remain unchanged. Artifacts are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11-32k/`.
+
+With 48 KiB in main SRAM and the same release settings, three full
+320→40 runs recorded 512,082 samples without gaps. The second attempt aborted
+on missing raw block 956 during the +320 hold and acknowledged its terminal
+Stop. STM32 producer drops and master SPI error counts were zero in all four
+attempts. The block loss was not localized. All sent timeline commands and
+terminal Stops were acknowledged, with a maximum timeline ACK of 15.3 ms.
+One completed run recorded a Hall stale-edge warning after deceleration.
+The image used 109.2 KiB of main SRAM for static data, leaving 18.8 KiB for
+stack and margin. The previous bench firmware was restored and verified
+stopped, with zero active faults. Artifacts are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11-48k/`.
