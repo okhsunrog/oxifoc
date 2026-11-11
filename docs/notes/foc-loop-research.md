@@ -702,3 +702,27 @@ respectively. The sequence gaps concentrate around the Hall/observer
 transitions, with a clean sustained +320 plateau. The 10-kHz recording
 passed with zero loss while FOC still ran at 20 kHz. No C5 changes.
 The previous normal image was restored and verified stopped.
+
+### Raw telemetry queue size at native 20 kHz
+
+On the same motor and Hall geometry, built the normal SPI release from
+`efa7e8f` with the 4, 8, and 16 KiB ISR telemetry queues. Only that capacity
+changed. Three repeats per capacity alternated build order and used the
+same 320→40 Hall/observer maneuver. Evidence, exact build patches and the
+gap plot are in `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11/`.
+
+| Queue | Missing samples in the three runs | Median | Max timeline ACK |
+| --- | ---: | ---: | ---: |
+| 4 KiB | 1,289 / 1,707 / 1,788 | 1,707 | 19.3 ms |
+| 8 KiB | 1,308 / 1,689 / 1,797 | 1,689 | 19.7 ms |
+| 16 KiB | 711 / 746 / 592 | 711 | 27.5 ms |
+
+All 27 timeline commands and nine terminal Stops were acknowledged.
+STM32 producer drops matched the gaps in sequence numbers. All nine runs
+had zero host drops, SPI errors, local ACK send failures and active faults.
+The +320 plateau stayed clean. The 16 KiB queue reduced startup losses to
+0/18/0 samples, while the return to Hall still lost 592–728 per run.
+A preliminary 4 KiB run had one unclassified fault entry after the
+deceleration, all ACKs and 1,828 producer drops. It is kept as `pilot-4k`.
+The default remains 4 KiB. The previous bench firmware was restored,
+stopped in Hall mode with zero active faults.
