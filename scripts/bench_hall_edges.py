@@ -21,6 +21,8 @@ OPTIONAL_SIZES = {"BENCH_HALL_STREAM_LOSSES": 16,
                   "BENCH_HALL_PHASE_COUNT": 4,
                   "BENCH_VELOCITY_SAMPLES": 128 * 8 * 4,
                   "BENCH_VELOCITY_COUNT": 4,
+                  "BENCH_CROSSOVER_SAMPLES": 320 * 8 * 4,
+                  "BENCH_CROSSOVER_COUNT": 4,
                   "BENCH_FAULT_EVENTS": 16 * 4 * 4, "BENCH_FAULT_COUNT": 4}
 
 
@@ -153,6 +155,16 @@ def main():
             names += ('granted_id_a',)
         velocity_samples = [dict(zip(names, (v if math.isfinite(v) else None for v in row)))
                             for row in struct.iter_unpack(f'<I{words - 1}f', values[:count * words * 4])]
+    crossover_samples = None
+    if 'BENCH_CROSSOVER_SAMPLES' in symbols:
+        count = scalar('BENCH_CROSSOVER_COUNT', '.crossover-count.bin')
+        values = read('BENCH_CROSSOVER_SAMPLES', '.crossover-samples.bin')
+        if count * 32 > len(values):
+            raise RuntimeError('invalid crossover sample prefix')
+        names = ('adc_sequence', 'flags', 'observer_weight', 'phase_angle',
+                 'phase_velocity', 'rotor_velocity', 'observer_angle', 'observer_velocity')
+        crossover_samples = [dict(zip(names, (v if math.isfinite(v) else None for v in row)))
+                             for row in struct.iter_unpack('<2I6f', values[:count * 32])]
     fault_events = None
     if 'BENCH_FAULT_EVENTS' in symbols:
         count = scalar('BENCH_FAULT_COUNT', '.fault-count.bin')
@@ -179,6 +191,7 @@ def main():
         stream_losses=stream_losses,
         phase_events=phase_events,
         velocity_samples=velocity_samples,
+        crossover_samples=crossover_samples,
         fault_events=fault_events,
         limits='First published prefix only. Overcapture means unknown hardware edge loss; '
                'dropped counts buffer overflow. Residual coast can append during read.',

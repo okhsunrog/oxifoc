@@ -33,6 +33,14 @@ pub static BENCH_VELOCITY_SAMPLES: [[AtomicU32; 8]; 128] =
 #[unsafe(no_mangle)]
 pub static BENCH_VELOCITY_COUNT: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(feature = "bench-hall-crossover")]
+#[unsafe(no_mangle)]
+pub static BENCH_CROSSOVER_SAMPLES: [[AtomicU32; 8]; 320] =
+    [const { [const { AtomicU32::new(0) }; 8] }; 320];
+#[cfg(feature = "bench-hall-crossover")]
+#[unsafe(no_mangle)]
+pub static BENCH_CROSSOVER_COUNT: AtomicU32 = AtomicU32::new(0);
+
 // Finite registry changes survive a warning that clears before the host polls.
 // Fields: ADC sequence, generation, active category bitmask, rotor speed bits.
 #[cfg(feature = "bench-hall-phase")]
@@ -48,6 +56,8 @@ pub struct PhaseRecorder {
     previous_health: Option<oxifoc_core::foc::phase::HallHealth>,
     previous_angle: f32,
     last_velocity_sequence: u32,
+    #[cfg(feature = "bench-hall-crossover")]
+    last_crossover_sequence: u32,
     fault_generation: u32,
 }
 
@@ -58,8 +68,54 @@ impl PhaseRecorder {
             previous_health: None,
             previous_angle: 0.0,
             last_velocity_sequence: 0,
+            #[cfg(feature = "bench-hall-crossover")]
+            last_crossover_sequence: 0,
             fault_generation: 0,
         }
+    }
+
+    /// Sample the selected phase and physical speed alongside the observer at 40 Hz.
+    #[cfg(feature = "bench-hall-crossover")]
+    pub fn observe_crossover<
+        H: oxifoc_core::foc::sensors::AngleSensor,
+        E: oxifoc_core::foc::sensors::AngleSensor,
+        S: oxifoc_core::foc::trig::SinCos,
+    >(
+        &mut self,
+        sequence: u32,
+        phase: &oxifoc_core::foc::phase::PhaseManager<H, E, S>,
+    ) {
+        use oxifoc_core::foc::phase::{HallHealth, PhaseProvider};
+        if sequence.wrapping_sub(self.last_crossover_sequence) < 500 {
+            return;
+        }
+        self.last_crossover_sequence = sequence;
+        let index = BENCH_CROSSOVER_COUNT.load(Ordering::Relaxed) as usize;
+        let Some(slot) = BENCH_CROSSOVER_SAMPLES.get(index) else {
+            return;
+        };
+        let observer = phase.observer();
+        let output = phase.get();
+        let flags = u32::from(observer.is_ready())
+            | (u32::from(phase.angle_trustworthy()) << 1)
+            | (u32::from(phase.hall_health() == HallHealth::Ok) << 2);
+        let values = [
+            sequence,
+            flags,
+            phase.bench_observer_weight().unwrap_or(f32::NAN).to_bits(),
+            output.angle.to_bits(),
+            output.velocity.to_bits(),
+            phase
+                .rotor_velocity()
+                .map_or(f32::NAN, |v| v.electrical_rad_s())
+                .to_bits(),
+            observer.phase().unwrap_or(f32::NAN).to_bits(),
+            observer.velocity().unwrap_or(f32::NAN).to_bits(),
+        ];
+        for (word, value) in slot.iter().zip(values) {
+            word.store(value, Ordering::Relaxed);
+        }
+        BENCH_CROSSOVER_COUNT.store(index as u32 + 1, Ordering::Release);
     }
 
     pub fn observe_faults(&mut self, sequence: u32, speed: impl FnOnce() -> f32) {

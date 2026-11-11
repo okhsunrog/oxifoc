@@ -34,6 +34,8 @@ impl PhaseManager<NoSensor, NoSensor> {
             source: PhaseSource::Manual,
             output: PhaseOutput::default(),
             rotor_velocity: None,
+            #[cfg(feature = "bench-phase-observation")]
+            bench_observer_weight: None,
             motion_reference_epoch: Default::default(),
             hall_reference_epoch: None,
             manual_angle: 0.0,
@@ -74,6 +76,8 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             source: PhaseSource::Hall,
             output: PhaseOutput::default(),
             rotor_velocity: None,
+            #[cfg(feature = "bench-phase-observation")]
+            bench_observer_weight: None,
             motion_reference_epoch: Default::default(),
             hall_reference_epoch: None,
             manual_angle: 0.0,
@@ -112,6 +116,8 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             source: self.source,
             output: self.output,
             rotor_velocity: self.rotor_velocity,
+            #[cfg(feature = "bench-phase-observation")]
+            bench_observer_weight: self.bench_observer_weight,
             motion_reference_epoch: self.motion_reference_epoch,
             hall_reference_epoch: self.hall_reference_epoch,
             manual_angle: self.manual_angle,
@@ -153,6 +159,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             source: self.source,
             output: self.output,
             rotor_velocity: self.rotor_velocity,
+            #[cfg(feature = "bench-phase-observation")]
+            bench_observer_weight: self.bench_observer_weight,
             motion_reference_epoch: self.motion_reference_epoch,
             hall_reference_epoch: self.hall_reference_epoch,
             manual_angle: self.manual_angle,
@@ -193,6 +201,8 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             source: PhaseSource::Encoder,
             output: PhaseOutput::default(),
             rotor_velocity: None,
+            #[cfg(feature = "bench-phase-observation")]
+            bench_observer_weight: None,
             motion_reference_epoch: Default::default(),
             hall_reference_epoch: None,
             manual_angle: 0.0,

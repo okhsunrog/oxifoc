@@ -48,6 +48,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         observer_was_ready: bool,
     ) -> PhaseOutput {
         self.rotor_velocity = None;
+        #[cfg(feature = "bench-phase-observation")]
+        {
+            self.bench_observer_weight = None;
+        }
         // A live hall sample retakes commutation from the recovery
         // override. Without this, one glitch-triggered override outlived
         // the glitch: nothing deactivated it when the SENSOR (rather than
@@ -363,6 +367,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 self.motion_reference_epoch.advance();
             }
             self.rotor_velocity = sensor_velocity;
+            #[cfg(feature = "bench-phase-observation")]
+            {
+                self.bench_observer_weight = Some(0.0);
+            }
             return sensor;
         }
 
@@ -397,6 +405,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
         if let (Some(obs_angle), Some(obs_vel)) = (self.observer.phase(), self.observer.velocity())
         {
+            #[cfg(feature = "bench-phase-observation")]
+            {
+                self.bench_observer_weight = Some(blend);
+            }
             // Reseeding uses the commutation frame's speed. It is not a new
             // physical observation; retain the sensor estimate for this cycle.
             self.rotor_velocity = if reseeded {
@@ -410,6 +422,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             }
         } else {
             self.rotor_velocity = sensor_velocity;
+            #[cfg(feature = "bench-phase-observation")]
+            {
+                self.bench_observer_weight = Some(0.0);
+            }
             sensor
         }
     }

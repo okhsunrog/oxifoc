@@ -12,7 +12,7 @@ MOTION_CASES = {
     "velocity40", "velocity-negative40", "velocity120-to40",
     "velocity40-long", "velocity-negative40-long", "velocity120-to40-long",
     "velocity40-to-iq03", "velocity40-to-iq06", "velocity40-to-iq045",
-    "rearm-current",
+    "rearm-current", "velocity320-to40", "velocity320-hold-to40",
 }
 SWEEP_CASES = {
     f"velocity{sign}{speed}-sweep"
@@ -33,6 +33,9 @@ def main():
     parser.add_argument("--velocity-ki", type=float, help="Volatile speed PI integral gain; other gains unchanged")
     parser.add_argument("--velocity-kp", type=float, help="Volatile speed PI proportional gain")
     parser.add_argument("--velocity-debug", action="store_true", help="Record native speed PI updates in the Packed28 session")
+    parser.add_argument("--phase-source", choices=("hall", "hall-fallback"), default="hall")
+    parser.add_argument("--spi-priority", action="store_true")
+    parser.add_argument("--capture-hz", type=int, choices=(10000, 20000), default=20000)
     parser.add_argument("--hall-config", type=Path, help="Replay only Hall calibration from a saved config dump, in RAM")
     parser.add_argument("--interp-min-erpm", type=float, help="Volatile Hall interpolation threshold")
     args = parser.parse_args()
@@ -43,12 +46,16 @@ def main():
     assert cases and set(cases) <= MOTION_CASES | SWEEP_CASES
     assert 1 <= args.repeats <= 3
     args.output.mkdir(parents=True, exist_ok=False)
-    manifest = dict(runs=[])
+    crossover = bool({"velocity320-to40", "velocity320-hold-to40"}.intersection(cases))
+    manifest = dict(phase_source=args.phase_source, spi_priority=args.spi_priority,
+                    capture_hz=args.capture_hz, runs=[])
     def save():
         (args.output/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
     try:
         with (args.output/"flash.log").open("w") as log:
-            subprocess.run(["just", "flash-mk5-motion"], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
+            subprocess.run(["just", "flash-mk5-motion", "on" if crossover else "off",
+                            "on" if args.spi_priority else "off"], stdout=log,
+                           stderr=subprocess.STDOUT, check=True, timeout=600)
         image = args.output/"firmware.elf"
         image.write_bytes(probe.ELF.read_bytes())
         manifest["sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
@@ -80,18 +87,22 @@ def main():
         symbols = {line.split()[-1]: int(line.split()[0],16) for line in listing.splitlines() if len(line.split()) >= 3}
         for case in cases:
             maneuver = args.output/f"{case}.maneuver.json"
-            maneuver.write_bytes(Path(f"maneuvers/foc-profile-{case}.json").read_bytes())
+            plan = json.loads(Path(f"maneuvers/foc-profile-{case}.json").read_text())
+            plan["capture"]["fast_hz"] = args.capture_hz
+            maneuver.write_text(json.dumps(plan, indent=2) + "\n")
             for repeat in range(args.repeats):
                 name = f"{case}-{repeat}"
                 status = json.loads(probe.run(["just", "cli-bridge", "status"]).stdout)
                 assert status["motor_state"] == "Stopped" and status["fault_count"] == 0
                 time.sleep(1)
-                for symbol in ["BENCH_HALL_EDGE_COUNT", "BENCH_HALL_EDGE_DROPPED", "BENCH_HALL_PHASE_COUNT", "BENCH_VELOCITY_COUNT", "BENCH_FAULT_COUNT"]:
+                counters = ["BENCH_HALL_EDGE_COUNT", "BENCH_HALL_EDGE_DROPPED", "BENCH_HALL_PHASE_COUNT", "BENCH_VELOCITY_COUNT", "BENCH_FAULT_COUNT"]
+                if crossover:
+                    counters.append("BENCH_CROSSOVER_COUNT")
+                for symbol in counters:
                     probe.run(probe.device("write", "b32", hex(symbols[symbol]), "0"))
                 capture = args.output/f"{name}.parquet"
                 cmd = ["just", "test-bridge", str(capture), str(maneuver)]
-                if args.velocity_debug:
-                    cmd += ["ergot-raw", "packed28", "on"]
+                cmd += ["ergot-raw", "packed28", "on" if args.velocity_debug else "off", args.phase_source]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
                 (args.output/f"{name}.driver.log").write_text(result.stdout+result.stderr)
                 row = dict(name=name, exit=result.returncode)

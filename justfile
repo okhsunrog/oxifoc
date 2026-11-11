@@ -636,11 +636,11 @@ cli-bridge *ARGS:
     @target/release/oxifoc-host-cli --transport usb-serial-jtag --serial-path /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00 --elf {{mk5_elf}} --wait-secs 12 --json "$@"
 
 # Finite maneuver, full native-rate stream, terminal Stop on success or failure.
-test-bridge capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off":
-    @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(source)}} {{quote(encoding)}} {{quote(velocity_debug)}}
+test-bridge capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off" phase_source="hall":
+    @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(source)}} {{quote(encoding)}} {{quote(velocity_debug)}} {{quote(phase_source)}}
 
 # USB is a temporary A/B reference; bridge is the production route.
-test-link link capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off":
+test-link link capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off" phase_source="hall":
     #!/usr/bin/env bash
     set -euo pipefail
     test {{quote(link)}} = bridge -o {{quote(link)}} = usb
@@ -648,7 +648,7 @@ test-link link capture maneuver source="ergot-raw" encoding="packed28" velocity_
     if test {{quote(link)}} = bridge; then cli=(just cli-bridge); fi
     trap '"${cli[@]}" stop >/dev/null' EXIT
     export RUST_LOG="${RUST_LOG:-warn},device=info"
-    "${cli[@]}" source hall > {{quote(capture + ".source.json")}}
+    "${cli[@]}" source {{quote(phase_source)}} > {{quote(capture + ".source.json")}}
     "${cli[@]}" --fast-source {{quote(source)}} --fast-encoding {{quote(encoding)}} {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}
 
 # Matching bench-executor-trace firmware must already be flashed.
@@ -656,10 +656,10 @@ profile-link-mk5 link output maneuver="maneuvers/mk5-hall-current-check.json" re
     uv run --no-project python -B scripts/bench_link_profile.py {{quote(link)}} {{quote(maneuver)}} {{quote(output)}} --repeats {{repeats}}
 
 # Native telemetry plus finite Hall/velocity evidence, without per-cycle timing marks.
-build-mk5-motion:
-    cd oxifoc-f405 && DEFMT_LOG=warn cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-hall-phase")}}
+build-mk5-motion crossover="off" spi_priority="off":
+    cd oxifoc-f405 && DEFMT_LOG=warn cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-hall-phase" + (if crossover == "on" { ",bench-hall-crossover" } else { "" }) + (if spi_priority == "on" { ",bench-spi-pump-priority" } else { "" }))}}
 
-flash-mk5-motion: build-mk5-motion
+flash-mk5-motion crossover="off" spi_priority="off": (build-mk5-motion crossover spi_priority)
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
     probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
 
@@ -688,6 +688,9 @@ bench-mk5-low-speed-interp output recovery hall_config interp="0" repeats="2":
 # Native velocity PI observations and Packed28 in one capture session.
 bench-mk5-velocity-debug output recovery hall_config repeats="2" cases="velocity40-long,velocity120-to40-long,velocity40-to-iq045":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --velocity-debug --cases {{quote(cases)}}
+
+bench-mk5-crossover output recovery hall_config repeats="1" phase_source="hall-fallback" cases="velocity320-hold-to40" spi_priority="off" hz="20000":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --phase-source {{quote(phase_source)}} --cases {{quote(cases)}} {{if spi_priority == "on" { "--spi-priority" } else { "" }}} --capture-hz {{hz}}
 
 test-velocity-debug:
     cargo test --locked -p oxifoc-core --lib --features {{quote(core_embassy_features + ",fast-telemetry")}}

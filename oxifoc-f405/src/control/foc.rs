@@ -673,6 +673,13 @@ fn ADC() {
             HALL_PHASE.observe(*SEQ, driver.phase(), hall_snapshot);
             #[cfg(feature = "bench-hall-phase")]
             HALL_PHASE.observe_velocity(*SEQ, || driver.velocity_control_snapshot());
+            #[cfg(feature = "bench-hall-crossover")]
+            if matches!(
+                driver.mode(),
+                oxifoc_core::types::ControlMode::VelocityControl { .. }
+            ) {
+                HALL_PHASE.observe_crossover(*SEQ, driver.phase());
+            }
             #[cfg(feature = "bench-hall-phase")]
             HALL_PHASE.observe_faults(*SEQ, || {
                 use oxifoc_core::foc::phase::PhaseProvider;

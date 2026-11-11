@@ -1,0 +1,11 @@
+{
+  "name": "foc-profile-velocity320-hold-to40",
+  "description": "Hold 320 long enough to check observer lock, then return to Hall at 40. The finite Hall edge prefix covers startup only.",
+  "capture": {"fast_hz": 20000, "tail_s": 0.4},
+  "terminal": "stop",
+  "timeline": [
+    {"t": 0.3, "cmd": {"velocity": {"rad_s": 320}}},
+    {"t": 6.1, "cmd": {"velocity": {"rad_s": 40}}},
+    {"t": 7.9, "cmd": {"stop": {}}}
+  ]
+}

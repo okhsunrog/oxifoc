@@ -602,3 +602,30 @@ speed feedback collapse from voltage saturation or rejected current. See
 `normal-mux-velocity120-to40.velocity.png` for the current format. For a
 focused independent review, the artifact root contains `fable-review/PROMPT.md`
 and `EVIDENCE.md` with exact A/B, raw data and source entry points.
+
+### Hall-to-observer crossover at 320 electrical rad/s
+
+Artifacts are in `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-crossover-2026-11-11/`.
+The long maneuver drives for 7.6 s, commands 320 for 5.8 s, then commands 40
+for 1.8 s before Stop. The test replays the measured Hall geometry in RAM and
+uses the default `hall-fallback` blend band of 150–300 electrical rad/s.
+The crossover build samples the applied blend weight, selected angle and
+rotor feedback, observer output and Hall health at 40 Hz. The 512-edge
+prefix intentionally covers only the start of this longer maneuver.
+
+Three complete control runs (`priority`, `half-rate` twice) held full
+observer weight for about 5.3 s at 320 (~437 mechanical RPM). At weight 1
+the selected rotor feedback equaled observer speed and the selected angle
+matched observer phase to floating-point precision. The weight reached 0
+about 0.35–0.4 s after the step to 40 and stayed at 0 until Stop. The usual
+low-speed feedback oscillation returned. Hall health and angle trust were
+good at every 40-Hz observation, with zero recorded faults.
+
+The complete 20-kHz attempt had all command ACKs and 37,705 STM32 producer
+drops. Shorter tests and the normal image also lost data, and a 48-KiB CCM
+queue did not solve it. Raising the SPI pump task priority was a bench-only
+setting used for the complete runs. With every second FOC sample exported,
+two repeats recorded 170,475 samples without losses or missed ACKs. TIM1 and
+the current loop remained at 20,004.27 Hz. Normal firmware was restored,
+stopped in Hall mode. Continuous 20-kHz recording during this blend remains
+unqualified. `half-rate/analysis.json` and the PNGs contain the aligned data.

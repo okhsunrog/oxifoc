@@ -64,6 +64,10 @@ fn checksum(crc: &mut Crc<'_>, bytes: &[u8]) -> u32 {
 
 #[embassy_executor::task]
 async fn pump(stack: &'static Stack, r: Resources, epoch: u32) {
+    #[cfg(feature = "bench-spi-pump-priority")]
+    embassy_executor::Metadata::for_current_task()
+        .await
+        .set_priority(3);
     use embassy_stm32::interrupt::{InterruptExt, Priority};
     embassy_stm32::interrupt::DMA2_STREAM0.set_priority(Priority::P6);
     embassy_stm32::interrupt::DMA2_STREAM3.set_priority(Priority::P6);

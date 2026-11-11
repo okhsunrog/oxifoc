@@ -238,6 +238,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         self.hall_health
     }
 
+    /// Weight applied by the latest sensor/observer blend, if that path ran.
+    #[cfg(feature = "bench-phase-observation")]
+    pub fn bench_observer_weight(&self) -> Option<f32> {
+        self.bench_observer_weight
+    }
+
     /// Get active faults
     pub fn faults(&self) -> &[PhaseFault] {
         &self.faults
